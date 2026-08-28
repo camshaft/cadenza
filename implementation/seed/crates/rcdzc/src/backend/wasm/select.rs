@@ -10883,6 +10883,17 @@ fn emit_immortal_static(
             out.push(Lir::CallImport("mark-immortal")); // [arr] — the record root, immortal
             Ok(())
         }
+        // A NULLARY variant of a MIXED sum (`(Z)`/`(Nil)`) — a real heap node (`sum-new(disc, IMM_UNIT)`)
+        // built ONCE, immortal (`is_markable_constant_sum_nullary`; the rsl1 leak-1 fix). SHALLOW
+        // `mark-immortal` suffices: the sum root wraps the inline-unit sentinel `IMM_UNIT` (rc-free, no heap
+        // child), so there is nothing deeper to mark — unlike the list/map/set roots that hold heap children.
+        Core::SumNew { disc, payloads } if payloads.is_empty() => {
+            out.push(Lir::ConstI32(disc as i32)); // [disc]
+            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc, unit]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [sum-handle]
+            out.push(Lir::CallImport("mark-immortal")); // [sum-handle] — the nullary sum root, immortal
+            Ok(())
+        }
         // A constant list of ANY size (non-empty, not all-`Bool`) — built like a tuple (a flat `arr` of boxed
         // elements) then `vec-of-arr`. The build is UNIFORM across sizes: `arr-alloc(n)` + per-element build +
         // `arr-set`, then `vec-of-arr`. What differs is the node topology `vec-of-arr` produces — ≤32 reuses the
@@ -12044,6 +12055,14 @@ fn emit(
         //    payload box + `arr-set`).
         // Leaves the sum's u32 handle on the stack.
         Core::SumNew { disc, payloads } => {
+            // BUILD-ONCE-IMMORTAL a nullary MIXED-sum terminal (`(Z)`/`(Nil)`): if this node was collected as
+            // a static compound (`is_markable_constant_sum_nullary`), read the immortal handle from its module
+            // global instead of a fresh `sum-new` — the rsl1 leak-1 fix (the fresh per-construction node was
+            // the leaked terminal on recursive-sum walks). Keyed by node id, so this only routes the collected
+            // nullary-terminal nodes; every other `SumNew` falls through to the fresh build below.
+            if try_emit_static_compound(db, id, layout, out) {
+                return Ok(());
+            }
             // The variant's DECLARED payload type(s) at this sum's instantiation — box each payload by THAT,
             // not the payload-value NODE's type. Same fix as `Core::Record`/`Core::Tuple`: an at-scale
             // empty-collection payload (`(Some Map.empty)`, or a sum whose payload is a Map/sum) can reach

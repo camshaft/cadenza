@@ -2050,7 +2050,7 @@
                      (not (prove g-bad (refl-tac g-bad))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 16))
+  (live-objects known-leak 15))
 
 (case "a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)"
   (doc    "The backward-proof shape: a tactic reduces a GOAL to a SUBGOAL and a JUSTIFICATION that builds

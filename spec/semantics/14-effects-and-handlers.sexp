@@ -1877,7 +1877,7 @@
             (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) (walk (T.Node (T.Leaf) (T.Leaf)))))
             (export main)))
   (call   main) (output (: 1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a match-scrutinee self-call preceding an arm-body perform folds via multi-value return"
   (doc    "`(match (walk (- n 1)) (_ (Ctr.tick)))` — the self-call is the match scrutinee and the arm body
@@ -8848,7 +8848,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "a handler STATE that is a recursive sum GROWS one constructor per operation"
   (doc    "The recursive-sum face of heap-valued handler state (list/record/set/string states are pinned;
@@ -8869,7 +8869,7 @@
                 (do (Acc.bump unit) (Acc.bump unit) (Acc.read unit))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "a LET-bound outer perform under an inner handle threads its state advance"
   (doc    "An OUTER-handled effect performed INSIDE an inner (different-effect) handle, with the perform's
@@ -9326,7 +9326,7 @@
                 (do (Halt.stop n) (Z)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "a mixed handler's ABORTIVE arm value reads BOTH the op arg and the state binder"
   (doc    "The mixed resuming+abortive handler where the ABORTIVE arm's value is a function of BOTH the op

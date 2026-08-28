@@ -14917,6 +14917,34 @@ pub fn is_markable_constant_set(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// Whether the node at `id` is a NULLARY variant of a MIXED sum — a build-once-immortal candidate (the
+/// rsl1 leak-1 class; v-runtime root-cause, v-memory-safety soundness-confirmed 2026-08-28). A nullary
+/// variant (`(Z)`/`(Nil)`/`[]`) of a sum that has ≥1 COMPOUND variant does NOT get the all-nullary
+/// enum-discriminant representation (`is_enum_disc`), so it is a REAL rc-counted heap node built FRESH
+/// every construction, and on a recursive-sum walk (`suml`/`depth-tail`) its terminal leaks. Building it
+/// ONCE as an immortal shared node (`mark-immortal` → `op_dup`/`op_drop` no-op → census-excluded) fixes the
+/// leak regardless of the over-ref site (construction OR walk), with NO wrong-target-drop risk — the
+/// principled fix (a nullary constant SHOULD be build-once-shared, not fresh-per-construction).
+///
+/// SOUNDNESS GATE (v-memory-safety, critical): match ONLY `Core::SumNew` with EMPTY payloads over a MIXED
+/// sum. EXCLUDE (a) an all-nullary enum-discriminant sum (`is_enum_disc` — no heap node; the value IS its
+/// discriminant, marking it is a no-op / double-handle hazard) and (b) any COMPOUND variant (non-empty
+/// payloads — a varying payload cannot be shared). A nullary variant carries no payload, so it is trivially
+/// constant (no `is_markable_constant_elem` recursion needed).
+pub fn is_markable_constant_sum_nullary(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::SumNew { payloads, .. } if payloads.is_empty() => {
+            // MIXED sum only: the type is a `Ty::Sum` whose decl is NOT an all-nullary enum-disc.
+            let ty = crate::infer::type_of(db, id);
+            match ty.strip_nominal() {
+                crate::ty::Ty::Sum { decl, .. } => !db.is_enum_disc(*decl),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Whether an ELEMENT of a candidate static compound is per-node-markable (see
 /// [`is_markable_constant_compound`]): a constant MACHINE-int (`Ty::Int`) or `Bool`/`Unit` scalar (boxes to
 /// ONE markable heap node via `box-int`/`box-bool` — `Unit` is the inline `IMM_UNIT` sentinel, already
