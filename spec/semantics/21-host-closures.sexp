@@ -5662,3 +5662,34 @@
   (call-method to-bytes)
   (output (: (229 142 38) (List UInt8)))
   (live-objects known-leak 1))
+
+; ── breaker batch 566: the host-closure × immortal-era campaign opens. hcp1-3 = the green capture
+; cells with truthful census (whole-tuple return; immortal-trie + scalar captures; runtime-list
+; capture — the host-held handle retains the closure cell + mortal captures, never dropped by the
+; single-call harness). hcx1 = the MINIMAL no-local-slot ICE (tuple-index projection of a captured
+; tuple in the body; effects-free — the chr1 ICE's second face), tracked known-FAIL until the
+; closure-conversion slot fix lands (see issues/BUG-captured-tuple-projection…).
+
+(case "hcp1 a captured tuple returned WHOLE from a host-called closure works (projection is the ICE, not the capture)"
+  (input (do (def (f (: n Int64)) (let ((a (tuple n 7))) (fn ((: q Int64)) a))) (export f)))
+  (call f (: 1 Int64) (: 5 Int64))
+  (output (: (tuple 1 7) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
+
+(case "hcp2 a closure capturing an IMMORTAL 33-trie plus a runtime scalar crosses and reads through the immortal"
+  (input (do (def (reader (: n Int64)) (let ((c (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (fn ((: i Int64)) (+ n (match (List.at c i) ((Option.Some v) v) ((Option.None) -1)))))) (export reader)))
+  (call reader (: 100 Int64) (: 5 Int64))
+  (output (: 106 Int64))
+  (live-objects known-leak 5))
+
+(case "hcp3 a closure capturing a runtime-BUILT list crosses and reads it (mortal capture retained by the host-held handle)"
+  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+             (def (holder (: n Int64)) (let ((xs (bld n))) (fn ((: i Int64)) (+ (List.len xs) (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))))) (export holder)))
+  (call holder (: 4 Int64) (: 1 Int64))
+  (output (: 6 Int64))
+  (live-objects known-leak 3))
+
+(case "hcx1 tuple-index projection of a captured tuple in a host-called closure body ICEs (no local slot; tracked known-FAIL, the chr1 ICE's effects-free face)"
+  (input (do (def (f (: n Int64)) (let ((a (tuple n 7))) (fn ((: q Int64)) (+ q (. a 0))))) (export f)))
+  (call f (: 1 Int64) (: 5 Int64))
+  (output (: 6 Int64)))
