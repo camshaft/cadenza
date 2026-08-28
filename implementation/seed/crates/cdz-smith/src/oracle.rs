@@ -363,6 +363,14 @@ pub fn compile_modules_catching(modules: &[(String, String)], entry_src: &str) -
         Ok(out) => out,
         Err(_) => return Verdict::Crash(capture_crash("[multi-module]")),
     };
+    wasm_output_verdict(&out)
+}
+
+/// Interpret a [`rcdzc::CompileOutput`] (from a multi-artifact `rcdzc::compile(&…, &[Target::Wasm])`) into
+/// a [`Verdict`], the way `compile_component` does: the wasm component artifact → `Compiled` (or
+/// `InvalidWasm` if it fails validation); no artifact → `Declined`, preferring a CODED error over an
+/// uncoded one (the safety ordering). Shared by the multi-module + wit-world compile paths.
+fn wasm_output_verdict(out: &rcdzc::CompileOutput) -> Verdict {
     match out.artifact(rcdzc::Target::Wasm.artifact_kind()) {
         Some(component) => match validate_component(component) {
             Ok(()) => Verdict::Compiled {
@@ -373,7 +381,6 @@ pub fn compile_modules_catching(modules: &[(String, String)], entry_src: &str) -
                 component_len: component.len(),
             },
         },
-        // No component → a decline. Prefer a CODED error over an uncoded one (the safety ordering).
         None => {
             let coded = out
                 .diagnostics
@@ -394,6 +401,49 @@ pub fn compile_modules_catching(modules: &[(String, String)], entry_src: &str) -
                 },
             }
         }
+    }
+}
+
+/// Compile a GUEST program against an imposed WIT WORLD, catching panics — the WIT-WORLD ABI boundary
+/// (where the per-cell WIT-binding gaps live: v-inference world-import synth / v-rust-backend emit). The
+/// guest is a `KIND_AST` `"main"` artifact; `world_src` is a `(world w (export <iface> (member …)))`
+/// s-expr (encoded into a `KIND_WIT_WORLD` artifact); `iface` names the component. `rcdzc::compile` emits
+/// the wasm component iff the guest fully + correctly implements the world's interface — otherwise it
+/// cleanly DECLINES (a WIT-binding gap: a member type that does not marshal, a partial guest, …). Verdict
+/// mirrors the single/multi-module paths. WASM-only. A parse failure of either source is a
+/// [`Verdict::ParseError`] (generator-quality), not a compiler finding.
+pub fn compile_world_catching(guest_src: &str, iface: &str, world_src: &str) -> Verdict {
+    install_panic_hook();
+
+    let guest = match cadenza_syntax::sexpr::read(guest_src) {
+        Ok(a) => a,
+        Err(e) => return Verdict::ParseError(e.0),
+    };
+    let world = match cadenza_syntax::sexpr::read(world_src) {
+        Ok(a) => a,
+        Err(e) => return Verdict::ParseError(e.0),
+    };
+    let artifacts = [
+        rcdzc::abi::Artifact::new(
+            rcdzc::abi::Artifact::KIND_AST,
+            "main",
+            cadenza_syntax::codec::encode(&guest),
+        ),
+        rcdzc::cli::component_name_artifact(iface),
+        rcdzc::abi::Artifact::new(
+            rcdzc::link::KIND_WIT_WORLD,
+            "wit-world",
+            cadenza_syntax::codec::encode(&world),
+        ),
+    ];
+
+    *slot().lock().unwrap() = None;
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        rcdzc::host::run_with_compiler_stack(|| rcdzc::compile(&artifacts, &[rcdzc::Target::Wasm]))
+    }));
+    match result {
+        Ok(out) => wasm_output_verdict(&out),
+        Err(_) => Verdict::Crash(capture_crash("[wit-world]")),
     }
 }
 
@@ -446,6 +496,37 @@ mod tests {
         match compile_modules_catching(&[], entry) {
             Verdict::Declined { .. } => {}
             other => panic!("unresolved import must decline, got {other:?}"),
+        }
+    }
+
+    /// The WIT-WORLD path: a guest that FULLY implements a single-member interface world compiles to a
+    /// component (the `two_member_record_world` shape from rcdzc's link tests, single member).
+    #[test]
+    fn a_full_wit_world_guest_compiles() {
+        let _g = slot_guard();
+        let world =
+            "(world w (export iface (member f (func (param m (record (a s64))) (result s64)))))";
+        let guest = "(module m (def (f (: m (Record (a Int64)))) (. m a)) (export f))";
+        match compile_world_catching(guest, "cadenza:demo/iface", world) {
+            Verdict::Compiled { .. } => {}
+            other => panic!("a full wit-world guest must compile, got {other:?}"),
+        }
+    }
+
+    /// A guest that does NOT match the world's interface member (exports a differently-named def) is
+    /// CLEANLY HANDLED (Compiled or Declined — never a crash / invalid wasm). The wit-world path stays
+    /// sound on a mismatched guest; the precise decline-triggering shapes are what a wit-world generator
+    /// campaign will discover. (NB: this specific mismatch currently COMPILES — a world-export-enforcement
+    /// observation worth a closer look once the campaign maps the surface.)
+    #[test]
+    fn a_mismatched_wit_world_guest_is_cleanly_handled() {
+        let _g = slot_guard();
+        let world =
+            "(world w (export iface (member f (func (param m (record (a s64))) (result s64)))))";
+        let guest = "(module m (def (g (: m (Record (a Int64)))) (. m a)) (export g))";
+        match compile_world_catching(guest, "cadenza:demo/iface", world) {
+            Verdict::Compiled { .. } | Verdict::Declined { .. } => {}
+            other => panic!("a mismatched wit-world guest must be cleanly handled, got {other:?}"),
         }
     }
 
