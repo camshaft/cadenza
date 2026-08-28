@@ -50,10 +50,10 @@ cdz-run = { path = "../cdz-run" }
 # cdz-corpus from that build's closure. That breaks the seedCompiler→corpus edge so a corpus-only MR no
 # longer needlessly re-runs the ~28min spine (v-nix's over-trigger fix); a Core/rcdzc MR still busts it.
 cdz-corpus = { path = "../cdz-corpus", optional = true }
-# The calculator REPL, mounted as `cdz calc` — folded in so a single `cdz` on the PATH also gives the
-# interactive/one-shot calculator. Its engine (Calculator/Eval) is owned by v-guide-infra; we mount
-# only the CLI surface (`cdz_calc::cli`). Pulls in cdz-run transitively (it runs compiled exprs).
-cdz-calc = { path = "../cdz-calc" }
+# `cdz calc` (the calculator REPL) is a PASSTHROUGH to the standalone `cdz-calc` binary (exec-not-link, like
+# `cdz run`/`smith`/`cad`), NOT a linked dep — because `cdz-calc` pulls `cdz-run` (→ wasmtime) in-process to
+# run compiled exprs, and the thin-`cdz` goal keeps that runner weight off `cdz`'s graph. So there is no
+# `cdz-calc` dependency here; `cdz calc` forwards argv to the `cdz-calc` bin on PATH. (Engine owned by v-guide-infra.)
 clap = { version = "4", features = ["derive"] }
 # Generate shell completion scripts (`cdz completions <shell>`) from the clap command tree — the
 # standard cargo-parity way (`clap_complete::generate`), so the completions never drift from the actual
