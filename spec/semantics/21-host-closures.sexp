@@ -5693,3 +5693,39 @@
   (input (do (def (f (: n Int64)) (let ((a (tuple n 7))) (fn ((: q Int64)) (+ q (. a 0))))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (output (: 6 Int64)))
+
+; ── breaker batch 567: drop-cascade fences + the capture-escape double-release crash (see
+; issues/BUG-closure-drop-after-capture-escape-double-release-silent-abort). hcd1/hcd2 pin the
+; CORRECT cascade: dropping the handle reclaims mortal captures and no-ops immortal ones. hcz1/
+; hcz2 pin the crash faces as tracked known-FAIL (a body that RETURNED its capture + (drop) —
+; double-release, silent abort); they flip to pass with 0-census when the ownership fix lands.
+
+(case "hcd1 dropping a closure whose capture is a runtime-BUILT list cascades the reclaim"
+  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+             (def (holder (: n Int64)) (let ((xs (bld n))) (fn ((: i Int64)) (+ (List.len xs) (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))))) (export holder)))
+  (call holder (: 4 Int64) (: 1 Int64))
+  (drop)
+  (output (: 6 Int64))
+  (live-objects 0))
+
+(case "hcd2 dropping a closure capturing an IMMORTAL trie + scalar reclaims the mortal env and no-ops the immortal"
+  (input (do (def (reader (: n Int64)) (let ((c (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (fn ((: i Int64)) (+ n (match (List.at c i) ((Option.Some v) v) ((Option.None) -1)))))) (export reader)))
+  (call reader (: 100 Int64) (: 5 Int64))
+  (drop)
+  (output (: 106 Int64))
+  (live-objects 0))
+
+(case "hcz1 dropping a closure whose body RETURNED its captured TUPLE crashes (double-release; tracked known-FAIL)"
+  (input (do (def (f (: n Int64)) (let ((a (tuple n 7))) (fn ((: q Int64)) a))) (export f)))
+  (call f (: 1 Int64) (: 5 Int64))
+  (drop)
+  (output (: (tuple 1 7) (Tuple Int64 Int64)))
+  (live-objects 0))
+
+(case "hcz2 dropping a closure whose body RETURNED its captured LIST crashes (double-release; tracked known-FAIL)"
+  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+             (def (h (: n Int64)) (let ((xs (bld n))) (fn ((: q Int64)) xs))) (export h)))
+  (call h (: 3 Int64) (: 5 Int64))
+  (drop)
+  (output (: (list 1 2 3) (List Int64)))
+  (live-objects 0))
