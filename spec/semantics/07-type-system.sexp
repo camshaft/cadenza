@@ -2510,3 +2510,26 @@
 (export main)))
   (call main (: 3 Int64))
   (output (: 3003 Int64)))
+
+; ── breaker batch 586: NESTED generic monomorphization census (Box-of-Pair, both generic, over a
+; heap payload — the composition of gib1's Box + a generic Pair). Value exact (75); the nested
+; shells leak ~5.5/frame (56@n10, 276@n50 — Box+Pair+tuple+list, deeper than gib1's ~2.8/frame
+; single Box). rust correctness verified separately (the two-level unbox/fst extraction is
+; value-correct cross-backend). Flips with the sum-shell reclaim.
+
+(case "gng1 a NESTED generic Box-of-Pair over a runtime heap payload is value-exact and leaks the nested shells (~5.5/frame)"
+  (input (do
+(type Box (Box a))
+(type Pair (Pair (Tuple a b)))
+(def (unbox (: x (Box a))) (match x ((Box.Box v) v)))
+(def (fst (: p (Pair a b))) (match p ((Pair.Pair (tuple x y)) x)))
+(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (+ (List.len (fst (unbox (Box.Box (Pair.Pair (tuple (bld (% k 4)) k))))))
+         (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 75 Int64))
+  (live-objects known-leak 276))

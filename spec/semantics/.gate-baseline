@@ -9040,3 +9040,4 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	gid1 a user-generic Box at TWO distinct heap domains (List + String) in one program is correct on every backend
+pass	gng1 a NESTED generic Box-of-Pair over a runtime heap payload is value-exact and leaks the nested shells (~5.5/frame)
