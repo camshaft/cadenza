@@ -852,7 +852,20 @@ partial def evalDo (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children 
             | some nm =>
               let bindTy := (operandTy? m valId).filter (fun t => t.width == .big)
               bindStmts ((nm, Thunk.mk (fun _ => evalNode m env defaultIntTy fuel valId), bindTy) :: env) rest
-            | none => .error (.unsupported "eval: do-block local function def not modeled")
+            | none =>
+              -- a local FUNCTION def `(def (fname params) body)`: bind `fname` to a CLOSURE over the
+              -- env-so-far (forced to values, like `evalFn`), so a later `(fname args)` call applies it.
+              -- A self-/mutually-recursive local fn references a name absent from its captured env →
+              -- unbound → skip (sound), since the capture is eager and doesn't include `fname` itself.
+              match m.nodes[targetId]? with
+              | some tnode =>
+                match m.headName? tnode with
+                | some fname =>
+                  let params := paramSpecNodes m targetId
+                  let cap := env.map (fun e => (e.1, outcomeToValue e.2.1.get))
+                  bindStmts ((fname, Thunk.mk (fun _ => .value (Value.closure params valId cap)), none) :: env) rest
+                | none => .error (.unsupported "eval: malformed do-block function def")
+              | none => .error (.unsupported "eval: malformed do-block function def target")
           | _, _ => .error (.unsupported "eval: malformed do-block def")
         | none => .error (.unsupported "eval: do-block non-def statement not modeled")
     match bindStmts env (items.extract 0 (items.size - 1)).toList with
