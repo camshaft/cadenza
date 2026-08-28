@@ -1615,3 +1615,34 @@
   (doc    "`(Tuple.split-at (tuple 10 20 30) 2)` = (tuple (tuple 10 20) (tuple 30)); `.1 .0` = 30.")
   (input  (. (. (Tuple.split-at (tuple 10 20 30) 2) 1) 0))
   (output (: 30 Int64)))
+
+; ── breaker batch 578: row-polymorphism × census (the file is census-light: 19/117). An open-row
+; accessor dispatched over fifty frames of MIXED-width runtime records reclaims completely, and a
+; HEAP field read through the row reclaims too — row-poly access is census-clean at both faces.
+
+(case "rwc1 an open-row accessor over runtime records of two widths, fifty frames, reclaims completely"
+  (input (do
+    (def (get-x r) (. r x))
+    (def (frames (: k Int64))
+      (if (= k 0) 0
+          (+ (if (= (% k 2) 0) (get-x (record (= x k))) (get-x (record (= x (* k 10)) (= y k) (= z 7))))
+             (frames (- k 1)))))
+    (def (main (: n Int64)) (frames n))
+    (export main)))
+  (call main (: 50 Int64))
+  (output (: 6900 Int64))
+  (live-objects 0))
+
+(case "rwc2 an open-row accessor reads a HEAP (list) field through the row, fifty frames, reclaims"
+  (input (do
+    (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+    (def (get-xs r) (List.len (. r xs)))
+    (def (frames (: k Int64))
+      (if (= k 0) 0
+          (+ (get-xs (record (= xs (bld 3)) (= tag k)))
+             (frames (- k 1)))))
+    (def (main (: n Int64)) (frames n))
+    (export main)))
+  (call main (: 50 Int64))
+  (output (: 150 Int64))
+  (live-objects 0))
