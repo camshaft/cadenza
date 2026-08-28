@@ -4319,12 +4319,22 @@
         # subsequent per-subcommand app reuses this wrapper shape.
         apps.roundtrip =
           let
+            # The warm nix-built pipeline tools roundtrip needs (cdz for the surface conversions, cdz-corpus
+            # for corpus normalization) as ONE bin dir, so `build_tools` takes the CDZ_SEED_BIN_DIR override
+            # and SKIPS its internal `cargo build -p cdz -p cdz-corpus …` — no per-worktree cold toolchain
+            # rebuild at `nix run` time (v-xtask-decompose: the "don't rebuild the world" half). seedCompiler
+            # carries cdz + cdz-run; cdzCorpus carries cdz-corpus; symlinkJoin merges their bin/ dirs.
+            seedTools = pkgs.symlinkJoin {
+              name = "cdz-seed-tools";
+              paths = [ seedCompiler cdzCorpus ];
+            };
             wrapper = pkgs.writeShellApplication {
               name = "cdz-roundtrip";
               runtimeInputs = [ pkgs.git ];
               text = ''
                 root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
                 export CDZ_REPO_ROOT="$root"
+                export CDZ_SEED_BIN_DIR="${seedTools}/bin"
                 exec ${xtaskBin}/bin/xtask roundtrip "$@"
               '';
             };
