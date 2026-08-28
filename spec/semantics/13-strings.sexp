@@ -4479,7 +4479,7 @@
           (zip-lens "aéb" "cd" 0))
         (export main)))
   (call   main (: 0 Int64)) (output (: 16 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 11))
 
 ; --- The overflow-safe fallible-index guard, String face (companion of the 10-bytes family):
 ; huge and i32-wrap indices must decline to None on the FULL-width check, never wrap into range.

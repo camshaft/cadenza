@@ -265,7 +265,7 @@
             (def (main) (loop 3 (Set.of (list))))
             (export main)))
   (output (: 0 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "an empty map passed to a recursive callee with a non-Int64 key param grounds its key type from the param"
   (doc    "The Map twin of the empty-set-at-call-arg case above: `(loop 3 Map.empty)` where `loop`'s param is
@@ -279,7 +279,7 @@
             (def (main) (loop 3 Map.empty))
             (export main)))
   (output (: 0 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "the number of elements counts distinct elements"
   (doc    "`(Set.len (Set.of (list 1 2 2 3)))` is 3 — the count of DISTINCT elements, since the duplicate
@@ -703,7 +703,7 @@
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 0 Int64))
   (call main (: 3 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 37))
+  (live-objects known-leak 36))
 
 (case "dropping a set derived by insert must not free members shared with the survivor"
   (doc    "The SET member of the generation-sharing reclaim family (map/list members in 05-compound,
@@ -805,7 +805,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 123541 Int64))
   (call   main (: 2 Int64)) (output (: 150 Int64))
-  (live-objects known-leak 85))
+  (live-objects known-leak 83))
 
 ; --- The algebraic laws the three operations satisfy: the empty set as identity/annihilator, and ----
 ; --- the union laws (commutative, idempotent). These pin the operations' DEFINING identities, which

@@ -3551,7 +3551,7 @@
                   (Seen.count))))
             (export main)))
   (call   main (: 20 Int64)) (output (: 7 Int64))
-  (live-objects known-leak 21))
+  (live-objects known-leak 20))
 
 (case "the mark op's dup-flag RESULT counts repeats while the set state dedupes"
   (doc    "The companion reading the op RESULTS instead of the final state: each mark resumes 1 iff the
@@ -3570,7 +3570,7 @@
                 (feed 0 n)))
             (export main)))
   (call   main (: 20 Int64)) (output (: 13 Int64))
-  (live-objects known-leak 21))
+  (live-objects known-leak 20))
 
 (case "a perform in a match-arm guard is discharged by the enclosing handle"
   (doc    "`(handle Ask 5 ((get () s (resume s (- s 1)))) (match 9 ((guard n (> (Ask.get) 3)) 100) (n 200)))`

@@ -708,7 +708,7 @@
   (output (: 1 Int64))
   (call   main (: 999 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 21))
+  (live-objects known-leak 20))
 
 (case "the model-oracle property has DISCRIMINATING power — a BROKEN model (counts every insert) diverges from Map.len"
   (doc    "The counterpoint that makes the count-model oracle above meaningful: a model that MISCOUNTS
