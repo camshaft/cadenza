@@ -1215,6 +1215,31 @@ struct Tools {
 /// interactive commands use `dev` (fast build); the corpus gate uses `release-debug` (optimized), so
 /// that the ~900-case run is not dominated by unoptimized tools.
 fn build_tools(paths: &Paths, profile: &str) -> Tools {
+    // CDZ_SEED_BIN_DIR override (v-xtask-decompose, operator all-nix mandate 2026-08-28): a directory of
+    // PREBUILT tool binaries (cdz / cdz-corpus / cdz-run) supplied by a nix app, so we SKIP the internal
+    // `cargo build` of the toolchain below — that self-build is exactly the "rebuild the world" per-worktree
+    // cold compile the decomposition is eliminating (a nix app injects the warm-cached seedCompiler+cdzCorpus
+    // instead). The rust-gate rlibs (cdz-rt / cdz-num / cadenza-ast) are NOT in this dir, so their dirs are
+    // recorded only if present (binary-only consumers — roundtrip / emit / run — never touch them; the
+    // `--target rust` gate does NOT set this env, so it still cargo-builds the rlibs below). Unset (the plain
+    // `cargo xtask …` path) → the cargo-build below, byte-for-byte unchanged.
+    if let Some(dir) = std::env::var_os("CDZ_SEED_BIN_DIR") {
+        let bin = PathBuf::from(dir);
+        let cdz = bin.join("cdz");
+        return Tools {
+            syntax: cdz.clone(),
+            corpus: bin.join("cdz-corpus"),
+            rcdzc: cdz,
+            run: bin.join("cdz-run"),
+            cdz_rt_dir: bin.join("libcdz_rt.rlib").exists().then(|| bin.clone()),
+            cdz_num_dir: bin.join("libcdz_num.rlib").exists().then(|| bin.clone()),
+            cadenza_ast_dir: bin
+                .join("libcadenza_ast.rlib")
+                .exists()
+                .then(|| bin.clone()),
+            debug_runtime_hash: parse_committed_debug_runtime_hash(&paths.repo),
+        };
+    }
     let sh = Shell::new().expect("open a shell");
     sh.change_dir(&paths.repo);
     // The front-end + compiler CLIs are now ONE binary, `cdz` (`cdz convert …` / `cdz compile …`);
