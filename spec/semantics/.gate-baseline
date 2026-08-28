@@ -5038,6 +5038,7 @@ pass	an SI decimal prefix scales a unit by a power of ten
 pass	an UNANNOTATED generic compose instantiates at a scalar arrow AND a String arrow in one program
 pass	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)
 pass	an UNEVEN large-vector RRB concat (short left, multi-node right) rebalances the seam correctly
+pass	an UNREFERENCED non-scalar-param helper stays opt-level-equivalent under force-lower-all
 pass	an UNSIGNED branch refinement decides a nested comparison and its soundness twin must not over-refine
 pass	an UNSIGNED lower-bound refinement must not fabricate an i64::MAX ceiling for a UInt64 above it
 pass	an UNZIP walk splits a list of pairs into two parallel lists that re-zip to the original

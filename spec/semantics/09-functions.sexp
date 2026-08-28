@@ -8225,6 +8225,23 @@
   (call main (: (list 1 2 3) (List Int64)))
   (output (: 22 Int64)))
 
+(case "an UNREFERENCED non-scalar-param helper stays opt-level-equivalent under force-lower-all"
+  (doc    "Fences the #4805 (Core-opt PassManager POST-layout — force-lower-all timing) × #4793 (non-scalar
+           entry param declines on the EXPORT boundary) interaction: a module carries an UNREFERENCED helper
+           `deadhelper` whose param is a non-scalar `(List Int64)` — the exact shape that declines on an EXPORT
+           path — while the sole export `main` is a trivial scalar doubler. force-lower-all could lower the dead
+           helper at O2/O3 (where O0/O1's cheaper pipeline skips or DCEs it); the pin asserts the OBSERVABLE
+           outcome is identical across O0..O3 (main 5 → 10) — i.e. the non-scalar-param decline is EXPORT-
+           boundary-scoped and does NOT leak onto an internal/dead helper under the new post-layout timing. A
+           regression that force-lowered the dead helper into the export-path decline, or that broke its DCE,
+           would decline at O2 where O0/O1 compile = an opt-level-equivalence violation.")
+  (input (do
+    (def (deadhelper (: xs (List Int64))) (List.len xs))
+    (def (main (: n Int64)) (* n 2))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 10 Int64)))
+
 (case "elc2 a Map keyed by the lifted List entry param answers its value on lookup"
   (input (do
     (def (main (: xs (List Int64)))
