@@ -1850,6 +1850,108 @@ impl Arenas {
         }
     }
 
+    /// If `id` is an `Atom` of an integer literal, its value. (Used to read an integer member key as a
+    /// tuple position — `(. t 0)` — where a name key would be a record field instead.)
+    pub fn as_int(&self, id: StructId) -> Option<&IntValue> {
+        match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Int { value, .. } => Some(value),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// If `id` is an `Atom` of a decimal/float literal, its `Decimal`. The float analogue of [`Arenas::as_int`],
+    /// used by `default-fraction` literal-marking (an exact default grounds a written decimal `0.5` to
+    /// `1/2`, so a decimal literal is marked alongside an integer one).
+    pub fn as_float(&self, id: StructId) -> Option<&Decimal> {
+        match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Float(d) => Some(d),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The value of a boolean-literal `Atom` (`true`/`false`), if `id` is one. (A surface `true`/`false`
+    /// is a `Leaf::Bool`, not a `Leaf::Name`, so `as_name` does not see it.)
+    pub fn as_bool(&self, id: StructId) -> Option<bool> {
+        match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Bool(b) => Some(*b),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The compound constructor a `List` node denotes accepting EITHER head spelling — the unshadowable
+    /// STRING primitive (`("list" …)`) OR the shadowable NAME alias (`(list …)`). This is the transitional
+    /// DUAL-READ recognizer for consumers that already accept both spellings (the
+    /// `as_ctor_form(…).or_else(as_form(…))` idiom); it deliberately does NOT distinguish a shadowed name
+    /// binding, so use it only where a compound literal is already expected, NOT for structural dispatch
+    /// (that is [`Arenas::compound_ctor`], the primitive-only form the resolver uses). See
+    /// `implementation/design/DESIGN-native-ast-compound-data.md` (M1 dual-read).
+    pub fn compound_ctor_either(&self, id: StructId) -> Option<CompoundCtor> {
+        match self.get(id) {
+            Struct::List(items) => {
+                let &h = items.first()?;
+                let spelling = self.as_name(h).or_else(|| self.as_str(h))?;
+                CompoundCtor::from_spelling(spelling)
+            }
+            _ => None,
+        }
+    }
+
+    /// The compound constructor a `List` node denotes for STRUCTURAL DISPATCH — accepting EITHER the native
+    /// ctor-LEAF-KIND head ([`Arenas::compound_ctor_leaf`], the M2 form the reader now emits) OR the legacy
+    /// unshadowable STRING-primitive head ([`Arenas::compound_ctor`], transitional). BOTH are unshadowable (a
+    /// ctor-leaf can't be rebound; a string can't be spelled as an identifier), so this is safe for the
+    /// resolver's structural dispatch — unlike the NAME alias (`(list …)`), which resolves lexically-first
+    /// (a bound `list` shadows it) and is NOT recognized here. The migration dual-read for dispatch; M3
+    /// drops the string arm, leaving `compound_ctor_leaf`. See `DESIGN-native-ast-compound-data.md`.
+    pub fn compound_ctor_prim(&self, id: StructId) -> Option<CompoundCtor> {
+        self.compound_ctor_leaf(id)
+            .or_else(|| self.compound_ctor(id))
+    }
+
+    /// The child occurrences of `id` if it is a `List` headed by the compound ctor `want`, accepting
+    /// EITHER head spelling (the transitional dual-read of [`Arenas::compound_ctor_either`]) — the tag-typed twin
+    /// of the `as_form(id, "…").or_else(|| as_ctor_form(id, "…"))` idiom for the four compound ctors.
+    /// Like `as_form`/`as_ctor_form`, an empty tail (a head-only list) yields `Some(&[])`.
+    pub fn compound_form_of(&self, id: StructId, want: CompoundCtor) -> Option<&[StructId]> {
+        match self.get(id) {
+            Struct::List(items) => {
+                let &h = items.first()?;
+                // Native ctor-LEAF-KIND head (M2, what the reader now emits) OR the legacy name/string head.
+                if self.compound_ctor_leaf(id) == Some(want) {
+                    return Some(&items[1..]);
+                }
+                let spelling = self.as_name(h).or_else(|| self.as_str(h))?;
+                (CompoundCtor::from_spelling(spelling) == Some(want)).then_some(&items[1..])
+            }
+            _ => None,
+        }
+    }
+
+    /// The declared TYPE NAME from a `(type …)` decl's FIRST tail element `head_occ` (the element after the
+    /// `type` keyword). Two spellings: a BARE atom `(type Box …)` — the atom IS the name — OR a
+    /// PARENTHESIZED head `(type (Box a b…) …)` — a `(Name params…)` list whose HEAD atom is the name.
+    /// `None` if `head_occ` is neither (a malformed decl). The ONE place both spellings are decoded, so every
+    /// raw `(type …)`-tail name-reader agrees — a bare `head_occ.as_name()` returns `None` for a `(List)` head, so
+    /// without this a parenthesized-head generic type was INVISIBLE to those readers (un-exported / not a
+    /// known user type).
+    pub fn type_decl_head_name(&self, head_occ: StructId) -> Option<&str> {
+        match self.get(head_occ) {
+            // Bare-atom name: `(type Box …)`.
+            Struct::Atom(_) => self.as_name(head_occ),
+            // Parenthesized `(Name params…)` head: the list's head atom is the name.
+            Struct::List(kids) => kids.first().and_then(|&h| self.as_name(h)),
+        }
+    }
+
     /// The DECLARED NAME of an effect-schema AST: the `Name` head of a root `(effect Name (op …) …)`
     /// form — e.g. `Weather` for `(effect Weather (op get (-> Unit Reading)))`. `None` if the root is
     /// not an `(effect …)` form or its name slot is absent/not a name.
@@ -1956,6 +2058,58 @@ mod tests {
     use super::*;
     use num_bigint::BigInt;
     use std::str::FromStr;
+
+    #[test]
+    fn arenas_leaf_accessors_and_compound_recognizers() {
+        // Pins the leaf-atom accessors (`as_int`/`as_float`/`as_bool`) and the transitional compound
+        // recognizers (`compound_ctor_either`/`compound_ctor_prim`/`compound_form_of`) + `type_decl_head_name`
+        // — the `Arenas` surface `rcdzc` re-exports from this crate once it consolidates off its own copy.
+        let mut b = Builder::new();
+        let iatom = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_i64(7),
+            radix: Radix::Dec,
+        });
+        let fatom = b.atom_leaf(Leaf::Float(Decimal::from_f64(0.5).unwrap()));
+        let batom = b.atom_leaf(Leaf::Bool(true));
+        // Native ctor-leaf-headed `(list 7)` — `Builder::compound` emits the ctor-leaf head.
+        let native_list = b.compound(CompoundCtor::List, &[iatom]);
+        // Shadowable NAME-alias-headed `(tuple 0.5)` — a dual-read-only spelling.
+        let alias_head = b.name("tuple");
+        let alias = b.list(vec![alias_head, fatom]);
+        // A parenthesized `(Box a)` type-decl head.
+        let boxn = b.name("Box");
+        let pa = b.name("a");
+        let paren_head = b.list(vec![boxn, pa]);
+        let root = b.list(vec![native_list, alias, paren_head, batom]);
+        let a = b.finish(root);
+
+        assert_eq!(a.as_int(iatom).map(|v| v.to_i64_bits()), Some(7));
+        assert!(a.as_float(fatom).is_some());
+        assert_eq!(a.as_bool(batom), Some(true));
+        assert_eq!(a.as_int(batom), None);
+        assert_eq!(a.as_bool(iatom), None);
+
+        // Structural dispatch: the native ctor-leaf head is recognized; the shadowable NAME alias is NOT.
+        assert_eq!(a.compound_ctor_prim(native_list), Some(CompoundCtor::List));
+        assert_eq!(a.compound_ctor_prim(alias), None);
+        assert_eq!(
+            a.compound_form_of(native_list, CompoundCtor::List)
+                .map(<[_]>::len),
+            Some(1)
+        );
+        assert_eq!(a.compound_form_of(native_list, CompoundCtor::Map), None);
+        // Dual-read accepts EITHER spelling, so the NAME alias resolves here.
+        assert_eq!(a.compound_ctor_either(alias), Some(CompoundCtor::Tuple));
+        assert_eq!(
+            a.compound_form_of(alias, CompoundCtor::Tuple)
+                .map(<[_]>::len),
+            Some(1)
+        );
+
+        // `type_decl_head_name`: parenthesized `(Box a)` head → "Box"; a bare atom → itself.
+        assert_eq!(a.type_decl_head_name(paren_head), Some("Box"));
+        assert_eq!(a.type_decl_head_name(boxn), Some("Box"));
+    }
 
     #[test]
     fn compound_ctor_and_ctor_head_key_recognize_the_reserved_vocabulary() {
