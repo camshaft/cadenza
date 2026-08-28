@@ -2618,3 +2618,31 @@
   (call main (: 50 Int64))
   (output (: 15400 Int64))
   (live-objects known-leak 1))
+
+; ── breaker batch 575: RUNTIME bin construction cells (the corpus round-trips are constant; these
+; take the widths from the ARG). Segment typing is exact-width (an Int64 in a u8 slot is a
+; teaching CDZ0203: wrap-to-truncate or of-to-check) — bcr1 pins the explicit-wrap round-trip
+; including the truncation semantics at an over-width value (300 → u8 44); bcr2 = fifty
+; construct+match cycles reclaim to zero.
+
+(case "bcr1 a runtime bin construction round-trips through its own pattern with explicit wrap semantics (300 → u16 300 / u8 44)"
+  (input (do (def (main (: n Int64))
+  (match (bin (u16 (UInt16.wrap n)) (u8 (UInt8.wrap n)))
+    ((bin (u16 a) (u8 b)) (+ (* 1000 a) b))
+    (_ -1)))
+(export main)))
+  (call main (: 300 Int64))
+  (output (: 300044 Int64))
+  (live-objects 0))
+
+(case "bcr2 fifty runtime bin construct+match cycles reclaim to zero"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (+ (match (bin (u16 (UInt16.wrap k)) (u8 (UInt8.wrap k))) ((bin (u16 a) (u8 b)) (+ a b)) (_ -1))
+         (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 2550 Int64))
+  (live-objects 0))
