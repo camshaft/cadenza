@@ -4810,9 +4810,11 @@ pass	a whole MAP holding a quantity VALUE renders it scaled to reference in the 
 pass	a whole rational carries a denominator of one
 pass	a whole-module alias projects an exported FUNCTION and applies it
 pass	a wide NEGATIVE integer literal pattern matches its runtime scrutinee
+pass	a wide UInt64 constant add overflows Int64 but fits UInt64 and folds
 pass	a wide fixed-size integer width is reserved, not yet a valid type
 pass	a wide multi-column literal match returns the matched arm's value over a runtime scrutinee (S2 emit-reshape value guard)
 pass	a wide multi-column match over a bound tuple PARAMETER returns the matched arm's value (S2 emit-reshape value guard, param shape)
+pass	a wide unsigned constant comparison folds by magnitude, not the i64 bit pattern
 pass	a wide-unsigned match probe past i64 is not mistaken for out-of-range and still fires
 pass	a widening runtime wrap ZERO-extends an UNSIGNED source
 pass	a widening runtime wrap extends a SIGNED source by its source sign
@@ -6561,6 +6563,7 @@ pass	gd2 pure guards on SUM-PAYLOAD binders — guarded and unguarded twins of e
 pass	gd3 the guard COMPARES the scrutinee draw to an earlier let-bound draw — two thread values meet in one pure predicate
 pass	gd4 pure guards INSIDE the handler arm grade the live state — three dispatches cross the tier boundaries as the state climbs
 pass	gd5 guards over TUPLE pattern binders — the predicate compares the tuple's own components, all three orderings reachable
+pass	gdc1 an element-discarding generic (rewrap + peek) at two heap domains is correct on every backend
 pass	geb1 a mask by -1 is NOT narrowing — the add guard stays and traps at MAX
 pass	geb2 signed-rem range keeps the add guard — MAX + (% x 10) traps only when the remainder pushes over
 pass	geb3 a small-mask range does not license subtracting Int64.min — always overflows, guard stays
@@ -6572,11 +6575,13 @@ pass	generic user-sum values dedupe as set elements and key a map by rope-payloa
 pass	gh1 a guard condition builds and consumes a heap temporary (guard taken)
 pass	gh2 a FAILED guard's heap temporary reclaims before the next arm
 pass	gib1 a user-generic Box wrap/unwrap over a runtime heap payload is value-exact and leaks the shells linearly
+pass	gid1 a user-generic Box at TWO distinct heap domains (List + String) in one program is correct on every backend
 pass	gl1 the let-lifted pure-guard equivalent of the gp1 dispatch shape — the pre-bound guard draw advances the state the arms read
 pass	gl2 the let-lifted pure-guard equivalent of the gp2 cascade — both guard draws pre-bound, all three arms reachable
 pass	glb1 a GLASSBLOWER'S bench — each blow thins the wall by a third of the gather FLOORED at one and halves the gather (a would-be wall under two CRACKS instead, both fields frozen), heating adds gather, the read packs wall gather and cracks, and the seed's opening gather thins fast toward the crack line on one bench while the other's gentle thirds leave wall to spare
 pass	gld1 a GOLD-PANNING yield decay — pan answers the current yield then decays it by a third truncating plus one unguarded (the stream never hits the floor), move relocates resetting the yield to the seed base minus a wear cost that grows two per move, total accumulates, and the richer claim decays through DIFFERENT residues while both wear down in lockstep
 pass	gnd1 a GONDOLA on a reflecting cable — move advances the car by the signed direction held in state binding the new position ONCE in a let consumed by the terminus test both answers and both next-states, REFLECTS at either terminus by negating the direction and counting the trip, answers pack the let-bound position an arithmetic direction bit and the trip count, span reads position and trips without advancing, and the seed places the start so one run reflects mid-sequence while the other reaches the far terminus one move later
+pass	gng1 a NESTED generic Box-of-Pair over a runtime heap payload is value-exact and leaks the nested shells (~5.5/frame)
 pass	gnl1 the nil arm of a multi-payload generic whose other arm nests a list pattern leaks the nil cell
 pass	gp1 a PERFORMING guard on a wildcard pattern is a COMPILE ERROR (guards-side-effect-free, CDZ0407)
 pass	gp1 a match GUARD inside the handler ARM compares the op PAYLOAD against the live STATE binder — the guard routes admit/reject per dispatch
@@ -9039,6 +9044,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	gid1 a user-generic Box at TWO distinct heap domains (List + String) in one program is correct on every backend
-pass	gng1 a NESTED generic Box-of-Pair over a runtime heap payload is value-exact and leaks the nested shells (~5.5/frame)
-pass	gdc1 an element-discarding generic (rewrap + peek) at two heap domains is correct on every backend

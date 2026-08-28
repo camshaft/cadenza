@@ -5495,62 +5495,6 @@ fn a_float32_record_field_grounds_its_bare_literal_to_f32_not_f64() {
     );
 }
 
-/// A CONSTANT unsigned comparison whose operand exceeds `i64` range folds by the TRUE numeric value at
-/// 128-bit precision — `(< (: 0 UInt64) UInt64.max)` is true, NOT the `false` a naive i64-bit-pattern
-/// compare (reading `UInt64.max` as `-1`) would give (06-numeric-model §Unsigned Comparison Orders By
-/// Magnitude). The fold uses `to_i128` when `to_i64` overflows, correct for signed and unsigned alike.
-#[test]
-fn a_wide_unsigned_constant_comparison_folds_by_magnitude() {
-    use crate::testkit::parse;
-    let run = |src: &str| {
-        let full = format!("(module m (def (main) {src}) (export main))");
-        run_returns::<bool>(
-            &compile_component(&crate::codec::encode(&parse(&full))).expect("compile"),
-            "main",
-        )
-    };
-    // 0 < UInt64.max (=2^64-1, beyond i64) → true (magnitude order, not the -1 bit pattern).
-    assert!(run("(< (: 0 UInt64) (. UInt64 max))"));
-    // UInt64.max > 0 → true; UInt64.max <= 0 → false.
-    assert!(run("(> (. UInt64 max) (: 0 UInt64))"));
-    assert!(!run("(<= (. UInt64 max) (: 0 UInt64))"));
-    // Equality against itself still holds at the wide value.
-    assert!(run("(= (. UInt64 max) (. UInt64 max))"));
-}
-
-/// A CONSTANT UInt64 arithmetic op whose result exceeds `Int64` but FITS `UInt64` folds to that value —
-/// it must NOT be rejected CDZ0304. `(+ (: Int64.max UInt64) (: 2 UInt64))` = 2^63 + 1, a valid UInt64
-/// (well below `2^64-1`). BOTH operands fit `i64` (Int64.max, 2), so the exact-`IntValue` wide-fold path
-/// (which only triggers when an OPERAND exceeds i64) was skipped, and `fold_arith`'s `checked_add`
-/// trapped on the i64-overflowing RESULT → a spurious "overflows Int64" reject of arithmetic that is
-/// in-range for its solved UInt64 type. The fix range-checks the exact result against the SOLVED width
-/// (as the operand-wide path already does), folding when it fits. `UInt64.max = 2^64-1` returns the
-/// operand unchanged via `+ 0` (an identity, already folded) — this pins the NON-identity overflow-i64-
-/// but-fits-u64 case that the identity shortcut does not cover.
-#[test]
-fn a_wide_unsigned_constant_add_that_overflows_i64_but_fits_u64_folds() {
-    use crate::testkit::parse;
-    let run = |src: &str| -> u64 {
-        let full = format!("(module m (def (main) {src}) (export main))");
-        run_returns::<u64>(
-            &compile_component(&crate::codec::encode(&parse(&full))).expect("compile"),
-            "main",
-        )
-    };
-    // Int64.max + 2 = 2^63 + 1 = 9223372036854775809, a valid UInt64 (i64-overflowing result).
-    assert_eq!(
-        run("(+ (: 9223372036854775807 UInt64) (: 2 UInt64))"),
-        9223372036854775809,
-        "Int64.max + 2 over UInt64 fits u64 (2^63+1) — must fold, not reject CDZ0304"
-    );
-    // A subtraction landing back in i64 range still folds (no regression to the common path).
-    assert_eq!(
-        run("(- (: 9223372036854775809 UInt64) (: 9 UInt64))"),
-        9223372036854775800,
-        "a wide-result UInt64 subtraction folds to its exact value"
-    );
-}
-
 /// The UNSOUND TWIN of discharge-then-capture MUST stay rejected: a closure whose BODY performs the handled
 /// effect and ESCAPES the handle — `(handle St k (arm) (fn (x) (+ x (St.get))))` applied outside — runs the
 /// perform on OUTSIDE-application (out of the handler's dynamic extent), so it has no home → CDZ0401. Pins
