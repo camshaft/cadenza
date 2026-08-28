@@ -40,6 +40,7 @@ pub mod differential;
 pub mod driver;
 pub mod finding;
 pub mod generator;
+pub mod lean;
 pub mod oracle;
 pub mod seeds;
 pub mod triage;
