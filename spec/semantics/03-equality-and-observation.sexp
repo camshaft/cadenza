@@ -1613,6 +1613,30 @@
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
+(case "list equality short-circuits at the first differing element — a later trapping element is not forced"
+  (doc    "The list twin of the tuple short-circuit case above: `(= (list 1 (/ 5 d)) (list 9 9))` compares
+           element 0 first (1 vs 9) — they DIFFER, so the result is decided FALSE without element 1, whose
+           `(/ 5 d)` at d=0 is a divide-by-zero. A list IS strict in its elements when its object is
+           MATERIALIZED — its length/size/membership taken, or it flows to the result (see core-semantics.md
+           #A Trap Occurs Only Where Its Computation Is Observed, and 19-sets `(Set.len (Set.of (list (/ 5 d)
+           2 3)))` which TRAPS at d=0) — but a structural `=` is decided positionally and short-circuits at the
+           first difference, never materializing this list, so the trapping element is UNOBSERVED and its trap
+           does NOT occur. At d=0 the comparison is false, NOT a trap. Distinguishes list-= (positional,
+           short-circuiting, like the tuple case) from a length/membership observation (which forces the build).")
+  (input  (do (def (main (: d Int64)) (= (list 1 (/ 5 d)) (list 9 9))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: false Bool)))
+
+(case "list equality forces through an equal-prefix element to the deciding element, whose trap occurs"
+  (doc    "The anchor to the list short-circuit case: `(= (list 9 (/ 5 d)) (list 9 9))` — element 0 is EQUAL
+           (9 = 9), so the comparison must continue to element 1 to decide, forcing `(/ 5 d)`; at d=0 that is a
+           divide-by-zero, so the comparison TRAPS. Pins that list short-circuit stops at the first DIFFERENCE
+           only — an equal prefix is forced through, and the first not-yet-decided element IS observed — the
+           list twin of the tuple equal-prefix case above.")
+  (input  (do (def (main (: d Int64)) (= (list 9 (/ 5 d)) (list 9 9))) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
 (case "recursive-sum equality over FLOAT payloads compares by canonical float bytes along the walk"
   (doc    "The float-leaf member of the recursive-walk family (the Int64-payload cases above compare
            integer leaves): `(type FL (FNil) (FCons Float64 FL))` — each spine node carries a Float64, so
