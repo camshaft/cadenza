@@ -712,7 +712,18 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
                           else if hs == "or" then evalAndOr m env fuel children false
                           else .unsupported s!"eval: operator/application {hs} not yet modeled"
              | none => .unsupported "eval: non-UTF8 head"
-      | none => .unsupported "eval: headless list"
+      | none =>
+        -- a NON-NAME head: the head is itself an EXPRESSION — an immediately-applied lambda
+        -- `((fn (x) …) a)` or a computed function `((f x) y)`. Evaluate it; if it forces to a closure,
+        -- apply it to the remaining children. (A member-access head like `(. Ast print)` evaluates via
+        -- `evalProject` and yields a non-closure → unsupported, a sound skip.)
+        match children[0]? with
+        | some hid =>
+          match evalNode m env defaultIntTy fuel hid with
+          | .value (.closure params body cap) => applyClosure m env fuel params body cap children
+          | .value _ => .unsupported "eval: applied a non-function computed head"
+          | other => other
+        | none => .unsupported "eval: empty list"
     | none => .unsupported "eval: node index out of range"
 
 /-- Reflect a quasiquote body at nesting `level` (≥1) into an `Ast` value (`metaprogramming.md`
