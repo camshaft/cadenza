@@ -9036,3 +9036,4 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	tryh1 fifty try-unwraps of a HEAP (list) Ok payload under a Result boundary reclaim to zero
+pass	deq1 a DES priority queue built by sorted insert then drained is value-exact and leaks its rebuilt spine prefixes (superlinear)

@@ -1029,3 +1029,30 @@
   (call   main (: 5 Int64)) (output (: 19 Int64))
   (call   main (: 99 Int64)) (output (: 31 Int64))
   (live-objects known-leak 3))
+
+; ── breaker batch 582: the DES event-queue census (a sum-spine priority queue driven through
+; insert-rebuild mutation — the file pins ORDER/VALUE but not census). deq1 = build a 10-entry
+; queue by sorted insert (each insert rebuilds the traversed prefix), then drain; the value is
+; exact (sum 1..10 = 55) and the discarded spine prefixes leak SUPERLINEARLY (32 at n=5, 91 at
+; n=10 — ~O(n²/2) undropped QCons+tuple nodes, the insert-rebuild face of the sum-spine leak).
+; Flips with the two-shell / tuple-payload reclaim arc.
+
+(case "deq1 a DES priority queue built by sorted insert then drained is value-exact and leaks its rebuilt spine prefixes (superlinear)"
+  (input (do
+(type Instant (Instant UInt64))
+(def (before? (: a Instant) (: b Instant)) (match a ((Instant.Instant x) (match b ((Instant.Instant y) (< x y))))))
+(type Q QNil (QCons (Tuple Instant Int64 Q)))
+(def (q-insert (: q Q) (: t Instant) (: v Int64))
+  (match q
+    ((Q.QNil _) (Q.QCons (tuple t v (Q.QNil ()))))
+    ((Q.QCons (tuple ht hv rest))
+      (if (before? t ht) (Q.QCons (tuple t v (Q.QCons (tuple ht hv rest))))
+          (Q.QCons (tuple ht hv (q-insert rest t v)))))))
+(def (drain (: q Q) (: acc Int64))
+  (match q ((Q.QNil _) acc) ((Q.QCons (tuple _ hv rest)) (drain rest (+ acc hv)))))
+(def (build (: i Int64) (: q Q)) (if (= i 0) q (build (- i 1) (q-insert q (Instant.Instant (UInt64.wrap (% (* i 7) 11))) i))))
+(def (main (: n Int64)) (drain (build n (Q.QNil ())) 0))
+(export main)))
+  (call main (: 10 Int64))
+  (output (: 55 Int64))
+  (live-objects known-leak 91))
