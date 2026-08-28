@@ -1589,15 +1589,37 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
          | .record fields => matchRecordPats m (pc.extract 1 pc.size).toList fields
          | _ => .ok none)
       else if ph == "map".toUTF8 then
-        -- a map pattern `(map (k p)…)`: each entry's key literal must be present with a matching value.
-        -- Exact key-count → decide; FEWER pattern entries than map keys (a subset pattern) → skip (I
-        -- don't yet model subset semantics — sound coverage-gap, never a wrong arm selection).
+        -- a map pattern `(map (k p)…)` — each entry's key literal must be present with a matching value —
+        -- optionally ending in `.. rest`, which binds the REMAINING entries (those not named by a leading
+        -- key) as a map. Without `..`: exact key-count decides; a FEWER-key (subset) pattern with no rest
+        -- is a skip (unmodeled — never a wrong arm selection).
         (match subj with
          | .map entries =>
-           let eps := (pc.extract 1 pc.size)
-           if eps.size > entries.size then .ok none
-           else if eps.size < entries.size then .error (.unsupported "eval: map subset-pattern not modeled")
-           else matchMapPats m eps.toList entries
+           let eps := pc.extract 1 pc.size
+           match eps.findIdx? (fun e => nameOf? m e == some "..".toUTF8) with
+           | some kk =>
+             match eps[kk+1]? with
+             | some restBinder =>
+               let leading := (eps.extract 0 kk).toList
+               -- the leading entries' KEY literals (to compute the rest = entries minus these keys)
+               let leadKeys := leading.filterMap (fun ep => match m.nodes[ep]? with
+                 | some (Node.list ec) => (ec[0]?).bind (fun kn => (m.nodes[kn]?).bind (fun n =>
+                     match n with | .atom lid => (m.leaves[lid]?).bind Value.ofLeaf | _ => none))
+                 | _ => none)
+               if leadKeys.length != leading.length then .error (.unsupported "eval: map rest-pattern key not a scalar literal")
+               else
+                 match matchMapPats m leading entries with
+                 | .ok (some e1) =>
+                   let restEntries := entries.filter (fun e => !(leadKeys.any (fun k => k == e.1)))
+                   (match matchPat m restBinder (Value.map restEntries) with
+                    | .ok (some e2) => .ok (some (e1 ++ e2))
+                    | r => r)
+                 | r => r
+             | none => .error (.unsupported "eval: malformed map rest pattern (no binder after ..)")
+           | none =>
+             if eps.size > entries.size then .ok none
+             else if eps.size < entries.size then .error (.unsupported "eval: map subset-pattern not modeled")
+             else matchMapPats m eps.toList entries
          | _ => .ok none)
       else if ph == "list".toUTF8 then
         -- a list pattern: fixed `(list p0 … pn)` (arity-checked positional) or a rest pattern
