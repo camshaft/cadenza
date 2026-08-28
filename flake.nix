@@ -1918,6 +1918,145 @@
             echo "ok: corpus ${name} case ${idx}" > "$out"
           '';
 
+        # ── corpus-cadenza: the CADENZA round-trip VALUE-equivalence target (v-cadenza-backend, #4759) ──────
+        # `corpus` (wasm) WITH A CADENZA HOP: compile program.ast → cadenza (`program1.ast`, the OPTIMIZED
+        # binary AST), then program1.ast → wasm (emit.wasm), and grade emit.wasm with the SAME `cdz-run`
+        # against the SAME wasm `.gate-baseline`. Every case the cadenza backend EMITS must grade IDENTICALLY
+        # to the direct-wasm path — a cadenza round-trip that changes a VALUE shows as a grade divergence,
+        # catching value-miscompiles that byte-idempotence (a stable-but-wrong encode, e.g. a `-0.0` flag byte)
+        # would miss. A cadenza DECLINE (the backend is early) is SKIPPED, not a regression (we only measure
+        # emitted cases). Owner split: v-cadenza-backend owns the backend + round-trip semantics; v-nix owns
+        # this flake mechanism (mirrors mkCorpusBuild/Exec, reuses the shred + wasm baseline + cdz-run grader).
+        mkCorpusCadenzaBuild = { name, shred, idx }:
+          pkgs.runCommand "corpus-cadenza-build-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzCompile ];
+              __contentAddressed = true;
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
+            } ''
+            set -euo pipefail
+            mkdir -p "$out"
+            case=$(echo ${shred}/${name}/${idx}-*)
+            [ -d "$case" ] || { echo "no shred dir for case ${idx} of ${name}"; exit 1; }
+
+            inputs=("ast:main=$case/program.ast")
+            entry=()
+            for m in "$case"/module-*.ast; do
+              if [ -e "$m" ]; then
+                n=$(basename "$m" .ast); n=''${n#module-}
+                inputs+=("ast:$n=$m")
+                entry=(--entry main)
+              fi
+            done
+            cfg=()
+            if [ -e "$case/wit-world.ast" ]; then cfg+=("wit-world:w=$case/wit-world.ast"); fi
+            if [ -e "$case/component-name" ]; then cfg+=(--component-name "$(cat "$case/component-name")"); fi
+
+            # HOP 1: program.ast → CADENZA (program1.ast). A DECLINE (cadenza backend early) → SKIP marker,
+            # no program1/emit — the exec skips (a decline must NOT read as a wasm-baseline regression).
+            if cdz-compile "''${inputs[@]}" "''${entry[@]}" -t cadenza -o "$out/program1.ast" 2>"$out/compile.err"; then
+              # HOP 2: the optimized program1.ast → WASM (emit.wasm), forwarding world/component-name. An
+              # UN-compilable program1 (HOP2 fail) is a real cadenza bug → graded (reds), NOT skipped.
+              if cdz-compile "ast:main=$out/program1.ast" "''${cfg[@]}" -t wasm -o "$out/emit.wasm" 2>>"$out/compile.err"; then
+                printf '0' > "$out/compile.status"
+              else
+                printf '%s' "$?" > "$out/compile.status"
+              fi
+            else
+              st=$?
+              touch "$out/cadenza-declined"
+              printf '%s' "$st" > "$out/compile.status"
+            fi
+            # (peer) cadenza-hop each provider peer the same way (cadenza → wasm) so the exec composes them via
+            # `--peer` exactly like the wasm corpus; a peer whose cadenza hop declines is left absent.
+            for p in "$case"/peer-*.ast; do
+              [ -e "$p" ] || continue
+              pn=$(basename "$p" .ast)
+              if cdz-compile "ast:main=$p" -t cadenza -o "$out/$pn.ast1" 2>>"$out/compile.err"; then
+                cdz-compile "ast:main=$out/$pn.ast1" --component-name "$(cat "$case/$pn.iface")" -t wasm \
+                  -o "$out/$pn.wasm" 2>>"$out/compile.err" || true
+              else
+                # (v-cadenza-backend) SKIP the whole case if ANY component's cadenza hop declines — a
+                # cross-component case is only meaningful when EVERY part round-trips; a partial hop would
+                # leave the consumer's peer import unsatisfied and grade divergently (a false red, not a
+                # value-miscompile). Mark declined so the exec skips (like a consumer-hop decline).
+                touch "$out/cadenza-declined"
+              fi
+              cp "$case/$pn.iface" "$out/$pn.iface"
+            done
+            cp "$case/test-run.ast" "$out/test-run.ast"
+            cp "$case/expect-kind" "$out/expect-kind"
+            if [ -e "$case/component-name" ]; then cp "$case/component-name" "$out/component-name"; fi
+          '';
+
+        # EXEC — the wasm grader EXACTLY (cdz-run --grade vs the wasm baseline), plus ONE guard: a cadenza
+        # DECLINE (build marked `cadenza-declined`) is SKIPPED (exit 0), not graded.
+        mkCorpusCadenzaExec = { name, build, idx }:
+          pkgs.runCommand "corpus-cadenza-exec-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzRun ];
+            } ''
+            set -euo pipefail
+            if [ -e ${build}/cadenza-declined ]; then
+              echo "skip: corpus-cadenza ${name} case ${idx} — cadenza backend declined (early)" > "$out"
+              exit 0
+            fi
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            export CDZ_STORE="${componentStore}"
+            status=$(cat ${build}/compile.status)
+            args=(--grade ${build}/test-run.ast --compile-status "$status" --compile-diag ${build}/compile.err
+                  --baseline ${./spec/semantics/.gate-baseline})
+            if [ -e ${build}/emit.wasm ]; then args=(${build}/emit.wasm "''${args[@]}"); fi
+            if [ -e ${build}/component-name ]; then args+=(--component-name "$(cat ${build}/component-name)"); fi
+            for pw in ${build}/peer-*.wasm; do
+              [ -e "$pw" ] || continue
+              pn=$(basename "$pw" .wasm)
+              args+=(--peer "$(cat ${build}/$pn.iface)=$pw")
+            done
+            args+=(--runtime ${runtimeDebug})
+            cdz-run "''${args[@]}"
+            echo "ok: corpus-cadenza ${name} case ${idx}" > "$out"
+          '';
+
+        corpusCadenzaCaseChecks = { name, file }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            n = corpusCaseCount file;
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+          in
+          builtins.listToAttrs (map
+            (idx: {
+              name = "${name}-${idx}";
+              value = mkCorpusCadenzaExec {
+                inherit name idx;
+                build = mkCorpusCadenzaBuild { inherit name shred idx; };
+              };
+            })
+            idxs);
+
+        mkCorpusCadenzaFileAgg = { name, file }:
+          let cases = corpusCadenzaCaseChecks { inherit name file; };
+          in
+          assert (builtins.length (builtins.attrNames cases)) > 0;
+          pkgs.runCommand "corpus-cadenza-${name}" { } ''
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues cases)}
+            echo "ok: corpus-cadenza ${name} — ${toString (builtins.length (builtins.attrNames cases))} cases via per-case shred→cadenza-build→exec" > "$out"
+          '';
+
+        corpusCadenzaFileAggs = builtins.listToAttrs (map
+          (f:
+            let stem = pkgs.lib.removeSuffix ".sexp" f; in
+            {
+              name = "corpus-cadenza-${stem}";
+              value = mkCorpusCadenzaFileAgg { name = stem; file = ./spec/semantics + "/${f}"; };
+            })
+          corpusFileNames);
+        corpusCadenzaAll = pkgs.runCommand "corpus-cadenza-all" { } ''
+          ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues corpusCadenzaFileAggs)}
+          echo "ok: corpus-cadenza — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→cadenza-build→exec caching graph" > "$out"
+        '';
+
         # A corpus file's per-case check MAP `{ "<idx>" = execDrv; … }` — shred once, then one build+exec
         # chain per case. `pipeline`-style (no barrier): each case is an independent chain.
         corpusCaseChecks = { name, file }:
@@ -3348,6 +3487,10 @@
             # corpus target to move off the native in-process `xtask gate --target rust-async` into a cached
             # nix check. Per-file `corpus-rust-async-<file>` aggregates spread in below.
             corpus-rust-async = corpusRustAsyncAll;
+            # The CADENZA round-trip value-equivalence target: `corpus` with a cadenza hop
+            # (program.ast → cadenza → wasm), graded vs the SAME wasm baseline so a value-miscompile in the
+            # round-trip shows as a grade divergence. Per-file `corpus-cadenza-<file>` aggregates spread below.
+            corpus-cadenza = corpusCadenzaAll;
             # The GLOBAL half of gap #7: a baseline case with no corpus case (silently dropped, its verdict
             # unenforced) — what the per-case `--baseline` regression check cannot see. Backend-independent.
             corpus-vanished = corpusVanishedCheck;
@@ -3494,6 +3637,10 @@
           # so CI can build/cache one file's async per-case graph in isolation (top-level `corpus-rust-async`
           # forces them all). Moves the last native `xtask gate --target rust-async` path into cached nix.
           // corpusRustAsyncFileAggs
+          # PER-FILE cadenza round-trip aggregates: `corpus-cadenza-<file>` (compile→cadenza→wasm, graded vs
+          # the wasm baseline), so one file's cadenza per-case graph builds/caches in isolation (top-level
+          # `corpus-cadenza` forces them all).
+          // corpusCadenzaFileAggs
           # PER-FILE wasm-opt-gap aggregates: `wasm-opt-gaps-<file>` for every corpus file, so a slice
           # (01-literals + 10-bytes) builds in isolation while the top-level `wasm-opt-gaps` forces the whole
           # sweep. Per-CASE reports are CA on {emit, binaryen} → shared with `wasm-opt-gaps` + cached.
