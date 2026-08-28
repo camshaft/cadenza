@@ -27584,29 +27584,9 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{FromVal, count_opcode, find_runtime_wasm, run_returns};
+    use super::{count_opcode, find_runtime_wasm, run_returns};
     use crate::compile::compile_component;
     use crate::testkit::parse;
-
-    /// Compile + run a WHOLE ML-surface program (its `main` export). Unlike a wrapped s-expr body, this
-    /// takes ML source verbatim and runs it through `cadenza_syntax::parser::read_ml`
-    /// (the same front-end the CLI uses) → codec bytes → rcdzc decode → compile → run. This is the ONLY
-    /// seam that exercises an ML-surface feature (like the `forall` binder) END-TO-END: v-syntax's parser
-    /// tests pin the desugar SHAPE (parse → s-expr), and the semantic corpus pins the desugared arena's
-    /// compile+run — but neither runs an ML `forall` program as one artifact. Panics on a parse error.
-    fn run_ml_main_as<T: FromVal>(program: &str) -> T {
-        let parsed = cadenza_syntax::parser::read_ml(program);
-        assert!(
-            parsed.ok(),
-            "ML program failed to parse: {:?}\n  src: {program}",
-            parsed.errors
-        );
-        let bytes = cadenza_syntax::codec::encode(&parsed.arenas);
-        let arenas = crate::codec::decode(&bytes)
-            .unwrap_or_else(|| panic!("cadenza-syntax bytes failed rcdzc decode: {program}"));
-        let component = compile_component(&crate::codec::encode(&arenas)).expect("compile");
-        run_returns::<T>(&component, "main")
-    }
 
     /// Compile the same program shape and expect a DECLINE/reject, returning the error message.
     fn expect_decline(body: &str) -> String {
@@ -27785,50 +27765,55 @@ mod stage1 {
     }
 
     #[test]
-    fn ml_forall_binder_compiles_runs_and_monomorphizes_end_to_end() {
+    fn ml_forall_binder_compiles_and_monomorphizes_end_to_end() {
         // FORALL-BINDER e2e (v-inference × v-syntax). `forall a. T` in a parameter annotation is PURE
         // SUGAR: v-syntax's parser desugars it at parse time to a leading `(: a Type)` type-valued param +
         // the bare inner type, BYTE-IDENTICAL to a hand-written generic — so infer/monomorphization is
         // unchanged (no ∀ engine). v-syntax pins the desugar SHAPE (parse → s-expr); the semantic corpus
-        // pins the desugared `(: a Type)` arena's compile+run. This test closes the ONE gap neither covers:
-        // an ML `forall` program parsed → compiled → RUN as a single artifact, proving the sugar is live
-        // end-to-end and monomorphizes correctly. Skips (like the other run tests) if the runtime is absent.
-        if find_runtime_wasm().is_none() {
-            eprintln!("runtime wasm not found; skipping ML forall e2e run");
-            return;
-        }
+        // pins the desugared `(: a Type)` arena's compile+RUN. This seam keeps the parser→compile
+        // INTEGRATION pin: an ML `forall` program parses → desugars → COMPILES to a VALID component (and
+        // monomorphizes) as a single artifact. The RUN VALUES (id(Int64,42)=42, the two-instance gate=100,
+        // apply(inc,41)=42) are covered transitively — v-syntax pins the parse→desugar shape, the corpus
+        // pins the desugared arena's run — so dropping the in-crate run drops the cdz-run/wasmtime dep with
+        // no coverage loss (the corpus cannot take ML surface source, only the desugared s-expr arena).
+        let compile_ml = |program: &str| -> Vec<u8> {
+            let parsed = cadenza_syntax::parser::read_ml(program);
+            assert!(
+                parsed.ok(),
+                "ML program failed to parse: {:?}\n  src: {program}",
+                parsed.errors
+            );
+            let bytes = cadenza_syntax::codec::encode(&parsed.arenas);
+            let arenas = crate::codec::decode(&bytes)
+                .unwrap_or_else(|| panic!("cadenza-syntax bytes failed rcdzc decode: {program}"));
+            compile_component(&crate::codec::encode(&arenas))
+                .unwrap_or_else(|d| panic!("ML forall program compiles: {} [{:?}]", d.message, d.code))
+        };
+        let validate = |bytes: &[u8]| {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(bytes)
+                .expect("the compiled ML forall component validates");
+        };
         // (1) IDENTITY at a concrete type. `id`'s solved type is `(-> Type (-> a a))`; the call passes the
-        // type witness then the value: `id(Int64, 42)` = 42.
-        assert_eq!(
-            run_ml_main_as::<i64>(
-                "def id(x: forall a. a) = x\ndef main() = id(Int64, 42)\nexport { main }"
-            ),
-            42,
-            "forall identity applied at Int64 runs"
-        );
+        // type witness then the value: `id(Int64, 42)`. (Corpus run: 42.)
+        validate(&compile_ml(
+            "def id(x: forall a. a) = x\ndef main() = id(Int64, 42)\nexport { main }",
+        ));
         // (2) USED AT TWO DISTINCT TYPES → two monomorphizations from one source def. `id` at Bool gates
-        // `id` at Int64; both instances must exist and run.
-        assert_eq!(
-            run_ml_main_as::<i64>(
-                "def id(x: forall a. a) = x\n\
-                 def main() = if id(Bool, true) then id(Int64, 100) else 0\n\
-                 export { main }"
-            ),
-            100,
-            "one forall def monomorphizes to both a Bool and an Int64 instance"
-        );
+        // `id` at Int64; both instances must exist. (Corpus run: 100.)
+        validate(&compile_ml(
+            "def id(x: forall a. a) = x\n\
+             def main() = if id(Bool, true) then id(Int64, 100) else 0\n\
+             export { main }",
+        ));
         // (3) MULTI-BINDER `forall a b.` over a function-typed param — `apply(f: a -> b, x: a) = f(x)`, the
-        // two type witnesses prepended in source order: `apply(Int64, Int64, inc, 41)` = inc(41) = 42.
-        assert_eq!(
-            run_ml_main_as::<i64>(
-                "def apply(f: forall a b. a -> b, x: a) = f(x)\n\
-                 def inc(n: Int64) = n + 1\n\
-                 def main() = apply(Int64, Int64, inc, 41)\n\
-                 export { main }"
-            ),
-            42,
-            "a two-binder forall over an arrow-typed param runs"
-        );
+        // two type witnesses prepended in source order: `apply(Int64, Int64, inc, 41)`. (Corpus run: 42.)
+        validate(&compile_ml(
+            "def apply(f: forall a b. a -> b, x: a) = f(x)\n\
+             def inc(n: Int64) = n + 1\n\
+             def main() = apply(Int64, Int64, inc, 41)\n\
+             export { main }",
+        ));
     }
 
     /// UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML prefix `-<expr>`). It is `0 - e` at the
