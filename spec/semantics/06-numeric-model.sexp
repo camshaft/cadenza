@@ -11927,3 +11927,45 @@
   (call main (: 3 Int64))
   (output (: (record (= pair (tuple 3 4)) (= xs (list 3 6))) (record (pair (Tuple Int64 Int64)) (xs (List Int64)))))
   (live-objects 4))
+
+(case "cdzw12 the cadenza backend round-trips a USER-declared multi-variant sum value — the (type …) declaration re-emits"
+  (doc "Fresh cadenza slice #4942 (re-emit user type declarations), the fix for the breaker-found
+        non-re-compilable emit (a user-sum value re-emitted as `(: (Leaf n) T)` with NO `(type T …)` decl →
+        CDZ0101 unbound on recompile). A runtime arm-selected user-sum value now round-trips: the emitted
+        surface carries the `(type T (Leaf Int64) (Node Int64))` declaration its value references. Both arms
+        exercised (n=8 → Leaf, n=-9 → Node with the negated payload). Dual-path verified. Additive over
+        cdzw1-11 (prelude sums only — no user declarations). A regression dropping the decl re-emit flips
+        this back to the unbound-type recompile failure.")
+  (input (do (type T (Leaf Int64) (Node Int64)) (def (main (: n Int64)) (if (> n 0) (Leaf n) (Node (- 0 n)))) (export main)))
+  (call main (: 8 Int64))
+  (output (: (Leaf 8) T))
+  (call main (: -9 Int64))
+  (output (: (Node 9) T))
+  (live-objects 1))
+
+(case "cdzw13 the cadenza backend round-trips a PRELUDE-COLLIDING user variant head — the qualified (. Type Variant) spelling"
+  (doc "The qualified-head face of cdzw12: the user variant is named `Int` (colliding with the prelude type
+        ctor), so lower's variant_head_ast renders EVERY head of this sum QUALIFIED — `(. MyT Int)` /
+        `(. MyT Other)` — and the re-emitted surface must resolve those back to the variants (a bare `Int`
+        head would read back as the prelude binding, not the variant). Unverifiable before #4942 (the
+        missing decl masked the head spelling — breaker tick 446); now pinned. Dual-path verified both arms.")
+  (input (do (type MyT (Int Int64) (Other Int64)) (def (main (: n Int64)) (if (> n 0) ((. MyT Int) n) ((. MyT Other) (- 0 n)))) (export main)))
+  (call main (: 8 Int64))
+  (output (: ((. MyT Int) 8) MyT))
+  (call main (: -9 Int64))
+  (output (: ((. MyT Other) 9) MyT))
+  (live-objects 1))
+
+(case "cdzw14 the cadenza backend round-trips a RECURSIVE user sum with a nested variant payload"
+  (doc "The recursive-payload face of cdzw12: `(type E (Lit Int64) (Neg E))` is self-referential, and the
+        n=8 value is the NESTED `(Neg (Lit 8))` — the decl re-emit must handle the recursive payload type
+        and the value emit must recurse into the variant payload (a SumNew inside a SumNew, each carrying
+        its ascription through the hop). `(live-objects 2)` = the two live sum cells of the nested value on
+        the FIRST (asserted) call. Dual-path verified; the evl def keeps the sum consumed too (match arms
+        over both variants).")
+  (input (do (type E (Lit Int64) (Neg E)) (def (evl (: e E)) (match e ((Lit v) v) ((Neg x) (- 0 (evl x))))) (def (main (: n Int64)) (if (> n 0) (Neg (Lit n)) (Lit (- 0 n)))) (export main)))
+  (call main (: 8 Int64))
+  (output (: (Neg (Lit 8)) E))
+  (call main (: -9 Int64))
+  (output (: (Lit 9) E))
+  (live-objects 2))
