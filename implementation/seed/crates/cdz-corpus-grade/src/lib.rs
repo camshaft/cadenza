@@ -229,6 +229,38 @@ pub struct GradeResult {
     pub ran_a_trial: bool,
 }
 
+/// Grade the post-run HEAP-BALANCE across ALL of a case's trials (the opt-out live-objects invariant).
+///
+/// `per_trial[i]` is trial `i`'s observed live-cell count: `Some(n)` when trial `i` imported the value-heap
+/// runtime and ended at `n` live cells (a HEAP trial, run on the debug-counters runtime); `None` when the
+/// trial imported no heap (a scalar/const program — nothing to balance). `expected` is the case's asserted
+/// count (`None` = no `(live-objects …)` clause → the opt-out default of 0 = no leak / no double-free), and
+/// it applies UNIFORMLY to every call.
+///
+/// Returns a `Fail` message for the FIRST heap trial whose balance ≠ `expected`, else `None`. The key fix
+/// over the historical code: it checks EVERY call, not just call[0] — a multi-call case that balances on
+/// call 0 but leaks on call 2 (or whose leak scales with call depth) is a real leak the corpus MUST catch.
+/// The first-call-only capture silently FALSE-GREENED those leaks fleet-wide. No-heap trials are skipped
+/// (never a false fail), so a mixed case is graded on its heap trials alone.
+pub fn check_live_objects(per_trial: &[Option<u32>], expected: Option<u32>) -> Option<String> {
+    let want = expected.unwrap_or(0);
+    for (i, live) in per_trial.iter().enumerate() {
+        if let Some(n) = live
+            && *n != want
+        {
+            // A single-trial case keeps the historical (call-index-free) message so its verdict text stays
+            // stable; a multi-call case names the offending call so a depth-scaling leak is legible.
+            let has_multiple_heap_trials = per_trial.iter().filter(|l| l.is_some()).count() > 1;
+            return Some(if has_multiple_heap_trials {
+                format!("live-objects mismatch on call {i}: expected {want}, got {n}")
+            } else {
+                format!("live-objects mismatch: expected {want}, got {n}")
+            });
+        }
+    }
+    None
+}
+
 /// Grade a whole case: decode is the caller's (it has the bytes); this orchestrates the trials + checks,
 /// calling `run_trial` for each RUNNABLE (output/trap, compiled) trial to obtain its [`Outcome`]. Compile
 /// outcomes (error/declines) + warns are graded from `compile_status`/`compile_diag` (no run). Reproduces
@@ -1334,6 +1366,48 @@ mod tests {
                 Some(baseline)
             )),
             success
+        );
+    }
+
+    /// `check_live_objects` balances EVERY trial, not just call[0] — the fix for the systemic false-green
+    /// where a multi-call case that balanced on the first call hid a leak on later calls.
+    #[test]
+    fn check_live_objects_balances_every_call() {
+        // No-heap trials are skipped entirely (never a false fail), regardless of `expected`.
+        assert_eq!(check_live_objects(&[None, None], Some(0)), None);
+        assert_eq!(check_live_objects(&[], None), None);
+        // A single heap trial at the expected count passes; the message on a miss is index-free (stable text).
+        assert_eq!(check_live_objects(&[Some(0)], Some(0)), None);
+        assert_eq!(
+            check_live_objects(&[Some(1)], Some(0)).as_deref(),
+            Some("live-objects mismatch: expected 0, got 1")
+        );
+        // Absent clause ⇒ opt-out default of 0.
+        assert_eq!(
+            check_live_objects(&[Some(2)], None).as_deref(),
+            Some("live-objects mismatch: expected 0, got 2")
+        );
+        // THE FIX: a multi-call case that balances on call 0 but LEAKS on call 2 is now caught — the
+        // historical first-call-only capture returned None here (false green).
+        assert_eq!(
+            check_live_objects(&[Some(0), Some(0), Some(0)], Some(0)),
+            None
+        );
+        assert_eq!(
+            check_live_objects(&[Some(0), Some(0), Some(3)], Some(0)).as_deref(),
+            Some("live-objects mismatch on call 2: expected 0, got 3")
+        );
+        // A depth-scaling leak on the FIRST call still reports call 0 (multi-call message form).
+        assert_eq!(
+            check_live_objects(&[Some(1), Some(2)], Some(0)).as_deref(),
+            Some("live-objects mismatch on call 0: expected 0, got 1")
+        );
+        // A uniform expected N > 0 (an explicit `(live-objects N)` / known-leak N) holds across every call.
+        assert_eq!(check_live_objects(&[Some(2), Some(2)], Some(2)), None);
+        // Interleaved no-heap trials don't shift the reported call index (index is the trial position).
+        assert_eq!(
+            check_live_objects(&[None, Some(0), Some(5)], Some(0)).as_deref(),
+            Some("live-objects mismatch on call 2: expected 0, got 5")
         );
     }
 
