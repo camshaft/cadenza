@@ -255,6 +255,18 @@
           doCheck = false;
         });
 
+        # xtaskMandatesBin — the STANDALONE mandate-lint binary (v-xtask-decompose). Built from ONLY the
+        # xtask-mandates crate's closure (`craneCrateCommon { crate = "xtask-mandates"; }` → src is just
+        # that crate + its sole dep syn), so it caches INDEPENDENTLY of xtask (operator 2026-08-28: "we
+        # only get the wins if xtask doesn't have a direct dependency on these subcrates — cache each
+        # subcrate independently"). `apps.lint-mandates` wraps it; the mandate GATE runs it too. `$out/bin/
+        # xtask-mandates`.
+        xtaskMandatesBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-mandates"; }) // {
+          pname = "cdz-xtask-mandates";
+          cargoExtraArgs = "-p xtask-mandates";
+          doCheck = false;
+        });
+
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
         # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
@@ -674,10 +686,12 @@
               # cdz-world-artifact deps only cadenza-ast (the language's binary-AST builders/codec) + the
               # external wit-parser; xtask still deps cadenza-ast via codegen.rs, so its closure is unchanged.
               cdz-world-artifact = [ "cadenza-ast" "cdz-world-artifact" ];
-              # xtask now deps xtask-mandates (the carved-out mandate-lint) — it dispatches `lint-mandates`
-              # to `xtask_mandates::lint_mandates`. xtask-mandates itself has NO workspace deps (only syn,
-              # external), so its own closure is just itself.
-              xtask = [ "cadenza-ast" "cdz-contract" "cdz-rust-render" "xtask" "xtask-mandates" ];
+              # xtask does NOT depend on xtask-mandates — the dep was SEVERED (v-xtask-decompose 2026-08-28,
+              # operator: cache each subcrate independently). The mandate lint is now the standalone
+              # xtask-mandates crate + `apps.lint-mandates` + the rewired `mandateLintCheck`; nothing links
+              # it into xtask, so editing one never rebuilds the other. xtask-mandates' own closure is just
+              # itself (its sole dep syn is external).
+              xtask = [ "cadenza-ast" "cdz-contract" "cdz-rust-render" "xtask" ];
               xtask-mandates = [ "xtask-mandates" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
@@ -3190,6 +3204,11 @@
         # -- <cmd>` works too if `CDZ_REPO_ROOT` is set (the apps set it for you).
         packages.xtask = xtaskBin;
 
+        # The standalone mandate-lint binary (v-xtask-decompose). `nix build .#xtask-mandates` →
+        # result/bin/xtask-mandates. Backs `apps.lint-mandates` + the mandate gate; caches independently
+        # of xtask (its closure is just the crate + syn).
+        packages.xtask-mandates = xtaskMandatesBin;
+
         # oracle-lean (L0.1): the Lean differential oracle. `nix build .#oracle-lean` →
         # result/bin/{cdz-oracle,oracle-selftest}.
         packages.oracle-lean = oracleLean;
@@ -3399,7 +3418,7 @@
                 inherit (perCrateClippyCrane)
                   clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
-              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
+              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
             # flakeReproBackstop: the REPRODUCIBILITY-BACKSTOP subset — the checks the `nix-flake (advisory)`
             # CI job should run INSTEAD of a whole `nix flake check`. Data-driven CI-speed (operator standing
@@ -3521,8 +3540,14 @@
             # fold-in.
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
-              cargoCmd = "cargo run --locked --package xtask --profile release -- lint-mandates";
-              # src = seedSrc (default): implementation/seed/crates + xtask (incl. the allowlist .txt).
+              # STANDALONE crate (v-xtask-decompose): builds ONLY `xtask-mandates` (+ its sole dep syn), NOT
+              # the xtask monolith's ~15-dep closure — so a mandate-lint edit no longer recompiles xtask, and
+              # the `xtask → xtask-mandates` dep is severed (operator 2026-08-28: cache each subcrate
+              # independently). The standalone bin resolves the scan root from cwd (the derivation's seedSrc
+              # working dir), so it walks implementation/**/*.rs exactly as before — behavior unchanged.
+              # src = seedSrc (default) is kept: it is the SCAN CORPUS the lint reads at runtime (+ carries
+              # the xtask-mandates crate src, since seedSrc includes the whole ./xtask).
+              cargoCmd = "cargo run --locked --package xtask-mandates --profile release";
             };
 
             # LOCAL GATE — the GHA-outage fallback (operator-greenlit, concierge-assigned, v-ft leads the
@@ -4108,6 +4133,29 @@
           {
             type = "app";
             program = "${wrapper}/bin/cdz-roundtrip";
+          };
+
+        # apps.lint-mandates — the mandate-lint as a nix-native app backed by the STANDALONE
+        # `xtaskMandatesBin` (v-xtask-decompose). `nix run .#lint-mandates`. This is what makes the crate
+        # split pay off: the app builds ONLY xtask-mandates (+ syn), NOT the xtask monolith — and with the
+        # `xtask → xtask-mandates` dep now SEVERED (the Cmd::LintMandates arm removed), the two cache fully
+        # independently (operator 2026-08-28). v-fleet-tooling's cargo→nix redirect maps `cargo xtask
+        # lint-mandates` here. Sets CDZ_REPO_ROOT so the relocated bin finds the invoking worktree.
+        apps.lint-mandates =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-lint-mandates";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export CDZ_REPO_ROOT="$root"
+                exec ${xtaskMandatesBin}/bin/xtask-mandates "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-lint-mandates";
           };
 
         #
