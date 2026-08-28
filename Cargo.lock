@@ -338,6 +338,7 @@ dependencies = [
  "cadenza-syntax-cedar",
  "cadenza-syntax-core",
  "cadenza-syntax-json",
+ "cadenza-syntax-sexpr",
  "cadenza-syntax-toml",
  "clap",
  "num-bigint",
@@ -370,6 +371,16 @@ version = "0.1.0"
 dependencies = [
  "cadenza-ast",
  "cadenza-syntax-core",
+]
+
+[[package]]
+name = "cadenza-syntax-sexpr"
+version = "0.1.0"
+dependencies = [
+ "cadenza-ast",
+ "cadenza-syntax-core",
+ "num-bigint",
+ "unicode-normalization",
 ]
 
 [[package]]

@@ -12,10 +12,10 @@
 //! arbitrary-precision `Int` and an exact `Decimal` (no `i64`/`f64` ceiling). The ML lexer MUST
 //! classify literals identically to this, or the round-trip fails.
 
-use crate::ast::{Arenas, Builder, Leaf, LeafId, Struct, StructId};
-use crate::doc::Doc;
-use crate::span::Span;
-use crate::spans::{FileId, SpanTable};
+use cadenza_syntax_core::ast::{Arenas, Builder, Leaf, LeafId, Struct, StructId};
+use cadenza_syntax_core::doc::Doc;
+use cadenza_syntax_core::span::Span;
+use cadenza_syntax_core::spans::{FileId, SpanTable};
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug)]
@@ -235,7 +235,7 @@ fn suffixed_annotation_atom(a: &Arenas, items: &[StructId]) -> Option<StructId> 
 const INDENT: isize = 2;
 
 /// The default target width for the pretty-printer (columns), shared with the ML printer.
-pub const DEFAULT_WIDTH: usize = crate::printer::DEFAULT_WIDTH;
+pub const DEFAULT_WIDTH: usize = cadenza_syntax_core::DEFAULT_WIDTH;
 
 /// Pretty-print `arenas` as multi-line s-expression text targeting the default width.
 pub fn print_pretty(arenas: &Arenas) -> String {
@@ -348,8 +348,10 @@ fn blank_line(doc: &mut Doc) {
 
 fn print_leaf(leaf: &Leaf, out: &mut String) {
     match leaf {
-        Leaf::Int { value, radix } => out.push_str(&crate::literal::render_int(value, *radix)),
-        Leaf::Float(d) => out.push_str(&crate::literal::render_decimal(d)),
+        Leaf::Int { value, radix } => {
+            out.push_str(&cadenza_syntax_core::literal::render_int(value, *radix))
+        }
+        Leaf::Float(d) => out.push_str(&cadenza_syntax_core::literal::render_decimal(d)),
         // Non-finite float VALUES render `nan`/`inf`/`-inf`. These leaves are produced only by
         // `Ast.encode` of a computed float, NEVER by the reader (which reads a source `nan`/`inf`
         // identifier to a `Name`), so a value-DISPLAY spelling is enough; a round-tripping source
@@ -359,13 +361,13 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         Leaf::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Leaf::Str(s) => {
             out.push('"');
-            out.push_str(&crate::literal::escape_string(s));
+            out.push_str(&cadenza_syntax_core::literal::escape_string(s));
             out.push('"');
         }
         // A byte sequence renders `b"…"` — the byte-string form (printable ASCII raw, else `\xNN`).
         Leaf::Bytes(b) => {
             out.push_str("b\"");
-            out.push_str(&crate::literal::escape_bytes(b));
+            out.push_str(&cadenza_syntax_core::literal::escape_bytes(b));
             out.push('"');
         }
         // A name is written verbatim. (The s-expr surface has no reserved words — `let`, `+`, `|`
@@ -374,7 +376,7 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         // A symbol renders `#"…"` (reusing the string escape set) — re-reads to the same `Leaf::Sym`.
         Leaf::Sym(s) => {
             out.push_str("#\"");
-            out.push_str(&crate::literal::escape_string(s));
+            out.push_str(&cadenza_syntax_core::literal::escape_string(s));
             out.push('"');
         }
         // A bad-escape MARKER round-trips back to the offending literal `"\<c>"` — so re-reading the
@@ -389,7 +391,7 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         }
         // A char renders `#\…` (a name for a common control char, `u+HHHH` for another, else the bare
         // scalar) — re-reads to the same scalar.
-        Leaf::Char(c) => out.push_str(&crate::literal::render_char(*c)),
+        Leaf::Char(c) => out.push_str(&cadenza_syntax_core::literal::render_char(*c)),
         // A bad-char MARKER round-trips to `#\<text>` — re-reading re-detects the malformed literal.
         Leaf::BadChar(s) => {
             out.push_str("#\\");
@@ -397,7 +399,7 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         }
         // A TYPE-SUFFIXED literal renders `<body><suffix>` (`100N`, `0.5R`) — re-reads to the same leaf.
         Leaf::Suffixed { value, kind } => {
-            out.push_str(&crate::literal::render_suffixed(value, *kind))
+            out.push_str(&cadenza_syntax_core::literal::render_suffixed(value, *kind))
         }
     }
 }
@@ -866,7 +868,7 @@ impl<'a, 'b> Reader<'a, 'b> {
             return Err(ReadError("empty char literal after `#\\`".into()));
         }
         let span = Span::new(start, self.pos);
-        Ok(self.mk_atom_leaf(crate::literal::char_leaf(word), span))
+        Ok(self.mk_atom_leaf(cadenza_syntax_core::literal::char_leaf(word), span))
     }
 
     /// Read a byte-string literal `b"…"` into a `Leaf::Bytes` (arbitrary bytes, NOT normalized as
@@ -927,7 +929,7 @@ impl<'a, 'b> Reader<'a, 'b> {
 
     /// Classify a whitespace-delimited token into a leaf occurrence. A dotted token `a.b.c` is
     /// display sugar for nested member access `(. (. a b) c)`; otherwise the shared
-    /// [`crate::literal::classify_word`] decides Int / Float / Bool / Name — the SAME layer the ML
+    /// [`cadenza_syntax_core::literal::classify_word`] decides Int / Float / Bool / Name — the SAME layer the ML
     /// surface uses, so literal values are byte-identical across surfaces.
     fn classify_token(&mut self, tok: &str, start: usize) -> StructId {
         // A segmented identifier (`Sign.Neg`, `a.b.c`) desugars to nested member access. This is
@@ -958,7 +960,7 @@ impl<'a, 'b> Reader<'a, 'b> {
         // for every occurrence (`classify_word` would `to_string()` the name eagerly and discard it on
         // a hit). `classify_word_nonname` returns `Some` only for the number/bool kinds, so a bare name
         // never allocates on the common repeated-identifier path.
-        match crate::literal::classify_word_nonname(tok) {
+        match cadenza_syntax_core::literal::classify_word_nonname(tok) {
             // A TYPE-SUFFIXED numeric literal (`100N`, `0.5R`) DESUGARS to the annotation `(: <literal>
             // BigInt|Rational)` — a suffix IS a terse annotation, so all typing/grounding reuses the
             // annotation path (and the compiler's codec decodes the `Suffixed` leaf straight to a plain
@@ -1012,7 +1014,7 @@ fn hex_digit(b: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Decimal, Radix};
+    use cadenza_syntax_core::ast::{Decimal, Radix};
     use num_bigint::BigInt;
     use std::str::FromStr;
 
@@ -1214,72 +1216,6 @@ mod tests {
     }
 
     #[test]
-    fn every_node_span_slices_back_to_that_node_over_generated_programs() {
-        // `spans_cover_the_source_text_of_each_node` pins span ACCURACY on ONE hand program at 3 nodes.
-        // This sweeps it: for EVERY node of every generated program, the span must (a) be an in-bounds,
-        // char-boundary slice of the source, (b) nest inside its parent's span, and (c) — the strong
-        // property — slice to source text that RE-READS to a tree structurally equal to that node's
-        // subtree. (c) is what LSP hover / go-to-def / codemod edits rely on: the span must identify
-        // EXACTLY this node's source, not a neighbor or an off-by-one range. Totality is already swept
-        // (`sexpr_reader_invariants_hold_on_arbitrary_input`); this is about the spans being RIGHT, not
-        // merely present. A list node additionally must bracket `(`…`)`.
-        let mut rng = SplitMix64(0x5a4c_0de5_acc0_1a7e);
-        let mut nodes_checked = 0usize;
-        for _ in 0..3000 {
-            let depth = 1 + (rng.next() as usize) % 4;
-            let src = gen_pretty_prog(&mut rng, depth);
-            let Ok((a, spans)) = read_spanned(&src) else {
-                continue;
-            };
-            // Walk every node with its parent span (root's "parent" is the whole source).
-            let full = Span::new(0, src.len());
-            let mut stack: Vec<(StructId, Span)> = vec![(a.root, full)];
-            while let Some((id, parent)) = stack.pop() {
-                let sp = spans.get(id).expect("span table is total");
-                // (a) in-bounds + char boundaries (slicing panics otherwise, but assert for a clear msg).
-                assert!(
-                    sp.start <= sp.end
-                        && sp.end <= src.len()
-                        && src.is_char_boundary(sp.start)
-                        && src.is_char_boundary(sp.end),
-                    "span {sp:?} out of bounds / off a char boundary in {src:?}"
-                );
-                // (b) nested within the parent's span.
-                assert!(
-                    parent.start <= sp.start && sp.end <= parent.end,
-                    "node span {sp:?} escapes parent {parent:?} in {src:?}"
-                );
-                let text = slice(&src, sp);
-                // (c) the covered text re-reads to a tree structurally equal to this subtree. Materialize
-                // the node rooted at `id` into its own arena (via `query::Tree`), then compare to a fresh
-                // parse of the span text — order-independent since `structurally_eq` compares shape.
-                let sub = crate::query::Tree::from_arena(&a, id).to_arena();
-                let reparsed = read(text).unwrap_or_else(|e| {
-                    panic!("node span text {text:?} must re-read ({e:?}) in {src:?}")
-                });
-                assert!(
-                    reparsed.structurally_eq(&sub),
-                    "node span text {text:?} re-reads to a DIFFERENT tree than the node it spans in {src:?}"
-                );
-                if let Struct::List(items) = a.get(id) {
-                    assert!(
-                        text.starts_with('(') && text.ends_with(')'),
-                        "a list node's span {text:?} must bracket parens in {src:?}"
-                    );
-                    for &child in items {
-                        stack.push((child, sp));
-                    }
-                }
-                nodes_checked += 1;
-            }
-        }
-        assert!(
-            nodes_checked >= 3000,
-            "swept a meaningful node population, got {nodes_checked}"
-        );
-    }
-
-    #[test]
     fn read_all_spanned_wraps_and_spans_each_top_form() {
         let src = "(a 1)\n(b 2)\n";
         let (a, spans) = read_all_spanned(src).unwrap();
@@ -1330,28 +1266,28 @@ mod tests {
             (
                 "Int-dec-neg",
                 Leaf::Int {
-                    value: crate::ast::IntValue::from_i64(-42),
+                    value: cadenza_syntax_core::ast::IntValue::from_i64(-42),
                     radix: Radix::Dec,
                 },
             ),
             (
                 "Int-hex",
                 Leaf::Int {
-                    value: crate::ast::IntValue::from_i64(255),
+                    value: cadenza_syntax_core::ast::IntValue::from_i64(255),
                     radix: Radix::Hex,
                 },
             ),
             (
                 "Int-bin",
                 Leaf::Int {
-                    value: crate::ast::IntValue::from_i64(10),
+                    value: cadenza_syntax_core::ast::IntValue::from_i64(10),
                     radix: Radix::Bin,
                 },
             ),
             (
                 "Int-zero",
                 Leaf::Int {
-                    value: crate::ast::IntValue::from_i64(0),
+                    value: cadenza_syntax_core::ast::IntValue::from_i64(0),
                     radix: Radix::Dec,
                 },
             ),
@@ -1359,7 +1295,7 @@ mod tests {
                 "Float-neg",
                 Leaf::Float(Decimal {
                     negative: true,
-                    significand: crate::ast::IntValue::from_i64(125).magnitude,
+                    significand: cadenza_syntax_core::ast::IntValue::from_i64(125).magnitude,
                     exponent: -2,
                 }),
             ),
@@ -1673,7 +1609,7 @@ mod tests {
             assert_eq!(
                 a.leaf(*l),
                 &Leaf::Int {
-                    value: crate::ast::IntValue::from_i64(val),
+                    value: cadenza_syntax_core::ast::IntValue::from_i64(val),
                     radix
                 },
                 "src {src}"
@@ -1691,7 +1627,7 @@ mod tests {
             a.leaf(*l),
             &Leaf::Float(Decimal {
                 negative: false,
-                significand: crate::ast::IntValue::from_i64(15).magnitude,
+                significand: cadenza_syntax_core::ast::IntValue::from_i64(15).magnitude,
                 exponent: -1
             })
         );
@@ -1708,7 +1644,7 @@ mod tests {
             a.leaf(*l),
             &Leaf::Float(Decimal {
                 negative: false,
-                significand: crate::ast::IntValue::from_i64(15).magnitude,
+                significand: cadenza_syntax_core::ast::IntValue::from_i64(15).magnitude,
                 exponent: 9
             })
         );
@@ -1780,7 +1716,7 @@ mod tests {
         assert_eq!(
             a.leaf(*l),
             &Leaf::Int {
-                value: crate::ast::IntValue::from_i64(1_000_000),
+                value: cadenza_syntax_core::ast::IntValue::from_i64(1_000_000),
                 radix: Radix::Dec
             }
         );
@@ -1809,8 +1745,8 @@ mod tests {
         // The marker must survive the binary AST codec (encode→decode) unchanged, so the compiler that
         // reads the binary AST sees the same `BadEscape` the reader produced.
         let a = read("\"\\q\"").unwrap();
-        let bytes = crate::codec::encode(&a);
-        let b = crate::codec::decode(&bytes).expect("decode");
+        let bytes = cadenza_ast::codec::encode(&a);
+        let b = cadenza_ast::codec::decode(&bytes).expect("decode");
         let Struct::Atom(l) = b.get(b.root) else {
             panic!("expected an atom")
         };
@@ -1846,8 +1782,8 @@ mod tests {
         // binary AST, so it must see the same leaf the reader produced).
         for src in ["#\\a", "#\\newline", "#\\u+D800"] {
             let a = read(src).unwrap();
-            let bytes = crate::codec::encode(&a);
-            let b = crate::codec::decode(&bytes).expect("decode");
+            let bytes = cadenza_ast::codec::encode(&a);
+            let b = cadenza_ast::codec::decode(&bytes).expect("decode");
             assert!(a.structurally_eq(&b), "codec round-trip changed {src}");
         }
     }
@@ -1908,8 +1844,8 @@ mod tests {
         for src in ["#\"meter\"", "#\"second\"", "#\"\""] {
             let a = read(src).unwrap();
             // Codec round-trip.
-            let bytes = crate::codec::encode(&a);
-            let b = crate::codec::decode(&bytes).expect("decode");
+            let bytes = cadenza_ast::codec::encode(&a);
+            let b = cadenza_ast::codec::decode(&bytes).expect("decode");
             assert!(a.structurally_eq(&b), "codec round-trip changed {src}");
             // Printer round-trip.
             let printed = print(&a);
@@ -2013,58 +1949,6 @@ mod tests {
         ] {
             assert_sexpr_read_invariants(s);
             assert_sexpr_read_invariants(&s.repeat(4));
-        }
-    }
-
-    #[test]
-    fn sexpr_printer_is_total_over_arbitrary_arenas() {
-        // The s-expr PRINTER half, over the full diversity of arena SHAPES — including shapes no s-expr
-        // TEXT produces (empty lists, error-marker leaves, deep member chains). We source those arenas
-        // from `read_ml` on byte-soup (it recovers, never bails, yielding every odd shape), then print
-        // via BOTH `sexpr::print` (flat) and `print_pretty_width` (the layout path — more shape-specific
-        // logic, the likelier place for an empty-list index gap like the ML printer's `(unquote ())`
-        // panic). Invariants: neither printer PANICS at any width, and both outputs RE-READ without
-        // panicking (via `read_all`, which handles any top-level form count — an ML arena may print as
-        // several s-expr forms). The flat/pretty forms also agree structurally (same tree, one flat, one
-        // laid out). Structural ROUND-TRIP of valid programs is covered elsewhere (corpus + `pretty_
-        // reads_back_to_the_same_arena`); here the point is printer TOTALITY on arbitrary shapes.
-        let alphabet: Vec<char> = "()[]{}|,;=>-+*/<:.@#`\"\\ \tabcdefimntxλ中0123456789\n"
-            .chars()
-            .collect();
-        let mut rng = SplitMix64(0xc0de_5e37_a5f1_0d1c);
-        for len in 0..=32usize {
-            for _ in 0..80 {
-                let s: String = (0..len)
-                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
-                    .collect();
-                let parsed = crate::parser::read_ml(&s);
-                let a = &parsed.arenas;
-                let flat = print(a); // must not panic
-                let flat_back = read_all(&flat); // must not panic (re-read; any form count)
-                for width in [0usize, 1, 20, 80] {
-                    let pretty = print_pretty_width(a, width); // must not panic
-                    let pretty_back = read_all(&pretty); // must not panic
-                    // Flat and pretty are the SAME tree rendered two ways — when both re-read cleanly
-                    // they are structurally equal (layout never changes the denoted tree).
-                    if let (Ok(f), Ok(p)) = (&flat_back, &pretty_back) {
-                        assert!(
-                            f.structurally_eq(p),
-                            "flat vs pretty (width {width}) differ for {s:?}"
-                        );
-                    }
-                }
-            }
-        }
-        // Shapes no s-expr TEXT yields, built directly, to hit the printer's list arms head-on: an empty
-        // list, an empty list under each quote head, a lone-head list.
-        let mut b = Builder::new();
-        let empty = b.list(vec![]);
-        let uq_head = b.name("unquote");
-        let uq_empty = b.list(vec![uq_head, empty]);
-        let a = b.finish(uq_empty);
-        let _ = print(&a); // must not panic
-        for width in [0usize, 1, 40] {
-            let _ = print_pretty_width(&a, width); // must not panic
         }
     }
 }

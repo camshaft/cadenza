@@ -1,0 +1,22 @@
+# cadenza-syntax-sexpr — the s-expression surface (the canonical/oracle text form of the AST).
+#
+# The s-expr surface is the DIRECT textual projection of the arena: `(head child …)` lists and bare leaf
+# atoms, one node per form. It is the round-trip ORACLE the other surfaces are tested against, and the
+# form the corpus is authored in. A parser (`read`/`read_all`/`read_spanned`) turns s-expr text into the
+# shared arena; a printer (`print`/`print_pretty_width`) turns an arena back into s-expr text — the
+# uniform read/print (text↔binary-AST) contract every surface crate exposes.
+#
+# Hand-rolled, NO external parser dependency. Depends on `cadenza-syntax-core` (spans + arena
+# read-helpers + `doc` pretty-printer + `literal` + `MAX_NESTING_DEPTH` + `DEFAULT_WIDTH`), NOT the
+# `cadenza-syntax` facade (which re-exports this crate → a dependency the other way would cycle). Fully
+# self-contained: unlike the data surfaces it has no ML-printer fallback, so it needs no injected printer.
+[package]
+name = "cadenza-syntax-sexpr"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cadenza-ast = { path = "../cadenza-ast" }
+cadenza-syntax-core = { path = "../cadenza-syntax-core" }
+num-bigint = "0.4"               # arbitrary-precision Int leaves
+unicode-normalization = "0.1.25" # NFC on string/name leaves

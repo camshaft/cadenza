@@ -52,6 +52,9 @@ cadenza-syntax-core = { path = "../cadenza-syntax-core" }
 # The JSON data surface, split into its own crate (hand-rolled, no external parser dep); re-exported as
 # `cadenza_syntax::json`. Always on — the ML surface embeds `json{…}` sub-documents.
 cadenza-syntax-json = { path = "../cadenza-syntax-json" }
+# The s-expression surface (the canonical/oracle text form), split into its own crate; re-exported as
+# `cadenza_syntax::sexpr`. Hand-rolled, no external parser dep.
+cadenza-syntax-sexpr = { path = "../cadenza-syntax-sexpr" }
 unicode-normalization = "0.1.25" # NFC on string/name leaves
 sha2 = "0.10"                    # schema-hash header over the arena type term
 num-bigint = "0.4"               # arbitrary-precision Int and the Decimal significand
