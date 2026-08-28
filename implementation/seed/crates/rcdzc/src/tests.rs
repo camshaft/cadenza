@@ -5371,15 +5371,14 @@ fn map_to_list_of_an_empty_map_folds_to_the_empty_list() {
         }
     }
     // The fold sees through an inlined nullary `(def (em) Map.empty)` — the exact seed shape; the whole
-    // expression const-folds to 0, so no runtime is imported.
+    // expression const-folds so no runtime is imported. It COMPILES (the fold-through-nullary pin); its RUN
+    // value (empty Map.to-list is the empty list, length 0) is corpus case 05-compound-types "Map.to-list
+    // of an empty map is the empty list".
     let src = "(module m (def (em) Map.empty) \
                (def (main) (List.len (Map.to-list (em)))) (export main))";
-    let comp = compile_component(&crate::codec::encode(&crate::testkit::parse(src)))
-        .expect("empty Map.to-list compiles");
-    assert_eq!(
-        run_returns::<i64>(&comp, "main"),
-        0,
-        "Map.to-list of an empty map is the empty list — length 0"
+    assert!(
+        compile_component(&crate::codec::encode(&crate::testkit::parse(src))).is_ok(),
+        "the fold sees through an inlined nullary def returning Map.empty (empty Map.to-list compiles)"
     );
 }
 

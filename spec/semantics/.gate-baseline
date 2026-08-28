@@ -9053,3 +9053,4 @@ pass	fno2 runtime +/-infinity is FULLY ORDERED (only NaN is unordered, not all n
 pass	ftd1 many same-signature functions dispatched through a selector are value-exact (the #4754 functype-dedup witness)
 pass	qqb1 fifty quasiquote-spliced runtime-Ast trees are value-exact and leak linearly (the splice-build face)
 pass	ssc1 String.slice indices are SCALAR (codepoint) positions, not bytes — mid-codepoint cuts are impossible by construction
+pass	Map.to-list of an empty map is the empty list
