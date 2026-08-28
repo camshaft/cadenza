@@ -509,3 +509,61 @@ confirms both), v-static-data (byte-EQ gate). Downstream (sequenced AFTER): v-ca
 consumer — build ctor-leaf head-first), v-ast-consolidate (unify rcdzc AST onto cadenza-ast + dep-lighten
 `Leaf::Int` num_bigint→dep-free IntValue, post-M3 — wire-neutral), v-corpus-declines (re-baseline
 `12-metaprogramming` after the corpus migration).
+
+## 12. M2 flag-day ASSEMBLY RUNBOOK (2026-08-28) — authoritative; CORRECTS §11.3 migration mechanism
+
+The push-button assembly procedure, validated piece-by-piece. Executes as ONE atomic squash the moment the
+last peer arm (op62) lands.
+
+### 12.1 Preconditions (arm readiness)
+- **rcdzc side (me): DONE + green.** codec kinds 20-26, native ctor/FieldPair/Member API (both twins),
+  recognition flip (resolve dual-accepts native + legacy via `compound_ctor_prim`), reflected-Ast Option-B
+  variants, `const_value_ast` + `member_access` head-first EMIT flip. Pinned `rcdzc --lib` green except the
+  deferred `regenerate_verify_kernel_bin` golden.
+- **node_eq collapse: DONE** (`cadenza-ast 80a9934b0`). `ctor_head_key` maps native `Leaf::Ctor(c)` == the
+  Name-alias == Str-primitive spelling → structurally_eq treats all three ctor-head spellings as one head.
+  Byte content-addressing UNCHANGED (codec still byte-distinguishes heads). FieldPair/Member stay distinct.
+- **v-syntax reader/printer: DONE + registered.** `--ref 74f3f6e1f` (delta `7beac9988..74f3f6e1f`,
+  cadenza-syntax + `ast-binary-format.md` only; based on old origin/main → SQUASH the delta onto the
+  integration base, do NOT merge the range). All 5 ctors have a `#word(…)` reader→Ctor + printer resugar;
+  `#(…)` set literal → native `Ctor(Set)` (was Set.of); `(= k v)` field-pairifies on READ. Keep their 3
+  fixes (alias_field_pairify, PATTERN .member→Member, match_to_let FieldPair head).
+- **op62 (v-runtime): THE LONG POLE — pending.** runtime value-encode op62/90 head-first ctor-leaf +
+  negatives as the neg-literal leaf (kinds 3-5, NOT `(- x)`) + REQUIRED/DEBUG runtime-hash bump. Byte target =
+  my const_value_ast (golden vectors `676eea6e0`+`2fe9ccc58`; cite CONTENT not sha).
+- **v-static-data byte-EQ arm** + **v-spec-oracle §265/§269 + reflected-Ast spec**: fold at assembly.
+
+### 12.2 CORPUS MIGRATION MECHANISM — ml-convert route (SUPERSEDES §11.3 "cdz rewrite")
+§11.3's blind `cdz rewrite` head-rename is UNSAFE: the corpus `(def (map …))` defines a `map` FUNCTION, so a
+bare `(map it f)` is a HOF CALL, not a literal — a syntactic `(map ,@e)→#map(,@e)` would corrupt it (prototype
+tick13). CORRECT mechanism = **`cdz convert sexpr → ml → sexpr`** per file: the ML surface DISAMBIGUATES a
+literal (`[…]`/`#{…}`/`#(…)`/`(a,b)`) from a call `f(x)` from a pattern, so the round-trip nativizes exactly
+the LITERALS/patterns and leaves HOF calls as calls — correct by construction; handles nesting, empty
+`(list)`→`#list()`, record/map field-pairify, and (post-74f3f6e1f) all 5 ctors incl. set (`(set …)` and
+`((. Set of)(list …))` both → `#(…)` → native `Ctor(Set)`). Prototype-VALIDATED (tick13) for
+list/tuple/record/map + HOF-safety; set via 74f3f6e1f. Unambiguous string-head `("list" …)` forms, if any,
+are directly-safe. Migration MUST pass `cdz corpus check` + the ML round-trip harness (`xtask roundtrip`),
+not just the gate.
+
+### 12.3 Ordered assembly steps
+1. Rebase the integration branch onto current origin/main. Drop the transiently-folded STALE peer arms
+   (early v-syntax cadenza-syntax fold; any v-runtime provisional decode/hash arm).
+2. Fold FINAL peer `--ref`s onto the integration base (squash-not-merge): v-syntax `74f3f6e1f`, v-runtime
+   op62 (final tip), v-spec-oracle spec arm, v-static-data byte-EQ test.
+3. Run the corpus migration: `cdz convert sexpr→ml→sexpr` over `spec/semantics/*.sexp` (all 34). Diff-review.
+4. Verify: `cdz corpus check` + `xtask roundtrip` (ML round-trip) green across all 34.
+5. Regenerate `verify_kernel.bin` (`REGEN_VERIFY_KERNEL_BIN=1`) — const_value_ast + op62 + reader all shifted
+   kernel bytes.
+6. Belt-and-suspenders: run a `#(…)` SET behavior corpus case through rcdzc (value + a set op) to confirm
+   native `Ctor(Set)` consumed identically (node-identity says yes; verify anyway).
+7. v-nix confirms BOTH runtime hashes (REQUIRED + DEBUG) — full guest recompile.
+8. Gate ALL-OR-NOTHING: pinned `rcdzc --lib` (incl. the re-baselined kernel-bin) + `cargo test -p
+   cadenza-syntax` (corpus_roundtrip now GREEN) + cadenza-ast + `--target platform` + cdzast byte-stability
+   re-baseline + clippy `--all-targets -D warnings` + pinned `cargo fmt --all --check`.
+9. Hand the concierge the single atomic `--ref` for the flag-day land.
+
+### 12.4 Post-flag-day (sequenced AFTER M2 lands)
+Ping v-ast-consolidate (num_bigint→IntValue swap), v-corpus-declines (re-baseline 12-metaprogramming),
+v-cadenza-backend (ctor-leaf head-first consumer). M3 (delete legacy string/name-head recognition) is a
+separate follow-on: flip the deferred boundary emitters (effect-request record in `lower.rs:16651` +
+`db.push_field_pair`; v-effects' tuple-projection `.` sites in effects.rs) to native then.
