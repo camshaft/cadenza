@@ -41435,6 +41435,70 @@ mod r2_runtime_resource {
     }
 
     #[test]
+    fn bake_constant_leaves_pre_encodes_a_fully_constant_tuple_to_zero_holes() {
+        // §2d PRE-ENCODE (Axis 2): a fully-constant compound RETURN has EVERY value-form leaf baked into the
+        // template at compile time (the SAME bytes the runtime hole-fill walker would write), so ZERO runtime
+        // holes remain — the escape becomes a hole-free copy with no per-event value-encode leaf walk.
+        // Independent check: the baked bytes still DECODE (separate codec code) to the constant Ints 3 and 1.
+        use crate::lower::bake_constant_leaves;
+        use crate::testkit::parse;
+        let src = "(module m (def (main) (tuple 3 1)) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main has a body");
+        let ty = crate::infer::type_of(&mut db, body);
+        let tpl =
+            runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[])).expect("template");
+        assert_eq!(tpl.leaves.len(), 2, "two runtime holes before baking");
+        let baked = bake_constant_leaves(&mut db, body, &tpl);
+        assert!(
+            baked.leaves.is_empty(),
+            "a fully-constant tuple bakes to ZERO holes (fully static)"
+        );
+        let arenas = crate::codec::decode(&baked.bytes).expect("baked template bytes decode");
+        let ints: std::collections::BTreeSet<i64> = arenas
+            .leaves
+            .iter()
+            .filter_map(|l| match l {
+                crate::ast::Leaf::Int { value, .. } => value.to_i64(),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            ints.contains(&3) && ints.contains(&1),
+            "the baked bytes decode to the tuple's constants 3 and 1, got {ints:?}"
+        );
+    }
+
+    #[test]
+    fn bake_constant_leaves_keeps_runtime_leaves_and_bakes_only_constants() {
+        // A PARTIALLY-constant return: `(tuple x 42)` — the constant `42` (index 1) bakes out, the runtime
+        // element `x` (index 0) STAYS a hole the walker fills per event. So one hole survives, at path [0] —
+        // the per-event work drops from two leaf writes to one, byte-identical output.
+        use crate::lower::bake_constant_leaves;
+        use crate::testkit::parse;
+        let src = "(module m (def (main (: x Int64)) (tuple x 42)) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main has a body");
+        let ty = crate::infer::type_of(&mut db, body);
+        let tpl =
+            runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[])).expect("template");
+        assert_eq!(tpl.leaves.len(), 2, "two holes before baking");
+        let baked = bake_constant_leaves(&mut db, body, &tpl);
+        assert_eq!(
+            baked.leaves.len(),
+            1,
+            "the constant leaf baked out; only the runtime leaf stays a hole"
+        );
+        assert_eq!(
+            baked.leaves[0].path,
+            vec![0u32],
+            "the surviving hole is the runtime element `x` at index 0"
+        );
+    }
+
+    #[test]
     fn a_runtime_qty_over_int_at_reference_unit_templates_with_the_unit_baked() {
         // A RUNTIME Qty over an Int64 at the REFERENCE unit (scale 1/1) gets a value-form template whose
         // unit label is BAKED as a compile-time constant and whose ONE leaf hole is the erased inner scalar,

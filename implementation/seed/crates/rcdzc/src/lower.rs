@@ -15047,6 +15047,101 @@ pub fn runtime_value_form_template(
     })
 }
 
+/// A compile-time-constant leaf value recovered from an escaping return's core, for [`bake_constant_leaves`].
+enum ConstLeafVal {
+    /// A constant integer — its `IntValue` (sign + big-endian magnitude), ≤ 8 magnitude bytes (the fixed
+    /// Int-hole width); a wider magnitude does not fit the hole and is left runtime.
+    Int(crate::ast::IntValue),
+    /// A constant boolean.
+    Bool(bool),
+}
+
+/// Follow a runtime leaf's `path` (`arr-get` indices) down the escaping return's core `root` to the leaf's
+/// core node, and — when that node is a compile-time constant matching the hole's `kind` — return its value.
+/// The walk descends ONLY through literal `Tuple`/`Record` cores (the shapes a value-form template indexes);
+/// any other node (a runtime operand, a projection, a call, a `Let`, a non-literal compound) makes the path
+/// non-navigable → `None`, so the leaf stays a runtime hole. Record fields are visited in `BTreeMap` (sorted)
+/// order, matching the positional `arr-get` index the template records.
+fn resolve_const_leaf(
+    db: &mut Db,
+    root: StructId,
+    path: &[u32],
+    kind: LeafFill,
+) -> Option<ConstLeafVal> {
+    let mut cur = root;
+    for &idx in path {
+        cur = match core_of(db, cur) {
+            Core::Tuple { elems } => *elems.get(idx as usize)?,
+            Core::Record { fields } => *fields.values().nth(idx as usize)?,
+            _ => return None,
+        };
+    }
+    match (core_of(db, cur), kind) {
+        (Core::ConstInt(v), LeafFill::Int) if v.magnitude.len() <= 8 => Some(ConstLeafVal::Int(v)),
+        (Core::ConstBool(x), LeafFill::Bool) => Some(ConstLeafVal::Bool(x)),
+        _ => None,
+    }
+}
+
+/// Write a constant Int leaf into a value-form template's bytes at `offset`, byte-IDENTICALLY to the runtime
+/// hole-fill walker (`serialize.rs` `EscapeForm` encode body): 8 big-endian magnitude bytes right-aligned at
+/// `offset` (the template reserves an 8-byte, `len=8` magnitude — a non-minimal magnitude decodes fine,
+/// `BigInt::from_bytes_be` drops leading zeros), and for a NEGATIVE value the kind byte at `offset - 2` set to
+/// `3` (`KIND_INT_NEG_DEC`). A positive value keeps the placeholder's positive kind (untouched).
+fn write_int_leaf(bytes: &mut [u8], offset: usize, iv: &crate::ast::IntValue) {
+    for b in bytes.iter_mut().skip(offset).take(8) {
+        *b = 0;
+    }
+    let start = 8 - iv.magnitude.len();
+    for (i, &m) in iv.magnitude.iter().enumerate() {
+        bytes[offset + start + i] = m;
+    }
+    if iv.negative {
+        bytes[offset - 2] = 3; // KIND_INT_NEG_DEC
+    }
+}
+
+/// Write a constant Bool leaf's kind byte at `offset`, byte-identically to the runtime walker (`8` false /
+/// `9` true — the walker writes `8 + get-bool`).
+fn write_bool_leaf(bytes: &mut [u8], offset: usize, x: bool) {
+    bytes[offset] = 8 + x as u8;
+}
+
+/// §2d STATIC-DATA / pre-encode (Axis 2): given a value-form `template` for an escaping compound return and
+/// the return body's core `root`, BAKE every leaf whose value is a compile-time constant directly into the
+/// template bytes — the SAME byte write the runtime hole-fill walker performs — and DROP that leaf's runtime
+/// hole. A leaf whose core is runtime, or unreachable by a static `Tuple`/`Record` path (a non-literal
+/// compound return, a sum-payload leaf), stays a hole and the walker fills it per event as before. When EVERY
+/// leaf bakes, the returned template has ZERO holes = fully static: the escape walker copies it to the output
+/// with no heap walk and no per-event leaf reads (the per-event value-encode is gone for the constant parts).
+/// Byte-IDENTICAL to `template` when nothing bakes, so it is safe to run on every flat-compound escape. The
+/// walker consumes `.leaves` unchanged — fewer holes simply means fewer per-event writes.
+pub fn bake_constant_leaves(
+    db: &mut Db,
+    root: StructId,
+    template: &ValueFormTemplate,
+) -> ValueFormTemplate {
+    let mut bytes = template.bytes.clone();
+    let mut remaining: Vec<RuntimeLeaf> = Vec::new();
+    for leaf in &template.leaves {
+        // A sum-payload leaf is reached through the runtime sum rep (`sum-payload`), not a static
+        // `Tuple`/`Record` index — leave it runtime this slice.
+        if leaf.via_sum_payload {
+            remaining.push(leaf.clone());
+            continue;
+        }
+        match resolve_const_leaf(db, root, &leaf.path, leaf.kind) {
+            Some(ConstLeafVal::Int(iv)) => write_int_leaf(&mut bytes, leaf.offset, &iv),
+            Some(ConstLeafVal::Bool(x)) => write_bool_leaf(&mut bytes, leaf.offset, x),
+            None => remaining.push(leaf.clone()),
+        }
+    }
+    ValueFormTemplate {
+        bytes,
+        leaves: remaining,
+    }
+}
+
 /// The two STATIC halves of a runtime `Bytes` value form, for the looping `encode()` walker (L2b).
 /// The value form of `(: <bytes> Bytes)` is `PREFIX · <LEB len> · <n raw bytes> · SUFFIX`, where ONLY
 /// the leaf's length-LEB and payload are runtime — the prefix (header … the `KIND_BYTES` tag) and the
