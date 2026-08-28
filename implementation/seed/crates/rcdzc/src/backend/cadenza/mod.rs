@@ -157,6 +157,15 @@ struct BinderEnv {
     lets: HashMap<StructId, std::rc::Rc<str>>,
     payloads: HashMap<(StructId, Vec<crate::core::PathStep>), std::rc::Rc<str>>,
     next_payload: usize,
+    /// The program's lambda-lifted lambdas (a cheap `Rc` copy of `layout.lifted`), so a `Core::Closure {
+    /// code }` value resolves its lifted lambda by index and re-emits the surface `(fn (<params>) <body>)`.
+    /// Set once per definition in [`emit_def`]; `None` (treated as empty) for a closure-free program.
+    lifted: Option<std::rc::Rc<[crate::lower::LiftedLambda]>>,
+    /// The captures of the lifted lambda whose body is CURRENTLY being emitted: a `Core::Captured { index }`
+    /// read inside that body resolves `captures[index]` (the enclosing binding's binder occurrence) to its
+    /// surface name — the closure re-captures it LEXICALLY, so the surface is just that name. Saved/restored
+    /// around each `Core::Closure` body emit so a nested closure resolves its own captures.
+    current_captures: Option<std::rc::Rc<[StructId]>>,
 }
 
 /// The deterministic synthesized surface name for the `i`th kept `let` binding encountered in an emit
@@ -203,9 +212,13 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         }
     }
 
+    // The lambda-lifted lambdas, shared (by `Rc`) into each definition's binder environment so a
+    // `Core::Closure { code }` body resolves its lifted lambda by index. Empty for a closure-free program.
+    let lifted: std::rc::Rc<[crate::lower::LiftedLambda]> = layout.lifted.clone().into();
+
     // One `(def …)` per reachable definition, in layout order (a stable, target-neutral order).
     for &def in &layout.order {
-        root_children.push(emit_def(db, &mut b, def, &emitted)?);
+        root_children.push(emit_def(db, &mut b, def, &emitted, &lifted)?);
     }
 
     // Then the exports, so recompiling the emitted program reaches the SAME definition set (an export-
@@ -280,6 +293,7 @@ fn emit_def(
     b: &mut Builder,
     def: usize,
     emitted: &std::collections::HashSet<StructId>,
+    lifted: &std::rc::Rc<[crate::lower::LiftedLambda]>,
 ) -> Result<StructId, Reject> {
     let name = db.defs[def].name.clone();
     let body = db.defs[def].body.ok_or_else(|| {
@@ -323,8 +337,12 @@ fn emit_def(
         }
     }
     let sig = b.list(sig_children);
-    // A fresh binding environment per definition — a `let` / match arm in the body populates it.
-    let mut env = BinderEnv::default();
+    // A fresh binding environment per definition — a `let` / match arm in the body populates it; the
+    // program's lifted lambdas are shared in so a `Core::Closure` body can resolve its lifted lambda.
+    let mut env = BinderEnv {
+        lifted: Some(lifted.clone()),
+        ..BinderEnv::default()
+    };
     let body_node = emit_expr(db, b, body, None, &mut env, emitted)?;
     Ok(b.list(vec![def_head, sig, body_node]))
 }
@@ -1291,6 +1309,98 @@ fn emit_expr_viewed(
             let head = member_access(b, "Blake3", "of");
             let x = emit_expr(db, b, operand, None, env, emitted)?;
             Ok(b.list(vec![head, x]))
+        }
+        // A CLOSURE value — a lambda that was LAMBDA-LIFTED (`code` indexes `layout.lifted`, the captures made
+        // explicit). Re-emit the ORIGINAL surface `(fn ((: <p> <Ty>)…) <body>)`: the params come from the
+        // lifted lambda's `params` (name via `as_name`, type via `type_ast` — the same signature shape a
+        // `def` uses), and the body is the lifted body emitted with this lambda's captures in scope. A
+        // `Core::Captured` in that body re-emits the enclosing binder's LEXICAL NAME (below), so the
+        // reconstructed `(fn …)` re-captures the same bindings; re-lowering re-lifts them (value-eq — a
+        // re-lift may reorder, so byte-idempotence is not guaranteed, but the value is preserved). The node's
+        // own `captures` value-expressions are NOT needed — the lexical name suffices.
+        Core::Closure { code, .. } => {
+            let lifted = env
+                .lifted
+                .as_ref()
+                .and_then(|l| l.get(code))
+                .cloned()
+                .ok_or_else(|| {
+                    Reject::decline(
+                        "the Cadenza backend has no lifted lambda for a closure code".to_string(),
+                    )
+                })?;
+            let fn_head = b.name("fn");
+            // The param signature `((: p0 T0) (: p1 T1) …)` — mirrors `emit_def`'s (immutable `NameCtx`
+            // scope, no `&mut db`, so the name reads + `type_ast` compose). A param with no value-form type
+            // surface (a function/unsolved type) declines, exactly as a def parameter does.
+            let mut sig_children = Vec::with_capacity(lifted.params.len());
+            {
+                let ncx = db.name_ctx();
+                for (binder, ty) in lifted.params.iter() {
+                    let pname = db.ast.as_name(*binder).ok_or_else(|| {
+                        Reject::decline(
+                            "the Cadenza backend cannot recover a closure parameter name"
+                                .to_string(),
+                        )
+                    })?;
+                    let pname_node = b.name(pname);
+                    let ty_node = crate::lower::type_ast(b, ty, &ncx).ok_or_else(|| {
+                        Reject::decline(
+                            "the Cadenza backend does not yet lower a closure parameter type (no \
+                             value-form surface)"
+                                .to_string(),
+                        )
+                    })?;
+                    let colon = b.name(":");
+                    sig_children.push(b.list(vec![colon, pname_node, ty_node]));
+                }
+            }
+            let sig = b.list(sig_children);
+            // Emit the lifted body with THIS lambda's captures in scope (save/restore for nesting).
+            let saved = env.current_captures.take();
+            env.current_captures = Some(lifted.captures.clone().into());
+            let body_res = emit_expr(db, b, lifted.body, None, env, emitted);
+            env.current_captures = saved;
+            let body_node = body_res?;
+            Ok(b.list(vec![fn_head, sig, body_node]))
+        }
+        // A read of the k-th CAPTURED free variable inside a lifted closure body — re-emit the enclosing
+        // binding's LEXICAL surface name (`lifted.captures[index]` is that binding's binder occurrence). A
+        // captured PARAMETER resolves via `as_name`; a captured kept-`let` resolves via `env.lets`; anything
+        // else declines. Reached only inside the `Core::Closure` body that set `current_captures`.
+        Core::Captured { index, .. } => {
+            let caps = env.current_captures.clone().ok_or_else(|| {
+                Reject::decline(
+                    "the Cadenza backend reached a captured-variable read outside a closure body"
+                        .to_string(),
+                )
+            })?;
+            let binder = *caps.get(index).ok_or_else(|| {
+                Reject::decline(
+                    "the Cadenza backend captured-variable index is out of range".to_string(),
+                )
+            })?;
+            if let Some(nm) = db.ast.as_name(binder) {
+                Ok(b.name(nm))
+            } else if let Some(nm) = env.lets.get(&binder) {
+                Ok(b.name(nm.clone()))
+            } else {
+                Err(Reject::decline(
+                    "the Cadenza backend cannot resolve a captured variable to an in-scope name"
+                        .to_string(),
+                ))
+            }
+        }
+        // Apply a runtime CLOSURE value at full arity — `(<closure> <arg>…)`. The head emits to a `(fn …)`
+        // value or a binder holding one; recompile re-selects the runtime `call_indirect` path.
+        Core::CallClosure { closure, args } => {
+            let head = emit_expr(db, b, closure, None, env, emitted)?;
+            let mut children = Vec::with_capacity(1 + args.len());
+            children.push(head);
+            for &a in args.iter() {
+                children.push(emit_expr(db, b, a, None, env, emitted)?);
+            }
+            Ok(b.list(children))
         }
         // STRING OPERATIONS — member-access ops `((. String <member>) <op>…)`. `String.at`/`scalar-at`
         // share ONE `Core::StrAt` (both walk the scalar buffer), distinguished by the RESULT's `Option`
