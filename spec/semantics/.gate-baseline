@@ -477,6 +477,7 @@ pass	TWO closures capture DIFFERENT generations of one shadowed name and each se
 pass	TWO closures capture one let-bound perform result — the effect fires ONCE
 pass	TWO closures capture the SAME heap map and the map outlives both applications
 pass	TWO closures capturing one let-bound host call in a HELPER def share ONE firing
+pass	TWO closures capturing one let-bound host call in a HELPER def's RECORD share ONE firing
 pass	TWO closures capturing one let-bound host call share ONE firing (in the exported def)
 pass	TWO closures escaping one handle carry DISTINCT captured state reads
 pass	TWO closures minted by the same op at DIFFERENT states each keep their own snapshot
@@ -5813,6 +5814,9 @@ pass	cdf2v decode-of-encode navigation VALUE twin under Ast.encode demand
 pass	cdf3 function-typed const param applied in const recursion under (const ...) surfaces the taken trap
 pass	cdr1 a CIDER press splitting juice from pomace — pressing yields two-thirds of the hopper as juice (integer) with the REMAINDER going to pomace and the hopper emptying (a dry press answers nine-hundred with the pomace's low digit touching nothing), loading adds apples, the read packs juice hopper and pomace, and the seed's first pressing yields four-to-one on the full hopper against one-to-one on the meagre one with the split ratios diverging every round
 pass	cds1 a COUNTDOWN alarm with snooze — tick decrements answering the remaining time until it FIRES at zero (answering a negated ten-plus-fire-count and auto-reloading the seed interval), snooze adds slack, and the shorter interval fires MID-STREAM where the longer one fires on the very last tick
+pass	cdzw1 the cadenza backend round-trip preserves the SIGN of negative zero
+pass	cdzw2 the cadenza backend round-trip preserves Int64.min
+pass	cdzw3 the cadenza backend round-trip preserves the minimum positive subnormal Float64
 pass	ce01 checked addition over a RUNTIME operand yields Some when it fits
 pass	ce02 checked addition over a RUNTIME operand yields None on overflow
 pass	ce03 Record.merge of two RUNTIME-built records projects the merged field
@@ -9085,4 +9089,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	TWO closures capturing one let-bound host call in a HELPER def's RECORD share ONE firing
