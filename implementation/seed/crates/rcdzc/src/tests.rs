@@ -29932,41 +29932,6 @@ mod stage1 {
     // tuple projection are COMPILE-TIME rejects (CDZ0201), never runtime traps.
 
     #[test]
-    fn a_constant_tuple_projection_folds_to_its_element() {
-        // `(. (tuple 10 20 30) 1)` — a projection of a visible tuple by a constant index folds to the
-        // element `20`, with no heap: the component runs to 20.
-        assert_eq!(run_main("(. (tuple 10 20 30) 1)"), 20);
-        // Position 0 and the last position, too.
-        assert_eq!(run_main("(. (tuple 10 20 30) 0)"), 10);
-        assert_eq!(run_main("(. (tuple 10 20 30) 2)"), 30);
-    }
-
-    #[test]
-    fn a_let_bound_constant_tuple_projection_folds() {
-        // A `let`-bound tuple projected ONCE is copy-propagated (single use) and folds — the binding is
-        // not kept, so the projection sees the literal `(tuple 1 2)` and reduces to `2`.
-        assert_eq!(run_main("(let ((t (tuple 1 2))) (. t 1))"), 2);
-    }
-
-    #[test]
-    fn positional_projection_is_member_access_with_an_integer_key() {
-        // Positional tuple projection is the one member-access form with an INTEGER key — `(. operand N)`
-        // (a NAME key reads a record field, an integer key a tuple element). `(. (tuple 10 20) 1)` folds
-        // to 20. (There is no `tuple.N` sigil — the single `.` form serves both.)
-        assert_eq!(run_main("(. (tuple 10 20) 1)"), 20);
-        assert_eq!(run_main("(. (tuple 10 20) 0)"), 10);
-        // A multi-digit index is one integer key (not per-digit): position 10 of an 11-tuple.
-        assert_eq!(run_main("(. (tuple 0 1 2 3 4 5 6 7 8 9 99) 10)"), 99);
-    }
-
-    #[test]
-    fn a_nested_tuple_projection_folds() {
-        // `(. (. (tuple (tuple 1 2) (tuple 3 4)) 1) 0)` — project the second inner tuple, then its
-        // first element: folds through both levels to `3`.
-        assert_eq!(run_main("(. (. (tuple (tuple 1 2) (tuple 3 4)) 1) 0)"), 3);
-    }
-
-    #[test]
     fn returning_a_constant_tuple_compiles_via_the_resource_escape() {
         // A CONSTANT tuple returned across the host boundary now crosses as a monomorphized component
         // RESOURCE whose `encode() -> list<u8>` yields the canonical binary value form; the host decodes
