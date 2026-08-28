@@ -2659,6 +2659,43 @@ fn a_do_rooted_reducer_synthesizes_its_in_source_world_import_effects() {
     }
 }
 
+/// WIT enum self-declaration, sub-slice 2 (resolve/infer half): an IMPOSED in-source world imports an op
+/// returning an ANONYMOUS `enum { active, closed }` the guest does NOT mirror. Sub-slice 1
+/// (`synthesize_missing_enum_type_decls`) injects the nominal `(type Wit… Active Closed)`; per the operator
+/// ruling the guest references the NAMEABLE case constructors (`Active`/`Closed`) — NOT the internal synth
+/// type name — to match the imported enum result. This pins that the bare constructors RESOLVE and the match
+/// TYPE-CHECKS (the front-end half; the run-level boundary crossing is emit, v-rb's Direction A).
+#[test]
+fn a_no_mirror_world_import_enum_result_is_matched_via_synthesized_nameable_constructors() {
+    use crate::db::Db;
+    let src = "(module m \
+                 (world reducer (import lifecycle (member status (func (result (\"enum\" active closed)))))) \
+                 (def (apply (: e Bytes)) \
+                   (host (lifecycle) \
+                     (match ((. lifecycle status)) ((Active) 1) ((Closed) 2)))) \
+                 (export apply))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    let bad: Vec<_> = diags
+        .iter()
+        .filter(|d| {
+            let m = &d.message;
+            m.contains("unbound")
+                || m.contains("Active")
+                || m.contains("Closed")
+                || m.contains("no field")
+                || m.contains("requires a record")
+                || m.contains("no machine representation")
+        })
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "a no-mirror imported enum result matches via the synthesized nameable constructors Active/Closed \
+         with no unbound/type error (sub-slice 2 resolve/infer half): {bad:?}"
+    );
+}
+
 /// performs any import, zero per-interface arms, no mirrored effect decl.
 #[test]
 fn a_no_redeclare_world_import_perform_resolves_via_the_injected_effect() {
