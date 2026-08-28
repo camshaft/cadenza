@@ -2585,3 +2585,36 @@
                    (match b ((bin (u64 n)) (Int64.of (% n 1000))) (_ -1)))) (export main)))
   (call main (: 128 UInt8)) (output (: 809 Int64))
   (call main (: 64 UInt8))  (output (: 905 Int64)))
+
+; ── breaker batch 574: bin patterns × DEEP ropes (the 50-concat bdr shape destructured). bmr1 =
+; segments read exactly ACROSS rope seams (the u16 spans the 2-byte base, the u8 crosses into the
+; concat chain, the rest binds the remainder) and everything reclaims. bmr2 = fifty matches leak
+; ZERO per-match (census 1 = the borrowed-param rope, the fixed mts1 class) — the (bytes rest)
+; binding reclaims clean where Bytes.slice leaks its dup (the slc family): the CONTRAST between
+; the two remainder-taking mechanisms.
+
+(case "bmr1 bin segments read exactly across the seams of a 50-concat rope and reclaim"
+  (input (do
+(def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 7))) (- k 1))))
+(def (main (: n Int64))
+  (let ((r (grow (Bytes.of (list 1 2)) 50)))
+    (match r
+      ((bin (u16 head) (u8 first7) (bytes rest)) (+ (* 100 head) (+ first7 (Bytes.len rest))))
+      (_ -1))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 25856 Int64))
+  (live-objects 0))
+
+(case "bmr2 fifty bin matches over a deep rope leak zero per-match (the rest binding reclaims where slicing leaks)"
+  (input (do
+(def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 7))) (- k 1))))
+(def (frames (: r Bytes) (: k Int64))
+  (if (= k 0) 0
+      (+ (match r ((bin (u16 head) (bytes rest)) (+ head (Bytes.len rest))) (_ -1))
+         (frames r (- k 1)))))
+(def (main (: n Int64)) (frames (grow (Bytes.of (list 1 2)) 50) n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 15400 Int64))
+  (live-objects known-leak 1))
