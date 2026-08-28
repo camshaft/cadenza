@@ -202,6 +202,12 @@ pub fn ty_natural_wit(t: &Ty) -> Option<WitType> {
         Ty::Bool => WitType::Bool,
         Ty::Char => WitType::Char,
         Ty::String => WitType::String,
+        // `unit` is a first-class WIT type — the exact inverse of [`wit_type_to_ty`]'s `WitType::Unit →
+        // Ty::Unit`. The imposed-world/host boundary handles a no-value return upstream, but a SYNTHESIZED
+        // world whose op result is `Unit` (a guest annotation drives the decl) needs this outbound arm to
+        // self-declare `unit` (WIT-shape-coverage matrix v1, v-rb-confirmed: emit owns no-value returns,
+        // synth owns the declared-unit result).
+        Ty::Unit => WitType::Unit,
         // A runtime Bytes value IS a byte-list at the boundary.
         Ty::Bytes => WitType::List(Box::new(WitType::U8)),
         Ty::Int(it) => match (it.ground_signed(), it.ground_width()) {
@@ -246,7 +252,6 @@ pub fn ty_natural_wit(t: &Ty) -> Option<WitType> {
         | Ty::BigInt
         | Ty::Rational
         | Ty::Symbol
-        | Ty::Unit
         | Ty::Qty { .. }
         | Ty::Fn(_, _)
         | Ty::Type
@@ -1389,6 +1394,22 @@ mod tests {
                 ("family".to_string(), WitType::String),
                 ("version".to_string(), WitType::U32),
             ]))
+        );
+    }
+
+    #[test]
+    fn natural_wit_of_unit_is_wit_unit_and_round_trips() {
+        // The unit OUTBOUND arm (WIT-shape-coverage matrix v1): a synthesized-world op result of `Unit`
+        // self-declares `unit`, the exact inverse of `wit_type_to_ty`'s `WitType::Unit → Ty::Unit`.
+        // Previously `Ty::Unit` fell into the None group (an asymmetry: inbound `unit` mapped, outbound
+        // did not). Pin both the arm and the Ty→WIT→Ty round-trip so the inverse can't silently drift.
+        assert_eq!(ty_natural_wit(&Ty::Unit), Some(WitType::Unit));
+        let db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        assert_eq!(
+            wit_type_to_ty(&db, &ty_natural_wit(&Ty::Unit).unwrap()),
+            Some(Ty::Unit)
         );
     }
 
