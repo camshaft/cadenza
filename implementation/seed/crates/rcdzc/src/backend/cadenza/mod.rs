@@ -526,7 +526,25 @@ fn emit_expr_viewed(
             let text = b.atom_leaf(Leaf::Str(s));
             Ok(b.list(vec![head, text]))
         }
-        Core::ConstFloat(d) if matches!(eff_ty, Ty::Float(_)) => Ok(b.atom_leaf(Leaf::Float(d))),
+        // A float constant. A bare decimal leaf grounds to the DEFAULT `Float64` on recompile, so a
+        // `Float32` constant (or any non-64 width) must be ASCRIBED with its width — otherwise the value
+        // CHANGES (`0.1` at `Float32` = `0.10000000149…` ≠ `0.1` at `Float64`, a value miscompile). A
+        // `Float64` const emits the bare literal (the default width needs no ascription).
+        Core::ConstFloat(d) if matches!(eff_ty, Ty::Float(_)) => {
+            let width = match &eff_ty {
+                Ty::Float(ft) => ft.ground_width(),
+                _ => 64,
+            };
+            let lit = b.atom_leaf(Leaf::Float(d));
+            if width == 64 {
+                Ok(lit)
+            } else {
+                let tyname = eff_ty.render_name(&db.name_ctx());
+                let colon = b.name(":");
+                let ty_node = b.name(tyname.as_str());
+                Ok(b.list(vec![colon, lit, ty_node]))
+            }
+        }
         // An exact RATIONAL constant — its value-form `num/den` is not valid expression syntax, so
         // re-emit the CONSTRUCTOR `(Rational.of <num> <den>)` over the normalized pair. `Rational.of`
         // takes two `Int64` arguments, so a numerator/denominator BEYOND `Int64` cannot be expressed this
