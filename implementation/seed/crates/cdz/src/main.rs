@@ -27,8 +27,9 @@
 //! separate `cdz-run` bin the user must also install. The standalone `cdz-run` bin remains as a thin
 //! shim over the same `cdz_run::cli` code (so existing call sites keep working); both share one impl.
 
-use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use clap::{CommandFactory, Parser, Subcommand};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cadenza_syntax::cli as syntax_cli;
@@ -497,6 +498,17 @@ fn init_tracing() {
 
 fn main() -> ExitCode {
     init_tracing();
+    // git-style plugin dispatch (the thin-`cdz` seam, `design/DESIGN-cdz-plugin-dispatch.md`): if the
+    // first positional token names a subcommand `cdz` does NOT know AND a `cdz-<name>` binary resolves,
+    // forward to it and propagate its exit code — the generalization of the existing `cdz smith`/`cdz cad`
+    // passthroughs to EVERY tool on the PATH. It is a FALLBACK, tried before clap parses: a KNOWN clap
+    // subcommand always takes precedence (builtin-first, like git), so this is behavior-neutral until a
+    // subcommand's in-process arm is removed (then `cdz <name>` naturally falls through to its external
+    // `cdz-<name>` plugin). An unknown token with no resolvable plugin falls through to clap, which prints
+    // its standard "unrecognized subcommand" error unchanged.
+    if let Some(code) = try_plugin_dispatch() {
+        return code;
+    }
     let cli = Cli::parse();
     match cli.command {
         // Front-end commands defer to the syntax CLI, reconstructing its command enum (its arg structs
@@ -3918,6 +3930,106 @@ fn locate_sibling_bin(stem: &str) -> Option<PathBuf> {
         .ok()
         .and_then(|p| p.parent().map(|dir| dir.join(bin_name(stem))))
         .filter(|p| p.exists())
+}
+
+// ── git-style plugin dispatch (thin-`cdz` seam) ──────────────────────────────────────────────────────
+
+/// The plugin-dispatch FALLBACK, tried before clap parses (see the call in [`main`]). Returns
+/// `Some(exit_code)` when the invocation was forwarded to an external `cdz-<name>` plugin, or `None` to
+/// let clap handle it (no first token, a flag, a KNOWN subcommand, or an unknown token with no resolvable
+/// plugin). Reads argv directly (`std::env::args`) because the decision precedes clap parsing.
+fn try_plugin_dispatch() -> Option<ExitCode> {
+    let args: Vec<String> = std::env::args().collect();
+    let sub = args.get(1)?;
+    // Never intercept a flag (`--help`, `-V`, `--version`) or clap's own `help` subcommand — those are
+    // `cdz`'s to handle. Only a bare subcommand token is a plugin-dispatch candidate.
+    if sub.starts_with('-') || sub == "help" {
+        return None;
+    }
+    // Builtin-first (git's rule): a KNOWN clap subcommand (or alias) always runs in-process, so this
+    // fallback is behavior-neutral for every subcommand `cdz` still owns.
+    if is_known_subcommand(sub) {
+        return None;
+    }
+    // Unknown token: forward to `cdz-<sub>` if one resolves, else fall through to clap's error.
+    let plugin = locate_plugin(sub)?;
+    Some(passthrough_status(
+        &plugin,
+        &args[2..],
+        &format!("cdz-{sub}"),
+    ))
+}
+
+/// Is `name` a subcommand (or alias) `cdz`'s clap tree knows? Drives the builtin-first precedence in
+/// [`try_plugin_dispatch`]. Enumerated from the derived [`Cli`] command so it can never drift from the
+/// actual subcommand set.
+fn is_known_subcommand(name: &str) -> bool {
+    Cli::command()
+        .get_subcommands()
+        .any(|c| c.get_name() == name || c.get_all_aliases().any(|a| a == name))
+}
+
+/// The `$CDZ_<NAME>_BIN` override key for a plugin — the same explicit-path injection convention the
+/// compile delegate uses (`$CDZ_COMPILE_BIN`), so nix can hand `cdz` the exact content-addressed plugin.
+/// `<NAME>` is the subcommand upper-cased with every non-alphanumeric byte mapped to `_` (so `run-rust`
+/// → `CDZ_RUN_RUST_BIN`).
+fn plugin_env_key(name: &str) -> String {
+    let mut key = String::from("CDZ_");
+    for c in name.chars() {
+        key.push(if c.is_ascii_alphanumeric() {
+            c.to_ascii_uppercase()
+        } else {
+            '_'
+        });
+    }
+    key.push_str("_BIN");
+    key
+}
+
+/// Resolve an external `cdz-<name>` plugin binary. Resolution order (mirrors the delegate + sibling
+/// convention): **`$CDZ_<NAME>_BIN` (explicit path) → sibling (`current_exe().parent()/cdz-<name>`) →
+/// `$PATH`.** `None` if unresolved (the caller then falls through to clap). Reads the process env/PATH and
+/// hands the pure decision to [`resolve_plugin`] so the priority logic is unit-testable without touching
+/// global state.
+fn locate_plugin(name: &str) -> Option<PathBuf> {
+    let env_val = std::env::var_os(plugin_env_key(name));
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    resolve_plugin(name, env_val, exe_dir.as_deref(), &path_dirs)
+}
+
+/// The pure plugin-resolution decision (env override → sibling dir → PATH dirs), split out so the
+/// priority order is testable with tempdir fixtures and no process-global env mutation.
+fn resolve_plugin(
+    name: &str,
+    env_val: Option<OsString>,
+    exe_dir: Option<&Path>,
+    path_dirs: &[PathBuf],
+) -> Option<PathBuf> {
+    // 1. Explicit `$CDZ_<NAME>_BIN` path (honored only if it points at a real file).
+    if let Some(v) = env_val {
+        let p = PathBuf::from(v);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let stem = bin_name(&format!("cdz-{name}"));
+    // 2. A `cdz-<name>` beside this `cdz` (the co-built location).
+    if let Some(dir) = exe_dir {
+        let cand = dir.join(&stem);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    // 3. First `cdz-<name>` on `$PATH`.
+    path_dirs
+        .iter()
+        .map(|d| d.join(&stem))
+        .find(|p| p.is_file())
 }
 
 /// `cdz smith <args…>` (alias `cdz fuzz`) — a PASSTHROUGH to the standalone `cdz-smith` fuzzer/differential
@@ -10832,5 +10944,89 @@ mod tests {
             &mut v,
         );
         assert_eq!(v, strs(&["2", "8"]));
+    }
+
+    // ── git-style plugin dispatch (thin-`cdz` seam) ──────────────────────────────────────────────────
+
+    #[test]
+    fn plugin_env_key_upper_snakes_the_subcommand() {
+        // The `$CDZ_<NAME>_BIN` override key: upper-case, non-alphanumeric → `_`, `_BIN` suffix.
+        assert_eq!(plugin_env_key("run"), "CDZ_RUN_BIN");
+        assert_eq!(plugin_env_key("run-rust"), "CDZ_RUN_RUST_BIN");
+        assert_eq!(plugin_env_key("Corpus"), "CDZ_CORPUS_BIN");
+    }
+
+    #[test]
+    fn is_known_subcommand_recognizes_builtins_but_not_plugins() {
+        // Builtin-first precedence: the in-process subcommands (+ their aliases) are known; an arbitrary
+        // plugin name is not, so it is eligible for external `cdz-<name>` dispatch. Enumerated from the
+        // derived clap tree so this can't drift from the actual subcommand set.
+        assert!(is_known_subcommand("compile"));
+        assert!(is_known_subcommand("run"));
+        assert!(is_known_subcommand("convert"));
+        assert!(!is_known_subcommand("frobnicate"));
+        assert!(!is_known_subcommand("run-quux"));
+    }
+
+    #[test]
+    fn resolve_plugin_honors_env_then_sibling_then_path() {
+        // A tempdir sandbox with a fake `cdz-frob` in three candidate locations, exercising the
+        // env → sibling → PATH priority WITHOUT mutating process-global env (the pure `resolve_plugin`
+        // takes the env value / exe-dir / PATH dirs explicitly).
+        let root = std::env::temp_dir().join(format!("cdz-plugin-resolve-{}", std::process::id()));
+        let _guard = RemoveOnDrop::dir(root.clone());
+        let env_dir = root.join("env");
+        let sib_dir = root.join("sib");
+        let path_dir = root.join("path");
+        for d in [&env_dir, &sib_dir, &path_dir] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let touch = |dir: &Path, stem: &str| {
+            let p = dir.join(bin_name(stem));
+            std::fs::write(&p, b"#!/bin/sh\n").unwrap();
+            p
+        };
+        let env_bin = touch(&env_dir, "cdz-frob");
+        let sib_bin = touch(&sib_dir, "cdz-frob");
+        let _path_bin = touch(&path_dir, "cdz-frob");
+        let path_dirs = vec![path_dir.clone()];
+
+        // 1. Env override wins over everything (points at a real file).
+        assert_eq!(
+            resolve_plugin(
+                "frob",
+                Some(env_bin.clone().into_os_string()),
+                Some(&sib_dir),
+                &path_dirs
+            ),
+            Some(env_bin.clone())
+        );
+        // 2. A non-existent env override is IGNORED → falls to the sibling dir.
+        assert_eq!(
+            resolve_plugin(
+                "frob",
+                Some(OsString::from("/no/such/cdz-frob")),
+                Some(&sib_dir),
+                &path_dirs
+            ),
+            Some(sib_bin.clone())
+        );
+        // 3. No env, no sibling match → PATH lookup.
+        let empty_dir = root.join("empty");
+        std::fs::create_dir_all(&empty_dir).unwrap();
+        assert_eq!(
+            resolve_plugin("frob", None, Some(&empty_dir), &path_dirs),
+            Some(path_dir.join(bin_name("cdz-frob")))
+        );
+        // 4. Nothing resolves → None (caller falls through to clap's error).
+        assert_eq!(
+            resolve_plugin(
+                "frob",
+                None,
+                Some(&empty_dir),
+                std::slice::from_ref(&empty_dir)
+            ),
+            None
+        );
     }
 }
