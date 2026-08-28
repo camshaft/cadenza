@@ -136,7 +136,7 @@
             (effect Fresh (op next (-> Int64)))
             (def (main)
               (handle Fresh 0 ((next () s (resume s (+ s 1))))
-                (let ((r ("record" (= b (Fresh.next)) (= a (Fresh.next))))) (- (. r a) (. r b))))) (export main)))
+                (let ((r #record((= b (Fresh.next)) (= a (Fresh.next))))) (- (. r a) (. r b))))) (export main)))
   (output (: 1 Int64)))
 
 (case "performs in the VALUES of a MAP constructor thread and the entry reads back correctly"
@@ -154,7 +154,7 @@
             (effect Fresh (op next (-> Int64)))
             (def (main)
               (handle Fresh 0 ((next () s (resume s (+ s 1))))
-                (let ((m ("map" (= 10 (Fresh.next)) (= 20 (Fresh.next)))))
+                (let ((m #map((= 10 (Fresh.next)) (= 20 (Fresh.next)))))
                   (match (Map.lookup m 20) ((Some v) v) (None 99))))) (export main)))
   (output (: 1 Int64)))
 
