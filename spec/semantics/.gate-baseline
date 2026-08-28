@@ -1,6 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
-fail	hcz1 dropping a closure whose body RETURNED its captured TUPLE crashes (double-release; tracked known-FAIL)
-fail	hcz2 dropping a closure whose body RETURNED its captured LIST crashes (double-release; tracked known-FAIL)
+pass	hcz1 dropping a closure whose body RETURNED its captured TUPLE reclaims cleanly (read-site dup balances the env-cell drop)
+pass	hcz2 dropping a closure whose body RETURNED its captured LIST reclaims cleanly (read-site dup balances the env-cell drop)
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth

@@ -5709,11 +5709,18 @@
 ; tuple in the body; effects-free — the chr1 ICE's second face), tracked known-FAIL until the
 ; closure-conversion slot fix lands (see issues/BUG-captured-tuple-projection…).
 
+; hcp1 is hcz1's SAME program minus the (drop) — the capture-escape read-site dup (hcz fix,
+; select.rs collect_captured_escape_dup_sites) fires here too (a compound capture returned once),
+; giving the returned tuple an independent ref. With NO drop the env cell is never reclaimed, so it
+; retains that ref → the tuple leaks alongside the cell: known-leak 1 → 2. This is the CORRECT
+; ownership accounting (before the dup the leaked cell held a DANGLING ref to the host-freed tuple);
+; the same dup makes hcz1 (the (drop) twin) reclaim to 0. The compiler cannot condition the dup on a
+; runtime drop the guest code does not encode, so the escape dup is unconditional (leak-beats-UAF).
 (case "hcp1 a captured tuple returned WHOLE from a host-called closure works (projection is the ICE, not the capture)"
   (input (do (def (f (: n Int64)) (let ((a (tuple n 7))) (fn ((: q Int64)) a))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (output (: (tuple 1 7) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak 2))
 
 (case "hcp2 a closure capturing an IMMORTAL 33-trie plus a runtime scalar crosses and reads through the immortal"
   (input (do (def (reader (: n Int64)) (let ((c (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (fn ((: i Int64)) (+ n (match (List.at c i) ((Option.Some v) v) ((Option.None) -1)))))) (export reader)))
@@ -5740,11 +5747,14 @@
   (output (: 6 Int64))
   (live-objects known-leak 3))
 
-; ── breaker batch 567: drop-cascade fences + the capture-escape double-release crash (see
+; ── breaker batch 567: drop-cascade fences + the capture-escape double-release (see
 ; issues/BUG-closure-drop-after-capture-escape-double-release-silent-abort). hcd1/hcd2 pin the
 ; CORRECT cascade: dropping the handle reclaims mortal captures and no-ops immortal ones. hcz1/
-; hcz2 pin the crash faces as tracked known-FAIL (a body that RETURNED its capture + (drop) —
-; double-release, silent abort); they flip to pass with 0-census when the ownership fix lands.
+; hcz2 pin the ESCAPE-then-drop face — a body that RETURNED its captured compound + (drop). Was a
+; double-release (silent abort); FIXED by the read-site capture dup (a compound capture read once +
+; escaping dup's at its Core::Captured read so the returned ref is independent of the env-cell drop
+; — select.rs collect_captured_escape_dup_sites). Now pass with 0-census. (A MULTI-read escaping
+; compound capture is a tracked residual — needs per-occurrence marking; not yet exercised.)
 
 (case "hcd1 dropping a closure whose capture is a runtime-BUILT list cascades the reclaim"
   (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
@@ -5761,14 +5771,14 @@
   (output (: 106 Int64))
   (live-objects 0))
 
-(case "hcz1 dropping a closure whose body RETURNED its captured TUPLE crashes (double-release; tracked known-FAIL)"
+(case "hcz1 dropping a closure whose body RETURNED its captured TUPLE reclaims cleanly (read-site dup balances the env-cell drop)"
   (input (do (def (f (: n Int64)) (let ((a (tuple n 7))) (fn ((: q Int64)) a))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (drop)
   (output (: (tuple 1 7) (Tuple Int64 Int64)))
   (live-objects 0))
 
-(case "hcz2 dropping a closure whose body RETURNED its captured LIST crashes (double-release; tracked known-FAIL)"
+(case "hcz2 dropping a closure whose body RETURNED its captured LIST reclaims cleanly (read-site dup balances the env-cell drop)"
   (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
              (def (h (: n Int64)) (let ((xs (bld n))) (fn ((: q Int64)) xs))) (export h)))
   (call h (: 3 Int64) (: 5 Int64))
