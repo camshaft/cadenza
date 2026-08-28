@@ -11749,3 +11749,19 @@
         normalization in the scalar codec.")
   (input (do (def (v) 5e-324) (export v)))
   (call v) (output (: 5e-324 Float64)))
+
+; ── breaker: cadenza-backend B1b/B2 round-trip witnesses (#4786 — operators/control/let over params) ──
+(case "cdzw4 the cadenza backend round-trip keeps float division float (not int truncation) despite the shared surface operator"
+  (doc "#4786's Prim→operator reverse-map emits float FDiv as the SAME surface `/` as integer Div; the round-
+        trip must recover FLOAT division from the Float64 param type. `(/ 5.0 2.0)` = 2.5 through the cadenza
+        hop, NOT the integer-truncated 2 an int/float confusion would produce — the sharpest shared-operator fence.")
+  (input (do (def (main (: x Float64)) (/ x 2.0)) (export main)))
+  (call main (: 5.0 Float64)) (output (: 2.5 Float64)))
+(case "cdzw5 the cadenza backend round-trip preserves a float comparison over a parameter"
+  (doc "FLt reverse-maps to the shared `<`; the round-trip recovers the float comparison from the param type.")
+  (input (do (def (main (: x Float64)) (if (< x 2.0) 1 0)) (export main)))
+  (call main (: 1.5 Float64)) (output (: 1 Int64)))
+(case "cdzw6 the cadenza backend round-trip preserves a let-binding and an if over an integer parameter"
+  (doc "B2 let + B1b if/control: `(let ((y (* x 2))) (if (> y 0) (+ y 1) (- 0 y)))` round-trips value-equal.")
+  (input (do (def (main (: x Int64)) (let ((y (* x 2))) (if (> y 0) (+ y 1) (- 0 y)))) (export main)))
+  (call main (: 3 Int64)) (output (: 7 Int64)))
