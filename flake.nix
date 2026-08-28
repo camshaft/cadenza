@@ -4573,10 +4573,13 @@
               text = ''
                 export CDZ_COMPILE_BIN="''${CDZ_COMPILE_BIN:-${cdzCompile}/bin/cdz-compile}"
                 export CDZ_STORE="''${CDZ_STORE:-${componentStore}}"
-                # CDZ_RUN_BIN: PRE-WIRED INERT (v-cdz-crate-split) — today `cdz run` runs in-process + ignores
-                # it (no-op); becomes live (delegate `cdz run` -> cdz-run binary) when their forward lands, no
-                # flake-day. Caller override honored via :- , exactly like CDZ_COMPILE_BIN/CDZ_STORE above.
+                # CDZ_RUN_BIN: LIVE (v-cdz-crate-split #5123 — `cdz run` direct-component arm now forwards to
+                # the cdz-run binary). Caller override honored via :- , exactly like CDZ_COMPILE_BIN/CDZ_STORE.
                 export CDZ_RUN_BIN="''${CDZ_RUN_BIN:-${cdzRun}/bin/cdz-run}"
+                # CDZ_RUST_RUN_BIN: PRE-WIRED INERT (v-cdz-crate-split) — `cdz run-rust` runs in-process today
+                # + ignores it (no-op); becomes live when their run-rust forward lands, no flag-day. Points at
+                # cdzRustRun (the cdz-rust-run binary the corpus rust exec uses). Resolution env->sibling->PATH.
+                export CDZ_RUST_RUN_BIN="''${CDZ_RUST_RUN_BIN:-${cdzRustRun}/bin/cdz-rust-run}"
                 exec "${seedCompiler}/bin/cdz" "$@"
               '';
             };
