@@ -33,15 +33,15 @@
   (doc    "Witnesses collections-and-text.md #A Set Is A Collection Of Unique Elements: `(Set.of (list
            1 2 3))` is the set {1, 2, 3}, and its canonical written form is `(Set.of (list 1 2 3))`
            with the elements in their canonical (sorted) order. A set of Int64 has type `(Set Int64)`.")
-  (input  (Set.of (list 1 2 3)))
-  (output (: (Set.of (list 1 2 3)) (Set Int64))))
+  (input  #set(1 2 3))
+  (output (: #set(1 2 3) (Set Int64))))
 
 (case "a set collapses a duplicate element"
   (doc    "Witnesses collections-and-text.md #A Set Is A Collection Of Unique Elements (2nd sentence: a
            set contains each element at most once): `(Set.of (list 1 2 2 3))` names 2 twice, but the set
            holds it once — it equals `(Set.of (list 1 2 3))`. Pins that construction deduplicates rather
            than building a multiset. MUST be true.")
-  (input  (= (Set.of (list 1 2 2 3)) (Set.of (list 1 2 3))))
+  (input  (= #set(1 2 2 3) #set(1 2 3)))
   (output (: true Bool)))
 
 (case "a set collapses a duplicate STRING element (a non-int scalar key path)"
@@ -49,7 +49,7 @@
            the non-int scalar key path: `(Set.of (list \"a\" \"b\" \"a\"))` names \"a\" twice but the set
            holds it once — it equals `(Set.of (list \"a\" \"b\"))`. Pins that construction deduplicates by
            value for a String (scalar-key) element, not only for Int64. MUST be true.")
-  (input  (= (Set.of (list "a" "b" "a")) (Set.of (list "a" "b"))))
+  (input  (= #set("a" "b" "a") #set("a" "b")))
   (output (: true Bool)))
 
 (case "set equality is independent of the order elements are written"
@@ -58,7 +58,7 @@
            `(Set.of (list 3 1 2))` and `(Set.of (list 1 2 3))` contain the same elements, so they are
            EQUAL regardless of the written order — the set analogue of order-independent map equality.
            Pins that set `=` compares element SETS, not positional lists. MUST be true.")
-  (input  (= (Set.of (list 3 1 2)) (Set.of (list 1 2 3))))
+  (input  (= #set(3 1 2) #set(1 2 3)))
   (output (: true Bool)))
 
 (case "membership of a present element is true"
@@ -66,7 +66,7 @@
            3)) 2)` tests whether 2 is in the set — it is, so the total predicate yields true (a Bool,
            never a trap and never an Option). The membership companion of a map lookup, but a set's
            membership is a plain Bool because there is no associated value to return.")
-  (input  (Set.contains (Set.of (list 1 2 3)) 2))
+  (input  (Set.contains #set(1 2 3) 2))
   (output (: true Bool)))
 
 ; The dedup/membership cases above use SCALAR (Int64) elements. A Set element may be a COMPOUND value —
@@ -84,7 +84,7 @@
            = 210. Pins compound-element dedup + order-sensitive compound membership.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (let ((s (Set.of (list (tuple a 1) (tuple b 2) (tuple a 1)))))
+              (let ((s #set((tuple a 1) (tuple b 2) (tuple a 1))))
                 (+ (* 100 (Set.len s))
                    (+ (* 10 (if (Set.contains s (tuple a 1)) 1 0))
                       (if (Set.contains s (tuple 1 a)) 1 0)))))
@@ -100,7 +100,7 @@
            tuple case.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (Set.len (Set.of (list (list a b) (list b a) (list a b)))))
+              (Set.len #set((list a b) (list b a) (list a b))))
             (export main)))
   (call main (: 3 Int64) (: 8 Int64)) (output (: 2 Int64))
   (call main (: 5 Int64) (: 5 Int64)) (output (: 1 Int64)))
@@ -118,7 +118,7 @@
            independence a tuple element cannot witness.")
   (input  (do
             (def (main (: k Int64))
-              (let ((s (Set.of (list (record (= x 1) (= y 2)) (record (= x 3) (= y k)) (record (= x 1) (= y 2))))))
+              (let ((s #set((record (= x 1) (= y 2)) (record (= x 3) (= y k)) (record (= x 1) (= y 2)))))
                 (+ (* 100 (Set.len s))
                    (+ (* 10 (if (Set.contains s (record (= x 1) (= y 2))) 1 0))
                       (if (Set.contains s (record (= y 2) (= x 1))) 1 0)))))
@@ -134,10 +134,9 @@
            conflates one of the pairs). Expected: 2 (a=10), 3 (a=99).")
   (input  (do
             (def (main (: a Int64))
-              (Set.len (Set.of (list
-                (Map.insert Map.empty 1 a)
+              (Set.len #set((Map.insert Map.empty 1 a)
                 (Map.insert Map.empty 1 10)
-                (Map.insert Map.empty 2 10)))))
+                (Map.insert Map.empty 2 10))))
             (export main)))
   (call   main (: 10 Int64)) (output (: 2 Int64))
   (call   main (: 99 Int64)) (output (: 3 Int64)))
@@ -153,9 +152,9 @@
            10·len + has = 10·2 + 1 = 21. MUST be 21.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (let ((ss (Set.of (list (Set.of (list a b)) (Set.of (list b a)) (Set.of (list a))))))
+              (let ((ss #set(#set(a b) #set(b a) #set(a))))
                 (+ (* 10 (Set.len ss))
-                   (if (Set.contains ss (Set.of (list b a))) 1 0))))
+                   (if (Set.contains ss #set(b a)) 1 0))))
             (export main)))
   (call   main (: 3 Int64) (: 8 Int64)) (output (: 21 Int64)))
 
@@ -171,7 +170,7 @@
             (type Nat (Z) (S Nat))
             (def (mk (: n Int64)) (if (= n 0) (Z) (S (mk (- n 1)))))
             (def (main (: a Int64))
-              (Set.len (Set.of (list (mk a) (mk 3)))))
+              (Set.len #set((mk a) (mk 3))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64)))
@@ -185,7 +184,7 @@
   (input  (do
             (type T (A Int64) (B Int64))
             (def (main (: n Int64))
-              (Set.len (Set.of (list (A n) (B n) (A 5)))))
+              (Set.len #set((A n) (B n) (A 5))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 2 Int64))
   (call   main (: 7 Int64)) (output (: 3 Int64)))
@@ -199,7 +198,7 @@
            as for a user sum.")
   (input  (do
             (def (main (: a Int64))
-              (Set.len (Set.of (list (Some a) (None unit) (Some a) (Some (+ a 1))))))
+              (Set.len #set((Some a) (None unit) (Some a) (Some (+ a 1)))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64)))
 
@@ -210,7 +209,7 @@
            tag-must-participate witness.")
   (input  (do
             (def (main (: a Int64))
-              (Set.len (Set.of (list (: (Ok a) (Result Int64 Int64)) (: (Err a) (Result Int64 Int64))))))
+              (Set.len #set((: (Ok a) (Result Int64 Int64)) (: (Err a) (Result Int64 Int64)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 2 Int64)))
 
@@ -220,7 +219,7 @@
            payload → false, not a trap). One compiled contains must walk tag-then-payload per call.")
   (input  (do
             (def (main (: a Int64))
-              (if (Set.contains (Set.of (list (Some 5) (None unit))) (Some a)) 1 0))
+              (if (Set.contains #set((Some 5) (None unit)) (Some a)) 1 0))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1 Int64))
   (call   main (: 6 Int64)) (output (: 0 Int64)))
@@ -230,14 +229,14 @@
            set, so the total predicate yields false — NOT a trap and NOT an error (collections-and-text.md
            #Set Membership Is Total). Pins that absence is an ordinary false, the reason membership needs
            no Option: a Bool already distinguishes present from absent totally.")
-  (input  (Set.contains (Set.of (list 1 2 3)) 5))
+  (input  (Set.contains #set(1 2 3) 5))
   (output (: false Bool)))
 
 (case "membership of an absent element in the empty set is false"
   (doc    "The degenerate boundary: `(Set.contains (Set.of (list)) 1)` tests membership in the empty set
            — nothing is present — so it is false. Pins that the total predicate handles the empty set
            without underflow, mirroring the empty-list / empty-map degenerate cases.")
-  (input  (Set.contains (Set.of (list)) 1))
+  (input  (Set.contains #set() 1))
   (output (: false Bool)))
 
 (case "the empty set has cardinality zero"
@@ -246,7 +245,7 @@
            of the unconstrained-empty-`Set.of (list)` emit: wasm defaults the element type in emit, and the
            rust backend grounds the empty `BTreeSet` to a concrete element type (not a bare `BTreeSet<_>`
            that fails rustc inference with E0282). Mirrors the empty-list / empty-map degenerate cardinality.")
-  (input  (Set.len (Set.of (list))))
+  (input  (Set.len #set()))
   (output (: 0 Int64)))
 
 (case "an empty set passed to a recursive callee with a non-Int64 element param grounds its element type from the param"
@@ -262,7 +261,7 @@
   (input  (do
             (def (loop (: n Int64) (: s (Set Float64)))
               (if (= n 0) (Set.len s) (loop (- n 1) s)))
-            (def (main) (loop 3 (Set.of (list))))
+            (def (main) (loop 3 #set()))
             (export main)))
   (output (: 0 Int64))
   (live-objects 0))
@@ -285,14 +284,14 @@
   (doc    "`(Set.len (Set.of (list 1 2 2 3)))` is 3 — the count of DISTINCT elements, since the duplicate
            2 is held once (collections-and-text.md #A Set Is A Collection Of Unique Elements). Pins that
            len reports the set's cardinality after deduplication, not the source list's length 4.")
-  (input  (Set.len (Set.of (list 1 2 2 3))))
+  (input  (Set.len #set(1 2 2 3)))
   (output (: 3 Int64)))
 
 (case "inserting an element yields a set containing it"
   (doc    "`(Set.insert (Set.of (list 1 2)) 3)` produces a new set {1, 2, 3} — the value heap is
            immutable, so insert returns a new set rather than mutating (memory-and-resource-model.md).
            It equals `(Set.of (list 1 2 3))`. MUST be true.")
-  (input  (= (Set.insert (Set.of (list 1 2)) 3) (Set.of (list 1 2 3))))
+  (input  (= (Set.insert #set(1 2) 3) #set(1 2 3)))
   (output (: true Bool)))
 
 (case "inserting a present element is a no-op value"
@@ -300,34 +299,34 @@
            holds 2 once — it equals the original `(Set.of (list 1 2 3))` (collections-and-text.md #A Set
            Is A Collection Of Unique Elements: each element at most once). Pins that insert preserves
            uniqueness rather than creating a second 2. MUST be true.")
-  (input  (= (Set.insert (Set.of (list 1 2 3)) 2) (Set.of (list 1 2 3))))
+  (input  (= (Set.insert #set(1 2 3) 2) #set(1 2 3)))
   (output (: true Bool)))
 
 (case "removing an element yields a set without it"
   (doc    "`(Set.remove (Set.of (list 1 2 3)) 2)` produces a new set {1, 3} without 2 — it equals
            `(Set.of (list 1 3))`. Pins that remove drops exactly the named element and returns a new
            persistent set. MUST be true.")
-  (input  (= (Set.remove (Set.of (list 1 2 3)) 2) (Set.of (list 1 3))))
+  (input  (= (Set.remove #set(1 2 3) 2) #set(1 3)))
   (output (: true Bool)))
 
 (case "the union contains the elements of either set"
   (doc    "Witnesses set algebra: `(Set.union (Set.of (list 1 2)) (Set.of (list 2 3)))` is {1, 2, 3} —
            every element in either operand, with the shared 2 held once. It equals `(Set.of (list 1 2
            3))`. MUST be true.")
-  (input  (= (Set.union (Set.of (list 1 2)) (Set.of (list 2 3))) (Set.of (list 1 2 3))))
+  (input  (= (Set.union #set(1 2) #set(2 3)) #set(1 2 3)))
   (output (: true Bool)))
 
 (case "the intersection contains the elements in both sets"
   (doc    "`(Set.intersection (Set.of (list 1 2 3)) (Set.of (list 2 3 4)))` is {2, 3} — the elements
            present in both operands — equal to `(Set.of (list 2 3))`. MUST be true.")
-  (input  (= (Set.intersection (Set.of (list 1 2 3)) (Set.of (list 2 3 4))) (Set.of (list 2 3))))
+  (input  (= (Set.intersection #set(1 2 3) #set(2 3 4)) #set(2 3)))
   (output (: true Bool)))
 
 (case "the difference contains the elements not in the second set"
   (doc    "`(Set.difference (Set.of (list 1 2 3)) (Set.of (list 2 3)))` is {1} — the elements of the
            first set not in the second — equal to `(Set.of (list 1))`. Pins the asymmetry of difference:
            elements of the second operand not in the first do not appear. MUST be true.")
-  (input  (= (Set.difference (Set.of (list 1 2 3)) (Set.of (list 2 3))) (Set.of (list 1))))
+  (input  (= (Set.difference #set(1 2 3) #set(2 3)) #set(1)))
   (output (: true Bool)))
 
 (case "the intersection of sets of TUPLES matches elements by their whole-tuple content"
@@ -339,9 +338,9 @@
            STRUCTURAL equality to `(Set.of (list (tuple 3 4)))` — a set-value `=` walking the CHAMP compound
            elements — so a WRONG surviving tuple (e.g. keeping (1,2) or (5,6)) would fail, not merely a
            wrong count as a `Set.len`-only check would miss.")
-  (input  (= (Set.intersection (Set.of (list (tuple 1 2) (tuple 3 4)))
-                               (Set.of (list (tuple 3 4) (tuple 5 6))))
-             (Set.of (list (tuple 3 4)))))
+  (input  (= (Set.intersection #set((tuple 1 2) (tuple 3 4))
+                               #set((tuple 3 4) (tuple 5 6)))
+             #set((tuple 3 4))))
   (output (: true Bool)))
 
 (case "the difference of sets of TUPLES removes elements by their whole-tuple content"
@@ -352,9 +351,9 @@
            to `(Set.of (list (tuple 3 4)))` — the set-value `=` compares the whole surviving element, so a
            difference that removed the wrong tuple (leaving (1,2)) would fail, which a `Set.len`-only check
            of the count would not catch.")
-  (input  (= (Set.difference (Set.of (list (tuple 1 2) (tuple 3 4)))
-                             (Set.of (list (tuple 1 2))))
-             (Set.of (list (tuple 3 4)))))
+  (input  (= (Set.difference #set((tuple 1 2) (tuple 3 4))
+                             #set((tuple 1 2)))
+             #set((tuple 3 4))))
   (output (: true Bool)))
 
 (case "two sets of TUPLES built in different orders compare equal through the compound elements"
@@ -365,8 +364,8 @@
   (input (do
         (def (main (: v Int64))
           (do
-            (def s1 (Set.of (list (tuple 1 2) (tuple 3 v))))
-            (def s2 (Set.of (list (tuple 3 4) (tuple 1 2))))
+            (def s1 #set((tuple 1 2) (tuple 3 v)))
+            (def s2 #set((tuple 3 4) (tuple 1 2)))
             (if (= s1 s2) 1 0)))
         (export main)))
   (call main (: 4 Int64)) (output (: 1 Int64))
@@ -386,8 +385,8 @@
           (+ (* (sub1 a b) 10) (sub2 a b)))
         (def (main (: n Int64))
           (do
-            (def small (Set.of (list 1 n)))
-            (def big (Set.of (list 1 2 3)))
+            (def small #set(1 n))
+            (def big #set(1 2 3))
             (+ (* (both small big) 10000)
                (+ (* (both big small) 100)
                   (both small small)))))
@@ -403,9 +402,9 @@
   (input (do
         (def (main (: n Int64))
           (do
-            (def a (Set.of (list 1 n)))
-            (def b (Set.of (list n 3)))
-            (def c (Set.of (list n)))
+            (def a #set(1 n))
+            (def b #set(n 3))
+            (def c #set(n))
             (def dist (if (= (Set.difference (Set.union a b) c)
                              (Set.union (Set.difference a c) (Set.difference b c))) 1 0))
             (def nonassoc (if (= (Set.difference (Set.difference a b) c)
@@ -422,8 +421,8 @@
   (input (do
         (def (main (: n Int64))
           (do
-            (def a (Set.of (list 1 2 n)))
-            (def b (Set.of (list 2 n 4)))
+            (def a #set(1 2 n))
+            (def b #set(2 n 4))
             (def l (Set.difference (Set.union a b) (Set.intersection a b)))
             (def r (Set.union (Set.difference a b) (Set.difference b a)))
             (+ (* (if (= l r) 1 0) 100)
@@ -444,8 +443,8 @@
            410.")
   (input  (do
             (def (main (: a Int64))
-              (let ((s1 (Set.of (list (tuple 1 2) (tuple 3 a))))
-                    (s2 (Set.of (list (tuple 3 4) (tuple 5 6)))))
+              (let ((s1 #set((tuple 1 2) (tuple 3 a)))
+                    (s2 #set((tuple 3 4) (tuple 5 6))))
                 (let ((u (Set.union s1 s2)))
                   (+ (* 100 (Set.len u))
                      (+ (* 10 (if (Set.contains u (tuple 3 a)) 1 0))
@@ -464,8 +463,8 @@
            one of the encoded digits. All three ops in one shape, both regimes.")
   (input  (do
             (def (main (: x Float64))
-              (let ((a (Set.of (list (tuple x 1) (tuple 2.5 2))))
-                    (b (Set.of (list (tuple 0.5 1) (tuple 9.5 9)))))
+              (let ((a #set((tuple x 1) (tuple 2.5 2)))
+                    (b #set((tuple 0.5 1) (tuple 9.5 9))))
                 (+ (* 100 (Set.len (Set.union a b)))
                    (+ (* 10 (Set.len (Set.intersection a b)))
                       (Set.len (Set.difference a b))))))
@@ -489,8 +488,8 @@
             (def (build (: i Int64) (: n Int64) (: s (Set Int64)))
               (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
             (def (main)
-              (let ((a (build 0 3 (Set.of (list))))
-                    (b (build 1 3 (Set.of (list)))))
+              (let ((a (build 0 3 #set()))
+                    (b (build 1 3 #set())))
                 (let ((d (Set.difference a b)))
                   (+ (* 1000 (Set.len d))
                      (+ (* 100 (Set.len a))
@@ -510,7 +509,7 @@
             (def (drain (: i Int64) (: n Int64) (: s (Set Int64)))
               (if (< i n) (drain (+ i 1) n (Set.remove s i)) s))
             (def (main (: n Int64))
-              (let ((s (build 0 n (Set.of (list)))))
+              (let ((s (build 0 n #set())))
                 (+ (* 10000 (Set.len s)) (Set.len (drain 0 n s)))))
             (export main)))
   (call   main (: 1000 Int64))
@@ -534,7 +533,7 @@
                   (toggle t (if (Set.contains s h) (Set.remove s h) (Set.insert s h))))))
             (def (main (: n Int64))
               (do
-                (def s (toggle (list n 1 2 n 1 3 n) (Set.of (list))))
+                (def s (toggle (list n 1 2 n 1 3 n) #set()))
                 (+ (* 100 (Set.len s))
                    (+ (* 10 (if (Set.contains s 1) 1 0))
                       (if (Set.contains s n) 1 0)))))
@@ -564,7 +563,7 @@
                       i
                       (walk t target (Set.insert seen h) (+ i 1))))))
             (def (two-sum (: xs (List Int64)) (: target Int64))
-              (walk xs target (Set.of (list)) 0))
+              (walk xs target #set() 0))
             (def (main (: target Int64))
               (two-sum (list 2 7 11 15 3) target))
             (export main)))
@@ -595,7 +594,7 @@
                       (tuple 0 steps)
                       (walk (sq-digits n 0) (Set.insert seen n) (+ steps 1)))))
             (def (main (: n Int64))
-              (match (walk n (Set.of (list)) 0)
+              (match (walk n #set() 0)
                 ((tuple h steps) (+ (* h 100) steps))))
             (export main)))
   (call   main (: 19 Int64)) (output (: 104 Int64))
@@ -636,7 +635,7 @@
               (do
                 (def g (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert Map.empty
                           1 (list 2 3)) 2 (list 4)) 3 (list 4)) 4 (list)) 5 (list 6)) 6 (list 5)))
-                (def seen (drain g (list start) (Set.of (list))))
+                (def seen (drain g (list start) #set()))
                 (+ (* (Set.len seen) 100) (sum-set (Set.to-list seen) 0))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 410 Int64))
@@ -718,7 +717,7 @@
               (if (> i n) acc (build (+ i 1) n (Set.insert acc i))))
             (def (main (: mode Int64))
               (do
-                (def s1 (build 1 3 (Set.of (list))))
+                (def s1 (build 1 3 #set()))
                 (def s2 (Set.insert s1 4))
                 (def keep (if (= mode 1) s1 s2))
                 (+ (* (Set.len keep) 100)
@@ -800,7 +799,7 @@
                 (def g0 (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert Map.empty
                            1 (list 3)) 2 (list 3)) 3 (list 4)) 4 (list)) 5 (list 4)))
                 (def g (if (> extra 0) (Map.insert g0 4 (list extra)) g0))
-                (def order (drain g ns (indeg-of g ns Map.empty) (Set.of (list)) (list)))
+                (def order (drain g ns (indeg-of g ns Map.empty) #set() (list)))
                 (+ (* (chk order 0) 10) (edges-fwd g order ns))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 123541 Int64))
@@ -819,7 +818,7 @@
            identity of union, so unioning it in adds nothing. Pins the identity law the overlapping-union
            case does not (it has elements on both sides); the empty set is a genuine operand, not a
            trap. MUST be true.")
-  (input  (= (Set.union (Set.of (list 1 2 3)) (Set.of (list))) (Set.of (list 1 2 3))))
+  (input  (= (Set.union #set(1 2 3) #set()) #set(1 2 3)))
   (output (: true Bool)))
 
 (case "intersection with the empty set is the empty set"
@@ -827,7 +826,7 @@
            annihilator of intersection, since no element is in both. Pins the annihilator law (the dual of
            the union-identity case) and that intersecting down to nothing yields the genuine empty set.
            MUST be true.")
-  (input  (= (Set.intersection (Set.of (list 1 2 3)) (Set.of (list))) (Set.of (list))))
+  (input  (= (Set.intersection #set(1 2 3) #set()) #set()))
   (output (: true Bool)))
 
 (case "an empty set in one if-branch unifies with a non-empty set in the other and its length reads correctly"
@@ -839,7 +838,7 @@
            type and enumerates as a genuine empty set at run time, on both backends.")
   (input  (do
             (def (main (: b Int64))
-              (Set.len (if (> b 0) (Set.of (list 1 2 3)) (Set.of (list)))))
+              (Set.len (if (> b 0) #set(1 2 3) #set())))
             (export main)))
   (call   main (: 1 Int64))  (output (: 3 Int64))
   (call   main (: -1 Int64)) (output (: 0 Int64)))
@@ -849,14 +848,14 @@
            element intersect to nothing. Pins that intersection over disjoint operands (no shared element,
            yet both non-empty) is the empty set, the complement of the overlapping-intersection case which
            has a shared element. MUST be true.")
-  (input  (= (Set.intersection (Set.of (list 1 2)) (Set.of (list 3 4))) (Set.of (list))))
+  (input  (= (Set.intersection #set(1 2) #set(3 4)) #set()))
   (output (: true Bool)))
 
 (case "the difference of a set with itself is empty"
   (doc    "`(Set.difference (Set.of (list 1 2 3)) (Set.of (list 1 2 3)))` is {} — removing a set's own
            elements leaves nothing. Pins the self-difference law (A ∖ A = ∅), the degenerate boundary the
            asymmetric-difference case above does not reach. MUST be true.")
-  (input  (= (Set.difference (Set.of (list 1 2 3)) (Set.of (list 1 2 3))) (Set.of (list))))
+  (input  (= (Set.difference #set(1 2 3) #set(1 2 3)) #set()))
   (output (: true Bool)))
 
 (case "union is commutative"
@@ -864,8 +863,8 @@
            depend on operand order (both are {1, 2, 3}). Pins commutativity of union directly as a value
            equality between the two orderings — a law that follows from a set being an order-independent
            collection (the written-order-independence case, lifted to the operation). MUST be true.")
-  (input  (= (Set.union (Set.of (list 1 2)) (Set.of (list 2 3)))
-             (Set.union (Set.of (list 2 3)) (Set.of (list 1 2)))))
+  (input  (= (Set.union #set(1 2) #set(2 3))
+             (Set.union #set(2 3) #set(1 2))))
   (output (: true Bool)))
 
 (case "union of a set with itself is the set (idempotent)"
@@ -873,7 +872,7 @@
            itself introduces no duplicates (a set holds each element once), so union is idempotent. Pins
            A ∪ A = A, the duplicate-collapsing law of union at the whole-set level (the operation-level
            companion of \"a set collapses a duplicate element\"). MUST be true.")
-  (input  (= (Set.union (Set.of (list 1 2 3)) (Set.of (list 1 2 3))) (Set.of (list 1 2 3))))
+  (input  (= (Set.union #set(1 2 3) #set(1 2 3)) #set(1 2 3)))
   (output (: true Bool)))
 
 (case "intersection of a set with itself is the set (idempotent)"
@@ -881,7 +880,7 @@
            in both operands, so the intersection is the whole set. Pins A ∩ A = A, the intersection
            companion of the union-idempotent law above; an intersection that de-duplicated incorrectly or
            dropped a shared element would fail this. MUST be true.")
-  (input  (= (Set.intersection (Set.of (list 1 2 3)) (Set.of (list 1 2 3))) (Set.of (list 1 2 3))))
+  (input  (= (Set.intersection #set(1 2 3) #set(1 2 3)) #set(1 2 3)))
   (output (: true Bool)))
 
 (case "the SAME runtime set as both operands of union intersection and difference computes each law live"
@@ -897,7 +896,7 @@
             (def (build (: n Int64) (: s (Set Int64)))
               (if (< n 1) s (build (- n 1) (Set.insert s n))))
             (def (main (: n Int64))
-              (let ((s (build n (Set.of (list)))))
+              (let ((s (build n #set())))
                 (+ (* 100 (Set.len (Set.union s s)))
                    (+ (* 10 (Set.len (Set.intersection s s)))
                       (Set.len (Set.difference s s))))))
@@ -909,7 +908,7 @@
            the set unchanged. Pins A ∖ ∅ = A, the identity element of difference and the companion of the
            self-difference law A ∖ A = ∅ above (the two boundaries of `difference`: subtracting everything
            gives empty, subtracting nothing gives the whole set). MUST be true.")
-  (input  (= (Set.difference (Set.of (list 1 2 3)) (Set.of (list))) (Set.of (list 1 2 3))))
+  (input  (= (Set.difference #set(1 2 3) #set()) #set(1 2 3)))
   (output (: true Bool)))
 
 (case "union is associative"
@@ -918,8 +917,8 @@
            commutativity: a canonical-order or dedup bug in the 3-way fold could break associativity while
            the 2-way commutativity above still passes, so this pins the associative regrouping directly.
            MUST be true.")
-  (input  (= (Set.union (Set.union (Set.of (list 1 2)) (Set.of (list 2 3))) (Set.of (list 3 4)))
-             (Set.union (Set.of (list 1 2)) (Set.union (Set.of (list 2 3)) (Set.of (list 3 4))))))
+  (input  (= (Set.union (Set.union #set(1 2) #set(2 3)) #set(3 4))
+             (Set.union #set(1 2) (Set.union #set(2 3) #set(3 4)))))
   (output (: true Bool)))
 
 (case "union dedups overlapping elements by content, counted once"
@@ -927,7 +926,7 @@
            the union, not double-counted. The operation-level dedup over TWO multi-element sets (the
            existing runtime union-dedup case only overlaps a single element), pinning that union merges
            by content across a genuine multi-element overlap. MUST be 4.")
-  (input  (Set.len (Set.union (Set.of (list 1 2 3)) (Set.of (list 2 3 4)))))
+  (input  (Set.len (Set.union #set(1 2 3) #set(2 3 4))))
   (output (: 4 Int64)))
 
 ; The set-algebra cases here use SMALL sets (a handful of elements, single CHAMP leaf). At higher
@@ -949,8 +948,8 @@
             (def (fill (: i Int64) (: n Int64) (: s (Set Int64)))
               (if (< i n) (fill (+ i 1) n (Set.insert s i)) s))
             (def (main (: z Int64))
-              (let ((a (fill 0 40 (Set.of (list))))
-                    (b (fill 20 60 (Set.of (list)))))
+              (let ((a (fill 0 40 #set()))
+                    (b (fill 20 60 #set())))
                 (tuple
                   (Set.len (Set.union a b))
                   (Set.len (Set.intersection a b))
@@ -977,9 +976,9 @@
               (if (= i 0) acc (build (- i 1) (Set.insert acc i))))
             (def (main (: n Int64))
               (do
-                (def s (build n (Set.of (list))))
+                (def s (build n #set()))
                 (def d (Set.difference s s))
-                (+ (* 10 (if (= d (Set.of (list))) 1 0)) (Set.len d))))
+                (+ (* 10 (if (= d #set()) 1 0)) (Set.len d))))
             (export main)))
   (call   main (: 100 Int64)) (output (: 10 Int64)))
 
@@ -996,7 +995,7 @@
               (if (= i 0) acc (build (- i 1) (Set.insert acc i))))
             (def (main (: n Int64))
               (do
-                (def s (build n (Set.of (list))))
+                (def s (build n #set()))
                 (def rt (Set.union (Set.difference s s) s))
                 (+ (* 10 (if (= rt s) 1 0)) (if (Set.contains rt 57) 1 0))))
             (export main)))
@@ -1018,7 +1017,7 @@
               (if (> i n) s (drop-half (+ i 2) n (Set.remove s i))))
             (def (main (: n Int64))
               (do
-                (def full (build n (Set.of (list))))
+                (def full (build n #set()))
                 (def odds (drop-half 2 n full))
                 (def inter (Set.intersection full odds))
                 (+ (* 10 (if (= inter odds) 1 0)) (if (Set.contains inter 2) 1 0))))
@@ -1040,8 +1039,8 @@
               (if (= i n) s (shrink (+ i 1) n (Set.remove s i))))
             (def (main (: n Int64))
               (do
-                (def emptied (shrink 1 n (grow 1 n (Set.of (list)))))
-                (+ (* 100 (if (= emptied (Set.of (list))) 1 0))
+                (def emptied (shrink 1 n (grow 1 n #set())))
+                (+ (* 100 (if (= emptied #set()) 1 0))
                    (+ (* 10 (Set.len emptied))
                       (if (Set.contains (Set.insert emptied 42) 42) 1 0)))))
             (export main)))
@@ -1051,8 +1050,8 @@
   (doc    "`(A ∩ B) ∩ C` equals `A ∩ (B ∩ C)` for A={1,2,3,4}, B={2,3,4,5}, C={3,4,5,6} — both regroupings
            yield {3,4}. The intersection companion of union associativity; pins that the meet regrouping is
            order-independent. MUST be true.")
-  (input  (= (Set.intersection (Set.intersection (Set.of (list 1 2 3 4)) (Set.of (list 2 3 4 5))) (Set.of (list 3 4 5 6)))
-             (Set.intersection (Set.of (list 1 2 3 4)) (Set.intersection (Set.of (list 2 3 4 5)) (Set.of (list 3 4 5 6))))))
+  (input  (= (Set.intersection (Set.intersection #set(1 2 3 4) #set(2 3 4 5)) #set(3 4 5 6))
+             (Set.intersection #set(1 2 3 4) (Set.intersection #set(2 3 4 5) #set(3 4 5 6)))))
   (output (: true Bool)))
 
 ; The lattice laws that COMPOSE the operations, over RUNTIME-element sets so the nested CHAMP union/intersection
@@ -1067,8 +1066,8 @@
            be 1.")
   (input  (do
             (def (main (: a Int64) (: b Int64) (: c Int64) (: d Int64))
-              (let ((sa (Set.of (list a b c)))
-                    (sb (Set.of (list b c d))))
+              (let ((sa #set(a b c))
+                    (sb #set(b c d)))
                 (if (= (Set.intersection sa sb) (Set.intersection sb sa)) 1 0)))
             (export main)))
   (call main (: 1 Int64) (: 2 Int64) (: 3 Int64) (: 4 Int64)) (output (: 1 Int64)))
@@ -1081,9 +1080,9 @@
            single-operation laws still passed. MUST be 1.")
   (input  (do
             (def (main (: a Int64) (: b Int64) (: c Int64) (: d Int64) (: e Int64))
-              (let ((sa (Set.of (list a b c)))
-                    (sb (Set.of (list b d)))
-                    (sc (Set.of (list c e))))
+              (let ((sa #set(a b c))
+                    (sb #set(b d))
+                    (sc #set(c e)))
                 (if (= (Set.intersection sa (Set.union sb sc))
                        (Set.union (Set.intersection sa sb) (Set.intersection sa sc))) 1 0)))
             (export main)))
@@ -1096,8 +1095,8 @@
            break this. MUST be 1.")
   (input  (do
             (def (main (: a Int64) (: b Int64) (: c Int64))
-              (let ((sa (Set.of (list a b)))
-                    (sb (Set.of (list b c))))
+              (let ((sa #set(a b))
+                    (sb #set(b c)))
                 (if (= (Set.union sa (Set.intersection sa sb)) sa) 1 0)))
             (export main)))
   (call main (: 1 Int64) (: 2 Int64) (: 3 Int64)) (output (: 1 Int64)))
@@ -1112,9 +1111,9 @@
            the two/three-operation lattice-law cluster beside distributive and absorption. MUST be 1.")
   (input  (do
             (def (main (: a Int64) (: b Int64) (: c Int64) (: d Int64))
-              (let ((sa (Set.of (list a b c d)))
-                    (sb (Set.of (list b)))
-                    (sc (Set.of (list c))))
+              (let ((sa #set(a b c d))
+                    (sb #set(b))
+                    (sc #set(c)))
                 (if (= (Set.difference sa (Set.union sb sc))
                        (Set.intersection (Set.difference sa sb) (Set.difference sa sc))) 1 0)))
             (export main)))
@@ -1125,15 +1124,15 @@
            `A \\ B` and `B \\ A` are DIFFERENT sets (unequal). The contrast to union/intersection
            commutativity: pins that difference does NOT commute (a `=` between the two orderings is FALSE),
            so a bug treating difference symmetrically would be caught. MUST be false.")
-  (input  (= (Set.difference (Set.of (list 1 2 3)) (Set.of (list 2 3 4)))
-             (Set.difference (Set.of (list 2 3 4)) (Set.of (list 1 2 3)))))
+  (input  (= (Set.difference #set(1 2 3) #set(2 3 4))
+             (Set.difference #set(2 3 4) #set(1 2 3))))
   (output (: false Bool)))
 
 (case "the empty set is equal to the empty set"
   (doc    "`(= (Set.of (list)) (Set.of (list)))` is true — two empty sets contain the same (no) elements
            (collections-and-text.md #A Set Is A Collection Of Unique Elements). Pins that the empty set
            is a genuine value equal to itself, the set companion of the empty-string / empty-map cases.")
-  (input  (= (Set.of (list)) (Set.of (list))))
+  (input  (= #set() #set()))
   (output (: true Bool)))
 
 ; --- Two sets with DIFFERENT elements are the SAME TYPE: comparing them is well-typed, not a --------
@@ -1150,7 +1149,7 @@
            So the comparison is well-typed and FALSE (they do not contain the same elements), NOT a type
            error. Pins that a set's elements are runtime data — the set analogue of the different-keyset
            map comparison. MUST be false.")
-  (input  (= (Set.of (list 1 2)) (Set.of (list 1 3))))
+  (input  (= #set(1 2) #set(1 3)))
   (output (: false Bool)))
 
 (case "two sets of different sizes are unequal, not a type error"
@@ -1159,7 +1158,7 @@
            Collection Of Unique Elements). The size-difference companion; contrast records `(= (record
            (a 1)) (record (a 1) (b 2)))`, which IS a type error because a record's field set is its
            shape. MUST be false.")
-  (input  (= (Set.of (list 1)) (Set.of (list 1 2))))
+  (input  (= #set(1) #set(1 2)))
   (output (: false Bool)))
 
 (case "a set with elements of two different types is a type error"
@@ -1168,7 +1167,7 @@
            (CDZ0201, collections-and-text.md #A Set Is A Collection Of Unique Elements: elements of one
            type), exactly as a heterogeneous list is rejected. The homogeneity flows in through the
            list `Set.of` consumes.")
-  (input  (Set.of (list 1 true)))
+  (input  #set(1 true))
   (error  CDZ0201))
 
 (case "a set built at run time escapes to the host as its value form"
@@ -1180,7 +1179,7 @@
            `(list 1 2 3)`. This declined before as needing a value-form walker.")
   (input  (do
             (def (build s n) (if (< n 1) s (build (Set.insert s n) (- n 1))))
-            (def (main) (build (Set.of (list)) 3)) (export main)))
+            (def (main) (build #set() 3)) (export main)))
   (output (: #set(1 2 3) (Set Int64)))
   (live-objects known-leak 1))
 
@@ -1196,7 +1195,7 @@
            `((. Set of) (list 1 2 5))`; with x=1 the shared element is held once → {1,2}. Pins that a
            set-ALGEBRA result crosses the boundary via the value-encode walker (not only an insert-built
            set), rendered in canonical sorted order — the union companion of the insert-built escape.")
-  (input  (do (def (main (: x Int64)) (Set.union (Set.of (list 1 2)) (Set.insert (Set.of (list)) x))) (export main)))
+  (input  (do (def (main (: x Int64)) (Set.union #set(1 2) (Set.insert #set() x))) (export main)))
   (call   main (: 5 Int64)) (output (: #set(1 2 5) (Set Int64)))
   (call   main (: 1 Int64)) (output (: #set(1 2) (Set Int64)))
   (live-objects known-leak 1))
@@ -1207,7 +1206,7 @@
            {1,2,3}. Pins that a difference result crosses as its canonical value form, the subtractive
            companion of the union-escape case (the value-encode walker handles an algebra result of any of
            the three set operations).")
-  (input  (do (def (main (: x Int64)) (Set.difference (Set.of (list 1 2 3)) (Set.insert (Set.of (list)) x))) (export main)))
+  (input  (do (def (main (: x Int64)) (Set.difference #set(1 2 3) (Set.insert #set() x))) (export main)))
   (call   main (: 2 Int64)) (output (: #set(1 3) (Set Int64)))
   (call   main (: 9 Int64)) (output (: #set(1 2 3) (Set Int64)))
   (live-objects known-leak 1))
@@ -1232,7 +1231,7 @@
            equal to itself, so the result is true for every `x` (reflexivity). Pins that a runtime-element
            set comparison is not mis-folded to a constant `false` (the const-set-equality fold treated the
            runtime element as absent, folding even reflexivity to `false`).")
-  (input  (do (def (main (: x Int64)) (= (Set.of (list x)) (Set.of (list x)))) (export main)))
+  (input  (do (def (main (: x Int64)) (= #set(x) #set(x))) (export main)))
   (call   main (: 9 Int64)) (output (: true Bool)))
 
 (case "a runtime-element set's equality is independent of written order"
@@ -1241,7 +1240,7 @@
            Is A Collection Of Unique Elements), so the two are equal regardless of order and regardless of
            `x`. Pins order-independence on the RUNTIME path — the const-set fold's order-independence,
            carried onto the deferred `value-eq` walk. True for every `x`.")
-  (input  (do (def (main (: x Int64)) (= (Set.of (list 1 2 x)) (Set.of (list x 2 1)))) (export main)))
+  (input  (do (def (main (: x Int64)) (= #set(1 2 x) #set(x 2 1))) (export main)))
   (call   main (: 9 Int64)) (output (: true Bool))
   (call   main (: 3 Int64)) (output (: true Bool)))
 
@@ -1252,7 +1251,7 @@
            walk. Pins that a runtime-built set and a constant set of the same elements agree — the runtime
            and constant construction paths produce byte-identical canonical CHAMP handles, and that a
            GENUINELY different element set is `false`, not accidentally `true`.")
-  (input  (do (def (main (: x Int64)) (= (Set.of (list 1 2 x)) (Set.of (list 1 2 3)))) (export main)))
+  (input  (do (def (main (: x Int64)) (= #set(1 2 x) #set(1 2 3))) (export main)))
   (call   main (: 3 Int64)) (output (: true Bool))
   (call   main (: 9 Int64)) (output (: false Bool)))
 
@@ -1261,7 +1260,7 @@
            once) and 3 when `x` = 9 (a distinct third element). Pins that construction deduplicates by
            VALUE across a mix of constant and runtime elements — the uniqueness invariant holds when the
            source list is built at run time, not only when every element is a literal.")
-  (input  (do (def (main (: x Int64)) (Set.len (Set.of (list 1 2 x)))) (export main)))
+  (input  (do (def (main (: x Int64)) (Set.len #set(1 2 x))) (export main)))
   (call   main (: 1 Int64)) (output (: 2 Int64))
   (call   main (: 9 Int64)) (output (: 3 Int64)))
 
@@ -1273,7 +1272,7 @@
            by VALUE (a regression witness: the set-algebra fold reported the runtime element absent and
            subtracted nothing, leaving 2 in the result).")
   (input  (do (def (main (: x Int64))
-                (Set.contains (Set.difference (Set.of (list 1 2 3)) (Set.of (list x))) 2)) (export main)))
+                (Set.contains (Set.difference #set(1 2 3) #set(x)) 2)) (export main)))
   (call   main (: 2 Int64)) (output (: false Bool))
   (call   main (: 9 Int64)) (output (: true Bool)))
 
@@ -1282,7 +1281,7 @@
            (one element removed) and 3 when `x` is absent from the first set. The size companion of the
            membership case above, over the deferred runtime `set-difference`.")
   (input  (do (def (main (: x Int64))
-                (Set.len (Set.difference (Set.of (list 1 2 3)) (Set.of (list x))))) (export main)))
+                (Set.len (Set.difference #set(1 2 3) #set(x)))) (export main)))
   (call   main (: 2 Int64)) (output (: 2 Int64))
   (call   main (: 9 Int64)) (output (: 3 Int64)))
 
@@ -1293,7 +1292,7 @@
            runtime element is intersected by VALUE (a regression witness: the fold reported it absent and
            produced the empty intersection even when `x` was present).")
   (input  (do (def (main (: x Int64))
-                (Set.len (Set.intersection (Set.of (list 1 2 3)) (Set.of (list x))))) (export main)))
+                (Set.len (Set.intersection #set(1 2 3) #set(x)))) (export main)))
   (call   main (: 2 Int64)) (output (: 1 Int64))
   (call   main (: 9 Int64)) (output (: 0 Int64)))
 
@@ -1303,7 +1302,7 @@
            `set-union`; pins that a runtime element already present is not double-counted — the
            uniqueness invariant on the deferred path.")
   (input  (do (def (main (: x Int64))
-                (Set.len (Set.union (Set.of (list 1 2 3)) (Set.of (list x))))) (export main)))
+                (Set.len (Set.union #set(1 2 3) #set(x)))) (export main)))
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 9 Int64)) (output (: 4 Int64)))
 
@@ -1311,7 +1310,7 @@
   (doc    "`(Set.contains (Set.of (list 1 2 x)) x)` is true for every `x` — a set built from a list
            containing `x` contains `x`. The membership predicate over a runtime-built set, deferring to the
            runtime `set-contains`. Pins that a runtime element is found by VALUE after construction.")
-  (input  (do (def (main (: x Int64)) (Set.contains (Set.of (list 1 2 x)) x)) (export main)))
+  (input  (do (def (main (: x Int64)) (Set.contains #set(1 2 x) x)) (export main)))
   (call   main (: 9 Int64)) (output (: true Bool))
   (call   main (: 2 Int64)) (output (: true Bool)))
 
@@ -1328,7 +1327,7 @@
            collections-and-text.md #A Set Is A Collection Of Unique Elements). Pins that a runtime insert
            preserves uniqueness — the cardinality reflects present-vs-absent decided at run time, deferring
            to the runtime `set-insert`.")
-  (input  (do (def (main (: x Int64)) (Set.len (Set.insert (Set.of (list 1 2 3)) x))) (export main)))
+  (input  (do (def (main (: x Int64)) (Set.len (Set.insert #set(1 2 3) x))) (export main)))
   (call   main (: 4 Int64)) (output (: 4 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64)))
 
@@ -1336,7 +1335,7 @@
   (doc    "`(Set.contains (Set.insert (Set.of (list 1 2)) x) x)` is true for every `x` — the element just
            inserted at run time is present. Pins that a runtime `set-insert` actually adds the element
            (found by value afterward), the membership companion of the cardinality case.")
-  (input  (do (def (main (: x Int64)) (Set.contains (Set.insert (Set.of (list 1 2)) x) x)) (export main)))
+  (input  (do (def (main (: x Int64)) (Set.contains (Set.insert #set(1 2) x) x)) (export main)))
   (call   main (: 5 Int64)) (output (: true Bool))
   (call   main (: 1 Int64)) (output (: true Bool)))
 
@@ -1346,7 +1345,7 @@
            unchanged and still holds 2 (true — removal is total, collections-and-text.md #A Set Is A
            Collection Of Unique Elements). Pins that a runtime `set-remove` drops exactly the named element
            and is a no-op on an absent one.")
-  (input  (do (def (main (: x Int64)) (Set.contains (Set.remove (Set.of (list 1 2 3)) x) 2)) (export main)))
+  (input  (do (def (main (: x Int64)) (Set.contains (Set.remove #set(1 2 3) x) 2)) (export main)))
   (call   main (: 2 Int64)) (output (: false Bool))
   (call   main (: 9 Int64)) (output (: true Bool)))
 
@@ -1354,7 +1353,7 @@
   (doc    "`(Set.len (Set.remove (Set.of (list 1 2 3)) x))` is 2 when `x` ∈ {1,2,3} (one element dropped)
            and 3 when `x` is absent (removal is total, the set is unchanged). The cardinality companion of
            the membership case, over the runtime `set-remove`.")
-  (input  (do (def (main (: x Int64)) (Set.len (Set.remove (Set.of (list 1 2 3)) x))) (export main)))
+  (input  (do (def (main (: x Int64)) (Set.len (Set.remove #set(1 2 3) x))) (export main)))
   (call   main (: 2 Int64)) (output (: 2 Int64))
   (call   main (: 9 Int64)) (output (: 3 Int64)))
 
@@ -1374,7 +1373,7 @@
            a scalar — the seen-set idiom, the set companion of the map accumulator.")
   (input  (do
             (def (build (: n Int64) (: s (Set Int64))) (if (= n 0) s (build (- n 1) (Set.insert s (% n 3)))))
-            (def (main (: n Int64)) (Set.len (build n (Set.of (list))))) (export main)))
+            (def (main (: n Int64)) (Set.len (build n #set()))) (export main)))
   (call   main (: 6 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64)))
@@ -1387,7 +1386,7 @@
            accumulator query.")
   (input  (do
             (def (build (: n Int64) (: s (Set Int64))) (if (= n 0) s (build (- n 1) (Set.insert s n))))
-            (def (main (: q Int64)) (if (Set.contains (build 5 (Set.of (list))) q) 1 0)) (export main)))
+            (def (main (: q Int64)) (if (Set.contains (build 5 #set()) q) 1 0)) (export main)))
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 9 Int64)) (output (: 0 Int64)))
 
@@ -1411,7 +1410,7 @@
             (def (build (: i Int64) (: n Int64) (: acc (Set Int64)))
               (if (< i n) (build (+ i 1) n (Set.insert acc i)) acc))
             (def (main (: n Int64))
-              (let ((s (build 0 n (Set.of (list)))))
+              (let ((s (build 0 n #set())))
                 (+ (Set.len (Set.insert s 99)) (Set.len s))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 7 Int64))
@@ -1433,7 +1432,7 @@
             (def (build (: i Int64) (: n Int64) (: acc (Set Int64)))
               (if (< i n) (build (+ i 1) n (Set.insert acc i)) acc))
             (def (main (: n Int64))
-              (let ((s (build 0 n (Set.of (list)))))
+              (let ((s (build 0 n #set())))
                 (let ((s2 (Set.remove s 1)))
                   (+ (* 100 (Set.len s)) (+ (* 10 (Set.len s2)) (if (Set.contains s 1) 1 0))))))
             (export main)))
@@ -1460,7 +1459,7 @@
            fold now declines (a non-constant element) and the runtime `set-contains` answers correctly.")
   (input  (do
             (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-            (def (main) (if (Set.contains (Set.of (list (add 2 3))) 5) 1 0)) (export main)))
+            (def (main) (if (Set.contains #set((add 2 3)) 5) 1 0)) (export main)))
   (output (: 1 Int64)))
 
 (case "Set.remove does not fold a set whose element is a runtime scalar"
@@ -1470,7 +1469,7 @@
            declines and the runtime `set-remove` removes the matching element.")
   (input  (do
             (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-            (def (main) (Set.len (Set.remove (Set.of (list (add 2 3))) 5))) (export main)))
+            (def (main) (Set.len (Set.remove #set((add 2 3)) 5))) (export main)))
   (output (: 0 Int64)))
 
 (case "Set.insert does not fold a duplicate against a runtime element"
@@ -1481,7 +1480,7 @@
            champ set.")
   (input  (do
             (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-            (def (main) (Set.len (Set.insert (Set.of (list (add 2 3))) 5))) (export main)))
+            (def (main) (Set.len (Set.insert #set((add 2 3)) 5))) (export main)))
   (output (: 1 Int64)))
 
 (case "Set.contains finds a runtime STRING-rope element built via Set.of"
@@ -1494,7 +1493,7 @@
   (input  (do
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (if (Set.contains (Set.of (list (rep "hi" 3))) "hixxx") 1 0)) (export main)))
+            (def (main) (if (Set.contains #set((rep "hi" 3)) "hixxx") 1 0)) (export main)))
   (output (: 1 Int64)))
 
 (case "Set.remove of a rope-element set built via Set.of lowers the cardinality"
@@ -1505,7 +1504,7 @@
   (input  (do
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (Set.len (Set.remove (Set.of (list (rep "hi" 3))) "hixxx"))) (export main)))
+            (def (main) (Set.len (Set.remove #set((rep "hi" 3)) "hixxx"))) (export main)))
   (output (: 0 Int64)))
 
 (case "an all-constant Set.of still folds membership with a constant query (control)"
@@ -1514,8 +1513,8 @@
            Pins that the runtime-element guard did NOT disable the valuable all-constant fold. Two exports
            (a present and an absent constant query) so both fold branches are witnessed. Expected: 1, 0.")
   (input  (do
-            (def (has2) (if (Set.contains (Set.of (list 1 2 3)) 2) 1 0))
-            (def (has9) (if (Set.contains (Set.of (list 1 2 3)) 9) 1 0))
+            (def (has2) (if (Set.contains #set(1 2 3) 2) 1 0))
+            (def (has9) (if (Set.contains #set(1 2 3) 9) 1 0))
             (export has2) (export has9)))
   (call   has2) (output (: 1 Int64))
   (call   has9) (output (: 0 Int64)))
@@ -1526,7 +1525,7 @@
            realizing collections-and-text.md §Map/Set iteration is deterministic. The element at index 0 is
            the smallest, 2. The inverse of Set.of. Expected: 2.")
   (input  (do
-            (def (main) (match (List.at (Set.to-list (Set.of (list 5 2 8 2))) 0)
+            (def (main) (match (List.at (Set.to-list #set(5 2 8 2)) 0)
                           ((Some v) v)
                           ((None u) -1))) (export main)))
   (output (: 2 Int64)))
@@ -1537,7 +1536,7 @@
            count 3 — not the input length 5. The canonical-order case pins index 0 and the interior order
            over already-distinct inputs; this pins that duplicates COLLAPSE in the enumerated list.")
   (input  (do
-            (def (main) (List.len (Set.to-list (Set.of (list 3 1 2 1 3)))))
+            (def (main) (List.len (Set.to-list #set(3 1 2 1 3))))
             (export main)))
   (output (: 3 Int64)))
 
@@ -1549,7 +1548,7 @@
            give 285. Pins the interior enumeration order an index-0-only check cannot see.")
   (input  (do
             (def (main)
-              (let ((xs (Set.to-list (Set.of (list 5 2 8)))))
+              (let ((xs (Set.to-list #set(5 2 8))))
                 (+ (+ (* 100 (Option.expect (List.at xs 0) "0"))
                       (* 10 (Option.expect (List.at xs 1) "1")))
                    (Option.expect (List.at xs 2) "2"))))
@@ -1564,7 +1563,7 @@
            enumeration order, so only a to-list-INDEXED read can witness an order divergence).")
   (input  (do
             (def (main)
-              (let ((xs (Set.to-list (Set.of (list 8 5 2)))))
+              (let ((xs (Set.to-list #set(8 5 2))))
                 (+ (+ (* 100 (Option.expect (List.at xs 0) "0"))
                       (* 10 (Option.expect (List.at xs 1) "1")))
                    (Option.expect (List.at xs 2) "2"))))
@@ -1586,7 +1585,7 @@
                 ((list) cnt)
                 ((list h .. t) (if (> h prev) (inc t h (+ cnt 1)) -100000))))
             (def (main (: n Int64))
-              (inc (Set.to-list (build n (Set.of (list)))) -1 0))
+              (inc (Set.to-list (build n #set())) -1 0))
             (export main)))
   (call   main (: 100 Int64)) (output (: 100 Int64))
   (live-objects known-leak 303))
@@ -1603,7 +1602,7 @@
               (if (= i 0) acc (build (- i 1) (Set.insert acc (* i 11)))))
             (def (main (: n Int64))
               (do
-                (def src (build n (Set.of (list))))
+                (def src (build n #set()))
                 (def rt (Set.of (Set.to-list src)))
                 (+ (* 10 (if (= rt src) 1 0)) (if (= (Set.len rt) n) 1 0))))
             (export main)))
@@ -1615,7 +1614,7 @@
            DISTINCT set element ({1,2,3} → 3), so its length equals Set.len. Pins the dedup + round count.
            Expected: 3.")
   (input  (do
-            (def (main) (List.len (Set.to-list (Set.of (list 3 1 2 1 3))))) (export main)))
+            (def (main) (List.len (Set.to-list #set(3 1 2 1 3)))) (export main)))
   (output (: 3 Int64)))
 
 (case "Set.to-list orders a set of COMPOUND (tuple) elements lexicographically"
@@ -1626,7 +1625,7 @@
            element set ('no orderable descriptor') while rust computed the sorted order; the fix sorts by the
            descriptor-guided total order (`value_cmp_shaped`) on both. Expected: 1.")
   (input  (do
-            (def (main) (match (List.at (Set.to-list (Set.of (list (tuple 3 1) (tuple 1 2) (tuple 2 0)))) 0)
+            (def (main) (match (List.at (Set.to-list #set((tuple 3 1) (tuple 1 2) (tuple 2 0))) 0)
                           ((Some t) (. t 0))
                           ((None u) -1))) (export main)))
   (output (: 1 Int64))
@@ -1645,9 +1644,9 @@
            Expected: 197.")
   (input  (do
             (def (main (: k Int64))
-              (match (List.at (Set.to-list (Set.of (list (tuple 1 (Bytes.of (list 98)))
+              (match (List.at (Set.to-list #set((tuple 1 (Bytes.of (list 98)))
                                                          (tuple 1 (Bytes.of (list 97)))
-                                                         (tuple 2 (Bytes.of (list 0)))))) 0)
+                                                         (tuple 2 (Bytes.of (list 0))))) 0)
                 ((Some t) (match (Bytes.at (. t 1) 0) ((Some v) (+ (* 100 (. t 0)) v)) ((None u) -1)))
                 ((None u) -1)))
             (export main)))
@@ -1663,7 +1662,7 @@
            `value_cmp_shaped` sort, over a runtime `a` so nothing folds. Expected: 1.")
   (input  (do
             (def (main (: a Int64))
-              (match (List.at (Set.to-list (Set.of (list (record (= x 3) (= y a)) (record (= x 1) (= y 2)) (record (= x 2) (= y 0))))) 0)
+              (match (List.at (Set.to-list #set((record (= x 3) (= y a)) (record (= x 1) (= y 2)) (record (= x 2) (= y 0)))) 0)
                 ((Some r) (. r x))
                 ((None u) -1)))
             (export main)))
@@ -1678,7 +1677,7 @@
   (input  (do
             (type Reading (Temp Float64) (Missing))
             (def (main (: x Float64))
-              (let ((s (Set.of (list (Temp x) (Temp 1.5) (Temp x) (Missing)))))
+              (let ((s #set((Temp x) (Temp 1.5) (Temp x) (Missing))))
                 (+ (Set.len s)
                    (* 10 (if (Set.contains s (Temp x)) 1 0)))))
             (export main)))
@@ -1693,7 +1692,7 @@
   (input  (do
             (type Reading (Temp Float64) (Missing))
             (def (main (: x Float64))
-              (let ((s (Set.of (list (Temp (- x x)) (Temp (* (- x x) -1.0)) (Missing)))))
+              (let ((s #set((Temp (- x x)) (Temp (* (- x x) -1.0)) (Missing))))
                 (Set.len s)))
             (export main)))
   (call   main (: 2.5 Float64)) (output (: 3 Int64)))
@@ -1708,7 +1707,7 @@
             (def (rank (: r Reading))
               (match r ((Temp f) (if (< f 2.0) 1 2)) ((Missing) 9)))
             (def (main (: x Float64))
-              (let ((sorted (Set.to-list (Set.of (list (Missing) (Temp x) (Temp 1.5))))))
+              (let ((sorted (Set.to-list #set((Missing) (Temp x) (Temp 1.5)))))
                 (match sorted
                   ((list a b c) (+ (rank a) (+ (* 10 (rank b)) (* 100 (rank c)))))
                   (_ -1))))
@@ -1744,8 +1743,8 @@
   (input  (do
             (def (main (: x Float64))
               (tuple
-                (List.len (Set.to-list (Set.of (list x 2.5 1.5))))
-                (match (List.at (Set.to-list (Set.of (list x 0.5 2.5))) 0)
+                (List.len (Set.to-list #set(x 2.5 1.5)))
+                (match (List.at (Set.to-list #set(x 0.5 2.5)) 0)
                   ((Some f) (if (= f 0.5) 1 0))
                   ((None u) -1))))
             (export main)))
@@ -1767,7 +1766,7 @@
   (input  (do
             (def (main (: x Float64))
               (let ((nan (/ x x)))
-                (match (List.at (Set.to-list (Set.of (list 1.5 nan -2.0))) 1)
+                (match (List.at (Set.to-list #set(1.5 nan -2.0)) 1)
                   ((Some e) (if (= e nan) 1 0))
                   ((None u) -1))))
             (export main)))
@@ -1788,7 +1787,7 @@
   (input  (do
             (def (ins (: n Int64) (: s (Set Int64)))
               (if (< n 1) s (ins (- n 1) (Set.insert s (- 20 n)))))
-            (def (main (: n Int64)) (Option.expect (List.at (Set.to-list (ins n (Set.of (list)))) 0) "empty"))
+            (def (main (: n Int64)) (Option.expect (List.at (Set.to-list (ins n #set())) 0) "empty"))
             (export main)))
   (call   main (: 5 Int64)) (output (: 15 Int64)))
 
@@ -1802,7 +1801,7 @@
   (input  (do
             (def (main (: n Int64))
               (Option.expect
-                (List.at (Set.to-list (Set.of (list 9223372036854775807 n 0 -9223372036854775808))) 0)
+                (List.at (Set.to-list #set(9223372036854775807 n 0 -9223372036854775808)) 0)
                 "empty"))
             (export main)))
   (call   main (: 5 Int64))
@@ -1818,7 +1817,7 @@
               (if (< n 1) s (ins (- n 1) (Set.insert s (% (* n 7) 5)))))
             (def (sumlist (: l (List Int64)) (: i Int64) (: a Int64))
               (if (= i (List.len l)) a (sumlist l (+ i 1) (+ a (Option.expect (List.at l i) "oob")))))
-            (def (main (: n Int64)) (sumlist (Set.to-list (ins n (Set.of (list)))) 0 0))
+            (def (main (: n Int64)) (sumlist (Set.to-list (ins n #set())) 0 0))
             (export main)))
   (call   main (: 10 Int64)) (output (: 10 Int64))
   (live-objects known-leak 2))
@@ -1842,7 +1841,7 @@
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
             (def (main (: n Int64))
-              (match (List.at (Set.to-list (Set.of (list (rep "b" n) (rep "a" n) (rep "c" n)))) 0)
+              (match (List.at (Set.to-list #set((rep "b" n) (rep "a" n) (rep "c" n))) 0)
                 ((Some s) (if (= s "axx") 1 0))
                 ((None u) -1)))
             (export main)))
@@ -1866,7 +1865,7 @@
                 ((list) acc)
                 ((list h .. t) (lastbyte t (match (Bytes.at h 0) ((Some v) v) ((None u) -1))))))
             (def (main (: z Int64))
-              (let ((xs (Set.to-list (Set.of (list (b1 128) (b1 5) (b1 127))))))
+              (let ((xs (Set.to-list #set((b1 128) (b1 5) (b1 127)))))
                 (+ (* 100 (match xs
                             ((list h .. t) (match (Bytes.at h 0) ((Some v) v) ((None u) -1)))
                             ((list) -2)))
@@ -1912,7 +1911,7 @@
             (def (pick (: n Int64))
               (if (> n 0) "é" "q"))
             (def (main (: n Int64))
-              (match (List.at (Set.to-list (Set.of (list (pick n) "z" "a"))) 2)
+              (match (List.at (Set.to-list #set((pick n) "z" "a")) 2)
                 ((Some s) (if (= s "é") 1 (if (= s "z") 2 0)))
                 ((None u) -1)))
             (export main)))
@@ -1932,7 +1931,7 @@
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
             (def (main (: n Int64))
-              (match (List.at (Set.to-list (Set.of (list (rep "a" n) "a"))) 0)
+              (match (List.at (Set.to-list #set((rep "a" n) "a")) 0)
                 ((Some s) (String.byte-len s))
                 ((None u) -1)))
             (export main)))
@@ -1951,7 +1950,7 @@
            Int64 (so the canonical-order descriptor is well-defined), the shape a symbol-table / free-var
            enumeration takes when the collection is empty.")
   (input  (do
-            (def (main) (List.len (Set.to-list (Set.remove (Set.of (list 1)) 1))))
+            (def (main) (List.len (Set.to-list (Set.remove #set(1) 1))))
             (export main)))
   (output (: 0 Int64)))
 
@@ -1962,7 +1961,7 @@
            seed. `(List.len (Set.to-list (es)))` is 0. Pins that an element-typeless constant empty set
            enumerates to the empty list (length 0), distinct from the runtime-emptied `Set.remove` path.")
   (input  (do
-            (def (es) (Set.of (list)))
+            (def (es) #set())
             (def (main) (List.len (Set.to-list (es))))
             (export main)))
   (output (: 0 Int64)))
@@ -1975,7 +1974,7 @@
            element) by pinning a NON-head position of a scrambled successive-insert build.")
   (input  (do
             (def (main (: d Int64))
-              (let ((xs (Set.to-list (Set.insert (Set.insert (Set.insert (Set.of (list)) 3) 1) 2))))
+              (let ((xs (Set.to-list (Set.insert (Set.insert (Set.insert #set() 3) 1) 2))))
                 (+ (* 100 (Option.expect (List.at xs 0) "a"))
                    (Option.expect (List.at xs 2) "c"))))
             (export main)))
@@ -1997,7 +1996,7 @@
            break the round-trip. MUST be 1.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (let ((s (Set.of (list a b a))))
+              (let ((s #set(a b a)))
                 (if (= (Set.of (Set.to-list s)) s) 1 0)))
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
@@ -2015,7 +2014,7 @@
            A fold that mis-hashed a tuple element or dropped one would flip a component. MUST be 21.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (let ((s (Set.of (list (tuple a 1) (tuple b 2) (tuple a 1)))))
+              (let ((s #set((tuple a 1) (tuple b 2) (tuple a 1))))
                 (let ((r (Set.of (Set.to-list s))))
                   (+ (* 10 (Set.len r)) (if (= r s) 1 0)))))
             (export main)))
@@ -2074,9 +2073,9 @@
            \"lo\"). 2 + 10·2 + 100·1 = 122. The N-site generalization of the two-type case above.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (+ (Set.len (Set.of (list a b a)))
-                 (+ (* 10 (Set.len (Set.of (list (> a b) (< a b)))))
-                    (* 100 (Set.len (Set.of (list (if (> a b) "hi" "lo") "lo")))))))
+              (+ (Set.len #set(a b a))
+                 (+ (* 10 (Set.len #set((> a b) (< a b))))
+                    (* 100 (Set.len #set((if (> a b) "hi" "lo") "lo"))))))
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
   (output (: 122 Int64)))
@@ -2107,7 +2106,7 @@
            `Set.len` of the 1-element set is 1.")
   (input  (do
             (def (main (: d Float64))
-              (Set.len (Set.insert (Set.of (list)) d)))
+              (Set.len (Set.insert #set() d)))
             (export main)))
   (call   main (: 2.5 Float64))
   (output (: 1 Int64)))
@@ -2176,8 +2175,8 @@
            both canonical-form rules through the fixed box-float path.")
   (input  (do
             (def (main (: x Float64))
-              (+ (* 10 (Set.len (Set.insert (Set.insert (Set.of (list)) (/ x x)) Float64.nan)))
-                 (Set.len (Set.insert (Set.insert (Set.of (list)) -0.0) 0.0))))
+              (+ (* 10 (Set.len (Set.insert (Set.insert #set() (/ x x)) Float64.nan)))
+                 (Set.len (Set.insert (Set.insert #set() -0.0) 0.0))))
             (export main)))
   (call   main (: 0.0 Float64))
   (output (: 12 Int64)))
@@ -2207,8 +2206,8 @@
            CHAMP set hash/eq canonicalizes a Float32 element at its OWN 32-bit width, not only Float64.")
   (input  (do
             (def (main (: x Float32))
-              (+ (* 10 (Set.len (Set.insert (Set.insert (Set.of (list)) (/ x x)) Float32.nan)))
-                 (Set.len (Set.insert (Set.insert (Set.of (list)) (: -0.0 Float32)) (: 0.0 Float32)))))
+              (+ (* 10 (Set.len (Set.insert (Set.insert #set() (/ x x)) Float32.nan)))
+                 (Set.len (Set.insert (Set.insert #set() (: -0.0 Float32)) (: 0.0 Float32)))))
             (export main)))
   (call   main (: 0.0 Float32))
   (output (: 12 Int64)))
@@ -2281,7 +2280,7 @@
            set-dedup cases.")
   (input  (do
             (def (main (: x Float64))
-              (Set.len (Set.insert (Set.insert (Set.of (list)) (tuple (+ x 1.25) 3)) (tuple 2.5 3))))
+              (Set.len (Set.insert (Set.insert #set() (tuple (+ x 1.25) 3)) (tuple 2.5 3))))
             (export main)))
   (call   main (: 1.25 Float64))
   (output (: 1 Int64)))
@@ -2293,7 +2292,7 @@
            reaches an f32 NaN leaf at its own width, the tuple companion of the bare-f32-NaN dedup case.")
   (input  (do
             (def (main (: x Float32))
-              (Set.len (Set.insert (Set.insert (Set.of (list)) (tuple (/ x x) 3)) (tuple Float32.nan 3))))
+              (Set.len (Set.insert (Set.insert #set() (tuple (/ x x) 3)) (tuple Float32.nan 3))))
             (export main)))
   (call   main (: 0.0 Float32))
   (output (: 1 Int64)))
@@ -2338,7 +2337,7 @@
            tuple-float set-dedup case.")
   (input  (do
             (def (main (: x Float64))
-              (Set.len (Set.insert (Set.insert (Set.of (list)) (record (= f (+ x 1.25)) (= n 3))) (record (= f 2.5) (= n 3)))))
+              (Set.len (Set.insert (Set.insert #set() (record (= f (+ x 1.25)) (= n 3))) (record (= f 2.5) (= n 3)))))
             (export main)))
   (call   main (: 1.25 Float64))
   (output (: 1 Int64)))
@@ -2398,7 +2397,7 @@
            layers to the float leaf.")
   (input  (do
             (def (main (: x Float64))
-              (Set.len (Set.insert (Set.insert (Set.of (list)) (tuple (tuple (+ x 1.25) 3) 9)) (tuple (tuple 2.5 3) 9))))
+              (Set.len (Set.insert (Set.insert #set() (tuple (tuple (+ x 1.25) 3) 9)) (tuple (tuple 2.5 3) 9))))
             (export main)))
   (call   main (: 1.25 Float64))
   (output (: 1 Int64)))
@@ -2416,7 +2415,7 @@
            to the one quiet-NaN (box-float), so `(Set.of (list nan nan))` has ONE element, `Set.len` = 1.
            IEEE == would treat nan != nan and keep both (len 2); the canonical byte form the scalar
            `nan == nan` case pins (03-equality) says one. Runtime Float64 params keep it off const-fold.")
-  (input  (do (def (build (: x Float64) (: y Float64)) (Set.len (Set.of (list x y))))
+  (input  (do (def (build (: x Float64) (: y Float64)) (Set.len #set(x y)))
               (def (main (: d Int64)) (build Float64.nan Float64.nan)) (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
@@ -2426,7 +2425,7 @@
            so `(Set.of (list -0.0 0.0))` keeps BOTH, `Set.len` = 2. IEEE == would treat -0.0 == +0.0 and
            dedup to 1; the canonical byte form the scalar `-0.0 != 0.0` case pins says two. Confirms Set
            dedup agrees with `=`, not with IEEE ==.")
-  (input  (do (def (build (: x Float64) (: y Float64)) (Set.len (Set.of (list x y))))
+  (input  (do (def (build (: x Float64) (: y Float64)) (Set.len #set(x y)))
               (def (main (: d Int64)) (build -0.0 0.0)) (export main)))
   (call   main (: 0 Int64))
   (output (: 2 Int64)))
@@ -2435,7 +2434,7 @@
   (doc    "The plain positive control: two identical runtime floats share canonical bytes, so
            `(Set.of (list 3.5 3.5))` dedups to ONE, `Set.len` = 1. Rules out an always-keep-both bug that
            would make the NaN case pass for the wrong reason.")
-  (input  (do (def (build (: x Float64) (: y Float64)) (Set.len (Set.of (list x y))))
+  (input  (do (def (build (: x Float64) (: y Float64)) (Set.len #set(x y)))
               (def (main (: d Int64)) (build 3.5 3.5)) (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
@@ -2444,7 +2443,7 @@
   (doc    "`Set.contains` uses the same canonical hash+eq as dedup: a set holding -0.0 does NOT contain
            +0.0 (distinct canonical bytes) → false. The membership analogue of the -0.0 != +0.0 dedup
            case, pinning that contains and dedup share the float byte-form rule.")
-  (input  (do (def (test (: stored Float64) (: probe Float64)) (Set.contains (Set.of (list stored)) probe))
+  (input  (do (def (test (: stored Float64) (: probe Float64)) (Set.contains #set(stored) probe))
               (def (main (: d Int64)) (if (test -0.0 0.0) 1 0)) (export main)))
   (call   main (: 0 Int64))
   (output (: 0 Int64)))
@@ -2452,7 +2451,7 @@
 (case "Set.contains over nan finds nan"
   (doc    "The membership positive: a set holding a NaN DOES contain a NaN (both canonicalize to the one
            quiet-NaN) → true. The contains analogue of the NaN-dedup case.")
-  (input  (do (def (test (: stored Float64) (: probe Float64)) (Set.contains (Set.of (list stored)) probe))
+  (input  (do (def (test (: stored Float64) (: probe Float64)) (Set.contains #set(stored) probe))
               (def (main (: d Int64)) (if (test Float64.nan Float64.nan) 1 0)) (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
@@ -2490,7 +2489,7 @@
   (doc    "The Set companion: `(: (Set.of (list)) (Set Float64))` is an empty float-element set grounded by
            its annotation — `Set.len` = 0. Pins the wrapper-decl injection covers a float Set ELEMENT type
            (`__CdzF64` in a set type-param), not only a Map key.")
-  (input  (do (def (main) (Set.len (: (Set.of (list)) (Set Float64)))) (export main)))
+  (input  (do (def (main) (Set.len (: #set() (Set Float64)))) (export main)))
   (output (: 0 Int64)))
 
 (case "a context-typed empty float32 map grounds the narrow-float wrapper"
@@ -2518,7 +2517,7 @@
            declared at two widths (invalid module). Reversed order, a plain list, and a bare `=` all worked;
            only the ordered [big-arith, of(i64-arith)] element pair inside a Set/Map build collided.")
   (input  (do (def (main (: n Int64))
-                (Set.len (Set.of (list (+ (BigInt.of n) (BigInt.of 1)) (BigInt.of (+ n 2)))))) (export main)))
+                (Set.len #set((+ (BigInt.of n) (BigInt.of 1)) (BigInt.of (+ n 2))))) (export main)))
   (call   main (: 5 Int64))
   (output (: 2 Int64)))
 
@@ -2567,7 +2566,7 @@
             (def (big (: n Int64))
               (* (BigInt.of n) (BigInt.of 9223372036854775807)))
             (def (main (: a Int64))
-              (Set.len (Set.of (list (big a) (big 2) (big 3)))))
+              (Set.len #set((big a) (big 2) (big 3))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 2 Int64))
   (call   main (: 7 Int64)) (output (: 3 Int64)))
@@ -2590,7 +2589,7 @@
            above and the `Map.remove` twin below; the last two fixed-base compound-op arms.")
   (input  (do
             (type ILst (INil) (ICons Int64 ILst))
-            (def (g xs) (match xs ((INil) (Set.of (list))) ((ICons v t) (Set.remove (g t) (+ v 1)))))
+            (def (g xs) (match xs ((INil) #set()) ((ICons v t) (Set.remove (g t) (+ v 1)))))
             (def (main) (Set.len (g (ICons 5 (INil)))))
             (export main)))
   (output (: 0 Int64))
@@ -2606,7 +2605,7 @@
            `(+ (* 10 contains-6) contains-9)` = 0*10 + 1 = 1 pins that exactly 6 was dropped and 9 survived.")
   (input  (do
             (type ILst (INil) (ICons Int64 ILst))
-            (def (g xs) (match xs ((INil) (Set.of (list 6 9))) ((ICons v t) (Set.remove (g t) (+ v 1)))))
+            (def (g xs) (match xs ((INil) #set(6 9)) ((ICons v t) (Set.remove (g t) (+ v 1)))))
             (def (main)
               (let ((r (g (ICons 5 (INil)))))
                 (+ (* 10 (if (Set.contains r 6) 1 0)) (if (Set.contains r 9) 1 0))))
@@ -2666,9 +2665,9 @@
            `remove` disjoint-slot pins above.")
   (input  (do
             (type ILst (INil) (ICons Int64 ILst))
-            (def (g xs) (match xs ((INil) (Set.of (list))) ((ICons v t) (Set.insert (g t) (+ v 1)))))
+            (def (g xs) (match xs ((INil) #set()) ((ICons v t) (Set.insert (g t) (+ v 1)))))
             (def (main (: n Int64))
-              (Set.len (Set.union (g (ICons 5 (INil))) (Set.of (list (+ n 2) (+ n 3))))))
+              (Set.len (Set.union (g (ICons 5 (INil))) #set((+ n 2) (+ n 3)))))
             (export main)))
   (call   main (: 50 Int64))
   (output (: 3 Int64))
@@ -2726,7 +2725,7 @@
   (input (do
            (def (main (: a Int64))
              (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
-               ((Some s) (if (Set.contains (Set.of (list (Bytes.of (list 20 30)))) s) 1 0))
+               ((Some s) (if (Set.contains #set((Bytes.of (list 20 30))) s) 1 0))
                ((None u) -2)))
            (export main)))
   (call main (: 1 Int64))
@@ -2758,7 +2757,7 @@
   (input  (do
             (def (main (: a Int64))
               (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
-                ((Some s) (Set.len (Set.of (list s (Bytes.of (list 20 30))))))
+                ((Some s) (Set.len #set(s (Bytes.of (list 20 30)))))
                 ((None u) -1)))
             (export main)))
   (call   main (: 1 Int64))
@@ -2777,8 +2776,8 @@
             (def (main (: a Int64))
               (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
                 ((Some s)
-                  (Set.len (Set.union (Set.of (list s))
-                                      (Set.of (list (Bytes.of (list 20 30)) (Bytes.of (list 1 2)))))))
+                  (Set.len (Set.union #set(s)
+                                      #set((Bytes.of (list 20 30)) (Bytes.of (list 1 2))))))
                 ((None u) -1)))
             (export main)))
   (call   main (: 1 Int64))
@@ -2798,10 +2797,10 @@
               (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
                 ((Some s)
                   (if (= which 0)
-                    (Set.len (Set.intersection (Set.of (list s (Bytes.of (list 1 2))))
-                                               (Set.of (list (Bytes.of (list 20 30))))))
-                    (Set.len (Set.difference (Set.of (list (Bytes.of (list 20 30)) (Bytes.of (list 1 2))))
-                                             (Set.of (list s))))))
+                    (Set.len (Set.intersection #set(s (Bytes.of (list 1 2)))
+                                               #set((Bytes.of (list 20 30)))))
+                    (Set.len (Set.difference #set((Bytes.of (list 20 30)) (Bytes.of (list 1 2)))
+                                             #set(s)))))
                 ((None u) -1)))
             (export main)))
   (call   main (: 1 Int64) (: 0 Int64))
@@ -2857,7 +2856,7 @@
            bytes exactly as the map-KEY twin (pinned above) does.")
   (input  (do
             (def (main (: x Float64))
-              (Set.len (Set.of (list (record (= f x) (= n 1)) (record (= f 2.5) (= n 1))))))
+              (Set.len #set((record (= f x) (= n 1)) (record (= f 2.5) (= n 1)))))
             (export main)))
   (call   main (: 0.5 Float64))
   (output (: 2 Int64))
@@ -2870,7 +2869,7 @@
            distinct (len 2 via insert-insert); x=2.5 collapses (len 1).")
   (input  (do
             (def (main (: x Float64))
-              (Set.len (Set.insert (Set.insert (Set.of (list)) (tuple (tuple x 1) 2)) (tuple (tuple 2.5 1) 2))))
+              (Set.len (Set.insert (Set.insert #set() (tuple (tuple x 1) 2)) (tuple (tuple 2.5 1) 2))))
             (export main)))
   (call   main (: 0.5 Float64))
   (output (: 2 Int64))
@@ -2886,7 +2885,7 @@
   (input  (do
         (def (main (: n Int64))
           (do
-            (def xs (Set.to-list (Set.of (list (Rational.of 3 2) (Rational.of 1 2) (Rational.of n 4)))))
+            (def xs (Set.to-list #set((Rational.of 3 2) (Rational.of 1 2) (Rational.of n 4))))
             (def a (match (List.at xs 0) ((Some r) (Rational.truncate (* r (Rational.of 2 1)))) ((None _u) -99)))
             (def b (match (List.at xs 1) ((Some r) (Rational.truncate (* r (Rational.of 2 1)))) ((None _u) -99)))
             (+ (* 100 (List.len xs)) (+ (* 10 a) b))))
@@ -2905,7 +2904,7 @@
   (input  (do
         (def (main (: n Int64))
           (do
-            (def s (Set.of (list (Rational.of 1 (- 0 n)) (Rational.of -1 2) (Rational.of 1 2))))
+            (def s #set((Rational.of 1 (- 0 n)) (Rational.of -1 2) (Rational.of 1 2)))
             (+ (* 10 (Set.len s)) (if (Set.contains s (Rational.of -2 4)) 1 0))))
         (export main)))
   (call   main (: 2 Int64)) (output (: 21 Int64))
@@ -2920,7 +2919,7 @@
   (input  (do
         (def (main (: n Int64))
           (do
-            (def xs (Set.to-list (Set.of (list (Rational.of 2 3) (Rational.of 1 n) (Rational.of 1 2)))))
+            (def xs (Set.to-list #set((Rational.of 2 3) (Rational.of 1 n) (Rational.of 1 2))))
             (def (six (: i Int64))
               (match (List.at xs i) ((Some r) (Rational.truncate (* r (Rational.of 6 1)))) ((None _u) -9)))
             (+ (* 100 (six 0)) (+ (* 10 (six 1)) (six 2)))))
@@ -2939,8 +2938,8 @@
   (input  (do
         (def (main (: n Int64))
           (do
-            (def a (Set.of (list (+ (Rational.of 1 4) (Rational.of 1 4)) (Rational.of 5 3))))
-            (def b (Set.of (list (Rational.of n 4) (Rational.of 7 3))))
+            (def a #set((+ (Rational.of 1 4) (Rational.of 1 4)) (Rational.of 5 3)))
+            (def b #set((Rational.of n 4) (Rational.of 7 3)))
             (def i (Set.intersection a b))
             (+ (* 10 (Set.len i)) (if (Set.contains i (Rational.of 1 2)) 1 0))))
         (export main)))
@@ -2962,7 +2961,7 @@
             (def v2 (+ (+ (* (BigInt.of 4611686018427387904) (BigInt.of 2))
                           (* (BigInt.of 4611686018427387904) (BigInt.of 4)))
                        (BigInt.of k)))
-            (def s (Set.of (list v1 v2)))
+            (def s #set(v1 v2))
             (+ (* 10 (Set.len s)) (if (Set.contains s (* (BigInt.of 2305843009213693952) (BigInt.of 12))) 1 0))))
         (export main)))
   (call   main (: 0 Int64)) (output (: 11 Int64))
@@ -3001,11 +3000,11 @@
   (input  (do
         (def (main (: n Int64))
           (do
-            (def i1 (Set.of (list 1 2 3)))
-            (def i2 (Set.insert (Set.insert (Set.insert (Set.of (list)) n) 2) 1))
-            (def s (Set.of (list i1 i2)))
+            (def i1 #set(1 2 3))
+            (def i2 (Set.insert (Set.insert (Set.insert #set() n) 2) 1))
+            (def s #set(i1 i2))
             (+ (* 10 (Set.len s))
-               (if (Set.contains s (Set.insert (Set.insert (Set.of (list 2)) 1) 3)) 1 0))))
+               (if (Set.contains s (Set.insert (Set.insert #set(2) 1) 3)) 1 0))))
         (export main)))
   (call   main (: 3 Int64)) (output (: 11 Int64))
   (call   main (: 4 Int64)) (output (: 21 Int64)))
@@ -3065,7 +3064,7 @@
         (def (main (: mode Int64))
           (do
             (def r (String.concat "a" (if (> mode 0) "a" "z")))
-            (def xs (Set.to-list (Set.of (list "b" r "c"))))
+            (def xs (Set.to-list #set("b" r "c")))
             (def (at (: i Int64)) (Option.expect (List.at xs i) "in"))
             (+ (* 10 (if (= (at 0) "aa") 1 0))
                (if (= (at 2) "c") 1 0))))
@@ -3086,7 +3085,7 @@
           (do
             (def a (tuple (Option.expect (String.slice "xkeyz" 1 4) "in") 1))
             (def b (tuple (String.concat "ke" (if (> mode 0) "y" "x")) 2))
-            (def xs (Set.to-list (Set.of (list a b))))
+            (def xs (Set.to-list #set(a b)))
             (match (List.at xs 0)
               ((Some t) (. t 1))
               ((None _u) -1))))
@@ -3109,7 +3108,7 @@
             (def m (Map.insert Map.empty "key" 42))
             (def rope (String.concat "ke" (if (= mode 1) "z" "y")))
             (def view (Option.expect (String.slice "xkeyz" 1 4) "in"))
-            (def s (Set.of (list rope)))
+            (def s #set(rope))
             (+ (* 1000 (match (Map.lookup m rope) ((Some v) 1) ((None _u) 0)))
                (+ (* 100 (match (Map.lookup m view) ((Some v) 1) ((None _u) 0)))
                   (+ (* 10 (if (Set.contains s view) 1 0))
@@ -3129,7 +3128,7 @@
 (case "Set.to-list over float-leaf tuple elements declines — a float-containing compound offers no total order (§319, 03:626 companion)"
   (input  (do
         (def (main)
-          (List.len (Set.to-list (Set.of (list (tuple 1.5 1) (tuple 2.5 2) (tuple -1.0 3))))))
+          (List.len (Set.to-list #set((tuple 1.5 1) (tuple 2.5 2) (tuple -1.0 3)))))
         (export main)))
   (declines))
 
@@ -3163,7 +3162,7 @@
   (input  (do
         (def (main (: x Float64))
           (do
-            (def s (Set.of (list (tuple 1.5 1) (tuple (/ x x) 2))))
+            (def s #set((tuple 1.5 1) (tuple (/ x x) 2)))
             (+ (* 100 (Set.len s))
                (+ (* 10 (if (Set.contains s (tuple Float64.nan 2)) 1 0))
                   (Set.len (Set.remove s (tuple 1.5 1)))))))
@@ -3178,12 +3177,12 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def s1 (Set.of (list 1 k)))
-                (def s2 (Set.of (list k 1)))
-                (def s3 (Set.of (list 9)))
-                (def nested (Set.of (list s1 s2 s3)))
+                (def s1 #set(1 k))
+                (def s2 #set(k 1))
+                (def s3 #set(9))
+                (def nested #set(s1 s2 s3))
                 (+ (* 10 (Set.len nested))
-                   (if (Set.contains nested (Set.of (list 2 1))) 1 0))))
+                   (if (Set.contains nested #set(2 1)) 1 0))))
             (export main)))
   (call   main (: 2 Int64))
   (output (: 21 Int64)))
@@ -3193,8 +3192,8 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def a (Set.of (list (String.concat "ap" (if (= k 1) "ple" "x")) "banana")))
-                (def b (Set.of (list "apple" (String.concat "che" (if (= k 1) "rry" "z")))))
+                (def a #set((String.concat "ap" (if (= k 1) "ple" "x")) "banana"))
+                (def b #set("apple" (String.concat "che" (if (= k 1) "rry" "z"))))
                 (+ (* 100 (Set.len (Set.union a b)))
                    (+ (* 10 (Set.len (Set.intersection a b)))
                       (Set.len (Set.difference a b))))))
@@ -3212,7 +3211,7 @@
   (input  (do
         (def (main (: x Float32))
           (do
-            (def xs (Set.to-list (Set.of (list x (: 0.5 Float32) (: 2.5 Float32)))))
+            (def xs (Set.to-list #set(x (: 0.5 Float32) (: 2.5 Float32))))
             (match (List.at xs 0)
               ((Some v) (if (= v (: 0.5 Float32)) 1 (if (= v x) 2 0)))
               ((None _u) -1))))
@@ -3232,7 +3231,7 @@
   (input  (do
         (def (main (: y Float32))
           (do
-            (def s (Set.of (list (tuple (/ y y) (: 1.5 Float64)) (tuple Float32.nan (: 1.5 Float64)))))
+            (def s #set((tuple (/ y y) (: 1.5 Float64)) (tuple Float32.nan (: 1.5 Float64))))
             (Set.len s)))
         (export main)))
   (call   main (: 0.0 Float32)) (output (: 1 Int64))
@@ -3245,8 +3244,8 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def es (Set.of (list)))
-                (def s1 (Set.remove (Set.of (list k)) k))
+                (def es #set())
+                (def s1 (Set.remove #set(k) k))
                 (+ (* 100 (List.len (Set.to-list es)))
                    (+ (* 10 (List.len (Set.to-list s1)))
                       (if (= es s1) 1 0)))))
@@ -3269,7 +3268,7 @@
                 ((emit (v) s (resume unit (+ (* s 10) v)))
                  (total (_u) s (resume s s)))
                 (do
-                  (drain (Set.to-list (Set.of (list 3 k 1))) 0)
+                  (drain (Set.to-list #set(3 k 1)) 0)
                   (Sink.total))))
             (export main)))
   (call   main (: 2 Int64))
@@ -3289,8 +3288,8 @@
            structure would flip the first leg.")
   (input  (do
             (def (main (: x Int64))
-              (+ (* 10 (if (= (Set.remove (Set.of (list x 99)) 99) (Set.of (list x))) 1 0))
-                 (if (= (Set.remove (Set.of (list x 99)) 99) (Set.of (list (+ x 1)))) 1 0)))
+              (+ (* 10 (if (= (Set.remove #set(x 99) 99) #set(x)) 1 0))
+                 (if (= (Set.remove #set(x 99) 99) #set((+ x 1))) 1 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 10 Int64)))
 
@@ -3302,8 +3301,8 @@
            construction would compare unequal while holding the same elements.")
   (input  (do
             (def (main (: x Int64))
-              (+ (* 10 (if (= (Set.difference (Set.of (list x 7 99)) (Set.of (list 7 99))) (Set.of (list x))) 1 0))
-                 (if (= (Set.intersection (Set.of (list x 7)) (Set.of (list x 42))) (Set.of (list x))) 1 0)))
+              (+ (* 10 (if (= (Set.difference #set(x 7 99) #set(7 99)) #set(x)) 1 0))
+                 (if (= (Set.intersection #set(x 7) #set(x 42)) #set(x)) 1 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 11 Int64)))
 
@@ -3315,8 +3314,8 @@
            structurally distinct) layout would flip the first leg.")
   (input  (do
             (def (main (: x Int64))
-              (+ (* 10 (if (= (Set.union (Set.of (list x 7)) (Set.of (list 7 42))) (Set.of (list x 7 42))) 1 0))
-                 (if (= (Set.union (Set.of (list x)) (Set.of (list x))) (Set.of (list x))) 1 0)))
+              (+ (* 10 (if (= (Set.union #set(x 7) #set(7 42)) #set(x 7 42)) 1 0))
+                 (if (= (Set.union #set(x) #set(x)) #set(x)) 1 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 11 Int64)))
 
@@ -3342,7 +3341,7 @@
             (def (main (: z Int64))
               (let ((a (+ 150512886 z))
                     (b (+ 59555794 z))
-                    (s (Set.of (list (+ 150512886 z) (+ 59555794 z)))))
+                    (s #set((+ 150512886 z) (+ 59555794 z))))
                 (+ (* 1000 (Set.len s))
                    (+ (* 100 (if (Set.contains s a) 1 0))
                       (+ (* 10 (if (Set.contains s b) 1 0))
@@ -3381,7 +3380,7 @@
            nested-eq that bottomed out comparing only the shared second child would wrongly fuse the two.")
   (input  (do
             (def (main (: z Int64))
-              (let ((s (Set.of (list (tuple (+ 150512886 z) z) (tuple (+ 59555794 z) z)))))
+              (let ((s #set((tuple (+ 150512886 z) z) (tuple (+ 59555794 z) z))))
                 (+ (* 1000 (Set.len s))
                    (+ (* 100 (if (Set.contains s (tuple (+ 150512886 z) z)) 1 0))
                       (+ (* 10 (if (Set.contains s (tuple (+ 59555794 z) z)) 1 0))
@@ -3407,7 +3406,7 @@
   (input  (do
             (def (main (: z Int64))
               (let ((a (+ 1 z)) (b (+ 162287981 z)) (c (+ 530337573 z))
-                    (s (Set.of (list (+ 1 z) (+ 162287981 z) (+ 530337573 z)))))
+                    (s #set((+ 1 z) (+ 162287981 z) (+ 530337573 z))))
                 (+ (* 10000 (Set.len s))
                    (+ (* 1000 (if (Set.contains s a) 1 0))
                       (+ (* 100 (if (Set.contains s b) 1 0))
@@ -3430,11 +3429,11 @@
   (input  (do
             (def (main (: z Int64))
               (let ((a (+ 1 z)) (b (+ 162287981 z)) (c (+ 530337573 z))
-                    (s3 (Set.of (list (+ 1 z) (+ 162287981 z) (+ 530337573 z)))))
+                    (s3 #set((+ 1 z) (+ 162287981 z) (+ 530337573 z))))
                 (let ((s2 (Set.remove s3 b)))
                   (+ (* 100 (if (and (not (Set.contains s2 b)) (and (Set.contains s2 a) (Set.contains s2 c))) 1 0))
                      (+ (* 10 (if (= (Set.len s2) 2) 1 0))
-                        (if (= (Set.remove s2 c) (Set.of (list a))) 1 0))))))
+                        (if (= (Set.remove s2 c) #set(a)) 1 0))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 111 Int64)))
 
@@ -3470,8 +3469,8 @@
   (input  (do
             (def (main (: z Int64))
               (let ((a (+ 1 z)) (b (+ 162287981 z)) (c (+ 530337573 z)))
-                (+ (* 10 (if (= (Set.len (Set.difference (Set.of (list a b c)) (Set.of (list b)))) 2) 1 0))
-                   (if (= (Set.union (Set.of (list a b)) (Set.of (list c))) (Set.of (list a b c))) 1 0))))
+                (+ (* 10 (if (= (Set.len (Set.difference #set(a b c) #set(b))) 2) 1 0))
+                   (if (= (Set.union #set(a b) #set(c)) #set(a b c)) 1 0))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 11 Int64)))
 
@@ -3498,7 +3497,7 @@
             (def (main (: z Int64))
               (let ((imm (+ 134198332 z))
                     (boxed (+ 536870918 z))
-                    (s (Set.of (list (+ 134198332 z) (+ 536870918 z))))
+                    (s #set((+ 134198332 z) (+ 536870918 z)))
                     (m (Map.insert (Map.insert Map.empty (+ 134198332 z) 1) (+ 536870918 z) 2)))
                 (+ (* 10000 (Set.len s))
                    (+ (* 1000 (if (Set.contains s imm) 1 0))
@@ -3517,7 +3516,7 @@
            the small fixnum first and flip the digits.")
   (input  (do
             (def (main (: z Int64))
-              (match (Set.to-list (Set.of (list (+ z 536870920) (+ z 100) (- 0 (+ z 536870915)))))
+              (match (Set.to-list #set((+ z 536870920) (+ z 100) (- 0 (+ z 536870915))))
                 ((list a b c) (+ (* 100 (if (< a b) 1 0))
                                  (+ (* 10 (if (< b c) 1 0))
                                     (if (= a (- 0 (+ z 536870915))) 1 0))))
@@ -3539,7 +3538,7 @@
            the k=2 hit or false-hits the k=3 miss.")
   (input  (do
             (def (main (: k Int64))
-              (match (Map.lookup (Map.insert Map.empty (Set.of (list 1 2)) 42) (Set.of (list k 1)))
+              (match (Map.lookup (Map.insert Map.empty #set(1 2) 42) #set(k 1))
                 ((Some v) v) ((None _u) -1)))
             (export main)))
   (call   main (: 2 Int64)) (output (: 42 Int64))
@@ -3552,8 +3551,8 @@
            set's canonical content; a row hash that stopped at the set's slot handle splits the hit.")
   (input  (do
             (def (main (: n Int64))
-              (match (Map.lookup (Map.insert Map.empty (record (= s (Set.of (list 1 2))) (= id 7)) 42)
-                                 (record (= s (Set.of (list n 1))) (= id 7)))
+              (match (Map.lookup (Map.insert Map.empty (record (= s #set(1 2)) (= id 7)) 42)
+                                 (record (= s #set(n 1)) (= id 7)))
                 ((Some v) v) ((None _u) -1)))
             (export main)))
   (call   main (: 2 Int64)) (output (: 42 Int64))
@@ -3567,10 +3566,9 @@
            set-key at full depth; a hash truncated at any layer collapses or splits an element.")
   (input  (do
             (def (main (: n Int64))
-              (Set.len (Set.of (list
-                (Map.insert Map.empty (Set.of (list 1 n)) "v")
-                (Map.insert Map.empty (Set.of (list 2 1)) "v")
-                (Map.insert Map.empty (Set.of (list 1 2)) "w")))))
+              (Set.len #set((Map.insert Map.empty #set(1 n) "v")
+                (Map.insert Map.empty #set(2 1) "v")
+                (Map.insert Map.empty #set(1 2) "w"))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 2 Int64))
   (call   main (: 3 Int64)) (output (: 3 Int64)))
@@ -3600,7 +3598,7 @@
             (def (build (: i Int64) (: n Int64) (: s (Set Int64)))
               (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
             (def (loop (: j Int64) (: n Int64) (: tot Int64))
-              (if (< j n) (loop (+ j 1) n (+ tot (List.len (Set.to-list (build 0 3 (Set.of (list))))))) tot))
+              (if (< j n) (loop (+ j 1) n (+ tot (List.len (Set.to-list (build 0 3 #set()))))) tot))
             (def (main (: n Int64)) (loop 0 n 0))
             (export main)))
   (call   main (: 500 Int64)) (output (: 1500 Int64))
@@ -3637,7 +3635,7 @@
               (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
             (def (loop (: j Int64) (: n Int64) (: s (Set Int64)) (: tot Int64))
               (if (< j n) (loop (+ j 1) n s (+ tot (List.len (Set.to-list s)))) tot))
-            (def (main (: n Int64)) (loop 0 n (build 0 3 (Set.of (list))) 0))
+            (def (main (: n Int64)) (loop 0 n (build 0 3 #set()) 0))
             (export main)))
   (call   main (: 500 Int64)) (output (: 1500 Int64))
   (live-objects known-leak 1))
@@ -3648,7 +3646,7 @@
            operands; the fresh owned union result is borrowed then dropped by Set.len -- net 0 live cells.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: s (Set Int64))) (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
-            (def (main) (Set.len (Set.union (build 0 3 (Set.of (list))) (build 2 5 (Set.of (list))))))
+            (def (main) (Set.len (Set.union (build 0 3 #set()) (build 2 5 #set()))))
             (export main)))
   (call   main) (output (: 5 Int64))
   (live-objects 0))
@@ -3658,7 +3656,7 @@
            the fresh owned result must all be reclaimed after the borrowing length read -- net 0.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: s (Set Int64))) (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
-            (def (main) (Set.len (Set.intersection (build 0 3 (Set.of (list))) (build 2 5 (Set.of (list))))))
+            (def (main) (Set.len (Set.intersection (build 0 3 #set()) (build 2 5 #set()))))
             (export main)))
   (call   main) (output (: 1 Int64))
   (live-objects 0))
@@ -3668,7 +3666,7 @@
            result must all be reclaimed after the borrowing length read -- net 0.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: s (Set Int64))) (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
-            (def (main) (Set.len (Set.difference (build 0 3 (Set.of (list))) (build 2 5 (Set.of (list))))))
+            (def (main) (Set.len (Set.difference (build 0 3 #set()) (build 2 5 #set()))))
             (export main)))
   (call   main) (output (: 2 Int64))
   (live-objects 0))
@@ -3698,7 +3696,7 @@
   (input  (do
             (def (build (: i Int64) (: n Int64) (: s (Set Int64)))
               (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
-            (def (main) (Set.len (build 0 3 (Set.of (list)))))
+            (def (main) (Set.len (build 0 3 #set())))
             (export main)))
   (call   main) (output (: 3 Int64))
   (live-objects 0))
@@ -3723,7 +3721,7 @@
             (def (build (: i Int64) (: n Int64) (: s (Set Int64)))
               (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
             (def (drive (: j Int64) (: m Int64) (: tot Int64))
-              (if (< j m) (drive (+ j 1) m (+ tot (if (Set.contains (build 0 3 (Set.of (list))) 1) 1 0))) tot))
+              (if (< j m) (drive (+ j 1) m (+ tot (if (Set.contains (build 0 3 #set()) 1) 1 0))) tot))
             (def (main) (drive 0 300 0))
             (export main)))
   (call   main) (output (: 300 Int64))
@@ -3751,7 +3749,7 @@
            double-free.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: s (Set Int64))) (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
-            (def (main) (let ((s (build 0 3 (Set.of (list))))) (+ (Set.len (Set.union s (build 5 8 (Set.of (list))))) (Set.len s))))
+            (def (main) (let ((s (build 0 3 #set()))) (+ (Set.len (Set.union s (build 5 8 #set()))) (Set.len s))))
             (export main)))
   (call   main) (output (: 9 Int64))
   (live-objects 0))
@@ -3767,7 +3765,7 @@
 (case "sto2 insertion-order INSENSITIVITY — {3,1,2} vs {2,3,1} to-list equality via tuple walk"
   (input (do
     (def (main (: n Int64))
-      (if (= (tuple 1 (Set.to-list (Set.of (list 3 1 2 n)))) (tuple 1 (Set.to-list (Set.of (list n 2 3 1))))) 1 0))
+      (if (= (tuple 1 (Set.to-list #set(3 1 2 n))) (tuple 1 (Set.to-list #set(n 2 3 1)))) 1 0))
     (export main)))
   (call main (: 7 Int64))
   (output (: 1 Int64)))
@@ -3779,7 +3777,7 @@
         ((Option.Some v) (+ v (sum-at xs (+ i 1))))
         ((Option.None) 0)))
     (def (main (: n Int64))
-      (let ((xs (Set.to-list (Set.of (list n 10 20)))))
+      (let ((xs (Set.to-list #set(n 10 20))))
         (+ (* 100 (List.len xs)) (sum-at xs 0))))
     (export main)))
   (call main (: 3 Int64))
@@ -3791,7 +3789,7 @@
     (def (at (: xs (List Int64)) (: i Int64))
       (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
     (def (main (: n Int64))
-      (let ((xs (Set.to-list (Set.of (list 3 1 2)))))
+      (let ((xs (Set.to-list #set(3 1 2))))
         (+ (* 100 (at xs 0)) (+ (* 10 (at xs 1)) (at xs 2)))))
     (export main)))
   (call main (: 0 Int64))
@@ -3802,7 +3800,7 @@
     (def (at (: xs (List String)) (: i Int64))
       (match (List.at xs i) ((Option.Some v) v) ((Option.None) "?")))
     (def (main (: n Int64))
-      (let ((xs (Set.to-list (Set.of (list "b" "a" "c")))))
+      (let ((xs (Set.to-list #set("b" "a" "c"))))
         (String.concat (at xs 0) (String.concat (at xs 1) (at xs 2)))))
     (export main)))
   (call main (: 0 Int64))
@@ -3816,7 +3814,7 @@
     (def (at (: xs (List Int64)) (: i Int64))
       (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
     (def (main (: n Int64))
-      (let ((xs (Set.to-list (grow (Set.of (list)) 20))))
+      (let ((xs (Set.to-list (grow #set() 20))))
         (+ (* 10000 (at xs 0)) (+ (* 100 (at xs 1)) (at xs 2)))))
     (export main)))
   (call main (: 0 Int64))
@@ -3827,7 +3825,7 @@
     (def (at (: xs (List Int64)) (: i Int64))
       (match (List.at xs i) ((Option.Some v) v) ((Option.None) -999)))
     (def (main (: n Int64))
-      (let ((xs (Set.to-list (Set.of (list 100 -5 7)))))
+      (let ((xs (Set.to-list #set(100 -5 7))))
         (if (= (at xs 0) -5) (if (= (at xs 1) 7) (if (= (at xs 2) 100) 1 -3) -2) -1)))
     (export main)))
   (call main (: 0 Int64))
@@ -3838,7 +3836,7 @@
     (def (at (: xs (List String)) (: i Int64))
       (match (List.at xs i) ((Option.Some v) v) ((Option.None) "?")))
     (def (main (: n Int64))
-      (let ((xs (Set.to-list (Set.of (list "bb" "ab" "b")))))
+      (let ((xs (Set.to-list #set("bb" "ab" "b"))))
         (String.concat (at xs 0) (String.concat "|" (String.concat (at xs 1) (String.concat "|" (at xs 2)))))))
     (export main)))
   (call main (: 0 Int64))
@@ -3854,7 +3852,7 @@
 (case "nz2 {+0.0, -0.0} are TWO set members"
   (input (do
     (def (main (: x Float64))
-      (Set.len (Set.of (list x (* x -1.0)))))
+      (Set.len #set(x (* x -1.0))))
     (export main)))
   (call main (: 0.0 Float64))
   (output (: 2 Int64)))
@@ -3862,7 +3860,7 @@
 (case "nz3 -0.0 is NOT a member of {+0.0}"
   (input (do
     (def (main (: x Float64))
-      (if (Set.contains (Set.of (list x)) (* x -1.0)) 1 0))
+      (if (Set.contains #set(x) (* x -1.0)) 1 0))
     (export main)))
   (call main (: 0.0 Float64))
   (output (: 0 Int64)))
@@ -3881,7 +3879,7 @@
 (case "nk1 two runtime-computed NaNs dedup to ONE set member (canonical NaN)"
   (input (do
     (def (main (: x Float64))
-      (Set.len (Set.of (list (- (/ x 0.0) (/ x 0.0)) (- (/ (* x 2.0) 0.0) (/ (* x 2.0) 0.0)) 1.0))))
+      (Set.len #set((- (/ x 0.0) (/ x 0.0)) (- (/ (* x 2.0) 0.0) (/ (* x 2.0) 0.0)) 1.0)))
     (export main)))
   (call main (: 1.0 Float64))
   (output (: 2 Int64)))
@@ -3889,7 +3887,7 @@
 (case "nk2 +inf, -inf, and NaN are THREE distinct set members"
   (input (do
     (def (main (: x Float64))
-      (Set.len (Set.of (list (/ x 0.0) (/ (- 0.0 x) 0.0) (- (/ x 0.0) (/ x 0.0))))))
+      (Set.len #set((/ x 0.0) (/ (- 0.0 x) 0.0) (- (/ x 0.0) (/ x 0.0)))))
     (export main)))
   (call main (: 1.0 Float64))
   (output (: 3 Int64)))
@@ -3913,7 +3911,7 @@
 (case "ck1 a Char set dedups repeated members"
   (input (do
     (def (main (: n Int64))
-      (Set.len (Set.of (list #\a #\b (if (> n 0) #\a #\c)))))
+      (Set.len #set(#\a #\b (if (> n 0) #\a #\c))))
     (export main)))
   (call main (: 1 Int64))
   (output (: 2 Int64)))
@@ -3921,7 +3919,7 @@
 (case "ck2 Char set membership hits and misses"
   (input (do
     (def (main (: n Int64))
-      (let ((s (Set.of (list #\a (if (> n 0) #\b #\z)))))
+      (let ((s #set(#\a (if (> n 0) #\b #\z))))
         (+ (if (Set.contains s #\b) 10 0) (if (Set.contains s #\c) 1 0))))
     (export main)))
   (call main (: 1 Int64))
@@ -3942,7 +3940,7 @@
   (input (do
     (def (main (: n Int64))
       (let ((s (if (> n 0) "hot" "warm")))
-        (let ((st (Set.of (list (Symbol.of "hot") (Symbol.of s) (Symbol.of "cold")))))
+        (let ((st #set((Symbol.of "hot") (Symbol.of s) (Symbol.of "cold"))))
           (+ (Set.len st) (if (Set.contains st (Symbol.of "cold")) 100 0)))))
     (export main)))
   (call main (: 1 Int64))
@@ -3957,13 +3955,13 @@
 (case "stl1 Set.to-list folds under the Ast.encode const-param demand path"
   (input (do
     (def (f (const (: n Int64)))
-      (List.len (Set.to-list (Set.of (list n (* n 2) n)))))
+      (List.len (Set.to-list #set(n (* n 2) n))))
     (def (run) (= (Ast.encode (Ast.Int (BigInt.of (f 4)))) (Ast.encode (Ast.Int (BigInt.of 2)))))
     (export run)))
   (output (: true Bool)))
 
 (case "stl2 a (const Set.to-list) result is consumed by runtime List.len outside the block"
-  (input (do (def (main) (List.len (const (Set.to-list (Set.of (list 1 2)))))) (export main)))
+  (input (do (def (main) (List.len (const (Set.to-list #set(1 2))))) (export main)))
   (output (: 2 Int64)))
 
 ; -- breaker batch 423 (2026-08-26): CROSS-FEATURE seam pins over the day's fixes — an
@@ -3980,7 +3978,7 @@
     (def (main (: n Int64))
       (handle E (% n 3)
         ((tick () s (resume (* s 10) (+ s 1))))
-        (match (List.at (const (Set.to-list (Set.of (list 30 10 20)))) (ap (fn (x) (+ x (E.tick)))))
+        (match (List.at (const (Set.to-list #set(30 10 20))) (ap (fn (x) (+ x (E.tick)))))
           ((Option.Some v) v)
           ((Option.None) -1))))
     (export main)))
@@ -3990,7 +3988,7 @@
 (case "xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)"
   (input (do
     (def (main (: n Int64))
-      (Set.len (Set.of (list (Ast.encode (Ast.Int (BigInt.of n))) (Ast.encode (Ast.Int (BigInt.of n))) (Ast.encode (Ast.Int (BigInt.of (+ n 1))))))))
+      (Set.len #set((Ast.encode (Ast.Int (BigInt.of n))) (Ast.encode (Ast.Int (BigInt.of n))) (Ast.encode (Ast.Int (BigInt.of (+ n 1)))))))
     (export main)))
   (call main (: 7 Int64))
   (output (: 2 Int64)))
@@ -3999,11 +3997,11 @@
   (input (do
     (effect E (op put (-> Int64)))
     (def (main (: n Int64))
-      (handle E (Set.of (list n))
+      (handle E #set(n)
         ((put () s (resume (Set.len s) (Set.insert s (* n 2)))))
         (let ((a (E.put)))
           (let ((b (E.put)))
-            (match (List.at (Set.to-list (Set.of (list (* 10 a) b))) 0)
+            (match (List.at (Set.to-list #set((* 10 a) b)) 0)
               ((Option.Some v) v)
               ((Option.None) -1))))))
     (export main)))
@@ -4018,7 +4016,7 @@
 (case "xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode"
   (input (do
     (def (main (: n Int64))
-      (if (Set.contains (Set.of (list (Ast.encode (Ast.Int (BigInt.of n))))) (Ast.encode (Ast.Int (BigInt.of n)))) 1 0))
+      (if (Set.contains #set((Ast.encode (Ast.Int (BigInt.of n)))) (Ast.encode (Ast.Int (BigInt.of n)))) 1 0))
     (export main)))
   (call main (: 7 Int64))
   (output (: 1 Int64))
@@ -4046,7 +4044,7 @@
 (case "ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)"
   (input (do
     (def (main (: n Int64))
-      (match (List.at (Set.to-list (Set.of (list #\c (if (> n 0) #\a #\q) #\b))) 0)
+      (match (List.at (Set.to-list #set(#\c (if (> n 0) #\a #\q) #\b)) 0)
         ((Option.Some ch) (if (= ch #\a) 1 0))
         ((Option.None) -1)))
     (export main)))
@@ -4056,7 +4054,7 @@
 (case "ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)"
   (input (do
     (def (main (: s String))
-      (let ((st (Set.of (list (Symbol.of "hot") (Symbol.of s) (Symbol.of "cold")))))
+      (let ((st #set((Symbol.of "hot") (Symbol.of s) (Symbol.of "cold"))))
         (+ (Set.len st) (if (Set.contains st (Symbol.of "cold")) 100 0))))
     (export main)))
   (call main (: "hot" String))
@@ -4070,7 +4068,7 @@
            (Set.len 0) and the box is reclaimed at the borrow's end -> live-objects 0 (a fixnum element boxes
            inline, no heap temporary). A missing drop would leave the un-dropped boxed element.")
   (input  (do
-            (def (main) (Set.len (Set.remove (Set.insert (Set.of (list)) 100000000000) 100000000000)))
+            (def (main) (Set.len (Set.remove (Set.insert #set() 100000000000) 100000000000)))
             (export main)))
   (call   main) (output (: 0 Int64)) (live-objects 0))
 
@@ -4081,7 +4079,7 @@
            deferred to the element node's type. A running case here proves the module is valid; the 1-element
            set (Set.len 1) reclaims fully -> live-objects 0.")
   (input  (do
-            (def (main) (Set.len (Set.insert (Set.of (list)) "hi")))
+            (def (main) (Set.len (Set.insert #set() "hi")))
             (export main)))
   (call   main) (output (: 1 Int64)) (live-objects 0))
 
@@ -4093,7 +4091,7 @@
            so the compaction added no leak).")
   (input  (do
             (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (Set.len (Set.insert (Set.of (list)) (rep "hi" 3))))
+            (def (main) (Set.len (Set.insert #set() (rep "hi" 3))))
             (export main)))
   (call   main) (output (: 1 Int64)) (live-objects 0))
 
@@ -4104,8 +4102,8 @@
 
 (case "tlf1 Set.to-list of TUPLE elements orders identically const and runtime"
   (input (do (def (main (: n Int64))
-    (let ((cs (Set.to-list (Set.of (list (tuple 2 1) (tuple 1 9) (tuple 1 2)))))
-          (rs (Set.to-list (Set.of (list (tuple (+ n (- 0 3)) 1) (tuple (- n 4) 9) (tuple (- n 4) 2))))))
+    (let ((cs (Set.to-list #set((tuple 2 1) (tuple 1 9) (tuple 1 2))))
+          (rs (Set.to-list #set((tuple (+ n (- 0 3)) 1) (tuple (- n 4) 9) (tuple (- n 4) 2)))))
       (if (= cs rs) 1 0)))
     (export main)))
   (call main (: 5 Int64))
@@ -4113,8 +4111,8 @@
 
 (case "tlf2 Set.to-list of SUM elements orders identically const and runtime (discriminant then payload)"
   (input (do (def (main (: n Int64))
-    (let ((cs (Set.to-list (Set.of (list (Option.Some 2) Option.None (Option.Some 1)))))
-          (rs (Set.to-list (Set.of (list (Option.Some (- n 3)) Option.None (Option.Some (- n 4)))))))
+    (let ((cs (Set.to-list #set((Option.Some 2) Option.None (Option.Some 1))))
+          (rs (Set.to-list #set((Option.Some (- n 3)) Option.None (Option.Some (- n 4))))))
       (if (= cs rs) 1 0)))
     (export main)))
   (call main (: 5 Int64))
@@ -4143,8 +4141,8 @@
     (def (mkrange (: s (Set Int64)) (: i Int64) (: lo Int64) (: hi Int64))
       (if (< (+ lo i) hi) (mkrange (Set.insert s (+ lo i)) (+ i 1) lo hi) s))
     (def (main)
-      (let ((a (mkrange (Set.of (list)) 0 0 30))
-            (b (mkrange (Set.of (list)) 0 15 45)))
+      (let ((a (mkrange #set() 0 0 30))
+            (b (mkrange #set() 0 15 45)))
         (+ (* 1000000 (if (= (Set.union a a) a) 1 0))
         (+ (* 100000  (Set.len (Set.difference a a)))
         (+ (* 10000   (if (= (Set.union a b) (Set.union b a)) 1 0))

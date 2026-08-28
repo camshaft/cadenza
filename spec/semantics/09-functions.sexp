@@ -8613,7 +8613,7 @@
 (case "clk2 a closure capturing a SET reclaims after invocation"
   (input (do
     (def (main (: n Int64))
-      (let ((s (Set.of (list n (+ n 1) (+ n 2)))))
+      (let ((s #set(n (+ n 1) (+ n 2))))
         (let ((f (fn (k) (if (Set.contains s k) 1 0))))
           (+ (f n) (f 99)))))
     (export main)))
@@ -8882,7 +8882,7 @@
 (case "nrr3 an export returns a record with a list field (three reachable cells)"
   (input (do (def (main (: n Int64)) (record (= k n) (= xs (list n (+ n 1))))) (export main)))
   (call main (: 5 Int64))
-  (output (: (record (= k 5) (= xs (list 5 6))) (record (k Int64) (xs (List Int64)))))
+  (output (: (record (= k 5) (= xs (list 5 6))) (record (= k Int64) (= xs (List Int64)))))
   (live-objects 3))
 
 (case "nrr4 an export returns a list of lists (six reachable cells)"
@@ -9048,7 +9048,7 @@
 ; when the runtime Sym render lands. The no-param constant Symbol works (deforested).
 
 (case "trm1 an export returns a two-element Set (one reachable cell, constructor-application render)"
-  (input (do (def (main (: n Int64)) (Set.of (list n (+ n 1)))) (export main)))
+  (input (do (def (main (: n Int64)) #set(n (+ n 1))) (export main)))
   (call main (: 5 Int64))
   (output (: #set(5 6) (Set Int64)))
   (live-objects 1))
@@ -9056,7 +9056,7 @@
 (case "trm2 an export returns a one-entry Map (one reachable cell)"
   (input (do (def (main (: n Int64)) (Map.insert Map.empty n (+ n 1))) (export main)))
   (call main (: 5 Int64))
-  (output (: (map (5 6)) (Map Int64 Int64)))
+  (output (: (map (= 5 6)) (Map Int64 Int64)))
   (live-objects 1))
 
 (case "trm3 an export returns a BigInt built from the scalar param (one reachable cell)"

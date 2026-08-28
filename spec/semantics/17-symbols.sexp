@@ -395,7 +395,7 @@
            constant, the set-lifted companion of \"a runtime symbol compared to an interned constant
            matches by content\".")
   (input  (do
-            (def (dispatch s) (Set.contains (Set.of (list (Symbol.of "map-insert") (Symbol.of "map-lookup"))) s))
+            (def (dispatch s) (Set.contains #set((Symbol.of "map-insert") (Symbol.of "map-lookup")) s))
             (def (main) (dispatch (Symbol.of "map-lookup"))) (export main)))
   (output (: true Bool)))
 
@@ -405,7 +405,7 @@
            content test (true for a member, false for a non-member), not a blanket answer, so an
            unrecognized identifier is distinguished from a known one.")
   (input  (do
-            (def (dispatch s) (Set.contains (Set.of (list (Symbol.of "map-insert") (Symbol.of "map-lookup"))) s))
+            (def (dispatch s) (Set.contains #set((Symbol.of "map-insert") (Symbol.of "map-lookup")) s))
             (def (main) (dispatch (Symbol.of "other"))) (export main)))
   (output (: false Bool)))
 
@@ -417,7 +417,7 @@
            membership analogue of \"a symbol's identity is its content, not how the content was
            derived\" — so a name assembled at run time still dispatches to the same table entry.")
   (input  (do
-            (def (dispatch s) (Set.contains (Set.of (list (Symbol.of "map-insert") (Symbol.of "map-lookup"))) s))
+            (def (dispatch s) (Set.contains #set((Symbol.of "map-insert") (Symbol.of "map-lookup")) s))
             (def (main) (dispatch (Symbol.of (String.concat "map" "-insert")))) (export main)))
   (output (: true Bool)))
 
@@ -431,7 +431,7 @@
            + dedups by content — the symbol-table-build the dispatch cases query.")
   (input  (do
             (def (mk (: x Symbol))
-              (Set.len (Set.of (list (Symbol.of "map-insert") (Symbol.of "map-lookup") x))))
+              (Set.len #set((Symbol.of "map-insert") (Symbol.of "map-lookup") x)))
             (def (main (: which Int64))
               (if (= which 0) (mk (Symbol.of "map-insert")) (mk (Symbol.of "map-remove"))))
             (export main)))
@@ -497,7 +497,7 @@
   (input  (do
             (def (main (: n Int64))
               (do
-                (def st (Set.of (list (tuple #"a" 1) (tuple (Symbol.of "a") 1) (tuple #"b" 1))))
+                (def st #set((tuple #"a" 1) (tuple (Symbol.of "a") 1) (tuple #"b" 1)))
                 (+ (* (Set.len st) 10)
                    (if (Set.contains st (tuple #"a" n)) 1 0))))
             (export main)))
@@ -529,7 +529,7 @@
             (def (main (: mode Int64))
               (do
                 (def s (if (= mode 1) "b" "zzzz"))
-                (def st (Set.insert (Set.insert (Set.insert (Set.insert (Set.of (list)) #"c") (Symbol.of s)) #"aa") #"c"))
+                (def st (Set.insert (Set.insert (Set.insert (Set.insert #set() #"c") (Symbol.of s)) #"aa") #"c"))
                 (+ (* (Set.len st) 1000) (fold-lens (Set.to-list st) 0))))
             (export main)))
   (call main (: 1 Int64)) (output (: 3211 Int64))
@@ -825,7 +825,7 @@
             (if (= mode 1)
                 (match (Map.lookup (Map.insert Map.empty #"key" 42) sv) ((Some x) x) ((None _u) -1))
                 (if (= mode 2)
-                    (Set.len (Set.remove (Set.of (list #"key" #"other")) sv))
+                    (Set.len (Set.remove #set(#"key" #"other") sv))
                     (match (Map.lookup (Map.insert Map.empty #"key" 42)
                                        (Symbol.of (Option.expect (String.slice "xkeyz" 0 3) "in")))
                       ((Some x) x) ((None _u) -1))))))
@@ -845,7 +845,7 @@
         (def (main (: mode Int64))
           (do
             (def sv (Symbol.of (Option.expect (String.slice (String.concat "xa" (if (> mode 0) "az" "zz")) 1 3) "in")))
-            (def xs (Set.to-list (Set.of (list #"b" sv #"c"))))
+            (def xs (Set.to-list #set(#"b" sv #"c")))
             (def (at (: i Int64)) (Option.expect (List.at xs i) "in"))
             (+ (* 10 (if (= (at 0) #"aa") 1 0))
                (if (= (at 2) #"c") 1 0))))

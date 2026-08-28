@@ -245,7 +245,7 @@
                   (def k (Param.k))
                   (def v (match (Map.lookup (Map.insert (Map.insert Map.empty 1 10) 2 20) k)
                            ((Some x) x) ((None _u) -1)))
-                  (def inn (if (Set.contains (Set.of (list 2 5)) k) 1 0))
+                  (def inn (if (Set.contains #set(2 5) k) 1 0))
                   (+ v (+ (* inn 100) (* k 1000))))))
             (export main)))
   (call   main)

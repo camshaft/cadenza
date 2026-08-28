@@ -2102,7 +2102,7 @@
   (input  (do
             (def (build m n) (if (< n 1) m (build (Map.insert m n n) (- n 1))))
             (def (main) (build Map.empty 3)) (export main)))
-  (output (: (map (1 1) (2 2) (3 3)) (Map Int64 Int64)))
+  (output (: (map (= 1 1) (= 2 2) (= 3 3)) (Map Int64 Int64)))
   (live-objects known-leak 1))
 
 (case "a map built at run time with list values escapes with its nested value type"
@@ -2114,7 +2114,7 @@
   (input  (do
             (def (build m n) (if (< n 1) m (build (Map.insert m n (list n)) (- n 1))))
             (def (main) (build Map.empty 2)) (export main)))
-  (output (: (map (1 (list 1)) (2 (list 2))) (Map Int64 (List Int64))))
+  (output (: (map (= 1 (list 1)) (= 2 (list 2))) (Map Int64 (List Int64))))
   (live-objects known-leak 5))
 
 ; The runtime-built maps above stop at a handful of keys — small enough that the CHAMP never splits a
@@ -2213,7 +2213,7 @@
                 (absent (+ j 1) hi s (+ acc (if (Set.contains s j) 1000 0)))
                 acc))
             (def (main (: n Int64))
-              (let ((s (build 0 n (Set.of (list)))))
+              (let ((s (build 0 n #set())))
                 (- (present 0 n s 0) (absent n (+ n 50) s 0))))
             (export main)))
   (call   main (: 200 Int64)) (output (: 200 Int64))
@@ -2243,7 +2243,7 @@
                 (absent (+ j 1) hi s (+ acc (if (Set.contains s (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap (% j 256))))) 1000 0)))
                 acc))
             (def (main (: n Int64))
-              (let ((s (build 0 n (Set.of (list)))))
+              (let ((s (build 0 n #set())))
                 (- (present 0 n s 0) (absent 0 50 s 0))))
             (export main)))
   (call   main (: 200 Int64)) (output (: 200 Int64))
@@ -2733,7 +2733,7 @@
                 (sum-absent (+ j 1) hi s (if (Set.contains s j) (+ acc 1000000) acc))
                 acc))
             (def (main (: n Int64))
-              (let ((s (build 0 n (Set.of (list)))))
+              (let ((s (build 0 n #set())))
                 (- (sum-present 0 n s 0)
                    (sum-absent n (+ n 50) s 0))))
             (export main)))
@@ -3632,7 +3632,7 @@
               (if (= i 0) s (fill (- i 1) (Set.insert s (Ast.Int (BigInt.of i))))))
             (def (main (: n Int64))
               (do
-                (def s (Set.insert (fill n (Set.of (list))) (quote 25)))
+                (def s (Set.insert (fill n #set()) (quote 25)))
                 (+ (* 10 (Set.len s))
                    (if (Set.contains s (Ast.Int 25N)) 1 0))))
             (export main)))
@@ -3647,8 +3647,8 @@
            (or the inner root handle) would miss the reordered twin.")
   (input  (do
             (def (main (: n Int64))
-              (let ((m (Map.insert Map.empty (Set.of (list 1 n)) 42)))
-                (match (Map.lookup m (Set.of (list 2 1))) ((Some v) v) ((None u) -1))))
+              (let ((m (Map.insert Map.empty #set(1 n) 42)))
+                (match (Map.lookup m #set(2 1)) ((Some v) v) ((None u) -1))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 42 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64)))
@@ -3847,7 +3847,7 @@
            the map key/value cases. Returns 1 when the queried variant is present.")
   (input  (do
             (type C (R) (G) (B))
-            (def (main) (if (Set.contains (Set.of (list (C.R) (C.G))) (C.G)) 1 0))
+            (def (main) (if (Set.contains #set((C.R) (C.G)) (C.G)) 1 0))
             (export main)))
   (output (: 1 Int64)))
 
@@ -4082,7 +4082,7 @@
            sets by the Bool and reads its size — b=5 → 3, b=-5 → 2. The `if` unifies two `(Set Int64)`
            branches into one CHAMP handle that `Set.len` reads; pins the join emits valid wasm for a SET
            handle, completing the heap-type runtime-if family (list/map/sum/bytes/set), both backends.")
-  (input  (do (def (main (: b Int64)) (Set.len (if (> b 0) (Set.of (list 1 2 3)) (Set.of (list 4 5))))) (export main)))
+  (input  (do (def (main (: b Int64)) (Set.len (if (> b 0) #set(1 2 3) #set(4 5)))) (export main)))
   (call   main (: 5 Int64)) (output (: 3 Int64))
   (call   main (: -5 Int64)) (output (: 2 Int64)))
 
@@ -4101,7 +4101,7 @@
            membership — b=5 selects {1,2} (e=1 → in, e=3 → out), b=0 selects {3,4} (e=3 → in). The `if` joins
            two `(Set Int64)` branches into one set handle `Set.contains` queries; pins that the join emits
            valid wasm for a SET handle, completing the heap-kinds (list/map/sum/set) chosen-by-if coverage.")
-  (input  (do (def (main (: b Int64) (: e Int64)) (if (Set.contains (if (> b 0) (Set.of (list 1 2)) (Set.of (list 3 4))) e) 1 0)) (export main)))
+  (input  (do (def (main (: b Int64) (: e Int64)) (if (Set.contains (if (> b 0) #set(1 2) #set(3 4)) e) 1 0)) (export main)))
   (call   main (: 5 Int64) (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 5 Int64) (: 3 Int64)) (output (: 0 Int64))
   (call   main (: 0 Int64) (: 3 Int64)) (output (: 1 Int64)))
@@ -4228,7 +4228,7 @@
               (let ((half (/ n 2))
                     (concat-elem (List.concat (build 0 half (list)) (build half n (list))))
                     (push-elem (build 0 n (list))))
-                (if (Set.contains (Set.insert (Set.of (list)) concat-elem) push-elem) 42 (- 0 1))))
+                (if (Set.contains (Set.insert #set() concat-elem) push-elem) 42 (- 0 1))))
             (export main)))
   (call main (: 40 Int64)) (output (: 42 Int64)))
 
@@ -4247,7 +4247,7 @@
               (let ((half (/ n 2))
                     (concat-elem (List.concat (build 0 half (list)) (build half n (list))))
                     (other (build 1 (+ n 1) (list))))
-                (if (Set.contains (Set.insert (Set.of (list)) concat-elem) other) 42 (- 0 1))))
+                (if (Set.contains (Set.insert #set() concat-elem) other) 42 (- 0 1))))
             (export main)))
   (call   main (: 40 Int64)) (output (: -1 Int64)))
 
@@ -5676,7 +5676,7 @@
   (input  (do
             (type Id (Id Int64))
             (def (main (: a Int64))
-              (Set.len (Set.of (list (Id a) (Id 5) (Id 7)))))
+              (Set.len #set((Id a) (Id 5) (Id 7))))
             (export main)))
   (call   main (: 5 Int64))  (output (: 2 Int64))
   (call   main (: 9 Int64))  (output (: 3 Int64)))
@@ -5971,7 +5971,7 @@
               (match xs
                 ((list (map (1 a)) .. rest) a)
                 (_ (- 0 1))))
-            (def (main) (f (list (map (1 77)))))
+            (def (main) (f (list (map (= 1 77)))))
             (export main)))
   (output (: 77 Int64)))
 
@@ -5985,7 +5985,7 @@
               (match xs
                 ((list (map (9 a)) .. rest) a)
                 (_ (- 0 1))))
-            (def (main) (f (list (map (1 77)))))
+            (def (main) (f (list (map (= 1 77)))))
             (export main)))
   (output (: -1 Int64)))
 
@@ -5999,7 +5999,7 @@
               (match xs
                 ((list (map (1 a) (2 b)) .. rest) (+ a b))
                 (_ (- 0 1))))
-            (def (main) (f (list (map (1 100) (2 5)))))
+            (def (main) (f (list (map (= 1 100) (= 2 5)))))
             (export main)))
   (output (: 105 Int64)))
 
@@ -8754,7 +8754,7 @@
            list-homogeneity manifestation of the different-keyset map-comparison bug (shapes_incompatible
            shares one arm for Record and Map). MUST be true. Contrast the record/tuple cases above, which
            ARE non-homogeneous because field set / arity IS the type.")
-  (input     (= (list (map ("a" 1)) (map ("b" 2))) (list (map ("a" 1)) (map ("b" 2)))))
+  (input     (= (list (map (= "a" 1)) (map (= "b" 2))) (list (map (= "a" 1)) (map (= "b" 2)))))
   (output    (: true Bool)))
 
 ; --- Nested collections at RUN TIME: a collection op's result feeds another collection op --------------
@@ -9229,7 +9229,7 @@
            companion of the list-of-maps and list-of-records cases (collections nest as list elements of
            every kind).")
   (input  (do (def (main (: i Int64) (: e Int64))
-                (match (List.at (list (Set.of (list 1 2)) (Set.of (list 3))) i)
+                (match (List.at (list #set(1 2) #set(3)) i)
                   ((Some s) (if (Set.contains s e) 1 0))
                   (None -1))) (export main)))
   (call   main (: 0 Int64) (: 1 Int64)) (output (: 1 Int64))
@@ -9280,7 +9280,7 @@
            that a SET map value round-trips through the lookup as a usable set handle whose membership is
            queryable — the third collection kind nested as a map value, beside the list-value case above.")
   (input  (do (def (main (: k Int64) (: e Int64))
-                (match (Map.lookup (Map.insert Map.empty 1 (Set.of (list 10 20))) k)
+                (match (Map.lookup (Map.insert Map.empty 1 #set(10 20)) k)
                   ((Some s) (if (Set.contains s e) 1 0))
                   (None -1))) (export main)))
   (call   main (: 1 Int64) (: 10 Int64)) (output (: 1 Int64))
@@ -9534,7 +9534,7 @@
            with `x`=9 they differ. Pins that a Set nested inside a tuple compares by its order-independent
            set value on the runtime path (a regression witness for the runtime-element set-equality fold in
            a NESTED position — the tuple's structural equality recurses into the set's `value-eq` walk).")
-  (input  (do (def (main (: x Int64)) (= (tuple 0 (Set.of (list 1 x))) (tuple 0 (Set.of (list 1 2))))) (export main)))
+  (input  (do (def (main (: x Int64)) (= (tuple 0 #set(1 x)) (tuple 0 #set(1 2)))) (export main)))
   (call   main (: 2 Int64)) (output (: true Bool))
   (call   main (: 9 Int64)) (output (: false Bool)))
 
@@ -9551,7 +9551,7 @@
   (input  (do
             (def (b (: n Int64)) (Bytes.of (list (UInt8.wrap n))))
             (def (main (: z Int64))
-              (match (Set.to-list (Set.of (list (tuple 1 (b 2)) (tuple 1 (b 1)) (tuple 1 (b 2)))))
+              (match (Set.to-list #set((tuple 1 (b 2)) (tuple 1 (b 1)) (tuple 1 (b 2))))
                 ((list h .. t) (match h ((tuple _i by) (match (Bytes.at by 0) ((Some v) v) ((None u) -1)))))
                 ((list) -2)))
             (export main)))
@@ -9679,7 +9679,7 @@
 
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
-  (input  (= (map ("a" 1) ("b" 2)) (map ("b" 2) ("a" 1))))
+  (input  (= (map (= "a" 1) (= "b" 2)) (map (= "b" 2) (= "a" 1))))
   (output (: true Bool)))
 
 ; The order-independence case above compares two constant `(map …)` literals (they fold). These pin it at
@@ -9736,7 +9736,7 @@
            rather than answering; the map path emits an equality that answers false. MUST be true. A
            generation whose map equality cannot yet compare a runtime map against a const one declines
            rather than answering false.")
-  (input   (let ((j (+ 2 3))) (let ((k 5)) (= (map (j 1)) (map (k 1))))))
+  (input   (let ((j (+ 2 3))) (let ((k 5)) (= (map (= j 1)) (map (= k 1))))))
   (output  (: true Bool)))
 
 ; The positive half of the map-key-is-a-value rule: a name bound in scope, used in a key position, keys
@@ -9755,7 +9755,7 @@
            in scope, not compile-time labels). A reader that treated the key as the literal name would key
            by `\"a\"` and this equality would be false. Pins the positive half of the map-key-is-a-value
            rule (the unbound-key scope-error case below is the negative half). MUST be true.")
-  (input      (let ((a 5)) (= (map (a 1)) (Map.insert Map.empty 5 1))))
+  (input      (let ((a 5)) (= (map (= a 1)) (Map.insert Map.empty 5 1))))
   (output     (: true Bool)))
 
 (case "two distinct names bound to the same value key the same map entry"
@@ -9764,7 +9764,7 @@
            overwrites `(a 1)`), size 1 — keys are compared by value (collections-and-text.md #Keys Are
            Compared By Value), and 5 = 5. If the key were the literal name, `a` and `b` would be distinct
            string keys and the map would have size 2. MUST be 1.")
-  (input      (let ((a 5)) (let ((b 5)) (Map.len (map (a 1) (b 2))))))
+  (input      (let ((a 5)) (let ((b 5)) (Map.len (map (= a 1) (= b 2))))))
   (output     (: 1 Int64)))
 
 ; The value-not-literal rule holds when the bound value is itself a STRING, ruling out a type-driven
@@ -9783,7 +9783,7 @@
            that the value-not-literal rule holds at String key type too, ruling out a type-driven ident
            coercion (a reader that stringified an ident only for a String key type would still be wrong
            here — the key is the bound value `\"x\"`, not the name). MUST be true.")
-  (input      (let ((a "x")) (= (map (a 1)) (Map.insert Map.empty "x" 1))))
+  (input      (let ((a "x")) (= (map (= a 1)) (Map.insert Map.empty "x" 1))))
   (output     (: true Bool)))
 
 (case "distinct names bound to the same string key the same map entry"
@@ -9791,7 +9791,7 @@
            both bound to `\"k\"`, so `(map (a 1) (b 2))` has ONE entry at key `\"k\"` (size 1) — keys
            compared by value, and `\"k\"` = `\"k\"`. If the key were the literal name, they would be
            distinct string keys `\"a\"`/`\"b\"` and size would be 2. MUST be 1.")
-  (input      (let ((a "k")) (let ((b "k")) (Map.len (map (a 1) (b 2))))))
+  (input      (let ((a "k")) (let ((b "k")) (Map.len (map (= a 1) (= b 2))))))
   (output     (: 1 Int64)))
 
 ; A map's KEY is a VALUE, not a compile-time label: collections-and-text.md #A Map's Canonical Form —
@@ -9826,7 +9826,7 @@
            family: a position that must EVALUATE its operand must not reinterpret an unresolvable name as a
            String). A generation that does not yet evaluate a map key as a scoped value declines rather than
            coercing.")
-  (input      (map (undefined-key 1)))
+  (input      (map (= undefined-key 1)))
   (error      CDZ0101))
 
 ; --- A map's values share one type (and its keys share one type) -------------------------
@@ -9840,7 +9840,7 @@
   (doc    "`(map (a 1) (b true))` associates `a`→Int64 and `b`→Bool: the values do not share one type,
            so the map is not well-typed and the compiler rejects it (CDZ0201, collections-and-text.md
            #A Map Associates Keys With Values — values of ONE type).")
-  (input      (= (map ("a" 1) ("b" true)) (map ("a" 1) ("b" true))))
+  (input      (= (map (= "a" 1) (= "b" true)) (map (= "a" 1) (= "b" true))))
   (error      CDZ0201))
 
 (case "a map mixing integer and float values is a type error"
@@ -9848,7 +9848,7 @@
            (numeric-model.md #Numeric Types Do Not Silently Promote), so `(map (a 1) (b 2.5))` has two
            value types and is ill-typed — CDZ0201. Pins that map value-homogeneity holds across the
            numeric types too, mirroring the list case.")
-  (input      (= (map ("a" 1) ("b" 2.5)) (map ("a" 1) ("b" 2.5))))
+  (input      (= (map (= "a" 1) (= "b" 2.5)) (map (= "a" 1) (= "b" 2.5))))
   (error      CDZ0201))
 
 ; The KEY-homogeneity half of the same rule, on the `(map …)` LITERAL path. collections-and-text.md #A Map
@@ -9877,7 +9877,7 @@
            2))` here — the construction-path half the value check already covers. A generation that does
            not yet check a map literal's key homogeneity on construction declines rather than building a
            heterogeneous-key map.")
-  (input      (let ((j 5)) (let ((k true)) (map (j 1) (k 2)))))
+  (input      (let ((j 5)) (let ((k true)) (map (= j 1) (= k 2)))))
   (error      CDZ0201))
 
 ; As with a list (the compound-shape homogeneity cases above), map value-homogeneity is by value TYPE:
@@ -9891,14 +9891,14 @@
            so a map associating them as values is not value-homogeneous — CDZ0201 (collections-and-text.md
            #A Map Associates Keys With Values: values of ONE type). Mirrors the list-of-diff-field-records
            case.")
-  (input      (= (map ("a" (record (= x 1))) ("b" (record (= y 2)))) (map ("a" (record (= x 1))) ("b" (record (= y 2))))))
+  (input      (= (map (= "a" (record (= x 1))) (= "b" (record (= y 2)))) (map (= "a" (record (= x 1))) (= "b" (record (= y 2))))))
   (error      CDZ0201))
 
 (case "a map with tuple values of different arities is a type error"
   (doc    "`(tuple 1 2)` and `(tuple 1 2 3)` are different tuple types (different lengths), so a map
            with them as values is not value-homogeneous — CDZ0201. Pins that the map-value homogeneity
            check compares tuple ARITY, mirroring the list case.")
-  (input      (= (map ("a" (tuple 1 2)) ("b" (tuple 1 2 3))) (map ("a" (tuple 1 2)) ("b" (tuple 1 2 3)))))
+  (input      (= (map (= "a" (tuple 1 2)) (= "b" (tuple 1 2 3))) (map (= "a" (tuple 1 2)) (= "b" (tuple 1 2 3)))))
   (error      CDZ0201))
 
 (case "a map with a duplicate key is a type error"
@@ -9906,7 +9906,7 @@
            most once.\" `(map (a 1) (a 2))` repeats the key `a`, so it is ill-typed and the compiler
            rejects it (CDZ0201) rather than build it — a repeated key makes the association ambiguous
            (which value does `a` hold?).")
-  (input      (= (map ("a" 1) ("a" 2)) (map ("a" 1) ("a" 2))))
+  (input      (= (map (= "a" 1) (= "a" 2)) (map (= "a" 1) (= "a" 2))))
   (error      CDZ0201))
 
 (case "a map with a duplicate int key is a type error"
@@ -9914,7 +9914,7 @@
            `1`, so which value `1` holds is ambiguous and the compiler rejects it (CDZ0201). A map MUST
            contain each key at most once (collections-and-text.md #A Map Associates Keys With Values) for
            every literal key kind, not only strings.")
-  (input      (= (map (1 10) (1 20)) (map (1 10) (1 20))))
+  (input      (= (map (= 1 10) (= 1 20)) (map (= 1 10) (= 1 20))))
   (error      CDZ0201))
 
 (case "a map with a spelling-variant duplicate key is a type error"
@@ -9922,19 +9922,19 @@
            `(map (1 10) (2 20) (0x1 30))` repeats the key `1` and is rejected (CDZ0201). Pins that the
            duplicate-key check canonicalizes numeric spellings before comparing, not a token compare — a
            dec/hex spelling of one value is one key.")
-  (input      (= (map (1 10) (2 20) (0x1 30)) (map (1 10) (2 20) (0x1 30))))
+  (input      (= (map (= 1 10) (= 2 20) (= 0x1 30)) (map (= 1 10) (= 2 20) (= 0x1 30))))
   (error      CDZ0201))
 
 (case "a map with a duplicate bool key is a type error"
   (doc    "The bool-key companion: `(map (true 1) (true 2))` repeats the key `true`, rejected CDZ0201 —
            the each-key-at-most-once rule holds for every literal key kind.")
-  (input      (= (map (true 1) (true 2)) (map (true 1) (true 2))))
+  (input      (= (map (= true 1) (= true 2)) (map (= true 1) (= true 2))))
   (error      CDZ0201))
 
 (case "a map with a duplicate unit key is a type error"
   (doc    "The unit-key companion: `(map (() 1) (() 2))` repeats the sole unit key `()`, rejected CDZ0201 —
            even a type with one inhabitant cannot key a map twice.")
-  (input      (= (map (() 1) (() 2)) (map (() 1) (() 2))))
+  (input      (= (map (= () 1) (= () 2)) (map (= () 1) (= () 2))))
   (error      CDZ0201))
 
 (case "comparing a map to a record is a type error"
@@ -9944,7 +9944,7 @@
            collections-and-text.md #A Map Associates Keys With Values). Comparing values of two
            different types is a type error the compiler rejects (CDZ0201), even though they carry the
            same keys mapped to the same values.")
-  (input      (= (map ("a" 1) ("b" 2)) (record (= a 1) (= b 2))))
+  (input      (= (map (= "a" 1) (= "b" 2)) (record (= a 1) (= b 2))))
   (error      CDZ0201))
 
 (case "comparing an empty map to an empty record is a type error"
@@ -9976,7 +9976,7 @@
            associate the same keys, so `=` is FALSE (collections-and-text.md #A Map Associates Keys With
            Values), NOT a type error. The seed wrongly treats the key set as a shape and rejects the
            comparison (CDZ0201) — a miscompile that refuses a valid program. MUST be false.")
-  (input      (= (map ("a" 1) ("b" 2)) (map ("a" 1) ("c" 2))))
+  (input      (= (map (= "a" 1) (= "b" 2)) (map (= "a" 1) (= "c" 2))))
   (output     (: false Bool)))
 
 (case "two maps of different sizes are unequal, not a type error"
@@ -9986,7 +9986,7 @@
            size-difference companion of the case above; the seed rejects it (CDZ0201) rather than
            yielding false — the same miscompile. Contrast records `(= (record (a 1)) (record (a 1) (b
            2)))`, which IS a type error, because a record's field set IS its shape.")
-  (input      (= (map ("a" 1)) (map ("a" 1) ("b" 2))))
+  (input      (= (map (= "a" 1)) (map (= "a" 1) (= "b" 2))))
   (output     (: false Bool)))
 
 (case "an empty map is unequal to a non-empty map, not a type error"
@@ -9995,7 +9995,7 @@
            emptiness on one side of a map comparison yields false, not a shape-mismatch rejection
            (contrast the empty-map-vs-empty-record case above, which IS a type error because map and
            record are different types). MUST be false.")
-  (input      (= (map) (map ("a" 1))))
+  (input      (= (map) (map (= "a" 1))))
   (output     (: false Bool)))
 
 (case "member access on a map is a type error"
@@ -10003,7 +10003,7 @@
            a field from the RECORD it is applied to; applied to a value that is not a record it is a
            type error. A map is not a record (its keys are a collection, not a fixed field set), so
            `(. m a)` on a map `m` is rejected (CDZ0201) rather than projecting the entry for `a`.")
-  (input      (let ((m (map ("a" 1) ("b" 2)))) (. m a)))
+  (input      (let ((m (map (= "a" 1) (= "b" 2)))) (. m a)))
   (error      CDZ0201))
 
 ; --- Shape-mismatch comparisons within one kind are type errors -------------------------
@@ -12727,7 +12727,7 @@
                 ((list h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: n Int64))
               (do
-                (def out (dedup (list 3 n 3 1 n 2 1) (Set.of (list)) (list)))
+                (def out (dedup (list 3 n 3 1 n 2 1) #set() (list)))
                 (+ (* (chk out 0) 10) ((. List len) out))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 35124 Int64))
@@ -14935,7 +14935,7 @@
                 (((. E Leaf))      (Set.len s))
                 (((. E Grow) body) (ev body (Set.insert s 9)))
                 (((. E Add) a b)   (+ (ev a s) (ev b s)))))
-            (def (main) (ev ((. E Add) ((. E Grow) ((. E Leaf))) ((. E Leaf))) (Set.insert (Set.of (list)) 1)))
+            (def (main) (ev ((. E Add) ((. E Grow) ((. E Leaf))) ((. E Leaf))) (Set.insert #set() 1)))
             (export main)))
   (output (: 3 Int64))
   (live-objects known-leak 1))
@@ -15024,7 +15024,7 @@
   (input  (do
             (def (main)
               (let ((j (+ 2 3)))
-                (match (Map.lookup (map (j 1)) 5)
+                (match (Map.lookup (map (= j 1)) 5)
                   ((Some v) v)
                   ((None _) -1)))) (export main)))
   (output (: 1 Int64)))
@@ -15692,7 +15692,7 @@
            Canonical Key Order, §Map Iteration Is Deterministic) — independent of insertion order, and
            distinguishable from a record. Inserting 2↦20 then 1↦10 renders in key order.")
   (input  (do (def (main) (Map.insert (Map.insert Map.empty 2 20) 1 10)) (export main)))
-  (output (: (map (1 10) (2 20)) (Map Int64 Int64))))
+  (output (: (map (= 1 10) (= 2 20)) (Map Int64 Int64))))
 
 ; Map homogeneity (collections-and-text.md #A Map Associates Keys With Values: "A map MUST associate keys
 ; of one type with values of one type") holds under `Map.insert` too, not only for a map literal. The
@@ -15739,7 +15739,7 @@
            is 1. Pins that a map value nests (a map is an ordinary heap value, stored/read like any
            compound), so `Map.len` of the looked-up inner map is 1.")
   (input  (do (def (main)
-                (match (Map.lookup (Map.insert Map.empty 1 (map (2 20))) 1)
+                (match (Map.lookup (Map.insert Map.empty 1 (map (= 2 20))) 1)
                   ((Some inner) (Map.len inner))
                   ((None _) 0))) (export main)))
   (output (: 1 Int64))
@@ -15759,7 +15759,7 @@
            map-keys are EQUAL maps collapse to one. `(map ((map (1 10)) 1) ((map (1 10)) 2))` names the key
            `(map (1 10))` twice → ONE entry, size 1 (the same each-key-at-most-once rule as any key type). A
            key compared by handle identity would keep both. MUST be 1.")
-  (input  (do (def (main) (Map.len (map ((map (1 10)) 1) ((map (1 10)) 2)))) (export main)))
+  (input  (do (def (main) (Map.len (map (= (map (= 1 10)) 1) (= (map (= 1 10)) 2)))) (export main)))
   (output (: 1 Int64)))
 
 (case "two distinct map-keys are distinct entries"
@@ -15767,7 +15767,7 @@
            has TWO entries (size 2) — the map-keys `(map (1 10))` and `(map (2 20))` are unequal values, so
            they do not collapse. Pins that a map key is discriminated by its canonical VALUE (contrast the
            equal-map-keys case above, size 1).")
-  (input  (do (def (main) (Map.len (map ((map (1 10)) 1) ((map (2 20)) 2)))) (export main)))
+  (input  (do (def (main) (Map.len (map (= (map (= 1 10)) 1) (= (map (= 2 20)) 2)))) (export main)))
   (output (: 2 Int64)))
 
 ; The above collapse cases pin that EQUAL compound keys are one entry (size), but not WHICH value survives a
@@ -15901,7 +15901,7 @@
               (match t
                 ((tuple (map (1 a)) k) (+ a k))
                 (_ (- 0 1))))
-            (def (main) (f (tuple (map (1 100)) 5)))
+            (def (main) (f (tuple (map (= 1 100)) 5)))
             (export main)))
   (output (: 105 Int64)))
 
@@ -15915,7 +15915,7 @@
               (match t
                 ((tuple (map (7 a)) k) (+ a k))
                 (_ (- 0 1))))
-            (def (main) (f (tuple (map (1 100)) 5)))
+            (def (main) (f (tuple (map (= 1 100)) 5)))
             (export main)))
   (output (: -1 Int64)))
 
@@ -16248,7 +16248,7 @@
            export, not only a populated map.")
   (input  (do (def (main (: n Int64)) (if (> n 0) (Map.insert Map.empty n n) Map.empty)) (export main)))
   (call   main (: 0 Int64)) (output (: (map) (Map Int64 Int64)))
-  (call   main (: 5 Int64)) (output (: (map (5 5)) (Map Int64 Int64)))
+  (call   main (: 5 Int64)) (output (: (map (= 5 5)) (Map Int64 Int64)))
   (live-objects 0))
 
 (case "a parameterized export returns a runtime-selected empty-or-nonempty set"
@@ -16256,7 +16256,7 @@
            singleton set by the argument. n=0 → the canonical empty set `((. Set of) (list))`; n=5 →
            `((. Set of) (list 5))`. Pins that the empty set crosses the boundary as its canonical empty
            value form from a parameterized export.")
-  (input  (do (def (main (: n Int64)) (if (> n 0) (Set.of (list n)) (Set.of (list)))) (export main)))
+  (input  (do (def (main (: n Int64)) (if (> n 0) #set(n) #set())) (export main)))
   (call   main (: 0 Int64)) (output (: #set() (Set Int64)))
   (call   main (: 5 Int64)) (output (: #set(5) (Set Int64)))
   (live-objects 0))
@@ -16601,7 +16601,7 @@
   (input  (do
             (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
             (def (main)
-              (match (Map.lookup (map ((add 2 3) 42)) 5)
+              (match (Map.lookup (map (= (add 2 3) 42)) 5)
                 ((Some v) v)
                 ((None) (- 0 1))))
             (export main)))
@@ -16619,7 +16619,7 @@
   (input  (do
             (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
             (def (main)
-              (match (map ((add 2 3) 42))
+              (match (map (= (add 2 3) 42))
                 ((map (5 v) .. rest) v)
                 (_ (- 0 1))))
             (export main)))
@@ -16943,7 +16943,7 @@
            directions (present and absent) of the value selection.")
   (input  (do
             (def (main (: k Int64))
-              (match (map (k 42))
+              (match (map (= k 42))
                 ((map (5 v) .. rest) v)
                 (_ -1)))
             (export main)))
@@ -16959,7 +16959,7 @@
            whenever ANY entry's key is runtime (rather than comparing per-entry) answers -1.")
   (input  (do
             (def (main (: k Int64))
-              (match (map (k 1) (5 42))
+              (match (map (= k 1) (= 5 42))
                 ((map (5 v) .. rest) v)
                 (_ -1)))
             (export main)))
@@ -16973,7 +16973,7 @@
            compile-time placeholder instead of its runtime result binds garbage).")
   (input  (do
             (def (main (: k Int64))
-              (match (map (5 (+ k 1)))
+              (match (map (= 5 (+ k 1)))
                 ((map (5 v) .. rest) v)
                 (_ -1)))
             (export main)))
@@ -16987,7 +16987,7 @@
            satisfaction in one arm.")
   (input  (do
             (def (main (: k Int64))
-              (match (map (k 1) (7 2))
+              (match (map (= k 1) (= 7 2))
                 ((map (5 a) (7 b) .. rest) (+ (* a 10) b))
                 (_ -1)))
             (export main)))
@@ -17004,7 +17004,7 @@
            in rest → 44).")
   (input  (do
             (def (main (: k Int64))
-              (match (map (k 42) (7 9))
+              (match (map (= k 42) (= 7 9))
                 ((map (5 v) .. rest) (+ v (Map.len rest)))
                 (_ -1)))
             (export main)))
@@ -18588,7 +18588,7 @@
   (input  (do (def (build (: n Int64)) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n)))
               (def (main) (record (= data (build 2)) (= n 2)))
               (export main)))
-  (output (: (record (= data (list 1 2)) (= n 2)) (record (data (List Int64)) (n Int64))))
+  (output (: (record (= data (list 1 2)) (= n 2)) (record (= data (List Int64)) (= n Int64))))
   (live-objects known-leak 3))
 
 (case "a runtime list of sum-typed elements escapes rendering each element as its sum value-form"
@@ -18617,7 +18617,7 @@
                 (if (< i n) (build (+ i 1) n (List.push out (record (= op "x") (= seq i)))) out))
               (def (main) (build 0 2 (: (list) (List (Record (: op String) (: seq Int64)))))) (export main)))
   (output (: (list (record (= op "x") (= seq 0)) (record (= op "x") (= seq 1)))
-             (List (record (op String) (seq Int64)))))
+             (List (record (= op String) (= seq Int64)))))
   (live-objects known-leak 6))
 
 (case "two sibling Option fields of different arg do not alias in the value-encode descriptor"
@@ -18636,7 +18636,7 @@
                         (= corr (: (. Option None) (Option Bytes))))))
               (def (main) (build 0)) (export main)))
   (output (: (record (= corr (None unit)) (= pl (Some (B (record (= x "hi"))))))
-             (record (corr (Option Bytes)) (pl (Option P)))))
+             (record (= corr (Option Bytes)) (= pl (Option P)))))
   ; WIT static encoding: the record-return value-encode assembler now hoists embedded constants build-once
   ; (census-excluded immortals), so the residual leak drops 6→4.
   (live-objects 0))
@@ -19218,10 +19218,10 @@
   (input  (do
         (def (main (: mode Int64))
           (do
-            (def s (Set.of (list 1 2)))
+            (def s #set(1 2))
             (def m (Map.insert Map.empty 7 s))
             (def r (Map.take m 7))
-            (def taken (match (. r 0) ((Some ts) ts) ((None _u) (Set.of (list)))))
+            (def taken (match (. r 0) ((Some ts) ts) ((None _u) #set())))
             (def grown (Set.insert taken 3))
             (if (= mode 1) (Set.len taken)
                 (if (= mode 2) (Set.len grown)
@@ -19245,8 +19245,8 @@
   (input  (do
         (def (main (: n Int64))
           (do
-            (def k1 (record (= s (Set.of (list 1 2 3)))))
-            (def k2 (record (= s (Set.insert (Set.insert (Set.of (list n)) 2) 1))))
+            (def k1 (record (= s #set(1 2 3))))
+            (def k2 (record (= s (Set.insert (Set.insert #set(n) 2) 1))))
             (match (Map.lookup (Map.insert Map.empty k1 42) k2)
               ((Some v) v)
               ((None _u) -1))))
@@ -19285,7 +19285,7 @@
         (type (Box a) (Full a) (Nil unit))
         (def (main (: k Int64))
           (do
-            (def s (Set.of (list (Full 1) (Full k) (Nil unit))))
+            (def s #set((Full 1) (Full k) (Nil unit)))
             (def m (Map.insert Map.empty (Full (String.concat "ke" "y")) 42))
             (+ (* 100 (Set.len s))
                (match (Map.lookup m (Full "key")) ((Some v) v) ((None _u) -1)))))
@@ -19602,7 +19602,7 @@
                 ((Option.Some v) (digits xs (+ i 1) (+ (* acc 10) v)))
                 ((Option.None _u) acc)))
             (def (main (: k Int64))
-              (digits (dedup-keep-first (list 3 1 3 k 1 2) 0 (Set.of (list)) (list)) 0 0))
+              (digits (dedup-keep-first (list 3 1 3 k 1 2) 0 #set() (list)) 0 0))
             (export main)))
   (call   main (: 4 Int64)) (output (: 3142 Int64))
   (call   main (: 3 Int64)) (output (: 312 Int64))
@@ -19710,7 +19710,7 @@
 
 (case "heterogeneous constructions take ONE malformed-collection code across list, map, and set"
   (doc    "collections-and-text.md:104: the malformed-collection code MUST be the same INDEPENDENT of collection kind. List and map-VALUE mixes are pinned; `(Set.of (list 1 true))` reaches the SET-construction surface with the SAME code (CDZ0201), via its heterogeneous element-list literal. (The fault attaches at the inner list literal — Set.of takes a homogeneous list; a mismatched Set.insert of a Bool instead takes CDZ0203, the type-mismatch code, not CDZ0201 — so CDZ0201 for a set specifically arrives through the element-list construction, not a post-hoc insert.)")
-  (input  (do (def (main) (Set.of (list 1 true))) (export main)))
+  (input  (do (def (main) #set(1 true)) (export main)))
   (error  CDZ0201))
 
 (case "a mixed-key map insert chain takes the same malformed-collection code"
@@ -19842,12 +19842,12 @@
            must equal a tuple-wrapped Map.empty (ones digit) → 11 ∀a. Pins that the tuple equality
            walk sees canonicalized post-edit CHAMP structure at BOTH element positions.")
   (input  (do
-            (def (sv (: a Int64)) (Set.remove (Set.of (list a 9)) 9))
+            (def (sv (: a Int64)) (Set.remove #set(a 9) 9))
             (def (dm (: a Int64))
               (Map.remove (Map.remove (Map.insert (Map.insert Map.empty 1 a) 2 20) 1) 2))
             (def (main (: a Int64))
               (+ (* 10 (if (= (tuple (sv a) (dm a))
-                             (tuple (Set.of (list a)) Map.empty)) 1 0))
+                             (tuple #set(a) Map.empty)) 1 0))
                  (if (= (tuple (dm a)) (tuple Map.empty)) 1 0)))
             (export main)))
   (call   main (: 4 Int64)) (output (: 11 Int64))
@@ -20156,7 +20156,7 @@
                       (= correlation (: (None unit) (Option Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= correlation (None unit)) (= payload (Some (B (record (= x "hi")))))) (record (correlation (Option Bytes)) (payload (Option P)))))
+  (output (: (record (= correlation (None unit)) (= payload (Some (B (record (= x "hi")))))) (record (= correlation (Option Bytes)) (= payload (Option P)))))
   ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 6→4.
   (live-objects 0))
 
@@ -20169,7 +20169,7 @@
                       (= second (Some (Q.D (record (= y 7)))))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= first (Some (B (record (= x "hi"))))) (= second (Some (D (record (= y 7)))))) (record (first (Option P)) (second (Option Q)))))
+  (output (: (record (= first (Some (B (record (= x "hi"))))) (= second (Some (D (record (= y 7)))))) (record (= first (Option P)) (= second (Option Q)))))
   ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 8→5.
   (live-objects 0))
 
@@ -20181,7 +20181,7 @@
                       (= zcorrelation (: (None unit) (Option Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= apayload (Some (B (record (= x "hi"))))) (= zcorrelation (None unit))) (record (apayload (Option P)) (zcorrelation (Option Bytes)))))
+  (output (: (record (= apayload (Some (B (record (= x "hi"))))) (= zcorrelation (None unit))) (record (= apayload (Option P)) (= zcorrelation (Option Bytes)))))
   ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 6→4.
   (live-objects 0))
 
@@ -20192,7 +20192,7 @@
                       (= second (: (Err (String.to-bytes "no")) (Result Int64 Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= first (Ok 7)) (= second (Err b"no"))) (record (first (Result Int64 String)) (second (Result Int64 Bytes)))))
+  (output (: (record (= first (Ok 7)) (= second (Err b"no"))) (record (= first (Result Int64 String)) (= second (Result Int64 Bytes)))))
   (live-objects 0))
 
 (case "vse11 two LIST fields of different element types encode independently — the list control of the generic-instantiation family"
@@ -20202,7 +20202,7 @@
                       (= tags (list "a" "b"))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= nums (list 1 2)) (= tags (list "a" "b"))) (record (nums (List Int64)) (tags (List String)))))
+  (output (: (record (= nums (list 1 2)) (= tags (list "a" "b"))) (record (= nums (List Int64)) (= tags (List String)))))
   ; WIT static encoding: record-return build-once hoists the two constant list fields → residual leak 7→1.
   (live-objects 0))
 
@@ -20221,7 +20221,7 @@
             (def (main) (f 2))
             (export main)))
   (call   main)
-  (output (: (record (= ct "wasm") (= pl b"\x01\x02\x03")) (record (ct String) (pl Bytes)))))
+  (output (: (record (= ct "wasm") (= pl b"\x01\x02\x03")) (record (= ct String) (= pl Bytes)))))
 
 ;; -- Perceus dup-site boundary faces: record-field alias + cross-fn param + closure capture across a persistent update (breaker batch 373, from the 2026-07-17 banked candidate) --
 (case "pd1 a list shared into a RECORD field survives an update through the original binding"
@@ -20331,7 +20331,7 @@
 (case "pd9 a shared SET operand survives an insert — both views keep their own len"
   (input (do
     (def (main (: n Int64))
-      (let ((s (Set.of (list n))))
+      (let ((s #set(n)))
         (let ((s2 (Set.insert s (+ n 1))))
           (+ (Set.len s) (* 10 (Set.len s2))))))
     (export main)))
@@ -20405,7 +20405,7 @@
     (def (main (: n Int64))
       (let ((m (Map.insert (map) n 10)))
         (let ((m2 (Map.insert m (+ n 1) 20)))
-          (let ((s (Set.of (list n))))
+          (let ((s #set(n)))
             (let ((s2 (Set.insert s (+ n 1))))
               (+ (Map.len m) (+ (* 10 (Map.len m2)) (+ (* 100 (Set.len s)) (* 1000 (Set.len s2))))))))))
     (export main)))
@@ -22394,8 +22394,8 @@
 
 (case "sts1 a persistent Set.insert against a constant Set leaves the constant without the new element (two-sided contains fence)"
   (input (do (def (main (: n Int64))
-  (let ((c (if (= n 1) (Set.of (list 1 2 3)) (Set.of (list 9))))
-        (u (Set.insert (if (= n 1) (Set.of (list 1 2 3)) (Set.of (list 9))) 7)))
+  (let ((c (if (= n 1) #set(1 2 3) #set(9)))
+        (u (Set.insert (if (= n 1) #set(1 2 3) #set(9)) 7)))
     (+ (if (Set.contains c 7) 100 0)
        (+ (if (Set.contains u 7) 10 0) (if (= c u) 1000 0)))))
 (export main)))
@@ -22686,7 +22686,7 @@
   (input (do
 (def (frames (: k Int64))
   (if (= k 0) 0
-      (+ (if (Set.contains (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)) (% k 45)) 1 0)
+      (+ (if (Set.contains #set(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40) (% k 45)) 1 0)
          (frames (- k 1)))))
 (def (main (: n Int64)) (frames n))
 (export main)))
@@ -22698,8 +22698,8 @@
   (input (do
 (def (frames (: k Int64))
   (if (= k 0) 0
-      (let ((c (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)))
-            (u (Set.insert (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)) (+ 900 k))))
+      (let ((c #set(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40))
+            (u (Set.insert #set(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40) (+ 900 k))))
         (+ (+ (if (Set.contains c (+ 900 k)) 100 0)
               (+ (if (Set.contains u (+ 900 k)) 10 0) (if (Set.contains c (% k 45)) 1 0)))
            (frames (- k 1))))))
@@ -22715,9 +22715,9 @@
 
 (case "itf4 an immortal 40-element Set compares structurally equal to a runtime-BUILT equal Set, and the runtime side reclaims"
   (input (do
-(def (bs (: i Int64)) (if (= i 0) (Set.of (list)) (Set.insert (bs (- i 1)) i)))
+(def (bs (: i Int64)) (if (= i 0) #set() (Set.insert (bs (- i 1)) i)))
 (def (main (: n Int64))
-  (if (= (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)) (bs (+ n 39))) 100000 1))
+  (if (= #set(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40) (bs (+ n 39))) 100000 1))
 (export main)))
   (call main (: 1 Int64))
   (output (: 100000 Int64))
@@ -22727,7 +22727,7 @@
   (input (do
 (def (frames (: k Int64))
   (if (= k 0) 0
-      (let ((u (Set.union (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)) (Set.of (list (+ 900 k))))))
+      (let ((u (Set.union #set(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40) #set((+ 900 k)))))
         (+ (+ (if (Set.contains u (+ 900 k)) 10 0) (if (Set.contains u (% k 45)) 1 0))
            (frames (- k 1))))))
 (def (main (: n Int64)) (frames n))
@@ -23329,8 +23329,8 @@
   (output (: -1 Int64)))
 (case "mde1 the two #map entry spellings (raw pair and = pair) build EQUAL maps (the #4589 dual-read; operator: maps+records unify on =)"
   (input (do (def (main (: n Int64))
-  (+ (if (= #map((1 10) (2 20)) #map((= 1 10) (= 2 20))) 1000 0)
-     (match (Map.lookup #map((= 1 10) (2 20)) n) ((Some v) v) ((None u) -1))))
+  (+ (if (= #map((= 1 10) (= 2 20)) #map((= 1 10) (= 2 20))) 1000 0)
+     (match (Map.lookup #map((= 1 10) (= 2 20)) n) ((Some v) v) ((None u) -1))))
 (export main)))
   (call main (: 2 Int64))
   (output (: 1020 Int64))
@@ -23345,14 +23345,14 @@
            at run time (a non-foldable recursive call), so the `5` arm matches by VALUE and binds v = 42. The
            const-fold path would report the runtime key absent and wrongly take the catch-all.")
   (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-              (def (main) (match (map ((add 2 3) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) (export main)))
+              (def (main) (match (map (= (add 2 3) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) (export main)))
   (output (: 42 Int64)))
 
 (case "a map match over a map literal with a non-matching runtime key falls through"
   (doc    "The dual: the literal's runtime key is 6 (`add 2 4`), so the `5` arm misses by value → the match
            falls through to the catch-all → -1.")
   (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-              (def (main) (match (map ((add 2 4) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) (export main)))
+              (def (main) (match (map (= (add 2 4) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) (export main)))
   (output (: -1 Int64)))
 
 (case "Map.lookup of a map literal with a runtime key finds the value by value, not a const-fold"
@@ -23362,7 +23362,7 @@
            fold would report the runtime key absent → None → -1 (the map twin of the Set.contains runtime-
            element fold miscompile).")
   (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-              (def (main) (match (Map.lookup (map ((add 2 3) 42)) 5) ((Some v) v) ((None) (- 0 1)))) (export main)))
+              (def (main) (match (Map.lookup (map (= (add 2 3) 42)) 5) ((Some v) v) ((None) (- 0 1)))) (export main)))
   (output (: 42 Int64)))
 
 ; ── breaker batch 551: the #4597 §5 sum-spine reclaim BOUNDARY. The fix (dup(rest)+drop(old
@@ -23461,7 +23461,7 @@
   (output (: 1 Int64)))
 
 (case "ecb3 an empty-SET if-branch joins with a built set (tri-target)"
-  (input (do (def (main (: n Int64)) (Set.len (if (> n 3) (Set.of (list)) (Set.insert (Set.of (list)) n)))) (export main)))
+  (input (do (def (main (: n Int64)) (Set.len (if (> n 3) #set() (Set.insert #set() n)))) (export main)))
   (call main (: 2 Int64))
   (output (: 1 Int64)))
 
@@ -23544,7 +23544,7 @@
   (input (do (def (main (: n Int64))
   (+ (if (Set.contains #set(1 2 3) n) 1000 0)
      (+ (* 10 (Set.len #set(4 5)))
-        (if (= #set(1 2 3) (Set.insert (Set.insert (Set.insert (Set.of (list)) 3) 1) 2)) 1 0))))
+        (if (= #set(1 2 3) (Set.insert (Set.insert (Set.insert #set() 3) 1) 2)) 1 0))))
 (export main)))
   (call main (: 2 Int64))
   (output (: 1021 Int64))
@@ -23645,8 +23645,8 @@
 (def (frames (: k Int64))
   (if (= k 0) 0
       (let ((key (+ (% k 40) 1))
-            (c (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)))
-            (u (Set.remove (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)) (+ (% k 40) 1))))
+            (c #set(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40))
+            (u (Set.remove #set(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40) (+ (% k 40) 1))))
         (+ (+ (if (Set.contains c key) 1 0) (if (Set.contains u key) 10 0))
            (frames (- k 1))))))
 (def (main (: n Int64)) (frames n))
@@ -23658,8 +23658,8 @@
 (case "srf2 intersection and difference off the immortal 40-set with a runtime probe: exact results, immortal untouched"
   (input (do
 (def (main (: n Int64))
-  (let ((c (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)))
-        (probe (Set.insert (Set.insert (Set.of (list)) n) 999)))
+  (let ((c #set(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40))
+        (probe (Set.insert (Set.insert #set() n) 999)))
     (+ (* 100 (Set.len (Set.intersection c probe)))
        (+ (Set.len (Set.difference c probe))
           (if (Set.contains c 999) 1000 0)))))

@@ -1233,7 +1233,7 @@
         (type Ev (A Int64) (B Int64) .. r)
         (def (main (: k Int64))
           (do
-            (def s (Set.of (list (Ev.A 10) (Ev.B 7) (Ev.A k))))
+            (def s #set((Ev.A 10) (Ev.B 7) (Ev.A k)))
             (+ (* 10 (Set.len s)) (if (Set.contains s (Ev.A 10)) 1 0))))
         (export main)))
   (call   main (: 10 Int64)) (output (: 21 Int64))
@@ -1500,7 +1500,7 @@
               (do
                 (def via-merge (Record.merge (record (= a n)) (record (= b 2))))
                 (def via-without (Record.without (record (= a n) (= b 2) (= c 9)) (c)))
-                (Set.len (Set.of (list via-merge via-without (record (= a n) (= b 2)))))))
+                (Set.len #set(via-merge via-without (record (= a n) (= b 2))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1 Int64)))
 

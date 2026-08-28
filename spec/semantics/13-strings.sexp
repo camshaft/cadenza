@@ -1589,7 +1589,7 @@
   (input  (do
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (Set.len (Set.insert (Set.of (list)) (rep "hi" 3))))
+            (def (main) (Set.len (Set.insert #set() (rep "hi" 3))))
             (export main)))
   (output (: 1 Int64)))
 
@@ -1602,7 +1602,7 @@
   (input  (do
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (if (Set.contains (Set.insert (Set.of (list)) (rep "hi" 3)) "hixxx") 1 0))
+            (def (main) (if (Set.contains (Set.insert #set() (rep "hi" 3)) "hixxx") 1 0))
             (export main)))
   (output (: 1 Int64)))
 
