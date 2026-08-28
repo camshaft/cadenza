@@ -2521,6 +2521,27 @@
   (host-calls (call io.get))
   (call   main (: 3 Int64)) (output (: 2110 Int64)))
 
+(case "TWO closures capturing one let-bound host call in a HELPER def share ONE firing"
+  (doc    "The HELPER-DEF face of the multi-capture host-boundary sharing invariant (adv-62, the twin the
+           in-exported-def case above flagged as filed): a helper `mk` returns `(tuple (fn (x) (+ v x)) (fn
+           (x) (* v x)))` from inside `(host (io) (let ((v (io.get unit))) …))`, and `main` destructures + calls
+           both. `v` binds ONE host response captured by BOTH closures, so `io.get` fires EXACTLY ONCE (the
+           host-calls list is the assertion) — a per-closure re-fire would consume a second (unsupplied)
+           response and trap. io.get = 21: f(10) = 31 + g(100) = 2100 = 2131. The bug was `mk` β-inlining into
+           the match scrutinee, folding to a Leaf that lost the inlined perform's effect-op meta, so the fold
+           re-emitted the whole `(host …)` block once per tuple binder → io.get fired TWICE. Relocated from
+           rcdzc adv62_a_let_bound_host_result_captured_by_two_escaping_closures_fires_the_host_op_once.")
+  (input  (do
+            (effect io (op get (-> Unit Int64)))
+            (def (mk) (host (io) (let ((v (io.get unit)))
+              (tuple (fn ((: x Int64)) (+ v x)) (fn ((: x Int64)) (* v x))))))
+            (def (main) (match (mk) ((tuple f g) (+ (f 10) (g 100)))))
+            (export main)))
+  (host-responses (respond io.get (: 21 Int64)))
+  (host-calls (call io.get))
+  (call   main) (output (: 2131 Int64))
+  (live-objects known-leak 2))
+
 (case "a trap raised inside a host-called closure body reaches the host as a trap"
   (doc    "`mk(100)` captures k=100 and returns `(fn (d) (/ k d))`; the host calls it with d = 0 and the
            division traps INSIDE the closure body — behind the resource `call` dispatch, not in a plain
