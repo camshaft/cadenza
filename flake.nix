@@ -3647,24 +3647,25 @@
           // optGapFileAggs;
 
         devShells.default = pkgs.mkShell {
-          # TIGHTLY SCOPED: only what the seed workspace's build/gate actually needs —
+          # THE SINGLE dev shell everyone runs everything in (operator 2026-08-28): one uniform
+          # environment, no per-lane shells. All EXTERNAL/SUBSTITUTABLE tooling (fetched from the binary
+          # cache, shared ONCE per box via /nix/store — not a per-agent compile), so eager is fine:
           #   rustToolchain : rustc/cargo/clippy/rustfmt/rust-src + wasm32 target (from the pin)
-          #   wasm-tools    : CI installs this per wasm job (checks.yml `wasm-tools: true`); the
-          #                   runtime component build + `cdz test` need it. Pin it from nixpkgs.
-          #   cargo-component : the runtime component build is `cargo component build` (see xtask
-          #                   build_component_with_features). Without it in the shell, `cargo
-          #                   component` leaks from the host `~/.cargo/bin`, defeating hermeticity.
-          #                   nixpkgs pins 0.21.1 — the exact version the recorded REQUIRED_RUNTIME_HASH
-          #                   was produced with, so the devShell build reproduces the committed hash.
-          # NOT added: anything a specific later derivation needs — those go in that derivation's
-          # own inputs (N1+), not this shared shell, to keep cache invalidation fine-grained. In
-          # particular the oracle-lean lane's `lean4` (a 2.5GiB-unpacked single-lane toolchain) lives
-          # in `devShells.oracle` below, NOT here — so the ~40 agents that `nix develop` the default
-          # shell don't pull it into their dev closure (v-nix flake-owner closure-hygiene, 2026-08-27).
+          #   wasm-tools    : the runtime component build + `cdz test` need it (nixpkgs pin)
+          #   cargo-component : the runtime component build is `cargo component build` — pinned 0.21.1
+          #                   (the version the recorded REQUIRED_RUNTIME_HASH was produced with), from
+          #                   nixpkgs not the host ~/.cargo/bin (hermeticity)
+          #   lean4         : lean + lake for the differential oracle (implementation/oracle-lean/). Folded
+          #                   in from the retired `devShells.oracle` — a substitutable ~2.5GiB fetch shared
+          #                   once per box, so the single-shell simplicity is worth it (supersedes the
+          #                   2026-08-27 closure-hygiene split; operator wants ONE shell). `.#oracle` is
+          #                   kept below as a deprecated ALIAS to this shell so no caller breaks.
+          # LOCAL builds are NOT eager here — the shellHook defers them (see the lazy-boot note below).
           packages = [
             rustToolchain
             pkgs.wasm-tools
             pkgs.cargo-component
+            pkgs.lean4
           ];
 
           # R4: point cdz/cdz-run at the NIX-BUILT component store. cdz-run + cdz `default_store()`
@@ -3716,20 +3717,11 @@
           '';
         };
 
-        # The oracle-lean lane's dev shell: `nix develop .#oracle` gets the default toolchain PLUS
-        # `lean4` (lean + lake) for building/editing the Lean differential oracle
-        # (implementation/oracle-lean/). Kept OUT of the shared default (v-nix flake-owner
-        # closure-hygiene, 2026-08-27): lean4 is a single-lane 2.5GiB-unpacked toolchain, so only the
-        # oracle lane pulls it. `inputsFrom` inherits the default shell's toolchain (rustToolchain +
-        # wasm-tools + cargo-component); the shellHook re-points CDZ_STORE the same way.
-        devShells.oracle = pkgs.mkShell {
-          inputsFrom = [ self.devShells.${system}.default ];
-          packages = [ pkgs.lean4 ];
-          shellHook = ''
-            export CDZ_STORE="${componentStore}"
-            echo "cdz: oracle dev shell (lean4 + lake); CDZ_STORE → nix component store ($CDZ_STORE)"
-          '';
-        };
+        # DEPRECATED ALIAS: `.#oracle` == the single `default` shell (operator 2026-08-28: one shell for
+        # everyone). lean4 folded into `default`, so there's no separate oracle environment anymore; this
+        # alias only keeps `nix develop .#oracle` working for callers (window.sh / scripts) until they
+        # migrate to plain `nix develop`. Remove once nothing references `.#oracle`.
+        devShells.oracle = self.devShells.${system}.default;
 
         # ── LOCAL WARM-KEEP (v-nix+v-fleet-tooling 2026-08-08) ─────────────────────────────────────
         #
