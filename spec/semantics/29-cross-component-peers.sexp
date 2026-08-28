@@ -437,24 +437,33 @@
   (doc    "The pure-scalar analogue of pca4: the consumer builds `(tuple x (+ x 1))` — two Int64 fields, no
            heap — and passes it as ONE handle to the peer op `sum`, which projects both fields and adds them.
            main(9) = S.sum((9,10)) = 9 + 10 = 19. Pins that a scalar-only compound crosses as a handle inbound
-           and the provider reads both fields. Relocated from rcdzc u16_a_compound_argument_crosses_to_a_peer.")
+           and the provider reads both fields. Relocated from rcdzc u16_a_compound_argument_crosses_to_a_peer.
+           Like the Map/Set inbound-arg twins pca1/pca2, the scalar-only compound crosses inbound as ONE
+           handle that is not yet reclaimed after the peer call → live-objects 1 (known leak, same class as
+           pca1/pca2; the heap-field tuple pca4 reclaims clean). Flips to 0 when peer-inbound-arg compound
+           reclaim lands (v-rust-backend arg-side emit / v-memory-safety).")
   (peer   "cadenza:adder/api" (do (def (sum (: t (Tuple Int64 Int64))) (+ (. t 0) (. t 1))) (export sum)))
   (input  (do (effect S (op sum (-> (Tuple Int64 Int64) Int64))) (bind S "cadenza:adder/api")
               (def (main (: x Int64)) (host (S) (S.sum (tuple x (+ x 1))))) (export main)))
   (call   main (: 9 Int64))
-  (output (: 19 Int64)))
+  (output (: 19 Int64))
+  (live-objects known-leak 1))
 
 (case "two compound arguments each cross as their own handle in one peer call"
   (doc    "u16 pins a SINGLE compound arg; this pins that MULTIPLE compound args each cross as their OWN handle
            in ONE call (the multi-handle inbound case). Peer `add4` takes TWO `(Tuple Int64 Int64)` and sums all
            four fields; the consumer passes two freshly-built tuples. main(5) = add4((5,5),(5,5)) = 20 — both
            tuple handles crossed inbound and were read. Relocated from rcdzc
-           two_compound_arguments_cross_to_a_peer_in_one_op.")
+           two_compound_arguments_cross_to_a_peer_in_one_op.
+           Same known-leak class as the single scalar-tuple inbound-arg case and pca1/pca2: each scalar-only
+           compound crosses inbound as ONE not-yet-reclaimed handle → TWO args leak 2. Flips to 0 when
+           peer-inbound-arg compound reclaim lands (v-rust-backend arg-side emit / v-memory-safety).")
   (peer   "cadenza:s/api" (do (def (add4 (: a (Tuple Int64 Int64)) (: b (Tuple Int64 Int64))) (+ (+ (. a 0) (. a 1)) (+ (. b 0) (. b 1)))) (export add4)))
   (input  (do (effect S (op add4 (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Int64))) (bind S "cadenza:s/api")
               (def (main (: x Int64)) (host (S) (S.add4 (tuple x x) (tuple x x)))) (export main)))
   (call   main (: 5 Int64))
-  (output (: 20 Int64)))
+  (output (: 20 Int64))
+  (live-objects known-leak 2))
 
 (case "a String argument handle passed to a peer stays live for a later local read (borrow not move)"
   (doc    "A refcount/borrow-correctness pin: passing a String handle to a peer op must BORROW it, not consume
@@ -763,7 +772,10 @@
               (bind P "cadenza:pairs/api") (bind S "cadenza:adder/api")
               (def (main (: x Int64)) (host (P) (host (S) (S.sum (P.pair x))))) (export main)))
   (call   main (: 9 Int64))
-  (output (: 19 Int64)))
+  (output (: 19 Int64))
+  ; the crossed scalar-tuple handle is not yet reclaimed after the peer boundary (same class as pca1/pca2 and
+  ; the scalar-tuple inbound-arg case); flips to 0 when peer-boundary compound reclaim lands (v-rust-backend / v-memory-safety).
+  (live-objects known-leak 1))
 
 (case "a let-bound peer compound is read twice (both live) then reclaimed"
   (doc    "A peer op `pair(x) = (tuple x x)` @cadenza:pairs/api returns a runtime tuple; the consumer LET-binds
@@ -787,7 +799,10 @@
               (effect B (op pb (-> Int64 Int64))) (bind B "cadenza:b/api")
               (def (main (: x Int64)) (host (A B) (tuple (A.pa x) (B.pb x)))) (export main)))
   (call   main (: 5 Int64))
-  (output (: (tuple 10 15) (Tuple Int64 Int64))))
+  (output (: (tuple 10 15) (Tuple Int64 Int64)))
+  ; the fused escaping compound built across two peers leaves one handle unreclaimed at the boundary;
+  ; flips to 0 when peer-boundary compound reclaim lands (v-rust-backend / v-memory-safety).
+  (live-objects known-leak 1))
 
 (case "a string result chained through two peers escapes the entrypoint via the methods envelope"
   (doc    "Two peers with a chained String result: A (cadenza:a/api) `ga(_x) = String.concat \"h\" \"i\"` = \"hi\";
@@ -801,7 +816,10 @@
               (effect B (op gb (-> String String))) (bind B "cadenza:b/api")
               (def (main (: x Int64)) (host (A B) (B.gb (A.ga x)))) (export main)))
   (call   main (: 0 Int64))
-  (output (: "hihi" String)))
+  (output (: "hihi" String))
+  ; the String result chained through two peers escapes with one boundary handle unreclaimed;
+  ; flips to 0 when peer-boundary result reclaim lands (v-rust-backend / v-memory-safety).
+  (live-objects known-leak 1))
 
 (case "a peer compound is projected and rebuilt into a fresh escaping compound (mixed ownership reclaims)"
   (doc    "MIXED-OWNERSHIP reclaim: a peer op `mk(x) = (tuple x x)` @cadenza:p/api mints a runtime tuple; the
@@ -813,7 +831,10 @@
   (input  (do (effect P (op mk (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:p/api")
               (def (main (: x Int64)) (host (P) (let ((t (P.mk x))) (tuple (. t 0) (+ (. t 1) 100))))) (export main)))
   (call   main (: 5 Int64))
-  (output (: (tuple 5 105) (Tuple Int64 Int64))))
+  (output (: (tuple 5 105) (Tuple Int64 Int64)))
+  ; the borrowed peer handle / rebuilt escaping compound leaves one boundary handle unreclaimed;
+  ; flips to 0 when peer-boundary compound reclaim lands (v-rust-backend / v-memory-safety).
+  (live-objects known-leak 1))
 
 (case "the agent-return shape: three peers with a Cedar-gated escaping string result"
   (doc    "The native agent harness's reported shape — THREE distinct peers: Cedar (cadenza:cedar/api)
@@ -830,7 +851,10 @@
               (def (main) (if (= (host (Cedar) (Cedar.authorize "tool:chat")) 1)
                               (host (Model) (Model.converse (host (Inbox) (Inbox.next)))) "denied")) (export main)))
   (call   main)
-  (output (: "R:hi" String)))
+  (output (: "R:hi" String))
+  ; the escaping String result reaching three peers leaves two boundary handles unreclaimed (Inbox.next + Model.converse);
+  ; flips to 0 when peer-boundary result reclaim lands (v-rust-backend / v-memory-safety).
+  (live-objects known-leak 2))
 
 (case "a diamond peer graph shares one provider across two middle peers"
   (doc    "DIAMOND: a shared provider A (cadenza:base/api) base(x)=2x is consumed by TWO middle peers — B
@@ -859,4 +883,7 @@
   (input  (do (effect P (op nest (-> Int64 (Tuple (Tuple Int64 Int64) Int64)))) (bind P "cadenza:nest/api")
               (def (main (: x Int64)) (host (P) (. (. (P.nest x) 0) 1))) (export main)))
   (call   main (: 9 Int64))
-  (output (: 10 Int64)))
+  (output (: 10 Int64))
+  ; the nested-compound projection off a crossed peer handle leaves one boundary handle unreclaimed;
+  ; flips to 0 when peer-boundary compound reclaim lands (v-rust-backend / v-memory-safety).
+  (live-objects known-leak 1))
