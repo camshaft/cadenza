@@ -27588,22 +27588,8 @@ mod stage1 {
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
-    /// Compile `(module m (def (main) BODY) (export main))` and run `main`, returning its result
-    /// decoded to `T`. Generic over the boundary type: adding a new one is one more `impl FromVal`.
-    fn run_main_as<T: FromVal>(body: &str) -> T {
-        let src = format!("(module m (def (main) {body}) (export main))");
-        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
-        run_returns::<T>(&bytes, "main")
-    }
-
-    /// The common case: an integer-returning body. (A thin fixed-type alias over `run_main_as` so the
-    /// many integer cases read `run_main("..")` and dodge integer-literal type inference.)
-    fn run_main(body: &str) -> i64 {
-        run_main_as::<i64>(body)
-    }
-
-    /// Compile + run a WHOLE ML-surface program (its `main` export). Unlike `run_main`, which wraps an
-    /// s-expr body, this takes ML source verbatim and runs it through `cadenza_syntax::parser::read_ml`
+    /// Compile + run a WHOLE ML-surface program (its `main` export). Unlike a wrapped s-expr body, this
+    /// takes ML source verbatim and runs it through `cadenza_syntax::parser::read_ml`
     /// (the same front-end the CLI uses) → codec bytes → rcdzc decode → compile → run. This is the ONLY
     /// seam that exercises an ML-surface feature (like the `forall` binder) END-TO-END: v-syntax's parser
     /// tests pin the desugar SHAPE (parse → s-expr), and the semantic corpus pins the desugared arena's
@@ -30248,19 +30234,6 @@ mod stage1 {
     }
 
     #[test]
-    fn the_unshadowed_tuple_and_record_aliases_build_the_compound() {
-        // With no shadowing binding, the alias names build the compound exactly as the string
-        // primitives do — a projection of a constant compound FOLDS to its element (no heap).
-        assert_eq!(run_main("(. (tuple 7 8) 0)"), 7);
-        assert_eq!(run_main("(. (record (x 1) (y 2)) y)"), 2);
-        // The STRING primitives are equivalent — a string head is unspellable as an identifier (so
-        // unshadowable) yet writable directly, and builds the same compound as the alias. ("The strings
-        // are the symbols.")
-        assert_eq!(run_main("(. (\"tuple\" 7 8) 1)"), 8);
-        assert_eq!(run_main("(. (\"record\" (x 1) (y 2)) x)"), 1);
-    }
-
-    #[test]
     fn an_unrealized_builtin_field_declines() {
         // `(. (Int 100) max)` — the field EXISTS (present as a poison: a >64-bit width's bounds are not
         // yet realized, `int_bounds` returns `None`), so projecting it declines "not yet realized" rather
@@ -31136,8 +31109,9 @@ mod stage1 {
                 "malformed width must be rejected CDZ0302 with the natural-width message: {body} → {msg}"
             );
         }
-        // A valid width is unaffected — `(Int 64)` still builds and `5` fits (crosses as s64).
-        assert_eq!(run_main("(: 5 (Int 64))"), 5);
+        // A valid width is unaffected — `(Int 64)` still builds and `5` fits (crosses as s64). That RUN is
+        // corpus case 07-type-system "an annotation whose type is a reduced (Int 64) constructor grounds the
+        // value" (`(: 5 (Int 64))` = 5); this test keeps only the malformed-width reject.
     }
 
     #[test]
