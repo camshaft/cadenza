@@ -18,5 +18,8 @@ pub mod doc;
 /// Generally-useful iterator helpers shared across surface readers: a span-carrying char iterator
 /// ([`iter::Chars`]/[`iter::Char`]) and a two-token lookahead adapter ([`iter::Peek2`]).
 pub mod iter;
+/// Shared literal lexing/escapes (string/byte/char/symbol unescape, numeric parsing, NFC, bare-name
+/// checks) every surface reader + the lexer use to turn literal text into `Leaf` values.
+pub mod literal;
 pub mod span;
 pub mod spans;

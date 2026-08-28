@@ -48,7 +48,9 @@ pub use cadenza_syntax_core::iter;
 pub mod json;
 pub use cadenza_ast::leb128;
 pub mod lexer;
-pub mod literal;
+/// Shared literal lexing/escapes — moved to `cadenza-syntax-core`, re-exported so `cadenza_syntax::literal`
+/// + internal `crate::literal` (every reader + the lexer) are unchanged.
+pub use cadenza_syntax_core::literal;
 /// The markdown surface: a literate document (`(document …)`) is a projection of the same arena the
 /// code surfaces use, and an embedded `cdz`/`ml`/`sexp` code block carries its program as a real
 /// arena SUBTREE — homoiconic markdown.
@@ -69,12 +71,11 @@ pub mod sexpr;
 /// `cadenza_syntax::span`/`::spans` (public API) + internal `crate::span`/`crate::spans` are unchanged.
 pub use cadenza_syntax_core::{span, spans};
 pub mod token;
-/// The TOML surface: a source-faithful config document (`(toml-document …)` — comments, whitespace,
-/// and each scalar's raw spelling stored as `Str`-leaf "decor" nodes) is a projection of the same
-/// arena the code surfaces use. Byte-exact round-trip for an unmutated doc, and fully rewritable (the
-/// arena stays the representation). Named `toml_surface` so `toml_edit::` remains the unambiguous crate
-/// path.
-pub mod toml_surface;
+/// The TOML surface — split into the `cadenza-syntax-toml` crate (which owns `toml_edit`), re-exported
+/// as `cadenza_syntax::toml_surface` (name kept so callers are unchanged). A source-faithful config
+/// document (`(toml-document …)` — comments, whitespace, raw scalar spellings as `Str`-leaf "decor"
+/// nodes) is a projection of the same arena the code surfaces use; byte-exact round-trip when unmutated.
+pub use cadenza_syntax_toml as toml_surface;
 
 pub use ast::{Arenas, Builder, Decimal, Leaf, LeafId, Radix, Struct, StructId};
 

@@ -59,6 +59,21 @@ fn remap_then_resolve_round_trips_a_cursor_through_canonicalization() {
     assert_eq!(remapped.file(), parsed.spans.file());
 }
 
+/// The TOML surface's ML-printer FALLBACK (a non-TOML root handed to `--to toml` → a `program = "<ml>"`
+/// key). Needs the ML printer + a reader, so it lives here rather than in `cadenza-syntax-toml`.
+#[test]
+fn toml_non_root_falls_back_to_program_key() {
+    use crate::toml_surface;
+    let prog = sexpr::read("(+ 1 2)").unwrap();
+    let out = toml_surface::print(&prog, 100, crate::printer::print);
+    assert!(
+        out.starts_with("program = "),
+        "fallback yields a program key, got {out}"
+    );
+    let back = toml_surface::read(&out).expect("fallback output is valid TOML");
+    assert_eq!(back.head_name(back.root), Some("toml-document"));
+}
+
 /// The cedar surface's ML-printer FALLBACK (a non-Cedar root handed to `--to cedar` → a `//`-comment
 /// block that re-reads to an empty policy set). Needs the ML printer + a reader, so it lives here rather
 /// than in `cadenza-syntax-cedar`. Gated on the `cedar` feature.

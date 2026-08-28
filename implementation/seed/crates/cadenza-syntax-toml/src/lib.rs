@@ -42,10 +42,10 @@
 //! than the arena-idempotence the markdown/JSON surfaces hold. After any node rewrite it degrades to
 //! arena-idempotence (`read(print(x))` is a fixed point).
 
-use crate::arena_read::{bool_leaf, child_tail, int_leaf, list_items, str_leaf};
-use crate::ast::{Arenas, Builder, Leaf, Radix, StructId};
-use crate::span::Span;
-use crate::spans::{FileId, SpanTable};
+use cadenza_syntax_core::arena_read::{bool_leaf, child_tail, int_leaf, list_items, str_leaf};
+use cadenza_syntax_core::ast::{Arenas, Builder, Leaf, Radix, StructId};
+use cadenza_syntax_core::span::Span;
+use cadenza_syntax_core::spans::{FileId, SpanTable};
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Key, Table, Value};
 
 /// A TOML parse failure, with a human-readable message (mirrors `sexpr::ReadError`). Where a position
@@ -241,7 +241,7 @@ impl<'b> Toml<'b> {
             }
             Value::Integer(f) => {
                 let val = Leaf::Int {
-                    value: crate::ast::IntValue::from_i64(*f.value()),
+                    value: cadenza_syntax_core::ast::IntValue::from_i64(*f.value()),
                     radix: Radix::Dec,
                 };
                 self.scalar_with("toml-integer", &pre, &suf, &f.display_repr(), Some(val))
@@ -249,7 +249,7 @@ impl<'b> Toml<'b> {
             Value::Float(f) => {
                 // A non-finite float (inf/nan) has no `Float` leaf — raw-text only.
                 let raw = f.display_repr();
-                let val = crate::literal::parse_float(&raw).map(Leaf::Float);
+                let val = cadenza_syntax_core::literal::parse_float(&raw).map(Leaf::Float);
                 self.scalar_with("toml-float", &pre, &suf, &raw, val)
             }
             Value::Boolean(f) => {
@@ -368,7 +368,7 @@ impl<'b> Toml<'b> {
 
     fn mk_int(&mut self, n: i64) -> StructId {
         self.mk_atom_leaf(Leaf::Int {
-            value: crate::ast::IntValue::from_i64(n),
+            value: cadenza_syntax_core::ast::IntValue::from_i64(n),
             radix: Radix::Dec,
         })
     }
@@ -413,20 +413,24 @@ fn decor_strs(decor: &toml_edit::Decor) -> (String, String) {
 /// uniformity and ignored (TOML layout is byte-reproduced). A NON-TOML root (a bare program handed to
 /// `--to toml`) becomes a single `program = "<ml text>"` key — a valid TOML doc that survives a
 /// round-trip — mirroring the JSON surface's string fallback.
-pub fn print(arenas: &Arenas, width: usize) -> String {
+/// `ml_print` renders an arbitrary arena as ML text — INJECTED (not called directly) so this crate stays
+/// BELOW the ML surface: the facade re-exports it, so a dependency on the ML printer would cycle. Only
+/// the non-TOML fallback path invokes it; a genuine `(toml-document …)` root never touches it. The facade
+/// (and the ML printer, when embedding a `toml{…}` sub-document) pass `cadenza_syntax::printer::print`.
+pub fn print(arenas: &Arenas, width: usize, ml_print: fn(&Arenas, usize) -> String) -> String {
     if arenas.head_name(arenas.root) == Some("toml-document") {
         match build_document(arenas) {
             Some(doc) => doc.to_string(),
-            None => fallback(arenas, width),
+            None => fallback(arenas, width, ml_print),
         }
     } else {
-        fallback(arenas, width)
+        fallback(arenas, width, ml_print)
     }
 }
 
 /// The non-TOML-root fallback: carry the program's ML text as a single TOML string key.
-fn fallback(arenas: &Arenas, width: usize) -> String {
-    let ml = crate::printer::print(arenas, width);
+fn fallback(arenas: &Arenas, width: usize, ml_print: fn(&Arenas, usize) -> String) -> String {
+    let ml = ml_print(arenas, width);
     let mut doc = DocumentMut::new();
     doc["program"] = toml_edit::value(ml);
     doc.to_string()
@@ -662,7 +666,7 @@ mod tests {
     /// The strong contract: parse → print is byte-identical for an unmutated document.
     fn assert_byte_exact(src: &str) {
         let a = read(src).expect("valid TOML");
-        let printed = print(&a, 100);
+        let printed = print(&a, 100, |_, _| String::new());
         assert_eq!(
             printed, src,
             "not byte-exact\n--- src ---\n{src}\n--- printed ---\n{printed}"
@@ -672,7 +676,7 @@ mod tests {
     /// The fallback law: read → print → read is an arena fixed point (after any normalization).
     fn assert_idempotent(src: &str) {
         let a1 = read(src).expect("valid TOML");
-        let printed = print(&a1, 100);
+        let printed = print(&a1, 100, |_, _| String::new());
         let a2 = read(&printed).expect("reprinted TOML parses");
         assert!(
             a1.structurally_eq(&a2),
@@ -800,7 +804,7 @@ mod tests {
             if a.head_name(id) == Some("toml-string") {
                 let items = list_items(&a, id);
                 // items[3] is the raw leaf; rebuild the arena with that leaf's string changed.
-                if let crate::ast::Struct::Atom(l) = *a.get(items[3])
+                if let cadenza_syntax_core::ast::Struct::Atom(l) = *a.get(items[3])
                     && let Leaf::Str(_) = a.leaf(l)
                 {
                     a.leaves[l.0 as usize] = Leaf::Str("\"0.0.0.0\"".into());
@@ -809,7 +813,7 @@ mod tests {
             }
         }
         assert!(changed, "found and rewrote the raw string leaf");
-        let printed = print(&a, 100);
+        let printed = print(&a, 100, |_, _| String::new());
         assert_eq!(
             printed, "host = \"0.0.0.0\"\n",
             "the rewrite reflects in output"
@@ -820,26 +824,17 @@ mod tests {
     fn toml_to_binary_round_trips() {
         let src = "[a]\nx = [1, 2, { b = true }]\ny = \"z\"\n";
         let a1 = read(src).unwrap();
-        let bin = crate::codec::encode(&a1);
-        let a2 = crate::codec::decode(&bin).expect("decodes");
+        let bin = cadenza_ast::codec::encode(&a1);
+        let a2 = cadenza_ast::codec::decode(&bin).expect("decodes");
         assert!(a1.structurally_eq(&a2));
-        // And printing the decoded arena reproduces the source.
-        assert_eq!(print(&a2, 100), src);
+        // And printing the decoded arena reproduces the source (toml-document root; ml_print unused).
+        assert_eq!(print(&a2, 100, |_, _| String::new()), src);
     }
 
-    #[test]
-    fn non_toml_root_falls_back_to_program_key() {
-        // `cdz convert prog.cdz --to toml` hands a bare program arena to print → a `program = "…"` key.
-        let prog = crate::sexpr::read("(+ 1 2)").unwrap();
-        let out = print(&prog, 100);
-        assert!(
-            out.starts_with("program = "),
-            "fallback yields a program key, got {out}"
-        );
-        // It re-reads as a valid TOML doc with a string kv.
-        let back = read(&out).expect("fallback output is valid TOML");
-        assert_eq!(back.head_name(back.root), Some("toml-document"));
-    }
+    // NOTE: `non_toml_root_falls_back_to_program_key` moved to `cadenza-syntax`'s in-crate
+    // `surface_tests` — it exercises the ML-printer fallback (a non-TOML root → `program = "<ml>"` key),
+    // which needs the ML printer + the sexpr reader, neither of which this below-the-surface crate may
+    // depend on.
 
     #[test]
     fn span_table_is_total_and_ordered() {
@@ -972,21 +967,21 @@ mod tests {
             for _ in 0..800 {
                 let src = gen_toml(&mut rng);
                 let a1 = read(&src).expect("generated TOML parses");
-                let bin = crate::codec::encode(&a1);
-                let a2 =
-                    crate::codec::decode(&bin).expect("a TOML arena decodes from its own encoding");
+                let bin = cadenza_ast::codec::encode(&a1);
+                let a2 = cadenza_ast::codec::decode(&bin)
+                    .expect("a TOML arena decodes from its own encoding");
                 assert!(
                     a1.structurally_eq(&a2),
                     "TOML arena survives the binary round-trip for:\n{src}"
                 );
                 assert_eq!(
                     bin,
-                    crate::codec::encode(&a2),
+                    cadenza_ast::codec::encode(&a2),
                     "binary encode is deterministic for:\n{src}"
                 );
                 // The STRONG contract: the decoded arena re-prints byte-exact to the source.
                 assert_eq!(
-                    print(&a2, 100),
+                    print(&a2, 100, |_, _| String::new()),
                     src,
                     "TOML is byte-exact through the binary codec for:\n{src}"
                 );
@@ -1055,7 +1050,7 @@ mod tests {
             );
         }
         fn walk(a: &Arenas, id: StructId) {
-            if let crate::ast::Struct::List(kids) = a.get(id) {
+            if let cadenza_syntax_core::ast::Struct::List(kids) = a.get(id) {
                 for &c in kids {
                     assert!(
                         (c.0 as usize) < a.structure.len(),

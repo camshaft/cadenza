@@ -15,3 +15,7 @@ edition = "2024"
 
 [dependencies]
 cadenza-ast = { path = "../cadenza-ast" }
+# `literal` (shared literal lexing/escapes) needs these — arbitrary-precision Int for numeric literals
+# and NFC normalization for string/name leaves. Small, and already in the workspace lock.
+num-bigint = "0.4"
+unicode-normalization = "0.1.25"

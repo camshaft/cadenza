@@ -2393,7 +2393,7 @@ impl<'a> Printer<'a> {
         let sub = crate::query::Tree::from_arena(self.a, subtree).to_arena();
         let body = match grammar {
             "json" => crate::json::print(&sub, self.width),
-            "toml" => crate::toml_surface::print(&sub, self.width),
+            "toml" => crate::toml_surface::print(&sub, self.width, crate::printer::print),
             _ => return false,
         };
         // `grammar{ <body> }` — a single space inside the braces so it re-lexes as the region (the reader
