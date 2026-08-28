@@ -314,9 +314,22 @@ fn gen_expr<C: Choice>(
             out.push_str("(if ");
             gen_cond(c, depth - 1, scope, fresh, caps, out);
             out.push(' ');
-            gen_expr(c, depth - 1, scope, fresh, caps, out);
-            out.push(' ');
-            gen_expr(c, depth - 1, scope, fresh, caps, out);
+            // Sometimes emit IDENTICAL branches — `(if C a a)`. If the compiler folds an identical-branch
+            // `if` to `a` WITHOUT evaluating `C`, then a TRAPPING condition's effect is ELIDED — the same
+            // fold-soundness family as the self-identity-fold miscompile (#4870), but on the if-CONDITION
+            // path, and `C` here is a DIRECT expr (a distinct `is_trap_free` path from a LocalRef). The
+            // branch is generated ONCE and duplicated verbatim so the two arms are syntactically equal.
+            if c.variant(3) == 0 {
+                let mut branch = String::new();
+                gen_expr(c, depth - 1, scope, fresh, caps, &mut branch);
+                out.push_str(&branch);
+                out.push(' ');
+                out.push_str(&branch);
+            } else {
+                gen_expr(c, depth - 1, scope, fresh, caps, out);
+                out.push(' ');
+                gen_expr(c, depth - 1, scope, fresh, caps, out);
+            }
             out.push(')');
         }
         // Let binding `(let ((vN <val>)) <body>)` — binds a FRESH Int64 name (so no shadowing) and adds
@@ -764,6 +777,26 @@ mod tests {
             saw_self_op,
             "a self-operation `(op v v)`/`(rel v v)` should be reachable across 400 varied inputs"
         );
+    }
+
+    /// The identical-branch `if` shapes the generator can emit are cleanly handled — a plain `(if C a a)`
+    /// and one whose condition can TRAP at runtime (`(if (< (r 2) 5) a a)`, r divide-by-zero). Pins that
+    /// the identical-branch fold surface (which must preserve a trapping condition's effect) is valid
+    /// Cadenza the compiler handles (compiles or a correct trap-decline), never a crash / invalid wasm.
+    #[test]
+    fn identical_branch_if_shapes_are_cleanly_handled() {
+        for src in [
+            "(do (def (main) (if (< 1 2) 5 5)) (export main))",
+            "(do (def (r n) (if (<= n 0) -9223372036854775808 (/ n (r (- n 1))))) (def (main) (if (< (r 2) 5) 7 7)) (export main))",
+        ] {
+            assert!(
+                matches!(
+                    compile_catching(src),
+                    Verdict::Compiled { .. } | Verdict::Declined { .. }
+                ),
+                "identical-branch if must be cleanly handled: {src}"
+            );
+        }
     }
 
     /// The base case (empty entropy) coerces to the simplest program — a single bounded literal main —
