@@ -1001,33 +1001,11 @@ mod tests {
         assert!(mismatches.is_empty());
     }
 
-    /// END-TO-END (skips without a live oracle): with v-lean-oracle's f64-rounding fix (#4818), the
-    /// underflow float literal `1.0e-400` now HOLDS (rcdzc 0.0 == the oracle's f64 0.0) — no false
-    /// mismatch. Requires the POST-#4818 oracle-check (`nix build .#oracle-lean`).
-    #[test]
-    fn float_underflow_literal_holds_after_f64_fix() {
-        let Some(oracle) = crate::lean::discover_oracle_check() else {
-            eprintln!(
-                "skipping: no oracle-check (nix build .#oracle-lean; set CDZ_SMITH_ORACLE_CHECK)"
-            );
-            return;
-        };
-        let sources = vec!["(do (def (main) 1.0e-400) (export main))".to_string()];
-        let mut mismatches = Vec::new();
-        let stats = lean_differential_sweep(
-            &sources,
-            std::path::Path::new("/nonexistent-store"),
-            &oracle,
-            8,
-            &mut mismatches,
-        )
-        .expect("sweep runs");
-        assert_eq!(stats.trials, 1);
-        assert_eq!(
-            stats.mismatches, 0,
-            "1.0e-400 must HOLD after the f64 fix (rcdzc 0.0 == oracle f64 0.0): {mismatches:?}"
-        );
-        assert_eq!(stats.holds, 1, "the underflow float literal holds");
-        assert!(mismatches.is_empty());
-    }
+    // NOTE: cdz-smith deliberately does NOT unit-test the oracle's float-literal (or any value-domain)
+    // behavior — that couples this suite to v-lean-oracle's external `oracle-check` ARTIFACT VERSION (a
+    // pre-#4818 oracle would fail such a test; a post-fix one would pass). The oracle's f64-rounding
+    // semantics are v-lean-oracle's to test (their #4818 #guard). cdz-smith tests its own WIRE + sweep
+    // logic (the pure tests above + `lean_differential_sweep_holds_for_benign_scalars`, whose Int64
+    // programs hold on any oracle version). Float-literal holds are validated by CAMPAIGN runs against a
+    // freshly-built oracle, not a standing test.
 }
