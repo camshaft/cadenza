@@ -442,6 +442,17 @@
   (call   main (: 5 Int64)) (output (: 0 Int64))
   (call   main (: 0 Int64)) (trap "divide by zero"))
 
+(case "self-identity comparison over a runtime checked-shift binding preserves the out-of-range trap"
+  (doc    "SECOND trap KIND (cdz-smith reinforcement): the elided effect is ANY force-trap, not just ÷0. A
+           checked left-shift `(<< 1 n)` traps on an OUT-OF-RANGE runtime shift count — a DIFFERENT
+           is_trap_free path than `/` (Shl is not in the trap-free set) that surfaces the KIND-LESS
+           `unreachable` runtime trap (no reason string, unlike div-by-zero). The self-identity fold
+           `(< v0 v0)→false` must still decline so v0 is forced: at n=3 v0=8 and `(< 8 8)`=false → 0; at n=64
+           the shift count ≥ width traps. Grounds the fault-kind-agnostic property e2e through the oracle.")
+  (input  (do (def (main (: n Int64)) (let ((v0 (<< 1 n))) (if (< v0 v0) 1 0))) (export main)))
+  (call   main (: 3 Int64)) (output (: 0 Int64))
+  (call   main (: 64 Int64)) (trap "unreachable"))
+
 (case "self-identity fold over a TRAP-FREE (pure) lazy binding still fires"
   (doc    "The trap-free twin: `w = (Int64.wrapping-add n 1)` is TOTAL (wrapping arithmetic never traps), so
            `is_trap_free` reports the ref trap-free and the self-identity fold `(< w w)→false` STILL fires — w
