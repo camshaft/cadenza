@@ -47,6 +47,7 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
 | option&lt;scalar\|bytes\|leaf-liftable&gt; | field + result | world | `option_payload_ty` | 1, 8, 16, 35, 36, 38 |
 | result&lt;list&lt;u8&gt;, enum&gt; | arg + result | world | `result_bytes_enum` | 15, 17 |
 | variant (scalar / mixed-width join / compound payload) + payloadless enum | arg + result | world | `variant_scalar_payload_cases` / `variant_liftable_payload_cases` / `enum_cases` | 2, 18, 32, + vres/cvp/mwv/wen families |
+| payloadless enum RESULT (bare + record-field) on a SYNTHESIZED world (no clause) | result + export | synth/export | `enum_cases` (db-aware) + `canon_write_of` enum-disc arm | 58, 59 (wasm+rust+rust-async) |
 | scalar-param → spilled compound (record) result | export | export | `needs_result_wrapper` (SpillRecord retptr) | 56, sp1–sp7 |
 
 ## WIRED but UNTESTED (predicate admits; no dedicated running SHAPE — verify opportunistically)
@@ -58,10 +59,13 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
 ## GAPS — DECLINED, tracked (owner in brackets)
 
 **Synth side — v-inference (`wit_world.rs`):**
-- **[synth]** variant/enum/flags SELF-DECLARATION on a SYNTHESIZED world (no `wit-world` clause):
-  `ty_natural_wit` / `wit_type_to_ty` / `wit_type_to_type_expr` all decline these. Needs the
-  **synthesized-nominal-decl increment**. NOTE: an *imposed*-world variant/enum WORKS — emit matches
-  an explicit decl; the gap is guest-annotation-driven self-declaration. Biggest synth-side lever.
+- **[synth]** variant/flags SELF-DECLARATION on a SYNTHESIZED world (no `wit-world` clause):
+  `ty_natural_wit` / `wit_type_to_ty` / `wit_type_to_type_expr` decline these. Needs the
+  **synthesized-nominal-decl increment**. NOTE: an *imposed*-world variant WORKS (emit matches an
+  explicit decl); the gap is guest-annotation-driven self-declaration. CORRECTION (verified by running,
+  SHAPE 58/59): payloadless **ENUM** self-declaration on a synthesized world ALREADY works for RESULTS
+  — emit synthesizes the enum WIT type DB-AWARE (`enum_cases`), so no `ty_natural_wit` Sum arm is needed
+  for enum results. The remaining enum blocker is the export PARAM (an emit gap, below), not synth.
 - **[synth]** `Ty::Unit` OUTBOUND asymmetry: `wit_type_to_ty` unit→Unit is wired but `ty_natural_wit`
   Ty::Unit→None. Trivial exact inverse; only bites a synthesized-world unit result.
 - **[synth]** option/result OUTBOUND: `wit_world.rs` maps `Ty::Sum`→None; outbound sum WIT is emitted
@@ -78,6 +82,12 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
   element.
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
+- **[emit, export]** a NON-SCALAR entry PARAM (enum/Sum, and a record whose fields aren't all
+  boundary-scalar) — `try_bare_entry_param_component` + `is_boundary_record`/`field_boundary_abi`
+  decline it: *"parameter … has no scalar boundary representation — a non-scalar entry parameter is not
+  yet emitted on this export path"* (verified: an enum export param, and a record with an enum field,
+  both decline `todo`). This is the real synthesized-world ENUM-PARAM blocker (emit, not synth); once
+  emit admits it, the enum WIT type should come from the db-aware `enum_cases`, not `ty_natural_wit`.
 - **[emit, export]** top-level Tuple/Sum/List/String/Bytes typed-interface PARAM
   (`record_interface_export`); a `result<>` top-level export result writer (`canon_write_of`); a flat
   1-value record result; an enum-disc result needing case REORDER; a nested/compound list-param
