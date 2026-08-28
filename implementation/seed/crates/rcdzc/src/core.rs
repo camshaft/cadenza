@@ -295,10 +295,11 @@ pub enum Core {
     ConstBool(bool),
     /// A string constant — the canonical text of a string literal. A `Ty::String` value; escapes as its
     /// baked UTF-8 bytes (like a constant compound). Runtime string ops are a later stage. Behind an
-    /// `Rc<str>` so cloning a `Core::ConstStr` (which `core_of` does on every memo read + every recursive
+    /// `Arc<str>` so cloning a `Core::ConstStr` (which `core_of` does on every memo read + every recursive
     /// Core walk per node) is a refcount bump, not a UTF-8 heap copy — same rationale as `Core::Record`'s
-    /// `Rc<BTreeMap>` and the element families' `Rc<[StructId]>`.
-    ConstStr(std::rc::Rc<str>),
+    /// `Rc<BTreeMap>` and the element families' `Rc<[StructId]>`. `Arc` (not `Rc`) matches `cadenza-ast`'s
+    /// `Leaf::Str(Arc<str>)`, so a leaf's text flows to/from this constant with no re-allocation.
+    ConstStr(std::sync::Arc<str>),
     /// A BYTES constant — a compile-time-known byte sequence baked as a single leaf (`Ty::Bytes`). The
     /// LEAF twin of `Core::BytesOf { elems }`: `BytesOf` carries one child NODE per byte (a `ConstInt` or
     /// a runtime element) and is emitted by materializing each element at run time, whereas `ConstBytes`
@@ -308,8 +309,9 @@ pub enum Core {
     /// compile-time fold of `Ast.encode` (a whole canonical `cdzast` document as one baked constant, rather
     /// than N per-byte `ConstInt` nodes), and the substrate a compile-time `Blake3.of`/const-executed
     /// transform folds a `Bytes` result into. Behind an `Rc<[u8]>` so cloning it on every `core_of` memo
-    /// read is a refcount bump, not a byte copy — same rationale as `Core::ConstStr`'s `Rc<str>`.
-    ConstBytes(std::rc::Rc<[u8]>),
+    /// read is a refcount bump, not a byte copy — same rationale as `Core::ConstStr`'s `Arc<str>`.
+    /// `Arc` (not `Rc`) matches `cadenza-ast`'s `Leaf::Bytes(Arc<[u8]>)` so a leaf's bytes flow with no copy.
+    ConstBytes(std::sync::Arc<[u8]>),
     /// A CHAR constant — a single Unicode scalar value (`Ty::Char`). Constant equality/ordering compare
     /// by scalar value (`c as u32`). Crossing the boundary as a char value + `Char.to-int`/`from-int` are
     /// later increments (a char at the boundary still declines — no scalar machine path yet).

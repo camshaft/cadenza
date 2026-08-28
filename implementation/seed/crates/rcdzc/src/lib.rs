@@ -11,11 +11,13 @@
 // insertion-ordered, so the encoded bytes are unchanged.
 extern crate alloc;
 
-// The copied-in syntax foundation (verbatim from `cadenza-syntax`, minus its external deps): the
-// two-arena leaf-pool AST, the total binary codec, and the leb128 primitives it rides on.
-pub mod ast;
-pub mod codec;
-pub mod leb128;
+// The AST value model + canonical binary codec: the SINGLE `cadenza-ast` crate, re-exported so the rest
+// of the compiler keeps addressing `crate::{ast,codec,leb128}` unchanged. Formerly copied-in verbatim
+// (`ast.rs`/`codec.rs`/`leb128.rs`); consolidated onto the one shared crate (operator directive: one
+// source of truth, no diverging copies). `default-features = false` = the `no_std`+alloc CORE (no
+// num-bigint / unicode-normalization / canon), keeping the compiler dependency-light for the Cadenza
+// self-host port — cadenza-ast is the one sanctioned dependency exception.
+pub use cadenza_ast::{ast, codec, leb128};
 
 // The columns substrate: index-typed arenas + columns, and the diagnostic taxonomy.
 pub mod arena;

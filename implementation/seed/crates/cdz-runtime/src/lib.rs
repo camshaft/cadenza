@@ -145,14 +145,20 @@ mod bigint;
 // `ast-encode`/`ast-decode` heap ops call it; those ops walk a heap `Ast` value into `ast::Arenas` and
 // `codec::encode` it BYTE-IDENTICALLY to the compiler's compile-time `Ast.encode` const fold (and the
 // inverse for decode), so one serializer source guarantees the runtime and const forms agree.
+// Source-included from the SINGLE `cadenza-ast` crate (formerly rcdzc's copies, now deleted —
+// consolidated to one source of truth). `#[path]` source-include, NOT a crate dependency, is
+// DELIBERATE (the #459 lesson, see above): a crate dep would enter cross-crate LTO and perturb the
+// frozen runtime wasm hash, which must be a function of THIS crate's own compilation only. cadenza-ast's
+// `ast.rs`/`codec.rs`/`leb128.rs` are the `no_std`+alloc CORE (canon/fxhash/std behind `cfg(feature =
+// "std")`), so they include standalone here exactly as rcdzc's copies did, byte-identically.
 #[allow(dead_code)]
-#[path = "../../rcdzc/src/leb128.rs"]
+#[path = "../../cadenza-ast/src/leb128.rs"]
 mod leb128;
 #[allow(dead_code)]
-#[path = "../../rcdzc/src/ast.rs"]
+#[path = "../../cadenza-ast/src/ast.rs"]
 mod ast;
 #[allow(dead_code)]
-#[path = "../../rcdzc/src/codec.rs"]
+#[path = "../../cadenza-ast/src/codec.rs"]
 mod codec;
 
 /// A single-threaded stand-in for `std::thread_local!`, so the two scratch/counter cells work under
@@ -6392,7 +6398,7 @@ fn encode_ast_to_arenas(
         for i in 0..n {
             raw.push(op_bytes_get(payload, i) as u8);
         }
-        Some(b.atom_leaf(crate::ast::Leaf::Bytes(raw)))
+        Some(b.atom_leaf(crate::ast::Leaf::Bytes(raw.into())))
     } else if disc == d.list {
         // A generic name-headed (or empty) list payload is a persistent RRB vector (`vec-*`, NOT `arr-*`);
         // each element is itself an Ast. Stays `Ast.List` (no ctor head) — the inverse of decode's fall-through.
@@ -6537,6 +6543,10 @@ fn decode_arenas_to_ast(
                 | crate::ast::Leaf::FieldPair
                 | crate::ast::Leaf::Member => return None,
                 crate::ast::Leaf::BadEscape(_) | crate::ast::Leaf::BadChar(_) => return None,
+                // A type-suffixed numeric literal (`100N`/`0.5R`) is decoded to a plain Int/Float by the
+                // codec, so it never appears in a decoded document; a stray occurrence fails cleanly
+                // (decode is TOTAL), like the marker leaves above.
+                crate::ast::Leaf::Suffixed { .. } => return None,
             };
             Some(h)
         }
@@ -21038,7 +21048,7 @@ mod tests {
         let e_neg3 = b.atom_leaf(idec(-3));
         let e_bool = b.atom_leaf(crate::ast::Leaf::Bool(true));
         let e_str = b.atom_leaf(crate::ast::Leaf::Str("hi".into()));
-        let e_bytes = b.atom_leaf(crate::ast::Leaf::Bytes(alloc::vec![0, 255]));
+        let e_bytes = b.atom_leaf(crate::ast::Leaf::Bytes(alloc::vec![0, 255].into()));
         let e_char = b.atom_leaf(crate::ast::Leaf::Char('λ'));
         let e_sym = b.atom_leaf(crate::ast::Leaf::Sym("m".into()));
         let e_float = b.atom_leaf(crate::ast::Leaf::Float(

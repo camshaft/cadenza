@@ -164,7 +164,9 @@ pub fn write_i64_be(out: &mut Vec<u8>, value: i64) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
-#[cfg(test)]
+// `all(test, feature = "std")`: libtest needs std, so this module only ever built under std — gating it
+// explicitly stops cdz-runtime's no_std `#[path]` include (mechanism B) from pulling it into that build.
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 

@@ -4194,7 +4194,7 @@ fn encode_ast_value(
             };
             raw.push(u8::try_from(v.to_i64().filter(|n| (0..=255).contains(n))?).ok()?);
         }
-        Some(b.atom_leaf(crate::ast::Leaf::Bytes(raw)))
+        Some(b.atom_leaf(crate::ast::Leaf::Bytes(raw.into())))
     } else if d == disc.char && payloads.len() == 1 {
         // A char node → `Leaf::Char` of the scalar (`Core::ConstChar`). The codec stores it as `KIND_CHAR`.
         let Core::ConstChar(c) = core_of(db, payloads[0]) else {
@@ -15552,7 +15552,7 @@ fn runtime_leaf_form(db: &mut Db, is_string: bool) -> Option<RuntimeBytesForm> {
         )
     } else {
         (
-            b.atom_leaf(crate::ast::Leaf::Bytes(Vec::new())),
+            b.atom_leaf(crate::ast::Leaf::Bytes(Vec::new().into())),
             b.name("Bytes"),
             KIND_BYTES,
         )
@@ -16772,7 +16772,7 @@ fn reify_effect_to_tuple(
         let mut b = crate::ast::Builder::new();
         let root = effect_schema_descriptor(db, &mut b, d)?;
         let bytes = crate::codec::encode(&b.finish(root));
-        Some(db.push_atom(crate::ast::Leaf::Bytes(bytes)))
+        Some(db.push_atom(crate::ast::Leaf::Bytes(bytes.into())))
     });
 
     // Synthesize the record AST `(#record (= correlation …) (= kind …) (= payload …) [(= target …)]
@@ -17126,6 +17126,10 @@ fn resolve_leaf_offsets(
             // (resolving it rejects CDZ0001/CDZ0002 before any escape emission), so a runtime template
             // over it is meaningless.
             crate::ast::Leaf::BadEscape(_) | crate::ast::Leaf::BadChar(_) => return None,
+            // A type-suffixed numeric literal (`100N`/`0.5R`) is a SYNTAX-side leaf the codec decodes to a
+            // plain Int/Float before the compiler sees it, so it never reaches a decoded runtime template;
+            // bail conservatively (like the Float arm) for enum exhaustiveness.
+            crate::ast::Leaf::Suffixed { .. } => return None,
             // A native-compound-data CTOR-HEAD leaf (`Leaf::Ctor`/`FieldPair`/`Member`) is payloadless —
             // one kind byte, no body and no runtime hole (it is a fixed structural head, never a patched
             // value leaf; the runtime holes are the Int/Bool value leaves elsewhere in the template). Skip
@@ -17484,7 +17488,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
                     _ => return None,
                 }
             }
-            Some(b.atom_leaf(Leaf::Bytes(raw)))
+            Some(b.atom_leaf(Leaf::Bytes(raw.into())))
         }
         _ => None,
     }
@@ -17656,8 +17660,8 @@ fn member_access(b: &mut crate::ast::Builder, operand: &str, key: &str) -> Struc
     // M2: the `(. operand key)` head is the native MEMBER leaf kind (recognized by kind), not the `.` name.
     // Keeps the compiler-emitted Qty/Symbol/Unit value-construction member forms native head-first, matching
     // op62's runtime encode (byte-EQ) and the reader's native `.` flip.
-    let op = b.name(operand.to_string());
-    let k = b.name(key.to_string());
+    let op = b.name(operand);
+    let k = b.name(key);
     b.member(op, k)
 }
 
@@ -17748,7 +17752,7 @@ pub(crate) fn type_ast(
         }
         // A bytes value's type surface is the bare name `Bytes` (a leaf, like a scalar) — matches
         // `render_name`; its VALUE renders `b"…"` (built in `const_value_ast` / the escape walker).
-        Ty::Bytes => Some(b.name("Bytes".to_string())),
+        Ty::Bytes => Some(b.name("Bytes")),
         // A still-free type variable in an escaping value's type has NO defined serialization — a bare
         // `(None)` : `Option ?0` or an empty `(list)` : `List ?0` whose payload/element nothing pins. It
         // is NOT rendered (no honest concrete surface exists): returning `None` here makes
@@ -17774,12 +17778,12 @@ pub(crate) fn type_ast(
         // A nominal's type surface is its declared NAME atom (`(: (Mk 42) UserId)`) — its identity is
         // the name, not its underlying shape (like a monomorphic sum). The value itself renders as the
         // underlying value form (built by the value walker, which sees through the tag).
-        Ty::Nominal { decl, .. } => Some(b.name(ncx.name_of(*decl)?.to_string())),
+        Ty::Nominal { decl, .. } => Some(b.name(ncx.name_of(*decl)?)),
         // The TYPE OF TYPES — the type surface of a type-VALUE (`(: Int64 Type)`). A type is a first-class
         // value that can be returned and inspected at run time (core-semantics.md §Types Are First-Class
         // Values), so a bare type-value crosses the boundary; its TYPE node is the atom `Type` (the value
         // node is the concrete type's name, built by `const_value_ast`'s `Ty::Type` arm). `render_name`.
-        Ty::Type => Some(b.name("Type".to_string())),
+        Ty::Type => Some(b.name("Type")),
         // A function has no boundary value form, so no type surface. A still-free type variable / `Any`
         // has no determined serialization. A program that would escape one declines before the escape.
         // A reified continuation has no value-form surface (like a function) — it never crosses as a
@@ -25764,8 +25768,10 @@ enum CVal {
     /// block, which has the node). Only a FINITE float is ever a `CVal::Float` (a `nan` is `Core::ConstFloatNan`,
     /// declined by `core_to_cval`). Carried so a Float threaded through a RECURSION const-folds (ca03).
     Float(crate::ast::Decimal),
-    Str(std::rc::Rc<str>),
-    Bytes(std::rc::Rc<[u8]>),
+    // `Arc` (not `Rc`) to match `cadenza-ast`'s `Leaf::Str(Arc<str>)`/`Leaf::Bytes(Arc<[u8]>)` + `Core`'s
+    // `ConstStr`/`ConstBytes`, so a value flows leaf↔Core↔CVal with a refcount bump, no re-allocation.
+    Str(std::sync::Arc<str>),
+    Bytes(std::sync::Arc<[u8]>),
     Unit,
     List(Vec<CVal>),
     /// A SUM / variant value (Stage b) — an `Ast` node, an `Option`/`Result`, or any user sum. `disc` is the
@@ -25790,7 +25796,7 @@ enum CVal {
     /// the whole fold becomes this trap; `cval_to_core` materializes it to a `Core::Poison(ConstTrap, msg)` so
     /// the trap's MESSAGE surfaces as the compile error (CDZ0304) — not the generic "runtime AST value"
     /// decline. This makes a const-executed trap a fail-loud, actionable compile-time error.
-    Trap(std::rc::Rc<str>),
+    Trap(std::sync::Arc<str>),
     /// A CLOSURE value — a `fn`/lambda captured as a first-class const value so a HIGHER-ORDER fold works: a
     /// `const f: (T) -> U` parameter bound to a lambda argument, then APPLIED per element (a `List.map`/
     /// `filter`/`fold`, or a user recursive map that threads a closure). `node` is the lambda literal's
@@ -26182,7 +26188,7 @@ fn const_eval_apply(
     {
         let msg = match args.first().map(|&a| const_eval(db, a, env, budget)) {
             Some(Some(CVal::Str(s))) => s,
-            _ => std::rc::Rc::from("trap (const-executed)"),
+            _ => std::sync::Arc::from("trap (const-executed)"),
         };
         return Some(CVal::Trap(msg));
     }
@@ -26704,11 +26710,11 @@ fn apply_const_prim(prim: Prim, vs: &[CVal]) -> Option<CVal> {
         // `core_of` path and the runtime produce. The recursive-engine twin of `core_of`'s Int Div/Rem fold.
         (Prim::Div, [CVal::Int(a), CVal::Int(b)]) => Some(match a.divmod(b) {
             Some((q, _)) => CVal::Int(q),
-            None => CVal::Trap(std::rc::Rc::from("division by zero")),
+            None => CVal::Trap(std::sync::Arc::from("division by zero")),
         }),
         (Prim::Rem, [CVal::Int(a), CVal::Int(b)]) => Some(match a.divmod(b) {
             Some((_, r)) => CVal::Int(r),
-            None => CVal::Trap(std::rc::Rc::from("division by zero")),
+            None => CVal::Trap(std::sync::Arc::from("division by zero")),
         }),
         (Prim::Lt, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Bool(a.cmp(b) == Ordering::Less)),
         (Prim::Gt, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Bool(a.cmp(b) == Ordering::Greater)),
@@ -27080,7 +27086,7 @@ fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
         CVal::Char(c) => db.push_atom(crate::ast::Leaf::Char(*c)),
         CVal::Float(d) => db.push_atom(crate::ast::Leaf::Float(d.clone())),
         CVal::Str(s) => db.push_atom(crate::ast::Leaf::Str(s.clone())),
-        CVal::Bytes(b) => db.push_atom(crate::ast::Leaf::Bytes(b.to_vec())),
+        CVal::Bytes(b) => db.push_atom(crate::ast::Leaf::Bytes(b.clone())),
         CVal::Unit => synth_core(db, Core::Unit, crate::ty::Ty::Unit),
         CVal::List(_) | CVal::Sum { .. } | CVal::Record(_) | CVal::Tuple(_) => {
             let core = cval_to_core(db, v)?;
@@ -28813,7 +28819,7 @@ fn lower_bytes_slice(
                         _ => None,
                     })
                     .collect();
-                let payload = db.push_atom(crate::ast::Leaf::Bytes(raw));
+                let payload = db.push_atom(crate::ast::Leaf::Bytes(raw.into()));
                 db.core.fill(payload, Core::BytesOf { elems: sub.into() });
                 db.types.fill(payload, crate::ty::Ty::Bytes);
                 trace!(target: "rcdzc::fold", node = id.0, start = s, len = l, "Bytes.slice folds to Some (in-range constant)");
@@ -29457,7 +29463,7 @@ fn decode_bin_field(
                     })
                 })
                 .collect();
-            let payload = db.push_atom(crate::ast::Leaf::Bytes(raw[*s..*e].to_vec()));
+            let payload = db.push_atom(crate::ast::Leaf::Bytes(raw[*s..*e].to_vec().into()));
             db.core.fill(payload, Core::BytesOf { elems: sub.into() });
             db.types.fill(payload, crate::ty::Ty::Bytes);
             core_of(db, payload)
@@ -30145,7 +30151,7 @@ fn is_curried_application_of_projected_fn(db: &mut Db, head: StructId) -> bool {
 }
 
 pub(crate) fn synth_core(db: &mut Db, core: Core, ty: crate::ty::Ty) -> StructId {
-    let id = db.push_atom(crate::ast::Leaf::Bytes(Vec::new())); // placeholder leaf; core/ty are authoritative
+    let id = db.push_atom(crate::ast::Leaf::Bytes(Vec::new().into())); // placeholder leaf; core/ty are authoritative
     db.core.fill(id, core);
     db.types.fill(id, ty);
     id

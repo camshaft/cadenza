@@ -635,7 +635,9 @@ fn read_bool(r: &mut Reader) -> Result<bool, DecodeError> {
     }
 }
 
-#[cfg(test)]
+// `all(test, feature = "std")`: libtest needs std, so this module only ever built under std — gating it
+// explicitly stops cdz-runtime's no_std `#[path]` include (mechanism B) from pulling it into that build.
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use crate::ast::Builder;
