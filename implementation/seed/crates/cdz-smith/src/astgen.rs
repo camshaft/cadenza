@@ -28,9 +28,11 @@ use crate::generator::Program;
 /// The recursion budget for a generated expression (bounds program size + guarantees termination).
 const MAX_DEPTH: usize = 4;
 
-/// Int64-typed binary operators — all total at COMPILE time (runtime overflow wraps/traps, which is a
-/// runnable outcome, not a compile error), so the generated program always type-checks + compiles.
-const OPS: [&str; 3] = ["+", "-", "*"];
+/// Int64 → Int64 → Int64 binary operators: arithmetic, division/modulo, and bitwise/shift. All
+/// type-check as Int64; runtime edges (a const `*` overflow → CDZ decline; a `/`/`%` by zero → a
+/// trap; a large/negative `<<`/`>>` count → shift-count masking) are runnable outcomes the compiler
+/// handles cleanly, and the bitwise/shift lowering is a known Wasm-vs-Rust disagreement surface.
+const OPS: [&str; 10] = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"];
 
 /// Int64 → Int64 → Bool relational operators, for the condition of an `if` (both branches are Int64).
 const RELS: [&str; 4] = ["<=", "<", ">=", ">"];
@@ -182,6 +184,21 @@ mod tests {
                 matches!(verdict, Verdict::Compiled { .. } | Verdict::Declined { .. }),
                 "coerced program must be cleanly handled (Compiled/Declined), got {verdict:?} for: {}",
                 program.source
+            );
+        }
+    }
+
+    /// Every operator the generator can emit is a valid Int64→Int64→Int64 op the compiler CLEANLY
+    /// handles (guards the `OPS` list: a bogus/removed op would surface here rather than as silent
+    /// declines in the fuzzer). With small operands (6, 3) there is no overflow / div-by-zero, so each
+    /// compiles.
+    #[test]
+    fn every_operator_is_a_cleanly_handled_int64_op() {
+        for op in OPS {
+            let source = format!("(do (def (main) ({op} 6 3)) (export main))");
+            assert!(
+                matches!(compile_catching(&source), Verdict::Compiled { .. }),
+                "operator `{op}` should compile as an Int64 op: {source}"
             );
         }
     }
