@@ -15,8 +15,15 @@
 ; where the handler is installed, so nothing is ambient. Every arm names one of the effect's operations
 ; and binds the CURRENT state after its operation's parameters — `(<op> (params…) <state> body)` — and
 ; resume carries BOTH outputs:
-; `(resume <value> <next-state>)` returns <value> to the point that performed the operation (one-shot) and
-; threads <next-state> forward to the rest of the sub-computation. A handle EVALUATES TO THE VALUE OF ITS
+; `(resume <value> <next-state>)` returns <value> to the point that performed the operation and
+; threads <next-state> forward to the rest of the sub-computation. RESUME is ONE-SHOT by default: an arm
+; resumes at most once. Multi-shot is not a supported feature (operator-punted, 2026-08-28: no immediate
+; use); the invariant that matters is a clean DECLINE for a single-shot violation — an arm that resumes
+; more than once when the continuation is NOT safely re-runnable (a HEAP-CAPTURING continuation, whose
+; second resume would double-use the captured heap) DECLINES rather than miscompiles (case `mrs1`). A
+; PURE, heap-free continuation happens to be safely re-runnable, so a second resume over it re-computes
+; and is left to fold (case `mrs2` = 100) — kept only because it is free + sound, NOT promoted.
+; A handle EVALUATES TO THE VALUE OF ITS
 ; BODY; the accumulated state is observable only through the effect's own operations (a read-out is an
 ; ordinary operation whose arm resumes the state — there is no separate return clause). A "stateless"
 ; handler is the degenerate case: seed `unit`, thread `s` unchanged (Unit carries no bytes, so it costs
