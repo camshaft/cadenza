@@ -48,6 +48,7 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
 | result&lt;list&lt;u8&gt;, enum&gt; | arg + result | world | `result_bytes_enum` | 15, 17 |
 | variant (scalar / mixed-width join / compound payload) + payloadless enum | arg + result | world | `variant_scalar_payload_cases` / `variant_liftable_payload_cases` / `enum_cases` | 2, 18, 32, + vres/cvp/mwv/wen families |
 | scalar-param → spilled compound (record) result | export | export | `needs_result_wrapper` (SpillRecord retptr) | 56, sp1–sp7 |
+| payloadless enum RESULT as a typed WIT `enum` under a DECLARED world | export | export | `record_result_lower` enum arm (Passthrough i32) + `note` re-export | 60 (WIT-dump: `enum t0`) |
 
 **Value ROUND-TRIP only (NOT a typed-WIT-export verification):** SHAPE 58/59 pin that a payloadless
 enum value round-trips through the guest + the generic `cadenza:run/run` encode envelope. They do
@@ -83,14 +84,19 @@ NOT verify a typed WIT `enum` export — the compiler cannot emit one today and 
   element.
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
-- **[emit, export, Direction A — MANDATORY, my next unit]** a typed enum/Sum EXPORT (guest declares
-  `type Status = …`, annotates an export/import, no `wit-world` clause) does NOT emit a typed WIT
-  `enum{…}`/`variant{…}` — the export lift's result/param match declines a Sum (`ty_natural_wit(Sum)
-  →None`, the "later slice"), so the WHOLE program FALLS BACK to the generic `cadenza:run/run` encode
-  envelope (verified by WIT-dump on SHAPE 58: `make/run/encode`, no typed `f`). Scalars DO get a typed
-  export (SHAPE 3: `export f: func(s64)->s64`). Fix: route the export sum-result/param lift through a
-  db-aware `Sum→WitType::Enum`/`Variant` built from `enum_cases`/the variant detectors, instead of
-  falling back. Emit-side (mine); no new `wit_world.rs` fn needed (enum_cases gives the case names).
+- **[emit, export] typed enum RESULT under a DECLARED world — ✅ DONE (SHAPE 60).** A payloadless-enum
+  export result under an imposed/in-source `(world … (result ("enum" …)))` now crosses as a typed WIT
+  `enum{…}` (WIT-dump: `enum t0 {red,green,blue}` + `f: func(s64)->t0`), not the old bare `u32`. Fix:
+  `record_result_lower` gained a payloadless-enum arm → `Passthrough` i32 (the def already returns the
+  raw disc = `flatten(Enum)`), and `needs_result_wrapper` is set for it so the typed path takes over from
+  the provider path; the enum defined type is emitted + re-exported by the existing `note` pass. Guard:
+  guest decl-order case names must equal the WIT case order (else a runtime disc remap — declines).
+- **[emit, export] typed enum RESULT on a fully-SYNTHESIZED world (NO clause at all) — remaining slice.**
+  With no world, there is no declared `WitType::Enum`, so `record_interface_export` isn't reached and the
+  program falls back to run/encode (SHAPE 58/59). Closing it needs the SYNTHESIZED-world builder to derive
+  an `enum` member result from the guest (db-aware `enum_cases`), then the SHAPE-60 lower applies.
+- **[emit, export] typed VARIANT-with-payload / Sum RESULT export — remaining slice** (the non-enum twin
+  of SHAPE 60): route it through the typed path via the db-aware variant detectors, same shape.
 - **[emit, export]** a NON-SCALAR entry PARAM (enum/Sum, and a record whose fields aren't all
   boundary-scalar) — `try_bare_entry_param_component` + `is_boundary_record`/`field_boundary_abi`
   decline it: *"parameter … has no scalar boundary representation — a non-scalar entry parameter is not
@@ -125,6 +131,9 @@ other host-RESULT shapes whose only running SHAPE is the reducer-export form.
 - host-string-RESULT (world path) — `result_is_liftable` gained the `string` leaf arm (#4894); SHAPE 57.
 - unit OUTBOUND synth — `ty_natural_wit` `Ty::Unit → WitType::Unit` (#4903), the exact inverse of
   `wit_type_to_ty`'s inbound arm; a synthesized-world unit result now self-declares.
+- typed enum RESULT export under a declared world (Direction A) — `record_result_lower` payloadless-enum
+  arm → `Passthrough` i32 + `needs_result_wrapper`; crosses as WIT `enum{…}` not `u32` (SHAPE 60,
+  WIT-dump verified). Remaining: the no-world SYNTHESIZED enum export + the variant-payload export result.
 
 ## Keeping this honest
 
