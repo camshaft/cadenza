@@ -10258,3 +10258,22 @@
 (def (main (: n Int64)) (classify n))
 (export main)))
   (error CDZ0407))
+
+(case "mrs1 a two-resume arm over a HEAP-allocating body declines cleanly (non-tail resume, later increment)"
+  (doc    "The boundary of the tail-resumptive fold on a TWICE-resuming arm: `(+ (resume s s) (resume s s))`
+           over a body that ALLOCATES heap before the perform (`(let ((xs (bld 3))) (+ (List.len xs)
+           (E.ask)))`) declines honestly — 'this handler is not yet reducible by the tail-resumptive fold
+           (cross-function or non-tail resume arrives in a later increment)'. Pins that a multi-resume over a
+           non-re-computable (heap) continuation is REJECTED rather than double-freeing the captured heap —
+           the safe boundary. (A two-resume over a PURE re-computable body IS accepted and re-runs it; that
+           value's one-shot-vs-multi-shot intent is a v-effects semantic question, not pinned here.)")
+  (input (do
+(effect E (op ask (-> Int64)))
+(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (main (: n Int64))
+  (handle E n
+    ((ask () s (+ (resume s s) (resume s s))))
+    (let ((xs (bld 3))) (+ (List.len xs) (E.ask)))))
+(export main)))
+  (call main (: 5 Int64))
+  (output (: 16 Int64)))
