@@ -85,6 +85,10 @@
 //!   so the constructor is not doubled. A GENERIC / OPEN user sum still DECLINES (no decl emitted). PRELUDE sums
 //!   (Option/Result/…) are ambient (no decl). A user-sum/nominal value emits ⇔ its decl was emitted
 //!   (`emitted` set), so there is never an unbound-type recompile.
+//! - **EXPECT**: `Core::SumExpect` → `((. Option|Result expect) <scrutinee> "")` — the unwrap-or-trap
+//!   accessor. The module is recovered from the scrutinee's sum-decl name; the `"message"` operand was
+//!   dropped at lowering (the trap is textless), so a placeholder `""` re-emits (byte-idempotent, and
+//!   value-equivalent — present → the payload, absent → the same trap).
 //!
 //! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
 //! (Seq/Block/Break), map/set OPERATIONS (insert/lookup/…), richer SUM decision trees (guarded /
@@ -798,6 +802,38 @@ fn emit_expr_viewed(
                     )
                 })?;
             Ok(b.name(nm.clone()))
+        }
+        // `Option.expect` / `Result.expect` — unwrap the present variant's payload or TRAP on absence. The
+        // surface `((. <Module> expect) <scrutinee> <message>)`; the MODULE (`Option`/`Result`) is recovered
+        // from the scrutinee's solved sum declaration NAME. The `"message"` operand was DROPPED at lowering
+        // (`Core::SumExpect` carries no text — the wasm trap is textless and the corpus grades on the TRAP,
+        // not its message), so a placeholder `""` is re-emitted: it round-trips (re-lowers to the same
+        // `SumExpect`, message dropped again — byte-idempotent) and is value-equivalent (present → the
+        // payload, unaffected by the message; absent → the same textless trap).
+        Core::SumExpect { scrutinee, .. } => {
+            let sty = crate::infer::type_of(db, scrutinee);
+            let module = match &sty {
+                Ty::Sum { decl, .. } => match db.type_decl_by_occ(*decl).map(|t| t.name.as_str()) {
+                    Some("Option") => "Option",
+                    Some("Result") => "Result",
+                    _ => {
+                        return Err(Reject::decline(
+                            "the Cadenza backend lowers `expect` only over `Option` / `Result`"
+                                .to_string(),
+                        ));
+                    }
+                },
+                _ => {
+                    return Err(Reject::decline(
+                        "the Cadenza backend cannot recover the module for an `expect` over a non-sum"
+                            .to_string(),
+                    ));
+                }
+            };
+            let head = member_access(b, module, "expect");
+            let s = emit_expr(db, b, scrutinee, None, env, emitted)?;
+            let msg = b.atom_leaf(Leaf::Str("".into()));
+            Ok(b.list(vec![head, s, msg]))
         }
         other => Err(Reject::decline(format!(
             "the Cadenza backend does not yet lower this Core node back to Cadenza: {}",
