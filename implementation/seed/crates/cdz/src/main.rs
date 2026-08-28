@@ -1408,11 +1408,39 @@ fn emit_and_run_module(driver_path: &std::path::Path) -> Result<String, String> 
     };
     // Run the emitted CORE module. A returned i64 → value; a trap (div0/mod0/MIN÷-1) → declined (matches
     // the eval-db oracle); an invalid/uninstantiable module → error (a bad artifact = a real emit bug).
-    match cdz_run::run_core_module(&bytes, "main") {
-        Ok(cdz_run::Outcome::Value(v)) => Ok(format!("value {v}")),
-        Ok(cdz_run::Outcome::Trap(_)) => Ok("declined".to_string()),
-        Err(e) => Ok(format!("error {e}")),
+    // Run the emitted CORE module through the external `cdz-run` binary (thin-`cdz` seam — the runner holds
+    // wasmtime, reached on PATH via `$CDZ_RUN_BIN` → sibling → `$PATH`) rather than linking
+    // `cdz_run::run_core_module` in-process. `cdz-run --core-module` prints one verdict line (`value <n>` /
+    // `trap` / `error <msg>`); map it to this fn's contract (Value→`value <n>`, Trap→`declined`, Err→`error`),
+    // preserving the exact strings run-ml/run-emitted/chor + the fuzzer's differential depend on. A spawn
+    // failure is an outer `Err` (the reserved harness-failure class, same as the compile/run spawns above).
+    let core_wasm = std::env::temp_dir().join(format!("cdz-core-{}.wasm", std::process::id()));
+    if let Err(e) = std::fs::write(&core_wasm, &bytes) {
+        return Err(format!("write core module: {e}"));
     }
+    let program = locate_plugin("run").unwrap_or_else(|| PathBuf::from(bin_name("cdz-run")));
+    let core = Command::new(&program)
+        .arg("--core-module")
+        .arg(&core_wasm)
+        .arg("--core-export")
+        .arg("main")
+        .output();
+    let _ = std::fs::remove_file(&core_wasm);
+    let core = core.map_err(|e| format!("spawn cdz-run --core-module: {e}"))?;
+    if !core.status.success() {
+        return Err(format!(
+            "cdz-run --core-module failed: {}",
+            String::from_utf8_lossy(&core.stderr).trim()
+        ));
+    }
+    let verdict = String::from_utf8_lossy(&core.stdout);
+    let verdict = verdict.trim();
+    // `trap` → `declined` (matches the eval-db oracle); `value <n>` and `error <msg>` pass through unchanged.
+    Ok(if verdict == "trap" {
+        "declined".to_string()
+    } else {
+        verdict.to_string()
+    })
 }
 
 /// Parse compiler-ml's `emit-src-bytes` rendered result into the raw module bytes. The render is
@@ -5780,6 +5808,8 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 compile_diag: None,
                 component_name: None,
                 report_live_objects: false,
+                core_module: None,
+                core_export: None,
             }),
         }
     };
@@ -11403,6 +11433,8 @@ mod tests {
             component_name: None,
             report_live_objects: true,
             baseline: None,
+            core_module: None,
+            core_export: None,
         };
         assert_eq!(
             cdz_run_forward_argv(&full),
@@ -11455,6 +11487,8 @@ mod tests {
             component_name: None,
             report_live_objects: false,
             baseline: None,
+            core_module: None,
+            core_export: None,
         };
         assert_eq!(
             cdz_run_forward_argv(&minimal),
