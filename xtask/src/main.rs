@@ -6092,7 +6092,68 @@ fn fast_gate_output_is_remote_transient(output: &str) -> bool {
         || output.contains("cannot open connection to remote store")
 }
 
+/// The `implementation/**/*.rs` paths among a git `--name-only` blob — the touched Rust sources the
+/// dev-gate emoji pre-check scans. The operator emoji-ban is `implementation/`-scoped (xtask/fleet are
+/// exempt — their output markers are functional), so we filter to that subtree + `.rs`, deduped (a file
+/// that is both staged and unstaged appears twice). Pure so the path filter is unit-tested off the FS.
+fn implementation_rs_touched(name_only: &str) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = name_only
+        .lines()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .filter(|p| p.starts_with("implementation/") && p.ends_with(".rs"))
+        .map(PathBuf::from)
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// WARN (non-blocking) on banned emoji in the COMMENTS of touched `implementation/**/*.rs` files, so an
+/// agent catches + strips them in the fast inner loop instead of at `cargo xtask check` / the advisory
+/// merge-gate `emojiLintCheck` / the operator's eye (v-core-opt 2026-08-28: two `⚠️` markers reached the
+/// operator because emoji-free ran ONLY in `check`, never in dev-gate). Reuses the exact `banned_emoji_hits`
+/// predicate the gate uses. WARN-only on purpose: the merge-side `emojiLintCheck` is ADVISORY, so dev-gate
+/// must not be STRICTER than the gate — this is an early heads-up, not a hard fail. Touched = changed vs
+/// origin/main + vs HEAD + staged + untracked (best-effort; a missing ref just contributes nothing).
+fn dev_gate_emoji_warn(paths: &Paths) {
+    let mut names = String::new();
+    for args in [
+        &["diff", "--name-only", "origin/main"][..],
+        &["diff", "--name-only", "HEAD"][..],
+        &["diff", "--name-only", "--cached"][..],
+        &["ls-files", "--others", "--exclude-standard"][..],
+    ] {
+        if let Ok(o) = std::process::Command::new("git")
+            .current_dir(&paths.repo)
+            .args(args)
+            .output()
+        {
+            names.push_str(&String::from_utf8_lossy(&o.stdout));
+        }
+    }
+    let mut hits: Vec<(PathBuf, usize, char)> = Vec::new();
+    for f in implementation_rs_touched(&names) {
+        if let Ok(text) = std::fs::read_to_string(paths.repo.join(&f)) {
+            for (line, c) in banned_emoji_hits(&text) {
+                hits.push((f.clone(), line, c));
+            }
+        }
+    }
+    if !hits.is_empty() {
+        eprintln!(
+            "dev-gate: WARN operator EMOJI-BAN — banned emoji in touched implementation/ comment(s); strip \
+             before landing (advisory at the merge gate, but the operator will flag it):"
+        );
+        for (f, line, c) in &hits {
+            eprintln!("  {}:{} — U+{:04X}", f.display(), line, *c as u32);
+        }
+    }
+}
+
 fn dev_gate(paths: &Paths, crates: &[String]) {
+    // Operator emoji-ban pre-check (WARN-only) on touched implementation/ comments — see fn doc.
+    dev_gate_emoji_warn(paths);
     let nix_bin = fleet::nix_binary();
     // `nix run .#fast-gate [-- crate1 crate2]` — the `--` separates flake-app args from nix's own.
     let mut args: Vec<String> = vec!["run".into(), ".#fast-gate".into()];
@@ -9309,6 +9370,34 @@ mod trap_grading_tests {
         assert_eq!(
             banned_emoji_hits("/// ⚠ the 32-byte SHA-256 address — a scalar walk\n"),
             vec![(1, '⚠')]
+        );
+    }
+
+    #[test]
+    fn implementation_rs_touched_filters_to_implementation_rs_deduped() {
+        // A git --name-only blob (staged+unstaged can list the same file twice) → only implementation/*.rs,
+        // deduped + sorted. xtask/fleet/non-.rs are excluded (emoji-ban is implementation-scoped).
+        let blob = "implementation/seed/crates/rcdzc/src/backend/wasm/select.rs\n\
+                    implementation/seed/crates/rcdzc/src/backend/wasm/select.rs\n\
+                    xtask/src/main.rs\n\
+                    implementation/seed/crates/cdz/src/lib.rs\n\
+                    fleet/AGENTS-fleet.md\n\
+                    implementation/README.md\n\
+                    \n";
+        assert_eq!(
+            implementation_rs_touched(blob),
+            vec![
+                PathBuf::from("implementation/seed/crates/cdz/src/lib.rs"),
+                PathBuf::from("implementation/seed/crates/rcdzc/src/backend/wasm/select.rs"),
+            ]
+        );
+        assert!(implementation_rs_touched("").is_empty());
+        // The exact v-core-opt miss: a ⚠️ marker line IS a banned hit the dev-gate scan would now surface.
+        assert_eq!(
+            banned_emoji_hits(
+                "/// ⚠️ RESUME-ESCAPE: a handler-arm re-reference is INVISIBLE here\n"
+            ),
+            vec![(1, '⚠'), (1, '\u{FE0F}')]
         );
     }
 
