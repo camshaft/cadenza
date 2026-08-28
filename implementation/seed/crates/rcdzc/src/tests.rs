@@ -50959,6 +50959,29 @@ mod closure_host_resource {
         );
     }
 
+    /// Regression (v-cdz-smith fuzzer Bucket 2): a closure param used at TWO incompatible types — as Int64
+    /// (`(+ v0 …)`) AND as a tuple (`(. v0 0)`) — inside an UNCALLED inline closure `(list (fn (v0) …))`
+    /// escaped the checker: `collect_node` does NOT fault-check an uncalled inline closure body (it relies on
+    /// the β-reduction call site, which never happens for a closure merely STORED). The body-solved SCALAR
+    /// param then lowered a runtime tuple-projection (an `arr-get`) on a scalar slot → InvalidWasm. The Proj
+    /// lowering now DECLINES CDZ0201 "tuple projection requires a tuple, found Int64" — the SAME fault the
+    /// top-level twin `(def (v0) (+ v0 (. v0 0)))` gets — a clean decline, never a miscompile.
+    #[test]
+    fn an_uncalled_inline_closure_with_a_conflicting_param_declines_not_miscompiles() {
+        use crate::testkit::parse;
+        let src =
+            "(module m (def (main) (List.len (list (fn (v0) (+ v0 (. v0 0)))))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "an uncalled inline closure with a param used as both Int64 and a tuple must DECLINE, not miscompile",
+        );
+        assert!(
+            err.message.contains("tuple projection requires a tuple"),
+            "expected the tuple-projection CDZ0201 decline, got: {:?} / {}",
+            err.code,
+            err.message
+        );
+    }
+
     /// A FIXED-SHAPE SCALAR tuple closure ARG on the direct-call path now COMPILES (the tuple crosses as a
     /// native component `tuple<s64,s64>` the canonical ABI flattens; the core `call` rebuilds the cell). But
     /// a compound arg with a VARIABLE-LENGTH element (a tuple/record CONTAINING a List/Map/Set) must still
