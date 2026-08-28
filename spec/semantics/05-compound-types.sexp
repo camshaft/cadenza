@@ -14365,6 +14365,30 @@
             (export main)))
   (output (: 302 Int64)))
 
+(case "a RUNTIME shared list prepended-onto leaves the original unchanged (rc>1 path-copy census control)"
+  (doc    "The RUNTIME (fold-defeated) twin of the persistence case above, and the rc>1 SHARED-INPUT control for
+           the dedicated front-growth prepend op (v-memory-safety, for the op_vec_prepend acceptance): the folded
+           `(list 2 3)` case above reduces at compile time and never runs the runtime prepend, and the 1100-element
+           05:2521 loop passes its list at rc==1 (a clean move, per v-core-opt's emit-diagnostic) — so NEITHER
+           exercises the rc>1 SHARED path where prepend must PATH-COPY and must NOT mutate the shared original.
+           Here `xs` is built at RUNTIME (recursive `List.push`, no fold) and is SHARED — read by BOTH
+           `List.prepend xs 99` AND a later `List.len xs` — so `xs` is rc>1 at the prepend, forcing the path-copy
+           branch. `100·len(prepend xs 99) + len(xs)` = `100·6 + 5` = 605 (n=5: xs=[0..4]); a prepend that mutated
+           the shared `xs` in place would make xs length 6 too → 606, and freeing a shared front-spine node would
+           trip the detector. MUST-STAY-GREEN control: value 605 + live-objects 0 (the single shared prepend
+           path-copies + reclaims cleanly, unlike the rc==1 LOOP whose per-iteration superseded fronts are the
+           05:2521 18,972 leak). When op_vec_prepend lands it must keep this at 605 / 0 — the rc>1 gate that the
+           rc==1 fix must not regress.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (main (: n Int64))
+              (let ((xs (build 0 n (list))))
+                (+ (* 100 (List.len (List.prepend xs 99))) (List.len xs))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 605 Int64))
+  (live-objects 0))
+
 (case "prepend across the RRB 32→33 boundary front-inserts and reads back at every index"
   (doc    "The prepend companion of the RRB dense-leaf→trie boundary. A List is an RRB vector: at ≤32 elements
            it fits ONE strict leaf; growing past 32 forms a trie. The existing boundary pin grows at the TAIL
