@@ -19,8 +19,18 @@ use crate::generator::Program;
 
 /// Host-op ARGUMENT types the generator uses — each with a matching literal the body passes. Kept to
 /// shapes with a known literal form (no bytes-literal syntax guessing): `Unit` (no arg), `Int64`, `String`.
-/// (A compound / higher-order ARGUMENT is a known gap; RESULT types below cover the compound-crossing gaps.)
-const ARG_TYPES: [&str; 3] = ["Unit", "Int64", "String"];
+/// Host-op ARGUMENT types — each with a matching literal ([`arg_literal`]) the body passes. Includes the
+/// scalar shapes that cross (`Unit`, `Int64`, `String`) AND compound / higher-order shapes that are
+/// KNOWN gaps: a compound `(Tuple …)`/`(List …)` argument is a later increment, and a higher-order
+/// `(-> …)` argument has no machine representation — so the arg surface straddles the declined frontier.
+const ARG_TYPES: [&str; 6] = [
+    "Unit",
+    "Int64",
+    "String",
+    "(Tuple Int64 Int64)",
+    "(List Int64)",
+    "(-> Int64 Int64)",
+];
 
 /// Host-op RESULT types — a mix of shapes the bare-effect boundary DOES emit (`Int64`, `Unit`, `String`)
 /// and ones it does NOT yet (`Bytes`, `(Tuple Int64 Int64)`, `(List Int64)` → the world-driven path), so
@@ -61,6 +71,9 @@ fn arg_literal(arg: &str) -> &'static str {
     match arg {
         "Int64" => " 5",
         "String" => " \"x\"",
+        "(Tuple Int64 Int64)" => " (tuple 1 2)",
+        "(List Int64)" => " (list 1 2 3)",
+        "(-> Int64 Int64)" => " (fn (x) x)",
         _ => "", // Unit: no argument
     }
 }
