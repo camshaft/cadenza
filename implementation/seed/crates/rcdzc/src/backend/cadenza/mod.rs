@@ -85,6 +85,10 @@
 //!   so the constructor is not doubled. A GENERIC / OPEN user sum still DECLINES (no decl emitted). PRELUDE sums
 //!   (Option/Result/…) are ambient (no decl). A user-sum/nominal value emits ⇔ its decl was emitted
 //!   (`emitted` set), so there is never an unbound-type recompile.
+//! - **PROJ / VALUE-EQ / VALUE-CMP**: a runtime tuple projection `Core::Proj` → `(. <operand> <index>)`;
+//!   structural equality `Core::ValueEq`/`ValueEqShaped` → `(= l r)` and structural ordering
+//!   `Core::ValueCmp{op}` → `(<op> l r)` on runtime compounds (the operands' type re-selects the
+//!   `value-eq`/`value-cmp` path vs a scalar `Compare` on recompile).
 //! - **LIST OPS**: the runtime list operations, each `((. List <member>) <op>…)` — `List.len`/`push`/
 //!   `prepend`/`concat`/`update`/`at` (`at` re-reads to its `Option` result). A constant-list op folds in
 //!   `lower`, so a surviving node is a runtime op.
@@ -103,7 +107,7 @@
 //! list arms, non-scalar scalar-match probes, and a multi-argument variant CONSTRUCTOR (`SumNew` — the
 //! match side already binds multi-payload slots).
 
-use crate::ast::{Builder, Leaf, Radix, StructId};
+use crate::ast::{Builder, IntValue, Leaf, Radix, StructId};
 use crate::core::Core;
 use crate::db::Db;
 use crate::diag::Reject;
@@ -1038,6 +1042,42 @@ fn emit_expr_viewed(
             let s = emit_expr(db, b, scrutinee, None, env, emitted)?;
             let msg = b.atom_leaf(Leaf::Str("".into()));
             Ok(b.list(vec![head, s, msg]))
+        }
+        // A tuple PROJECTION `(. <operand> <index>)` — read element `index` of a runtime tuple (a
+        // projection of a compile-time tuple folds in `lower`). The index is a compile-time constant, an
+        // `Int` leaf; the member-access reader accepts an integer key for a positional tuple read.
+        Core::Proj { operand, index } => {
+            let dot = b.name(".");
+            let op = emit_expr(db, b, operand, None, env, emitted)?;
+            let idx = b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i64(index as i64),
+                radix: Radix::Dec,
+            });
+            Ok(b.list(vec![dot, op, idx]))
+        }
+        // Structural EQUALITY on a runtime compound — `(= <lhs> <rhs>)`. `ValueEq`/`ValueEqShaped` (the
+        // shaped form carries a descriptor `ty`, display-neutral) both re-emit the surface `=`; on recompile
+        // the operands' compound type re-selects the `value-eq` path (a scalar `=` would re-select `Compare`,
+        // a constant pair would fold — all value-equivalent). Mirrors the operator arm's `=`.
+        Core::ValueEq { lhs, rhs } | Core::ValueEqShaped { lhs, rhs, .. } => {
+            let head = b.name("=");
+            let l = emit_expr(db, b, lhs, None, env, emitted)?;
+            let r = emit_expr(db, b, rhs, None, env, emitted)?;
+            Ok(b.list(vec![head, l, r]))
+        }
+        // Structural ORDERING on a runtime compound — `(<op> <lhs> <rhs>)` where `op` is an ordering prim
+        // (`Lt`/`Le`/`Gt`/`Ge`), re-emitted via the same `prim_operator` reverse-map the scalar comparisons
+        // use; the operands' compound type re-selects the `value-cmp` path on recompile.
+        Core::ValueCmp { op, lhs, rhs, .. } => {
+            let sym = prim_operator(op).ok_or_else(|| {
+                Reject::decline(format!(
+                    "the Cadenza backend does not yet lower the value-compare prim {op:?}"
+                ))
+            })?;
+            let head = b.name(sym);
+            let l = emit_expr(db, b, lhs, None, env, emitted)?;
+            let r = emit_expr(db, b, rhs, None, env, emitted)?;
+            Ok(b.list(vec![head, l, r]))
         }
         other => Err(Reject::decline(format!(
             "the Cadenza backend does not yet lower this Core node back to Cadenza: {}",
