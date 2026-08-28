@@ -33,6 +33,20 @@ fn has_canonicalizing_head(a: &Arenas) -> bool {
     })
 }
 
+/// Does this tree contain a MEMBER access `(. obj key)` whose KEY is a COMPOUND (call-shaped) form —
+/// e.g. `(. m (meta capabilities))`, a module METADATA projection (the `(meta …)` channel, distinct from
+/// an export field)? The ML `.member` surface only spells a PLAIN-NAME key (`obj.key`); a compound key
+/// has no faithful member surface, so the printer falls back to the quoted-operator `` `.`(obj, key) ``,
+/// which re-reads to a `.`-APPLICATION, not the same `Member` node. Exactly like `Unit.^`, these are held
+/// to the weaker parse-ok contract only — the codec (binary) and s-expr paths preserve the node EXACTLY
+/// (the program's identity), only the ML text round-trip is exempt. See [`has_canonicalizing_head`].
+fn has_compound_key_member(a: &Arenas) -> bool {
+    (0..a.structure.len() as u32).map(StructId).any(|id| {
+        a.member_parts(id)
+            .is_some_and(|(_, key)| matches!(a.get(key), Struct::List(_)))
+    })
+}
+
 /// A hint for the commonest round-trip authoring mistake: a `record` literal whose fields are written
 /// POSITIONAL `(name value)` instead of `(= name value)`. `structurally_eq` collapses a ctor HEAD
 /// (`record` ↔ `"record"`, `list` ↔ `"list"`, …), so a name-head compound literal is fine — but the ML
@@ -173,7 +187,8 @@ fn ml_surface_round_trips_the_corpus() {
 
             // A head the surface canonicalizes away (`Unit.^` → `^`) cannot satisfy structural equality,
             // so it is held to the weaker parse-ok + idempotence contract only.
-            let structural_required = !has_canonicalizing_head(&input);
+            let structural_required =
+                !has_canonicalizing_head(&input) && !has_compound_key_member(&input);
 
             // A REJECTED program (an error case) is MALFORMED, so the ML surface has no faithful
             // rendering of it — a valueless construct in a value position (e.g. a trailing `type`
@@ -341,7 +356,7 @@ fn all_surface_paths_round_trip_the_corpus() {
 
             // A canonicalizing head (`Unit.^` → `^`) collapses under the ML surface, so Path A
             // (ml→binary→ml) is held to the idempotence contract, not structural equality.
-            let structural = !has_canonicalizing_head(&input);
+            let structural = !has_canonicalizing_head(&input) && !has_compound_key_member(&input);
 
             // Path A: ml → binary → ml. Print ML, read it back to an arena, encode, decode, print ML
             // again — the two ML renderings must be byte-identical (and structurally equal to the input

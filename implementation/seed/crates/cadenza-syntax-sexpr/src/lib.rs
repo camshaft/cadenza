@@ -12,7 +12,7 @@
 //! arbitrary-precision `Int` and an exact `Decimal` (no `i64`/`f64` ceiling). The ML lexer MUST
 //! classify literals identically to this, or the round-trip fails.
 
-use cadenza_syntax_core::ast::{Arenas, Builder, Leaf, LeafId, Struct, StructId};
+use cadenza_syntax_core::ast::{Arenas, Builder, CompoundCtor, Leaf, LeafId, Struct, StructId};
 use cadenza_syntax_core::doc::Doc;
 use cadenza_syntax_core::span::Span;
 use cadenza_syntax_core::spans::{FileId, SpanTable};
@@ -187,6 +187,38 @@ fn print_node(a: &Arenas, id: StructId, out: &mut String) {
                         stack.push(Work::Node(atom));
                         continue;
                     }
+                    // RESUGAR native compound heads (M2) back to their surface so a re-read reproduces the
+                    // SAME native node: a ctor-leaf head → `#word(child…)`, a `FieldPair` → `(= k v)`, a
+                    // `Member` → `(. obj key)`. Recognized by leaf KIND, not head text.
+                    if let Some(ctor) = a.compound_ctor_leaf(id) {
+                        out.push('#');
+                        out.push_str(compound_ctor_word(ctor));
+                        out.push('(');
+                        stack.push(Work::Str(")"));
+                        for (i, &child) in items[1..].iter().enumerate().rev() {
+                            stack.push(Work::Node(child));
+                            if i > 0 {
+                                stack.push(Work::Str(" "));
+                            }
+                        }
+                        continue;
+                    }
+                    if let Some((k, v)) = a.field_pair_parts(id) {
+                        out.push_str("(= ");
+                        stack.push(Work::Str(")"));
+                        stack.push(Work::Node(v));
+                        stack.push(Work::Str(" "));
+                        stack.push(Work::Node(k));
+                        continue;
+                    }
+                    if let Some((obj, key)) = a.member_parts(id) {
+                        out.push_str("(. ");
+                        stack.push(Work::Str(")"));
+                        stack.push(Work::Node(key));
+                        stack.push(Work::Str(" "));
+                        stack.push(Work::Node(obj));
+                        continue;
+                    }
                     out.push('(');
                     // Push in reverse: closing paren first (popped last), then children interleaved with
                     // single-space separators so they pop child_0, " ", child_1, …, ")".
@@ -302,6 +334,25 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
                         stack.push(Work::Node(atom, false));
                         continue;
                     }
+                    // RESUGAR a native ctor-leaf head (M2) to its `#word(child…)` surface: the normal list
+                    // path below would print `(list …)` (a name-application that does NOT re-read to the
+                    // ctor leaf), so a compound literal needs its own opener. A `FieldPair`/`Member` head
+                    // needs no special case — the normal path + `print_leaf` render them `(= k v)` /
+                    // `(. obj key)` (the head atom prints as `=` / `.`). Mirrors the single-line printer.
+                    if let Some(ctor) = a.compound_ctor_leaf(id) {
+                        doc.cbox(INDENT);
+                        doc.word(format!("#{}(", compound_ctor_word(ctor)));
+                        stack.push(Work::CloseParen);
+                        // children `items[1..]`: the first hugs the `#word(` opener (no leading space), the
+                        // rest get an inter-child break. Push in REVERSE for source order.
+                        for (i, &child) in items.iter().enumerate().skip(1).rev() {
+                            stack.push(Work::Node(child, false));
+                            if i > 1 {
+                                stack.push(Work::OpenSpace);
+                            }
+                        }
+                        continue;
+                    }
                     // A consistent box: `(head child…)` stays flat when it fits `width`, else EVERY inter-
                     // child break fires, so each child lands on its own line indented one level under the
                     // head. The head hugs the `(`; the closing `)` hugs the last child (no dangling paren).
@@ -401,6 +452,27 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         Leaf::Suffixed { value, kind } => {
             out.push_str(&cadenza_syntax_core::literal::render_suffixed(value, *kind))
         }
+        // A native compound HEAD leaf (M2) is a LIST head, resugared at the list level (`print_node`) and
+        // never printed as a bare atom in a well-formed tree; render a best-effort marker for a stray
+        // atom occurrence so the printer stays total.
+        Leaf::Ctor(c) => out.push_str(compound_ctor_word(*c)),
+        Leaf::FieldPair => out.push('='),
+        Leaf::Member => out.push('.'),
+    }
+}
+
+/// The reserved surface word for a compound constructor — the inverse of the reader's `#word(` → ctor
+/// mapping, used by the s-expr printers to resugar a `Leaf::Ctor` head back to `#word(…)`. `pub` (not
+/// `pub(crate)`) because after the #5082 sexpr-move the ML printer (cadenza-syntax) resugars a `Ctor`
+/// head via `crate::sexpr::compound_ctor_word` CROSS-CRATE (through the facade's `pub use
+/// cadenza_syntax_sexpr as sexpr`), so it must be visible outside this crate.
+pub fn compound_ctor_word(ctor: CompoundCtor) -> &'static str {
+    match ctor {
+        CompoundCtor::Record => "record",
+        CompoundCtor::Tuple => "tuple",
+        CompoundCtor::List => "list",
+        CompoundCtor::Map => "map",
+        CompoundCtor::Set => "set",
     }
 }
 
@@ -628,7 +700,7 @@ impl<'a, 'b> Reader<'a, 'b> {
                     // Synthetic `(. operand key)`: the `.` head spans the dot, the key spans the
                     // segment, the list spans from the operand's start through the segment.
                     let operand_start = self.span_start_of(node);
-                    let dot = self.mk_name(".", Span::new(dot_pos, dot_pos + 1));
+                    let dot = self.mk_atom_leaf(Leaf::Member, Span::new(dot_pos, dot_pos + 1));
                     let key = self.mk_name(seg, Span::new(start, self.pos));
                     node = self.mk_list(vec![dot, node, key], Span::new(operand_start, self.pos));
                 }
@@ -660,8 +732,15 @@ impl<'a, 'b> Reader<'a, 'b> {
                 Some(b')') => {
                     self.bump();
                     // The list spans from `(` through the matching `)` (now consumed, so `self.pos` is
-                    // just past).
-                    break Ok(self.mk_list(items, Span::new(start, self.pos)));
+                    // just past). An explicit `(. obj key)` list reads to a native `Member` head.
+                    let span = Span::new(start, self.pos);
+                    // A bare-NAME `record` compound-alias head (the shadowable prelude alias the pattern
+                    // reader + corpus author, `DESIGN-native-ast-compound-data.md`) field-pairifies its
+                    // DIRECT `(= k v)` entries just like `#record(…)` — so `(record (= x a))` reads to the
+                    // SAME `Name`-head + `FieldPair`-field arena `read_ml`'s record-pattern reader emits.
+                    self.alias_field_pairify(&mut items);
+                    let id = self.mk_list(items, span);
+                    break Ok(self.memberize(id, span));
                 }
                 Some(_) => match self.read_node() {
                     Ok(item) => items.push(item),
@@ -684,13 +763,13 @@ impl<'a, 'b> Reader<'a, 'b> {
             .find(|word| rest.starts_with(word.as_bytes()) && rest.get(word.len()) == Some(&b'('))
     }
 
-    /// Read a `#word(…)` collection literal into the str-head ctor form `("word" child…)` — the
-    /// `compound_ctor` tag, converging with the value reader's canonical compound (a later increment
-    /// flips this one construction site to the ctor leaf kind once `Builder::compound` lands). The body
-    /// is read VERBATIM (the same for all five ctors): the `#word(` prefix only names the head, and a
-    /// `record` field / `map` entry is written as its explicit `(= key value)` `FieldPair` — the reader
-    /// inserts nothing, so the produced arena is exactly `(word <body-as-written>)` and comments compose
-    /// around a field as ordinary nodes.
+    /// Read a `#word(…)` collection literal into the native ctor-LEAF-KIND form `(<ctor> child…)` — the
+    /// M2 native-compound-data surface (`DESIGN-native-ast-compound-data.md`): the head is a
+    /// [`Leaf::Ctor`] recognized by kind identity, not a `Str`/`Name` head text. The body is read the
+    /// same way for all five ctors; a `#record`/`#map` DIRECT entry written `(= key value)` has its `=`
+    /// head rewritten to the [`Leaf::FieldPair`] marker (ruling A — the stored AST is native end-to-end),
+    /// while equality `=` anywhere else stays an ordinary `Name("=")`. Comments compose around a field as
+    /// ordinary nodes (a comment-wrapped field is descended, see [`field_pairify`]).
     fn read_compound_literal(&mut self, word: &'static str) -> Result<StructId, ReadError> {
         // Same recursion bound as `read_list`: `#word(…)` bodies descend through `read_node` too.
         if self.depth >= MAX_NESTING_DEPTH {
@@ -703,9 +782,21 @@ impl<'a, 'b> Reader<'a, 'b> {
         let start = self.pos; // at '#'
         // `#` + the ctor word are ASCII, so advancing by their byte length lands on the '(' cleanly.
         self.pos += 1 + word.len();
-        // The reserved STRING head names the constructor; span it over the `#word` prefix.
-        let head = self.mk_atom_leaf(Leaf::Str(word.into()), Span::new(start, self.pos));
+        let ctor = match word {
+            "record" => CompoundCtor::Record,
+            "tuple" => CompoundCtor::Tuple,
+            "list" => CompoundCtor::List,
+            "map" => CompoundCtor::Map,
+            "set" => CompoundCtor::Set,
+            _ => unreachable!("compound_literal_word yields only the five ctor words"),
+        };
+        // The native ctor LEAF KIND names the constructor (recognized by kind identity); span the head
+        // over the `#word` prefix.
+        let head = self.mk_atom_leaf(Leaf::Ctor(ctor), Span::new(start, self.pos));
         self.bump(); // '('
+        // In a #record/#map body a DIRECT `(= k v)` entry is a FieldPair; other ctors read their body
+        // verbatim (elements are positional).
+        let keyed = matches!(ctor, CompoundCtor::Record | CompoundCtor::Map);
         let mut items = vec![head];
         let result = loop {
             self.skip_ws();
@@ -721,13 +812,111 @@ impl<'a, 'b> Reader<'a, 'b> {
                     break Ok(self.mk_list(items, Span::new(start, self.pos)));
                 }
                 Some(_) => match self.read_node() {
-                    Ok(item) => items.push(item),
+                    Ok(item) => {
+                        let item = if keyed {
+                            self.field_pairify(item)
+                        } else {
+                            item
+                        };
+                        items.push(item);
+                    }
                     Err(e) => break Err(e),
                 },
             }
         };
         self.depth -= 1;
         result
+    }
+
+    /// The recorded span of an already-built node (full range), or a zero-width span at `self.pos` when
+    /// not tracking — used when rebuilding a node with a native head (FieldPair/Member), so the rebuilt
+    /// occurrence carries the original's source range.
+    fn span_of(&self, id: StructId) -> Span {
+        match self.spans.as_ref().and_then(|t| t.get(id)) {
+            Some(s) => Span::new(s.start, s.end),
+            None => Span::new(self.pos, self.pos),
+        }
+    }
+
+    /// Rewrite a `#record`/`#map` DIRECT body entry into its native form (ruling A): a `(= k v)` list —
+    /// exactly two args after the `=` head — is rebuilt with a [`Leaf::FieldPair`] head (reusing `k`,`v`;
+    /// the old `Name("=")` atom + list are left unreferenced and dropped by `canon` on encode). A
+    /// `(comment …)` wrapper is descended — each child is field-pairified and the wrapper preserved — so
+    /// a comment-wrapped field `(comment "doc" (= x 1))` becomes `(comment "doc" (<field-pair> x 1))`.
+    /// Any other item (a bare `=` of the wrong arity, a positional value, equality inside a field VALUE)
+    /// is returned unchanged: `field_pairify` only rewrites the DIRECT entry head, so `(= x (= a b))`
+    /// keeps its inner equality as `Name("=")`.
+    fn field_pairify(&mut self, item: StructId) -> StructId {
+        // A direct `(= k v)` — exactly two args.
+        let eq_kv = self
+            .b
+            .as_form(item, "=")
+            .filter(|tail| tail.len() == 2)
+            .map(|tail| (tail[0], tail[1]));
+        if let Some((k, v)) = eq_kv {
+            let span = self.span_of(item);
+            let fp = self.mk_atom_leaf(Leaf::FieldPair, span);
+            return self.mk_list(vec![fp, k, v], span);
+        }
+        // A `(comment …)` wrapper — descend, field-pairifying each non-head child (nested comments
+        // recurse; the `comment` head and any doc-string child are unchanged).
+        if self.b.as_form(item, "comment").is_some() {
+            let orig: Vec<StructId> = match self.b.get(item) {
+                Struct::List(items) => items.clone(),
+                Struct::Atom(_) => return item,
+            };
+            let span = self.span_of(item);
+            let mut rebuilt = Vec::with_capacity(orig.len());
+            rebuilt.push(orig[0]); // the `comment` head, preserved
+            for &child in &orig[1..] {
+                let field = self.field_pairify(child);
+                rebuilt.push(field);
+            }
+            return self.mk_list(rebuilt, span);
+        }
+        item
+    }
+
+    /// If `items` is a bare-NAME `record` compound-alias body (`(record …)` — the shadowable prelude
+    /// alias the pattern reader + corpus author, distinct from the explicit `#record(…)` ctor surface),
+    /// rewrite each DIRECT `(= k v)` entry to a [`Leaf::FieldPair`] in place, exactly as `#record(…)`
+    /// does. This lets the shadowable alias surface read to the SAME `Name`-head + `FieldPair`-field arena
+    /// `read_ml`'s record reader emits (value + pattern record fields are the canonical `=` FieldPair,
+    /// operator ruling: full symmetry). A non-`record` head (or entries that are not `(= k v)`) is left
+    /// untouched — `map` alias entries stay bare `(k v)` pairs (its pattern surface), and equality `=`
+    /// elsewhere stays `Name("=")`.
+    fn alias_field_pairify(&mut self, items: &mut [StructId]) {
+        // A bare-NAME `record` OR `map` compound-alias head: both spell their entries as the canonical
+        // `(= k v)` FieldPair in the native arena (a map VALUE entry and a record field are the same
+        // `=` node, unified in M2), so a `(= k v)` DIRECT child under either alias field-pairifies. A map
+        // PATTERN's entries are bare `(k p)` pairs (no `=`), so `field_pairify` leaves them untouched.
+        if !matches!(
+            items.first().and_then(|&h| self.b.as_name(h)),
+            Some("record") | Some("map")
+        ) {
+            return;
+        }
+        for slot in items.iter_mut().skip(1) {
+            *slot = self.field_pairify(*slot);
+        }
+    }
+
+    /// Rewrite an explicit member-access list `(. obj key)` — head `Name(".")`, exactly two args — to a
+    /// native [`Leaf::Member`] head (ruling A; member access is native everywhere). Any other `.` arity
+    /// or a non-`.` list is returned unchanged. The old `Name(".")` atom + list are left unreferenced
+    /// (dropped by `canon`). The postfix (`obj.key`) and dotted-token (`a.b`) sugars build a `Member`
+    /// head directly at their own sites.
+    fn memberize(&mut self, id: StructId, span: Span) -> StructId {
+        let dot_kv = self
+            .b
+            .as_form(id, ".")
+            .filter(|tail| tail.len() == 2)
+            .map(|tail| (tail[0], tail[1]));
+        if let Some((obj, key)) = dot_kv {
+            let dot = self.mk_atom_leaf(Leaf::Member, span);
+            return self.mk_list(vec![dot, obj, key], span);
+        }
+        id
     }
 
     //= spec/capabilities/collections-and-text.md#a-string-literal-s-escapes-are-a-closed-set
@@ -947,7 +1136,7 @@ impl<'a, 'b> Reader<'a, 'b> {
                 let dot_pos = off; // the '.' separator
                 let seg_start = off + 1;
                 let seg_end = seg_start + seg.len();
-                let dot = self.mk_name(".", Span::new(dot_pos, dot_pos + 1));
+                let dot = self.mk_atom_leaf(Leaf::Member, Span::new(dot_pos, dot_pos + 1));
                 let seg_id = self.mk_name(seg, Span::new(seg_start, seg_end));
                 node = self.mk_list(vec![dot, node, seg_id], Span::new(start, seg_end));
                 off = seg_end;
@@ -1024,67 +1213,161 @@ mod tests {
         assert_eq!(a.head_name(a.root), Some("+"));
     }
 
-    // `#word(…)` collection literals (DESIGN-native-ast-compound-data.md §D-SURFACE). One uniform rule:
-    // the body is read VERBATIM and the ctor word names the head, so each reads to the SAME arena as the
-    // str-head ctor form `("word" <body>)`. A record field / map entry is written as its explicit
-    // `(= key value)` FieldPair (no implicit `=` insertion).
+    // `#word(…)` collection literals (DESIGN-native-ast-compound-data.md §D-SURFACE / M2). The `#word(`
+    // head reads to a native ctor LEAF KIND (recognized by `compound_ctor_leaf`, NOT head text); a
+    // `#record`/`#map` DIRECT `(= k v)` entry reads to a `FieldPair` head; member access reads to a
+    // `Member` head. The s-expr printer resugars each back to its surface, so every form round-trips.
     #[test]
-    fn hash_word_literals_equal_the_str_head_form() {
-        assert_eq!(
-            read("#list(1 2 3)").unwrap(),
-            read("(\"list\" 1 2 3)").unwrap()
-        );
-        assert_eq!(
-            read("#tuple(a b)").unwrap(),
-            read("(\"tuple\" a b)").unwrap()
-        );
-        assert_eq!(
-            read("#set(1 2 3)").unwrap(),
-            read("(\"set\" 1 2 3)").unwrap()
-        );
-        assert_eq!(read("#list()").unwrap(), read("(\"list\")").unwrap());
-        // Record/map fields/entries are explicit `(= k v)` FieldPairs, read verbatim (no insertion).
-        assert_eq!(
-            read("#record((= x 1) (= y 2))").unwrap(),
-            read("(\"record\" (= x 1) (= y 2))").unwrap(),
-        );
-        assert_eq!(
-            read("#map((= 1 2) (= 3 4))").unwrap(),
-            read("(\"map\" (= 1 2) (= 3 4))").unwrap(),
-        );
-        assert_eq!(read("#record()").unwrap(), read("(\"record\")").unwrap());
+    fn hash_word_literals_read_to_native_ctor_heads() {
+        for (src, ctor, children) in [
+            ("#list(1 2 3)", CompoundCtor::List, 3usize),
+            ("#tuple(a b)", CompoundCtor::Tuple, 2),
+            ("#set(1 2 3)", CompoundCtor::Set, 3),
+            ("#list()", CompoundCtor::List, 0),
+            ("#record((= x 1) (= y 2))", CompoundCtor::Record, 2),
+            ("#map((= 1 2) (= 3 4))", CompoundCtor::Map, 2),
+            ("#record()", CompoundCtor::Record, 0),
+        ] {
+            let a = read(src).unwrap();
+            assert_eq!(
+                a.compound_ctor_leaf(a.root),
+                Some(ctor),
+                "{src} reads to a native ctor-leaf head (not a Str/Name head)"
+            );
+            match a.get(a.root) {
+                Struct::List(items) => {
+                    assert_eq!(
+                        items.len(),
+                        children + 1,
+                        "{src}: head + {children} children"
+                    )
+                }
+                Struct::Atom(_) => panic!("{src} must be a list"),
+            }
+            // The s-expr printer resugars the native head back to the `#word(…)` surface byte-exact, and
+            // re-reading reproduces the same arena.
+            assert_eq!(print(&a), src, "{src} prints back to its #word surface");
+            assert!(
+                read(&print(&a)).unwrap().structurally_eq(&a),
+                "{src} round-trips through the s-expr printer"
+            );
+        }
     }
 
     #[test]
-    fn hash_word_literals_nest() {
+    fn hash_word_literals_nest_and_round_trip() {
+        let src = "#list(#map((= 1 2)) #record((= a 3)))";
+        let a = read(src).unwrap();
+        assert_eq!(a.compound_ctor_leaf(a.root), Some(CompoundCtor::List));
         assert_eq!(
-            read("#list(#map((= 1 2)) #record((= a 3)))").unwrap(),
-            read("(\"list\" (\"map\" (= 1 2)) (\"record\" (= a 3)))").unwrap(),
+            print(&a),
+            src,
+            "nested native literals print back byte-exact"
+        );
+        assert!(read(&print(&a)).unwrap().structurally_eq(&a));
+    }
+
+    #[test]
+    fn hash_record_and_map_entries_read_to_field_pairs() {
+        // A DIRECT `(= k v)` entry of a `#record`/`#map` reads to a `FieldPair` head (ruling A); the key
+        // and value are the written nodes.
+        let a = read("#record((= x 1) (= y 2))").unwrap();
+        let items = match a.get(a.root) {
+            Struct::List(items) => items.clone(),
+            Struct::Atom(_) => panic!("record is a list"),
+        };
+        assert!(
+            a.field_pair_parts(items[1]).is_some(),
+            "first entry is a FieldPair"
+        );
+        assert!(
+            a.field_pair_parts(items[2]).is_some(),
+            "second entry is a FieldPair"
+        );
+        let (k, v) = a.field_pair_parts(items[1]).unwrap();
+        assert_eq!(a.as_name(k), Some("x"), "field key");
+        assert_eq!(a.as_name(v), None, "value 1 is a bare int atom, not a name");
+    }
+
+    #[test]
+    fn equality_outside_a_record_map_body_stays_a_name() {
+        // `field_pairify` rewrites ONLY a DIRECT `(= k v)` entry of a #record/#map. Equality `=` anywhere
+        // else stays `Name("=")`: a standalone `(= a b)`, AND the inner `(= a b)` of a field VALUE.
+        let bare = read("(= a b)").unwrap();
+        assert_eq!(
+            bare.head_name(bare.root),
+            Some("="),
+            "a bare (= a b) is equality"
+        );
+        assert_eq!(bare.field_pair_parts(bare.root), None);
+        let a = read("#record((= x (= a b)))").unwrap();
+        let entry = match a.get(a.root) {
+            Struct::List(items) => items[1],
+            Struct::Atom(_) => panic!("record is a list"),
+        };
+        let (_k, v) = a
+            .field_pair_parts(entry)
+            .expect("the outer entry is a FieldPair");
+        assert_eq!(
+            a.head_name(v),
+            Some("="),
+            "the inner (= a b) in the value stays Name(=)"
+        );
+        assert_eq!(a.field_pair_parts(v), None);
+    }
+
+    #[test]
+    fn hash_record_field_may_be_comment_wrapped() {
+        // A `(comment …)` wrapper around a field is descended: the inner `(= x 1)` becomes a FieldPair,
+        // the wrapper is preserved around it.
+        let a = read("#record((comment \"doc\" (= x 1)))").unwrap();
+        let entry = match a.get(a.root) {
+            Struct::List(items) => items[1],
+            Struct::Atom(_) => panic!("record is a list"),
+        };
+        assert_eq!(
+            a.head_name(entry),
+            Some("comment"),
+            "the comment wrapper is preserved"
+        );
+        let wrapped = match a.get(entry) {
+            Struct::List(items) => *items.last().unwrap(),
+            Struct::Atom(_) => panic!("comment wrapper is a list"),
+        };
+        assert!(
+            a.field_pair_parts(wrapped).is_some(),
+            "the wrapped (= x 1) is a FieldPair"
         );
     }
 
     #[test]
-    fn hash_word_body_is_read_verbatim_including_comments() {
-        // The reader inserts NOTHING: the body is read exactly as written, so a bare (non-`=`) element
-        // stays a bare pair and a comment composes around a field as an ordinary node — both round-trip
-        // as themselves, no implicit `=` and no pair-shape requirement.
+    fn member_access_reads_to_a_member_head() {
+        // All three member surfaces — explicit `(. obj key)`, postfix `obj.key`, dotted `a.b` — read to a
+        // native `Member` head, and print back to the explicit `(. obj key)` form.
+        for src in ["(. p x)", "p.x", "(. (. p x) y)"] {
+            let a = read(src).unwrap();
+            assert!(
+                a.member_parts(a.root).is_some(),
+                "{src} reads to a Member head"
+            );
+        }
+        let a = read("p.x").unwrap();
         assert_eq!(
-            read("#record((x 1))").unwrap(),
-            read("(\"record\" (x 1))").unwrap()
+            print(&a),
+            "(. p x)",
+            "the dotted sugar canonicalizes to the explicit form"
         );
-        assert_eq!(
-            read("#record((comment \"doc\" (= x 1)))").unwrap(),
-            read("(\"record\" (comment \"doc\" (= x 1)))").unwrap(),
-        );
+        assert!(read(&print(&a)).unwrap().structurally_eq(&a));
     }
 
     #[test]
     fn only_the_exact_hash_word_paren_prefix_opens_a_literal() {
-        // Only the exact `#word(` prefix opens a literal. `#list(1)` is one (== the str-head form); but a
-        // longer identifier `#listx(…)` is NOT stolen as a `#list` literal — the `x` breaks the ctor
-        // word so it reads the ordinary way (a bare `#listx` token then a trailing `(1)`, which is a
-        // malformed single form), proving the reader keys on the whole word immediately before `(`.
-        assert_eq!(read("#list(1)").unwrap(), read("(\"list\" 1)").unwrap());
+        // Only the exact `#word(` prefix opens a literal. `#list(1)` is one (a native List head); a longer
+        // identifier `#listx(…)` is NOT stolen as a `#list` literal — the `x` breaks the ctor word so it
+        // reads the ordinary way (a bare `#listx` token then a trailing `(1)`, a malformed single form),
+        // proving the reader keys on the whole word immediately before `(`.
+        let a = read("#list(1)").unwrap();
+        assert_eq!(a.compound_ctor_leaf(a.root), Some(CompoundCtor::List));
         assert!(read("#listx(1)").is_err());
     }
 
@@ -1236,11 +1519,11 @@ mod tests {
         // key `max`, and the whole postfix list the full `(Int 8).max`.
         let src = "(Int 8).max";
         let (a, spans) = read_spanned(src).unwrap();
-        assert_eq!(a.head_name(a.root), Some("."));
         assert_eq!(slice(src, spans.get(a.root).unwrap()), "(Int 8).max");
-        let tail = a.as_form(a.root, ".").unwrap();
-        assert_eq!(slice(src, spans.get(tail[0]).unwrap()), "(Int 8)");
-        assert_eq!(slice(src, spans.get(tail[1]).unwrap()), "max");
+        // Native Member head (M2); operand/key read via `member_parts`, their spans unchanged.
+        let (obj, key) = a.member_parts(a.root).expect("member projection");
+        assert_eq!(slice(src, spans.get(obj).unwrap()), "(Int 8)");
+        assert_eq!(slice(src, spans.get(key).unwrap()), "max");
     }
 
     /// print∘read is stable: reading printed text yields a structurally-equal arena, and printing
@@ -1661,50 +1944,49 @@ mod tests {
     #[test]
     fn dotted_name_desugars() {
         let a = read("Sign.Neg").unwrap();
-        // (. Sign Neg)
-        assert_eq!(a.head_name(a.root), Some("."));
-        let tail = a.as_form(a.root, ".").unwrap();
-        assert_eq!(a.as_name(tail[0]), Some("Sign"));
-        assert_eq!(a.as_name(tail[1]), Some("Neg"));
+        // (. Sign Neg) — a native Member head (M2), recognized by kind via `member_parts`.
+        let (obj, key) = a
+            .member_parts(a.root)
+            .expect("Sign.Neg is a Member projection");
+        assert_eq!(a.as_name(obj), Some("Sign"));
+        assert_eq!(a.as_name(key), Some("Neg"));
     }
 
     #[test]
     fn postfix_member_after_a_paren_desugars() {
         // `(Int 8).max` reads to `(. (Int 8) max)` — the paren-postfix sibling of `Int8.max`. This is
         // what lets a type-constructor application be projected directly (the modules `(Int N)` builds
-        // carry `max`/`min`/`wrap`), reading identically to the aliased-name form.
+        // carry `max`/`min`/`wrap`), reading identically to the aliased-name form. Native Member head.
         let a = read("(Int 8).max").unwrap();
-        assert_eq!(a.head_name(a.root), Some("."));
-        let tail = a.as_form(a.root, ".").unwrap();
+        let (obj, key) = a.member_parts(a.root).expect("member projection");
         // operand is the `(Int 8)` application; key is `max`.
-        assert_eq!(a.head_name(tail[0]), Some("Int"));
-        assert_eq!(a.as_name(tail[1]), Some("max"));
+        assert_eq!(a.head_name(obj), Some("Int"));
+        assert_eq!(a.as_name(key), Some("max"));
     }
 
     #[test]
     fn postfix_member_chains_and_composes_with_application() {
         // `((. (UInt 48) wrap) -1)` is unaffected (explicit form), and a chained postfix `(Int 8).x.y`
-        // nests left-to-right: `(. (. (Int 8) x) y)`.
+        // nests left-to-right: `(. (. (Int 8) x) y)` — nested native Member heads.
         let a = read("(Int 8).x.y").unwrap();
-        assert_eq!(a.head_name(a.root), Some("."));
-        let outer = a.as_form(a.root, ".").unwrap();
-        assert_eq!(a.as_name(outer[1]), Some("y"));
-        assert_eq!(a.head_name(outer[0]), Some(".")); // inner (. (Int 8) x)
-        let inner = a.as_form(outer[0], ".").unwrap();
-        assert_eq!(a.head_name(inner[0]), Some("Int"));
-        assert_eq!(a.as_name(inner[1]), Some("x"));
+        let (outer_obj, outer_key) = a.member_parts(a.root).expect("outer member");
+        assert_eq!(a.as_name(outer_key), Some("y"));
+        let (inner_obj, inner_key) = a.member_parts(outer_obj).expect("inner (. (Int 8) x)");
+        assert_eq!(a.head_name(inner_obj), Some("Int"));
+        assert_eq!(a.as_name(inner_key), Some("x"));
     }
 
     #[test]
     fn dot_head_form_is_not_a_postfix() {
         // `(. p x)` — a `.` that heads a list (with a following space) is ordinary member-access
         // structure, NOT a postfix on the preceding token. Pins that the postfix only fires on a `.`
-        // glued to an identifier segment.
+        // glued to an identifier segment. Reads to a native Member head.
         let a = read("(. p x)").unwrap();
-        assert_eq!(a.head_name(a.root), Some("."));
-        let tail = a.as_form(a.root, ".").unwrap();
-        assert_eq!(a.as_name(tail[0]), Some("p"));
-        assert_eq!(a.as_name(tail[1]), Some("x"));
+        let (obj, key) = a
+            .member_parts(a.root)
+            .expect("explicit (. p x) is a Member projection");
+        assert_eq!(a.as_name(obj), Some("p"));
+        assert_eq!(a.as_name(key), Some("x"));
     }
 
     #[test]

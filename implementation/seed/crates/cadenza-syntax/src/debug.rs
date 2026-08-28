@@ -127,6 +127,10 @@ fn leaf(l: &Leaf) -> String {
                 kind.type_name()
             )
         }
+        // Native compound HEAD leaves (M2).
+        Leaf::Ctor(c) => format!("Ctor {c:?}"),
+        Leaf::FieldPair => "FieldPair".to_string(),
+        Leaf::Member => "Member".to_string(),
     }
 }
 

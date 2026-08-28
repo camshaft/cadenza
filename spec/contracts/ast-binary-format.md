@@ -119,6 +119,23 @@ are exactly the following, and a decoder MUST refuse any other kind byte.
 - `17` — the floating-point not-a-number value. The body MUST be empty.
 - `18` — positive floating-point infinity. The body MUST be empty.
 - `19` — negative floating-point infinity. The body MUST be empty.
+- `20` — a LIST constructor head — the head leaf of a list literal `(<list-ctor> element…)`. The body
+  MUST be empty; the leaf carries its meaning in its kind alone, so a compound literal's constructor is
+  recognized by this kind identity rather than by comparing a head's text against a reserved spelling.
+- `21` — a TUPLE constructor head — the head leaf of a tuple literal `(<tuple-ctor> element…)`. The body
+  MUST be empty.
+- `22` — a RECORD constructor head — the head leaf of a record literal `(<record-ctor> field…)` whose
+  fields are FIELD-PAIR entries (kind `25`). The body MUST be empty.
+- `23` — a MAP constructor head — the head leaf of a map literal `(<map-ctor> entry…)` whose entries are
+  FIELD-PAIR entries (kind `25`). The body MUST be empty.
+- `24` — a SET constructor head — the head leaf of a set literal `(<set-ctor> element…)`. The body MUST
+  be empty.
+- `25` — a FIELD-PAIR head — the head leaf of a record/map entry `(<field-pair> key value)` (the `=`
+  marker). The body MUST be empty; the entry marker is recognized by this kind identity, distinct from a
+  NAME leaf spelling `=` (kind `10`), which remains an ordinary name.
+- `26` — a MEMBER-ACCESS head — the head leaf of a projection `(<member> object key)` (the `.` marker).
+  The body MUST be empty; the projection marker is recognized by this kind identity, distinct from a NAME
+  leaf spelling `.` (kind `10`), which remains an ordinary name.
 
 ## The Structure Pool
 
@@ -207,6 +224,10 @@ encoder produces and a conformant decoder accepts:
   negative, exponent `-1` as an eight-byte big-endian two's-complement integer, significand length `1`,
   significand `0x0F` (fifteen).
 - The not-a-number value: `11` — kind `17`, no body.
+- The list constructor head: `14` — kind `20`, no body.
+- The record constructor head: `16` — kind `22`, no body.
+- The field-pair (`=`) head: `19` — kind `25`, no body.
+- The member-access (`.`) head: `1A` — kind `26`, no body.
 
 ## Additive Evolution
 

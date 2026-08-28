@@ -22,7 +22,7 @@
 //! See the `error recovery` helpers ([`Parser::at_expr_stop`], [`Parser::sep_continue`]) and the
 //! `error recovery` test module.
 
-use crate::ast::{Arenas, Builder, Leaf, StructId};
+use crate::ast::{Arenas, Builder, CompoundCtor, Leaf, StructId};
 use crate::lexer::{Lexer, Token};
 use crate::literal;
 use crate::span::Span;
@@ -454,7 +454,18 @@ impl<'a> Parser<'a> {
     /// name a binding could shadow, so a literal always builds the compound even where the alias name
     /// `list`/`tuple`/`record`/`map` is rebound. ("The strings are the symbols.")
     fn ctor_head(&mut self, name: &str, span: Span) -> StructId {
-        self.atom(Leaf::Str(name.into()), span)
+        // M2: the compound constructor is a native ctor LEAF KIND (recognized by kind identity, not head
+        // text), the ML-reader counterpart of the s-expr `#word(` flip. Unshadowable like the old string
+        // primitive; `read_ml` is native end-to-end (ruling ii).
+        let ctor = match name {
+            "record" => CompoundCtor::Record,
+            "tuple" => CompoundCtor::Tuple,
+            "list" => CompoundCtor::List,
+            "map" => CompoundCtor::Map,
+            "set" => CompoundCtor::Set,
+            _ => unreachable!("ctor_head is only called with the five compound ctor words"),
+        };
+        self.atom(Leaf::Ctor(ctor), span)
     }
 
     // ---- token cursor ----
@@ -1687,7 +1698,8 @@ impl<'a> Parser<'a> {
     /// Build a member-access head `(. obj key)` — the arena shape `obj.key` desugars to, reused to
     /// synthesize the `Qty.of` / `Unit.of` heads of a quantity literal.
     fn member_head(&mut self, obj: &str, key: &str, span: Span) -> StructId {
-        let dot = self.name(".", span);
+        // M2: `.` is a native Member leaf head (kind identity), the ML counterpart of the s-expr flip.
+        let dot = self.atom(Leaf::Member, span);
         let obj = self.name(obj, span);
         let key = self.name(key, span);
         self.list(vec![dot, obj, key], span)
@@ -1824,7 +1836,8 @@ impl<'a> Parser<'a> {
             }
         };
         let dot_span = start.merge(self.prev_span());
-        let dot = self.name(".", dot_span);
+        // M2: native Member leaf head (kind identity), the ML counterpart of the s-expr member flip.
+        let dot = self.atom(Leaf::Member, dot_span);
         self.list(vec![dot, node, key], dot_span)
     }
 
@@ -3432,7 +3445,11 @@ impl<'a> Parser<'a> {
                         _ => self.name(self.text(seg_t), seg_span),
                     };
                     let dot_span = start.merge(self.prev_span());
-                    let dot = self.name(".", dot_span);
+                    // M2: `.` is a native Member leaf head (kind identity), matching `member_access` /
+                    // `member_head` and the s-expr reader's `memberize` — a dotted CONSTRUCTOR pattern
+                    // (`Sign.Neg`, `Id.Mk(n)`) round-trips against the same Member head every other surface
+                    // produces (was `self.name(".")`, which mismatched the reader's `Leaf::Member`).
+                    let dot = self.atom(Leaf::Member, dot_span);
                     node = self.list(vec![dot, node, seg], dot_span);
                 }
                 Kind::LParen => {
@@ -3658,7 +3675,7 @@ impl<'a> Parser<'a> {
                         // A record-PATTERN field is the canonical `(= name sub-pattern)` triple — the SAME
                         // form as a value-record field (RV1), so patterns and literals spell identically
                         // (operator ruling: path B, full symmetry). Was a bare `(name sub-pattern)` pair.
-                        let eq = self.name("=", f_start);
+                        let eq = self.atom(Leaf::FieldPair, f_start);
                         items.push(self.list(vec![eq, field, value], f_span));
                         if !self.sep_continue(Kind::RBrace) {
                             break;
@@ -3836,7 +3853,7 @@ impl<'a> Parser<'a> {
                 // magical"). Was the bare `(name value)` pair that dropped the `=`. Shorthand `{ x }`
                 // puns to `(= x x)` (every field is `=`-headed, uniform). The `record` STRING head is
                 // unchanged; only the field node gains the `=` head.
-                let eq = self.name("=", f_start);
+                let eq = self.atom(Leaf::FieldPair, f_start);
                 let field = self.list(vec![eq, name, value], f_span);
                 // Wrap any own-line LEADING comment around the field triple (printer renders it above).
                 let field = self.wrap_comments(leading, field);
@@ -3902,7 +3919,10 @@ impl<'a> Parser<'a> {
                     self.expect(Kind::Eq, "`=`");
                     let value = self.expr(crate::token::PREC_SEQ + 1);
                     let e_span = e_start.merge(self.prev_span());
-                    let entry = self.list(vec![key, value], e_span);
+                    // M2: a map entry is a native `(= key value)` FieldPair (unified with record fields —
+                    // operator ruling; matches the s-expr `#map((= k v))`), not a bare `(key value)` pair.
+                    let eq = self.atom(Leaf::FieldPair, e_start);
+                    let entry = self.list(vec![eq, key, value], e_span);
                     let entry = self.wrap_comments(leading, entry);
                     // Capture a same-line trailing `//` on the LAST entry (gated on `at(RBrace)`), like the
                     // record loop — wrap as `(comment-after "text" (key value))`; the map printer/shape-guard
@@ -3953,19 +3973,20 @@ impl<'a> Parser<'a> {
         self.list(items, span)
     }
 
-    /// `#( e, … )`  ->  `((. Set of) ("list" e …))` — a set literal, sugar for `Set.of([e, …])`. The
-    /// third built-in collection surface, completing the `#`-prefix family (`#{`=map, `#[`=raw-list,
-    /// `#(`=set). It desugars to a member-access APPLICATION of the ordinary prelude `Set.of` (not a
-    /// grammar primitive) applied to a list literal — so `#()` is the empty set `Set.of([])`, and a
-    /// shadowed `Set` binding correctly falls back to the user's `Set` (there is no unshadowable set
-    /// primitive; the printer round-trips this exact shape via `set_literal`). Elements are single
+    /// `#( e, … )`  ->  `#set(e …)` — the native `Leaf::Ctor(Set)` compound literal (M2
+    /// native-compound-data), the third built-in collection surface completing the `#`-prefix family
+    /// (`#{`=map, `#[`=raw-list, `#(`=set). Its head is the distinct unshadowable set ctor leaf (kind
+    /// identity), uniform with `#list`/`#tuple`/`#record`/`#map` — so `#()` is the empty set `#set()` and
+    /// ml-convert nativizes it through the same one route as every other ctor. (Was sugar for a
+    /// `Set.of([…])` member CALL — `((. Set of) ("list" …))`; the printer still recognizes that legacy
+    /// shape too, so an un-migrated corpus set still round-trips to `#(…)`.) Elements are single
     /// expressions (`PREC_SEQ + 1`), comma-separated; a sequence element parenthesizes.
     fn set_literal(&mut self) -> StructId {
         let start = self.cur_span();
         self.bump(); // '#'
         self.bump(); // '('
-        let list_head = self.ctor_head("list", start);
-        let mut elems = vec![list_head];
+        let set_head = self.ctor_head("set", start);
+        let mut elems = vec![set_head];
         if !self.at(Kind::RParen) {
             loop {
                 let before = self.pos;
@@ -3996,9 +4017,8 @@ impl<'a> Parser<'a> {
         self.drain_closer_comment_onto_last(&mut elems, 1);
         self.expect(Kind::RParen, "`)`");
         let span = start.merge(self.prev_span());
-        let list = self.list(elems, span);
-        let set_of = self.member_head("Set", "of", span);
-        self.list(vec![set_of, list], span)
+        // Native set ctor: the `Leaf::Ctor(Set)` head + elements directly (no `Set.of`/`list` wrapper).
+        self.list(elems, span)
     }
 
     /// `b[ <segment>, … ]`  ->  `(bin <segment> …)` — a binary literal, the structured sibling of the
@@ -4578,28 +4598,28 @@ mod tests {
         // list:
         assert_eq!(
             sexpr::print(&parse_ok("def l() = [1, 2\n // c\n]")),
-            "(def (l) (\"list\" 1 (comment \"c\" 2)))"
+            "(def (l) #list(1 (comment \"c\" 2)))"
         );
         // tuple:
         assert_eq!(
             sexpr::print(&parse_ok("def t() = (1, 2\n // c\n)")),
-            "(def (t) (\"tuple\" 1 (comment \"c\" 2)))"
+            "(def (t) #tuple(1 (comment \"c\" 2)))"
         );
         // record (field is a `(= name value)` triple; the comment wraps the whole field):
         assert_eq!(
             sexpr::print(&parse_ok("def r() = { a = 1, b = 2\n // c\n }")),
-            "(def (r) (\"record\" (= a 1) (comment \"c\" (= b 2))))"
+            "(def (r) #record((= a 1) (comment \"c\" (= b 2))))"
         );
         // set desugars to `Set.of([…])` — the comment wraps the last list element:
         assert_eq!(
             sexpr::print(&parse_ok("def s() = #(1, 2\n // c\n)")),
-            "(def (s) ((. Set of) (\"list\" 1 (comment \"c\" 2))))"
+            "(def (s) #set(1 (comment \"c\" 2)))"
         );
-        // map (head is the STRING `"map"`; an entry is a `(key value)` PAIR — the `=` is just the
-        // separator, NOT the record `(= …)` triple, so no `=` head here):
+        // map (native `#map(…)` ctor head; an entry is the canonical `(= key value)` `FieldPair` triple,
+        // unified with a record field per the M2 native-compound-data migration):
         assert_eq!(
             sexpr::print(&parse_ok("def m() = #{ a = 1\n // c\n }")),
-            "(def (m) (\"map\" (comment \"c\" (a 1))))"
+            "(def (m) #map((comment \"c\" (= a 1))))"
         );
     }
 
@@ -4613,7 +4633,7 @@ mod tests {
         // ONLY the mid comment on `2`; the last comment is NOT attached (would reorder).
         assert_eq!(
             sexpr::print(&parse_ok("def m() = [1,\n // mid\n 2\n // last\n]")),
-            "(def (m) (\"list\" 1 (comment \"mid\" 2)))",
+            "(def (m) #list(1 (comment \"mid\" 2)))",
             "the closer comment is not attached (would reorder above the element's own comment)"
         );
     }
@@ -5013,22 +5033,22 @@ mod tests {
         assert_eq!(a.head_name(a.root), Some("f"));
         assert_eq!(a.as_form(a.root, "f").unwrap().len(), 2);
 
-        // `a.b` -> (. a b)
+        // `a.b` -> (. a b) — the `.` head is a native `Leaf::Member` (kind identity, not `Name(".")`),
+        // read via `member_parts`.
         let a = parse_ok("a.b");
-        assert_eq!(a.head_name(a.root), Some("."));
+        assert!(a.member_parts(a.root).is_some());
 
         // `p.0` -> (. p 0) — positional tuple access, the numeric sibling of `p.field`.
         let a = parse_ok("p.0");
-        let tail = a.as_form(a.root, ".").unwrap();
-        assert_eq!(a.as_name(tail[0]), Some("p"));
+        let (obj, key) = a.member_parts(a.root).unwrap();
+        assert_eq!(a.as_name(obj), Some("p"));
         assert!(
-            matches!(a.get(tail[1]), crate::ast::Struct::Atom(l) if matches!(a.leaf(*l), Leaf::Int { .. }))
+            matches!(a.get(key), crate::ast::Struct::Atom(l) if matches!(a.leaf(*l), Leaf::Int { .. }))
         );
         // `(x.0).1` -> (. (. x 0) 1) — chained index, parens keep `0.1` from lexing as a float.
         let a = parse_ok("(x.0).1");
-        assert_eq!(a.head_name(a.root), Some("."));
-        let outer = a.as_form(a.root, ".").unwrap();
-        assert_eq!(a.head_name(outer[0]), Some("."));
+        let (inner, _) = a.member_parts(a.root).unwrap();
+        assert!(a.member_parts(inner).is_some());
 
         // `if a then b else c` -> (if a b c)
         let a = parse_ok("if a then b else c");
@@ -5910,7 +5930,7 @@ mod tests {
             sexpr::print(&parse_ok(
                 "@!param(widget: slider, range: (1, 10)) width : Int64"
             )),
-            r#"(pragma param (param (: widget slider) (: range ("tuple" 1 10))) (: width Int64))"#
+            r#"(pragma param (param (: widget slider) (: range #tuple(1 10))) (: width Int64))"#
         );
         // Empty / absent config -> `(param)`; both spellings parse to the same node.
         assert_eq!(
@@ -6023,22 +6043,19 @@ mod tests {
     #[test]
     fn set_literal_desugars() {
         use crate::sexpr;
-        // `#(1, 2, 3)` desugars to `Set.of([1, 2, 3])` — a member-access application of the prelude
-        // `Set.of` over a `list` literal. The list head is the unshadowable STRING primitive `"list"`.
+        // `#(1, 2, 3)` is the native set ctor literal `#set(1 2 3)` (head `Leaf::Ctor(Set)`), uniform
+        // with `#list`/`#tuple`/`#record`/`#map`. (Was sugar for a `Set.of([…])` member call.)
         let a = parse_ok("#(1, 2, 3)");
-        assert_eq!(sexpr::print(&a), r#"((. Set of) ("list" 1 2 3))"#);
-        // The empty set is `Set.of([])`.
+        assert_eq!(sexpr::print(&a), r#"#set(1 2 3)"#);
+        // The empty set is `#set()`.
         let e = parse_ok("#()");
-        assert_eq!(sexpr::print(&e), r#"((. Set of) ("list"))"#);
+        assert_eq!(sexpr::print(&e), r#"#set()"#);
         // A single-element set, and nested elements (an expression element parses fully).
-        assert_eq!(
-            sexpr::print(&parse_ok("#(x + 1)")),
-            r#"((. Set of) ("list" (+ x 1)))"#
-        );
+        assert_eq!(sexpr::print(&parse_ok("#(x + 1)")), r#"#set((+ x 1))"#);
         // It composes as an ordinary operand: a call argument.
         assert_eq!(
             sexpr::print(&parse_ok("contains(#(1, 2), 1)")),
-            r#"(contains ((. Set of) ("list" 1 2)) 1)"#
+            r#"(contains #set(1 2) 1)"#
         );
     }
 
@@ -6238,7 +6255,7 @@ mod tests {
             "(def (j (: p unit)) p)"
         );
         // A VALUE-position paren-comma still builds the tuple VALUE ctor — the retyping is TYPE-only.
-        assert_eq!(sexpr::print(&parse_ok("(1, 2)")), r#"("tuple" 1 2)"#);
+        assert_eq!(sexpr::print(&parse_ok("(1, 2)")), r#"#tuple(1 2)"#);
     }
 
     #[test]
@@ -6682,12 +6699,23 @@ mod tests {
     #[test]
     fn missing_comma_in_list_recovers() {
         // `[1 2 3]` — every element is recovered, with one missing-`,` error per gap. The literal
-        // desugars to the STRING-headed primitive `("list" 1 2 3)`, so read the tail via `as_ctor_form`.
+        // desugars to the native `#list(1 2 3)` ctor (head `Leaf::Ctor(List)`, recognized by kind
+        // identity), so confirm the ctor kind + count the element children (all but the head).
         let p = read_ml("[1 2 3]");
         assert!(!p.ok());
         let a = &p.arenas;
-        let list = a.as_ctor_form(a.root, "list").unwrap();
-        assert_eq!(list.len(), 3, "all three elements recovered: {list:?}");
+        assert_eq!(
+            a.compound_ctor_leaf(a.root),
+            Some(crate::ast::CompoundCtor::List)
+        );
+        let crate::ast::Struct::List(items) = a.get(a.root) else {
+            panic!("list literal is a List node")
+        };
+        assert_eq!(
+            items.len() - 1,
+            3,
+            "all three elements recovered: {items:?}"
+        );
     }
 
     #[test]

@@ -82,25 +82,25 @@ fn gen_expr(rng: &mut Rng, depth: usize) -> String {
                 .collect();
             format!("(let ({}) {})", binds.join(" "), sub(rng))
         }
-        // list literal
+        // list literal — native `#list(…)` ctor head (M2 native-compound-data)
         7 => {
             let n = rng.below(4);
             let elems: Vec<String> = (0..n).map(|_| sub(rng)).collect();
-            format!("(\"list\" {})", elems.join(" "))
+            format!("#list({})", elems.join(" "))
         }
-        // tuple literal (≥2 elements — a 1-tuple is a grouping)
+        // tuple literal (≥2 elements — a 1-tuple is a grouping) — native `#tuple(…)`
         8 => {
             let n = 2 + rng.below(2);
             let elems: Vec<String> = (0..n).map(|_| sub(rng)).collect();
-            format!("(\"tuple\" {})", elems.join(" "))
+            format!("#tuple({})", elems.join(" "))
         }
-        // record literal: ("record" (= field value)…) — the (= name value) ascription form
+        // record literal: #record((= field value)…) — native ctor head + `(= name value)` FieldPair fields
         9 => {
             let n = 1 + rng.below(3);
             let fields: Vec<String> = (0..n)
                 .map(|i| format!("(= {} {})", ["m", "n", "o"][i], sub(rng)))
                 .collect();
-            format!("(\"record\" {})", fields.join(" "))
+            format!("#record({})", fields.join(" "))
         }
         // match: (match scrut (pat body)…) — patterns are simple names/literals/wildcards
         10 => {
@@ -132,13 +132,14 @@ fn gen_expr(rng: &mut Rng, depth: usize) -> String {
             let ty = gen_type_expr(rng, ty_depth);
             format!("(: {} {})", sub(rng), ty)
         }
-        // map literal: (map (key value)…) — prints `#{ k = v, … }` (distinct from a `record`).
+        // map literal: #map((= key value)…) — native ctor head + `(= k v)` FieldPair entries (unified with
+        // a record field per M2); prints `#{ k = v, … }` (distinct from a `record`).
         14 => {
             let n = 1 + rng.below(3);
             let entries: Vec<String> = (0..n)
-                .map(|i| format!("({} {})", ["m", "n", "o"][i], sub(rng)))
+                .map(|i| format!("(= {} {})", ["m", "n", "o"][i], sub(rng)))
                 .collect();
-            format!("(map {})", entries.join(" "))
+            format!("#map({})", entries.join(" "))
         }
         // annotation `(@ name form)` -> `@name form` (bare) / `(@ (tag "s") form)` -> `@tag("s") form`
         // (parameterized). The annotation prints on its own line above the wrapped form; in a STATEMENT

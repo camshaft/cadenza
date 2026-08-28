@@ -78,12 +78,14 @@ pub fn is_irrefutable_with(pat: &Tree, single_ctors: &SingleVariantCtors) -> boo
                 }
                 Tree::Atom(Leaf::Name(h), _) if &**h == "record" => {
                     // Each field is the canonical `(= fieldname subpat)` triple (path B — same form as a
-                    // value-record field); the sub-pattern is the LAST element. A legacy `(fieldname
-                    // subpat)` pair is tolerated (sub-pattern = 2nd element).
+                    // value-record field); the sub-pattern is the LAST element. The `=` head is the native
+                    // `Leaf::FieldPair` (M2 native-compound-data) or a legacy `Name("=")` (dual-read). A
+                    // bare `(fieldname subpat)` pair is also tolerated (sub-pattern = 2nd element).
                     rest.iter().all(|field| match field {
                         Tree::List(fitems, _)
                             if fitems.len() == 3
-                                && matches!(&fitems[0], Tree::Atom(Leaf::Name(eq), _) if &**eq == "=") =>
+                                && (matches!(&fitems[0], Tree::Atom(Leaf::FieldPair, _))
+                                    || matches!(&fitems[0], Tree::Atom(Leaf::Name(eq), _) if &**eq == "=")) =>
                         {
                             is_irrefutable_with(&fitems[2], single_ctors)
                         }
