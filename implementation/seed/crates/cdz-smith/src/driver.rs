@@ -112,6 +112,14 @@ pub fn run(cfg: &Config) -> std::io::Result<Stats> {
 
     spawn_watchdog(progress.clone(), epoch, cfg.clone());
 
+    // In-flight seed capture (opt-in via `CDZ_SMITH_INFLIGHT=<path>`): the watchdog can regenerate a
+    // HANG's program from `progress.current_seed`, but a HARD abort (a compiler stack overflow / OOM —
+    // SIGABRT, not an unwinding panic) bypasses both `catch_unwind` and the hang watchdog and takes the
+    // whole process down WITHOUT filing anything, losing the culprit. When this path is set we write the
+    // seed to it BEFORE each compile (overwritten every iteration), so after a hard abort the file holds
+    // the exact seed that crashed — `cdz-smith gen <seed>` then reproduces it. Off by default (no I/O).
+    let inflight = std::env::var_os("CDZ_SMITH_INFLIGHT");
+
     let mut stats = Stats::default();
     let mut rng = SplitMix64::new(cfg.run_seed);
     let mut i = 0u64;
@@ -122,6 +130,9 @@ pub fn run(cfg: &Config) -> std::io::Result<Stats> {
             break;
         }
         let seed = rng.next();
+        if let Some(path) = &inflight {
+            let _ = std::fs::write(path, seed.to_string());
+        }
 
         // Publish what we're about to do, then arm the deadline for the watchdog.
         progress.current_seed.store(seed, Ordering::SeqCst);
