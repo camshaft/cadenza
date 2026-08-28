@@ -429,7 +429,7 @@
   (output (: 230 Int64))
   (call   main (: 0 Int64))
   (output (: 210 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 ; -- Bytes.at over an OWNED-TEMPORARY rope-producer reclaims it (migrated from rcdzc bytes_at_over_an_owned_
 ; temporary_* reclaim tests). Every rope-producer — Bytes.concat / Bytes.slice / Bytes.compact / String.to-bytes
@@ -472,7 +472,7 @@
                           (Bytes.at (Option.expect (Bytes.slice (build 0 3 (Bytes.of (list))) 1 3) "s") 1) "v"))
             (export main)))
   (call   main) (output (: 30 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "bar4 5000x Bytes.at over an owned-temporary Bytes.slice each reclaims (no leak drift)"
   (doc    "Leak/UAF stress: 5000x build+slice a fresh owned bytes and read byte 1 of the window (30). A leaked
@@ -486,7 +486,7 @@
             (def (main) (drive 0 5000 0))
             (export main)))
   (call   main) (output (: 150000 Int64))
-  (live-objects known-leak 10000))
+  (live-objects 0))
 
 (case "bar5 Bytes.at over an owned-temporary Bytes.compact result reclaims it"
   (doc    "The compact rope-producer face: `build` -> [10,20]x3 (6 bytes); `(Bytes.compact …)` flattens to a
