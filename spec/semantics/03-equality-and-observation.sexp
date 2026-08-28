@@ -2901,20 +2901,22 @@
             (export main)))
   (declines))
 
-(case "a tuple with a Char leaf declines compound ordering — Char has no blessed order"
-  (doc    "`(< (mk #\\a) (mk #\\b))` where `mk` builds a runtime `(tuple 1 c)` with a Char component.
-           Compound ordering is offered exactly when EVERY component offers a total order, and Char
-           remains outside the blessed leaf vocabulary — scalar `(Ordering.of #\\a #\\b)` IS blessed and
-           computes (13-strings:3092), but Char-in-a-compound follows the tuple walk, which declines
-           rather than inventing an order. (Bytes USED to share this carve-out until PR#1120 blessed
-           its lexicographic order — re-verified this pin still declines AFTER that blessing, so the
-           Char and Float carve-outs are now the remaining family.) Uniform across backends; flips to
-           a witness only if the Char leaf is blessed into the walk.")
+(case "a tuple with a Char leaf orders by codepoint — Char is a blessed compound-ordering leaf"
+  (doc    "`(< (mk #\\a) (mk #\\b))` where `mk` builds a `(tuple 1 c)` with a Char component. Compound
+           ordering is offered exactly when EVERY component offers a total order, and a Char DOES: a
+           Unicode scalar value has a total order by codepoint — the same order scalar `(Ordering.of #\\a
+           #\\b)` computes (13-strings:3092). So the tuple walk orders the Char leaf by codepoint: the
+           first components tie (1 = 1), the Char leaf decides — #\\a (U+0061) < #\\b (U+0062) — so
+           `(< (tuple 1 #\\a) (tuple 1 #\\b))` is true → 1. Char joins the blessed compound-ordering leaf
+           vocabulary (Int/Bool/String/Symbol/Bytes/…), exactly as Bytes was blessed into the walk by
+           PR#1120; FLOAT (IEEE partial order) and a CLOSURE leaf remain the carve-outs. Uniform across
+           backends (the runtime `value_cmp_shaped` orders a Char-in-compound as its codepoint `Shape::Int`
+           — no runtime change was needed to bless it, only the `is_orderable_compound` guard).")
   (input  (do
             (def (mk (: c Char)) (tuple 1 c))
             (def (main) (if (< (mk #\a) (mk #\b)) 1 0))
             (export main)))
-  (declines))
+  (call   main) (output (: 1 Int64)))
 
 ; breaker probe W — stress the cmp-walk recursion just pinned in 3c223e37b one level DEEPER:
 ; a LIST of user SUMS whose payload is itself a LIST — the walk must recurse list→sum→list.
