@@ -43,6 +43,7 @@ fn target_cli(t: Target) -> &'static str {
         Target::Dwarf => "dwarf",
         Target::Rust => "rust",
         Target::RustAsync => "rust-async",
+        Target::Cadenza => "cadenza",
     }
 }
 
@@ -587,6 +588,7 @@ mod tests {
         assert_eq!(target_cli(Target::Dwarf), "dwarf");
         assert_eq!(target_cli(Target::Rust), "rust");
         assert_eq!(target_cli(Target::RustAsync), "rust-async");
+        assert_eq!(target_cli(Target::Cadenza), "cadenza");
     }
 
     #[test]
