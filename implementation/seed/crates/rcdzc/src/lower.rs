@@ -14880,10 +14880,11 @@ pub fn is_markable_constant_compound(db: &mut Db, id: StructId) -> bool {
 /// Two shapes stay EXCLUDED (they would leak — see the emit arm): an EMPTY list (the shared `vec-empty`
 /// SINGLETON — unsound to mark a shared node immortal), and an ALL-`Bool` list (`vec-of-arr` PACKS it into a
 /// fresh bit-leaf while dropping the source `arr` that holds the shallow-marked element boxes → those
-/// immortal boxes are orphaned). Element markability reuses [`is_markable_constant_elem`], which does NOT
-/// recurse into a nested `Core::ListNew` — so a list whose element is itself a list is (conservatively) NOT
-/// markable yet (the element builder does not build a nested list), while a list of markable scalars /
-/// `Bytes` / `String` / `Tuple` / `Record` of any size IS.
+/// immortal boxes are orphaned). Element markability reuses [`is_markable_constant_elem`], which DOES
+/// recurse into a nested `Core::ListNew`/`MapNew`/`SetOf` (PR #4989/#4994) — so a list whose element is
+/// itself a (non-bool, non-empty) list / map / set IS markable, the root's `mark-immortal-DEEP` reaching
+/// the nested collection's whole structure transitively — as is a list of markable scalars / `Bytes` /
+/// `String` / `Tuple` / `Record` / `SumNew` of any size.
 pub fn is_markable_constant_list(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::ListNew { elems } => {
@@ -14913,10 +14914,10 @@ pub fn is_markable_constant_list(db: &mut Db, id: StructId) -> bool {
 /// transitively marks the whole HAMT spine + every data-entry key/value handle. Because `map-insert` consumes
 /// (moves, never copies) its arguments, there is no orphan-leak hazard (contrast the all-`Bool` list pack).
 ///
-/// EMPTY is excluded (the `map-empty` shared singleton — unsound to mark immortal). A nested `List`/`Map` key
-/// or value is (conservatively) NOT markable yet — [`is_markable_constant_elem`] does not recurse into them,
-/// and the immortal builder's per-key/value path builds only scalar / `Bytes` / `String` / `Tuple` / `Record`
-/// (a later widening reuses the list/map arms for nested collection k/v).
+/// EMPTY is excluded (the `map-empty` shared singleton — unsound to mark immortal). A nested `List`/`Map`/
+/// `Set` key or value IS markable (PR #4989/#4994: [`is_markable_constant_elem`] recurses `ListNew`/`MapNew`/
+/// `SetOf`), built inline by the immortal MapNew builder (`emit`) or its own `emit_immortal_static` arm and
+/// covered by the root's `mark-immortal-DEEP`.
 pub fn is_markable_constant_map(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::MapNew { entries, .. } => {
@@ -14934,8 +14935,8 @@ pub fn is_markable_constant_map(db: &mut Db, id: StructId) -> bool {
 /// element per-node-buildable via [`is_markable_constant_elem`]. Built once (`set-empty` + per-element
 /// `set-insert`, which CONSUMES set+element — moves in, no copy) then `mark-immortal-DEEP` on the root, which
 /// transitively marks the whole HAMT + element handles. EMPTY excluded (`set-empty` shared singleton); a
-/// nested `List`/`Map`/`Set` element is (conservatively) NOT markable yet (the element builder handles only
-/// scalar / `Bytes` / `String` / `Tuple` / `Record`).
+/// nested `List`/`Map`/`Set` element IS markable (PR #4989/#4994: [`is_markable_constant_elem`] recurses
+/// the collection predicates; the root deep-mark covers the nested structure).
 pub fn is_markable_constant_set(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::SetOf { elems, .. } => {
@@ -14983,9 +14984,9 @@ pub fn is_markable_constant_sum_nullary(db: &mut Db, id: StructId) -> bool {
 /// GATE (v-core-opt's tightness reqs): (a) MIXED sum only (`!is_enum_disc` — an all-nullary enum has no heap
 /// node); (b) EVERY payload `is_markable_constant_elem` (a payload with ANY runtime value must NOT hoist — it
 /// is not a constant); (c) implicitly fully-constant (a non-constant payload fails (b)). `is_markable_constant_elem`
-/// does NOT recurse into a nested `Core::SumNew`, so a NESTED recursive-sum payload (`Cons`-of-`Cons`) is
-/// (conservatively) not markable yet — a later slice; a variant wrapping scalars / `Bytes` / `String` /
-/// `Tuple` / `Record` / (small const) `List` IS.
+/// DOES recurse into a nested `Core::SumNew` (and `ListNew`/`MapNew`/`SetOf`/`Tuple`/`Record`), so a NESTED
+/// recursive-sum payload (`Cons`-of-`Cons`) IS markable — the root's `mark-immortal-DEEP` covers the whole
+/// spine; a variant wrapping scalars / `Bytes` / `String` / `Tuple` / `Record` / `List` / `Map` / `Set` IS.
 pub fn is_markable_constant_sum_payloaded(db: &mut Db, id: StructId) -> bool {
     let payloads = match core_of(db, id) {
         Core::SumNew { payloads, .. } if !payloads.is_empty() => payloads,
@@ -15003,14 +15004,16 @@ pub fn is_markable_constant_sum_payloaded(db: &mut Db, id: StructId) -> bool {
 /// Whether an ELEMENT of a candidate static compound is per-node-markable (see
 /// [`is_markable_constant_compound`]): a constant MACHINE-int (`Ty::Int`) or `Bool`/`Unit` scalar (boxes to
 /// ONE markable heap node via `box-int`/`box-bool` — `Unit` is the inline `IMM_UNIT` sentinel, already
-/// rc-free), a constant `Bytes`/`String` leaf, or a NESTED markable `Tuple`/`Record`.
+/// rc-free), a constant `Bytes`/`String` leaf, or a NESTED markable `Tuple`/`Record`/`SumNew`/`ListNew`/
+/// `MapNew`/`SetOf` (recursed via the collection predicates — PR #4989/#4994; the root `mark-immortal-DEEP`
+/// covers the whole nested tree).
 ///
 /// The `Ty::Int` guard on `ConstInt` is LOAD-BEARING: `(BigInt.of 10)` folds to a `Core::ConstInt` typed
 /// `Ty::BigInt`, but a BigInt const materializes as a `bigint-of-*` HEAP LEAF (not a `box-int` node), which
 /// the compound builder's scalar path (`box_op` → `None` for a handle) would leave UNMARKED → a census leak
 /// (a real bug caught by `06-numeric-model` "a tuple key with an ARITH-built BigInt leaf": expected 0 got 1).
-/// So a BigInt/Rational-typed const (and `ConstFloat`/`ConstChar`, a runtime value, a `ListNew`, a map) is
-/// NOT markable — the compound declines and builds inline, per-eval, as before (a conservative first slice).
+/// So a BigInt/Rational-typed const (and `ConstFloat`/`ConstChar`, or a runtime value) is NOT markable — the
+/// compound declines and builds inline, per-eval, as before.
 fn is_markable_constant_elem(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::ConstBool(_) | Core::Unit => true,
