@@ -6394,16 +6394,63 @@ fn encode_ast_to_arenas(
         }
         Some(b.atom_leaf(crate::ast::Leaf::Bytes(raw)))
     } else if disc == d.list {
-        // A list payload is a persistent RRB vector (`vec-*`, NOT `arr-*`); each element is itself an Ast.
+        // A generic name-headed (or empty) list payload is a persistent RRB vector (`vec-*`, NOT `arr-*`);
+        // each element is itself an Ast. Stays `Ast.List` (no ctor head) — the inverse of decode's fall-through.
         let n = op_vec_len(payload);
         let mut children = Vec::with_capacity(n as usize);
         for i in 0..n {
             children.push(encode_ast_to_arenas(op_vec_get(payload, i), d, b)?);
         }
         Some(b.list(children))
+    } else if disc == d.list_ctor {
+        // M2 (OPTION B): a reflected first-class compound-ctor value. Its payload is a `(List Ast)` RRB vector
+        // of the reflected children (for Record/Map, those children are themselves `FieldPair` Ast values);
+        // emit head-first via `Builder::compound`, whose head is the ctor LEAF KIND — byte-identical to the
+        // compile-time `encode_ast_value` (both go through the shared cadenza-ast `Builder`) and the exact
+        // inverse of `decode_arenas_to_ast`'s ctor-head arm.
+        let children = encode_ast_ctor_children(payload, d, b)?;
+        Some(b.compound(crate::ast::CompoundCtor::List, &children))
+    } else if disc == d.tuple_ctor {
+        let children = encode_ast_ctor_children(payload, d, b)?;
+        Some(b.compound(crate::ast::CompoundCtor::Tuple, &children))
+    } else if disc == d.record_ctor {
+        let children = encode_ast_ctor_children(payload, d, b)?;
+        Some(b.compound(crate::ast::CompoundCtor::Record, &children))
+    } else if disc == d.map_ctor {
+        let children = encode_ast_ctor_children(payload, d, b)?;
+        Some(b.compound(crate::ast::CompoundCtor::Map, &children))
+    } else if disc == d.set_ctor {
+        let children = encode_ast_ctor_children(payload, d, b)?;
+        Some(b.compound(crate::ast::CompoundCtor::Set, &children))
+    } else if disc == d.field_pair {
+        // FieldPair / Member payload is a `(Tuple Ast Ast)` = an `arr` of exactly two reflected children
+        // (key,value for FieldPair; obj,key for Member).
+        let k = encode_ast_to_arenas(op_arr_get(payload, 0), d, b)?;
+        let val = encode_ast_to_arenas(op_arr_get(payload, 1), d, b)?;
+        Some(b.field_pair(k, val))
+    } else if disc == d.member {
+        let obj = encode_ast_to_arenas(op_arr_get(payload, 0), d, b)?;
+        let key = encode_ast_to_arenas(op_arr_get(payload, 1), d, b)?;
+        Some(b.member(obj, key))
     } else {
         None
     }
+}
+
+/// Encode the `(List Ast)` RRB-vector payload of a reflected compound-ctor value into the arena children
+/// (each element recursively encoded), collected into a `Vec` so the mutable `Builder` borrow is released
+/// before the caller's `Builder::compound` reborrows it. `None` propagates any child's encode failure.
+fn encode_ast_ctor_children(
+    payload: Handle,
+    d: &AstEncDiscs,
+    b: &mut crate::ast::Builder,
+) -> Option<Vec<crate::ast::StructId>> {
+    let n = op_vec_len(payload);
+    let mut children = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        children.push(encode_ast_to_arenas(op_vec_get(payload, i), d, b)?);
+    }
+    Some(children)
 }
 
 /// `ast-encode(handle, discs)` (heap op 93) — the runtime half of the compiler's `Ast.encode`: serialize a
@@ -21065,6 +21112,110 @@ mod tests {
         op_drop(decoded);
         op_drop(enc2);
         op_drop(junk);
+        op_drop(discs);
+    }
+
+    /// M2 (OPTION B) `ast-encode`/`ast-decode` over the 7 first-class compound-ctor reflected forms
+    /// (ListCtor/TupleCtor/RecordCtor/MapCtor/SetCtor + FieldPair/Member, discs 9–15). Two contracts:
+    /// (1) the runtime op93 encode of a reflected ctor value is byte-identical to the shared cadenza-ast
+    /// `Builder`+`codec::encode` path — the compile-time `Ast.encode` fold's form, via the SAME
+    /// `compound`/`field_pair`/`member` emit primitives (`b.compound` heads with the ctor LEAF KIND, not a
+    /// Name/Str head); (2) it round-trips through op94 decode (`encode(decode(encode v)) == encode(v)`,
+    /// decoded ≠ NULL), proving `decode_arenas_to_ast`'s ctor arm is the exact inverse. BEFORE the encode
+    /// ctor arms landed, op93 returned EMPTY on any ctor disc (silent mis-encode + a decode/encode asymmetry
+    /// vs the compile-time fold) — this pins the symmetry closed.
+    #[test]
+    fn ast_encode_decode_round_trips_compound_ctor_forms() {
+        reset();
+        let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        // disc positions: int=0 bool=2 str=3 name=4; list_ctor=9 tuple_ctor=10 record_ctor=11 map_ctor=12
+        // set_ctor=13 field_pair=14 member=15.
+        let int = |n: i64| op_sum_new(0, op_bigint_of_i64(n));
+        let name = |s: &str| op_sum_new(4, op_str_new(s.to_string()));
+        let strv = |s: &str| op_sum_new(3, op_str_new(s.to_string()));
+        // FieldPair/Member payload = a 2-elem `arr` (Tuple Ast Ast).
+        let pair = |disc: u32, a: Handle, c: Handle| {
+            let t = op_arr_alloc(2);
+            op_arr_set(t, 0, a);
+            op_arr_set(t, 1, c);
+            op_sum_new(disc, t)
+        };
+        // Collection payload = a `(List Ast)` RRB vector.
+        let vecof = |elems: &[Handle]| {
+            let mut v = op_vec_empty();
+            for &e in elems {
+                v = op_vec_push(v, e);
+            }
+            v
+        };
+
+        // root = TupleCtor[ ListCtor[1,2], RecordCtor[a=7, b=true], MapCtor[3="x"], SetCtor[5,9], Member(obj,key) ]
+        let listc = op_sum_new(9, vecof(&[int(1), int(2)]));
+        let rec = op_sum_new(
+            11,
+            vecof(&[pair(14, name("a"), int(7)), pair(14, name("b"), op_sum_new(2, op_box_bool(true)))]),
+        );
+        let mp = op_sum_new(12, vecof(&[pair(14, int(3), strv("x"))]));
+        let setc = op_sum_new(13, vecof(&[int(5), int(9)]));
+        let mem = pair(15, name("obj"), name("key"));
+        let root = op_sum_new(10, vecof(&[listc, rec, mp, setc, mem]));
+
+        let enc1 = op_ast_encode(root, discs);
+        let enc1_bytes = bytes_to_vec(enc1);
+        assert!(
+            !enc1_bytes.is_empty(),
+            "op93 must encode a compound-ctor Ast (was EMPTY before the ctor encode arms)"
+        );
+
+        // (1) byte-identity with the shared Builder+codec path (post-order emit matches the heap walk).
+        let idec = |n: i64| crate::ast::Leaf::Int {
+            value: crate::ast::IntValue::from_i64(n),
+            radix: crate::ast::Radix::Dec,
+        };
+        use crate::ast::CompoundCtor as C;
+        let mut b = crate::ast::Builder::new();
+        let l1 = b.atom_leaf(idec(1));
+        let l2 = b.atom_leaf(idec(2));
+        let listc_b = b.compound(C::List, &[l1, l2]);
+        let na = b.atom_leaf(crate::ast::Leaf::Name("a".into()));
+        let v7 = b.atom_leaf(idec(7));
+        let fpa = b.field_pair(na, v7);
+        let nb = b.atom_leaf(crate::ast::Leaf::Name("b".into()));
+        let vt = b.atom_leaf(crate::ast::Leaf::Bool(true));
+        let fpb = b.field_pair(nb, vt);
+        let rec_b = b.compound(C::Record, &[fpa, fpb]);
+        let k3 = b.atom_leaf(idec(3));
+        let sx = b.atom_leaf(crate::ast::Leaf::Str("x".into()));
+        let fpm = b.field_pair(k3, sx);
+        let mp_b = b.compound(C::Map, &[fpm]);
+        let s5 = b.atom_leaf(idec(5));
+        let s9 = b.atom_leaf(idec(9));
+        let setc_b = b.compound(C::Set, &[s5, s9]);
+        let mobj = b.atom_leaf(crate::ast::Leaf::Name("obj".into()));
+        let mkey = b.atom_leaf(crate::ast::Leaf::Name("key".into()));
+        let mem_b = b.member(mobj, mkey);
+        let root_b = b.compound(C::Tuple, &[listc_b, rec_b, mp_b, setc_b, mem_b]);
+        let want_bytes = crate::codec::encode(&b.finish(root_b));
+        assert_eq!(
+            enc1_bytes, want_bytes,
+            "runtime op93 encode of the compound-ctor Ast must equal the shared Builder+codec form \
+             (the compile-time Ast.encode fold) — head-first ctor leaves, byte-for-byte"
+        );
+
+        // (2) round-trips through op94 decode.
+        let decoded = op_ast_decode(enc1, discs);
+        assert_ne!(decoded, Handle::NULL, "a compound-ctor cdzast document decodes to an Ast, not NULL");
+        let enc2 = op_ast_encode(decoded, discs);
+        assert_eq!(
+            bytes_to_vec(enc2),
+            enc1_bytes,
+            "encode(decode(encode v)) == encode(v) — decode rebuilt the same compound-ctor Ast"
+        );
+
+        op_drop(root);
+        op_drop(enc1);
+        op_drop(decoded);
+        op_drop(enc2);
         op_drop(discs);
     }
 
