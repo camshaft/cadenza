@@ -16257,8 +16257,8 @@
            `((. Set of) (list 5))`. Pins that the empty set crosses the boundary as its canonical empty
            value form from a parameterized export.")
   (input  (do (def (main (: n Int64)) (if (> n 0) (Set.of (list n)) (Set.of (list)))) (export main)))
-  (call   main (: 0 Int64)) (output (: ((. Set of) (list)) (Set Int64)))
-  (call   main (: 5 Int64)) (output (: ((. Set of) (list 5)) (Set Int64)))
+  (call   main (: 0 Int64)) (output (: #set() (Set Int64)))
+  (call   main (: 5 Int64)) (output (: #set(5) (Set Int64)))
   (live-objects 0))
 
 ; The parameterized returns above are FLAT collections (a list/map/set of scalars). A NESTED collection
