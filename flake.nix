@@ -3119,6 +3119,7 @@
               cdz-run FILE.wasm   run a component
               cdz-compile …       the standalone compiler (what cdz delegates to)
               roundtrip [files]   corpus round-trip (sexpr exact-repro + ml fixed-point)
+              lint-mandates       the mandate lint (no-integration-tests etc.; replaces cargo xtask lint-mandates)
               fast-gate [crates]  fast touched-crate gate (inner loop)
               gate                full local-gate battery (convenience)
               cdz-help            print this list
@@ -3131,6 +3132,7 @@
           (cdzShellWrap "cdz-run" "cdz-run")
           (cdzShellWrap "cdz-compile" "cdz-compile")
           (cdzShellWrap "roundtrip" "roundtrip")
+          (cdzShellWrap "lint-mandates" "lint-mandates")
           (cdzShellWrap "gate" "gate")
           (cdzShellWrap "fast-gate" "fast-gate")
           cdzShellHelp
