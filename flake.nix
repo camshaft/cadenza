@@ -2034,24 +2034,35 @@
             })
             idxs;
 
-        # AGGREGATOR: collect a set of per-case records, DROP the optimal/skip markers, sort the `(gap …)`
-        # records by o3-delta DESC, wrap in the top-level `(wasm-opt-gaps …)` form. Pure reduction (no wasm-opt)
-        # so it re-runs only when a per-case report changed. `from-trunk` rides the flake rev — only in the
-        # aggregator (the per-case CA reports stay rev-independent, so they cache across commits).
+        # AGGREGATOR: collect a set of per-case records, TALLY them by kind (for the self-describing summary),
+        # DROP the optimal/skip markers, sort the `(gap …)` records by o3-delta DESC, wrap in the top-level
+        # `(wasm-opt-gaps …)` form. Pure reduction (no wasm-opt) so it re-runs only when a per-case report
+        # changed. `from-trunk` rides the flake rev — only in the aggregator (the per-case CA reports stay
+        # rev-independent, so they cache across commits). The `(summary …)` header makes "near-optimal %" =
+        # optimal/(optimal+gaps) computable from the report alone (v-wasm-opt request) — the counts are tallied
+        # by each report's leading token (`(gap` / `(optimal` / `; skip`) BEFORE the gap-only records are kept.
         mkOptGapAgg = { drvName, reports }:
           pkgs.runCommand drvName { } ''
             set -euo pipefail
-            idx=$(mktemp)
+            idx=$(mktemp); kinds=$(mktemp)
             ${pkgs.lib.concatMapStringsSep "\n" (r: ''
-              if head -c4 ${r} | grep -q '(gap'; then
+              p=$(head -c4 ${r} 2>/dev/null || true)
+              if [ "$p" = "(gap" ]; then
+                echo gap >> "$kinds"
                 d=$(grep -oE '\(delta \(o3 -?[0-9]+\)' ${r} | grep -oE -- '-?[0-9]+' | head -1)
                 printf '%s\t%s\n' "''${d:-0}" "${r}" >> "$idx"
-              fi
+              elif [ "$p" = "(opt" ]; then echo optimal >> "$kinds"
+              else echo skipped >> "$kinds"; fi
             '') reports}
+            gaps=$(grep -cx gap "$kinds" || true);        gaps=''${gaps:-0}
+            optimal=$(grep -cx optimal "$kinds" || true);  optimal=''${optimal:-0}
+            skipped=$(grep -cx skipped "$kinds" || true);  skipped=''${skipped:-0}
+            measured=$((optimal + gaps)); total=$((measured + skipped))
             {
               echo "(wasm-opt-gaps"
               echo "  (binaryen \"${pkgs.binaryen.version}\")"
               echo "  (from-trunk \"${self.shortRev or "dev"}\")"
+              echo "  (summary (total-cases $total) (measured $measured) (optimal $optimal) (gaps $gaps) (skipped $skipped))"
               if [ -s "$idx" ]; then
                 sort -k1,1 -rn "$idx" | cut -f2 | while IFS= read -r r; do sed 's/^/  /' "$r"; echo; done
               fi
