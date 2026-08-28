@@ -1761,6 +1761,13 @@
           export HOME="$TMPDIR/home"; mkdir -p "$HOME"
           export CDZ_STORE="${componentStore}"
           export CDZ_COMPILE_BIN="${cdzCompile}/bin/cdz-compile"
+          # CDZ_RUN_BIN (v-cdz-crate-split, operator wasmtime-out-of-the-compiler): PRE-WIRED INERT. Today the
+          # --no-default-features seedCompiler runs `cdz run` (the descriptor() exec) IN-PROCESS and ignores
+          # CDZ_RUN_BIN, so this is a NO-OP; when their cdz-side forward lands (cdz run -> spawn external
+          # cdz-run, like cdz compile -> cdz-compile), this env makes the run reach the cdzRun binary WITHOUT
+          # a flake-day. Points at cdzRun, the same content-addressed run binary mkCorpusExec uses. Resolution
+          # is $CDZ_RUN_BIN -> sibling -> $PATH (locate_plugin), so the explicit path wins — no PATH change.
+          export CDZ_RUN_BIN="${cdzRun}/bin/cdz-run"
           # Stage the lib under its CLEAN name: `cdz compile` derives a package-file's module name from the
           # input's FILE STEM, and the import is `from "contract-id"`, so the input must be named
           # `contract-id.cdz`. The raw store path is `<hash>-contract-id.cdz` (stem `<hash>-contract-id`) →
@@ -4555,6 +4562,10 @@
               text = ''
                 export CDZ_COMPILE_BIN="''${CDZ_COMPILE_BIN:-${cdzCompile}/bin/cdz-compile}"
                 export CDZ_STORE="''${CDZ_STORE:-${componentStore}}"
+                # CDZ_RUN_BIN: PRE-WIRED INERT (v-cdz-crate-split) — today `cdz run` runs in-process + ignores
+                # it (no-op); becomes live (delegate `cdz run` -> cdz-run binary) when their forward lands, no
+                # flake-day. Caller override honored via :- , exactly like CDZ_COMPILE_BIN/CDZ_STORE above.
+                export CDZ_RUN_BIN="''${CDZ_RUN_BIN:-${cdzRun}/bin/cdz-run}"
                 exec "${seedCompiler}/bin/cdz" "$@"
               '';
             };
