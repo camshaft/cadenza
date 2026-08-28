@@ -9162,6 +9162,113 @@ pub(crate) fn variant_payload_ty_at(db: &mut Db, sum: &Ty, disc: u32) -> Option<
 /// the loop top and never reaches the post-match drop) — that stays at the call site because it needs the
 /// `MatchSum` decision tree, and it is NOT the same as a `TailPos::Tail(Some(_))` self-loop test (a
 /// `Tail(Some)` match whose arm is a constructor still has a valid reclaim point).
+/// (FIND3, v-mem-safety fence — the SCRUTINEE-ESCAPE analog of scalar-extracted-not-escaped) Whether the
+/// matched `scrutinee` is DEAD AFTER DESTRUCTURE — the WHOLE scrutinee value (and, when it is a Param/
+/// LocalRef, its binder) does NOT appear in ANY arm body EXCEPT as the destructured value (a `SumPayload`/
+/// `Proj`/`SumExpect` read OFF it). A DIRECT re-reference — `(f st)`, `(tuple st …)`, `return st` — makes it
+/// LIVE AFTER the match, so the shell-deep-drop would free a still-live value → UAF. STRUCTURAL: any
+/// non-destructuring reference counts.
+///
+/// ⚠️ RESUME-ESCAPE (v-effects #048389): a handler-arm `(resume -1 st)` re-reference is INVISIBLE here —
+/// by select.rs the resume is REDUCED/threaded, so `st` is not a syntactic arm-body ref. TWO guards cover
+/// it: (1) the handler THREADED-STATE scrutinee is classified BORROWED, so the caller's `Owned` gate excludes
+/// it (rrb1); (2) a `CallClosure`/`HostCall` in the arm (an opaque consumer that could capture the scrutinee
+/// invisibly) is conservatively treated as not-dead. A genuinely OWNED-COMPUTED scrutinee (a fresh recursive
+/// `Call` result — the FIND3 target) is not a threaded-state and cannot resume-escape. (Tighter pre-reduction
+/// signal = v-effects' #4966 collect_tail_resume_values, deferred unless the conservative floor over-excludes.)
+fn scrutinee_dead_after_destructure(
+    db: &mut Db,
+    scrutinee: StructId,
+    root: &crate::core::SumCont,
+) -> bool {
+    let binder = match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+        _ => None,
+    };
+    !sum_cont_refs_scrutinee(db, root, scrutinee, binder)
+}
+
+fn sum_cont_refs_scrutinee(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    scrutinee: StructId,
+    binder: Option<StructId>,
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => expr_refs_scrutinee(db, *body, scrutinee, binder),
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            expr_refs_scrutinee(db, *cond, scrutinee, binder)
+                || expr_refs_scrutinee(db, *body, scrutinee, binder)
+                || sum_cont_refs_scrutinee(db, els, scrutinee, binder)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_refs_scrutinee(db, then_, scrutinee, binder)
+                || sum_cont_refs_scrutinee(db, els, scrutinee, binder)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_cont_refs_scrutinee(db, &a.cont, scrutinee, binder)),
+    }
+}
+
+/// Whether the subtree at `id` references the scrutinee (its node id, or its binder via [`is_ref_to`])
+/// OUTSIDE a destructuring read. A `SumPayload`/`Proj`/`SumExpect` reading OFF the scrutinee is the match's
+/// own extraction (allowed) — its scrutinee/operand slot is SKIPPED; every OTHER position that references
+/// the scrutinee is an escape. A `CallClosure`/`HostCall` is conservatively an escape (opaque capture).
+fn expr_refs_scrutinee(
+    db: &mut Db,
+    id: StructId,
+    scrutinee: StructId,
+    binder: Option<StructId>,
+) -> bool {
+    let mut seen = HashSet::new();
+    expr_refs_scrutinee_seen(db, id, scrutinee, binder, &mut seen)
+}
+
+fn expr_refs_scrutinee_seen(
+    db: &mut Db,
+    id: StructId,
+    scrutinee: StructId,
+    binder: Option<StructId>,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    // CONSERVATIVE OPAQUE-CAPTURE BACKSTOP: a `CallClosure`/`HostCall` env is invisible to this walk and
+    // could capture the scrutinee (a reduced resume-continuation is one) → treat as not-dead-after.
+    if matches!(
+        core_of(db, id),
+        Core::CallClosure { .. } | Core::HostCall { .. }
+    ) {
+        return true;
+    }
+    let is_scrut_ref =
+        |db: &mut Db, x: StructId| x == scrutinee || binder.is_some_and(|b| is_ref_to(db, x, b));
+    match core_of(db, id) {
+        // A destructuring read OFF the scrutinee is the match's own extraction — SKIP its scrutinee/operand
+        // slot (allowed), but still descend the OTHER children (an index/path could reference the scrutinee).
+        Core::SumPayload { scrutinee: s, .. }
+        | Core::SumExpect { scrutinee: s, .. }
+        | Core::Proj { operand: s, .. }
+            if is_scrut_ref(db, s) =>
+        {
+            core_child_ids(db, id)
+                .into_iter()
+                .filter(|&c| c != s)
+                .any(|c| expr_refs_scrutinee_seen(db, c, scrutinee, binder, seen))
+        }
+        _ => {
+            if is_scrut_ref(db, id) {
+                return true;
+            }
+            core_child_ids(db, id)
+                .into_iter()
+                .any(|c| expr_refs_scrutinee_seen(db, c, scrutinee, binder, seen))
+        }
+    }
+}
+
 /// Whether ANY arm body (or guard) in a `MatchSum` decision tree materializes a heap sub-value of the
 /// scrutinee OUT as a live handle — the sum analogue of the per-arm `arm_borrows_heap_subvalue` check
 /// `list_shell_reclaim_slot` runs over a `MatchList`'s flat arms. Walks the `SumCont`: a `Leaf`/`Guarded`
@@ -9499,6 +9606,24 @@ fn sum_shell_reclaim_payload_ok(
         // an opaque Call/CallClosure (incl. a reduced resume-thread — resume is invisible in Core) is NOT a
         // builder child, so it declines (leak beats UAF).
         && (sum_has_only_scalar_payloads(db, scrut_ty)
+            // (FIND3, v-mem-safety-confirmed) ALL-SCALAR PRODUCT scrutinee (a Tuple/Record of all-scalar
+            // fields): every field is EXTRACTED via get-int/get-bool (COPIED, not a cell alias), so the arm
+            // CANNOT FBIP-reuse the old product's cells → the shell-deep-drop is safe EVEN WHEN the arm builds
+            // a compound (the `!arm_constructs_compound` FBIP suppression is spurious here). The Tuple/product
+            // analog of the all-scalar-payload floor + #4939. Fixes the arg-scaling group (fib fast-doubling,
+            // Catalan/Pascal/look-and-say/pairwise-swap — recursive builds' intermediate scalar-tuples).
+            // GATED (both load-bearing, v-mem-safety): OWNED scrutinee (a fresh recursive-`Call` result — NEVER
+            // a BORROWED handler threaded-state, which can resume-escape invisibly; rrb1) AND DEAD-AFTER-
+            // DESTRUCTURE (the whole scrutinee not re-referenced/escaping in any arm — rrb1's `(resume -1 st)`).
+            || (ty_is_all_scalar_product(db, scrut_ty)
+                // The scrutinee is a fresh recursive-`Call` result (an Owned COMPUTED value consumed by this
+                // match) — NEVER a handler THREADED-STATE (an If/materialize/Param that a `resume` re-reads
+                // invisibly, rrb1). A `Core::Call` result is inlined once as the match scrutinee and cannot be
+                // resume-threaded, so it IS dead after destructure — the sound proxy for v-effects' "exclude
+                // any resuming arm" that is decidable at select.rs (the resume-escape being pre-reduction).
+                // Keeps the arg-scaling group (fib/Catalan/Pascal recursive-tuple results); excludes rrb1.
+                && matches!(core_of(db, scrutinee), Core::Call { .. })
+                && scrutinee_dead_after_destructure(db, scrutinee, root))
             || (!sum_cont_arm_borrows_heap_subvalue(db, root)
                 && !sum_cont_arm_constructs_compound(db, root))
             || sum_cont_extraction_consume_allowlisted(db, root, scrutinee))
@@ -9617,6 +9742,28 @@ fn list_arms_rematch_scrutinee(
 /// qualifies (the reported List.at/Map.lookup leak), a compound-payload sum does NOT (left un-dropped — a
 /// residual leak there, never a double-free). This mirrors the SumExpect gate's scalar-payload arm applied
 /// to EVERY variant. Returns false for a non-sum or an unresolvable payload (reject-don't-miscompile).
+/// (FIND3) Whether `ty` is a PRODUCT (Tuple/Record) whose fields are ALL SCALAR (Int/Bool/Float). Such a
+/// product is destructured field-by-field into COPIED immediates (get-int/get-bool) — no field is a heap
+/// handle that could alias into an arm's rebuilt compound (the FBIP-reuse hazard `sum_cont_arm_constructs_
+/// compound` guards). So its shell is safely deep-droppable after a scalar-extracting match EVEN WHEN the arm
+/// builds a compound. The product analog of [`sum_has_only_scalar_payloads`] (which bails on non-`Sum` types,
+/// so a bare Tuple/Record scrutinee never matched it — fib fast-doubling's `(Tuple Int Int)`). Conservative:
+/// ANY heap field → false (a heap field could alias the arm's compound = v-mem-safety's heap-extracted
+/// must-hold). ONE level (a nested-product field is heap → false). Caller ANDs Owned + dead-after-destructure.
+fn ty_is_all_scalar_product(db: &mut Db, ty: &Ty) -> bool {
+    fn is_scalar(t: &Ty) -> bool {
+        matches!(t.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_))
+    }
+    match ty.strip_nominal() {
+        Ty::Tuple(elems) => !elems.is_empty() && elems.iter().all(is_scalar),
+        Ty::Record(fields) => !fields.is_empty() && fields.values().all(is_scalar),
+        _ => {
+            let _ = db;
+            false
+        }
+    }
+}
+
 fn sum_has_only_scalar_payloads(db: &mut Db, sum: &Ty) -> bool {
     let stripped = sum.strip_nominal().clone();
     let Ty::Sum { decl, .. } = &stripped else {

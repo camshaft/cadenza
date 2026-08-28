@@ -3589,7 +3589,7 @@
               (export main)))
   (call   main)
   (output (: 1 Int64))
-  (live-objects known-leak 19))
+  (live-objects 0))
 
 ; --- A recursive Bool-returning function used as a condition, in BOTH branch orders --------------
 ; A recursive predicate — "all elements from i satisfy P" — is a byte/element loop whose recursive
@@ -9648,7 +9648,7 @@
               (def (f (: n Int64)) (if (= n 0) (Mk 1 1) (match (f (+ n 1)) ((Mk a _) (Mk a a)))))
               (def (main) (match (f -60) ((Mk x _) x))) (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 59))
+  (live-objects 0))
 
 (case "ftd1 many same-signature functions dispatched through a selector are value-exact (the #4754 functype-dedup witness)"
   (doc    "#4754 collapses identical core functypes for closure-free programs. Five (Int64)->Int64 defs
