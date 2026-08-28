@@ -3231,6 +3231,7 @@ pass	a pure one-hole match-scrutinee fold selects a non-wildcard arm by the resu
 pass	a pure shared subexpression computes the same value however the backend optimizes it
 pass	a purely-logical composed proof over a quantified proposition: DISCH then MP
 pass	a push-loop tuple-list accumulator infers its tuple element component types
+pass	a qualified (. Ast Ctor) pattern binds each variant's payload at its own type
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a qualified nullary variant pattern resolves in a nested match on the same scrutinee
 pass	a quantity annotation at a same-unit out-of-range magnitude is rejected
@@ -3527,6 +3528,8 @@ pass	a repeated do-local declaration shadows the earlier one for what follows
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
 pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator
+pass	a repeated same-index List.at shared by CSE leaves the list live for a later length read
+pass	a repeated same-key Map.lookup shared by CSE leaves the map live for a later size read
 pass	a repeated trapping divide in a short-circuited and's right operand stays shielded (CSE must not hoist it past the connective)
 pass	a repeated trapping divide in a short-circuited or's right operand stays shielded (CSE must not hoist it past the connective)
 pass	a repeated trapping division in a guarded arm stays shielded — a CSE class must not hoist past the branch
@@ -6102,6 +6105,7 @@ pass	eval of an Ast.Float NaN node executes to the NaN value — it does NOT con
 pass	eval of an Ast.List with a non-operator head is the ordinary application type error
 pass	eval of an exported smart constructor still works — the forge fix does not over-reject
 pass	eval on malformed AST traps
+pass	every Ast variant deconstructs to its own arm through a qualified (. Ast Ctor) pattern
 pass	every arm of a three-variant enum match is exercised by RUNTIME calls
 pass	every not-a-number value is equal to every not-a-number value
 pass	ex1 a draw SEEDS a mid-body handler install for a different effect — the install expression itself performs
@@ -8490,5 +8494,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a repeated same-key Map.lookup shared by CSE leaves the map live for a later size read
-pass	a repeated same-index List.at shared by CSE leaves the list live for a later length read
