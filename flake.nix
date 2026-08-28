@@ -3174,13 +3174,13 @@
         # LIST (dir/surfaces/graded/expectKind/peers) is read at eval. The 7 deferred test-mode cases (no
         # program) are skipped in v1 (they need the @test-export driver — a v2 shred kind).
         guideManifest = builtins.fromJSON (builtins.readFile ./guide/examples-manifest.json);
-        # KNOWN-FAILING cases skipped in v1 (matches the serial check:examples blocklist — that check is
-        # "409 ok / 1 failed" and stays green in localGate BECAUSE it blocklists this one). dir 0239
-        # PlatformExecution is the multi-file event-reducer bug (breaker's K1 record-fold-consume UAF
-        # residual, v-rust-backend owns); its tool-RESULT fold is dropped so the reducer renders "done:done:"
-        # not the expected trace. REMOVE from this skip-set when v-rb's fix lands (that is the guide-green
-        # re-verify trigger). A hardcoded single skip until v-guide-infra exports the real blocklist as data.
-        guideKnownFailingDirs = [ "0239-platformexecution" ];
+        # SKIP-SET = the manifest's own `blockedDirs` (v-guide-infra #5113) — the serial check:examples
+        # known-blocked list exported AS DATA, so the sharded matrix's pass-set == the serial check's by
+        # construction + self-heals when a block is added/removed (no hardcoding). Currently EMPTY (dir 0239
+        # PlatformExecution's reducer bug was FIXED by #5098 record-field-name projection → the serial check
+        # is 410/0), so the matrix skips nothing → fully green. (The 7 deferred test-mode cases carry no
+        # program and are filtered separately.)
+        guideKnownFailingDirs = guideManifest.blockedDirs or [ ];
         guideCaseList = builtins.filter
           (c: !(c.deferred or false) && !(builtins.elem c.dir guideKnownFailingDirs))
           guideManifest.cases;
