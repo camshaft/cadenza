@@ -50,6 +50,7 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
 | scalar-param → spilled compound (record) result | export | export | `needs_result_wrapper` (SpillRecord retptr) | 56, sp1–sp7 |
 | payloadless enum RESULT as a typed WIT `enum` under a DECLARED world | export | export | `record_result_lower` enum arm (Passthrough i32) + `note` re-export | 60 (WIT-dump: `enum t0`) |
 | variant-with-payload RESULT as a typed WIT `variant` under a DECLARED world | export | export | `record_result_lower` SpillRecord + `canon_write_of` variant arm | 61 (WIT-dump: `variant t0 { continue, close(s64) }`) |
+| TUPLE RESULT (bare, + as a variant/record payload) as a typed WIT `tuple` under a DECLARED world | export | export | `canon_write_of` Ty::Tuple arm (positional, reuses `CanonWrite::Record`) | 62, 63 (WIT-dump: `tuple<s64,s64>` / `two(tuple<s64,s64>)`) |
 
 **Value ROUND-TRIP only (NOT a typed-WIT-export verification):** SHAPE 58/59 pin that a payloadless
 enum value round-trips through the guest + the generic `cadenza:run/run` encode envelope. They do
@@ -136,6 +137,10 @@ other host-RESULT shapes whose only running SHAPE is the reducer-export form.
 - variant-with-payload RESULT export under a declared world — already WIRED (SpillRecord +
   `canon_write_of` variant arm); now VERIFIED (SHAPE 61, WIT-dump `variant t0 { continue, close(s64) }`).
   No emit change — a previously-untested cell now pinned.
+- TUPLE RESULT export (bare, and as a variant/record payload) under a declared world — `canon_write_of`
+  gained a `Ty::Tuple` arm (positional twin of the Record arm, reuses `CanonWrite::Record`); crosses as
+  WIT `tuple<…>` not `u32` (SHAPE 62 bare tuple result, SHAPE 63 variant-with-tuple-payload). This also
+  unblocks a variant/record whose payload/field is a tuple (the variant/record arm recurses here).
 - Remaining enum/variant export slice: the NO-WORLD SYNTHESIZED enum/variant export (guest annotates a
   sum result with no world clause) — the enum result diverts to the resource-escape / provider path
   before `try_bare_entry`, so it falls to run/encode; a proper multi-path trace is needed (deferred).
