@@ -2067,7 +2067,10 @@ impl Arenas {
     }
 }
 
-#[cfg(test)]
+// `all(test, feature = "std")`: the libtest harness needs std, and these tests use the std-gated
+// `IntValue<->BigInt` bridge — so they only ever ran under std. Making it explicit stops cdz-runtime's
+// no_std `#[path]` include (mechanism B) from dragging this test module into its own test build.
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use num_bigint::BigInt;

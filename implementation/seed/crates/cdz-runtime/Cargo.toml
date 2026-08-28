@@ -30,6 +30,14 @@ crate-type = ["cdylib"]
 # on to verify the compiler's Perceus dup/drop discipline (assert live-objects() == 0 after a run).
 debug-counters = []
 
+[lints.rust]
+# cdz-runtime `#[path]`-includes cadenza-ast's source (the shared codec core, mechanism B). Those files
+# carry `#[cfg(feature = "std")]` gates for cadenza-ast's OWN std build, but cdz-runtime declares no `std`
+# feature (it only ever compiles the no_std core), so check-cfg would flag `feature = "std"` as an
+# unexpected cfg value across the included spans. Declare it a KNOWN (never-enabled here) value so the
+# include stays warning-clean, without silencing genuinely-unknown cfgs.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("std"))'] }
+
 [dependencies]
 wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
 

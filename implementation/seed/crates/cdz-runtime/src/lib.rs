@@ -21048,7 +21048,7 @@ mod tests {
         let e_neg3 = b.atom_leaf(idec(-3));
         let e_bool = b.atom_leaf(crate::ast::Leaf::Bool(true));
         let e_str = b.atom_leaf(crate::ast::Leaf::Str("hi".into()));
-        let e_bytes = b.atom_leaf(crate::ast::Leaf::Bytes(alloc::vec![0, 255]));
+        let e_bytes = b.atom_leaf(crate::ast::Leaf::Bytes(alloc::vec![0, 255].into()));
         let e_char = b.atom_leaf(crate::ast::Leaf::Char('λ'));
         let e_sym = b.atom_leaf(crate::ast::Leaf::Sym("m".into()));
         let e_float = b.atom_leaf(crate::ast::Leaf::Float(
