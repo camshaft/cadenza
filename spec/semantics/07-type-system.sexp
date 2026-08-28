@@ -2595,3 +2595,25 @@
 (export main)))
   (call main (: 5 Int64))   (output (: 5 Int64))
   (call main (: 200 Int64)) (output (: 2000 Int64)))
+
+; ── let-binder annotation type-validation (migrated from rcdzc an_unknown_type_in_a_let_binder_annotation_is_rejected) ──
+; A `(let (((: x T) v)) …)` binder annotation `T` is VALIDATED (it was once silently accepted — an
+; unresolvable T "agreed" vacuously and typed x as Any). The reject half is backend-agnostic (compile-time),
+; so it lives here; the KNOWN-type-mismatch M63 coercion-fix assertion (a structured .fix) stays as a
+; corpus-inexpressible white-box pin in rcdzc.
+(case "an unknown type in a let-binder annotation is rejected"
+  (input (do (def (main) (let (((: x Nonesuch) 5)) x)) (export main)))
+  (error CDZ0101 (message "Nonesuch")))
+
+(case "an unknown type nested in a let-binder List annotation is rejected"
+  (input (do (def (main) (let (((: x (List Nonesuch)) (list 1))) x)) (export main)))
+  (error CDZ0101 (message "Nonesuch")))
+
+(case "a well-formed non-type in a let-binder annotation is rejected"
+  (input (do (def (main) (let (((: x 5) 3)) x)) (export main)))
+  (error CDZ0203))
+
+(case "a known-type let-binder annotation compiles and the binding reads back"
+  (input (do (def (main) (let (((: x Int64) 5)) x)) (export main)))
+  (call main)
+  (output (: 5 Int64)))
