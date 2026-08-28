@@ -2102,6 +2102,33 @@
             (export main)))
   (error  CDZ0216))
 
+(case "a function in a NATIVE SET LITERAL is rejected (CDZ0216 — the native-literal face must not bypass the prim-app check)"
+  (doc    "The NATIVE `#set` LITERAL face of the fn-set-element reject above. `(\"set\" (fn (x) (+ x 1)))` — the
+           first-class tagged set literal (ML `#(fn(x) => x + 1)`) — keys/hashes its elements exactly as
+           `Set.of` does, so a function element is CDZ0216 here too. This closed an M2 SOUNDNESS HOLE: the
+           key-hashability gate fired ONLY on set/map PRIM APPLICATIONS (`Set.of`/`Set.insert`/…), so the
+           s-expr `(Set.of (list (fn …)))` above correctly declined, but the native `#set` literal resolved
+           to `Resolved::Set` (never a prim app) and SAILED THROUGH — type-checking a set of functions (wasm
+           would invent a closure identity). Pre-M2 there was no native literal so the prim-only gate was
+           complete; the M2 printer's native literal reopened it. The fix runs the SAME element/key check on
+           the `Resolved::Set`/`Resolved::Map` literal nodes. A `#list` of functions stays legal (a list does
+           not hash its elements) — only the set/map literals are gated.")
+  (input  (do
+            (def (main) (Set.len ("set" (fn (x) (+ x 1)))))
+            (export main)))
+  (error  CDZ0216))
+
+(case "a function KEY in a NATIVE MAP LITERAL is rejected (CDZ0216 — the #map sibling of the native #set bypass)"
+  (doc    "The NATIVE `#map` LITERAL face: `(map ((fn (x) x) 1))` — a map literal whose sole entry is keyed by
+           a function — is CDZ0216, the same as `(Map.insert Map.empty f 1)`. Sibling of the native-`#set`
+           case above; both close the M2 native-literal bypass of the key-hashability gate (a native literal
+           resolves to `Resolved::Map`/`Set`, not a prim app, so the fault-walk must check the literal node
+           itself). The map VALUE axis is unconstrained (a fn value is legal); only the KEY is hashed.")
+  (input  (do
+            (def (main) (Map.len (map ((fn (x) x) 1))))
+            (export main)))
+  (error  CDZ0216))
+
 (case "a TUPLE containing a closure as a map key is rejected (CDZ0216 descends into compound keys)"
   (doc    "The compound-wrapped face of the fn-Map-KEY reject above: the function is not the key itself
            but a COMPONENT of a tuple key — `(Map.insert Map.empty (tuple 1 f) 42)`. Keyability is
