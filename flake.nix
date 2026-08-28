@@ -3160,6 +3160,146 @@
           echo "ok: guide-shred $dirs case dirs (count=$count emitted=$emitted deferred=$deferred)" > "$out"
         '';
 
+        # ── guide-examples PER-CASE matrix (mirrors corpus mkCorpusBuild/Exec, adapted to the guide grading
+        # model). Enumerate cases at EVAL from the COMMITTED guide/examples-manifest.json (v-guide-infra #5102,
+        # render-independent → byte-identical to a fresh shred manifest; NO IFD — the flake bans it). The
+        # program SOURCES + `expected` come from the cached `guideShred` output at BUILD time; only the case
+        # LIST (dir/surfaces/graded/expectKind/peers) is read at eval. The 7 deferred test-mode cases (no
+        # program) are skipped in v1 (they need the @test-export driver — a v2 shred kind).
+        guideManifest = builtins.fromJSON (builtins.readFile ./guide/examples-manifest.json);
+        # KNOWN-FAILING cases skipped in v1 (matches the serial check:examples blocklist — that check is
+        # "409 ok / 1 failed" and stays green in localGate BECAUSE it blocklists this one). dir 0239
+        # PlatformExecution is the multi-file event-reducer bug (breaker's K1 record-fold-consume UAF
+        # residual, v-rust-backend owns); its tool-RESULT fold is dropped so the reducer renders "done:done:"
+        # not the expected trace. REMOVE from this skip-set when v-rb's fix lands (that is the guide-green
+        # re-verify trigger). A hardcoded single skip until v-guide-infra exports the real blocklist as data.
+        guideKnownFailingDirs = [ "0239-platformexecution" ];
+        guideCaseList = builtins.filter
+          (c: !(c.deferred or false) && !(builtins.elem c.dir guideKnownFailingDirs))
+          guideManifest.cases;
+        # BUILD one (case, surface): convert program.<surface> → binary AST (the front-end `cdz convert`, pure
+        # syntax — cdz-compile is ast-only + cdz-wasm can't emit .ast + the guide's wrap/lower stays JS, so the
+        # shred emits SOURCE and the parse lives here), then compile → emit.wasm, capturing the outcome (a
+        # decline is NOT a derivation failure — the exec grades it). Multi-file: the peers (module-<name>.
+        # <surface>) convert to sibling module ASTs + `--entry`. Content-addressed so a re-emit of identical
+        # bytes cache-hits the exec. `seedCompiler/bin/cdz convert` is the same converter the harness runs use.
+        mkGuideBuild = { dir, surface, entryName, peers }:
+          pkgs.runCommand "guide-build-${dir}-${surface}"
+            {
+              nativeBuildInputs = [ seedCompiler cdzCompile ];
+              __contentAddressed = true;
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
+            } ''
+            set -euo pipefail
+            mkdir -p "$out"
+            case=${guideShred}/${dir}
+            cdz convert --from ${surface} --to binary "$case/program.${surface}" > program.ast
+            inputs=("ast:main=program.ast")
+            entry=()
+            ${pkgs.lib.concatMapStringsSep "\n" (p: ''
+              cdz convert --from ${p.surface} --to binary "$case/module-${p.name}.${p.surface}" > "module-${p.name}.ast"
+              inputs+=("ast:${p.name}=module-${p.name}.ast")
+              entry=(--entry ${entryName})
+            '') peers}
+            if cdz-compile "''${inputs[@]}" "''${entry[@]}" -t wasm -o "$out/emit.wasm" 2>"$out/compile.err"; then
+              printf '0' > "$out/compile.status"
+            else
+              printf '%s' "$?" > "$out/compile.status"
+            fi
+            # Forward the grade inputs so the exec depends ONLY on this build output (+ cdzRun): expect-kind
+            # (value|error) and, for a graded case, the expected rendered value.
+            cp "$case/expect-kind" "$out/expect-kind"
+            [ -e "$case/expected" ] && cp "$case/expected" "$out/expected" || true
+          '';
+        # EXEC one (case, surface) — grade against the guide model (compiler-free: cdzRun + the runtime store).
+        #   expect-kind=value : compile+run must succeed; if the case is graded, stdout must equal `expected`.
+        #   expect-kind=error : the example must DECLINE (compile failed) OR TRAP (run failed) — a clean run is
+        #                       a failure. (Guide errors are authored to not-compile-or-not-run, no baseline.)
+        mkGuideExec = { dir, surface, build }:
+          pkgs.runCommand "guide-exec-${dir}-${surface}"
+            {
+              nativeBuildInputs = [ cdzRun ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            export CDZ_STORE="${componentStore}"
+            status=$(cat ${build}/compile.status)
+            ek=$(cat ${build}/expect-kind)
+            if [ "$ek" = error ]; then
+              if [ "$status" != 0 ]; then
+                echo "ok: guide ${dir} (${surface}) — expected error, declined at compile"
+              elif cdz-run ${build}/emit.wasm >/dev/null 2>trap.err; then
+                echo "FAIL guide ${dir} (${surface}): expect-kind=error but compiled AND ran clean"; exit 1
+              else
+                echo "ok: guide ${dir} (${surface}) — expected error, trapped at run"
+              fi
+            else
+              if [ "$status" != 0 ]; then
+                echo "FAIL guide ${dir} (${surface}): expected a value but compile declined:"; cat ${build}/compile.err; exit 1
+              fi
+              got=$(cdz-run ${build}/emit.wasm 2>run.err) || { echo "FAIL guide ${dir} (${surface}): run trapped:"; cat run.err; exit 1; }
+              if [ -e ${build}/expected ]; then
+                want=$(cat ${build}/expected)
+                [ "$got" = "$want" ] || { echo "FAIL guide ${dir} (${surface}): value mismatch — got [$got] want [$want]"; exit 1; }
+                echo "ok: guide ${dir} (${surface}) — value [$got]"
+              else
+                echo "ok: guide ${dir} (${surface}) — compiled + ran clean (ungraded)"
+              fi
+            fi
+            echo ok > "$out"
+          '';
+        # one exec per (case, surface) — 399 cases carry both sexpr+ml, the multi-file case sexpr-only.
+        guideCaseChecks = builtins.listToAttrs (builtins.concatMap
+          (c: map
+            (surface: {
+              name = "${c.dir}-${surface}";
+              value = mkGuideExec {
+                inherit (c) dir;
+                inherit surface;
+                build = mkGuideBuild {
+                  inherit (c) dir;
+                  inherit surface;
+                  entryName = c.entryName or "main";
+                  peers = c.peers or [ ];
+                };
+              };
+            })
+            c.surfaces)
+          guideCaseList);
+        # Per-FILE aggregate: force every (case,surface) exec whose case came from that chapter/source file.
+        guideFileStems = pkgs.lib.unique (map (c: pkgs.lib.removeSuffix ".tsx" (baseNameOf c.file)) guideCaseList);
+        mkGuideFileAgg = stem:
+          let
+            fileCases = builtins.filter (c: (pkgs.lib.removeSuffix ".tsx" (baseNameOf c.file)) == stem) guideCaseList;
+            execs = builtins.concatMap (c: map (surface: guideCaseChecks."${c.dir}-${surface}") c.surfaces) fileCases;
+          in
+          assert (builtins.length execs) > 0;
+          pkgs.runCommand "guide-examples-shredded-${stem}" { } ''
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') execs}
+            echo "ok: guide-examples ${stem} — ${toString (builtins.length execs)} (case,surface) execs" > "$out"
+          '';
+        guideFileAggs = builtins.listToAttrs (map
+          (stem: { name = "guide-examples-shredded-${stem}"; value = mkGuideFileAgg stem; })
+          guideFileStems);
+        # TOP aggregate: force every (case,surface) exec across all files — the sharded replacement for the
+        # serial check:examples (each case cached independently; a red case fails here).
+        guideExamplesShredded = pkgs.runCommand "guide-examples-shredded" { } ''
+          ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues guideFileAggs)}
+          echo "ok: guide-examples-shredded — ${toString (builtins.length (builtins.attrNames guideCaseChecks))} (case,surface) execs across ${toString (builtins.length guideFileStems)} files" > "$out"
+        '';
+        # DRIFT-GUARD: the committed manifest MUST equal a freshly-shredded manifest (render-independent, so a
+        # byte-identical JSON — v-guide-infra owns regen, this makes staleness a LOUD red, not a silent skip).
+        guideManifestDriftAssert = pkgs.runCommand "guide-manifest-drift-assert" { nativeBuildInputs = [ pkgs.jq ]; } ''
+          set -euo pipefail
+          if diff <(jq -S . ${./guide/examples-manifest.json}) <(jq -S . ${guideShred}/manifest.json) > manifest.diff; then
+            echo "ok: committed guide/examples-manifest.json == fresh shred manifest" > "$out"
+          else
+            echo "DRIFT: committed guide/examples-manifest.json != fresh shred manifest — regen:"; echo "  (in guide/) node --expose-gc scripts/shred-examples.mjs --out-dir /tmp/gs && cp /tmp/gs/manifest.json guide/examples-manifest.json"
+            cat manifest.diff; exit 1
+          fi
+        '';
+
         # ── oracle-lean (L0.1): the Lean reference interpreter as an independent differential oracle ─
         #
         # A pure Lean 4 model of Cadenza semantics over the frozen binary AST, cross-checked against
@@ -3929,6 +4069,9 @@
             # hermetic wasm-pack + npm ci + the check:* battery + build + bundle). The LAST required job.
             guide-examples = guideExamplesCheck;
             guide-shred-check = guideShredCheck;
+            guide-examples-shredded = guideExamplesShredded;
+            guide-manifest-drift-assert = guideManifestDriftAssert;
+          } // guideFileAggs // {
             # Full-CI-in-nix increment 6a: the GHA `roundtrip` job — every corpus program round-trips
             # through the syntax surfaces. Corpus-only (reads spec/semantics, no runtime store) → narrow
             # `seedRoundtripSrc` (no compiler-ml, #2007). Invoked via `cargo run --locked` (not the bare
