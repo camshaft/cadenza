@@ -96,6 +96,19 @@ pub struct Emit {
     /// Computed ONCE at function entry over all heap binders (params + `let`-binders); empty for a body
     /// with no shared-then-consumed heap binding (the common case), so the fast path is untouched.
     dup_sites: HashSet<StructId>,
+    /// hcz CAPTURE-ESCAPE retain sites (`collect_captured_escape_dup_sites`): the `Core::Captured` OCCURRENCE
+    /// ids of a COMPOUND (heap) closure capture that ESCAPES the closure body via its sole read — a `dup` is
+    /// emitted after the env-cell `arr-get` so the returned value owns an INDEPENDENT ref and the monolithic
+    /// env-cell drop (unconditional for an Owned closure operand, select.rs — cascades to the capture) frees
+    /// only the cell's copy → each ref frees exactly once (no double-release; hcz1/hcz2). GUARD (v-memory-
+    /// safety-signed): marked ONLY for a capture read EXACTLY ONCE (that sole read is the escaping consume, so
+    /// no borrow occurrence is over-dup'd). A MULTI-read escaping compound capture is left UNMARKED — a TRACKED
+    /// RESIDUAL double-free (NOT leak-safe: the env-cell drop is unconditional and captures have no per-
+    /// occurrence dup marking yet), surfaced by v-memory-safety's corpus-wide 0-trap sweep; its fix is the
+    /// per-occurrence capture-escape marking (the `mark_binder_dups` analog for captures) or a decline of that
+    /// shape. A DEDICATED set (disjoint from `dup_sites`) so the single-source-of-truth double-mark discipline
+    /// holds. Empty for a non-closure body (no `Core::Captured`) → the fast path is untouched.
+    captured_escape_dup_sites: HashSet<StructId>,
     /// (2) rope/slice-view SumExpect reclaim — the `Core::SumExpect` NODE ids whose extracted COMPOUND view
     /// payload is SCALAR-READ (consumed by exactly ONE `Bytes.at`) and does NOT escape, so the extraction is
     /// reclaimable: `compound_dupd` (the SumExpect emit) dup's the view at extract + drops the Some-shell, and
@@ -1354,9 +1367,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
 /// double-release, hcz1/hcz2). `false` = borrow-only (a `List.len`/field read of the capture, hcd1/hcd2) →
 /// NO dup → the cell drop reclaims it once (v-memory-safety gate C: a borrow-only capture stays reclaimed,
 /// by construction — the same borrow classification the binder query draws). No `dup_sites` (a fresh query).
-// CONSUMED by v-effects' hcz dup-on-escaping-captured-read gate (in flight) — dead until that lands, which
-// also exercises `EscapeTarget::Capture`; the `allow` retires when the gate calls this.
-#[allow(dead_code)]
+// CONSUMED by `collect_captured_escape_dup_sites` (the hcz dup-on-escaping-captured-read gate).
 pub(crate) fn capture_escapes_via_body(db: &mut Db, body: StructId, capture_index: usize) -> bool {
     binding_escapes_dup_aware(db, body, EscapeTarget::Capture(capture_index), false, None)
 }
@@ -2484,6 +2495,51 @@ fn count_node_refs(db: &mut Db, body: StructId, target: StructId) -> usize {
 //# A decision to reuse a value's storage or to allocate fresh storage MUST be a deterministic function of the source, so that reuse does not introduce nondeterminism into a program's observable behavior.
 //= spec/capabilities/memory-and-resource-model.md#sharing-is-not-observable
 //# A decision to share a value's storage or to copy it MUST be a deterministic function of the source, so that sharing does not introduce nondeterminism into a program's observable behavior.
+/// hcz CAPTURE-ESCAPE dup sites: mark the `Core::Captured` occurrence of each COMPOUND (heap) closure capture
+/// that is read EXACTLY ONCE in `body` and whose sole read ESCAPES (flows out via the body's return / a
+/// consuming use, per [`capture_escapes_via_body`]). Such a read must `dup` so the returned value owns an
+/// independent ref — else the monolithic env-cell drop double-frees it (the hcz1/hcz2 UAF). SINGLE-READ +
+/// HEAP + ESCAPES guard (v-memory-safety-signed): with exactly one occurrence, that read IS the escaping
+/// consume (no borrow occurrence to over-dup); a scalar capture unboxes/copies (no rc); a multi-read escaping
+/// compound capture is left UNMARKED (a tracked RESIDUAL double-free — see the `captured_escape_dup_sites`
+/// field doc). Runs for EVERY body — a non-closure body has no `Core::Captured` occurrence, so the map is
+/// empty and this is a no-op. Called from BOTH `select_function_of` (to EMIT the dup) and the op-collection
+/// pass (to IMPORT `OP_DUP`) so the emit and the import agree exactly — the dup-site import/emit discipline.
+fn collect_captured_escape_dup_sites(db: &mut Db, body: StructId, sites: &mut HashSet<StructId>) {
+    let mut by_index: HashMap<usize, Vec<StructId>> = HashMap::new();
+    collect_captured_occurrences(db, body, &mut by_index);
+    for (index, occs) in by_index {
+        // MULTI-read (or zero) → not the single-escaping-read shape; leave unmarked (residual / nothing).
+        if occs.len() != 1 {
+            continue;
+        }
+        let occ = occs[0];
+        // A scalar capture unboxes to a raw value (no heap handle, no refcount) → no dup needed.
+        if !is_heap_type(&type_of(db, occ)) {
+            continue;
+        }
+        // The sole read escapes (non-borrow) → its returned ref must be independent of the env-cell drop.
+        if capture_escapes_via_body(db, body, index) {
+            sites.insert(occ);
+        }
+    }
+}
+
+/// Collect every `Core::Captured { index }` occurrence in `body`, grouped by capture slot INDEX. Recurses via
+/// [`core_child_ids`] (the same uniform Core-child walk `collect_retain_candidate_binders` uses).
+fn collect_captured_occurrences(
+    db: &mut Db,
+    id: StructId,
+    by_index: &mut HashMap<usize, Vec<StructId>>,
+) {
+    if let Core::Captured { index, .. } = core_of(db, id) {
+        by_index.entry(index).or_default().push(id);
+    }
+    for child in core_child_ids(db, id) {
+        collect_captured_occurrences(db, child, by_index);
+    }
+}
+
 fn collect_dup_sites(
     db: &mut Db,
     body: StructId,
@@ -4106,6 +4162,10 @@ pub fn collect_used_ops(
     // Also the runtime row-op field-copy dups (breaker #45) — same set as the emit's `collect_row_op_field_dups`
     // so the `dup` import is present iff the emit dups a borrowed heap field before the operand's drop.
     collect_row_op_field_dups(db, id, &mut sites);
+    // hcz capture-escape dups: mirror `select_function_of`'s `collect_captured_escape_dup_sites` so `OP_DUP`
+    // is imported iff the emit `dup`s an escaping single-read compound capture. Same set as the emit → the
+    // import is present exactly when a dup is emitted (empty for a body with no such capture).
+    collect_captured_escape_dup_sites(db, id, &mut sites);
     if !sites.is_empty() {
         out.insert(OP_DUP);
     }
@@ -6020,6 +6080,11 @@ pub fn select_function_of(
         // holds a dangling field (a borrow outliving the operand's owned-node drop). Computed here (upfront)
         // so the emit's child-`dup` + the `dup` import agree. Empty for scalar-only / fresh-record row ops.
         collect_row_op_field_dups(db, body, &mut code.dup_sites);
+        // hcz capture-escape dups: a compound capture read once + escaping needs a dup at its `Core::Captured`
+        // read so the returned ref is independent of the monolithic env-cell drop (else double-free). A
+        // DEDICATED set (not `dup_sites`) — the emit's `Core::Captured` arm gates on it. Empty for a body with
+        // no escaping single-read compound capture (every non-closure body, and borrow-only captures).
+        collect_captured_escape_dup_sites(db, body, &mut code.captured_escape_dup_sites);
     }
     // (2) rope/slice-view: partition the SumExpect-extracted single-view Somes (String.at/Bytes.slice) into
     // the VIEW set (scalar-read-dead single consumer → we dup+shell-drop+view-drop, net -1) and the SHELL set
@@ -16651,6 +16716,18 @@ fn emit(
         // The node's own `type_of` is the captured value's type (set at lowering), so `get_op`/`is_narrow`
         // read it exactly as a tuple projection does.
         Core::Captured { index, .. } => {
+            // hcz CAPTURE-ESCAPE RETAIN: a compound capture whose sole read ESCAPES (returned / consumed) must
+            // `dup` so the returned value owns an INDEPENDENT ref — else the monolithic env-cell drop (which
+            // cascades to this capture) and the consumer both free the SAME ref (hcz1/hcz2 double-release).
+            // Emitted via a SEPARATE `arr-get` that `OP_DUP` consumes (rc++), mirroring `emit_binder_ref`'s
+            // extra-read-then-dup; the normal read below then leaves the handle as the value. Marked only for
+            // the single-read escaping compound shape (`collect_captured_escape_dup_sites`).
+            if out.captured_escape_dup_sites.contains(&id) {
+                out.push(Lir::LocalGet(0));
+                out.push(Lir::ConstI32(1 + index as i32));
+                out.push(Lir::CallImport(OP_ARR_GET));
+                out.push(Lir::CallImport(OP_DUP)); // rc++ — pops this copy, returns nothing
+            }
             out.push(Lir::LocalGet(0)); // the env cell (lifted fn's 1st param)
             out.push(Lir::ConstI32(1 + index as i32));
             out.push(Lir::CallImport(OP_ARR_GET));
