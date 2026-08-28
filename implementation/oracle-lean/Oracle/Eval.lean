@@ -430,13 +430,21 @@ sole variant of its type with arity 1 — such a value is SCALAR-ERASED to its p
 not modeled here); and a multi-field ctor (arity ≥ 2, curried payload tuple — not modeled). -/
 def variantCtorArity? (m : Module) (name : ByteArray) : Option Nat :=
   if (defNames m).contains name then none
-  else match (preludeSumCtors.find? (fun p => name == p.1.toUTF8)).map (·.2) with
-  | some ar => some ar
-  | none =>
-    (userSumTypes m).findSome? (fun (_, ctors) =>
-      (ctors.find? (fun c => c.1 == name)).bind (fun c =>
-        let isNewtype := ctors.length == 1 && c.2 == 1
-        if isNewtype || c.2 ≥ 2 then none else some c.2))
+  else
+    -- USER sum ctors SHADOW prelude ctors of the same name (corpus 05-compound bare-collision doc): a
+    -- user variant reusing a prelude DATA-CONSTRUCTOR name (Sign Neg/Pos/Zero, Ordering Less/Equal/
+    -- Greater) binds to the LOCAL variant, not the prelude nullary ctor — the built-in sums inject
+    -- their ctor names into the prelude AFTER the variant-ctor index snapshot. So resolve against the
+    -- user `(type …)` decls FIRST (a name declared by SOME user type NEVER falls back to the prelude,
+    -- even if its own arity is unmodeled → none); only a name no user type declares uses the prelude.
+    -- (Was prelude-first, which mis-read a user `(Neg T)` as the prelude's nullary Neg → dropped its
+    -- payload to unit — 03-0094 mutually-recursive-sums.)
+    match (userSumTypes m).findSome? (fun (_, ctors) =>
+            (ctors.find? (fun c => c.1 == name)).map (fun c => (ctors.length, c.2))) with
+    | some (nvariants, ar) =>
+      let isNewtype := nvariants == 1 && ar == 1
+      if isNewtype || ar ≥ 2 then none else some ar
+    | none => (preludeSumCtors.find? (fun p => name == p.1.toUTF8)).map (·.2)
 
 /-- Is `name` a NEWTYPE constructor — the SOLE variant of its user type, carrying EXACTLY ONE field?
 Such a sum SCALAR-ERASES: its value IS the payload, construction is identity, a pattern binds the
