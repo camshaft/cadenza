@@ -1373,13 +1373,31 @@ fn emit_expr_viewed(
         // projection of a compile-time tuple folds in `lower`). The index is a compile-time constant, an
         // `Int` leaf; the member-access reader accepts an integer key for a positional tuple read.
         Core::Proj { operand, index } => {
+            // A projection's surface KEY depends on the operand's compound kind: a TUPLE projects by the
+            // positional slot `(. t 1)`, but a RECORD projects by the FIELD NAME `(. r val)`. Records are
+            // keyed by name (canonical `BTreeMap` sorted order), so the field name at slot `index` is the
+            // `index`-th key. Emitting the positional index for a record is NON-re-compilable — `(. r 1)`
+            // re-reads as a tuple projection → CDZ0201 "tuple projection requires a tuple, found (Record …)".
+            let operand_ty = crate::infer::type_of(db, operand);
             let dot = b.name(".");
             let op = emit_expr(db, b, operand, None, env, emitted)?;
-            let idx = b.atom_leaf(Leaf::Int {
-                value: IntValue::from_i64(index as i64),
-                radix: Radix::Dec,
-            });
-            Ok(b.list(vec![dot, op, idx]))
+            let key = match &operand_ty {
+                Ty::Record(fields) => {
+                    let name = fields.keys().nth(index).ok_or_else(|| {
+                        Reject::decline(
+                            "the Cadenza backend could not recover the record field name for a \
+                             projection (slot out of range)"
+                                .to_string(),
+                        )
+                    })?;
+                    b.name(&*name.name)
+                }
+                _ => b.atom_leaf(Leaf::Int {
+                    value: IntValue::from_i64(index as i64),
+                    radix: Radix::Dec,
+                }),
+            };
+            Ok(b.list(vec![dot, op, key]))
         }
         // Structural EQUALITY on a runtime compound — `(= <lhs> <rhs>)`. `ValueEq`/`ValueEqShaped` (the
         // shaped form carries a descriptor `ty`, display-neutral) both re-emit the surface `=`; on recompile
