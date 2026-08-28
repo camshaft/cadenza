@@ -143,7 +143,9 @@
               (export main)))
   (call   main (: 5 Int64))
   (output (: 40 Int64))
-  (live-objects known-leak 1))
+  ; reclaims clean since the #8cb61381a runtime flag-day (shared immortal empty-vec singleton +
+  ; collection-reclaim tightening reached the peer-returned-Map path); was known-leak 1 pre-flag-day.
+  (live-objects 0))
 
 ; -- a LIST argument crosses INBOUND to a peer as a handle (migrated from rcdzc
 ; a_list_argument_crosses_inbound_to_a_peer_as_a_handle): the inbound twin of the list-RESULT crossing —
@@ -575,7 +577,9 @@
              (def (main (: n Int64)) (host (A) (A.sum (bld n)))) (export main)))
   (call main (: 4 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak 1))
+  ; reclaims clean since the #8cb61381a runtime flag-day (collection-reclaim tightening reached the
+  ; heap-List inbound-arg path); was known-leak 1 pre-flag-day.
+  (live-objects 0))
 
 (case "pcc1 fifty peer-returned lists consumed on the consumer side reclaim to zero (cross-boundary census)"
   (peer "cadenza:a/api" (do (def (dup (: x Int64)) (list x x x)) (export dup)))
