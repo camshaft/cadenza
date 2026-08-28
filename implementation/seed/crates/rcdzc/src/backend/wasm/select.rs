@@ -132,6 +132,16 @@ pub struct Emit {
     /// wasm (fuzzer 38551). When the callee's valtype differs from this, the tail call falls back to a
     /// non-tail `Call` + the width conversion + `Return`. `None` for a Unit/diverging (0-result) function.
     fn_ret_vt: Option<ValType>,
+    /// NON-TAIL SPINE RECLAIM (v-mem-safety-signed-off): the PARAM binders proven OWNED + DEAD-AFTER a
+    /// tail-position `MatchSum` — a heap param consumed ONLY by the match (`count_param_consumes == 0`, so
+    /// the match holds its LAST owned ref) and NOT epilogue-dropped (`looped_owned_param_drops`). For such a
+    /// scrutinee the tail-`MatchSum` shell-reclaim drops the param's SLOT (there is no stashed temp), freeing
+    /// each recursive frame's un-reclaimed spine shell (e.g. `sum-nat`'s `Nat.S` cells — 1/cell leak → 0).
+    /// A NARROW proven-owned exception to the global `heap_operand_ownership(Param) == Borrowed` default
+    /// (select.rs:17542) — it does NOT change that load-bearing default. Computed ONCE in
+    /// `select_function_of` (it has params/self_def/body); empty otherwise. Reuses the EXISTING
+    /// `count_param_consumes` + `looped_owned_param_drops` machinery (no re-derived predicate).
+    nontail_match_reclaim_binders: HashSet<StructId>,
 }
 
 /// A scalar match's binder scope: the `[start, end)` Lir range spanning its arm bodies, and the binder
@@ -1971,6 +1981,49 @@ fn collect_consuming_payload_sites_expr(
 /// the SAME set. A reusable/borrowed/all-scalar scrutinee contributes nothing (the emit reclaims those
 /// with no dup, or leaves a borrowed scrutinee to its owner). This is what makes the deep shell drop in
 /// BOTH the tail and non-tail `MatchSum` emits safe for a consumed-child arm.
+/// §5-disjointness for the NON-TAIL SPINE dup: whether any arm's TAIL-position expression is a `Call` that
+/// consumes a payload-of-`scrut` as an arg — §5's self-loop-tail spine shape (`(rec tail …)`), where
+/// `emit_loop_iteration` already dup(rest)s the carried payload. The non-tail-spine dup MUST skip such a
+/// match (else double-dup → leak). Follows result-position tails (`If`/`Let`/`Seq`/`Block`/`Break`); a
+/// non-tail nested call (`(+ 1 (rec m))`) is NOT a tail call → returns false → the non-tail dup fires.
+fn sum_cont_payload_consumed_in_tail_call(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    scrut: StructId,
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => expr_tail_is_call_consuming_payload(db, *body, scrut),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            expr_tail_is_call_consuming_payload(db, *body, scrut)
+                || sum_cont_payload_consumed_in_tail_call(db, els, scrut)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_payload_consumed_in_tail_call(db, then_, scrut)
+                || sum_cont_payload_consumed_in_tail_call(db, els, scrut)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_cont_payload_consumed_in_tail_call(db, &a.cont, scrut)),
+    }
+}
+
+fn expr_tail_is_call_consuming_payload(db: &mut Db, id: StructId, scrut: StructId) -> bool {
+    match core_of(db, id) {
+        Core::Call { args, .. } => args
+            .iter()
+            .any(|&a| payload_proj_chain_roots_at_node(db, a, scrut)),
+        Core::If { then_, else_, .. } => {
+            expr_tail_is_call_consuming_payload(db, then_, scrut)
+                || expr_tail_is_call_consuming_payload(db, else_, scrut)
+        }
+        Core::Let { body, .. } => expr_tail_is_call_consuming_payload(db, body, scrut),
+        Core::Seq { tail, .. } => expr_tail_is_call_consuming_payload(db, tail, scrut),
+        Core::Block { body, .. } => expr_tail_is_call_consuming_payload(db, body, scrut),
+        Core::Break { value } => expr_tail_is_call_consuming_payload(db, value, scrut),
+        _ => false,
+    }
+}
+
 fn collect_shell_reclaim_child_dups(db: &mut Db, id: StructId, dup_sites: &mut HashSet<StructId>) {
     // SHARING-AWARE: a shared Core `StructId` reached under N parents would otherwise be re-descended N
     // times (the exponential DAG re-walk — v-core-opt profile: this walk was ~55% of one self-host body's
@@ -1980,12 +2033,16 @@ fn collect_shell_reclaim_child_dups(db: &mut Db, id: StructId, dup_sites: &mut H
     // multiplicity-sensitive `mark_binder_dups`, whose per-occurrence retain placement a naive visited-set
     // WOULD corrupt into a dropped dup → UAF; that one stays Perceus-blocked.)
     let mut seen = HashSet::new();
-    collect_shell_reclaim_child_dups_seen(db, id, dup_sites, &mut seen);
+    // `id` is the TOP function body — threaded down as `top_body` so the non-tail-spine param membership
+    // (count_param_consumes over the WHOLE body) is computed self-contained, matching BOTH callers
+    // (select_function_of + collect_used_ops) without threading params/self_def into this walk.
+    collect_shell_reclaim_child_dups_seen(db, id, id, dup_sites, &mut seen);
 }
 
 fn collect_shell_reclaim_child_dups_seen(
     db: &mut Db,
     id: StructId,
+    top_body: StructId,
     dup_sites: &mut HashSet<StructId>,
     seen: &mut HashSet<StructId>,
 ) {
@@ -1994,19 +2051,49 @@ fn collect_shell_reclaim_child_dups_seen(
     }
     if let Core::MatchSum { scrutinee, root } = core_of(db, id) {
         let scrut_ty = type_of(db, scrutinee);
-        let owned_compound_boxed = is_heap_type(&scrut_ty)
+        let compound_boxed = is_heap_type(&scrut_ty)
             && !ty_is_enum_disc(db, &scrut_ty)
-            && !sum_has_only_scalar_payloads(db, &scrut_ty)
+            && !sum_has_only_scalar_payloads(db, &scrut_ty);
+        // Existing STASHED-owned path: a computed owned compound boxed sum whose shell the emit deep-drops.
+        let owned_compound_boxed = compound_boxed
             && matches!(
                 heap_operand_ownership(db, scrutinee),
                 Ok(HandleOwnership::Owned)
             );
-        if owned_compound_boxed {
+        // NON-TAIL SPINE path (v-mem-safety-signed-off): a PARAM scrutinee consumed ONLY by the match
+        // (count_param_consumes over the WHOLE body == 0) — the emit's tail-MatchSum param-slot drop reclaims
+        // its shell, so its CONSUMED spine payload must ALSO be dup'd here (else the deep-drop double-frees
+        // the moved payload). RELAXED vs the emit's strict set (NO epilogue-dropped exclusion here): the
+        // dup-pass over-includes (a param the emit won't drop → dup-without-drop = a LEAK, never a UAF), so
+        // dup ⊇ drop = every emit drop has its dup = no double-free. heap_operand_ownership(Param)==Borrowed,
+        // so this is DISJOINT from owned_compound_boxed above (no double dup).
+        // Match the EMIT's boundary exclusion (dup ⟺ drop, tightest-correct per v-mem-safety): a LIFTED-
+        // LAMBDA body's params are CLOSURE-ARG boundary-built (caller-owned) — the emit excludes them
+        // (is_boundary_owned), so the dup-pass MUST too, else dup-without-drop = a LEAK (the 5 DES cases).
+        // db.lifted is accessible here (unlike layout.exports); an export body with a COMPOUND-payload param
+        // is rare (Option-scalar exports don't dup) and any residual is a pinnable leak, never a UAF.
+        let top_is_lifted = db.lifted.iter().any(|l| l.body == top_body);
+        let nontail_spine_param = compound_boxed
+            && !top_is_lifted
+            && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if {
+                let mut seen2 = HashSet::new();
+                let mut total = 0usize;
+                count_param_consumes(db, top_body, binder, &mut seen2, &mut total);
+                total == 0
+            })
+            // §5-DISJOINTNESS: skip if the payload is consumed by a call in the arm's TAIL position — that is
+            // §5's self-loop-tail spine shape (`(rec tail …)` as the arm tail), where emit_loop_iteration
+            // ALREADY dup(rest)s the carried payload. Dupping here too would DOUBLE-dup → leak. The tail-
+            // MatchSum EMIT already skips the drop for such an arm (`!arms_tail_call`), so skipping the dup
+            // keeps dup⟺drop in lockstep. Structural (no self_def needed); a non-member tail call is also
+            // skipped (→ leak, never a UAF).
+            && !sum_cont_payload_consumed_in_tail_call(db, &root, scrutinee);
+        if owned_compound_boxed || nontail_spine_param {
             collect_consuming_payload_sites_cont(db, &root, scrutinee, dup_sites);
         }
     }
     for child in core_child_ids(db, id) {
-        collect_shell_reclaim_child_dups_seen(db, child, dup_sites, seen);
+        collect_shell_reclaim_child_dups_seen(db, child, top_body, dup_sites, seen);
     }
 }
 
@@ -5120,12 +5207,21 @@ fn collect_used_ops_into_seen(
             // only shell reclaim too (else the emit's drop would lack its import → invalid module). NOT for an
             // enum-disc (bare i32, no shell).
             let scrut_ty = type_of(db, scrutinee);
+            // Also import `drop` for a PARAM/LocalRef scrutinee: the NON-TAIL SPINE reclaim (v-mem-safety-
+            // signed-off) drops a proven-owned-dead-after param's shell slot, but heap_operand_ownership(Param)
+            // == Borrowed so the Owned test below misses it → without this the emitted `drop` would have no
+            // import (function index u32::MAX → invalid module). A SUPERSET of the emit's param-reclaim gate (a
+            // non-reclaimed param scrutinee → a declared-but-unused import = harmless, per the note above).
+            let param_scrut = matches!(
+                core_of(db, scrutinee),
+                Core::Param { .. } | Core::LocalRef { .. }
+            );
             if is_heap_type(&scrut_ty)
                 && !ty_is_enum_disc(db, &scrut_ty)
-                && matches!(
+                && (matches!(
                     heap_operand_ownership(db, scrutinee),
                     Ok(HandleOwnership::Owned)
-                )
+                ) || param_scrut)
             {
                 out.insert(OP_DROP);
             }
@@ -5540,6 +5636,63 @@ pub fn select_function_of(
     // (or shared across two recursive-call operands) is mutated in place by the consuming op — a silent
     // wrong value. Computed ONCE here over all heap binders; the set is empty for the common single-use
     // body, so the FBIP fast path is unchanged. (See `collect_dup_sites`.)
+    // NON-TAIL SPINE RECLAIM precompute (v-mem-safety-signed-off) — computed FIRST because BOTH the dup-pass
+    // (`collect_shell_reclaim_child_dups`, which must dup the consumed spine payload for a reclaimed param
+    // shell) AND the tail-MatchSum emit (which drops the param slot) gate on this set: the heap params proven
+    // OWNED + DEAD-AFTER a tail-position MatchSum — consumed ONLY by the match (count_param_consumes == 0, so
+    // the match holds the LAST owned ref) and NOT epilogue-dropped (looped_owned_param_drops). REUSES
+    // count_param_consumes + looped_owned_param_drops (no re-derived predicate, per v-mem-safety). A NARROW
+    // proven-owned exception to the heap_operand_ownership(Param)==Borrowed default — that default is intact
+    // everywhere else. The per-match payload-safety (consume-only) + !cont_rematches gates are checked at the
+    // reclaim/dup sites; dup ⊇ drop (the dup-pass fires for any such match, the drop only at a tail match →
+    // every drop has its dup = no double-free; an extra dup at a rare non-tail match is a leak, never a UAF).
+    // CALLEE-OWNED gate (v-mem-safety's exclusive-transfer-reachability spec, cheap-marker form): the
+    // non-tail spine reclaim DROPS a param shell, so it is sound ONLY when the param is CALLEE-OWNED (the
+    // callee reclaims), NEVER caller/boundary-owned (the caller built + drop_afters it → the callee BORROWS,
+    // heap_operand_ownership==Borrowed is CORRECT). count_param_consumes==0 proves DEAD-AFTER but NOT
+    // ownership — a boundary-built param is dead-after yet caller-owned → reclaiming DOUBLE-FREES (40 corpus
+    // traps). v-mem-safety: the boundary conventions are a CLOSED set of TWO — (1) EXPORT-ENTRY params
+    // (try_bare_entry_param_component builds + drop_afters the cell) and (2) CLOSURE-ARG params (a lifted
+    // lambda's params, built + drop_after'd at the direct-call boundary). Both markers are CHEAP: an export
+    // body is in layout.exports; a closure body is in db.lifted. Excluding BOTH is EXHAUSTIVE for the
+    // double-free (trap) class (a closed set, not whack-a-mole) and a clean partition (a top-level def is
+    // never a lifted lambda). Internal callee-owned recursive defs (sum-nat) are neither → reclaimed.
+    let is_boundary_owned =
+        layout.exports.iter().any(|e| e.body == body) || db.lifted.iter().any(|l| l.body == body);
+    let nontail_reclaim: HashSet<StructId> = if is_boundary_owned {
+        HashSet::new()
+    } else {
+        let epilogue_dropped: HashSet<u32> = looped_owned_param_drops(db, body, params, self_def)
+            .into_iter()
+            .collect();
+        let mut set = HashSet::new();
+        let mut slot = 0u32;
+        for (binder, ty) in params.iter() {
+            if matches!(ty.strip_nominal(), Ty::Unit) {
+                continue;
+            }
+            let this_slot = slot;
+            slot += 1;
+            if !is_heap_type(ty) {
+                continue;
+            }
+            if epilogue_dropped.contains(&this_slot) {
+                continue; // already reclaimed at the fn-exit epilogue — a match drop would double-free.
+            }
+            // SOLE-CONSUME (gate b): count_param_consumes counts CONSUMING uses (RestFrom / consume-ops /
+            // escapes / direct-ref call args) but NOT a match's Payload extraction or a scrutinee borrow. == 0
+            // ⟹ the param is never consumed elsewhere, so the match reading it holds the LAST owned ref → its
+            // shell is dead after the (tail) match. A post-match CONSUME (return/escape/consuming-call of the
+            // original ref) makes this > 0 → excluded (the param-reused-after control).
+            let mut seen = HashSet::new();
+            let mut total = 0usize;
+            count_param_consumes(db, body, *binder, &mut seen, &mut total);
+            if total == 0 {
+                set.insert(*binder);
+            }
+        }
+        set
+    };
     {
         let mut heap_binders: Vec<StructId> = Vec::new();
         collect_retain_candidate_binders(db, body, &mut heap_binders);
@@ -5547,7 +5700,8 @@ pub fn select_function_of(
         // The wrapper-scrutinee shell-reclaim's consumed-child dups: for each MatchSum over an owned
         // compound boxed-sum whose shell the emit will deep-drop, `dup` each consuming scrutinee-child
         // extraction so the drop does not double-free a moved-out child. Computed here (upfront) so the
-        // emit's child-dup + the `dup` import agree. Empty for borrow-only/all-scalar/reusable scrutinees.
+        // emit's child-dup + the `dup` import agree. Also fires (self-contained, relaxed) for a NON-TAIL
+        // SPINE param scrutinee — dups the consumed spine payload so the param-slot shell-drop nets correctly.
         collect_shell_reclaim_child_dups(db, body, &mut code.dup_sites);
         // The runtime row-op field-copy dups (breaker #45): a heap-handle field projected off a
         // materialize-`Let` row-op operand must be `dup`'d before the operand's drop, else the built record
@@ -5555,6 +5709,7 @@ pub fn select_function_of(
         // so the emit's child-`dup` + the `dup` import agree. Empty for scalar-only / fresh-record row ops.
         collect_row_op_field_dups(db, body, &mut code.dup_sites);
     }
+    code.nontail_match_reclaim_binders = nontail_reclaim;
     // Scratch locals start PAST the parameters (slots `0..n` are the params); a guarded op claims scratch
     // slots from `base` up. `high` tracks the highest scratch slot used, and `scratch_ty` records each
     // scratch slot's VALUE TYPE (i32 for a ≤32-bit op, i64 otherwise) — a slot must be DECLARED at the
@@ -7896,15 +8051,27 @@ fn emit_tail(
             // child; the deep drop then frees a still-read value → the sread OOB/unreachable UAF). A scalar
             // payload copies out (no alias), so the drop is safe; a compound shell is left un-dropped (leak,
             // value-correct) pending a sound compound-reclaim increment.
+            // NON-TAIL SPINE param path (v-mem-safety-signed-off): a PARAM scrutinee proven OWNED + DEAD-AFTER
+            // (in `nontail_match_reclaim_binders`: heap + count_param_consumes==0 + not-epilogue-dropped) has NO
+            // stashed temp, so `sum_shell_reclaim_ok` (which requires a stashed Owned slot) declines it. Reclaim
+            // it via its PARAM SLOT when the payload/rematch gates hold. SOUND because: this is TAIL position
+            // (the match is the fn's last use → no after-use of the shell); the arm's existing consume-dup of
+            // the payload runs BEFORE this post-arm drop (gate 6 ordering); the payload-safety gate excludes a
+            // borrowed-out payload (gate 3) and a re-match (gate 8); count_param_consumes==0 means the match
+            // holds the LAST owned ref (a post-match consume → count>0 → not in the set → not reclaimed here).
+            let param_reclaim = stashed_slot.is_none()
+                && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder }
+                    if out.nontail_match_reclaim_binders.contains(&binder))
+                && nontail_param_payload_ok(db, scrutinee, &scrut_ty, never_diverges, &root);
             let reclaim_shell = !arms_tail_call
-                && sum_shell_reclaim_ok(
+                && (sum_shell_reclaim_ok(
                     db,
                     scrutinee,
                     &scrut_ty,
                     stashed_slot,
                     never_diverges,
                     &root,
-                );
+                ) || param_reclaim);
             emit_sum_cont(
                 db,
                 scrutinee,
@@ -7920,9 +8087,25 @@ fn emit_tail(
                 TailPos::Tail(tl),
             )?;
             if reclaim_shell {
+                // The stashed temp's slot, OR (non-tail-spine param path) the PARAM scrutinee's own slot.
+                // `arms_slots`/`slots` are keyed by the param's BINDER (select_function_of inserts
+                // `binder -> slot`), so resolve the scrutinee's binder, not its occurrence id. op_drop is
+                // DEEP + rc-aware: the shell frees, cascading into the payload m which the arm already dup'd
+                // (collect_shell_reclaim_child_dups non-tail-spine path) → m lands at its owned rc, no
+                // double-free / no leak.
                 let slot = stashed_slot
-                    .expect("reclaim_shell implies a stashed slot")
-                    .0;
+                    .map(|s| s.0)
+                    .or_else(|| match core_of(db, scrutinee) {
+                        Core::Param { binder } | Core::LocalRef { binder } => {
+                            arms_slots.get(&binder).copied()
+                        }
+                        _ => None,
+                    });
+                let Some(slot) = slot else {
+                    return Err(Reject::decline(
+                        "shell reclaim: no stashed slot or param binder slot for the scrutinee",
+                    ));
+                };
                 out.push(Lir::LocalGet(slot)); // [result, shell]
                 out.push(Lir::CallImport(OP_DROP)); // → [result] (reclaim the owned sum shell)
             }
@@ -8868,11 +9051,100 @@ fn sum_cont_extraction_consume_allowlisted(
     consuming.iter().all(|s| builder_children.contains(s))
 }
 
+/// NON-TAIL SPINE param-path payload gate (v-mem-safety predicate 1, consume-only): the tail-MatchSum
+/// shell-reclaim of a proven-owned-dead-after PARAM scrutinee is safe iff its heap payload is CONSUMED (a
+/// call/op arg — the dup-pass dups it, so the shell-drop cascade nets correctly) and NEVER appears in an
+/// arm's RESULT/tail position (returned as-is → could alias the shell ref and be freed by the drop → UAF).
+/// Distinct from the STASHED path's `sum_shell_reclaim_ok` (which keeps the strict `arm_borrows` block for a
+/// consumed compound): here the dup-pass (`collect_shell_reclaim_child_dups`'s non-tail-spine arm) guarantees
+/// the consumed payload is dup'd, so a CONSUMING occurrence is safe; only a RESULT-position occurrence is
+/// blocked. Composes with `!sum_cont_arm_constructs_compound` (FBIP-reuse hazard) + `!cont_rematches` (Class-B).
+fn nontail_param_payload_ok(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> bool {
+    !never_diverges
+        && is_heap_type(scrut_ty)
+        && !ty_is_enum_disc(db, scrut_ty)
+        && !sum_cont_arm_constructs_compound(db, root)
+        && !cont_rematches_scrutinee(db, scrutinee, root)
+        && !sum_cont_payload_in_result(db, root, scrutinee)
+}
+
+/// Whether ANY arm's RESULT/tail expression IS a heap payload of `scrut` (the UNSAFE non-tail-spine case:
+/// the payload is RETURNED, so the shell-drop would free the returned value). Follows result-position tails
+/// (`If`/`Let`/`Seq`/`Block`/`Break`) but does NOT descend into CALL/OP ARGS (a payload consumed there is
+/// dup-protected + safe). A result-position payload-of-scrut (`SumPayload`/`Proj` rooting at `scrut`, heap)
+/// → true.
+fn sum_cont_payload_in_result(db: &mut Db, cont: &crate::core::SumCont, scrut: StructId) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => payload_in_result_position(db, *body, scrut),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            payload_in_result_position(db, *body, scrut)
+                || sum_cont_payload_in_result(db, els, scrut)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_payload_in_result(db, then_, scrut)
+                || sum_cont_payload_in_result(db, els, scrut)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_cont_payload_in_result(db, &a.cont, scrut)),
+    }
+}
+
+fn payload_in_result_position(db: &mut Db, id: StructId, scrut: StructId) -> bool {
+    if payload_proj_chain_roots_at_node(db, id, scrut) {
+        // A payload projection of the scrutinee IN RESULT position — heap (a scalar leaf copies out, safe).
+        return is_heap_type(&type_of(db, id)) && !matches!(get_op(db, id), Ok(Some(_)));
+    }
+    match core_of(db, id) {
+        Core::If { then_, else_, .. } => {
+            payload_in_result_position(db, then_, scrut)
+                || payload_in_result_position(db, else_, scrut)
+        }
+        Core::Let { body, .. } => payload_in_result_position(db, body, scrut),
+        Core::Seq { tail, .. } => payload_in_result_position(db, tail, scrut),
+        Core::Block { body, .. } => payload_in_result_position(db, body, scrut),
+        Core::Break { value } => payload_in_result_position(db, value, scrut),
+        // A call/constructor/arith as the result CONSUMES the payload inside its args — not a bare result
+        // escape (constructor-as-result is separately blocked by sum_cont_arm_constructs_compound).
+        _ => false,
+    }
+}
+
 fn sum_shell_reclaim_ok(
     db: &mut Db,
     scrutinee: StructId,
     scrut_ty: &Ty,
     stashed_slot: Option<(u32, ValType)>,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> bool {
+    // The STASHED-owned path: the payload-safety + rematch gates PLUS a freshly-stashed I32 slot holding an
+    // OWNED scrutinee (a computed/materialized temporary). A reused PARAM/local slot fails the Owned gate
+    // (heap_operand_ownership(Param)==Borrowed) — that case is the non-tail-spine param path, gated separately
+    // via `sum_shell_reclaim_payload_ok` + the proven-owned-dead-after `nontail_match_reclaim_binders` set.
+    sum_shell_reclaim_payload_ok(db, scrutinee, scrut_ty, never_diverges, root)
+        && matches!(stashed_slot, Some((_, ValType::I32)))
+        && matches!(
+            heap_operand_ownership(db, scrutinee),
+            Ok(HandleOwnership::Owned)
+        )
+}
+
+/// The scrutinee-shell-reclaim gates that are INDEPENDENT of how the scrutinee's handle is held (stashed
+/// temp vs proven-owned param slot): heap + non-enum + non-diverging + payload-safety + not-re-matched.
+/// [`sum_shell_reclaim_ok`] ANDs the stashed-Owned requirement on top; the non-tail-spine param path ANDs
+/// the proven-owned-dead-after param membership on top. Splitting these lets BOTH reclaim a shell soundly
+/// while the payload/rematch soundness stays in ONE place.
+fn sum_shell_reclaim_payload_ok(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
     never_diverges: bool,
     root: &crate::core::SumCont,
 ) -> bool {
@@ -8899,11 +9171,6 @@ fn sum_shell_reclaim_ok(
             || (!sum_cont_arm_borrows_heap_subvalue(db, root)
                 && !sum_cont_arm_constructs_compound(db, root))
             || sum_cont_extraction_consume_allowlisted(db, root, scrutinee))
-        && matches!(stashed_slot, Some((_, ValType::I32)))
-        && matches!(
-            heap_operand_ownership(db, scrutinee),
-            Ok(HandleOwnership::Owned)
-        )
         // Class-B UAF (cb3-5): a scrutinee RE-MATCHED by a NESTED `MatchSum` in an arm (`match s { Circle =>
         // match s { … } … }`, `s` an owned/inlined sum) is reclaimed by the INNER match's shell-drop already;
         // this ENCLOSING reclaim would deep-drop the SAME handle a 2nd time → double-free. Suppress the
