@@ -85,6 +85,11 @@
 //!   so the constructor is not doubled. A GENERIC / OPEN user sum still DECLINES (no decl emitted). PRELUDE sums
 //!   (Option/Result/…) are ambient (no decl). A user-sum/nominal value emits ⇔ its decl was emitted
 //!   (`emitted` set), so there is never an unbound-type recompile.
+//! - **NUMERIC TOWER**: BigInt/Rational ops — `BigIntOfI64`→`(BigInt.of n)`, `BigIntBinOp`/`RationalBinOp`
+//!   → the plain operator `(+ l r)` etc (tower op re-selected by operand type on recompile), `BigIntCmp`/
+//!   `RationalCmp` → `(<op> l r)` via `prim_operator`; `RationalOfInts`→`(Rational.of n d)`,
+//!   `RationalOfIntWiden`→`(Rational.of-int n)`, `RationalNum`/`RationalDen`→`(Rational.numerator/
+//!   denominator r)`.
 //! - **STRING.CONCAT / NFC**: `String.concat` shares `Core::BytesConcat` (a String is a UTF-8 byte leaf),
 //!   disambiguated from `Bytes.concat` by the result type; its compiler-inserted `Core::NfcNormalize` (no
 //!   surface member) emits TRANSPARENTLY (its inner string), the surface `String.concat`/`to-bytes`
@@ -517,6 +522,78 @@ fn emit_expr_viewed(
             let head = b.name(sym);
             // Operands FIRST would reverse head-first order — build the head atom, then each operand
             // sub-tree left-to-right, then the list (children hold the ids; the head is already pushed).
+            let l = emit_expr(db, b, lhs, None, env, emitted)?;
+            let r = emit_expr(db, b, rhs, None, env, emitted)?;
+            Ok(b.list(vec![head, l, r]))
+        }
+        // RATIONAL constructors / accessors — member-access ops `((. Rational <member>) <op>…)` (member
+        // names per `prelude.rs`: `of`/`of-int`/`numerator`/`denominator`). Present when an operand is
+        // runtime (a constant `Rational.of` folds to `Core::ConstRational`). `Rational.of` takes two
+        // fixed-width ints; `of-int` widens one int to `n/1`; `numerator`/`denominator` project a `BigInt`.
+        // `BigInt.of n` on a RUNTIME fixed-width int — widen to a `BigInt`. Member-access `((. BigInt of)
+        // <value>)` (a constant folds to a `ConstInt`-typed-`BigInt` in `lower`, handled as a value above).
+        Core::BigIntOfI64 { value } => {
+            let head = member_access(b, "BigInt", "of");
+            let v = emit_expr(db, b, value, None, env, emitted)?;
+            Ok(b.list(vec![head, v]))
+        }
+        Core::RationalOfInts { num, den } => {
+            let head = member_access(b, "Rational", "of");
+            let n = emit_expr(db, b, num, None, env, emitted)?;
+            let d = emit_expr(db, b, den, None, env, emitted)?;
+            Ok(b.list(vec![head, n, d]))
+        }
+        Core::RationalOfIntWiden { value } => {
+            let head = member_access(b, "Rational", "of-int");
+            let v = emit_expr(db, b, value, None, env, emitted)?;
+            Ok(b.list(vec![head, v]))
+        }
+        Core::RationalNum { operand } => {
+            let head = member_access(b, "Rational", "numerator");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
+        Core::RationalDen { operand } => {
+            let head = member_access(b, "Rational", "denominator");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
+        // BigInt / Rational ARITHMETIC + COMPARISON — the numeric-tower twins of `Arith`/`Compare`, present
+        // when an operand is a RUNTIME `BigInt`/`Rational` (a constant pair folds in `lower`). All re-emit
+        // the plain surface operator `(<op> l r)`: on recompile the operands' `BigInt`/`Rational` type
+        // re-selects the same tower op (the author writes one `+`/`<`, `lower` picks the op by solved type).
+        Core::BigIntBinOp { op, lhs, rhs } => {
+            let sym = match op {
+                crate::core::BigIntOp::Add => "+",
+                crate::core::BigIntOp::Sub => "-",
+                crate::core::BigIntOp::Mul => "*",
+                crate::core::BigIntOp::Div => "/",
+                crate::core::BigIntOp::Rem => "%",
+            };
+            let head = b.name(sym);
+            let l = emit_expr(db, b, lhs, None, env, emitted)?;
+            let r = emit_expr(db, b, rhs, None, env, emitted)?;
+            Ok(b.list(vec![head, l, r]))
+        }
+        Core::RationalBinOp { op, lhs, rhs } => {
+            let sym = match op {
+                crate::core::RationalOp::Add => "+",
+                crate::core::RationalOp::Sub => "-",
+                crate::core::RationalOp::Mul => "*",
+                crate::core::RationalOp::Div => "/",
+            };
+            let head = b.name(sym);
+            let l = emit_expr(db, b, lhs, None, env, emitted)?;
+            let r = emit_expr(db, b, rhs, None, env, emitted)?;
+            Ok(b.list(vec![head, l, r]))
+        }
+        Core::BigIntCmp { op, lhs, rhs } | Core::RationalCmp { op, lhs, rhs } => {
+            let sym = prim_operator(op).ok_or_else(|| {
+                Reject::decline(format!(
+                    "the Cadenza backend does not yet lower the numeric-tower compare prim {op:?}"
+                ))
+            })?;
+            let head = b.name(sym);
             let l = emit_expr(db, b, lhs, None, env, emitted)?;
             let r = emit_expr(db, b, rhs, None, env, emitted)?;
             Ok(b.list(vec![head, l, r]))
