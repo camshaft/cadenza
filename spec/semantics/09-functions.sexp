@@ -9773,3 +9773,22 @@
               (export main)))
   (call   main (: (list 10 20 30) (List Int64)))
   (output (: 103 Int64)))
+
+(case "an UNCALLED stored closure with a type-conflicting param is REJECTED at compile, not miscompiled"
+  (doc    "The uncalled-closure conflict-escape CLASS fence (#4980): `collect_node` historically relied on
+           the beta-reduction CALL SITE to fault-check an inline closure body, so a STORED-but-uncalled
+           closure whose param is used at two incompatible types escaped the checker and reached the
+           lowering — `(. v 0)` got a per-op decline (#4970), but the `List.len`/`Bytes.len`/`Bytes.at`
+           siblings emitted INVALID wasm. #4980 fault-checks uncalled bodies directly, so every sibling now
+           rejects with the same positional type fault. This pins the `List.len` sibling (the first live
+           escape found); the valid-closure control below must keep compiling.")
+  (input  (do (def (main (: n Int64)) (List.len (list (fn (v) (+ v (List.len v)))))) (export main)))
+  (error  CDZ0203))
+
+(case "control: an UNCALLED stored closure with a CONSISTENT param still compiles and runs"
+  (doc    "The must-hold twin of the conflict-escape fence: a stored-but-uncalled closure whose body is
+           type-consistent (`(+ v 1)`) must keep compiling — the #4980 uncalled-body fault-check must fault
+           only genuine conflicts, not the mere fact of being uncalled.")
+  (input  (do (def (main (: n Int64)) (List.len (list (fn (v) (+ v 1))))) (export main)))
+  (call   main (: 3 Int64))
+  (output (: 1 Int64)))
