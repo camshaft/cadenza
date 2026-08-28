@@ -9044,3 +9044,4 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	nmb1 a RUNTIME Int8 multiply by -1 computes in range and traps at the MIN/-1 boundary (the narrow-width runtime companion of the checked-mul ladder)
