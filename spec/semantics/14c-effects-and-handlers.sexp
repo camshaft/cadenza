@@ -8542,7 +8542,7 @@
                 (S.put (<< n 2) n)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "wp3 a THREE-param op with two computed args through the two-lookup-match arm — every arg slot and the handle slot stay disjoint"
   (input  (do
@@ -8557,7 +8557,7 @@
                 (S.put (+ n 1) (* n 2) (- n 1))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 8 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed"
   (input  (do
@@ -9632,7 +9632,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 13051 Int64))
   (call   main (: 1 Int64)) (output (: 35071 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 ; --- breaker batch 255: mixed-width four-param op, three result types on one thread, UTF-8 validity flip mid-run ---
 (case "mx4 a FOUR-param op mixing two Int64s, a NARROW UInt8, and a Bool — the narrow slot rides between wide ones and the flag doubles the first argument"
@@ -10179,7 +10179,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 1112213132 Int64))
   (call   main (: 5 Int64)) (output (: 1112131415 Int64))
-  (live-objects known-leak 25))
+  (live-objects known-leak 18))
 
 ; --- breaker batch 262: priority-pop selection, two-pointer merge across handlers, checkpoint/restore pair ---
 (case "pq1 a PRIORITY-POP protocol — pushes append unsorted (priority,value) pairs, popmin scans for the strict minimum priority (first-of-equals wins) answers its value and removes it by filtered rebuild"
