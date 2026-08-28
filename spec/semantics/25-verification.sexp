@@ -376,7 +376,7 @@
                   ((Option.None) false))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "the kernel's DEDUCT_ANTISYM rule: from A |- p and B |- q derive (A-q)++(B-p) |- p=q"
   (doc    "The rule that BUILDS an equality from bidirectional entailment (HOL's DEDUCT_ANTISYM_RULE):
@@ -1172,7 +1172,7 @@
                   ((Option.None) false))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 (case "the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness"
   (doc    "∀-elimination: from ⊢ ∀x.P derive ⊢ P[t/x], substituting the witness t for the bound variable
@@ -1454,7 +1454,7 @@
                     ((Option.None) false)))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "MK_COMB unions its operands' hypotheses — an assumption threaded through MK_COMB survives (soundness)"
   (doc    "The soundness pin for MK_COMB (congruence). th1 = ASSUME (f=g) : {f=g} ⊢ f=g; th2 = refl(x) :

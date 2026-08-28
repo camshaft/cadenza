@@ -425,7 +425,7 @@
                ((Option.None _) -2)))
            (export main)))
   (call main (: 0 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 ; --- Increment 12 slice-2 ∨/∃ NEIGHBORS (breaker): the unforgeability + hyp-preservation faces skipped ---
 ; The slice-2 case tests EXISTS-intro's POSITIVE path (matching witness) and DISJ1. These pin the unpinned

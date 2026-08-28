@@ -454,7 +454,7 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 7))
+  (live-objects known-leak 5))
 (case "a bytes-param leaf and a spilled record result in one member run through both memory paths (via an imposed WIT world)"
   (doc    "SHAPE 28 — BOTH memory boundaries in ONE member: a list<u8> LEAF param AND a spilled record result,
            the exact combined shape of a reducer's on-message(message) -> step. The wrapper uses both memory
@@ -500,7 +500,7 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 6))
+  (live-objects known-leak 5))
 
 (case "a typed reducer branching on a bool host-op result emits a request when true (via an imposed WIT world)"
   (doc "SHAPE 32 - a BOOL host-import RESULT (kv.delete : (Bytes) -> bool) driven through an imposed WIT world. The reducer on-message performs kv.delete(m.token) and branches on the bool: true -> one echo request, false -> no requests. Stubbing kv.delete -> true and asserting the non-empty branch fires (one request) makes the bool result lift load-bearing (a flat scalar disc read). The platform state.delete returns unit (no bool), so this bool host-result lift has no conformance home - it belongs in the typed host-result corpus. Complements the emit+load-only a_host_fused_kv_delete_bool_reducer with the RUNTIME bool-branch coverage.")

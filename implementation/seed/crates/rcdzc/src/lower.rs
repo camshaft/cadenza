@@ -15029,6 +15029,14 @@ fn is_markable_constant_elem(db: &mut Db, id: StructId) -> bool {
         Core::SumNew { .. } => {
             is_markable_constant_sum_nullary(db, id) || is_markable_constant_sum_payloaded(db, id)
         }
+        // A NESTED constant LIST — a list element of a tuple/record/list/sum-payload (`(list (list 1) (list 2))`,
+        // a `Cons` payload, a record field). Recurse into `is_markable_constant_list` (non-empty, not all-`Bool`,
+        // every element itself markable); the ROOT's `mark-immortal-DEEP` transitively covers the nested list's
+        // whole structure (header/arr or spine + trie leaves + element handles). `emit_immortal_elem` has a
+        // matching `ListNew` arm (→ `emit_immortal_static`), and the map/set KEY canonicalize ops a nested list
+        // needs (`value-canonicalize`/`bytes-compact`) are force-imported into the static-compound init.
+        // Terminates: a finite constant literal bottoms out at a scalar / `Bytes` / `String` leaf.
+        Core::ListNew { .. } => is_markable_constant_list(db, id),
         _ => is_constant_bytes(db, id) || constant_string_value(db, id).is_some(),
     }
 }
