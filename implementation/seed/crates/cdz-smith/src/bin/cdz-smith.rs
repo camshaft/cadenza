@@ -275,6 +275,13 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
     }
 }
 
+/// Decline signatures BREAKER has already TRIAGED as legitimate compile-time rejections (expected
+/// behavior, not gaps) and pinned into the corpus — so we stop re-surfacing them in the hand-off:
+/// * `CDZ0304` — a const out-of-range shift count (must be `0..=63`); correctly rejected. Corpus-pinned
+///   by breaker in #4895 (`(<< 5 -1)` → CDZ0304). (Breaker triage note, 2026-08-28.)
+#[cfg(feature = "differential")]
+const FILTERED_DECLINE_SIGNATURES: &[&str] = &["CDZ0304"];
+
 /// Dedup declines by signature and write ONE minimal (shortest) repro `.sexp` + `.reason.txt` per
 /// distinct signature into `dir` — the breaker decline→corpus gap hand-off producer. Keeps the shortest
 /// repro seen for each signature ACROSS runs (skips overwriting when an existing repro is already no
@@ -298,6 +305,10 @@ fn write_declines(dir: &std::path::Path, declines: &[(String, String)]) -> std::
             continue;
         }
         let sig = cdz_smith::differential::decline_signature(reason);
+        // Skip signatures breaker already triaged as legitimate + corpus-pinned (not gaps).
+        if FILTERED_DECLINE_SIGNATURES.contains(&sig.as_str()) {
+            continue;
+        }
         best.entry(sig)
             .and_modify(|e| {
                 if src.len() < e.0.len() {
