@@ -533,17 +533,27 @@ last peer arm (op62) lands.
   my const_value_ast (golden vectors `676eea6e0`+`2fe9ccc58`; cite CONTENT not sha).
 - **v-static-data byte-EQ arm** + **v-spec-oracle §265/§269 + reflected-Ast spec**: fold at assembly.
 
-### 12.2 CORPUS MIGRATION MECHANISM — ml-convert route (SUPERSEDES §11.3 "cdz rewrite")
-§11.3's blind `cdz rewrite` head-rename is UNSAFE: the corpus `(def (map …))` defines a `map` FUNCTION, so a
-bare `(map it f)` is a HOF CALL, not a literal — a syntactic `(map ,@e)→#map(,@e)` would corrupt it (prototype
-tick13). CORRECT mechanism = **`cdz convert sexpr → ml → sexpr`** per file: the ML surface DISAMBIGUATES a
-literal (`[…]`/`#{…}`/`#(…)`/`(a,b)`) from a call `f(x)` from a pattern, so the round-trip nativizes exactly
-the LITERALS/patterns and leaves HOF calls as calls — correct by construction; handles nesting, empty
-`(list)`→`#list()`, record/map field-pairify, and (post-74f3f6e1f) all 5 ctors incl. set (`(set …)` and
-`((. Set of)(list …))` both → `#(…)` → native `Ctor(Set)`). Prototype-VALIDATED (tick13) for
-list/tuple/record/map + HOF-safety; set via 74f3f6e1f. Unambiguous string-head `("list" …)` forms, if any,
-are directly-safe. Migration MUST pass `cdz corpus check` + the ML round-trip harness (`xtask roundtrip`),
-not just the gate.
+### 12.2 CORPUS MIGRATION MECHANISM — resolve-aware structural head-rewrite (ml-convert is DEAD; SUPERSEDES §11.3 + the earlier §12.2 ml-convert)
+
+Two mechanisms were considered and REJECTED; the third is the plan:
+- ❌ **blind `cdz rewrite` head-rename** (§11.3): UNSAFE — the corpus `(def (map …))` defines a `map`
+  FUNCTION, so a bare `(map it f)` is a HOF CALL, not a literal; `(map ,@e)→#map(,@e)` corrupts it (tick13).
+- ❌ **`cdz convert sexpr → ml → sexpr`** (the earlier §12.2): the ML surface disambiguates literal-vs-call
+  (HOF-safe) AND nativizes value-only cases cleanly — BUT the FULL-CORPUS form-by-form rehearsal (tick15)
+  found it FAILS on cases whose `(input …)` is a PROGRAM (`(do (def …) (export …))`): the ML wraps it as
+  `case(input( ( (def …); export {…} ) ))` — a def/export sequence in ML call-arg position — which `read_ml`
+  REJECTS ("expected `)`"). A large fraction of corpus cases have program inputs (416/519 in 02-binding
+  failed). The value-only prototypes (tick13 + the one record case) gave FALSE confidence. ml-convert is DEAD
+  for the corpus.
+- ✅ **resolve-aware structural head-rewrite** (v-syntax's alternative; the PLAN): a rcdzc-based codemod —
+  read each corpus form (dual-accept reader → legacy heads), RESOLVE it, and for every node that resolves to
+  a compound CONSTRUCTOR (`Resolved::Record/Tuple/List/Map/Set` — NOT a shadowed fn: `(map it f)` resolves to
+  an APPLICATION, so HOF-safe by resolution), rewrite its AST head to the native `Ctor` leaf + field-pairify
+  record/map entries + memberize `.` access; then re-print. NO ML round-trip → program structure preserved,
+  no read_ml fragility. This is a rcdzc pass (resolve is rcdzc's) — MY lane to build at assembly, coordinated
+  with the metaprog/corpus lane (`cdz rewrite` engine owner). Must pass `cdz corpus check` + `xtask roundtrip`.
+  Note: the native-surface FACTS still hold (ml-convert proved `#map((= k v)…)`, `#record(…)`, `#(…)`→Ctor(Set),
+  `(. p x)` Member are the correct native shapes) — only the whole-case-through-ML DELIVERY mechanism is dead.
 
 **FORM-BY-FORM, not whole-file (tick14 full-corpus rehearsal).** The corpus files are a MULTI-FORM sequence
 of `(case "…" (doc …) (input …) (output …))` test-harness forms (NOT one Cadenza program) with `;` comments.
@@ -566,9 +576,9 @@ the metaprog/corpus lane; the ml-convert route is validated + simplest.
    (early v-syntax cadenza-syntax fold; any v-runtime provisional decode/hash arm).
 2. Fold FINAL peer `--ref`s onto the integration base (squash-not-merge): v-syntax `74f3f6e1f`, v-runtime
    op62 (final tip), v-spec-oracle spec arm, v-static-data byte-EQ test.
-3. Run the corpus migration FORM-BY-FORM (§12.2): for each `spec/semantics/*.sexp` (all 34), convert each
-   top-level `(case …)` via sexpr→ml→sexpr (whole-file fails — the ML surface needs program structure) and
-   reassemble; expect a whole-file reformat diff. Diff-review.
+3. Run the corpus migration via the RESOLVE-AWARE structural head-rewrite (§12.2 — NOT ml-convert, which is
+   dead for program-input cases): a rcdzc codemod that resolves each form + rewrites compound-constructor
+   heads to native `Ctor` leaves (+ field-pairify + memberize), structure-preserving + HOF-safe. Diff-review.
 4. Verify: `cdz corpus check` + `xtask roundtrip` (ML round-trip) green across all 34.
 5. Regenerate `verify_kernel.bin` (`REGEN_VERIFY_KERNEL_BIN=1`) — const_value_ast + op62 + reader all shifted
    kernel bytes.
