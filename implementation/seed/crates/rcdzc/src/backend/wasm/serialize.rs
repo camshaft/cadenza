@@ -3311,14 +3311,6 @@ fn emit_result_spill(
     uleb128(retptr as u64, out);
     // Write the value's canonical form at retptr + 0.
     emit_canon_write(write, rec, retptr, 0, next_local, realloc_abs, imp, out);
-    // Reclaim the def RESULT cell now that its canonical form has been copied into the return area.
-    // `drop` recursively reclaims the whole result subtree (the wrapper is the result's sole owner);
-    // no double-free, because `emit_canon_write` only READS the value-heap handles to serialize them,
-    // it never takes ownership. Without this the result cell (and its subtree) leaks on every call.
-    out.push(op::LOCAL_GET);
-    uleb128(rec as u64, out);
-    out.push(op::CALL);
-    uleb128(imp("drop"), out);
     // Return the area pointer.
     out.push(op::LOCAL_GET);
     uleb128(retptr as u64, out);
