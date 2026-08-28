@@ -42,6 +42,19 @@ pub enum RcdzcOutput {
     Trap(String),
 }
 
+impl RcdzcOutput {
+    /// Bridge rcdzc's RENDERED wasm result — the `Side::Value` string the differential produces (e.g.
+    /// cdz-run's `"42"` / `"(tuple 1 2)"` after the `(: … Type)` annotation is stripped) — into a
+    /// trial's `(value <ast>)` by parsing the render as a value-AST. Returns `None` if it does not parse
+    /// (a non-canonical render): the caller then SKIPS that trial rather than sending a malformed value.
+    /// This is the pure core of the S4b bridge from the wasm differential side to a Lean trial.
+    pub fn value_from_render(rendered: &str) -> Option<RcdzcOutput> {
+        cadenza_syntax::sexpr::read(rendered)
+            .ok()
+            .map(RcdzcOutput::Value)
+    }
+}
+
 /// One trial: a program, its call arguments (as value-ASTs; empty for `main`/0-args), and the output
 /// rcdzc produced for it, which the oracle asserts against.
 #[derive(Debug, Clone)]
@@ -273,6 +286,31 @@ mod tests {
             panic!()
         };
         assert_eq!(a.as_name(out1[0]), Some("trap"));
+    }
+
+    /// `value_from_render` parses a rendered wasm value into a `(value <ast>)` trial output; a trial
+    /// built from it encodes into a `(batch (trial … (value 42)))`. A non-parsing render → `None` (skip).
+    #[test]
+    fn value_from_render_bridges_a_rendered_value_into_a_trial() {
+        let out = RcdzcOutput::value_from_render("42").expect("canonical value parses");
+        assert!(matches!(out, RcdzcOutput::Value(_)));
+        let blob = encode_batch_request(&[Trial::main_0(
+            ast("(do (def (main) 42) (export main))"),
+            out,
+        )]);
+        let a = cadenza_syntax::codec::decode(&blob).expect("decodes");
+        let Struct::List(kids) = a.get(a.root) else {
+            panic!()
+        };
+        let Struct::List(trial) = a.get(kids[1]) else {
+            panic!()
+        };
+        let Struct::List(output) = a.get(trial[3]) else {
+            panic!()
+        };
+        assert_eq!(a.as_name(output[0]), Some("value"));
+        // A render that isn't a well-formed value → None (the caller skips the trial).
+        assert!(RcdzcOutput::value_from_render("(( not balanced").is_none());
     }
 
     /// A hand-built `(verdicts (holds) (mismatch "d") (skip "r"))` AST decodes to the three verdicts in
