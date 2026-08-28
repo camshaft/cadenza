@@ -11729,3 +11729,23 @@
   (input (do (def (main (: n Int64)) (% n -1)) (export main)))
   (call main (: 7 Int64))                    (output (: 0 Int64))
   (call main (: -9223372036854775808 Int64)) (output (: 0 Int64)))
+
+; ── breaker: cadenza-backend round-trip VALUE-equivalence witnesses (corpus-cadenza target #4837, backend #4759) ──
+; The cadenza backend emits B0 scalar LEAVES; these bare-leaf exports are cases it actually emits (most 06
+; cases are operator expressions it declines → corpus-cadenza-skipped). Each fences that the scalar CODEC
+; survives sexp→cadenza(.ast)→wasm→run identically to direct sexp→wasm→run — a value-equivalence a byte-
+; idempotence check would miss (esp. the -0.0 leading-flag-byte encoding).
+(case "cdzw1 the cadenza backend round-trip preserves the SIGN of negative zero"
+  (doc "A `-0.0` leaf's cadenza encoding is a leading FLAG byte (not raw IEEE), distinct from `0.0`; the
+        round-trip must reproduce -0.0, not collapse the sign of zero. `=` is canonical-byte so -0.0 ≠ 0.0.")
+  (input (do (def (v) -0.0) (export v)))
+  (call v) (output (: -0.0 Float64)))
+(case "cdzw2 the cadenza backend round-trip preserves Int64.min"
+  (doc "The most-negative Int64 leaf (-2^63) survives the cadenza round-trip exactly (no wrap/truncation).")
+  (input (do (def (v) -9223372036854775808) (export v)))
+  (call v) (output (: -9223372036854775808 Int64)))
+(case "cdzw3 the cadenza backend round-trip preserves the minimum positive subnormal Float64"
+  (doc "The smallest positive denormal (5e-324) survives the cadenza round-trip — no flush-to-zero or
+        normalization in the scalar codec.")
+  (input (do (def (v) 5e-324) (export v)))
+  (call v) (output (: 5e-324 Float64)))
