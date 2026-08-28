@@ -9279,7 +9279,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 103752099 Int64))
   (call   main (: -100 Int64)) (output (: 752099 Int64))
-  (live-objects known-leak 24))
+  (live-objects known-leak 8))
 
 (case "ONE inner map shared under TWO outer keys updates independently (no aliasing cross-talk)"
   (doc    "The map-of-maps rows above store DISTINCT inner maps; this pins the SHARED-value face: one

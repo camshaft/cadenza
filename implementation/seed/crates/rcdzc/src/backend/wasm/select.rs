@@ -11786,9 +11786,12 @@ fn emit_immortal_elem(
         // nested-collection immortals work — a sum/list element of a list/tuple/record, or a recursive-sum
         // spine, builds once. Without the `ListNew` arm a nested list falls to the `_` scalar path below,
         // whose `box_op` returns `None` for a list handle → the list is left UNMARKED = a census leak.
-        Core::Tuple { .. } | Core::Record { .. } | Core::SumNew { .. } | Core::ListNew { .. } => {
-            emit_immortal_static(db, elem, layout, out)
-        }
+        Core::Tuple { .. }
+        | Core::Record { .. }
+        | Core::SumNew { .. }
+        | Core::ListNew { .. }
+        | Core::MapNew { .. }
+        | Core::SetOf { .. } => emit_immortal_static(db, elem, layout, out),
         _ => {
             if let Some(payload) = crate::lower::constant_bytes_value(db, elem)
                 .or_else(|| crate::lower::constant_string_value(db, elem))
