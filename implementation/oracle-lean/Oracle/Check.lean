@@ -106,6 +106,14 @@ partial def expectedValue? (m : Module) (i : Nat) : Option Value :=
       | Option.some (Value.list elems) => (Eval.canonSet elems).map Value.set
       | _ => Option.none
     else
+    -- an `Ast` variant VALUE `((. Ast Ctor) payload)` — the qualified-only ctor form a quoted/reflected
+    -- program renders as. Parses to the SAME `variant` the eval side's `quoteReflect`/`(. Ast Ctor)`
+    -- construction produces, so a quote result compares equal to its written-out `Ast.*` expected form.
+    match Eval.qualHead? m cs with
+    | Option.some (q, c) =>
+      if q == "Ast".toUTF8 then ((cs[1]?).bind (expectedValue? m)).map (fun p => Value.variant c p)
+      else Option.none
+    | Option.none =>
     match headStr? m s with
     | Option.some "Some" => ((cs[1]?).bind (expectedValue? m)).map Value.some
     | Option.some "Ok" => ((cs[1]?).bind (expectedValue? m)).map Value.ok

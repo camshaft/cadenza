@@ -497,6 +497,51 @@ def canonMap (entries : Array (Value × Value)) : Option (Array (Value × Value)
 def mapInsertRaw (entries : Array (Value × Value)) (k v : Value) : Array (Value × Value) :=
   (entries.filter (fun e => !(e.1 == k))).push (k, v)
 
+/-- Structurally REFLECT the AST subtree at node `i` into an `Ast` sum VALUE, WITHOUT evaluating it
+(`metaprogramming.md` #Quote Produces An AST Value: `(quote <expr>)` returns the `Ast` value for
+<expr>'s structure — UNCONDITIONALLY, whatever <expr> contains, so a nested `quasiquote`/`unquote` is
+inert literal structure, not an active splice). Each leaf becomes its matching `Ast` variant (the
+prelude `Ast` sum's variants: `Int`/`Float`/`Bool`/`Str`/`Name`/`Bytes`/`Char`; a NAME reflects to
+`Ast.Name` carrying the identifier text, distinct from a string literal's `Ast.Str`), and a list node
+becomes `Ast.List` of the reflected children. These are the SAME `variant` values the qualified
+constructor `(. Ast Ctor)` builds, so a quoted value compares equal to its written-out `Ast.*` form.
+A `Symbol`/suffixed/malformed leaf is not modeled as a value → `unsupported` (a sound skip: the whole
+quoted structure cannot be faithfully represented). -/
+partial def quoteReflect (m : Module) (fuel : Nat) (i : Nat) : Outcome :=
+  match fuel with
+  | 0 => .diverges
+  | Nat.succ fuel' =>
+    match m.nodes[i]? with
+    | some (Node.atom lid) =>
+      match m.leaves[lid]? with
+      | some (.intLit neg _ mag) =>
+        let n := Int.ofNat (Value.beBytesToNat mag)
+        .value (Value.variant "Int".toUTF8 (Value.int (if neg then -n else n)))
+      | some (.float neg e s) => .value (Value.variant "Float".toUTF8 (Value.float neg e s))
+      | some .floatNan => .value (Value.variant "Float".toUTF8 Value.floatNan)
+      | some (.floatInf neg) => .value (Value.variant "Float".toUTF8 (Value.floatInf neg))
+      | some (.boolLit b) => .value (Value.variant "Bool".toUTF8 (Value.bool b))
+      | some (.str b) => .value (Value.variant "Str".toUTF8 (Value.str b))
+      | some (.name b) => .value (Value.variant "Name".toUTF8 (Value.str b))
+      | some (.bytesLit b) => .value (Value.variant "Bytes".toUTF8 (Value.bytes b))
+      | some (.char b) => .value (Value.variant "Char".toUTF8 (Value.char b))
+      | some _ => .unsupported "quote: unmodeled leaf (symbol/suffixed/malformed) in quoted structure"
+      | none => .unsupported "quote: leaf index out of range"
+    | some (Node.list children) =>
+      -- reflect each child into an `Ast.List`; any unmodeled child short-circuits to its outcome
+      let reflected : Except Outcome (Array Value) :=
+        children.foldl (fun acc j =>
+          match acc with
+          | .error o => .error o
+          | .ok vs =>
+            match quoteReflect m fuel' j with
+            | .value v => .ok (vs.push v)
+            | other => .error other) (.ok #[])
+      match reflected with
+      | .ok vs => .value (Value.variant "List".toUTF8 (Value.list vs))
+      | .error o => o
+    | none => .unsupported "quote: node index out of range"
+
 mutual
 /-- Evaluate a node under `env` at expected integer type `ty` to an `Outcome`. Models the pure-core:
 scalar literals, variable references, `let`, `if`, `(: e T)` ascription, and binary integer arithmetic
@@ -541,7 +586,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
                -- names collide with type/module names, so they are never bare). Each carries one payload →
                -- a generic `variant`. (Metaprog foundation: quote reflects an AST into these Ast values.)
                else if q == "Ast".toUTF8 &&
-                       ["Int", "Name", "Str", "Bool", "List", "Bytes", "Char", "Symbol"].contains ((String.fromUTF8? c).getD "") then
+                       ["Int", "Float", "Name", "Str", "Bool", "List", "Bytes", "Char", "Symbol"].contains ((String.fromUTF8? c).getD "") then
                  some (evalUnaryCtor m env fuel children (Value.variant c))
                else none
              | none => none)
@@ -556,6 +601,11 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
       match m.headName? (Node.list children) with
       | some h =>
         if h == "let".toUTF8 then evalLet m env ty fuel children
+        else if h == "quote".toUTF8 then
+          -- `(quote <expr>)`: reflect the single quoted subtree structurally, WITHOUT evaluating it.
+          match children[1]? with
+          | some c => quoteReflect m fuel c
+          | none => .unsupported "quote: missing quoted argument"
         else if h == "if".toUTF8 then evalIf m env ty fuel children
         else if h == ":".toUTF8 then evalAscribe m env ty fuel children
         else if h == "fn".toUTF8 then evalFn m env fuel children
