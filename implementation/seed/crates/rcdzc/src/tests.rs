@@ -31166,8 +31166,9 @@ mod stage1 {
                 "an over-ceiling width must be rejected CDZ0302 naming `{name}`: {body} -> {msg}"
             );
         }
-        // The boundary itself (64) is still valid — `(UInt 64)` builds and 5 fits (crosses as u64).
-        assert_eq!(run_main_as::<u64>("(: 5 (UInt 64))"), 5);
+        // The boundary itself (64) is still valid — `(UInt 64)` builds and 5 fits (crosses as u64). Its RUN
+        // is corpus-covered by 06-numeric-model "a bare constant width UInt8 literal crosses to the host as
+        // its value" (the width-ascription-crosses witness); this test keeps only the over-ceiling reject.
     }
 
     #[test]
@@ -31278,9 +31279,10 @@ mod stage1 {
             .expect_err("a runtime-valued signed width must be rejected");
         assert_eq!(e.code.as_deref(), Some("CDZ0302"), "got: {}", e.message);
         // A width that IS a compile-time constant reached through a `let` is still fine (it folds to the
-        // constant): `(let ((w 8)) (: 5 (UInt w)))` builds and 5 fits UInt8 (crosses as u8, not dropped
-        // to the default i64 — the constant width is honored).
-        assert_eq!(run_main_as::<u8>("(let ((w 8)) (: 5 (UInt w)))"), 5);
+        // constant): `(let ((w 8)) (: 5 (UInt w)))` builds and 5 fits UInt8 (crosses as u8, not dropped to
+        // the default i64 — the constant width is honored). That RUN is corpus case 06-numeric-model "an
+        // integer width reached through a let-bound constant folds and is honored"; this test keeps only
+        // the runtime-valued-width reject.
     }
 
     #[test]
@@ -31406,9 +31408,9 @@ mod stage1 {
         }
         // An ADMITTED width (`Float64`) types cleanly and CROSSES as f64 — the value runs to 1.5, not a
         // CDZ0302. (A `Float32` value declines at emit until the f32 path lands — F3/F4 — but is
-        // WELL-TYPED, no CDZ0302; that decline is covered where the emit path is exercised.)
-        assert_eq!(run_main_as::<f64>("(: 1.5 (Float 64))"), 1.5);
-        assert_eq!(run_main_as::<f64>("(: 1.5 Float64)"), 1.5);
+        // WELL-TYPED, no CDZ0302; that decline is covered where the emit path is exercised.) That RUN
+        // (`(: 1.5 (Float 64))` and the `Float64` alias both cross as f64) is corpus-covered by
+        // 06-numeric-model "(: (: 1.5 (Float 64)) Float64)"; this test keeps only the non-admitted reject.
     }
 
     #[test]
