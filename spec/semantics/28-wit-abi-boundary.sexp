@@ -1257,6 +1257,15 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Color (Red) (Green) (Blue)) (def (f (: x Int64)) (if (= x 0) Color.Red Color.Green)) (export f)))
   (declines (message "a different type than the world declares")))
 
+(case "a typed RECORD result with a VARIANT field crosses the export boundary (declared world)"
+  (doc "SHAPE 65 - a typed export result `record { o: variant{continue, close(s64)}, n: s64 }` under a declared world. Verifies canon_write_of's Record arm recursing into its Variant arm for a compound field (the record + variant defined types both emitted + re-exported). WIT-dump: `variant t0 {continue, close(s64)}` + `record t1 {o: t0, n: s64}` + `f: func(x: s64) -> t1`. Both variant arms x=0->Continue / x!=0->Close(x). Previously WIRED-but-untested (the doc's record-result-with-variant-field cell); now pinned.")
+  (wit-world (world w (export cadenza:demo/iface (member f (func (param x (s64)) (result ("record" (o ("variant" (continue) (close (s64)))) (n (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type Outcome (Continue) (Close Int64)) (def (f (: x Int64)) (record (= o (if (= x 0) Outcome.Continue (Outcome.Close x))) (= n x))) (export f)))
+  (call f (: 0 Int64)) (output (: (record (= o (continue unit)) (= n 0)) (record (o Outcome) (n Int64))))
+  (call f (: 7 Int64)) (output (: (record (= o (close 7)) (= n 7)) (record (o Outcome) (n Int64))))
+  (live-objects known-leak 1))
+
 ; -- breaker batch 408 (2026-08-26): the scalar-param + compound-result acceptance ladder, promoted
 ; on the #3721 fix (gate admission: a scalar-param member with a SpillRecord compound result now takes
 ; the typed-interface wrapper instead of leaking the raw handle). All 8 faces flipped on the fix:
