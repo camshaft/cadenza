@@ -3764,7 +3764,7 @@
             (def (main (: b Bool)) (canon b)) (export main)))
   (call   main (: true Bool)) (output (: 1 Int64))
   (call   main (: false Bool)) (output (: 2 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a map with a String value: a missing key takes the None arm"
   (doc    "The absent companion: looking up a key the String-valued map does not hold takes the `None` arm

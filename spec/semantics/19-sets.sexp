@@ -1847,7 +1847,7 @@
                 ((None u) -1)))
             (export main)))
   (call   main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "Set.to-list orders runtime Bytes elements by unsigned-lexicographic byte order — 0x80 sorts LAST, not as signed -128"
   (doc    "Bytes gained a BLESSED TOTAL ORDER (§order, operator directive 2026-08-02; rcdzc+runtime #1120):
@@ -1918,7 +1918,7 @@
             (export main)))
   (call   main (: 1 Int64))  (output (: 1 Int64))
   (call   main (: -1 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "Set.to-list sorts a PREFIX string before its extension (length tiebreak on equal prefixes)"
   (doc    "`{\"axxx\",\"a\"}` — the flat literal \"a\" is a proper PREFIX of the rope `(rep \"a\" 3)` =
@@ -2848,7 +2848,7 @@
   (output (: 42 Int64))
   (call   main (: 0 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 (case "a float-field RECORD as a SET element dedups by content including the float leaf"
   (doc    "The float-leaf record as a champ SET element (closed with the slice-canonicalization work —

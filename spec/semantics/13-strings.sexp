@@ -324,7 +324,7 @@
   (call main (: 1 Int64) (: 3 Int64)) (output (: 51 Int64))
   (call main (: 0 Int64) (: 2 Int64)) (output (: 30 Int64))
   (call main (: 2 Int64) (: 4 Int64)) (output (: 40 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 (case "a runtime multibyte rope matches a MULTIBYTE string-literal arm by content"
   (doc    "The string-match desugar pins use ASCII literals; this arm is multibyte over a runtime
@@ -1087,7 +1087,7 @@
             (def (main) (f (Map.insert (Map.empty) "y" (rep "hi" 3)) "y"))
             (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a runtime-rope do-def that escapes an if-select in a match arm survives (multi-use heap keep, not a UAF)"
   (doc    "breaker FINDING #20 (wasm UAF, rust/rust-async always correct) — v-inference's lower_let
@@ -4089,7 +4089,7 @@
   (output (: (tuple 5 1 1) (Tuple Int64 Int64 Int64)))
   ; The (tuple 5 1 1) folds to a constant, so its embedded constant cells now hoist build-once (WIT static
   ; encoding) — census-excluded immortals — dropping the leak 12→7 (the residual is the runtime String rope).
-  (live-objects known-leak 7))
+  (live-objects known-leak 5))
 
 ; --- The threaded-String-param retain: the consumption-shape faces ----------------------------------
 ; e38228f35 added String/Symbol to the Perceus retain-candidate gate (a param threaded through a
@@ -4566,7 +4566,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "String.byte-len of a runtime rope agrees with Bytes.len of its to-bytes image"
   (doc    "The runtime-rope face of the const agreement pin: byte-len and Bytes.len∘to-bytes must agree on a concat-built value (6 for café+s).")

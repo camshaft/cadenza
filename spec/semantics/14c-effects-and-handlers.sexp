@@ -8969,7 +8969,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 109207104 Int64))
   (call   main (: 7 Int64)) (output (: 109211104 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "uwr1 a NARROW UInt8 handler state — wrapping-add accumulates modulo 256 through the thread, each dispatch answers the widened running value"
   (input  (do
