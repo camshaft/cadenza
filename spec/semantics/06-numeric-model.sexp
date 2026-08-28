@@ -11857,3 +11857,14 @@
     (def (main (: n Int64)) (+ (* 1000 (fact n)) (+ (* 10 (ev n)) (od n))))
     (export main)))
   (call main (: 5 Int64)) (output (: 120001 Int64)))
+
+(case "cdzw9 the cadenza backend round-trips a beyond-Int64 BigInt constant (emits (: n BigInt), not BigInt.of)"
+  (doc "Regression fence for #4881 (breaker-found): a `ConstInt @ Ty::BigInt` whose magnitude EXCEEDS Int64
+        must re-emit as the direct ascription `(: n BigInt)`, NOT `(BigInt.of n)` — `BigInt.of` widens a
+        fixed-size Int64 and cannot hold a beyond-Int64 literal, so a `(BigInt.of <26-digit>)` re-emit produced
+        a non-re-compilable .ast (CDZ0201). Here a 26-digit BigInt constant round-trips value-correct through
+        the cadenza hop (sexp→cadenza→wasm; dual-path verified). A regression back to the `BigInt.of` re-emit
+        would fail the hop. Int64.MAX and in-range BigInts already round-trip either way; this pins the
+        beyond-Int64 magnitude.")
+  (input (do (def (v) (: 99999999999999999999999999 BigInt)) (export v)))
+  (call v) (output (: 99999999999999999999999999 BigInt)))
