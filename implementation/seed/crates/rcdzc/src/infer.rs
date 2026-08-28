@@ -9059,43 +9059,11 @@ fn check_application(
                 key_tys.push(k);
             }
         }
+        // Anchor at `head` (the prim application's head) — `push_unhashable_key_fault` builds the CDZ0202
+        // (abstract key) / CDZ0216 (function key) rejects; the native `#set`/`#map` LITERAL arms in `collect`
+        // call the SAME helper anchored at the literal node, so the two surfaces enforce one constraint.
         for k in &key_tys {
-            if let Some(abstract_ty) = key_ty_contains_abstract_at(db, app, k) {
-                trace!(target: "rcdzc::infer", head = head.0, "fault: abstract-typed map/set key (CDZ0202)");
-                out.push(
-                    Reject::coded(
-                        Code::NominalMismatch,
-                        format!(
-                            "`{}` is an abstract type here (its constructors are not exported to this \
-                             file), so it cannot be a map/set key — key insertion, lookup, and membership \
-                             observe its representation through a built-in comparison; compare it through \
-                             a function exported by the module that declares it",
-                            abstract_ty.render_name(&db.name_ctx())
-                        ),
-                    )
-                    .at(head),
-                );
-                return;
-            }
-            // A FUNCTION-typed key (or one containing a function at a comparable-spine position) — CDZ0216.
-            // A closure has no canonical identity, so it is neither equatable nor orderable at all; keying a
-            // Map/Set by it (or comparing it) can't satisfy structural membership. Distinct from the abstract
-            // case above: not a boundary/opacity issue but intrinsic non-comparability. Currently wasm
-            // MISCOMPILES (invents a closure identity) while rust E0277s — a uniform compile-time reject.
-            if let Some(fn_ty) = key_ty_contains_fn(k) {
-                trace!(target: "rcdzc::infer", head = head.0, "fault: function-typed map/set key (CDZ0216)");
-                out.push(
-                    Reject::coded(
-                        Code::NotEquatable,
-                        format!(
-                            "a value of function type `{}` cannot be a map/set key — a function has no \
-                             canonical identity, so it is neither equatable nor orderable; key the \
-                             collection by a value type (or by a field the closure captures)",
-                            fn_ty.render_name(&db.name_ctx())
-                        ),
-                    )
-                    .at(head),
-                );
+            if push_unhashable_key_fault(db, head, k, out) {
                 return;
             }
         }
@@ -12181,6 +12149,51 @@ fn key_ty_contains_fn(ty: &Ty) -> Option<Ty> {
     }
 }
 
+/// Push the map/set KEY-HASHABILITY fault for `key_ty`, anchored at `at`, if any: an ABSTRACT key type
+/// (CDZ0202 — its representation is not observable across its boundary) or a FUNCTION-typed key (CDZ0216 —
+/// a closure has no canonical identity, so it is neither equatable nor orderable). Returns whether a fault
+/// was pushed. SHARED by `check_application` (the `Set.of`/`Map.new`/lookup/algebra PRIM apps) AND the
+/// native `#set`/`#map` LITERAL arms in `collect`: both store keys the runtime later compares/hashes
+/// structurally (`champ_eq`), so both must enforce the same constraint — a native literal must NOT be a
+/// silent bypass of the prim-app check (the M2 native-literal soundness hole: pre-M2 there was no native
+/// `#set`/`#map` literal, so the prim-app-only gate was complete; the literal reopened it).
+fn push_unhashable_key_fault(db: &Db, at: StructId, key_ty: &Ty, out: &mut Vec<Reject>) -> bool {
+    if let Some(abstract_ty) = key_ty_contains_abstract_at(db, at, key_ty) {
+        trace!(target: "rcdzc::infer", at = at.0, "fault: abstract-typed map/set key (CDZ0202)");
+        out.push(
+            Reject::coded(
+                Code::NominalMismatch,
+                format!(
+                    "`{}` is an abstract type here (its constructors are not exported to this \
+                     file), so it cannot be a map/set key — key insertion, lookup, and membership \
+                     observe its representation through a built-in comparison; compare it through \
+                     a function exported by the module that declares it",
+                    abstract_ty.render_name(&db.name_ctx())
+                ),
+            )
+            .at(at),
+        );
+        return true;
+    }
+    if let Some(fn_ty) = key_ty_contains_fn(key_ty) {
+        trace!(target: "rcdzc::infer", at = at.0, "fault: function-typed map/set key (CDZ0216)");
+        out.push(
+            Reject::coded(
+                Code::NotEquatable,
+                format!(
+                    "a value of function type `{}` cannot be a map/set key — a function has no \
+                     canonical identity, so it is neither equatable nor orderable; key the \
+                     collection by a value type (or by a field the closure captures)",
+                    fn_ty.render_name(&db.name_ctx())
+                ),
+            )
+            .at(at),
+        );
+        return true;
+    }
+    false
+}
+
 fn same_sum_shape(db: &Db, a: StructId, b: StructId) -> bool {
     let (Some(da), Some(dbecl)) = (db.type_decl_by_occ(a), db.type_decl_by_occ(b)) else {
         return false;
@@ -13459,6 +13472,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     }
                 }
             }
+            // A native `#set` LITERAL keys/hashes its ELEMENTS (a `#list` does NOT), so a set element that is
+            // a FUNCTION (CDZ0216, no canonical identity) or an ABSTRACT type (CDZ0202, representation not
+            // observable here) is rejected at the literal — the SAME constraint `Set.of`/`Set.insert` enforce
+            // as prim apps. Without this the native `#set` literal was a silent BYPASS (M2 soundness hole: the
+            // s-expr `(Set.of (list (fn …)))` = a `Prim::SetOf` app correctly declined CDZ0216, but the M2
+            // printer's `#(fn …)` native set-literal sailed through). `type_of` is `Ty::Set(k)` for a set,
+            // `Ty::List(_)` for a list — so this fires ONLY for the set (a list of functions stays legal).
+            if let Ty::Set(k) = type_of(db, id) {
+                push_unhashable_key_fault(db, id, &k, out);
+            }
             for &e in elems.iter() {
                 collect(db, e, out);
             }
@@ -13500,6 +13523,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             if let Some(reject) = map_duplicate_const_key(db, &entries) {
                 trace!(target: "rcdzc::infer", node = id.0, "fault: map has a duplicate constant key (CDZ0201)");
                 out.push(reject);
+            }
+            // A native `#map` LITERAL keys/hashes its KEYS, so a FUNCTION key (CDZ0216) or an ABSTRACT-typed
+            // key (CDZ0202) is rejected at the literal — the SAME constraint `Map.new`/`Map.insert`/lookup
+            // enforce as prim apps (the `#map` sibling of the `#set` bypass above; M2 native-literal soundness).
+            if let Ty::Map(k, _) = type_of(db, id) {
+                push_unhashable_key_fault(db, id, &k, out);
             }
             for &(k, v) in entries.iter() {
                 collect(db, k, out);
