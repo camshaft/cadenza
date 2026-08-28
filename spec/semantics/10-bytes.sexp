@@ -415,8 +415,12 @@
            leaking, both reads see the live view: `100·2 + 30` = 230 / `100·2 + 10` = 210. A regression that
            reclaimed a count>1 view would move the value off 230/210 or trip an `assert_node_live` UAF trap.
            The single-consumer scalar-extracted twin (`Bytes.at` over a directly-consumed slice) is bar3/bar4,
-           which #4939 correctly drops to 0 — this count>1 case is the complementary must-hold that stays leaking
-           (known-leak 2: the shared Some-shell + the un-reclaimed multi-read view).")
+           which #4939 correctly drops to 0 — this count>1 case is the complementary must-hold that stays leaking.
+           KNOWN-LEAK 1 (was 2): the Option-A SumExpect SHELL-reclaim (#4956) net-0-reclaims the orphaned Some-shell
+           here too — the SumExpect node is referenced ONCE by the `let` (its parent is the Let, not a scalar-read),
+           so it lands in the SHELL-set and its shell drops soundly (view untouched). The residual 1 IS the
+           un-reclaimed count>1 VIEW — the must-hold witness: a regression that wrongly reclaimed the multi-read
+           view would drop this to 0 (or trip `assert_node_live`), so known-leak-1 still guards the count>1 view.")
   (input  (do
             (def (mk-slice (: a Int64))
               (let ((parent (Bytes.of (list 10 20 30 40))))
