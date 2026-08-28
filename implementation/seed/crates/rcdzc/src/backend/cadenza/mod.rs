@@ -105,6 +105,8 @@
 //!   disambiguated from `Bytes.concat` by the result type; its compiler-inserted `Core::NfcNormalize` (no
 //!   surface member) emits TRANSPARENTLY (its inner string), the surface `String.concat`/`to-bytes`
 //!   re-inserting the normalization on recompile.
+//! - **ORDERING**: the three-way compare prim (`Compare`, scalar `Core::Compare` or compound `ValueCmp`)
+//!   re-emits the member `(Ordering.of l r)` — `compare` is namespaced as `Ordering.of`, NOT a bare name.
 //! - **PROJ / VALUE-EQ / VALUE-CMP**: a runtime tuple projection `Core::Proj` → `(. <operand> <index>)`;
 //!   structural equality `Core::ValueEq`/`ValueEqShaped` → `(= l r)` and structural ordering
 //!   `Core::ValueCmp{op}` → `(<op> l r)` on runtime compounds (the operands' type re-selects the
@@ -571,6 +573,15 @@ fn emit_expr_viewed(
                     }
                 };
                 let head = member_access(b, &module, member);
+                let l = emit_expr(db, b, lhs, None, env, emitted)?;
+                let r = emit_expr(db, b, rhs, None, env, emitted)?;
+                return Ok(b.list(vec![head, l, r]));
+            }
+            // THREE-WAY compare — its surface is the member `(Ordering.of l r)` (the `compare` prim is
+            // namespaced as `Ordering.of`, NOT a bare `compare` name — which is unbound). Applies to a
+            // scalar `Core::Compare { op: Compare }`; the compound `Core::ValueCmp { Compare }` mirrors it.
+            if op == crate::resolved::Prim::Compare {
+                let head = member_access(b, "Ordering", "of");
                 let l = emit_expr(db, b, lhs, None, env, emitted)?;
                 let r = emit_expr(db, b, rhs, None, env, emitted)?;
                 return Ok(b.list(vec![head, l, r]));
@@ -1274,12 +1285,18 @@ fn emit_expr_viewed(
         // (`Lt`/`Le`/`Gt`/`Ge`), re-emitted via the same `prim_operator` reverse-map the scalar comparisons
         // use; the operands' compound type re-selects the `value-cmp` path on recompile.
         Core::ValueCmp { op, lhs, rhs, .. } => {
-            let sym = prim_operator(op).ok_or_else(|| {
-                Reject::decline(format!(
-                    "the Cadenza backend does not yet lower the value-compare prim {op:?}"
-                ))
-            })?;
-            let head = b.name(sym);
+            // A THREE-WAY compound compare is the member `(Ordering.of l r)` (like the scalar case); a
+            // boolean compound ordering (`Lt`/`Le`/`Gt`/`Ge`) is the plain operator via `prim_operator`.
+            let head = if op == crate::resolved::Prim::Compare {
+                member_access(b, "Ordering", "of")
+            } else {
+                let sym = prim_operator(op).ok_or_else(|| {
+                    Reject::decline(format!(
+                        "the Cadenza backend does not yet lower the value-compare prim {op:?}"
+                    ))
+                })?;
+                b.name(sym)
+            };
             let l = emit_expr(db, b, lhs, None, env, emitted)?;
             let r = emit_expr(db, b, rhs, None, env, emitted)?;
             Ok(b.list(vec![head, l, r]))
@@ -1743,7 +1760,8 @@ fn prim_operator(op: crate::resolved::Prim) -> Option<&'static str> {
         Le | FLe => "<=",
         Ge | FGe => ">=",
         Eq | FEq => "=",
-        Compare => "compare",
+        // `Compare` (three-way ordering) is NOT a bare operator — its surface is the member `Ordering.of`
+        // (`compare` is no longer a top-level name), so it is handled by the caller, not here.
         _ => return None,
     })
 }
