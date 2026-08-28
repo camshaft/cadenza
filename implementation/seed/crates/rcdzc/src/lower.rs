@@ -17331,16 +17331,16 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         //= spec/capabilities/units-of-measure.md#a-stored-quantity-displays-at-its-dimension-s-reference-unit
         //# The reference-unit display MUST recurse into every quantity leaf of a compound value, so that a tuple, a sum payload, a nested compound, or a record field carrying a quantity each displays scaled to its reference independently and in its own inner type, not only a bare top-level quantity.
         Core::Tuple { elems } => {
-            let head = b.name("tuple");
-            let mut children = vec![head];
+            // M2: head-first native TUPLE_CTOR head (recognized by kind), not the `tuple` name head.
+            let mut children = Vec::with_capacity(elems.len());
             for e in elems.iter().copied() {
                 children.push(const_value_ast(db, b, e)?);
             }
-            Some(b.list(children))
+            Some(b.compound(crate::ast::CompoundCtor::Tuple, &children))
         }
         Core::Record { fields } => {
-            let head = b.name("record");
-            let mut children = vec![head];
+            // M2: head-first native RECORD_CTOR head; fields are FieldPair-leaf `(= k v)` (b.field_pair).
+            let mut children = Vec::with_capacity(fields.len());
             // Canonical (sorted) field order — a `BTreeMap` iterates sorted, matching the type render.
             for (name, &v) in fields.iter() {
                 let fname = b.name(&*name.name);
@@ -17350,7 +17350,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
                 // 2026-08-09). Distinct from a map's `(key value)` pairs, which stay pair-form.
                 children.push(b.field_pair(fname, fval));
             }
-            Some(b.list(children))
+            Some(b.compound(crate::ast::CompoundCtor::Record, &children))
         }
         // A CONSTANT list literal renders `(list e1 e2 …)` — its length is statically known (unlike a
         // grown/runtime list), so its bytes bake exactly like a constant tuple's. Each element is a
@@ -17361,12 +17361,12 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         //= spec/contracts/deterministic-value-form.md#ordering-of-aggregate-members-is-fixed
         //# The canonical encoding of an ordered aggregate MUST preserve its element order.
         Core::ListNew { elems } => {
-            let head = b.name("list");
-            let mut children = vec![head];
+            // M2: head-first native LIST_CTOR head, not the `list` name head.
+            let mut children = Vec::with_capacity(elems.len());
             for e in elems.iter().copied() {
                 children.push(const_value_ast(db, b, e)?);
             }
-            Some(b.list(children))
+            Some(b.compound(crate::ast::CompoundCtor::List, &children))
         }
         // A CONSTANT map value — `(map (k1 v1) (k2 v2) …)` — its entries rendered in CANONICAL KEY ORDER,
         // independent of insertion order and DISTINGUISHABLE from a record (`map` head, `(key value)`
@@ -17402,14 +17402,15 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             if !orderable {
                 return None;
             }
-            let head = b.name("map");
-            let mut children = vec![head];
+            // M2: head-first native MAP_CTOR head; entries are FieldPair-leaf `(= k v)` (map=field-pair
+            // unification), not the legacy `(k v)` raw pair.
+            let mut children = Vec::with_capacity(sorted.len());
             for (k, v) in sorted {
                 let kv = const_value_ast(db, b, k)?;
                 let vv = const_value_ast(db, b, v)?;
-                children.push(b.list(vec![kv, vv]));
+                children.push(b.field_pair(kv, vv));
             }
-            Some(b.list(children))
+            Some(b.compound(crate::ast::CompoundCtor::Map, &children))
         }
         // A CONSTANT set value — `(Set.of (list e1 e2 …))` — its elements rendered in CANONICAL (sorted)
         // ORDER inside a `(list …)`, wrapped in a `(Set.of …)` form (collections-and-text.md §A Set …
@@ -17434,19 +17435,13 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             if !orderable {
                 return None;
             }
-            let list_head = b.name("list");
-            let mut list_children = vec![list_head];
+            // M2: head-first native SET_CTOR head with the sorted-deduped elements directly — the
+            // `(. Set of)(list …)` member-path is REPLACED (operator: a set renders `#set(…)` natively).
+            let mut children = Vec::with_capacity(sorted.len());
             for e in sorted {
-                list_children.push(const_value_ast(db, b, e)?);
+                children.push(const_value_ast(db, b, e)?);
             }
-            let inner_list = b.list(list_children);
-            // `(Set.of <list>)` — a member-access `(. Set of)` applied to the list. The value form the
-            // corpus records is the `Set.of (list …)` application, so build it as `((. Set of) <list>)`.
-            let set_mod = b.name("Set");
-            let of_key = b.name("of");
-            let dot = b.name(".");
-            let set_of = b.list(vec![dot, set_mod, of_key]);
-            Some(b.list(vec![set_of, inner_list]))
+            Some(b.compound(crate::ast::CompoundCtor::Set, &children))
         }
         // A CONSTANT sum value — `(Some 5)`, `(None unit)`, `(Some (Some 5))`. Its canonical form is
         // `(VariantName payload…)` with the variant TAG present (`deterministic-value-form.md`;

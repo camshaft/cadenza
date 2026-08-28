@@ -1118,7 +1118,10 @@ impl Builder {
     /// entries. The emit twin of [`Arenas::field_pair`], so record/map construction routes through one
     /// place. See `implementation/design/DESIGN-native-ast-compound-data.md`.
     pub fn field_pair(&mut self, key: StructId, value: StructId) -> StructId {
-        let eq = self.name("=");
+        // M2: the `(= key value)` head is the payloadless FIELD_PAIR leaf kind (recognized by kind, not the
+        // `=` name text). Legacy `Name("=")`-head consumers still recognize it during the migration via the
+        // `as_name` bridge (FieldPair→"="); M3 drops the legacy readers.
+        let eq = self.atom_leaf(Leaf::FieldPair);
         self.list(vec![eq, key, value])
     }
 
