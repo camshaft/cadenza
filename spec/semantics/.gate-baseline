@@ -9014,3 +9014,4 @@ pass	stt1 a runtime-built binary Exp tree evals exactly and leaks the whole tree
 pass	stt2 a tree-to-tree transform then eval preserves meaning and leaks BOTH trees (transform calibration)
 pass	aq1 constant quotes hoist build-once and each depth-walk over the immortal Ast leaks its extraction dups
 pass	aq2 fifty depth-walks over a hoisted constant quote leak LINEARLY (per-walk extraction dups)
+todo	prr1 a RUNTIME print-then-read Ast round-trip declines pending runtime Ast.read (constant strings only today)
