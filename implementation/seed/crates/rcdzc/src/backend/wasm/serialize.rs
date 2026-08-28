@@ -1062,15 +1062,20 @@ fn core_module_impl(
     // empty (extern at `0..e`, `CallExternImport(i)=call i`) and a host program keeps extern empty (host at
     // `0..h`, `CallHostImport(i)=call i`) — both indices stay valid; extern-first is chosen so extern+RUNTIME
     // lays peer ops before runtime ops, matching the `assemble_extern_runtime` envelope's alias order.
-    let mut type_items = Vec::new();
+    // Collected as ONE functype byte-seq PER type (in the fixed positional order below) so identical
+    // functypes can be DEDUPED into a single type-section entry — most programs import many same-signature
+    // heap ops (e.g. several `(i32) -> i32`), and wasm-opt collapses those duplicate functypes; we do the
+    // same at emit. `type_remap[old_positional_index] = new_deduped_index` translates every downstream type
+    // reference (import descriptors + the function section). See the dedup + guard below the collection.
+    let mut type_seqs: Vec<Vec<u8>> = Vec::new();
     for f in extern_fns {
-        type_items.extend_from_slice(&extern_import_functype(f));
+        type_seqs.push(extern_import_functype(f));
     }
     for f in host_fns {
-        type_items.extend_from_slice(&host_import_functype(f));
+        type_seqs.push(host_import_functype(f));
     }
     for o in imports {
-        type_items.extend_from_slice(&import_functype(o));
+        type_seqs.push(import_functype(o));
     }
     // The `cabi_realloc` IMPORT functype `(i32×4)->i32`, placed WITHIN the import block (right after runtime,
     // type index `e+h+k`) so the `import_count`↔type-index lockstep holds (defined funcs stay at
@@ -1079,10 +1084,10 @@ fn core_module_impl(
         let mut ft = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         ft.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
         ft.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
-        type_items.extend_from_slice(&ft);
+        type_seqs.push(ft);
     }
     for f in funcs {
-        type_items.extend_from_slice(&functype(f)?);
+        type_seqs.push(functype(f)?);
     }
     // EXTRA closure-application functypes (see `Layout::closure_call_types`): a `call_indirect` applying a
     // closure whose shape NO lifted lambda supplies (a dynamically-dead but statically-emitted variant
@@ -1092,7 +1097,7 @@ fn core_module_impl(
     // body (then this loop adds nothing and the type section is byte-identical to before).
     let extra = layout.closure_call_types.len();
     for (param_vts, ret) in &layout.closure_call_types {
-        type_items.extend_from_slice(&closure_call_functype(param_vts, ret)?);
+        type_seqs.push(closure_call_functype(param_vts, ret)?);
     }
     // Boundary WRAPPER functypes, LAST (type indices `import_count + n + extra + w`): a core functype
     // `(param_vts) -> (result_vts)`. Empty for a program with no wrappers → byte-identical to before.
@@ -1100,7 +1105,7 @@ fn core_module_impl(
         let mut ft = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         ft.extend_from_slice(&wasm_vec(w.param_vts.len(), &w.param_vts));
         ft.extend_from_slice(&wasm_vec(w.result_vts.len(), &w.result_vts));
-        type_items.extend_from_slice(&ft);
+        type_seqs.push(ft);
     }
     // The DEFINE-mode `cabi_realloc` functype LAST (type index `import_count + n + extra + n_wrap`), when a
     // wrapper needs memory AND we are not importing the shared allocator (`n_realloc == 1`): `(i32 old_ptr,
@@ -1110,7 +1115,7 @@ fn core_module_impl(
         let mut ft = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         ft.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
         ft.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
-        type_items.extend_from_slice(&ft);
+        type_seqs.push(ft);
     }
     // The STATIC-BYTES `start` init functype `() -> ()`, LAST (type index `import_count + n + extra +
     // n_wrap + n_realloc`) — the init takes no params and returns nothing (it builds each static bytes and
@@ -1119,15 +1124,41 @@ fn core_module_impl(
         let mut ft = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         ft.extend_from_slice(&wasm_vec(0, &[]));
         ft.extend_from_slice(&wasm_vec(0, &[]));
-        type_items.extend_from_slice(&ft);
+        type_seqs.push(ft);
     }
-    let type_sec = section(
-        wasm_abi::CORE_SEC_TYPE,
-        &wasm_vec(
-            import_count + n + extra + n_wrap + n_realloc + n_init,
-            &type_items,
-        ),
+    debug_assert_eq!(
+        type_seqs.len(),
+        import_count + n + extra + n_wrap + n_realloc + n_init
     );
+    // DEDUP the collected functypes into distinct entries, recording `type_remap[old_positional_index] =
+    // new_deduped_index`. GUARD: dedup ONLY when the program has NO `call_indirect` — i.e. no closure-call
+    // functypes (`extra == 0`) AND no lifted lambdas (no funcref table). In that case the ONLY type-index
+    // references are the import descriptors + the function section (both remapped below), so the dedup is
+    // fully contained here. A closure program bakes its `call_indirect` type index into the emitted Lir
+    // (via `Layout::closure_call_type_index`), which this pass does NOT remap — so for those we keep the
+    // IDENTITY layout (byte-identical to before); deduping their type section would desync those baked
+    // indices. (Closure-program dedup is a follow-up that must also remap `Lir::CallIndirect` + the DWARF
+    // code-range re-derivation.)
+    let can_dedup = extra == 0 && layout.lifted.is_empty();
+    let mut type_remap: Vec<u32> = Vec::with_capacity(type_seqs.len());
+    let mut type_items: Vec<u8> = Vec::new();
+    let mut type_count = 0usize;
+    {
+        let mut seen: std::collections::HashMap<Vec<u8>, u32> = std::collections::HashMap::new();
+        for seq in type_seqs {
+            if can_dedup {
+                if let Some(&ix) = seen.get(&seq) {
+                    type_remap.push(ix);
+                    continue;
+                }
+                seen.insert(seq.clone(), type_count as u32);
+            }
+            type_remap.push(type_count as u32);
+            type_items.extend_from_slice(&seq);
+            type_count += 1;
+        }
+    }
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(type_count, &type_items));
 
     // Import section (id 2) — HOST func imports first (from module `"host"`, indices `0..h`), then one
     // func import per runtime op (from module `"heap"`, `h..import_count`). Omitted entirely when there
@@ -1150,20 +1181,27 @@ fn core_module_impl(
         // EXTERN peer ops FIRST (from module `"peer"`, indices `0..e`) — so `CallExternImport(i)=call i`
         // AND, when composed with the runtime, the peer ops precede the runtime ops (matching the
         // `assemble_extern_runtime` envelope). Extern + host never coexist, so `e>0 ⇒ h=0`.
+        // NOTE: an import descriptor's TYPE index is `type_remap`-translated (dedup may have collapsed its
+        // functype), but its FUNCTION index (its position in the import section, stored in `import_index`
+        // for `CallImport`/`CallExternImport`/`CallHostImport` resolution) is UNCHANGED — dedup touches only
+        // the type section, never import ordering. In the identity (no-dedup) case `type_remap[x] == x`, so
+        // this is byte-identical to before.
         for (i, f) in extern_fns.iter().enumerate() {
-            import_items.extend_from_slice(&extern_import_item(&f.op, i as u32));
+            import_items.extend_from_slice(&extern_import_item(&f.op, type_remap[i]));
             import_n += 1;
         }
         for (i, f) in host_fns.iter().enumerate() {
-            import_items.extend_from_slice(&host_import_item(&f.op, (e + i) as u32));
+            import_items.extend_from_slice(&host_import_item(&f.op, type_remap[e + i]));
             import_n += 1;
         }
-        // RUNTIME ops — from module `"heap"` at indices `e+h..import_count`, resolved BY NAME via
-        // `import_index` (so the shift by `e+h` is automatic wherever a `CallImport` looks up its op).
+        // RUNTIME ops — from module `"heap"` at FUNC indices `e+h..import_count`, resolved BY NAME via
+        // `import_index` (so the shift by `e+h` is automatic wherever a `CallImport` looks up its op). The
+        // descriptor's type index is the deduped `type_remap[e+h+j]`; the func index stored in `import_index`
+        // stays the positional `e+h+j`.
         for (j, o) in imports.iter().enumerate() {
-            let ti = (e + h + j) as u32;
-            import_items.extend_from_slice(&import_item(o.name, ti));
-            import_index.insert(o.name, ti);
+            let func_idx = (e + h + j) as u32;
+            import_items.extend_from_slice(&import_item(o.name, type_remap[e + h + j]));
+            import_index.insert(o.name, func_idx);
             import_n += 1;
         }
         // The SHARED `cabi_realloc` FUNC import (module `"mem"`, func index `e+h+k`, its functype at the same
@@ -1171,15 +1209,15 @@ fn core_module_impl(
         // canon-lower's Realloc option + the guest's `CallImport("cabi_realloc")` (select's host-result lift +
         // the wrapper's spill) all resolve to it via `import_index`; the mem module owns the one bump cursor.
         if import_realloc {
-            let ti = (e + h + imports.len()) as u32;
+            let func_idx = (e + h + imports.len()) as u32;
             let mut it = uleb_bytes("mem".len() as u64);
             it.extend_from_slice(b"mem");
             it.extend_from_slice(&uleb_bytes("cabi_realloc".len() as u64));
             it.extend_from_slice(b"cabi_realloc");
             it.push(0x00); // import desc: func
-            uleb128(ti as u64, &mut it);
+            uleb128(type_remap[e + h + imports.len()] as u64, &mut it); // deduped TYPE index
             import_items.extend_from_slice(&it);
-            import_index.insert("cabi_realloc", ti);
+            import_index.insert("cabi_realloc", func_idx); // positional FUNC index (unchanged)
             import_n += 1;
         }
         if needs_memory {
@@ -1199,27 +1237,30 @@ fn core_module_impl(
 
     // Function section: defined func `i` (function index `import_count + i`) uses type index
     // `import_count + i` (the import functypes came first).
+    // Each entry is the defined function's TYPE index, `type_remap`-translated (dedup may have collapsed the
+    // functype). The FUNCTION indices themselves are unchanged (dedup touches only the type section); only
+    // the type reference each function declares is remapped. Identity (`type_remap[x]==x`) when not deduped.
     let mut func_items = Vec::new();
     for i in 0..n {
-        uleb128((import_count + i) as u64, &mut func_items);
+        uleb128(type_remap[import_count + i] as u64, &mut func_items);
     }
     // WRAPPER funcs, appended AFTER the n defined+lifted funcs (function indices `import_count + n + w`),
     // each referencing its wrapper functype (`import_count + n + extra + w`).
     for w in 0..n_wrap {
-        uleb128((import_count + n + extra + w) as u64, &mut func_items);
+        uleb128(type_remap[import_count + n + extra + w] as u64, &mut func_items);
     }
     // The DEFINED `cabi_realloc` LAST (function index `import_count + n + n_wrap`), its functype at
     // `import_count + n + extra + n_wrap`. Present only in DEFINE mode (`n_realloc == 1`); in `import_realloc`
     // mode the shared allocator is imported, so no defined func here.
     if n_realloc == 1 {
-        uleb128((import_count + n + extra + n_wrap) as u64, &mut func_items);
+        uleb128(type_remap[import_count + n + extra + n_wrap] as u64, &mut func_items);
     }
     // The STATIC-BYTES `start` init func LAST (function index `import_count + n + n_wrap + n_realloc`), its
     // functype at `import_count + n + extra + n_wrap + n_realloc` (the last one laid above). `n_init == 0` →
     // no entry, byte-identical.
     if n_init == 1 {
         uleb128(
-            (import_count + n + extra + n_wrap + n_realloc) as u64,
+            type_remap[import_count + n + extra + n_wrap + n_realloc] as u64,
             &mut func_items,
         );
     }
