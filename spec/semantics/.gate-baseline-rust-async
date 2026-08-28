@@ -8468,3 +8468,5 @@ todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 todo	a diamond peer graph shares one provider across two middle peers
 todo	reclaim across a nested-compound projection from a peer result
 todo	an effect bound to a peer routes a two-argument op to the boundary
+fail	qkm1 a same-unit Float quantity Map key round-trips with value discrimination
+fail	qkm3 an explicitly converted cross-scale probe (Unit.in + re-wrap) hits the same-unit key

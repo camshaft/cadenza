@@ -1,6 +1,6 @@
 # BUG (wasm reclaim): a NESTED compound that is both PROJECTED-into and passed to value-eq leaks its heap nodes
 
-**Status:** OPEN — routed to `v-memory-safety` (rc/emit — same lane as
+**Status:** OPEN — OWNERSHIP SETTLED (2026-08-27): v-core-opt claimed it (Core-IR reclaim placement — missing end-of-scope drop for a dual-borrowed binding via mark_binder_dups; folded into the §4 unified consuming analysis; operator concurred; v-memory-safety stays stopped). Originally — routed to `v-memory-safety` (rc/emit — same lane as
 issues/hardening-valueeq-emit-does-not-box-a-scalar-operand-at-erased-heap-type.md, which is a
 different face of the value-eq emit). FYI v-core-opt (Perceus placement design).
 
