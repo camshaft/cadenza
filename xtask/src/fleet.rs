@@ -339,6 +339,7 @@ impl Fleet {
             "prune-tmp-inodes.sh",
             "reap-wedged-nix-clients.sh",
             "refresh-tools.sh",
+            "cargo-nix-shim.sh",
         ] {
             let src = self.src.join(f);
             if src.exists() {
@@ -14722,6 +14723,7 @@ mod tests {
             "prune-tmp-inodes.sh",
             "reap-wedged-nix-clients.sh",
             "refresh-tools.sh",
+            "cargo-nix-shim.sh",
         ];
         let base = std::env::temp_dir().join(format!("cdz-materialize-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
