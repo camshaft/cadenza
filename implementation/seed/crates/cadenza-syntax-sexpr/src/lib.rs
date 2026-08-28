@@ -886,14 +886,16 @@ impl<'a, 'b> Reader<'a, 'b> {
     /// untouched — `map` alias entries stay bare `(k v)` pairs (its pattern surface), and equality `=`
     /// elsewhere stays `Name("=")`.
     fn alias_field_pairify(&mut self, items: &mut [StructId]) {
-        // A bare-NAME `record` OR `map` compound-alias head: both spell their entries as the canonical
-        // `(= k v)` FieldPair in the native arena (a map VALUE entry and a record field are the same
-        // `=` node, unified in M2), so a `(= k v)` DIRECT child under either alias field-pairifies. A map
-        // PATTERN's entries are bare `(k p)` pairs (no `=`), so `field_pairify` leaves them untouched.
-        if !matches!(
-            items.first().and_then(|&h| self.b.as_name(h)),
-            Some("record") | Some("map")
-        ) {
+        // A `record` OR `map` compound-alias head — the shadowable NAME alias (`(record …)`) OR the
+        // unshadowable STRING primitive (`("record" …)`, which Ast-metaprogramming / value-reification
+        // emit). Both spell their entries as the canonical `(= k v)` FieldPair in the native arena (a map
+        // VALUE entry and a record field are the same `=` node, unified in M2), so a `(= k v)` DIRECT
+        // child under either field-pairifies. A map PATTERN's entries are bare `(k p)` pairs (no `=`), so
+        // `field_pairify` leaves them untouched.
+        let head_word = items
+            .first()
+            .and_then(|&h| self.b.as_name(h).or_else(|| self.b.as_str(h)));
+        if !matches!(head_word, Some("record") | Some("map")) {
             return;
         }
         for slot in items.iter_mut().skip(1) {
