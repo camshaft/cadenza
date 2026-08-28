@@ -220,6 +220,13 @@ def trapKind (reason : String) : Option String :=
 
 /-- Assert one trial against the program: run it, compare the outcome to the expectation. -/
 def checkTrial (prog : Module) (ot : Module) (t : OTrial) : Verdict :=
+  -- A trial with an EMPTY call export is a `call-method`/reducer-continuation harness shape (the harness
+  -- calls a MEMBER — e.g. `.len`/`.is-empty` — on the reducer's persistent result value, possibly
+  -- repeatably via `then-call`; the oracle-trial encodes it as `(call "")`, losing the method). The
+  -- oracle models a pure program's value, not this stateful member-on-result harness → SKIP (a sound
+  -- coverage-gap), rather than grade the raw program result against the member-call's expected output.
+  if t.call == some "" then .skip "call-method/reducer-continuation trial (empty export) — harness shape not modeled"
+  else
   -- A no-argument trial is `reduce`; an argument-bearing call binds the arg VALUES to main's params
   -- via `execute`. Args are the trial's value-AST nodes (bare scalar values); a compound/non-scalar
   -- arg the value domain doesn't model yet → skip (not every arg decodes).
