@@ -10086,11 +10086,26 @@ mod trap_grading_tests {
             ),
             Grade::Pass
         ));
-        // Trapped, but the reason does not match (or classify) → Todo, never a false Pass.
+        // Trapped, and BOTH reasons classify to KNOWN (but DIFFERENT) trap codes → Fail — a wrong-trap-kind
+        // disagreement is a hard signal, NOT a hidden Todo (corpus-grade #4469 / breaker grading-gap; the
+        // semantic CDZ07xx codes make a kind mismatch a real disagreement). `index out of bounds` and
+        // `integer overflow` are both classified kinds, so a mismatch between them Fails like a wrong value.
         assert!(matches!(
             grade_trial(
                 "trap index out of bounds",
                 &Ran::Trap("cdz-run: trap: wasm trap: integer overflow: bt".to_string())
+            ),
+            Grade::Fail(_)
+        ));
+        // Trapped, but the ACTUAL reason does NOT classify (a novel/unknown trap) → Todo, never a false
+        // Pass: a real trap fired but it can't be confirmed to be the SAME kind the corpus pinned. (This is
+        // the `_` arm that survives #4469 — only a mismatch between two KNOWN codes is a Fail.)
+        assert!(matches!(
+            grade_trial(
+                "trap divide by zero",
+                &Ran::Trap(
+                    "cdz-run: trap: wasm trap: some novel unclassified failure: bt".to_string()
+                )
             ),
             Grade::Todo
         ));
