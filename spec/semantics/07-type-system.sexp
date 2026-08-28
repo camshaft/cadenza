@@ -2470,3 +2470,24 @@
   (call recfield) (output (: 7 Int64))
   (call recsome)  (output (: 5 Int64))
   (call recnone)  (output (: 0 Int64)))
+
+; ── breaker batch 584: generic monomorphization × heap payload census (07-type-system is
+; census-BLIND: 2/193 clauses). A user-generic Box wraps then unwraps a runtime Option-of-list
+; payload per frame; the value is exact (75) and the Box+Option shells + the list leak LINEARLY
+; (~2.8/frame: 28@n10, 138@n50) — the generic-dispatch face of the sum-shell reclaim family. The
+; monomorphized `unbox` extracts the payload but the discarded Box/Option shells are not dropped.
+
+(case "gib1 a user-generic Box wrap/unwrap over a runtime heap payload is value-exact and leaks the shells linearly"
+  (input (do
+(type Box (Box a))
+(def (unbox (: b (Box a))) (match b ((Box.Box v) v)))
+(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (+ (match (unbox (Box.Box (Option.Some (bld (% k 4))))) ((Option.Some xs) (List.len xs)) ((Option.None) -1))
+         (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 75 Int64))
+  (live-objects known-leak 138))
