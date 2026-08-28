@@ -85,6 +85,8 @@
 //!   so the constructor is not doubled. A GENERIC / OPEN user sum still DECLINES (no decl emitted). PRELUDE sums
 //!   (Option/Result/…) are ambient (no decl). A user-sum/nominal value emits ⇔ its decl was emitted
 //!   (`emitted` set), so there is never an unbound-type recompile.
+//! - **WRAPPING ARITH**: `Core::Arith` with a `WrappingAdd`/`Sub`/`Mul` prim → `((. <IntType> wrapping-add)
+//!   l r)` (opted-into BY NAME on the operand's int-type module — a plain `+` is the trapping form).
 //! - **NUMERIC TOWER**: BigInt/Rational ops — `BigIntOfI64`→`(BigInt.of n)`, `BigIntBinOp`/`RationalBinOp`
 //!   → the plain operator `(+ l r)` etc (tower op re-selected by operand type on recompile), `BigIntCmp`/
 //!   `RationalCmp` → `(<op> l r)` via `prim_operator`; `RationalOfInts`→`(Rational.of n d)`,
@@ -514,6 +516,34 @@ fn emit_expr_viewed(
             rhs,
             width: _,
         } => {
+            // The WRAPPING arithmetic prims are opted into BY NAME on the int-type module —
+            // `(Int64.wrapping-add …)` = `((. <IntType> wrapping-add) l r)`, NOT a bare operator (a plain
+            // `+` is the trapping form). The module is the operand's int type (`render_name`), so
+            // `UInt8.wrapping-mul` round-trips to the same prim. (These reach here as `Core::Arith` — a
+            // wrapping prim lowers to a raw machine op — so `prim_operator` has no symbol for them.)
+            use crate::resolved::Prim::{WrappingAdd, WrappingMul, WrappingSub};
+            if let WrappingAdd | WrappingSub | WrappingMul = op {
+                let member = match op {
+                    WrappingAdd => "wrapping-add",
+                    WrappingSub => "wrapping-sub",
+                    WrappingMul => "wrapping-mul",
+                    _ => unreachable!(),
+                };
+                let operand_ty = crate::infer::type_of(db, lhs);
+                let module = match &operand_ty {
+                    Ty::Int(_) => operand_ty.render_name(&db.name_ctx()),
+                    _ => {
+                        return Err(Reject::decline(
+                            "the Cadenza backend cannot recover the int type for a wrapping op"
+                                .to_string(),
+                        ));
+                    }
+                };
+                let head = member_access(b, &module, member);
+                let l = emit_expr(db, b, lhs, None, env, emitted)?;
+                let r = emit_expr(db, b, rhs, None, env, emitted)?;
+                return Ok(b.list(vec![head, l, r]));
+            }
             let sym = prim_operator(op).ok_or_else(|| {
                 Reject::decline(format!(
                     "the Cadenza backend does not yet lower the operator prim {op:?}"
