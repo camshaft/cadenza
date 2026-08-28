@@ -4233,6 +4233,34 @@
             program = "${wrapper}/bin/cdz-lint-mandates";
           };
 
+        # apps.xtask — the GENERAL xtask entrypoint through nix (v-nix, operator all-nix mandate 2026-08-28:
+        # "delegate the `cargo xtask` alias to use nix"). `nix run .#xtask -- <subcommand> [args…]` runs the
+        # warm-cached `xtaskBin` (shared ~383MB dep-closure layer) instead of a bare per-worktree cargo build,
+        # forwarding ALL subcommands (fleet / gate-local / world-artifact / …). This is the target the planned
+        # `cargo`-shim delegates `cargo xtask …` to (a ~/.local/bin `cargo` that shadows cargo, routes the
+        # `xtask` subcommand here, and passes everything else to the real cargo — no `.cargo/config.toml` edit,
+        # so it does NOT bust the wasmtime/cranelift deps layer). Same relocatability seam as apps.roundtrip:
+        # resolve the invoking worktree via `git rev-parse` and export CDZ_REPO_ROOT so the sandbox-baked
+        # CARGO_MANIFEST_DIR is overridden (else fleet/gate paths resolve into the nix sandbox). packages.xtask
+        # (pname `cdz-xtask`, bin `xtask`) has no mainProgram, so a bare `nix run .#xtask` mis-inferred the
+        # program name — this app is the correct run surface.
+        apps.xtask =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-xtask-app";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export CDZ_REPO_ROOT="$root"
+                exec ${xtaskBin}/bin/xtask "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-xtask-app";
+          };
+
         #
         # WRAPPED (not a bare bin): the nix `seedCompiler` builds `cdz` in DELEGATE mode
         # (`--no-default-features`, v-cdz-delegate #3397) — so `cdz compile` SPAWNS the external
