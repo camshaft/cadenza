@@ -875,6 +875,35 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
           | some (.trap t), _ | _, some (.trap t) => .trap t
           | some .diverges, _ | _, some .diverges => .diverges
           | _, _ => .unsupported "Map.remove: operand")
+  else if is "String" "concat" then
+    some (match a1, a2 with
+          | some (.value (.str x)), some (.value (.str y)) => .value (.str (x ++ y))
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "String.concat: non-string operand")
+  else if is "String" "byte-len" then
+    some (match a1 with | some (.value (.str b)) => .value (.int (Int.ofNat b.size))
+                        | some (.value _) => .unsupported "String.byte-len: not a string" | some o => o | none => .unsupported "arity")
+  else if is "String" "scalar-len" then
+    some (match a1 with
+          | some (.value (.str b)) => (match String.fromUTF8? b with | some s => .value (.int (Int.ofNat s.toList.length)) | none => .unsupported "String.scalar-len: invalid UTF-8")
+          | some (.value _) => .unsupported "String.scalar-len: not a string" | some o => o | none => .unsupported "arity")
+  else if (parseIntTyName? qual).isSome && (mem == "wrapping-add".toUTF8 || mem == "wrapping-sub".toUTF8 || mem == "wrapping-mul".toUTF8) then
+    -- WRAPPING arithmetic: (x op y) reduced mod 2^w (total, never traps — the non-trapping companion of +/-/*).
+    let tty := (parseIntTyName? qual).get!
+    some (match a1, a2 with
+          | some (.value (.int x)), some (.value (.int y)) =>
+            let r := if mem == "wrapping-add".toUTF8 then x + y else if mem == "wrapping-sub".toUTF8 then x - y else x * y
+            (match tty.width with
+             | .bits w => let modw : Int := (2 : Int) ^ w
+                          let p := ((r % modw) + modw) % modw
+                          .value (.int (if tty.signed && p ≥ (2 : Int) ^ (w - 1) then p - modw else p))
+             | _ => .value (.int r))       -- BigInt: no wrapping (unbounded)
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "wrapping arithmetic: non-integer operand")
   else if (parseIntTyName? qual).isSome && (mem == "wrap".toUTF8 || mem == "of".toUTF8) then
     -- numeric conversion `(. <IntTy> wrap|of) x`: `wrap` reinterprets x mod 2^w (total); `of` is checked
     -- (traps `overflow` if x is out of the target range); on BigInt both are identity. Value = int (type
