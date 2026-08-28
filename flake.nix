@@ -413,6 +413,11 @@
           # no own [workspace]), so — like cdz-contract / cdz-world-artifact — it MUST be registered here or
           # the crane deps-layer src omits its Cargo.toml and the whole workspace fails to load.
           xtask-mandates = "xtask/crates/xtask-mandates";
+          # xtask-support (v-xtask-decompose): the shared foundation lib for the decomposed xtask commands
+          # (content_address/hash_tree now; corpus/Tools machinery to follow). A ROOT workspace member under
+          # xtask/crates/*, so — like the others — it MUST be registered here or the crane deps-src omits its
+          # Cargo.toml and the workspace fails to load.
+          xtask-support = "xtask/crates/xtask-support";
         };
         rootCrateNames = builtins.attrNames rootWorkspaceCrates;
         # direct member-edges of one crate across the three rebuild-relevant dep sections (A1 walk).
@@ -715,7 +720,11 @@
               # xtask-mandates crate + `apps.lint-mandates` + the rewired `mandateLintCheck`; nothing links
               # it into xtask, so editing one never rebuilds the other. xtask-mandates' own closure is just
               # itself (its sole dep syn is external).
-              xtask = [ "cadenza-ast" "cdz-contract" "cdz-rust-render" "xtask" ];
+              # xtask now deps xtask-support (the shared foundation lib — content_address/hash_tree moved
+              # there). xtask-support's own closure is cadenza-ast + cdz-contract + itself (cdz-contract deps
+              # cadenza-ast; sha2 is external).
+              xtask = [ "cadenza-ast" "cdz-contract" "cdz-rust-render" "xtask" "xtask-support" ];
+              xtask-support = [ "cadenza-ast" "cdz-contract" "xtask-support" ];
               xtask-mandates = [ "xtask-mandates" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
@@ -3643,6 +3652,7 @@
               };
               clippy-xtask = mkCrateClippyCrane { crate = "xtask"; extraSrc = [ ./spec/semantics ./implementation/compiler-ml ]; extraInputs = [ pkgs.git ]; };
               clippy-xtask-mandates = mkCrateClippyCrane { crate = "xtask-mandates"; };
+              clippy-xtask-support = mkCrateClippyCrane { crate = "xtask-support"; };
             };
             # cdz's clippy stays in its workspace-src check (crateCdzCheck runs `cargo clippy -p cdz` inside).
             clippyCraneAggregate = pkgs.runCommand "cargo-clippy-crane-aggregate"
@@ -3684,6 +3694,7 @@
               };
               test-xtask = mkCrateTestCrane { crate = "xtask"; extraSrc = [ ./spec/semantics ./implementation/compiler-ml ]; extraInputs = [ pkgs.git ]; };
               test-xtask-mandates = mkCrateTestCrane { crate = "xtask-mandates"; };
+              test-xtask-support = mkCrateTestCrane { crate = "xtask-support"; };
             };
             # COVERAGE-PARITY assert (concierge mandate — no test silently dropped vs `cargo test
             # --workspace`): the per-crate test crates PLUS cdz (crateCdzCheck) must EXACTLY equal the
@@ -3748,7 +3759,7 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
               echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';

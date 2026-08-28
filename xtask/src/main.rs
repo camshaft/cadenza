@@ -29,9 +29,9 @@
 
 use cdz_rust_render::*;
 use clap::{Parser, Subcommand};
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use xshell::{Shell, cmd};
+use xtask_support::{content_address, hash_tree};
 
 /// The one interface for driving the Cadenza seed workspace. Every knob is a typed flag; there are
 /// no environment-variable knobs.
@@ -8484,46 +8484,6 @@ impl CachedStep {
     }
 }
 
-/// Content hash of every file under `root`, in a DETERMINISTIC order (paths sorted), so the same tree
-/// always hashes the same regardless of directory-read order. Each file contributes its relative path
-/// AND its bytes (so a rename or a content edit both change the hash). `None` if `root` can't be walked.
-fn hash_tree(root: &Path) -> Option<String> {
-    let mut files: Vec<PathBuf> = Vec::new();
-    collect_files(root, &mut files).ok()?;
-    files.sort();
-    let mut h = Sha256::new();
-    for f in &files {
-        let rel = f.strip_prefix(root).unwrap_or(f);
-        h.update(rel.to_string_lossy().as_bytes());
-        h.update([0u8]); // path/content separator
-        if let Ok(bytes) = std::fs::read(f) {
-            h.update(&bytes);
-        }
-        h.update([0u8]); // file separator
-    }
-    let digest = h.finalize();
-    let mut s = String::with_capacity(64);
-    for b in digest {
-        s.push_str(&format!("{b:02x}"));
-    }
-    Some(s)
-}
-
-/// Recursively collect every regular file under `dir` into `out` (order unspecified; caller sorts).
-fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let ty = entry.file_type()?;
-        if ty.is_dir() {
-            collect_files(&path, out)?;
-        } else if ty.is_file() {
-            out.push(path);
-        }
-    }
-    Ok(())
-}
-
 // ============================================================================================
 // roundtrip — the syntax surfaces round-trip on every corpus program.
 // ============================================================================================
@@ -8803,18 +8763,6 @@ fn emit(paths: &Paths, profile: &str, file: &Path, from: &str, out: Option<PathB
         std::process::exit(status.code().unwrap_or(1));
     }
     println!("wrote {}", out.display());
-}
-
-/// The platform content address of the bytes — a `HashTag::Blob`-tagged blake3 digest rendered base62
-/// (`design/cadenza-platform.md` §8), via [`cdz_contract::Hash`]. This is the ONE unified content-address
-/// string: it MUST match `cdz-run`'s `content_address` (which delegates to the same call) and the store's
-/// own `put()` (`Hash::of(HashTag::Blob, bytes)`), so the store address == blob-store key == compose-dep
-/// `+hash` == `REQUIRED_RUNTIME_HASH` are one 45-char string. base62 (not hex, not base64url) because the
-/// `+hash` rides a component-import semver build-metadata suffix, whose grammar rejects `_`. (The local
-/// build-cache `hash_tree` below is an internal fingerprint, NOT a content address that crosses the
-/// store/compose boundary, so it stays SHA-256 — no cross-boundary contract.)
-pub(crate) fn content_address(bytes: &[u8]) -> String {
-    cdz_contract::Hash::of(cdz_contract::HashTag::Blob, bytes).to_string()
 }
 
 /// CANONICALIZE a built runtime component for content-addressing: strip ALL custom sections
@@ -11025,40 +10973,6 @@ mod trap_grading_tests {
             start.elapsed() < std::time::Duration::from_secs(5),
             "timeout must kill promptly, not wait out the child"
         );
-    }
-
-    #[test]
-    fn hash_tree_is_deterministic_and_change_sensitive() {
-        let base = std::env::temp_dir().join(format!("cdz-hashtree-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(base.join("sub")).unwrap();
-        std::fs::write(base.join("a.cdz"), "alpha").unwrap();
-        std::fs::write(base.join("sub/b.cdz"), "beta").unwrap();
-
-        let h1 = hash_tree(&base).expect("hashable");
-        let h2 = hash_tree(&base).expect("hashable");
-        assert_eq!(
-            h1, h2,
-            "same tree → same hash (order-independent, deterministic)"
-        );
-
-        // A content edit changes the hash.
-        std::fs::write(base.join("a.cdz"), "alpha!").unwrap();
-        let h3 = hash_tree(&base).expect("hashable");
-        assert_ne!(h1, h3, "editing a file's content changes the tree hash");
-
-        // Adding a file changes the hash.
-        std::fs::write(base.join("c.cdz"), "gamma").unwrap();
-        let h4 = hash_tree(&base).expect("hashable");
-        assert_ne!(h3, h4, "adding a file changes the tree hash");
-
-        // A rename (same bytes, different path) changes the hash — path is folded in.
-        std::fs::remove_file(base.join("c.cdz")).unwrap();
-        std::fs::write(base.join("d.cdz"), "gamma").unwrap();
-        let h5 = hash_tree(&base).expect("hashable");
-        assert_ne!(h4, h5, "a rename changes the tree hash (path folded in)");
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

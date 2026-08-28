@@ -3380,12 +3380,12 @@ dependencies = [
  "quote",
  "serde",
  "serde_json",
- "sha2",
  "syn 2.0.119",
  "wasm-encoder 0.239.0",
  "wasmparser 0.239.0",
  "wit-parser",
  "xshell",
+ "xtask-support",
 ]
 
 [[package]]
@@ -3393,6 +3393,14 @@ name = "xtask-mandates"
 version = "0.0.0"
 dependencies = [
  "syn 2.0.119",
+]
+
+[[package]]
+name = "xtask-support"
+version = "0.0.0"
+dependencies = [
+ "cdz-contract",
+ "sha2",
 ]
 
 [[package]]
