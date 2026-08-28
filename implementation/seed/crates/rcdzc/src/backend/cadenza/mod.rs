@@ -1520,6 +1520,25 @@ fn emit_expr_viewed(
         // projection of a compile-time tuple folds in `lower`). The index is a compile-time constant, an
         // `Int` leaf; the member-access reader accepts an integer key for a positional tuple read.
         Core::Proj { operand, index } => {
+            // If the operand is a compile-time-visible compound LITERAL, resolve the projection at the CORE
+            // level and emit the element node directly — the FOLDED form recompile's projection-fold
+            // produces. Emitting `(. <literal> field)` would leave hop¹ un-folded but hop² folded (a
+            // byte-idempotence break: breaker #5137, a nested record destructure whose scrutinee inlined to
+            // a record literal, so the projection is materialized AFTER the fold pass). A runtime operand
+            // (a binder / call / …) falls to the `(. <operand> <key>)` surface projection below.
+            match core_of(db, operand) {
+                Core::Tuple { elems } => {
+                    if let Some(&e) = elems.get(index) {
+                        return emit_expr(db, b, e, expected, env, emitted);
+                    }
+                }
+                Core::Record { fields } => {
+                    if let Some((_, &v)) = fields.iter().nth(index) {
+                        return emit_expr(db, b, v, expected, env, emitted);
+                    }
+                }
+                _ => {}
+            }
             // A projection's surface KEY depends on the operand's compound kind: a TUPLE projects by the
             // positional slot `(. t 1)`, but a RECORD projects by the FIELD NAME `(. r val)`. Records are
             // keyed by name (canonical `BTreeMap` sorted order), so the field name at slot `index` is the
