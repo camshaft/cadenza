@@ -1386,6 +1386,13 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
            | none =>
              if sps.size != es.size then .ok none else matchSeq m (sps.zip es).toList
          | _ => .ok none)
+      else if ph == "quasiquote".toUTF8 then
+        -- a QUOTE-pattern `(quasiquote <template>)`: structurally match the `Ast` scrutinee against the
+        -- template, `(unquote X)` positions binding. (A plain `(quote L)` literal pattern is the leaf
+        -- case of the same idea; the corpus uses the quasiquote form for binders.)
+        (match pc[1]? with
+         | some templateId => matchQuasiPat m templateId subj
+         | none => .error (.unsupported "eval: malformed quasiquote pattern"))
       else .error (.unsupported "eval: match user-sum/other constructor pattern not modeled")
     | none => .error (.unsupported "eval: match pattern is a headless list")
   | none => .error (.unsupported "eval: match pattern node out of range")
@@ -1400,6 +1407,68 @@ partial def matchSeq (m : Module) (pairs : List (Nat × Value)) : Except Outcome
     | .error o => .error o
     | .ok none => .ok none
     | .ok (some e1) => match matchSeq m rest with
+                       | .error o => .error o
+                       | .ok none => .ok none
+                       | .ok (some e2) => .ok (some (e1 ++ e2))
+
+/-- Match a QUASIQUOTE-pattern template `templateId` against an `Ast` VALUE `subj` (metaprogramming
+quote-patterns, e.g. `((quasiquote (+ (unquote a) (unquote b))) …)`): a template `(unquote X)` position
+BINDS (`matchPat X` against the Ast subvalue); a template list matches an `Ast.List` value structurally
++ positionally (FIXED arity — a size mismatch is no-match, so a wrong-arity scrutinee falls to the next
+arm); a template leaf matches the corresponding `Ast` leaf variant BY VALUE (via `quoteReflect` equality).
+This is the pattern dual of quasiquote construction, and equivalent to the `((. Ast …) …)` ctor pattern. -/
+partial def matchQuasiPat (m : Module) (templateId : Nat) (subj : Value) : Except Outcome (Option Env) :=
+  match m.nodes[templateId]? with
+  | some (Node.list tc) =>
+    if m.headName? (Node.list tc) == some "unquote".toUTF8 then
+      match tc[1]? with
+      | some binderId => matchPat m binderId subj
+      | none => .error (.unsupported "eval: malformed unquote in quote-pattern")
+    else
+      -- a compound template → the subj must be an `Ast.List`. Children match positionally; a TRAILING
+      -- `(unquote-splicing X)` binds X to the REMAINING Ast children as a list (like a list `.. rest`).
+      match subj with
+      | .variant tag (.list es) =>
+        if tag != "List".toUTF8 then .ok none
+        else
+          match tc.findIdx? (fun t => (m.nodes[t]?).bind (fun n => m.headName? n) == some "unquote-splicing".toUTF8) with
+          | some k =>
+            if k != tc.size - 1 then .error (.unsupported "eval: non-final unquote-splicing in quote-pattern not modeled")
+            else if es.size < k then .ok none
+            else
+              match m.nodes[tc[k]!]? with
+              | some (Node.list sc) =>
+                match sc[1]? with
+                | some binderId =>
+                  (match matchQuasiSeq m ((tc.extract 0 k).toList.zip (es.extract 0 k).toList) with
+                   | .ok (some e1) =>
+                     (match matchPat m binderId (Value.list (es.extract k es.size)) with
+                      | .ok (some e2) => .ok (some (e1 ++ e2))
+                      | r => r)
+                   | r => r)
+                | none => .error (.unsupported "eval: malformed unquote-splicing in quote-pattern")
+              | _ => .error (.unsupported "eval: malformed unquote-splicing in quote-pattern")
+          | none =>
+            if tc.size == es.size then matchQuasiSeq m (tc.zip es).toList else .ok none
+      | _ => .ok none
+  | some (Node.atom _) =>
+    -- a literal template leaf: subj must EQUAL the leaf's reflected `Ast` variant (structural)
+    match quoteReflect m defaultFuel templateId with
+    | .value av => (match observeDeep subj with
+                    | .value sv => if sv == av then .ok (some []) else .ok none
+                    | other => .error other)
+    | other => .error other
+  | none => .error (.unsupported "eval: quote-pattern template node out of range")
+
+/-- Positional AND of quasiquote-pattern sub-matches (a template child vs the corresponding Ast child). -/
+partial def matchQuasiSeq (m : Module) (pairs : List (Nat × Value)) : Except Outcome (Option Env) :=
+  match pairs with
+  | [] => .ok (some [])
+  | (tid, v) :: rest =>
+    match matchQuasiPat m tid v with
+    | .error o => .error o
+    | .ok none => .ok none
+    | .ok (some e1) => match matchQuasiSeq m rest with
                        | .error o => .error o
                        | .ok none => .ok none
                        | .ok (some e2) => .ok (some (e1 ++ e2))
