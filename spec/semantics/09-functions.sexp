@@ -8191,6 +8191,40 @@
   (call main (: (list 1 2 3) (List Int64)))
   (output (: 17 Int64)))
 
+(case "elc6 a MIXED scalar+non-scalar bare export param list still gates B2 off (opt-level equivalent)"
+  (doc    "The MIXED-param sibling of elc1 fencing the #4793 B2-bare-entry gate's `at least ONE non-scalar
+           param` condition: `main` takes BOTH a non-scalar `(List Int64)` entry param AND a scalar `Int64`
+           one, a single export, its List param captured by a local closure invoked twice. The gate
+           `b2_excluded_bare_entry_export` must fire on the PRESENCE of a non-scalar param even though a scalar
+           param is also present (a regression that required ALL params non-scalar, or keyed only the first/
+           sole param, would let B2's `Core::Let`-wrap reshape the body → the `try_bare_entry_param_component`
+           None → the `non-scalar entry parameter not emitted` DECLINE at O2/O3 while O0/O1 compile = an opt-
+           level-equivalence violation). `(f base) + (f 100)` with base=10, xs=(1 2 3) → 13 + 103 = 116; the
+           OBSERVABLE outcome is identical across O0/O1/O2/O3 (verified by an opt-sweep).")
+  (input (do
+    (def (main (: xs (List Int64)) (: base Int64))
+      (let ((f (fn ((: k Int64)) (+ k (List.len xs)))))
+        (+ (f base) (f 100))))
+    (export main)))
+  (call main (: (list 1 2 3) (List Int64)) (: 10 Int64))
+  (output (: 116 Int64)))
+
+(case "elc7 TWO closures capturing the same lifted List entry param keep B2 gated off (opt-level equivalent)"
+  (doc    "The MULTI-CAPTURE sibling of elc1: a single bare export whose `(List Int64)` entry param is captured
+           by TWO distinct local closures (a `+` reader and a `*` reader), each invoked once. B2 sharing-aware-
+           emit has two shared-param reads it could `Core::Let`-wrap — the #4793 gate skips the B2 plan for the
+           whole export body so `try_bare_entry_param_component` still sees the RAW shape. `(f 10) + (g 3)` with
+           xs=(1 2 3) → (10+3) + (3*3) = 13 + 9 = 22, identical across all four opt levels (a residual B2 that
+           reshaped either capture at O2 would decline where O0/O1 compile).")
+  (input (do
+    (def (main (: xs (List Int64)))
+      (let ((f (fn ((: k Int64)) (+ k (List.len xs))))
+            (g (fn ((: j Int64)) (* j (List.len xs)))))
+        (+ (f 10) (g 3))))
+    (export main)))
+  (call main (: (list 1 2 3) (List Int64)))
+  (output (: 22 Int64)))
+
 (case "elc2 a Map keyed by the lifted List entry param answers its value on lookup"
   (input (do
     (def (main (: xs (List Int64)))

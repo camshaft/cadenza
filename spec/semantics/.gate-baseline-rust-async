@@ -5990,6 +5990,8 @@ pass	elc1 a local closure captures the lifted List entry param and is invoked tw
 pass	elc2 a Map keyed by the lifted List entry param answers its value on lookup
 pass	elc4 List.concat consumes two lifted List entry params into one measured list
 pass	elc5 the capturing closure crosses a higher-order call boundary and answers from both invocations
+pass	elc6 a MIXED scalar+non-scalar bare export param list still gates B2 off (opt-level equivalent)
+pass	elc7 TWO closures capturing the same lifted List entry param keep B2 gated off (opt-level equivalent)
 pass	ele1 the lifted List entry param is read in a handle BODY alongside a dispatch
 pass	ele2 the lifted List entry param is read inside a handler ARM feeding the resume value
 pass	ele3 the lifted List entry param SEEDS the handler state
