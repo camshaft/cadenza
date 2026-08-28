@@ -114,17 +114,12 @@ fn gen_expr<D: Driver>(
             gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
             out.push(')');
         }
-        // Conditional `(if (<rel> <e> <e>) <e> <e>)` — the condition is Int64→Int64→Bool, both branches
-        // Int64, so the whole `if` is Int64 and type-checks.
+        // Conditional `(if <cond> <e> <e>)` — `<cond>` is a Bool (relations + boolean connectives),
+        // both branches Int64, so the whole `if` is Int64 and type-checks.
         2 => {
-            let rel = RELS[driver.gen_variant(RELS.len(), 0).unwrap_or(0)];
-            out.push_str("(if (");
-            out.push_str(rel);
+            out.push_str("(if ");
+            gen_cond(driver, depth - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
-            out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
-            out.push_str(") ");
             gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
             out.push(' ');
             gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
@@ -167,6 +162,75 @@ fn gen_expr<D: Driver>(
                     .unwrap_or(0);
                 write!(out, "{n}").ok();
             }
+        }
+    }
+}
+
+/// Append one coerced Bool CONDITION (for an `if`): a base relation `(<rel> <e> <e>)` over Int64
+/// sub-expressions, or a boolean connective `(and <c> <c>)` / `(or <c> <c>)` / `(not <c>)`. Reaches
+/// boolean-connective + short-circuit lowering. Depth-bounded (base = a relation) so it terminates.
+fn gen_cond<D: Driver>(
+    driver: &mut D,
+    depth: usize,
+    scope: &mut Vec<String>,
+    fresh: &mut usize,
+    can_call_f: bool,
+    out: &mut String,
+) {
+    let variant = if depth == 0 {
+        0
+    } else {
+        driver.gen_variant(4, 0).unwrap_or(0)
+    };
+    match variant {
+        // `(and <c> <c>)` — short-circuit conjunction.
+        1 => {
+            out.push_str("(and ");
+            gen_cond(driver, depth - 1, scope, fresh, can_call_f, out);
+            out.push(' ');
+            gen_cond(driver, depth - 1, scope, fresh, can_call_f, out);
+            out.push(')');
+        }
+        // `(or <c> <c>)` — short-circuit disjunction.
+        2 => {
+            out.push_str("(or ");
+            gen_cond(driver, depth - 1, scope, fresh, can_call_f, out);
+            out.push(' ');
+            gen_cond(driver, depth - 1, scope, fresh, can_call_f, out);
+            out.push(')');
+        }
+        // `(not <c>)` — negation.
+        3 => {
+            out.push_str("(not ");
+            gen_cond(driver, depth - 1, scope, fresh, can_call_f, out);
+            out.push(')');
+        }
+        // Base case: a relation `(<rel> <e> <e>)` over Int64 → Bool. `saturating_sub` because `gen_cond`
+        // can be entered at depth 0 (the `if` arm always emits a condition), where `depth - 1` would
+        // underflow — the operand exprs just bottom out at their own base case.
+        _ => {
+            let rel = RELS[driver.gen_variant(RELS.len(), 0).unwrap_or(0)];
+            out.push('(');
+            out.push_str(rel);
+            out.push(' ');
+            gen_expr(
+                driver,
+                depth.saturating_sub(1),
+                scope,
+                fresh,
+                can_call_f,
+                out,
+            );
+            out.push(' ');
+            gen_expr(
+                driver,
+                depth.saturating_sub(1),
+                scope,
+                fresh,
+                can_call_f,
+                out,
+            );
+            out.push(')');
         }
     }
 }
@@ -249,6 +313,18 @@ mod tests {
         assert!(
             matches!(compile_catching(src), Verdict::Compiled { .. }),
             "helper + call must compile: {src}"
+        );
+    }
+
+    /// The boolean-connective condition shapes the generator can emit compile: `and`/`or`/`not` over
+    /// relations, as an `if` condition. Pins that boolean-connective lowering is valid Cadenza.
+    #[test]
+    fn boolean_connective_condition_compiles() {
+        let src =
+            "(do (def (main) (if (and (< 1 2) (or (not (> 3 4)) (<= 5 6))) 1 0)) (export main))";
+        assert!(
+            matches!(compile_catching(src), Verdict::Compiled { .. }),
+            "boolean-connective condition must compile: {src}"
         );
     }
 
