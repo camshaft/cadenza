@@ -10,3 +10,4 @@ import Oracle.Eval
 import Oracle.Check
 import Oracle.Frame
 import Oracle.Handler
+import Oracle.Batch
