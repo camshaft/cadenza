@@ -1847,15 +1847,34 @@ fn run_program_wasm(
     } else {
         // The trap reason is on cdz-run's `<prog>: trap: <reason>` stderr line. With `--report-live-objects`
         // an informational `live-objects run on …` diagnostic PRECEDES it, and host-call lines may too — so
-        // scan for the trap line rather than blindly taking the first stderr line (a non-trap run failure —
-        // e.g. an exhausted host-response — has no such line, so fall back to the first line as before).
+        // scan for the trap line rather than blindly taking the first stderr line.
         let stderr = String::from_utf8_lossy(&run_out.stderr);
-        let reason = stderr
-            .lines()
-            .find(|l| l.contains(": trap: "))
-            .map(|l| l.to_string())
-            .unwrap_or_else(|| first_line(&run_out.stderr));
-        Ran::Trap(reason)
+        if let Some(l) = stderr.lines().find(|l| l.contains(": trap: ")) {
+            return Ran::Trap(l.to_string());
+        }
+        // No `: trap: ` line. Distinguish a SILENT-DEATH crash from a clean run-failure diagnostic (breaker's
+        // B1-sibling). A CRASH (the run STARTED — the informational `live-objects run on value-heap runtime`
+        // provenance banner is printed pre-invoke — then DIED) leaves stdout empty and NOTHING on stderr but
+        // that banner (+ any `host-call`/`host-arg` trace lines) — no meaningful diagnostic at all. A clean
+        // run failure (a compose/instantiate REJECTION — `cdz-run: peer … mismatch`/does-not-export — or an
+        // exhausted host-response) emits a STRUCTURED diagnostic line that corpus cases legitimately pin. So:
+        // strip the known informational banner + host-call traces; if a meaningful diagnostic REMAINS, keep the
+        // old `Ran::Trap(first_line)` (byte-identical — the rejection cases stay reason-matched); if NOTHING
+        // remains, the run died without output → a BadArtifact ICE-class failure with an honest label (the run
+        // face of the artifact-ICE: the compiler said yes and the run produced garbage), never a misleading
+        // `Ran::Trap(<stray banner>)`.
+        if run_failure_has_diagnostic(&stderr) {
+            Ran::Trap(first_line(&run_out.stderr))
+        } else {
+            Ran::BadArtifact(format!(
+                "run died without output — a crash mid-run with no trap or diagnostic ({})",
+                run_out
+                    .status
+                    .code()
+                    .map(|c| format!("exit {c}"))
+                    .unwrap_or_else(|| "killed by signal".into())
+            ))
+        }
     }
 }
 
@@ -3751,6 +3770,23 @@ fn first_line(bytes: &[u8]) -> String {
         .next()
         .unwrap_or("")
         .to_string()
+}
+
+/// Whether a NON-SUCCESS wasm run's stderr (with no `: trap:` line) carries a MEANINGFUL diagnostic — vs a
+/// SILENT-DEATH crash that left nothing but informational noise (breaker's B1-sibling discriminator). A crash
+/// (the run started then died) leaves only the `live-objects run on value-heap runtime` provenance banner
+/// (printed pre-invoke) and possibly `host-call`/`host-arg` trace lines — all informational. A clean run
+/// failure (a compose/instantiate REJECTION — `cdz-run: peer … mismatch` / does-not-export — or an exhausted
+/// host-response) emits a STRUCTURED diagnostic line that corpus cases legitimately pin. Returns `true` iff a
+/// line survives stripping those informational/trace lines: `true` → keep it as the trap reason (a real
+/// failure); `false` → the run died without output (→ BadArtifact ICE-class). Extracted for unit tests.
+fn run_failure_has_diagnostic(stderr: &str) -> bool {
+    stderr.lines().map(str::trim).any(|l| {
+        !l.is_empty()
+            && !l.contains("live-objects run on value-heap runtime")
+            && !l.starts_with("host-call\t")
+            && !l.starts_with("host-arg\t")
+    })
 }
 
 /// The OBSERVED host calls in cdz-run's stderr — each `host-call\t<op>` line's op, in emitted (call)
@@ -9888,6 +9924,27 @@ mod trap_grading_tests {
         assert!(emit_agrees_with_interp(
             &Ran::Trap("divide by zero".into()),
             &Ran::Trap("overflow".into())
+        ));
+    }
+
+    #[test]
+    fn run_failure_diagnostic_distinguishes_crash_from_clean_rejection() {
+        // A SILENT-DEATH crash: stderr is ONLY the informational provenance banner (+ host traces) → no
+        // diagnostic → classified as "run died without output" (BadArtifact). breaker's B1-sibling.
+        assert!(!run_failure_has_diagnostic(
+            "cdz: live-objects run on value-heap runtime abc123 (--runtime override)"
+        ));
+        assert!(!run_failure_has_diagnostic(
+            "cdz: live-objects run on value-heap runtime abc123\nhost-call\tprint\nhost-arg\tprint\thi"
+        ));
+        assert!(!run_failure_has_diagnostic(""));
+        // A clean COMPOSE/INSTANTIATE rejection or run error emits a STRUCTURED diagnostic → keep as the trap
+        // reason (the 5 peer-compose-reject corpus cases pin this; must NOT be reclassified).
+        assert!(run_failure_has_diagnostic(
+            "cdz-run: peer `cadenza:math/api` op `add` signature mismatch: ..."
+        ));
+        assert!(run_failure_has_diagnostic(
+            "cdz: live-objects run on value-heap runtime abc123\ncdz-run: peer `m/api` does not export op `sub`"
         ));
     }
 
