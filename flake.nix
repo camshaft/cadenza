@@ -286,6 +286,17 @@
           doCheck = false;
         });
 
+        # xtaskCanonicalizeBaselinesBin — the STANDALONE `.gate-baseline*` canonicalizer (v-xtask-decompose).
+        # Built from ONLY the xtask-canonicalize-baselines crate's closure (deps just xtask-support → the
+        # std-only baseline-text algebra → cdz-contract → cadenza-ast), so it caches INDEPENDENTLY of xtask
+        # (operator 2026-08-28: "cache each subcrate independently"). `apps.canonicalize-baselines` wraps it
+        # with CDZ_REPO_ROOT. Output: $out/bin/xtask-canonicalize-baselines.
+        xtaskCanonicalizeBaselinesBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-canonicalize-baselines"; }) // {
+          pname = "cdz-xtask-canonicalize-baselines";
+          cargoExtraArgs = "-p xtask-canonicalize-baselines";
+          doCheck = false;
+        });
+
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
         # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
@@ -443,6 +454,9 @@
           # xtask-lint-emoji (v-xtask-decompose): the emoji-ban source lint as its own bin crate, deps only
           # xtask-support. Registered here so the crane deps-src includes its Cargo.toml.
           xtask-lint-emoji = "xtask/crates/xtask-lint-emoji";
+          # xtask-canonicalize-baselines (v-xtask-decompose): the .gate-baseline* canonicalizer as its own
+          # bin crate, deps only xtask-support. Registered here so the crane deps-src includes its Cargo.toml.
+          xtask-canonicalize-baselines = "xtask/crates/xtask-canonicalize-baselines";
         };
         rootCrateNames = builtins.attrNames rootWorkspaceCrates;
         # direct member-edges of one crate across the three rebuild-relevant dep sections (A1 walk).
@@ -754,6 +768,8 @@
               xtask-roundtrip = [ "cadenza-ast" "cdz-contract" "xtask-roundtrip" "xtask-support" ];
               # xtask-lint-emoji deps xtask-support (which deps cdz-contract→cadenza-ast).
               xtask-lint-emoji = [ "cadenza-ast" "cdz-contract" "xtask-lint-emoji" "xtask-support" ];
+              # xtask-canonicalize-baselines deps xtask-support (which deps cdz-contract→cadenza-ast).
+              xtask-canonicalize-baselines = [ "cadenza-ast" "cdz-contract" "xtask-canonicalize-baselines" "xtask-support" ];
               xtask-mandates = [ "xtask-mandates" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
@@ -3576,6 +3592,11 @@
         # result/bin/xtask-lint-emoji. Backs `apps.lint-emoji`; caches independently of xtask.
         packages.xtask-lint-emoji = xtaskLintEmojiBin;
 
+        # The standalone baseline canonicalizer bin (v-xtask-decompose). `nix build
+        # .#xtask-canonicalize-baselines` → result/bin/xtask-canonicalize-baselines. Backs
+        # `apps.canonicalize-baselines`; caches independently of xtask.
+        packages.xtask-canonicalize-baselines = xtaskCanonicalizeBaselinesBin;
+
         # The standalone mandate-lint binary (v-xtask-decompose). `nix build .#xtask-mandates` →
         # result/bin/xtask-mandates. Backs `apps.lint-mandates` + the mandate gate; caches independently
         # of xtask (its closure is just the crate + syn).
@@ -3702,6 +3723,7 @@
               clippy-xtask-support = mkCrateClippyCrane { crate = "xtask-support"; };
               clippy-xtask-roundtrip = mkCrateClippyCrane { crate = "xtask-roundtrip"; };
               clippy-xtask-lint-emoji = mkCrateClippyCrane { crate = "xtask-lint-emoji"; };
+              clippy-xtask-canonicalize-baselines = mkCrateClippyCrane { crate = "xtask-canonicalize-baselines"; };
             };
             # cdz's clippy stays in its workspace-src check (crateCdzCheck runs `cargo clippy -p cdz` inside).
             clippyCraneAggregate = pkgs.runCommand "cargo-clippy-crane-aggregate"
@@ -3746,6 +3768,7 @@
               test-xtask-support = mkCrateTestCrane { crate = "xtask-support"; };
               test-xtask-roundtrip = mkCrateTestCrane { crate = "xtask-roundtrip"; };
               test-xtask-lint-emoji = mkCrateTestCrane { crate = "xtask-lint-emoji"; };
+              test-xtask-canonicalize-baselines = mkCrateTestCrane { crate = "xtask-canonicalize-baselines"; };
             };
             # COVERAGE-PARITY assert (concierge mandate — no test silently dropped vs `cargo test
             # --workspace`): the per-crate test crates PLUS cdz (crateCdzCheck) must EXACTLY equal the
@@ -3810,9 +3833,9 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
-              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
+              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
             # flakeReproBackstop: the REPRODUCIBILITY-BACKSTOP subset — the checks the `nix-flake (advisory)`
             # CI job should run INSTEAD of a whole `nix flake check`. Data-driven CI-speed (operator standing
@@ -4663,6 +4686,29 @@
           {
             type = "app";
             program = "${wrapper}/bin/cdz-lint-emoji";
+          };
+
+        # apps.canonicalize-baselines — the `.gate-baseline*` canonicalizer as a nix-native app backed by
+        # the STANDALONE `xtaskCanonicalizeBaselinesBin` (v-xtask-decompose). `nix run .#canonicalize-baselines`.
+        # Builds ONLY xtask-canonicalize-baselines (+ xtask-support), NOT the xtask monolith — and with the
+        # `Cmd::CanonicalizeBaselines` arm removed, `cargo xtask canonicalize-baselines` forwards here via
+        # v-fleet-tooling's cargo→nix redirect. Sets CDZ_REPO_ROOT so the relocated bin sweeps the invoking
+        # worktree's baselines. Mirrors apps.lint-emoji.
+        apps.canonicalize-baselines =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-canonicalize-baselines";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export CDZ_REPO_ROOT="$root"
+                exec ${xtaskCanonicalizeBaselinesBin}/bin/xtask-canonicalize-baselines "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-canonicalize-baselines";
           };
 
         # apps.xtask — the GENERAL xtask entrypoint through nix (v-nix, operator all-nix mandate 2026-08-28:

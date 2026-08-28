@@ -1,0 +1,19 @@
+# xtask-canonicalize-baselines — the `.gate-baseline*` canonicalizer as its OWN minimal-dep crate
+# (v-xtask-decompose: per-command crate split). Depends ONLY on xtask-support (the shared, std-only
+# baseline-text algebra: canonicalize_baseline_text — also used by the xtask `check` no-dup lint and the
+# merge-baseline git driver, so ONE source of truth, no drift); no dep on xtask itself, so editing this
+# command rebuilds only this crate + xtask-support. The nix `apps.canonicalize-baselines` runs this bin
+# with CDZ_REPO_ROOT (the invoking worktree) — no cargo build. `cargo xtask canonicalize-baselines`
+# forwards here via v-fleet-tooling's cargo->nix redirect.
+[package]
+name = "xtask-canonicalize-baselines"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-canonicalize-baselines"
+path = "src/main.rs"
+
+[dependencies]
+xtask-support = { path = "../xtask-support" }

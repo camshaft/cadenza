@@ -3389,6 +3389,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask-canonicalize-baselines"
+version = "0.0.0"
+dependencies = [
+ "xtask-support",
+]
+
+[[package]]
 name = "xtask-lint-emoji"
 version = "0.0.0"
 dependencies = [
