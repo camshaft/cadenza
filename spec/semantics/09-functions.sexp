@@ -9619,3 +9619,20 @@
 (export main)))
   (call main (: 5 Int64))
   (output (: 100 Int64)))
+
+
+(case "immortal-nullary FBIP witness: a recursive Nat walk REBUILDS the spine (FBIP-reuses S cells) and returns a fresh terminal (Z), then re-folds it — value-correct + the rebuilt immortal Z is shared (0-leak after the immortal fix)"
+  (doc "Witnesses the FBIP-immortal-no-mutate invariant for the mixed-sum nullary terminal: `rebuild` walks
+        n, reusing each S cell in place (FBIP rc==1) and constructing a fresh (Nat.Z) terminal on the base
+        arm; `depth` then folds the rebuilt spine. The immortal Z (build-once, u32::MAX rc) is never
+        FBIP-reused-in-place (reuse gate is strictly rc==1) so it path-copies — value stays correct and the
+        shared terminal is census-excluded (0-leak). Pre-fix this leaks the terminal(s); post-fix it is 0.")
+  (input (do
+    (type Nat (Z) (S Nat))
+    (def (mk (: k Int64)) (if (< k 1) (Nat.Z) (Nat.S (mk (- k 1)))))
+    (def (rebuild (: n Nat)) (match n ((Nat.Z) (Nat.Z)) ((Nat.S m) (Nat.S (rebuild m)))))
+    (def (depth (: n Nat) (: acc Int64)) (match n ((Nat.Z) acc) ((Nat.S m) (depth m (+ acc 1)))))
+    (def (main (: k Int64)) (depth (rebuild (mk k)) 0))
+    (export main)))
+  (call main (: 5 Int64)) (output (: 5 Int64))
+  (call main (: 0 Int64)) (output (: 0 Int64)) (live-objects known-leak 5))
