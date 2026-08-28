@@ -93,6 +93,9 @@
 //!   `RationalOfIntWiden`→`(Rational.of-int n)`, `RationalNum`/`RationalDen`→`(Rational.numerator/
 //!   denominator r)`; `BigIntToI64`→`(<IntType>.of <bigint>)` (the checked narrow, target from result type).
 //!   A `Core::SumNew` with MULTIPLE payloads re-emits `(<Variant> p0 p1 …)`.
+//! - **TRAP**: `Core::Trap` (the unconditional `unreachable`) → `(trap "")` — the message is dropped at
+//!   lowering (textless wasm trap), so a placeholder round-trips. `TrapDivZero`/`TrapOverflow` (distinct
+//!   trap kinds) still decline.
 //! - **CONVERT**: `Core::Convert` → `((. <ResultType> <member>) operand)` — the target type is the result
 //!   type, the member is `of-int` for `FloatOfInt` (int→float) else `of` (float-width / int-width). A
 //!   non-numeric (boolean-coercion) Convert declines; an int→int narrow declines on its range-check `Trap`.
@@ -1256,6 +1259,16 @@ fn emit_expr_viewed(
             let l = emit_expr(db, b, lhs, None, env, emitted)?;
             let r = emit_expr(db, b, rhs, None, env, emitted)?;
             Ok(b.list(vec![head, l, r]))
+        }
+        // An unconditional TRAP — `(trap "")`. `Core::Trap` is the generic `unreachable` (from `Prim::Trap`
+        // with its message dropped, an unreachable match, or a demoted provable trap). The message operand
+        // is dropped at lowering (the wasm trap is textless, graded on the trap not its text), so a
+        // placeholder `""` re-emits: `(trap "")` re-lowers to `Core::Trap` (byte-idempotent) and traps the
+        // same. (`TrapDivZero`/`TrapOverflow` are distinct wasm trap kinds — a later slice — declined below.)
+        Core::Trap => {
+            let head = b.name("trap");
+            let msg = b.atom_leaf(Leaf::Str("".into()));
+            Ok(b.list(vec![head, msg]))
         }
         other => Err(Reject::decline(format!(
             "the Cadenza backend does not yet lower this Core node back to Cadenza: {}",
