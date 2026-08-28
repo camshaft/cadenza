@@ -3239,6 +3239,7 @@ pass	a partial constructor in a runtime tuple element completes via an eta-closu
 pass	a partial constructor passed to a higher-order function completes the variant
 pass	a partial constructor projected from a tuple literal completes when applied
 pass	a partial constructor stored in a record field completes when applied
+pass	a partial constructor stored in a runtime tuple is projected and completed by application
 pass	a partial record match naming one scalar field drops the unnamed heap fields
 pass	a partially-applied RUNTIME closure binds its residual to a let, then completes it
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
@@ -5817,6 +5818,9 @@ pass	cds1 a COUNTDOWN alarm with snooze — tick decrements answering the remain
 pass	cdzw1 the cadenza backend round-trip preserves the SIGN of negative zero
 pass	cdzw2 the cadenza backend round-trip preserves Int64.min
 pass	cdzw3 the cadenza backend round-trip preserves the minimum positive subnormal Float64
+pass	cdzw4 the cadenza backend round-trip keeps float division float (not int truncation) despite the shared surface operator
+pass	cdzw5 the cadenza backend round-trip preserves a float comparison over a parameter
+pass	cdzw6 the cadenza backend round-trip preserves a let-binding and an if over an integer parameter
 pass	ce01 checked addition over a RUNTIME operand yields Some when it fits
 pass	ce02 checked addition over a RUNTIME operand yields None on overflow
 pass	ce03 Record.merge of two RUNTIME-built records projects the merged field
@@ -9089,4 +9093,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a partial constructor stored in a runtime tuple is projected and completed by application

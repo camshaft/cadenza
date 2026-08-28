@@ -3103,6 +3103,7 @@ pass	a partial constructor in a runtime tuple element completes via an eta-closu
 pass	a partial constructor passed to a higher-order function completes the variant
 pass	a partial constructor projected from a tuple literal completes when applied
 pass	a partial constructor stored in a record field completes when applied
+pass	a partial constructor stored in a runtime tuple is projected and completed by application
 pass	a partial record match naming one scalar field drops the unnamed heap fields
 pass	a partially-applied RUNTIME closure binds its residual to a let, then completes it
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
@@ -5514,6 +5515,9 @@ pass	cds1 a COUNTDOWN alarm with snooze — tick decrements answering the remain
 pass	cdzw1 the cadenza backend round-trip preserves the SIGN of negative zero
 pass	cdzw2 the cadenza backend round-trip preserves Int64.min
 pass	cdzw3 the cadenza backend round-trip preserves the minimum positive subnormal Float64
+pass	cdzw4 the cadenza backend round-trip keeps float division float (not int truncation) despite the shared surface operator
+pass	cdzw5 the cadenza backend round-trip preserves a float comparison over a parameter
+pass	cdzw6 the cadenza backend round-trip preserves a let-binding and an if over an integer parameter
 pass	ce01 checked addition over a RUNTIME operand yields Some when it fits
 pass	ce02 checked addition over a RUNTIME operand yields None on overflow
 pass	ce03 Record.merge of two RUNTIME-built records projects the merged field
@@ -8509,4 +8513,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a partial constructor stored in a runtime tuple is projected and completed by application
