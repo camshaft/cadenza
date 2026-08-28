@@ -2677,3 +2677,30 @@
   (call main (: 50 Int64))
   (output (: 2550 Int64))
   (live-objects known-leak 101))
+
+; ── breaker batch 577: signed segments + the utf8-construction gap. sbn1 = a runtime NEGATIVE
+; round-trips through i16/i8 with exact wrap semantics (-300 → i16 -300 / i8 -44). sbn2 = utf8
+; construction is PATTERN-ONLY today ("constructing a utf8 bin segment is not yet built") — an
+; honest decline naming the increment; todo auto-flip witness with a twice-traced oracle (the
+; grammar requires the explicit-size (utf8 s n) form in BOTH positions; a malformed one-arg
+; segment cascades to a misleading unbound-bin secondary error — the CDZ0201 primary is correct).
+
+(case "sbn1 a runtime negative round-trips through signed i16/i8 segments with exact wrap semantics"
+  (input (do (def (main (: n Int64))
+  (match (bin (i16 (Int16.wrap n)) (i8 (Int8.wrap n)))
+    ((bin (i16 a) (i8 b)) (+ (* 1000 a) b))
+    (_ 9)))
+(export main)))
+  (call main (: -300 Int64))
+  (output (: -300044 Int64))
+  (live-objects 0))
+
+(case "sbn2 a runtime utf8 CONSTRUCTION segment declines pending the encode increment (utf8 is pattern-only)"
+  (input (do (def (main (: n Int64))
+  (let ((s (String.concat "h" (if (> n 0) "i" "o"))))
+    (match (bin (u8 (UInt8.wrap (String.byte-len s))) (utf8 s 2))
+      ((bin (u8 len) (utf8 out len)) (if (= out "hi") 100 0))
+      (_ -1))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 100 Int64)))
