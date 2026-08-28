@@ -124,6 +124,12 @@ Every firing of your `/loop`, in order:
    broken — but your worktree may be left dirty across ticks (the next tick resumes it).
 6. **If a commit is ready,** send `pr-sync` a `merge-request` (below). Otherwise reschedule.
 
+**🧹 Clean up your own `/tmp` scratch when a probe/experiment finishes.** `/tmp` is a tmpfs with a FIXED
+inode budget; agent-scratch dirs (`/tmp/<yourprobe>`, smoke-test dirs, etc.) that pile up across the fleet
+creep toward inode-ENOSPC (which wedges everyone's Bash). `rm -rf` your scratch dir when you're done with
+it. A safety-net reaper (`prune-tmp-inodes.sh` Class C) only sweeps allowlisted, >4h-idle, unheld scratch
+and ONLY near the wedge (≥70% inode-use) — so it won't save a still-referenced or short-lived dir; own-cleanup is the reliable path.
+
 ### ⚠ Keep your context small — keep turns short; compaction is WATCHDOG-driven, not self-invoked
 A saturated context is the fleet's worst failure mode: at ~100% even `/compact` can't submit — it
 needs headroom the full window no longer has, so it can't run at all — and a fully-wedged agent then
