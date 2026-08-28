@@ -4148,15 +4148,53 @@ fn discover_plugin_names(dirs: &[PathBuf], is_builtin: impl Fn(&str) -> bool) ->
 /// spawn error) → `None` — the plugin is then listed by name only (git's graceful `help -a` degrade), so a
 /// foreign or older `cdz-*` that does not speak the sentinel never breaks `cdz --help`.
 fn plugin_summary(bin: &Path) -> Option<String> {
-    let out = std::process::Command::new(bin)
+    use std::io::Read;
+    use std::process::Stdio;
+    // Bound the query: a foreign/misbehaving `cdz-*` that hangs (or blocks reading stdin, or never exits)
+    // on `--cdz-summary` must NOT hang `cdz --help`. Spawn with piped stdout + null stdin, poll `try_wait`
+    // to a short deadline, and KILL on timeout → `None` (listed by name only). A well-formed plugin exits
+    // in microseconds, so the normal path pays ~one poll.
+    let mut child = std::process::Command::new(bin)
         .arg(CDZ_SUMMARY_FLAG)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    if !out.status.success() {
+    let deadline = std::time::Instant::now() + PLUGIN_SUMMARY_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(_) => return None,
+        }
+    };
+    if !status.success() {
         return None;
     }
-    let text = String::from_utf8(out.stdout).ok()?;
-    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    // The process has exited; drain its (small, one-line) buffered stdout. A plugin that flooded stdout
+    // past the pipe buffer would have blocked on write → never exited → already timed out above.
+    let mut text = String::new();
+    child.stdout.take()?.read_to_string(&mut text).ok()?;
+    parse_plugin_summary(&text)
+}
+
+/// The per-plugin `--cdz-summary` query timeout (see [`plugin_summary`]). Short — a well-formed plugin
+/// answers instantly; this only bounds a misbehaving one so it can't hang `cdz --help`.
+const PLUGIN_SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Parse a plugin's `--cdz-summary` stdout: exactly ONE non-empty line → `Some(trimmed)`, else `None`
+/// (empty or multi-line is not a well-formed summary). Split out so the well-formed/degrade rule is
+/// unit-testable without spawning a process.
+fn parse_plugin_summary(stdout: &str) -> Option<String> {
+    let mut lines = stdout.lines().filter(|l| !l.trim().is_empty());
     let first = lines.next()?.trim().to_string();
     match lines.next() {
         Some(_) => None, // more than one non-empty line → not a well-formed summary
@@ -11225,5 +11263,28 @@ mod tests {
         // Multi-line stdout → not a well-formed summary → None.
         let chatty = write_script("cdz-chatty", "echo one; echo two");
         assert_eq!(plugin_summary(&chatty), None);
+        // A plugin that HANGS past the timeout is killed → None (never hangs `cdz --help`).
+        let hangs = write_script("cdz-hangs", "sleep 30");
+        let t0 = std::time::Instant::now();
+        assert_eq!(plugin_summary(&hangs), None);
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(5),
+            "plugin_summary must time out fast, not wait for the hung child"
+        );
+    }
+
+    #[test]
+    fn parse_plugin_summary_accepts_one_line_rejects_empty_and_multi() {
+        assert_eq!(
+            parse_plugin_summary("run a thing\n"),
+            Some("run a thing".to_string())
+        );
+        assert_eq!(
+            parse_plugin_summary("  trimmed  \n"),
+            Some("trimmed".to_string())
+        );
+        assert_eq!(parse_plugin_summary(""), None);
+        assert_eq!(parse_plugin_summary("\n  \n"), None);
+        assert_eq!(parse_plugin_summary("one\ntwo\n"), None);
     }
 }
