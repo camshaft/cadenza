@@ -453,6 +453,7 @@ pass	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
 pass	TWO closures capture DIFFERENT generations of one shadowed name and each sees its own
 pass	TWO closures capture one let-bound perform result — the effect fires ONCE
 pass	TWO closures capture the SAME heap map and the map outlives both applications
+pass	TWO closures capturing one let-bound host call in a HELPER def share ONE firing
 pass	TWO closures capturing one let-bound host call share ONE firing (in the exported def)
 pass	TWO closures escaping one handle carry DISTINCT captured state reads
 pass	TWO closures minted by the same op at DIFFERENT states each keep their own snapshot

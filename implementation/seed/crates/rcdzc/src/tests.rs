@@ -34335,55 +34335,6 @@ mod stage1 {
     }
 
     #[test]
-    fn adv62_a_let_bound_host_result_captured_by_two_escaping_closures_fires_the_host_op_once() {
-        // adv-62 (breaker, HIGH wasm soundness): a `let`-bound host-call result captured by TWO escaping
-        // closures must fire the host op EXACTLY ONCE — the shared `let`-bound `v` is captured by both. The
-        // callee `mk` returns `(tuple (fn (x) (+ v x)) (fn (x) (* v x)))` from inside `(host (io) …)`; `main`
-        // destructures + calls both. BUG: `mk` β-inlines into the match scrutinee, the match folds to a
-        // single Leaf, and — because the inlined `io.get` copy lost its effect-op meta —
-        // `scrutinee_reaches_host_perform` missed it → the bare-body fold RE-EMITTED the whole `(host …)`
-        // block once per tuple binder → `io.get` fired TWICE → the 2nd call had no recorded response → TRAP.
-        // FIX (two complementary arms, both this vertical): (1) the scrutinee guard now treats a
-        // `Resolved::Host` block as reaching a host perform, so the `MatchSum` wrapper is kept and the
-        // scrutinee materializes ONCE; (2) the wasm `Core::Let` emit maps a SCALAR value node → its slot, so
-        // the two closures capture the SAME slot rather than re-lowering the host call. Runs with io.get=21:
-        // `f(10)=31`, `g(100)=2100`, sum 2131 — and the run supplies EXACTLY ONE response, so the pre-fix
-        // double-fire would trap here (call 2 of 1). This is the wasm face; the rust backend pins the same
-        // double-emit at `rustc_closure_capturing_a_let_bound_host_call_emits_it_once`.
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!("[adv62] runtime wasm not in the store; skipping run");
-            return;
-        };
-        let src = "(do (effect io (op get (-> Unit Int64))) \
-                   (def (mk) (host (io) (let ((v (io.get unit))) \
-                     (tuple (fn ((: x Int64)) (+ v x)) (fn ((: x Int64)) (* v x)))))) \
-                   (def (main) (match (mk) ((tuple f g) (+ (f 10) (g 100))))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("adv-62 two-closure host-capture must compile");
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            // EXACTLY ONE response: the pre-fix double-fire consumes a second (absent) response → trap.
-            host_responses: vec![cdz_run::HostResponse {
-                op: "io.get".to_string(),
-                value: "21".to_string(),
-            }],
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "2131",
-                "io.get (=21) fires ONCE, shared by both closures: f(10)=31 + g(100)=2100 = 2131"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!(
-                "adv-62 regressed: the let-bound host call fired more than once (2nd call has no \
-                 recorded response) → trap: {t}"
-            ),
-        }
-    }
-
-    #[test]
     fn adv62b_a_host_result_captured_by_two_closures_in_a_record_fires_the_host_op_once() {
         // adv-62b: the RECORD-face sibling of adv-62. `mk` returns a RECORD of two closures capturing the
         // let-bound host result `v`, from inside `(host (io) …)`; `main` projects + calls both. BUG: `r`'s
