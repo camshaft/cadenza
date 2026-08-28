@@ -2028,14 +2028,21 @@
             n = corpusCaseCount file;
             titles = corpusCaseTitles file;   # ONE split for the whole file, indexed per case below
           in
-          builtins.genList
-            (i: mkCorpusOptGap {
-              inherit name;
-              idx = pkgs.lib.fixedWidthNumber 4 i;
-              caseTitle = builtins.elemAt titles i;
-              build = mkCorpusBuild { inherit name shred; idx = pkgs.lib.fixedWidthNumber 4 i; };
-            })
-            n;
+          # DEFENSIVE: corpusCaseCount and corpusCaseTitles derive from the SAME line-anchored `(case "` split,
+          # so their lengths agree by construction — but if a future/malformed file ever desynced them, the
+          # per-case `elemAt titles i` would surface as a cryptic `elemAt index N on size N`. Fail loud + NAMED
+          # instead (which file, both counts), so a bad case is a one-line diagnosis, not an OOB hunt.
+          if builtins.length titles != n
+          then throw "wasm-opt-gaps ${name}: corpusCaseTitles (${toString (builtins.length titles)}) != corpusCaseCount (${toString n}) — a malformed or embedded-quote (case …)?"
+          else
+            builtins.genList
+              (i: mkCorpusOptGap {
+                inherit name;
+                idx = pkgs.lib.fixedWidthNumber 4 i;
+                caseTitle = builtins.elemAt titles i;
+                build = mkCorpusBuild { inherit name shred; idx = pkgs.lib.fixedWidthNumber 4 i; };
+              })
+              n;
 
         # AGGREGATOR: collect a set of per-case records, TALLY them by kind (for the self-describing summary),
         # DROP the optimal/skip markers, sort the `(gap …)` records by o3-delta DESC, wrap in the top-level
