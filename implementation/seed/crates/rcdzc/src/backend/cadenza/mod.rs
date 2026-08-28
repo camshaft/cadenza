@@ -1086,17 +1086,60 @@ fn emit_expr_viewed(
         // ONLY inside the arm body that bound it; a read whose binder is not in scope (a nested sub-pattern
         // this slice does not emit) declines.
         Core::SumPayload { scrutinee, path } => {
-            let nm = env
-                .payloads
-                .get(&(scrutinee, path.to_vec()))
-                .ok_or_else(|| {
-                    Reject::decline(
-                        "the Cadenza backend reached a sum-match payload with no binder in scope (a \
-                         payload read outside a directly-emitted single-level match arm)"
+            // Exact registered binder (a match arm's own payload slot).
+            if let Some(nm) = env.payloads.get(&(scrutinee, path.to_vec())) {
+                return Ok(b.name(nm.clone()));
+            }
+            // Else: a NESTED compound destructure — a `(tuple a c)` / `(record (= f p))` pattern inside a
+            // match arm reads its element as `SumPayload { scrutinee = <the enclosing bound compound>, path =
+            // [Elem(i)…] }` (relative to that scrutinee, not the root). Emit the SCRUTINEE's surface (it
+            // recurses — the scrutinee is itself a registered payload / binder), then re-emit the `Elem` path
+            // as nested PROJECTIONS: index for a `Ty::Tuple`, field name for a `Ty::Record` (mirrors the
+            // `Core::Proj` arm, and its type-driven key). A `Payload` / `RestFrom` step (a refutable nested
+            // sum/list — needs a real nested match) is not projectable and declines. An irrefutable
+            // tuple/record destructure is value-eq to these projections (recompile re-lowers them identically).
+            let mut cur_ty = crate::infer::type_of(db, scrutinee);
+            let mut node = emit_expr(db, b, scrutinee, None, env, emitted)?;
+            for step in path.iter() {
+                let crate::core::PathStep::Elem(i) = *step else {
+                    return Err(Reject::decline(
+                        "the Cadenza backend does not yet lower a nested match sub-pattern with a \
+                         non-tuple/record (sum / list-rest) step"
                             .to_string(),
-                    )
-                })?;
-            Ok(b.name(nm.clone()))
+                    ));
+                };
+                let (key, next_ty) = match &cur_ty {
+                    Ty::Tuple(ts) => (
+                        b.atom_leaf(Leaf::Int {
+                            value: IntValue::from_i64(i as i64),
+                            radix: Radix::Dec,
+                        }),
+                        ts.get(i).cloned().unwrap_or(Ty::Any),
+                    ),
+                    Ty::Record(fields) => {
+                        let fname = fields.keys().nth(i).ok_or_else(|| {
+                            Reject::decline(
+                                "the Cadenza backend could not recover a record field name for a \
+                                 nested projection"
+                                    .to_string(),
+                            )
+                        })?;
+                        let key = b.name(&*fname.name);
+                        (key, fields.values().nth(i).cloned().unwrap_or(Ty::Any))
+                    }
+                    _ => {
+                        return Err(Reject::decline(
+                            "the Cadenza backend reached a payload projection over a non-tuple/record \
+                             value"
+                                .to_string(),
+                        ));
+                    }
+                };
+                let dot = b.name(".");
+                node = b.list(vec![dot, node, key]);
+                cur_ty = next_ty;
+            }
+            Ok(node)
         }
         // MAP / SET OPERATIONS — each a prelude member-access application `((. <Module> <member>) <op>…)`
         // (the member name is the prelude field the op resolves from — `Map.len` is `map-size`, `Set.len` is
