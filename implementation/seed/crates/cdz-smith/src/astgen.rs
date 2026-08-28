@@ -280,7 +280,8 @@ fn gen_compound<C: Choice>(
 /// lowering (uniform-width, so it stays on the compile path); the type-diverse-compound arm
 /// ([`gen_typed_compound`]) returns a HETEROGENEOUS tuple / non-Int64 list / heterogeneous record /
 /// `Option` / annotated `Result` — the type-directed step past the Int64-element compounds `gen_compound`
-/// builds (named-record + Option/Result sum value lowering).
+/// builds (named-record + Option/Result sum value lowering); the typed-fn arm ([`gen_typed_fn_call_body`])
+/// defines + calls a locally-typed function (typed param/return/call across scalar types).
 fn gen_main_body<C: Choice>(
     c: &mut C,
     scope: &mut Vec<String>,
@@ -288,7 +289,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(7) {
+    match c.variant(8) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -302,6 +303,8 @@ fn gen_main_body<C: Choice>(
         5 => gen_float_body(c, fresh, out),
         // A TYPE-DIVERSE compound: a heterogeneous tuple / a non-Int64 homogeneous list (type-directed).
         6 => gen_typed_compound(c, out),
+        // A TYPED local function def + call `(do (def (g (: x T)) …) (g <T-leaf>))`: typed param/return/call.
+        7 => gen_typed_fn_call_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -528,6 +531,26 @@ fn gen_typed_compound<C: Choice>(c: &mut C, out: &mut String) {
             write!(out, ") (Result {} {}))", ok.name(), err.name()).ok();
         }
     }
+}
+
+/// A body that DEFINES and CALLS a locally-TYPED function: `(do (def (g (: x T)) <body>) (g <T-leaf>))`.
+/// The generator's helpers (`f`/`r`/`t`) are Int64-only; this exercises a typed function PARAM `T`, a
+/// typed RETURN, and a typed CALL/arg-pass across arbitrary scalar types. The body is either the identity
+/// `x` (return type `T` — a typed round-trip THROUGH the param) or an independently-typed leaf `U` (the
+/// `T` param ignored, a `U` return — distinct in/out types). Type-correct + bounded (increment 3 of the
+/// type-directed program: typed function args/returns).
+fn gen_typed_fn_call_body<C: Choice>(c: &mut C, out: &mut String) {
+    let pty = pick_scalar_ty(c);
+    write!(out, "(do (def (g (: x {})) ", pty.name()).ok();
+    if c.variant(2) == 0 {
+        out.push('x'); // identity — return type T (the param flows to the return)
+    } else {
+        let uty = pick_scalar_ty(c);
+        gen_scalar_leaf(c, uty, out); // independent U-typed leaf (param ignored)
+    }
+    out.push_str(") (g ");
+    gen_scalar_leaf(c, pty, out); // call argument of type T
+    out.push_str("))");
 }
 
 /// Append one coerced `Int64` expression: at `depth == 0` (or when the base variant is picked) an
@@ -1062,6 +1085,41 @@ mod tests {
         assert!(
             saw_non_int64,
             "type-diverse compounds should reach non-Int64 element types"
+        );
+    }
+
+    /// Every `gen_typed_fn_call_body` (a typed local `(def (g (: x T)) …)` + `(g <T-leaf>)`) is CLEANLY
+    /// HANDLED across scalar param/return types, and REACHES a non-Int64 param type — so typed function
+    /// param/return/call ABI is genuinely exercised, not just the Int64 helpers.
+    #[test]
+    fn gen_typed_fn_call_body_is_cleanly_handled_and_diverse() {
+        let mut saw_non_int64_param = false;
+        for seed in 0u64..256 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(41);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut src = String::from("(do (def (main) ");
+            gen_typed_fn_call_body(&mut ByteCursorChoice::new(&bytes), &mut src);
+            src.push_str(") (export main))");
+            assert!(
+                matches!(
+                    compile_catching(&src),
+                    Verdict::Compiled { .. } | Verdict::Declined { .. }
+                ),
+                "typed fn def+call must be cleanly handled: {src}"
+            );
+            // A non-Int64 param shows up as `(: x Float…/Int8/…/Bool)` — i.e. `(: x ` not followed by Int64.
+            if src.contains("(: x ") && !src.contains("(: x Int64)") {
+                saw_non_int64_param = true;
+            }
+        }
+        assert!(
+            saw_non_int64_param,
+            "typed fn bodies should reach a non-Int64 param type"
         );
     }
 
