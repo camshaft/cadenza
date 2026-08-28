@@ -73,6 +73,17 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         #[cfg(feature = "differential")]
+        "module-declines" => cmd_module_declines(&args[1..]),
+        #[cfg(not(feature = "differential"))]
+        "module-declines" => {
+            eprintln!(
+                "cdz-smith: the `module-declines` subcommand needs the `differential` feature \
+                 (it shares the decline-capture helpers) — rebuild: \
+                 `cargo run --features differential -- module-declines …`."
+            );
+            ExitCode::from(2)
+        }
+        #[cfg(feature = "differential")]
         "verify-differential" => cmd_verify_differential(&args[1..]),
         #[cfg(not(feature = "differential"))]
         "verify-differential" => {
@@ -111,6 +122,7 @@ fn usage() {
          \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR] [--host]\n\
          \x20 cdz-smith verify-differential <FILE.sexp | SEED> [--store DIR] [--cdz PATH] [--oracle PATH]\n\
          \x20 cdz-smith host-declines     [--count N] [--seed S] [--declines-dir DIR]   (WIT/host gap hunt → breaker)\n\
+         \x20 cdz-smith module-declines   [--count N] [--seed S] [--declines-dir DIR]   (cross-module WIT-binding gap hunt → breaker)\n\
          \x20 cdz-smith once             <SEED>\n\
          \x20 cdz-smith gen              <SEED>\n\
          \x20 cdz-smith verify           <FILE.sexp | SEED>\n\
@@ -378,6 +390,94 @@ fn cmd_host_declines(args: &[String]) -> ExitCode {
     };
     eprintln!(
         "[cdz-smith] host-declines done: {compiled} compiled, {declined} declined, {other} other | {distinct} distinct decline signatures"
+    );
+    ExitCode::SUCCESS
+}
+
+/// The MODULE-DECLINE sweep: generate `count` MODULE+import programs (see `hostgen::generate_module_program`)
+/// and compile each via [`compile_modules_catching`], collecting the compiler's DECLINES — the CROSS-MODULE
+/// / WIT-binding GAPS. Each decline's repro is the corpus multi-file form (`(module "lib" …)` + `(input …)`)
+/// so breaker can drop it straight into a corpus file. Deduped to `--declines-dir` like the other sweeps.
+/// `--count` (default 2000), `--seed`, `--declines-dir`. Exits 0 (declines are EXPECTED output).
+#[cfg(feature = "differential")]
+fn cmd_module_declines(args: &[String]) -> ExitCode {
+    let mut count: u64 = 2000;
+    let mut seed: Option<u64> = None;
+    let mut declines_dir: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
+            "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
+            "--declines-dir" => declines_dir = it.next().map(PathBuf::from),
+            other => {
+                eprintln!("cdz-smith module-declines: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let run_seed = seed.unwrap_or_else(driver::wallclock_seed);
+    eprintln!(
+        "[cdz-smith] module-declines @{} | {count} programs | seed {run_seed}",
+        driver::detect_commit()
+    );
+
+    let mut rng = run_seed;
+    let mut declines: Vec<(String, String)> = Vec::new();
+    let (mut compiled, mut declined, mut other) = (0usize, 0usize, 0usize);
+    for _ in 0..count {
+        let mut bytes = Vec::with_capacity(12);
+        for _ in 0..12 {
+            rng = rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = rng;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            bytes.push(((z ^ (z >> 31)) >> 24) as u8);
+        }
+        let (module_src, entry_src) = cdz_smith::hostgen::generate_module_program(&bytes);
+        match cdz_smith::oracle::compile_modules_catching(
+            &[("lib".to_string(), module_src.clone())],
+            &entry_src,
+        ) {
+            Verdict::Compiled { .. } => compiled += 1,
+            Verdict::Declined { code, message } => {
+                declined += 1;
+                let reason = match code {
+                    Some(c) => format!("{c}: {message}"),
+                    None => message,
+                };
+                // Repro in the corpus multi-file form so breaker can drop it into a corpus case.
+                let repro = format!("(module \"lib\" {module_src})\n(input {entry_src})");
+                declines.push((repro, reason));
+            }
+            other_v => {
+                other += 1;
+                eprintln!("[cdz-smith] module-declines: non-decline outcome {other_v:?}");
+            }
+        }
+    }
+
+    let distinct = if let Some(dir) = &declines_dir {
+        match write_declines(dir, &declines) {
+            Ok(n) => {
+                eprintln!(
+                    "[cdz-smith] {declined} declines ({n} distinct) → {} (hand off to breaker)",
+                    dir.display()
+                );
+                n
+            }
+            Err(e) => {
+                eprintln!("cdz-smith module-declines: cannot write declines dir: {e}");
+                0
+            }
+        }
+    } else {
+        0
+    };
+    eprintln!(
+        "[cdz-smith] module-declines done: {compiled} compiled, {declined} declined, {other} other | {distinct} distinct decline signatures"
     );
     ExitCode::SUCCESS
 }
