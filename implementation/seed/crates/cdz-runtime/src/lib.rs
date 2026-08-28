@@ -25377,6 +25377,12 @@ mod tests {
     #[derive(Debug, bolero::TypeGenerator)]
     enum VecOp {
         Push { elem: u8 },
+        // FRONT growth — `op_vec_prepend`, the dedicated front-growth twin of `Push`. Its own path
+        // (`vec_prepend_into`, packs into the leftmost leaf, mints a fresh front subtree only on a full
+        // level) once built a degenerate O(n)-deep tree (#4982); interleaving it with split/concat/update/
+        // fork here pins that the front-growth spine composes with relaxed interior nodes — element-equal,
+        // shape-unobservable, and leak-free — under an arbitrary history, not just the fixed spot-checks.
+        Prepend { elem: u8 },
         // `index`/`at` are taken MODULO the current length at apply time, so a generated value always
         // lands in-range (the ops trap OOB — the reference is what defines "in range"). A no-op on empty.
         Update { index: u8, elem: u8 },
@@ -25415,6 +25421,11 @@ mod tests {
                     let e = elem as i64;
                     v = op_vec_push(v, op_box_int(e));
                     reference.push(e);
+                }
+                VecOp::Prepend { elem } => {
+                    let e = elem as i64;
+                    v = op_vec_prepend(v, op_box_int(e));
+                    reference.insert(0, e);
                 }
                 VecOp::Update { index, elem } => {
                     if !reference.is_empty() {
@@ -25551,6 +25562,11 @@ mod tests {
                     let b = elem & 1 != 0;
                     v = op_vec_push(v, op_box_bool(b));
                     reference.push(b);
+                }
+                VecOp::Prepend { elem } => {
+                    let b = elem & 1 != 0;
+                    v = op_vec_prepend(v, op_box_bool(b));
+                    reference.insert(0, b);
                 }
                 VecOp::Update { index, elem } => {
                     if !reference.is_empty() {
