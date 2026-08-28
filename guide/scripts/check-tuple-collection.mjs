@@ -67,7 +67,7 @@ async function getHeap() {
 // tuple with a scalar: the canonical "data + result" shape the operator wants.
 const BUILD = "(def (build n) (if (= n 0) (: (list) (List Int64)) (List.push (build (- n 1)) n)))";
 const PROGRAM = `(do ${BUILD} (def (main) (tuple (build 3) 30)) (export main))`;
-const EXPECTED = "(: (tuple (list 1 2 3) 30) (Tuple (List Int64) Int64))";
+const EXPECTED = "(: #tuple(#list(1 2 3) 30) (Tuple (List Int64) Int64))";
 // The specific decline emitted while the walker gap is unfixed — used to SKIP (not fail) pending the fix.
 const PENDING_MARKER = "value-form walker that loops to a runtime-determined depth";
 
