@@ -7939,6 +7939,7 @@ pass	sa1 STRING op arguments measured into a scalar state — the empty string i
 pass	sa2 a string BUILT from a prior draw's branch becomes the next op's argument — the tag arm reads the post-pick state
 pass	sa3 STRING resume values — the arm builds a rope per dispatch branching op-arg vs live state, body concatenates two
 pass	sab1 a CONDITIONALLY-aborting handle inside the SEED — the abort value or the fall-through both become the outer init
+pass	salg1 the set-algebra laws hold over two runtime HAMT sets — idempotence, commutativity, self-difference, membership
 pass	same-Instant queue entries resume in FIFO insertion order (§3.4 tie-break)
 pass	same-arity tuple match arms share an equal element and sink the differing one
 pass	same-effect shadowing with ADVANCING states — the outer state survives the inner handle and resumes advanced
