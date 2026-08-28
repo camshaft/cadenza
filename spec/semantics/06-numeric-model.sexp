@@ -12286,3 +12286,18 @@
   (call main (: -4 Int64))
   (output (: #tuple(-4 -3) P2))
   (live-objects 1))
+
+(case "cdzw37 a GUARDED sum arm with same-variant fall-through round-trips through the cadenza hop"
+  (doc "The #5146 fence (SumCont::Guarded): a guarded Some arm, its same-variant unguarded fall-through,
+        and a None arm — over an OPAQUE scrutinee — must re-emit as the (guard …) surface with the shared
+        payload binder in scope for both the cond and every fall-through row, and the emit must sit at its
+        fold fixpoint (corpus-cadenza byte-idempotence is the teeth). n=7: guard 7>3 → 100; n=2: falls to
+        the plain Some arm → 2; n=-5: None → -1. Dual-path verified; the disc-folded-ROOT face (scrutinee
+        constructed+inlined at call sites) still declines and is banked as a flip witness, NOT pinned here.")
+  (input (do
+    (def (f (: o (Option Int64))) (match o ((guard (Some v) (> v 3)) 100) ((Some v) v) ((None _u) -1)))
+    (def (main (: n Int64)) (f (if (> n 0) (Some n) (None))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 100 Int64))
+  (call main (: 2 Int64)) (output (: 2 Int64))
+  (call main (: -5 Int64)) (output (: -1 Int64)))
