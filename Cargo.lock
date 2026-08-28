@@ -3396,6 +3396,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask-roundtrip"
+version = "0.0.0"
+dependencies = [
+ "xtask-support",
+]
+
+[[package]]
 name = "xtask-support"
 version = "0.0.0"
 dependencies = [

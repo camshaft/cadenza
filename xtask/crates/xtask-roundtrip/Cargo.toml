@@ -1,0 +1,17 @@
+# xtask-roundtrip — the corpus round-trip check as its OWN minimal-dep crate (v-xtask-decompose:
+# per-command crate split). Depends ONLY on xtask-support (the shared corpus reader/parser + convert
+# helpers); no dep on xtask itself, so editing this command rebuilds only this crate + xtask-support.
+# The nix `apps.roundtrip` runs this bin with CDZ_SEED_BIN_DIR (nix-built cdz/cdz-corpus) — no cargo
+# build of the toolchain. `cargo xtask roundtrip` forwards here via v-fleet-tooling's cargo→nix redirect.
+[package]
+name = "xtask-roundtrip"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-roundtrip"
+path = "src/main.rs"
+
+[dependencies]
+xtask-support = { path = "../xtask-support" }

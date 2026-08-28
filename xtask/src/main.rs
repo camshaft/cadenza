@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use xshell::{Shell, cmd};
 use xtask_support::{
     Call, CorpusRecord, content_address, convert_bytes, default_corpus_files, first_line,
-    hash_tree, launch_fail, read_corpus, split_message_clause, to_binary,
+    hash_tree, launch_fail, read_corpus, split_message_clause,
 };
 
 /// The one interface for driving the Cadenza seed workspace. Every knob is a typed flag; there are
@@ -199,13 +199,6 @@ enum Cmd {
     /// advisory job (no full build). Comment-scoped + Unicode-test-doc-excluded, so functional emoji in
     /// string/char literals (the language's own lex/parse/print fixtures) are correctly left alone.
     LintEmoji,
-    /// Round-trip every corpus program through the syntax surfaces: `sexpr` must reproduce the exact
-    /// binary AST; `ml` (the long-term syntax, allowed to canonicalize once) must round-trip to a
-    /// FIXED POINT (`ml(ml(x)) == ml(x)`). Guards `cadenza-syntax` independently of the compiler.
-    Roundtrip {
-        /// The corpus `.sexp` files to check. [default: all of spec/semantics/*.sexp]
-        files: Vec<PathBuf>,
-    },
     /// Format Cadenza program file(s) through the printer, rewriting them in place.
     Fmt {
         /// The `.cdz`/`.sexp` files to format.
@@ -388,7 +381,6 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Cmd::Roundtrip { files } => roundtrip(&paths, profile, files),
         Cmd::Fmt { files, to, check } => fmt(&paths, profile, files, &to, check),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
         Cmd::Codegen { check } => codegen::run(&paths, check),
@@ -8178,165 +8170,6 @@ impl CachedStep {
 // ============================================================================================
 // roundtrip — the syntax surfaces round-trip on every corpus program.
 // ============================================================================================
-
-/// For every corpus program, confirm the syntax surfaces round-trip. `sexpr` is STRICT: re-encoding
-/// the round-tripped text to binary yields the SAME bytes as the original. `ml` is IDEMPOTENT: it may
-/// canonicalize on the first round-trip (e.g. name-alias compound ctors → their literal/string-
-/// primitive form), so it must reach a FIXED POINT (`ml(ml(x)) == ml(x)`) rather than reproduce the
-/// original byte-for-byte. Guards `cadenza-syntax` (reader/printer/codec) independently of the compiler.
-fn roundtrip(paths: &Paths, profile: &str, files: Vec<PathBuf>) {
-    let tools = build_tools(paths, profile);
-    let files = if files.is_empty() {
-        default_corpus_files(&paths.repo)
-    } else {
-        files
-    };
-
-    // Gather every case, then round-trip them in PARALLEL. Each case is independent — it only READS
-    // `tools` and spawns its own `cdz-syntax` conversions — so the ~1025 cases × 2 surfaces (each a
-    // subprocess) are embarrassingly parallel; the serial loop was process-wait-bound at ~10s. Failure
-    // messages are collected per case (in the SAME order as `records`) so the reported list is stable.
-    let records: Vec<CorpusRecord> = files
-        .iter()
-        .flat_map(|file| read_corpus(&tools.corpus, file))
-        .collect();
-    let per_case = roundtrip_all_parallel(&tools, records);
-
-    let (mut ok, mut fail) = (0u32, 0u32);
-    let mut failures: Vec<String> = Vec::new();
-    for case in per_case {
-        if case.counted_ok {
-            ok += 1;
-        }
-        fail += case.failures.len() as u32;
-        failures.extend(case.failures);
-    }
-
-    println!("\nroundtrip: {ok} programs ok, {fail} failures");
-    if !failures.is_empty() {
-        println!();
-        for f in failures.iter().take(40) {
-            println!("  FAIL  {f}");
-        }
-        if failures.len() > 40 {
-            println!("  … and {} more", failures.len() - 40);
-        }
-        std::process::exit(1);
-    }
-}
-
-/// One case's round-trip outcome: whether it counted as an `ok` program, and any failure messages.
-/// `counted_ok` mirrors the serial loop's `ok += 1` — reached iff the reference sexpr→binary
-/// succeeded (a program whose reference conversion fails is NOT counted ok).
-struct RoundtripCase {
-    counted_ok: bool,
-    failures: Vec<String>,
-}
-
-/// Round-trip every record in PARALLEL, returning one [`RoundtripCase`] per record in the SAME order
-/// as `records`. Same shape as `grade_all_parallel`: a `std::thread::scope` worker pool (no new
-/// dependency) pulling from a shared atomic cursor, each result written to its own index slot so the
-/// reported failure list is order-stable. Each case only READS `tools` and spawns its own `cdz-syntax`
-/// conversions, so there is no shared mutable state.
-fn roundtrip_all_parallel(tools: &Tools, records: Vec<CorpusRecord>) -> Vec<RoundtripCase> {
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    let n = records.len();
-    let slots: Vec<Mutex<Option<RoundtripCase>>> = (0..n).map(|_| Mutex::new(None)).collect();
-    let cursor = AtomicUsize::new(0);
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .max(1);
-
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            let cursor = &cursor;
-            let slots = &slots;
-            let records = &records;
-            scope.spawn(move || {
-                loop {
-                    let i = cursor.fetch_add(1, Ordering::Relaxed);
-                    if i >= records.len() {
-                        break;
-                    }
-                    let rec = &records[i];
-                    let mut failures = Vec::new();
-                    // The reference: the program's canonical binary AST. If it fails, the case is not
-                    // counted ok (mirrors the serial loop's early `continue`).
-                    let counted_ok = match to_binary(&tools.syntax, &rec.program) {
-                        None => {
-                            failures.push(format!("{}: sexpr→binary failed", rec.description));
-                            false
-                        }
-                        Some(bin0) => {
-                            // Round-trip through each intermediate surface, back to binary, compare bytes.
-                            //
-                            // `sexpr` is STRICT: it must reproduce the exact binary (byte-identical).
-                            //
-                            // `ml` is IDEMPOTENT rather than strict: the ML surface is the long-term
-                            // syntax and is allowed to CANONICALIZE on the first round-trip (e.g. the
-                            // name-alias compound ctors `(tuple a b)`/`(list …)` render to the literal
-                            // `(a, b)`/`[…]`, which parses back to the string-primitive `("tuple" …)` —
-                            // a deliberate, semantics-preserving normalization, not information loss).
-                            // So we require the ML round-trip to reach a FIXED POINT: a second ML
-                            // round-trip must reproduce the first (`ml(ml(x)) == ml(x)`). That still
-                            // catches any real ML round-trip bug (non-idempotence = instability or lost
-                            // information) while tolerating the one-time ctor canonicalization.
-                            match roundtrip_via(tools, &bin0, "sexpr") {
-                                Some(bin1) if bin1 == bin0 => {}
-                                Some(_) => failures
-                                    .push(format!("{}: binary≠binary via sexpr", rec.description)),
-                                None => failures.push(format!(
-                                    "{}: round-trip via sexpr errored",
-                                    rec.description
-                                )),
-                            }
-                            match roundtrip_via(tools, &bin0, "ml") {
-                                Some(bin1) => match roundtrip_via(tools, &bin1, "ml") {
-                                    Some(bin2) if bin2 == bin1 => {}
-                                    Some(_) => failures.push(format!(
-                                        "{}: ml round-trip not idempotent (ml(ml(x)) != ml(x))",
-                                        rec.description
-                                    )),
-                                    None => failures.push(format!(
-                                        "{}: second ml round-trip errored",
-                                        rec.description
-                                    )),
-                                },
-                                None => failures.push(format!(
-                                    "{}: round-trip via ml errored",
-                                    rec.description
-                                )),
-                            }
-                            true
-                        }
-                    };
-                    *slots[i].lock().unwrap() = Some(RoundtripCase {
-                        counted_ok,
-                        failures,
-                    });
-                }
-            });
-        }
-    });
-
-    slots
-        .into_iter()
-        .map(|slot| {
-            slot.into_inner()
-                .unwrap()
-                .expect("every case round-tripped")
-        })
-        .collect()
-}
-
-/// binary → <surface> text → binary, returning the re-encoded bytes (to compare to the original).
-fn roundtrip_via(tools: &Tools, bin0: &[u8], surface: &str) -> Option<Vec<u8>> {
-    let text = convert_bytes(&tools.syntax, bin0, "binary", surface)?;
-    convert_bytes(&tools.syntax, &text, surface, "binary")
-}
 
 // ============================================================================================
 // fmt — format program files through the printer.
