@@ -47,9 +47,11 @@
 //!   (name-sorted), `Core::ListNew`→`(list …)`; and a `Core::SumNew` variant →
 //!   `(: (<Variant> <payload-or-unit>) <sum-type>)` (the type ascription pins an under-determined sum,
 //!   e.g. a bare `(None unit)`; `type_ast` declines a free-type-arg sum). All mirror lower's value surface.
-//!   A value whose type is a USER-declared sum/nominal DECLINES for now (the backend does not yet re-emit
-//!   the `(type …)` declaration it needs, and a single-variant user sum erases to its payload); PRELUDE
-//!   sums (Option/Result/…) are ambient and round-trip.
+//!   A USER sum is re-declared: `emit` emits its `(type <Name> (<Variant> <PayloadTy>…)…)` decl (for a
+//!   MONOMORPHIC, CLOSED, MULTI-variant sum — recursive payloads OK) and its values then round-trip; a
+//!   GENERIC / OPEN / SINGLE-variant (optimizer-erased) user sum, and a user `Nominal` newtype, still
+//!   DECLINE. PRELUDE sums (Option/Result/…) are ambient (no decl). A user-sum value emits ⇔ its decl was
+//!   emitted (`emitted` set), so there is never an unbound-type recompile.
 //!
 //! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
 //! (Seq/Block/Break), map/set values, sum/list MATCHES (MatchSum/MatchList) + non-scalar match probes,
@@ -93,9 +95,25 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     let do_head = b.name("do");
     let mut root_children = vec![do_head];
 
+    // Emit the user-declared TYPE declarations FIRST — a user sum's value re-reads to `(: (V p) T)`,
+    // which needs `(type T …)` in scope (a prelude sum like Option/Result is ambient, needs none).
+    // `emit_type_decl` handles only a monomorphic, closed, multi-variant sum (generic / open / single-
+    // variant-erased are declined at the value site); the set of decls that landed gates which sum values
+    // may emit, so the two agree (a value emits ⇔ its decl was emitted — no unbound-type recompile).
+    let mut emitted: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    for i in 0..db.type_decls.len() {
+        let decl = db.type_decls[i].clone();
+        if db.is_user_node(decl.occ)
+            && let Some(node) = emit_type_decl(db, &mut b, &decl)
+        {
+            root_children.push(node);
+            emitted.insert(decl.occ);
+        }
+    }
+
     // One `(def …)` per reachable definition, in layout order (a stable, target-neutral order).
     for &def in &layout.order {
-        root_children.push(emit_def(db, &mut b, def)?);
+        root_children.push(emit_def(db, &mut b, def, &emitted)?);
     }
 
     // Then the exports, so recompiling the emitted program reaches the SAME definition set (an export-
@@ -112,10 +130,42 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     Ok(crate::codec::encode(&arenas))
 }
 
+/// Reconstruct a user sum's `(type <Name> (<Variant> <PayloadTy>…)…)` declaration, or `None` for a sum
+/// this slice does not emit: a GENERIC sum (type parameters — the payload is a type variable), an OPEN
+/// sum (row-variable tail), or a SINGLE-variant sum (optimizer-erased to its payload, so its value emits
+/// without the nominal — a later slice). A variant's payload types are recovered from their declaration
+/// occurrences via `typeval_of` + lower's `type_ast`; a nullary variant is `(<Variant>)`. `decl` is an
+/// owned clone (so `typeval_of`'s `&mut db` does not alias a `db.type_decls` borrow).
+fn emit_type_decl(db: &mut Db, b: &mut Builder, decl: &crate::db::TypeDecl) -> Option<StructId> {
+    if !decl.params.is_empty() || decl.open_tail.is_some() || decl.variants.len() < 2 {
+        return None;
+    }
+    let type_head = b.name("type");
+    let name = b.name(decl.name.as_str());
+    let mut children = vec![type_head, name];
+    for v in &decl.variants {
+        let vname = b.name(v.name.as_str());
+        let mut vchildren = vec![vname];
+        for &p in &v.payloads {
+            let ty = crate::eval::typeval_of(db, p)?;
+            let ncx = db.name_ctx();
+            let ty_node = crate::lower::type_ast(b, &ty, &ncx)?;
+            vchildren.push(ty_node);
+        }
+        children.push(b.list(vchildren));
+    }
+    Some(b.list(children))
+}
+
 /// Reconstruct `(def (<name> (: <p> <Ty>)…) <body>)` for definition `def`. B1a handles NULLARY defs and
 /// parameterized defs whose parameters have a value-form-representable type; a parameter of a type with
 /// no surface (a function/continuation/unsolved type — `type_ast` returns `None`) declines.
-fn emit_def(db: &mut Db, b: &mut Builder, def: usize) -> Result<StructId, Reject> {
+fn emit_def(
+    db: &mut Db,
+    b: &mut Builder,
+    def: usize,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Result<StructId, Reject> {
     let name = db.defs[def].name.clone();
     let body = db.defs[def].body.ok_or_else(|| {
         Reject::decline(format!(
@@ -160,7 +210,7 @@ fn emit_def(db: &mut Db, b: &mut Builder, def: usize) -> Result<StructId, Reject
     let sig = b.list(sig_children);
     // A fresh binding environment per definition — a `let` in the body populates it.
     let mut env = BinderEnv::new();
-    let body_node = emit_expr(db, b, body, &mut env)?;
+    let body_node = emit_expr(db, b, body, &mut env, emitted)?;
     Ok(b.list(vec![def_head, sig, body_node]))
 }
 
@@ -194,26 +244,32 @@ fn emit_expr(
     b: &mut Builder,
     id: StructId,
     env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
-    // A value whose solved type is a USER-DECLARED sum / nominal cannot yet round-trip: the backend does
-    // not re-emit the `(type …)` declaration such a value needs (a user variant value → CDZ0101 "unknown
-    // type" on recompile), and a SINGLE-variant user sum is optimizer-ERASED to its bare payload (so it
-    // would emit without the nominal, a value divergence). DECLINE it (the case SKIPS the round-trip
-    // corpus check rather than mis-round-tripping) until user type-decl emission lands. A PRELUDE sum
-    // (Option / Result / Ordering — ambient, needs no decl) has `file_of(decl) == None`, so it is NOT
-    // declined here and continues to the `SumNew` arm below. (breaker-reported, matching the
-    // decline-don't-miscompile discipline.) `is_user_node` is the canonical user-vs-prelude predicate the
-    // rust backend uses to pick which sums to emit — reliable in the corpus-shred context (unlike a
-    // file-range check).
-    if let Ty::Sum { decl, .. } | Ty::Nominal { decl, .. } = crate::infer::type_of(db, id)
-        && db.is_user_node(decl)
-    {
-        return Err(Reject::decline(
-            "the Cadenza backend does not yet re-emit a USER-declared sum/nominal value (its \
-             `(type …)` declaration is not yet emitted, and a single-variant sum erases to its \
-             payload) — a later slice"
-                .to_string(),
-        ));
+    // A value whose solved type is a USER-declared sum/nominal round-trips only if its `(type …)`
+    // declaration is re-emitted. `emit` emits (and records in `emitted`) the declarations it can — a
+    // MONOMORPHIC, CLOSED, MULTI-variant sum. So a user-sum value whose decl IS in `emitted` proceeds
+    // (its `(type …)` is in scope). Otherwise DECLINE: a GENERIC/OPEN sum (no decl emitted), a
+    // SINGLE-variant sum (optimizer-ERASED to its bare payload, so its value would emit without the
+    // nominal — a value divergence), or a `Ty::Nominal` newtype (erased likewise). Prelude sums
+    // (Option/Result — `is_user_node` false) are ambient and always proceed. (breaker-reported;
+    // decline-don't-miscompile.)
+    match crate::infer::type_of(db, id) {
+        Ty::Sum { decl, .. } if db.is_user_node(decl) && !emitted.contains(&decl) => {
+            return Err(Reject::decline(
+                "the Cadenza backend does not yet re-emit this user sum value (generic / open / \
+                 single-variant sum — its `(type …)` declaration is not emitted) — a later slice"
+                    .to_string(),
+            ));
+        }
+        Ty::Nominal { decl, .. } if db.is_user_node(decl) => {
+            return Err(Reject::decline(
+                "the Cadenza backend does not yet re-emit a user nominal (newtype) value — it erases \
+                 to its payload, losing the nominal — a later slice"
+                    .to_string(),
+            ));
+        }
+        _ => {}
     }
     match core_of(db, id) {
         // A CONSTANT scalar leaf re-reads to its plain value+type when its solved type is the PLAIN scalar
@@ -323,29 +379,29 @@ fn emit_expr(
             let head = b.name(sym);
             // Operands FIRST would reverse head-first order — build the head atom, then each operand
             // sub-tree left-to-right, then the list (children hold the ids; the head is already pushed).
-            let l = emit_expr(db, b, lhs, env)?;
-            let r = emit_expr(db, b, rhs, env)?;
+            let l = emit_expr(db, b, lhs, env, emitted)?;
+            let r = emit_expr(db, b, rhs, env, emitted)?;
             Ok(b.list(vec![head, l, r]))
         }
         // Boolean negation `(not x)`.
         Core::Not { operand } => {
             let head = b.name("not");
-            let x = emit_expr(db, b, operand, env)?;
+            let x = emit_expr(db, b, operand, env, emitted)?;
             Ok(b.list(vec![head, x]))
         }
         // Short-circuiting conjunction / disjunction — `is_and` picks `and` vs `or`.
         Core::And { lhs, rhs, is_and } => {
             let head = b.name(if is_and { "and" } else { "or" });
-            let l = emit_expr(db, b, lhs, env)?;
-            let r = emit_expr(db, b, rhs, env)?;
+            let l = emit_expr(db, b, lhs, env, emitted)?;
+            let r = emit_expr(db, b, rhs, env, emitted)?;
             Ok(b.list(vec![head, l, r]))
         }
         // A two-way conditional `(if cond then else)`.
         Core::If { cond, then_, else_ } => {
             let head = b.name("if");
-            let c = emit_expr(db, b, cond, env)?;
-            let t = emit_expr(db, b, then_, env)?;
-            let e = emit_expr(db, b, else_, env)?;
+            let c = emit_expr(db, b, cond, env, emitted)?;
+            let t = emit_expr(db, b, then_, env, emitted)?;
+            let e = emit_expr(db, b, else_, env, emitted)?;
             Ok(b.list(vec![head, c, t, e]))
         }
         // A kept multi-use binding sequence `(let ((<n0> <v0>) …) <body>)`. Each binding is `(init, init)`
@@ -363,12 +419,12 @@ fn emit_expr(
                 let name_atom = b.name(name.clone());
                 // The value is emitted with only the PRIOR bindings in scope (a binding's initializer
                 // cannot reference itself), then this binding is registered for the rest of the sequence.
-                let value_node = emit_expr(db, b, value, env)?;
+                let value_node = emit_expr(db, b, value, env, emitted)?;
                 env.insert(binder, name);
                 binding_nodes.push(b.list(vec![name_atom, value_node]));
             }
             let bindings_list = b.list(binding_nodes);
-            let body_node = emit_expr(db, b, body, env)?;
+            let body_node = emit_expr(db, b, body, env, emitted)?;
             Ok(b.list(vec![let_head, bindings_list, body_node]))
         }
         // A runtime CALL to a top-level function — `(<callee-name> <arg>…)`. `Core::Call` is present only
@@ -382,7 +438,7 @@ fn emit_expr(
             let mut children = Vec::with_capacity(1 + args.len());
             children.push(head);
             for arg in args {
-                children.push(emit_expr(db, b, arg, env)?);
+                children.push(emit_expr(db, b, arg, env, emitted)?);
             }
             Ok(b.list(children))
         }
@@ -417,7 +473,7 @@ fn emit_expr(
                     ));
                 }
             }
-            emit_match_chain(db, b, scrutinee, &arms, 0, env)
+            emit_match_chain(db, b, scrutinee, &arms, 0, env, emitted)
         }
         // A runtime TUPLE value `(tuple <e>…)` — a fixed-arity positional product built from runtime
         // operands (a projection of a compile-time-visible tuple folds away in `lower`, so a surviving
@@ -427,7 +483,7 @@ fn emit_expr(
             let mut children = Vec::with_capacity(1 + elems.len());
             children.push(head);
             for e in elems.iter().copied() {
-                children.push(emit_expr(db, b, e, env)?);
+                children.push(emit_expr(db, b, e, env, emitted)?);
             }
             Ok(b.list(children))
         }
@@ -439,7 +495,7 @@ fn emit_expr(
             children.push(head);
             for (name, &v) in fields.iter() {
                 let fname = b.name(&*name.name);
-                let fval = emit_expr(db, b, v, env)?;
+                let fval = emit_expr(db, b, v, env, emitted)?;
                 children.push(b.field_pair(fname, fval));
             }
             Ok(b.list(children))
@@ -451,7 +507,7 @@ fn emit_expr(
             let mut children = Vec::with_capacity(1 + elems.len());
             children.push(head);
             for e in elems.iter().copied() {
-                children.push(emit_expr(db, b, e, env)?);
+                children.push(emit_expr(db, b, e, env, emitted)?);
             }
             Ok(b.list(children))
         }
@@ -487,7 +543,7 @@ fn emit_expr(
             })?;
             let payload = match payloads.len() {
                 0 => b.name("unit"),
-                1 => emit_expr(db, b, payloads[0], env)?,
+                1 => emit_expr(db, b, payloads[0], env, emitted)?,
                 _ => {
                     return Err(Reject::decline(
                         "the Cadenza backend does not yet lower a multi-argument variant"
@@ -524,17 +580,18 @@ fn emit_match_chain(
     arms: &[crate::core::MatchArm],
     i: usize,
     env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
     let arm = &arms[i];
     // The last arm, or a wildcard (which always matches, making any later arm dead): unconditional else.
     // A wildcard arm may BIND the scrutinee; its body reads that binder, which lowering resolves to the
     // scrutinee's own core, so emitting the body re-emits the scrutinee reference in scope.
     if i + 1 == arms.len() || matches!(arm.probe, crate::core::Probe::Wild) {
-        return emit_expr(db, b, arm.body, env);
+        return emit_expr(db, b, arm.body, env, emitted);
     }
     let if_head = b.name("if");
     let eq = b.name("=");
-    let scrut = emit_expr(db, b, scrutinee, env)?;
+    let scrut = emit_expr(db, b, scrutinee, env, emitted)?;
     let lit = match &arm.probe {
         crate::core::Probe::Int(v) => b.atom_leaf(Leaf::Int {
             value: v.clone(),
@@ -549,8 +606,8 @@ fn emit_match_chain(
         }
     };
     let cond = b.list(vec![eq, scrut, lit]);
-    let body = emit_expr(db, b, arm.body, env)?;
-    let rest = emit_match_chain(db, b, scrutinee, arms, i + 1, env)?;
+    let body = emit_expr(db, b, arm.body, env, emitted)?;
+    let rest = emit_match_chain(db, b, scrutinee, arms, i + 1, env, emitted)?;
     Ok(b.list(vec![if_head, cond, body, rest]))
 }
 
