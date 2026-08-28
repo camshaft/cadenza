@@ -924,6 +924,89 @@ fn emit_expr_viewed(
             let i = emit_expr(db, b, index, None, env, emitted)?;
             Ok(b.list(vec![head, l, i]))
         }
+        // BYTES OPERATIONS — `Bytes.of` builds a byte sequence from a `(list …)` of `Int64` bytes; the rest
+        // are member-access ops `((. Bytes <member>) <op>…)` (`len`/`at`/`concat`/`slice`/`compact`; see
+        // `prelude.rs`). A fully-constant `Bytes.of` bakes in `lower`, so a surviving node is a runtime value.
+        Core::BytesOf { elems } => {
+            let list_head = b.name("list");
+            let mut list_children = Vec::with_capacity(1 + elems.len());
+            list_children.push(list_head);
+            for e in elems.iter().copied() {
+                list_children.push(emit_expr(db, b, e, None, env, emitted)?);
+            }
+            let inner_list = b.list(list_children);
+            let head = member_access(b, "Bytes", "of");
+            Ok(b.list(vec![head, inner_list]))
+        }
+        Core::BytesLen { operand } => {
+            let head = member_access(b, "Bytes", "len");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
+        Core::BytesAt { bytes, index, .. } => {
+            let head = member_access(b, "Bytes", "at");
+            let by = emit_expr(db, b, bytes, None, env, emitted)?;
+            let i = emit_expr(db, b, index, None, env, emitted)?;
+            Ok(b.list(vec![head, by, i]))
+        }
+        Core::BytesConcat { lhs, rhs } => {
+            let head = member_access(b, "Bytes", "concat");
+            let l = emit_expr(db, b, lhs, None, env, emitted)?;
+            let r = emit_expr(db, b, rhs, None, env, emitted)?;
+            Ok(b.list(vec![head, l, r]))
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            let head = member_access(b, "Bytes", "slice");
+            let by = emit_expr(db, b, bytes, None, env, emitted)?;
+            let s = emit_expr(db, b, start, None, env, emitted)?;
+            let l = emit_expr(db, b, len, None, env, emitted)?;
+            Ok(b.list(vec![head, by, s, l]))
+        }
+        Core::BytesCompact { operand } => {
+            let head = member_access(b, "Bytes", "compact");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
+        // STRING OPERATIONS — member-access ops `((. String <member>) <op>…)`. `String.at`/`scalar-at`
+        // share ONE `Core::StrAt` (both walk the scalar buffer), distinguished by the RESULT's `Option`
+        // payload — a `Char` payload came from `scalar-at`, a `String` payload from `at`. The others are 1:1.
+        Core::StrScalarLen { operand } => {
+            let head = member_access(b, "String", "scalar-len");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
+        Core::StrAt { string, index, .. } => {
+            // `at` (payload `String`) vs `scalar-at` (payload `Char`) — recover from the result Option's arg.
+            let member = match crate::infer::type_of(db, id) {
+                Ty::Sum { args, .. } if matches!(args.first(), Some(Ty::Char)) => "scalar-at",
+                _ => "at",
+            };
+            let head = member_access(b, "String", member);
+            let s = emit_expr(db, b, string, None, env, emitted)?;
+            let i = emit_expr(db, b, index, None, env, emitted)?;
+            Ok(b.list(vec![head, s, i]))
+        }
+        Core::StrSlice {
+            string, start, end, ..
+        } => {
+            let head = member_access(b, "String", "slice");
+            let s = emit_expr(db, b, string, None, env, emitted)?;
+            let st = emit_expr(db, b, start, None, env, emitted)?;
+            let en = emit_expr(db, b, end, None, env, emitted)?;
+            Ok(b.list(vec![head, s, st, en]))
+        }
+        Core::StrToBytes { string } => {
+            let head = member_access(b, "String", "to-bytes");
+            let s = emit_expr(db, b, string, None, env, emitted)?;
+            Ok(b.list(vec![head, s]))
+        }
+        Core::StrFromBytes { bytes, .. } => {
+            let head = member_access(b, "String", "from-bytes");
+            let by = emit_expr(db, b, bytes, None, env, emitted)?;
+            Ok(b.list(vec![head, by]))
+        }
         // `Option.expect` / `Result.expect` — unwrap the present variant's payload or TRAP on absence. The
         // surface `((. <Module> expect) <scrutinee> <message>)`; the MODULE (`Option`/`Result`) is recovered
         // from the scrutinee's solved sum declaration NAME. The `"message"` operand was DROPPED at lowering
