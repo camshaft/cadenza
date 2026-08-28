@@ -1368,6 +1368,24 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
         (match subj with
          | .record fields => matchRecordPats m (pc.extract 1 pc.size).toList fields
          | _ => .ok none)
+      else if ph == "list".toUTF8 then
+        -- a list pattern: fixed `(list p0 … pn)` (arity-checked positional) or a rest pattern
+        -- `(list p0 … .. rest)` — the `..` marker binds `rest` to the REMAINING elements as a list.
+        (match subj with
+         | .list es =>
+           let sps := pc.extract 1 pc.size
+           match sps.findIdx? (fun sp => nameOf? m sp == some "..".toUTF8) with
+           | some k =>
+             match sps[k+1]? with
+             | some restBinder =>
+               if es.size < k then .ok none
+               else
+                 let leading := (sps.extract 0 k).toList.zip (es.extract 0 k).toList
+                 matchSeq m (leading ++ [(restBinder, Value.list (es.extract k es.size))])
+             | none => .error (.unsupported "eval: malformed list rest pattern (no binder after ..)")
+           | none =>
+             if sps.size != es.size then .ok none else matchSeq m (sps.zip es).toList
+         | _ => .ok none)
       else .error (.unsupported "eval: match user-sum/other constructor pattern not modeled")
     | none => .error (.unsupported "eval: match pattern is a headless list")
   | none => .error (.unsupported "eval: match pattern node out of range")
