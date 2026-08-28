@@ -707,7 +707,7 @@ fn emit_expr_viewed(
         // `FloatOfInt` (int→float) is written `Float64.of-int`; the TRUNCATING integer conversion `Wrap`
         // is `<Type>.wrap` (total — keeps the low bits, never traps); a float→float WIDTH change (`FloatOf`)
         // and the CHECKED int→int width/sign change (`CheckedOf`) are `<Type>.of`. The operand's type +
-        // target re-select the exact op on recompile. 🪤 `Wrap` and `CheckedOf` share the `Core::Convert`
+        // target re-select the exact op on recompile. TRAP: `Wrap` and `CheckedOf` share the `Core::Convert`
         // node but have DIFFERENT semantics — `.wrap` truncates, `.of` range-CHECKS (traps out of range) —
         // so a `Wrap` re-emitted as `.of` is a VALUE-changing miscompile (hop traps where direct wraps),
         // NOT a decline. A non-numeric result (the boolean-coercion `!`) declines (a later slice). (An
