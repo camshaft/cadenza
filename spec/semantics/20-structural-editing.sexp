@@ -618,7 +618,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 24))
+  (live-objects known-leak 22))
 
 ;; A mutually-recursive fold that rebuilds an Ast list, then reads a payload derived from the
 ;; rebuilt-list binder (`xs2`) while a sibling arm reuses that same binder, MUST build on every
@@ -648,7 +648,7 @@
             ((tuple _r k) (+ (* k 100) n))))
         (export main)))
   (call main (: 2 Int64)) (output (: 102 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 9))
 
 (case "Record.with on a map-extracted record leaves the stored original untouched"
   (doc    "Structural edit through a collection extraction: the record comes OUT of a map (lookup +
@@ -726,7 +726,7 @@
                  (if (= (rename (quote 42)) (quote 42)) 1 0)))
             (export main)))
   (output (: 11 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 ; --- Guards over quote patterns (subtree-equality rewrites). ---
 

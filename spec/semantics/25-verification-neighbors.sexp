@@ -317,7 +317,7 @@
                ((Option.None _) -2)))
            (export main)))
   (call main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 (case "TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption"
   (doc "The soundness fix (TRANS/MK_COMB union operand hypotheses) is pinned for the one-operand case; this pins the actual union — both operands carry a distinct assumption and the result must retain BOTH. A TRANS that kept only one operand's hypotheses (or emptied them) would silently discharge a live assumption, letting an unproven equation escape. trans({a=b}|-a=b, {b=c}|-b=c) = {a=b, b=c}|-a=c, so hyps has length 2.")

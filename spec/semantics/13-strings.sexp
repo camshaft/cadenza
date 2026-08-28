@@ -123,7 +123,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 1600 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a balanced-paren scan tracks depth over a runtime string and fails fast on early close"
   (doc    "The delimiter recognizer every parser front-end runs: a `String.at` scalar walk over a
@@ -209,7 +209,7 @@
   (call   main (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
   (call   main (: 4 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 19))
+  (live-objects known-leak 18))
 
 (case "a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN"
   (doc    "The inverse of the separator-JOIN pin above: scan for `,` hits and slice each FIELD as a
@@ -251,7 +251,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 321 Int64))
   (call   main (: 0 Int64)) (output (: 411 Int64))
-  (live-objects known-leak 23))
+  (live-objects known-leak 22))
 
 (case "a scalar-indexed split over a MULTIBYTE string bounds its walk by scalar-len, not byte-len"
   (doc    "The multibyte witness for the scalar-vs-byte loop-bound distinction that the ASCII split case
@@ -840,7 +840,7 @@
   (call   main (: 9 Int64)) (output (: 21 Int64))
   (call   main (: 40 Int64)) (output (: 21 Int64))
   (call   main (: 3888 Int64)) (output (: 151 Int64))
-  (live-objects known-leak 41))
+  (live-objects known-leak 40))
 
 (case "a ROMAN DECODER subtracts on lookahead and round-trips through the pinned renderer"
   (doc    "The decoder's mechanism is entirely different from the renderer above: a per-scalar value
@@ -895,7 +895,7 @@
   (call   main (: 9 Int64)) (output (: 91 Int64))
   (call   main (: 3888 Int64)) (output (: 38881 Int64))
   (call   main (: 3 Int64)) (output (: 31 Int64))
-  (live-objects known-leak 216))
+  (live-objects known-leak 212))
 
 (case "a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters"
   (doc    "The substitution cipher over the alphabet-table pair: each scalar's position is found by

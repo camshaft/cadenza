@@ -5158,8 +5158,31 @@ fn vec_find_child_relaxed(node: Handle, idx: u32) -> (usize, u32) {
 }
 
 /// `vec-empty` — a new owned empty vector (rc 1). No root node until the first push.
+// The shared IMMORTAL empty-vec singleton (lazily minted on first use), the `IMM_UNIT` analog for lists.
+// `Handle::NULL` marks "not yet minted" (a real empty-vec is a heap node, never null), so the first
+// `op_vec_empty` allocates + immortalizes it and every later call returns the SAME node.
+runtime_local! {
+    static EMPTY_VEC: core::cell::Cell<Handle> = core::cell::Cell::new(Handle::NULL);
+}
+
 fn op_vec_empty() -> Handle {
-    vec_alloc_header(0, 0, Handle::NULL)
+    // Return the shared IMMORTAL empty-vec. An empty list is CONSTANT (all empties are structurally equal,
+    // no elements), so ONE immortal instance is semantically correct: it is EXCLUDED from the live-objects
+    // census (rc = IMMORTAL; `op_mark_immortal` decrements the counter), so it NEVER shows as a leak — this
+    // is the fix for the mixed-recursive List-fold terminal leak (the base `(list)` and every runtime-
+    // generated empty, e.g. value-encode's defensive totals, now share one node instead of minting a fresh
+    // MORTAL empty per call). It is also NEVER FBIP-mutated: every vec mutator gates on `node_rc == 1`, and
+    // IMMORTAL != 1, so `vec-push`/`vec-set` on it take the persistent COPY path (verified) — read-only,
+    // no shared-singleton corruption (the same discipline that protects `IMM_UNIT` and the immortal sums).
+    EMPTY_VEC.with(|slot| {
+        let mut e = slot.get();
+        if e.0.is_null() {
+            e = vec_alloc_header(0, 0, Handle::NULL);
+            op_mark_immortal(e);
+            slot.set(e);
+        }
+        e
+    })
 }
 
 /// `vec-len` — the element count. Borrows; returns a `u32` by value.
@@ -20381,6 +20404,45 @@ mod tests {
         op_drop(escaped_head); // release the escapee → head freed
         op_drop(t2);
         assert_eq!(live_nodes() - base2, 0, "(2) balanced — no premature free, no leak");
+    }
+
+    /// The empty-vec is a SHARED IMMORTAL SINGLETON (the `IMM_UNIT` analog for lists): `op_vec_empty`
+    /// returns the SAME node every call, it is census-EXCLUDED (never a leak — the mixed-recursive
+    /// List-fold terminal fix), and a `vec-push` on it takes the persistent COPY path (rc = IMMORTAL != 1)
+    /// so the singleton is NEVER mutated in place. This is the soundness control for the immortal-empty-vec
+    /// fix (no shared-singleton corruption).
+    #[test]
+    fn empty_vec_is_a_shared_immortal_singleton_never_mutated_by_push() {
+        let base = live_nodes();
+        let e1 = op_vec_empty();
+        let e2 = op_vec_empty();
+        assert_eq!(e1.0, e2.0, "op_vec_empty returns the SAME shared singleton");
+        assert_eq!(op_vec_len(e1), 0, "the singleton is empty");
+        // Immortal → census-EXCLUDED: minting it did not raise the live count.
+        assert_eq!(live_nodes() - base, 0, "the immortal empty-vec is not counted as live");
+        // Push takes the COPY path (rc = IMMORTAL != 1): a FRESH vec, the singleton untouched.
+        let pushed = op_vec_push(e1, op_box_int(7));
+        assert_ne!(pushed.0, e1.0, "push on the immortal empty builds a FRESH vec, not in-place");
+        assert_eq!(op_vec_len(pushed), 1, "the fresh vec carries the pushed element");
+        // The singleton is UNCHANGED — still the same node, still empty (no shared corruption).
+        assert_eq!(op_vec_empty().0, e1.0, "the singleton is still the same node");
+        assert_eq!(op_vec_len(e1), 0, "the singleton is still EMPTY (the push did not mutate it)");
+        // TWO INDEPENDENT pushes off the SAME shared empty must NOT alias — the flag-day soundness
+        // witness: a mutated-shared-immortal would make the second push see the first's element (or the
+        // two results alias). Each push path-copies off the immortal, so the results are distinct vecs.
+        let pushed2 = op_vec_push(op_vec_empty(), op_box_int(9));
+        assert_ne!(pushed2.0, pushed.0, "two independent pushes off the shared empty do NOT alias");
+        assert_eq!(op_vec_len(pushed2), 1, "the second result is its own 1-element vec");
+        assert_eq!(op_get_int(op_vec_get(pushed, 0)), 7, "first result still carries 7 (not clobbered)");
+        assert_eq!(op_get_int(op_vec_get(pushed2, 0)), 9, "second result carries 9");
+        assert_eq!(op_vec_len(op_vec_empty()), 0, "the shared empty is STILL empty after both pushes");
+        op_drop(pushed); // frees the fresh vecs; any drop of the immortal is a no-op
+        op_drop(pushed2);
+        assert_eq!(
+            live_nodes() - base,
+            0,
+            "balanced — only the census-excluded immortal remains"
+        );
     }
 
     /// `hash-blake3` (heap index 91) is BYTE-IDENTICAL to `blake3::hash` of the same input — for a flat

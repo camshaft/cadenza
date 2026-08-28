@@ -148,7 +148,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 52))
+  (live-objects known-leak 51))
 
 (case "an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)"
   (doc    "The dual — the soundness-critical negative. For an UNCONSTRAINED `x + 1 : Int64` (no precondition
@@ -308,7 +308,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 60))
+  (live-objects known-leak 58))
 
 (case "the b2 match predicate REJECTS a proof discharged under a FOREIGN hypothesis not in the node precondition (soundness — no elision under wrong assumptions)"
   (doc    "The soundness-critical b2 negative — the breaker vector the design flags. A proof can have the
@@ -413,7 +413,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 60))
+  (live-objects known-leak 58))
 
 ; ── SOUNDNESS PIN: the arithmetic axiom base cannot forge (breaker 2026-07-17) ──────────────────────
 (case "the CHECKED ground axiom le-ax cannot forge a FALSE order fact (5 <= 3) — the axiom base is consistent"
@@ -700,7 +700,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 52))
+  (live-objects known-leak 51))
 
 ; ── b4c(unprovable): an @ensures whose obligation is NOT dischargeable → the PROVEN tier fails (CDZ-VERIFY) ─
 ; The dual of b4c(proven). For `@ensures(<= ret MAXINT) (def (f x) (+ x 1))` with NO (or too-weak)
@@ -894,7 +894,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 74))
+  (live-objects known-leak 72))
 
 ; ── b4c(conjunctive) NEGATIVES: partial precondition coverage → NOT licensed (breaker, all-covered sentinel) ─
 ; The soundness sentinels for the conjunctive hyps-subset: a 2-hyp proof {le x 100, ge x 0} must NOT be
@@ -997,7 +997,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 67))
+  (live-objects known-leak 65))
 
 (case "b4c(conjunctive) NEG-2 (reverse): precondition covers only {ge x 0} (missing le x 100) — NOT licensed though discharged via le"
   (doc    "The subtle reverse sentinel (breaker vector). The obligation was DISCHARGED using the `le x 100`
@@ -1093,7 +1093,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 65))
+  (live-objects known-leak 63))
 
 ; ── b(sub): a no-UNDERFLOW discharge — for x >= 0, (x - 1) >= MININT (the lower-bound / `-` direction) ──
 ; The b1 discharge pinned `+`/overflow (upper bound vs MAXINT). Overflow elision (b3) also covers `-`/`*`;
@@ -1201,7 +1201,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 52))
+  (live-objects known-leak 51))
 
 ; ── b(mul): a no-overflow discharge for MULTIPLICATION — for x <= 100, (x * 2) <= MAXINT ──────────────
 ; Completes the arithmetic-op discharge coverage (+, -, now *) that b3's guard elision handles. For a
@@ -1309,7 +1309,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 52))
+  (live-objects known-leak 51))
 
 ; ── t1(div0): the DIVIDE-BY-ZERO trap-source obligation — for b > 0, (b != 0) so `a / b` cannot trap ──
 ; The @trap_free capstone (design §8) proves EVERY trap source unreachable. This pins the DIVIDE-BY-ZERO
@@ -2075,7 +2075,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 11 Int64))
   (call main (: 2 Int64)) (trap "unreachable")
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "STACKED @requires and @ensures both enforce at runtime on one def with a heap precondition"
   (doc    "Both wrappers on ONE def: entry borrows xs (len>0), exit guards ret>=0, the value flows
@@ -2097,7 +2097,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 15 Int64))
   (call main (: 2 Int64)) (trap "unreachable")
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a RELATIONAL @requires over two parameters enforces their order at entry"
   (doc    "The fn-level relational face (the type-level twin is the @invariant ordered-pair): one
@@ -2713,7 +2713,7 @@
                     (licenses proof obligation precondition)))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 59))
+  (live-objects known-leak 58))
 
 ; ── @ensures-over-@requires × EFFECTFUL body: order-insensitive enforcement (cross-vertical, v-effects fix) ─
 ; Annotation stacking order is presentation, not semantics — `@ensures(Q) @requires(P)` (reversed) must
@@ -2828,7 +2828,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 35))
+  (live-objects known-leak 34))
 
 ; ── @invariant NAME-RESOLUTION: a predicate name outside {it, prelude} is unbound (b4c pattern, data-level) ─
 ; An `@invariant(pred)` predicate references only the value binder `self` (the value of the type) and prelude/
@@ -4003,7 +4003,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 52))
+  (live-objects known-leak 51))
 
 ; --- Contract enforcement × ABORTIVE effects: the conditions surface pins effectful PREDICATES
 ; (:2134) and perform-produced ARGUMENTS (:3554), but not the composition with an ABORTIVE

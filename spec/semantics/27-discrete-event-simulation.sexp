@@ -663,7 +663,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: true Bool))
-  (live-objects known-leak 123))
+  (live-objects known-leak 116))
 
 (case "a deep out-of-order queue drains fully time-sorted with FIFO across every tie-group"
   (doc    "A larger stress of the ordering invariant: eight events at times 5,2,8,2,1,8,3,2 (labels a..h)
@@ -948,7 +948,7 @@
         (export main)))
   (call   main (: 3 Int64)) (output (: 5 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a rope label rides a pqueue entry through insort to its time-ordered slot"
   (doc    "The event-queue pins carry scalar/continuation payloads; this entry's SECOND field is a
@@ -978,7 +978,7 @@
   (call   main (: 5 Int64)) (output (: 41 Int64))
   (call   main (: 25 Int64)) (output (: 42 Int64))
   (call   main (: 99 Int64)) (output (: 43 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 7))
 
 ; --- The adjacent-pair timeline window. ---
 
@@ -1028,7 +1028,7 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 19 Int64))
   (call   main (: 99 Int64)) (output (: 31 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 ; ── breaker batch 582: the DES event-queue census (a sum-spine priority queue driven through
 ; insert-rebuild mutation — the file pins ORDER/VALUE but not census). deq1 = build a 10-entry

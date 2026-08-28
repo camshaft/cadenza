@@ -79,7 +79,7 @@
         (export main)))
   (call main (: 3 Int64)) (output (: 1806 Int64))
   (call main (: 0 Int64)) (output (: 1803 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a LET shadow of a do-def heap binding closes its scope and the do-def survives"
   (doc    "The mixed-BINDER-KIND interleave: do-def xs at do-scope, a let re-binds xs for an inner
@@ -99,7 +99,7 @@
         (export main)))
   (call main (: 5 Int64)) (output (: 706 Int64))
   (call main (: 0 Int64)) (output (: 701 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a closure captures a heap binding BEFORE a shadow and applies AFTER seeing the original"
   (doc    "The face where capture-time vs apply-time name resolution DIVERGE observably: f captures
@@ -119,7 +119,7 @@
         (export main)))
   (call main (: 2 Int64)) (output (: 315 Int64))
   (call main (: 0 Int64)) (output (: 115 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "TWO closures capture DIFFERENT generations of one shadowed name and each sees its own"
   (doc    "Two live capture cells holding DIFFERENT heap handles under ONE source name: f captures
@@ -140,7 +140,7 @@
         (export main)))
   (call main (: 2 Int64)) (output (: 315 Int64))
   (call main (: 0 Int64)) (output (: 115 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a let shadowing a parameter with a differently-typed value is not an invalid component"
   (doc    "`(def (f x) (let ((x true)) x))` shadows the Int64 parameter `x` with the Bool `x = true`; the
@@ -749,7 +749,7 @@
   (call main (: 1 Int64)) (output (: 18 Int64))
   (call main (: 2 Int64)) (output (: -1 Int64))
   (call main (: 3 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "THREE stacked guards on one constructor classify a heap payload into bands in order"
   (doc    "The stacked face: three guards on ONE constructor classify by length bands (>4/>2/>0 →
@@ -875,7 +875,7 @@
         (export main)))
   (call main (: 0 Int64)) (output (: 63 Int64))
   (call main (: 5 Int64)) (output (: 91 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)"
   (doc    "The soundness BOUNDARY of the unsigned interval refinement (value-facts GAP-A): an unsigned
@@ -1957,7 +1957,7 @@
             (export main)))
   (call   main (: 100 Int64)) (output (: 4950 Int64))
   (call   main (: 100000 Int64)) (output (: 4999950000 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a non-tail list fold over a large runtime list is accumulator-transformed to constant stack"
   (doc    "The user's natural non-tail list sum: `(sum xs) = (match xs ((list) 0) ((list x .. rest) (+ x
@@ -1978,7 +1978,7 @@
             (export main)))
   (call   main (: 100 Int64)) (output (: 4950 Int64))
   (call   main (: 100000 Int64)) (output (: 4999950000 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a nullary do-local def followed by a use of it computes over its result"
   (doc    "The `def helper … then use it` idiom: `main`'s body is a do-block with a nullary do-local
@@ -4748,7 +4748,7 @@
             (def (main) (all (list 7 8 9)))
             (export main)))
   (output (: 24 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a leading-element list rest pattern in a def parameter is refutable and rejected"
   (doc    "`(def (head (list x .. rest)) x)` binds a LEADING element `x` before the rest — a REFUTABLE

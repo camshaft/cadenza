@@ -120,7 +120,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a NaN selected through a runtime if-join stays self-equal and unordered downstream"
   (doc    "NaN through a runtime if-JOIN, both disciplines checked downstream: (= r r) is the
@@ -386,7 +386,7 @@
               (inc (Map.to-list (fill n Map.empty)) (Rational.of 0 1) 0))
             (export main)))
   (call   main (: 40 Int64)) (output (: 40 Int64))
-  (live-objects known-leak 285))
+  (live-objects known-leak 284))
 
 (case "a Rational-keyed trie churned with DIFFERENTLY-normalized spellings equals the direct build"
   (doc    "The normalization-identity churn: 29 keys (i = 1..n-1 at n = 30) are INSERTED as `2i/6` and
@@ -695,7 +695,7 @@
   (output (: 23 Int64))
   (call   main (: 7 Int64))
   (output (: 25 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 (case "String ordering drives an insort over runtime ROPES, verified by content"
   (doc    "The String-comparator sort: three concat-built ropes (\"axx\", \"mxx\", \"zxx\" at n=2) insort
@@ -720,7 +720,7 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 10))
 
 ; The compound-ordering cases above all bottom out in an INTEGER leaf (the numeric leaf order). This pins
 ; that the compound walk uses the BLESSED per-leaf order for a STRING leaf too — a String's order is

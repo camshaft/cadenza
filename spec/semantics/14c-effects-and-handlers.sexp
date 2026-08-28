@@ -9106,7 +9106,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 601919 Int64))
   (call   main (: 5 Int64)) (output (: 1103434 Int64))
-  (live-objects known-leak 24))
+  (live-objects known-leak 23))
 
 (case "neu1 KAHAN COMPENSATED SUMMATION as a handler state — the (sum,comp) pair recovers a small addend that naive summation absorbs at the 2^53 boundary, the naive control confirms the absorption"
   (input  (do
@@ -9284,7 +9284,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 11212 Int64))
   (call   main (: 5 Int64)) (output (: 11222 Int64))
-  (live-objects known-leak 19))
+  (live-objects known-leak 18))
 
 ; --- breaker batch 250: negative-mod rotation cipher, prefix-sum table (the finding-23 rich form,
 ; both ListAt/ListUpdate index fixes in), sorted enumeration after remove-churn ---
@@ -10040,7 +10040,7 @@
             (export main)))
   (call   main (: 13 Int64)) (output (: 22122 Int64))
   (call   main (: 22 Int64)) (output (: 22221 Int64))
-  (live-objects known-leak 51))
+  (live-objects known-leak 50))
 
 (case "lcs1 an LCS DP-ROW state — each fed character rebuilds the whole dynamic-programming row against the fixed pattern via a recursive fold reading the OLD row while writing the NEW"
   (input  (do
@@ -10671,7 +10671,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 104106204205 Int64))
   (call   main (: 2 Int64)) (output (: 104106107107 Int64))
-  (live-objects known-leak 40))
+  (live-objects known-leak 36))
 
 (case "ivl1 INTERVAL OVERLAP counting — each add answers how many existing intervals the newcomer overlaps (closed-interval test lo<=b and a<=hi) before inserting itself; the seeded interval slides in or out of range"
   (input  (do
@@ -10696,7 +10696,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 1231 Int64))
   (call   main (: 8 Int64)) (output (: 1131 Int64))
-  (live-objects known-leak 19))
+  (live-objects known-leak 18))
 
 (case "rpn1 an RPN EVALUATOR — pushes stack operands, the operator ops pop two and push the result; the (n+3)*2 program evaluates through five dispatches with stack depths and intermediates exposed"
   (input  (do
@@ -11088,7 +11088,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 1112030413 Int64))
   (call   main (: 2 Int64)) (output (: 1102130313 Int64))
-  (live-objects known-leak 57))
+  (live-objects known-leak 56))
 
 (case "brk1 TYPED-BRACKET matching — opens push their code, a close must match the TOP of the expected stack (LIFO discipline), a wrong-type close flips the sticky invalid; the seed orders the closes right or wrong"
   (input  (do
@@ -11688,7 +11688,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 5009905 Int64))
   (call   main (: 0 Int64)) (output (: 6000606 Int64))
-  (live-objects known-leak 75))
+  (live-objects known-leak 74))
 
 (case "pas1 PASCAL'S TRIANGLE row advanced through effect state — next rebuilds the row by a recursive pairwise-sum answering the row total (a power of two), coef reads the SEED-KEYED binomial coefficient mid-descent and after, and the out-of-range read answers -1"
   (input  (do
@@ -12661,7 +12661,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 10305065909 Int64))
   (call   main (: 0 Int64)) (output (: 510104050709 Int64))
-  (live-objects known-leak 906))
+  (live-objects known-leak 224))
 
 (case "prk1 a PARKING-LOT fee meter — enter stamps the time, exit charges the seed-shaped first-hour rate plus two per further hour CAPPED at fifteen (a zero-duration stay is free), rev totals the day, and the cap row is identical across seeds while the uncapped rows and the total differ"
   (input  (do
@@ -18737,7 +18737,7 @@
 (export main)))
   (call main (: 4 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 4))
 
 (case "nei1 cross-effect interleave: an inner B handler's arm performs the OUTER A effect, whose state advances across two B draws"
   (doc    "Two DIFFERENT nested effects (distinct from the same-effect cn shadow series): the inner B arm's

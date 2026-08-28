@@ -477,7 +477,7 @@
                   ((Option.None) false))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 ; ============================================================================================
 ; Increment 4 — the λ-calculus layer: Abs (lambda), capture-naive substitution, and the BETA and ABS
@@ -850,7 +850,7 @@
                    (not (aconv (Term.Abs 0 (Term.Var 0)) (Term.Abs 0 (Term.Var 9))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 9))
+  (live-objects known-leak 8))
 
 (case "α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable"
   (doc    "The subtle correctness edges that make aconv a REAL α-equivalence, not a toy: (a) nested
@@ -889,7 +889,7 @@
                           (not (aconv (Term.Abs 0 (Term.Var 0)) (Term.Abs 0 (Term.Var 5))))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 25))
+  (live-objects known-leak 20))
 
 (case "a kernel rule using α-equivalence accepts an α-variant premise a structural equality would reject"
   (doc    "Why the kernel NEEDS aconv, not structural term-eq: EQ_MP takes ⊢ p=q and a theorem whose
@@ -1001,7 +1001,7 @@
                        (match (hyps th) ((list) true) (_ false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q"
   (doc    "The elimination rule dual to DISCH: MP takes ⊢ p ⇒ q and ⊢ p and derives ⊢ q, checking the
@@ -1050,7 +1050,7 @@
                     ((Option.None) false)))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214"
   (doc    "Re-asserts the soundness boundary after adding the Imp term form and the DISCH/MP rules: the
@@ -1172,7 +1172,7 @@
                   ((Option.None) false))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 6))
+  (live-objects known-leak 5))
 
 (case "the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness"
   (doc    "∀-elimination: from ⊢ ∀x.P derive ⊢ P[t/x], substituting the witness t for the bound variable
@@ -1346,7 +1346,7 @@
                     ((Option.None) false)))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 11))
+  (live-objects known-leak 8))
 
 (case "a purely-logical composed proof over a quantified proposition: DISCH then MP"
   (doc    "Composition within the logical layer, over a QUANTIFIED proposition P = (∀x0. x0 = x0). DISCH P
@@ -1395,7 +1395,7 @@
                          ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 ; ============================================================================================
 ; Increment 11 — SOUNDNESS FIX (breaker-found): the CHAINING rules must UNION their operands'
@@ -1571,7 +1571,7 @@
                     (match (mp-aconv imp th) ((Option.Some r) (term-eq (concl r) q)) ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "TRANS should match its middle term up to α-equivalence: aconv-TRANS chains an α-variant a structural equality rejects"
   (doc    "Premise-matching completeness for TRANS. t1 : ⊢ (Var 1) = (λx0.x0); t2 : ⊢ (λx5.x5) = (Var 2) —
@@ -1628,7 +1628,7 @@
                     (match (trans-aconv t1 t2) ((Option.Some r) (term-eq (concl r) (Term.Eq a c))) ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 9))
+  (live-objects known-leak 8))
 
 ; ============================================================================================
 ; Increment 12 — the HOL-FAITHFUL LOGICAL LAYER: logical constants as DEFINED constants (via
@@ -1691,7 +1691,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "the kernel's conjunction: CONJ unions hypotheses, CONJUNCT1/2 project (hyps survive)"
   (doc    "Conjunction as an intro/elim connective. CONJ takes A ⊢ a and B ⊢ b and derives A∪B ⊢ a∧b —
@@ -1935,7 +1935,7 @@
                        (match (hyps th) ((list) true) (_ false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel"
   (doc    "The axiomatic base does not weaken the trust boundary. new_axiom is the KERNEL's privileged
@@ -2050,7 +2050,7 @@
                      (not (prove g-bad (refl-tac g-bad))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)"
   (doc    "The backward-proof shape: a tactic reduces a GOAL to a SUBGOAL and a JUSTIFICATION that builds
@@ -2152,7 +2152,7 @@
                        (match (hyps th) ((list) true) (_ false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel"
   (doc    "The choice axiom does not weaken the boundary: like every Thm, a SELECT-shaped axiom is minted
@@ -2224,7 +2224,7 @@
                        (match (hyps th) ((list) true) (_ false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel"
   (doc    "Completing the axiom set does not weaken the boundary. Like ETA and SELECT, an INFINITY-shaped

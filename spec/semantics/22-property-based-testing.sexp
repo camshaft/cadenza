@@ -424,7 +424,7 @@
               (def (main) (= (sum (list 1 2 3)) (sum (list 3 1 2))))
               (export main)))
   (output (: true Bool))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "permutation invariance of a commutative fold holds for generated runtime inputs"
   (doc    "The generator-exercised form: the three inputs are DRAWN from a runtime seed (so nothing
@@ -444,7 +444,7 @@
               (export main)))
   (call   main (: 12345 Int64)) (output (: true Bool))
   (call   main (: 42 Int64)) (output (: true Bool))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "the permutation-invariance property has discriminating power — an order-dependent fold fails it"
   (doc    "The counterpoint that makes the property meaningful: a computation that DEPENDS on order does
@@ -950,7 +950,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 1102 Int64))
   (call main (: 2 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 22))
+  (live-objects known-leak 10))
 
 (case "a generated list reverses twice to itself — an involution property over generated content"
   (doc    "The involution law over GENERATED content: an 8-element list of masked LCG draws, reversed
@@ -970,7 +970,7 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a set over a NULLARY-SUM key enumerates canonically — permutation-invariant AND discriminant-ordered"
   (doc    "Witnesses §Permutation Invariance Is A Property on a set whose element is a NULLARY SUM (a bare
@@ -1010,7 +1010,7 @@
   (call   main (: 12345 Int64)) (output (: 1 Int64))
   (call   main (: 777 Int64)) (output (: 1 Int64))
   (call   main (: -7 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 4))
 
 (case "a scalar-aware string shrinker converges to the 1-minimal failing string"
   (doc    "The STRING sibling of the list-shrinker pin (:782) and the original program behind the
