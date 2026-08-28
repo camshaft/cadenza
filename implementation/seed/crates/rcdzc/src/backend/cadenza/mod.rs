@@ -85,6 +85,9 @@
 //!   so the constructor is not doubled. A GENERIC / OPEN user sum still DECLINES (no decl emitted). PRELUDE sums
 //!   (Option/Result/…) are ambient (no decl). A user-sum/nominal value emits ⇔ its decl was emitted
 //!   (`emitted` set), so there is never an unbound-type recompile.
+//! - **LIST OPS**: the runtime list operations, each `((. List <member>) <op>…)` — `List.len`/`push`/
+//!   `prepend`/`concat`/`update`/`at` (`at` re-reads to its `Option` result). A constant-list op folds in
+//!   `lower`, so a surviving node is a runtime op.
 //! - **MAP/SET OPS**: the runtime collection operations, each a prelude member-access application
 //!   `((. <Module> <member>) <op>…)` — `Map.insert`/`lookup`/`remove`/`len`(`MapSize`)/`to-list`,
 //!   `Set.insert`/`remove`/`contains`/`len`(`SetLen`)/`to-list`/`union`/`intersection`/`difference`. Operands
@@ -95,7 +98,7 @@
 //!   value-equivalent — present → the payload, absent → the same trap).
 //!
 //! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
-//! (Seq/Block/Break), LIST operations (push/len/at/…), richer SUM decision trees (guarded /
+//! (Seq/Block/Break), `Bytes.of` / `Str` ops, richer SUM decision trees (guarded /
 //! literal-test / nested-switch / default sum arms — the `SumCont::Guarded` continuation), nested-element
 //! list arms, non-scalar scalar-match probes, and a multi-argument variant CONSTRUCTOR (`SumNew` — the
 //! match side already binds multi-payload slots).
@@ -880,6 +883,46 @@ fn emit_expr_viewed(
             let l = emit_expr(db, b, lhs, None, env, emitted)?;
             let r = emit_expr(db, b, rhs, None, env, emitted)?;
             Ok(b.list(vec![head, l, r]))
+        }
+        // LIST OPERATIONS — the runtime list ops, each a prelude member-access application
+        // `((. List <member>) <op>…)` (`List.len`/`push`/`prepend`/`concat`/`update`/`at`; see `prelude.rs`).
+        // A constant-list op folds in `lower`, so a surviving node is a runtime list op. `List.len` re-reads
+        // to `Int64`, `List.at` to its `Option` result — the member re-resolves to the same op on recompile.
+        Core::ListLen { operand } => {
+            let head = member_access(b, "List", "len");
+            let l = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, l]))
+        }
+        Core::ListPush { list, elem } => {
+            let head = member_access(b, "List", "push");
+            let l = emit_expr(db, b, list, None, env, emitted)?;
+            let e = emit_expr(db, b, elem, None, env, emitted)?;
+            Ok(b.list(vec![head, l, e]))
+        }
+        Core::ListPrepend { list, elem } => {
+            let head = member_access(b, "List", "prepend");
+            let l = emit_expr(db, b, list, None, env, emitted)?;
+            let e = emit_expr(db, b, elem, None, env, emitted)?;
+            Ok(b.list(vec![head, l, e]))
+        }
+        Core::ListConcat { lhs, rhs } => {
+            let head = member_access(b, "List", "concat");
+            let l = emit_expr(db, b, lhs, None, env, emitted)?;
+            let r = emit_expr(db, b, rhs, None, env, emitted)?;
+            Ok(b.list(vec![head, l, r]))
+        }
+        Core::ListUpdate { list, index, elem } => {
+            let head = member_access(b, "List", "update");
+            let l = emit_expr(db, b, list, None, env, emitted)?;
+            let i = emit_expr(db, b, index, None, env, emitted)?;
+            let e = emit_expr(db, b, elem, None, env, emitted)?;
+            Ok(b.list(vec![head, l, i, e]))
+        }
+        Core::ListAt { list, index, .. } => {
+            let head = member_access(b, "List", "at");
+            let l = emit_expr(db, b, list, None, env, emitted)?;
+            let i = emit_expr(db, b, index, None, env, emitted)?;
+            Ok(b.list(vec![head, l, i]))
         }
         // `Option.expect` / `Result.expect` — unwrap the present variant's payload or TRAP on absence. The
         // surface `((. <Module> expect) <scrutinee> <message>)`; the MODULE (`Option`/`Result`) is recovered
