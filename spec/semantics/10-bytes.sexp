@@ -403,27 +403,28 @@
   (output (: 210 Int64))
   (live-objects known-leak 4))
 
-(case "a SumExpect-unwrapped slice view returned from a helper OUTLIVES the local parent (SumExpect view-escape must-hold)"
-  (doc    "The Option.expect (→ Core::SumExpect) twin of the match-shape escape case above (v-memory-safety, the
-           view-escape MUST-HOLD control for the queued SumExpect view-reclaim). `mk-slice` builds `parent` as a
-           LOCAL and returns `(Option.expect (Bytes.slice parent a 2) …)` — the SumExpect-unwrapped view — so the
-           parent binding dies at the helper's return while the escaping view crosses the boundary. The caller
-           reads length (2) and content (a=2 → 30, a=0 → 10): the parent's bytes MUST survive the helper's frame
-           teardown because the escaping view holds them. `100·2 + 30` = 230 / `100·2 + 10` = 210. This is the
-           SumExpect analog of `a slice returned from a helper OUTLIVES the helper's local parent` — it fences
-           the boundary the SumExpect view-reclaim (dup-at-extract + shell-drop + liveness-placed view-drop) must
-           NOT cross: an ESCAPING SumExpect'd view gets NO liveness-view-drop (reclaim-IFF-scalar-extracted-NOT-
-           escaped), so this stays leaking (the escape is caught by the result-position occurrence), NOT reclaimed.
-           A SumExpect reclaim that freed the escaping view at scope exit would hand the caller a dangling view →
-           the value moves off 230/210 or an assert_node_live UAF trap. MUST-HOLD: known-leak 4 (unchanged when
-           the SumExpect view-reclaim lands — the scalar-extracted-dead corpus cases bar3/bar4 drop, this does not).")
+(case "a SumExpect-unwrapped slice view BOUND and read TWICE (count>1) is NOT reclaimed (SumExpect single-consumer/escape must-hold)"
+  (doc    "The MUST-HOLD guard for the SumExpect view-reclaim (#4939, v-memory-safety): the reclaim marks a
+           SumExpect-extracted Bytes slice-view a dup-site ONLY when it is the operand of exactly ONE `Bytes.at`
+           (`count_node_refs == 1` — single-consumer, scalar-extracted, not-escaped), then reclaims it via the
+           per-op `reclaim_bytes` drop. This case fences the count>1 EXCLUSION: `mk-slice` returns an
+           `(Option.expect (Bytes.slice parent a 2) …)` view of a LOCAL parent, and the caller BINDS it (`v`)
+           and reads it TWICE — `(Bytes.len v)` AND `(Bytes.at v 0)` — so `count_node_refs(v) > 1`. The reclaim
+           MUST NOT fire (a per-op `reclaim_bytes` drop on a multi-read view would DOUBLE-DROP; and the view
+           escapes the helper holding its local parent, so freeing it under a live use = UAF). So `v` stays
+           leaking, both reads see the live view: `100·2 + 30` = 230 / `100·2 + 10` = 210. A regression that
+           reclaimed a count>1 view would move the value off 230/210 or trip an `assert_node_live` UAF trap.
+           The single-consumer scalar-extracted twin (`Bytes.at` over a directly-consumed slice) is bar3/bar4,
+           which #4939 correctly drops to 0 — this count>1 case is the complementary must-hold that stays leaking
+           (known-leak 2: the shared Some-shell + the un-reclaimed multi-read view).")
   (input  (do
             (def (mk-slice (: a Int64))
               (let ((parent (Bytes.of (list 10 20 30 40))))
                 (Option.expect (Bytes.slice parent a 2) "in bounds")))
             (def (main (: a Int64))
-              (+ (* 100 (Bytes.len (mk-slice a)))
-                 (Option.expect (Bytes.at (mk-slice a) 0) "v")))
+              (let ((v (mk-slice a)))
+                (+ (* 100 (Bytes.len v))
+                   (Option.expect (Bytes.at v 0) "v"))))
             (export main)))
   (call   main (: 2 Int64))
   (output (: 230 Int64))
