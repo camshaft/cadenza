@@ -314,25 +314,32 @@ def cmpHolds (op : String) : Ordering → Bool
          | ">=" => o != .lt
          | _ => false
 
-/-- If an operand node is a `(: e T)` ascription with an integer type `T`, that type — so an operation
-takes its width from its operands (e.g. `(+ (: v UInt64) (: 0 UInt64))` is UInt64 arithmetic, not the
-ambient default). A minimal bottom-up inference for the scalar core. -/
-partial def operandTy? (m : Module) (i : Nat) : Option IntTy :=
+/-- ENV-AWARE operand-width inference: a `(: e T)` ascription gives its integer type; an arithmetic op is
+BigInt if EITHER operand is (BigInt is contagious — unbounded, no overflow); a qualified `((. BigInt …) …)`
+call is BigInt; and a bare-NAME operand consults its binding's stored `IntTy` (a param ascription or a
+BigInt-typed let/do binding). So an operation takes its width from its operands (e.g. `(+ (: v UInt64) …)`
+is UInt64 arithmetic, not the ambient default). The bare-name case is what lets BigInt-ness propagate
+through let-var CHAINS: `(let ((q (/ n d)) (r (% n d))) (+ (* q d) r))` — `q`/`r`'s values are arithmetic
+over the BigInt let-vars `n`/`d`, so their bindings resolve BigInt, and the outer `(+ (* q d) r)` infers
+BigInt too rather than defaulting to Int64 and false-overflowing a multi-limb value (an env-less inference
+returned `none` for any bare-name operand → the multi-limb division identity 06-numeric 0215/0255 mis-inferred
+Int64 and trapped overflow). A minimal bottom-up inference for the scalar core. -/
+partial def operandTyEnv? (m : Module) (env : Env) (i : Nat) : Option IntTy :=
   match m.nodes[i]? with
+  | some (Node.atom lid) =>
+    match m.leaves[lid]? with
+    | some (Leaf.name nm) => (env.lookup? nm).bind (·.2)
+    | _ => none
   | some (Node.list cs) =>
     match m.headName? (Node.list cs) with
     | some h =>
       if h == ":".toUTF8 && cs.size ≥ 3 then parseIntTy? m cs[2]!
-      -- BigInt is CONTAGIOUS: an arithmetic op with a BigInt operand produces a BigInt (unbounded, no
-      -- overflow). Recursing here so a nested `(* (. BigInt of …) …)` chain stays BigInt-typed.
       else if arithOps.contains ((String.fromUTF8? h).getD "") &&
-              (((cs[1]?).bind (operandTy? m)).any (·.width == .big) ||
-               ((cs[2]?).bind (operandTy? m)).any (·.width == .big)) then
+              (((cs[1]?).bind (operandTyEnv? m env)).any (·.width == .big) ||
+               ((cs[2]?).bind (operandTyEnv? m env)).any (·.width == .big)) then
         some { signed := true, width := .big }
       else none
     | none =>
-      -- a qualified `((. BigInt <m>) …)` call (e.g. `(. BigInt of) x`) yields a BigInt value. (Inlined
-      -- rather than via `qualHead?`, which is defined later.)
       match (cs[0]?).bind (fun hid => m.nodes[hid]?) with
       | some (Node.list hc) =>
         if m.headName? (Node.list hc) == some ".".toUTF8 && (hc[1]?).bind (nameOf? m) == some "BigInt".toUTF8
@@ -956,7 +963,7 @@ partial def evalDo (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children 
           | some targetId, some valId =>
             match nameOf? m targetId with
             | some nm =>
-              let bindTy := (operandTy? m valId).filter (fun t => t.width == .big)
+              let bindTy := (operandTyEnv? m env valId).filter (fun t => t.width == .big)
               bindStmts ((nm, Thunk.mk (fun _ => evalNode m env defaultIntTy fuel valId), bindTy) :: env) rest
             | none =>
               -- a local FUNCTION def `(def (fname params) body)`: bind `fname` to a CLOSURE over the
@@ -1014,8 +1021,10 @@ partial def evalLet (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children
                 let captured := env
                 -- propagate a BigInt-typed binding's width so later arithmetic on it stays unbounded
                 -- (a `(let ((x (. BigInt of …))) (* x x))` must not false-overflow); other widths keep
-                -- the Int64 default (narrowing widths are pending the trap-kind policy ruling).
-                let bindTy := (operandTy? m vId).filter (fun t => t.width == .big)
+                -- the Int64 default (narrowing widths are pending the trap-kind policy ruling). ENV-aware
+                -- so a binding whose VALUE is arithmetic over PRIOR BigInt let-vars (`q = (/ n d)`) also
+                -- infers BigInt — the chain that fixes the multi-limb division identity (06-numeric 0215/0255).
+                let bindTy := (operandTyEnv? m env vId).filter (fun t => t.width == .big)
                 extend ((nm, (Thunk.mk (fun _ => evalNode m captured defaultIntTy fuel vId)), bindTy) :: env) rest
               | none => .error "eval: let binding target is not a name"
             | _, _ => .error "eval: malformed let binding pair"
@@ -1051,7 +1060,7 @@ partial def evalArith (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : S
   if op == "-" && children.size == 2 then
     match children[1]? with
     | some eId =>
-      let opTy := ((operandTy? m eId).orElse (fun _ => (nameOf? m eId).bind (fun nm => (env.lookup? nm).bind (·.2)))).getD ty
+      let opTy := (operandTyEnv? m env eId).getD ty
       match evalNode m env opTy fuel eId with
       | .value (.int a) => evalArithOp "-" 0 a opTy    -- negation = 0 - a at the operand's width
       | .value _ => .unsupported "eval: unary minus of a non-integer"
@@ -1063,8 +1072,7 @@ partial def evalArith (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : S
     else
       -- the op's width comes from an operand's ascription OR a bound (param) variable's declared
       -- type, if either is present; else the ambient type
-      let operandTyIn := fun (i : Nat) =>
-        (operandTy? m i).orElse (fun _ => (nameOf? m i).bind (fun nm => (env.lookup? nm).bind (·.2)))
+      let operandTyIn := fun (i : Nat) => operandTyEnv? m env i
       let opTy := ((operandTyIn aId).orElse (fun _ => operandTyIn bId)).getD ty
       -- Evaluate BOTH operands and combine by precedence: unsupported > diverges > trap > value. An
       -- UNMODELED operand (unsupported) wins over a sibling's trap — so we skip (never claim a trap we
@@ -1090,8 +1098,7 @@ partial def evalBitwise (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op :
   | some aId, some bId =>
     if children.size != 3 then .unsupported s!"eval: {op} expects 2 operands"
     else
-      let operandTyIn := fun (i : Nat) =>
-        (operandTy? m i).orElse (fun _ => (nameOf? m i).bind (fun nm => (env.lookup? nm).bind (·.2)))
+      let operandTyIn := fun (i : Nat) => operandTyEnv? m env i
       let opTy := ((operandTyIn aId).orElse (fun _ => operandTyIn bId)).getD ty
       let oa := evalNode m env opTy fuel aId
       let ob := evalNode m env opTy fuel bId
