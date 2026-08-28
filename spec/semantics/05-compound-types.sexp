@@ -2508,10 +2508,12 @@
            poisons by -1000000. A prepend that mis-shifted the front boundary or a vec-get that mis-navigated
            the left interior digit loses/misroutes an element and breaks the checksum. The FRONT-growth
            companion of the push-built multi-level RRB read case. Expected: 604450. `List.prepend` lowers to the
-           dedicated `vec-prepend` op (front-growth twin of `vec-push`); the op reclaims the BUILD phase to zero
-           (see the `List.len`-only build sibling), so the 18,972 residual here is `vec-get`'s PRE-EXISTING
-           relaxed-node read-path leak (identical whether the relaxed tree is built by this op or the old
-           `concat`) — a distinct target from the build reclaim the dedicated op governs.")
+           dedicated `vec-prepend` op (front-growth twin of `vec-push`), which PACKS the front into the leftmost
+           leaf and stays LOG-DEPTH. The residual 39 here MATCHES the push-built companion (05:2409) — it is the
+           readsum's per-index `List.at` Option-shell overhead, common to both build directions, NOT prepend- or
+           relaxed-specific. (This was 18,972 while `op_vec_prepend` built a DEGENERATE O(n)-deep tree — a
+           single-element front child per prepend; the balanced front-pack fix collapsed both the read cost and
+           the leak to the push baseline, and cleared a `1<<level` overflow the deep tree hit past ~7 levels.)")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: out (List Int64)))
               (if (< i n) (build (+ i 1) n (List.prepend out i)) out))
@@ -2522,7 +2524,7 @@
               (readsum (- n 1) (build 0 n (list)) 0))
             (export main)))
   (call   main (: 1100 Int64)) (output (: 604450 Int64))
-  (live-objects known-leak 18972))
+  (live-objects known-leak 39))
 
 (case "a small single-level prepend-built runtime list reads every index (no relaxed root spawned)"
   (doc    "The SINGLE-LEVEL twin of the 1100-element prepend case above, isolating the prepend share/dup path
@@ -2534,9 +2536,9 @@
            (v-memory-safety coverage): the single-level path leaks only a CONSTANT base of 2 (the readsum
            Option-shell overhead, NOT per-element — measured got = 2 at both n=10 and n=20). The dedicated op
            reclaims the build phase to ZERO (see the sibling `List.len`-only build case), so this residual 2 is
-           the READSUM overhead, not a build leak. The multi-level case above's 18,972 is a DISTINCT, PRE-EXISTING
-           leak in `vec-get`'s RELAXED-NODE read path (both this op AND the old `concat` produce relaxed trees, so
-           its read-leak behaviour is identical for both) — not a build leak the dedicated op governs. A
+           the READSUM overhead, not a build leak. The multi-level case above now matches its push companion at
+           39 (the same readsum overhead scaled by index count) — both are the balanced-tree baseline; the old
+           18,972 there was a DEGENERATE O(n)-deep prepend tree (since fixed), not a relaxed-read-path leak. A
            regression that broke the single-level share/dup or corrupted the shifted indices would move the value
            off 45.")
   (input  (do

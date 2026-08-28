@@ -5499,17 +5499,67 @@ fn op_vec_push(v: Handle, elem: Handle) -> Handle {
     v
 }
 
+/// PATH-COPY front-prepend of `elem` into the subtree `node` at `level`, returning the NEW owned subtree,
+/// or `None` if `node` is FULL at the front (its front spine is full to the leaf AND `node` itself has 32
+/// children — the caller then grows a level). BALANCED (log-depth): `elem` PACKS into the leftmost leaf
+/// while it has room (< 32), and a fresh front subtree is added only when a level is genuinely full — the
+/// front-growth mirror of `vec-push`'s tail-append, NOT a new single-element child per prepend (which built
+/// a degenerate O(n)-deep tree, `List.prepend`'s original miscompile: value-correct but O(n) reads + a
+/// `1<<level` overflow in `vec_subtree_size` past ~7 levels).
+///
+/// RECLAIM: `node` is BORROWED (not consumed) — the caller frees the old tree via `op_drop(v)`, whose
+/// cascade reclaims exactly the OLD front spine this copied. Off-path siblings CARRY FORWARD, so they are
+/// `dup`'d (rc bumped) into the new node → the cascade takes them rc2→1 (survive). The front child that the
+/// recursion descends into is NOT dup'd (a fresh front replaces it; the cascade frees the old one). This is
+/// the standard persistent path-copy, rc-correct for a uniquely-owned AND a shared `node`.
+fn vec_prepend_into(node: Handle, level: u32, elem: Handle) -> Option<Handle> {
+    let arity = vec_arity(node);
+    let cap = VEC_MASK as usize + 1; // 32
+    if level == 0 {
+        // Leaf: pack `elem` at the front if there is room; a full leaf declines (caller adds a sibling).
+        if arity >= cap {
+            return None;
+        }
+        let mut kids = Vec::with_capacity(arity + 1);
+        kids.push(elem);
+        vec_collect_children_dup(node, &mut kids); // dup the old elements (they carry forward)
+        return Some(vec_leaf_from_handles(kids));
+    }
+    let front = vec_child(node, 0);
+    if let Some(new_front) = vec_prepend_into(front, level - VEC_BITS, elem) {
+        // The front subtree absorbed `elem`. Path-copy: new child 0 = new_front (the old front is freed by
+        // the caller's cascade — NOT dup'd here); children 1.. carry forward (dup'd).
+        let mut kids = Vec::with_capacity(arity);
+        kids.push(new_front);
+        for i in 1..arity {
+            let c = vec_child(node, i);
+            op_dup(c);
+            kids.push(c);
+        }
+        return Some(vec_relaxed_node(kids, level));
+    }
+    // Front subtree is FULL. If `node` has room, add a NEW front child — a fresh spine to a 1-element leaf
+    // at this level's child depth (amortized rare, exactly `vec-push`'s full-tail case). ALL old children
+    // (including the full old front child 0) carry forward → dup them.
+    if arity >= cap {
+        return None; // `node` full too — the caller grows a level above it
+    }
+    let mut kids = Vec::with_capacity(arity + 1);
+    kids.push(vec_new_path(level - VEC_BITS, vec_leaf_of(elem)));
+    vec_collect_children_dup(node, &mut kids); // dup all old children (they follow the new front child)
+    Some(vec_relaxed_node(kids, level))
+}
+
 /// `vec-prepend` — a new owned vector = `elem` followed by the elements of `v`. CONSUMES `v` and `elem`
 /// (a constructor, like `vec-push`); the FRONT-growth twin of `vec-push`'s tail-growth. `List.prepend`
 /// lowers to this, REPLACING the old `concat(singleton, v)` path — which invoked the full RRB merge
-/// (lifting the singleton to `v`'s level) per prepend and leaked the superseded front-spine, ~17
-/// cells/prepend at multi-level (the corpus's single biggest leak, 18,972 at n=1100). RECLAIM discipline
-/// (concat's, minus the merge overhead): the old children are `dup`'d into the result and `v` is dropped,
-/// so the old header + root SHELL are freed while the children carry forward — rc-correct for BOTH a
-/// uniquely-owned `v` (rc 1 → the shell frees, children go rc2→1) AND a shared `v` (rc > 1 → decremented,
+/// (lifting the singleton to `v`'s level) per prepend and leaked the superseded front-spine. Front growth
+/// PACKS into the leftmost leaf (`vec_prepend_into`), staying LOG-DEPTH — not a new single-element child
+/// per prepend (which built a degenerate O(n)-deep tree). RECLAIM discipline: the path-copy `dup`s the
+/// carried-forward (off-path) children and `op_drop(v)` frees the old front spine — rc-correct for BOTH a
+/// uniquely-owned `v` (shell frees, shared children go rc2→1) AND a shared `v` (rc > 1 → decremented,
 /// children stay shared, RRB persistence intact). SOUND on the immortal empty-vec base (count 0 → a fresh
-/// one-element vector; `op_drop` of the shared immortal is a no-op). Bounded-depth (no fan-out recursion):
-/// one relaxed root over the ≤32 old children plus the front element, growing one level on overflow.
+/// one-element vector; `op_drop` of the shared immortal is a no-op).
 fn op_vec_prepend(v: Handle, elem: Handle) -> Handle {
     let (count, shift, root) = vec_read_header(v);
     let cap = VEC_MASK as usize + 1; // 32 — max children per node
@@ -5542,25 +5592,20 @@ fn op_vec_prepend(v: Handle, elem: Handle) -> Handle {
         op_drop(v);
         return hdr;
     }
-    // Interior root: `elem` becomes a new FRONT child of a relaxed root at `shift`. Lift it to a subtree
-    // at the root's child level (`shift - VEC_BITS`), then prepend it to the old children (dup'd).
-    let lifted = vec_grow_to_shift(vec_leaf_of(elem), 0, shift - VEC_BITS);
-    let mut kids = Vec::with_capacity(cap + 1);
-    kids.push(lifted);
-    vec_collect_children_dup(root, &mut kids);
-    let (new_root, new_shift) = if kids.len() <= cap {
-        (vec_relaxed_node(kids, shift), shift)
-    } else {
-        // >32 front children → two balanced groups + a 2-child relaxed parent one level up.
-        let k = kids.len().div_ceil(2);
-        let right = kids.split_off(k);
-        (
-            vec_relaxed_node(
-                vec![vec_relaxed_node(kids, shift), vec_relaxed_node(right, shift)],
+    // Interior root: PACK `elem` into the leftmost leaf via the balanced path-copy. On overflow (the whole
+    // front spine full AND the root has 32 children) grow ONE level: a fresh single-element front subtree
+    // beside the (dup'd) old root — the front-growth mirror of `vec-push`'s root-overflow, and the ONLY
+    // place a single-element spine is minted (amortized, never per-prepend).
+    let (new_root, new_shift) = match vec_prepend_into(root, shift, elem) {
+        Some(new_root) => (new_root, shift),
+        None => {
+            let new_front = vec_new_path(shift, vec_leaf_of(elem)); // 1-element front subtree at the old root's level
+            op_dup(root); // the old root carries forward as the new root's second child
+            (
+                vec_relaxed_node(vec![new_front, root], shift + VEC_BITS),
                 shift + VEC_BITS,
-            ),
-            shift + VEC_BITS,
-        )
+            )
+        }
     };
     let hdr = vec_alloc_header(count + 1, new_shift, new_root);
     op_drop(v);
@@ -21318,6 +21363,63 @@ mod tests {
             live_nodes(),
             before,
             "census balances (no double-free, no leak) — compact-of-a-shared view is sound WITH the dup, so the adv54b fix is purely the compiler dup"
+        );
+    }
+
+    /// LANE-SPLIT PROBE (v-memory-safety/breaker List.at-over-relaxed-RRB read leak, corpus L2501): does
+    /// reading every index of a PREPEND-built (relaxed size-table) RRB via `op_vec_get` + the Some-shell
+    /// dance, WITHOUT threading the list (v borrowed, not dup'd), balance at the RUNTIME layer? The corpus
+    /// case (build+readsum n=1100) leaks 18972 — but build-only is 0 (op sound) and a SINGLE read is 0, so
+    /// the leak is the READ LOOP. This isolates the vec-get+Some READ path (runtime) from the compiled
+    /// recursive THREADING of the borrowed list (compiler). If this balances, the leak is the compiled
+    /// loop/threading reclaim (COMPILER); if it leaks, the relaxed-node read path itself leaks (RUNTIME).
+    #[test]
+    fn probe_relaxed_rrb_read_loop_balances_at_runtime() {
+        reset();
+        let before = live_nodes();
+        let n: i64 = 1100;
+        let mut v = op_vec_empty();
+        for i in 0..n {
+            v = op_vec_prepend(v, op_box_int(i)); // relaxed (front-growth) RRB
+        }
+        // Read EVERY index, borrowing v (NO threading dup) — the List.at read dance: vec-get borrows the
+        // element, the emit dups it for the `Some` payload, the match extract + Some-shell drop cascades -1.
+        for idx in 0..(n as u32) {
+            let e = op_vec_get(v, idx); // BORROW (rc unchanged)
+            op_dup(e); // emit dups the borrowed vec-get result for the Some payload
+            let some = op_sum_new(0, e); // Some(e)
+            let _payload = op_sum_payload(some); // match extract (borrow) — read, don't consume
+            op_drop(some); // drop the Some shell → cascades -1 to the dup'd e (balances the dup)
+        }
+        op_drop(v); // drop the list at loop end
+        assert_eq!(
+            live_nodes(),
+            before,
+            "relaxed-RRB read loop (vec-get + Some, borrowed list) balances at runtime (→ the corpus L2501 read-loop leak is COMPILER threading reclaim, not the relaxed read path)"
+        );
+    }
+
+    /// LANE-SPLIT PROBE (v-memory-safety/breaker slice-view-as-key leak-2): does a SINGLE-use borrowed
+    /// slice-view, compacted then borrowed-compared then dropped, balance at the RUNTIME layer? The corpus
+    /// cases (19-sets view-as-CHAMP-key, value-eq-of-view) leak 2. If this exact runtime op sequence
+    /// balances, the leak is COMPILER emit reclaim (a missing/extra drop around the compacted operand); if
+    /// it leaks, the leak is RUNTIME (bytes_flatten of a single-owned view). Distinct from the dual-use
+    /// `compact_of_a_dual_used_shared_slice_view_is_balanced_with_the_dup` above (that needs the compiler dup).
+    #[test]
+    fn probe_single_use_compacted_slice_view_balances_at_runtime() {
+        reset();
+        let before = live_nodes();
+        let parent = bytes_leaf(&[9, 20, 30, 8]); // P (rc1)
+        let sl = op_bytes_slice(parent, 1, 2); // view [20,30]; view now owns P's ref (P rc1, held by view)
+        let k = op_bytes_compact(sl); // flatten in place → drops P; k == sl, now a flat [20,30] leaf
+        let flat = bytes_leaf(&[20, 30]);
+        let _eq = champ_eq(k, flat); // a BORROWING compare (map-lookup/value-eq shape) — consumes neither
+        op_drop(flat); // drop the flat RHS/probe (owned temp)
+        op_drop(k); // drop the (arm-owned) compacted key
+        assert_eq!(
+            live_nodes(),
+            before,
+            "single-use compacted slice-view balances at the runtime layer (→ any corpus leak-2 is COMPILER emit reclaim, not runtime)"
         );
     }
 
