@@ -5762,3 +5762,21 @@
   (drop)
   (output (: 30 Int64))
   (live-objects 0))
+
+; ── breaker batch 580: dual-use INSIDE a closure body (unblocked by the #4707 projection fold).
+; hce1 = tuple-index projection of a captured tuple in the closure body FOLDS + runs (the dqe
+; leg-1 projection now works through closure conversion; the capture env leaks its cell). hce2 =
+; a borrowing op (=) over a captured value in a closure body still DECLINES honestly ("borrowing
+; op operand has an ownership this backend cannot yet prove") — the closure-body face of the
+; ownership-proof gap, a todo auto-flip witness.
+
+(case "hce1 tuple-index projection of a captured tuple in a closure body folds and runs (dqe leg-1 through closure conversion)"
+  (input (do (def (f (: n Int64)) (let ((a (tuple n (tuple n 9)))) (fn ((: q Int64)) (+ q (. (. a 1) 1))))) (export f)))
+  (call f (: 1 Int64) (: 5 Int64))
+  (output (: 14 Int64))
+  (live-objects known-leak 3))
+
+(case "hce2 a borrowing op (=) over a captured value in a closure body declines pending the ownership proof (todo)"
+  (input (do (def (f (: n Int64)) (let ((a (tuple n n))) (fn ((: q Int64)) (+ q (if (= a a) 100 0))))) (export f)))
+  (call f (: 1 Int64) (: 5 Int64))
+  (output (: 105 Int64)))
