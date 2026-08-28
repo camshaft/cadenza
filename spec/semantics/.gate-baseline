@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+fail	hcx1 tuple-index projection of a captured tuple in a host-called closure body ICEs (no local slot; tracked known-FAIL, the chr1 ICE's effects-free face)
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
@@ -1174,6 +1175,7 @@ pass	a Set/Map lookup over an abstract-element collection reached via a param is
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
+pass	a String argument handle passed to a peer stays live for a later local read (borrow not move)
 pass	a String built by folding String.concat over a runtime list of chunks has the right content and length
 pass	a String compound export under a non-main name crosses to the host
 pass	a String literal pattern over a Symbol scrutinee is rejected at the nominal boundary
@@ -1965,6 +1967,7 @@ pass	a derived-range remainder keeps the modulo when the range is not strictly b
 pass	a derived-unit type annotation in INPUT position round-trips and the param computes
 pass	a destructuring let over a runtime value binds its parts
 pass	a destructuring record let over a runtime value binds its fields
+pass	a diamond peer graph shares one provider across two middle peers
 pass	a dictionary consumer called at two dictionaries is monomorphized per dictionary
 pass	a different function argument through the same recursive higher-order function
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
@@ -4193,6 +4196,7 @@ pass	a scalar newtype matched back in place round-trips the erased inner
 pass	a scalar newtype wrapped by a param'd helper then matched back crosses the internal call boundary
 pass	a scalar quantity argument crosses to and from a peer as its inner scalar
 pass	a scalar slice spanning a width TRANSITION carries its multibyte content exactly
+pass	a scalar tuple argument crosses INBOUND to a peer and both fields are summed there
 pass	a scalar walk over a rope spanning ALL FOUR UTF-8 widths counts the wide scalars
 pass	a scalar-aware string shrinker converges to the 1-minimal failing string
 pass	a scalar-erased newtype returned directly from a parameterized def renders its nominal type
@@ -5164,6 +5168,7 @@ pass	an axiom composes with the inference rules like any other theorem (SYM of E
 pass	an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an earlier name-binding arm shadows a later literal arm — first-match-wins, not specificity-ordered
+pass	an effect bound to a peer routes a two-argument op to the boundary
 pass	an effect declared in a MODULE is performed by its helper and handled by the IMPORTER
 pass	an effect discharged by a handler does not escape to the manifest
 pass	an effect in a statically-dead branch is still syntactically reached, so its delegation is not latent
@@ -6608,6 +6613,9 @@ pass	hc2 helpers at TWO depths both perform — the call-site draw, mid's draw, 
 pass	hc3 the SAME performing helper under two SEQUENTIAL handlers — each handle interprets its draws with its own arm and seed
 pass	hc4 a performing helper COMPOSED with itself — probe(probe(draw)), three dispatches through two call frames
 pass	hc5 a helper RETURNS a tuple of two draws — the caller destructures it and re-performs
+pass	hcp1 a captured tuple returned WHOLE from a host-called closure works (projection is the ICE, not the capture)
+pass	hcp2 a closure capturing an IMMORTAL 33-trie plus a runtime scalar crosses and reads through the immortal
+pass	hcp3 a closure capturing a runtime-BUILT list crosses and reads it (mortal capture retained by the host-held handle)
 pass	heap string elements of a hoisted list if select by branch
 pass	heap-valued handler state above an inner abort keeps threading
 pass	het1 ONE effect with THREE result types — Int64, Bool, and String ops share a single scalar thread, each consumed by its own idiom in one run
@@ -7635,6 +7643,7 @@ pass	reading a string's scalar addresses scalar values, not bytes
 pass	reading a string's scalar in bounds yields Some of the char
 pass	reading a string's scalar out of bounds yields None
 pass	reading the text a printer produced round-trips to an equal value
+pass	reclaim across a nested-compound projection from a peer result
 pass	record equality is independent of the order fields are written
 pass	record event payloads ride pqueue insort and read both fields from the head
 pass	record fields render in canonical (key-sorted) order regardless of source order
@@ -8626,6 +8635,7 @@ pass	two chars with different scalar values are unequal
 pass	two closure handles swap parameter slots through repeated tail calls
 pass	two closures from one factory capture distinct values
 pass	two composed times-minus-one strength reductions round-trip a normal operand but still trap at Int64.min
+pass	two compound arguments each cross as their own handle in one peer call
 pass	two const top-bit-set u64 bin bindings in one fn both fold unsigned
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal
@@ -8988,10 +8998,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a diamond peer graph shares one provider across two middle peers
-pass	reclaim across a nested-compound projection from a peer result
-pass	an effect bound to a peer routes a two-argument op to the boundary
-pass	hcp1 a captured tuple returned WHOLE from a host-called closure works (projection is the ICE, not the capture)
-pass	hcp2 a closure capturing an IMMORTAL 33-trie plus a runtime scalar crosses and reads through the immortal
-pass	hcp3 a closure capturing a runtime-BUILT list crosses and reads it (mortal capture retained by the host-held handle)
-fail	hcx1 tuple-index projection of a captured tuple in a host-called closure body ICEs (no local slot; tracked known-FAIL, the chr1 ICE's effects-free face)
