@@ -3803,7 +3803,7 @@
                     ((. T Leaf) 0))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 ; --- A rope String NESTED IN A COMPOUND compares/keys by CONTENT (v-runtime) ----------------------
 ; The top-level `=`/map-key compaction (above) canonicalizes a rope String when the string IS the

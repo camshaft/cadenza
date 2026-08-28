@@ -2594,7 +2594,7 @@
             (def (main) (Set.len (g (ICons 5 (INil)))))
             (export main)))
   (output (: 0 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a Set.remove of a checked-arith element that is PRESENT drops exactly it (disjoint-slot value-parity)"
   (doc    "Value-parity companion to the Set.remove disjoint-slot pin above: the two pins there observe a
@@ -2612,7 +2612,7 @@
                 (+ (* 10 (if (Set.contains r 6) 1 0)) (if (Set.contains r 9) 1 0))))
             (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a Map.remove of a checked-arith key behind a recursive-call map is disjoint-slotted"
   (doc    "The Map twin of the `Set.remove` disjoint-slot pin above: `(Map.remove (g t) (+ v 1))` removes a
@@ -2627,7 +2627,7 @@
             (def (main) (Map.len (g (ICons 5 (INil)))))
             (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a Map.remove of a checked-arith key that is PRESENT drops exactly it (disjoint-slot value-parity)"
   (doc    "Value-parity companion to the Map.remove disjoint-slot pin above: that pin observes a NO-OP removal
@@ -2646,7 +2646,7 @@
                    (match (Map.lookup r 9) ((Some v) v) ((None u) -1)))))
             (export main)))
   (output (: -10 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; `Set.union`/`Set.intersection`/`Set.difference` (`Core::SetAlgebra`) emit BOTH set operands at a SHARED
 ; scratch `base` (select.rs:7755, `emit(lhs, base); emit(rhs, base)`) — the SAME fixed-base pattern that
@@ -2672,7 +2672,7 @@
             (export main)))
   (call   main (: 50 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; ---- a runtime Bytes.slice VIEW as a CHAMP key must key by CONTENT, not by the view node --------------
 ; A runtime-start `Bytes.slice` produces a borrowed [off,len] VIEW over its parent. Used as a CHAMP key

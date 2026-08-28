@@ -11034,7 +11034,13 @@ fn emit_immortal_elem(
     out: &mut Emit,
 ) -> Result<(), Reject> {
     match core_of(db, elem) {
-        Core::Tuple { .. } | Core::Record { .. } => emit_immortal_static(db, elem, layout, out),
+        // A nested constant compound (Tuple/Record) OR a nested constant mixed-sum (`(Some 5)`/`(Cons …)`/
+        // `(Nil)`): recurse to `emit_immortal_static`, which builds the child + marks it (the parent's final
+        // `mark-immortal[-deep]` re-marks idempotently). The `SumNew` case is what makes nested-collection
+        // immortals work — a sum element of a list/tuple/record, or a recursive-sum spine, builds once.
+        Core::Tuple { .. } | Core::Record { .. } | Core::SumNew { .. } => {
+            emit_immortal_static(db, elem, layout, out)
+        }
         _ => {
             if let Some(payload) = crate::lower::constant_bytes_value(db, elem)
                 .or_else(|| crate::lower::constant_string_value(db, elem))

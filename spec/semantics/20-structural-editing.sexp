@@ -55,7 +55,7 @@
                 ((Exp.Add (tuple a b)) (+ (eval a) (eval b)))
                 ((Exp.Mul (tuple a b)) (* (eval a) (eval b))))) (export main)))
   (output (: 17 Int64))
-  (live-objects known-leak 4))
+  (live-objects 0))
 
 ; The BUILT-IN-Ast companion of the user-`Exp` recursive walk above: a recursive function descends the
 ; built-in `Ast` sum by matching `(Ast.List es)` and recursing into its `(List Ast)` payload via a
@@ -113,7 +113,7 @@
                 ((Exp.Add (tuple a b)) (+ (eval a) (eval b)))
                 ((Exp.Mul (tuple a b)) (* (eval a) (eval b))))) (export main)))
   (output (: true Bool))
-  (live-objects known-leak 11))
+  (live-objects known-leak 3))
 
 ; The simp case above WORKS AROUND a limitation, worth pinning directly: it simplifies children with
 ; `let`-bound `x`/`y` and probes them with the single-scrutinee `is-lit` helper (its doc notes "a
@@ -163,7 +163,7 @@
             (def (main)
               (ev (fold (E.Add (tuple (E.Lit 3) (E.Add (tuple (E.Lit 4) (E.Lit 5)))))))) (export main)))
   (output (: 12 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 7))
 
 ; The tuple-of-recursive-results constructor match (above) is realized for SELF-recursive calls; the
 ; SIBLING shape — the tuple elements are calls to a DIFFERENT function whose argument is a value of the
@@ -243,7 +243,7 @@
                 ((Exp.Add (tuple a b)) (+ 1 (+ (size a) (size b))))
                 ((Exp.Mul (tuple a b)) (+ 1 (+ (size a) (size b)))))) (export main)))
   (output (: 4 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 3))
 
 (case "the built-in Ast is transformed as an ordinary value"
   (doc    "metaprogramming.md §Quote Produces An AST Value + type-system.md §The Abstract Syntax Tree
@@ -618,7 +618,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 28))
+  (live-objects known-leak 24))
 
 ;; A mutually-recursive fold that rebuilds an Ast list, then reads a payload derived from the
 ;; rebuilt-list binder (`xs2`) while a sibling arm reuses that same binder, MUST build on every

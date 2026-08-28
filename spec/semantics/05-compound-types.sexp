@@ -1161,7 +1161,7 @@
             (def (kind-of c) (match c ((Core.KConst n) 0) (_ 1)))
             (def (main) (kind-of (resolve (Node.NPrim (tuple "+" (Node.NInt 20) (Node.NInt 22)))))) (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "two structural values of the same shape are equal"
   (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural (2nd
@@ -1651,7 +1651,7 @@
             (def (main) (match (bump (ICons 5 (ICons 6 (INil)))) ((INil) 0) ((ICons h t) h)))
             (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 4))
+  (live-objects 0))
 
 (case "a List.push of a checked-arith element behind a recursive-call list is disjoint-slotted"
   (doc    "The `List.push` sibling of the recursive-sum-constructor scratch-slot case above: `(List.push (h
@@ -1668,7 +1668,7 @@
             (def (main) (match (h (ICons 5 (INil))) ((list x) x) (_ 0)))
             (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a List.concat of a checked-arith list with a recursive-call list is disjoint-slotted"
   (doc    "The `List.concat` sibling of the `List.push` scratch-slot case above: `(List.concat (list (+ v
@@ -1687,7 +1687,7 @@
             (def (main) (match (g (ICons 5 (INil))) ((list x) x) (_ 0)))
             (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a List.update at a checked-arith element behind a recursive-call list is disjoint-slotted"
   (doc    "The `List.update` sibling of the `List.push`/`List.concat` scratch-slot cases above: `(List.update
@@ -1704,7 +1704,7 @@
             (def (main) (match (u (ICons 5 (INil))) ((list x) x) (_ 99)))
             (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a recursive list-map reusing a destructured sum payload beside an i64 let is disjoint-slotted"
   (doc    "The RETAIN-CHILD-SLOT sibling of the disjoint-slot family above (the `Core::Proj`/`Core::SumPayload`
@@ -3258,7 +3258,7 @@
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 ; The DISTINCT sibling of the case above, now FIXED: reading the head by RE-EXTRACTING the node's payload
 ; (`head-of node`) in a sibling operand WHILE `fl(elems)` consumes the shared payload alias. `elems` is the
@@ -3299,7 +3299,7 @@
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a self-recursive AST walker consumes a node's child list while the node is threaded unchanged"
   (doc    "The CONSUMING-payload face of the AST-walker family (the loop-carried twin of the mutual-recursion
@@ -3403,7 +3403,7 @@
                  (rhs (contract (App (Ix 1) (Ix 0)) (Ix 7)))))
             (export main)))
   (output (: 7 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 8))
 
 (case "a map with a user-sum VALUE looks up and matches the stored variant"
   (doc    "A user sum used as a Map VALUE — `(Map.insert Map.empty 1 (C.R))` stores the variant `C.R` at key
@@ -4431,7 +4431,7 @@
             (def (main) (unify (Ty.TArrow (Ty.TInt) (Ty.TBool)) (Ty.TArrow (Ty.TInt) (Ty.TInt))))
             (export main)))
   (output (: 0 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 2))
 
 ; --- A variant payload may be ANY monomorphic leaf type, including Char and Symbol -----------------
 ; core-semantics.md #Sum Types Are Structural Types: a variant's payload type is any type. The leaf
@@ -4931,7 +4931,7 @@
             (def (build n) (IntList.Cons (tuple n (IntList.Cons (tuple 8 (IntList.Cons (tuple 2 (IntList.Nil ()))))))))
             (def (main) (sm (build 5))) (export main)))
   (output (: 15 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 (case "a recursive function folds a linked list of runtime-determined length"
   (doc    "The genuine self-hosting idiom, distinct from the case above: the list's LENGTH is decided at
@@ -4996,7 +4996,7 @@
             (def (main) (len (mylist.Cons 1 (mylist.Cons 2 (mylist.Cons 3 (mylist.Nil))))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 (case "a lowercase-named type cross-references another lowercase-named type in a field"
   (doc    "The cross-reference companion: a lowercase `(type wrap (W num))` whose field references ANOTHER
@@ -5030,7 +5030,7 @@
             (export main)))
   (call   main)
   (output (: 5 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a recursive NEWTYPE-wrapped linked list folds to a scalar"
   (doc    "The single-variant NEWTYPE spelling of the recursive linked list above: `(type Lst (Mk (Option
@@ -5053,7 +5053,7 @@
             (def (main) (sm (Mk (Some (tuple 10 (Mk (Some (tuple 20 (Mk (Some (tuple 30 (Mk (None)))))))))))))
             (export main)))
   (output (: 60 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 (case "a single-variant nominal value escapes to the host as its erased payload tagged with the nominal name"
   (doc    "A single-variant sum is a NOMINAL NEWTYPE (a struct) whose box ERASES: the runtime value IS the
@@ -5081,7 +5081,7 @@
            `(Mk (Some (tuple 7 (Mk None))))` renders `(: (Some (tuple 7 (: (None unit) Lst))) Lst)`.")
   (input  (do (type Lst (Mk (Option (Tuple Int64 Lst)))) (def (main) (Mk (Some (tuple 7 (Mk None))))) (export main)))
   (output (: (Some (tuple 7 (: (None unit) Lst))) Lst))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a recursive NEWTYPE traversal recurses on its projected recursive field"
   (doc    "The single-variant NEWTYPE form of the linked-list traversal: `(type Lst (Mk (Option (Tuple
@@ -5102,7 +5102,7 @@
             (def (main) (sm (Mk (Some (tuple 10 (Mk (Some (tuple 20 (Mk (Some (tuple 30 (Mk (None unit)))))))))))))
             (export main)))
   (output (: 60 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 (case "a folded recursive-newtype ANNOTATION unifies with the unfolded value type"
   (doc    "The annotation-ascription face of the recursive-newtype fold/unfold unify (the traversal at 4983 hits it at the recursive-CALL site; this hits it at an explicit `(: value Lst)` ascription). The annotation `(: (Mk (Some (tuple 42 (Mk None)))) Lst)` gives a FOLDED type where `Lst` at the recursion point collapses to a `Ty::Sum{Lst}` μ back-edge, while the value's own type is `Ty::Nominal{Lst}` there — because `Ty::Nominal` is compared by decl+args (NOT inner), the two unify and the ascription type-checks (was 'annotation type Lst does not match value type Lst' pre-fix). Match out the `Mk`, then the head `(. t 0)` = 42.")
@@ -5146,7 +5146,7 @@
                 ((FL.FCons (tuple h t)) (recompute t (List.push out h)))))
             (def (main) (List.len (recompute (FL.FCons (tuple 5 (FL.FCons (tuple 6 (FL.FNil ()))))) (list)))) (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 4))
+  (live-objects 0))
 
 (case "a fixpoint loop that threads a growing list accumulator returns that list"
   (doc    "The self-hosting return-kind machinery next needs a monotone FIXPOINT loop — `iterate` a
@@ -5194,7 +5194,7 @@
               (if (< passes 1) ktab (iterate funcs (recompute funcs (list)) (- passes 1))))
             (def (main) (List.len (iterate (FL.FCons (tuple 1 (FL.FNil ()))) (list) 2))) (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 (case "an element pattern matches a list by its length and elements"
   (doc    "A list is deconstructed by ELEMENT patterns — `(list)` matches exactly the empty list, a
@@ -6434,7 +6434,7 @@
                                                (Expr.Bin (tuple 1
                                                  (tuple (Expr.Lit 22) (Expr.Lit 8))))))))) (export main)))
   (output (: 34 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 (case "a constructor pattern nested under Some matches a runtime list element"
   (doc    "A `match` arm whose binder is ITSELF a constructor pattern nested under `Some` —
@@ -6736,7 +6736,7 @@
                                           (Node.NInt 20)
                                           (Node.NPrim (tuple "*" (Node.NInt 2) (Node.NInt 11)))))))) (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 7))
 
 (case "a BST built by comparison-driven inserts reads back sorted via in-order traversal"
   (doc    "The ordered-tree discipline over a user sum (the resolver above transforms a FIXED tree;
@@ -6935,7 +6935,7 @@
                                       (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5)))))))
             (export main)))
   (output (: 12 Int64))
-  (live-objects known-leak 4))
+  (live-objects 0))
 
 (case "an unannotated generic branching sum fold infers its parameter's instantiation from the arms"
   (doc    "The UNANNOTATED companion: the same generic branching tree folded by `sm` with NO annotation on
@@ -6958,7 +6958,7 @@
                                       (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5)))))))
             (export main)))
   (output (: 12 Int64))
-  (live-objects known-leak 4))
+  (live-objects 0))
 
 (case "an unannotated generic sum ACCUMULATOR infers its parameter from the values folded into it"
   (doc    "A running-max fold threads an `Option Int64` accumulator through a recursive list walk with NO
@@ -6988,7 +6988,7 @@
                 ((None)   0)))
             (export main)))
   (output (: 7 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 2))
 
 (case "a generic recursive sum with a bare self-reference nested in a list parameter"
   (doc    "The companion where the bare self-reference is nested inside another type constructor: `(type
@@ -7027,7 +7027,7 @@
             (def (main) (cnt (Tree.Node (tuple (Tree.Leaf 3) (Tree.Leaf 4)))))
             (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a recursively-built linked list renders its full runtime spine"
   (doc    "The RENDER counterpart of the runtime-fold cases: a list whose spine is built by a
@@ -7180,7 +7180,7 @@
             (def (main) (mk 5)) (export main)))
   (call   main)
   (output (: (P 5 (Some 5)) W))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a multi-payload variant with a scalar AND two recursive payloads escapes flat"
   (doc    "The multi-way-recursive counterpart of the flat multi-payload list: a `Node` variant carries a
@@ -8030,7 +8030,7 @@
             (def (main) (len (IntList.Cons 1 (IntList.Cons 2 (IntList.Cons 3 IntList.Nil))))) (export main)))
   (call   main)
   (output (: 3 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 (case "a multi-payload destructure binds the head and recurses on the tail"
   (doc    "The companion binding BOTH payloads meaningfully: `sm` sums a linked list — the `Cons` arm
@@ -8043,7 +8043,7 @@
             (def (main) (sm (IntList.Cons 1 (IntList.Cons 2 (IntList.Cons 3 IntList.Nil))))) (export main)))
   (call   main)
   (output (: 6 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 (case "a sum whose variants are named after target-language keywords constructs and matches"
   (doc    "A user sum is free to name its variants whatever the language permits — including words that are
@@ -8874,7 +8874,7 @@
   (call   main (: 2 Int64)) (output (: 6 Int64))
   (call   main (: 3 Int64)) (output (: -1 Int64))
   (call   main (: 4 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 214))
+  (live-objects known-leak 212))
 
 (case "LONGEST INCREASING SUBSEQUENCE fills a per-index table from strictly-smaller predecessors"
   (doc    "The coin-change table's sibling with a VALUE-conditioned predecessor scan: dp is indexed
@@ -9552,7 +9552,7 @@
                           ((Core.KCall (tuple fi xs)) (sum-args xs 0 (List.len xs)))))
             (def (main) (ev (Core.KCall (tuple 9 (list (Core.KConst 10) (Core.KConst 20) (Core.KConst 12)))))) (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 5))
 
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
@@ -12957,7 +12957,7 @@
             (def (depth e) (match e ((Expr.Lit n) 0) ((Expr.Neg x) (+ 1 (depth x)))))
             (def (main)    (depth (Expr.Neg (Expr.Lit 5)))) (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a bare prelude-colliding variant name matches as the local variant"
   (doc    "`(type T (Int Int64))` declares a variant named `Int`, colliding with the prelude `Int` type
@@ -13127,7 +13127,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "a recursive sum recurses THROUGH a record-typed payload"
   (doc    "The recursion runs through a RECORD field rather than a tuple element: `(type Tree (Leaf Int64)
@@ -13946,7 +13946,7 @@
             (def (ev e) (match e ((E.Lit n) n) ((E.Add (tuple a b)) (+ (ev a) (ev b)))))
             (def (main) (ev (fold (E.Add (tuple (E.Lit 3) (E.Add (tuple (E.Lit 4) (E.Lit 5))))))))
             (export main)))
-  (call   main) (output (: 12 Int64)) (live-objects known-leak 11))
+  (call   main) (output (: 12 Int64)) (live-objects known-leak 7))
 
 (case "a match through an erased single-variant newtype dispatches on the inner sum's discriminant"
   (doc    "`(match (Outer2.Wrap <runtime Inner2>) ((Outer2.Wrap (Inner2.P x)) …) ((Outer2.Wrap (Inner2.W y))
@@ -14770,7 +14770,7 @@
             (def (main) (ev ((. E Add) ((. E Bind) ((. E Var))) ((. E Var))) (Map.insert (map) 0 1)))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 1))
 
 (case "a runtime set shared across two recursive-call operands is not mutated by an insert in one"
   (doc    "The `Set` face of the same aliasing invariant, in the recursive interpreter shape: `ev` threads a
@@ -14791,7 +14791,7 @@
             (def (main) (ev ((. E Add) ((. E Grow) ((. E Leaf))) ((. E Leaf))) (Set.insert (Set.of (list)) 1)))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 1))
 
 (case "a recursive sum consumer whose arguments are recursive sum producers compiles"
   (doc    "The self-hosting compiler's spine: a recursive tree-walk (`lower`) whose arms combine the
@@ -14821,7 +14821,7 @@
                 ((Core.KAdd (tuple a b)) (code-cat (lower a) (code-cat (lower b) (one (Instr.IAdd ())))))))
             (def (main) (len (lower (Core.KAdd (tuple (Core.KConst 20) (Core.KConst 22)))))) (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 10))
 
 ; --- The Map OPERATION surface (collections-and-text.md §A Map Is Built By Functional Construction,
 ; §Keys Are Compared By Value, §A Map Renders As Its Entries In Canonical Key Order). The map value
@@ -15537,7 +15537,7 @@
                       (match (Map.lookup m 3) ((Some v) v) (None 0))))))
             (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 4))
+  (live-objects 0))
 
 (case "a built map renders its entries in canonical key order"
   (doc    "A map returned as the program RESULT renders its entries as key-value pairs in the
@@ -17724,7 +17724,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 3))
 
 ; --- Deep push-chain retain placement (the memoized dup-site scan's value guard) --------------------
 ; 3d5d48eea memoized mark_binder_dups' occurrence pre-pass (was exponential — depth 30 timed out).
@@ -17810,7 +17810,7 @@
             (def (main) (sum-it (Take (tuple 3 (Range (tuple 0 1000000))))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 26))
+  (live-objects known-leak 24))
 
 (case "a map-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)"
   (doc    "The MAP twin of the list-arm coded-head case above. A `(Map …)` scrutinee has no user
@@ -18306,7 +18306,7 @@
               (def (main) (cnt (L.C 1 (L.C 2 (L.C 3 (L.N unit))))))
               (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 (case "a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)"
   (doc    "A NESTED-payload non-exhaustive match NAMES the uncovered inner variant — `(match o ((Some (A))
@@ -18492,7 +18492,7 @@
              (record (corr (Option Bytes)) (pl (Option P)))))
   ; WIT static encoding: the record-return value-encode assembler now hoists embedded constants build-once
   ; (census-excluded immortals), so the residual leak drops 6→4.
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; A WIDE MULTI-COLUMN MATCH's value must survive the emit-side shared-continuation reshape (S2). A match
 ; whose arms each test >=2 LITERAL COLUMNS (`(tuple state token payload)` — a transition-table dispatch)
@@ -18639,7 +18639,7 @@
   (call   main (: 2 Int64)) (output (: 50 Int64))
   (call   main (: 1 Int64)) (output (: 40 Int64))
   (call   main (: 9 Int64)) (output (: 29 Int64))
-  (live-objects known-leak 12))
+  (live-objects 0))
 
 ; A TRANSITIVE chain of single-variant (erasable) newtypes declared in REVERSED dependency order — `A`
 ; wraps `B`, `B` wraps `C`, `C` wraps `Int64`, declared A-FIRST — must construct + read through all three
@@ -19509,7 +19509,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 21 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 6))
 
 (case "an RPN evaluator drives a LIST-as-STACK through token dispatch — push, pop-two, apply"
   (doc    "The stack-machine idiom: Num pushes, operators read the top TWO by index-from-len, REBUILD the popped stack via take-n (the persistent-list pop spelling), push the result. (2 3 + 4 x) = 20 with the runtime k mid-expression.")
@@ -20011,7 +20011,7 @@
   (call   main (: 1 Int64))
   (output (: (record (= correlation (None unit)) (= payload (Some (B (record (= x "hi")))))) (record (correlation (Option Bytes)) (payload (Option P)))))
   ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 6→4.
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "vse7 TWO Option-sum sibling fields at DIFFERENT sum decls each keep their own value-form — the first instantiation's descriptor must not stamp the second"
   (input  (do
@@ -20024,7 +20024,7 @@
   (call   main (: 1 Int64))
   (output (: (record (= first (Some (B (record (= x "hi"))))) (= second (Some (D (record (= y 7)))))) (record (first (Option P)) (second (Option Q)))))
   ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 8→5.
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "vse9 the Option-sum field sorting FIRST keeps both siblings intact — the sort-order control of the sibling-descriptor pair"
   (input  (do
@@ -20036,7 +20036,7 @@
   (call   main (: 1 Int64))
   (output (: (record (= apayload (Some (B (record (= x "hi"))))) (= zcorrelation (None unit))) (record (apayload (Option P)) (zcorrelation (Option Bytes)))))
   ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 6→4.
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "vse10 two RESULT fields at different type args each encode their own Err payload — the same generic decl at two instantiations shares no descriptor"
   (input  (do
@@ -20046,7 +20046,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: (record (= first (Ok 7)) (= second (Err b"no"))) (record (first (Result Int64 String)) (second (Result Int64 Bytes)))))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "vse11 two LIST fields of different element types encode independently — the list control of the generic-instantiation family"
   (input  (do
@@ -23345,7 +23345,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 (case "sd1 the #set literal resolves first-class (D2): membership, len, and order-independent equality with an insert-built set"
   (doc    "Completes the #word collection-literal matrix (list/tuple/record/map pinned earlier; set was
