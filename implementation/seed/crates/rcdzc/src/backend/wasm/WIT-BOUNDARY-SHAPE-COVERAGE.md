@@ -98,15 +98,14 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   raw disc = `flatten(Enum)`), and `needs_result_wrapper` is set for it so the typed path takes over from
   the provider path; the enum defined type is emitted + re-exported by the existing `note` pass. Guard:
   guest decl-order case names must equal the WIT case order (a reorder would need a runtime disc remap).
-  🐛 **KNOWN BUG (breaker, 2026-08-28) — SILENT DEGRADE, my next fix:** on that order-MISMATCH the guard
-  `return None`s, which does NOT decline loudly — it falls through to the PROVIDER path and silently
-  exports `f: func(s64) -> u32`, so a component can export a DIFFERENT type than the imposed world declares
-  (WIT-dump: guest `(Red Green Blue)` under `(enum green red blue)` → `-> u32`). Same silent degrade for
-  disjoint case names, and (more broadly) for ANY typed export member `record_interface_export` declines
-  under an imposed world. FIX (needs care — must not over-decline legit peer-provider worlds): when
-  `component_name`+`wit_world` are imposed and a declared typed member can't be emitted, DECLINE loudly
-  instead of `assemble_provider`. This is also the general asymmetry: a compound export RESULT silently
-  degrades where an export PARAM declines `todo`.
+  ✅ **FIXED (breaker FINDING 1, SHAPE 64):** on that order-mismatch the guard `return None`s, which used
+  to fall through to the PROVIDER path and silently export `f -> u32` (a DIFFERENT type than the imposed
+  world declares). Now an **imposed-world contract guard** in the export dispatch declines loudly: when
+  `wit_world.is_some()` and an export result reaches the generic `u32`-handle provider path as a COMPOUND
+  (`abi_val_type` None + `extern_abi_val_type` Some), it declines instead of mislabeling. This closes the
+  WHOLE class (any declared-typed compound export member the typed paths can't emit, not just enum-reorder).
+  A component-name-ONLY peer provider has `wit_world = None`, so its X5c compound-as-handle crossing is
+  unaffected (verified: 29-* peer list/tuple/map/set cases still PASS).
 - **[emit, export] typed enum RESULT on a fully-SYNTHESIZED world (NO clause at all) — remaining slice.**
   With no world, there is no declared `WitType::Enum`, so `record_interface_export` isn't reached and the
   program falls back to run/encode (SHAPE 58/59). Closing it needs the SYNTHESIZED-world builder to derive
@@ -131,11 +130,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
 - **peer-bound** crosses any compound as an opaque `u32` handle (`extern_abi_val_type`) — no
   structural marshal is intended.
 
-⚠️ **Behavior wart (not by-design, worth fixing eventually):** a NO-`wit-world`-clause guest whose
-export result is a compound (record/sum/list) falls back SILENTLY to the run/encode envelope, whereas a
-non-scalar export PARAM declines LOUDLY (`todo`, "a non-scalar entry parameter is not yet emitted").
-Asymmetry: the result-side silently degrades; the param-side surfaces the limitation. The no-world
-synthesized typed export (below) closing it would remove the silent fallback.
+⚠️ **Behavior wart (NO-`wit-world`-clause only now):** a NO-clause guest whose export result is a
+compound (record/sum/list) falls back SILENTLY to the run/encode envelope, whereas a non-scalar export
+PARAM declines LOUDLY (`todo`). Asymmetry: on the no-clause path the result-side silently degrades while
+the param-side surfaces the limitation. (The IMPOSED-world result-side silent degrade to `u32` is now
+FIXED — SHAPE 64 — it declines loudly; only the fully-synthesized no-clause path still run/encode-degrades.
+The no-world synthesized typed export, below, closing it would remove the last silent fallback.)
 
 ## Harness caveat (a run-form limit, NOT an emit limit)
 

@@ -1441,6 +1441,32 @@ pub fn emit(
         ));
     }
 
+    // IMPOSED-WORLD CONTRACT GUARD (breaker 2026-08-28): an explicit `wit_world` declares a CONCRETE typed
+    // contract. If we've fallen through every typed export path (bytes-provider, scalar/record interface) to
+    // the generic `u32`-handle PROVIDER path AND an export result is a COMPOUND (crosses as a handle), then
+    // the declared typed result (enum/record/variant/tuple/…) could NOT be emitted — publishing a `u32`
+    // handle would EXPORT A DIFFERENT TYPE than the world declares (a reordered-enum world silently became
+    // `f: func(…) -> u32`). DECLINE loudly rather than silently mislabel the export. A component-name-ONLY
+    // peer provider (X5c) has NO imposed world — `wit_world` is None — so its intended compound-as-handle
+    // crossing is unaffected; and a member the typed paths DID emit returned early above, so only a genuinely
+    // unemittable declared-typed compound reaches here.
+    if db.wit_world.is_some()
+        && let Some(bad) = layout.exports.iter().find(|e| {
+            crate::backend::wasm::host::abi_val_type(&e.result).is_none()
+                && crate::backend::wasm::host::extern_abi_val_type(&e.result).is_some()
+        })
+    {
+        let ty_name = bad.result.render_name(&db.name_ctx());
+        let ename = bad.name.clone();
+        return Err(Reject::decline(format!(
+            "the export `{ename}` returns `{ty_name}`, which the imposed world declares as a typed \
+             component type, but this compiler cannot emit that typed export yet — rather than silently \
+             cross it as an opaque `u32` handle (exporting a different type than the world declares), it \
+             declines. (A record/enum/variant/tuple result under a declared world is supported; other \
+             compound results are a later increment.)"
+        )));
+    }
+
     // A PROVIDER (X4b/X5c) publishes its boundary exports as a named INTERFACE INSTANCE (the name the
     // `component-name` request supplied, stored on the Db) so a peer's `(effect …)` `(bind "iface")` binds
     // to it (the effects-unified surface, U2). A
