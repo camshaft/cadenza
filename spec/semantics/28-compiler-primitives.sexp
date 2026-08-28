@@ -799,14 +799,14 @@
 ; `ConstInt(n)` as `n/1`, so the constant pair folds to a `Core::ConstRational` — no runtime op, no borrow
 ; classification. `(pragma default-fraction Rational)` makes the record fields heap Rationals (the notebook shape).
 (case "a wrapper (Rational) field projected off a nullary record folds through a rational op — no borrow-ownership decline"
-  (doc    "`(rect)` returns `(record (w (width)) (h 3))` with Rational fields (default-fraction Rational). `(* (.
+  (doc    "`(rect)` returns `(record (= w (width)) (= h 3))` with Rational fields (default-fraction Rational). `(* (.
            (rect) w) (. (rect) h))` folds each projection to its integer-valued Rational (a `ConstInt`) and the
            multiply folds them as `4/1 * 3/1 = 12/1` — a `Core::ConstRational`, so the record is eliminated and NO
            runtime rational op (hence no borrow-ownership classification) is reached. Before, the bare-`ConstInt`
            operand of the runtime `RationalBinOp` had no ownership class and DECLINED.")
   (input  (do (pragma default-fraction Rational)
               (def (width) 4)
-              (def (rect) (record (w (width)) (h 3)))
+              (def (rect) (record (= w (width)) (= h 3)))
               (def (main) (* (. (rect) w) (. (rect) h)))
               (export main)))
   (output (: 12/1 Rational)))
