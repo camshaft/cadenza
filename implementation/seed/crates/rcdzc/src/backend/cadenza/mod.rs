@@ -40,8 +40,13 @@
 //!   `(<callee-name> <arg>…)`, naming the callee by its source name (it is in `layout.order`, so its
 //!   `(def …)` is emitted too).
 //!
+//! - **M1**: scalar `Core::Match` (Int/Bool probes + wildcard/binder) → an `if`-chain of `(= scrut lit)`
+//!   probes (value-equivalent; the scrutinee is a pure scalar). Guards desugar to `if` at lowering (so
+//!   they never reach here); a non-scalar probe (Str/Char/Bytes/list/map) declines.
+//!
 //! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
-//! (Seq/Block/Break), and data (Record/Tuple/sums/collections — B4), plus scalar `Match`.
+//! (Seq/Block/Break), data (Record/Tuple/sums/collections — B4), and sum/list matches
+//! (MatchSum/MatchList) + non-scalar match probes.
 
 use crate::ast::{Builder, Leaf, Radix, StructId};
 use crate::core::Core;
@@ -354,11 +359,86 @@ fn emit_expr(
             }
             Ok(b.list(children))
         }
+        // A scalar MATCH over a runtime Int/Bool scrutinee — re-emit as an `if`-CHAIN of literal-equality
+        // probes: `(match s (l0 b0) … (_ bn))` → `(if (= s l0) b0 (if … bn))`. This is VALUE-equivalent
+        // (the backend itself lowers a scalar match to a probe chain), reusing the `if`/`=` emit; the
+        // scrutinee is a pure scalar, so re-emitting it per probe is side-effect-free. M1 handles LITERAL
+        // probes (`Int`/`Bool`) + a wildcard tail, UNGUARDED; a guarded arm or a non-scalar probe
+        // (`Str`/`Char`/`Bytes`/`ListLen`/`MapHasKeys`) declines (later slices).
+        Core::Match { scrutinee, arms } => {
+            if arms.is_empty() {
+                return Err(Reject::decline(
+                    "the Cadenza backend does not lower a zero-arm match".to_string(),
+                ));
+            }
+            for arm in &arms {
+                if arm.guard.is_some() {
+                    return Err(Reject::decline(
+                        "the Cadenza backend does not yet lower a GUARDED match arm".to_string(),
+                    ));
+                }
+                if !matches!(
+                    arm.probe,
+                    crate::core::Probe::Int(_)
+                        | crate::core::Probe::Bool(_)
+                        | crate::core::Probe::Wild
+                ) {
+                    return Err(Reject::decline(
+                        "the Cadenza backend does not yet lower a non-scalar match probe \
+                         (Str/Char/Bytes/list/map)"
+                            .to_string(),
+                    ));
+                }
+            }
+            emit_match_chain(db, b, scrutinee, &arms, 0, env)
+        }
         other => Err(Reject::decline(format!(
             "the Cadenza backend does not yet lower this Core node back to Cadenza: {}",
             core_node_kind(&other)
         ))),
     }
+}
+
+/// Re-emit a scalar match's arms as a nested `if`-chain, from arm `i` onward. The LAST arm (or a
+/// wildcard arm) is unconditional — its body IS the else: a scalar `Core::Match` is exhaustive (checked
+/// upstream), so its final/wildcard arm covers the residual case. Each earlier literal-probe arm wraps
+/// `(if (= <scrutinee> <lit>) <body> <rest>)`. The scrutinee is a pure scalar, re-emitted per probe.
+/// Precondition (checked by the caller): every arm is unguarded with an `Int`/`Bool`/`Wild` probe.
+fn emit_match_chain(
+    db: &mut Db,
+    b: &mut Builder,
+    scrutinee: StructId,
+    arms: &[crate::core::MatchArm],
+    i: usize,
+    env: &mut BinderEnv,
+) -> Result<StructId, Reject> {
+    let arm = &arms[i];
+    // The last arm, or a wildcard (which always matches, making any later arm dead): unconditional else.
+    // A wildcard arm may BIND the scrutinee; its body reads that binder, which lowering resolves to the
+    // scrutinee's own core, so emitting the body re-emits the scrutinee reference in scope.
+    if i + 1 == arms.len() || matches!(arm.probe, crate::core::Probe::Wild) {
+        return emit_expr(db, b, arm.body, env);
+    }
+    let if_head = b.name("if");
+    let eq = b.name("=");
+    let scrut = emit_expr(db, b, scrutinee, env)?;
+    let lit = match &arm.probe {
+        crate::core::Probe::Int(v) => b.atom_leaf(Leaf::Int {
+            value: v.clone(),
+            radix: Radix::Dec,
+        }),
+        crate::core::Probe::Bool(x) => b.atom_leaf(Leaf::Bool(*x)),
+        // The caller pre-scanned the arms to only Int/Bool/Wild; a non-last non-Wild arm is Int/Bool.
+        _ => {
+            return Err(Reject::decline(
+                "the Cadenza backend does not yet lower this match probe".to_string(),
+            ));
+        }
+    };
+    let cond = b.list(vec![eq, scrut, lit]);
+    let body = emit_expr(db, b, arm.body, env)?;
+    let rest = emit_match_chain(db, b, scrutinee, arms, i + 1, env)?;
+    Ok(b.list(vec![if_head, cond, body, rest]))
 }
 
 /// `(. <operand> <key>)` — the member-access form the reader normalizes a dotted `X.key` to. Used to
