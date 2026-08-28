@@ -78,9 +78,11 @@
 //!   A USER sum is re-declared: `emit` emits its `(type <Name> (<Variant> <PayloadTy>…)…)` decl (for a
 //!   MONOMORPHIC, CLOSED sum of ANY arity — recursive payloads OK) and its values then round-trip. A
 //!   SINGLE-variant sum is the ERASED `Ty::Nominal` newtype: its value re-emits the CONSTRUCTOR
-//!   `(<Ctor> <payload>)` at the construction sites [`nominal_disposition`] classifies (the payload peeled
-//!   to `inner` via a `view` recursion), with pass-through positions emitted unwrapped so the constructor
-//!   is not doubled. A GENERIC / OPEN user sum still DECLINES (no decl emitted). PRELUDE sums
+//!   `(<Ctor> <payload>)` at the construction sites [`nominal_disposition`] classifies — a value-producing
+//!   leaf/operator OR a COMPOUND-value builder (`(Mk (list …))`/`(tuple …)`/`(record …)`/`(map …)`/`Set.of`)
+//!   OR a binder whose declared type is the inner — with the payload peeled to `inner` via a `view`
+//!   recursion; pass-through positions (control flow, a binder already holding the nominal) emit unwrapped
+//!   so the constructor is not doubled. A GENERIC / OPEN user sum still DECLINES (no decl emitted). PRELUDE sums
 //!   (Option/Result/…) are ambient (no decl). A user-sum/nominal value emits ⇔ its decl was emitted
 //!   (`emitted` set), so there is never an unbound-type recompile.
 //!
@@ -1124,7 +1126,11 @@ enum NominalDisp {
 /// any other core (`Call`, compound builders, …) is ambiguous (`Decline`).
 fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp {
     match core_of(db, id) {
-        // Intrinsically inner-valued producers → the constructor is erased HERE.
+        // Intrinsically inner-valued producers → the constructor is erased HERE. A scalar constant/operator
+        // yields its scalar; a COMPOUND-VALUE builder (`(list …)`/`(tuple …)`/`(record …)`/`(map …)`/
+        // `Set.of`) yields its own collection/tuple/record — NEVER a pre-existing nominal — so a newtype
+        // over a compound (`(Mk (list n …))` : `(type LW (Mk (List Int64)))`) is a construction here: wrap
+        // `(Mk <compound>)`, the payload peeled to `inner` (a List/Tuple/…) via the `view` recursion.
         Core::ConstInt(_)
         | Core::ConstRational(..)
         | Core::ConstBool(_)
@@ -1137,7 +1143,12 @@ fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp
         | Core::StrCmp { .. }
         | Core::FloatCompare { .. }
         | Core::Not { .. }
-        | Core::And { .. } => NominalDisp::Construct,
+        | Core::And { .. }
+        | Core::Tuple { .. }
+        | Core::Record { .. }
+        | Core::ListNew { .. }
+        | Core::MapNew { .. }
+        | Core::SetOf { .. } => NominalDisp::Construct,
         // A binder: construction iff its DECLARED type is NOT already this nominal (a wrapped inner value);
         // a binder already typed as the nominal is a pass-through (emit the bare name).
         Core::Param { binder } | Core::LocalRef { binder } => {
