@@ -11995,3 +11995,60 @@
   (call main (: -9 Int64))
   (output (: (Lit 9) E))
   (live-objects 2))
+
+(case "cdzw15 the cadenza backend round-trips a MatchSum CONSUMED through recursion — the #4942+#4954 interplay"
+  (doc "Fresh cadenza slices #4954 (MatchSum M4a) + #4942 (user type-decl re-emit) COMPOSED: the recursive
+        sum `(type E (Lit Int64) (Neg E))` is built at runtime AND matched back down by the recursive
+        `evl` — the hop must re-emit the type decl, the SumNew values, AND the sum match (payload binders
+        on both arms, recursion through the Neg payload). n=7 → evl(Neg(Lit 7)) = -7; n=-9 → evl(Lit 9)
+        = 9. Dual-path verified. The scalar-return residue (2 cells at the nested arm) is the tracked
+        recursion-crossing reclaim class, not a divergence.")
+  (input (do (type E (Lit Int64) (Neg E)) (def (evl (: e E)) (match e ((Lit v) v) ((Neg x) (- 0 (evl x))))) (def (main (: n Int64)) (evl (if (> n 0) (Neg (Lit n)) (Lit (- 0 n))))) (export main)))
+  (call main (: 7 Int64))
+  (output (: -7 Int64))
+  (call main (: -9 Int64))
+  (output (: 9 Int64))
+  (live-objects known-leak 2))
+
+(case "cdzw16 the cadenza backend round-trips a MULTI-PAYLOAD variant match — slot-i payload binders"
+  (doc "The multi-payload face of M4a: `(Both a b)` binds payload SLOTS 0 and 1 in one arm (a
+        multi-argument variant VALUE still declines to emit, but constructing and MATCHING it inside one
+        program stays in Core, so the match's slot binders are what the hop must reproduce). n=7 →
+        (Both 7 8) → 7 + 800 = 807; n=-4 → (One 4) → 4. Dual-path verified; fully scalarized (no heap).")
+  (input (do (type P (Both Int64 Int64) (One Int64)) (def (g (: p P)) (match p ((Both a b) (+ a (* b 100))) ((One x) x))) (def (main (: n Int64)) (g (if (> n 0) (Both n (+ n 1)) (One (- 0 n))))) (export main)))
+  (call main (: 7 Int64))
+  (output (: 807 Int64))
+  (call main (: -4 Int64))
+  (output (: 4 Int64)))
+
+(case "cdzw17 the cadenza backend round-trips a MULTI-leading-rest list pattern — (list a b c .. r)"
+  (doc "The M4b (#4959) LenGe face with MULTIPLE leading binders: `(list a b c .. r)` maps to LenGe(3)
+        with element binders at slots 0/1/2 plus the RestFrom(3) rest — the historically-flagged
+        leading-rest soundness edge. n=7 over (list 7 2 3 7 8) → 700 + 20 + 3 + len(7 8)=2 → 725.
+        Dual-path verified; fully scalarized.")
+  (input (do (def (f (: xs (List Int64))) (match xs ((list a b c .. r) (+ (* a 100) (+ (* b 10) (+ c (List.len r))))) (_ -1))) (def (main (: n Int64)) (f (list n 2 3 7 8))) (export main)))
+  (call main (: 7 Int64))
+  (output (: 725 Int64))
+  (call main (: 1 Int64))
+  (output (: 125 Int64)))
+
+(case "cdzw18 the cadenza backend round-trips a RECURSIVE fold THROUGH list matches"
+  (doc "M4b recursion: `sum` destructures `(list h .. t)` and recurses on the rest until the `(list)`
+        arm — the hop must re-emit the length-dispatch match INSIDE a recursive def, composing M4b with
+        B3 calls. n=7 → 7+2+3+4 = 16. Dual-path verified; heap balances to 0 (the rest views reclaim).")
+  (input (do (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list h .. t) (+ h (sum t))))) (def (main (: n Int64)) (sum (list n 2 3 4))) (export main)))
+  (call main (: 7 Int64))
+  (output (: 16 Int64))
+  (live-objects 0))
+
+(case "cdzw19 the cadenza backend round-trips a runtime map with a DUPLICATE key — last-insert-wins survives the stored-order replay"
+  (doc "The sharpest #4960 face: `(map (n 1) (n 2))` writes the SAME runtime key twice, so the built map
+        holds the LAST value. The hop re-emits entries in STORED order and the recompiled program rebuilds
+        by re-inserting — if the emit reordered entries, last-wins would flip the value. n=5 →
+        (map (5 2)). Dual-path verified. `(live-objects 1)` = the reachable returned map.")
+  (input (do (def (main (: n Int64)) (map (n 1) (n 2))) (export main)))
+  (call main (: 5 Int64))
+  (output (: (map (5 2)) (Map Int64 Int64)))
+  (call main (: -3 Int64))
+  (output (: (map (-3 2)) (Map Int64 Int64)))
+  (live-objects 1))
