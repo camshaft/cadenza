@@ -15,7 +15,7 @@
 //! parallel or lossy re-encoding.
 
 use crate::{Hash, HashTag};
-use cadenza_ast::ast::{Arenas, Builder, Leaf, Struct, StructId};
+use cadenza_ast::ast::{Arenas, Builder, CompoundCtor, Leaf, Struct, StructId};
 use cadenza_ast::{canon, codec};
 use std::sync::Arc;
 
@@ -85,19 +85,29 @@ pub fn id_name_from_descriptor(value: &Arenas) -> Option<(String, Hash)> {
     // The escaped value form is `(: <record> <type>)`; the record is the first child after the `:` head.
     let annotated = value.as_form(value.root, ":")?;
     let record = *annotated.first()?;
-    // `(record (= <field> <value>) …)` — scan the `(= …)` field groups for `id` and `name`.
-    let fields = value.as_form(record, "record")?;
+    // `(#record (= <field> <value>) …)` — scan the `(= …)` field groups for `id` and `name`. The descriptor
+    // value is the M2 NATIVE compound form (a `RecordCtor` ctor-leaf head), so recognize it via
+    // `compound_form_of` (native leaf + the legacy name/string heads during migration), not the name-only
+    // `as_form(record, "record")` — a native ctor-leaf head is NOT `as_name`-bridged, so the name-only reader
+    // returned None and the descriptor was rejected as "not a contract descriptor record".
+    let fields = value.compound_form_of(record, CompoundCtor::Record)?;
     let mut id: Option<Hash> = None;
     let mut name: Option<String> = None;
     for &field in fields {
-        let Some([field_name, field_value]) = value.as_form(field, "=") else {
+        // A field is a native `FieldPair`-leaf `(= key value)` (M2, what the value form now carries) or the
+        // transitional name-head `(= …)`. `as_name` does NOT bridge the native FieldPair leaf here (unlike
+        // rcdzc's), so read it via `field_pair_parts`/`field_pair`, not `as_form(field, "=")`.
+        let Some((field_name, field_value)) = value
+            .field_pair_parts(field)
+            .or_else(|| value.field_pair(field))
+        else {
             continue; // not a `(= name value)` field group — skip
         };
-        match value.as_name(*field_name) {
+        match value.as_name(field_name) {
             // The `id` field is the 33-byte tagged contract-id, as a `Bytes` leaf.
-            Some("id") => id = bytes_leaf(value, *field_value).and_then(|b| Hash::try_from(b).ok()),
+            Some("id") => id = bytes_leaf(value, field_value).and_then(|b| Hash::try_from(b).ok()),
             // The `name` field is the contract name, as a string leaf.
-            Some("name") => name = value.as_str(*field_value).map(str::to_string),
+            Some("name") => name = value.as_str(field_value).map(str::to_string),
             _ => {}
         }
     }
@@ -117,18 +127,24 @@ pub fn id_name_from_descriptor(value: &Arenas) -> Option<(String, Hash)> {
 pub fn identity_from_descriptor(value: &Arenas) -> Option<(String, String, String)> {
     let annotated = value.as_form(value.root, ":")?;
     let record = *annotated.first()?;
-    let fields = value.as_form(record, "record")?;
+    // Native compound form (M2 `RecordCtor` ctor-leaf head) — see `id_name_from_descriptor`.
+    let fields = value.compound_form_of(record, CompoundCtor::Record)?;
     let mut name: Option<String> = None;
     let mut input: Option<String> = None;
     let mut output: Option<String> = None;
     for &field in fields {
-        let Some([field_name, field_value]) = value.as_form(field, "=") else {
+        // Native `FieldPair`-leaf `(= key value)` (M2) or the transitional name-head — see
+        // `id_name_from_descriptor`.
+        let Some((field_name, field_value)) = value
+            .field_pair_parts(field)
+            .or_else(|| value.field_pair(field))
+        else {
             continue;
         };
-        match value.as_name(*field_name) {
-            Some("name") => name = value.as_str(*field_value).map(str::to_string),
-            Some("input") => input = decode_type_name(value, *field_value),
-            Some("output") => output = decode_type_name(value, *field_value),
+        match value.as_name(field_name) {
+            Some("name") => name = value.as_str(field_value).map(str::to_string),
+            Some("input") => input = decode_type_name(value, field_value),
+            Some("output") => output = decode_type_name(value, field_value),
             _ => {}
         }
     }
@@ -163,7 +179,7 @@ mod tests {
     };
     use crate::{Hash, HashTag};
     use cadenza_ast::ast::Leaf;
-    use cadenza_ast::ast::{Builder, StructId};
+    use cadenza_ast::ast::{Builder, CompoundCtor, StructId};
     use std::sync::Arc;
 
     /// Build a `(Head child…)` list form. A small helper because a builder call cannot nest another
@@ -265,16 +281,18 @@ mod tests {
     #[test]
     fn id_and_name_are_read_from_the_descriptor_value_form() {
         // The Option-B host derivation (operator 2026-08-27): after `cdz run --format binary-ast` executes a
-        // contract's `descriptor()`, the host decodes the value form `(: (record (= ast b"…") (= id b"<tagged
+        // contract's `descriptor()`, the host decodes the value form `(: (#record (= ast b"…") (= id b"<tagged
         // 33 bytes>") (= name "<name>") …) <type>)` and reads the contract-id + name back out — no pragmas, no
-        // Rust re-derivation. Build that exact shape (with an extra `ast` field the reader must SKIP) and
-        // assert `id_name_from_descriptor` recovers the tagged `Hash` and the `String` name.
+        // Rust re-derivation. Build that exact shape in the M2 NATIVE form (a `RecordCtor` ctor-leaf head +
+        // native `FieldPair` fields — what `value_encode`/`const_value_ast` now emit), with an extra `ast`
+        // field the reader must SKIP, and assert `id_name_from_descriptor` recovers the tagged `Hash` + name.
+        // (Pre-fix this rejected the native head as "not a contract descriptor record" — the name-only
+        // `as_form(record, "record")` missed the un-bridged ctor-leaf head.)
         let want_id = Hash::of(HashTag::Contract, b"a-contract-declaration");
         let mut b = Builder::new();
         let field = |b: &mut Builder, key: &str, val: StructId| -> StructId {
-            let eq = b.name("=");
             let k = b.name(key);
-            b.list(vec![eq, k, val])
+            b.field_pair(k, val)
         };
         let ast_val = b.atom_leaf(Leaf::Bytes(Arc::from(&b"module-ast-bytes"[..])));
         let field_ast = field(&mut b, "ast", ast_val);
@@ -282,11 +300,9 @@ mod tests {
         let field_id = field(&mut b, "id", id_val);
         let name_val = b.atom_leaf(Leaf::Str(Arc::from("temp.celsius")));
         let field_name = field(&mut b, "name", name_val);
-        let rec_head = b.name("record");
-        let record = b.list(vec![rec_head, field_ast, field_id, field_name]);
+        let record = b.compound(CompoundCtor::Record, &[field_ast, field_id, field_name]);
         // A minimal `<type>` node — the reader only needs the `:`-envelope's FIRST child (the value).
-        let ty_head = b.name("record");
-        let ty = b.list(vec![ty_head]);
+        let ty = b.compound(CompoundCtor::Record, &[]);
         let colon = b.name(":");
         let root = b.list(vec![colon, record, ty]);
         let arenas = b.finish(root);
@@ -316,9 +332,8 @@ mod tests {
         };
         let mut b = Builder::new();
         let field = |b: &mut Builder, key: &str, val: StructId| -> StructId {
-            let eq = b.name("=");
             let k = b.name(key);
-            b.list(vec![eq, k, val])
+            b.field_pair(k, val)
         };
         let name_val = b.atom_leaf(Leaf::Str(Arc::from("cdz-platform.deliver")));
         let f_name = field(&mut b, "name", name_val);
@@ -326,10 +341,9 @@ mod tests {
         let f_in = field(&mut b, "input", in_val);
         let out_val = b.atom_leaf(Leaf::Bytes(Arc::from(&encode_name("Outcome")[..])));
         let f_out = field(&mut b, "output", out_val);
-        let rec_head = b.name("record");
-        let record = b.list(vec![rec_head, f_name, f_in, f_out]);
-        let ty_head = b.name("record");
-        let ty = b.list(vec![ty_head]);
+        // M2 native compound form (RecordCtor ctor-leaf head), matching the real descriptor value.
+        let record = b.compound(CompoundCtor::Record, &[f_name, f_in, f_out]);
+        let ty = b.compound(CompoundCtor::Record, &[]);
         let colon = b.name(":");
         let root = b.list(vec![colon, record, ty]);
         let arenas = b.finish(root);
