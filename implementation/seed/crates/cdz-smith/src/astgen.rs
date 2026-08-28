@@ -275,7 +275,9 @@ fn gen_compound<C: Choice>(
 /// bool arm returns a `Bool` from `main` (via [`gen_cond`]), exercising bool RETURN-value lowering + the
 /// bool value codec — distinct from bool-as-`if`-condition, the only place a Bool appears otherwise. The
 /// sized-int arm ([`gen_sized_int_body`]) returns an `Int8`/…/`UInt64` value, reaching narrow-width value
-/// lowering + the checked-conversion ops that the Int64-only expression grammar never hits.
+/// lowering + the checked-conversion ops that the Int64-only expression grammar never hits; the float arm
+/// ([`gen_float_body`]) returns a `Float64`/`Float32` value, reaching float value/arith/compare/if-join/let
+/// lowering (uniform-width, so it stays on the compile path).
 fn gen_main_body<C: Choice>(
     c: &mut C,
     scope: &mut Vec<String>,
@@ -283,7 +285,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(5) {
+    match c.variant(6) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -293,6 +295,8 @@ fn gen_main_body<C: Choice>(
         2 => gen_compound(c, true, MAX_DEPTH - 1, scope, fresh, caps, out),
         // A SIZED-int-typed body (`main : Int8`/…): narrow-width value lowering + checked conversions.
         4 => gen_sized_int_body(c, out),
+        // A FLOAT-typed body (`main : Float64`/`Float32`): float value/arith/compare/if-join/let lowering.
+        5 => gen_float_body(c, fresh, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -319,6 +323,85 @@ fn gen_sized_int_body<C: Choice>(c: &mut C, out: &mut String) {
             .ok()
         }
     };
+}
+
+/// Float binary operators — all TOTAL on floats (a `/ 0.0` is `inf`/`nan`, never a trap), so a generated
+/// float expression stays on the COMPILE path.
+const FLOAT_OPS: [&str; 4] = ["+", "-", "*", "/"];
+
+/// Append one non-negative float LITERAL of a single width: a bare `N.0` for Float64, an ascribed
+/// `(: N.0 Float32)` for Float32 (a bare float literal defaults to Float64, so an f32 slot must ascribe).
+fn gen_float_lit<C: Choice>(c: &mut C, is_f32: bool, out: &mut String) {
+    let whole = c.int_bounded(0, 1000);
+    if is_f32 {
+        write!(out, "(: {whole}.0 Float32)").ok();
+    } else {
+        write!(out, "{whole}.0").ok();
+    }
+}
+
+/// Append a UNIFORM float expression of ONE width (`is_f32` → Float32, else Float64): a literal, a binary
+/// op, an `if` (float-relation condition + two same-width arms), or a `let`. Type-correct by construction
+/// — EVERY leaf and arm is the same float type — so an `if`/`match` join never mixes widths (which would
+/// hit the open match-emit-widen gap); it COMPILES, exercising float value / arith / compare / if-join /
+/// let lowering that the Int64-only expression grammar never reached.
+fn gen_float<C: Choice>(
+    c: &mut C,
+    is_f32: bool,
+    depth: usize,
+    fresh: &mut usize,
+    out: &mut String,
+) {
+    if depth == 0 {
+        gen_float_lit(c, is_f32, out);
+        return;
+    }
+    match c.variant(4) {
+        // A binary op over two same-width float sub-expressions.
+        1 => {
+            let op = FLOAT_OPS[c.variant(FLOAT_OPS.len())];
+            write!(out, "({op} ").ok();
+            gen_float(c, is_f32, depth - 1, fresh, out);
+            out.push(' ');
+            gen_float(c, is_f32, depth - 1, fresh, out);
+            out.push(')');
+        }
+        // (if (<rel> <float> <float>) <float> <float>) — a float-relation condition + two same-width arms.
+        2 => {
+            let rel = RELS[c.variant(RELS.len())];
+            write!(out, "(if ({rel} ").ok();
+            gen_float(c, is_f32, depth - 1, fresh, out);
+            out.push(' ');
+            gen_float(c, is_f32, depth - 1, fresh, out);
+            out.push_str(") ");
+            gen_float(c, is_f32, depth - 1, fresh, out);
+            out.push(' ');
+            gen_float(c, is_f32, depth - 1, fresh, out);
+            out.push(')');
+        }
+        // (let ((vN <float>)) (<op> vN <float>)) — a float-typed binding used in a float op.
+        3 => {
+            let v = *fresh;
+            *fresh += 1;
+            let op = FLOAT_OPS[c.variant(FLOAT_OPS.len())];
+            write!(out, "(let ((v{v} ").ok();
+            gen_float(c, is_f32, depth - 1, fresh, out);
+            write!(out, ")) ({op} v{v} ").ok();
+            gen_float(c, is_f32, depth - 1, fresh, out);
+            out.push_str("))");
+        }
+        // Base case + exhaustion default: a literal.
+        _ => gen_float_lit(c, is_f32, out),
+    }
+}
+
+/// A FLOAT-typed body (`main : Float64`/`Float32`) via [`gen_float`] — the coercing generator was
+/// otherwise Int64/Bool/compound only. Reaches float value/arith/compare/if-join/let lowering. Kept
+/// uniform-width (see [`gen_float`]) so it stays on the compile path (the mixed-width match-arm widen is
+/// v-rb's open emit bug; a later increment adds mixed-width arms once that lands + surfaces as findings).
+fn gen_float_body<C: Choice>(c: &mut C, fresh: &mut usize, out: &mut String) {
+    let is_f32 = c.variant(2) == 1;
+    gen_float(c, is_f32, MAX_DEPTH, fresh, out);
 }
 
 /// Append one coerced `Int64` expression: at `depth == 0` (or when the base variant is picked) an
@@ -745,6 +828,74 @@ mod tests {
             }
         }
         assert!(saw, "the coercing generator should reach a sized-int body");
+    }
+
+    /// Every `gen_float` expression (both widths, across depths/arms) is CLEANLY HANDLED — it COMPILES or
+    /// cleanly DECLINES (e.g. a const-folded non-finite `/ 0.0` or an overflow-to-`inf` `*`), never a
+    /// crash / invalid wasm / parse error. It is uniform-width by construction (Float32 leaves ascribed,
+    /// if/match arms same width) so no join mixes widths (which would hit v-rb's open match-emit-widen
+    /// bug) — a width leak would surface as InvalidWasm here. Also asserts the arm REACHES the compile
+    /// path (some body COMPILES), so the float value/arith/emit coverage is real, not all const-declines.
+    #[test]
+    fn gen_float_body_is_cleanly_handled_and_reaches_emit() {
+        let mut saw_compiled = false;
+        for seed in 0u64..256 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(13);
+            let mut bytes = Vec::new();
+            for _ in 0..32 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut fresh = 0usize;
+            for is_f32 in [false, true] {
+                let mut src = String::from("(do (def (main) ");
+                gen_float(
+                    &mut ByteCursorChoice::new(&bytes),
+                    is_f32,
+                    MAX_DEPTH,
+                    &mut fresh,
+                    &mut src,
+                );
+                src.push_str(") (export main))");
+                let v = compile_catching(&src);
+                assert!(
+                    matches!(v, Verdict::Compiled { .. } | Verdict::Declined { .. }),
+                    "uniform-width float body must be cleanly handled (is_f32={is_f32}), got {v:?}: {src}"
+                );
+                saw_compiled |= matches!(v, Verdict::Compiled { .. });
+            }
+        }
+        assert!(
+            saw_compiled,
+            "the float body arm should REACH the compile path (float value/arith emit), not only const-declines"
+        );
+    }
+
+    /// The generator REACHES a float-typed body across varied entropy — so float value/arith/if-join/let
+    /// lowering is actually exercised by the coercing fuzzer, not dead.
+    #[test]
+    fn generator_reaches_a_float_body() {
+        let mut saw = false;
+        for seed in 0u64..256 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(21);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let src = generate_coerced(&bytes).source;
+            // A float body shows up as a bare `N.0` (Float64) or an ascribed `Float32` literal.
+            if src.contains(".0)") || src.contains(".0 ") || src.contains("Float32)") {
+                saw = true;
+                break;
+            }
+        }
+        assert!(
+            saw,
+            "the coercing generator should reach a float-typed body"
+        );
     }
 
     /// Every operator the generator can emit is a valid Int64→Int64→Int64 op the compiler CLEANLY
