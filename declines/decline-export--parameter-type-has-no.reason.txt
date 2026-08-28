@@ -1,0 +1,1 @@
+export `f`: parameter type `Unit` has no component-boundary representation — only the aliased integer widths, `Bool`, and `Float` cross the boundary; it is already annotated, so an annotation cannot fix this (use a boundary-representable parameter type)
