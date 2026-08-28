@@ -47,8 +47,12 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
 | option&lt;scalar\|bytes\|leaf-liftable&gt; | field + result | world | `option_payload_ty` | 1, 8, 16, 35, 36, 38 |
 | result&lt;list&lt;u8&gt;, enum&gt; | arg + result | world | `result_bytes_enum` | 15, 17 |
 | variant (scalar / mixed-width join / compound payload) + payloadless enum | arg + result | world | `variant_scalar_payload_cases` / `variant_liftable_payload_cases` / `enum_cases` | 2, 18, 32, + vres/cvp/mwv/wen families |
-| payloadless enum RESULT (bare + record-field) on a SYNTHESIZED world (no clause) | result + export | synth/export | `enum_cases` (db-aware) + `canon_write_of` enum-disc arm | 58, 59 (wasm+rust+rust-async) |
 | scalar-param → spilled compound (record) result | export | export | `needs_result_wrapper` (SpillRecord retptr) | 56, sp1–sp7 |
+
+**Value ROUND-TRIP only (NOT a typed-WIT-export verification):** SHAPE 58/59 pin that a payloadless
+enum value round-trips through the guest + the generic `cadenza:run/run` encode envelope. They do
+NOT verify a typed WIT `enum` export — the compiler cannot emit one today and FALLS BACK to run/encode
+(confirmed by WIT-dump). Typed enum export is a DECLINED gap (below).
 
 ## WIRED but UNTESTED (predicate admits; no dedicated running SHAPE — verify opportunistically)
 
@@ -59,13 +63,12 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
 ## GAPS — DECLINED, tracked (owner in brackets)
 
 **Synth side — v-inference (`wit_world.rs`):**
-- **[synth]** variant/flags SELF-DECLARATION on a SYNTHESIZED world (no `wit-world` clause):
-  `ty_natural_wit` / `wit_type_to_ty` / `wit_type_to_type_expr` decline these. Needs the
-  **synthesized-nominal-decl increment**. NOTE: an *imposed*-world variant WORKS (emit matches an
-  explicit decl); the gap is guest-annotation-driven self-declaration. CORRECTION (verified by running,
-  SHAPE 58/59): payloadless **ENUM** self-declaration on a synthesized world ALREADY works for RESULTS
-  — emit synthesizes the enum WIT type DB-AWARE (`enum_cases`), so no `ty_natural_wit` Sum arm is needed
-  for enum results. The remaining enum blocker is the export PARAM (an emit gap, below), not synth.
+- **[synth, Direction B]** enum/variant/flags NOMINAL SYNTHESIS from an IMPOSED/external world that
+  declares the shape with NO guest mirror sum: `synthesize_world_import_effect_decls` skips such an op
+  today. Closing it = synthesize a nominal (`type <Name> …`) + inject + add to the sums map. Squarely
+  `wit_world.rs` (v-inference). OPEN DESIGN Q (escalated): what NAME the anonymous WIT enum's synthesized
+  nominal gets, and how the guest constructs/matches variants it didn't declare — needs a reference model.
+  MANDATORY per the operator "full WIT algebra" ruling.
 - **[synth]** option/result OUTBOUND: `wit_world.rs` maps `Ty::Sum`→None; outbound sum WIT is emitted
   here (`spilled_result_wit_type`). Imposed-world works; a synthesized-world option/result *result*
   cannot self-declare (rolls into the nominal-decl increment).
@@ -80,12 +83,19 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
   element.
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
+- **[emit, export, Direction A — MANDATORY, my next unit]** a typed enum/Sum EXPORT (guest declares
+  `type Status = …`, annotates an export/import, no `wit-world` clause) does NOT emit a typed WIT
+  `enum{…}`/`variant{…}` — the export lift's result/param match declines a Sum (`ty_natural_wit(Sum)
+  →None`, the "later slice"), so the WHOLE program FALLS BACK to the generic `cadenza:run/run` encode
+  envelope (verified by WIT-dump on SHAPE 58: `make/run/encode`, no typed `f`). Scalars DO get a typed
+  export (SHAPE 3: `export f: func(s64)->s64`). Fix: route the export sum-result/param lift through a
+  db-aware `Sum→WitType::Enum`/`Variant` built from `enum_cases`/the variant detectors, instead of
+  falling back. Emit-side (mine); no new `wit_world.rs` fn needed (enum_cases gives the case names).
 - **[emit, export]** a NON-SCALAR entry PARAM (enum/Sum, and a record whose fields aren't all
   boundary-scalar) — `try_bare_entry_param_component` + `is_boundary_record`/`field_boundary_abi`
   decline it: *"parameter … has no scalar boundary representation — a non-scalar entry parameter is not
   yet emitted on this export path"* (verified: an enum export param, and a record with an enum field,
-  both decline `todo`). This is the real synthesized-world ENUM-PARAM blocker (emit, not synth); once
-  emit admits it, the enum WIT type should come from the db-aware `enum_cases`, not `ty_natural_wit`.
+  both decline `todo`). The param twin of Direction A above.
 - **[emit, export]** top-level Tuple/Sum/List/String/Bytes typed-interface PARAM
   (`record_interface_export`); a `result<>` top-level export result writer (`canon_write_of`); a flat
   1-value record result; an enum-disc result needing case REORDER; a nested/compound list-param
@@ -120,5 +130,11 @@ other host-RESULT shapes whose only running SHAPE is the reducer-export form.
 
 - "WIRED + CORPUS-VERIFIED" requires a *running* SHAPE, not just a predicate arm. Adding an arm
   without a SHAPE puts the row under "WIRED but UNTESTED" until a case runs it.
+- A gate PASS on a synthesized-world case (no `wit-world`/`component-name`) proves the value ROUND-TRIPS
+  — it does NOT prove a typed WIT export was emitted. When it can't emit a typed export the compiler
+  FALLS BACK to the generic `cadenza:run/run` encode envelope and the case still passes. To claim a
+  *typed* WIT shape crosses, DUMP THE WIT (`wasm-tools component wit <out>.wasm`) and check for the
+  actual `enum`/`variant`/`record` type — not just the gate verdict. (This is how the SHAPE 58/59
+  enum-export over-claim was caught.)
 - When you close a gap, move its row up and cite the SHAPE that verifies it.
 - When you add a `Core`/`Ty`/`Prim` variant, decide its boundary form here (or add a gap row).
