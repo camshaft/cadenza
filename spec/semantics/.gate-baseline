@@ -9062,3 +9062,5 @@ pass	mrs2 a PURE-body two-resume arm re-computes the continuation and sums (mult
 pass	nei1 cross-effect interleave: an inner B handler's arm performs the OUTER A effect, whose state advances across two B draws
 pass	hta1 a 24-field runtime tuple builds a VALID artifact and every field projects (high-arity, verified by running)
 pass	hta2 a 20-parameter function builds a VALID artifact and sums all params (high param-count, verified by running)
+pass	constant compound equality folds structurally over Option, None, tuple, and nesting
+pass	constant Bytes structural equality folds over unequal, length-differing, concat, and compact forms

@@ -30160,73 +30160,10 @@ mod stage1 {
 
     #[test]
     fn constant_compound_equality_folds_and_a_runtime_one_emits_a_heap_walk() {
-        // Equality of two CONSTANT compounds folds STRUCTURALLY (core-semantics.md §Equality Is
-        // Structural: same type + component-wise equal). `(= (Some 1) (Some 1))` → true; `(= (Some 1)
-        // (Some 2))` → false; `(= None None)` → true; `(= (tuple 1 2) (tuple 1 2))` → true; a nested
-        // compound recurses. Was declined "comparison of a compound value needs a heap walk".
-        for (body, want) in [
-            (
-                "(module m (def (main) (if (= (Some 1) (Some 1)) 1 0)) (export main))",
-                1,
-            ),
-            (
-                "(module m (def (main) (if (= (Some 1) (Some 2)) 1 0)) (export main))",
-                0,
-            ),
-            (
-                "(module m (def (main) (if (= None None) 1 0)) (export main))",
-                1,
-            ),
-            (
-                "(module m (def (main) (if (= (tuple 1 2) (tuple 1 2)) 1 0)) (export main))",
-                1,
-            ),
-            (
-                "(module m (def (main) (if (= (tuple 1 2) (tuple 1 3)) 1 0)) (export main))",
-                0,
-            ),
-            (
-                "(module m (def (main) (if (= (Some (Some 1)) (Some (Some 1))) 1 0)) (export main))",
-                1,
-            ),
-            // Bytes structural equality (10-bytes.sexp): two constant byte sequences compare equal iff
-            // the same bytes in the same order — the byte companion of the tuple/list arm. A `Bytes.concat`
-            // and a `Bytes.compact` already fold to a constant `Core::BytesOf`, so their `=` witnesses fold
-            // here too.
-            (
-                "(module m (def (main) (if (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 30))) 1 0)) (export main))",
-                1,
-            ),
-            (
-                "(module m (def (main) (if (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 99))) 1 0)) (export main))",
-                0,
-            ),
-            (
-                "(module m (def (main) (if (= (Bytes.of (list 1 2)) (Bytes.of (list 1 2 3))) 1 0)) (export main))",
-                0,
-            ),
-            (
-                "(module m (def (main) (if (= (Bytes.of (list)) (Bytes.of (list))) 1 0)) (export main))",
-                1,
-            ),
-            (
-                "(module m (def (main) (if (= (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) (Bytes.of (list 1 2 3 4))) 1 0)) (export main))",
-                1,
-            ),
-            (
-                "(module m (def (main) (if (= (Bytes.compact (Bytes.of (list 1 2 3))) (Bytes.of (list 1 2 3))) 1 0)) (export main))",
-                1,
-            ),
-        ] {
-            assert_eq!(
-                run_returns::<i64>(
-                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
-                    "main"
-                ),
-                want,
-                "constant compound equality folds: {body}"
-            );
-        }
+        // The CONSTANT-compound structural-equality folds (Some/None/tuple/nested → bool, and the Bytes
+        // structural-equality arms) are corpus cases: 03-equality-and-observation "constant compound
+        // equality folds structurally over Option, None, tuple, and nesting" and 10-bytes "constant Bytes
+        // structural equality folds over unequal, length-differing, concat, and compact forms".
         // A genuinely-RUNTIME compound comparison (a recursive result, not constant-foldable) now
         // COMPILES to a `value-eq` heap walk (a scalar-leaf compound is canonical by construction, so the
         // tagless `champ_eq` walk is exact). `dn 3` recurses (cannot fold), so `(= (dn 3) (Some 0))`
