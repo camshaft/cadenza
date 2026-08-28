@@ -415,6 +415,22 @@ pub fn emit(
                 crate::ty::Ty::Int(_) => Some(("box-int", None)),
                 _ => None,
             };
+            // PRE-ENCODE (Axis 2): bake any compile-time-constant leaf of a TUPLE/RECORD return directly into
+            // the value-form template, dropping its runtime hole — so a partially/fully-constant compound
+            // return no longer re-encodes its constant leaves on every event (a fully-constant one becomes a
+            // hole-free memcpy). Byte-identical when nothing bakes; scoped to a compound result so the
+            // scalar-erased (`scalar_box`) template — a single boxed scalar the `make` body still forwards — is
+            // untouched. The return body's core supplies the constant values (`bake_constant_leaves` keeps any
+            // non-literal / runtime leaf as a hole).
+            let tpl = if matches!(
+                result.strip_nominal(),
+                crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_)
+            ) {
+                let body = def_body(db, e.def)?;
+                crate::lower::bake_constant_leaves(db, body, &tpl)
+            } else {
+                tpl
+            };
             return emit_runtime_resource(db, layout, e.def, &tpl, scalar_box, spans);
         } else if matches!(result, crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_))
             && let Some(desc) = crate::lower::sum_shape_descriptor(db, &result)
