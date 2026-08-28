@@ -2491,3 +2491,22 @@
   (call main (: 50 Int64))
   (output (: 75 Int64))
   (live-objects known-leak 138))
+
+; ── breaker batch 585: generic monomorphization at TWO distinct heap domains, TRI-TARGET. This is
+; the exact shape the gtx transformer miscompiled (rust E0308, grounded elements to Unit) before
+; #4319 — a plain user-generic Box instantiated at (List Int64) AND String in one program. Value
+; correct on wasm AND rust AND rust-async (3003 = list-len 3 + string-len 3); leak-free (the unbox
+; results feed len/byte-len directly). Tri-target rows: a rust-only monomorphization regression
+; on the two-heap-domain path now reds --check.
+
+(case "gid1 a user-generic Box at TWO distinct heap domains (List + String) in one program is correct on every backend"
+  (input (do
+(type Box (Box a))
+(def (unbox (: b (Box a))) (match b ((Box.Box v) v)))
+(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (main (: n Int64))
+  (+ (* 1000 (List.len (unbox (Box.Box (bld n)))))
+     (String.byte-len (unbox (Box.Box (String.concat "ab" (if (> n 0) "c" "")))))))
+(export main)))
+  (call main (: 3 Int64))
+  (output (: 3003 Int64)))
