@@ -4957,3 +4957,20 @@
   (call main (: 1 Int64))
   (output (: 5101 Int64))
   (live-objects known-leak 7))
+
+(case "ssc1 String.slice indices are SCALAR (codepoint) positions, not bytes — mid-codepoint cuts are impossible by construction"
+  (doc    "Over `aé😀` (a=1B, é=2B, 😀=4B; 7 bytes, 3 scalars), `(String.slice s 0 k)` takes the first k
+           SCALARS: k=1 -> 'a' (1 byte), k=2 -> 'aé' (3 bytes), k=3 -> 'aé😀' (7 bytes). The byte-lengths
+           1/3/7 prove the index is a scalar count, NOT a byte offset — so a slice can never land mid-
+           codepoint and corrupt a scalar (contrast Bytes.slice which IS byte start+length, tick-344). A
+           refactor to byte-offset slicing would change these byte-lengths. `(* 100 byte-len s)` = 700
+           carries the total; k=1/2/3 add 1/3/7.")
+  (input (do (def (main (: n Int64))
+  (let ((s (String.concat "a" (if (> n 0) "é😀" "x"))))
+    (+ (* 100 (String.byte-len s))
+       (match (String.slice s 0 n) ((Some sl) (String.byte-len sl)) ((None) -1)))))
+(export main)))
+  (call main (: 1 Int64)) (output (: 701 Int64))
+  (call main (: 2 Int64)) (output (: 703 Int64))
+  (call main (: 3 Int64)) (output (: 707 Int64))
+  (live-objects known-leak 1))
