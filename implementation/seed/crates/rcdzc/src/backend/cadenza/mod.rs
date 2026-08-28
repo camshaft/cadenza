@@ -31,9 +31,12 @@
 //! - **B2**: BINDING — a kept multi-use `Core::Let` re-emits as `(let ((<n> <v>)…) <body>)` with
 //!   DETERMINISTIC synthesized binding names (the source name is discarded at lowering), and a
 //!   `Core::LocalRef` resolves to its binding's synthesized name via the threaded [`BinderEnv`].
+//! - **B3**: CALLS — a `Core::Call` (a non-inlinable, i.e. recursive, application) re-emits as
+//!   `(<callee-name> <arg>…)`, naming the callee by its source name (it is in `layout.order`, so its
+//!   `(def …)` is emitted too).
 //!
-//! Still declining, for later increments: sequencing (Seq/Block/Break), calls (Call/Closure — B3),
-//! and data (Record/Tuple/sums/collections — B4), plus scalar `Match` (a later slice).
+//! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
+//! (Seq/Block/Break), and data (Record/Tuple/sums/collections — B4), plus scalar `Match`.
 
 use crate::ast::{Builder, Leaf, Radix, StructId};
 use crate::core::Core;
@@ -281,6 +284,21 @@ fn emit_expr(
             let bindings_list = b.list(binding_nodes);
             let body_node = emit_expr(db, b, body, env)?;
             Ok(b.list(vec![let_head, bindings_list, body_node]))
+        }
+        // A runtime CALL to a top-level function — `(<callee-name> <arg>…)`. `Core::Call` is present only
+        // for an application that could NOT be inlined-and-folded at compile time (i.e. a RECURSIVE
+        // callee); `callee` is the `db.defs` index, whose source name re-resolves to the same definition
+        // (it is in `layout.order`, so this backend also emits its `(def …)`). Args are lowered in the
+        // caller's frame, left-to-right. Head-first: the callee name atom is pushed before the args.
+        Core::Call { callee, args } => {
+            let callee_name = db.defs[callee].name.clone();
+            let head = b.name(callee_name.as_str());
+            let mut children = Vec::with_capacity(1 + args.len());
+            children.push(head);
+            for arg in args {
+                children.push(emit_expr(db, b, arg, env)?);
+            }
+            Ok(b.list(children))
         }
         other => Err(Reject::decline(format!(
             "the Cadenza backend does not yet lower this Core node back to Cadenza: {}",
