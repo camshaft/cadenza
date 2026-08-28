@@ -4455,6 +4455,64 @@
             program = "${fastGate}/bin/cdz-fast-gate";
           };
 
+        # apps.test — per-crate nix TEST (operator NIX-FIRST-for-tests 2026-08-28, sccache SHELVED). The
+        # agent-facing surface v-fleet-tooling's `cargo test -p CRATE` → nix redirect targets: SINGLE app
+        # (their design call — less surface + auto-handles new crates). Each crate's tests run via the
+        # existing per-crate crane check (`test-<crate>` — inherits the shared cargoArtifacts deps layer, so
+        # deps compile ONCE fleet-wide and only the top crate + its dependents recompile), and cdz via the
+        # combined `crate-cdz` workspace check. No arg → the full per-crate test aggregate (all crates).
+        #   nix run .#test -- cdz-num cadenza-syntax   # named crates
+        #   nix run .#test                             # everything (test-crane-aggregate)
+        # NOT added to cdz-shell-wrappers: a PATH command named `test` would shadow the shell/coreutils
+        # `test` builtin — this stays the explicit `nix run .#test` surface the cargo-shim maps onto.
+        apps.test =
+          let
+            # crate name → its TEST check. cdz is the combined crate-cdz (its clippy+test run in one
+            # workspace-src check); every other root crate has a per-crate crane `test-<c>`. Auto-covers a
+            # new crate (rootCrateNames is the workspace-member map; testCrateCoverageAssert keeps it honest).
+            testCheckFor = name: if name == "cdz" then "crate-cdz" else "test-${name}";
+            nameCaseArms = pkgs.lib.concatStringsSep "\n" (map
+              (c: ''            ${c}) echo "${testCheckFor c}" ;;'')
+              rootCrateNames);
+            testApp = pkgs.writeShellApplication {
+              name = "cdz-test";
+              runtimeInputs = [ pkgs.nix pkgs.coreutils pkgs.git ];
+              text = ''
+                name_check() {
+                  case "$1" in
+                ${nameCaseArms}
+                    *) echo "" ;;
+                  esac
+                }
+                root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+                if [ "$#" -eq 0 ]; then
+                  echo "cdz test: no crate arg — running the FULL per-crate test aggregate (all workspace crates; deps cached, top-crate recompile)"
+                  exec nix build --print-build-logs "$root#checks.${system}.test-crane-aggregate"
+                fi
+                checks=""
+                for c in "$@"; do
+                  got="$(name_check "$c")"
+                  if [ -z "$got" ]; then echo "cdz test: '$c' is not a gated root crate — skipping" >&2; else checks="$checks $got"; fi
+                done
+                checks="$(echo "$checks" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')"
+                if [ -z "$checks" ]; then echo "cdz test: no valid root crate in args — nothing to run" >&2; exit 1; fi
+                attrs=""; for c in $checks; do attrs="$attrs $root#checks.${system}.$c"; done
+                echo "cdz test: building (deps cached, top-crate recompile):$checks"
+                # shellcheck disable=SC2086
+                if nix build $attrs --print-build-logs; then
+                  echo "cdz test: GREEN — the requested crate(s) pass their test suite."
+                else
+                  echo "cdz test: RED — a crate's tests failed above. Fix + re-run." >&2
+                  exit 1
+                fi
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${testApp}/bin/cdz-test";
+          };
+
         # apps.cdz / apps.cdz-run — run the compiler + runtime THROUGH NIX (operator all-nix mandate,
         # 2026-08-28: agents should not invoke bare `cargo`, which cold-rebuilds the dep closure per
         # worktree — ~177GB of duplicated target/ dirs, wasmtime/cranelift recompiled ~40x). Both wrap
