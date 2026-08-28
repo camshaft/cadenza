@@ -1756,10 +1756,8 @@ fn emit_match_sum(
                             probe,
                             then_,
                             els,
-                        } if path.len() == 1
-                            && matches!(path[0], crate::core::PathStep::Payload)
-                            && binder_names.len() == 1 =>
-                        {
+                        } => {
+                            use crate::core::PathStep;
                             if !matches!(
                                 probe,
                                 crate::core::Probe::Int(_) | crate::core::Probe::Bool(_)
@@ -1770,6 +1768,24 @@ fn emit_match_sum(
                                         .to_string(),
                                 ));
                             }
+                            // Which payload binder the literal refines: the WHOLE single payload
+                            // (`[Payload]`), or slot `i` of a multi-payload variant (`[Payload, Elem(i)]`).
+                            // A deeper path (a literal nested inside a payload tuple/record) is a later slice.
+                            let bidx = match &path[..] {
+                                [PathStep::Payload] if binder_names.len() == 1 => 0usize,
+                                [PathStep::Payload, PathStep::Elem(i)]
+                                    if *i < binder_names.len() =>
+                                {
+                                    *i
+                                }
+                                _ => {
+                                    return Err(Reject::decline(
+                                        "the Cadenza backend does not yet lower a literal-payload test at \
+                                         a deep / non-payload path"
+                                            .to_string(),
+                                    ));
+                                }
+                            };
                             // The matched continuation `then_` must be a plain body (`Leaf`); a nested
                             // continuation after the literal test (another guard / test) is a later slice.
                             let SumCont::Leaf(then_body) = then_.as_ref() else {
@@ -1779,13 +1795,14 @@ fn emit_match_sum(
                                         .to_string(),
                                 ));
                             };
-                            // Build in the SAME leaf-insertion order the `Guarded` arm uses for a re-read
-                            // `(guard (V k) (= k <lit>))` — guard head, then the cond `=`/binder/lit — so
-                            // hop¹ (this arm) and hop² (recompile re-reads a guard → the `Guarded` arm) emit
-                            // BYTE-IDENTICAL trees (the no-canon codec serializes build order).
+                            // Translate to `(guard (<V> b…) (= <b_bidx> <lit>))`, built in the SAME
+                            // leaf-insertion order the `Guarded` arm uses for a re-read guard — guard head,
+                            // then the cond `=`/binder/lit — so hop¹ (this arm) and hop² (recompile re-reads
+                            // the guard → the `Guarded` arm) emit BYTE-IDENTICAL trees (the no-canon codec
+                            // serializes build order).
                             let guard_head = b.name("guard");
                             let eq_head = b.name("=");
-                            let binder_ref = b.name(binder_names[0].clone());
+                            let binder_ref = b.name(binder_names[bidx].clone());
                             let lit = match probe {
                                 crate::core::Probe::Int(v) => b.atom_leaf(Leaf::Int {
                                     value: v.clone(),
