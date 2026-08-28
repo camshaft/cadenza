@@ -3378,6 +3378,7 @@ pass	a pure one-hole match-scrutinee fold selects a non-wildcard arm by the resu
 pass	a pure shared subexpression computes the same value however the backend optimizes it
 pass	a purely-logical composed proof over a quantified proposition: DISCH then MP
 pass	a push-loop tuple-list accumulator infers its tuple element component types
+pass	a qualified (. Ast Ctor) pattern binds each variant's payload at its own type
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a qualified nullary variant pattern resolves in a nested match on the same scrutinee
 pass	a quantity annotation at a same-unit out-of-range magnitude is rejected
@@ -3697,6 +3698,8 @@ pass	a repeated float comparison is computed once and reused (value-transparent 
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
 pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator
+pass	a repeated same-index List.at shared by CSE leaves the list live for a later length read
+pass	a repeated same-key Map.lookup shared by CSE leaves the map live for a later size read
 pass	a repeated trapping divide in a short-circuited and's right operand stays shielded (CSE must not hoist it past the connective)
 pass	a repeated trapping divide in a short-circuited or's right operand stays shielded (CSE must not hoist it past the connective)
 pass	a repeated trapping divide inside one if-arm is not speculated past the branch
@@ -5777,7 +5780,6 @@ pass	cbm3 a nested same-scrutinee match on a TUPLE plus a re-consume after is cl
 pass	cbw1 a nested same-scrutinee LIST match computes and fully reclaims (the #4685 fix witness)
 pass	cbw2 the nested re-match with no tail consume computes and reclaims
 pass	cbw3 the nested re-match through a WILDCARD inner arm computes and reclaims (the header-read-only face)
-pass	two distinct mixed sums sharing a byte-identical immortal nullary terminal keep per-type identity
 pass	cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance
 pass	cc10 a draw bound in a PLAIN let OUTSIDE the closure init-let is captured once and folds
 pass	cc11 a closure over a nested-let-init with a PURE init folds
@@ -6471,6 +6473,7 @@ pass	eval of an Ast.Float NaN node executes to the NaN value — it does NOT con
 pass	eval of an Ast.List with a non-operator head is the ordinary application type error
 pass	eval of an exported smart constructor still works — the forge fix does not over-reject
 pass	eval on malformed AST traps
+pass	every Ast variant deconstructs to its own arm through a qualified (. Ast Ctor) pattern
 pass	every arm of a three-variant enum match is exercised by RUNTIME calls
 pass	every not-a-number value is equal to every not-a-number value
 pass	ex1 a draw SEEDS a mid-body handler install for a different effect — the install expression itself performs
@@ -8712,6 +8715,7 @@ pass	two differing runtime Ok values of a multi-parameter sum compare unequal by
 pass	two differing runtime sum values compare unequal by a heap walk
 pass	two distinct doubles print to distinct text — 0.3 and 0.1+0.2 do not round-trip-collide
 pass	two distinct map-keys are distinct entries
+pass	two distinct mixed sums sharing a byte-identical immortal nullary terminal keep per-type identity
 pass	two distinct names bound to the same value key the same map entry
 pass	two distinct-named modules in one scope coexist
 pass	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
@@ -9067,5 +9071,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a repeated same-key Map.lookup shared by CSE leaves the map live for a later size read
-pass	a repeated same-index List.at shared by CSE leaves the list live for a later length read

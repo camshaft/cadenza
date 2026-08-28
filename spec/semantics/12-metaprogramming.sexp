@@ -171,6 +171,52 @@
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
 
+(case "every Ast variant deconstructs to its own arm through a qualified (. Ast Ctor) pattern"
+  (doc    "First-user fence for the deconstruction dual of quote: a `kind` dispatcher matches a reflected
+           AST with a QUALIFIED `((. Ast Ctor) subpat)` pattern for each of the nine built-in Ast variants
+           (Int/Float/Name/List/Bool/Str/Char/Bytes/Symbol) — the exact pattern shape the Lean oracle newly
+           recognizes (the `Ast` sum is built-in, absent from the scanned `(type …)` decls, so its qualified
+           ctor patterns had fallen through to a headless-list skip). Applied to one representative literal of
+           each variant, weighted by position `i` so a misclassification of arm `i` shifts the total off the
+           self-witnessing `Σ i*i` = 285 (e.g. a Bytes literal miscaught as Symbol makes term 8 read 8*9). A
+           `#\"…\"` literal is a SYMBOL (arm 9), a `b\"…\"` literal is BYTES (arm 8) — the two are distinct
+           leaves that a naive reader conflates. The nine arms are exhaustive over the Ast sum (no wildcard).")
+  (input  (do
+            (def (kind a)
+              (match a
+                (((. Ast Int) _) 1) (((. Ast Float) _) 2) (((. Ast Name) _) 3)
+                (((. Ast List) _) 4) (((. Ast Bool) _) 5) (((. Ast Str) _) 6)
+                (((. Ast Char) _) 7) (((. Ast Bytes) _) 8) (((. Ast Symbol) _) 9)))
+            (def (main)
+              (+ (* 1 (kind (quote 42)))
+              (+ (* 2 (kind (quote 2.5)))
+              (+ (* 3 (kind (quote foo)))
+              (+ (* 4 (kind (quote (a b))))
+              (+ (* 5 (kind (quote true)))
+              (+ (* 6 (kind (quote "s")))
+              (+ (* 7 (kind (quote #\c)))
+              (+ (* 8 (kind (quote b"\x00")))
+                 (* 9 (kind (quote #"sym"))))))))))))
+            (export main)))
+  (output (: 285 Int64)))
+
+(case "a qualified (. Ast Ctor) pattern binds each variant's payload at its own type"
+  (doc    "The payload-binding half of the deconstruction fence: `((. Ast Ctor) subpat)` binds the subpattern
+           to the variant's payload AT ITS DECLARED TYPE — `Ast.Int` binds a BigInt (not Int64, the lossless-
+           storage flip), `Ast.Name` binds a String, `Ast.Symbol` binds a SYMBOL (not a String — a `#\"…\"`
+           leaf), `Ast.Bytes` binds a Bytes. Each arm reads its bound payload back and scores only on an exact
+           match, summing 10+20+30+40 = 100. A binding that surfaced the wrong payload type (e.g. a Symbol as a
+           String, or an Int64-truncated BigInt) would fail its arm's equality and drop the total. Companion to
+           the nine-variant classification pin above.")
+  (input  (do
+            (def (main)
+              (+ (match (quote 7)           (((. Ast Int) n)    (if (= n (: 7 BigInt)) 10 0)) (_ 0))
+              (+ (match (quote foo)         (((. Ast Name) s)   (if (= s "foo") 20 0)) (_ 0))
+              (+ (match (quote #"sy")       (((. Ast Symbol) y) (if (= y #"sy") 30 0)) (_ 0))
+                 (match (quote b"\x01\x02") (((. Ast Bytes) b)  (if (= (Bytes.len b) 2) 40 0)) (_ 0))))))
+            (export main)))
+  (output (: 100 Int64)))
+
 (case "eval of a quoted subtraction that goes negative preserves the sign"
   (doc    "`(eval (quote (- 3 10)))` = -7: the existing arithmetic eval cases produce only POSITIVE results,
            so none exercise a negative eval result. Pins that eval's arithmetic reduction carries the sign
