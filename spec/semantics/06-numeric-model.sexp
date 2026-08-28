@@ -1154,6 +1154,38 @@
   (call   main (: 7 Int64))
   (output (: 101 Int64)))
 
+; The SIBLING-WIDTH face of the Float32 branch family — the one member where the branch width comes NOT from
+; an annotation on the conditional but from a SIBLING ARM whose type is already a fixed Float32 (a typed
+; parameter). `(if b 2.0 v0)` with `v0 : Float32` and NO annotation anywhere: the two arms' types are joined
+; (`Float32` ⊔ a deferred-float LITERAL), and a deferred float used to STAY deferred through the join → the
+; if's RESULT type grounded to the Float64 DEFAULT, so the emit pushed the f32 `v0` in one arm and an
+; `f64.const 2.0` in the other under one select → "select operands have different types", an INVALID module
+; (v-cdz-smith/v-rb). This is a TYPE-JOIN gap, upstream of the emit-grounding pinned above (which needs the
+; result type ALREADY f32): the float `join` now adopts the sibling's FIXED width exactly as a deferred INT
+; arm adopts a sibling Int8 (the sibling-inferred-width integer case above is the integer twin), so the bare
+; literal grounds to f32 and both arms agree. Both faces below (if + match) — the gap was general across both.
+(case "an un-annotated float if takes its branch width from a sibling Float32 arm and emits valid f32"
+  (doc    "The sibling-width member of the Float32 branch family: `(if b 2.0 v0)` with `v0 : Float32` and NO
+           annotation anywhere. The arm types join (Float32 ⊔ a deferred-float literal); the deferred literal
+           must ADOPT the sibling's f32 width — it defaulted to f64, so the if's result was f64 and emit
+           produced an `f32`(v0)/`f64.const 2.0` select mismatch: `select operands have different types`, an
+           INVALID module. The float twin of the sibling-inferred-width integer case. This is upstream of the
+           annotation-driven branch-grounding pins above (it makes the RESULT type f32 in the first place).
+           b=true → the bare `2.0` at f32; b=false → the passed v0.")
+  (input  (do (def (main (: v0 Float32) (: b Bool)) (if b 2.0 v0)) (export main)))
+  (call   main (: 2.5 Float32) (: true Bool))  (output (: 2.0 Float32))
+  (call   main (: 2.5 Float32) (: false Bool)) (output (: 2.5 Float32)))
+
+(case "an un-annotated float match takes its arm width from a sibling Float32 arm and emits valid f32"
+  (doc    "The MATCH twin of the sibling-width if case above: `(match n (0 2.0) (_ v0))` with `v0 : Float32`
+           and NO annotation. The arm types join the same way — the bare `2.0` arm must adopt the sibling
+           `v0` arm's f32 width, not default to f64 (which lowered to an f64/f32 select mismatch, an INVALID
+           module). Confirms the float join fix covers match arms as well as if branches (the gap was general
+           across both, per v-cdz-smith). n=0 → the bare `2.0` at f32; else → the passed v0.")
+  (input  (do (def (main (: v0 Float32) (: n Int64)) (match n (0 2.0) (_ v0))) (export main)))
+  (call   main (: 2.5 Float32) (: 0 Int64)) (output (: 2.0 Float32))
+  (call   main (: 2.5 Float32) (: 7 Int64)) (output (: 2.5 Float32)))
+
 ; The RECURSIVE face of the Float32 match-arm family. When the match is the body of a SELF-recursive
 ; function, the Rust backend compiles the function to a `loop` and each non-recursive tail arm `break`s its
 ; value out; the recursive arm `continue`s. The loop's break leaves used to be grounded ONLY from the group's

@@ -1684,6 +1684,23 @@ impl Ty {
                 };
                 Ty::Int(IntTy { sign, width })
             }
+            // Two floats join by preferring the FIXED width (mirroring the Int arm) — so a DEFERRED float
+            // literal (`2.0`, `Ty::float()`) in one arm ADAPTS to the sibling arm's `Float32`, exactly as a
+            // deferred INT literal adapts to a sibling `Int8`. Without this the pair hit the `_ => self.clone()`
+            // fallthrough and a deferred-float arm STAYED deferred → grounded to the Float64 DEFAULT, leaving an
+            // f64-vs-f32 join whose emit lowered to INVALID WASM (v-cdz-smith match-arm float-width; the `if`
+            // analog was latently the same, masked by const-cond dead-branch-elim). A deferred literal taking a
+            // determined width is the literal's type being FIXED, NOT an implicit promotion (numeric-model
+            // §a-declared-default-fixes-a-type-not-a-conversion). Two DIFFERENT fixed widths (`Float64` ⊔
+            // `Float32`) still return `self` here but are REJECTED by the arms-agree check (`agrees_with` = false,
+            // no silent promotion between float widths) — identical to the Int arm's two-fixed-widths behavior.
+            (Ty::Float(a), Ty::Float(b)) => {
+                let width = match (a.width, b.width) {
+                    (Width::Fixed(w), _) | (_, Width::Fixed(w)) => Width::Fixed(w),
+                    _ => a.width,
+                };
+                Ty::Float(FloatTy { width })
+            }
             // Two agreeing records join field-wise (a deferred width in one branch's field is fixed by
             // the other). If they disagree, keep `self` — the branches-agree check reports the fault.
             (Ty::Record(a), Ty::Record(b)) if self.agrees_with(other) => {
@@ -2059,6 +2076,38 @@ impl Scheme {
 #[cfg(test)]
 mod tests {
     use super::Unit;
+    use super::{FloatTy, Ty};
+
+    // Regression (v-cdz-smith/v-rb match-arm float-width): a control-flow JOIN of a DEFERRED float literal
+    // (`Ty::float()`) with a fixed `Float32` must yield `Float32` — the literal ADAPTS to the fixed width,
+    // exactly as a deferred int literal joins to a sibling `Int8`. Without the `Float` arm in `join`, the
+    // pair hit `_ => self.clone()` and a deferred-float arm stayed deferred → grounded to the Float64
+    // default → an f64-vs-f32 join that emitted INVALID WASM. Two DIFFERENT fixed widths must NOT agree
+    // (no silent float-width promotion), so the arms-agree check rejects them.
+    #[test]
+    fn join_of_a_deferred_float_and_a_fixed_float_adopts_the_fixed_width() {
+        let f32 = Ty::Float(FloatTy::fixed(32));
+        let deferred = Ty::float(); // a bare float literal's deferred-width type
+        assert_eq!(
+            deferred.join(&f32),
+            f32,
+            "deferred ⊔ Float32 = Float32 (order 1)"
+        );
+        assert_eq!(
+            f32.join(&deferred),
+            f32,
+            "Float32 ⊔ deferred = Float32 (order 2)"
+        );
+        // Two DIFFERENT fixed widths do NOT agree — the arms-agree check rejects the mix (no silent promotion).
+        assert!(
+            !Ty::Float(FloatTy::fixed(64)).agrees_with(&f32),
+            "Float64 and Float32 must NOT agree (no silent float-width promotion)"
+        );
+        assert!(
+            deferred.agrees_with(&f32),
+            "a deferred float agrees with Float32 (its width is not yet fixed)"
+        );
+    }
 
     #[test]
     fn render_value_form_escapes_a_base_name_for_the_symbol_literal() {
