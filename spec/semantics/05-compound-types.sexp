@@ -23746,3 +23746,25 @@
             (def (main) (+ (* 1000 (probe (bld 2))) (probe (bld 5))))
             (export main)))
   (output (: 300303 Int64)))
+
+(case "evs1 pushing onto the shared immortal empty-vec singleton does not corrupt it — two empty lists stay independent"
+  (doc    "#4886 makes `op_vec_empty()` a SHARED IMMORTAL SINGLETON (was a fresh mortal empty-vec per call that
+           leaked at recursive-list-fold terminals). Soundness fence: because every `(list)` is now the SAME
+           immortal cell, a push MUST copy-on-write, never FBIP-mutate the shared singleton — else pushing onto
+           one empty list would corrupt EVERY `(list)` in the program. `mk` returns the empty singleton at a
+           runtime-seeded branch (defeats fold); `e1`/`e2` are both it. `(List.push e1 100)` and `(List.push
+           e2 200)` must be independent [100]/[200], AND a fresh `(mk seed)` read afterward must still be EMPTY
+           (len 0). Packed: `1000000*len(empty) + 1000*a[0] + b[0]` = `0 + 100000 + 200` = 100200. A regression
+           that mutated the singleton in place would make len(empty)≠0 (→ off by ≥1000000) or alias a/b.
+           release==debug (no UAF over the shared cell). Uniform across wasm/rust/rust-async.")
+  (input  (do
+            (def (mk (: k Int64)) (if (> k 1000) (list 9) (list)))
+            (def (main (: seed Int64))
+              (let ((e1 (mk seed)) (e2 (mk seed)))
+                (let ((a (List.push e1 100)) (b (List.push e2 200)))
+                  (+ (* 1000000 (List.len (mk seed)))
+                  (+ (* 1000 (match (List.at a 0) ((Option.Some v) v) ((Option.None) -1)))
+                     (match (List.at b 0) ((Option.Some v) v) ((Option.None) -1)))))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 100200 Int64)))

@@ -6133,6 +6133,7 @@ pass	eval on malformed AST traps
 pass	every Ast variant deconstructs to its own arm through a qualified (. Ast Ctor) pattern
 pass	every arm of a three-variant enum match is exercised by RUNTIME calls
 pass	every not-a-number value is equal to every not-a-number value
+pass	evs1 pushing onto the shared immortal empty-vec singleton does not corrupt it — two empty lists stay independent
 pass	ex1 a draw SEEDS a mid-body handler install for a different effect — the install expression itself performs
 pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor
