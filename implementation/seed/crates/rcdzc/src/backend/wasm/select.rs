@@ -3565,9 +3565,62 @@ fn mark_binder_dups_inner(
         }
         // `if`: the condition is evaluated first (borrow — a bool test never consumes a heap ref into the
         // result); the two branches are INDEPENDENT paths, each with the incoming `live_after`.
+        //
+        // CROSS-ARM RETAIN (v-memory-safety ruling, narrowed): a binder CONSUMED in one if-arm needs a `dup`
+        // iff it is ALIASED AS THE OTHER ARM'S BORROWED RESULT and the if-RESULT is DROPPED (`!consuming`).
+        // Then the other arm yields the binder unchanged as the join value; because the if-result is dropped
+        // (borrowed later, not moved out), the reclaim inserts an UNCONDITIONAL post-join drop of that join
+        // value, which on the surviving arm's path aliases the binder — so on THIS arm's path (where the
+        // binder was consumed) consume + that same drop = double-free unless the consume retained a fresh ref.
+        //
+        // "Aliased as the other arm's borrowed result" = `binding_escapes(arm, tb=false) &&
+        // !binding_escapes(arm, tb=true)`: the binder leaves the arm ONLY as its borrowed result (it escapes
+        // with a CONSUMING tail but NOT with a BORROWED tail), i.e. the arm's tail expression IS the binder /
+        // a borrow-chain rooted at it. This is STRICTLY NARROWER than "net-survives the other arm" (the first
+        // wiring, which over-dupped +11 corpus leak-increases): it excludes (i) a binder BORROWED INTERNALLY
+        // whose result is something else (`(if c (byte-len r1) (concat r1 y))` — byte-len escapes neither way
+        // → not an alias → the reclaim's per-path conditional drop already handles it, no dup), and (ii)
+        // BOTH-arms-consume (`(if c (concat r1 a) (concat r1 b))` — concat escapes both ways → not an alias →
+        // each path owns its own ref, no double-free). The `!consuming` gate keeps the FBIP tail-return
+        // accumulator dup-free (its if-result is MOVED OUT, so there is no post-join drop to double with).
+        //
+        // Verified (cdz-run --report-live-objects, debug-counters runtime): 980 (then=keep=r1 alias, else=
+        // concat r1 consume) → the else-consume dups, mode2 double-free UAF eliminated; the two FBIP no-dup
+        // unit tests stay dup-free; a binder consumed-in-one-arm-and-ABSENT-from-the-other stays dup-free; and
+        // the earlier +11 corpus leak-increases (recursion/accumulator/dedup shapes) are gone (back to base).
+        // Does NOT reach a PRE-`if` multi-consume (D1) — already handled by cross-let live_after.
         Core::If { cond, then_, else_ } => {
-            let then_occurs = mark_binder_dups(db, then_, binder, consuming, live_after, sites);
-            let else_occurs = mark_binder_dups(db, else_, binder, consuming, live_after, sites);
+            // The binder is aliased as `arm`'s borrowed result (escapes via a consuming tail, not a borrowed
+            // tail — i.e. the tail IS the binder / a borrow-chain rooted at it), and this if's result is
+            // DROPPED (`!consuming`). `binder_occurs` short-circuits the walks when the binder is absent.
+            let mut occ = HashMap::new();
+            let aliases_as_result =
+                |db: &mut Db, arm: StructId, occ: &mut HashMap<StructId, bool>| {
+                    !consuming
+                        && binder_occurs(db, arm, binder, occ)
+                        && binding_escapes(db, arm, binder, false)
+                        && !binding_escapes(db, arm, binder, true)
+                };
+            let else_alias = aliases_as_result(db, else_, &mut occ);
+            let mut occ2 = HashMap::new();
+            let then_alias = aliases_as_result(db, then_, &mut occ2);
+            // A consuming occurrence in THIS arm dups iff the OTHER arm aliases the binder as its dropped result.
+            let then_occurs = mark_binder_dups(
+                db,
+                then_,
+                binder,
+                consuming,
+                live_after || else_alias,
+                sites,
+            );
+            let else_occurs = mark_binder_dups(
+                db,
+                else_,
+                binder,
+                consuming,
+                live_after || then_alias,
+                sites,
+            );
             let cond_la = live_after || then_occurs || else_occurs;
             let cond_occurs = mark_binder_dups(db, cond, binder, false, cond_la, sites);
             cond_occurs || then_occurs || else_occurs
@@ -11975,6 +12028,35 @@ pub fn build_static_compound_init(
         out.push(Lir::GlobalSet((byte_base + k) as u32)); // store the once-built immortal handle → []
     }
     Ok(std::mem::take(&mut *out))
+}
+
+/// The EXACT runtime-op set the static-compound init (`build_static_compound_init` → `emit_immortal_static`)
+/// will emit, derived by a DRY-RUN into a throwaway `Emit` + scanning its `CallImport`s. This makes the
+/// module import set PRECISE (only the ops each compound's SHAPE actually builds) instead of the prior
+/// unconditional over-approximation (which force-imported the full arr/box/bytes/vec/map/set/canonicalize
+/// batch whenever ANY static compound existed — leaving e.g. map/set/vec/bytes imports DEAD in a program
+/// whose only constants are sums/tuples). No mirror-divergence: this runs the SAME emit path
+/// (`emit_immortal_static`), so the collected op set is exactly what the real init emits. A compound that
+/// DECLINES in the dry-run is not built by the real init either (`build_static_compound_init` propagates the
+/// same `Reject`, so no module is emitted), so ignoring the dry `Err` never under-collects an op that the
+/// real init actually emits. The dry `Emit` is discarded; `emit_immortal_static` only reads/memoizes `db`.
+pub fn collect_static_compound_ops(
+    db: &mut Db,
+    compounds: &[StructId],
+    layout: &Layout,
+) -> std::collections::BTreeSet<&'static str> {
+    let mut ops = std::collections::BTreeSet::new();
+    for &root in compounds {
+        let mut probe = Emit::new();
+        if emit_immortal_static(db, root, layout, &mut probe).is_ok() {
+            for instr in probe.code.iter() {
+                if let Lir::CallImport(op) = instr {
+                    ops.insert(*op);
+                }
+            }
+        }
+    }
+    ops
 }
 
 #[allow(clippy::too_many_arguments)]

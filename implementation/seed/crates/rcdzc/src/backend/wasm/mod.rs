@@ -565,43 +565,19 @@ pub fn emit(
         used.insert("bytes-set");
         used.insert("mark-immortal");
     }
-    // STATIC COMPOUNDS (increment 6): the `start` init builds each tuple/record with `arr-alloc` + a boxed
-    // `arr-set` per element (`box-int`/`box-bool`; nested compounds recurse; a Bytes/String leaf uses
-    // `bytes-alloc`/`bytes-set`), then `mark-immortal` per node. `collect_used_ops` reports the arr/box ops
-    // for the body's `Core::Tuple`/`Record` (even when routed to a global), but the init's `mark-immortal`
-    // isn't in any body — force the full init op set when the compound table is non-empty. Idempotent.
-    if !static_compounds.is_empty() {
-        used.insert("arr-alloc");
-        used.insert("arr-set");
-        used.insert("box-int");
-        used.insert("box-bool");
-        used.insert("bytes-alloc");
-        used.insert("bytes-set");
-        used.insert("mark-immortal");
-        // A hoisted constant list builds its flat arr then `vec-of-arr` (reused-as-leaf for ≤32, drained into a
-        // trie for >32); the init's `vec-of-arr` isn't in any body when the only list use is hoisted, so force
-        // it. A list root is marked with `mark-immortal-DEEP` (op 96) — transitive, reaches trie internals — so
-        // force that too (the per-node shallow `mark-immortal` above still covers tuple/record/scalar/leaf marks).
-        used.insert("vec-of-arr");
-        used.insert("mark-immortal-deep");
-        // A hoisted constant MAP builds via `map-empty` + per-entry `map-insert` in the init; force both (they
-        // aren't in any body when the only map use is hoisted).
-        used.insert("map-empty");
-        used.insert("map-insert");
-        used.insert("set-empty");
-        used.insert("set-insert");
-        // A hoisted NULLARY mixed-sum terminal (`(Z)`/`(Nil)`) builds via `sum-new(disc, IMM_UNIT)` in the
-        // init (`is_markable_constant_sum_nullary`); force it too (not in any body when the only such
-        // construction is hoisted → its `CallImport` would otherwise resolve to u32::MAX).
-        used.insert("sum-new");
-        // A hoisted MAP/SET whose KEY/ELEMENT is (or contains) a LIST canonicalizes that key for CHAMP-slot
-        // exactness (`key_needs_canonicalize` = `ty_contains_list` → `emit_key_canonicalize`), which emits
-        // `value-canonicalize`; a rope String/Bytes key compacts (`key_needs_compaction` → `bytes-compact`).
-        // When the ONLY use of such a map/set is hoisted, neither op is in any body → its init `CallImport`
-        // would resolve out-of-range (invalid `function[N]`, the exact regressor the prior nested-list attempt
-        // hit). Force both — same discipline as `vec-of-arr`/`sum-new` above.
-        used.insert("value-canonicalize");
-        used.insert("bytes-compact");
+    // STATIC COMPOUNDS (increment 6): the `start` init builds each tuple/record/list/map/set/sum ONCE and
+    // `mark-immortal`s it. Those init `mark-immortal`(-deep) / `vec-of-arr` / `map-*` / `set-*` / `sum-new` /
+    // `value-canonicalize` / `bytes-compact` ops are NOT in any body when the only use of a constant is a
+    // hoisted `global.get`, so the import set must force the init's ops. PRECISELY: import EXACTLY the ops the
+    // init emits per each compound's SHAPE, derived by a dry-run of the real init emit path
+    // (`collect_static_compound_ops` → `emit_immortal_static`). This replaces the prior UNCONDITIONAL full
+    // batch (which force-imported arr/box/bytes/vec/map/set/canonicalize/compact whenever ANY static compound
+    // existed) — that over-approximation left map/set/vec/bytes/canonicalize imports DEAD in a program whose
+    // constants are e.g. only sums or scalar tuples (the imports-dominant unused-import gap, v-wasm-opt). No
+    // mirror-divergence: the dry-run is the SAME emit path, so it imports neither less (missing-import →
+    // invalid module) nor more than the init actually calls.
+    for op in select::collect_static_compound_ops(db, &static_compounds, layout) {
+        used.insert(op);
     }
     // A typed interface-export member with a RECORD param emits a boundary WRAPPER that BUILDS the record
     // from the flattened fields (`arr-alloc`/`arr-set` + per-field `box-*`). Those ops are the wrapper's,
