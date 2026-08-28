@@ -2520,6 +2520,32 @@
   (call   main (: 1100 Int64)) (output (: 604450 Int64))
   (live-objects known-leak 18972))
 
+(case "a small single-level prepend-built runtime list reads every index (no relaxed root spawned)"
+  (doc    "The SINGLE-LEVEL twin of the 1100-element prepend case above, isolating the prepend share/dup path
+           BELOW the relaxed-root threshold. `build` prepends 0..n-1 via `List.prepend` (which lowers to
+           vec-concat of a fresh singleton and the list — `lower_list_prepend`), so at n=10 the list is
+           [9,8,..,1,0] and stays a SINGLE RRB leaf (n < 32) — no relaxed size-table root is spawned. `readsum`
+           reads every index i=n-1..0; value at index i is (n-1-i), so Sigma i in 0..=9 of (9-i) = Sigma k in
+           0..=9 of k = 45. Built at a runtime recursion base (defeats fold). CENSUS ROLE (v-memory-safety
+           coverage, for the op_vec_prepend acceptance): the single-level leaf-copy prepend leaks only a
+           CONSTANT base (measured got = 2 at BOTH n=10 and n=20 — NOT per-element), in contrast to the
+           multi-level case above whose 18,972 is the RELAXED-ROOT path-copy reclaim gap accumulating per
+           prepend. So the leak is relaxed-root-specific, not single-level; this case pins the single-level
+           path stays a small constant and flips when op_vec_prepend's reclaim (and/or the immortal-empty-vec
+           base) lands. A regression that broke the single-level share/dup or corrupted the shifted indices
+           would move the value off 45.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.prepend out i)) out))
+            (def (readsum (: i Int64) (: xs (List Int64)) (: acc Int64))
+              (if (< i 0) acc
+                (readsum (- i 1) xs (+ acc (match (List.at xs i) ((Some v) v) ((None u) -1000000))))))
+            (def (main (: n Int64))
+              (readsum (- n 1) (build 0 n (list)) 0))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 45 Int64))
+  (live-objects known-leak 2))
+
 ; --- Large-vector CONCATENATION (the RRB MERGE/rebalance path, distinct from push/prepend growth) ---
 ; The push/prepend cases above grow ONE RRB vector element-by-element. `List.concat` of two ALREADY-LARGE
 ; vectors is a different operation: it MERGES two multi-node RRB tries into one, which must splice the left
