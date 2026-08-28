@@ -638,6 +638,132 @@ pub fn count_faults(faults: &[DiagFault], severity: Severity, code: &str) -> usi
     faults.iter().filter(|f| f.is(severity, code)).count()
 }
 
+/// How a corpus `(fix …)` clause matches a fault's `replacement` text: `Exact` demands equality (the
+/// spelling/wrap-form the repair substitutes, order-sensitive); `Contains` demands a substring (the repair
+/// merely mentions a name/arm). Both are common in the migrated tests (≈19 exact / 23 substring), so the
+/// surface offers both: `(replacement "r")` = `Exact`, `(replacement-contains "s")` = `Contains`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplMatch {
+    Exact(String),
+    Contains(String),
+}
+
+impl ReplMatch {
+    fn matches(&self, actual: &str) -> bool {
+        match self {
+            ReplMatch::Exact(s) => actual == s,
+            ReplMatch::Contains(s) => actual.contains(s.as_str()),
+        }
+    }
+}
+
+/// The asserted STRUCTURAL FIX a corpus `(fix …)` clause pins on a diagnostic — each field optional, so a
+/// case constrains only what it cares about (kind, replacement text, verified flag). Matches the structural
+/// `DiagFaultFix` (kind ∈ {replace, insert, wrap, delete}; the semantic flavor lives in the replacement /
+/// message, not the kind).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FixExpect {
+    /// The structural edit kind the fix must have (wire spelling), or `None` to not constrain it.
+    pub kind: Option<String>,
+    /// How the fix's replacement text must match, or `None` to not constrain it.
+    pub replacement: Option<ReplMatch>,
+    /// The verified flag the fix must have, or `None` to not constrain it.
+    pub verified: Option<bool>,
+}
+
+/// The DIAGNOSTIC-QUALITY assertions a corpus `(error …)` / `(warning …)` case pins beyond the code +
+/// message: an exact fault `count`, and either a required `fix` (matched by [`FixExpect`]) or `no_fix` (the
+/// fault must carry NO repair). All optional — a case asserts only what it checks. `fix` and `no_fix` are
+/// mutually exclusive (a `no_fix` case that also named a `fix` is an authoring error; grading treats a
+/// present fix under `no_fix` as a Fail).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DiagExpect {
+    pub fix: Option<FixExpect>,
+    pub no_fix: bool,
+    pub count: Option<u32>,
+}
+
+impl DiagExpect {
+    /// Whether this asserts anything at all (else the quality grade is a no-op Pass).
+    pub fn is_empty(&self) -> bool {
+        self.fix.is_none() && !self.no_fix && self.count.is_none()
+    }
+}
+
+/// Grade a corpus case's DIAGNOSTIC-QUALITY assertions against the parsed structured `faults` — the check
+/// that lets the corpus "express fixes" (the operator-greenlit capability). `severity`/`code` select the
+/// fault the assertions are about (the case's `(error CDZ####)` / `(warning CDZ####)`). Returns `Pass` when
+/// every asserted facet holds, else `Fail` naming the first mismatch. An empty `DiagExpect` is a no-op Pass.
+///
+/// The FIX facets (`fix`/`no_fix`) apply to the FIRST fault matching `(severity, code)` — a case pins one
+/// fault's repair; a multi-fault case uses `count` to bound the set. When `count` asserts `0` and none are
+/// present, that is a Pass (the fault is absent as required) with no fix to check.
+pub fn grade_diag_quality(
+    faults: &[DiagFault],
+    severity: Severity,
+    code: &str,
+    expect: &DiagExpect,
+) -> Grade {
+    if expect.is_empty() {
+        return Grade::Pass;
+    }
+    let matching: Vec<&DiagFault> = faults.iter().filter(|f| f.is(severity, code)).collect();
+    if let Some(n) = expect.count
+        && matching.len() != n as usize
+    {
+        return Grade::Fail(format!(
+            "expected {n} {severity:?} {code} fault(s), found {}",
+            matching.len()
+        ));
+    }
+    let Some(fault) = matching.first() else {
+        // No matching fault. If the case asserted exactly zero, that already passed the count check above;
+        // otherwise a fix/no_fix assertion has nothing to grade against — a real mismatch.
+        if expect.count == Some(0) {
+            return Grade::Pass;
+        }
+        return Grade::Fail(format!("expected a {severity:?} {code} fault, found none"));
+    };
+    if expect.no_fix
+        && let Some(f) = &fault.fix
+    {
+        return Grade::Fail(format!(
+            "expected NO fix on {code}, but a {:?} fix was proposed",
+            f.kind
+        ));
+    }
+    if let Some(want) = &expect.fix {
+        let Some(got) = &fault.fix else {
+            return Grade::Fail(format!("expected a fix on {code}, but none was proposed"));
+        };
+        if let Some(k) = &want.kind
+            && &got.kind != k
+        {
+            return Grade::Fail(format!(
+                "expected fix kind {k:?} on {code}, got {:?}",
+                got.kind
+            ));
+        }
+        if let Some(rm) = &want.replacement
+            && !rm.matches(&got.replacement)
+        {
+            return Grade::Fail(format!(
+                "fix replacement {:?} on {code} does not match {rm:?}",
+                got.replacement
+            ));
+        }
+        if let Some(v) = want.verified
+            && got.verified != v
+        {
+            return Grade::Fail(format!(
+                "expected fix verified={v} on {code}, got verified={}",
+                got.verified
+            ));
+        }
+    }
+    Grade::Pass
+}
+
 /// The FIRST error diagnostic in a compiler stderr as `(code, message)` — `error [CODE] (node N): msg`
 /// (coded) or `error: msg` (codeless). Ported verbatim from the `xtask gate`.
 pub fn first_error_diag(diag: &str) -> (Option<String>, String) {
@@ -1548,6 +1674,132 @@ mod tests {
         assert_eq!(count_faults(&faults, Severity::Warning, "CDZ9999"), 0);
         assert!(faults[0].is(Severity::Warning, "CDZ0305"));
         assert!(!faults[0].is(Severity::Error, "CDZ0305"));
+    }
+
+    /// `grade_diag_quality` checks the corpus fix/count assertions against parsed structured faults — the
+    /// grading brain for the operator-greenlit "corpus expresses fixes" capability.
+    #[test]
+    fn grade_diag_quality_checks_fix_count_and_no_fix() {
+        let wire = "error\tCDZ0203\t7\treplace\t7\tfoo\tverified\tundefined name; did you mean `foo`?\n\
+                    warning\tCDZ0305\t1\t-\t-\t-\t-\tdead trap A\n\
+                    warning\tCDZ0305\t2\t-\t-\t-\t-\tdead trap B\n";
+        let faults = parse_diagnostics(wire);
+        let pass = |g: &Grade| matches!(g, Grade::Pass);
+
+        // Empty assertion = no-op Pass.
+        assert!(pass(&grade_diag_quality(
+            &faults,
+            Severity::Error,
+            "CDZ0203",
+            &DiagExpect::default()
+        )));
+
+        // KIND + exact REPLACEMENT + VERIFIED all match → Pass.
+        let want = DiagExpect {
+            fix: Some(FixExpect {
+                kind: Some("replace".into()),
+                replacement: Some(ReplMatch::Exact("foo".into())),
+                verified: Some(true),
+            }),
+            ..Default::default()
+        };
+        assert!(pass(&grade_diag_quality(
+            &faults,
+            Severity::Error,
+            "CDZ0203",
+            &want
+        )));
+
+        // Wrong kind → Fail; wrong replacement → Fail; wrong verified → Fail.
+        let bad_kind = DiagExpect {
+            fix: Some(FixExpect {
+                kind: Some("wrap".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(
+            grade_diag_quality(&faults, Severity::Error, "CDZ0203", &bad_kind),
+            Grade::Fail(_)
+        ));
+        let bad_repl = DiagExpect {
+            fix: Some(FixExpect {
+                replacement: Some(ReplMatch::Exact("bar".into())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(
+            grade_diag_quality(&faults, Severity::Error, "CDZ0203", &bad_repl),
+            Grade::Fail(_)
+        ));
+
+        // Substring replacement matches the exact spelling too.
+        let contains = DiagExpect {
+            fix: Some(FixExpect {
+                replacement: Some(ReplMatch::Contains("fo".into())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(pass(&grade_diag_quality(
+            &faults,
+            Severity::Error,
+            "CDZ0203",
+            &contains
+        )));
+
+        // no_fix on a fault that HAS a fix → Fail; no_fix on a fault with none → Pass.
+        let no_fix = DiagExpect {
+            no_fix: true,
+            ..Default::default()
+        };
+        assert!(matches!(
+            grade_diag_quality(&faults, Severity::Error, "CDZ0203", &no_fix),
+            Grade::Fail(_)
+        ));
+        assert!(pass(&grade_diag_quality(
+            &faults,
+            Severity::Warning,
+            "CDZ0305",
+            &no_fix
+        )));
+
+        // COUNT: exactly two CDZ0305 warnings → Pass with (count 2); (count 1) → Fail.
+        let count2 = DiagExpect {
+            count: Some(2),
+            ..Default::default()
+        };
+        assert!(pass(&grade_diag_quality(
+            &faults,
+            Severity::Warning,
+            "CDZ0305",
+            &count2
+        )));
+        let count1 = DiagExpect {
+            count: Some(1),
+            ..Default::default()
+        };
+        assert!(matches!(
+            grade_diag_quality(&faults, Severity::Warning, "CDZ0305", &count1),
+            Grade::Fail(_)
+        ));
+
+        // A fix assertion on an ABSENT code → Fail (found none); (count 0) on an absent code → Pass.
+        assert!(matches!(
+            grade_diag_quality(&faults, Severity::Error, "CDZ9999", &want),
+            Grade::Fail(_)
+        ));
+        let count0 = DiagExpect {
+            count: Some(0),
+            ..Default::default()
+        };
+        assert!(pass(&grade_diag_quality(
+            &faults,
+            Severity::Error,
+            "CDZ9999",
+            &count0
+        )));
     }
 
     /// `check_live_objects` balances EVERY trial, not just call[0] — the fix for the systemic false-green
