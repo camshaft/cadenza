@@ -91,7 +91,8 @@
 //!   → the plain operator `(+ l r)` etc (tower op re-selected by operand type on recompile), `BigIntCmp`/
 //!   `RationalCmp` → `(<op> l r)` via `prim_operator`; `RationalOfInts`→`(Rational.of n d)`,
 //!   `RationalOfIntWiden`→`(Rational.of-int n)`, `RationalNum`/`RationalDen`→`(Rational.numerator/
-//!   denominator r)`.
+//!   denominator r)`; `BigIntToI64`→`(<IntType>.of <bigint>)` (the checked narrow, target from result type).
+//!   A `Core::SumNew` with MULTIPLE payloads re-emits `(<Variant> p0 p1 …)`.
 //! - **STRING.CONCAT / NFC**: `String.concat` shares `Core::BytesConcat` (a String is a UTF-8 byte leaf),
 //!   disambiguated from `Bytes.concat` by the result type; its compiler-inserted `Core::NfcNormalize` (no
 //!   surface member) emits TRANSPARENTLY (its inner string), the surface `String.concat`/`to-bytes`
@@ -567,6 +568,24 @@ fn emit_expr_viewed(
             let v = emit_expr(db, b, value, None, env, emitted)?;
             Ok(b.list(vec![head, v]))
         }
+        // `<IntType>.of <bigint>` — the CHECKED narrowing of a BigInt to a fixed-width int (traps out of
+        // range). Member-access `((. <IntType> of) <operand>)`; the target int module is this node's OWN
+        // result type (`render_name` → `Int64`/`Int8`/…), so a narrow target round-trips to the same op.
+        Core::BigIntToI64 { operand } => {
+            let ty = crate::infer::type_of(db, id);
+            let module = match &ty {
+                Ty::Int(_) => ty.render_name(&db.name_ctx()),
+                _ => {
+                    return Err(Reject::decline(
+                        "the Cadenza backend cannot recover the target int type for a BigInt narrow"
+                            .to_string(),
+                    ));
+                }
+            };
+            let head = member_access(b, &module, "of");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
         Core::RationalOfInts { num, den } => {
             let head = member_access(b, "Rational", "of");
             let n = emit_expr(db, b, num, None, env, emitted)?;
@@ -866,23 +885,27 @@ fn emit_expr_viewed(
                         .to_string(),
                 )
             })?;
-            let payload = match payloads.len() {
-                0 => b.name("unit"),
-                // The payload's `expected` is the variant's INSTANTIATED payload type at this sum type — so a
-                // bare `(None)` nested as a variant payload (`(Some (None))` : `Option (Option Int64)`, whose
-                // inner own type is `Option<?>`) recovers `Option Int64` from the outer sum's instantiation.
+            let mut variant_children = vec![head];
+            match payloads.len() {
+                // A NULLARY variant carries `unit` (`(None unit)`).
+                0 => variant_children.push(b.name("unit")),
+                // SINGLE payload — its `expected` is the variant's INSTANTIATED payload type at this sum
+                // type, so a bare `(None)` nested as a payload (`(Some (None))` : `Option (Option Int64)`,
+                // whose inner own type is `Option<?>`) recovers `Option Int64` from the outer instantiation.
                 1 => {
                     let pexp = sum_payload_expected(db, decl, disc, &ty);
-                    emit_expr(db, b, payloads[0], pexp, env, emitted)?
+                    variant_children.push(emit_expr(db, b, payloads[0], pexp, env, emitted)?);
                 }
+                // MULTI-argument variant `(<Variant> p0 p1 …)` — each payload emitted left-to-right (their
+                // types are the variant's slot types, determined by the operands; no under-determined
+                // fallback needed for the common case).
                 _ => {
-                    return Err(Reject::decline(
-                        "the Cadenza backend does not yet lower a multi-argument variant"
-                            .to_string(),
-                    ));
+                    for &p in payloads.iter() {
+                        variant_children.push(emit_expr(db, b, p, None, env, emitted)?);
+                    }
                 }
-            };
-            let variant = b.list(vec![head, payload]);
+            }
+            let variant = b.list(variant_children);
             let ncx = db.name_ctx();
             let ty_node = crate::lower::type_ast(b, &ty, &ncx).ok_or_else(|| {
                 Reject::decline(
