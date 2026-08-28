@@ -85,6 +85,10 @@
 //!   so the constructor is not doubled. A GENERIC / OPEN user sum still DECLINES (no decl emitted). PRELUDE sums
 //!   (Option/Result/…) are ambient (no decl). A user-sum/nominal value emits ⇔ its decl was emitted
 //!   (`emitted` set), so there is never an unbound-type recompile.
+//! - **STRING.CONCAT / NFC**: `String.concat` shares `Core::BytesConcat` (a String is a UTF-8 byte leaf),
+//!   disambiguated from `Bytes.concat` by the result type; its compiler-inserted `Core::NfcNormalize` (no
+//!   surface member) emits TRANSPARENTLY (its inner string), the surface `String.concat`/`to-bytes`
+//!   re-inserting the normalization on recompile.
 //! - **PROJ / VALUE-EQ / VALUE-CMP**: a runtime tuple projection `Core::Proj` → `(. <operand> <index>)`;
 //!   structural equality `Core::ValueEq`/`ValueEqShaped` → `(= l r)` and structural ordering
 //!   `Core::ValueCmp{op}` → `(<op> l r)` on runtime compounds (the operands' type re-selects the
@@ -953,8 +957,16 @@ fn emit_expr_viewed(
             let i = emit_expr(db, b, index, None, env, emitted)?;
             Ok(b.list(vec![head, by, i]))
         }
+        // `Core::BytesConcat` backs BOTH `Bytes.concat` AND `String.concat` — a String is a flat UTF-8 byte
+        // leaf, so `String.concat` lowers to the SAME `bytes-concat` op (see `lower.rs`). Recover which
+        // surface from the result type: a `Ty::String` node re-emits `(. String concat)`, else `(. Bytes
+        // concat)` — emitting `Bytes.concat` over String operands would mis-type on recompile.
         Core::BytesConcat { lhs, rhs } => {
-            let head = member_access(b, "Bytes", "concat");
+            let module = match crate::infer::type_of(db, id) {
+                Ty::String => "String",
+                _ => "Bytes",
+            };
+            let head = member_access(b, module, "concat");
             let l = emit_expr(db, b, lhs, None, env, emitted)?;
             let r = emit_expr(db, b, rhs, None, env, emitted)?;
             Ok(b.list(vec![head, l, r]))
@@ -1006,6 +1018,13 @@ fn emit_expr_viewed(
             let s = emit_expr(db, b, string, None, env, emitted)?;
             Ok(b.list(vec![head, s]))
         }
+        // NFC normalization is COMPILER-INSERTED (no surface member) — `String.concat` lowers to
+        // `NfcNormalize(bytes-concat …)` and `String.to-bytes` to `StrToBytes(NfcNormalize s)` (see
+        // `lower.rs`; for a constant/ASCII operand NFC is identity and folds away, so this only reaches the
+        // backend for a RUNTIME string op). Emit the inner string TRANSPARENTLY: the surrounding surface op
+        // (`String.concat`/`to-bytes`) RE-INSERTS the same normalization on recompile, so dropping the
+        // explicit node round-trips (NFC is deterministic + idempotent — same op, same normalize).
+        Core::NfcNormalize { string } => emit_expr(db, b, string, expected, env, emitted),
         Core::StrFromBytes { bytes, .. } => {
             let head = member_access(b, "String", "from-bytes");
             let by = emit_expr(db, b, bytes, None, env, emitted)?;
@@ -1532,18 +1551,15 @@ fn prim_operator(op: crate::resolved::Prim) -> Option<&'static str> {
 
 /// A short human-readable kind name for a `Core` node, for the decline message (so a decline says WHICH
 /// construct is not yet lowered rather than an opaque debug dump).
-fn core_node_kind(c: &Core) -> &'static str {
-    match c {
-        Core::ConstInt(_) => "ConstInt",
-        Core::ConstRational(..) => "ConstRational",
-        Core::ConstBool(_) => "ConstBool",
-        Core::ConstStr(_) => "ConstStr",
-        Core::ConstChar(_) => "ConstChar",
-        Core::ConstFloat(_) => "ConstFloat",
-        Core::ConstFloatNan => "ConstFloatNan",
-        Core::Unit => "Unit",
-        _ => "a non-constant node",
-    }
+fn core_node_kind(c: &Core) -> String {
+    // The variant NAME, derived from `Core`'s `Debug` (`Foo { .. }` / `Bar(..)` / `Baz` → `Foo`/`Bar`/`Baz`)
+    // — so a decline names EXACTLY which Core node blocked, without a hand-maintained match to drift or a
+    // debug build to inspect (breaker's diagnostic nit). Cheap: one `Debug` format on the decline path only.
+    let dbg = format!("{c:?}");
+    dbg.split([' ', '(', '{'])
+        .next()
+        .unwrap_or("<unknown>")
+        .to_string()
 }
 // Behavioral coverage for this backend lives in the CORPUS round-trip check through the nix per-case
 // pipeline (operator directive: e2e behavior belongs in the conformance/corpus suite, NEVER a Rust
