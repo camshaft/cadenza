@@ -302,7 +302,7 @@ fn gen_main_body<C: Choice>(
         // A FLOAT-typed body (`main : Float64`/`Float32`): float value/arith/compare/if-join/let lowering.
         5 => gen_float_body(c, fresh, out),
         // A TYPE-DIVERSE compound: a heterogeneous tuple / a non-Int64 homogeneous list (type-directed).
-        6 => gen_typed_compound(c, fresh, out),
+        6 => gen_typed_compound(c, COMPOUND_DEPTH, fresh, out),
         // A TYPED local function def + call `(do (def (g (: x T)) …) (g <T-expr>))`: typed param/return/call.
         7 => gen_typed_fn_call_body(c, fresh, out),
         // A bare Int64 expression (the base case + exhaustion default).
@@ -557,18 +557,17 @@ fn gen_if_of<C: Choice>(
 /// leaves); a homogeneous non-Int64 `(list …)`; a heterogeneous `(record (= a …) …)`; an `(Some …)`
 /// (Option, inferable bare); or an annotated `(: (Ok/Err …) (Result T E))` (a sum needs the annotation).
 /// Reaches heterogeneous-product / non-Int64-list / named-record / Option+Result sum value+codec+emit
-/// lowering (surfaces the tuple/list arms + Int64 compounds never exercise). Leaf payloads keep it
-/// bounded + type-correct.
-fn gen_typed_compound<C: Choice>(c: &mut C, fresh: &mut usize, out: &mut String) {
+/// lowering. Tuple/record elements MAY themselves NEST a compound (bounded by `depth`) — reaching
+/// nested-structure emit (tuple-of-record, record-with-Option, …); list/Result payloads stay scalar.
+fn gen_typed_compound<C: Choice>(c: &mut C, depth: usize, fresh: &mut usize, out: &mut String) {
     match c.variant(5) {
-        // Heterogeneous tuple of 2 or 3 independently-typed elements.
+        // Heterogeneous tuple of 2 or 3 independently-typed elements (each may NEST a compound).
         0 => {
             let n = 2 + c.variant(2);
             out.push_str("(tuple");
             for _ in 0..n {
                 out.push(' ');
-                let ty = pick_scalar_ty(c);
-                gen_of_ty(c, ty, ELEM_DEPTH, fresh, out);
+                gen_compound_element(c, depth, fresh, out);
             }
             out.push(')');
         }
@@ -582,15 +581,14 @@ fn gen_typed_compound<C: Choice>(c: &mut C, fresh: &mut usize, out: &mut String)
             }
             out.push(')');
         }
-        // Heterogeneous record of 2 or 3 named fields (a/b/c), each an independently-typed expression.
+        // Heterogeneous record of 2 or 3 named fields (a/b/c), each independently-typed (may NEST a compound).
         2 => {
             let n = 2 + c.variant(2);
             out.push_str("(record");
             for i in 0..n {
                 let field = ["a", "b", "c"][i];
                 write!(out, " (= {field} ").ok();
-                let ty = pick_scalar_ty(c);
-                gen_of_ty(c, ty, ELEM_DEPTH, fresh, out);
+                gen_compound_element(c, depth, fresh, out);
                 out.push(')');
             }
             out.push(')');
@@ -618,8 +616,24 @@ fn gen_typed_compound<C: Choice>(c: &mut C, fresh: &mut usize, out: &mut String)
     }
 }
 
+/// A tuple/record element: at `depth > 0` it MAY be a NESTED compound (recurse, bounded by `depth`),
+/// otherwise a typed scalar EXPRESSION. Only heterogeneous positions (tuple/record) nest — a homogeneous
+/// list needs all elements the same type, and Result payloads need a nameable type for the annotation, so
+/// those stay scalar. Reaches NESTED-structure value/codec/emit (tuple-of-record, record-with-Option, …).
+fn gen_compound_element<C: Choice>(c: &mut C, depth: usize, fresh: &mut usize, out: &mut String) {
+    if depth > 0 && c.variant(3) == 0 {
+        gen_typed_compound(c, depth - 1, fresh, out);
+    } else {
+        let ty = pick_scalar_ty(c);
+        gen_of_ty(c, ty, ELEM_DEPTH, fresh, out);
+    }
+}
+
 /// Depth of a typed sub-expression in a compound element / fn arg — shallow (structured, but bounds size).
 const ELEM_DEPTH: usize = 2;
+
+/// Max NESTING depth of a type-diverse compound (tuple/record elements may be compounds) — bounds size.
+const COMPOUND_DEPTH: usize = 2;
 
 /// A body that DEFINES and CALLS a locally-TYPED function: `(do (def (g (: x T)) <body>) (g <T-leaf>))`.
 /// The generator's helpers (`f`/`r`/`t`) are Int64-only; this exercises a typed function PARAM `T`, a
@@ -1152,7 +1166,12 @@ mod tests {
                 bytes.push((x >> 24) as u8);
             }
             let mut src = String::from("(do (def (main) ");
-            gen_typed_compound(&mut ByteCursorChoice::new(&bytes), &mut 0, &mut src);
+            gen_typed_compound(
+                &mut ByteCursorChoice::new(&bytes),
+                COMPOUND_DEPTH,
+                &mut 0,
+                &mut src,
+            );
             src.push_str(") (export main))");
             assert!(
                 matches!(
