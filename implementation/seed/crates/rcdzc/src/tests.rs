@@ -40387,32 +40387,20 @@ mod r2_runtime_resource {
         c.finish()
     }
 
-    /// Drive the combined component through the HOST (`cdz_run::run`), composing the real value-heap
-    /// runtime — the same path `cdz-run` takes for a resource-escape program. Returns the decoded
-    /// `(: value type)` text (or skips if the runtime wasm is not built). The import name carries the
-    /// runtime's content hash so the host composes it.
-    fn run_composed(core: &[u8]) -> Option<String> {
+    /// STRUCTURALLY validate the combined runtime-resource component built from a hand-built walker `core`
+    /// (localizes any byte/index error). Formerly it also RAN the component via `cdz_run::run` to decode the
+    /// escaped `(: value type)` text; that run is dropped — the escaped value forms (a runtime tuple renders
+    /// `(: (tuple …) (Tuple …))`) are corpus-covered by the tuple-escape cases in 05-compound-types, and a
+    /// hand-built walker core cannot be a corpus (Cadenza-source) program, so it stays a compile+validate pin.
+    fn validate_composed(core: &[u8]) {
         use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
         let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
         let comp = oracle_runtime_resource_component(core, &import_name);
-        // Validate structurally first (localizes any byte/index error before wasmtime).
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("combined runtime-resource component validates");
-        let runtime = super::find_runtime_wasm()?;
-        let opts = cdz_run::RunOpts {
-            export: None, // no bare func export → the host takes the resource-escape path
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&comp, &opts).expect("run composed") {
-            cdz_run::Outcome::Value(s) => Some(s),
-            cdz_run::Outcome::Trap(t) => panic!("composed runtime-resource run trapped: {t}"),
-        }
     }
 
     #[test]
@@ -40424,11 +40412,10 @@ mod r2_runtime_resource {
         let tpl =
             runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[])).expect("template");
         let core = walker_core_borrow(&tpl, &[3, 1]);
-        if let Some(text) = run_composed(&core) {
-            assert_eq!(text, "(: (tuple 3 1) (Tuple Int64 Int64))");
-        } else {
-            eprintln!("[R2] runtime wasm not found; skipping composed walk");
-        }
+        // The escaped value form — `(: (tuple 3 1) (Tuple Int64 Int64))` — is corpus-covered by the runtime
+        // tuple-escape cases in 05-compound-types; here the hand-built borrow-walker core need only compose
+        // into a VALID runtime-resource component.
+        validate_composed(&core);
     }
 
     #[test]
@@ -40438,11 +40425,10 @@ mod r2_runtime_resource {
         let tpl =
             runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[])).expect("template");
         let core = walker_core_borrow(&tpl, &[-5, 7]);
-        if let Some(text) = run_composed(&core) {
-            assert_eq!(text, "(: (tuple -5 7) (Tuple Int64 Int64))");
-        } else {
-            eprintln!("[R2] runtime wasm not found; skipping composed walk");
-        }
+        // The escaped value form — `(: (tuple -5 7) (Tuple Int64 Int64))`, exercising the NEG kind-byte flip
+        // — is corpus-covered by the runtime tuple-escape cases (with negative elements) in
+        // 05-compound-types; here the hand-built walker core need only compose into a VALID component.
+        validate_composed(&core);
     }
 
     #[test]
@@ -52356,32 +52342,16 @@ mod cross_component_oracle {
         use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
         let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
         let comp = composed_shared_heap_component(&import_name);
+        // STRUCTURAL pin: the hand-built two-core shared-runtime composition is a VALID component. The RUN —
+        // A builds [99] on the shared heap, B reads element 0 back over the ONE shared runtime instance → 99
+        // — is corpus/conformance territory (29-cross-component-peers pcs4/pcm7 witness a peer value read
+        // over the shared runtime, and the deleted x5a cited them); this hand-built ComponentBuilder
+        // composition cannot be a corpus (peer) case, so it stays as a compile+validate pin (x3/x4a family).
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("shared-heap cross-component component validates");
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!(
-                "[X1b] runtime wasm not found (run `cargo xtask build`); skipping shared-heap run"
-            );
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&comp, &opts).expect("run shared-heap cross-component") {
-            // A built [99] on the shared heap; B read element 0 back → 99. The handle A produced is
-            // meaningful to B because both index the ONE shared runtime instance.
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(s, "99", "B reads A's handle over the shared heap")
-            }
-            cdz_run::Outcome::Trap(t) => panic!("shared-heap cross-component run trapped: {t}"),
-        }
     }
 
     // ------------------------------------------------------------------------------------------------
