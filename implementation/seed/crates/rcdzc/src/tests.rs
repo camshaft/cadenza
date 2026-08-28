@@ -8043,7 +8043,6 @@ mod recursion {
 // non-exhaustive match) is checked STRUCTURALLY, before the fold. These run whole programs under
 // wasmtime + assert the rejections.
 mod match_engine {
-    use super::run_returns;
     use crate::backend::Target;
     use crate::compile::{compile, compile_component};
     use crate::testkit::parse;
@@ -22280,18 +22279,18 @@ mod match_engine {
             fams.get("degree"),
             "radian and degree are DISTINCT dimensions (no exact interconversion)"
         );
-        // Exact WITHIN a dimension: `5 degree + 90 degree = 95 degree` runs (Int64 magnitude, no runtime).
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(do (def (main) ((. Qty value) \
-                       (+ ((. Qty of) 5 ((. Unit of) #\"degree\")) \
-                          ((. Qty of) 90 ((. Unit of) #\"degree\"))))) (export main))"
-                )))
-                .expect("a degree + degree sum compiles and runs"),
-                "main"
-            ),
-            95
+        // Exact WITHIN a dimension: `5 degree + 90 degree` COMPILES (Int64 magnitude, a valid same-dimension
+        // add). Its RUN value (magnitudes add via Qty.value → 95) is corpus-covered by 18-units-of-measure
+        // "adding two quantities of the same dimension keeps that dimension" / "a runtime-magnitude same-unit
+        // sum adds the erased magnitudes".
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(do (def (main) ((. Qty value) \
+                   (+ ((. Qty of) 5 ((. Unit of) #\"degree\")) \
+                      ((. Qty of) 90 ((. Unit of) #\"degree\"))))) (export main))"
+            )))
+            .is_ok(),
+            "a degree + degree same-dimension sum compiles"
         );
         // Mixing dimensions REJECTS CDZ0501 — degree + radian is not exactly interconvertible, so it is a
         // dimension mismatch, not a silent conversion.
