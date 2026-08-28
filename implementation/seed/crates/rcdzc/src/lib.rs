@@ -19,6 +19,17 @@ extern crate alloc;
 // self-host port — cadenza-ast is the one sanctioned dependency exception.
 pub use cadenza_ast::{ast, codec, leb128};
 
+// DRIFT-GUARD (ast-consolidation): `crate::{ast,codec,leb128}` MUST stay RE-EXPORTS of the single
+// `cadenza-ast` crate, never re-forked local copies. These identity-function `const`s compile ONLY while
+// the re-exported items are the SAME types/fns as `cadenza_ast`'s; if a future change reverts the
+// re-export to a `pub mod ast { … }` fork (reintroducing the divergence this consolidation removed), the
+// types stop unifying and the BUILD FAILS here fleet-wide — turning a silent re-fork into a hard error.
+// Zero runtime cost (never called). cheap structural insurance for the one-source-of-truth invariant.
+const _: fn(cadenza_ast::ast::Leaf) -> crate::ast::Leaf = |x| x;
+const _: fn(cadenza_ast::ast::Arenas) -> crate::ast::Arenas = |x| x;
+const _: fn(&crate::ast::Arenas) -> Vec<u8> = crate::codec::encode;
+const _: fn(&[u8]) -> Option<crate::ast::Arenas> = crate::codec::decode;
+
 // The columns substrate: index-typed arenas + columns, and the diagnostic taxonomy.
 pub mod arena;
 pub mod diag;
