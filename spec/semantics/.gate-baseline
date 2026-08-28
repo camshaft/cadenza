@@ -9059,3 +9059,4 @@ pass	gex1 a sum variant covered ONLY by a guarded arm is non-exhaustive (rejecte
 pass	gex2 a guarded arm plus an unguarded fall-through for the same variant IS exhaustive (guard-first ordering honored)
 todo	mrs1 a two-resume arm over a HEAP-allocating body declines cleanly (non-tail resume, later increment)
 pass	mrs2 a PURE-body two-resume arm re-computes the continuation and sums (multi-shot on a re-computable body = 100; v-effects-ruled intended)
+pass	nei1 cross-effect interleave: an inner B handler's arm performs the OUTER A effect, whose state advances across two B draws
