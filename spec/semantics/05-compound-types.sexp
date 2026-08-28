@@ -16800,6 +16800,15 @@
   (call   main (: 5 Int64))
   (output (: 43 Int64)))
 
+(case "Map.to-list of an empty map is the empty list"
+  (doc    "The size-0 edge of Map.to-list (the enumeration cases below are all non-empty): an empty map
+           enumerates to the empty list, so `(List.len (Map.to-list Map.empty))` = 0. Relocated from rcdzc
+           map_to_list_of_an_empty_map_folds_to_the_empty_list — its const-fold-to-ListNew and
+           float-key-keeps-the-runtime-op white-box pins stay in rcdzc.")
+  (input  (do (def (main) (List.len (Map.to-list (: Map.empty (Map Int64 Int64))))) (export main)))
+  (call   main)
+  (output (: 0 Int64)))
+
 (case "Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order"
   (doc    "`(match (List.at (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 5 50) 2 20) 8 80)) 0)
            ((Some p) (match p ((tuple k v) k))) ((None u) -1))` — Map.to-list yields the entries as a
