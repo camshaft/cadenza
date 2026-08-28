@@ -476,6 +476,10 @@ pub struct LeanDiffStats {
     pub skips: usize,
     /// Programs that produced no comparable wasm output (declined / artifact-error / unparsable render).
     pub not_comparable: usize,
+    /// Comparable trials the oracle process could NOT judge — it errored on them (e.g. an AST leaf kind
+    /// the oracle can't DECODE yet, like a post-flag-day codec gap). Isolated per-program so one such
+    /// trial does not abort the sweep; an oracle-CAPABILITY gap (not a bug, distinct from a modelled `skip`).
+    pub oracle_undecodable: usize,
 }
 
 /// Run each program source under the WASM backend, batch the comparable (program, rcdzc-output) trials,
@@ -598,25 +602,58 @@ fn judge_and_tally(
     stats: &mut LeanDiffStats,
     mismatches: &mut Vec<(String, String)>,
 ) -> std::io::Result<()> {
-    let verdicts = crate::lean::judge_batch(oracle_bin, trials)?;
-    for (src, verdict) in srcs.iter().zip(verdicts) {
-        stats.trials += 1;
-        match verdict {
-            crate::lean::Verdict::Holds => stats.holds += 1,
-            crate::lean::Verdict::Skip(_) => stats.skips += 1,
-            crate::lean::Verdict::Mismatch(detail) => {
-                // Every mismatch is a candidate rcdzc bug and is filed. This INCLUDES the runtime-fault
-                // trap-KIND class (oracle=specific-kind vs rcdzc=generic `unreachable`): the operator ruled
-                // (Option 2) the oracle's specific kind is AUTHORITATIVE and rcdzc's `unreachable` is an
-                // imprecision to close compiler-side — so it is a real rcdzc-side finding, no longer
-                // suppressed. (The compound-`=` short-circuit that once over-forced is fixed oracle-side in
-                // v-lean-oracle #4893; float-literal mismatches are trustworthy since #4818.)
-                stats.mismatches += 1;
-                mismatches.push((src.clone(), detail));
+    match crate::lean::judge_batch(oracle_bin, trials) {
+        Ok(verdicts) => {
+            for (src, verdict) in srcs.iter().zip(verdicts) {
+                fold_verdict(src, verdict, stats, mismatches);
+            }
+        }
+        Err(_batch_err) => {
+            // The batch failed as a WHOLE — the oracle process errored mid-stream (a `--batch-stream`
+            // exit is all-or-nothing: e.g. a single program carrying an AST leaf kind the oracle can't
+            // DECODE yet aborts the stream, losing every verdict). Isolate: RE-JUDGE each trial on its
+            // own so one undecodable program does not sink the rest of the sweep. A single-trial batch
+            // that STILL errors = that one program is beyond the oracle's current decode/model
+            // capability → count it as an oracle-capability gap (`oracle_undecodable`) and continue.
+            // (Once the oracle gains the missing kind, the fast batched path succeeds and this is unused.)
+            for (src, trial) in srcs.iter().zip(trials) {
+                match crate::lean::judge_batch(oracle_bin, std::slice::from_ref(trial)) {
+                    Ok(mut verdicts) => {
+                        if let Some(verdict) = verdicts.pop() {
+                            fold_verdict(src, verdict, stats, mismatches);
+                        }
+                    }
+                    Err(_) => stats.oracle_undecodable += 1,
+                }
             }
         }
     }
     Ok(())
+}
+
+/// Fold ONE judged trial's verdict into the running tally (+ collect a mismatch by source). Shared by the
+/// fast batched path and the per-trial isolation fallback in [`judge_and_tally`].
+fn fold_verdict(
+    src: &str,
+    verdict: crate::lean::Verdict,
+    stats: &mut LeanDiffStats,
+    mismatches: &mut Vec<(String, String)>,
+) {
+    stats.trials += 1;
+    match verdict {
+        crate::lean::Verdict::Holds => stats.holds += 1,
+        crate::lean::Verdict::Skip(_) => stats.skips += 1,
+        crate::lean::Verdict::Mismatch(detail) => {
+            // Every mismatch is a candidate rcdzc bug and is filed. This INCLUDES the runtime-fault
+            // trap-KIND class (oracle=specific-kind vs rcdzc=generic `unreachable`): the operator ruled
+            // (Option 2) the oracle's specific kind is AUTHORITATIVE and rcdzc's `unreachable` is an
+            // imprecision to close compiler-side — so it is a real rcdzc-side finding, no longer
+            // suppressed. (The compound-`=` short-circuit that once over-forced is fixed oracle-side in
+            // v-lean-oracle #4893; float-literal mismatches are trustworthy since #4818.)
+            stats.mismatches += 1;
+            mismatches.push((src.to_string(), detail));
+        }
+    }
 }
 
 /// The full differential check for one program: run both backends and compare. `store` is the runtime
@@ -1088,6 +1125,41 @@ mod tests {
             stats.mismatches, 0,
             "benign scalars must not mismatch: {mismatches:?}"
         );
+        assert!(mismatches.is_empty());
+    }
+
+    /// A failing oracle process must be ISOLATED, not fatal to the sweep (S103 resilience). A stand-in
+    /// "oracle" that always exits non-zero (`/bin/false`) — like an oracle that can't DECODE a program's
+    /// AST leaf kind — makes every `--batch-stream` call error; the sweep must fall back to per-program
+    /// judging, classify each still-failing trial as `oracle_undecodable`, and COMPLETE (return `Ok`)
+    /// rather than aborting. Version-INDEPENDENT (uses a stub, not the real oracle), so it does not couple
+    /// to the oracle artifact version the NOTE below warns against.
+    #[test]
+    fn a_failing_oracle_is_isolated_not_fatal_to_the_sweep() {
+        let oracle = std::path::Path::new("/bin/false");
+        if !oracle.exists() {
+            eprintln!("skipping: no /bin/false on this platform");
+            return;
+        }
+        let sources = vec![
+            "(do (def (main) (+ 1 2)) (export main))".to_string(),
+            "(do (def (main) 42) (export main))".to_string(),
+        ];
+        let store = std::path::Path::new("/nonexistent-store"); // pure scalars need no runtime
+        let mut mismatches = Vec::new();
+        let mut declines = Vec::new();
+        let stats =
+            lean_differential_sweep(&sources, store, oracle, 8, &mut mismatches, &mut declines)
+                .expect("a failing oracle must NOT error the sweep — it isolates per program");
+        assert_eq!(
+            stats.trials, 0,
+            "no trial graded (the stub oracle always fails)"
+        );
+        assert_eq!(
+            stats.oracle_undecodable, 2,
+            "both comparable trials classify as oracle-undecodable, not fatal"
+        );
+        assert_eq!(stats.mismatches, 0);
         assert!(mismatches.is_empty());
     }
 
