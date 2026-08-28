@@ -9028,3 +9028,5 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	rwc1 an open-row accessor over runtime records of two widths, fifty frames, reclaims completely
+pass	rwc2 an open-row accessor reads a HEAP (list) field through the row, fifty frames, reclaims
