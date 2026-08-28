@@ -408,7 +408,6 @@ version = "0.0.0"
 dependencies = [
  "bolero-generator",
  "cadenza-syntax",
- "cdz-calc",
  "cdz-corpus",
  "cdz-run",
  "cdz-rust-render",
