@@ -562,7 +562,21 @@ fn main() -> ExitCode {
             );
             ExitCode::FAILURE
         }
-        Cmd::Run(a) => cdz_run::cli::run(&a, PROG),
+        // Direct "run a COMPILED component" — FORWARD to the external `cdz-run` binary rather than linking
+        // `cdz_run::cli::run` in-process (the thin-`cdz` seam: the runner holds wasmtime and should be reached
+        // on PATH — `design/DESIGN-cdz-plugin-dispatch.md` S4). This arm is byte-for-byte the standalone
+        // `cdz-run` (SAME `cdz_run::cli::run`, only the diagnostic prog-name differs), so forwarding the raw
+        // argv after `run` — which `cdz-run` re-parses as the identical `RunArgs` — is behavior-preserving.
+        // Resolves via `$CDZ_RUN_BIN` (v-nix injects it at the seed `cdz run` sites, #5115) → co-built sibling
+        // → `$PATH`. The project (`run_project`, needs the compiler) + source-file guard arms above stay
+        // in-process. (Does NOT yet drop the `cdz-run` dep — `run_project`/`run-rust`/`test` still link it;
+        // this is the first of the runner severings that culminate in `cdz` shedding `cdz-run` + wasmtime.)
+        Cmd::Run(_) => {
+            let forwarded: Vec<String> = std::env::args().skip(2).collect();
+            let program =
+                locate_plugin("run").unwrap_or_else(|| PathBuf::from(bin_name("cdz-run")));
+            passthrough_status(&program, &forwarded, "cdz-run")
+        }
         // `cdz corpus` — mounted from the `cdz-corpus` lib; the same code the standalone bin runs.
         #[cfg(feature = "corpus")]
         Cmd::Corpus(a) => cdz_corpus::cli::run(&a, PROG),
