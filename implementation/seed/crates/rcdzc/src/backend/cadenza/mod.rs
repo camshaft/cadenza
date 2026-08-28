@@ -85,13 +85,17 @@
 //!   so the constructor is not doubled. A GENERIC / OPEN user sum still DECLINES (no decl emitted). PRELUDE sums
 //!   (Option/Result/…) are ambient (no decl). A user-sum/nominal value emits ⇔ its decl was emitted
 //!   (`emitted` set), so there is never an unbound-type recompile.
+//! - **MAP/SET OPS**: the runtime collection operations, each a prelude member-access application
+//!   `((. <Module> <member>) <op>…)` — `Map.insert`/`lookup`/`remove`/`len`(`MapSize`)/`to-list`,
+//!   `Set.insert`/`remove`/`contains`/`len`(`SetLen`)/`to-list`/`union`/`intersection`/`difference`. Operands
+//!   emit left-to-right; the member re-resolves to the same op on recompile.
 //! - **EXPECT**: `Core::SumExpect` → `((. Option|Result expect) <scrutinee> "")` — the unwrap-or-trap
 //!   accessor. The module is recovered from the scrutinee's sum-decl name; the `"message"` operand was
 //!   dropped at lowering (the trap is textless), so a placeholder `""` re-emits (byte-idempotent, and
 //!   value-equivalent — present → the payload, absent → the same trap).
 //!
 //! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
-//! (Seq/Block/Break), map/set OPERATIONS (insert/lookup/…), richer SUM decision trees (guarded /
+//! (Seq/Block/Break), LIST operations (push/len/at/…), richer SUM decision trees (guarded /
 //! literal-test / nested-switch / default sum arms — the `SumCont::Guarded` continuation), nested-element
 //! list arms, non-scalar scalar-match probes, and a multi-argument variant CONSTRUCTOR (`SumNew` — the
 //! match side already binds multi-payload slots).
@@ -802,6 +806,80 @@ fn emit_expr_viewed(
                     )
                 })?;
             Ok(b.name(nm.clone()))
+        }
+        // MAP / SET OPERATIONS — each a prelude member-access application `((. <Module> <member>) <op>…)`
+        // (the member name is the prelude field the op resolves from — `Map.len` is `map-size`, `Set.len` is
+        // `set-len`; see `prelude.rs`). The operands are runtime values (a fully-constant op folds in
+        // `lower`), emitted left-to-right with no expected. `Map.lookup` re-reads to its `Option` result and
+        // `Map.len`/`Set.len` to `Int64`, exactly as the surface member does, so the round-trip re-lowers to
+        // the same op node. (`Map.empty`/`Set.of`/the constant maps are handled as VALUES above.)
+        Core::MapInsert { map, key, val, .. } => {
+            let head = member_access(b, "Map", "insert");
+            let m = emit_expr(db, b, map, None, env, emitted)?;
+            let k = emit_expr(db, b, key, None, env, emitted)?;
+            let v = emit_expr(db, b, val, None, env, emitted)?;
+            Ok(b.list(vec![head, m, k, v]))
+        }
+        Core::MapLookup { map, key, .. } => {
+            let head = member_access(b, "Map", "lookup");
+            let m = emit_expr(db, b, map, None, env, emitted)?;
+            let k = emit_expr(db, b, key, None, env, emitted)?;
+            Ok(b.list(vec![head, m, k]))
+        }
+        Core::MapRemove { map, key, .. } => {
+            let head = member_access(b, "Map", "remove");
+            let m = emit_expr(db, b, map, None, env, emitted)?;
+            let k = emit_expr(db, b, key, None, env, emitted)?;
+            Ok(b.list(vec![head, m, k]))
+        }
+        Core::MapSize { map } => {
+            let head = member_access(b, "Map", "len");
+            let m = emit_expr(db, b, map, None, env, emitted)?;
+            Ok(b.list(vec![head, m]))
+        }
+        Core::MapToList { map, .. } => {
+            let head = member_access(b, "Map", "to-list");
+            let m = emit_expr(db, b, map, None, env, emitted)?;
+            Ok(b.list(vec![head, m]))
+        }
+        Core::SetContains { set, elem, .. } => {
+            let head = member_access(b, "Set", "contains");
+            let s = emit_expr(db, b, set, None, env, emitted)?;
+            let e = emit_expr(db, b, elem, None, env, emitted)?;
+            Ok(b.list(vec![head, s, e]))
+        }
+        Core::SetInsert { set, elem, .. } => {
+            let head = member_access(b, "Set", "insert");
+            let s = emit_expr(db, b, set, None, env, emitted)?;
+            let e = emit_expr(db, b, elem, None, env, emitted)?;
+            Ok(b.list(vec![head, s, e]))
+        }
+        Core::SetRemove { set, elem, .. } => {
+            let head = member_access(b, "Set", "remove");
+            let s = emit_expr(db, b, set, None, env, emitted)?;
+            let e = emit_expr(db, b, elem, None, env, emitted)?;
+            Ok(b.list(vec![head, s, e]))
+        }
+        Core::SetLen { set } => {
+            let head = member_access(b, "Set", "len");
+            let s = emit_expr(db, b, set, None, env, emitted)?;
+            Ok(b.list(vec![head, s]))
+        }
+        Core::SetToList { set, .. } => {
+            let head = member_access(b, "Set", "to-list");
+            let s = emit_expr(db, b, set, None, env, emitted)?;
+            Ok(b.list(vec![head, s]))
+        }
+        Core::SetAlgebra { op, lhs, rhs } => {
+            let member = match op {
+                crate::core::SetAlgebraOp::Union => "union",
+                crate::core::SetAlgebraOp::Intersection => "intersection",
+                crate::core::SetAlgebraOp::Difference => "difference",
+            };
+            let head = member_access(b, "Set", member);
+            let l = emit_expr(db, b, lhs, None, env, emitted)?;
+            let r = emit_expr(db, b, rhs, None, env, emitted)?;
+            Ok(b.list(vec![head, l, r]))
         }
         // `Option.expect` / `Result.expect` — unwrap the present variant's payload or TRAP on absence. The
         // surface `((. <Module> expect) <scrutinee> <message>)`; the MODULE (`Option`/`Result`) is recovered
