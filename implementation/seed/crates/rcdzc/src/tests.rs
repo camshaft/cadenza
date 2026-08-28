@@ -1438,56 +1438,6 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
     // (same (+ (. t 0) (. t 1)) over UInt8 params = 150); this test keeps the builds-on-the-heap pin.
 }
 
-/// adv-66 (breaker/v-runtime, HIGH wasm-only UAF/OOB): `Bytes.compact` was mis-classified as a BORROW in
-/// the Perceus dup-placement pass (`mark_binder_dups`), but it lowers to the SAME runtime `bytes-compact`
-/// op as `String.to-bytes` — which CONSUMES its operand and returns the SAME handle (op_bytes_compact
-/// flattens the rope in place). So `(let ((flat (Bytes.compact rope))) …)` makes `flat` an ALIAS of
-/// `rope`'s handle; a later CONSUMING use of `flat` (`Bytes.concat flat …`) FBIP-freed the handle while
-/// `rope` (the same handle) was STILL read (`= rope flat` / `< rope …`) → use-after-free (n=2 trapped,
-/// n=10 OOB'd; rust computed 11). The COMBINATION is the trigger: a value-= that BORROWS rope+flat in one
-/// clause, then a consuming op on the SAME bindings in the next. Fix: classify `Bytes.compact` CONSUMING
-/// in the dup pass (matching its `StrToBytes` twin + `binding_escapes`) so `rope` is dup'd before the
-/// compact and its later reads see a live handle. Each clause ALONE always worked; only the combo faulted.
-#[test]
-fn bytes_compact_consumes_its_operand_so_a_later_use_of_the_aliased_source_is_dup_guarded() {
-    use crate::testkit::parse;
-    let src = "(module m \
-                 (def (build-rope (: n Int64) (: acc Bytes)) \
-                   (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of (list (UInt8.wrap 65))))) acc)) \
-                 (def (main (: n Int64)) \
-                   (let ((rope (build-rope n (Bytes.of (list))))) \
-                     (let ((flat (Bytes.compact rope))) \
-                       (+ (if (= rope flat) 1 0) \
-                          (* 10 (if (< rope (Bytes.concat flat (Bytes.of (list (UInt8.wrap 66))))) 1 0)))))) \
-                 (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    // rope == flat by content (n copies of 'A'), so (= rope flat) = 1; rope < (flat ++ "B") = 1 (a proper
-    // prefix is less), so the value is 1 + 10*1 = 11. Before the fix: n=2 trapped, n=10 OOB'd (UAF on the
-    // aliased handle). n=2 and n=10 both pinned (the corpus pin corpus-bugfix banked at 11/11).
-    for n in ["2", "10"] {
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![n.to_string()],
-            runtime: Some(runtime.clone()),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "11",
-                "adv-66 n={n}: = rope flat (1) + 10*(rope < flat++B) (1) = 11; a UAF on the compact-aliased handle would trap/OOB"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!(
-                "adv-66 n={n}: Bytes.compact-aliased handle freed by a later consuming use while still read → UAF trap: {t}"
-            ),
-        }
-    }
-}
-
 /// COMMON-CONSTRUCTOR HOIST: `(if c (Some a) (Some b))` builds the `Some` variant ONCE and pushes the
 /// differing payload into a branchless `(if c a b)` (a scalar `select`), instead of DUPLICATING the
 /// whole `sum-new` construction in both `if`/`else` arms. Structurally: exactly ONE `sum-new`-style
