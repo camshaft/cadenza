@@ -90,16 +90,44 @@ impl ValueGenerator for ProgramGen {
         }
         source.push_str("(def (main) ");
         let mut scope: Vec<String> = Vec::new();
-        gen_expr(
-            driver,
-            MAX_DEPTH,
-            &mut scope,
-            &mut fresh,
-            has_helper,
-            &mut source,
-        );
+        gen_main_body(driver, &mut scope, &mut fresh, has_helper, &mut source);
         source.push_str(") (export main))");
         Some(Program { source })
+    }
+}
+
+/// `main`'s body: an Int64 expression, or a COMPOUND value built from Int64 sub-expressions — a
+/// `(tuple <e> <e>)` or `(list <e> <e> <e>)`. Keeping the elements Int64 stays type-safe without full
+/// type-directed generation, while reaching product/collection construction + the compound value codec
+/// (a lowering surface a bare scalar body never exercises).
+fn gen_main_body<D: Driver>(
+    driver: &mut D,
+    scope: &mut Vec<String>,
+    fresh: &mut usize,
+    can_call_f: bool,
+    out: &mut String,
+) {
+    match driver.gen_variant(3, 0).unwrap_or(0) {
+        // (tuple <e> <e>) — a 2-tuple of Int64.
+        1 => {
+            out.push_str("(tuple ");
+            gen_expr(driver, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
+            out.push(' ');
+            gen_expr(driver, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
+            out.push(')');
+        }
+        // (list <e> <e> <e>) — a homogeneous Int64 list.
+        2 => {
+            out.push_str("(list ");
+            gen_expr(driver, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
+            out.push(' ');
+            gen_expr(driver, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
+            out.push(' ');
+            gen_expr(driver, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
+            out.push(')');
+        }
+        // A bare Int64 expression (the base case + exhaustion default).
+        _ => gen_expr(driver, MAX_DEPTH, scope, fresh, can_call_f, out),
     }
 }
 
@@ -353,6 +381,21 @@ mod tests {
             matches!(compile_catching(src), Verdict::Compiled { .. }),
             "boolean-connective condition must compile: {src}"
         );
+    }
+
+    /// The compound `main`-body shapes the generator can emit compile: a `(tuple …)` and a `(list …)`
+    /// of Int64 elements. Pins that product/collection construction from the coercing generator is valid.
+    #[test]
+    fn compound_main_body_shapes_compile() {
+        for src in [
+            "(do (def (main) (tuple 1 2)) (export main))",
+            "(do (def (main) (list 1 2 3)) (export main))",
+        ] {
+            assert!(
+                matches!(compile_catching(src), Verdict::Compiled { .. }),
+                "compound main body must compile: {src}"
+            );
+        }
     }
 
     /// The base case (empty entropy) coerces to the simplest program — a single bounded literal main —
