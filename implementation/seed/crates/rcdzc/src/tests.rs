@@ -41063,29 +41063,17 @@ mod r2_runtime_resource {
         use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
         let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
         let comp = oracle_runtime_resource_component_borrow(&core, &import_name);
+        // STRUCTURAL pin: the hand-built borrow-self resource envelope (encode takes `borrow<t>`, uses the
+        // param directly as the heap rep — no `resource.rep`, no drop) composes into a VALID component — the
+        // ABI-shape guard for the borrow-self redesign. The RUN — the walked tuple decodes to
+        // `(: (tuple 3 1) (Tuple Int64 Int64))` — is corpus-covered by the runtime tuple-escape cases in
+        // 05-compound-types; a hand-built walker core cannot be a corpus (Cadenza-source) program, so it
+        // stays a compile+validate pin (the R2-walker / x3-x4a family).
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("borrow runtime-resource component validates");
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[borrow] runtime wasm not found; skipping composed borrow walk");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: None, // resource-escape path: make() then encode(borrow)
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&comp, &opts).expect("run composed borrow") {
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(s, "(: (tuple 3 1) (Tuple Int64 Int64))");
-                eprintln!("PROBE borrow-self encode → OK: {s}");
-            }
-            cdz_run::Outcome::Trap(t) => panic!("borrow-self encode trapped: {t}"),
-        }
     }
 
     /// The hand-emitted combined runtime-import + resource envelope
