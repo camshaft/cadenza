@@ -5820,6 +5820,7 @@ pass	cdr1 a CIDER press splitting juice from pomace — pressing yields two-thir
 pass	cds1 a COUNTDOWN alarm with snooze — tick decrements answering the remaining time until it FIRES at zero (answering a negated ten-plus-fire-count and auto-reloading the seed interval), snooze adds slack, and the shorter interval fires MID-STREAM where the longer one fires on the very last tick
 pass	cdzw1 the cadenza backend round-trip preserves the SIGN of negative zero
 pass	cdzw10 the cadenza backend round-trips a scalar Match — literal arms, arm selection, and a binder else
+pass	cdzw11 the cadenza backend round-trips a runtime NESTED compound — a record with a tuple field and a list field
 pass	cdzw2 the cadenza backend round-trip preserves Int64.min
 pass	cdzw3 the cadenza backend round-trip preserves the minimum positive subnormal Float64
 pass	cdzw4 the cadenza backend round-trip keeps float division float (not int truncation) despite the shared surface operator
