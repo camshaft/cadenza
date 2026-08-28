@@ -1247,13 +1247,19 @@ fn core_module_impl(
     // WRAPPER funcs, appended AFTER the n defined+lifted funcs (function indices `import_count + n + w`),
     // each referencing its wrapper functype (`import_count + n + extra + w`).
     for w in 0..n_wrap {
-        uleb128(type_remap[import_count + n + extra + w] as u64, &mut func_items);
+        uleb128(
+            type_remap[import_count + n + extra + w] as u64,
+            &mut func_items,
+        );
     }
     // The DEFINED `cabi_realloc` LAST (function index `import_count + n + n_wrap`), its functype at
     // `import_count + n + extra + n_wrap`. Present only in DEFINE mode (`n_realloc == 1`); in `import_realloc`
     // mode the shared allocator is imported, so no defined func here.
     if n_realloc == 1 {
-        uleb128(type_remap[import_count + n + extra + n_wrap] as u64, &mut func_items);
+        uleb128(
+            type_remap[import_count + n + extra + n_wrap] as u64,
+            &mut func_items,
+        );
     }
     // The STATIC-BYTES `start` init func LAST (function index `import_count + n + n_wrap + n_realloc`), its
     // functype at `import_count + n + extra + n_wrap + n_realloc` (the last one laid above). `n_init == 0` →
