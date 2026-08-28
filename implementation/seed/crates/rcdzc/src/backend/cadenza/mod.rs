@@ -41,8 +41,10 @@
 //!   `(def …)` is emitted too).
 //!
 //! - **M1**: scalar `Core::Match` (Int/Bool probes + wildcard/binder) → an `if`-chain of `(= scrut lit)`
-//!   probes (value-equivalent; the scrutinee is a pure scalar). Guards desugar to `if` at lowering (so
-//!   they never reach here); a non-scalar probe (Str/Char/Bytes/list/map) declines.
+//!   probes (value-equivalent; the scrutinee is a pure scalar). A GUARDED arm desugars into the `if`
+//!   condition — `(if (and (= scrut lit) <guard>) body rest)`, or `(if <guard> body rest)` for a guarded
+//!   wildcard — since a guard's fall-through IS the `if`/else chain. A non-scalar probe
+//!   (Str/Char/Bytes/list/map) declines.
 //! - **M4a**: sum `Core::MatchSum` → surface `(match <scrutinee> (<Variant> <binder>…) <body>)…`
 //!   ([`emit_match_sum`]): a root switch on the scrutinee's OWN discriminant with EXPLICIT-variant, bare
 //!   `Leaf`-body arms. Each arm mints a fresh `_cdz_m<n>` binder per payload slot (recorded in
@@ -55,8 +57,9 @@
 //!   ([`emit_match_list`]): a length-dispatch arm — `LenEq(n)`→`(list b0 … b_{n-1})`, `LenGe(lead)`→
 //!   `(list b0 … b_{lead-1} .. rest)`, `Any`→`_`. Leading element binders register at `[Elem(i)]`, the
 //!   rest binder at `[RestFrom(lead)]` (same `env.payloads` map M4a uses); a `Core::SumPayload` resolves
-//!   to its binder, and nested list matches recurse. A GUARDED arm, or a NESTED/variant element sub-pattern
-//!   (a deeper `SumPayload` path this slice does not register), declines.
+//!   to its binder, and nested list matches recurse. A GUARDED arm re-emits the `(guard <pattern> <cond>)`
+//!   surface form (cond with the arm's binders in scope). A NESTED/variant element sub-pattern (a deeper
+//!   `SumPayload` path this slice does not register) declines.
 //! - **DATA**: runtime compound VALUES — `Core::Tuple`→`(tuple …)`, `Core::Record`→`(record (= k v)…)`
 //!   (name-sorted), `Core::ListNew`→`(list …)`, `Core::MapNew`→`(map (<k> <v>)…)` and `Core::SetOf`→
 //!   `((. Set of) (list …))` (map/set entries emit in STORED order — the value is unordered, so the
@@ -71,9 +74,10 @@
 //!   emitted (`emitted` set), so there is never an unbound-type recompile.
 //!
 //! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
-//! (Seq/Block/Break), map/set values, richer MATCH decision trees (guarded / literal-test / nested-switch /
-//! default sum arms; guarded / nested-element list arms), non-scalar scalar-match probes, and a
-//! multi-argument variant CONSTRUCTOR (`SumNew` — the match side already binds multi-payload slots).
+//! (Seq/Block/Break), map/set OPERATIONS (insert/lookup/…), richer SUM decision trees (guarded /
+//! literal-test / nested-switch / default sum arms — the `SumCont::Guarded` continuation), nested-element
+//! list arms, non-scalar scalar-match probes, and a multi-argument variant CONSTRUCTOR (`SumNew` — the
+//! match side already binds multi-payload slots).
 
 use crate::ast::{Builder, Leaf, Radix, StructId};
 use crate::core::Core;
@@ -491,11 +495,6 @@ fn emit_expr(
                 ));
             }
             for arm in &arms {
-                if arm.guard.is_some() {
-                    return Err(Reject::decline(
-                        "the Cadenza backend does not yet lower a GUARDED match arm".to_string(),
-                    ));
-                }
                 if !matches!(
                     arm.probe,
                     crate::core::Probe::Int(_)
@@ -802,11 +801,6 @@ fn emit_match_list(
     let scrut_node = emit_expr(db, b, scrutinee, env, emitted)?;
     let mut children = vec![match_head, scrut_node];
     for arm in arms {
-        if arm.guard.is_some() {
-            return Err(Reject::decline(
-                "the Cadenza backend does not yet lower a GUARDED list-match arm".to_string(),
-            ));
-        }
         // Build the arm's surface pattern, registering each binder's `SumPayload` path for the body.
         let pattern = match arm.cond {
             ListArmCond::LenEq(n) => {
@@ -844,17 +838,38 @@ fn emit_match_list(
             // comes through the scrutinee's own name (not a `SumPayload`), so no binder is registered.
             ListArmCond::Any => b.name("_"),
         };
+        // A GUARDED arm wraps its pattern in the `(guard <pattern> <cond>)` surface form (`resolve.rs`
+        // Case 6lg): the arm fires only when its length condition AND `cond` hold, and otherwise FALLS
+        // THROUGH to the next arm — the surface reader re-lowers `(guard …)` with that same fall-through.
+        // The cond is emitted with this arm's element/rest binders IN SCOPE (registered above), so a guard
+        // reading a bound element resolves to its binder. A guarded arm does not count toward exhaustiveness
+        // (upstream guarantees an unguarded covering tail), so mirroring the arm keeps the match exhaustive.
+        let pattern = match arm.guard {
+            Some(g) => {
+                let guard_head = b.name("guard");
+                let cond = emit_expr(db, b, g, env, emitted)?;
+                b.list(vec![guard_head, pattern, cond])
+            }
+            None => pattern,
+        };
         let body_node = emit_expr(db, b, arm.body, env, emitted)?;
         children.push(b.list(vec![pattern, body_node]));
     }
     Ok(b.list(children))
 }
 
-/// Re-emit a scalar match's arms as a nested `if`-chain, from arm `i` onward. The LAST arm (or a
-/// wildcard arm) is unconditional — its body IS the else: a scalar `Core::Match` is exhaustive (checked
-/// upstream), so its final/wildcard arm covers the residual case. Each earlier literal-probe arm wraps
-/// `(if (= <scrutinee> <lit>) <body> <rest>)`. The scrutinee is a pure scalar, re-emitted per probe.
-/// Precondition (checked by the caller): every arm is unguarded with an `Int`/`Bool`/`Wild` probe.
+/// Re-emit a scalar match's arms as a nested `if`-chain, from arm `i` onward. The LAST arm (or an
+/// UNGUARDED wildcard) is unconditional — its body IS the else: a scalar `Core::Match` is exhaustive
+/// (checked upstream), so its final/wildcard arm covers the residual case. Each earlier arm wraps
+/// `(if <cond> <body> <rest>)`, where `<cond>` is the probe test `(= <scrutinee> <lit>)`, the arm's GUARD,
+/// or their conjunction `(and (= <scrutinee> <lit>) <guard>)`: a GUARDED arm fires only when its probe AND
+/// guard hold and otherwise FALLS THROUGH to the rest — exactly the `if`/`else` chain, so a guard needs no
+/// surface `match`, it desugars into the condition (a guarded Wild arm is just `(if <guard> body rest)`).
+/// The guard's binder is the scrutinee (a bare-binder pattern binds the whole scalar), which lowering
+/// resolves to the scrutinee's own core, so emitting the guard re-emits the scrutinee reference in scope.
+/// The scrutinee is a pure scalar, re-emitted per probe. Precondition (caller): every probe is
+/// `Int`/`Bool`/`Wild`. (A guarded arm does not count toward exhaustiveness, so the final covering arm is
+/// always unguarded — a guarded LAST arm would be a non-exhaustive shape and declines defensively.)
 fn emit_match_chain(
     db: &mut Db,
     b: &mut Builder,
@@ -865,29 +880,67 @@ fn emit_match_chain(
     emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
     let arm = &arms[i];
-    // The last arm, or a wildcard (which always matches, making any later arm dead): unconditional else.
-    // A wildcard arm may BIND the scrutinee; its body reads that binder, which lowering resolves to the
-    // scrutinee's own core, so emitting the body re-emits the scrutinee reference in scope.
-    if i + 1 == arms.len() || matches!(arm.probe, crate::core::Probe::Wild) {
+    let is_last = i + 1 == arms.len();
+    // An UNGUARDED last arm, or an UNGUARDED wildcard (always matches → any later arm is dead): the
+    // unconditional else. A wildcard arm may BIND the scrutinee; its body reads that binder, which lowering
+    // resolves to the scrutinee's own core, so emitting the body re-emits the scrutinee reference in scope.
+    let unguarded_wild = matches!(arm.probe, crate::core::Probe::Wild) && arm.guard.is_none();
+    if (is_last && arm.guard.is_none()) || unguarded_wild {
         return emit_expr(db, b, arm.body, env, emitted);
     }
-    let if_head = b.name("if");
-    let eq = b.name("=");
-    let scrut = emit_expr(db, b, scrutinee, env, emitted)?;
-    let lit = match &arm.probe {
-        crate::core::Probe::Int(v) => b.atom_leaf(Leaf::Int {
-            value: v.clone(),
-            radix: Radix::Dec,
-        }),
-        crate::core::Probe::Bool(x) => b.atom_leaf(Leaf::Bool(*x)),
-        // The caller pre-scanned the arms to only Int/Bool/Wild; a non-last non-Wild arm is Int/Bool.
+    if is_last {
+        // A guarded final arm cannot cover the residual case (its guard may fail) — a non-exhaustive shape
+        // that should not arise from a well-formed match; decline rather than build a chain with no tail.
+        return Err(Reject::decline(
+            "the Cadenza backend does not lower a GUARDED final scalar-match arm (no covering tail)"
+                .to_string(),
+        ));
+    }
+    // The probe test `(= <scrutinee> <lit>)`, if this arm probes a literal (a Wild arm has no probe test —
+    // only its guard gates it).
+    let probe_cond = match &arm.probe {
+        crate::core::Probe::Int(v) => {
+            let eq = b.name("=");
+            let scrut = emit_expr(db, b, scrutinee, env, emitted)?;
+            let lit = b.atom_leaf(Leaf::Int {
+                value: v.clone(),
+                radix: Radix::Dec,
+            });
+            Some(b.list(vec![eq, scrut, lit]))
+        }
+        crate::core::Probe::Bool(x) => {
+            let eq = b.name("=");
+            let scrut = emit_expr(db, b, scrutinee, env, emitted)?;
+            let lit = b.atom_leaf(Leaf::Bool(*x));
+            Some(b.list(vec![eq, scrut, lit]))
+        }
+        crate::core::Probe::Wild => None,
+        // The caller pre-scanned the arms to only Int/Bool/Wild.
         _ => {
             return Err(Reject::decline(
                 "the Cadenza backend does not yet lower this match probe".to_string(),
             ));
         }
     };
-    let cond = b.list(vec![eq, scrut, lit]);
+    // The arm's guard (a boolean the scrutinee-binder is in scope for), if present.
+    let guard_cond = match arm.guard {
+        Some(g) => Some(emit_expr(db, b, g, env, emitted)?),
+        None => None,
+    };
+    // The full condition: probe alone, guard alone, or `(and probe guard)`. At least one is present here
+    // (an unguarded Wild was returned above as the unconditional else).
+    let cond = match (probe_cond, guard_cond) {
+        (Some(p), Some(g)) => {
+            let and = b.name("and");
+            b.list(vec![and, p, g])
+        }
+        (Some(p), None) => p,
+        (None, Some(g)) => g,
+        (None, None) => {
+            unreachable!("an unguarded Wild arm is the unconditional else, handled above")
+        }
+    };
+    let if_head = b.name("if");
     let body = emit_expr(db, b, arm.body, env, emitted)?;
     let rest = emit_match_chain(db, b, scrutinee, arms, i + 1, env, emitted)?;
     Ok(b.list(vec![if_head, cond, body, rest]))
