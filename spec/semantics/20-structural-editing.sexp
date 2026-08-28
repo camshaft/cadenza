@@ -818,3 +818,36 @@
   (call main (: 3 Int64))
   (output (: 16 Int64))
   (live-objects known-leak 44))
+
+; ── breaker batch 571: constant QUOTES join the build-once family (verified: 3 static globals —
+; previously undocumented in the constant-kind matrix) but the WALK over a hoisted immortal Ast
+; leaks ~10 mortal cells PER WALK (the sum-payload extraction dups never release — the Ast face
+; of the walk-leak family). aq1 = hoist + two walks (20); aq2 = fifty walks, exactly linear (500).
+; Both flip with the reclaim arc; the hoist facts hold regardless.
+
+(case "aq1 constant quotes hoist build-once and each depth-walk over the immortal Ast leaks its extraction dups"
+  (input (do
+(def (depth (: node Ast)) (match node
+  ((Ast.List es) (match es ((list) 1) ((list h .. rest) (+ 1 (depth h)))))
+  (_ 1)))
+(def (main (: n Int64))
+  (let ((a (if (> n 0) (quote (f (g 1))) (quote x)))
+        (b (quote (f (g 1)))))
+    (+ (* 100 (depth a)) (depth b))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 202 Int64))
+  (live-objects known-leak 20))
+
+(case "aq2 fifty depth-walks over a hoisted constant quote leak LINEARLY (per-walk extraction dups)"
+  (input (do
+(def (depth (: node Ast)) (match node
+  ((Ast.List es) (match es ((list) 1) ((list h .. rest) (+ 1 (depth h)))))
+  (_ 1)))
+(def (frames (: k Int64))
+  (if (= k 0) 0 (+ (depth (if (> k 0) (quote (f (g 1))) (quote y))) (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 100 Int64))
+  (live-objects known-leak 500))
