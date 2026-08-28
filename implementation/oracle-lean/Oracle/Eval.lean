@@ -1328,15 +1328,28 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
     -- scrutinee IS the erased payload); a tagged-variant pattern `(C subpat)` / `((. T C) subpat)` /
     -- nullary `(C)` compares the tag then binds the payload (multi-field/shadowed heads are not modeled).
     let ctorMatch : Option (Except Outcome (Option Env)) :=
-      match ctorAppName? m pc with
-      | some cname =>
-        if newtypeCtor? m cname then some (match pc[1]? with | some sp => matchPat m sp subj | none => .ok (some []))
-        else if (variantCtorArity? m cname).isSome then
-          some (match subj with
-                | .variant tag payload => if tag == cname then (match pc[1]? with | some sp => matchPat m sp payload | none => .ok (some [])) else .ok none
-                | _ => .ok none)
-        else none
-      | none => none
+      (match ctorAppName? m pc with
+       | some cname =>
+         if newtypeCtor? m cname then some (match pc[1]? with | some sp => matchPat m sp subj | none => .ok (some []))
+         else if (variantCtorArity? m cname).isSome then
+           some (match subj with
+                 | .variant tag payload => if tag == cname then (match pc[1]? with | some sp => matchPat m sp payload | none => .ok (some [])) else .ok none
+                 | _ => .ok none)
+         else none
+       | none => none)
+      <|>
+      -- a prelude `Ast` variant pattern `((. Ast Ctor) subpat)` (Int/Float/Name/…): the `Ast` sum is
+      -- built-in (not in the scanned `(type …)` decls), so recognize its qualified ctors directly and
+      -- match the tagged `variant` value that `quote`/`eval` produce, binding the subpattern to the payload.
+      (match qualHead? m pc with
+       | some (q, c) =>
+         if q == "Ast".toUTF8 &&
+            ["Int", "Float", "Bool", "Str", "Name", "List", "Bytes", "Char", "Symbol"].contains ((String.fromUTF8? c).getD "") then
+           some (match subj with
+                 | .variant tag payload => if tag == c then (match pc[1]? with | some sp => matchPat m sp payload | none => .ok (some [])) else .ok none
+                 | _ => .ok none)
+         else none
+       | none => none)
     match ctorMatch with
     | some r => r
     | none =>
