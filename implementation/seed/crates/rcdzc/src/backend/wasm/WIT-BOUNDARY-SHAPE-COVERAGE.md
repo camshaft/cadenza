@@ -43,19 +43,24 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
 | Bytes (`list<u8>`) | arg all; result world; leaf/field/element; export-param | all/world | `result_is_liftable` (Bytes arm) | 9, 14, 22, 37 |
 | List&lt;scalar\|bytes\|list\|tuple\|record\|option\|variant&gt; | arg + result | world | `list_elem_marshalable` / `result_is_liftable` (List) | 12, 24, 30, 33, 34, 38, 39 |
 | Tuple (all leaf-liftable) | arg + result | world | `result_is_liftable` (Tuple) | 33, 34 |
-| Record (all fields boundary/leaf, incl. nested + WIT-order reorder) | arg + result + export | world/export | `is_boundary_record` / `result_is_liftable` (Record) / `record_interface_export` | 4, 11, 13, 19, 20, 21, 25, 29, 31, 35, 36 |
-| option&lt;scalar\|bytes\|leaf-liftable&gt; | field + result | world | `option_payload_ty` | 1, 8, 16, 35, 36, 38 |
+| Record (all fields boundary/leaf, incl. nested + WIT-order reorder) | arg + result + export | world/export | `is_boundary_record` / `result_is_liftable` (Record) / `record_interface_export` | 11, 13, 19, 20, 21, 25, 29, 31, 35, 36 |
+| option&lt;scalar\|bytes\|leaf-liftable&gt; | field + result | world | `option_payload_ty` | 8, 16, 35, 36, 38 |
 | result&lt;list&lt;u8&gt;, enum&gt; | arg + result | world | `result_bytes_enum` | 15, 17 |
-| variant (scalar / mixed-width join / compound payload) + payloadless enum | arg + result | world | `variant_scalar_payload_cases` / `variant_liftable_payload_cases` / `enum_cases` | 2, 18, 32, + vres/cvp/mwv/wen families |
+| variant (scalar / mixed-width join / compound payload) + payloadless enum | arg + result | world | `variant_scalar_payload_cases` / `variant_liftable_payload_cases` / `enum_cases` | 18, 32, + vres/cvp/mwv/wen families |
 | scalar-param → spilled compound (record) result | export | export | `needs_result_wrapper` (SpillRecord retptr) | 56, sp1–sp7 |
 | payloadless enum RESULT as a typed WIT `enum` under a DECLARED world | export | export | `record_result_lower` enum arm (Passthrough i32) + `note` re-export | 60 (WIT-dump: `enum t0`) |
 | variant-with-payload RESULT as a typed WIT `variant` under a DECLARED world | export | export | `record_result_lower` SpillRecord + `canon_write_of` variant arm | 61 (WIT-dump: `variant t0 { continue, close(s64) }`) |
 | TUPLE RESULT (bare, + as a variant/record payload) as a typed WIT `tuple` under a DECLARED world | export | export | `canon_write_of` Ty::Tuple arm (positional, reuses `CanonWrite::Record`) | 62, 63 (WIT-dump: `tuple<s64,s64>` / `two(tuple<s64,s64>)`) |
 
-**Value ROUND-TRIP only (NOT a typed-WIT-export verification):** SHAPE 58/59 pin that a payloadless
-enum value round-trips through the guest + the generic `cadenza:run/run` encode envelope. They do
-NOT verify a typed WIT `enum` export — the compiler cannot emit one today and FALLS BACK to run/encode
-(confirmed by WIT-dump). Typed enum export is a DECLINED gap (below).
+**Value ROUND-TRIP only (NOT a typed-WIT-export verification):** SHAPEs 1, 2, 4, 5, 7, 58, 59 (all
+NO-`wit-world`-clause) compile to the generic `cadenza:run/run` encode envelope — verified by WIT-dump
+(breaker audit 2026-08-28) — NOT a typed record/sum/enum export. They pin the option/variant/record/
+list/enum VALUE ROUND-TRIP through the guest + encode, which is real coverage, but do NOT verify a typed
+WIT export. So the WIRED rows above cite only the `wit-world`-declared (ww=Y) SHAPEs as their typed
+export/world proof; 1/2/4/5/7 are NOT cited there. These are the natural FLIP-WITNESSES for the typed
+record/Sum EXPORT emit unit (they become running typed-export proof once a no-clause guest annotation
+synthesizes the world member — see the no-world synthesized sum-export gap below). Verify typed shapes
+by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline).
 
 ## WIRED but UNTESTED (predicate admits; no dedicated running SHAPE — verify opportunistically)
 
@@ -116,6 +121,12 @@ NOT verify a typed WIT `enum` export — the compiler cannot emit one today and 
   envelope). State it; don't "close" it.
 - **peer-bound** crosses any compound as an opaque `u32` handle (`extern_abi_val_type`) — no
   structural marshal is intended.
+
+⚠️ **Behavior wart (not by-design, worth fixing eventually):** a NO-`wit-world`-clause guest whose
+export result is a compound (record/sum/list) falls back SILENTLY to the run/encode envelope, whereas a
+non-scalar export PARAM declines LOUDLY (`todo`, "a non-scalar entry parameter is not yet emitted").
+Asymmetry: the result-side silently degrades; the param-side surfaces the limitation. The no-world
+synthesized typed export (below) closing it would remove the silent fallback.
 
 ## Harness caveat (a run-form limit, NOT an emit limit)
 
