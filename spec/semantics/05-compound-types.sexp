@@ -2461,6 +2461,40 @@
   (call   main (: 7 Int64))
   (output (: 872 Int64)))
 
+(case "ksd1 a record-fold projection consumed by String.concat survives the loop dup-skip — the #4139/#5090 UAF fence"
+  (doc "The record-sibling-drop fold UAF fence (breaker-found, guide flagship corruption): a recursive fold
+        destructures a list of TWO-heap-field records and feeds the projected `val` STRING into
+        `(String.concat acc …)` — under #4139's Site-A loop dup-skip the projection's dup was skipped as a
+        last-use while the consume-last reorder released the record (and its heap sibling) before the
+        concat consumed it → OOB/UAF from the SECOND iteration. #5090 gates the skip on head-element
+        liveness. Every guard is REQUIRED to reproduce the original bug: two heap fields, ≥2 elements, and
+        the concat CONSUMING the projection. `known-leak 9` = the narrow fix's accepted residual
+        (leak-beats-UAF).")
+  (input (do
+    (def turn (list (record (= kind "k") (= val "a")) (record (= kind "k2") (= val "b"))))
+    (def (run (: xs (List (Record (: kind String) (: val String)))) (: acc String))
+      (match xs ((list) acc) ((list e .. rest) (run rest (String.concat acc (. e val))))))
+    (def (main) (run turn ""))
+    (export main)))
+  (call main)
+  (output (: "ab" String))
+  (live-objects known-leak 9))
+
+(case "ksd2 the SCALAR-sibling control — an Int64 co-field never took the broken path and must stay green"
+  (doc "ksd1's must-hold twin: with the record's other field a SCALAR (Int64), the fold was ALWAYS sound
+        (single-heap-field records take a different reclaim path) — this control proves the #5090 gate
+        stays narrow and the sound path never regresses. `known-leak 7` = the same accepted residual class
+        minus the sibling string cells.")
+  (input (do
+    (def turn (list (record (= kind 1) (= val "a")) (record (= kind 2) (= val "b"))))
+    (def (run (: xs (List (Record (: kind Int64) (: val String)))) (: acc String))
+      (match xs ((list) acc) ((list e .. rest) (run rest (String.concat acc (. e val))))))
+    (def (main) (run turn ""))
+    (export main)))
+  (call main)
+  (output (: "ab" String))
+  (live-objects known-leak 7))
+
 (case "a multi-level RRB list persistently updates deep interior-level indices leaving the original intact"
   (doc    "The WRITE-PATH analog of the 1100-element multi-level RRB read case. `build` pushes 0..n into an
            RRB vector (value at index i is i), and at n=1100 the vector is a THREE-level trie (32*32 = 1024
