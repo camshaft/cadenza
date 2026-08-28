@@ -5647,14 +5647,15 @@ fn a_bin_build_operand_referencing_a_do_def_under_a_handle_binds_it_not_unbound(
 /// A PARTIAL application of a boxed closure whose body PERFORMS a discharged effect, under a handler, DECLINES
 /// cleanly — the effects×partial-closure intersection. `mk` boxes a 2-param curried closure `(fn a (fn b (+ a
 /// (+ b (E.tick)))))`; `main` handles `E` and applies the projected closure to ONE of its two args (`(f 3)` —
-/// a genuine 1-of-2 partial, result still a function). The partial-application-of-a-runtime-closure lowering
-/// (which now declines an under-arity `CallClosure` rather than emitting an invalid module — the
-/// v-effects-surfaced miscompile→decline) must compose with the effect fold: the perform inside the residual
-/// closure does NOT change that the partial has no residual-closure lift yet, so it declines HONESTLY (never a
-/// miscompile / invalid wasm). Pins that a performing closure partially applied under a handler takes the
-/// clean partial-application decline, not a mis-emit — the effect analogue of
-/// `a_partial_application_of_a_runtime_closure_declines_not_invalid_wasm`. (Full application would fold; this
-/// guards the SHORT-arity path at the effects intersection.)
+/// a genuine 1-of-2 partial), RETURNING the residual closure as the handle body's value. The partial now
+/// builds a RESIDUAL CLOSURE (eta-abstract the missing param, lift it), but that residual closure PERFORMS
+/// `E.tick` and ESCAPES its handler (it is returned out of the `handle`), so lifting it out to a standalone
+/// function correctly hits the EFFECT-ESCAPE decline ("this effect operation is performed with no enclosing
+/// handler here") — a performing closure may not escape its handler (CDZ0406 family). So it STILL DECLINES
+/// cleanly (never a miscompile / invalid wasm); the residual-closure lift composes with effect-escape
+/// detection. Pins the effects×partial intersection: a performing closure partially applied + escaping a
+/// handler declines via the effect-escape guard, not a mis-emit. (A NON-performing partial now lifts + runs
+/// — see 09-functions "a let-bound partial application of a runtime closure builds a residual closure".)
 #[test]
 fn a_partial_application_of_a_performing_closure_under_a_handler_declines_cleanly() {
     use crate::testkit::parse;
@@ -5665,12 +5666,15 @@ fn a_partial_application_of_a_performing_closure_under_a_handler_declines_cleanl
         (def (main) (handle E 0 ((tick (u) s (resume s (+ s 1)))) (match (mk) ((Box.C f) (f 3))))) \
         (export main))";
     let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-        "a partial application of a performing runtime closure must DECLINE, not emit invalid wasm",
+        "a partial application of a performing runtime closure that escapes its handler must DECLINE, not emit invalid wasm",
     );
     assert!(
-        err.message
-            .contains("partial application of a runtime closure"),
-        "the decline names the partial-application limitation (not a mis-emit / handler fold error), got: {}",
+        err.message.contains("no enclosing handler")
+            || err
+                .message
+                .contains("partial application of a runtime closure"),
+        "the decline names either the effect-escape (residual closure performs + escapes) or the \
+         partial-application limitation — a clean decline, not a mis-emit / handler fold error, got: {}",
         err.message
     );
 }

@@ -2887,22 +2887,27 @@
 
 ; The complement of the escaping-partial case above: the partial is over a RUNTIME closure (boxed in a sum,
 ; extracted by a match), NOT a statically-known lambda, and a `let` breaks the curried-spine flatten —
-; `(match p ((Box.C f) (let ((g (f 3))) (g 4))))`. That gathers 1 of the closure's 2 curried args and would
-; need a residual-closure build the emit does not yet do, so it DECLINES cleanly rather than emit an invalid
-; module. The residual-closure lift is a later capability; the DIRECT full-arity `((f 3) 4)` = 7 flattens to
-; one call and is covered by the boxed-curried-closure cases.
+; `(match p ((Box.C f) (let ((g (f 3))) (g 4))))`. That gathers 1 of the closure's 2 curried args and now
+; builds a RESIDUAL CLOSURE (eta-abstract the missing param into `(fn (b) (f 3 b))`, whose lift captures `f`
+; and `3`), so `(g 4)` completes it — `f(3)(4) = 7`, uniform across backends. (Previously this declined: an
+; under-arity `CallClosure` mis-emitted an invalid module; the residual-closure lift synthesizes a FULL
+; application, so the reps agree.) The DIRECT full-arity `((f 3) 4)` = 7 flattens to one call, still covered.
 
-(case "a let-bound partial application of a runtime closure declines (residual-closure lift is a later capability)"
+(case "a let-bound partial application of a runtime closure builds a residual closure and completes"
   (doc    "A closure boxed in a sum and applied at partial arity through a `let` that breaks the spine
-           flatten gathers 1 of 2 curried args; the emit has no residual-closure build, so it declines
-           cleanly ('a partial application of a runtime closure ... is not yet emittable') rather than
-           produce an invalid module. Contrast the statically-known escaping partial above, which runs.")
+           flatten gathers 1 of 2 curried args: `(f 3)` is a 1-of-2 partial of the runtime closure `f`,
+           bound to `g`, then completed by `(g 4)`. The partial now EMITS a RESIDUAL CLOSURE — it
+           eta-abstracts the missing param into a synthesized `(fn (b) (f 3 b))` whose lift captures `f`
+           and `3` into the residual closure's env, so `(g 4)` runs `f(3)(4) = 3 + 4 = 7`. (Previously this
+           declined — an under-arity `CallClosure` mis-emitted an invalid module; the residual-closure lift
+           builds a FULL application in the synthesized body, so the machine reps agree, uniform across
+           backends.) The DIRECT full-arity `((f 3) 4)` = 7 flattens the same.")
   (input  (do
             (type Box (C (-> Int64 (-> Int64 Int64))))
             (def (mk) (Box.C (fn ((: a Int64)) (fn ((: b Int64)) (+ a b)))))
             (def (main) (let ((p (mk))) (match p ((Box.C f) (let ((g (f 3))) (g 4))))))
             (export main)))
-  (declines))
+  (call   main) (output (: 7 Int64)))
 
 (case "a user-written MAP combinator builds a transformed list through its fn parameter"
   (doc    "The list-BUILDING HOF (the fold-list pins reduce to a scalar): `map-l` pushes `(f h)` per
