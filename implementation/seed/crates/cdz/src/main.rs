@@ -509,6 +509,12 @@ fn main() -> ExitCode {
     if let Some(code) = try_plugin_dispatch() {
         return code;
     }
+    // Top-level `cdz --help`/`-h`/`help`: augment clap's help with a git-style listing of the external
+    // `cdz-<name>` plugins discovered on PATH (each best-effort annotated with its `--cdz-summary` line).
+    // Only the TOP level — `cdz <sub> --help` stays clap's.
+    if wants_toplevel_help(&std::env::args().collect::<Vec<_>>()) {
+        return print_help_with_plugins();
+    }
     let cli = Cli::parse();
     match cli.command {
         // Front-end commands defer to the syntax CLI, reconstructing its command enum (its arg structs
@@ -3961,12 +3967,15 @@ fn try_plugin_dispatch() -> Option<ExitCode> {
 }
 
 /// Is `name` a subcommand (or alias) `cdz`'s clap tree knows? Drives the builtin-first precedence in
-/// [`try_plugin_dispatch`]. Enumerated from the derived [`Cli`] command so it can never drift from the
-/// actual subcommand set.
+/// [`try_plugin_dispatch`] AND the plugin-listing skip in [`discover_plugins`]. Enumerated from the
+/// derived [`Cli`] command so it can never drift from the actual subcommand set. `help` counts as known
+/// (clap's auto-help subcommand, which `get_subcommands` omits) so a stray `cdz-help` on PATH — e.g. a
+/// devShell wrapper — is never dispatched to or listed as a plugin.
 fn is_known_subcommand(name: &str) -> bool {
-    Cli::command()
-        .get_subcommands()
-        .any(|c| c.get_name() == name || c.get_all_aliases().any(|a| a == name))
+    name == "help"
+        || Cli::command()
+            .get_subcommands()
+            .any(|c| c.get_name() == name || c.get_all_aliases().any(|a| a == name))
 }
 
 /// The `$CDZ_<NAME>_BIN` override key for a plugin — the same explicit-path injection convention the
@@ -4030,6 +4039,118 @@ fn resolve_plugin(
         .iter()
         .map(|d| d.join(&stem))
         .find(|p| p.is_file())
+}
+
+/// Does argv request the TOP-LEVEL help (`cdz --help` / `cdz -h` / `cdz help`)? Only the top level —
+/// `cdz <sub> --help` stays clap's. Bare `cdz` is left to clap (its usage error), unchanged.
+fn wants_toplevel_help(args: &[String]) -> bool {
+    args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h" | "help")
+}
+
+/// The `--cdz-summary` sentinel a plugin answers with its one-line help (see
+/// `design/DESIGN-cdz-plugin-dispatch.md`): a plugin invoked with exactly this flag prints ONE line to
+/// stdout and exits 0. `cdz --help` queries every discovered `cdz-<name>` with it and aggregates.
+const CDZ_SUMMARY_FLAG: &str = "--cdz-summary";
+
+/// Print `cdz`'s own (clap) help, then a git-style listing of the EXTERNAL `cdz-<name>` plugins
+/// discovered on PATH — each best-effort annotated with its one-line `--cdz-summary`. This is the
+/// aggregation half of the plugin model: builtins come from clap, external commands are discovered.
+fn print_help_with_plugins() -> ExitCode {
+    let mut cmd = Cli::command();
+    let _ = cmd.print_long_help();
+    println!();
+    let plugins = discover_plugins();
+    if !plugins.is_empty() {
+        println!("Plugin commands (external `cdz-<name>` binaries found on PATH):");
+        for (name, summary) in plugins {
+            match summary {
+                Some(s) => println!("  {name:<16} {s}"),
+                None => println!("  {name}"),
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Discover the external `cdz-<name>` plugin commands reachable as `cdz <name>`: walk the sibling dir
+/// (beside this `cdz`) then every `$PATH` entry, collect `cdz-<name>` executables, and best-effort query
+/// each for its one-line summary. Returns `(name, summary?)` sorted by name. A name that shadows a KNOWN
+/// clap subcommand is skipped (builtin-first — such a plugin is never reachable). First location wins on
+/// a duplicate name (sibling before PATH, mirroring [`resolve_plugin`]'s precedence).
+fn discover_plugins() -> Vec<(String, Option<String>)> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(d) = exe_dir {
+        dirs.push(d);
+    }
+    if let Some(p) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&p));
+    }
+    discover_plugin_names(&dirs, is_known_subcommand)
+        .into_iter()
+        .map(|name| {
+            let summary = locate_plugin(&name).and_then(|bin| plugin_summary(&bin));
+            (name, summary)
+        })
+        .collect()
+}
+
+/// The pure plugin-DISCOVERY walk (split out for unit testing without executing anything): scan `dirs`
+/// in order for files named `cdz-<name>` (platform suffix aware), yielding each `<name>` once (first
+/// occurrence wins), skipping any `is_builtin(name)` (builtin-first), sorted. Does NOT query summaries.
+fn discover_plugin_names(dirs: &[PathBuf], is_builtin: impl Fn(&str) -> bool) -> Vec<String> {
+    let prefix = "cdz-";
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if !entry.path().is_file() {
+                continue;
+            }
+            let Ok(fname) = entry.file_name().into_string() else {
+                continue;
+            };
+            let Some(rest) = fname.strip_prefix(prefix) else {
+                continue;
+            };
+            let name = match rest.strip_suffix(suffix) {
+                Some(n) if !suffix.is_empty() => n,
+                _ => rest,
+            };
+            if name.is_empty() || is_builtin(name) {
+                continue;
+            }
+            seen.insert(name.to_string());
+        }
+    }
+    seen.into_iter().collect()
+}
+
+/// Best-effort query of a plugin's one-line summary: run `<bin> --cdz-summary`, and if it exits 0 with
+/// exactly one non-empty stdout line, return it (trimmed). Any other outcome (non-zero, empty, multi-line,
+/// spawn error) → `None` — the plugin is then listed by name only (git's graceful `help -a` degrade), so a
+/// foreign or older `cdz-*` that does not speak the sentinel never breaks `cdz --help`.
+fn plugin_summary(bin: &Path) -> Option<String> {
+    let out = std::process::Command::new(bin)
+        .arg(CDZ_SUMMARY_FLAG)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(out.stdout).ok()?;
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let first = lines.next()?.trim().to_string();
+    match lines.next() {
+        Some(_) => None, // more than one non-empty line → not a well-formed summary
+        None if first.is_empty() => None,
+        None => Some(first),
+    }
 }
 
 /// `cdz smith <args…>` (alias `cdz fuzz`) — a PASSTHROUGH to the standalone `cdz-smith` fuzzer/differential
@@ -11028,5 +11149,65 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn wants_toplevel_help_only_for_bare_top_level_help() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(wants_toplevel_help(&v(&["cdz", "--help"])));
+        assert!(wants_toplevel_help(&v(&["cdz", "-h"])));
+        assert!(wants_toplevel_help(&v(&["cdz", "help"])));
+        // NOT bare `cdz` (clap's usage), NOT a real subcommand, NOT `cdz <sub> --help` (clap's).
+        assert!(!wants_toplevel_help(&v(&["cdz"])));
+        assert!(!wants_toplevel_help(&v(&["cdz", "compile"])));
+        assert!(!wants_toplevel_help(&v(&["cdz", "convert", "--help"])));
+    }
+
+    #[test]
+    fn discover_plugin_names_walks_dedups_and_skips_builtins() {
+        let root = std::env::temp_dir().join(format!("cdz-plugin-discover-{}", std::process::id()));
+        let _guard = RemoveOnDrop::dir(root.clone());
+        let d1 = root.join("d1");
+        let d2 = root.join("d2");
+        for d in [&d1, &d2] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let touch = |dir: &Path, fname: &str| std::fs::write(dir.join(fname), b"x").unwrap();
+        // d1: two real plugins + a builtin-shadowing name + a non-cdz file.
+        touch(&d1, &bin_name("cdz-foo"));
+        touch(&d1, &bin_name("cdz-compile")); // shadows a builtin → skipped
+        touch(&d1, "cdz"); // the dispatcher itself is not `cdz-<name>` → skipped
+        touch(&d1, "unrelated");
+        // d2: a new plugin + a DUPLICATE of foo (d1 wins, but dedup means one `foo` regardless).
+        touch(&d2, &bin_name("cdz-bar"));
+        touch(&d2, &bin_name("cdz-foo"));
+
+        // Treat only "compile" as a builtin here (isolate the skip logic from the real clap tree).
+        let names = discover_plugin_names(&[d1.clone(), d2.clone()], |n| n == "compile");
+        assert_eq!(names, vec!["bar".to_string(), "foo".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugin_summary_reads_one_line_and_degrades_gracefully() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("cdz-plugin-summary-{}", std::process::id()));
+        let _guard = RemoveOnDrop::dir(root.clone());
+        std::fs::create_dir_all(&root).unwrap();
+        let write_script = |name: &str, body: &str| {
+            let p = root.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        // A well-formed plugin: prints exactly one line on --cdz-summary, exit 0.
+        let good = write_script("cdz-good", "echo 'run a thing well'");
+        assert_eq!(plugin_summary(&good), Some("run a thing well".to_string()));
+        // Non-zero exit → None (graceful degrade).
+        let fails = write_script("cdz-fails", "exit 3");
+        assert_eq!(plugin_summary(&fails), None);
+        // Multi-line stdout → not a well-formed summary → None.
+        let chatty = write_script("cdz-chatty", "echo one; echo two");
+        assert_eq!(plugin_summary(&chatty), None);
     }
 }
