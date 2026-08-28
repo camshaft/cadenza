@@ -45,3 +45,9 @@ fleet/scratch/
 # the whole `zz-run-…-driver-` prefix so a stray driver never pollutes git status or a `git add -A`.
 implementation/compiler-ml/src/zz-run-ml-driver-*.cdz
 implementation/compiler-ml/src/zz-run-emitted-driver-*.cdz
+
+# `cargo xtask wasm-opt-gaps` / `nix run .#wasm-opt-gaps` writes this whole-corpus optimality-gap dump
+# (~1.4MB, thousands of gap records). Operator: do NOT commit it (too massive) — it is a regenerable,
+# advisory artifact; the VALUE is the analysis/report (near-optimal %, outliers) v-wasm-opt delivers from
+# it, not the raw dump. Ignore the generated path so a future run's output can't be accidentally committed.
+implementation/design/wasm-opt-gaps.sexp
