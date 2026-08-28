@@ -788,3 +788,33 @@
             (export main)))
   (call   main (: 6 Int64)) (output (: 11 Int64))
   (live-objects known-leak 10))
+
+; ── breaker batch 570: the TREE face of the sum-spine leak family (the ss/sp cells are LINEAR
+; chains; these are BRANCHING walks — the structural-editing substrate shape). A depth-4 binary
+; Exp tree's eval leaks the ENTIRE tree (46 = 15 Add+tuple pairs + 16 Lit boxes, exact); a
+; transform-then-eval leaks BOTH trees (44 = input 22 + output 22 at depth 3). Values exact.
+; Calibration for the reclaim arc: the two-shell fix targets self-loop-TAIL chains; branching
+; non-tail recursion is the harder later face — these clauses key its landing.
+
+(case "stt1 a runtime-built binary Exp tree evals exactly and leaks the whole tree (branching-walk calibration)"
+  (input (do
+    (type Exp (Lit Int64) (Add (Tuple Exp Exp)))
+    (def (mk (: d Int64)) (if (= d 0) (Exp.Lit 1) (Exp.Add (tuple (mk (- d 1)) (mk (- d 1))))))
+    (def (eval (: e Exp)) (match e ((Exp.Lit n) n) ((Exp.Add (tuple a b)) (+ (eval a) (eval b)))))
+    (def (main (: n Int64)) (eval (mk n)))
+    (export main)))
+  (call main (: 4 Int64))
+  (output (: 16 Int64))
+  (live-objects known-leak 46))
+
+(case "stt2 a tree-to-tree transform then eval preserves meaning and leaks BOTH trees (transform calibration)"
+  (input (do
+    (type Exp (Lit Int64) (Add (Tuple Exp Exp)))
+    (def (mk (: d Int64)) (if (= d 0) (Exp.Lit 1) (Exp.Add (tuple (mk (- d 1)) (mk (- d 1))))))
+    (def (dbl (: e Exp)) (match e ((Exp.Lit n) (Exp.Lit (* n 2))) ((Exp.Add (tuple a b)) (Exp.Add (tuple (dbl a) (dbl b))))))
+    (def (eval (: e Exp)) (match e ((Exp.Lit n) n) ((Exp.Add (tuple a b)) (+ (eval a) (eval b)))))
+    (def (main (: n Int64)) (eval (dbl (mk n))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 16 Int64))
+  (live-objects known-leak 44))
