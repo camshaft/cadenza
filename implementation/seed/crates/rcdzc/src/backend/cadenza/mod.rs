@@ -21,7 +21,7 @@
 //! construct it does not yet reconstruct — the same decline-don't-miscompile discipline the wasm/rust
 //! backends follow. Coverage so far:
 //! - **B0**: whole-program shape (`(do (def …)… (export …)…)`) with CONSTANT-bodied definitions —
-//!   the constant leaves (Int/Bool/Str/Char/Float).
+//!   the constant leaves (Int/Bool/Str/Char/Float/Unit).
 //! - **B1a**: PARAMETERS — a def signature `(<name> (: <p> <Ty>)…)` (param types via lower's canonical
 //!   `type_ast`) and a `Core::Param`/`LocalRef` reference (the bare binder name). A parameter of a type
 //!   with no value-form surface (function/unsolved) declines.
@@ -190,6 +190,10 @@ fn emit_expr(
         // A finite float constant carries its exact `Decimal` (no `f64` rounding), which re-reads to the
         // same leaf. (`ConstFloatNan` has no finite `Decimal` and no plain written form — a later slice.)
         Core::ConstFloat(d) => Ok(b.atom_leaf(Leaf::Float(d))),
+        // The unit value bakes as the bare `unit` name — its ONE canonical form (matches lower's
+        // `const_value_ast` and the corpus surface `(: unit Unit)`), so a unit-returning definition
+        // round-trips.
+        Core::Unit => Ok(b.name("unit")),
         // A reference to a function PARAMETER — its surface is the bare name of the parameter's binder
         // occurrence (a `Name`), which re-resolves to the same parameter on recompile.
         Core::Param { binder } => {
