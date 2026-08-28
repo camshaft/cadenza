@@ -1237,6 +1237,8 @@ pass	a USER sum as handler state — a countdown mode machine (Fast k -> Slow)
 pass	a USER-DEFINED multi-variant sum payload quantity renders scaled to its reference
 pass	a USER-SUM op result (Status) crosses resume; the body matches per variant
 pass	a USER-SUM-literal scrutinee with a performing payload — the ctor pattern binds once
+pass	a USER-declared monomorphic sum's Some variant escapes to the host rendering its bare name
+pass	a USER-declared monomorphic sum's nullary None variant escapes as its unit payload
 pass	a Unit element between two Int64s in a tuple, a later element read
 pass	a Unit element in a multi-payload sum variant compiles to valid wasm
 pass	a Unit payload MATCH-bound from a still-live sum at a dup-site drops the sentinel
@@ -1326,6 +1328,7 @@ pass	a bare prelude Option is built via if and matched to its payload or a defau
 pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare primitive operator passed as a first-class function value folds via the annotation see-through
 pass	a bare reference to a nullary function denotes its body value
+pass	a bare subset map pattern (fewer keys, no rest) matches a larger runtime map — open key-presence semantics
 pass	a bare type-name-colliding variant name constructs as the local variant
 pass	a bare under-applied generic nested as a type argument declines, does not stack-overflow the compiler
 pass	a bare user constructor is passed as a first-class function to a higher-order function
@@ -8501,5 +8504,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a USER-declared monomorphic sum's Some variant escapes to the host rendering its bare name
-pass	a USER-declared monomorphic sum's nullary None variant escapes as its unit payload

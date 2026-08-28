@@ -23111,6 +23111,24 @@
   (call   main (: true Bool))
   (output (: 7 Int64)))
 
+(case "a bare subset map pattern (fewer keys, no rest) matches a larger runtime map — open key-presence semantics"
+  (doc    "Pins the OPEN/subset map-match semantic documented above (a `(map (k v)…)` pattern tests only that
+           the NAMED keys are PRESENT, extras allowed): a bare `(map (2 x))` pattern — fewer keys than the
+           scrutinee, and NO `.. rest` binder — matches a 3-key runtime map, binding x to key 2's value and
+           silently ignoring keys 1 and 3. Over a RUNTIME-seeded `{1:s+10, 2:s+20, 3:s+30}` (the seed keeps the
+           map off the const-fold path — verified input-dependent, main 0→20, and it is a heap value), the arm
+           binds x = s+20 → 20 at s=0. This behavior is intentionally NOT modelled by the Lean oracle (which is
+           conservative on subset patterns, #4829), so this corpus value-pin is the SOLE regression guard for
+           it: a compiler regression to EXACT-key-count matching (requiring the pattern's key set to equal the
+           map's) would fall through to -1. The superset direction (a pattern key absent from the map) correctly
+           refutes, pinned by the multi-key case above.")
+  (input  (do
+            (def (mk (: s Int64)) (Map.insert (Map.insert (Map.insert (Map.empty) 1 (+ s 10)) 2 (+ s 20)) 3 (+ s 30)))
+            (def (main (: s Int64)) (match (mk s) ((map (2 x)) x) (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 20 Int64)))
+
 (case "a runtime map match's two-key arm falls through when one key is missing"
   (doc    "Over `{\"a\": 3}` (missing \"b\") the two-key arm `(map (\"a\" x) (\"b\" y) …)` is refuted → falls
            through to the catch-all → -1.")
