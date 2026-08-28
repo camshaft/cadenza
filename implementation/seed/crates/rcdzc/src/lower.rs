@@ -17654,10 +17654,12 @@ fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit) -> Struct
 /// dotted name `Operand.key` to (an alphabetic-segment postfix desugar). Used to bake a unit/quantity
 /// value form so it re-reads to the same tree the corpus records (`(. Qty of)`, `(. Unit base)`).
 fn member_access(b: &mut crate::ast::Builder, operand: &str, key: &str) -> StructId {
-    let dot = b.name(".");
+    // M2: the `(. operand key)` head is the native MEMBER leaf kind (recognized by kind), not the `.` name.
+    // Keeps the compiler-emitted Qty/Symbol/Unit value-construction member forms native head-first, matching
+    // op62's runtime encode (byte-EQ) and the reader's native `.` flip.
     let op = b.name(operand.to_string());
     let k = b.name(key.to_string());
-    b.list(vec![dot, op, k])
+    b.member(op, k)
 }
 
 /// Reconstruct a TYPE s-expression into `b`, matching `Ty::render_name`'s surface exactly so the host
