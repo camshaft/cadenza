@@ -6029,6 +6029,29 @@
   (input  (<< 1 -1))
   (error  CDZ0304))
 
+(case "a runtime-reached shift with an out-of-range CONSTANT count and a TRAPPING lhs surfaces the lhs trap first (eval-order)"
+  (doc    "EVAL-ORDER soundness (the #4870 family, wasm emit): operands evaluate LEFT-TO-RIGHT, so a
+           trapping LHS must surface its trap BEFORE the shift's out-of-range count trap. Here `(r 10)`
+           recurses to `(/ 2 0)` (divide-by-zero) and is NOT const-folded (kept a live runtime call), and
+           the count `-1000000` is an out-of-range CONSTANT. The wasm `emit_shift` const-oob fast-path used
+           to emit a bare `unreachable` WITHOUT evaluating lhs, masking the div-by-zero; it now evaluates a
+           not-trap-free lhs first so its trap surfaces. Expected kind = `divide by zero`, NOT `unreachable`.
+           The count trap itself stays `unreachable` (the oracle agrees with unreachable for a PURE oob
+           count — see the trap-free control below). Rust backend was already correct (binds lhs first).")
+  (input  (do (def (r n) (if (<= n 0) 4294967295 (/ n (r (- n 1)))))
+              (def (main) (let ((v0 (r 10))) (<< v0 -1000000)))
+              (export main)))
+  (call   main) (trap "divide by zero"))
+
+(case "a runtime shift with an out-of-range CONSTANT count and a TRAP-FREE lhs still traps unreachable (control)"
+  (doc    "The control twin: a TRAP-FREE lhs (a bare param `x`) with an out-of-range constant count `64`
+           keeps the bare-`unreachable` fast-path (no eval-order change, no operand to surface) — the
+           oracle AGREES with `unreachable` for a pure out-of-range shift count (v-cdz-smith byte-probe),
+           so this stays `unreachable`, not a specific reason. Pins that the eval-order fix does NOT flip
+           the pure-oob-count case.")
+  (input  (do (def (main (: x Int64)) (<< x 64)) (export main)))
+  (call   main (: 5 Int64)) (trap "unreachable"))
+
 ; The count = 63 boundary — the largest in-range shift count — is where a left shift's exact-2^count
 ; multiplication meets Int64's edge, and where a folder that builds the `2^count` factor with a signed
 ; `1 << 63` (= i64::MIN, a NEGATIVE 2^63) miscomputes in BOTH directions: `(<< 1 63)` folds to a

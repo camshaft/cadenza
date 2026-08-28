@@ -21928,6 +21928,17 @@ fn emit_shift(
     if let Some(k) = const_count
         && (k < 0 || k >= m.width as i64)
     {
+        // EVAL-ORDER (#4870 family): operands evaluate LEFT-TO-RIGHT, so a trapping LHS must surface its
+        // trap BEFORE the shift's count trap. The bare-`unreachable` below skips operand evaluation, so a
+        // trapping lhs (e.g. a `(let ((v (/ 2 0))) (<< v -1))` div-by-zero folded through a call) would be
+        // wrongly elided — the count trap would mask lhs's. Guard it: when lhs is NOT trap-free, evaluate
+        // lhs first for its side-effect trap; its value is left on the stack, which the stack-polymorphic
+        // `unreachable` discards. The count trap itself stays `unreachable` — v-cdz-smith's oracle byte-probe
+        // found the oracle AGREES with unreachable for a pure out-of-range shift count, so no specific-reason
+        // flip here (that would introduce a divergence) until v-lean-oracle byte-confirms a specific kind.
+        if !crate::lower::is_trap_free(db, lhs) {
+            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
+        }
         out.push(Lir::Unreachable);
         return Ok(());
     }
