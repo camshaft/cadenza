@@ -49,6 +49,9 @@ cadenza-ast = { path = "../cadenza-ast" }
 # `cadenza-syntax` re-exports its `span`/`spans`/`arena_read` so the public API + internal `crate::`
 # paths stay byte-stable.
 cadenza-syntax-core = { path = "../cadenza-syntax-core" }
+# The JSON data surface, split into its own crate (hand-rolled, no external parser dep); re-exported as
+# `cadenza_syntax::json`. Always on — the ML surface embeds `json{…}` sub-documents.
+cadenza-syntax-json = { path = "../cadenza-syntax-json" }
 unicode-normalization = "0.1.25" # NFC on string/name leaves
 sha2 = "0.10"                    # schema-hash header over the arena type term
 num-bigint = "0.4"               # arbitrary-precision Int and the Decimal significand

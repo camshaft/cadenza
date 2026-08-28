@@ -34,7 +34,7 @@ pub struct ReadError(pub String);
 /// (not exceeding) the compiler's limit keeps the deepest margin below the smallest target stack (the
 /// ~1 MB wasm stack overflows well before 4096 native-frame-equivalents), so every source-ingesting
 /// entry point (`convert`/`check`/`fix`, `cdz-wasm`) returns a clean diagnostic instead of crashing.
-pub const MAX_NESTING_DEPTH: u32 = 1024;
+pub use cadenza_syntax_core::MAX_NESTING_DEPTH;
 
 /// Parse a single s-expression from `text` into its own `Arenas` (rooted at the parsed form). This is
 /// the READER — text to the canonical representation, so a program can be written as text before a

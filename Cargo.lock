@@ -335,13 +335,50 @@ name = "cadenza-syntax"
 version = "0.1.0"
 dependencies = [
  "cadenza-ast",
- "cedar-policy",
+ "cadenza-syntax-cedar",
+ "cadenza-syntax-core",
+ "cadenza-syntax-json",
+ "cadenza-syntax-toml",
  "clap",
  "num-bigint",
  "pulldown-cmark",
  "sha2",
- "toml_edit 0.22.27",
  "unicode-normalization",
+]
+
+[[package]]
+name = "cadenza-syntax-cedar"
+version = "0.1.0"
+dependencies = [
+ "cadenza-ast",
+ "cadenza-syntax-core",
+ "cedar-policy",
+]
+
+[[package]]
+name = "cadenza-syntax-core"
+version = "0.1.0"
+dependencies = [
+ "cadenza-ast",
+ "num-bigint",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "cadenza-syntax-json"
+version = "0.1.0"
+dependencies = [
+ "cadenza-ast",
+ "cadenza-syntax-core",
+]
+
+[[package]]
+name = "cadenza-syntax-toml"
+version = "0.1.0"
+dependencies = [
+ "cadenza-ast",
+ "cadenza-syntax-core",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]

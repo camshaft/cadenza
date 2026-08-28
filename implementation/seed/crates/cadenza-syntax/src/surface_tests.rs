@@ -59,6 +59,21 @@ fn remap_then_resolve_round_trips_a_cursor_through_canonicalization() {
     assert_eq!(remapped.file(), parsed.spans.file());
 }
 
+/// The JSON surface's ML-printer FALLBACK (a non-JSON root handed to `--to json` → a JSON string
+/// carrying the ML text). Needs the ML printer + a reader, so it lives here rather than in
+/// `cadenza-syntax-json`.
+#[test]
+fn json_non_root_falls_back_to_json_string() {
+    use crate::json;
+    let prog = sexpr::read("(+ 1 2)").unwrap();
+    let out = json::print(&prog, 100, crate::printer::print);
+    let back = json::read(&out).expect("fallback output is valid JSON");
+    assert!(
+        back.as_str(back.root).is_some(),
+        "fallback yields a JSON string, got {out}"
+    );
+}
+
 /// The TOML surface's ML-printer FALLBACK (a non-TOML root handed to `--to toml` → a `program = "<ml>"`
 /// key). Needs the ML printer + a reader, so it lives here rather than in `cadenza-syntax-toml`.
 #[test]

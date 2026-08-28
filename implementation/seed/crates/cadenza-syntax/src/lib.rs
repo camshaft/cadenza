@@ -37,16 +37,16 @@ pub use cadenza_syntax_core::doc;
 /// (`cadenza doc`, design/DESIGN-cadenza-docs.md I1). Structural/syntactic — no typecheck dependency.
 pub mod doc_item;
 pub mod extern_name;
+pub use cadenza_ast::leb128;
 /// Generally-useful iterator helpers (span-carrying `Chars`, `Peek2` lookahead) — moved to
 /// `cadenza-syntax-core`, re-exported so `cadenza_syntax::iter` + internal `crate::iter` are unchanged.
 pub use cadenza_syntax_core::iter;
-/// The JSON surface: a faithful data document (`(json-object …)`/`(json-array …)`/`(json-null)` plus
-/// bare scalar leaves) is a projection of the same arena the code surfaces use. Unlike a native
-/// `record`/`list`, it preserves everything real JSON has that the typed value universe would reject
-/// or normalize — duplicate & non-identifier keys, key order, heterogeneous arrays, exact numbers,
-/// and `null`.
-pub mod json;
-pub use cadenza_ast::leb128;
+/// The JSON surface — split into the `cadenza-syntax-json` crate (hand-rolled, no external parser dep),
+/// re-exported as `cadenza_syntax::json`. A faithful data document (`(json-object …)`/`(json-array …)`/
+/// `(json-null)` + bare scalar leaves) preserving everything real JSON has that the typed value universe
+/// would reject or normalize — duplicate & non-identifier keys, key order, heterogeneous arrays, exact
+/// numbers, and `null`.
+pub use cadenza_syntax_json as json;
 pub mod lexer;
 /// Shared literal lexing/escapes — moved to `cadenza-syntax-core`, re-exported so `cadenza_syntax::literal`
 /// + internal `crate::literal` (every reader + the lexer) are unchanged.

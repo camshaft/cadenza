@@ -11,6 +11,11 @@
 /// Re-export so the moved modules' `crate::ast::{…}` paths resolve in this crate.
 pub use cadenza_ast::ast;
 
+/// The shared recursive-descent depth guard: past this many nested open forms a reader returns a clean
+/// diagnostic instead of overflowing the native stack. Shared across surfaces (the sexpr reader + the
+/// JSON reader bound their recursion by it) so the limit is defined once.
+pub const MAX_NESTING_DEPTH: u32 = 1024;
+
 pub mod arena_read;
 /// The Wadler-style pretty-printer engine (`Doc`/`ibox`/`word`/breaks) every surface PRINTER lays its
 /// output out through — surface-agnostic, depends on nothing but std.

@@ -1925,7 +1925,7 @@ pub mod driver {
             Format::Ml => Ok(printer::print(arena, width)),
             Format::Sexpr => Ok(sexpr::print(arena)),
             Format::Markdown => Ok(crate::markdown::print(arena, width)),
-            Format::Json => Ok(crate::json::print(arena, width)),
+            Format::Json => Ok(crate::json::print(arena, width, crate::printer::print)),
             Format::Toml => Ok(crate::toml_surface::print(
                 arena,
                 width,
