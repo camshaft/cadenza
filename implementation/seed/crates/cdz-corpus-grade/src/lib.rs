@@ -524,6 +524,120 @@ pub fn grade_compile_declines(compiled: bool, diag: &str, msg: Option<&str>) -> 
     }
 }
 
+/// One STRUCTURED diagnostic fault, parsed from rcdzc's machine-readable diagnostics wire (the
+/// `rcdzc::sidecar` `KIND_DIAGNOSTICS` artifact, also what `cdz check --json` projects). This is the
+/// grade-path counterpart of `rcdzc::abi::Diagnostic`: it lets a corpus `(error …)` / `(warning …)` case
+/// assert DIAGNOSTIC QUALITY — a structural fix, its verified flag, an exact fault count, the severity —
+/// not just the code + a message substring (the capability the operator greenlit so the corpus can
+/// "express fixes", unblocking the diagnostic-quality tests' migration off `rcdzc/tests.rs`).
+///
+/// The wire is one fault per line, EIGHT TAB-separated columns (see `rcdzc/src/sidecar.rs` `Query::
+/// Diagnostics`): `severity⇥code⇥node⇥fix-kind⇥fix-node⇥fix-repl⇥fix-verified⇥message`, with `-` for any
+/// absent field (uncoded/unanchored/no-fix) and `message` LAST (a free-text remainder after seven tabs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagFault {
+    /// `Error` denies the component; `Warning` accompanies a produced one. From the wire's `error`/`warning`.
+    pub severity: Severity,
+    /// The stable `CDZ####` code, or `None` for an uncoded decline (wire `-`).
+    pub code: Option<String>,
+    /// The anchored AST node index the diagnostic is about, or `None` if unanchored (wire `-`).
+    pub node: Option<u32>,
+    /// The structural repair the diagnostic carries, or `None` when no fix is proposed (wire fix-kind `-`).
+    pub fix: Option<DiagFaultFix>,
+    /// The human message (the free-text last column).
+    pub message: String,
+}
+
+/// The structural repair a [`DiagFault`] carries — the grade-path projection of `rcdzc::abi::DiagnosticFix`.
+/// The `kind` is STRUCTURAL (matching the ABI's `FixKind`), spelled exactly as the wire emits it; the
+/// semantic flavor of a fix (a coercion, a rename, …) lives in `replacement`/the message, not in `kind`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagFaultFix {
+    /// The structural edit kind, verbatim from the wire: `replace` | `insert` | `wrap` | `delete`.
+    pub kind: String,
+    /// The AST node index the edit targets, or `None` (wire `-`).
+    pub node: Option<u32>,
+    /// The edit's surface payload — the spelling to substitute (`replace`), the child form(s) to append
+    /// (`insert`), or the wrap text with a `…` hole (`wrap`). Empty-ish for `delete`.
+    pub replacement: String,
+    /// `true` iff the compiler PROVED the fix correct (wire `verified`); `false` for a heuristic (wire
+    /// `heuristic`) an agent should confirm before applying.
+    pub verified: bool,
+}
+
+/// The severity part of one wire fault (`error`/`warning`), or `None` for an unrecognized token.
+fn parse_severity(tok: &str) -> Option<Severity> {
+    match tok {
+        "error" => Some(Severity::Error),
+        "warning" => Some(Severity::Warning),
+        _ => None,
+    }
+}
+
+/// A diagnostic's severity — the grade-path mirror of `rcdzc::abi::Severity`. An error DENIES the produced
+/// component; a warning ACCOMPANIES one. A corpus case reads failure-ness from this, not from the
+/// diagnostic's kind (reject/decline/trap).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+/// Parse rcdzc's structured-diagnostics wire (the `KIND_DIAGNOSTICS` artifact) into [`DiagFault`]s. Each
+/// non-empty line is split into its eight TAB columns (the message may itself contain no tab — it is the
+/// remainder after seven splits); a line with fewer than eight columns, or an unrecognized severity token,
+/// is SKIPPED (defensive — the grader treats a malformed line as no fault rather than erroring). A `-` in
+/// any optional column decodes to `None`/no-fix; the fix columns decode to a [`DiagFaultFix`] only when the
+/// fix-kind column is not `-`.
+pub fn parse_diagnostics(wire: &str) -> Vec<DiagFault> {
+    let mut out = Vec::new();
+    for line in wire.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let cols: Vec<&str> = line.splitn(8, '\t').collect();
+        if cols.len() < 8 {
+            continue;
+        }
+        let Some(severity) = parse_severity(cols[0]) else {
+            continue;
+        };
+        let dash = |s: &str| (s != "-").then(|| s.to_string());
+        let fix = if cols[3] == "-" {
+            None
+        } else {
+            Some(DiagFaultFix {
+                kind: cols[3].to_string(),
+                node: dash(cols[4]).and_then(|s| s.parse::<u32>().ok()),
+                replacement: cols[5].to_string(),
+                verified: cols[6] == "verified",
+            })
+        };
+        out.push(DiagFault {
+            severity,
+            code: dash(cols[1]),
+            node: dash(cols[2]).and_then(|s| s.parse::<u32>().ok()),
+            fix,
+            message: cols[7].to_string(),
+        });
+    }
+    out
+}
+
+impl DiagFault {
+    /// Whether this fault has the given `severity` AND `code` — the primary selector a corpus `(error
+    /// CDZ####)` / `(warning CDZ####)` quality assertion keys on.
+    pub fn is(&self, severity: Severity, code: &str) -> bool {
+        self.severity == severity && self.code.as_deref() == Some(code)
+    }
+}
+
+/// Count the faults in `faults` with the given `severity` and `code` — the basis for a `(count N)` / `(once)`
+/// assertion (e.g. "exactly one CDZ0305 dead-trap warning", which a presence-only check cannot express).
+pub fn count_faults(faults: &[DiagFault], severity: Severity, code: &str) -> usize {
+    faults.iter().filter(|f| f.is(severity, code)).count()
+}
+
 /// The FIRST error diagnostic in a compiler stderr as `(code, message)` — `error [CODE] (node N): msg`
 /// (coded) or `error: msg` (codeless). Ported verbatim from the `xtask gate`.
 pub fn first_error_diag(diag: &str) -> (Option<String>, String) {
@@ -1367,6 +1481,73 @@ mod tests {
             )),
             success
         );
+    }
+
+    /// `parse_diagnostics` decodes rcdzc's 8-column structured-diagnostics wire into typed faults — the
+    /// foundation for corpus `(error …)`/`(warning …)` diagnostic-QUALITY assertions (fix/verified/count).
+    #[test]
+    fn parse_diagnostics_decodes_the_eight_column_wire() {
+        // A coded ERROR with a verified REPLACE fix; a WARNING with no fix + a dash code; a heuristic WRAP.
+        let wire = "error\tCDZ0203\t7\treplace\t7\tfoo\tverified\tundefined name `fooo`; did you mean `foo`?\n\
+                    warning\t-\t-\t-\t-\t-\t-\tan unanchored note\n\
+                    error\tCDZ0210\t3\twrap\t3\t(Some …)\theuristic\tmatch is non-exhaustive\n";
+        let faults = parse_diagnostics(wire);
+        assert_eq!(faults.len(), 3);
+
+        assert_eq!(faults[0].severity, Severity::Error);
+        assert_eq!(faults[0].code.as_deref(), Some("CDZ0203"));
+        assert_eq!(faults[0].node, Some(7));
+        let fix0 = faults[0].fix.as_ref().expect("has fix");
+        assert_eq!(fix0.kind, "replace");
+        assert_eq!(fix0.replacement, "foo");
+        assert!(fix0.verified);
+        assert!(faults[0].message.contains("did you mean"));
+
+        // A `-` code/node/fix decodes to None/no-fix; severity still parses.
+        assert_eq!(faults[1].severity, Severity::Warning);
+        assert_eq!(faults[1].code, None);
+        assert_eq!(faults[1].node, None);
+        assert_eq!(faults[1].fix, None);
+
+        // A heuristic fix decodes verified=false; wrap payload (with a tab-free `…`) round-trips.
+        let fix2 = faults[2].fix.as_ref().expect("has fix");
+        assert_eq!(fix2.kind, "wrap");
+        assert_eq!(fix2.replacement, "(Some …)");
+        assert!(!fix2.verified);
+    }
+
+    /// A malformed line (too few columns) or an unrecognized severity token is SKIPPED, not an error — the
+    /// grader treats a bad line as no fault rather than failing the whole grade.
+    #[test]
+    fn parse_diagnostics_skips_malformed_lines() {
+        let wire = "error\tCDZ0203\t7\treplace\t7\tfoo\tverified\tok message\n\
+                    too\tfew\tcols\n\
+                    note\tCDZ0001\t1\t-\t-\t-\t-\tunknown severity token\n\
+                    \n";
+        let faults = parse_diagnostics(wire);
+        assert_eq!(
+            faults.len(),
+            1,
+            "only the well-formed error line survives: {faults:?}"
+        );
+        assert_eq!(faults[0].code.as_deref(), Some("CDZ0203"));
+    }
+
+    /// `count_faults` / `DiagFault::is` select by (severity, code) — the basis for a `(count N)` assertion
+    /// that a presence-only check cannot express (e.g. "exactly one CDZ0305 dead-trap warning").
+    #[test]
+    fn count_faults_selects_by_severity_and_code() {
+        let wire = "warning\tCDZ0305\t1\t-\t-\t-\t-\tdead trap A\n\
+                    warning\tCDZ0305\t2\t-\t-\t-\t-\tdead trap B\n\
+                    error\tCDZ0305\t3\t-\t-\t-\t-\tsame code, different severity\n\
+                    warning\tCDZ0306\t4\t-\t-\t-\t-\tunused binding\n";
+        let faults = parse_diagnostics(wire);
+        assert_eq!(count_faults(&faults, Severity::Warning, "CDZ0305"), 2);
+        assert_eq!(count_faults(&faults, Severity::Error, "CDZ0305"), 1);
+        assert_eq!(count_faults(&faults, Severity::Warning, "CDZ0306"), 1);
+        assert_eq!(count_faults(&faults, Severity::Warning, "CDZ9999"), 0);
+        assert!(faults[0].is(Severity::Warning, "CDZ0305"));
+        assert!(!faults[0].is(Severity::Error, "CDZ0305"));
     }
 
     /// `check_live_objects` balances EVERY trial, not just call[0] — the fix for the systemic false-green
