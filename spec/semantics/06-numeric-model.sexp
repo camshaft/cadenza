@@ -415,6 +415,42 @@
   (input  (do (def (main) (List.len (list 1 2 3))) (export main)))
   (output (: 3 Int64)))
 
+; --- self-identity fold must preserve a TRAPPING lazy binding's trap (trap-preservation) ----------------
+; The self-identity simplifications `(< x x)→false`, `(<= x x)→true`, `(> x x)→false`, `(>= x x)→true`,
+; `(- x x)→0`, `(^ x x)→0` collapse to a constant that DISCARDS the operand. A `let` binding is LAZY (forced
+; on use), so a compare/arith that inspects it FORCES it — if the discarding fold fired it would drop the
+; binding (now dead) and ELIDE an observable trap. `is_trap_free` now follows a local-ref to its bound init:
+; a `(/ 10 n)` init is a runtime checked divide (not trap-free), so the fold declines and the force survives.
+; cdz-smith L2 differential (Lean-oracle ratified, #4417 trap-observability precedent): `(let ((v0 (r 2)))
+; (< v0 v0))` must TRAP, not fold to false. The trap-free twin below still folds (a pure binding is dropped).
+(case "self-identity comparison over a TRAPPING lazy binding preserves the trap (does not fold to a constant)"
+  (doc    "`(let ((v0 (/ 10 n))) (if (< v0 v0) 1 0))` — the reflexive compare `(< v0 v0)` would fold to
+           `false` treating v0 symbolically, dropping v0. But v0 is a lazy binding whose force ÷0-TRAPS at
+           n=0, so the fold must be BLOCKED and v0 forced: at n=5 v0=2 and `(< 2 2)`=false → 0; at n=0 the
+           force `(/ 10 0)` divide-by-zero-traps. Pins that the self-identity fold respects is_trap_free over
+           a ref-to-trapping-init (the compare-op analogue of the List.len trap-preservation above).")
+  (input  (do (def (main (: n Int64)) (let ((v0 (/ 10 n))) (if (< v0 v0) 1 0))) (export main)))
+  (call   main (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
+(case "self-identity subtraction over a TRAPPING lazy binding preserves the trap (does not fold to 0)"
+  (doc    "The arith-fold twin over the OTHER discarding fold site: `(- v0 v0)→0` also discards v0, so it too
+           must decline over a trapping lazy binding. `(let ((v0 (/ 10 n))) (- v0 v0))` — at n=5 v0=2 and
+           `(- 2 2)`=0; at n=0 the force ÷0-traps. Pins the `Sub`/`BitXor` same-operand fold (gated on
+           is_trap_free(lhs)) against the ref-to-trapping-init elision.")
+  (input  (do (def (main (: n Int64)) (let ((v0 (/ 10 n))) (- v0 v0))) (export main)))
+  (call   main (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
+(case "self-identity fold over a TRAP-FREE (pure) lazy binding still fires"
+  (doc    "The trap-free twin: `w = (Int64.wrapping-add n 1)` is TOTAL (wrapping arithmetic never traps), so
+           `is_trap_free` reports the ref trap-free and the self-identity fold `(< w w)→false` STILL fires — w
+           is dead-eliminated and `main` returns 0 for every n (including n=0, where a trapping binding would
+           have trapped). Pins that the trap-preservation guard did NOT over-decline pure bindings.")
+  (input  (do (def (main (: n Int64)) (let ((w (Int64.wrapping-add n 1))) (if (< w w) 1 0))) (export main)))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: 5 Int64)) (output (: 0 Int64)))
+
 ; `Rational.floor : Rational → Int64` (toward −∞) and `Rational.ceil` (toward +∞) — the other two exact
 ; integer projections. Like `truncate`, DERIVATIONS (no runtime op): `truncate` adjusted by ±1 off the
 ; remainder sign — floor = trunc−1 iff (numerator < 0 AND remainder ≠ 0); ceil = trunc+1 iff (numerator > 0

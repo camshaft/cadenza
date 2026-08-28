@@ -20771,8 +20771,23 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
         | Core::Unit
-        | Core::Param { .. }
-        | Core::LocalRef { .. } => true,
+        // A PARAMETER is caller-forced (its argument was already evaluated before the body runs), so a param
+        // reference can never itself be an un-forced trap — always trap-free.
+        | Core::Param { .. } => true,
+        // A LOCAL REFERENCE reads an already-bound slot, so the READ is pure — but `is_trap_free` is used by
+        // DISCARDING folds (`x OP x → const`, `x * 0 → 0`, `(if c a a) → a`, the absorbing/complement laws …)
+        // to decide "safe to DROP this operand without eliding a trap". A `let` binding is LAZY (forced on
+        // use), so DISCARDING the reference can drop the LAST forcing of a binding whose INIT traps → eliding
+        // an OBSERVABLE trap (cdz-smith L2 differential: `(let ((v0 (r 2))) (< v0 v0))` folded to false,
+        // dropping v0's trapping force; the Lean oracle correctly traps). So a reference is trap-free-TO-DISCARD
+        // iff its BOUND VALUE is: follow the ref chain (`peel_ref_annot`) to the underlying init and check THAT.
+        // (Consistent with the trap-observability precedent #4417 — a real trap is never silently elided.) An
+        // unresolvable ref keeps the prior `true` (regression-safe — this only tightens the resolvable cases,
+        // which are exactly the unsound discards).
+        Core::LocalRef { .. } => {
+            let init = peel_ref_annot(db, id);
+            init == id || is_trap_free(db, init)
+        }
         // PURE VALUE CONSTRUCTORS never trap in themselves — building a record/tuple/list/sum node is total;
         // only a trapping SUB-expression inside makes the whole thing trap. So a construction is trap-free
         // iff every field/element/payload it holds is. (This is what lets a discarding fold over a compound
