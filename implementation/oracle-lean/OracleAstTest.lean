@@ -33,6 +33,8 @@ def reprLeafKind : Leaf → String
   | .name _ => "name" | .bytesLit _ => "bytes" | .badEscape _ => "bad-escape" | .char _ => "char"
   | .badChar _ => "bad-char" | .sym _ => "sym" | .suffixed .. => "suffixed"
   | .floatNan => "nan" | .floatInf _ => "inf"
+  | .listCtor => "list-ctor" | .tupleCtor => "tuple-ctor" | .recordCtor => "record-ctor"
+  | .mapCtor => "map-ctor" | .setCtor => "set-ctor" | .fieldPair => "field-pair" | .member => "member"
 
 /-- Hex of a short byte slice, for a legible mismatch report. -/
 def hexPrefix (b : ByteArray) (n : Nat) : String :=
