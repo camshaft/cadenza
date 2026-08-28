@@ -17,7 +17,8 @@
 //! arithmetic (10 ops) | `(if <bool-cond> … …)` | `let` | a SELF-operation reusing an in-scope var
 //! `(op v v)` / `(rel v v)` (stresses self-identity folds + thunk sharing) | non-recursive helper call `(f e e)` |
 //! non-tail recursive-helper call `(r <small-fuel>)` | tail-recursive-helper call `(t <small-fuel>
-//! <seed>)` — a compound value `(tuple e e)` / `(list e e e)` of Int64 elements, or a Bool value. Kept
+//! <seed>)` — a compound value `(tuple e e)` / `(list e e e)` of Int64 elements, or a Bool value (a
+//! relation incl. `=`, boolean connectives, or a STRUCTURAL `(= <compound> <compound>)` equality). Kept
 //! type-correct throughout, so a generated program is cleanly HANDLED (it compiles, or cleanly declines
 //! e.g. on a const-folded overflow) — never a crash / invalid wasm / non-terminating run (both recursive
 //! helpers are fuel-bounded + structurally decreasing).
@@ -38,8 +39,10 @@ const MAX_DEPTH: usize = 5;
 /// handles cleanly, and the bitwise/shift lowering is a known Wasm-vs-Rust disagreement surface.
 const OPS: [&str; 10] = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"];
 
-/// Int64 → Int64 → Bool relational operators, for the condition of an `if` (both branches are Int64).
-const RELS: [&str; 4] = ["<=", "<", ">=", ">"];
+/// Int64 → Int64 → Bool relational operators for an `if` condition. Includes `=` (equality) alongside
+/// the orderings; `=` also drives the reflexive-equality fold path via the `(= v v)` self-op. (`!=` is
+/// not a valid Cadenza form — CDZ0101 — so it is deliberately absent.)
+const RELS: [&str; 5] = ["<=", "<", ">=", ">", "="];
 
 /// Boundary Int64 literals — where width / overflow / wrap / sign-extend miscompiles cluster (mirrors
 /// `generator.rs`'s `INT_BOUNDARIES`). Index 0 is `0`, so exhausted entropy still yields a trivial
@@ -202,6 +205,35 @@ fn gen_int_literal<C: Choice>(c: &mut C, out: &mut String) {
     write!(out, "{n}").ok();
 }
 
+/// Append one COMPOUND value of Int64 elements: a `(tuple <e> <e>)` (`is_list=false`) or a homogeneous
+/// `(list <e> <e> <e>)` (`is_list=true`). Shared by `main`'s compound body and the structural
+/// `(= <compound> <compound>)` equality arm (both sides built with the SAME `is_list` → type-correct).
+fn gen_compound<C: Choice>(
+    c: &mut C,
+    is_list: bool,
+    depth: usize,
+    scope: &mut Vec<String>,
+    fresh: &mut usize,
+    caps: Caps,
+    out: &mut String,
+) {
+    if is_list {
+        out.push_str("(list ");
+        gen_expr(c, depth, scope, fresh, caps, out);
+        out.push(' ');
+        gen_expr(c, depth, scope, fresh, caps, out);
+        out.push(' ');
+        gen_expr(c, depth, scope, fresh, caps, out);
+        out.push(')');
+    } else {
+        out.push_str("(tuple ");
+        gen_expr(c, depth, scope, fresh, caps, out);
+        out.push(' ');
+        gen_expr(c, depth, scope, fresh, caps, out);
+        out.push(')');
+    }
+}
+
 /// `main`'s body: an Int64 expression, a COMPOUND value built from Int64 sub-expressions — a
 /// `(tuple <e> <e>)` or `(list <e> <e> <e>)` — or a BOOL value. Keeping the elements Int64 stays
 /// type-safe without full type-directed generation, while reaching product/collection construction +
@@ -220,23 +252,9 @@ fn gen_main_body<C: Choice>(
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
         // (tuple <e> <e>) — a 2-tuple of Int64.
-        1 => {
-            out.push_str("(tuple ");
-            gen_expr(c, MAX_DEPTH - 1, scope, fresh, caps, out);
-            out.push(' ');
-            gen_expr(c, MAX_DEPTH - 1, scope, fresh, caps, out);
-            out.push(')');
-        }
+        1 => gen_compound(c, false, MAX_DEPTH - 1, scope, fresh, caps, out),
         // (list <e> <e> <e>) — a homogeneous Int64 list.
-        2 => {
-            out.push_str("(list ");
-            gen_expr(c, MAX_DEPTH - 1, scope, fresh, caps, out);
-            out.push(' ');
-            gen_expr(c, MAX_DEPTH - 1, scope, fresh, caps, out);
-            out.push(' ');
-            gen_expr(c, MAX_DEPTH - 1, scope, fresh, caps, out);
-            out.push(')');
-        }
+        2 => gen_compound(c, true, MAX_DEPTH - 1, scope, fresh, caps, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -384,8 +402,19 @@ fn gen_cond<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    let variant = if depth == 0 { 0 } else { c.variant(4) };
+    let variant = if depth == 0 { 0 } else { c.variant(5) };
     match variant {
+        // Structural EQUALITY of two same-shaped COMPOUND values — `(= (tuple e e) (tuple e e))` or
+        // `(= (list e e e) (list e e e))`. Reaches the structural (recursive, heap) equality lowering —
+        // a surface scalar relations never hit. Both sides share `is_list` so the comparison type-checks.
+        4 => {
+            let is_list = c.variant(2) == 1;
+            out.push_str("(= ");
+            gen_compound(c, is_list, depth - 1, scope, fresh, caps, out);
+            out.push(' ');
+            gen_compound(c, is_list, depth - 1, scope, fresh, caps, out);
+            out.push(')');
+        }
         // `(and <c> <c>)` — short-circuit conjunction.
         1 => {
             out.push_str("(and ");
@@ -795,6 +824,24 @@ mod tests {
                     Verdict::Compiled { .. } | Verdict::Declined { .. }
                 ),
                 "identical-branch if must be cleanly handled: {src}"
+            );
+        }
+    }
+
+    /// Scalar `=` and STRUCTURAL compound `=` shapes the generator can emit compile: Int64 equality as an
+    /// `if` condition, and `(= (tuple …) (tuple …))` / `(= (list …) (list …))` structural equality. Pins
+    /// that equality (incl. the recursive/heap compound-equality lowering) is valid Cadenza the compiler
+    /// handles — `!=` is deliberately NOT generated (invalid form, CDZ0101).
+    #[test]
+    fn equality_and_compound_equality_shapes_compile() {
+        for src in [
+            "(do (def (main) (if (= 3 3) 1 0)) (export main))",
+            "(do (def (main) (if (= (tuple 1 2) (tuple 3 4)) 1 0)) (export main))",
+            "(do (def (main) (if (= (list 1 2 3) (list 1 2 3)) 1 0)) (export main))",
+        ] {
+            assert!(
+                matches!(compile_catching(src), Verdict::Compiled { .. }),
+                "equality shape must compile: {src}"
             );
         }
     }
