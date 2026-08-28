@@ -7335,25 +7335,48 @@ fn collect_rel(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) {
 
 // ── worktree / inbox / tmux helpers ───────────────────────────────────────────────────────────
 
-/// Ensure the agent's git worktree exists, creating it off `trunk` if missing. pr-sync's worktree
-/// checks out `trunk` itself; every other agent gets its own topic branch. Idempotent.
+/// Ensure the agent's git worktree exists, creating a fresh topic branch off the CURRENT base if
+/// missing. pr-sync's worktree checks out `trunk` itself; every other agent gets its own topic branch.
+/// Idempotent.
+///
+/// BASE (concierge 2026-08-28, same pr-sync-PAUSED root as #4797/#4791): normally a topic branch cuts
+/// from `trunk` (the integration branch). But while pr-sync is paused it does NOT advance `trunk`, so
+/// `trunk` is a FROZEN ancient ancestor (1830 commits behind origin/main today) — a worktree cut from it
+/// starts the agent on an ancient base, so it measures WRONG baselines and risks duplicate work
+/// (v-corpus-declines wasted a cycle). When paused, fetch + cut the topic branch from `origin/main` (the
+/// real tip the fleet lands to) instead. pr-sync's OWN worktree still checks out `trunk` (it manages it).
 fn ensure_worktree(fleet: &Fleet, a: &Agent) {
     let wt = Path::new(&a.worktree);
     if wt.is_dir() {
         return;
     }
     std::fs::create_dir_all(&fleet.worktrees).ok();
+    // pr-sync-paused → cut topic branches from origin/main, not the frozen trunk. Only for topic
+    // branches (pr-sync's own `trunk` worktree must stay on trunk). Freshen origin/main first so the new
+    // worktree is off the current tip (best-effort; only runs on actual creation, not per existing agent).
+    let paused = a.branch != TRUNK
+        && trunk_vs_origin_main(&fleet.repo)
+            .is_some_and(|(_ahead, behind)| pr_sync_paused_by_trunk_lag(behind));
+    let base: &str = if paused {
+        let _ = Command::new("git")
+            .current_dir(&fleet.repo)
+            .args(["fetch", "-q", "origin", "main"])
+            .status();
+        "origin/main"
+    } else {
+        TRUNK
+    };
     let mut cmd = Command::new("git");
     cmd.current_dir(&fleet.repo).arg("worktree").arg("add");
     if a.branch == TRUNK {
         // pr-sync: check out the existing trunk branch (no new branch).
         cmd.arg(wt).arg(TRUNK);
     } else {
-        // A fresh topic branch off trunk for this agent.
-        cmd.arg("-b").arg(&a.branch).arg(wt).arg(TRUNK);
+        // A fresh topic branch off the current base (origin/main while pr-sync is paused, else trunk).
+        cmd.arg("-b").arg(&a.branch).arg(wt).arg(base);
     }
     match cmd.status() {
-        Ok(s) if s.success() => println!("  + worktree {} [{}]", a.worktree, a.branch),
+        Ok(s) if s.success() => println!("  + worktree {} [{} off {base}]", a.worktree, a.branch),
         Ok(_) => eprintln!(
             "  ! failed to create worktree {} (branch {} may already be checked out elsewhere)",
             a.worktree, a.branch
