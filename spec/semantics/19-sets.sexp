@@ -2135,6 +2135,26 @@
   (call   main (: 3.5 Float64))
   (output (: 1 Int64)))
 
+(case "a map insert forces a trapping value at construction — Map.len traps, not returns the count"
+  (doc    "Map (heap-materialized) construction is STRICT: inserting a trapping VALUE forces it at construction,
+           so a trapping value traps even though only Map.len is later taken. `(Map.len (Map.insert (Map.empty)
+           1 (/ 5 d)))` at d=0 — the value `(/ 5 0)` is a divide-by-zero — TRAPS rather than returning 1; at d=1
+           the value is 5, len 1. Pins map-construction strictness (core-semantics.md #A Trap Occurs Only Where
+           Its Computation Is Observed: a heap collection forces its entries at construction), the map twin of
+           the list-len trapping-element pin (28-compiler-primitives).")
+  (input  (do (def (main (: d Int64)) (Map.len (Map.insert (Map.empty) 1 (/ 5 d)))) (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
+(case "a set of a list with a trapping element forces it at construction — Set.len traps, not returns the count"
+  (doc    "Set (heap-materialized) construction is STRICT: a trapping element is forced at construction, so
+           `(Set.len (Set.of (list (/ 5 d) 2 3)))` at d=0 — the element `(/ 5 0)` is a divide-by-zero — TRAPS
+           rather than returning 3; at d=1 the elements are {5,2,3}, len 3. Pins set-construction strictness
+           (via the strict Set.of-over-list path), the set twin of the map/list trapping-element pins.")
+  (input  (do (def (main (: d Int64)) (Set.len (Set.of (list (/ 5 d) 2 3)))) (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
 ; --- Float CHAMP keys/elements under the canonical byte form ----------------------------------------
 ; 9c2790cef fixed the Float element-boxing arm (box-float, not the defaulted box-int — my filed
 ; invalid-wasm; its pin covers the empty-set insert). These pin the canonical-form semantics the
