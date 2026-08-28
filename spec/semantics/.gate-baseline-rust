@@ -8473,3 +8473,5 @@ pass	qkm3 an explicitly converted cross-scale probe (Unit.in + re-wrap) hits the
 todo	a scalar tuple argument crosses INBOUND to a peer and both fields are summed there
 todo	two compound arguments each cross as their own handle in one peer call
 todo	a String argument handle passed to a peer stays live for a later local read (borrow not move)
+pass	constant tuple projections fold at boundary and multi-digit indices
+pass	a nested constant tuple projection folds through both levels

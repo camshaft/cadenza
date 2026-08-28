@@ -516,6 +516,25 @@
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
 
+(case "constant tuple projections fold at boundary and multi-digit indices"
+  (doc    "Projecting a compile-time-visible tuple by a CONSTANT index folds to the element with no heap (the
+           constant companion of the runtime-element fold above). Pins the boundary positions (index 0 and the
+           last index) AND a MULTI-DIGIT index read as ONE integer key (position 10 of an 11-tuple, not
+           per-digit): (. (tuple 10 20 30) 0) + (. (tuple 10 20 30) 2) + (. (tuple 0 1 2 3 4 5 6 7 8 9 99) 10)
+           = 10 + 30 + 99 = 139. Relocated from rcdzc a_constant_tuple_projection_folds_to_its_element +
+           positional_projection_is_member_access_with_an_integer_key.")
+  (input  (do (def (main) (+ (. (tuple 10 20 30) 0) (+ (. (tuple 10 20 30) 2) (. (tuple 0 1 2 3 4 5 6 7 8 9 99) 10)))) (export main)))
+  (call   main)
+  (output (: 139 Int64)))
+
+(case "a nested constant tuple projection folds through both levels"
+  (doc    "A projection of a projection over compile-time-visible nested tuples folds through both levels to a
+           scalar: (. (. (tuple (tuple 1 2) (tuple 3 4)) 1) 0) projects the second inner tuple, then its first
+           element = 3. Relocated from rcdzc a_nested_tuple_projection_folds.")
+  (input  (do (def (main) (. (. (tuple (tuple 1 2) (tuple 3 4)) 1) 0)) (export main)))
+  (call   main)
+  (output (: 3 Int64)))
+
 (case "projecting a just-built tuple does not evaluate the unprojected sibling's trap"
   (doc    "`(. (tuple a (/ 1 z)) 0)` with z = 0 projects element 0 (`a`), so the sibling `(/ 1 z)` — a
            divide-by-zero — is NEVER evaluated: the fold reduces to `a` and building the tuple is elided,

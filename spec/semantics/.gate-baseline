@@ -1,5 +1,7 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 fail	hcx1 tuple-index projection of a captured tuple in a host-called closure body ICEs (no local slot; tracked known-FAIL, the chr1 ICE's effects-free face)
+fail	hcz1 dropping a closure whose body RETURNED its captured TUPLE crashes (double-release; tracked known-FAIL)
+fail	hcz2 dropping a closure whose body RETURNED its captured LIST crashes (double-release; tracked known-FAIL)
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
@@ -3024,6 +3026,7 @@ pass	a nested conditional (the sign idiom) folds to branchless nested selects �
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — zero
 pass	a nested conjunction accumulates all three operand hypotheses
 pass	a nested constant multiply preserves the inner overflow rather than combining the factors
+pass	a nested constant tuple projection folds through both levels
 pass	a nested constructor in a multi-payload position destructures two levels
 pass	a nested constructor match on a variant past the first dispatches on that variant's payload
 pass	a nested constructor pattern dispatches a RUNTIME two-sum value
@@ -5756,6 +5759,9 @@ pass	cbk1 a CIRCUIT-BREAKER state machine — two failures trip it open, open re
 pass	cbm1 a SEQUENTIAL double match on the same runtime list scrutinee is clean (the nested form traps the UAF detector)
 pass	cbm2 a nested same-scrutinee match on an OPTION is clean (the list-scrutinee sibling traps)
 pass	cbm3 a nested same-scrutinee match on a TUPLE plus a re-consume after is clean
+pass	cbw1 a nested same-scrutinee LIST match computes and fully reclaims (the #4685 fix witness)
+pass	cbw2 the nested re-match with no tail consume computes and reclaims
+pass	cbw3 the nested re-match through a WILDCARD inner arm computes and reclaims (the header-read-only face)
 pass	cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance
 pass	cc10 a draw bound in a PLAIN let OUTSIDE the closure init-let is captured once and folds
 pass	cc11 a closure over a nested-let-init with a PURE init folds
@@ -5987,6 +5993,7 @@ pass	conjunction of two theorems sharing a hypothesis concatenates without dedup
 pass	conjunction shields a trapping right operand when the left is false
 pass	const u32 and u16 bin bindings with their top bits set fold unsigned
 pass	constant conditions simplify around performs — kept branches dispatch, dropped ones do not
+pass	constant tuple projections fold at boundary and multi-digit indices
 pass	constant-succeeding tries as LIST-literal elements unwrap in place and the list builds
 pass	constructing a bit-field from a value wider than its width is rejected
 pass	constructing a byte sequence with a negative value is a type error
@@ -6613,6 +6620,11 @@ pass	hc2 helpers at TWO depths both perform — the call-site draw, mid's draw, 
 pass	hc3 the SAME performing helper under two SEQUENTIAL handlers — each handle interprets its draws with its own arm and seed
 pass	hc4 a performing helper COMPOSED with itself — probe(probe(draw)), three dispatches through two call frames
 pass	hc5 a helper RETURNS a tuple of two draws — the caller destructures it and re-performs
+pass	hcd1 dropping a closure whose capture is a runtime-BUILT list cascades the reclaim
+pass	hcd2 dropping a closure capturing an IMMORTAL trie + scalar reclaims the mortal env and no-ops the immortal
+pass	hcn1 a closure CAPTURING another closure crosses and dispatches through it
+pass	hcn2 a closure capturing a runtime-built MAP looks up by the call argument
+pass	hcn3 dropping a closure with a CHAMP capture cascades the reclaim to zero
 pass	hcp1 a captured tuple returned WHOLE from a host-called closure works (projection is the ICE, not the capture)
 pass	hcp2 a closure capturing an IMMORTAL 33-trie plus a runtime scalar crosses and reads through the immortal
 pass	hcp3 a closure capturing a runtime-BUILT list crosses and reads it (mortal capture retained by the host-held handle)
@@ -8998,13 +9010,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	hcd1 dropping a closure whose capture is a runtime-BUILT list cascades the reclaim
-pass	hcd2 dropping a closure capturing an IMMORTAL trie + scalar reclaims the mortal env and no-ops the immortal
-fail	hcz1 dropping a closure whose body RETURNED its captured TUPLE crashes (double-release; tracked known-FAIL)
-fail	hcz2 dropping a closure whose body RETURNED its captured LIST crashes (double-release; tracked known-FAIL)
-pass	hcn1 a closure CAPTURING another closure crosses and dispatches through it
-pass	hcn2 a closure capturing a runtime-built MAP looks up by the call argument
-pass	hcn3 dropping a closure with a CHAMP capture cascades the reclaim to zero
-pass	cbw1 a nested same-scrutinee LIST match computes and fully reclaims (the #4685 fix witness)
-pass	cbw2 the nested re-match with no tail consume computes and reclaims
-pass	cbw3 the nested re-match through a WILDCARD inner arm computes and reclaims (the header-read-only face)
