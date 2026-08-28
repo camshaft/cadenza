@@ -151,17 +151,24 @@ const nfcHostImport = {
   },
 };
 
-let heapPromise = null;
+// A FRESH value-heap runtime instance PER program-run — do NOT share ONE heap across every example.
+// WHY (root-caused 2026-08-28, the fleet-wide "36 playground examples trap 'memory access out of bounds'"
+// gate-local blocker): a single memoized heap ACCUMULATES guest allocations across all ~410 examples in
+// this one long-lived process. Those allocations live INSIDE the runtime's wasm linear memory (managed by
+// the guest's Perceus reclaim, invisible to JS GC), so the shared heap grows monotonically; once it can no
+// longer grow, every subsequent run traps `memory access out of bounds` — reproducibly under jco/Node in
+// CI, but NOT under native cdz-run (fresh process per program) nor in the browser (runWorker.ts disposes a
+// worker per run). Re-instantiating per run gives each example a clean heap, exactly like the browser and
+// native paths. We cache only the (expensive) transpiled MODULE; the instance is cheap + fresh each call.
+// The freed instances' V8 wasm-memory reservations are reclaimed by the `globalThis.gc()` swept at the top
+// of the example loop below (the harness runs with `--expose-gc`; see package.json check:examples) — without
+// that sweep the many fresh reservations would balloon the process's VIRTUAL address space.
+let __runtimeModule = null;
 async function getHeap() {
-  if (!heapPromise) {
-    heapPromise = (async () => {
-      const rt = await loadComponent(readFileSync(runtimePath), "heap");
-      // The runtime imports the NFC normalization component — supply the JS shim so it instantiates.
-      const root = await rt.instantiate(rt.getCore, { [NFC_IMPORT]: nfcHostImport });
-      return root[HEAP_IMPORT] ?? root["heap"];
-    })();
-  }
-  return heapPromise;
+  if (!__runtimeModule) __runtimeModule = await loadComponent(readFileSync(runtimePath), "heap");
+  // The runtime imports the NFC normalization component — supply the JS shim so it instantiates.
+  const root = await __runtimeModule.instantiate(__runtimeModule.getCore, { [NFC_IMPORT]: nfcHostImport });
+  return root[HEAP_IMPORT] ?? root["heap"];
 }
 
 // ---- run a compiled component through jco, return its rendered value text ----
@@ -908,6 +915,10 @@ const stillBlocked = []; // known-blocked examples that (correctly) still fail �
 const recovered = []; // blocklist entries that now PASS — the entry should be removed + the example ships.
 const matchedEntries = new Set(); // blocklist entries that matched ≥1 example (to find stale ones).
 for (const ex of examples) {
+  // Reclaim the previous example's fresh runtime + program instances (each reserves a large V8 wasm-memory
+  // guard region) so this long-lived process's virtual address space stays bounded instead of climbing into
+  // the hundreds of GB. Runs under `--expose-gc` (package.json check:examples); a no-op if the flag is absent.
+  if (globalThis.gc) globalThis.gc();
   const block = blockedBy(ex);
   const fail = await checkExample(ex);
   if (block) {
