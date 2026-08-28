@@ -510,46 +510,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             // `Any` and the value-heap emit declines; typing each element occurrence on its own reaches the
             // recursive callee's cached `def_scheme` (`fold : E → E`), so `fa : E`. `tuple_constructor_ty`
             // builds `(Tuple <elem-tys>)` from the constructor when the scrutinee is one, else `None`.
-            let mut cur =
+            let start =
                 tuple_constructor_ty(db, scrutinee).unwrap_or_else(|| type_of(db, scrutinee));
-            let mut heads = heads.iter();
-            for step in steps.iter() {
-                cur = match step {
-                    crate::core::PathStep::Payload => {
-                        let Some(&head) = heads.next() else {
-                            return Ty::Any; // malformed path (fewer heads than Payload steps)
-                        };
-                        // Over a NOMINAL NEWTYPE the `Payload` step UNWRAPS the tag to its underlying
-                        // type (a runtime no-op — the value is unchanged). `(Mk n)` over a `Ty::Nominal {
-                        // inner: Int64 }` binds `n : Int64`.
-                        if let Ty::Nominal { inner, .. } = &cur {
-                            (**inner).clone()
-                        } else {
-                            match payload_ty_at_instantiation(db, head, &cur) {
-                                Some(t) => t,
-                                None => return Ty::Any,
-                            }
-                        }
-                    }
-                    crate::core::PathStep::Elem(i) => match &cur {
-                        Ty::Tuple(elems) => match elems.get(*i) {
-                            Some(t) => t.clone(),
-                            None => return Ty::Any,
-                        },
-                        // A list-pattern element binder — every element of a `List T` has type `T`
-                        // (homogeneous), regardless of the index.
-                        Ty::List(elem) => (**elem).clone(),
-                        _ => return Ty::Any,
-                    },
-                    // A list-pattern REST binder — the tail sublist is still a `List T` (same type as the
-                    // list scrutinee), independent of where the tail starts.
-                    crate::core::PathStep::RestFrom(_) => match &cur {
-                        Ty::List(_) => cur.clone(),
-                        _ => return Ty::Any,
-                    },
-                };
-            }
-            cur
+            project_path_type(db, start, &steps, &heads)
         }
         Resolved::If { cond, then_, else_ } => {
             // Reading the children's types is the backward demand: each is a lazy `type_of`.
@@ -3570,6 +3533,61 @@ fn call_site_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Optio
 /// two different types (`(loopn 3 a)` : Int64 and `(loopn 2 "hi")` : String) is detected as generic.
 /// `own_body` is `def`'s body, skipped (a self-call's args reference the very params being solved). A
 /// read-only scan over the call-site index; only DETERMINED (non-`Any`/non-`Var`) types are recorded.
+/// Walk a starting type down a match-pattern access PATH, returning the type at the binder position.
+/// A `Payload` step descends into a variant's payload AT THE CURRENT INSTANTIATION
+/// (`payload_ty_at_instantiation` unifies the head's `(-> payload Sum)` result against `cur`; a nominal
+/// newtype unwraps to its inner); an `Elem(i)` step reads a tuple element / list element type; a
+/// `RestFrom` step keeps the list type. `Any` on a malformed path or a non-matching type. SHARED by the
+/// `Resolved::SumPayload` type_of arm (which starts from the scrutinee's solved type) and the transitive
+/// spread projection in `call_site_distinct_arg_types` (which starts from a caller-param's CONCRETE
+/// call-site type, so a binder over a GENERIC caller param inherits the param's per-instantiation
+/// sub-type — the L6512 `reduce1`->`go` delegated element).
+fn project_path_type(
+    db: &mut Db,
+    mut cur: Ty,
+    steps: &[crate::core::PathStep],
+    heads: &[StructId],
+) -> Ty {
+    let mut heads = heads.iter();
+    for step in steps.iter() {
+        cur = match step {
+            crate::core::PathStep::Payload => {
+                let Some(&head) = heads.next() else {
+                    return Ty::Any; // malformed path (fewer heads than Payload steps)
+                };
+                // Over a NOMINAL NEWTYPE the `Payload` step UNWRAPS the tag to its underlying type (a
+                // runtime no-op — the value is unchanged). `(Mk n)` over a `Ty::Nominal { inner: Int64 }`
+                // binds `n : Int64`.
+                if let Ty::Nominal { inner, .. } = &cur {
+                    (**inner).clone()
+                } else {
+                    match payload_ty_at_instantiation(db, head, &cur) {
+                        Some(t) => t,
+                        None => return Ty::Any,
+                    }
+                }
+            }
+            crate::core::PathStep::Elem(i) => match &cur {
+                Ty::Tuple(elems) => match elems.get(*i) {
+                    Some(t) => t.clone(),
+                    None => return Ty::Any,
+                },
+                // A list-pattern element binder — every element of a `List T` has type `T` (homogeneous),
+                // regardless of the index.
+                Ty::List(elem) => (**elem).clone(),
+                _ => return Ty::Any,
+            },
+            // A list-pattern REST binder — the tail sublist is still a `List T` (same type as the list
+            // scrutinee), independent of where the tail starts.
+            crate::core::PathStep::RestFrom(_) => match &cur {
+                Ty::List(_) => cur.clone(),
+                _ => return Ty::Any,
+            },
+        };
+    }
+    cur
+}
+
 fn call_site_distinct_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Vec<Ty>> {
     ensure_call_site_index(db);
     let call_args: Vec<Vec<StructId>> = db
@@ -3612,6 +3630,38 @@ fn call_site_distinct_arg_types(db: &mut Db, def: usize, own_body: StructId) -> 
                     for ty in tys {
                         if !out[i].contains(ty) {
                             out[i].push(ty.clone());
+                        }
+                    }
+                }
+            } else if let Resolved::SumPayload {
+                scrutinee,
+                steps,
+                heads,
+            } = resolved_of(db, arg)
+                && let Some((d, j)) = arg_is_other_def_param(db, scrutinee)
+                && !db.seed_transitive.contains(&d)
+                && db.defs[d].body.is_some()
+            {
+                // TRANSITIVE genericity through a MATCH BINDER (not just a direct param). The seed is a
+                // pattern binder DESTRUCTURED from a caller PARAM: `reduce1`'s `(go rest h f)` seeds `go`'s
+                // acc with `h`, the `Cons` HEAD binder of reduce1's generic iterator param `it`.
+                // `arg_is_other_def_param` sees only a DIRECT param, so the binder inherited nothing → `go`'s
+                // acc grounded to `Any` → the transitive tie DECLINED (L6512). Recover the spread by
+                // projecting the caller param's per-call-site CONCRETE types through the SAME pattern PATH to
+                // the binder's sub-position: reduce1's `it` is called at `GIter Int64` + `GIter String`, and
+                // the `Cons`-head path projects those to `{Int64, String}` — the two element types `go`'s acc
+                // is genuinely generic over. Guarded by `seed_transitive` against a cycle, exactly as the
+                // direct-param case above; a binder over a MONOMORPHIC scrutinee projects a single concrete
+                // type (or `Any`/`Var`, dropped) and stays non-generic.
+                db.seed_transitive.insert(d);
+                let d_body = db.defs[d].body.unwrap();
+                let d_spread = call_site_distinct_arg_types(db, d, d_body);
+                db.seed_transitive.remove(&d);
+                if let Some(scrut_tys) = d_spread.get(j).cloned() {
+                    for st in scrut_tys {
+                        let bt = project_path_type(db, st, &steps, &heads);
+                        if !matches!(bt, Ty::Any | Ty::Var(_)) && !out[i].contains(&bt) {
+                            out[i].push(bt);
                         }
                     }
                 }
