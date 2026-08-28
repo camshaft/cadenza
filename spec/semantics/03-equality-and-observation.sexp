@@ -720,7 +720,7 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 8))
 
 ; The compound-ordering cases above all bottom out in an INTEGER leaf (the numeric leaf order). This pins
 ; that the compound walk uses the BLESSED per-leaf order for a STRING leaf too — a String's order is
@@ -3199,7 +3199,7 @@
               (match (Map.lookup mp k) ((Some s) (if (= s "hixxx") 1 0)) ((None) (- 0 1))))
             (def (main) (f (Map.insert (Map.empty) "y" (rep "hi" 3)) "y"))
             (export main)))
-  (call   main) (output (: 1 Int64)) (live-objects known-leak 2))
+  (call   main) (output (: 1 Int64)) (live-objects 0))
 
 (case "the flat-value baseline for the borrowed-rope-eq leak-neutrality (same map/value-box residual)"
   (doc    "The byte-identical flat-value baseline for the borrowed-rope-eq neutrality pin above: the map value
@@ -3212,7 +3212,7 @@
               (match (Map.lookup mp k) ((Some s) (if (= s "hixxx") 1 0)) ((None) (- 0 1))))
             (def (main) (f (Map.insert (Map.empty) "y" "hixxx") "y"))
             (export main)))
-  (call   main) (output (: 1 Int64)) (live-objects known-leak 1))
+  (call   main) (output (: 1 Int64)) (live-objects 0))
 
 (case "Ordering.of yields the three-way ordering of two Int64 operands"
   (doc    "`Ordering.of a b` deconstructed by a three-arm match → -1/0/1: 1<2 Less→-1, 2=2 Equal→0, 3>2 Greater→1.")

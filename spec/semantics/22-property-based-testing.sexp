@@ -1174,7 +1174,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
   (call   main (: 9 Int64)) (output (: 9 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "a Value.encode/Value.decode round-trip preserves a runtime-length LIST"
   (doc    "Extends the round-trips to a `(List Int64)` — the R2 value-form `(list ..)` shape, a RUNTIME-length

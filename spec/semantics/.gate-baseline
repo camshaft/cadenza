@@ -7763,7 +7763,7 @@ pass	reifying a positive-infinity float into an Ast.Float declines
 pass	rejection sampling draws until the refinement holds — an only-even generator produces an even value
 pass	rejection sampling into a narrow range refinement produces only in-range values
 pass	rejection sampling terminates on fuel exhaustion when the refinement is unsatisfiable
-pass	remainder (%) on a quantity declines cleanly (not a leaked scheme mismatch)
+pass	remainder (%) on a floating-point quantity is CDZ0301 (no float remainder)
 pass	remainder BY the state — truncated dividend-sign semantics hold as the state walks through negative and positive divisors
 pass	remainder by negative one annihilates to zero at every input including the minimum
 pass	remainder by one folds to zero but does not discard a trapping runtime operand
