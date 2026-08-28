@@ -23539,3 +23539,21 @@
             (export main)))
   (output (: 21 Int64))
   (live-objects known-leak 6))
+
+(case "a list rest pattern binds an EMPTY rest when the fixed heads exactly consume a runtime list"
+  (doc    "The list-pattern boundary the #4798 oracle path (list patterns in match — fixed + `.. rest`) newly
+           grades but the rest-form corpus family doesn't isolate: when a `(list a b .. rest)` pattern's fixed
+           head patterns EXACTLY consume the runtime list, `rest` binds to the EMPTY list (len 0) rather than
+           the arm falling through — matchSeq's rest-remainder at remaining=[]. Contrasted in one program with
+           a longer list where the SAME pattern binds a non-empty rest: `probe` returns `100*(a+b) + len(rest)`,
+           so a runtime-built 2-element list `(1 2)` gives a=1,b=2,rest=() → 300, and a 5-element list gives
+           rest=(3 4 5) → 303; `1000*300 + 303` = 300303. The lists are built by a recursive `List.push` so the
+           match runs on a RUNTIME list, not a const-folded literal. A regression that fell through on the
+           exact-length case (→ -1) or mis-sized the rest would move the total off 300303.")
+  (input  (do
+            (def (bld (: n Int64)) (if (> n 0) (List.push (bld (- n 1)) n) (list)))
+            (def (probe (: lst (List Int64)))
+              (match lst ((list a b .. rest) (+ (* 100 (+ a b)) (List.len rest))) (_ -1)))
+            (def (main) (+ (* 1000 (probe (bld 2))) (probe (bld 5))))
+            (export main)))
+  (output (: 300303 Int64)))
