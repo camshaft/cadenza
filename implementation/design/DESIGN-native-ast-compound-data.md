@@ -590,6 +590,14 @@ the metaprog/corpus lane; the ml-convert route is validated + simplest.
    re-baseline + clippy `--all-targets -D warnings` + pinned `cargo fmt --all --check`.
 9. Hand the concierge the single atomic `--ref` for the flag-day land.
 
+### 12.5 Tooling (2026-08-28, v-fleet-tooling)
+Prefer the all-nix PATH wrappers (warm shared closure, auto-rebuild from the dirty worktree — no per-worktree
+cold rebuild): `cdz` (compile/run/convert/rewrite — runs the migration codemod current with local source),
+`roundtrip [files]` (the corpus verify: sexpr exact-repro + ml fixed-point — step 4), `fast-gate [crates]`
+(inner-loop touched-crate gate — e.g. `fast-gate rcdzc` for my pinned gate), `gate` (full local battery —
+step 8). AUTHORITATIVE merge gate stays `cargo xtask fleet gate-local` (adds the lease + failing-sub-check +
+transient-vs-real advisory). Avoid bare `nix develop -c cargo test` (the ~40x-redundant cold build = shared-box load).
+
 ### 12.4 Post-flag-day (sequenced AFTER M2 lands)
 Ping v-ast-consolidate (num_bigint→IntValue swap), v-corpus-declines (re-baseline 12-metaprogramming),
 v-cadenza-backend (ctor-leaf head-first consumer). M3 (delete legacy string/name-head recognition) is a
