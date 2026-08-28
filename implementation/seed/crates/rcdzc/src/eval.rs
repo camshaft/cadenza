@@ -834,14 +834,30 @@ fn is_binder_occurrence(db: &Db, id: StructId) -> bool {
     // β-immune exactly like the legacy `(key value)` pair's first child — without this a
     // `(def (f (: x Int64)) (record (= x 5)))` substitutes the arg for the key `x`, corrupting
     // `(record (= x 5))` into `(record (= 7 5))` → CDZ0201. Handle it directly, before the first-child gate.
+    //
+    // The field pair reads in EITHER spelling, matching `resolve::read_record_fields`: the LEGACY
+    // `(= key value)` list (head is the NAME `=`) OR the native M2 FIELD_PAIR-leaf-headed entry
+    // (`field_pair_parts` — head is `Leaf::FieldPair`, recognized by kind). Both are 3-element lists with
+    // the key at index 1. The RECORD grandparent is likewise recognized in EITHER head spelling via
+    // `compound_form_of` (the same dispatch `resolve_record` uses) — the `record` NAME/STRING alias AND
+    // the native M2 ctor-LEAF head that `{…}` literals now emit. Using the name/string-only
+    // `compound_ctor_either` here silently dropped the immunity after the M2 flag-day (the reader emits a
+    // `Leaf::Ctor(Record)` head, which that recognizer misses), so a `{ name = … }` field key that shadows
+    // a `const`/plain param was β-substituted into the arg — reintroducing the exact CDZ0201 this arm
+    // prevents (it broke every platform contract's `descriptor()`). Record-ONLY: a MAP entry's key is a
+    // value expression, not a static label, so it stays substitutable (grandparent must be `Record`).
     let crate::ast::Struct::List(pair_children) = db.ast.get(pair) else {
         return false;
     };
     if pair_children.len() == 3
-        && db.ast.as_name(pair_children[0]) == Some("=")
+        && (db.ast.as_name(pair_children[0]) == Some("=")
+            || db.ast.field_pair_parts(pair).is_some())
         && pair_children.get(1) == Some(&id)
         && let Some(grandparent) = db.parent_of(pair)
-        && (db.ast.compound_ctor_either(grandparent) == Some(CompoundCtor::Record))
+        && db
+            .ast
+            .compound_form_of(grandparent, CompoundCtor::Record)
+            .is_some()
     {
         return true;
     }

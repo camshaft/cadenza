@@ -7944,6 +7944,22 @@
   (input  (do (def (f (: x Int64)) (. (record (= x 1) (= y 2)) y)) (def (main) (f 7)) (export main)))
   (call   main) (output (: 2 Int64)))
 
+(case "a param-colliding record field key survives on the NATIVE ctor-leaf head"
+  (doc    "M2 regression guard: the two cases above use the `record` NAME alias; this uses the native
+           `#record` ctor-LEAF head (the form `{…}` literals emit). Its field key `x` is a LABEL, β-immune
+           to substitution of the param `x` exactly like the alias form. The field-key immunity recognized
+           only the name/string-headed record, so after the native-compound flag-day inlining `(f 7)`
+           β-substituted the key into the arg -> `#record((= 7 5))` -> CDZ0201 (it broke every platform
+           contract's `descriptor()`); here it must project x -> 5.")
+  (input  (do (def (f (: x Int64)) (. #record((= x 5)) x)) (def (main) (f 7)) (export main)))
+  (call   main) (output (: 5 Int64)))
+
+(case "a native-head param-colliding record key does not corrupt a non-colliding field"
+  (doc    "Multi-field native `#record`: the colliding key `x` (= param name) does not corrupt the record;
+           project the non-colliding field y -> 2.")
+  (input  (do (def (f (: x Int64)) (. #record((= x 1) (= y 2)) y)) (def (main) (f 7)) (export main)))
+  (call   main) (output (: 2 Int64)))
+
 (case "a record field VALUE referencing the parameter still substitutes"
   (doc    "The complement of key-immunity: a field VALUE that references the param STILL beta-substitutes
            (immunity is key-only). `(record (y x))` with x=7, projected y -> 7.")
