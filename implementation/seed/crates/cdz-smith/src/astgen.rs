@@ -47,7 +47,9 @@ impl ValueGenerator for ProgramGen {
         // exhausted entropy (every driver read falls back to a default), so `generate` never returns
         // `None`. That is the operator's "coerce ANY entropy → a valid value".
         let mut source = String::from("(do (def (main) ");
-        gen_expr(driver, MAX_DEPTH, &mut source);
+        let mut scope: Vec<String> = Vec::new();
+        let mut fresh = 0usize;
+        gen_expr(driver, MAX_DEPTH, &mut scope, &mut fresh, &mut source);
         source.push_str(") (export main))");
         Some(Program { source })
     }
@@ -56,13 +58,19 @@ impl ValueGenerator for ProgramGen {
 /// Append one coerced `Int64` expression: at `depth == 0` (or when the driver picks the base variant) an
 /// integer literal; otherwise a binary arithmetic node over two sub-expressions. Every driver read falls
 /// back to a default on exhaustion, so this always produces a well-formed sub-expression.
-fn gen_expr<D: Driver>(driver: &mut D, depth: usize, out: &mut String) {
-    // At `depth == 0` force the base literal (0); otherwise `gen_variant(3, 0)` biases toward it — so
+fn gen_expr<D: Driver>(
+    driver: &mut D,
+    depth: usize,
+    scope: &mut Vec<String>,
+    fresh: &mut usize,
+    out: &mut String,
+) {
+    // At `depth == 0` force the base case (0); otherwise `gen_variant(4, 0)` biases toward it — so
     // generation always terminates within the depth budget. Exhaustion → base case (0).
     let variant = if depth == 0 {
         0
     } else {
-        driver.gen_variant(3, 0).unwrap_or(0)
+        driver.gen_variant(4, 0).unwrap_or(0)
     };
     match variant {
         // Binary arithmetic `(op <e> <e>)`.
@@ -71,9 +79,9 @@ fn gen_expr<D: Driver>(driver: &mut D, depth: usize, out: &mut String) {
             out.push('(');
             out.push_str(op);
             out.push(' ');
-            gen_expr(driver, depth - 1, out);
+            gen_expr(driver, depth - 1, scope, fresh, out);
             out.push(' ');
-            gen_expr(driver, depth - 1, out);
+            gen_expr(driver, depth - 1, scope, fresh, out);
             out.push(')');
         }
         // Conditional `(if (<rel> <e> <e>) <e> <e>)` — the condition is Int64→Int64→Bool, both branches
@@ -83,21 +91,43 @@ fn gen_expr<D: Driver>(driver: &mut D, depth: usize, out: &mut String) {
             out.push_str("(if (");
             out.push_str(rel);
             out.push(' ');
-            gen_expr(driver, depth - 1, out);
+            gen_expr(driver, depth - 1, scope, fresh, out);
             out.push(' ');
-            gen_expr(driver, depth - 1, out);
+            gen_expr(driver, depth - 1, scope, fresh, out);
             out.push_str(") ");
-            gen_expr(driver, depth - 1, out);
+            gen_expr(driver, depth - 1, scope, fresh, out);
             out.push(' ');
-            gen_expr(driver, depth - 1, out);
+            gen_expr(driver, depth - 1, scope, fresh, out);
             out.push(')');
         }
-        // Base case: a bounded Int64 literal — well within range, so it always type-checks as Int64.
+        // Let binding `(let ((vN <val>)) <body>)` — binds a FRESH Int64 name (so no shadowing) and adds
+        // it to scope for the body, which may then reference it. The bound value is generated BEFORE the
+        // name enters scope (a `let` is non-recursive). Reaches name-resolution / binding lowering.
+        3 => {
+            let name = format!("v{fresh}");
+            *fresh += 1;
+            out.push_str("(let ((");
+            out.push_str(&name);
+            out.push(' ');
+            gen_expr(driver, depth - 1, scope, fresh, out);
+            out.push_str(")) ");
+            scope.push(name);
+            gen_expr(driver, depth - 1, scope, fresh, out);
+            scope.pop();
+            out.push(')');
+        }
+        // Base case: an in-scope Int64 variable reference (when any is bound and the driver picks it) —
+        // which keeps the expression Int64 — else a bounded Int64 literal.
         _ => {
-            let n = driver
-                .gen_i64(Bound::Included(&-1_000_000), Bound::Included(&1_000_000))
-                .unwrap_or(0);
-            write!(out, "{n}").ok();
+            if !scope.is_empty() && driver.gen_variant(2, 0).unwrap_or(0) == 1 {
+                let idx = driver.gen_variant(scope.len(), 0).unwrap_or(0);
+                out.push_str(&scope[idx]);
+            } else {
+                let n = driver
+                    .gen_i64(Bound::Included(&-1_000_000), Bound::Included(&1_000_000))
+                    .unwrap_or(0);
+                write!(out, "{n}").ok();
+            }
         }
     }
 }
@@ -182,6 +212,7 @@ mod tests {
     #[test]
     fn if_arm_is_reachable_and_every_coerced_program_is_cleanly_handled() {
         let mut saw_if = false;
+        let mut saw_let = false;
         for seed in 0u64..200 {
             // A varied, well-mixed byte string per seed (SplitMix-ish), so the driver visits all arms.
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
@@ -193,6 +224,7 @@ mod tests {
             }
             let program = gen_from(&bytes);
             saw_if |= program.source.contains("(if (");
+            saw_let |= program.source.contains("(let ((");
             let verdict = compile_catching(&program.source);
             assert!(
                 matches!(verdict, Verdict::Compiled { .. } | Verdict::Declined { .. }),
@@ -203,6 +235,10 @@ mod tests {
         assert!(
             saw_if,
             "the if arm should be reachable across 200 varied entropy inputs"
+        );
+        assert!(
+            saw_let,
+            "the let arm should be reachable across 200 varied entropy inputs"
         );
     }
 
