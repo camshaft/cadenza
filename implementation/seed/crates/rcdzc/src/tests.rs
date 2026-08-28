@@ -2190,13 +2190,15 @@ fn record_merge_and_pop_over_a_runtime_record_build_from_projections_materialize
     // the corpus-inexpressible per-operand materialize-once emit pins above.
 }
 
-/// §3c REDUCER-SHAPE de-risk: a runtime-built record with a STRING field and a BYTES field — the essence
-/// of the reducer Event (`{content-type, payload}`) — escapes via the value-encode WALKER. Pins that the
-/// exact reducer-Event field shape (mixed String + Bytes) value-encodes to the canonical `(= name value)`
-/// WIRE, so §3c step 2b's value-decode-param + value-encode-result path has a sound descriptor + encoder
-/// for the real shape (not just all-scalar records). This is the value-encode half of the reducer apply.
+/// §3c REDUCER-SHAPE de-risk (WHITE-BOX half): a runtime-built record with a STRING field and a BYTES field —
+/// the essence of the reducer Event (`{content-type, payload}`) — that escapes must IMPORT the value-heap
+/// runtime, i.e. it takes the runtime value-encode WALKER (not a const-fold pre-render). This compile-artifact
+/// pin (the import name is not observable behavior, so it is corpus-inexpressible) stays in-crate; the RUN half
+/// — that the mixed String+Bytes shape value-encodes to the canonical `(= name value)` wire with the Bytes
+/// field as `b".."` — is corpus case 05-compound-types "vse12 a RUNTIME-BUILT record with String + Bytes
+/// fields escapes via the runtime value-encode walker (the reducer-Event shape)".
 #[test]
-fn a_reducer_event_shaped_record_with_bytes_escapes_via_value_encode() {
+fn a_reducer_event_shaped_record_with_bytes_imports_the_value_encode_runtime() {
     use crate::testkit::parse;
     // Fields sorted (BTreeMap): `ct` < `pl`. `ct` = String, `pl` = Bytes. Runtime-built (recursion defeats
     // the constant fold), so it takes the runtime value-encode walker — the reducer apply's result path.
@@ -2207,26 +2209,6 @@ fn a_reducer_event_shaped_record_with_bytes_escapes_via_value_encode() {
         imports_value_heap_runtime(&bytes),
         "a runtime record-with-Bytes escape must import the value-heap runtime"
     );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("[3c] runtime wasm not found; skipping reducer-event-shaped escape");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: None,
-        args: vec![],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => assert_eq!(
-            s,
-            "(: (record (= ct \"wasm\") (= pl b\"\\x01\\x02\\x03\")) (record (ct String) (pl Bytes)))",
-            "reducer-event-shaped record (String + Bytes) value-encode WIRE: name-head record, \
-             (= name value) fields, Bytes as b\"..\""
-        ),
-        cdz_run::Outcome::Trap(t) => panic!("reducer-event-shaped escape run trapped: {t}"),
-    }
 }
 
 /// The PREPARSED TARGET WIT WORLD (KIND_WIT_WORLD bytes) declaring a single export interface `fold` with
