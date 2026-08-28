@@ -3675,30 +3675,40 @@
           # guests) from the nix-built, content-addressed store — the operator's load-by-hash north star.
           # OPT-IN + non-destructive: `cargo xtask build` (the store WRITER) still writes
           # target/cadenza-store; this only overrides the READ path for a nix-develop session.
+          # LAZY BOOT (operator 2026-08-28): agents boot directly into this shell, so it must be REACTIVE.
+          # A LOCALLY-BUILT derivation referenced in the shellHook is realised at BOOT (nix must build it to
+          # substitute its path) — previously `CDZ_STORE=<the component store>` forced 9 local derivations
+          # (runtime component + debug + NFC + guests + hashes, minutes cold) on every fresh `nix develop`.
+          # Rule: EAGER for external/substitutable tooling (rustToolchain/wasm-tools/cargo-component — the
+          # `packages` above, fetched from the binary cache), LAZY for anything derived from LOCAL builds
+          # (the component store, the compiler) — deferred to first actual use. So the shellHook references
+          # NO local derivation; CDZ_STORE is resolved on the first cdz/cdz-run call and memoized.
           shellHook = ''
-            export CDZ_STORE="${componentStore}"
-            # NIX_REMOTE=daemon: in-shell nix MUST use the shared multi-user daemon/store so the warm
-            # crane dep-closure + component store are visible (not a private store) — v-fleet-tooling
-            # boots agents into this shell (all-nix cutover, operator 2026-08-28). CARGO_BUILD_JOBS caps
-            # any residual in-shell cargo fan-out (composes with the daemon's cores; overridable).
             export NIX_REMOTE=daemon
             export CARGO_BUILD_JOBS="''${CARGO_BUILD_JOBS:-8}"
+            # Resolve the flake root INSIDE each call (not a shell var) so the functions work from any
+            # subdir and after `export -f` into bash children/scripts (an unexported var would be lost there).
+            __cdz_flakeroot() { git rev-parse --show-toplevel 2>/dev/null || echo "$PWD"; }
+            # LAZY store: build + pin the nix component store (runtime/NFC/guests) on the FIRST cdz/cdz-run
+            # use (memoized for the session), so `cdz run`/`cdz test` resolve components by hash from the nix
+            # store rather than a `target/cadenza-store` fallback — WITHOUT paying that build at boot.
+            __cdz_ensure_store() {
+              if [ -z "''${CDZ_STORE:-}" ]; then
+                CDZ_STORE="$(nix build --no-link --print-out-paths --option warn-dirty false "$(__cdz_flakeroot)#store")" && export CDZ_STORE
+              fi
+            }
             # ALL-NIX AGENT ENTRYPOINTS: invoke the tool directly — nix compiles it ON DEMAND from your
             # CURRENT worktree (picks up uncommitted edits to TRACKED files; new untracked files need
             # `git add`) reusing the warm dep-closure, so there is no bare-cargo per-worktree cold rebuild.
             # FUNCTIONS not PATH: `nix run` rebuilds from the dirty tree each call, whereas a PATH-injected
             # binary would freeze at shell-entry rev and miss your edits (v-nix+operator 2026-08-28).
-            # Resolve the flake root INSIDE each call (not a shell var) so the functions work from any
-            # subdir and after `export -f` into bash children/scripts (an unexported var would be lost there).
-            __cdz_flakeroot() { git rev-parse --show-toplevel 2>/dev/null || echo "$PWD"; }
-            cdz()       { nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz"       -- "$@"; }
-            cdz-run()   { nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz-run"   -- "$@"; }
+            cdz()       { __cdz_ensure_store; nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz"       -- "$@"; }
+            cdz-run()   { __cdz_ensure_store; nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz-run"   -- "$@"; }
             gate()      { nix run --option warn-dirty false "$(__cdz_flakeroot)#gate"      -- "$@"; }
             fast-gate() { nix run --option warn-dirty false "$(__cdz_flakeroot)#fast-gate" -- "$@"; }
-            export -f __cdz_flakeroot cdz cdz-run gate fast-gate 2>/dev/null || true
-            echo "cdz: CDZ_STORE → nix component store ($CDZ_STORE); NIX_REMOTE=$NIX_REMOTE"
-            echo "cdz all-nix shell — invoke tools directly (nix compiles on demand, reuses the warm cache):"
-            echo "  cdz …               compile / run / test / doctor"
+            export -f __cdz_flakeroot __cdz_ensure_store cdz cdz-run gate fast-gate 2>/dev/null || true
+            echo "cdz all-nix shell (LAZY boot) — tools compile on FIRST use, reusing the warm cache:"
+            echo "  cdz …               compile / run / test / doctor  (builds the component store on 1st run)"
             echo "  cdz-run FILE.wasm   run a component"
             echo "  fast-gate [crates]  fast touched-crate gate (inner loop)"
             echo "  gate                full local-gate battery (convenience)"
