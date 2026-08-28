@@ -61,6 +61,17 @@ fn main() -> ExitCode {
             );
             ExitCode::from(2)
         }
+        #[cfg(feature = "differential")]
+        "verify-differential" => cmd_verify_differential(&args[1..]),
+        #[cfg(not(feature = "differential"))]
+        "verify-differential" => {
+            eprintln!(
+                "cdz-smith: the `verify-differential` subcommand needs the `differential` feature \
+                 (it runs the wasm + rust backends) — rebuild: \
+                 `cargo run --features differential -- verify-differential …`."
+            );
+            ExitCode::from(2)
+        }
         "once" => cmd_once(&args[1..]),
         "gen" => cmd_gen(&args[1..]),
         "verify" => cmd_verify(&args[1..]),
@@ -87,6 +98,7 @@ fn usage() {
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
          \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR]\n\
+         \x20 cdz-smith verify-differential <FILE.sexp | SEED> [--store DIR] [--cdz PATH] [--oracle PATH]\n\
          \x20 cdz-smith once             <SEED>\n\
          \x20 cdz-smith gen              <SEED>\n\
          \x20 cdz-smith verify           <FILE.sexp | SEED>\n\
@@ -331,6 +343,135 @@ fn cmd_differential(args: &[String]) -> ExitCode {
             eprintln!("cdz-smith: differential sweep failed: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Triage ONE reproducer through the differential, in-process: run it under the wasm backend and the
+/// rust backend, print each `Side` + the wasm-vs-rust `Diff`, and (with `--oracle`) also judge it with
+/// the Lean L2 oracle. This is the per-source counterpart to the `differential` / `lean-differential`
+/// sweeps — the tool for triaging a filed finding (or any program) WITHOUT re-running a whole campaign.
+/// Exits non-zero iff a disagreement fired (wasm-vs-rust mismatch or a Lean mismatch).
+#[cfg(feature = "differential")]
+fn cmd_verify_differential(args: &[String]) -> ExitCode {
+    let mut file: Option<String> = None;
+    let mut store: Option<PathBuf> = None;
+    let mut cdz: Option<PathBuf> = None;
+    let mut oracle: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--store" => store = it.next().map(PathBuf::from),
+            "--cdz" => cdz = it.next().map(PathBuf::from),
+            "--oracle" => oracle = it.next().map(PathBuf::from),
+            other if !other.starts_with('-') && file.is_none() => file = Some(other.to_string()),
+            other => {
+                eprintln!("cdz-smith verify-differential: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let Some(arg) = file else {
+        eprintln!("cdz-smith verify-differential: expected a FILE.sexp or a SEED");
+        return ExitCode::from(2);
+    };
+    let source = match resolve_source(&arg, "verify-differential") {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+
+    // The `cdz` binary (rust side) is OPTIONAL: findings from `lean-differential` only exercise the
+    // in-process wasm side + the Lean oracle, and `cdz` (+ its rlibs) is a heavy separate build. If it
+    // is not discoverable we still run the wasm side + Lean judge and just report the rust side as
+    // unavailable — so the tool works for the common (wasm/Lean) triage case.
+    let cdz = cdz
+        .filter(|p| p.is_file())
+        .or_else(cdz_smith::differential::discover_cdz);
+    let store = store.unwrap_or_else(|| {
+        cdz.as_ref()
+            .and_then(|c| c.parent())
+            .and_then(|p| p.parent())
+            .map(|t| t.join("cadenza-store"))
+            .unwrap_or_else(|| PathBuf::from("target/cadenza-store"))
+    });
+
+    use cdz_smith::differential::{Diff, compare, run_rust, run_wasm};
+    let wasm = run_wasm(&source, &store);
+    println!("wasm: {}", describe_side(&wasm));
+    let mut disagreed = false;
+    match &cdz {
+        None => println!(
+            "rust: <unavailable> no `cdz` binary (build `cargo build --release --bin cdz` or pass --cdz); \
+             skipping wasm-vs-rust"
+        ),
+        Some(cdz) => match run_rust(cdz, &source) {
+            Ok(rust) => {
+                println!("rust: {}", describe_side(&rust));
+                match compare(&wasm, &rust) {
+                    Diff::Agree => println!("wasm-vs-rust: AGREE"),
+                    Diff::Mismatch { kind, wasm, rust } => {
+                        disagreed = true;
+                        println!(
+                            "wasm-vs-rust: MISMATCH [{}] — wasm={wasm} rust={rust}",
+                            kind.tag()
+                        );
+                    }
+                    Diff::Unavailable(e) => println!("wasm-vs-rust: UNAVAILABLE — {e}"),
+                }
+            }
+            Err(e) => println!("rust: <unavailable> {e}"),
+        },
+    }
+
+    // With --oracle, also judge the single program with the Lean L2 oracle (a 1-trial batch).
+    if let Some(oracle) = oracle {
+        if !oracle.is_file() {
+            println!(
+                "lean: <skipped> --oracle {} is not a file",
+                oracle.display()
+            );
+        } else {
+            let mut mm: Vec<(String, String)> = Vec::new();
+            match cdz_smith::differential::lean_differential_sweep(
+                std::slice::from_ref(&source),
+                &store,
+                &oracle,
+                1,
+                &mut mm,
+            ) {
+                Ok(s) if s.mismatches > 0 => {
+                    disagreed = true;
+                    let detail = mm.first().map(|(_, d)| d.as_str()).unwrap_or("");
+                    println!("lean: MISMATCH — {detail}");
+                }
+                Ok(s) if s.holds > 0 => println!("lean: HOLDS"),
+                Ok(s) if s.skips > 0 => {
+                    println!("lean: SKIP (a construct the oracle does not model)")
+                }
+                Ok(_) => println!("lean: NOT-COMPARABLE (no comparable wasm output)"),
+                Err(e) => println!("lean: <error> {e}"),
+            }
+        }
+    }
+
+    if disagreed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// A short human label for a [`cdz_smith::differential::Side`] (the module's own `describe_side` is
+/// private).
+#[cfg(feature = "differential")]
+fn describe_side(s: &cdz_smith::differential::Side) -> String {
+    use cdz_smith::differential::Side;
+    match s {
+        Side::Value(v) => format!("value {v}"),
+        Side::Trap(t) => format!("trap {t}"),
+        Side::Declined(d) => format!("declined {d}"),
+        Side::ArtifactError(e) => format!("artifact-error {e}"),
     }
 }
 
@@ -607,43 +748,46 @@ fn cmd_verify(args: &[String]) -> ExitCode {
         eprintln!("cdz-smith verify: expected a FILE.sexp or a SEED");
         return ExitCode::from(2);
     };
-    // A path to a reproducer, or a bare seed.
-    let source = if std::path::Path::new(arg).exists() {
-        match std::fs::read_to_string(arg) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("cdz-smith verify: cannot read {arg}: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-    } else if let Some(seed) = parse_seed(arg) {
-        driver::program_for_seed(seed)
-    } else {
-        // Try resolving relative to a discovered failures dir (so `verify foo.smith.sexp` works
-        // from anywhere in the repo, matching the note's suggested command).
-        match cdz_smith::finding::FindingStore::discover(
-            &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        ) {
-            Ok(store) => {
-                let p = store.dir().join(arg);
-                match std::fs::read_to_string(&p) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        eprintln!(
-                            "cdz-smith verify: `{arg}` is neither a file, a seed, nor a finding in {}",
-                            store.dir().display()
-                        );
-                        return ExitCode::from(2);
-                    }
-                }
-            }
-            Err(_) => {
-                eprintln!("cdz-smith verify: `{arg}` is neither a readable file nor a seed");
-                return ExitCode::from(2);
-            }
-        }
+    let source = match resolve_source(arg, "verify") {
+        Ok(s) => s,
+        Err(code) => return code,
     };
     report(&compile_catching(&source))
+}
+
+/// Resolve a `verify`-style argument into program source: a path to a reproducer file, a bare SEED
+/// (decimal / `0x`-hex, mapped through the PRNG generator), or a finding NAME relative to the discovered
+/// `spec/semantics/failures` store (so `foo.smith.sexp` works from anywhere in the repo). `subcmd` is
+/// only for the error text. Shared by `verify` and `verify-differential`.
+fn resolve_source(arg: &str, subcmd: &str) -> Result<String, ExitCode> {
+    if std::path::Path::new(arg).exists() {
+        return std::fs::read_to_string(arg).map_err(|e| {
+            eprintln!("cdz-smith {subcmd}: cannot read {arg}: {e}");
+            ExitCode::FAILURE
+        });
+    }
+    if let Some(seed) = parse_seed(arg) {
+        return Ok(driver::program_for_seed(seed));
+    }
+    // Try resolving relative to a discovered failures dir (matching the finding note's suggested command).
+    match cdz_smith::finding::FindingStore::discover(
+        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    ) {
+        Ok(store) => {
+            let p = store.dir().join(arg);
+            std::fs::read_to_string(&p).map_err(|_| {
+                eprintln!(
+                    "cdz-smith {subcmd}: `{arg}` is neither a file, a seed, nor a finding in {}",
+                    store.dir().display()
+                );
+                ExitCode::from(2)
+            })
+        }
+        Err(_) => {
+            eprintln!("cdz-smith {subcmd}: `{arg}` is neither a readable file nor a seed");
+            Err(ExitCode::from(2))
+        }
+    }
 }
 
 /// Print a verdict; exit non-zero iff it is a finding (a crash), so `verify` doubles as a check.
