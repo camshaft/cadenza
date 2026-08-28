@@ -125,6 +125,50 @@ def ofModule? (m : Module) : Option Value :=
     | Option.none => Option.none
   | _ => Option.none
 
+/-- The `f64` a float VALUE denotes — the KEY correction (v-cdz-smith L2 differential, 2026-08-28): a
+Cadenza float literal is ROUNDED to `f64` (rcdzc's model), so the oracle must compare floats by their
+`f64` value, NOT by the literal's exact decimal (which diverges on extremes: `1.0e-400`→0.0 underflow,
+`1.0e308`→the f64-rounded value, …). `(neg, exp, sig)` denotes `±(beBytesToNat sig) × 10^exp`, rounded
+via `Float.ofScientific` (correctly-rounded decimal→f64). -/
+def asF64? : Value → Option Float
+  | .float neg exp sig =>
+    let f := Float.ofScientific (beBytesToNat sig) (decide (exp < 0)) exp.natAbs
+    Option.some (if neg then -f else f)
+  | .floatNan => Option.some (0.0 / 0.0)
+  | .floatInf neg => Option.some (if neg then -(1.0 / 0.0) else 1.0 / 0.0)
+  | _ => Option.none
+
+/-- Canonical `f64` bits for SPEC float equality: all NaN fold to one bit pattern (spec: a single NaN,
+all NaN equal), and `-0.0` (bits `0x8000…`) stays DISTINCT from `0.0` (spec: sign-significant zero).
+Every other `f64` is keyed by its bits, so equal value ⟺ equal bits. -/
+def specFloatEq (a b : Float) : Bool :=
+  let canon := fun (f : Float) => if f.isNaN then (0x7ff8000000000000 : UInt64) else f.toBits
+  canon a == canon b
+
+/-- Spec value equality: structural EVERYWHERE except at float components, which compare by `f64` value
+(`specFloatEq`). Strictly ⊇ structural `BEq` for floats — two structurally-equal floats are `f64`-equal,
+so no hold is ever lost; it only recognizes that two float SPELLINGS of the same `f64` (or an extreme
+literal and its f64-rounded output) are equal. Used by the checker's computed-vs-expected comparison. -/
+partial def valueEqSpec (a b : Value) : Bool :=
+  match asF64? a, asF64? b with
+  | Option.some fa, Option.some fb => specFloatEq fa fb
+  | Option.some _, _ => false
+  | _, Option.some _ => false
+  | Option.none, Option.none =>
+    match a, b with
+    | .some x, .some y => valueEqSpec x y
+    | .ok x, .ok y => valueEqSpec x y
+    | .err x, .err y => valueEqSpec x y
+    | .variant t1 p1, .variant t2 p2 => t1 == t2 && valueEqSpec p1 p2
+    | .tuple xs, .tuple ys => xs.size == ys.size && (xs.zip ys).all (fun p => valueEqSpec p.1 p.2)
+    | .list xs, .list ys => xs.size == ys.size && (xs.zip ys).all (fun p => valueEqSpec p.1 p.2)
+    | .set xs, .set ys => xs.size == ys.size && (xs.zip ys).all (fun p => valueEqSpec p.1 p.2)
+    | .record f1, .record f2 =>
+      f1.size == f2.size && (f1.zip f2).all (fun p => p.1.1 == p.2.1 && valueEqSpec p.1.2 p.2.2)
+    | .map m1, .map m2 =>
+      m1.size == m2.size && (m1.zip m2).all (fun p => valueEqSpec p.1.1 p.2.1 && valueEqSpec p.1.2 p.2.2)
+    | _, _ => a == b
+
 /-- Encode a value to its canonical value-AST bytes (`cdzast\x00\x01`). -/
 def encode (v : Value) : ByteArray := Ast.encode v.toModule
 
