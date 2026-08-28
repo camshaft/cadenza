@@ -66,10 +66,12 @@ pub mod query;
 /// calculator/REPL, reused by every surface (`cdz-wasm::repl_eval`, the native `cdz calc`) so they
 /// never drift in how the program is built.
 pub mod repl;
-pub mod sexpr;
 /// Source spans + the `StructId → Span` table — moved to `cadenza-syntax-core`, re-exported so
 /// `cadenza_syntax::span`/`::spans` (public API) + internal `crate::span`/`crate::spans` are unchanged.
 pub use cadenza_syntax_core::{span, spans};
+/// The s-expression surface (canonical/oracle text form) — split into the `cadenza-syntax-sexpr` crate,
+/// re-exported as `cadenza_syntax::sexpr` so callers + the corpus oracle are unchanged.
+pub use cadenza_syntax_sexpr as sexpr;
 pub mod token;
 /// The TOML surface — split into the `cadenza-syntax-toml` crate (which owns `toml_edit`), re-exported
 /// as `cadenza_syntax::toml_surface` (name kept so callers are unchanged). A source-faithful config

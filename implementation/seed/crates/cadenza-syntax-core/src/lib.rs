@@ -16,6 +16,10 @@ pub use cadenza_ast::ast;
 /// JSON reader bound their recursion by it) so the limit is defined once.
 pub const MAX_NESTING_DEPTH: u32 = 1024;
 
+/// The default pretty-print width every surface printer lays out to when a caller doesn't specify one.
+/// Shared so the ML printer, the s-expr printer, and `convert`'s default all agree on one value.
+pub const DEFAULT_WIDTH: usize = 100;
+
 pub mod arena_read;
 /// The Wadler-style pretty-printer engine (`Doc`/`ibox`/`word`/breaks) every surface PRINTER lays its
 /// output out through — surface-agnostic, depends on nothing but std.

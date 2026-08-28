@@ -90,8 +90,9 @@ fn print_mode(arenas: &Arenas, width: usize, display: bool) -> String {
     p.doc.render(width)
 }
 
-/// The default target width (100 columns).
-pub const DEFAULT_WIDTH: usize = 100;
+/// The default target width (100 columns) — moved to `cadenza-syntax-core`, re-exported so
+/// `printer::DEFAULT_WIDTH` stays a stable path.
+pub use cadenza_syntax_core::DEFAULT_WIDTH;
 
 /// Pretty-print at the default width.
 pub fn print_ml(arenas: &Arenas) -> String {
