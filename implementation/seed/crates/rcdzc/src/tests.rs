@@ -4216,26 +4216,10 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
         imports_value_heap_runtime(&bytes),
         "the nested record-transform builds a runtime record, so it imports the value-heap runtime"
     );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec!["0".to_string()],
-        runtime: Some(runtime.clone()),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => {
-            assert_eq!(
-                s, "2",
-                "f(f({{a:seed,b:5}})) with seed=0 bumps a twice → {{a:2,b:5}}, so .a = 2"
-            )
-        }
-        cdz_run::Outcome::Trap(t) => panic!("composed record-transform trapped (miscompile?): {t}"),
-    }
+    // The RUN VALUE — f(f({a:seed,b:5})) with seed=0 bumps a twice → .a = 2 — is corpus-covered by
+    // 05-compound-types "a composed record-transform call bumps a field, applied twice, and the result field
+    // is read"; this test keeps the slot-collision COMPILE-VALIDITY guard (a compile-artifact the corpus
+    // cannot assert: the miscompile was a wasm-validation failure, expected i64/found i32).
     // A THREE-field record with TWO checked-arith fields and the arith field read LAST — exercises more
     // than one arith scratch interleaved with the assembler slots. `(* c 3)` twice over c=2 → 18.
     // Field `a` seeded from the runtime parameter (same reason as above) keeps the three-field build on the
@@ -4250,17 +4234,9 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
         imports_value_heap_runtime(&three_bytes),
         "the three-field nested record-transform imports the value-heap runtime"
     );
-    let three_opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec!["0".to_string()],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&three_bytes, &three_opts).expect("run") {
-        cdz_run::Outcome::Value(s) => assert_eq!(s, "18", "c = 2 tripled twice = 2*3*3 = 18"),
-        cdz_run::Outcome::Trap(t) => panic!("three-field record-transform trapped: {t}"),
-    }
+    // The RUN VALUE — c = 2 tripled twice = 18 — is corpus-covered by 05-compound-types "a composed
+    // three-field record-transform triples a field twice and reads it last"; this test keeps the
+    // slot-collision compile-validity guard (the interleaved-arith-scratch face the corpus cannot assert).
 }
 
 /// A COLLECTION construction whose element/key/value siblings interleave a BigInt HEAP HANDLE (i32) with

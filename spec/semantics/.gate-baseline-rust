@@ -8496,3 +8496,5 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	a composed record-transform call bumps a field, applied twice, and the result field is read
+pass	a composed three-field record-transform triples a field twice and reads it last
