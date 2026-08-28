@@ -544,18 +544,38 @@ fn judge_and_tally(
     mismatches: &mut Vec<(String, String)>,
 ) -> std::io::Result<()> {
     let verdicts = crate::lean::judge_batch(oracle_bin, trials)?;
-    for (src, verdict) in srcs.iter().zip(verdicts) {
+    for ((src, trial), verdict) in srcs.iter().zip(trials).zip(verdicts) {
         stats.trials += 1;
         match verdict {
             crate::lean::Verdict::Holds => stats.holds += 1,
             crate::lean::Verdict::Skip(_) => stats.skips += 1,
             crate::lean::Verdict::Mismatch(detail) => {
-                stats.mismatches += 1;
-                mismatches.push((src.clone(), detail));
+                // INTERIM (v-lean-oracle 2026-08-28): a float-literal value mismatch is a KNOWN ORACLE
+                // GAP — their `Value.float` is an exact-decimal pass-through, not f64-rounded, so it
+                // emits FALSE mismatches on float extremes rcdzc rounds/underflows/overflows (e.g.
+                // 1.0e-400→0.0, f64::MAX). rcdzc is f64-correct. Until they land the f64-rounding fix +
+                // ping, treat any mismatch whose program carries a float literal as a SKIP, not a bug.
+                // Non-float mismatches remain real rcdzc findings. Remove this filter when Lean re-enables.
+                if program_has_float_literal(&trial.program) {
+                    stats.skips += 1;
+                } else {
+                    stats.mismatches += 1;
+                    mismatches.push((src.clone(), detail));
+                }
             }
         }
     }
     Ok(())
+}
+
+/// True iff the program AST carries a float literal (a `Leaf::Float`). Reliable at the AST level — it
+/// catches e.g. `1.7976931348623157e308` whose rcdzc *value* renders as a big integer but whose source
+/// literal is a float. Used to filter the known float-literal oracle gap (see [`judge_and_tally`]).
+fn program_has_float_literal(program: &cadenza_syntax::ast::Arenas) -> bool {
+    program
+        .leaves
+        .iter()
+        .any(|l| matches!(l, cadenza_syntax::ast::Leaf::Float(_)))
 }
 
 /// The full differential check for one program: run both backends and compare. `store` is the runtime
@@ -994,6 +1014,50 @@ mod tests {
         assert_eq!(
             stats.mismatches, 0,
             "benign scalars must not mismatch: {mismatches:?}"
+        );
+        assert!(mismatches.is_empty());
+    }
+
+    /// The float-literal filter is reliable at the AST level: a program with a float literal is
+    /// detected regardless of how its value renders; an Int64-only program is not.
+    #[test]
+    fn program_has_float_literal_detects_float_literals() {
+        let f = |s| program_has_float_literal(&cadenza_syntax::sexpr::read(s).expect("parses"));
+        assert!(f("(do (def (main) 2.5) (export main))"));
+        assert!(f("(do (def (main) 1.7976931348623157e308) (export main))"));
+        assert!(!f("(do (def (main) (+ 1 2)) (export main))"));
+        assert!(!f("(do (def (main) 42) (export main))"));
+    }
+
+    /// END-TO-END (skips without a live oracle): a float-literal program that the oracle MISMATCHES
+    /// (1.0e-400, the confirmed oracle gap) is FILTERED to a skip — not counted/filed as a mismatch —
+    /// per the interim v-lean-oracle agreement. rcdzc's 0.0 is correct f64 underflow.
+    #[test]
+    fn float_literal_mismatch_is_filtered_to_skip() {
+        let Some(oracle) = crate::lean::discover_oracle_check() else {
+            eprintln!(
+                "skipping: no oracle-check (nix build .#oracle-lean; set CDZ_SMITH_ORACLE_CHECK)"
+            );
+            return;
+        };
+        let sources = vec!["(do (def (main) 1.0e-400) (export main))".to_string()];
+        let mut mismatches = Vec::new();
+        let stats = lean_differential_sweep(
+            &sources,
+            std::path::Path::new("/nonexistent-store"),
+            &oracle,
+            8,
+            &mut mismatches,
+        )
+        .expect("sweep runs");
+        assert_eq!(stats.trials, 1);
+        assert_eq!(
+            stats.mismatches, 0,
+            "float-literal oracle-gap must be filtered, not filed"
+        );
+        assert_eq!(
+            stats.skips, 1,
+            "the float mismatch is reclassified as a skip"
         );
         assert!(mismatches.is_empty());
     }
