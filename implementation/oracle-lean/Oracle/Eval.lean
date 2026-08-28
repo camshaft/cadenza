@@ -619,6 +619,40 @@ partial def reifyInto (m : Module) (v : Value) : Except String (Module × Nat) :
       | none => .error s!"eval: cannot reify Ast.{tagS} payload"
   | _ => .error "eval: value is not an Ast node (cannot reify)"
 
+/-- Does an effect op's type return `Unit`? The type is either an arrow `(-> Arg… Ret)` (Ret = last
+child) or a bare type; Unit-returning iff that return position is the name `Unit`. -/
+def retIsUnit? (m : Module) (tyId : Nat) : Bool :=
+  match m.nodes[tyId]? with
+  | some (Node.list tc) =>
+    if m.headName? (Node.list tc) == some "->".toUTF8 && tc.size ≥ 2
+    then (tc[tc.size - 1]?).bind (nameOf? m) == some "Unit".toUTF8
+    else false
+  | some (Node.atom _) => (nameOf? m tyId) == some "Unit".toUTF8
+  | _ => false
+
+/-- Resolve a performed effect op `((. eff op) …)` against the program's `(effect eff (op op <type>)…)`
+declarations: `some true` if the op RETURNS Unit (its perform yields `unit` — response-independent, so
+modelable purely NOW), `some false` if it returns a VALUE (the perform's result IS the host response —
+needs host-response threading, H2, so unmodeled here → skip), `none` if `(eff, op)` is not a declared
+effect op. This is the H1a foundation of host-function modeling (the L2 WIT/host surface). -/
+def effectOpRetUnit? (m : Module) (eff op : ByteArray) : Option Bool :=
+  match m.nodes[m.root]? with
+  | some (Node.list stmts) =>
+    stmts.findSome? (fun sid =>
+      match m.nodes[sid]? with
+      | some (Node.list ec) =>
+        if m.headName? (Node.list ec) == some "effect".toUTF8 && (ec[1]?).bind (nameOf? m) == some eff then
+          (ec.extract 2 ec.size).findSome? (fun oid =>
+            match m.nodes[oid]? with
+            | some (Node.list oc) =>
+              if m.headName? (Node.list oc) == some "op".toUTF8 && (oc[1]?).bind (nameOf? m) == some op then
+                some (match oc[2]? with | some tyId => retIsUnit? m tyId | none => true)
+              else none
+            | _ => none)
+        else none
+      | _ => none)
+  | _ => none
+
 mutual
 /-- SHORT-CIRCUIT structural equality (spec core-semantics.md §Equality Is Structural: equality is
 component-wise + §A Trap Occurs Only Where Its Computation Is Observed: an unobserved subcomputation's
@@ -701,7 +735,13 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
                else if q == "Ast".toUTF8 &&
                        ["Int", "Float", "Name", "Str", "Bool", "List", "Bytes", "Char", "Symbol"].contains ((String.fromUTF8? c).getD "") then
                  some (evalUnaryCtor m env fuel children (Value.variant c))
-               else none
+               -- PERFORM a declared effect op `((. eff op) args)` (host-function modeling, H1a): a
+               -- Unit-returning op yields `unit` (response-independent) after its args are observed; a
+               -- value-returning op's result IS the host response (H2) → skip until responses are threaded.
+               else match effectOpRetUnit? m q c with
+                 | some true => some (performUnitOp m env fuel children)
+                 | some false => some (.unsupported "eval: value-returning effect op (host response not yet modeled)")
+                 | none => none
              | none => none)
         <|> ((qualHead? m children).bind (fun (q, f) => evalModuleFn m env fuel q f children))
         <|> ((m.headName? (Node.list children)).bind (fun h =>
@@ -715,6 +755,10 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
       | some h =>
         if h == "let".toUTF8 then evalLet m env ty fuel children
         else if h == "do".toUTF8 then evalDo m env ty fuel children
+        else if h == "host".toUTF8 then
+          -- `(host (caps) body)`: the host context provides capabilities to `body`; evaluate the body
+          -- (the effect ops themselves are resolved from the `(effect …)` decls, not the caps list).
+          (match children[2]? with | some b => evalNode m env ty fuel b | none => .unsupported "eval: malformed host")
         else if h == "quote".toUTF8 then
           -- `(quote <expr>)`: reflect the single quoted subtree structurally, WITHOUT evaluating it.
           match children[1]? with
@@ -907,6 +951,19 @@ partial def evalDo (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children 
     match bindStmts env (items.extract 0 (items.size - 1)).toList with
     | .ok env' => evalNode m env' ty fuel lastId
     | .error o => o
+
+/-- Perform a Unit-returning effect op `((. eff op) args…)` — host-function modeling, H1a. The args flow
+to the host, so they are OBSERVED (a trapping arg surfaces its trap); the op then yields `unit` (a
+Unit-returning op's result is response-independent). The host CALL is not yet recorded (H3 will thread
+the ordered call log through `execute`); only the response-independent VALUE is modeled here. -/
+partial def performUnitOp (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  let argsOk : Outcome := (children.extract 1 children.size).foldl (fun (acc : Outcome) aid =>
+    match acc with
+    | .value _ => (match evalNode m env defaultIntTy fuel aid with
+                   | .value v => observeDeep v
+                   | other => other)
+    | other => other) (Outcome.value Value.unit)
+  match argsOk with | .value _ => Outcome.value Value.unit | other => other
 
 /-- `(let (bindings) body)`: bind each `(name val)` SEQUENTIALLY (a later binding sees the earlier),
 then evaluate `body`. Binding values are evaluated at the default integer type (their own annotation,
