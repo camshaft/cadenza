@@ -524,7 +524,7 @@
            above, on the runtime record-assembler path.) Relocated from rcdzc
            a_composed_call_over_a_record_with_a_checked_arith_field_runs.")
   (input  (do
-            (def (f (: r (Record (= a Int64) (= b Int64))))
+            (def (f (: r (Record (: a Int64) (: b Int64))))
               (record (= a (+ (. r a) 1)) (= b (. r b))))
             (def (main (: seed Int64)) (. (f (f (record (= a seed) (= b 5)))) a))
             (export main)))
@@ -537,7 +537,7 @@
            that keeps the build on the heap). Relocated from rcdzc
            a_composed_call_over_a_record_with_a_checked_arith_field_runs (three-field arm).")
   (input  (do
-            (def (f (: r (Record (= a Int64) (= b Int64) (= c Int64))))
+            (def (f (: r (Record (: a Int64) (: b Int64) (: c Int64))))
               (record (= a (+ (. r a) 1)) (= b (. r b)) (= c (* (. r c) 3))))
             (def (main (: seed Int64)) (. (f (f (record (= a seed) (= b 5) (= c 2)))) c))
             (export main)))
