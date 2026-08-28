@@ -6227,7 +6227,10 @@ fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
 /// (`core-semantics.md` §A Record Has A Fixed Set Of Named Fields); the check is over the WHOLE field
 /// list, not adjacent pairs.
 fn resolve_record(db: &Db, id: StructId) -> Resolved {
-    let tail = db.ast.compound_form_of(id, CompoundCtor::Record).unwrap_or(&[]);
+    let tail = db
+        .ast
+        .compound_form_of(id, CompoundCtor::Record)
+        .unwrap_or(&[]);
     match read_record_fields(db, tail) {
         Ok(fields) => Resolved::Record {
             fields: std::rc::Rc::new(fields),
@@ -6465,7 +6468,11 @@ fn tuple_index(value: &crate::ast::IntValue) -> Option<usize> {
 /// elements — it is the empty product, which coincides with unit; but the reader writes `()` for unit,
 /// so a written `(tuple)` is kept as a zero-element tuple here and typed as such (its arity is 0).
 fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
-    let elems: std::rc::Rc<[StructId]> = db.ast.compound_form_of(id, CompoundCtor::Tuple).unwrap_or(&[]).into();
+    let elems: std::rc::Rc<[StructId]> = db
+        .ast
+        .compound_form_of(id, CompoundCtor::Tuple)
+        .unwrap_or(&[])
+        .into();
     Resolved::Tuple { elems }
 }
 
@@ -6474,7 +6481,11 @@ fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
 /// element type — `infer`/`type_errors` enforce homogeneity). An empty `(list)` has no elements — a
 /// list of a deferred element type.
 fn resolve_list(db: &Db, id: StructId) -> Resolved {
-    let elems: std::rc::Rc<[StructId]> = db.ast.compound_form_of(id, CompoundCtor::List).unwrap_or(&[]).into();
+    let elems: std::rc::Rc<[StructId]> = db
+        .ast
+        .compound_form_of(id, CompoundCtor::List)
+        .unwrap_or(&[])
+        .into();
     Resolved::List { elems }
 }
 
@@ -6483,7 +6494,11 @@ fn resolve_list(db: &Db, id: StructId) -> Resolved {
 /// element type (homogeneity enforced by `infer`/`type_errors`); DUPLICATES collapse at build. Lowers to
 /// `Core::SetOf`. An empty `("set")` is a set of a deferred element type.
 fn resolve_set(db: &Db, id: StructId) -> Resolved {
-    let elems: std::rc::Rc<[StructId]> = db.ast.compound_form_of(id, CompoundCtor::Set).unwrap_or(&[]).into();
+    let elems: std::rc::Rc<[StructId]> = db
+        .ast
+        .compound_form_of(id, CompoundCtor::Set)
+        .unwrap_or(&[])
+        .into();
     Resolved::Set { elems }
 }
 
@@ -6495,7 +6510,10 @@ fn resolve_set(db: &Db, id: StructId) -> Resolved {
 /// value) is a `Poison` (CDZ0201), never a panic reaching for the absent value. An empty `(map)` is a
 /// map with no entries. `infer`/`type_errors` enforce key/value homogeneity + duplicate-const-key.
 fn resolve_map(db: &Db, id: StructId) -> Resolved {
-    let tail = db.ast.compound_form_of(id, CompoundCtor::Map).unwrap_or(&[]);
+    let tail = db
+        .ast
+        .compound_form_of(id, CompoundCtor::Map)
+        .unwrap_or(&[]);
     let mut entries: Vec<(StructId, StructId)> = Vec::with_capacity(tail.len());
     for &entry in tail {
         // Prefer the canonical `(= key value)` FieldPair — map entries unify with record fields

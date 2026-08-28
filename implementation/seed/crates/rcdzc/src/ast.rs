@@ -1508,7 +1508,8 @@ impl Arenas {
     /// (a bound `list` shadows it) and is NOT recognized here. The migration dual-read for dispatch; M3
     /// drops the string arm, leaving `compound_ctor_leaf`. See `DESIGN-native-ast-compound-data.md`.
     pub fn compound_ctor_prim(&self, id: StructId) -> Option<CompoundCtor> {
-        self.compound_ctor_leaf(id).or_else(|| self.compound_ctor(id))
+        self.compound_ctor_leaf(id)
+            .or_else(|| self.compound_ctor(id))
     }
 
     /// The `(key, value)` of a native `(= key value)` record/map ENTRY — a `List` of exactly three whose
