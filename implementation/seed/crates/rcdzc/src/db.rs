@@ -978,6 +978,16 @@ pub struct Db {
     /// a COMPUTED Int64 expression is NEVER marked, so a genuine Int64/BigInt mismatch still declines.
     pub bigint_ctor_arg_literals: crate::fxhash::FxHashSet<StructId>,
 
+    /// LAZY CACHE of every `Resolved::Resume` value + next-state node in the program — the operands a resume
+    /// can carry a value OUT through. Built ONCE on first demand by [`crate::infer::binder_resume_escapes`]
+    /// (the FIND3 (B) shell-reclaim fence's pre-reduction resume-escape check), then consulted per candidate
+    /// scrutinee-binder. Collects TAIL and NON-TAIL resumes alike (a non-tail resume escapes its operands
+    /// too), so the fence never misses an escape → no false-negative (a false-negative would be a UAF; a
+    /// false-positive is only a leak-safe missed reclaim). `None` until first built; empty once built for a
+    /// resume-free program (so the fence is a cheap O(1) miss on pure code). Not populated at load (the
+    /// escape check needs `resolved_of`, unavailable during the structural load walk).
+    pub resume_escape_operands: Option<Vec<StructId>>,
+
     /// Each bare DECIMAL-LITERAL node WRITTEN inside a `(module … (pragma default-float <T>) …)` → the
     /// pragma's `<T>` type-expression occurrence. A literal in this map defaults to `<T>` (a float width)
     /// instead of `Float64` (`numeric-model.md` §A Module May Declare Its Default Float Literal Type). The
@@ -2792,6 +2802,7 @@ impl Db {
             default_int_literals,
             default_fraction_literals,
             bigint_ctor_arg_literals,
+            resume_escape_operands: None,
             default_float_literals,
             enum_disc: crate::fxhash::FxHashSet::default(),
             parent,

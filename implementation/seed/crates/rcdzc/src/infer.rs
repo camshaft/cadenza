@@ -8081,6 +8081,48 @@ pub(crate) fn scrutinee_resume_escapes(
     false
 }
 
+/// Whether the binding `binder` (a match SCRUTINEE's Param/LocalRef binder, extracted by the caller) ESCAPES
+/// via ANY resume in the program — i.e. some `(resume <value> <next-state>)` carries `binder` (directly or
+/// through a Ref/alias chain, per [`crate::effects::subtree_references_binder`]) out to the perform site or
+/// forward as threaded state. This is the GLOBAL, PRE-REDUCTION resume-escape signal the FIND3 (B) shell-
+/// reclaim fence (`sum_shell_reclaim_payload_ok`, select.rs) needs to WIDEN its conservative `Core::Call`-only
+/// proxy: by the backend the resume is threaded away, so a scrutinee re-referenced inside the reduced
+/// continuation — `(match st … (resume -1 st))` — is invisible to the Core-level dead-after-destructure walk,
+/// and reclaiming its shell would deep-drop a value the continuation still holds (a UAF). The fence reclaims
+/// an all-scalar-product OWNED dead-after scrutinee IFF it is a NON-binder (a fresh `Call`/materialize result
+/// — cannot be resume-referenced) OR a binder that does NOT resume-escape (`!binder_resume_escapes`).
+///
+/// COMPLETENESS (v-memory-safety's crux — a false-negative is a UAF, a false-positive only a leak-safe missed
+/// reclaim): collects TAIL and NON-TAIL resumes alike (a non-tail resume escapes its operands too — the tail-
+/// only `scrutinee_resume_escapes` collectors would miss it), and `subtree_references_binder` follows the
+/// Ref/alias chain (the chr1 family), so the four escape vectors (direct / alias / captured-continuation via
+/// the closure-side `capture_escapes_via_body` / call-boundary via the dead-after + opaque-call backstop) are
+/// covered by composition. The resume-operand list is cached in `db.resume_escape_operands` (built once on
+/// first call; empty for a resume-free program → an O(1) miss on pure code).
+// STAGED for v-core-opt's FIND3 (B) consult (v-memory-safety-directed): dead until the reclaim gate calls it
+// (mirrors the staging of `scrutinee_resume_escapes` above + `capture_escapes_via_body` for the hcz gate).
+#[allow(dead_code)]
+pub(crate) fn binder_resume_escapes(db: &mut Db, binder: StructId) -> bool {
+    if db.resume_escape_operands.is_none() {
+        let mut operands = Vec::new();
+        for ix in 0..db.ast.structure.len() {
+            let id = <StructId as crate::arena::Index>::from_ix(ix);
+            if let Resolved::Resume { value, next_state } = resolved_of(db, id) {
+                operands.push(value);
+                operands.push(next_state);
+            }
+        }
+        db.resume_escape_operands = Some(operands);
+    }
+    // Take the cache out to iterate without holding a borrow across the `&mut db` calls below, then restore.
+    let operands = db.resume_escape_operands.take().unwrap_or_default();
+    let escapes = operands
+        .iter()
+        .any(|&n| crate::effects::subtree_references_binder(db, n, binder));
+    db.resume_escape_operands = Some(operands);
+    escapes
+}
+
 /// Check an application for type faults — the ONE rule's fault side. Instantiate the head's scheme and
 /// unify each argument into its curried parameter; a unify failure is the conflicting-use type error.
 /// A head with no `(meta t)` scheme (a type constructor, or a not-yet-typed value) is not checked here.
