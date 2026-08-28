@@ -81,6 +81,12 @@ the key's spelling or on the syntactic shape of the key node, so that projecting
 a module, a variant of a sum, a meta field of a type — is one operation rather than a case per member
 ([reference-compiler.md §Member Access Projects A Record Field](../capabilities/core-semantics.md)).
 
+The resolver MUST recognize a member-access node in the stored form by its reserved member leaf kind — the
+head-leaf KIND IDENTITY, not the head text `.` — consistent with recognizing a form by its kind rather than
+its spelling ([core-semantics.md §Member Access Projects A Record Field](../capabilities/core-semantics.md));
+the member leaf kind is one of the reserved structural leaf kinds that the constructor leaf kinds also belong
+to (core-semantics.md §"A Compound Value Has A Symbol Constructor And A Shadowable Alias").
+
 A projection of a compile-time-known aggregate — a literal record or tuple, which every prelude type,
 module, sum, and meta record is — MUST reduce to the projected field during the construction of the resolved
 representation, and a projection of a value not known until run time MUST survive as the one projection node

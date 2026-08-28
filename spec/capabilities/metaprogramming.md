@@ -23,6 +23,8 @@ states the invariants; the concrete macro surface is governed by the code-shape 
 
 The expression `(quote <expr>)` MUST evaluate to an AST sum type value representing the structure of `<expr>`, without evaluating `<expr>` itself.
 
+Quoting a collection construction — a list, a tuple, a record, a map, or a set — MUST produce that collection's own first-class AST variant (`Ast.ListCtor` / `Ast.TupleCtor` / `Ast.RecordCtor` / `Ast.MapCtor` / `Ast.SetCtor`, *type-system.md §The Abstract Syntax Tree Is An Ordinary Sum Type*) rather than a name-headed generic node, so that a reflected record is a `RecordCtor` of `FieldPair` values, a reflected map a `MapCtor` of `FieldPair` values, a reflected set a `SetCtor`, and a reflected member access `(. obj key)` an `Ast.Member` — no collection is reflected as a string- or name-headed node.
+
 The AST MUST be a sum type with variants for each syntactic form, deconstructible by pattern matching like any other sum type.
 
 ### Quasiquote Constructs AST With Selective Evaluation
