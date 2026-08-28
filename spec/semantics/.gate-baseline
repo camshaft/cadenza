@@ -9045,3 +9045,4 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	nmb1 a RUNTIME Int8 multiply by -1 computes in range and traps at the MIN/-1 boundary (the narrow-width runtime companion of the checked-mul ladder)
+pass	shb1 a RUNTIME left-shift computes below the value-overflow boundary and traps at it (fold-vs-runtime agree; << is checked *2^n)

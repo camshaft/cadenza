@@ -11703,3 +11703,14 @@
 (export main)))
   (call main (: 5 Int64))    (output (: -5 Int64))
   (call main (: -128 Int64)) (trap "integer overflow"))
+
+(case "shb1 a RUNTIME left-shift computes below the value-overflow boundary and traps at it (fold-vs-runtime agree; << is checked *2^n)"
+  (doc    "Shift companion of nmb1/the checked-mul ladder: Cadenza's `<<` is a CHECKED *2^n, so
+           `(<< 1 63)` OVERFLOWS (2^63 > Int64.MAX) — the const form is CDZ0304, its runtime twin traps
+           integer-overflow at exactly the same count; `(<< 1 62)` = 2^62 computes. Pins that the fold and
+           the runtime shift agree on the value-overflow boundary. (A count >= width, e.g. 1<<64, is the
+           distinct shift-COUNT-OOR case that traps kind-less per #4398's documented exclusion — not
+           exercised here to keep this a value-boundary fence.)")
+  (input (do (def (main (: n Int64)) (<< 1 n)) (export main)))
+  (call main (: 62 Int64)) (output (: 4611686018427387904 Int64))
+  (call main (: 63 Int64)) (trap "integer overflow"))
