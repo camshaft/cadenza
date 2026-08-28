@@ -8003,7 +8003,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5000162 Int64))
   (call   main (: 0 Int64)) (output (: 112 Int64))
-  (live-objects known-leak 19))
+  (live-objects known-leak 17))
 
 ; ── Abort-after-advance + arm-built value-eq (breaker batch 228) ──────────────
 ; ag3 pins the abort-arm reading the ADVANCED state after one resumptive
@@ -9783,7 +9783,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 3572911 Int64))
   (call   main (: 30 Int64)) (output (: 3842911 Int64))
-  (live-objects known-leak 21))
+  (live-objects known-leak 20))
 
 ; --- breaker batch 257: base-100 odometer carry cascade, value-yielding map ops, unsigned bytes high-water ---
 (case "odo1 a BASE-100 ODOMETER — the list of wheels absorbs each tick with a CASCADING CARRY that rebuilds cells by List.update and GROWS the list when the top wheel overflows"
@@ -10145,7 +10145,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 3421 Int64))
   (call   main (: 1 Int64)) (output (: 2321 Int64))
-  (live-objects known-leak 613))
+  (live-objects known-leak 611))
 
 (case "rle2 a RUN-LENGTH ENCODER state — equal-to-last feeds bump the tail pair's count via List.update at len-1, fresh values push a new pair; the n=5 seed merges the middle literal into one long run"
   (input  (do

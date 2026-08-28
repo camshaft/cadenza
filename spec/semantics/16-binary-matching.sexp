@@ -1243,7 +1243,7 @@
   (call main (: 1 Int64)) (output (: 230 Int64))
   (call main (: 2 Int64)) (output (: 18 Int64))
   (call main (: 3 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 9))
 
 (case "a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin"
   (doc    "The transcoder pin further down re-encodes the SAME decoded n and checks only Bytes.len;
@@ -1925,7 +1925,7 @@
         (export main)))
   (call   main (: 42 UInt8)) (output (: 3183 Int64))
   (call   main (: 50 UInt8)) (output (: 3191 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 15))
 
 (case "a u16 bin field reads correctly at every runtime slice offset, odd or even"
   (doc    "The ALIGNMENT face of the runtime-start slice family (:987 dispatches on a u8 tag; this reads

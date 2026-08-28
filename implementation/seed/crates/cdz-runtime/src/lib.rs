@@ -3641,7 +3641,33 @@ fn op_value_decode(doc_bytes: &[u8], desc: &[u8]) -> Handle {
 // ─── Bytes: a packed immutable byte buffer (in `raw`) ───────────────────────────────────
 // OOB into a valid buffer traps; null is benign.
 
+// The shared IMMORTAL empty-BYTES singleton (lazily minted, census-excluded) — see op_bytes_alloc.
+runtime_local! {
+    static EMPTY_BYTES: core::cell::Cell<Handle> = core::cell::Cell::new(Handle::NULL);
+}
+
 fn op_bytes_alloc(len: u32) -> Handle {
+    // len==0 → the shared IMMORTAL empty-BYTES singleton (the IMM_UNIT analog for bytes): an empty bytes
+    // value is CONSTANT, so allocate it ONCE, immortal (census-excluded), reuse. SOUND: an empty bytes is
+    // never mutated in place — bytes-set on it is OOB (traps, 0 slots), concat builds a fresh rope node,
+    // and bytes_flatten is a no-op on an already-flat empty leaf. So the singleton is read-only.
+    if len == 0 {
+        return EMPTY_BYTES.with(|slot| {
+            let mut e = slot.get();
+            if e.0.is_null() {
+                e = alloc_raw(
+                    Vec::new(),
+                    Raw::Inline {
+                        len: 0,
+                        buf: [0u8; INLINE_RAW_CAP],
+                    },
+                );
+                op_mark_immortal(e);
+                slot.set(e);
+            }
+            e
+        });
+    }
     // A ≤INLINE_RAW_CAP-byte buffer (a short string/section leaf — the common case when assembling a
     // rope from many small pieces) builds its zero-filled raw INLINE, skipping the transient `vec![0u8;
     // len]` that `alloc` would otherwise copy into the inline `Raw` and immediately free. That transient
@@ -3979,7 +4005,27 @@ fn op_str_nfc(s: Handle) -> Handle {
 
 // ─── String: a stored UTF-8 leaf (bytes in `raw`) ───────────────────────────────────────
 
+// The shared IMMORTAL empty-STRING singleton (lazily minted, census-excluded) — see op_str_new.
+runtime_local! {
+    static EMPTY_STR: core::cell::Cell<Handle> = core::cell::Cell::new(Handle::NULL);
+}
+
 fn op_str_new(s: String) -> Handle {
+    // Empty string → the shared IMMORTAL empty-STRING singleton (the IMM_UNIT analog for strings): an
+    // empty string is CONSTANT, so allocate it ONCE, immortal (census-excluded), reuse. SOUND: an empty
+    // string is never mutated in place — String.concat builds a fresh rope node, and bytes_flatten /
+    // str-get are no-ops on an already-flat empty leaf. Read-only singleton.
+    if s.is_empty() {
+        return EMPTY_STR.with(|slot| {
+            let mut e = slot.get();
+            if e.0.is_null() {
+                e = alloc(Vec::new(), Vec::new());
+                op_mark_immortal(e);
+                slot.set(e);
+            }
+            e
+        });
+    }
     alloc(Vec::new(), s.into_bytes())
 }
 fn op_str_get(h: Handle) -> String {
@@ -7905,8 +7951,26 @@ fn champ_size_of(node: Handle) -> u32 {
 /// The canonical empty map: both bitmaps 0, size 0, no handles (exactly `is_empty_node`). U3's
 /// remove-to-empty MUST reproduce this representation so callers can recognise emptiness uniformly.
 #[allow(dead_code)]
+// The shared IMMORTAL empty-MAP singleton (the IMM_UNIT / empty-vec analog for maps) — lazily minted,
+// rc=IMMORTAL (census-excluded), so an empty map allocates ONCE and is reused, never per-occurrence.
+runtime_local! {
+    static EMPTY_MAP: core::cell::Cell<Handle> = core::cell::Cell::new(Handle::NULL);
+}
+
 fn op_map_empty() -> Handle {
-    alloc_raw(Vec::new(), champ_header(0, 0, 0))
+    // One shared immortal empty CHAMP node. An empty map is CONSTANT (no entries), so one immortal is
+    // correct + census-EXCLUDED (never a leak) + free to share. SOUND: map insert gates on node_rc==1
+    // (champ_insert_fbip's `mine`), and IMMORTAL != 1, so an insert onto the singleton takes the proven
+    // COPY path — the shared empty is never mutated in place.
+    EMPTY_MAP.with(|slot| {
+        let mut e = slot.get();
+        if e.0.is_null() {
+            e = alloc_raw(Vec::new(), champ_header(0, 0, 0));
+            op_mark_immortal(e);
+            slot.set(e);
+        }
+        e
+    })
 }
 
 /// O(1) entry count of the map. BORROWS `m` (no rc change).
@@ -9467,8 +9531,24 @@ fn op_map_iter_val(cur: Handle) -> Handle {
 /// The canonical empty set — byte-identical to the empty map (`alloc_raw(vec![], champ_header(0,0,0))`);
 /// the collection kind is compile-time knowledge, not a runtime tag.
 #[allow(dead_code)]
+// The shared IMMORTAL empty-SET singleton (per-type, mirrors EMPTY_MAP). Separate from EMPTY_MAP for
+// type-clarity + zero cross-type aliasing, though an empty set + empty map are structurally identical.
+runtime_local! {
+    static EMPTY_SET: core::cell::Cell<Handle> = core::cell::Cell::new(Handle::NULL);
+}
+
 fn op_set_empty() -> Handle {
-    alloc_raw(Vec::new(), champ_header(0, 0, 0))
+    // One shared immortal empty CHAMP node (see op_map_empty). SOUND: set insert gates on node_rc==1
+    // and IMMORTAL != 1, so an insert path-copies off the singleton — never mutated in place.
+    EMPTY_SET.with(|slot| {
+        let mut e = slot.get();
+        if e.0.is_null() {
+            e = alloc_raw(Vec::new(), champ_header(0, 0, 0));
+            op_mark_immortal(e);
+            slot.set(e);
+        }
+        e
+    })
 }
 
 /// O(1) element count. BORROWS `s`.
@@ -20442,6 +20522,46 @@ mod tests {
             live_nodes() - base,
             0,
             "balanced — only the census-excluded immortal remains"
+        );
+    }
+
+    /// The empty MAP / SET / BYTES / STRING constructors return shared IMMORTAL singletons — the empty-vec
+    /// / IMM_UNIT generalization (operator directive: an empty value should allocate once, immortal,
+    /// reused). Same handle every call, census-EXCLUDED (never a leak), and an insert/build path-copies
+    /// off them (rc=IMMORTAL != 1) leaving the singleton empty (no in-place mutation of the shared empty).
+    #[test]
+    fn empty_collection_constructors_are_shared_immortal_singletons() {
+        let base = live_nodes();
+        assert_eq!(op_map_empty().0, op_map_empty().0, "empty map is a shared singleton");
+        assert_eq!(op_set_empty().0, op_set_empty().0, "empty set is a shared singleton");
+        assert_eq!(op_bytes_alloc(0).0, op_bytes_alloc(0).0, "empty bytes is a shared singleton");
+        assert_eq!(
+            op_str_new(String::new()).0,
+            op_str_new(String::new()).0,
+            "empty string is a shared singleton"
+        );
+        assert_eq!(
+            live_nodes() - base,
+            0,
+            "the four empty singletons are census-excluded (immortal — not counted live)"
+        );
+        // Insert onto the immortal empty map/set path-copies (rc=IMMORTAL != 1): a FRESH node, and the
+        // shared empty singleton is left untouched.
+        let m = op_map_insert(op_map_empty(), op_box_int(1), op_box_int(2));
+        assert_ne!(m.0, op_map_empty().0, "map insert builds a FRESH map off the immortal empty");
+        assert_eq!(op_map_size(m), 1, "the fresh map carries the entry");
+        assert_eq!(op_map_size(op_map_empty()), 0, "the immortal empty map is STILL empty (not mutated)");
+        let s = op_set_insert(op_set_empty(), op_box_int(7));
+        assert_ne!(s.0, op_set_empty().0, "set insert builds a FRESH set off the immortal empty");
+        assert_eq!(op_set_size(s), 1, "the fresh set carries the element");
+        assert_eq!(op_set_size(op_set_empty()), 0, "the immortal empty set is STILL empty");
+        assert_eq!(op_bytes_len(op_bytes_alloc(0)), 0, "the empty bytes singleton stays empty");
+        op_drop(m);
+        op_drop(s);
+        assert_eq!(
+            live_nodes() - base,
+            0,
+            "balanced — only the census-excluded immortal empties remain"
         );
     }
 

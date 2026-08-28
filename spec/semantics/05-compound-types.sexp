@@ -16152,7 +16152,7 @@
   (input  (do (def (main (: n Int64)) (if (> n 0) (Map.insert Map.empty n n) Map.empty)) (export main)))
   (call   main (: 0 Int64)) (output (: (map) (Map Int64 Int64)))
   (call   main (: 5 Int64)) (output (: (map (5 5)) (Map Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a parameterized export returns a runtime-selected empty-or-nonempty set"
   (doc    "The set companion: `main(n) = (if (> n 0) (Set.of (list n)) (Set.of (list)))` returns an empty or
@@ -16162,7 +16162,7 @@
   (input  (do (def (main (: n Int64)) (if (> n 0) (Set.of (list n)) (Set.of (list)))) (export main)))
   (call   main (: 0 Int64)) (output (: ((. Set of) (list)) (Set Int64)))
   (call   main (: 5 Int64)) (output (: ((. Set of) (list 5)) (Set Int64)))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; The parameterized returns above are FLAT collections (a list/map/set of scalars). A NESTED collection
 ; return — a `(List (Tuple …))` (an association / key-value list) or a `(List (List …))` — is the shape a
@@ -16686,7 +16686,7 @@
   (call   main (: 3 Int64)) (output (: 6 Int64))
   (call   main (: 4 Int64)) (output (: 10 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "a shared list concatenated with itself has twice its length"
   (doc    "`(List.concat xs xs)` over a runtime-built `xs` (rc≥2 — the binding is used as BOTH operands)
@@ -19536,7 +19536,7 @@
             (export main)))
   (call   main (: 20 Int64))
   (output (: 676521 Int64))
-  (live-objects known-leak 61))
+  (live-objects known-leak 60))
 
 (case "an expression INTERPRETER threads a Map environment through Let-shadowing scopes"
   (doc    "The self-hosting core idiom (the structural eval-exp is env-free): an inner Let SHADOWS x via Map.insert on the recursive call while the sibling Add operand still sees the OUTER x — the env is PERSISTENT: (let x=10 in (let x=x+1 in x) + x) = 21; a mutable-env interpreter computes 22.")
@@ -19559,7 +19559,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 21 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 5))
 
 (case "an RPN evaluator drives a LIST-as-STACK through token dispatch — push, pop-two, apply"
   (doc    "The stack-machine idiom: Num pushes, operators read the top TWO by index-from-len, REBUILD the popped stack via take-n (the persistent-list pop spelling), push the result. (2 3 + 4 x) = 20 with the runtime k mid-expression.")
