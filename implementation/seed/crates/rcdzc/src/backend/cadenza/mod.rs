@@ -21,7 +21,10 @@
 //! construct it does not yet reconstruct — the same decline-don't-miscompile discipline the wasm/rust
 //! backends follow. Coverage so far:
 //! - **B0**: whole-program shape (`(do (def …)… (export …)…)`) with CONSTANT-bodied definitions —
-//!   the constant leaves (Int/Bool/Str/Char/Float/Unit).
+//!   the PLAIN constant leaves (Int/Bool/Str/Char/Float/Unit). A WRAPPER-typed constant
+//!   (`BigInt`/`Rational`/`Symbol`/`Qty`) shares a bare scalar core but has no bare-literal surface that
+//!   re-reads to the wrapper, so it DECLINES (emitting the bare scalar would drop the type and
+//!   miscompile the value); its constructor surface is a later slice.
 //! - **B1a**: PARAMETERS — a def signature `(<name> (: <p> <Ty>)…)` (param types via lower's canonical
 //!   `type_ast`) and a `Core::Param`/`LocalRef` reference (the bare binder name). A parameter of a type
 //!   with no value-form surface (function/unsolved) declines.
@@ -44,6 +47,7 @@ use crate::db::Db;
 use crate::diag::Reject;
 use crate::layout::Layout;
 use crate::lower::core_of;
+use crate::ty::Ty;
 use std::collections::HashMap;
 
 /// The in-scope `let`-binding environment: a map from a kept binding's binder occurrence (the
@@ -178,21 +182,27 @@ fn emit_expr(
     env: &mut BinderEnv,
 ) -> Result<StructId, Reject> {
     match core_of(db, id) {
-        // An integer constant re-reads to the same value regardless of the base its text used (the base
-        // is display-only and Core does not retain it), so emit the canonical decimal spelling.
-        Core::ConstInt(v) => Ok(b.atom_leaf(Leaf::Int {
-            value: v,
-            radix: Radix::Dec,
-        })),
+        // A CONSTANT scalar leaf re-reads to the same value+type ONLY when its solved type is the PLAIN
+        // scalar type. A numeric-tower / nominal-leaf WRAPPER (`BigInt`/`Rational`/`Symbol`/`Qty`) shares
+        // a bare scalar core (`ConstInt`/`ConstStr`/`ConstFloat`) but has no bare-literal surface that
+        // re-reads to the WRAPPER — emitting the bare scalar would drop the type and MISCOMPILE the value
+        // (a `Ty::Symbol` value came back a `String`, confirmed). So a wrapper-typed constant DECLINES
+        // (its faithful constructor surface — `(Symbol.of …)` / `(Rational.of …)` / `(BigInt.of …)` — is a
+        // later slice), and only a plain scalar emits its literal. `radix` is display-only (Core drops it).
+        Core::ConstInt(v) if matches!(crate::infer::type_of(db, id), Ty::Int(_)) => Ok(b
+            .atom_leaf(Leaf::Int {
+                value: v,
+                radix: Radix::Dec,
+            })),
+        Core::ConstStr(s) if matches!(crate::infer::type_of(db, id), Ty::String) => {
+            Ok(b.atom_leaf(Leaf::Str(s)))
+        }
+        Core::ConstFloat(d) if matches!(crate::infer::type_of(db, id), Ty::Float(_)) => {
+            Ok(b.atom_leaf(Leaf::Float(d)))
+        }
+        // Bool / Char / Unit have no wrapping type, so they always emit their one literal form.
         Core::ConstBool(bo) => Ok(b.atom_leaf(Leaf::Bool(bo))),
-        Core::ConstStr(s) => Ok(b.atom_leaf(Leaf::Str(s))),
         Core::ConstChar(c) => Ok(b.atom_leaf(Leaf::Char(c))),
-        // A finite float constant carries its exact `Decimal` (no `f64` rounding), which re-reads to the
-        // same leaf. (`ConstFloatNan` has no finite `Decimal` and no plain written form — a later slice.)
-        Core::ConstFloat(d) => Ok(b.atom_leaf(Leaf::Float(d))),
-        // The unit value bakes as the bare `unit` name — its ONE canonical form (matches lower's
-        // `const_value_ast` and the corpus surface `(: unit Unit)`), so a unit-returning definition
-        // round-trips.
         Core::Unit => Ok(b.name("unit")),
         // A reference to a function PARAMETER — its surface is the bare name of the parameter's binder
         // occurrence (a `Name`), which re-resolves to the same parameter on recompile.
