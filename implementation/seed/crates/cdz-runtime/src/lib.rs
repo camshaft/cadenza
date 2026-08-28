@@ -25963,8 +25963,10 @@ mod tests {
 
     /// Build a random value AND its matching shape descriptor from one byte stream. Appends each node's
     /// `Shape` to `table` and returns its index, so the value's node structure and the descriptor stay
-    /// aligned by construction. Shapes mirror `build_rand_value`'s producers (int/bool/unit/str/bytes/
-    /// float leaves + 2-tuple/sum/3-tuple compounds) — the ones with a settled canonical value form. Depth
+    /// aligned by construction. Shapes mirror `build_rand_value`'s producers — int/bool/unit/str/bytes/
+    /// float leaves + the compounds with a settled canonical value form: 2-tuple, sum, 2-field record,
+    /// set-of-int, list-of-int, map-int→int, 3-tuple (the List/Map/Set/Record/Tuple heads all encode
+    /// head-first via their M2 `KIND_*_CTOR` ctor-leaf; map/record entries via `FieldPair`). Depth
     /// is capped low (the recursive oracle overflows on deep values — that is the ITERATIVE walk's reason
     /// to exist, tested separately by `value_encode_deep_recursive_value_does_not_overflow_the_stack`);
     /// this targets shape VARIETY, not depth.
@@ -25987,7 +25989,7 @@ mod tests {
             t.push(s);
             (t.len() - 1) as u32
         }
-        match tag % if allow_compound { 11 } else { 6 } {
+        match tag % if allow_compound { 13 } else { 6 } {
             0 => {
                 let h = op_box_int(p as i64 - 128);
                 (h, emit(table, S::Int))
@@ -26068,6 +26070,35 @@ mod tests {
                     s = op_set_insert(s, op_box_int((3 - k) * 7 + (p as i64 & 3)));
                 }
                 (s, ix)
+            }
+            10 => {
+                // List of Int — exercises the head-first `KIND_LIST_CTOR` ctor-leaf head + the RRB spine
+                // encode (0..4 elements; an EMPTY list is the single ctor-head leaf, the empty-collection
+                // case). Element shape `[elem_ix] = Int` is emitted BEFORE the List entry references it, so
+                // the index is valid regardless of where `ix` landed.
+                let ix = emit(table, S::List(0));
+                let elem_ix = emit(table, S::Int);
+                table[ix as usize] = S::List(elem_ix);
+                let mut l = op_vec_empty();
+                for k in 0..((p % 4) as i64) {
+                    l = op_vec_push(l, op_box_int(k * 5 - 3 + (p as i64 & 1)));
+                }
+                (l, ix)
+            }
+            11 => {
+                // Map Int→Int — exercises the head-first `KIND_MAP_CTOR` head + the `FieldPair`-headed
+                // entries (the M2 map-entry form). Scalar Int keys are canonically orderable, so the encode
+                // re-sorts to canonical key order; insert a few DISTINCT keys in non-sorted order. Key then
+                // value shape emitted before the Map entry references them.
+                let ix = emit(table, S::Map(0, 0));
+                let k_ix = emit(table, S::Int);
+                let v_ix = emit(table, S::Int);
+                table[ix as usize] = S::Map(k_ix, v_ix);
+                let mut m = op_map_empty();
+                for k in 0..((p % 4) as i64) {
+                    m = op_map_insert(m, op_box_int((3 - k) * 11), op_box_int(k + 1));
+                }
+                (m, ix)
             }
             _ => {
                 // 3-tuple.
