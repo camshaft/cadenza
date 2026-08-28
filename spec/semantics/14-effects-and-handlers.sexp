@@ -9802,7 +9802,7 @@
                 (S.put (+ n 1) n)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "three list-append dispatches then a two-param range over a computed-index List.at emits valid wasm (ListAt index floated above the high-water)"
   (doc    "regression guard for breaker finding-23 (case pfxmin5): a handler arm that reads the
