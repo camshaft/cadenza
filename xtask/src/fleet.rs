@@ -1176,7 +1176,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::RerouteUnknown { dry_run } => reroute_unknown(&fleet, dry_run),
         FleetCmd::MergeFloor { ours, theirs } => merge_floor(&ours, &theirs),
         FleetCmd::GateBatch { dry_run, limit } => gate_batch(&fleet, dry_run, limit),
-        FleetCmd::GateLocal { arch } => gate_local(&arch),
+        FleetCmd::GateLocal { arch } => gate_local(&fleet, &arch),
         FleetCmd::CiStatus { target } => ci_status(&target),
         FleetCmd::LaneOf { r#ref } => lane_of_cmd(&r#ref),
         FleetCmd::DispatchPlan { r#ref, agent } => dispatch_plan(&fleet, &r#ref, &agent),
@@ -9108,7 +9108,18 @@ fn gate_local_hold_advisory(captured: &str) -> &'static str {
     }
 }
 
-fn run_gate_local(arch: &str) -> CiVerdict {
+fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
+    // Acquire a NON-priority check-lease slot BEFORE building. Under the current land model gate-local is
+    // the AUTHORITATIVE pre-merge gate that EVERY agent runs (contract 2026-08-28), so with ~28 agents it
+    // became the fleet's most common heavy `nix build` — and it previously BYPASSED the concurrency cap
+    // (unlike `cargo xtask check`/`with-lease`), letting 5+ full 9-check aggregate builds run at once and
+    // thrash the daemon/big-nix-lock (concierge 2026-08-28: load ~24, gate-locals crawling 45m+, one agent
+    // --admin'd without a completing gate-local). Routing it through `acquire_check_lease` caps concurrent
+    // gate-locals at CDZ_CHECK_LEASE_MAX (default 3) so each completes fast instead of all crawling. The
+    // lease is FAIL-OPEN (a lease-dir hiccup yields an inert guard → never hard-blocks a merge gate) and is
+    // held for the whole build (RAII drop of `_lease` on return). Fan-out is already bounded by the
+    // `--max-jobs 4` in `nix_gate_argv`, so the slot cap is the missing piece, not a per-holder budget.
+    let _lease = acquire_check_lease(&fleet.repo, false);
     let target = format!(".#checks.{arch}-linux.local-gate");
     let nix_bin = nix_binary();
     eprintln!(
@@ -9274,8 +9285,8 @@ fn check_trunk_fmt_clean(dir: &Path) -> TrunkFmtVerdict {
     }
 }
 
-fn gate_local(arch: &str) {
-    let verdict = run_gate_local(arch);
+fn gate_local(fleet: &Fleet, arch: &str) {
+    let verdict = run_gate_local(fleet, arch);
     println!(
         "decision: {}",
         if verdict.is_landable() {
