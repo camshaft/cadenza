@@ -263,7 +263,8 @@ fn run_wasm_bytes(bytes: &[u8], store: &std::path::Path) -> Side {
 /// Strip the `(: <value> <Type>)` value-form wrapper down to the bare `<value>`, matching what
 /// `cdz run-rust` (and a scalar `cdz-run` result) prints. A payload that is NOT a value-form is
 /// returned unchanged. Mirrors the corpus gate's `expected_value`: take the FIRST balanced token after
-/// `(:` — a `(…)` group, a `"…"` string (which may contain spaces), or a bare atom up to the next space.
+/// `(:` — a `(…)` group, an M2 native `#ctor(…)` compound render, a `"…"` string (which may contain
+/// spaces), or a bare atom up to the next space.
 fn strip_value_annotation(payload: &str) -> String {
     let Some(rest) = payload.strip_prefix("(:") else {
         return payload.to_string();
@@ -288,6 +289,33 @@ fn strip_value_annotation(payload: &str) -> String {
             }
             rest.to_string()
         }
+        // An M2 native COMPOUND value render: `#<ctor>(<balanced …>)` — e.g. `#tuple(1 2)`, `#list(1 2 3)`,
+        // `#record((= a 1) (= b 2))`, `#set(…)`, `#map(…)`. The `#ctor` head is followed by a balanced
+        // `(…)` group that MAY contain spaces and nested compounds, so take `#ctor` THROUGH the matching
+        // close paren (the bare-atom arm below would wrongly truncate at the first inner space → `#tuple(1`).
+        Some(b'#') => match rest.find('(') {
+            Some(open) => {
+                let mut depth = 0i32;
+                for (i, &b) in bytes.iter().enumerate().skip(open) {
+                    match b {
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return rest[..=i].to_string();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                rest.to_string()
+            }
+            // A bare `#name` head with no parens — up to the next space (drop a trailing `)`).
+            None => match rest.find(char::is_whitespace) {
+                Some(idx) => rest[..idx].to_string(),
+                None => rest.trim_end_matches(')').to_string(),
+            },
+        },
         // A quoted string value (may contain internal spaces) — take up to the matching close quote,
         // honoring a `\"` escape so an embedded quote does not end the token early.
         Some(b'"') => {
@@ -912,6 +940,23 @@ mod tests {
         assert_eq!(strip_value_annotation("(: 42 Int64)"), "42");
         // A non-value-form payload is returned unchanged.
         assert_eq!(strip_value_annotation("(tuple 1 2)"), "(tuple 1 2)");
+        // M2 native compound renders `#ctor(…)` must NOT be cut at the first inner space (the S107 bug:
+        // `#tuple(1 2)` was truncated to `#tuple(1`). Take `#ctor` through the matching close paren.
+        assert_eq!(
+            strip_value_annotation("(: #tuple(1 2) (Tuple Int64 Int64))"),
+            "#tuple(1 2)"
+        );
+        assert_eq!(
+            strip_value_annotation("(: #list(1 2 3) (List Int64))"),
+            "#list(1 2 3)"
+        );
+        // A nested compound (record with an inner space + nested parens) stays intact.
+        assert_eq!(
+            strip_value_annotation("(: #record((= a 1) (= b 2)) (Record (: a Int64) (: b Int64)))"),
+            "#record((= a 1) (= b 2))"
+        );
+        // An empty native compound `#set()`.
+        assert_eq!(strip_value_annotation("(: #set() (Set Int64))"), "#set()");
     }
 
     /// A non-zero `run-rust` exit (a usage/harness error for one program) must classify as a
