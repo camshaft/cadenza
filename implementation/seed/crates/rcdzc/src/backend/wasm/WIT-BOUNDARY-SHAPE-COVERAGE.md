@@ -52,6 +52,7 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
 | variant-with-payload RESULT as a typed WIT `variant` under a DECLARED world | export | export | `record_result_lower` SpillRecord + `canon_write_of` variant arm | 61 (WIT-dump: `variant t0 { continue, close(s64) }`) |
 | TUPLE RESULT (bare, + as a variant/record payload) as a typed WIT `tuple` under a DECLARED world | export | export | `canon_write_of` Ty::Tuple arm (positional, reuses `CanonWrite::Record`) | 62, 63 (WIT-dump: `tuple<s64,s64>` / `two(tuple<s64,s64>)`) |
 | RECORD result with a compound field (a `variant` field) as a typed WIT `record` under a DECLARED world | export | export | `canon_write_of` Record arm recursing its Variant arm | 65 (WIT-dump: `record t1 {o: variant, n}`) |
+| option<COMPOUND> RESULT (an `option<record>` field) as a typed WIT `option` under a DECLARED world | export | export | `canon_write_of` option arm recursing its payload | 66 (WIT-dump: `record t1 {d: option<t0>, n}`) |
 
 **Value ROUND-TRIP only (NOT a typed-WIT-export verification):** SHAPEs 1, 2, 4, 5, 7, 58, 59 (all
 NO-`wit-world`-clause) compile to the generic `cadenza:run/run` encode envelope — verified by WIT-dump
@@ -65,7 +66,6 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
 
 ## WIRED but UNTESTED (predicate admits; no dedicated running SHAPE — verify opportunistically)
 
-- `option<compound-leaf>` result (only `option<scalar>` / `option<bytes>` have SHAPEs).
 - `Qty`-over-scalar result.
 
 ## GAPS — DECLINED, tracked (owner in brackets)
@@ -86,7 +86,7 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   variant join — see `variant_scalar_payload_cases` / `variant_liftable_payload_cases`.
 - **[emit]** compound variant payload at the ARG (register-flatten) position; compound-payload
   variant list-element.
-- **[emit]** `option<compound>` record field / list element (only `option<scalar>`/`option<bytes>`).
+- **[emit, ARG-side]** `option<compound>` host-op record-ARG field / list element (only `option<scalar>`/`option<bytes>` marshalable). The RESULT side is DONE — SHAPE 66; this is the marshal side (`field_boundary_abi`/`list_elem_marshalable`).
 - **[emit]** `list<record|tuple>` element with a nested record/list/tuple field, or a tuple/variant
   element.
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a

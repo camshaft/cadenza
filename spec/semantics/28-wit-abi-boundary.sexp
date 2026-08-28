@@ -1266,6 +1266,15 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: 7 Int64)) (output (: (record (= o (close 7)) (= n 7)) (record (o Outcome) (n Int64))))
   (live-objects known-leak 1))
 
+(case "a typed record result with an option<COMPOUND> field crosses the export boundary (declared world)"
+  (doc "SHAPE 66 - a typed export result `record { d: option<record{a}>, n: s64 }` under a declared world - the option<COMPOUND> RESULT face (the doc's untested option<compound-leaf> result cell; only option<scalar>/option<bytes> had SHAPEs). canon_write_of's option arm recurses its payload into the Record arm; both defined types emit + re-export. WIT-dump: `record t0 {a}` + `record t1 {d: option<t0>, n}` + `f: func(s64)->t1`. Both arms x=0->None / x!=0->Some(record{a=x}). NOTE: this is the RESULT side; an option<compound> host-op ARG field / list element is a separate marshal-side gap.")
+  (wit-world (world w (export cadenza:demo/iface (member f (func (param x (s64)) (result ("record" (d ("option" ("record" (a (s64))))) (n (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: x Int64)) (record (= d (if (= x 0) Option.None (Option.Some (record (= a x))))) (= n x))) (export f)))
+  (call f (: 0 Int64)) (output (: (record (= d (None unit)) (= n 0)) (record (d (Option (Record (: a Int64)))) (n Int64))))
+  (call f (: 5 Int64)) (output (: (record (= d (Some (record (= a 5)))) (= n 5)) (record (d (Option (Record (: a Int64)))) (n Int64))))
+  (live-objects known-leak 1))
+
 ; -- breaker batch 408 (2026-08-26): the scalar-param + compound-result acceptance ladder, promoted
 ; on the #3721 fix (gate admission: a scalar-param member with a SpillRecord compound result now takes
 ; the typed-interface wrapper instead of leaking the raw handle). All 8 faces flipped on the fix:
