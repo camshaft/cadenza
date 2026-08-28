@@ -177,3 +177,25 @@ fn string_ordering_round_trips() {
     // `Compare`; it re-emits as the same `<` surface operator.
     assert_roundtrips("(module m (def (early (: s String)) (< s \"m\")) (export early))");
 }
+
+// ── B2: binding (a kept multi-use `let`) ─────────────────────────────────────────────────────────
+
+#[test]
+fn a_multi_use_let_binding_round_trips() {
+    // `y` binds a RUNTIME computation `(+ x 1)` used TWICE, so lowering KEEPS it as a `Core::Let`
+    // (a single-use or constant binding would be copy-propagated away, leaving no `let`). The backend
+    // re-emits it with a synthesized binding name + `LocalRef`s to it; the synthesis is deterministic,
+    // so emit==re-emit byte-identically.
+    assert_roundtrips("(module m (def (f (: x Int64)) (let ((y (+ x 1))) (+ y y))) (export f))");
+}
+
+#[test]
+fn sequential_let_bindings_round_trip() {
+    // `let*` sequencing: the second binding's value references the first, and both are multi-use, so
+    // both are kept. Exercises the environment carrying an earlier binding's name into a later value.
+    assert_roundtrips(
+        "(module m (def (g (: x Int64)) \
+           (let ((a (* x 2)) (b (+ a a))) (+ b b))) \
+         (export g))",
+    );
+}

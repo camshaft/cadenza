@@ -28,8 +28,11 @@
 //! - **B1b**: OPERATORS + CONTROL — the runtime binary operators (`Arith`/`Compare`/`StrCmp`/
 //!   `FloatCompare`, re-emitted `(<op> l r)` via the `Prim`→surface reverse-map), boolean `Not`
 //!   (`(not x)`), short-circuit `And`/`or` (`(and|or l r)`), and the conditional `If` (`(if c t e)`).
+//! - **B2**: BINDING — a kept multi-use `Core::Let` re-emits as `(let ((<n> <v>)…) <body>)` with
+//!   DETERMINISTIC synthesized binding names (the source name is discarded at lowering), and a
+//!   `Core::LocalRef` resolves to its binding's synthesized name via the threaded [`BinderEnv`].
 //!
-//! Still declining, for later increments: binding (Let/Seq/Block — B2), calls (Call/Closure — B3),
+//! Still declining, for later increments: sequencing (Seq/Block/Break), calls (Call/Closure — B3),
 //! and data (Record/Tuple/sums/collections — B4), plus scalar `Match` (a later slice).
 
 use crate::ast::{Builder, Leaf, Radix, StructId};
@@ -38,6 +41,24 @@ use crate::db::Db;
 use crate::diag::Reject;
 use crate::layout::Layout;
 use crate::lower::core_of;
+use std::collections::HashMap;
+
+/// The in-scope `let`-binding environment: a map from a kept binding's binder occurrence (the
+/// initializer `StructId` a `Core::LocalRef` resolves to) to the SYNTHESIZED surface name this backend
+/// gives it. A `Core::Let` binding carries only its initializer occurrence — the source binding name is
+/// discarded at lowering — so the backend mints fresh names DETERMINISTICALLY (by binding order, see
+/// [`synth_binding_name`]); the same Core always yields the same names, which is what makes the
+/// re-emitted `let` round-trip byte-identically. Threaded (as `&mut`) through [`emit_expr`] so a
+/// `LocalRef` in a `let` body resolves to the name its binding was minted.
+type BinderEnv = HashMap<StructId, std::rc::Rc<str>>;
+
+/// The deterministic synthesized surface name for the `i`th kept `let` binding encountered in an emit
+/// walk. Positional (not derived from the binder's `StructId`, which differs between the two arenas of a
+/// round-trip), so compile-then-recompile mints the SAME name for the structurally-same binding. The
+/// `_cdz_let` prefix keeps it out of the way of ordinary source identifiers.
+fn synth_binding_name(i: usize) -> std::rc::Rc<str> {
+    format!("_cdz_let{i}").into()
+}
 
 /// Emit the binary-AST artifact for the program in `db` under `layout`. Reconstructs a Cadenza surface
 /// tree `(do (def …)… (export …)…)` over the same reachable definition set (`layout.order`) the other
@@ -116,7 +137,9 @@ fn emit_def(db: &mut Db, b: &mut Builder, def: usize) -> Result<StructId, Reject
         }
     }
     let sig = b.list(sig_children);
-    let body_node = emit_expr(db, b, body)?;
+    // A fresh binding environment per definition — a `let` in the body populates it.
+    let mut env = BinderEnv::new();
+    let body_node = emit_expr(db, b, body, &mut env)?;
     Ok(b.list(vec![def_head, sig, body_node]))
 }
 
@@ -145,7 +168,12 @@ fn emit_export(
 /// Reconstruct a Cadenza surface expression from the optimized `Core` at `id`. B0 covers the constant
 /// leaves only; every other node declines (attributed to this target), to be filled in by later
 /// increments (ops/control B1, binding B2, calls B3, data B4, …).
-fn emit_expr(db: &mut Db, b: &mut Builder, id: StructId) -> Result<StructId, Reject> {
+fn emit_expr(
+    db: &mut Db,
+    b: &mut Builder,
+    id: StructId,
+    env: &mut BinderEnv,
+) -> Result<StructId, Reject> {
     match core_of(db, id) {
         // An integer constant re-reads to the same value regardless of the base its text used (the base
         // is display-only and Core does not retain it), so emit the canonical decimal spelling.
@@ -159,18 +187,29 @@ fn emit_expr(db: &mut Db, b: &mut Builder, id: StructId) -> Result<StructId, Rej
         // A finite float constant carries its exact `Decimal` (no `f64` rounding), which re-reads to the
         // same leaf. (`ConstFloatNan` has no finite `Decimal` and no plain written form — a later slice.)
         Core::ConstFloat(d) => Ok(b.atom_leaf(Leaf::Float(d))),
-        // A reference to a function PARAMETER (or a kept `let` binding) — its surface is the bare name of
-        // the binder occurrence, which re-resolves to the same parameter/binding on recompile. `Param`
-        // and `LocalRef` share the mechanism (a name atom); a `LocalRef` only appears once `let` bindings
-        // survive lowering (B2), but rendering it costs nothing and keeps the two consistent.
-        Core::Param { binder } | Core::LocalRef { binder } => {
+        // A reference to a function PARAMETER — its surface is the bare name of the parameter's binder
+        // occurrence (a `Name`), which re-resolves to the same parameter on recompile.
+        Core::Param { binder } => {
             let nm = db.ast.as_name(binder).ok_or_else(|| {
                 Reject::decline(
-                    "the Cadenza backend cannot recover the name of a parameter/binding reference"
+                    "the Cadenza backend cannot recover the name of a parameter reference"
                         .to_string(),
                 )
             })?;
             Ok(b.name(nm))
+        }
+        // A reference to a kept `let` binding — its binder is the initializer occurrence (NOT a `Name`),
+        // so its surface name comes from the environment the enclosing `Let` populated with the
+        // synthesized binding name. A `LocalRef` always lives inside its `Let`'s body, so the binder is
+        // in scope; an absent entry would be an emit bug (a `LocalRef` reached without its `Let`).
+        Core::LocalRef { binder } => {
+            let nm = env.get(&binder).ok_or_else(|| {
+                Reject::decline(
+                    "the Cadenza backend reached a `let`-binding reference with no binding in scope"
+                        .to_string(),
+                )
+            })?;
+            Ok(b.name(nm.clone()))
         }
         // A runtime binary operator — arithmetic, integer/bool comparison, string ordering, or float
         // comparison. All four carry `{op, lhs, rhs}` (FloatCompare also a width, ignored — the surface
@@ -195,30 +234,53 @@ fn emit_expr(db: &mut Db, b: &mut Builder, id: StructId) -> Result<StructId, Rej
             let head = b.name(sym);
             // Operands FIRST would reverse head-first order — build the head atom, then each operand
             // sub-tree left-to-right, then the list (children hold the ids; the head is already pushed).
-            let l = emit_expr(db, b, lhs)?;
-            let r = emit_expr(db, b, rhs)?;
+            let l = emit_expr(db, b, lhs, env)?;
+            let r = emit_expr(db, b, rhs, env)?;
             Ok(b.list(vec![head, l, r]))
         }
         // Boolean negation `(not x)`.
         Core::Not { operand } => {
             let head = b.name("not");
-            let x = emit_expr(db, b, operand)?;
+            let x = emit_expr(db, b, operand, env)?;
             Ok(b.list(vec![head, x]))
         }
         // Short-circuiting conjunction / disjunction — `is_and` picks `and` vs `or`.
         Core::And { lhs, rhs, is_and } => {
             let head = b.name(if is_and { "and" } else { "or" });
-            let l = emit_expr(db, b, lhs)?;
-            let r = emit_expr(db, b, rhs)?;
+            let l = emit_expr(db, b, lhs, env)?;
+            let r = emit_expr(db, b, rhs, env)?;
             Ok(b.list(vec![head, l, r]))
         }
         // A two-way conditional `(if cond then else)`.
         Core::If { cond, then_, else_ } => {
             let head = b.name("if");
-            let c = emit_expr(db, b, cond)?;
-            let t = emit_expr(db, b, then_)?;
-            let e = emit_expr(db, b, else_)?;
+            let c = emit_expr(db, b, cond, env)?;
+            let t = emit_expr(db, b, then_, env)?;
+            let e = emit_expr(db, b, else_, env)?;
             Ok(b.list(vec![head, c, t, e]))
+        }
+        // A kept multi-use binding sequence `(let ((<n0> <v0>) …) <body>)`. Each binding is `(init, init)`
+        // — keyed only by its initializer occurrence — so a fresh surface name is minted deterministically
+        // (by binding order) and recorded in `env` for the `LocalRef`s that read it. Bindings are
+        // SEQUENTIAL (`let*`): a later binding's value may reference an earlier binding, so each name is
+        // registered right AFTER its own value is emitted and BEFORE the next; the body is emitted with
+        // every binding in scope. Head-first: the `let` head and each binding's name atom are pushed
+        // before their sub-trees.
+        Core::Let { bindings, body } => {
+            let let_head = b.name("let");
+            let mut binding_nodes = Vec::with_capacity(bindings.len());
+            for &(binder, value) in bindings.iter() {
+                let name = synth_binding_name(env.len());
+                let name_atom = b.name(name.clone());
+                // The value is emitted with only the PRIOR bindings in scope (a binding's initializer
+                // cannot reference itself), then this binding is registered for the rest of the sequence.
+                let value_node = emit_expr(db, b, value, env)?;
+                env.insert(binder, name);
+                binding_nodes.push(b.list(vec![name_atom, value_node]));
+            }
+            let bindings_list = b.list(binding_nodes);
+            let body_node = emit_expr(db, b, body, env)?;
+            Ok(b.list(vec![let_head, bindings_list, body_node]))
         }
         other => Err(Reject::decline(format!(
             "the Cadenza backend does not yet lower this Core node back to Cadenza: {}",
