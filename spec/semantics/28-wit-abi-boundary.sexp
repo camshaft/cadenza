@@ -1250,6 +1250,13 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (output (: (two (4 4)) Pair))
   (live-objects known-leak 1))
 
+(case "a declared-world enum EXPORT whose guest case order MISMATCHES the WIT declines (not a silent u32 degrade)"
+  (doc "SHAPE 64 - breaker FINDING 1 regression pin. Guest `(type Color (Red)(Green)(Blue))` under an imposed world declaring `(result (\"enum\" green red blue))` [case order REVERSED]. Before, the SHAPE-60 order-mismatch guard returned None → silently fell through to the PROVIDER path and exported `f: func(s64) -> u32` — a DIFFERENT type than the world declares (the value even round-tripped, masking it). Now the imposed-world contract guard in the export dispatch DECLINES loudly: an explicit wit_world's typed member that can't be emitted must NOT silently cross as a u32 handle. A reorder needs a runtime disc-remap (a later increment), so it declines rather than mis-emitting. A component-name-ONLY peer provider (no imposed wit_world) is unaffected — it still crosses compounds as handles (29-* peer cases).")
+  (wit-world (world w (export cadenza:demo/iface (member f (func (param x (s64)) (result ("enum" green red blue)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type Color (Red) (Green) (Blue)) (def (f (: x Int64)) (if (= x 0) Color.Red Color.Green)) (export f)))
+  (declines (message "a different type than the world declares")))
+
 ; -- breaker batch 408 (2026-08-26): the scalar-param + compound-result acceptance ladder, promoted
 ; on the #3721 fix (gate admission: a scalar-param member with a SpillRecord compound result now takes
 ; the typed-interface wrapper instead of leaking the raw handle). All 8 faces flipped on the fix:
