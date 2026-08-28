@@ -215,6 +215,18 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
 /// don't perturb the path; Tuple/Record/Unit decline at the boundary.
 const HEAP_PARAM_TYPES: &[&str] = &["String", "Bytes", "(List Int64)", "(Option Int64)"];
 
+/// SIZED integer types (the generator is otherwise Int64-only). A `main : T` body over one of these
+/// reaches narrow-width value lowering + the checked-conversion ops — a surface an Int64 body never hits.
+const SIZED_INT_TYPES: &[&str] = &[
+    "Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64",
+];
+
+/// Width-SAFE binary ops for the sized-int body: with two `0..=9` operands the result stays in range for
+/// EVERY width (incl. UInt8) — no const overflow/underflow — so the program COMPILES (reaching narrow
+/// arith emit) rather than declining CDZ0304. Deliberately excludes `-` (unsigned underflow), `/`/`%`
+/// (div-by-zero), and shifts (overflow) to keep the coverage arm on the compile path.
+const SIZED_INT_OPS: &[&str] = &["+", "*", "&", "|", "^"];
+
 /// Append one Int64 literal — biased toward boundary values (where width/overflow/wrap miscompiles
 /// cluster), else a bounded random int. Both are valid Int64 literals. Shared by the leaf case and the
 /// recursive helper's base.
@@ -257,11 +269,13 @@ fn gen_compound<C: Choice>(
 }
 
 /// `main`'s body: an Int64 expression, a COMPOUND value built from Int64 sub-expressions — a
-/// `(tuple <e> <e>)` or `(list <e> <e> <e>)` — or a BOOL value. Keeping the elements Int64 stays
-/// type-safe without full type-directed generation, while reaching product/collection construction +
-/// the compound value codec (a lowering surface a bare scalar body never exercises). The bool arm
-/// returns a `Bool` from `main` (via [`gen_cond`]), exercising bool RETURN-value lowering + the bool
-/// value codec — distinct from bool-as-`if`-condition, the only place a Bool appears otherwise.
+/// `(tuple <e> <e>)` or `(list <e> <e> <e>)` — a BOOL value, or a SIZED-int value. Keeping the elements
+/// Int64 stays type-safe without full type-directed generation, while reaching product/collection
+/// construction + the compound value codec (a lowering surface a bare scalar body never exercises). The
+/// bool arm returns a `Bool` from `main` (via [`gen_cond`]), exercising bool RETURN-value lowering + the
+/// bool value codec — distinct from bool-as-`if`-condition, the only place a Bool appears otherwise. The
+/// sized-int arm ([`gen_sized_int_body`]) returns an `Int8`/…/`UInt64` value, reaching narrow-width value
+/// lowering + the checked-conversion ops that the Int64-only expression grammar never hits.
 fn gen_main_body<C: Choice>(
     c: &mut C,
     scope: &mut Vec<String>,
@@ -269,7 +283,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(4) {
+    match c.variant(5) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -277,9 +291,34 @@ fn gen_main_body<C: Choice>(
         1 => gen_compound(c, false, MAX_DEPTH - 1, scope, fresh, caps, out),
         // (list <e> <e> <e>) — a homogeneous Int64 list.
         2 => gen_compound(c, true, MAX_DEPTH - 1, scope, fresh, caps, out),
+        // A SIZED-int-typed body (`main : Int8`/…): narrow-width value lowering + checked conversions.
+        4 => gen_sized_int_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
+}
+
+/// Append a SIZED-integer-typed expression (`main : T` for a `T` in [`SIZED_INT_TYPES`]) — self-contained
+/// (no Int64 scope), so it stays type-correct without type-directed generation. One of: an ascribed
+/// literal `(: <n> T)`; a checked conversion `(T.of <n>)` from a small in-range Int64 literal; or a
+/// width-SAFE binary op `(<op> (: a T) (: b T))` over two `0..=9` operands (see [`SIZED_INT_OPS`] — the
+/// result stays in range for every width, so it COMPILES). Reaches narrow-width arith/conversion emit.
+fn gen_sized_int_body<C: Choice>(c: &mut C, out: &mut String) {
+    let t = SIZED_INT_TYPES[c.variant(SIZED_INT_TYPES.len())];
+    match c.variant(3) {
+        0 => write!(out, "(: {} {t})", c.int_bounded(0, 9)).ok(),
+        1 => write!(out, "({t}.of {})", c.int_bounded(0, 9)).ok(),
+        _ => {
+            let op = SIZED_INT_OPS[c.variant(SIZED_INT_OPS.len())];
+            write!(
+                out,
+                "({op} (: {} {t}) (: {} {t}))",
+                c.int_bounded(0, 9),
+                c.int_bounded(0, 9)
+            )
+            .ok()
+        }
+    };
 }
 
 /// Append one coerced `Int64` expression: at `depth == 0` (or when the base variant is picked) an
@@ -656,6 +695,56 @@ mod tests {
             saw,
             "the coercing generator should reach a heap-param entry `(def (main (: v0 …)) …)`"
         );
+    }
+
+    /// Every form the sized-int body arm emits — an ascribed literal `(: n T)`, a checked conversion
+    /// `(T.of n)`, and a width-safe binary op `(<op> (: a T) (: b T))` — must COMPILE (not merely be
+    /// cleanly handled) for EVERY `T` in `SIZED_INT_TYPES`: the arm is deliberately kept on the compile
+    /// path (small 0..=9 operands + no-overflow ops) so the coverage actually reaches narrow-width emit.
+    /// Guards `SIZED_INT_TYPES`/`SIZED_INT_OPS` (a bad type/op name would decline/parse-error here).
+    #[test]
+    fn every_sized_int_body_form_compiles() {
+        for t in SIZED_INT_TYPES {
+            for src in [
+                format!("(do (def (main) (: 5 {t})) (export main))"),
+                format!("(do (def (main) ({t}.of 9)) (export main))"),
+                format!("(do (def (main) (+ (: 9 {t}) (: 9 {t}))) (export main))"),
+                format!("(do (def (main) (* (: 9 {t}) (: 9 {t}))) (export main))"),
+                format!("(do (def (main) (& (: 9 {t}) (: 3 {t}))) (export main))"),
+                format!("(do (def (main) (| (: 5 {t}) (: 2 {t}))) (export main))"),
+                format!("(do (def (main) (^ (: 6 {t}) (: 3 {t}))) (export main))"),
+            ] {
+                assert!(
+                    matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                    "sized-int body form must COMPILE: {src}"
+                );
+            }
+        }
+    }
+
+    /// The generator REACHES the sized-int body arm across varied entropy — so the coverage (narrow-width
+    /// value/arith/conversion emit) is actually exercised by the coercing fuzzer, not dead.
+    #[test]
+    fn generator_reaches_a_sized_int_body() {
+        let mut saw = false;
+        for seed in 0u64..256 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(9);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let src = generate_coerced(&bytes).source;
+            if SIZED_INT_TYPES
+                .iter()
+                .any(|t| src.contains(&format!(": {t})")) || src.contains(&format!("{t}.of ")))
+            {
+                saw = true;
+                break;
+            }
+        }
+        assert!(saw, "the coercing generator should reach a sized-int body");
     }
 
     /// Every operator the generator can emit is a valid Int64→Int64→Int64 op the compiler CLEANLY
