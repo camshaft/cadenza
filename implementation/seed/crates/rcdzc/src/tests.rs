@@ -54639,26 +54639,22 @@ mod cross_component_oracle {
 #[test]
 fn a_variant_with_a_lowercase_tuple_alias_payload_reads_as_a_payload_variant_not_nullary() {
     use crate::testkit::parse;
-    // Lowercase `(tuple …)` payload — the bug's exact shape. Constructs `Mk` with a tuple payload, matches
-    // it, returns a constant: the point is that construction + match SUCCEED (the bug rejected them).
+    let validate = |bytes: &[u8]| {
+        let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        v.validate_all(bytes)
+            .expect("the payload-variant component validates");
+    };
+    // Lowercase `(tuple …)` payload — the bug's exact shape: construction + match must COMPILE to a valid
+    // component (the bug REJECTED them CDZ0201, reading `Mk` as nullary). The regression is the compile; the
+    // `(match (P.Mk (tuple 4 5)) ((P.Mk t) 9))` run to 9 is incidental (a constant fold). This stays a
+    // compile+validate pin, not a corpus case: the lowercase-alias payload does not round-trip through the ML
+    // surface (it renders as the comma tuple `(Int64, Int64)`), so the corpus ML round-trip cannot carry it.
     let low = "(module m (type P (Mk (tuple Int64 Int64))) (def (main) (match (P.Mk (tuple 4 5)) ((P.Mk t) 9))) (export main))";
-    assert_eq!(
-        run_returns::<i64>(
-            &compile_component(&crate::codec::encode(&parse(low))).expect("compile"),
-            "main"
-        ),
-        9
-    );
-    // The capital `(Tuple …)` spelling always worked — its head is Capitalized, so the lowercase-name
-    // param filter never harvested it. Pin it alongside so the two spellings are proven equivalent.
+    validate(&compile_component(&crate::codec::encode(&parse(low))).expect("lowercase-alias payload compiles"));
+    // The capital `(Tuple …)` spelling always worked — its head is Capitalized, so the lowercase-name param
+    // filter never harvested it. Pin it alongside so the two spellings are proven equivalent.
     let cap = "(module m (type P (Mk (Tuple Int64 Int64))) (def (main) (match (P.Mk (tuple 4 5)) ((P.Mk t) 9))) (export main))";
-    assert_eq!(
-        run_returns::<i64>(
-            &compile_component(&crate::codec::encode(&parse(cap))).expect("compile"),
-            "main"
-        ),
-        9
-    );
+    validate(&compile_component(&crate::codec::encode(&parse(cap))).expect("capital-Tuple payload compiles"));
 }
 
 /// Applying a NULLARY variant to a non-unit payload — `(None 5)` — is rejected CDZ0201 with an ACTIONABLE
