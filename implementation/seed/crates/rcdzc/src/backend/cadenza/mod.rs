@@ -392,6 +392,42 @@ fn emit_expr(
             }
             emit_match_chain(db, b, scrutinee, &arms, 0, env)
         }
+        // A runtime TUPLE value `(tuple <e>…)` — a fixed-arity positional product built from runtime
+        // operands (a projection of a compile-time-visible tuple folds away in `lower`, so a surviving
+        // `Core::Tuple` is a runtime value). Mirrors lower's constant value surface.
+        Core::Tuple { elems } => {
+            let head = b.name("tuple");
+            let mut children = Vec::with_capacity(1 + elems.len());
+            children.push(head);
+            for e in elems.iter().copied() {
+                children.push(emit_expr(db, b, e, env)?);
+            }
+            Ok(b.list(children))
+        }
+        // A runtime RECORD value `(record (= <k> <v>)…)` — fields in canonical (name-sorted `BTreeMap`)
+        // order, each an `(= name value)` ascription pair (matching lower's `const_value_ast` surface).
+        Core::Record { fields } => {
+            let head = b.name("record");
+            let mut children = Vec::with_capacity(1 + fields.len());
+            children.push(head);
+            for (name, &v) in fields.iter() {
+                let fname = b.name(&*name.name);
+                let fval = emit_expr(db, b, v, env)?;
+                children.push(b.field_pair(fname, fval));
+            }
+            Ok(b.list(children))
+        }
+        // A runtime LIST value `(list <e>…)` — an ordered homogeneous sequence built from runtime
+        // operands; the walk preserves element order.
+        Core::ListNew { elems } => {
+            let head = b.name("list");
+            let mut children = Vec::with_capacity(1 + elems.len());
+            children.push(head);
+            for e in elems.iter().copied() {
+                children.push(emit_expr(db, b, e, env)?);
+            }
+            Ok(b.list(children))
+        }
         other => Err(Reject::decline(format!(
             "the Cadenza backend does not yet lower this Core node back to Cadenza: {}",
             core_node_kind(&other)
