@@ -43,6 +43,14 @@
 //! - **M1**: scalar `Core::Match` (Int/Bool probes + wildcard/binder) → an `if`-chain of `(= scrut lit)`
 //!   probes (value-equivalent; the scrutinee is a pure scalar). Guards desugar to `if` at lowering (so
 //!   they never reach here); a non-scalar probe (Str/Char/Bytes/list/map) declines.
+//! - **M4a**: sum `Core::MatchSum` → surface `(match <scrutinee> (<Variant> <binder>…) <body>)…`
+//!   ([`emit_match_sum`]): a root switch on the scrutinee's OWN discriminant with EXPLICIT-variant, bare
+//!   `Leaf`-body arms. Each arm mints a fresh `_cdz_m<n>` binder per payload slot (recorded in
+//!   `env.payloads` under the `SumPayload` `(scrutinee, path)` key the body reads); a `Core::SumPayload`
+//!   resolves to its binder. NESTED matches (a `Leaf` body that is itself a `MatchSum`) recurse naturally.
+//!   A disc-FOLDED / nested-`Switch` / `Guarded` / `LitTest` decision tree, or a DEFAULT (`disc: None`)
+//!   arm, declines. A match over a user sum whose `(type …)` was not re-emitted declines; prelude sums
+//!   (Option/Result) are ambient.
 //! - **DATA**: runtime compound VALUES — `Core::Tuple`→`(tuple …)`, `Core::Record`→`(record (= k v)…)`
 //!   (name-sorted), `Core::ListNew`→`(list …)`; and a `Core::SumNew` variant →
 //!   `(: (<Variant> <payload-or-unit>) <sum-type>)` (the type ascription pins an under-determined sum,
@@ -54,8 +62,9 @@
 //!   emitted (`emitted` set), so there is never an unbound-type recompile.
 //!
 //! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
-//! (Seq/Block/Break), map/set values, sum/list MATCHES (MatchSum/MatchList) + non-scalar match probes,
-//! and a multi-argument variant.
+//! (Seq/Block/Break), map/set values, LIST matches (MatchList), richer sum-match decision trees
+//! (guarded / literal-test / nested-switch / default arms), non-scalar scalar-match probes, and a
+//! multi-argument variant CONSTRUCTOR (`SumNew` — the match side already binds multi-payload slots).
 
 use crate::ast::{Builder, Leaf, Radix, StructId};
 use crate::core::Core;
@@ -66,14 +75,24 @@ use crate::lower::core_of;
 use crate::ty::Ty;
 use std::collections::HashMap;
 
-/// The in-scope `let`-binding environment: a map from a kept binding's binder occurrence (the
-/// initializer `StructId` a `Core::LocalRef` resolves to) to the SYNTHESIZED surface name this backend
-/// gives it. A `Core::Let` binding carries only its initializer occurrence — the source binding name is
-/// discarded at lowering — so the backend mints fresh names DETERMINISTICALLY (by binding order, see
-/// [`synth_binding_name`]); the same Core always yields the same names, which is what makes the
-/// re-emitted `let` round-trip byte-identically. Threaded (as `&mut`) through [`emit_expr`] so a
-/// `LocalRef` in a `let` body resolves to the name its binding was minted.
-type BinderEnv = HashMap<StructId, std::rc::Rc<str>>;
+/// The in-scope binding environment threaded (as `&mut`) through an emit walk. Two DISJOINT namespaces,
+/// both mapping an anonymous-in-Core binder to the SYNTHESIZED surface name this backend mints for it (the
+/// source name was discarded at lowering, so names are minted DETERMINISTICALLY — the same Core always
+/// yields the same names, so a re-emit round-trips):
+/// - `lets`: a kept `let` binding's initializer occurrence (the `StructId` a `Core::LocalRef` resolves to)
+///   → its synthesized name (by binding order, see [`synth_binding_name`]).
+/// - `payloads`: a sum-match payload — keyed by `(scrutinee-node, path)` (the same key a `Core::SumPayload`
+///   in an arm body carries) → the binder name a `Core::MatchSum` arm minted for that payload slot (see
+///   [`synth_payload_name`]). A match payload binder is anonymous in Core (a body reads
+///   `sum-payload(scrutinee)` at a path), so the arm mints one fresh name per payload slot and records it
+///   here for the body; `next_payload` keeps names globally unique within the def so a nested match's
+///   binders never shadow an outer match's.
+#[derive(Default)]
+struct BinderEnv {
+    lets: HashMap<StructId, std::rc::Rc<str>>,
+    payloads: HashMap<(StructId, Vec<crate::core::PathStep>), std::rc::Rc<str>>,
+    next_payload: usize,
+}
 
 /// The deterministic synthesized surface name for the `i`th kept `let` binding encountered in an emit
 /// walk. Positional (not derived from the binder's `StructId`, which differs between the two arenas of a
@@ -81,6 +100,14 @@ type BinderEnv = HashMap<StructId, std::rc::Rc<str>>;
 /// `_cdz_let` prefix keeps it out of the way of ordinary source identifiers.
 fn synth_binding_name(i: usize) -> std::rc::Rc<str> {
     format!("_cdz_let{i}").into()
+}
+
+/// The deterministic synthesized surface name for the `i`th sum-match PAYLOAD binder minted in an emit
+/// walk (monotone across the whole def, so binders of a nested match never collide with an outer match's).
+/// The `_cdz_m` prefix keeps it clear of source identifiers AND silences the unused-binding warning
+/// (CDZ0306, "prefix with `_` to silence") for a payload slot the arm body never reads.
+fn synth_payload_name(i: usize) -> std::rc::Rc<str> {
+    format!("_cdz_m{i}").into()
 }
 
 /// Emit the binary-AST artifact for the program in `db` under `layout`. Reconstructs a Cadenza surface
@@ -208,8 +235,8 @@ fn emit_def(
         }
     }
     let sig = b.list(sig_children);
-    // A fresh binding environment per definition — a `let` in the body populates it.
-    let mut env = BinderEnv::new();
+    // A fresh binding environment per definition — a `let` / match arm in the body populates it.
+    let mut env = BinderEnv::default();
     let body_node = emit_expr(db, b, body, &mut env, emitted)?;
     Ok(b.list(vec![def_head, sig, body_node]))
 }
@@ -348,7 +375,7 @@ fn emit_expr(
         // synthesized binding name. A `LocalRef` always lives inside its `Let`'s body, so the binder is
         // in scope; an absent entry would be an emit bug (a `LocalRef` reached without its `Let`).
         Core::LocalRef { binder } => {
-            let nm = env.get(&binder).ok_or_else(|| {
+            let nm = env.lets.get(&binder).ok_or_else(|| {
                 Reject::decline(
                     "the Cadenza backend reached a `let`-binding reference with no binding in scope"
                         .to_string(),
@@ -415,12 +442,12 @@ fn emit_expr(
             let let_head = b.name("let");
             let mut binding_nodes = Vec::with_capacity(bindings.len());
             for &(binder, value) in bindings.iter() {
-                let name = synth_binding_name(env.len());
+                let name = synth_binding_name(env.lets.len());
                 let name_atom = b.name(name.clone());
                 // The value is emitted with only the PRIOR bindings in scope (a binding's initializer
                 // cannot reference itself), then this binding is registered for the rest of the sequence.
                 let value_node = emit_expr(db, b, value, env, emitted)?;
-                env.insert(binder, name);
+                env.lets.insert(binder, name);
                 binding_nodes.push(b.list(vec![name_atom, value_node]));
             }
             let bindings_list = b.list(binding_nodes);
@@ -561,11 +588,141 @@ fn emit_expr(
             })?;
             Ok(b.list(vec![colon, variant, ty_node]))
         }
+        // A match over a runtime SUM scrutinee — re-emit the surface `(match <scrutinee> (<pat> <body>)…)`.
+        // M4a handles the SIMPLE decision-tree shape (delegated to [`emit_match_sum`]): a root switch on the
+        // scrutinee's OWN discriminant, every arm an explicit variant with a bare LEAF body; a disc-folded /
+        // nested / guarded / literal-test tree, or a default (wildcard) arm, declines (a later slice).
+        Core::MatchSum { scrutinee, root } => emit_match_sum(db, b, scrutinee, &root, env, emitted),
+        // A sum-match PAYLOAD read — its surface is the binder name the enclosing `MatchSum` arm minted for
+        // this `(scrutinee, path)` and recorded in `env.payloads`. A `SumPayload` is reached ONLY inside the
+        // arm body that bound it (a single-level match arm emitted directly by [`emit_match_sum`]); a payload
+        // read whose binder is not in scope (a shape this slice does not emit) declines.
+        Core::SumPayload { scrutinee, path } => {
+            let nm = env
+                .payloads
+                .get(&(scrutinee, path.to_vec()))
+                .ok_or_else(|| {
+                    Reject::decline(
+                        "the Cadenza backend reached a sum-match payload with no binder in scope (a \
+                         payload read outside a directly-emitted single-level match arm)"
+                            .to_string(),
+                    )
+                })?;
+            Ok(b.name(nm.clone()))
+        }
         other => Err(Reject::decline(format!(
             "the Cadenza backend does not yet lower this Core node back to Cadenza: {}",
             core_node_kind(&other)
         ))),
     }
+}
+
+/// Reconstruct the surface `(match <scrutinee> (<pattern> <body>)…)` for a `Core::MatchSum`. M4a lowers the
+/// SIMPLE decision-tree shape: the `root` is a [`SumCont::Switch`] on the scrutinee's OWN discriminant
+/// (empty `path`), every arm dispatches on an EXPLICIT variant (`disc: Some`) to a bare [`SumCont::Leaf`]
+/// body. Anything richer declines (a later slice): a disc-FOLDED / NESTED-switch / GUARDED / LITERAL-TEST
+/// continuation, or a DEFAULT (`disc: None`) wildcard arm. Each arm's `(<Variant> <binder>…)` pattern mints
+/// one fresh `_cdz_m<n>` binder per payload slot (recorded in `env.payloads` under the same `(scrutinee,
+/// path)` key a `Core::SumPayload` in the body carries — `[Payload]` for a single-payload variant,
+/// `[Payload, Elem(i)]` for slot `i` of a multi-payload variant, mirroring `select.rs`), so a payload read
+/// resolves to its binder. A match over a USER sum whose `(type …)` was not re-emitted declines (its variant
+/// heads must resolve on recompile); a prelude sum (`Option`/`Result`) is ambient. The scrutinee is emitted
+/// ONCE (a match evaluates it once). Because every arm is an explicit variant, the emitted match covers the
+/// same variant set the original did — it stays exhaustive (no CDZ0210), no synthesized wildcard needed.
+fn emit_match_sum(
+    db: &mut Db,
+    b: &mut Builder,
+    scrutinee: StructId,
+    root: &crate::core::SumCont,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Result<StructId, Reject> {
+    use crate::core::{PathStep, SumCont};
+    let arms = match root {
+        SumCont::Switch { path, arms } if path.is_empty() => arms,
+        _ => {
+            return Err(Reject::decline(
+                "the Cadenza backend does not yet lower this sum match (a disc-folded / nested / \
+                 guarded root — only a switch on the scrutinee's own discriminant)"
+                    .to_string(),
+            ));
+        }
+    };
+    // The scrutinee's solved sum declaration — the source of each arm's variant name + payload arity.
+    let decl = match crate::infer::type_of(db, scrutinee) {
+        Ty::Sum { decl, .. } => decl,
+        _ => {
+            return Err(Reject::decline(
+                "the Cadenza backend cannot recover a sum declaration for a MatchSum scrutinee"
+                    .to_string(),
+            ));
+        }
+    };
+    if db.is_user_node(decl) && !emitted.contains(&decl) {
+        return Err(Reject::decline(
+            "the Cadenza backend does not yet re-emit a match over this user sum (its `(type …)` \
+             declaration is not emitted — a generic / open / single-variant sum)"
+                .to_string(),
+        ));
+    }
+    let match_head = b.name("match");
+    let scrut_node = emit_expr(db, b, scrutinee, env, emitted)?;
+    let mut children = vec![match_head, scrut_node];
+    for arm in arms {
+        let disc = arm.disc.ok_or_else(|| {
+            Reject::decline(
+                "the Cadenza backend does not yet lower a DEFAULT (wildcard) sum-match arm"
+                    .to_string(),
+            )
+        })?;
+        let body = match &arm.cont {
+            SumCont::Leaf(body) => *body,
+            _ => {
+                return Err(Reject::decline(
+                    "the Cadenza backend does not yet lower a guarded / literal-test / nested-switch \
+                     sum-match arm"
+                        .to_string(),
+                ));
+            }
+        };
+        // Recover the variant head (bare or `(. Type Variant)`) and its payload arity from the sum decl.
+        let head = crate::lower::variant_head_ast(db, b, decl, disc).ok_or_else(|| {
+            Reject::decline(
+                "the Cadenza backend could not recover the variant name for a sum-match arm"
+                    .to_string(),
+            )
+        })?;
+        let arity = db
+            .type_decl_by_occ(decl)
+            .and_then(|t| t.variants.get(disc as usize))
+            .map(|v| v.payloads.len())
+            .ok_or_else(|| {
+                Reject::decline(
+                    "the Cadenza backend could not recover the variant arity for a sum-match arm"
+                        .to_string(),
+                )
+            })?;
+        // Mint a binder per payload slot and register its `SumPayload` path for the arm body: a single-
+        // payload variant reads `[Payload]`; a multi-payload variant's payload is a tuple, slot `i` at
+        // `[Payload, Elem(i)]`. A nullary variant emits the bare `(<Variant>)` pattern.
+        let mut pat_children = vec![head];
+        for slot in 0..arity {
+            let name = synth_payload_name(env.next_payload);
+            env.next_payload += 1;
+            let path: Vec<PathStep> = if arity == 1 {
+                vec![PathStep::Payload]
+            } else {
+                vec![PathStep::Payload, PathStep::Elem(slot)]
+            };
+            env.payloads.insert((scrutinee, path), name.clone());
+            pat_children.push(b.name(name));
+        }
+        let pattern = b.list(pat_children);
+        // The body is emitted with this arm's payload binders in scope.
+        let body_node = emit_expr(db, b, body, env, emitted)?;
+        children.push(b.list(vec![pattern, body_node]));
+    }
+    Ok(b.list(children))
 }
 
 /// Re-emit a scalar match's arms as a nested `if`-chain, from arm `i` onward. The LAST arm (or a
