@@ -700,6 +700,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         else if h == "tuple".toUTF8 then evalSeqCtor m env fuel children Value.tuple
         else if h == "list".toUTF8 then evalSeqCtor m env fuel children Value.list
         else if h == "record".toUTF8 then evalRecord m env fuel children
+        else if h == "map".toUTF8 then evalMapLiteral m env fuel children
         else if h == ".".toUTF8 then evalProject m env fuel children
         else if h == "match".toUTF8 then evalMatch m env ty fuel children
         else match String.fromUTF8? h with
@@ -1281,6 +1282,35 @@ partial def evalRecord (m : Module) (env : Env) (fuel : Nat) (children : Array N
   | .ok fields => .value (.record (fields.qsort (fun a b => cmpBytes a.1 b.1 == .lt)))
   | .error e => .unsupported e
 
+/-- `(map (k1 v1) (k2 v2)…)` — a map LITERAL: evaluate each `(k v)` entry to a key/value pair, then
+canonicalize with `canonMap` (sort by key, dedupe; an unorderable key → skip). Mirrors the `(map (k v)…)`
+value form the checker's `expectedValue?` reads, and is the construction dual of the `(map (k p)…)`
+match pattern. A non-value key/value propagates its outcome (a map key must be forced to be ordered). -/
+partial def evalMapLiteral (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  let rec go (js : List Nat) (acc : Array (Value × Value)) : Except Outcome (Array (Value × Value)) :=
+    match js with
+    | [] => .ok acc
+    | j :: rest =>
+      match m.nodes[j]? with
+      | some (Node.list ec) =>
+        let (kId, vId) := match m.headName? (Node.list ec) with
+          | some h => if h == "=".toUTF8 && ec.size == 3 then (ec[1]?, ec[2]?) else (ec[0]?, ec[1]?)
+          | none => (ec[0]?, ec[1]?)
+        match kId, vId with
+        | some kId, some vId =>
+          (match evalNode m env defaultIntTy fuel kId with
+           | .value kv => (match evalNode m env defaultIntTy fuel vId with
+                           | .value vv => go rest (acc.push (kv, vv))
+                           | other => .error other)
+           | other => .error other)
+        | _, _ => .error (.unsupported "eval: malformed map entry")
+      | _ => .error (.unsupported "eval: malformed map entry")
+  match go (children.extract 1 children.size).toList #[] with
+  | .ok entries => (match canonMap entries with
+                    | some c => .value (.map c)
+                    | none => .unsupported "eval: map literal has an unorderable key")
+  | .error o => o
+
 /-- `(. recExpr field)` — project a named field from a record value (spec §Member Access): observe the
 projected field SHALLOWLY (its top-level poison surfaces; a nested compound stays lazy). A non-record
 operand or a non-name field key (tuple positional access, etc.) is not modeled → skip. -/
@@ -1367,6 +1397,17 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
       else if ph == "record".toUTF8 then
         (match subj with
          | .record fields => matchRecordPats m (pc.extract 1 pc.size).toList fields
+         | _ => .ok none)
+      else if ph == "map".toUTF8 then
+        -- a map pattern `(map (k p)…)`: each entry's key literal must be present with a matching value.
+        -- Exact key-count → decide; FEWER pattern entries than map keys (a subset pattern) → skip (I
+        -- don't yet model subset semantics — sound coverage-gap, never a wrong arm selection).
+        (match subj with
+         | .map entries =>
+           let eps := (pc.extract 1 pc.size)
+           if eps.size > entries.size then .ok none
+           else if eps.size < entries.size then .error (.unsupported "eval: map subset-pattern not modeled")
+           else matchMapPats m eps.toList entries
          | _ => .ok none)
       else if ph == "list".toUTF8 then
         -- a list pattern: fixed `(list p0 … pn)` (arity-checked positional) or a rest pattern
@@ -1492,6 +1533,35 @@ partial def matchRecordPats (m : Module) (fieldPats : List Nat) (fields : Array 
                            | .ok (some e2) => .ok (some (e1 ++ e2))
       | none => .ok none   -- named key absent → no match
     | none => .error (.unsupported "eval: malformed record field-pattern")
+
+/-- Match map entry-patterns `(k p)…` against a map's entries: each pattern entry's KEY (a scalar
+literal) must be a key in the map, its value matched by the entry's sub-pattern. -/
+partial def matchMapPats (m : Module) (entryPats : List Nat) (entries : Array (Value × Value)) : Except Outcome (Option Env) :=
+  match entryPats with
+  | [] => .ok (some [])
+  | ep :: rest =>
+    match m.nodes[ep]? with
+    | some (Node.list ec) =>
+      match ec[0]?, ec[1]? with
+      | some kNode, some pNode =>
+        match m.nodes[kNode]? with
+        | some (Node.atom lid) =>
+          match (m.leaves[lid]?).bind Value.ofLeaf with
+          | some kv =>
+            match (entries.find? (fun e => e.1 == kv)).map (·.2) with
+            | some vv =>
+              (match matchPat m pNode vv with
+               | .error o => .error o
+               | .ok none => .ok none
+               | .ok (some e1) => match matchMapPats m rest entries with
+                                  | .error o => .error o
+                                  | .ok none => .ok none
+                                  | .ok (some e2) => .ok (some (e1 ++ e2)))
+            | none => .ok none   -- key absent from the map → no match
+          | none => .error (.unsupported "eval: map-pattern key is not a scalar literal")
+        | _ => .error (.unsupported "eval: map-pattern key is not a literal")
+      | _, _ => .error (.unsupported "eval: malformed map-pattern entry")
+    | _ => .error (.unsupported "eval: malformed map-pattern entry")
 
 /-- `(match scrutinee (pat body)… )` — try arms in order (spec: the scrutinee IS an observation point,
 core-semantics.md:287). A top-level WILDCARD `_` or bare-name BINDER binds the scrutinee LAZILY (never
