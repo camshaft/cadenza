@@ -6612,6 +6612,9 @@ impl Guest for Component {
     fn vec_push(v: u32, elem: u32) -> u32 {
         op_vec_push(Handle::from_u32(v), Handle::from_u32(elem)).to_u32()
     }
+    fn vec_prepend(v: u32, elem: u32) -> u32 {
+        op_vec_prepend(Handle::from_u32(v), Handle::from_u32(elem)).to_u32()
+    }
     fn vec_update(v: u32, index: u32, elem: u32) -> u32 {
         op_vec_update(Handle::from_u32(v), index, Handle::from_u32(elem)).to_u32()
     }
