@@ -958,7 +958,7 @@
             (def (main (: pos Int64)) (wval (loop b"\x05\x07\x09" 3 pos ((. W Atom) 0))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 9 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "a projected boxed-sum accumulator survives the tail-loop step (escape, not reclaimed)"
   (doc    "The ESCAPE/use-after-free face of the reader loop above (distinct-branch `if`): `one` returns `(tuple (W.Atom <byte>) (+ pos 1))` from an `if` whose two branches DIFFER (`(W.Atom 99)` in the else) — so the `if` cannot be merged/folded and `r` is a REAL join-produced heap handle. `loop` threads `(. r 0)` (the boxed-sum node) as the `last` accumulator and `(. r 1)` (the cursor) as the position, so the `W.Atom` child handle ESCAPES out of the tuple into the recursive call. If the let-bound tuple `r` were reclaimed after its projections (a naive rule seeing only borrows — `(. r 1)` copies its scalar out), the drop would cascade to FREE the escaped boxed sum → use-after-free → garbage 0 instead of 5. Pins that a nested-compound projection ESCAPES its aggregate (`select.rs binding_escapes`), so the aggregate is not reclaimed while its extracted child is live. All three of {distinct `if`, boxed-sum accumulator, sibling-projected cursor} are jointly required to trigger the bug. One step over b\"\\x05\\x07\" from pos 0: byte 5 → then-arm → `(W.Atom 5)` → `wval` = 5.")
@@ -974,7 +974,7 @@
             (def (main (: pos Int64)) (wval (loop b"\x05\x07" 1 pos ((. W Atom) 0))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 5 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a chained access through an if-of-records composes and shields the untaken branch's trap"
   (doc    "The access-into-if fold COMPOSES through a chain: `(. (. (if b R1 R2) a) x)` reads field `a`
@@ -1023,7 +1023,7 @@
             (def (ev e) (match e ((Node.NLit v) v) ((Node.NAdd (tuple a b)) (+ (ev a) (ev b)))))
             (def (main) (let ((l (mk))) (ev (. l 0)))) (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a scalar element is projected directly from a function's runtime tuple result"
   (doc    "The `let`-free companion of the projected-element cases above: `(. x N)` applied DIRECTLY to a
@@ -1161,7 +1161,7 @@
             (def (kind-of c) (match c ((Core.KConst n) 0) (_ 1)))
             (def (main) (kind-of (resolve (Node.NPrim (tuple "+" (Node.NInt 20) (Node.NInt 22)))))) (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "two structural values of the same shape are equal"
   (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural (2nd
@@ -2016,7 +2016,7 @@
                     (+ (sum g) (* 1000 (sum t)))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 22117 Int64))
-  (live-objects known-leak 25))
+  (live-objects known-leak 24))
 
 (case "pushing through ONE alias of a doubly-held list leaves the sibling field intact"
   (doc    "The same-value-in-BOTH-FIELDS consume face: `(Mk xs xs)` holds ONE list in two payload slots
@@ -3258,7 +3258,7 @@
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 5))
 
 ; The DISTINCT sibling of the case above, now FIXED: reading the head by RE-EXTRACTING the node's payload
 ; (`head-of node`) in a sibling operand WHILE `fl(elems)` consumes the shared payload alias. `elems` is the
@@ -3299,7 +3299,7 @@
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 (case "a self-recursive AST walker consumes a node's child list while the node is threaded unchanged"
   (doc    "The CONSUMING-payload face of the AST-walker family (the loop-carried twin of the mutual-recursion
@@ -3403,7 +3403,7 @@
                  (rhs (contract (App (Ix 1) (Ix 0)) (Ix 7)))))
             (export main)))
   (output (: 7 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 12))
 
 (case "a map with a user-sum VALUE looks up and matches the stored variant"
   (doc    "A user sum used as a Map VALUE — `(Map.insert Map.empty 1 (C.R))` stores the variant `C.R` at key
@@ -3636,7 +3636,7 @@
   (call   main (: 1 Int64)) (output (: 7 Int64))
   (call   main (: 2 Int64)) (output (: 103 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "a returned lookup result consumed with a wildcard never inspects the payload"
   (doc    "The wildcard-consume companion: the caller matches the returned `Out` but binds the payload with
@@ -3653,7 +3653,7 @@
             (def (main) (present (get (Map.insert (map) "x" (Ty.Con "Int")) "x")))
             (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 ; A STRING used as a Map VALUE — the symbol-table idiom (a name maps to a canonical name / type string /
 ; opcode mnemonic), the string companion of the sum-/list-/set-valued map cases. The looked-up String is
@@ -4976,7 +4976,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 115 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 5))
 
 (case "a lowercase-named type is referenceable in a field (types are values, not gated by case)"
   (doc    "A type is a VALUE, referenceable by name regardless of case — so a lowercase-named sum
@@ -6392,7 +6392,7 @@
                                (Expr.Add (tuple (Expr.Lit k) (build (- k 1))))))
             (def (main) (ev (build 4))) (export main)))
   (output (: 12 Int64))
-  (live-objects known-leak 13))
+  (live-objects known-leak 12))
 
 (case "a function returns a heap sub-node selected by a match arm"
   (doc    "A helper whose `match` arm yields a heap value bound by the pattern (a payload binder) — the
@@ -6434,7 +6434,7 @@
                                                (Expr.Bin (tuple 1
                                                  (tuple (Expr.Lit 22) (Expr.Lit 8))))))))) (export main)))
   (output (: 34 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 6))
 
 (case "a constructor pattern nested under Some matches a runtime list element"
   (doc    "A `match` arm whose binder is ITSELF a constructor pattern nested under `Some` —
@@ -6736,7 +6736,7 @@
                                           (Node.NInt 20)
                                           (Node.NPrim (tuple "*" (Node.NInt 2) (Node.NInt 11)))))))) (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 11))
 
 (case "a BST built by comparison-driven inserts reads back sorted via in-order traversal"
   (doc    "The ordered-tree discipline over a user sum (the resolver above transforms a FIXED tree;
@@ -6935,7 +6935,7 @@
                                       (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5)))))))
             (export main)))
   (output (: 12 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 4))
 
 (case "an unannotated generic branching sum fold infers its parameter's instantiation from the arms"
   (doc    "The UNANNOTATED companion: the same generic branching tree folded by `sm` with NO annotation on
@@ -6958,7 +6958,7 @@
                                       (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5)))))))
             (export main)))
   (output (: 12 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 4))
 
 (case "an unannotated generic sum ACCUMULATOR infers its parameter from the values folded into it"
   (doc    "A running-max fold threads an `Option Int64` accumulator through a recursive list walk with NO
@@ -7027,7 +7027,7 @@
             (def (main) (cnt (Tree.Node (tuple (Tree.Leaf 3) (Tree.Leaf 4)))))
             (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a recursively-built linked list renders its full runtime spine"
   (doc    "The RENDER counterpart of the runtime-fold cases: a list whose spine is built by a
@@ -7180,7 +7180,7 @@
             (def (main) (mk 5)) (export main)))
   (call   main)
   (output (: (P 5 (Some 5)) W))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "a multi-payload variant with a scalar AND two recursive payloads escapes flat"
   (doc    "The multi-way-recursive counterpart of the flat multi-payload list: a `Node` variant carries a
@@ -8874,7 +8874,7 @@
   (call   main (: 2 Int64)) (output (: 6 Int64))
   (call   main (: 3 Int64)) (output (: -1 Int64))
   (call   main (: 4 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 215))
+  (live-objects known-leak 214))
 
 (case "LONGEST INCREASING SUBSEQUENCE fills a per-index table from strictly-smaller predecessors"
   (doc    "The coin-change table's sibling with a VALUE-conditioned predecessor scan: dp is indexed
@@ -9552,7 +9552,7 @@
                           ((Core.KCall (tuple fi xs)) (sum-args xs 0 (List.len xs)))))
             (def (main) (ev (Core.KCall (tuple 9 (list (Core.KConst 10) (Core.KConst 20) (Core.KConst 12)))))) (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 7))
 
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
@@ -10251,7 +10251,7 @@
             (export run)))
   (call   run (: 0 Int64)) (output (: 7 Int64))
   (call   run (: 5 Int64)) (output (: -3 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 7))
 
 (case "a runtime Result carrying a String error is matched"
   (doc    "The `Err` payload may be a heap `String` (a diagnostic message), not only a scalar code: `(if
@@ -10888,7 +10888,7 @@
     (def (main) (match (. (loop (mk 1) 2) 1) ((Some _) 5) ((None) 0)))
     (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a Unit payload MATCH-bound from a still-live sum at a dup-site drops the sentinel"
   (doc    "The `SumPayload` twin (a `match` binder rather than `Option.expect`): the Some arm binds the Unit
@@ -10901,7 +10901,7 @@
     (def (main) (match (. (loop (mk 1) 2) 1) ((Some _) 6) ((None) 0)))
     (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a two-payload sum escapes its second variant with a bare name"
   (doc    "A sum whose variants are both payload-carrying — `(type E (A Int64) (B Int64))` — escaping its
@@ -12957,7 +12957,7 @@
             (def (depth e) (match e ((Expr.Lit n) 0) ((Expr.Neg x) (+ 1 (depth x)))))
             (def (main)    (depth (Expr.Neg (Expr.Lit 5)))) (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a bare prelude-colliding variant name matches as the local variant"
   (doc    "`(type T (Int Int64))` declares a variant named `Int`, colliding with the prelude `Int` type
@@ -13127,7 +13127,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 4))
 
 (case "a recursive sum recurses THROUGH a record-typed payload"
   (doc    "The recursion runs through a RECORD field rather than a tuple element: `(type Tree (Leaf Int64)
@@ -13147,7 +13147,7 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer"
   (doc    "A user declares a generic sum `(type Box (W a) (E))` — its NAME collides with a backend's heap
@@ -13166,7 +13166,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "a sum type NAMED after a primitive scalar does not collide with the primitive"
   (doc    "A user names a sum `i64` — colliding with a backend TARGET TYPE (Rust's primitive `i64`). The
@@ -13236,7 +13236,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 5 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "a two-parameter sum whose variants use the parameters in different orders instantiates correctly"
   (doc    "`(type Pair (First a b) (Swapped b a))` has two type parameters used in DIFFERENT orders across
@@ -13946,7 +13946,7 @@
             (def (ev e) (match e ((E.Lit n) n) ((E.Add (tuple a b)) (+ (ev a) (ev b)))))
             (def (main) (ev (fold (E.Add (tuple (E.Lit 3) (E.Add (tuple (E.Lit 4) (E.Lit 5))))))))
             (export main)))
-  (call   main) (output (: 12 Int64)) (live-objects known-leak 14))
+  (call   main) (output (: 12 Int64)) (live-objects known-leak 11))
 
 (case "a match through an erased single-variant newtype dispatches on the inner sum's discriminant"
   (doc    "`(match (Outer2.Wrap <runtime Inner2>) ((Outer2.Wrap (Inner2.P x)) …) ((Outer2.Wrap (Inner2.W y))
@@ -14821,7 +14821,7 @@
                 ((Core.KAdd (tuple a b)) (code-cat (lower a) (code-cat (lower b) (one (Instr.IAdd ())))))))
             (def (main) (len (lower (Core.KAdd (tuple (Core.KConst 20) (Core.KConst 22)))))) (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 14))
 
 ; --- The Map OPERATION surface (collections-and-text.md §A Map Is Built By Functional Construction,
 ; §Keys Are Compared By Value, §A Map Renders As Its Entries In Canonical Key Order). The map value
@@ -15537,7 +15537,7 @@
                       (match (Map.lookup m 3) ((Some v) v) (None 0))))))
             (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 4))
 
 (case "a built map renders its entries in canonical key order"
   (doc    "A map returned as the program RESULT renders its entries as key-value pairs in the
@@ -17724,7 +17724,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 7))
 
 ; --- Deep push-chain retain placement (the memoized dup-site scan's value guard) --------------------
 ; 3d5d48eea memoized mark_binder_dups' occurrence pre-pass (was exponential — depth 30 timed out).
@@ -17810,7 +17810,7 @@
             (def (main) (sum-it (Take (tuple 3 (Range (tuple 0 1000000))))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 27))
+  (live-objects known-leak 26))
 
 (case "a map-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)"
   (doc    "The MAP twin of the list-arm coded-head case above. A `(Map …)` scrutinee has no user
@@ -18306,7 +18306,7 @@
               (def (main) (cnt (L.C 1 (L.C 2 (L.C 3 (L.N unit))))))
               (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)"
   (doc    "A NESTED-payload non-exhaustive match NAMES the uncovered inner variant — `(match o ((Some (A))
@@ -18492,7 +18492,7 @@
              (record (corr (Option Bytes)) (pl (Option P)))))
   ; WIT static encoding: the record-return value-encode assembler now hoists embedded constants build-once
   ; (census-excluded immortals), so the residual leak drops 6→4.
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 ; A WIDE MULTI-COLUMN MATCH's value must survive the emit-side shared-continuation reshape (S2). A match
 ; whose arms each test >=2 LITERAL COLUMNS (`(tuple state token payload)` — a transition-table dispatch)
@@ -19509,7 +19509,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 21 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 12))
 
 (case "an RPN evaluator drives a LIST-as-STACK through token dispatch — push, pop-two, apply"
   (doc    "The stack-machine idiom: Num pushes, operators read the top TWO by index-from-len, REBUILD the popped stack via take-n (the persistent-list pop spelling), push the result. (2 3 + 4 x) = 20 with the runtime k mid-expression.")
@@ -19542,7 +19542,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 20 Int64))
-  (live-objects known-leak 15))
+  (live-objects known-leak 13))
 
 ; --- The map-borne record literal-rebuild guard, and the uniform malformed-collection code
 ; (set-element + map-key kinds, completing the MUST clause's list/map/set coverage). ---
@@ -20011,7 +20011,7 @@
   (call   main (: 1 Int64))
   (output (: (record (= correlation (None unit)) (= payload (Some (B (record (= x "hi")))))) (record (correlation (Option Bytes)) (payload (Option P)))))
   ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 6→4.
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "vse7 TWO Option-sum sibling fields at DIFFERENT sum decls each keep their own value-form — the first instantiation's descriptor must not stamp the second"
   (input  (do
@@ -20024,7 +20024,7 @@
   (call   main (: 1 Int64))
   (output (: (record (= first (Some (B (record (= x "hi"))))) (= second (Some (D (record (= y 7)))))) (record (first (Option P)) (second (Option Q)))))
   ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 8→5.
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 (case "vse9 the Option-sum field sorting FIRST keeps both siblings intact — the sort-order control of the sibling-descriptor pair"
   (input  (do
@@ -20036,7 +20036,7 @@
   (call   main (: 1 Int64))
   (output (: (record (= apayload (Some (B (record (= x "hi"))))) (= zcorrelation (None unit))) (record (apayload (Option P)) (zcorrelation (Option Bytes)))))
   ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 6→4.
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "vse10 two RESULT fields at different type args each encode their own Err payload — the same generic decl at two instantiations shares no descriptor"
   (input  (do
@@ -20046,7 +20046,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: (record (= first (Ok 7)) (= second (Err b"no"))) (record (first (Result Int64 String)) (second (Result Int64 Bytes)))))
-  (live-objects known-leak 4))
+  (live-objects known-leak 1))
 
 (case "vse11 two LIST fields of different element types encode independently — the list control of the generic-instantiation family"
   (input  (do
@@ -22555,7 +22555,7 @@
 (export main)))
   (call main)
   (output (: 56 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a payload binder read in two different subexpressions shares its read"
   (doc    "The same shared-read guarantee with `x` used across DIFFERENT subexpressions — `(+ (* x 2) (* x 3))` = 5*x — still shares one `sum-payload ; get-int` (same scrutinee + path), and the value is unchanged by the sharing. `go (Some 4) 2 0` = (4*2 + 4*3)*2 = 40. Pairs with the doubled-binder case above: the read is shared whether the binder recurs in one op or across several.")
@@ -22566,7 +22566,7 @@
 (export main)))
   (call main)
   (output (: 40 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; -- list-vehicle Perceus retain/reclaim (migrated from rcdzc list reclaim/retain heap tests): a runtime
 ; list built by a push-loop exercises the real vec-* heap; a shared binding/param consumed by List.push in
@@ -22688,7 +22688,7 @@
                (if (= n 0) acc (go s (- n 1) (+ acc (u2 ((. Option expect) s "v") (match s ((Some _) 1) ((None) 0)))))))
              (def (main) (go (Option.Some unit) 4 0)) (export main)))
   (call main) (output (: 4 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "ope4 a chained Unit-payload Option.expect runs (nested sentinel drop, valid module)"
   (doc    "The chained Unit-payload twin of ope3: `(Option.expect (Option.expect s))` over `(Some (Some unit))` — both extraction levels must drop the `IMM_UNIT` sentinel to stay valid wasm. `u x = 1`; 4 iters → 4.")
@@ -23061,7 +23061,7 @@
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: true Bool))
   (output (: 5 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a refutable map value sub-pattern falls through on a non-matching variant"
   (doc    "The refutation face: over `{\"a\": None}` the value at \"a\" is not `(Some n)`, so the arm is

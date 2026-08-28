@@ -843,7 +843,7 @@
                 (+ (* 10 (walk (build n (Exp.Lit 5)))) (Cnt.bump))))
             (export main)))
   (call   main (: 199 Int64)) (output (: 2240 Int64))
-  (live-objects known-leak 598))
+  (live-objects known-leak 398))
 
 (case "two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right"
   (doc    "The performs sit in the argument list of a non-primitive, effect-free USER function, whose call
@@ -3893,7 +3893,7 @@
                 (lower (Bin (Lit 1) (Bin (Lit 2) (Lit 3))))))
             (export main)))
   (output (: 4 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 4))
 
 (case "a cross-function recursive fold's out-state threads to a later perform in the caller's continuation"
   (doc    "The CALLER-observed out-state face of the multi-value return (the recursive analogue of the
@@ -5406,7 +5406,7 @@
                 (sum-tree (St.grow n))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 16 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "a recursive sum as op ARGUMENT — the arm dispatches on its shape"
   (doc    "The argument direction: the body hands trees to the op and the ARM pattern-dispatches on
@@ -6269,7 +6269,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 14 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 9))
 
 (case "a WRITER effect accumulates a PRE-ORDER trace string during a recursive tree walk"
   (doc    "The writer idiom: each Add/Mul node logs its op tag BEFORE recursing (pre-order), the handler concats onto a String state, and dump reads the trace back beside the value ((2+3)*4: trace exactly \"*+\" — order-sensitive; the result triple-encodes value/len/content-eq).")
@@ -6292,7 +6292,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 2021 Int64))
-  (live-objects known-leak 13))
+  (live-objects known-leak 11))
 
 (case "a GENSYM effect derives fresh symbols from a counter state — same base yields distinct symbols"
   (doc    "The allocator idiom at the SYMBOL level (the scalar-id gensym pin sums draws): the arm concats the string op-arg with a counter suffix and interns — the same base twice yields DISTINCT symbols (x_e/x_o); results accumulate into a list and compare against a literal intern, exercising Option<Symbol> slot equality.")

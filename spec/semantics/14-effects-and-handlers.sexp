@@ -5581,7 +5581,7 @@
                 (sum-t (St.grow (Tree.Node (tuple (Tree.Leaf n) (Tree.Leaf 7)))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 22 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 5))
 
 (case "a heap result of effect A pipes directly into effect B's argument — cross-effect heap flow"
   (doc    "Two marshals back-to-back on one heap value through two DIFFERENT handlers: `(B.use

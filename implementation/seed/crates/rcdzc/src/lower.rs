@@ -14945,6 +14945,33 @@ pub fn is_markable_constant_sum_nullary(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// Whether the node at `id` is a PAYLOADED variant of a MIXED sum whose payloads are ALL markable constants
+/// — a build-once-immortal candidate, the payloaded extension of [`is_markable_constant_sum_nullary`]
+/// (v-core-opt greenlit 2026-08-28; SAME const-list deep-mark + FBIP-strict-rc==1 soundness pattern, no new
+/// invariant). A `(Some 5)` / `(Cons 1 (list …))` reaches the runtime `Core::SumNew` emit and is rebuilt
+/// FRESH every construction; building it once immortal (`mark-immortal-DEEP` — the payloads are heap
+/// children) makes every use a `global.get`, cutting the per-eval alloc.
+///
+/// GATE (v-core-opt's tightness reqs): (a) MIXED sum only (`!is_enum_disc` — an all-nullary enum has no heap
+/// node); (b) EVERY payload `is_markable_constant_elem` (a payload with ANY runtime value must NOT hoist — it
+/// is not a constant); (c) implicitly fully-constant (a non-constant payload fails (b)). `is_markable_constant_elem`
+/// does NOT recurse into a nested `Core::SumNew`, so a NESTED recursive-sum payload (`Cons`-of-`Cons`) is
+/// (conservatively) not markable yet — a later slice; a variant wrapping scalars / `Bytes` / `String` /
+/// `Tuple` / `Record` / (small const) `List` IS.
+pub fn is_markable_constant_sum_payloaded(db: &mut Db, id: StructId) -> bool {
+    let payloads = match core_of(db, id) {
+        Core::SumNew { payloads, .. } if !payloads.is_empty() => payloads,
+        _ => return false,
+    };
+    // MIXED sum only (an all-nullary enum-disc has no heap node — but a payloaded variant is never enum-disc
+    // anyway; the guard mirrors the nullary predicate for symmetry + safety).
+    let mixed = match crate::infer::type_of(db, id).strip_nominal() {
+        crate::ty::Ty::Sum { decl, .. } => !db.is_enum_disc(*decl),
+        _ => false,
+    };
+    mixed && payloads.iter().all(|&p| is_markable_constant_elem(db, p))
+}
+
 /// Whether an ELEMENT of a candidate static compound is per-node-markable (see
 /// [`is_markable_constant_compound`]): a constant MACHINE-int (`Ty::Int`) or `Bool`/`Unit` scalar (boxes to
 /// ONE markable heap node via `box-int`/`box-bool` — `Unit` is the inline `IMM_UNIT` sentinel, already
