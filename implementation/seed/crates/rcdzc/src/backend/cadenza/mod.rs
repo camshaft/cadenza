@@ -1646,30 +1646,30 @@ fn emit_match_sum(
     let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
     let mut children = vec![match_head, scrut_node];
     for arm in arms {
-        let body = match &arm.cont {
-            SumCont::Leaf(body) => *body,
-            _ => {
-                return Err(Reject::decline(
-                    "the Cadenza backend does not yet lower a guarded / literal-test / nested-switch \
-                     sum-match arm"
-                        .to_string(),
-                ));
+        match arm.disc {
+            // The DEFAULT (wildcard) tail `_` — binds nothing; a body reading the whole scrutinee does so
+            // through its own name. Only a bare `Leaf` default is emitted (a guarded default declines).
+            None => {
+                let SumCont::Leaf(body) = &arm.cont else {
+                    return Err(Reject::decline(
+                        "the Cadenza backend does not yet lower a guarded / literal-test default \
+                         sum-match arm"
+                            .to_string(),
+                    ));
+                };
+                let pat = b.name("_");
+                let body_node = emit_expr(db, b, *body, expected.clone(), env, emitted)?;
+                children.push(b.list(vec![pat, body_node]));
             }
-        };
-        // A `disc: Some(k)` arm is an EXPLICIT variant pattern `(<Variant> <binder>…)`; a `disc: None` arm
-        // is the DEFAULT (wildcard) tail `_` — a catch-all covering the residual variants, binding nothing
-        // (so no payload paths to register; a body reading the whole scrutinee does so through its own name).
-        let pattern = match arm.disc {
-            None => b.name("_"),
+            // An EXPLICIT variant. Register its payload binders ONCE (single-payload reads `[Payload]`, a
+            // multi-payload variant's tuple slot `i` reads `[Payload, Elem(i)]`), then emit one surface arm
+            // per step of the cont chain: a `Leaf` is `(<Variant> <binder>…) <body>`; a `Guarded { cond,
+            // body, els }` is `((guard <Variant-pattern> <cond>) <body>)` FOLLOWED BY the arms of `els` (the
+            // fall-through rows of the SAME variant — a later guard, or the covering unguarded arm), exactly
+            // as the Core threads a false guard's else. The shared binders are in scope for every cond+body;
+            // the covering unguarded fall-through keeps the emitted match exhaustive. A literal-test /
+            // nested-switch continuation declines (a later slice).
             Some(disc) => {
-                // Recover the variant head (bare or `(. Type Variant)`) + its payload arity from the decl.
-                let head =
-                    crate::lower::variant_head_ast(db, b, decl, disc).ok_or_else(|| {
-                        Reject::decline(
-                            "the Cadenza backend could not recover the variant name for a sum-match arm"
-                                .to_string(),
-                        )
-                    })?;
                 let arity = db
                     .type_decl_by_occ(decl)
                     .and_then(|t| t.variants.get(disc as usize))
@@ -1680,10 +1680,7 @@ fn emit_match_sum(
                                 .to_string(),
                         )
                     })?;
-                // Mint a binder per payload slot and register its `SumPayload` path for the arm body: a
-                // single-payload variant reads `[Payload]`; a multi-payload variant's payload is a tuple,
-                // slot `i` at `[Payload, Elem(i)]`. A nullary variant emits the bare `(<Variant>)` pattern.
-                let mut pat_children = vec![head];
+                let mut binder_names = Vec::with_capacity(arity);
                 for slot in 0..arity {
                     let name = synth_payload_name(env.next_payload);
                     env.next_payload += 1;
@@ -1693,15 +1690,51 @@ fn emit_match_sum(
                         vec![PathStep::Payload, PathStep::Elem(slot)]
                     };
                     env.payloads.insert((scrutinee, path), name.clone());
-                    pat_children.push(b.name(name));
+                    binder_names.push(name);
                 }
-                b.list(pat_children)
+                let mut cont = &arm.cont;
+                loop {
+                    // Rebuild the `(<Variant> <binder>…)` pattern fresh for THIS surface arm.
+                    let head =
+                        crate::lower::variant_head_ast(db, b, decl, disc).ok_or_else(|| {
+                            Reject::decline(
+                                "the Cadenza backend could not recover the variant name for a \
+                                 sum-match arm"
+                                    .to_string(),
+                            )
+                        })?;
+                    let mut pat_children = vec![head];
+                    for n in &binder_names {
+                        pat_children.push(b.name(n.clone()));
+                    }
+                    let var_pat = b.list(pat_children);
+                    match cont {
+                        SumCont::Leaf(body) => {
+                            let body_node =
+                                emit_expr(db, b, *body, expected.clone(), env, emitted)?;
+                            children.push(b.list(vec![var_pat, body_node]));
+                            break;
+                        }
+                        SumCont::Guarded { cond, body, els } => {
+                            let guard_head = b.name("guard");
+                            let cond_node = emit_expr(db, b, *cond, None, env, emitted)?;
+                            let guard_pat = b.list(vec![guard_head, var_pat, cond_node]);
+                            let body_node =
+                                emit_expr(db, b, *body, expected.clone(), env, emitted)?;
+                            children.push(b.list(vec![guard_pat, body_node]));
+                            cont = els.as_ref();
+                        }
+                        _ => {
+                            return Err(Reject::decline(
+                                "the Cadenza backend does not yet lower a literal-test / nested-switch \
+                                 sum-match arm"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                }
             }
-        };
-        // The body is emitted with this arm's payload binders in scope; it is the match's value/tail
-        // position, so it inherits the match's `expected` type (for an under-determined `(None)` etc.).
-        let body_node = emit_expr(db, b, body, expected.clone(), env, emitted)?;
-        children.push(b.list(vec![pattern, body_node]));
+        }
     }
     Ok(b.list(children))
 }
