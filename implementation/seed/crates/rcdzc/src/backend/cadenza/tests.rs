@@ -79,17 +79,50 @@ fn several_constant_definitions_round_trip_together() {
     );
 }
 
+// ── B1a: parameters + a parameter reference ──────────────────────────────────────────────────────
+
+#[test]
+fn an_identity_function_over_a_scalar_param_round_trips() {
+    // The minimal parameterized def: `(def (id (: x Int64)) x)`. Exercises the param signature
+    // `(: x Int64)` (type via lower's `type_ast`) AND a `Core::Param` body reference (the bare name).
+    // `x` is a runtime value, so the body does NOT fold — it stays a `Core::Param`, reaching the backend.
+    assert_roundtrips("(module m (def (id (: x Int64)) x) (export id))");
+}
+
+#[test]
+fn identity_functions_over_scalar_param_types_round_trip() {
+    // A param of each B1a-representable scalar type — each an identity returning the param, so the body
+    // is a bare `Core::Param` and the signature carries the type ascription rendered by `type_ast`.
+    assert_roundtrips(
+        "(module m \
+           (def (i (: x Int64)) x) \
+           (def (u (: x UInt8)) x) \
+           (def (b (: x Bool)) x) \
+           (def (f (: x Float64)) x) \
+           (def (s (: x String)) x) \
+           (export i) (export u) (export b) (export f) (export s))",
+    );
+}
+
+#[test]
+fn a_multi_parameter_identity_projection_round_trips() {
+    // Two params; the body returns the FIRST — exercises multiple `(: p Ty)` slots in one signature and
+    // a `Core::Param` selecting one of them by name (the un-returned param is still in the signature).
+    assert_roundtrips("(module m (def (fst (: a Int64) (: b Bool)) a) (export fst))");
+}
+
 #[test]
 fn a_non_constant_body_declines_cleanly() {
-    // `(+ 1 2)` const-folds to `3`, so it does NOT exercise the decline — use a body the optimizer
-    // cannot fold to a constant: a call to a parameterized helper of a runtime-shaped value. The
-    // simplest non-foldable body that reaches a non-constant Core node is an addition of two DISTINCT
-    // exported nullary results is still foldable; instead use a definition WITH A PARAMETER, whose body
-    // references the parameter — that reaches `Core::Param`/`LocalRef`, which B0 declines.
+    // A body the optimizer cannot fold and that the backend does not YET lower: `(+ x 1)` over a
+    // parameter is a runtime `Core::Arith` (arithmetic emit is B1b). B1a now ACCEPTS the parameter
+    // signature `(: x Int64)`, so the decline here is attributed to the Arith body, not the param.
     let err = compile_cadenza("(module m (def (inc (: x Int64)) (+ x 1)) (export inc))")
-        .expect_err("a parameterized definition must decline in B0");
+        .expect_err("an arithmetic body must decline until B1b");
     assert!(
         err.iter().any(|m| m.contains("does not yet")),
         "expected a Cadenza-backend decline, got: {err:?}"
     );
 }
+// (A function-typed-parameter decline path exists in `emit_def` — `type_ast` returns `None` — but a
+// higher-order program that reaches it needs closures/calls (B3), so it is witnessed there, not here:
+// an exported fn-param def is rejected at the boundary before the backend anyway.)

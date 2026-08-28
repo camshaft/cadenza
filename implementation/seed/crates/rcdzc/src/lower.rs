@@ -17349,7 +17349,11 @@ fn member_access(b: &mut crate::ast::Builder, operand: &str, key: &str) -> Struc
 /// prints the recorded type: `Int64`/`UInt8`/… as a name atom, `Bool`/`Unit` likewise, a tuple as
 /// `(Tuple T…)`, a record as `(record (name T)…)`. `None` for a type with no value-form surface (a
 /// function/type-value/unsolved variable can never be a runtime value crossing the boundary).
-fn type_ast(
+///
+/// `pub(crate)` so the Cadenza backend (`backend::cadenza`) reuses the SAME canonical type-surface when
+/// it re-emits a parameter's `(: name Ty)` ascription — sharing this one renderer keeps the re-emitted
+/// type byte-identical to lower's value-form surface (a divergent copy would break round-trip identity).
+pub(crate) fn type_ast(
     b: &mut crate::ast::Builder,
     ty: &crate::ty::Ty,
     ncx: &crate::ty::NameCtx,

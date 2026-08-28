@@ -19,9 +19,15 @@
 //! Like the other backends it consumes the structured Core DIRECTLY (no flat wasm `Lir`) and uses only
 //! `backend::common`, never the sibling backends' internals. It DECLINES (attributed to this target) a
 //! construct it does not yet reconstruct — the same decline-don't-miscompile discipline the wasm/rust
-//! backends follow. This is the B0 slice: whole-program shape (`(do (def …)… (export …)…)`) with
-//! CONSTANT-bodied nullary definitions; every non-constant Core node and every parameterized definition
-//! declines, to be filled in by later increments (ops/control, binding, calls, data, …).
+//! backends follow. Coverage so far:
+//! - **B0**: whole-program shape (`(do (def …)… (export …)…)`) with CONSTANT-bodied definitions —
+//!   the constant leaves (Int/Bool/Str/Char/Float).
+//! - **B1a**: PARAMETERS — a def signature `(<name> (: <p> <Ty>)…)` (param types via lower's canonical
+//!   `type_ast`) and a `Core::Param`/`LocalRef` reference (the bare binder name). A parameter of a type
+//!   with no value-form surface (function/unsolved) declines.
+//!
+//! Still declining, for later increments: ops/control (Arith/Compare/If/And/Not — B1b/c), binding
+//! (Let/Seq/Block — B2), calls (Call/Closure — B3), and data (Record/Tuple/sums/collections — B4).
 
 use crate::ast::{Builder, Leaf, Radix, StructId};
 use crate::core::Core;
@@ -61,8 +67,9 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     Ok(crate::codec::encode(&arenas))
 }
 
-/// Reconstruct `(def (<name>) <body>)` for definition `def`. B0 handles only NULLARY definitions with a
-/// CONSTANT body; a parameterized definition declines (parameter binding is a later increment).
+/// Reconstruct `(def (<name> (: <p> <Ty>)…) <body>)` for definition `def`. B1a handles NULLARY defs and
+/// parameterized defs whose parameters have a value-form-representable type; a parameter of a type with
+/// no surface (a function/continuation/unsolved type — `type_ast` returns `None`) declines.
 fn emit_def(db: &mut Db, b: &mut Builder, def: usize) -> Result<StructId, Reject> {
     let name = db.defs[def].name.clone();
     let body = db.defs[def].body.ok_or_else(|| {
@@ -71,21 +78,41 @@ fn emit_def(db: &mut Db, b: &mut Builder, def: usize) -> Result<StructId, Reject
         ))
     })?;
 
-    // A parameterized definition needs its parameter names woven into the signature AND parameter
-    // references (`Core::Param`/`Core::LocalRef`) rendered in the body — a later increment (B3).
+    // Build the signature `(<name> (: <p0> <Ty0>) …)`. `def_params` returns each parameter's binder
+    // occurrence (the identity a `Core::Param` reference resolves to) paired with its SOLVED type. The
+    // parameter's surface name is read off that binder occurrence; its type ascription reuses lower's
+    // canonical `type_ast` so the re-emitted `(: p Ty)` is byte-identical to the type surface everything
+    // else in the program uses (round-trip identity). `def_params` returns an owned Vec, so it is taken
+    // FIRST (a `&mut db`), before the immutable `name_ctx()` borrow the type rendering needs.
     let params = crate::layout::def_params(db, def);
-    if !params.is_empty() {
-        return Err(Reject::decline(format!(
-            "the Cadenza backend does not yet lower a definition with parameters (`{name}`) — B0 emits \
-             constant-bodied nullary definitions only"
-        )));
-    }
-
     let def_head = b.name("def");
-    // The signature `(<name>)` — a one-element list whose sole child is the def's source name. (A def
-    // name is a plain identifier, emitted as a `Name` atom.)
     let sig_name = b.name(name.as_str());
-    let sig = b.list(vec![sig_name]);
+    let mut sig_children = vec![sig_name];
+    {
+        // Within this scope only the immutable `NameCtx` (a `&db` borrow) and the builder are used — no
+        // `&mut db` — so the parameter name reads (`as_name`) and `type_ast` calls compose.
+        let ncx = db.name_ctx();
+        for (binder, ty) in params.iter() {
+            let pname = db.ast.as_name(*binder).ok_or_else(|| {
+                Reject::decline(format!(
+                    "the Cadenza backend cannot recover a parameter name for `{name}`"
+                ))
+            })?;
+            let pname_node = b.name(pname);
+            let ty_node = crate::lower::type_ast(b, ty, &ncx).ok_or_else(|| {
+                Reject::decline(format!(
+                    "the Cadenza backend does not yet lower a parameter of type `{}` (`{name}`) — no \
+                     value-form type surface (a function / unsolved type)",
+                    ty.render_name(&ncx)
+                ))
+            })?;
+            // `(: <pname> <Ty>)` — the ascription head `:` is a Name atom, matching the surface reader
+            // and `type_ast`'s own record-field ascriptions.
+            let colon = b.name(":");
+            sig_children.push(b.list(vec![colon, pname_node, ty_node]));
+        }
+    }
+    let sig = b.list(sig_children);
     let body_node = emit_expr(db, b, body)?;
     Ok(b.list(vec![def_head, sig, body_node]))
 }
@@ -129,6 +156,19 @@ fn emit_expr(db: &mut Db, b: &mut Builder, id: StructId) -> Result<StructId, Rej
         // A finite float constant carries its exact `Decimal` (no `f64` rounding), which re-reads to the
         // same leaf. (`ConstFloatNan` has no finite `Decimal` and no plain written form — a later slice.)
         Core::ConstFloat(d) => Ok(b.atom_leaf(Leaf::Float(d))),
+        // A reference to a function PARAMETER (or a kept `let` binding) — its surface is the bare name of
+        // the binder occurrence, which re-resolves to the same parameter/binding on recompile. `Param`
+        // and `LocalRef` share the mechanism (a name atom); a `LocalRef` only appears once `let` bindings
+        // survive lowering (B2), but rendering it costs nothing and keeps the two consistent.
+        Core::Param { binder } | Core::LocalRef { binder } => {
+            let nm = db.ast.as_name(binder).ok_or_else(|| {
+                Reject::decline(
+                    "the Cadenza backend cannot recover the name of a parameter/binding reference"
+                        .to_string(),
+                )
+            })?;
+            Ok(b.name(nm))
+        }
         other => Err(Reject::decline(format!(
             "the Cadenza backend does not yet lower this Core node back to Cadenza: {}",
             core_node_kind(&other)
