@@ -3938,11 +3938,11 @@ struct SmithArgs {
     args: Vec<String>,
 }
 
-/// Locate a sibling passthrough binary (`stem`) beside THIS `cdz` — it lives in `target/<profile>/` when
-/// built (`cargo build -p <stem>`), the install-location-independent `current_exe().parent()/<stem>` path
-/// (the same convention as [`locate_cdz_run`]). Used for the separate-workspace passthrough tools
-/// (`cdz-smith`, `cdz-cad`) that are NOT linked in, so must be found as binaries. Carries the platform
-/// executable suffix via [`bin_name`]. `None` if absent beside `cdz` (the caller then tries `$PATH`).
+/// Locate a sibling passthrough binary (`stem`) beside THIS `cdz` — the install-location-independent
+/// `current_exe().parent()/<stem>` path. Used ONLY by the `!standalone` compile-delegation (`delegate.rs`,
+/// which resolves `cdz-compile`), hence the matching `cfg` — the subcommand passthroughs go through the
+/// fuller [`locate_plugin`] resolver. Carries the platform executable suffix via [`bin_name`].
+#[cfg(not(feature = "standalone"))]
 fn locate_sibling_bin(stem: &str) -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
@@ -4210,12 +4210,12 @@ fn parse_plugin_summary(stdout: &str) -> Option<String> {
 /// in would reintroduce the exact dependency conflict its workspace-exclusion exists to prevent. Resolves
 /// the binary beside `cdz` first (the co-built location), then falls back to `$PATH` (an installed one).
 fn run_smith(args: &SmithArgs) -> ExitCode {
-    // Prefer the co-built sibling; fall back to a `cdz-smith` on `$PATH` (a system install). If neither
-    // resolves, `Command::new` on the bare name would fail with an opaque OS error — give the actionable
-    // build hint instead (the separate-workspace bin isn't produced by an ordinary `cargo build`). The
-    // fallback carries the platform executable suffix (`.exe` on Windows) so a PATH lookup resolves.
-    let program =
-        locate_sibling_bin("cdz-smith").unwrap_or_else(|| PathBuf::from(bin_name("cdz-smith")));
+    // Resolve `cdz-smith` through the SAME plugin resolver as every other forwarded subcommand
+    // ([`locate_plugin`]): `$CDZ_SMITH_BIN` (explicit path, for nix injection) → co-built sibling → `$PATH`.
+    // Falls back to the bare `cdz-smith` name so `passthrough_status` still emits the actionable build hint
+    // when nothing resolves (the separate-workspace bin isn't produced by an ordinary `cargo build`). The
+    // bare name carries the platform executable suffix (`.exe` on Windows) so a PATH lookup resolves.
+    let program = locate_plugin("smith").unwrap_or_else(|| PathBuf::from(bin_name("cdz-smith")));
     passthrough_status(&program, &args.args, "cdz-smith")
 }
 
@@ -4236,8 +4236,9 @@ struct CadArgs {
 /// Resolves the binary beside `cdz` first (the co-built location), then falls back to `$PATH`. Shares
 /// `passthrough_status` with `cdz smith` so exit-code + not-found handling stay identical.
 fn run_cad(args: &CadArgs) -> ExitCode {
-    let program =
-        locate_sibling_bin("cdz-cad").unwrap_or_else(|| PathBuf::from(bin_name("cdz-cad")));
+    // Same plugin resolution as the other forwards ([`locate_plugin`]): `$CDZ_CAD_BIN` → sibling → `$PATH`,
+    // then the bare `cdz-cad` name so `passthrough_status`'s not-found hint still fires.
+    let program = locate_plugin("cad").unwrap_or_else(|| PathBuf::from(bin_name("cdz-cad")));
     passthrough_status(&program, &args.args, "cdz-cad")
 }
 
