@@ -7896,59 +7896,79 @@ fn check_resume_result_type(db: &mut Db, arm: &crate::resolved::HandleArm, out: 
     // type does not depend on those bindings here — its declared-type check is against a concrete op
     // result type, and a value like `true`/`42`/`(tuple …)` types independently of the (unsubstituted)
     // binders. So read the tail resume off the UN-substituted arm body and type its value.
-    let Some(value) = tail_resume_value(db, arm.body) else {
-        return; // no tail resume (abortive / non-tail) — out of scope for this check
-    };
-    let value_ty = type_of(db, value);
-    // WIDTH FIT-CHECK (breaker nw-class, nw8 result face): a DEFERRED integer LITERAL resume value
-    // `(resume 999 s)` AGREES with any int width, so the `agrees_with` clash-check below does NOT fire —
-    // yet `999` does not FIT a `UInt8` op RESULT. The perform site returns this value into a `UInt8`-typed
-    // position (and, for a HOST op, across the component boundary), so it must pass the same CDZ0302
-    // range-check the argument direction + every annotated narrow position enforces. Run it against the
-    // op's declared result type BEFORE the agreement check (a genuine kind-clash still falls to CDZ0201
-    // below). `width_fault_against_ty` handles narrow-int / Float32 / compound-payload nesting.
-    if let Some(reject) = width_fault_against_ty(db, value, &result) {
-        trace!(target: "rcdzc::infer", value = value.0, "fault: resume value literal does not fit the operation's declared narrow result width (CDZ0302)");
-        out.push(reject);
-        return;
-    }
-    if !value_ty.agrees_with(&result) {
-        trace!(target: "rcdzc::infer", value = value.0, "fault: resume value's type does not match the operation's result type (CDZ0201)");
-        let mut reject = Reject::coded(
-            Code::Malformed,
-            format!(
-                "a handler resumes with a value of type {} but the operation's result type is {}",
-                value_ty.render_name(&db.name_ctx()),
-                result.render_name(&db.name_ctx())
-            ),
-        )
-        .at(value);
-        // A resume value that mismatches the op result by a NUMERIC/TEXT coercion — `(resume x s)` with
-        // `x:Int8` where the op returns Int64 → `(Int64.of x)` — has the same one-shot repair every other
-        // expected-vs-actual site does (arg/annotation/let-binder/ctor-payload). Offer it here too.
-        if let Some(fix) = numeric_text_coercion_fix(db, &result, &value_ty, value) {
-            reject = reject.with_fix(fix);
+    // EVERY tail resume value — a bare `(resume v s)`, OR each branch of an `if`/`match`-JOIN whose arms
+    // tail-resume (`(if c (resume 1.5 s) (resume 1 s))`). A single mismatched resume is CDZ0201, but a
+    // per-arm mismatch inside an if/match-join ESCAPED this check when it read only a top-level `Resume`
+    // node — the join is an `If`/`Match`, not a `Resume`, so the check was SKIPPED and the ill-typed
+    // resume (e.g. a Float value into an Int64 op result) reached emit as an INVALID module (v-cdz-smith
+    // fuzzer bucket, routed by v-inference — the effect-resume check was not applied per-arm). Collect all
+    // tail resume values through the join shapes and check EACH against the op result, so a mismatched arm
+    // faults CDZ0201 per-arm rather than escaping to InvalidWasm.
+    let mut values = Vec::new();
+    collect_tail_resume_values(db, arm.body, &mut values);
+    // No tail resume (abortive / non-tail) — out of scope for this check.
+    for value in values {
+        let value_ty = type_of(db, value);
+        // WIDTH FIT-CHECK (breaker nw-class, nw8 result face): a DEFERRED integer LITERAL resume value
+        // `(resume 999 s)` AGREES with any int width, so the `agrees_with` clash-check below does NOT fire
+        // — yet `999` does not FIT a `UInt8` op RESULT. The perform site returns this value into a
+        // `UInt8`-typed position (and, for a HOST op, across the component boundary), so it must pass the
+        // same CDZ0302 range-check the argument direction + every annotated narrow position enforces. Run
+        // it against the op's declared result type BEFORE the agreement check (a genuine kind-clash still
+        // falls to CDZ0201 below). `width_fault_against_ty` handles narrow-int / Float32 / compound nesting.
+        if let Some(reject) = width_fault_against_ty(db, value, &result) {
+            trace!(target: "rcdzc::infer", value = value.0, "fault: resume value literal does not fit the operation's declared narrow result width (CDZ0302)");
+            out.push(reject);
+            continue;
         }
-        out.push(reject);
+        if !value_ty.agrees_with(&result) {
+            trace!(target: "rcdzc::infer", value = value.0, "fault: resume value's type does not match the operation's result type (CDZ0201)");
+            let mut reject = Reject::coded(
+                Code::Malformed,
+                format!(
+                    "a handler resumes with a value of type {} but the operation's result type is {}",
+                    value_ty.render_name(&db.name_ctx()),
+                    result.render_name(&db.name_ctx())
+                ),
+            )
+            .at(value);
+            // A resume value that mismatches the op result by a NUMERIC/TEXT coercion — `(resume x s)` with
+            // `x:Int8` where the op returns Int64 → `(Int64.of x)` — has the same one-shot repair every other
+            // expected-vs-actual site does (arg/annotation/let-binder/ctor-payload). Offer it here too.
+            if let Some(fix) = numeric_text_coercion_fix(db, &result, &value_ty, value) {
+                reject = reject.with_fix(fix);
+            }
+            out.push(reject);
+        }
     }
 }
 
-/// The VALUE of a tail `(resume value next-state)` in an arm body `node`, if the body IS such a resume at
-/// the tail. `None` if the arm does not tail-resume (abortive, or a non-tail resume). Used by the
-/// resume-value/result-type check; reads the ORIGINAL (un-substituted) arm body.
-fn tail_resume_value(db: &mut Db, node: StructId) -> Option<StructId> {
+/// Collect EVERY tail resume value in an arm body `node` — a bare `(resume value …)`, and each branch of
+/// an `if`/`match`-JOIN (or through `do`/`let` tails) whose tail is a resume. The per-arm companion of
+/// [`tail_resume_value`], so the resume-value/result-type check ([`check_resume_result_type`]) applies to
+/// each branch of a join rather than skipping a whole `If`/`Match` (which is not a `Resume` node). A
+/// non-tail / abortive branch contributes nothing. Reads the ORIGINAL (un-substituted) body.
+fn collect_tail_resume_values(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
     match resolved_of(db, node) {
-        Resolved::Resume { value, .. } => Some(value),
-        _ => None,
-    }
-}
-
-/// The NEXT-STATE of a tail `(resume value next-state)` in an arm body `node`. `None` if the arm does not
-/// tail-resume. The state-side twin of [`tail_resume_value`].
-fn tail_resume_next_state(db: &mut Db, node: StructId) -> Option<StructId> {
-    match resolved_of(db, node) {
-        Resolved::Resume { next_state, .. } => Some(next_state),
-        _ => None,
+        Resolved::Resume { value, .. } => out.push(value),
+        Resolved::If { then_, else_, .. } => {
+            collect_tail_resume_values(db, then_, out);
+            collect_tail_resume_values(db, else_, out);
+        }
+        Resolved::Match { arms, .. } => {
+            for (_, body) in arms {
+                collect_tail_resume_values(db, body, out);
+            }
+        }
+        Resolved::Let { body, .. } => collect_tail_resume_values(db, body, out),
+        _ => {
+            // A `do` sequence: its tail (last item) carries the resume.
+            if let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec)
+                && let Some(&tail) = items.last()
+            {
+                collect_tail_resume_values(db, tail, out);
+            }
+        }
     }
 }
 
@@ -7973,26 +7993,57 @@ fn check_resume_next_state_type(
     if matches!(seed_ty, Ty::Any | Ty::Var(_)) {
         return;
     }
-    let Some(next_state) = tail_resume_next_state(db, arm.body) else {
-        return; // no tail resume — out of scope
-    };
-    let next_ty = type_of(db, next_state);
-    if !next_ty.agrees_with(&seed_ty) {
-        trace!(target: "rcdzc::infer", next_state = next_state.0, "fault: resume next-state type does not match the handler's seed/state type (CDZ0201)");
-        let mut reject = Reject::coded(
-            Code::Malformed,
-            format!(
-                "a handler resumes with a next-state of type {} but the handler's state type is {} \
-                 (the seed fixes the state type; each resume threads a state of that type)",
-                next_ty.render_name(&db.name_ctx()),
-                seed_ty.render_name(&db.name_ctx())
-            ),
-        )
-        .at(next_state);
-        if let Some(fix) = numeric_text_coercion_fix(db, &seed_ty, &next_ty, next_state) {
-            reject = reject.with_fix(fix);
+    // EVERY tail next-state — a bare resume AND each branch of an `if`/`match`-JOIN — for the same reason
+    // as the resume-VALUE check: a per-arm next-state mismatch inside a join (`(if c (resume 1 "x")
+    // (resume 1 s))` under an Int64 seed) escaped when only a top-level `Resume` was read, threading a
+    // wrong-typed state mid-fold (a type-confusion miscompile). Collect through the join shapes + check each.
+    let mut next_states = Vec::new();
+    collect_tail_resume_next_states(db, arm.body, &mut next_states);
+    for next_state in next_states {
+        let next_ty = type_of(db, next_state);
+        if !next_ty.agrees_with(&seed_ty) {
+            trace!(target: "rcdzc::infer", next_state = next_state.0, "fault: resume next-state type does not match the handler's seed/state type (CDZ0201)");
+            let mut reject = Reject::coded(
+                Code::Malformed,
+                format!(
+                    "a handler resumes with a next-state of type {} but the handler's state type is {} \
+                     (the seed fixes the state type; each resume threads a state of that type)",
+                    next_ty.render_name(&db.name_ctx()),
+                    seed_ty.render_name(&db.name_ctx())
+                ),
+            )
+            .at(next_state);
+            if let Some(fix) = numeric_text_coercion_fix(db, &seed_ty, &next_ty, next_state) {
+                reject = reject.with_fix(fix);
+            }
+            out.push(reject);
         }
-        out.push(reject);
+    }
+}
+
+/// Collect EVERY tail next-state in an arm body — the next-state twin of [`collect_tail_resume_values`],
+/// recursing through `if`/`match`-joins + `do`/`let` tails so a per-arm next-state mismatch in a join is
+/// checked rather than skipped.
+fn collect_tail_resume_next_states(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
+    match resolved_of(db, node) {
+        Resolved::Resume { next_state, .. } => out.push(next_state),
+        Resolved::If { then_, else_, .. } => {
+            collect_tail_resume_next_states(db, then_, out);
+            collect_tail_resume_next_states(db, else_, out);
+        }
+        Resolved::Match { arms, .. } => {
+            for (_, body) in arms {
+                collect_tail_resume_next_states(db, body, out);
+            }
+        }
+        Resolved::Let { body, .. } => collect_tail_resume_next_states(db, body, out),
+        _ => {
+            if let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec)
+                && let Some(&tail) = items.last()
+            {
+                collect_tail_resume_next_states(db, tail, out);
+            }
+        }
     }
 }
 

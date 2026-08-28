@@ -8775,6 +8775,44 @@
             (export main)))
   (error  CDZ0201))
 
+(case "irj1 an if-JOIN whose arms resume with MISMATCHED value types is rejected per-arm CDZ0201 (not escaped to InvalidWasm)"
+  (doc    "The resume-value/result-type check (CDZ0201) is applied PER-ARM through an if/match-join, not
+           only at a top-level resume. `(if (<= v 8) (resume 1.5 v) (resume 1 v))` — one arm resumes a
+           Float64, the other an Int64, while the op result is Int64. A SINGLE `(resume 1.5 v)` is correctly
+           CDZ0201; before this fix the join was an `If` (not a `Resume`), so the check was SKIPPED and the
+           Float resume reached emit as an INVALID module (v-cdz-smith fuzzer bucket, routed by v-inference).
+           Now the check collects every tail resume value through the join and faults the mismatched arm.")
+  (input  (do
+            (effect E (op ask (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E 0 ((ask (v) s (if (<= v 8) (resume 1.5 v) (resume 1 v)))) (E.ask n)))
+            (export main)))
+  (error  CDZ0201))
+
+(case "irj2 an if-JOIN whose arms resume with MISMATCHED next-STATE types is rejected per-arm CDZ0201"
+  (doc    "The next-state twin of irj1: the seed fixes the state type (Int64 here), and each resume must
+           thread that type. `(if (<= v 8) (resume 1 \"x\") (resume 1 v))` — one arm's next-state is a
+           String, the other Int64 — escaped the same way (the join is an `If`, not a `Resume`), threading
+           a wrong-typed state mid-fold. The per-arm collection now faults it CDZ0201 at the String
+           next-state.")
+  (input  (do
+            (effect E (op ask (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E 0 ((ask (v) s (if (<= v 8) (resume 1 "x") (resume 1 v)))) (E.ask n)))
+            (export main)))
+  (error  CDZ0201))
+
+(case "irj3 a VALID if-JOIN where both arms resume the op-result type folds — the per-arm check does not over-reject"
+  (doc    "The positive control for irj1/irj2: both arms resume an Int64 value AND an Int64 next-state under
+           an Int64 seed, so the per-arm resume-type check passes and the handler folds. main(5): v=5<=8 so
+           the taken arm resumes 2 → the op result 2.")
+  (input  (do
+            (effect E (op ask (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E 0 ((ask (v) s (if (<= v 8) (resume 2 v) (resume 1 v)))) (E.ask n)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2 Int64)))
+
 (case "a unit MISMATCH in the op argument is rejected — the program cannot perform with a different unit"
   (doc    "The op-ARG direction of the unit-safety pair: the op takes `(Qty Int64 meter)` but the program
            performs with a SECOND-typed quantity → CDZ0203 (the ARGUMENT-position code, vs the resume-side
