@@ -537,6 +537,12 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
                else if q == "Option".toUTF8 && c == "None".toUTF8 then some (Outcome.value Value.none)
                else if q == "Result".toUTF8 && c == "Ok".toUTF8 then some (evalUnaryCtor m env fuel children Value.ok)
                else if q == "Result".toUTF8 && c == "Err".toUTF8 then some (evalUnaryCtor m env fuel children Value.err)
+               -- prelude Ast sum ctors, QUALIFIED-ONLY `(. Ast Int|Name|Str|Bool|List|Bytes|Char|Symbol)` (their
+               -- names collide with type/module names, so they are never bare). Each carries one payload →
+               -- a generic `variant`. (Metaprog foundation: quote reflects an AST into these Ast values.)
+               else if q == "Ast".toUTF8 &&
+                       ["Int", "Name", "Str", "Bool", "List", "Bytes", "Char", "Symbol"].contains ((String.fromUTF8? c).getD "") then
+                 some (evalUnaryCtor m env fuel children (Value.variant c))
                else none
              | none => none)
         <|> ((qualHead? m children).bind (fun (q, f) => evalModuleFn m env fuel q f children))
