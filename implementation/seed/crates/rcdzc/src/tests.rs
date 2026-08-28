@@ -5859,6 +5859,55 @@ fn a_capture_once_closure_through_a_recursive_hof_folds_via_alias_chain_capture(
     );
 }
 
+/// A TUPLE-INDEX PROJECTION of a captured tuple in a closure body now COMPILES (was a "parameter
+/// reference has no local slot" ICE — hcx1, the effects-free/recursion-free face of the chr1 ICE class).
+/// `(fn (q) (+ q (. a 0)))` captures the enclosing `let`-bound tuple `a = (tuple n 7)`. `collect_captures`
+/// correctly records the capture of `a`, but the tuple-projection fold (lower.rs) reduced `(. a 0)`
+/// THROUGH the captured `let` to its element `n` — an enclosing param NOT itself captured — lowering it
+/// to a slot-less `Core::Param` in the lifted closure body. Fixed by suppressing the projection fold when
+/// the operand is a captured occurrence (`db.captured_ref`): emit a runtime `Core::Proj` that reads the
+/// element from the captured tuple env cell instead of inlining the element. Pins that it COMPILES with no
+/// slot-less-param leak; the run value (`f(1)` applied to 5 = 6) is checked by the corpus case `hcx1 …
+/// FOLDS …` (21-host-closures) via the host-closure harness. Returning the tuple WHOLE (hcp1) and LIST
+/// captures (hcp2/hcp3) are the boundary controls — this fold-suppression only fires for a captured operand.
+#[test]
+fn a_captured_tuple_projection_in_a_closure_body_folds_via_runtime_proj_of_the_capture() {
+    use crate::testkit::parse;
+    // Both the FLAT projection `(. a 0)` (hcx1) and the NESTED projection `(. (. a 0) 0)` (hcx2, whose
+    // outer fold would otherwise reduce THROUGH the inner projection to the captured tuple's element)
+    // must compile — the fold is suppressed at any projection depth whose base is a captured operand.
+    for (label, src) in [
+        (
+            "flat",
+            "(do (def (f (: n Int64)) (let ((a (tuple n 7))) (fn ((: q Int64)) (+ q (. a 0))))) (export f))",
+        ),
+        (
+            "nested",
+            "(do (def (f (: n Int64)) (let ((a (tuple (tuple n 1) 7))) (fn ((: q Int64)) (+ q (. (. a 0) 0))))) (export f))",
+        ),
+    ] {
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "f",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        assert!(
+            out.artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some(),
+            "{label} captured-tuple projection must compile (reads the env cell, no slot-less param)"
+        );
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("no local slot")),
+            "{label}: no 'parameter reference has no local slot' decline"
+        );
+    }
+}
+
 /// A mutual-group DEMAND-PERFORM-DEMAND arm inside a `let`-wrapped dispatch now FOLDS (was a tail-resumptive
 /// decline that blocked compiler-ml's lazy-DB spine). `demand`/`cache`/`compute` are a mutual SCC over a
 /// per-node state effect; `compute`'s arm is `(let ((a (demand child))) (match (St.put …) (_ (demand child))))`

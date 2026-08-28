@@ -168,6 +168,24 @@ pub(crate) fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
     result
 }
 
+/// Whether a tuple-projection operand is (transitively, through nested projections) a CAPTURED binding of
+/// an enclosing closure — its base occurrence reads the env cell (`db.captured_ref`). Used to keep the
+/// projection a runtime `Core::Proj` instead of folding it to the tuple ELEMENT: reducing through a
+/// captured `let`-bound tuple would inline an enclosing binding as a slot-less `Core::Param` in the lifted
+/// closure body. A NESTED projection `(. (. a 0) 0)` has a `Resolved::Proj` operand whose own operand is
+/// the captured `a`, so recurse through the projection chain to its base.
+fn proj_operand_reaches_capture(db: &mut Db, operand: StructId) -> bool {
+    if db.captured_ref.contains_key(&operand) {
+        return true;
+    }
+    match resolved_of(db, operand) {
+        Resolved::Proj { operand: inner, .. } if inner != operand => {
+            proj_operand_reaches_capture(db, inner)
+        }
+        _ => false,
+    }
+}
+
 fn compute(db: &mut Db, id: StructId) -> Core {
     // A `(do S… tail)` block whose NON-FINAL statements reach a HOST CALL lowers to a `Core::Seq` — the
     // side-effecting statements must be EMITTED (their host call crosses the boundary), then the tail is
@@ -805,6 +823,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // to `arr-get`. An out-of-arity index is impossible here (rejected in `type_errors` before
         // selection); defensively, a projection past a visible tuple's arity poisons.
         Resolved::Proj { operand, index } => {
+            // The operand is (transitively, through nested projections) a CAPTURED binding of an
+            // enclosing closure — its base occurrence reads the env cell via `db.captured_ref`. Do NOT
+            // fold the projection to the tuple's ELEMENT: reducing through the captured `let`-bound tuple
+            // `(tuple n 7)` would inline the element `n` — an enclosing param that is NOT itself captured
+            // — lowering it to a slot-less `Core::Param` in the lifted closure body (the captured-tuple-
+            // projection ICE, hcx1; and its nested `(. (. a 0) 0)` face). Instead emit a runtime
+            // `Core::Proj` whose operand lowers to `Core::Captured`/a nested runtime `Core::Proj`, reading
+            // element `index` from the captured tuple env cell at runtime. (A non-captured operand still
+            // folds below, unchanged.)
+            if proj_operand_reaches_capture(db, operand) {
+                return Core::Proj { operand, index };
+            }
             match crate::eval::reduce_to_tuple_elems(db, operand) {
                 Some(elems) => match elems.get(index) {
                     Some(&elem) => {
