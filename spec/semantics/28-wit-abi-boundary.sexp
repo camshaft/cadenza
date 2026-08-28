@@ -1226,6 +1226,26 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: 7 Int64))
   (output (: (close 7) Outcome)))
 
+(case "a bare TUPLE export result crosses as a typed WIT tuple (declared world)"
+  (doc "SHAPE 62 - a bare `tuple<s64, s64>` EXPORT result under a declared world. Before this, canon_write_of had NO Ty::Tuple arm, so a tuple result declined the typed path and degraded to a bare u32 via the provider path (verified by WIT-dump). Fix: canon_write_of gained a Ty::Tuple arm (the POSITIONAL twin of the Record arm - element i at cell slot i, written at the WIT tuple's canonical offset; reuses CanonWrite::Record, no new writer). WIT-dump now shows `f: func(x: s64) -> tuple<s64, s64>`. Element writes recurse, so a nested tuple/record/bytes element composes.")
+  (wit-world (world w (export cadenza:demo/iface (member f (func (param x (s64)) (result ("tuple" (s64) (s64))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: x Int64)) (tuple x (* x 2))) (export f)))
+  (call f (: 5 Int64))
+  (output (: (5 10) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
+
+(case "a variant with a TUPLE payload crosses as a typed WIT variant (declared world)"
+  (doc "SHAPE 63 - a variant whose payloaded case carries a TUPLE (`two(tuple<s64,s64>)`), under a declared world. Exercises canon_write_of's variant arm recursing into the new Ty::Tuple arm for the payload. Before the Tuple arm this degraded to a bare u32. WIT-dump now shows `variant t0 { one(s64), two(tuple<s64, s64>) }` + `f: func(x: s64) -> t0`. Both arms: x=0 -> One(x) (scalar payload), x!=0 -> Two(tuple x x) (tuple payload). The compound-payload twin of SHAPE 61 (scalar payload).")
+  (wit-world (world w (export cadenza:demo/iface (member f (func (param x (s64)) (result ("variant" (one (s64)) (two ("tuple" (s64) (s64))))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type Pair (One Int64) (Two (Tuple Int64 Int64))) (def (f (: x Int64)) (if (= x 0) (Pair.One x) (Pair.Two (tuple x x)))) (export f)))
+  (call f (: 0 Int64))
+  (output (: (one 0) Pair))
+  (call f (: 4 Int64))
+  (output (: (two (4 4)) Pair))
+  (live-objects known-leak 1))
+
 ; -- breaker batch 408 (2026-08-26): the scalar-param + compound-result acceptance ladder, promoted
 ; on the #3721 fix (gate admission: a scalar-param member with a SpillRecord compound result now takes
 ; the typed-interface wrapper instead of leaking the raw handle). All 8 faces flipped on the fix:
