@@ -23408,6 +23408,24 @@
   (output (: 439 Int64))
   (live-objects 0))
 
+(case "moi1 a runtime CHAMP built ascending equals the same keys built descending (insert-order canonicality)"
+  (doc    "The structural-canonicality oracle for the persistent Map: a CHAMP is a HASH array-mapped trie, so
+           the FINAL structure of a map must depend only on its key/value SET, never on insertion ORDER. Builds
+           `[0, n)` keyed `i -> i*i` two ways — ascending (`fwd` 0→n) and descending (`bwd` n-1→0) — and asserts
+           the two maps are `=` (canonical-byte equal), returning `Map.len` (n) on agreement, -1 on divergence.
+           `n` is a RUNTIME parameter so const-fold cannot collapse the builds (verified input-dependent: main
+           30→30, 40→40), and n=30 forces multi-level HAMT branching. A CHAMP regression where insert order
+           left the trie in a different (non-canonical) node shape would make `=` return false → -1. The
+           order-independence complement of the mrf remove-side fences above; 0-leak (both maps reclaimed).")
+  (input  (do
+            (def (fwd (: mp (Map Int64 Int64)) (: i Int64) (: n Int64)) (if (< i n) (fwd (Map.insert mp i (* i i)) (+ i 1) n) mp))
+            (def (bwd (: mp (Map Int64 Int64)) (: i Int64)) (if (>= i 0) (bwd (Map.insert mp i (* i i)) (- i 1)) mp))
+            (def (main (: n Int64)) (if (= (fwd Map.empty 0 n) (bwd Map.empty (- n 1))) (Map.len (fwd Map.empty 0 n)) -1))
+            (export main)))
+  (call main (: 30 Int64))
+  (output (: 30 Int64))
+  (live-objects 0))
+
 ; ── breaker batch 564: the SET-side mutation/algebra completion (mirrors mrf on maps). srf1 =
 ; fifty RUNTIME-keyed Set.removes against the immortal 40-element HAMT (the removal must copy;
 ; the sibling keeps every key — an all-constant draft folded whole, the vacuity trap; the

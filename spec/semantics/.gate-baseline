@@ -1270,6 +1270,8 @@ pass	a USER sum as handler state — a countdown mode machine (Fast k -> Slow)
 pass	a USER-DEFINED multi-variant sum payload quantity renders scaled to its reference
 pass	a USER-SUM op result (Status) crosses resume; the body matches per variant
 pass	a USER-SUM-literal scrutinee with a performing payload — the ctor pattern binds once
+pass	a USER-declared monomorphic sum's Some variant escapes to the host rendering its bare name
+pass	a USER-declared monomorphic sum's nullary None variant escapes as its unit payload
 pass	a Unit element between two Int64s in a tuple, a later element read
 pass	a Unit element in a multi-payload sum variant compiles to valid wasm
 pass	a Unit payload MATCH-bound from a still-live sum at a dup-site drops the sentinel
@@ -7051,6 +7053,7 @@ pass	modulo by zero traps
 pass	modulo gives the remainder
 pass	modulo of an integer and a float does not silently promote
 pass	modulo of two floats rejects — the operator is integer-only, not merely promotion-free
+pass	moi1 a runtime CHAMP built ascending equals the same keys built descending (insert-order canonicality)
 pass	mp1 draws pick the Map INSERT key and the LOOKUP key — hit-old, hit-updated, and miss all reachable by input
 pass	mp2 map VALUES are draws inserted in key order — weighted lookups replay the draw sequence through the map
 pass	mp3 a draw picks the Map.remove key — lookups of all three keys show exactly one hole where the thread pointed
@@ -9078,5 +9081,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a USER-declared monomorphic sum's Some variant escapes to the host rendering its bare name
-pass	a USER-declared monomorphic sum's nullary None variant escapes as its unit payload
