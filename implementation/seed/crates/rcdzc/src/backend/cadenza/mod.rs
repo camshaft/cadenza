@@ -1743,6 +1743,64 @@ fn emit_match_sum(
                             children.push(b.list(vec![guard_pat, body_node]));
                             cont = els.as_ref();
                         }
+                        // A LITERAL-PAYLOAD test `(<Variant> <lit>)` on the WHOLE single payload — translate
+                        // to the equivalent GUARD `(guard (<Variant> <binder>) (= <binder> <lit>))`: the
+                        // literal test IS an equality refinement of the bound payload, so reusing the guard
+                        // machinery makes a `then_` that reads the payload work (it reads `<binder>`, which
+                        // == the literal on a match). Only a scalar (`Int`/`Bool`) probe over the single
+                        // payload `[Payload]` is realized (a runtime `Str`/`Char`/`Bytes`/`ListLen`/
+                        // `MapHasKeys` probe never reaches a backend; a deeper `path` — a literal in a
+                        // multi-payload tuple slot — is a later slice), else decline.
+                        SumCont::LitTest {
+                            path,
+                            probe,
+                            then_,
+                            els,
+                        } if path.len() == 1
+                            && matches!(path[0], crate::core::PathStep::Payload)
+                            && binder_names.len() == 1 =>
+                        {
+                            if !matches!(
+                                probe,
+                                crate::core::Probe::Int(_) | crate::core::Probe::Bool(_)
+                            ) {
+                                return Err(Reject::decline(
+                                    "the Cadenza backend lowers a literal-payload test only for a \
+                                     scalar (Int/Bool) probe"
+                                        .to_string(),
+                                ));
+                            }
+                            // The matched continuation `then_` must be a plain body (`Leaf`); a nested
+                            // continuation after the literal test (another guard / test) is a later slice.
+                            let SumCont::Leaf(then_body) = then_.as_ref() else {
+                                return Err(Reject::decline(
+                                    "the Cadenza backend does not yet lower a literal-payload test with \
+                                     a nested `then` continuation"
+                                        .to_string(),
+                                ));
+                            };
+                            // Build in the SAME leaf-insertion order the `Guarded` arm uses for a re-read
+                            // `(guard (V k) (= k <lit>))` — guard head, then the cond `=`/binder/lit — so
+                            // hop¹ (this arm) and hop² (recompile re-reads a guard → the `Guarded` arm) emit
+                            // BYTE-IDENTICAL trees (the no-canon codec serializes build order).
+                            let guard_head = b.name("guard");
+                            let eq_head = b.name("=");
+                            let binder_ref = b.name(binder_names[0].clone());
+                            let lit = match probe {
+                                crate::core::Probe::Int(v) => b.atom_leaf(Leaf::Int {
+                                    value: v.clone(),
+                                    radix: Radix::Dec,
+                                }),
+                                crate::core::Probe::Bool(x) => b.atom_leaf(Leaf::Bool(*x)),
+                                _ => unreachable!("probe kind checked above"),
+                            };
+                            let cond_node = b.list(vec![eq_head, binder_ref, lit]);
+                            let guard_pat = b.list(vec![guard_head, var_pat, cond_node]);
+                            let body_node =
+                                emit_expr(db, b, *then_body, expected.clone(), env, emitted)?;
+                            children.push(b.list(vec![guard_pat, body_node]));
+                            cont = els.as_ref();
+                        }
                         _ => {
                             return Err(Reject::decline(
                                 "the Cadenza backend does not yet lower a literal-test / nested-switch \
