@@ -50,9 +50,9 @@
 //!   `Leaf`-body arms. Each arm mints a fresh `_cdz_m<n>` binder per payload slot (recorded in
 //!   `env.payloads` under the `SumPayload` `(scrutinee, path)` key the body reads); a `Core::SumPayload`
 //!   resolves to its binder. NESTED matches (a `Leaf` body that is itself a `MatchSum`) recurse naturally.
-//!   A disc-FOLDED / nested-`Switch` / `Guarded` / `LitTest` decision tree, or a DEFAULT (`disc: None`)
-//!   arm, declines. A match over a user sum whose `(type …)` was not re-emitted declines; prelude sums
-//!   (Option/Result) are ambient.
+//!   A DEFAULT (`disc: None`) arm re-emits the wildcard `_` (a catch-all over the residual variants). A
+//!   disc-FOLDED / nested-`Switch` / `Guarded` / `LitTest` decision tree still declines. A match over a
+//!   user sum whose `(type …)` was not re-emitted declines; prelude sums (Option/Result) are ambient.
 //! - **M4b**: list `Core::MatchList` → surface `(match <scrutinee> (<list-pattern> <body>)…)`
 //!   ([`emit_match_list`]): a length-dispatch arm — `LenEq(n)`→`(list b0 … b_{n-1})`, `LenGe(lead)`→
 //!   `(list b0 … b_{lead-1} .. rest)`, `Any`→`_`. Leading element binders register at `[Elem(i)]`, the
@@ -1317,12 +1317,6 @@ fn emit_match_sum(
     let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
     let mut children = vec![match_head, scrut_node];
     for arm in arms {
-        let disc = arm.disc.ok_or_else(|| {
-            Reject::decline(
-                "the Cadenza backend does not yet lower a DEFAULT (wildcard) sum-match arm"
-                    .to_string(),
-            )
-        })?;
         let body = match &arm.cont {
             SumCont::Leaf(body) => *body,
             _ => {
@@ -1333,39 +1327,48 @@ fn emit_match_sum(
                 ));
             }
         };
-        // Recover the variant head (bare or `(. Type Variant)`) and its payload arity from the sum decl.
-        let head = crate::lower::variant_head_ast(db, b, decl, disc).ok_or_else(|| {
-            Reject::decline(
-                "the Cadenza backend could not recover the variant name for a sum-match arm"
-                    .to_string(),
-            )
-        })?;
-        let arity = db
-            .type_decl_by_occ(decl)
-            .and_then(|t| t.variants.get(disc as usize))
-            .map(|v| v.payloads.len())
-            .ok_or_else(|| {
-                Reject::decline(
-                    "the Cadenza backend could not recover the variant arity for a sum-match arm"
-                        .to_string(),
-                )
-            })?;
-        // Mint a binder per payload slot and register its `SumPayload` path for the arm body: a single-
-        // payload variant reads `[Payload]`; a multi-payload variant's payload is a tuple, slot `i` at
-        // `[Payload, Elem(i)]`. A nullary variant emits the bare `(<Variant>)` pattern.
-        let mut pat_children = vec![head];
-        for slot in 0..arity {
-            let name = synth_payload_name(env.next_payload);
-            env.next_payload += 1;
-            let path: Vec<PathStep> = if arity == 1 {
-                vec![PathStep::Payload]
-            } else {
-                vec![PathStep::Payload, PathStep::Elem(slot)]
-            };
-            env.payloads.insert((scrutinee, path), name.clone());
-            pat_children.push(b.name(name));
-        }
-        let pattern = b.list(pat_children);
+        // A `disc: Some(k)` arm is an EXPLICIT variant pattern `(<Variant> <binder>…)`; a `disc: None` arm
+        // is the DEFAULT (wildcard) tail `_` — a catch-all covering the residual variants, binding nothing
+        // (so no payload paths to register; a body reading the whole scrutinee does so through its own name).
+        let pattern = match arm.disc {
+            None => b.name("_"),
+            Some(disc) => {
+                // Recover the variant head (bare or `(. Type Variant)`) + its payload arity from the decl.
+                let head =
+                    crate::lower::variant_head_ast(db, b, decl, disc).ok_or_else(|| {
+                        Reject::decline(
+                            "the Cadenza backend could not recover the variant name for a sum-match arm"
+                                .to_string(),
+                        )
+                    })?;
+                let arity = db
+                    .type_decl_by_occ(decl)
+                    .and_then(|t| t.variants.get(disc as usize))
+                    .map(|v| v.payloads.len())
+                    .ok_or_else(|| {
+                        Reject::decline(
+                            "the Cadenza backend could not recover the variant arity for a sum-match arm"
+                                .to_string(),
+                        )
+                    })?;
+                // Mint a binder per payload slot and register its `SumPayload` path for the arm body: a
+                // single-payload variant reads `[Payload]`; a multi-payload variant's payload is a tuple,
+                // slot `i` at `[Payload, Elem(i)]`. A nullary variant emits the bare `(<Variant>)` pattern.
+                let mut pat_children = vec![head];
+                for slot in 0..arity {
+                    let name = synth_payload_name(env.next_payload);
+                    env.next_payload += 1;
+                    let path: Vec<PathStep> = if arity == 1 {
+                        vec![PathStep::Payload]
+                    } else {
+                        vec![PathStep::Payload, PathStep::Elem(slot)]
+                    };
+                    env.payloads.insert((scrutinee, path), name.clone());
+                    pat_children.push(b.name(name));
+                }
+                b.list(pat_children)
+            }
+        };
         // The body is emitted with this arm's payload binders in scope; it is the match's value/tail
         // position, so it inherits the match's `expected` type (for an under-determined `(None)` etc.).
         let body_node = emit_expr(db, b, body, expected.clone(), env, emitted)?;
