@@ -5821,6 +5821,7 @@ pass	cdzw3 the cadenza backend round-trip preserves the minimum positive subnorm
 pass	cdzw4 the cadenza backend round-trip keeps float division float (not int truncation) despite the shared surface operator
 pass	cdzw5 the cadenza backend round-trip preserves a float comparison over a parameter
 pass	cdzw6 the cadenza backend round-trip preserves a let-binding and an if over an integer parameter
+pass	cdzw7 the cadenza backend round-trips a nested let/if mixing int and float operators in one program
 pass	ce01 checked addition over a RUNTIME operand yields Some when it fits
 pass	ce02 checked addition over a RUNTIME operand yields None on overflow
 pass	ce03 Record.merge of two RUNTIME-built records projects the merged field
