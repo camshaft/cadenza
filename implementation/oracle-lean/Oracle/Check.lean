@@ -122,7 +122,7 @@ partial def expectedValue? (m : Module) (i : Nat) : Option Value :=
     | Option.some "tuple" => (seqVals m (cs.extract 1 cs.size)).map Value.tuple
     | Option.some "list" => (seqVals m (cs.extract 1 cs.size)).map Value.list
     | Option.some "map" => (mapEntries m (cs.extract 1 cs.size)).bind (fun es => (Eval.canonMap es).map Value.map)
-    | Option.some "record" => Option.none   -- record output not modeled here (compared via `=` only)
+    | Option.some "record" => (recordFields? m (cs.extract 1 cs.size)).map Value.record
     | Option.some ctor =>
       -- a prelude/user sum VARIANT value `(Ctor payload)` — bare ctor head + one payload child
       -- (nullary renders `(Ctor unit)`); every other name-headed value node is a variant in canonical form
@@ -153,6 +153,23 @@ partial def mapEntries (m : Module) (ids : Array Nat) : Option (Array (Value × 
         | Option.some k, Option.some v => Option.some (es.push (k, v))
         | _, _ => Option.none
       | _ => Option.none) (Option.some #[])
+
+/-- Interpret record FIELD nodes — each a `(= k v)` (or positional `(k v)`) pair via `Eval.recordField?` —
+as (key-bytes, value) pairs SORTED by key: the canonical `Value.record` form `evalRecord` produces, so a
+record OUTPUT compares field-wise against the computed record. `none` if any field is malformed or its value
+is not a modeled value. -/
+partial def recordFields? (m : Module) (ids : Array Nat) : Option (Array (ByteArray × Value)) :=
+  (ids.foldl (fun acc id =>
+    match acc with
+    | Option.none => Option.none
+    | Option.some fs =>
+      match Eval.recordField? m id with
+      | Option.some (k, vId) =>
+        match expectedValue? m vId with
+        | Option.some v => Option.some (fs.push (k, v))
+        | Option.none => Option.none
+      | Option.none => Option.none) (Option.some #[])).map
+    (fun fs => fs.qsort (fun a b => Eval.cmpBytes a.1 b.1 == Ordering.lt))
 end
 
 /-- Parse one `(trial (call <export>)? (arg <val>)* (expect-… …))`. -/
