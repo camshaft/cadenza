@@ -304,9 +304,21 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
     }
 
     eprintln!(
-        "[cdz-smith] lean-differential done: {} trials | {} holds, {} mismatch ({} new buckets), {} skip | {} not-comparable",
-        stats.trials, stats.holds, stats.mismatches, new_buckets, stats.skips, stats.not_comparable
+        "[cdz-smith] lean-differential done: {} trials | {} holds, {} mismatch ({} new buckets), {} skip | {} not-comparable, {} oracle-undecodable",
+        stats.trials,
+        stats.holds,
+        stats.mismatches,
+        new_buckets,
+        stats.skips,
+        stats.not_comparable,
+        stats.oracle_undecodable
     );
+    if stats.oracle_undecodable > 0 {
+        eprintln!(
+            "[cdz-smith] note: {} comparable trial(s) the oracle could NOT decode/judge (isolated, sweep still completed) — an oracle-CAPABILITY gap (e.g. a post-flag-day AST leaf kind the oracle lacks), not a bug; grades once the oracle gains it",
+            stats.oracle_undecodable
+        );
+    }
     if stats.mismatches > 0 {
         ExitCode::from(1)
     } else {
