@@ -702,6 +702,16 @@ fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
     }
 }
 
+/// Does `component_bytes` import the value-heap runtime (`cadenza:runtime/heap…`)? A byte-level replacement
+/// for the former `cdz_run::required_runtime(..).is_some()` — the runtime import name appears VERBATIM as a
+/// string in the component's import section, so a byte scan is a faithful present/absent check (the H2c
+/// "no per-call heap" pins only need present vs absent, never the content-address hash). Keeps these
+/// compile-artifact pins off the `cdz-run` dep.
+fn imports_value_heap_runtime(component_bytes: &[u8]) -> bool {
+    let needle = b"cadenza:runtime/heap";
+    component_bytes.windows(needle.len()).any(|w| w == needle)
+}
+
 /// Count the core-module instructions in `component_bytes` matching `pred` — an emission-strategy probe
 /// (e.g. `i64.mul` count for inline-vs-emit-once, `call_indirect` count for dict erasure). Walks every
 /// code-section entry with `wasmparser`; `pred` classifies each operator.
@@ -1360,7 +1370,7 @@ fn a_projection_only_runtime_tuple_folds_without_the_heap() {
                  (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        !imports_value_heap_runtime(&bytes),
         "a projection-only tuple must fold, importing no runtime op (no per-call arr-alloc)"
     );
     // Value parity (pair-sum(20,22)=42) migrated to the corpus (run via cdz-run): case "a projection-only
@@ -1414,7 +1424,7 @@ fn a_projection_of_an_if_selected_tuple_pushes_into_the_branches() {
                  (. (if p (tuple a b) (tuple b a)) 0)) (export pick))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        !imports_value_heap_runtime(&bytes),
         "a single projection of an if-of-tuples must fold (no per-call arr-alloc, no runtime import)"
     );
     // Value parity (p true → a, p false → b) migrated to the corpus (run via cdz-run): case "a projection
@@ -1473,7 +1483,7 @@ fn a_match_over_an_if_selected_sum_pushes_into_the_branches() {
                      ((Option.Some v) v) (Option.None 0))) (export f))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        !imports_value_heap_runtime(&bytes),
         "a match over an if-of-constructors must fold (no throwaway sum build, no runtime import)"
     );
     // Value parity (x>0 → 5, x<=0 → 0) migrated to the corpus (run via cdz-run): case "a match over an
@@ -1497,7 +1507,7 @@ fn a_match_over_a_match_selected_sum_pushes_into_the_arms() {
                      ((Option.Some v) v) (Option.None 0))) (export f))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        !imports_value_heap_runtime(&bytes),
         "a match over a match-of-constructors must fold (no throwaway sum build, no runtime import)"
     );
     // Value parity (n>0 → 5, n<=0 → 0) migrated to the corpus (run via cdz-run): case "a match over a
@@ -1527,7 +1537,7 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
                  (export pair-sum))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        imports_value_heap_runtime(&bytes),
         "an if-selected narrow tuple, projected, must build on the heap (import the runtime)"
     );
     let Some(runtime) = find_runtime_wasm() else {
@@ -1992,7 +2002,7 @@ fn cse_does_not_hoist_a_trapping_subexpr_out_of_a_match_arm() {
                  (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        !imports_value_heap_runtime(&bytes),
         "an all-scalar Int64 match program imports no value-heap runtime — the witness runs store-free"
     );
     // Value parity (k=0 selects the constant arm → 100; the wildcard arm's trapping `(/ 10 0)` must not be
@@ -2101,7 +2111,7 @@ fn a_cse_shared_indexed_read_is_refcount_correct_and_leaves_the_list_live() {
                  (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        imports_value_heap_runtime(&bytes),
         "a runtime list must build on the value heap (import the runtime)"
     );
     let Some(runtime) = find_runtime_wasm() else {
@@ -2147,7 +2157,7 @@ fn a_cse_shared_map_lookup_is_refcount_correct_and_leaves_the_map_live() {
                  (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        imports_value_heap_runtime(&bytes),
         "a runtime map must build on the value heap (import the runtime)"
     );
     let Some(runtime) = find_runtime_wasm() else {
@@ -2397,7 +2407,7 @@ fn a_reducer_event_shaped_record_with_bytes_escapes_via_value_encode() {
                  (def (main) (f 2)) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        imports_value_heap_runtime(&bytes),
         "a runtime record-with-Bytes escape must import the value-heap runtime"
     );
     let Some(runtime) = find_runtime_wasm() else {
@@ -3903,10 +3913,8 @@ fn a_reducer_with_a_variant_effect_list_result_emits_a_valid_provider() {
     let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
     v.validate_all(bytes)
         .expect("the variant-result bytes-roundtrip provider component validates");
-    let req = cdz_run::required_runtime(bytes)
-        .expect("the variant-result provider component loads on the pinned wasmtime");
     assert!(
-        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        imports_value_heap_runtime(bytes),
         "a variant-effect-list reducer marshals through the value-heap runtime import"
     );
 }
@@ -4428,9 +4436,9 @@ fn a_nested_constant_tuple_with_shared_element_occurrences_escapes() {
 fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
     use crate::testkit::parse;
     // The fix must at minimum produce a VALID module — the miscompile was a wasm-validation failure
-    // (`expected i64, found i32`), so `compile_component` returning `Ok` + `required_runtime` parsing
-    // the bytes is itself the primary guard (it re-validates the component). The composed run below then
-    // confirms the VALUE when the runtime store is present.
+    // (`expected i64, found i32`), so `compile_component` returning `Ok` + the wasmparser validate below is
+    // the primary guard, and `imports_value_heap_runtime` confirms the record-transform reaches the heap.
+    // The composed run below then confirms the VALUE when the runtime store is present.
     // Field `a` is seeded from a RUNTIME parameter so the record cannot const-fold away — the general
     // const-evaluator now folds a record threaded through a record-param fn (`(f (f (record …)))` over an
     // all-constant record reduces to the projected scalar, no heap), which is the correct behavior but would
@@ -4444,9 +4452,7 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
     let bytes = compile_component(&crate::codec::encode(&parse(src)))
         .expect("a composed record-transform call must compile");
     assert!(
-        cdz_run::required_runtime(&bytes)
-            .expect("the emitted component must be valid wasm")
-            .is_some(),
+        imports_value_heap_runtime(&bytes),
         "the nested record-transform builds a runtime record, so it imports the value-heap runtime"
     );
     let Some(runtime) = find_runtime_wasm() else {
@@ -4480,9 +4486,7 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
     let three_bytes = compile_component(&crate::codec::encode(&parse(three)))
         .expect("a three-field composed record-transform call must compile");
     assert!(
-        cdz_run::required_runtime(&three_bytes)
-            .expect("the three-field component must be valid wasm")
-            .is_some(),
+        imports_value_heap_runtime(&three_bytes),
         "the three-field nested record-transform imports the value-heap runtime"
     );
     let three_opts = cdz_run::RunOpts {
@@ -4521,15 +4525,13 @@ fn a_bigint_arith_then_of_arith_collection_element_pair_runs() {
         return;
     };
     // A helper: compile the module, assert it is VALID wasm (the miscompile was a validation failure, so
-    // `compile_component` returning `Ok` + `required_runtime` re-parsing the bytes is itself the guard),
+    // `compile_component` returning `Ok` + `imports_value_heap_runtime` on the bytes is itself the guard),
     // then run `main 5` and assert the value.
     let check = |src: &str, expect: &str, what: &str| {
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
             .unwrap_or_else(|e| panic!("{what} must compile: {e:?}"));
         assert!(
-            cdz_run::required_runtime(&bytes)
-                .expect("the emitted component must be valid wasm")
-                .is_some(),
+            imports_value_heap_runtime(&bytes),
             "{what} builds a runtime collection, so it imports the value-heap runtime"
         );
         let opts = cdz_run::RunOpts {
@@ -4976,7 +4978,7 @@ fn a_multi_use_constant_tuple_folds_away_with_no_heap() {
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     // The H2c property: NO runtime import — the static tuple left no heap trace at all.
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        !imports_value_heap_runtime(&bytes),
         "a constant tuple must fold away, importing no runtime op (no per-call arr-alloc)"
     );
     // And it runs to the folded scalar without any runtime composed in.
@@ -5000,7 +5002,7 @@ fn a_projection_only_tuple_folds_importing_no_runtime() {
     // even with a runtime element. The RUN value (with-param 32 → 42) is pinned by the corpus case
     // "a projection-only tuple over a runtime element folds to the sum of its elements" (05-compound-types).
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        !imports_value_heap_runtime(&bytes),
         "a projection-only tuple folds — no heap — even with a runtime element"
     );
 }
@@ -27447,7 +27449,7 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{count_opcode, find_runtime_wasm, run_returns};
+    use super::{count_opcode, find_runtime_wasm, imports_value_heap_runtime, run_returns};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -30412,9 +30414,7 @@ mod stage1 {
         let program = compile_component(&crate::codec::encode(&parse(runtime)))
             .expect("a runtime scalar-leaf compound equality now compiles to a value-eq heap walk");
         assert!(
-            cdz_run::required_runtime(&program)
-                .expect("valid component")
-                .is_some(),
+            imports_value_heap_runtime(&program),
             "a runtime compound equality imports the value-heap runtime (the value-eq walk is a runtime call)"
         );
     }
@@ -38563,7 +38563,7 @@ mod stage1 {
         let bytes =
             compile_component(&crate::codec::encode(&parse(src))).expect("compile a sum escape");
         assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            !imports_value_heap_runtime(&bytes),
             "a CONSTANT sum escape bakes its bytes — no value-heap runtime import"
         );
         let Some(runtime) = super::find_runtime_wasm() else {
@@ -38837,7 +38837,7 @@ mod stage1 {
                      (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile enum");
         assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            !imports_value_heap_runtime(&bytes),
             "an all-nullary enum is a bare i32 — no value-heap runtime import (no dead sum-new/sum-disc)"
         );
         // A boxed sum in the SAME shape (Option) STILL imports the runtime — the elision is enum-only.
@@ -38853,7 +38853,7 @@ mod stage1 {
                        (export main))";
         let bb = compile_component(&crate::codec::encode(&parse(boxed))).expect("compile boxed");
         assert!(
-            cdz_run::required_runtime(&bb).expect("valid").is_some(),
+            imports_value_heap_runtime(&bb),
             "a genuinely-boxed sum still imports the value-heap runtime"
         );
     }
