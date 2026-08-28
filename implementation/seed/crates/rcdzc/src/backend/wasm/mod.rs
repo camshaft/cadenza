@@ -190,10 +190,13 @@ pub fn emit(
             let article = if pos == "argument" { "an" } else { "a" };
             return Err(Reject::decline(format!(
                 "the host operation `{op}` has {article} {pos} of type `{ty}`, which has no component \
-                 boundary form this compiler emits yet. Host RESULTS cross as: a scalar/unit, a `list<u8>` \
-                 (Bytes), or an `option<list<u8>>`. Host ARGUMENTS cross as: a scalar/unit/string or a \
-                 `list<u8>`. A record/compound ARGUMENT, or a `list<list<u8>>`/`list<tuple<…>>` RESULT, is a \
-                 later increment."
+                 boundary form this compiler emits yet on a bare `(effect …)`. On a bare effect, host \
+                 RESULTS cross as a scalar/unit, and host ARGUMENTS as a scalar/unit/string or a `list<u8>` \
+                 (Bytes). A `list<u8>` (Bytes) or `option<list<u8>>` RESULT crosses on the WORLD-DRIVEN \
+                 boundary path — a component that declares an imposed `(wit-world …)` for the effect's \
+                 interface — NOT on a bare effect (that path lifts the host bytes into a value-heap handle; \
+                 the bare host-call emit does not yet). A record/compound ARGUMENT, or a \
+                 `list<list<u8>>`/`list<tuple<…>>` RESULT, is a later increment."
             )));
         }
     }
