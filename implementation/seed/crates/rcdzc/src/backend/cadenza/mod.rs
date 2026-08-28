@@ -99,8 +99,10 @@
 //!   lowering (textless wasm trap), so a placeholder round-trips. `TrapDivZero`/`TrapOverflow` (distinct
 //!   trap kinds) still decline.
 //! - **CONVERT**: `Core::Convert` → `((. <ResultType> <member>) operand)` — the target type is the result
-//!   type, the member is `of-int` for `FloatOfInt` (int→float) else `of` (float-width / int-width). A
-//!   non-numeric (boolean-coercion) Convert declines; an int→int narrow declines on its range-check `Trap`.
+//!   type, the member is `of-int` for `FloatOfInt` (int→float), `wrap` for the truncating total `Wrap`
+//!   (never traps), else `of` (float-width / checked int-width). A non-numeric (boolean-coercion) Convert
+//!   declines; a CHECKED int→int narrow declines on its range-check `Trap` (a `Wrap` narrow is total, no
+//!   such `Trap`, and re-emits as `.wrap` — mapping it to `.of` would be a trap-vs-value miscompile).
 //! - **STRING.CONCAT / NFC**: `String.concat` shares `Core::BytesConcat` (a String is a UTF-8 byte leaf),
 //!   disambiguated from `Bytes.concat` by the result type; its compiler-inserted `Core::NfcNormalize` (no
 //!   surface member) emits TRANSPARENTLY (its inner string), the surface `String.concat`/`to-bytes`
@@ -665,10 +667,15 @@ fn emit_expr_viewed(
         }
         // A numeric CONVERSION `(<TargetType>.<member> <operand>)` — the TARGET type is this node's OWN
         // result type (`render_name` → `Int8`/`Float64`/…); the MEMBER depends on the conversion kind:
-        // `FloatOfInt` (int→float) is written `Float64.of-int`, while a float→float WIDTH change (`FloatOf`)
-        // and an int→int width/sign change are `<Type>.of`. The operand's type + target re-select the exact
-        // op on recompile. A non-numeric result (the boolean-coercion `!`) declines (a later slice). (An
-        // int→int NARROW carries a range-check `Trap` above the `Convert`, which declines on `Trap` first.)
+        // `FloatOfInt` (int→float) is written `Float64.of-int`; the TRUNCATING integer conversion `Wrap`
+        // is `<Type>.wrap` (total — keeps the low bits, never traps); a float→float WIDTH change (`FloatOf`)
+        // and the CHECKED int→int width/sign change (`CheckedOf`) are `<Type>.of`. The operand's type +
+        // target re-select the exact op on recompile. 🪤 `Wrap` and `CheckedOf` share the `Core::Convert`
+        // node but have DIFFERENT semantics — `.wrap` truncates, `.of` range-CHECKS (traps out of range) —
+        // so a `Wrap` re-emitted as `.of` is a VALUE-changing miscompile (hop traps where direct wraps),
+        // NOT a decline. A non-numeric result (the boolean-coercion `!`) declines (a later slice). (An
+        // int→int CHECKED narrow carries a range-check `Trap` above the `Convert`, which declines on `Trap`
+        // first; a `Wrap` narrow is total, has no such `Trap`, and reaches here.)
         Core::Convert { op, operand } => {
             let ty = crate::infer::type_of(db, id);
             let module = match &ty {
@@ -683,6 +690,7 @@ fn emit_expr_viewed(
             };
             let member = match op {
                 crate::resolved::Prim::FloatOfInt => "of-int",
+                crate::resolved::Prim::Wrap => "wrap",
                 _ => "of",
             };
             let head = member_access(b, &module, member);
