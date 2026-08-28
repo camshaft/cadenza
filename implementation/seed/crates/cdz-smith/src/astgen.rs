@@ -12,8 +12,10 @@
 //! `ValueGenerator` (behind `#[cfg(test)]`, since `bolero` is a dev-dependency) drives the SAME grammar
 //! via a `Driver`→`Choice` adapter for the `cdz_smith_gen_never_panics` target. One grammar, two drivers.
 //!
-//! Grammar: `(do [ (def (r n) …) ] [ (def (t n acc) …) ] [ (def (f a b) …) ] (def (main) <body>)
-//! (export main))` where `<body>` is an Int64 expression — edge-biased literal | in-scope var |
+//! Grammar: `(do [ (def (r n) …) ] [ (def (t n acc) …) ] [ (def (f a b) …) ] (def (main [ (: v0 <heap>) ])
+//! <body>) (export main))` — `main` OPTIONALLY takes one heap/reference-typed param (`String`/`Bytes`/
+//! `(List Int64)`/`(Option Int64)`, left unused) to exercise the exported-entry heap-param ABI path (the
+//! bucket-1 emit miscompile fixed by rcdzc #4961). `<body>` is an Int64 expression — edge-biased literal | in-scope var |
 //! arithmetic (10 ops) | `(if <bool-cond> … …)` | `let` | a SELF-operation reusing an in-scope var
 //! `(op v v)` / `(rel v v)` (stresses self-identity folds + thunk sharing) | non-recursive helper call `(f e e)` |
 //! non-tail recursive-helper call `(r <small-fuel>)` | tail-recursive-helper call `(t <small-fuel>
@@ -186,12 +188,32 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
         );
         source.push_str(") ");
     }
-    source.push_str("(def (main) ");
+    // Optionally give the EXPORTED entry `main` a HEAP/reference-typed parameter (`v0`). This exercises
+    // the exported-entry heap-param ABI lowering path (lift-op import appends + def-index shifting) —
+    // where the bucket-1 miscompile lived (a heap-param entry + a reachable recursive fn emitted the
+    // recursive call's result at the wrong width; fixed by rcdzc #4961). Generating this shape gives the
+    // coercing generator an ONGOING regression guard for that path + broader entry-ABI coverage. The
+    // param is left UNUSED (not added to `scope`) so the body stays well-typed regardless (an in-scope
+    // heap var used in the Int64 body would be a type conflict); only the accepted entry-param types are
+    // drawn (String/Bytes/(List Int64)/(Option Int64) cross the plain export boundary — Tuple/Record/Unit
+    // decline there, which is still "cleanly handled" but pointless), so the program COMPILES (post-#4961)
+    // or cleanly declines.
+    if c.variant(2) == 1 {
+        let ty = HEAP_PARAM_TYPES[c.variant(HEAP_PARAM_TYPES.len())];
+        write!(source, "(def (main (: v0 {ty})) ").ok();
+    } else {
+        source.push_str("(def (main) ");
+    }
     let mut scope: Vec<String> = Vec::new();
     gen_main_body(c, &mut scope, &mut fresh, caps, &mut source);
     source.push_str(") (export main))");
     Program { source }
 }
+
+/// Heap/reference-typed entry-parameter types that cross the plain export boundary (so `main` with one of
+/// these + a reachable recursive fn reaches the entry-ABI path that #4961 fixed). Scalars (Int64/Bool)
+/// don't perturb the path; Tuple/Record/Unit decline at the boundary.
+const HEAP_PARAM_TYPES: &[&str] = &["String", "Bytes", "(List Int64)", "(Option Int64)"];
 
 /// Append one Int64 literal — biased toward boundary values (where width/overflow/wrap miscompiles
 /// cluster), else a bounded random int. Both are valid Int64 literals. Shared by the leaf case and the
@@ -546,7 +568,8 @@ mod tests {
             let program = gen_from(bytes);
             assert!(
                 program.source.starts_with("(do ")
-                    && program.source.contains("(def (main) ")
+                    // `main` is either param-less `(def (main) …)` or a heap-param entry `(def (main (: v0 …
+                    && program.source.contains("(def (main")
                     && program.source.ends_with("(export main))"),
                 "shape: {}",
                 program.source
@@ -587,6 +610,52 @@ mod tests {
         }
         // Empty entropy still yields a valid program (all choices bottom out).
         assert!(generate_coerced(&[]).source.ends_with("(export main))"));
+    }
+
+    /// REGRESSION GUARD for the bucket-1 emit miscompile (rcdzc #4961): an EXPORTED entry with a
+    /// heap/reference-typed param + a reachable RECURSIVE fn once emitted the recursive call's result at
+    /// the wrong wasm width (i32 vs i64) → InvalidWasm. Each `HEAP_PARAM_TYPES` entry, wired to the exact
+    /// minimal shape the fuzzer found + bisected, must COMPILE (not merely be cleanly handled) — so a
+    /// re-introduction of the def-index-shift bug fails here rather than silently in a campaign.
+    #[test]
+    fn heap_param_entry_over_a_recursive_fn_compiles() {
+        for ty in HEAP_PARAM_TYPES {
+            let src = format!(
+                "(do (def (main (: v0 {ty})) (do (def (v1 v2) (if (<= v2 0) v2 (v1 (- v2 1)))) (v1 2))) (export main))"
+            );
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "heap-param entry ({ty}) over a recursive fn must COMPILE (bucket-1 #4961 regression): {src}"
+            );
+        }
+    }
+
+    /// The generator REACHES the heap-param-entry shape (the #4961 regression-guard path) across varied
+    /// entropy — so the coercing fuzzer actually exercises the exported-entry heap-param ABI lowering, not
+    /// only param-less `main`.
+    #[test]
+    fn generator_reaches_a_heap_param_entry() {
+        let mut saw = false;
+        for seed in 0u64..128 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(5);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            if generate_coerced(&bytes)
+                .source
+                .contains("(def (main (: v0 ")
+            {
+                saw = true;
+                break;
+            }
+        }
+        assert!(
+            saw,
+            "the coercing generator should reach a heap-param entry `(def (main (: v0 …)) …)`"
+        );
     }
 
     /// Every operator the generator can emit is a valid Int64→Int64→Int64 op the compiler CLEANLY
