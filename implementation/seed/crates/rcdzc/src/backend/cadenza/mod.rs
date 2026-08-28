@@ -1284,6 +1284,14 @@ fn emit_expr_viewed(
             let colon = b.name(":");
             Ok(b.list(vec![colon, call, ty_node]))
         }
+        // `Blake3.of b` on a RUNTIME `Bytes` — the blake3 content hash (`Bytes → Bytes`, a 32-byte digest).
+        // Surface `((. Blake3 of) <operand>)`. (A CONSTANT `Bytes` folds to a `Core::ConstBytes` in `lower`
+        // and never reaches here; this is the runtime path.)
+        Core::Blake3Of { operand } => {
+            let head = member_access(b, "Blake3", "of");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
         // STRING OPERATIONS — member-access ops `((. String <member>) <op>…)`. `String.at`/`scalar-at`
         // share ONE `Core::StrAt` (both walk the scalar buffer), distinguished by the RESULT's `Option`
         // payload — a `Char` payload came from `scalar-at`, a `String` payload from `at`. The others are 1:1.
