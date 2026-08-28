@@ -3927,6 +3927,26 @@
             program = "${fastGate}/bin/cdz-fast-gate";
           };
 
+        # apps.cdz / apps.cdz-run — run the compiler + runtime THROUGH NIX (operator all-nix mandate,
+        # 2026-08-28: agents should not invoke bare `cargo`, which cold-rebuilds the dep closure per
+        # worktree — ~177GB of duplicated target/ dirs, wasmtime/cranelift recompiled ~40x). Both wrap
+        # the crane-built `seedCompiler` ($out/bin/{cdz,cdz-run}), so they REUSE the warm dep-closure
+        # (the ~383MB cargoArtifacts layer, GC-root-pinned by warm-keep) — no per-worktree cold rebuild.
+        #   nix run .#cdz -- run prog.cdz       → the unified CLI (compile / run / test / doctor)
+        #   nix run .#cdz -- test               → the @test suite
+        #   nix run .#cdz-run -- prog.wasm      → the standalone component runner / grader
+        # The tight inner loop stays `nix run .#fast-gate`; the full merge gate is
+        # `nix build .#checks.<system>.local-gate`. Together these remove every reason to reach for raw
+        # cargo (v-fleet-tooling wires the boot-into-nix-develop + the cargo-redirect wrapper).
+        apps.cdz = {
+          type = "app";
+          program = "${seedCompiler}/bin/cdz";
+        };
+        apps.cdz-run = {
+          type = "app";
+          program = "${seedCompiler}/bin/cdz-run";
+        };
+
         # apps.wasm-opt-gaps — run the wasm-opt optimality-gap sweep + refresh the tracked
         # `implementation/design/wasm-opt-gaps.sexp` (design/DESIGN-wasm-opt-gap-analysis-rcdzc.md). Builds the
         # `wasm-opt-gaps` check (per-case unbundle → `wasm-opt --all-features -O3`/`-Oz` → record, all cached +
