@@ -8077,6 +8077,7 @@ pass	smj1 a sum match whose BOTH arms are owned producers reclaims (join = Owned
 pass	smj2 a borrowed sum payload read twice under its live scrutinee is not freed early
 pass	smj3 5000x a borrowed sum payload read twice does not double-free (leak-drift stress)
 pass	smk1 a STRING-KEYED Map state whose keys are BUILT IN THE ARM — parity routes each value to a concat-computed bucket, accumulate-or-insert answers the bucket total
+pass	sms1 scalar-indexed String.slice isolates a multi-byte codepoint and round-trips on a RUNTIME string
 pass	smy1 a SYMBOL-KEYED Map state — the op takes a Symbol and routes accumulation by interned identity, the same label from two different dispatches lands in one bucket
 pass	sn1 a #set literal with RUNTIME elements dedups at construction
 pass	sn1 a snapshot op resumes the WHOLE tuple state as a value — the body destructures the live pair after mixed bumps

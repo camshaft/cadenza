@@ -4974,3 +4974,25 @@
   (call main (: 2 Int64)) (output (: 703 Int64))
   (call main (: 3 Int64)) (output (: 707 Int64))
   (live-objects known-leak 1))
+
+(case "sms1 scalar-indexed String.slice isolates a multi-byte codepoint and round-trips on a RUNTIME string"
+  (doc    "Fences that `String.slice` is SCALAR (codepoint) indexed, not byte-indexed, over a runtime-built
+           multi-byte string — a byte-indexed regression would cut mid-codepoint and corrupt. `s = rep \"aé🦀\" n`
+           is built by runtime recursion (scalar-len 3n, byte-len 7n; the recursion defeats const-fold —
+           verified input-dependent, main 1→3401, 2→6401). `(String.slice s 2 3)` isolates the 4-byte 🦀 by its
+           SCALAR index 2 (a is 1 byte, é is 2, so a byte-2 slice would land inside é), so its `byte-len` is 4;
+           and the scalar-split round-trip `slice[0:2] ++ slice[2:scalar-len] == s` holds. `String.slice`
+           returns `(Option String)` (None out-of-bounds), unwrapped here. `1000*scalar-len + 100*byte-len(🦀
+           slice) + roundtrip` = 1000*3 + 100*4 + 1 = 3401 at n=1.")
+  (input (do
+    (def (rep (: s String) (: n Int64)) (if (> n 0) (String.concat s (rep s (- n 1))) ""))
+    (def (main (: n Int64))
+      (let ((s (rep "aé🦀" n)))
+        (+ (* 1000 (String.scalar-len s))
+        (+ (* 100 (String.byte-len (Option.expect (String.slice s 2 3) "")))
+           (if (= (String.concat (Option.expect (String.slice s 0 2) "")
+                                 (Option.expect (String.slice s 2 (String.scalar-len s)) "")) s) 1 0)))))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 3401 Int64))
+  (live-objects known-leak 4))
