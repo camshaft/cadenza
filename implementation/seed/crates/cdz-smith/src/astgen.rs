@@ -8,9 +8,11 @@
 //! the strict decode-gate mostly rejects. Bolero's [`Driver`] does the coercion (bounded ints, variant
 //! choices, depth), so every input maps to a well-formed, type-correct program the compiler accepts.
 //!
-//! This v0 grammar is deliberately small and TOTAL — `(do (def (main) <expr>) (export main))` where
-//! `<expr>` is an `Int64` literal or a binary arithmetic tree — so every generated program compiles
-//! (the property target then asserts the compiler never PANICS or emits invalid wasm on them). Later
+//! This v0 grammar is deliberately small — `(do (def (main) <expr>) (export main))` where `<expr>` is
+//! an `Int64` literal, a binary arithmetic tree, or a conditional (`(if (<rel> …) … …)`) — kept
+//! type-correct Int64 throughout so a generated program is cleanly HANDLED (it compiles, or cleanly
+//! declines e.g. on a const-folded overflow), and the property target asserts the compiler never
+//! PANICS or emits invalid wasm on them. Later
 //! increments widen the grammar (let/if/functions/…, and direct binary-AST emission) behind the same
 //! `ValueGenerator` seam; the semantics-corpus ASTs inform which constructs to add, but the DRIVING
 //! mechanism stays "coerce entropy → valid program", never a seed corpus.
@@ -29,6 +31,9 @@ const MAX_DEPTH: usize = 4;
 /// Int64-typed binary operators — all total at COMPILE time (runtime overflow wraps/traps, which is a
 /// runnable outcome, not a compile error), so the generated program always type-checks + compiles.
 const OPS: [&str; 3] = ["+", "-", "*"];
+
+/// Int64 → Int64 → Bool relational operators, for the condition of an `if` (both branches are Int64).
+const RELS: [&str; 4] = ["<=", "<", ">=", ">"];
 
 /// A bolero [`ValueGenerator`] that coerces the driver's entropy into a valid `(do (def (main) …)
 /// (export main))` program. Wire it with `check!().with_generator(ProgramGen)`.
@@ -52,24 +57,48 @@ impl ValueGenerator for ProgramGen {
 /// integer literal; otherwise a binary arithmetic node over two sub-expressions. Every driver read falls
 /// back to a default on exhaustion, so this always produces a well-formed sub-expression.
 fn gen_expr<D: Driver>(driver: &mut D, depth: usize, out: &mut String) {
-    // `gen_variant(2, 0)` biases toward the base case (0) — and at depth 0 we force it — so generation
-    // always terminates within the depth budget. Exhaustion → base case (0).
-    let recurse = depth > 0 && driver.gen_variant(2, 0).unwrap_or(0) == 1;
-    if recurse {
-        let op = OPS[driver.gen_variant(OPS.len(), 0).unwrap_or(0)];
-        out.push('(');
-        out.push_str(op);
-        out.push(' ');
-        gen_expr(driver, depth - 1, out);
-        out.push(' ');
-        gen_expr(driver, depth - 1, out);
-        out.push(')');
+    // At `depth == 0` force the base literal (0); otherwise `gen_variant(3, 0)` biases toward it — so
+    // generation always terminates within the depth budget. Exhaustion → base case (0).
+    let variant = if depth == 0 {
+        0
     } else {
-        // A bounded Int64 literal — well within range, so the program always type-checks as Int64.
-        let n = driver
-            .gen_i64(Bound::Included(&-1_000_000), Bound::Included(&1_000_000))
-            .unwrap_or(0);
-        write!(out, "{n}").ok();
+        driver.gen_variant(3, 0).unwrap_or(0)
+    };
+    match variant {
+        // Binary arithmetic `(op <e> <e>)`.
+        1 => {
+            let op = OPS[driver.gen_variant(OPS.len(), 0).unwrap_or(0)];
+            out.push('(');
+            out.push_str(op);
+            out.push(' ');
+            gen_expr(driver, depth - 1, out);
+            out.push(' ');
+            gen_expr(driver, depth - 1, out);
+            out.push(')');
+        }
+        // Conditional `(if (<rel> <e> <e>) <e> <e>)` — the condition is Int64→Int64→Bool, both branches
+        // Int64, so the whole `if` is Int64 and type-checks.
+        2 => {
+            let rel = RELS[driver.gen_variant(RELS.len(), 0).unwrap_or(0)];
+            out.push_str("(if (");
+            out.push_str(rel);
+            out.push(' ');
+            gen_expr(driver, depth - 1, out);
+            out.push(' ');
+            gen_expr(driver, depth - 1, out);
+            out.push_str(") ");
+            gen_expr(driver, depth - 1, out);
+            out.push(' ');
+            gen_expr(driver, depth - 1, out);
+            out.push(')');
+        }
+        // Base case: a bounded Int64 literal — well within range, so it always type-checks as Int64.
+        _ => {
+            let n = driver
+                .gen_i64(Bound::Included(&-1_000_000), Bound::Included(&1_000_000))
+                .unwrap_or(0);
+            write!(out, "{n}").ok();
+        }
     }
 }
 
@@ -145,6 +174,36 @@ mod tests {
             compile_catching(&program.source),
             Verdict::Compiled { .. }
         ));
+    }
+
+    /// Sweeping varied entropy: the `if` arm is REACHABLE, and every coerced program (arith or `if`) is
+    /// cleanly handled (never a crash / invalid wasm / parse error). Guards that the widened grammar
+    /// stays in-bounds.
+    #[test]
+    fn if_arm_is_reachable_and_every_coerced_program_is_cleanly_handled() {
+        let mut saw_if = false;
+        for seed in 0u64..200 {
+            // A varied, well-mixed byte string per seed (SplitMix-ish), so the driver visits all arms.
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let program = gen_from(&bytes);
+            saw_if |= program.source.contains("(if (");
+            let verdict = compile_catching(&program.source);
+            assert!(
+                matches!(verdict, Verdict::Compiled { .. } | Verdict::Declined { .. }),
+                "coerced program must be cleanly handled, got {verdict:?} for: {}",
+                program.source
+            );
+        }
+        assert!(
+            saw_if,
+            "the if arm should be reachable across 200 varied entropy inputs"
+        );
     }
 
     /// A recursive-entropy input coerces into a NESTED arithmetic program (exercises the recursive arm),
