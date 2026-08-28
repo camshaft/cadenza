@@ -36,7 +36,10 @@ use cadenza_syntax::cli as syntax_cli;
 use rcdzc::cli as compiler_cli;
 
 // The LSP server (`cdz lsp`) — its own module so `main.rs` gains only the `Cmd::Lsp` arm + dispatch,
-// keeping the server implementation (owned by the v-lsp vertical) out of the shared command file.
+// keeping the server implementation (owned by the v-lsp vertical) out of the shared command file. Behind
+// the default-on `lsp` feature (sole user of lsp-server/lsp-types) so a `--no-default-features` seedCompiler
+// build sheds them.
+#[cfg(feature = "lsp")]
 mod lsp;
 
 // The structural fix-application engine, shared by `cdz fix` / `cdz check --json` / `cdz lsp` codeAction.
@@ -314,6 +317,7 @@ enum Cmd {
     /// same `Project.cdz` as `cdz build`/`test` (searching upward when given no argument) and watches its
     /// declared source set + the manifest. Rapid saves are DEBOUNCED (coalesced) and an in-flight run is
     /// superseded by the next change, so a burst of edits triggers ONE re-run. Ctrl-C exits.
+    #[cfg(feature = "watch")]
     Watch(WatchArgs),
 
     // ── semantic queries — the in-process win (both libraries + spans) ──────────────────────────
@@ -407,6 +411,7 @@ enum Cmd {
     /// each open document in memory and republishes its diagnostics on every edit ("diagnostics as you
     /// type"), reusing the SAME compiler queries the one-shot subcommands drive. No arguments — it
     /// communicates only over stdin/stdout.
+    #[cfg(feature = "lsp")]
     Lsp,
 
     // ── Cadenza-in-Cadenza (ML) compiler conformance ────────────────────────────────────────────────
@@ -575,6 +580,7 @@ fn main() -> ExitCode {
         Cmd::Smith(a) => run_smith(&a),
         Cmd::Cad(a) => run_cad(&a),
         Cmd::Test(a) => run_test(&a),
+        #[cfg(feature = "watch")]
         Cmd::Watch(a) => run_watch(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
         Cmd::Type(a) => run_type(&a),
@@ -593,6 +599,7 @@ fn main() -> ExitCode {
         Cmd::Instantiations(a) => run_instantiations(&a),
         Cmd::FuncLayout(a) => run_func_layout(&a),
         Cmd::ParamManifest(a) => run_param_manifest(&a),
+        #[cfg(feature = "lsp")]
         Cmd::Lsp => run_lsp(),
         Cmd::RunMl(a) => run_run_ml(&a),
         Cmd::RunRust(a) => run_run_rust(&a),
@@ -604,6 +611,7 @@ fn main() -> ExitCode {
 /// `cdz lsp` — run the stdio Language Server to completion. Returns FAILURE only on a transport-level
 /// error (a broken stream); a clean client shutdown is SUCCESS. The server itself never fails on a bad
 /// buffer — a query is total (an un-analyzable document yields empty diagnostics, never a crash).
+#[cfg(feature = "lsp")]
 fn run_lsp() -> ExitCode {
     match lsp::run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -5539,6 +5547,7 @@ fn run_test_file(
 /// A POSITIVE filter (source extensions + `Project.cdz`) is what keeps `watch` from self-triggering: a
 /// `watch build`/`watch test` writes `.wasm`/`.rs`/`.dwarf`/`link-map.txt`/`.cdz-run-*` artifacts INTO the
 /// watched dir, and an editor churns swap/temp files — none of those are source, so none re-fire the run.
+#[cfg(feature = "watch")]
 fn is_watch_trigger(path: &std::path::Path) -> bool {
     if path.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME) {
         return true;
@@ -5560,6 +5569,7 @@ fn is_watch_trigger(path: &std::path::Path) -> bool {
 /// edit made mid-run is NOT reflected in the run that just finished, so it triggers one more re-run
 /// rather than being dropped until the next event. Ctrl-C exits. The re-run itself is the ordinary
 /// in-process `run_check`/`run_test`/`run_build`/`run_project`.
+#[cfg(feature = "watch")]
 fn run_watch(args: &WatchArgs) -> ExitCode {
     use notify::{RecursiveMode, Watcher};
     use std::sync::mpsc;
@@ -7171,6 +7181,7 @@ struct TestArgs {
 
 /// Which command `cdz watch` re-runs on each change. Kept to the project-scoped commands that read the
 /// same `Project.cdz` (so the watched file set and the re-run target agree).
+#[cfg(feature = "watch")]
 #[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq)]
 enum WatchCmd {
     /// Re-run `cdz check` (report diagnostics) — the default, the cheapest + most useful "on save" loop.
@@ -7183,6 +7194,7 @@ enum WatchCmd {
     Run,
 }
 
+#[cfg(feature = "watch")]
 #[derive(clap::Args)]
 struct WatchArgs {
     /// The project to watch: a `Project.cdz` or a directory holding one. OMITTED → search up from the
