@@ -594,7 +594,7 @@ the metaprog/corpus lane; the ml-convert route is validated + simplest.
 Prefer the all-nix PATH wrappers (warm shared closure, auto-rebuild from the dirty worktree — no per-worktree
 cold rebuild): `cdz` (compile/run/convert/rewrite — runs the migration codemod current with local source),
 `roundtrip [files]` (the corpus verify: sexpr exact-repro + ml fixed-point — step 4), `fast-gate [crates]`
-(inner-loop touched-crate gate — e.g. `fast-gate rcdzc` for my pinned gate), `gate` (full local battery —
+(inner-loop touched-crate gate — ⚠ BROKEN as of 2026-08-28: its derivation fails shellcheck SC2221/2222; reported to v-fleet-tooling; until fixed use `nix develop -c cargo test -p rcdzc --lib`), `gate` (full local battery —
 step 8). AUTHORITATIVE merge gate stays `cargo xtask fleet gate-local` (adds the lease + failing-sub-check +
 transient-vs-real advisory). Avoid bare `nix develop -c cargo test` (the ~40x-redundant cold build = shared-box load).
 
