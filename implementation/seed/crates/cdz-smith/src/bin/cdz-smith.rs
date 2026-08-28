@@ -84,6 +84,17 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         #[cfg(feature = "differential")]
+        "world-declines" => cmd_world_declines(&args[1..]),
+        #[cfg(not(feature = "differential"))]
+        "world-declines" => {
+            eprintln!(
+                "cdz-smith: the `world-declines` subcommand needs the `differential` feature \
+                 (it shares the decline-capture helpers) — rebuild: \
+                 `cargo run --features differential -- world-declines …`."
+            );
+            ExitCode::from(2)
+        }
+        #[cfg(feature = "differential")]
         "verify-differential" => cmd_verify_differential(&args[1..]),
         #[cfg(not(feature = "differential"))]
         "verify-differential" => {
@@ -123,6 +134,7 @@ fn usage() {
          \x20 cdz-smith verify-differential <FILE.sexp | SEED> [--store DIR] [--cdz PATH] [--oracle PATH]\n\
          \x20 cdz-smith host-declines     [--count N] [--seed S] [--declines-dir DIR]   (WIT/host gap hunt → breaker)\n\
          \x20 cdz-smith module-declines   [--count N] [--seed S] [--declines-dir DIR]   (cross-module WIT-binding gap hunt → breaker)\n\
+         \x20 cdz-smith world-declines    [--count N] [--seed S] [--declines-dir DIR]   (WIT-world ABI per-cell gap hunt → breaker)\n\
          \x20 cdz-smith once             <SEED>\n\
          \x20 cdz-smith gen              <SEED>\n\
          \x20 cdz-smith verify           <FILE.sexp | SEED>\n\
@@ -478,6 +490,90 @@ fn cmd_module_declines(args: &[String]) -> ExitCode {
     };
     eprintln!(
         "[cdz-smith] module-declines done: {compiled} compiled, {declined} declined, {other} other | {distinct} distinct decline signatures"
+    );
+    ExitCode::SUCCESS
+}
+
+/// The WIT-WORLD DECLINE sweep: generate `count` guest+world pairs (`hostgen::generate_world_program` — an
+/// identity guest over an arbitrary WIT interface-member type) and compile each via
+/// [`compile_world_catching`], collecting DECLINES — the per-cell WIT-BINDING gaps (v-inference synth /
+/// v-rust-backend emit matrix). Repro = corpus form `(wit-world <world>)` + `(input <guest>)`. Deduped to
+/// `--declines-dir` for the breaker hand-off. `--count` (default 2000), `--seed`, `--declines-dir`.
+#[cfg(feature = "differential")]
+fn cmd_world_declines(args: &[String]) -> ExitCode {
+    let mut count: u64 = 2000;
+    let mut seed: Option<u64> = None;
+    let mut declines_dir: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
+            "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
+            "--declines-dir" => declines_dir = it.next().map(PathBuf::from),
+            other => {
+                eprintln!("cdz-smith world-declines: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let run_seed = seed.unwrap_or_else(driver::wallclock_seed);
+    eprintln!(
+        "[cdz-smith] world-declines @{} | {count} programs | seed {run_seed}",
+        driver::detect_commit()
+    );
+
+    let mut rng = run_seed;
+    let mut declines: Vec<(String, String)> = Vec::new();
+    let (mut compiled, mut declined, mut other) = (0usize, 0usize, 0usize);
+    for _ in 0..count {
+        let mut bytes = Vec::with_capacity(12);
+        for _ in 0..12 {
+            rng = rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = rng;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            bytes.push(((z ^ (z >> 31)) >> 24) as u8);
+        }
+        let (guest, iface, world) = cdz_smith::hostgen::generate_world_program(&bytes);
+        match cdz_smith::oracle::compile_world_catching(&guest, &iface, &world) {
+            Verdict::Compiled { .. } => compiled += 1,
+            Verdict::Declined { code, message } => {
+                declined += 1;
+                let reason = match code {
+                    Some(c) => format!("{c}: {message}"),
+                    None => message,
+                };
+                let repro = format!("(wit-world {world})\n(input {guest})");
+                declines.push((repro, reason));
+            }
+            other_v => {
+                other += 1;
+                eprintln!("[cdz-smith] world-declines: non-decline outcome {other_v:?}");
+            }
+        }
+    }
+
+    let distinct = if let Some(dir) = &declines_dir {
+        match write_declines(dir, &declines) {
+            Ok(n) => {
+                eprintln!(
+                    "[cdz-smith] {declined} declines ({n} distinct) → {} (hand off to breaker)",
+                    dir.display()
+                );
+                n
+            }
+            Err(e) => {
+                eprintln!("cdz-smith world-declines: cannot write declines dir: {e}");
+                0
+            }
+        }
+    } else {
+        0
+    };
+    eprintln!(
+        "[cdz-smith] world-declines done: {compiled} compiled, {declined} declined, {other} other | {distinct} distinct decline signatures"
     );
     ExitCode::SUCCESS
 }
