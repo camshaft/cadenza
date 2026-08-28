@@ -3909,6 +3909,35 @@
   (call   main (: 200 UInt8) (: 3 UInt8)) (output (: 200 UInt8))
   (call   main (: 100 UInt8) (: 200 UInt8)) (output (: 150 UInt8)))
 
+(case "a wide unsigned constant comparison folds by magnitude, not the i64 bit pattern"
+  (doc    "A CONSTANT unsigned comparison whose operand exceeds i64 range folds by the TRUE numeric value at
+           128-bit precision — `(< (: 0 UInt64) UInt64.max)` is TRUE, NOT the `false` a naive i64-bit-pattern
+           compare (reading UInt64.max = 2^64-1 as -1) would give (§Unsigned Comparison Orders By Magnitude).
+           Weighted so one result pins all four: < holds (true), > holds, <= is false, self-= holds → the
+           nested if returns 1. Relocated from rcdzc a_wide_unsigned_constant_comparison_folds_by_magnitude.")
+  (input  (do
+            (def (main)
+              (if (< (: 0 UInt64) (. UInt64 max))
+                (if (> (. UInt64 max) (: 0 UInt64))
+                  (if (<= (. UInt64 max) (: 0 UInt64)) 0
+                    (if (= (. UInt64 max) (. UInt64 max)) 1 2))
+                  3)
+                4))
+            (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
+(case "a wide UInt64 constant add overflows Int64 but fits UInt64 and folds"
+  (doc    "A CONSTANT UInt64 arithmetic result that exceeds Int64 but FITS UInt64 folds to that value — it
+           must NOT be rejected CDZ0304. `(+ (: 9223372036854775807 UInt64) (: 2 UInt64))` = 2^63+1
+           (9223372036854775809), a valid UInt64 well below 2^64-1; both operands fit i64 so the exact-value
+           wide-fold path was formerly skipped and checked_add trapped on the i64-overflowing RESULT. Chained
+           with a subtraction landing back in i64 range: (2^63+1) - 9 = 9223372036854775800. Relocated from
+           rcdzc a_wide_unsigned_constant_add_that_overflows_i64_but_fits_u64_folds.")
+  (input  (do (def (main) (- (+ (: 9223372036854775807 UInt64) (: 2 UInt64)) (: 9 UInt64))) (export main)))
+  (call   main)
+  (output (: 9223372036854775800 UInt64)))
+
 (case "widening a runtime signed narrow integer to Int64 sign-extends (total, emits)"
   (doc    "`(Int64.of x)` with `x` a runtime `Int8` widens totally by SIGN-extending — -1 stays -1, not a
            large positive. Every Int8 (-128..127) fits Int64, so no trap; contrasts the unsigned case's
