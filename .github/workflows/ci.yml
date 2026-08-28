@@ -1,25 +1,30 @@
-# CI — runs on every push and pull request against the active branches.
+# CI — ADVISORY HOURLY run on main (NOT a per-PR / per-merge gate).
+#
+# Operator directive (2026-08-28): CI no longer runs on `pull_request` or `push`-to-main. Under heavy
+# fleet activity the per-event fan-out burned the GitHub Actions budget and slowed time-to-merge, and
+# the operator opted NOT to raise the spend cap. Land-truth is now gate-local: agents test locally
+# (`cargo xtask dev-gate` / the nix `checks`) and open + self-merge their own PRs — the paused-pr-sync
+# policy. GHA becomes an HOURLY ADVISORY signal on main that a human eyeballs green; it gates nothing.
+# `workflow_dispatch` stays for an on-demand full run. (nightly.yml, cache-warm.yml, pages.yml keep
+# their own schedules; release.yml still fires on a `v*` tag.)
 #
 # Thin entrypoint: delegates the whole parallel check fan-out to the reusable `checks.yml`. Kept
 # separate from checks.yml so release/nightly can reuse the checks without re-declaring triggers.
 name: ci
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  schedule:
+    # Hourly on an off-minute (:13) so it doesn't collide with the :00/:07/:37/:30 crons of the other
+    # workflows (cache-warm */30, pages 7,37, nightly 07:00). Cron reads only the default branch's copy.
+    - cron: "13 * * * *"
+  workflow_dispatch: {}
 
-# Cancel superseded PR runs (a new push to a PR obsoletes the in-flight gate) — but NEVER cancel a
-# `main` run. Main runs are what SAVE the shared /nix/store cache (cache-nix-action saves only on the
-# default branch); if a rapid series of main pushes cancels each in-flight main run before it finishes,
-# the cache never warms and every candidate keeps cold-rebuilding the store (~31min/job, the ~1hr/PR
-# regression). So gate cancel-in-progress on the PR event: PR runs cancel-supersede (cheap + desirable),
-# main runs always run to completion so the cache save lands. (The per-ref group still coalesces, so at
-# most one main run is queued behind the running one — they serialize, not pile up.)
+# One advisory run at a time per ref; NEVER cancel in progress — a run completing is what SAVES the
+# shared /nix/store cache (cache-nix-action saves only on the default branch), so a queued hourly run
+# serializes behind the running one rather than killing it. No `pull_request` event exists anymore.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
