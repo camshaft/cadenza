@@ -1164,16 +1164,19 @@
           root = ./.;
           fileset = pkgs.lib.fileset.unions [
             ./implementation/seed/crates/cdz-runtime
-            # cdz-runtime `#[path]`-includes the cadenza-ast codec-core (ast/leb128/codec) from the sibling
-            # rcdzc crate — the shared canonical serializer the `ast-encode`/`ast-decode` heap ops reuse so
-            # the runtime bytes are byte-identical to the compile-time `Ast.encode` fold (copy-don't-depend
-            # via shared SOURCE, NOT a crate dep — the #459 cross-crate-LTO/frozen-hash lesson). Those three
-            # files ARE part of the runtime's source, so they must be staged into this tightly-scoped build
-            # sandbox or the relative `../../rcdzc/src/*.rs` include fails "No such file or directory". A
-            # change to any of the three correctly rotates the runtime component (its bytes depend on them).
-            ./implementation/seed/crates/rcdzc/src/ast.rs
-            ./implementation/seed/crates/rcdzc/src/codec.rs
-            ./implementation/seed/crates/rcdzc/src/leb128.rs
+            # cdz-runtime `#[path]`-includes the codec-core (ast/leb128/codec) from cadenza-ast — the shared
+            # canonical serializer the `ast-encode`/`ast-decode` heap ops reuse so the runtime bytes are
+            # byte-identical to the compile-time `Ast.encode` fold (copy-don't-depend via shared SOURCE, NOT a
+            # crate dep — the #459 cross-crate-LTO/frozen-hash lesson). These 3 files USED to live in rcdzc/src
+            # but #5158 (ast-consolidation, f12ecabf5a) DELETED rcdzc's copies + repointed cdz-runtime's
+            # `#[path]` at `../../cadenza-ast/src/*.rs` (byte-identical move); the fileset must follow or the
+            # relative include fails "No such file or directory" (fleet-wide nix-eval break, v-guide-infra
+            # flag). Only these 3 (the no_std core) are needed — `canon`/`fxhash` are `#[cfg(feature="std")]`,
+            # compiled OUT of the runtime's no_std wasm build, so cadenza-ast/src's canon.rs/fxhash.rs are NOT
+            # staged. A change to any of the three correctly rotates the runtime component (its bytes depend).
+            ./implementation/seed/crates/cadenza-ast/src/ast.rs
+            ./implementation/seed/crates/cadenza-ast/src/codec.rs
+            ./implementation/seed/crates/cadenza-ast/src/leb128.rs
             # The runtime's world imports `cadenza:nfc/normalize` (FINDING#23), and its Cargo.toml points
             # cargo-component's WIT resolution at the sibling NFC crate's WIT
             # (`[package.metadata.component.target.dependencies] "cadenza:nfc" = { path = "../cdz-nfc/wit" }`).
