@@ -311,6 +311,92 @@ pub fn compile_program(program: &Program) -> Verdict {
     compile_catching(&program.source)
 }
 
+/// Compile a set of MODULE library files linked with an ENTRY program, catching panics — the
+/// MULTI-MODULE analog of [`compile_catching`], for the cross-module / WIT-binding decline surface (where
+/// the per-cell import/export gaps live). Each `(name, source)` in `modules` becomes a `KIND_AST` artifact
+/// named `name` (an importable module); `entry_src` is the `"main"` artifact, which may `(import "name" …)`
+/// from a module. [`rcdzc::compile`] links them and emits the wasm component. The reported [`Verdict`]
+/// mirrors the single-program path — a coded rejection is preferred over an uncoded decline (the safety
+/// ordering `compile_component` uses). WASM-only (no second Rust-backend crash oracle). A source that
+/// fails to PARSE is a generator-quality [`Verdict::ParseError`], not a compiler finding.
+pub fn compile_modules_catching(modules: &[(String, String)], entry_src: &str) -> Verdict {
+    install_panic_hook();
+
+    // Parse + encode each module + the entry into KIND_AST artifacts (the exact bridge the single path
+    // uses). The module's artifact NAME is what an `(import "name" …)` resolves against.
+    let mut artifacts = Vec::with_capacity(modules.len() + 1);
+    for (name, src) in modules {
+        let arenas = match cadenza_syntax::sexpr::read(src) {
+            Ok(a) => a,
+            Err(e) => return Verdict::ParseError(e.0),
+        };
+        artifacts.push(rcdzc::abi::Artifact::new(
+            rcdzc::abi::Artifact::KIND_AST,
+            name,
+            cadenza_syntax::codec::encode(&arenas),
+        ));
+    }
+    let entry = match cadenza_syntax::sexpr::read(entry_src) {
+        Ok(a) => a,
+        Err(e) => return Verdict::ParseError(e.0),
+    };
+    artifacts.push(rcdzc::abi::Artifact::new(
+        rcdzc::abi::Artifact::KIND_AST,
+        "main",
+        cadenza_syntax::codec::encode(&entry),
+    ));
+    // A KIND_ENTRY artifact names which file is the package entry (its bytes are the entry file's name) —
+    // the linker needs it to know where `main` lives and produce a component (see rcdzc link tests).
+    artifacts.push(rcdzc::abi::Artifact::new(
+        rcdzc::link::KIND_ENTRY,
+        "entry",
+        b"main".to_vec(),
+    ));
+
+    // Clear the crash slot so we read THIS run's panic (see `compile_bytes_catching`).
+    *slot().lock().unwrap() = None;
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        rcdzc::host::run_with_compiler_stack(|| rcdzc::compile(&artifacts, &[rcdzc::Target::Wasm]))
+    }));
+
+    let out = match result {
+        Ok(out) => out,
+        Err(_) => return Verdict::Crash(capture_crash("[multi-module]")),
+    };
+    match out.artifact(rcdzc::Target::Wasm.artifact_kind()) {
+        Some(component) => match validate_component(component) {
+            Ok(()) => Verdict::Compiled {
+                component_len: component.len(),
+            },
+            Err(detail) => Verdict::InvalidWasm {
+                detail,
+                component_len: component.len(),
+            },
+        },
+        // No component → a decline. Prefer a CODED error over an uncoded one (the safety ordering).
+        None => {
+            let coded = out
+                .diagnostics
+                .iter()
+                .find(|d| d.severity == rcdzc::Severity::Error && d.code.is_some());
+            let any_err = out
+                .diagnostics
+                .iter()
+                .find(|d| d.severity == rcdzc::Severity::Error);
+            match coded.or(any_err) {
+                Some(d) => Verdict::Declined {
+                    code: d.code.clone(),
+                    message: d.message.clone(),
+                },
+                None => Verdict::Declined {
+                    code: None,
+                    message: "compilation produced no component".into(),
+                },
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +418,34 @@ mod tests {
         match v {
             Verdict::Compiled { .. } => {}
             other => panic!("expected Compiled, got {other:?}"),
+        }
+    }
+
+    /// The MULTI-MODULE path links a module library + an importing entry into one component (mirrors
+    /// corpus 11-modules "an imported name resolves to a sibling file's exported definition" → 42).
+    #[test]
+    fn a_module_import_program_compiles() {
+        let _g = slot_guard();
+        let modules = [(
+            "lib".to_string(),
+            "(do (def (helper) 40) (export helper))".to_string(),
+        )];
+        let entry = "(do (import \"lib\" (helper)) (def (main) (+ (helper) 2)) (export main))";
+        match compile_modules_catching(&modules, entry) {
+            Verdict::Compiled { .. } => {}
+            other => panic!("module import must compile, got {other:?}"),
+        }
+    }
+
+    /// An import with NO matching module cleanly DECLINES (not a crash) — the multi-module path reports a
+    /// decline the same way the single path does, so a module decline campaign is a clean gap hunt.
+    #[test]
+    fn an_unresolved_import_declines_not_crashes() {
+        let _g = slot_guard();
+        let entry = "(do (import \"absent\" (helper)) (def (main) (helper)) (export main))";
+        match compile_modules_catching(&[], entry) {
+            Verdict::Declined { .. } => {}
+            other => panic!("unresolved import must decline, got {other:?}"),
         }
     }
 

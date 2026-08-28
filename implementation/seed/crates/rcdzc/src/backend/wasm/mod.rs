@@ -9531,6 +9531,36 @@ fn canon_write_of(
             }
             Some(CanonWrite::Record { fields })
         }
+        // A TUPLE result / payload — the POSITIONAL twin of the Record arm: element `i` of the guest tuple
+        // cell lives at slot `i` (no name permutation), written at the WIT tuple's canonical offset. A tuple
+        // and a record with the same element types share the component canonical layout, so
+        // `record_field_offsets` yields the tuple's offsets too; `CanonWrite::Record` (index-keyed arr-get)
+        // is reused with positional indices — no new writer. This admits a bare tuple export result AND a
+        // variant/record payload that is a tuple (the variant arm recurses here). Element writes recurse, so
+        // a nested tuple/record/list/bytes/scalar element composes.
+        Ty::Tuple(elems) => {
+            let WitType::Tuple(wits) = wty else {
+                return None;
+            };
+            if wits.len() != elems.len() {
+                return None;
+            }
+            let offsets = wit_ctype::record_field_offsets(wits);
+            let mut fields = Vec::new();
+            for (i, ((eg, ew), off)) in elems
+                .iter()
+                .zip(wits.iter())
+                .zip(offsets.iter())
+                .enumerate()
+            {
+                fields.push(CanonField {
+                    index: i as u32,
+                    offset: *off,
+                    write: canon_write_of(db, eg, ew)?,
+                });
+            }
+            Some(CanonWrite::Record { fields })
+        }
         Ty::List(elem_g) => {
             let WitType::List(elem_w) = wty else {
                 return None;
