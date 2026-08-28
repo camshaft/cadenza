@@ -615,6 +615,11 @@ pub fn inject_world_import_effects(ast: &mut Arenas) {
 /// declared and skips, so an interface is never synthesized twice.
 pub fn inject_world_import_effects_from_bytes(ast: &mut Arenas, world_bytes: &[u8]) {
     use crate::backend::common::export_name::kebab_extern_name;
+    // FIRST synthesize any nominal type decl a world `enum` needs but the guest did not mirror — injected as a
+    // top-level `(type …)` so the `guest_sum_names` re-scan INSIDE `synthesize_world_import_effect_decls`
+    // below sees it and the enum-typed op maps (else it would be skipped). No-op when the world has no enum,
+    // or every enum already has a guest mirror.
+    synthesize_missing_enum_type_decls(ast, world_bytes);
     // Effect names the module already declares (kebab-normalized) — hand-written OR already-synthesized.
     let declared: std::collections::HashSet<String> = top_level_items(ast)
         .into_iter()
@@ -877,6 +882,132 @@ fn append_module_member(ast: &mut Arenas, member: StructId) {
         };
         new_items.insert(insert_at, member);
         ast.structure[root.0 as usize] = Struct::List(new_items);
+    }
+}
+
+/// A kebab WIT case identifier (`not-found`) → the Cadenza constructor identifier (`NotFound`) — the inverse
+/// of `kebab_extern_name`'s Pascal→kebab, so a `guest_sum_names` re-scan kebabs the synthesized constructor
+/// back to the SAME case-set the WIT `enum` keys on.
+fn pascal_of_kebab(s: &str) -> String {
+    s.split('-')
+        .filter(|seg| !seg.is_empty())
+        .map(|seg| {
+            let mut c = seg.chars();
+            match c.next() {
+                Some(f) => f.to_ascii_uppercase().to_string() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+/// Collect every `WitType::Enum` case-set (kebab) appearing anywhere in `t` — recursing through
+/// list/tuple/record/option/result element+field types and variant payloads — into `out`, keyed by the kebab
+/// case-set → the original (raw) case-name list. Deduped by set (the same enum shape in >1 position is one
+/// synthesized type). VARIANT case-sets are NOT collected here (payloaded variants are a later sub-slice; a
+/// variant's payloads ARE walked for nested enums).
+fn collect_enum_case_sets(
+    t: &WitType,
+    out: &mut std::collections::BTreeMap<std::collections::BTreeSet<String>, Vec<String>>,
+) {
+    use crate::backend::common::export_name::kebab_extern_name;
+    match t {
+        WitType::Enum(cases) => {
+            let set: std::collections::BTreeSet<String> =
+                cases.iter().map(|c| kebab_extern_name(c)).collect();
+            out.entry(set).or_insert_with(|| cases.clone());
+        }
+        WitType::List(e) | WitType::Option(e) => collect_enum_case_sets(e, out),
+        WitType::Tuple(es) => es.iter().for_each(|e| collect_enum_case_sets(e, out)),
+        WitType::Record(fs) => fs.iter().for_each(|(_, e)| collect_enum_case_sets(e, out)),
+        WitType::Result { ok, err } => {
+            if let Some(o) = ok {
+                collect_enum_case_sets(o, out);
+            }
+            if let Some(e) = err {
+                collect_enum_case_sets(e, out);
+            }
+        }
+        WitType::Variant(cases) => {
+            for (_, p) in cases {
+                if let Some(pt) = p {
+                    collect_enum_case_sets(pt, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// WIT ENUM SELF-DECLARATION, sub-slice 1 (operator ruling 2026-08-28 — full WIT type algebra: an IMPOSED
+/// world's anonymous `enum` with NO guest mirror sum gets a SYNTHESIZED nominal type, with an INTERNAL name
+/// and NAMEABLE case constructors, so the guest performs the import with zero hand-decl). Scans the world's
+/// IMPORT op param/result types for `enum` case-sets not already covered by a guest `(type …)` decl
+/// (`guest_sum_names`) and injects a `(type <SynthName> <Ctor>…)` per missing set. Injected BEFORE
+/// [`synthesize_world_import_effect_decls`], so its internal `guest_sum_names` re-scan sees the synthesized
+/// decl and the enum-typed op MAPS instead of being SKIPPED (`wit_type_to_type_expr_with_sums`'s enum arm now
+/// resolves the case-set to the synthesized type's bare name). The type name is INTERNAL (`Wit<Ctors>`,
+/// disambiguated against existing top-level types); per the ruling the guest references the nameable case
+/// constructors, not this name. Payloaded `variant` + `flags` are later sub-slices (their payloads are still
+/// walked for nested enums).
+fn synthesize_missing_enum_type_decls(ast: &mut Arenas, world_bytes: &[u8]) {
+    use crate::ast::Leaf;
+    use crate::backend::common::export_name::kebab_extern_name;
+    use crate::prelude::{push_atom, push_list};
+    let Some(world_arena) = crate::codec::decode(world_bytes) else {
+        return;
+    };
+    let Some(world) = parse_target_world(&world_arena, world_arena.root) else {
+        return;
+    };
+    // Enum case-sets appearing in any IMPORT op param/result (deduped by kebab set → raw case names).
+    let mut enums: std::collections::BTreeMap<std::collections::BTreeSet<String>, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for iface in &world.imports {
+        for member in &iface.members {
+            for (_pname, pty) in &member.func.params {
+                collect_enum_case_sets(pty, &mut enums);
+            }
+            collect_enum_case_sets(&member.func.result, &mut enums);
+        }
+    }
+    if enums.is_empty() {
+        return;
+    }
+    // Case-sets a guest type ALREADY covers → the mirror wins, do not synthesize (avoids the ambiguous
+    // two-types-one-set drop that would then leave the op unmapped).
+    let existing = guest_sum_names(ast);
+    // Existing top-level type NAMES → disambiguate the internal synth name against them.
+    let mut names: std::collections::HashSet<String> = top_level_items(ast)
+        .into_iter()
+        .filter_map(|it| ast.as_form(it, "type").and_then(|t| t.first().copied()))
+        .filter_map(|n| ast.as_name(n).map(|s| s.to_string()))
+        .collect();
+    for (set, cases) in &enums {
+        if existing.contains_key(set) {
+            continue;
+        }
+        let ctors: Vec<String> = cases
+            .iter()
+            .map(|c| pascal_of_kebab(&kebab_extern_name(c)))
+            .collect();
+        let mut tyname = format!("Wit{}", ctors.join(""));
+        let mut n = 2;
+        while names.contains(&tyname) {
+            tyname = format!("Wit{}{}", ctors.join(""), n);
+            n += 1;
+        }
+        names.insert(tyname.clone());
+        // `(type <tyname> <Ctor>…)` — a payloadless (enum) sum: bare-name nullary cases.
+        let mut kids = vec![
+            push_atom(ast, Leaf::Name("type".into())),
+            push_atom(ast, Leaf::Name(tyname.as_str().into())),
+        ];
+        for ct in &ctors {
+            kids.push(push_atom(ast, Leaf::Name(ct.as_str().into())));
+        }
+        let decl = push_list(ast, kids);
+        append_module_member(ast, decl);
     }
 }
 
@@ -2199,6 +2330,72 @@ mod tests {
         assert!(
             decls2.is_empty(),
             "with no mirroring guest sum the enum-typed op is skipped (hand-declared meanwhile)"
+        );
+    }
+
+    #[test]
+    fn an_imposed_world_enum_with_no_guest_mirror_synthesizes_a_nominal_and_maps_the_op() {
+        // WIT ENUM SELF-DECLARATION, sub-slice 1 (operator ruling 2026-08-28, full WIT algebra): an IMPOSED
+        // world declares an anonymous enum { active, closed } the guest does NOT mirror. Where the mirror test
+        // above SKIPS such an op, inject_world_import_effects_from_bytes must now SYNTHESIZE a nominal
+        // (type Wit… Active Closed) + inject it FIRST, so the enum-typed op MAPS (its effect is synthesized).
+        // Per the ruling: internal synth type name (Wit-prefixed), nameable case constructors (Active/Closed).
+        use crate::db::Db;
+        let mut b = Builder::new();
+        // status: () -> enum { active, closed }
+        let status_enum = {
+            let eh = str_head(&mut b, "enum");
+            let c1 = b.name("active");
+            let c2 = b.name("closed");
+            b.list(vec![eh, c1, c2])
+        };
+        let status = member(&mut b, "status", vec![], status_enum);
+        let ih = b.name("import");
+        let inm = b.name("cadenza:agent-kernel/lifecycle");
+        let lifecycle = b.list(vec![ih, inm, status]);
+        let wh = b.name("world");
+        let wn = b.name("reducer");
+        let world = b.list(vec![wh, wn, lifecycle]);
+        let a = b.finish(world);
+        let bytes = crate::codec::encode(&a);
+
+        // Guest module with NO mirror type.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        inject_world_import_effects_from_bytes(&mut db.ast, &bytes);
+
+        let items = top_level_items(&db.ast);
+        // A nominal type was synthesized (Wit-prefixed name), with the payloadless cases Active + Closed.
+        let synth_ctors = items.iter().find_map(|&it| {
+            let tail = db.ast.as_form(it, "type")?;
+            let (&nn, cases) = tail.split_first()?;
+            if !db.ast.as_name(nn)?.starts_with("Wit") {
+                return None;
+            }
+            Some(
+                cases
+                    .iter()
+                    .filter_map(|&c| db.ast.as_name(c).map(|s| s.to_string()))
+                    .collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(
+            synth_ctors.as_deref(),
+            Some(&["Active".to_string(), "Closed".to_string()][..]),
+            "an imposed-world anonymous enum with no guest mirror synthesizes a (type Wit… Active Closed)"
+        );
+        // And the enum-typed import op now MAPS → the lifecycle effect is injected (was skipped before).
+        let has_effect = items.iter().any(|&it| {
+            db.ast
+                .as_form(it, "effect")
+                .and_then(|t| t.first().copied())
+                .and_then(|n| db.ast.as_name(n))
+                .is_some_and(|n| n == "lifecycle")
+        });
+        assert!(
+            has_effect,
+            "the enum-typed import op maps once its nominal is synthesized → the effect is injected"
         );
     }
 }
