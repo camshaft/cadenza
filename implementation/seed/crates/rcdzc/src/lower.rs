@@ -892,8 +892,36 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                             )),
                         }
                     } else {
-                        trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, index, "tuple projection stays runtime (operand is a runtime tuple)");
-                        Core::Proj { operand, index }
+                        // GUARD: the operand must be a TUPLE (or an as-yet-`Any`/`Var` uninstantiated param,
+                        // checked when a concrete tuple flows in at the call site). A CONCRETE NON-TUPLE here
+                        // is an ill-typed projection that escaped `collect_node`'s CDZ0201 check (infer.rs
+                        // ~13110): `collect_node` does NOT fault-check an UNCALLED inline closure body (it
+                        // relies on the β-reduction call site, which never happens for a closure merely STORED,
+                        // e.g. `(list (fn (v0) …))`). Such a closure's param is body-SOLVED to a scalar (seeded
+                        // into `db.param_types` in `lower_lambda_value`, so `type_of` here reads it), and
+                        // lowering a runtime `Core::Proj` (an `arr-get`) on that scalar slot emitted INVALID
+                        // WASM (fuzzer bucket `(fn (v0) (+ v0 (. v0 0)))` stored uncalled). Decline cleanly —
+                        // the same CDZ0201 the top-level twin `(def (v0) (+ v0 (. v0 0)))` gets. An `Any`/`Var`
+                        // operand (`(fn (t) (. t 0))`, or a closure passed to a generic HOF) still lowers, so
+                        // those are unaffected.
+                        let ot = crate::infer::type_of(db, operand);
+                        if !matches!(
+                            ot,
+                            crate::ty::Ty::Tuple(_) | crate::ty::Ty::Any | crate::ty::Ty::Var(_)
+                        ) && !matches!(resolved_of(db, operand), Resolved::Poison(_))
+                        {
+                            trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, index, "tuple projection on a concrete non-tuple declines (escaped collect_node — uncalled inline closure body)");
+                            Core::Poison(Reject::coded(
+                                Code::Malformed,
+                                format!(
+                                    "tuple projection requires a tuple, found {}",
+                                    ot.render_name(&db.name_ctx())
+                                ),
+                            ))
+                        } else {
+                            trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, index, "tuple projection stays runtime (operand is a runtime tuple)");
+                            Core::Proj { operand, index }
+                        }
                     }
                 }
             }
