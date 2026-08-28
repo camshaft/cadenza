@@ -262,10 +262,14 @@ observed with 8+ concurrent heavy builds serializing, a 1h31m aggregate starved 
 check` acquires the lease itself, but a **raw `nix build .#checks.…` / `.#<heavy-attr>` you run directly
 BYPASSES the cap.** So wrap any heavy raw nix build: `cargo xtask fleet with-lease nix build .#…` (not a
 bare `nix build`). This is fleet-wide courtesy — one escapee crawls every peer's required gate too.
-`with-lease` also caps each wrapped build's rustc fan-out (injects a per-holder `NIX_CONFIG`
-`max-jobs`/`cores` budget ≈ `nproc / (2·(LEASE_MAX+1))`), so N lease holders can't oversubscribe the box
-even though each `nix build .#checks…corpus-<file>` forks many rustc — a bare `nix build` gets neither the
-slot cap NOR this fan-out cap. Tune per host with `CDZ_LEASE_NIX_BUDGET`.
+`with-lease`'s primary protection is that **slot cap** (fewer heavy builds run at once). It also injects a
+per-holder `NIX_CONFIG` (`max-jobs`/`cores` ≈ `nproc / (2·(LEASE_MAX+1))`, tune with `CDZ_LEASE_NIX_BUDGET`)
+that bounds concurrent derivations + `NIX_BUILD_CORES`-respecting builds — but NOT a single heavy **cargo**
+build's rustc fan-out (a 60-crate `cargo build` self-parallelizes to nproc; cargo ignores `NIX_BUILD_CORES`).
+That cargo fan-out is bounded elsewhere — the nix **daemon** (`cores=1`/`max-jobs=64` in `nix.custom.conf`,
+for the make-ish side) and **flake-side `CARGO_BUILD_JOBS`** (for the cargo builds). So `with-lease` is
+still the right courtesy for any heavy raw `nix build` (it takes the slot), but don't assume it alone caps a
+compiler-rebuild's rustc storm.
 
 **Do NOT run the full `cargo xtask gate` (whole corpus × 3 backends) or `cargo xtask check` (whole
 workspace) yourself** — not per iteration, not "once before send." A green `dev-gate` + scoped spot-check
