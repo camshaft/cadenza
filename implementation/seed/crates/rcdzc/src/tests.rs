@@ -611,7 +611,8 @@ trait FromVal: Sized {
 
 impl FromVal for i64 {
     fn from_rendered(s: &str) -> i64 {
-        s.parse().unwrap_or_else(|_| panic!("expected i64 result, got {s:?}"))
+        s.parse()
+            .unwrap_or_else(|_| panic!("expected i64 result, got {s:?}"))
     }
 }
 
@@ -627,19 +628,22 @@ impl FromVal for bool {
 
 impl FromVal for u64 {
     fn from_rendered(s: &str) -> u64 {
-        s.parse().unwrap_or_else(|_| panic!("expected u64 result, got {s:?}"))
+        s.parse()
+            .unwrap_or_else(|_| panic!("expected u64 result, got {s:?}"))
     }
 }
 
 impl FromVal for u32 {
     fn from_rendered(s: &str) -> u32 {
-        s.parse().unwrap_or_else(|_| panic!("expected u32 result, got {s:?}"))
+        s.parse()
+            .unwrap_or_else(|_| panic!("expected u32 result, got {s:?}"))
     }
 }
 
 impl FromVal for i32 {
     fn from_rendered(s: &str) -> i32 {
-        s.parse().unwrap_or_else(|_| panic!("expected i32 result, got {s:?}"))
+        s.parse()
+            .unwrap_or_else(|_| panic!("expected i32 result, got {s:?}"))
     }
 }
 
@@ -647,25 +651,29 @@ impl FromVal for i32 {
 // `u16`, rendered as the same decimal, so a behavior test reads it back as the matching Rust type.
 impl FromVal for i8 {
     fn from_rendered(s: &str) -> i8 {
-        s.parse().unwrap_or_else(|_| panic!("expected i8 result, got {s:?}"))
+        s.parse()
+            .unwrap_or_else(|_| panic!("expected i8 result, got {s:?}"))
     }
 }
 
 impl FromVal for u8 {
     fn from_rendered(s: &str) -> u8 {
-        s.parse().unwrap_or_else(|_| panic!("expected u8 result, got {s:?}"))
+        s.parse()
+            .unwrap_or_else(|_| panic!("expected u8 result, got {s:?}"))
     }
 }
 
 impl FromVal for i16 {
     fn from_rendered(s: &str) -> i16 {
-        s.parse().unwrap_or_else(|_| panic!("expected i16 result, got {s:?}"))
+        s.parse()
+            .unwrap_or_else(|_| panic!("expected i16 result, got {s:?}"))
     }
 }
 
 impl FromVal for u16 {
     fn from_rendered(s: &str) -> u16 {
-        s.parse().unwrap_or_else(|_| panic!("expected u16 result, got {s:?}"))
+        s.parse()
+            .unwrap_or_else(|_| panic!("expected u16 result, got {s:?}"))
     }
 }
 
@@ -674,13 +682,15 @@ impl FromVal for u16 {
 // caller remains; those live in the corpus, compared by canonical value.)
 impl FromVal for f64 {
     fn from_rendered(s: &str) -> f64 {
-        s.parse().unwrap_or_else(|_| panic!("expected f64 result, got {s:?}"))
+        s.parse()
+            .unwrap_or_else(|_| panic!("expected f64 result, got {s:?}"))
     }
 }
 
 impl FromVal for f32 {
     fn from_rendered(s: &str) -> f32 {
-        s.parse().unwrap_or_else(|_| panic!("expected f32 result, got {s:?}"))
+        s.parse()
+            .unwrap_or_else(|_| panic!("expected f32 result, got {s:?}"))
     }
 }
 
@@ -10514,7 +10524,6 @@ mod match_engine {
             "a reference-unit i64-MAX magnitude has no scale to overflow"
         );
     }
-
 
     /// The coded rejection a program produces, or `None` if it compiled. Used to pin a well-formedness
     /// rejection (CDZ code) rather than a silent miscompile.
@@ -27468,8 +27477,9 @@ mod stage1 {
             let bytes = cadenza_syntax::codec::encode(&parsed.arenas);
             let arenas = crate::codec::decode(&bytes)
                 .unwrap_or_else(|| panic!("cadenza-syntax bytes failed rcdzc decode: {program}"));
-            compile_component(&crate::codec::encode(&arenas))
-                .unwrap_or_else(|d| panic!("ML forall program compiles: {} [{:?}]", d.message, d.code))
+            compile_component(&crate::codec::encode(&arenas)).unwrap_or_else(|d| {
+                panic!("ML forall program compiles: {} [{:?}]", d.message, d.code)
+            })
         };
         let validate = |bytes: &[u8]| {
             let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
@@ -41054,12 +41064,19 @@ mod r2_runtime_resource {
         };
         let want_ints: std::collections::BTreeSet<i64> = [1, 3].into_iter().collect();
         // BARE: the tuple value + its constants, with NO `(: value Type)` frame.
-        assert!(names(&bare_a).contains("tuple"), "bare doc is the tuple value");
+        assert!(
+            names(&bare_a).contains("tuple"),
+            "bare doc is the tuple value"
+        );
         assert!(
             !names(&bare_a).contains(":"),
             "the bare doc carries NO `(: value type)` frame"
         );
-        assert_eq!(ints(&bare_a), want_ints, "bare carries the constants 3 and 1");
+        assert_eq!(
+            ints(&bare_a),
+            want_ints,
+            "bare carries the constants 3 and 1"
+        );
         // FRAMED: the SAME value, WITH the `:` frame — the contrast that shows bare = framed minus the frame.
         assert!(
             names(&framed_a).contains(":"),
@@ -41114,7 +41131,8 @@ mod r2_runtime_resource {
         ));
         let d = db.def_by_name("apply").expect("apply");
         let body = db.defs[d].body.expect("body");
-        let cbytes = crate::lower::constant_value_form_bare(&mut db, body).expect("constant result");
+        let cbytes =
+            crate::lower::constant_value_form_bare(&mut db, body).expect("constant result");
         // Run with an ARBITRARY input (the constant apply ignores it) → output IS the pre-encoded bytes.
         let Some(runtime) = super::find_runtime_wasm() else {
             eprintln!("runtime wasm not found; skipping reducer run");
@@ -54491,11 +54509,17 @@ fn a_variant_with_a_lowercase_tuple_alias_payload_reads_as_a_payload_variant_not
     // compile+validate pin, not a corpus case: the lowercase-alias payload does not round-trip through the ML
     // surface (it renders as the comma tuple `(Int64, Int64)`), so the corpus ML round-trip cannot carry it.
     let low = "(module m (type P (Mk (tuple Int64 Int64))) (def (main) (match (P.Mk (tuple 4 5)) ((P.Mk t) 9))) (export main))";
-    validate(&compile_component(&crate::codec::encode(&parse(low))).expect("lowercase-alias payload compiles"));
+    validate(
+        &compile_component(&crate::codec::encode(&parse(low)))
+            .expect("lowercase-alias payload compiles"),
+    );
     // The capital `(Tuple …)` spelling always worked — its head is Capitalized, so the lowercase-name param
     // filter never harvested it. Pin it alongside so the two spellings are proven equivalent.
     let cap = "(module m (type P (Mk (Tuple Int64 Int64))) (def (main) (match (P.Mk (tuple 4 5)) ((P.Mk t) 9))) (export main))";
-    validate(&compile_component(&crate::codec::encode(&parse(cap))).expect("capital-Tuple payload compiles"));
+    validate(
+        &compile_component(&crate::codec::encode(&parse(cap)))
+            .expect("capital-Tuple payload compiles"),
+    );
 }
 
 /// Applying a NULLARY variant to a non-unit payload — `(None 5)` — is rejected CDZ0201 with an ACTIONABLE
