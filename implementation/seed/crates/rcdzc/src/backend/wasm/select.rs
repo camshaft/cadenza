@@ -6017,6 +6017,63 @@ pub fn select_function(
     select_function_of(db, body, params, layout, None)
 }
 
+/// Coalesce a selected function's non-interfering DECLARED local slots in place (see
+/// [`crate::backend::wasm::coalesce`]): reuses dead slots so the declared-local count and every
+/// `local.{get,set,tee}` index shrink to smaller LEB encodings. Applied to EVERY selected body (the
+/// win is universal but is largest on the effects-lowering local-slot BLOWUP — `glb1` emits ~18.7k
+/// mostly single-use continuation temps of which ~7 are ever simultaneously live). It rewrites
+/// `f.code`'s local ops, `f.declared`, AND the DWARF slot references in `f.locals`/`f.scopes` through
+/// one remap, so the emitted code and its debug info stay consistent.
+///
+/// Two guards keep it correct:
+/// - **Loops:** the flat-span interference model under-approximates liveness across a `loop` back-edge
+///   (a value read early in a loop body is live for the whole loop), so we SKIP any function that
+///   contains a `loop`. Sound — skipping only forgoes the optimization. (A loop-aware span extension
+///   is a later slice.)
+/// - **Debug-named locals:** a `let`-binding / match-binder that a DWARF DIE points at is PINNED — it
+///   keeps a distinct slot, so a debugger never reads another variable's value within its scope.
+fn coalesce_func(f: &mut SelectedFunc) {
+    // Loop-soundness guard (see the module doc): the only loop is the self-tail-call→loop transform,
+    // whose carried state is in PARAMETER slots, but we do not assume a declared local is never
+    // loop-carried — skip loopy functions until the analysis is loop-aware.
+    if f.code.iter().any(|op| matches!(op, Lir::Loop(_))) {
+        return;
+    }
+    let nparams = f.params.len() as u32;
+    // DECLARED slots a DWARF DIE references (let-binding locals + match-binder scopes). Param debug
+    // locals are slots < nparams — already fixed, so they need no pin.
+    let mut pinned: HashSet<u32> = HashSet::new();
+    for lv in &f.locals {
+        if lv.slot >= nparams {
+            pinned.insert(lv.slot);
+        }
+    }
+    for sc in &f.scopes {
+        for v in &sc.vars {
+            if v.slot >= nparams {
+                pinned.insert(v.slot);
+            }
+        }
+    }
+    let (remap, new_declared) =
+        crate::backend::wasm::coalesce::coalesce_locals(&f.params, &f.declared, &f.code, &pinned);
+    for op in &mut f.code {
+        match op {
+            Lir::LocalGet(s) | Lir::LocalSet(s) | Lir::LocalTee(s) => *s = remap[*s as usize],
+            _ => {}
+        }
+    }
+    f.declared = new_declared;
+    for lv in &mut f.locals {
+        lv.slot = remap[lv.slot as usize];
+    }
+    for sc in &mut f.scopes {
+        for v in &mut sc.vars {
+            v.slot = remap[v.slot as usize];
+        }
+    }
+}
+
 /// [`select_function`] plus the emitting function's OWN `db.defs` index (`self_def`) when known — used
 /// to compile a SELF-tail-recursive function as a `loop` (its self-tail-calls iterate in place rather
 /// than `return_call`). `None` (the `select_function` entry, and `select_body`) disables the loop
@@ -6491,7 +6548,7 @@ pub fn select_function_of(
     // scalar `let`-bindings discovered during emit (`Emit::binding_local`). Both become `DW_TAG_variable`
     // DIEs, so a debugger can `print` an argument OR a local.
     locals.extend(code.binding_locals);
-    Ok(SelectedFunc {
+    let mut f = SelectedFunc {
         params: param_vts,
         ret,
         code: code.code,
@@ -6504,7 +6561,11 @@ pub fn select_function_of(
         scopes: code.match_scopes,
         // Per-construct source line markers (per-statement granularity), remapped through the peephole.
         stmt_lines: code.lines,
-    })
+    };
+    // Reuse non-interfering declared local slots (shrinks the local-decl count + `local.*` index widths;
+    // largest win on the effects local-slot blowup). Rewrites body + declared + debug slot refs in place.
+    coalesce_func(&mut f);
+    Ok(f)
 }
 
 /// A local peephole pass over the linearized body: fold `local.set N ; local.get N` (store then
