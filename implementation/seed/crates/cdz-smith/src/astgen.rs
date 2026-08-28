@@ -207,8 +207,13 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
     // the join/emit surface: a const condition/scrutinee lets dead-branch-elim ELIDE the mismatched arm
     // (the masking that hid the float-widen class in probes) — a runtime `n` keeps the join actually
     // emitted. Broader emit coverage + the runtime-scrutinee foundation the aggressive mixed-type mode needs.
+    // Weighting: keep PARAM-LESS `main` the MAJORITY (~1/2) so most programs stay VALUE-GRADEABLE (a
+    // param'd `main` can't be run 0-arg by the value differential → not-comparable); the heap-param and
+    // runtime-`n` variants are coverage (~1/4 each) — ample for the ABI/un-masking paths without drowning
+    // the value-differential's comparable yield (an equal-thirds split made 2/3 of programs param'd →
+    // ~80% not-comparable; this restores ~1/2 gradeable).
     let mut scope: Vec<String> = Vec::new();
-    match c.variant(3) {
+    match c.variant(4) {
         0 => {
             let ty = HEAP_PARAM_TYPES[c.variant(HEAP_PARAM_TYPES.len())];
             write!(source, "(def (main (: v0 {ty})) ").ok();
@@ -218,7 +223,7 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
             scope.push("n".to_string()); // `n` is a runtime Int64 in scope → runtime-dependent programs
         }
         _ => {
-            source.push_str("(def (main) ");
+            source.push_str("(def (main) "); // variants 2 & 3 → param-less (1/2, the value-gradeable majority)
         }
     }
     gen_main_body(c, &mut scope, &mut fresh, caps, &mut source);
