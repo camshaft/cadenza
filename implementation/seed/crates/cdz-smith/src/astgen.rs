@@ -302,9 +302,9 @@ fn gen_main_body<C: Choice>(
         // A FLOAT-typed body (`main : Float64`/`Float32`): float value/arith/compare/if-join/let lowering.
         5 => gen_float_body(c, fresh, out),
         // A TYPE-DIVERSE compound: a heterogeneous tuple / a non-Int64 homogeneous list (type-directed).
-        6 => gen_typed_compound(c, out),
-        // A TYPED local function def + call `(do (def (g (: x T)) …) (g <T-leaf>))`: typed param/return/call.
-        7 => gen_typed_fn_call_body(c, out),
+        6 => gen_typed_compound(c, fresh, out),
+        // A TYPED local function def + call `(do (def (g (: x T)) …) (g <T-expr>))`: typed param/return/call.
+        7 => gen_typed_fn_call_body(c, fresh, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -467,6 +467,91 @@ fn gen_scalar_leaf<C: Choice>(c: &mut C, ty: ScalarTy, out: &mut String) {
     }
 }
 
+/// Int64 binary ops kept on the COMPILE path for the type-directed expression generator: no `/`/`%` (a
+/// const zero divisor traps/declines) and no shifts (a large const count → CDZ0304). `*` can still const-
+/// overflow to a clean CDZ0304 decline — cleanly-handled, so it stays.
+const INT_SAFE_OPS: &[&str] = &["+", "-", "*", "&", "|", "^"];
+
+/// Recursive TYPED expression generator — a type-correct expression of `ty`: at `depth == 0` a leaf, else
+/// a type-appropriate binary op, a uniform-arm `if`, or (for Bool) a relation. The CORE of the
+/// type-directed program: it lets compounds / fn args / fn bodies hold typed EXPRESSIONS, not just leaves,
+/// exercising typed-expression emit in those positions. UNIFORM by construction (an `if`'s two arms share
+/// `ty`, a Float32 stays Float32) — no join mixes widths (which would hit v-rb's open match-emit-widen) —
+/// so it stays cleanly handled: it COMPILES, or cleanly DECLINES on a const overflow / non-finite float.
+fn gen_of_ty<C: Choice>(
+    c: &mut C,
+    ty: ScalarTy,
+    depth: usize,
+    fresh: &mut usize,
+    out: &mut String,
+) {
+    if depth == 0 {
+        gen_scalar_leaf(c, ty, out);
+        return;
+    }
+    match ty {
+        ScalarTy::Float64 => gen_float(c, false, depth, fresh, out),
+        ScalarTy::Float32 => gen_float(c, true, depth, fresh, out),
+        ScalarTy::Bool => match c.variant(3) {
+            0 => gen_scalar_leaf(c, ScalarTy::Bool, out),
+            // (<rel> <int> <int>) — a Bool from two Int64 sub-expressions.
+            1 => {
+                let rel = RELS[c.variant(RELS.len())];
+                write!(out, "({rel} ").ok();
+                gen_of_ty(c, ScalarTy::Int64, depth - 1, fresh, out);
+                out.push(' ');
+                gen_of_ty(c, ScalarTy::Int64, depth - 1, fresh, out);
+                out.push(')');
+            }
+            _ => gen_if_of(c, ScalarTy::Bool, depth, fresh, out),
+        },
+        ScalarTy::Int64 => match c.variant(3) {
+            0 => gen_int_literal(c, out),
+            1 => {
+                let op = INT_SAFE_OPS[c.variant(INT_SAFE_OPS.len())];
+                write!(out, "({op} ").ok();
+                gen_of_ty(c, ScalarTy::Int64, depth - 1, fresh, out);
+                out.push(' ');
+                gen_of_ty(c, ScalarTy::Int64, depth - 1, fresh, out);
+                out.push(')');
+            }
+            _ => gen_if_of(c, ScalarTy::Int64, depth, fresh, out),
+        },
+        // Sized: a leaf or a width-safe op over two ascribed 0..=9 operands (no overflow at any width).
+        ScalarTy::Sized(t) => match c.variant(2) {
+            0 => gen_scalar_leaf(c, ScalarTy::Sized(t), out),
+            _ => {
+                let op = SIZED_INT_OPS[c.variant(SIZED_INT_OPS.len())];
+                write!(
+                    out,
+                    "({op} (: {} {t}) (: {} {t}))",
+                    c.int_bounded(0, 9),
+                    c.int_bounded(0, 9)
+                )
+                .ok();
+            }
+        },
+    }
+}
+
+/// `(if <bool-cond> <ty> <ty>)` with a generated Bool condition and two UNIFORM `ty` arms (same type, so
+/// the join never mixes widths). Shared by [`gen_of_ty`]'s Int64/Bool if-arms.
+fn gen_if_of<C: Choice>(
+    c: &mut C,
+    ty: ScalarTy,
+    depth: usize,
+    fresh: &mut usize,
+    out: &mut String,
+) {
+    out.push_str("(if ");
+    gen_of_ty(c, ScalarTy::Bool, depth - 1, fresh, out);
+    out.push(' ');
+    gen_of_ty(c, ty, depth - 1, fresh, out);
+    out.push(' ');
+    gen_of_ty(c, ty, depth - 1, fresh, out);
+    out.push(')');
+}
+
 /// A TYPE-DIVERSE compound body over independently-typed scalar leaves — the type-directed step past the
 /// Int64-element compounds [`gen_compound`] builds. One of: a heterogeneous `(tuple …)` (2–3 mixed-type
 /// leaves); a homogeneous non-Int64 `(list …)`; a heterogeneous `(record (= a …) …)`; an `(Some …)`
@@ -474,30 +559,30 @@ fn gen_scalar_leaf<C: Choice>(c: &mut C, ty: ScalarTy, out: &mut String) {
 /// Reaches heterogeneous-product / non-Int64-list / named-record / Option+Result sum value+codec+emit
 /// lowering (surfaces the tuple/list arms + Int64 compounds never exercise). Leaf payloads keep it
 /// bounded + type-correct.
-fn gen_typed_compound<C: Choice>(c: &mut C, out: &mut String) {
+fn gen_typed_compound<C: Choice>(c: &mut C, fresh: &mut usize, out: &mut String) {
     match c.variant(5) {
-        // Heterogeneous tuple of 2 or 3 independently-typed leaves.
+        // Heterogeneous tuple of 2 or 3 independently-typed elements.
         0 => {
             let n = 2 + c.variant(2);
             out.push_str("(tuple");
             for _ in 0..n {
                 out.push(' ');
                 let ty = pick_scalar_ty(c);
-                gen_scalar_leaf(c, ty, out);
+                gen_of_ty(c, ty, ELEM_DEPTH, fresh, out);
             }
             out.push(')');
         }
-        // Homogeneous list of one chosen scalar type (3 elements).
+        // Homogeneous list of one chosen scalar type (3 elements, all `ty`).
         1 => {
             let ty = pick_scalar_ty(c);
             out.push_str("(list");
             for _ in 0..3 {
                 out.push(' ');
-                gen_scalar_leaf(c, ty, out);
+                gen_of_ty(c, ty, ELEM_DEPTH, fresh, out);
             }
             out.push(')');
         }
-        // Heterogeneous record of 2 or 3 named fields (a/b/c), each an independently-typed leaf.
+        // Heterogeneous record of 2 or 3 named fields (a/b/c), each an independently-typed expression.
         2 => {
             let n = 2 + c.variant(2);
             out.push_str("(record");
@@ -505,19 +590,19 @@ fn gen_typed_compound<C: Choice>(c: &mut C, out: &mut String) {
                 let field = ["a", "b", "c"][i];
                 write!(out, " (= {field} ").ok();
                 let ty = pick_scalar_ty(c);
-                gen_scalar_leaf(c, ty, out);
+                gen_of_ty(c, ty, ELEM_DEPTH, fresh, out);
                 out.push(')');
             }
             out.push(')');
         }
-        // (Some <leaf>) — Option, inferable bare from its payload.
+        // (Some <expr>) — Option, inferable bare from its payload.
         3 => {
             out.push_str("(Some ");
             let ty = pick_scalar_ty(c);
-            gen_scalar_leaf(c, ty, out);
+            gen_of_ty(c, ty, ELEM_DEPTH, fresh, out);
             out.push(')');
         }
-        // (: (Ok/Err <leaf>) (Result T E)) — a sum needs a type annotation to infer both arms.
+        // (: (Ok/Err <expr>) (Result T E)) — a sum needs a type annotation to infer both arms.
         _ => {
             let ok = pick_scalar_ty(c);
             let err = pick_scalar_ty(c);
@@ -527,11 +612,14 @@ fn gen_typed_compound<C: Choice>(c: &mut C, out: &mut String) {
                 ("Err", err)
             };
             write!(out, "(: ({ctor} ").ok();
-            gen_scalar_leaf(c, payload, out);
+            gen_of_ty(c, payload, ELEM_DEPTH, fresh, out);
             write!(out, ") (Result {} {}))", ok.name(), err.name()).ok();
         }
     }
 }
+
+/// Depth of a typed sub-expression in a compound element / fn arg — shallow (structured, but bounds size).
+const ELEM_DEPTH: usize = 2;
 
 /// A body that DEFINES and CALLS a locally-TYPED function: `(do (def (g (: x T)) <body>) (g <T-leaf>))`.
 /// The generator's helpers (`f`/`r`/`t`) are Int64-only; this exercises a typed function PARAM `T`, a
@@ -539,17 +627,17 @@ fn gen_typed_compound<C: Choice>(c: &mut C, out: &mut String) {
 /// `x` (return type `T` — a typed round-trip THROUGH the param) or an independently-typed leaf `U` (the
 /// `T` param ignored, a `U` return — distinct in/out types). Type-correct + bounded (increment 3 of the
 /// type-directed program: typed function args/returns).
-fn gen_typed_fn_call_body<C: Choice>(c: &mut C, out: &mut String) {
+fn gen_typed_fn_call_body<C: Choice>(c: &mut C, fresh: &mut usize, out: &mut String) {
     let pty = pick_scalar_ty(c);
     write!(out, "(do (def (g (: x {})) ", pty.name()).ok();
     if c.variant(2) == 0 {
         out.push('x'); // identity — return type T (the param flows to the return)
     } else {
         let uty = pick_scalar_ty(c);
-        gen_scalar_leaf(c, uty, out); // independent U-typed leaf (param ignored)
+        gen_of_ty(c, uty, ELEM_DEPTH, fresh, out); // independent U-typed expression (param ignored)
     }
     out.push_str(") (g ");
-    gen_scalar_leaf(c, pty, out); // call argument of type T
+    gen_of_ty(c, pty, ELEM_DEPTH, fresh, out); // call argument of type T
     out.push_str("))");
 }
 
@@ -1064,7 +1152,7 @@ mod tests {
                 bytes.push((x >> 24) as u8);
             }
             let mut src = String::from("(do (def (main) ");
-            gen_typed_compound(&mut ByteCursorChoice::new(&bytes), &mut src);
+            gen_typed_compound(&mut ByteCursorChoice::new(&bytes), &mut 0, &mut src);
             src.push_str(") (export main))");
             assert!(
                 matches!(
@@ -1103,7 +1191,7 @@ mod tests {
                 bytes.push((x >> 24) as u8);
             }
             let mut src = String::from("(do (def (main) ");
-            gen_typed_fn_call_body(&mut ByteCursorChoice::new(&bytes), &mut src);
+            gen_typed_fn_call_body(&mut ByteCursorChoice::new(&bytes), &mut 0, &mut src);
             src.push_str(") (export main))");
             assert!(
                 matches!(
