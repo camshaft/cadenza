@@ -134,10 +134,57 @@ pub fn generate_host(entropy: &[u8]) -> Program {
     Program { source }
 }
 
+/// Boundary Int64 literals for the perform ARGUMENT — where arg-marshalling width/wrap bugs cluster.
+const HOST_INT_BOUNDARIES: [i64; 8] = [0, 1, -1, i64::MAX, i64::MIN, 127, -128, 4_294_967_295];
+
+/// Coerce entropy into a GRADEABLE Unit-effect host program — the exact shape the H1a oracle value-grades:
+/// `(do (effect e (op o (-> <arg> Unit))) (def (main) (host (e) (e.o <arg-lit>))) (export main))` where the
+/// perform IS the whole `main` body (so `main : Unit`) and `<arg>` is `Unit` or `Int64` (a heap-free scalar
+/// — `String`/`Bytes` args need the value-heap store the differential runs without). rcdzc runs it to
+/// `unit` and the oracle grades it `unit` → the L2 differential VALUE-checks host-perform lowering (a
+/// non-unit / trapping / crashing lowering would diverge). Int64 args are edge-biased to stress the
+/// perform's arg-marshalling path across width boundaries.
+pub fn generate_host_unit_effect(entropy: &[u8]) -> Program {
+    let mut c = Cursor::new(entropy);
+    // Arg type: Unit (no arg) or Int64 (an edge-biased literal).
+    let (arg_ty, arg_lit) = if c.pick(2) == 0 {
+        ("Unit", String::new())
+    } else {
+        let n = HOST_INT_BOUNDARIES[c.pick(HOST_INT_BOUNDARIES.len())];
+        ("Int64", format!(" {n}"))
+    };
+    let source = format!(
+        "(do (effect e (op o (-> {arg_ty} Unit))) (def (main) (host (e) (e.o{arg_lit}))) (export main))"
+    );
+    Program { source }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::oracle::{Verdict, compile_catching};
+
+    /// Every `generate_host_unit_effect` program COMPILES to a value (the gradeable Unit-effect shape rcdzc
+    /// lowers + runs to `unit`) — so a Lean value-differential campaign over it actually GRADES (not
+    /// declines/skips). Guards that the arg-marshalling variants (Unit + edge Int64) all stay compilable.
+    #[test]
+    fn host_unit_effect_programs_compile() {
+        for seed in 0u64..64 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
+            let mut bytes = Vec::new();
+            for _ in 0..8 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let program = generate_host_unit_effect(&bytes);
+            assert!(
+                matches!(compile_catching(&program.source), Verdict::Compiled { .. }),
+                "gradeable Unit-effect host program must compile: {}",
+                program.source
+            );
+        }
+    }
 
     /// ANY entropy coerces to a well-formed host/effect program the compiler CLEANLY handles — it either
     /// COMPILES (a supported boundary shape) or DECLINES (a gap) — never a crash / invalid wasm / parse

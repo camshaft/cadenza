@@ -108,7 +108,7 @@ fn usage() {
          \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH]\n\
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
-         \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR]\n\
+         \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR] [--host]\n\
          \x20 cdz-smith verify-differential <FILE.sexp | SEED> [--store DIR] [--cdz PATH] [--oracle PATH]\n\
          \x20 cdz-smith host-declines     [--count N] [--seed S] [--declines-dir DIR]   (WIT/host gap hunt → breaker)\n\
          \x20 cdz-smith once             <SEED>\n\
@@ -133,6 +133,7 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
     let mut oracle: Option<PathBuf> = None;
     let mut findings: Option<PathBuf> = None;
     let mut declines_dir: Option<PathBuf> = None;
+    let mut host = false;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -143,6 +144,9 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
             "--oracle" => oracle = it.next().map(PathBuf::from),
             "--findings" => findings = it.next().map(PathBuf::from),
             "--declines-dir" => declines_dir = it.next().map(PathBuf::from),
+            // Generate gradeable UNIT-EFFECT host programs (H1a) instead of the astgen Int64/compound
+            // grammar — VALUE-grades host-perform lowering against the oracle (a non-unit/trap = a finding).
+            "--host" => host = true,
             other => {
                 eprintln!("cdz-smith lean-differential: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -194,7 +198,12 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             bytes.push(((z ^ (z >> 31)) >> 24) as u8);
         }
-        sources.push(cdz_smith::astgen::generate_coerced(&bytes).source);
+        let src = if host {
+            cdz_smith::hostgen::generate_host_unit_effect(&bytes).source
+        } else {
+            cdz_smith::astgen::generate_coerced(&bytes).source
+        };
+        sources.push(src);
     }
 
     eprintln!(
