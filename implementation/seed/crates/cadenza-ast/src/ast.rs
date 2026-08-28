@@ -1910,20 +1910,30 @@ impl Arenas {
         true
     }
 
-    /// The compound-ctor TAG an occurrence denotes as a LIST HEAD, collapsing the shadowable NAME alias
-    /// and the unshadowable STRING primitive to one [`CompoundCtor`] — so head-kind normalization in
-    /// [`node_eq`] can treat `Name("record")` and `Str("record")` as the same head. Only the four
-    /// compound ctors qualify; every other name/string is left to exact leaf comparison.
+    /// The compound-ctor TAG an occurrence denotes as a LIST HEAD, collapsing ALL THREE head spellings of
+    /// a compound ctor to one [`CompoundCtor`]: the native unshadowable ctor-LEAF ([`Leaf::Ctor`], the M2
+    /// primitive), the shadowable NAME alias (`(record …)`), and the legacy unshadowable STRING primitive
+    /// (`("record" …)`). So head-kind normalization in [`node_eq`] treats `#record(…)`, `(record …)`, and
+    /// `("record" …)` as the same head — head-KIND never splits structural identity (consistent with the
+    /// documented [`structurally_eq`] contract). This is what lets a native-head value and a still-legacy
+    /// alias/string-head value (e.g. an un-migrated corpus record vs a `read_ml` native record) compare
+    /// structurally equal across the M2 migration. It does NOT weaken byte-level content-addressing: the
+    /// codec still emits DISTINCT bytes per head kind, so their hashes differ — this normalization is only
+    /// for the lenient structural comparison. Only the five compound ctors qualify; the `=`/`.` marker
+    /// leaves ([`Leaf::FieldPair`]/[`Leaf::Member`]) are NOT ctor heads and keep their own identity (they do
+    /// not collapse with `Name("=")`/`Name(".")`). Every other name/string is left to exact leaf comparison.
     fn ctor_head_key(&self, id: StructId) -> Option<CompoundCtor> {
-        let spelling: &str = match self.get(id) {
+        match self.get(id) {
             Struct::Atom(l) => match self.leaf(*l) {
-                Leaf::Name(n) => n,
-                Leaf::Str(s) => s,
-                _ => return None,
+                // The native ctor-LEAF head IS the tag directly (M2 primitive).
+                Leaf::Ctor(c) => Some(*c),
+                // The shadowable NAME alias + legacy STRING primitive collapse to the tag by spelling.
+                Leaf::Name(n) => CompoundCtor::from_spelling(n),
+                Leaf::Str(s) => CompoundCtor::from_spelling(s),
+                _ => None,
             },
-            _ => return None,
-        };
-        CompoundCtor::from_spelling(spelling)
+            _ => None,
+        }
     }
 }
 
@@ -2624,14 +2634,17 @@ mod tests {
     }
 
     #[test]
-    fn structurally_eq_treats_a_native_ctor_leaf_head_as_its_own_identity() {
-        // A native ctor-LEAF-KIND head (`Leaf::Ctor`) is recognized by leaf identity, so node_eq compares
-        // it by kind (it is not a Name/Str, so `ctor_head_key` returns None and the head falls through to
-        // exact leaf comparison). This is the M2 content-addressing invariant: two same-kind ctor-leaf
-        // trees are equal; different ctor KINDS differ; and a ctor-leaf head does NOT cross-collapse with
-        // the LEGACY string/name head of the same spelling (they are distinct representations — the
-        // migration replaces the legacy heads rather than aliasing them). See
-        // `DESIGN-native-ast-compound-data.md` (node_eq: a ctor-leaf is its own identity).
+    fn structurally_eq_collapses_a_native_ctor_leaf_head_with_the_name_and_string_spellings() {
+        // node_eq NORMALIZES the head KIND for the five compound ctors (`ctor_head_key`): the native
+        // ctor-LEAF head (`Leaf::Ctor`, the M2 primitive), the shadowable NAME alias, and the legacy
+        // STRING primitive of the same spelling ALL collapse to one head. So two same-ctor trees are equal
+        // regardless of which of the three head spellings each uses — head-KIND never splits structural
+        // identity (the documented `structurally_eq` contract), which is what lets a native-head value and
+        // a still-legacy alias/string-head value compare equal across the M2 migration (e.g. an un-migrated
+        // corpus record vs a `read_ml` native record). Different ctor KINDS still differ. This does NOT
+        // weaken byte content-addressing: the codec emits distinct bytes per head kind, so their HASHES
+        // differ — only this lenient structural comparison normalizes. See
+        // `DESIGN-native-ast-compound-data.md` (node_eq: head-kind is normalized for the compound ctors).
         let one = &[Leaf::Int {
             value: IntValue::from_i64(1),
             radix: Radix::Dec,
@@ -2652,19 +2665,16 @@ mod tests {
             !list_a.structurally_eq(&set),
             "List-ctor and Set-ctor heads must differ"
         );
-        // A ctor-leaf head does NOT collapse with the legacy string/name head (no cross-representation
-        // aliasing), in BOTH directions.
+        // A native ctor-leaf head COLLAPSES with the legacy string/name head of the same ctor (head-kind
+        // normalization), in BOTH directions.
         assert!(
-            !list_a.structurally_eq(&str_list),
-            "ctor-leaf head must not collapse with a string head"
+            list_a.structurally_eq(&str_list),
+            "ctor-leaf head collapses with the string-primitive head of the same ctor"
         );
+        assert!(str_list.structurally_eq(&list_a), "collapse is symmetric");
         assert!(
-            !str_list.structurally_eq(&list_a),
-            "no cross-collapse (symmetric)"
-        );
-        assert!(
-            !list_a.structurally_eq(&name_list),
-            "ctor-leaf head must not collapse with a name head"
+            list_a.structurally_eq(&name_list),
+            "ctor-leaf head collapses with the name-alias head of the same ctor"
         );
         // The two field-pair / member marker leaves are likewise their own identities.
         let fp = form(Leaf::FieldPair, one);
