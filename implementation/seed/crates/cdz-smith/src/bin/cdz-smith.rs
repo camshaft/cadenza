@@ -152,8 +152,11 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
     let run_seed = seed.unwrap_or_else(driver::wallclock_seed);
     let commit = driver::detect_commit();
 
-    // Generate `count` TERMINATING programs from varied entropy (generator::generate's grammar is
-    // structurally terminating, so the in-process wasm run cannot hang).
+    // Generate `count` programs from varied entropy via the COERCING generator (astgen): every input
+    // maps to a valid, type-correct Int64/compound program, so ~all trials are COMPARABLE by the oracle
+    // (vs generator.rs's text grammar, which declines ~91% → not-comparable). Terminating by
+    // construction, so the in-process wasm run cannot hang. This is the operator's directed mechanism —
+    // coerce entropy → valid program — driving the differential densely over Lean's comparable domain.
     let mut rng = run_seed;
     let mut sources = Vec::with_capacity(count as usize);
     for _ in 0..count {
@@ -165,7 +168,7 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             bytes.push(((z ^ (z >> 31)) >> 24) as u8);
         }
-        sources.push(cdz_smith::generate(&bytes).source);
+        sources.push(cdz_smith::astgen::generate_coerced(&bytes).source);
     }
 
     eprintln!(
