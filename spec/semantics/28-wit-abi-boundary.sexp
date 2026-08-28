@@ -69,7 +69,7 @@
 ; SHAPE 39 — a list<record{option<s64>, n}> host-op ARG (sink.push): each record element written in place, its
 ; option field via emit_option_to_mem (Some + None across two elements) + invoked e2e.
 
-(case "an option<s64> field in a record result crosses the export boundary on both arms"
+(case "an option<s64> field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
            `{ x: Int64 }` and returns a record `{ d: Option Int64 }`, mapping x=0 to None and any
            other x to Some(x). Asserting BOTH arms exercises the Option discriminant (Some vs None)
@@ -86,7 +86,7 @@
   (output (: (record (= d (None unit))) (record (d (Option Int64)))))
   (live-objects known-leak 3))
 
-(case "a named variant-with-payload field in a record result crosses the export boundary on both arms"
+(case "a named variant-with-payload field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "SHAPE 2 — the general named-VARIANT RESULT lift (a discriminated union, distinct from a bare
            enum: one case carries a payload). The guest returns a record `{ o: Outcome }` where
            `Outcome = Continue | Close(Int64)`, mapping x=0 to Continue (nullary) and any other x to
@@ -113,7 +113,7 @@
   (call f (: 7 Int64))
   (output (: 7 Int64)))
 
-(case "a multi-field record result crosses the export boundary"
+(case "a multi-field record result VALUE round-trips via the run/encode envelope (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "SHAPE 4 — the multi-field RECORD RESULT spill: the guest returns { a, b } from a record
            input, exercising the record result lift (two s64 fields, in order). Migrated from the
            in-crate wasmtime test `a_record_result_guest_compiles_and_runs_via_result_spill` (v-rb feed 5).")
@@ -125,7 +125,7 @@
   (output (: (record (= a 21) (= b 42)) (Record (: a Int64) (: b Int64))))
   (live-objects known-leak 2))
 
-(case "a bare list of scalars in a record result crosses the export boundary"
+(case "a bare list of scalars in a record result VALUE round-trips via the run/encode envelope (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "SHAPE 5 — the bare-LIST RESULT: a record field that is a list<s64>, exercising the list
            result lift (element count + s64 element stride). Migrated from the in-crate wasmtime test
            `a_list_result_guest_compiles_and_runs` (v-rb feed 6).")
@@ -137,7 +137,7 @@
   (output (: (record (= xs (list 5 10))) (record (xs (List Int64)))))
   (live-objects known-leak 4))
 
-(case "a list of records in a record result crosses the export boundary"
+(case "a list of records in a record result VALUE round-trips via the run/encode envelope (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "SHAPE 7 — the list-of-records RESULT (the structural workhorse of every reducer Step's
            `requests: list<request>`): a record field that is a LIST of RECORDS. The guest returns
            `{ items: [ { a, b } ] }` with one element built from the input (a=x, b=x+x). Exercises the
