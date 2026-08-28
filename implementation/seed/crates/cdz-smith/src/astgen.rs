@@ -639,9 +639,20 @@ const COMPOUND_DEPTH: usize = 2;
 /// The generator's helpers (`f`/`r`/`t`) are Int64-only; this exercises a typed function PARAM `T`, a
 /// typed RETURN, and a typed CALL/arg-pass across arbitrary scalar types. The body is either the identity
 /// `x` (return type `T` — a typed round-trip THROUGH the param) or an independently-typed leaf `U` (the
-/// `T` param ignored, a `U` return — distinct in/out types). Type-correct + bounded (increment 3 of the
-/// type-directed program: typed function args/returns).
+/// `T` param ignored, a `U` return — distinct in/out types). Half the time the param is instead a
+/// COMPOUND type (identity over a `(Tuple …)`/`(List …)`/`(Option …)`/`(Record …)`, see
+/// [`gen_compound_ty`]) — a compound value marshalled IN as an arg + OUT as the return, exercising
+/// compound-typed function ABI. Type-correct + bounded (typed function args/returns, scalar + compound).
 fn gen_typed_fn_call_body<C: Choice>(c: &mut C, fresh: &mut usize, out: &mut String) {
+    // 1/2 the time pass a COMPOUND-typed param through the call (compound-value marshalling across a call
+    // frame) — otherwise a scalar param (scalar/independent-U return).
+    if c.variant(2) == 0 {
+        let (ty, val) = gen_compound_ty(c);
+        // Identity over a compound: `(def (g (: x <compound-ty>)) x) (g <compound-val>)` — the compound
+        // flows IN as an arg and OUT as the return, exercising compound-typed function ABI.
+        write!(out, "(do (def (g (: x {ty})) x) (g {val}))").ok();
+        return;
+    }
     let pty = pick_scalar_ty(c);
     write!(out, "(do (def (g (: x {})) ", pty.name()).ok();
     if c.variant(2) == 0 {
@@ -653,6 +664,58 @@ fn gen_typed_fn_call_body<C: Choice>(c: &mut C, fresh: &mut usize, out: &mut Str
     out.push_str(") (g ");
     gen_of_ty(c, pty, ELEM_DEPTH, fresh, out); // call argument of type T
     out.push_str("))");
+}
+
+/// Generate a COMPOUND type + a matching value, as `(type_string, value_string)` — a `(Tuple T U)` /
+/// `(List T)` / `(Option T)` / `(Record (: a T) (: b U))` over scalar-leaf elements. The element types
+/// drive BOTH the type annotation and the value, so they agree by construction. Used for a compound-typed
+/// function param (the compound crosses a call boundary). Scalar LEAVES keep the value simple + inferable.
+fn gen_compound_ty<C: Choice>(c: &mut C) -> (String, String) {
+    let mut ty = String::new();
+    let mut val = String::new();
+    match c.variant(4) {
+        // (Tuple T U) / (tuple <T> <U>)
+        0 => {
+            let (a, b) = (pick_scalar_ty(c), pick_scalar_ty(c));
+            write!(ty, "(Tuple {} {})", a.name(), b.name()).ok();
+            val.push_str("(tuple ");
+            gen_scalar_leaf(c, a, &mut val);
+            val.push(' ');
+            gen_scalar_leaf(c, b, &mut val);
+            val.push(')');
+        }
+        // (List T) / (list <T> <T> <T>)
+        1 => {
+            let a = pick_scalar_ty(c);
+            write!(ty, "(List {})", a.name()).ok();
+            val.push_str("(list ");
+            gen_scalar_leaf(c, a, &mut val);
+            val.push(' ');
+            gen_scalar_leaf(c, a, &mut val);
+            val.push(' ');
+            gen_scalar_leaf(c, a, &mut val);
+            val.push(')');
+        }
+        // (Option T) / (Some <T>)
+        2 => {
+            let a = pick_scalar_ty(c);
+            write!(ty, "(Option {})", a.name()).ok();
+            val.push_str("(Some ");
+            gen_scalar_leaf(c, a, &mut val);
+            val.push(')');
+        }
+        // (Record (: a T) (: b U)) / (record (= a <T>) (= b <U>))
+        _ => {
+            let (a, b) = (pick_scalar_ty(c), pick_scalar_ty(c));
+            write!(ty, "(Record (: a {}) (: b {}))", a.name(), b.name()).ok();
+            val.push_str("(record (= a ");
+            gen_scalar_leaf(c, a, &mut val);
+            val.push_str(") (= b ");
+            gen_scalar_leaf(c, b, &mut val);
+            val.push_str("))");
+        }
+    }
+    (ty, val)
 }
 
 /// Append one coerced `Int64` expression: at `depth == 0` (or when the base variant is picked) an
