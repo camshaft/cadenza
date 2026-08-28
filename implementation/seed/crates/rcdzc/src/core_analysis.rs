@@ -805,7 +805,15 @@ pub(crate) fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
                 width: wy,
             },
         ) => ox == oy && wx == wy && core_eq(db, lx, ly) && core_eq(db, rx, ry),
-        // A pure conversion: same op over an equal operand.
+        // A pure conversion: same op over an equal operand AND the same TARGET TYPE. `Core::Convert`'s `op`
+        // is only the conversion PRIM (e.g. `Prim::Wrap`) — the truncation TARGET width/signedness is NOT in
+        // `op`; the backend reads it off the CONVERT NODE'S OWN solved type at selection (`int_ty_of(id)` →
+        // `Machine`). So `Int32.wrap n` and `UInt8.wrap n` share `op = Prim::Wrap` AND the same operand `n`
+        // and would MERGE on `ox == oy && core_eq(px,py)` alone — the second reusing the first's slot → both
+        // take the first's width (an order-dependent SILENT WRONG VALUE: `(+ (Int64.of (Int32.wrap n)) (Int64.of
+        // (UInt8.wrap n)))` at n=300 gave 600/88 instead of 344). Compare the two nodes' solved TARGET types so
+        // width-different conversions of one operand stay DISTINCT. Over-strict (two nominal wrappers of the
+        // same machine type won't share) is SAFE — it only forgoes a share, never merges a differing width.
         (
             Core::Convert {
                 op: ox,
@@ -815,7 +823,11 @@ pub(crate) fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
                 op: oy,
                 operand: py,
             },
-        ) => ox == oy && core_eq(db, px, py),
+        ) => {
+            ox == oy
+                && crate::infer::type_of(db, a) == crate::infer::type_of(db, b)
+                && core_eq(db, px, py)
+        }
         // A tuple projection: same index off an equal (runtime) operand.
         (
             Core::Proj {

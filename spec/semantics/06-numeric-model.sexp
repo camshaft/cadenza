@@ -473,6 +473,25 @@
   (call   main (: 0 Int64)) (output (: 0 Int64))
   (call   main (: 5 Int64)) (output (: 0 Int64)))
 
+(case "CSE keeps two width-DIFFERENT .wrap conversions of one operand DISTINCT (target width is off the node, not the Prim)"
+  (doc    "A miscompile fence. `Core::Convert`'s `op` is only the conversion `Prim::Wrap` — the truncation
+           TARGET width/signedness is read off the CONVERT NODE's OWN solved type at selection, NOT stored in
+           `op`. So `(Int32.wrap n)` and `(UInt8.wrap n)` share `op=Wrap` AND the operand `n`; a CSE keying only
+           `(op, operand)` MERGES them → the second reuses the first's slot → both take the FIRST's width, an
+           ORDER-DEPENDENT silent wrong value (this expression gave 600 — both un-masked as Int32 — before the
+           fix). `core_eq`'s Convert arm now also compares the nodes' solved TARGET types, so width-different
+           conversions stay distinct. At n=300: `Int32.wrap`=300 (fits), `UInt8.wrap`=300 mod 256=44 → 344.
+           Runtime `n` (a const operand would fold in `lower`, hiding the CSE).")
+  (input  (do (def (main (: n Int64)) (+ (Int64.of (Int32.wrap n)) (Int64.of (UInt8.wrap n)))) (export main)))
+  (call   main (: 300 Int64)) (output (: 344 Int64)))
+
+(case "CSE Convert-distinctness holds under the reversed arm order (the swap gave the OTHER wrong value)"
+  (doc    "The order-swap twin of the width-different `.wrap` CSE fence: with `UInt8.wrap` FIRST, the buggy
+           merge took the UInt8 mask for BOTH operands → 44+44=88 before the fix; correct is still 344. Pins
+           that the fix (comparing the target type, not arm order) is order-INDEPENDENT.")
+  (input  (do (def (main (: n Int64)) (+ (Int64.of (UInt8.wrap n)) (Int64.of (Int32.wrap n)))) (export main)))
+  (call   main (: 300 Int64)) (output (: 344 Int64)))
+
 (case "an ABSORBING (* v 0) fold over a TRAPPING lazy binding preserves the trap (does not fold to 0)"
   (doc    "The ABSORBING-fold sibling of the self-identity compare/subtract cases above (#4870): `(* v0 0)`→0
            discards v0 via the zero absorbing element — a DIFFERENT discard-fold class (v0 appears ONCE, not
