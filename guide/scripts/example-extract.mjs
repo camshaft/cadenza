@@ -6,6 +6,20 @@
 // (no wasm, no fs) — cookTemplate ⊂ extractFilesProp ⊂ extractExamples; unit-pinned by check-examples'
 // cookTemplate + multi-file self-checks.
 
+// The blocklist entry an example matches, or null. An entry matches when the chapter file agrees AND
+// EVERY substring in `match` (a string or an array — all must be present) appears in the snippet. Shared
+// so the SERIAL check (known-blocked reporting) and the SHARDED nix matrix (skip-set) block the SAME
+// examples by construction — a blocklist edit can't drift the two.
+export function blockedBy(ex, blocklist) {
+  return (
+    (blocklist ?? []).find((b) => {
+      if (ex.file !== b.file) return false;
+      const needles = Array.isArray(b.match) ? b.match : [b.match];
+      return needles.every((n) => ex.snippet.includes(n));
+    }) ?? null
+  );
+}
+
 // Interpret the escapes in a captured template-literal body EXACTLY as JS would when evaluating the `…`
 // at runtime — that cooked value is what the live <Runnable> `source` prop receives, so the gate/shred
 // must compile the SAME string the browser does (e.g. authored `#\\a` cooks to the `#\a` char literal).

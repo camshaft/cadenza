@@ -35,7 +35,7 @@
 import { readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { extractExamples } from "./example-extract.mjs";
+import { extractExamples, blockedBy } from "./example-extract.mjs";
 
 // ---- args ----
 const argv = process.argv.slice(2);
@@ -165,11 +165,18 @@ function shredOne(ex) {
   return { files, meta };
 }
 
+// The SAME known-blocked list the serial check consults — exported into the manifest as `blockedDirs` so
+// the sharded nix matrix filters the SAME examples the serial check reports "known-blocked", by
+// construction (v-nix's ask: no hardcoded skips; the matrix's pass-set == the serial check's, self-healing
+// when a block is added/removed). Currently empty; a `blocked` entry here becomes a matrix skip automatically.
+const blocklist = JSON.parse(readFileSync(join(guideRoot, "scripts/example-blocklist.json"), "utf8")).blocked ?? [];
+
 // ---- emit ----
 const slugify = (s) => s.replace(/^.*\//, "").replace(/\.[a-z]+$/i, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 const manifest = [];
+const blockedDirs = [];
 let idx = 0;
 let emitted = 0;
 let deferred = 0;
@@ -194,6 +201,8 @@ for (const ex of examples) {
     writeFileSync(join(caseDir, "expect-kind"), res.meta.expectKind);
     emitted++;
   }
+  const block = blockedBy(ex, blocklist);
+  if (block) { res.meta.blocked = true; res.meta.blockReason = block.reason ?? null; res.meta.blockOwner = block.owner ?? null; blockedDirs.push(slug); }
   writeFileSync(join(caseDir, "meta.json"), JSON.stringify(res.meta, null, 2) + "\n");
   manifest.push({ dir: slug, ...res.meta });
   if (globalThis.gc) globalThis.gc();
@@ -203,5 +212,5 @@ for (const ex of examples) {
 if (contentFiles.length < 30) { console.error(`shred: expected ≥30 content files, found ${contentFiles.length}`); process.exit(1); }
 if (emitted < 100) { console.error(`shred: expected ≥100 emitted cases, got ${emitted} — extraction likely broke`); process.exit(1); }
 
-writeFileSync(join(outDir, "manifest.json"), JSON.stringify({ count: manifest.length, emitted, deferred, cases: manifest }, null, 2) + "\n");
-console.log(`shred: ${manifest.length} cases across ${contentFiles.length} content files + playground → ${outDir} (${emitted} emitted, ${deferred} deferred[test-mode/notebook])`);
+writeFileSync(join(outDir, "manifest.json"), JSON.stringify({ count: manifest.length, emitted, deferred, blockedDirs, cases: manifest }, null, 2) + "\n");
+console.log(`shred: ${manifest.length} cases across ${contentFiles.length} content files + playground → ${outDir} (${emitted} emitted, ${deferred} deferred[test-mode/notebook], ${blockedDirs.length} blocked)`);

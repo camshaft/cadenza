@@ -31,7 +31,7 @@ const guideRoot = join(here, "..");
 // Example EXTRACTION (cookTemplate / extractFilesProp / extractExamples) is shared with
 // scripts/shred-examples.mjs via ./example-extract.mjs, so the inline gate and the per-example
 // nix-cached shred can NEVER drift in how they parse `<Runnable>`/`<Exercise>` out of a chapter.
-import { cookTemplate, extractFilesProp, extractExamples } from "./example-extract.mjs";
+import { cookTemplate, extractFilesProp, extractExamples, blockedBy } from "./example-extract.mjs";
 
 // ---- the blocklist: examples that DON'T run yet, classified + routed (operator policy 2026-07-15) ----
 // An entry marks a KNOWN failure the guide can't fix on its own (a filed compiler bug, or a content bug
@@ -40,19 +40,7 @@ import { cookTemplate, extractFilesProp, extractExamples } from "./example-extra
 // ships broken. RE-RUN LOOP: each run re-checks every blocked example; when one starts PASSING the
 // harness says so, so the entry is removed and the example ships. See example-blocklist.json for shape.
 const blocklist = JSON.parse(readFileSync(join(here, "example-blocklist.json"), "utf8")).blocked ?? [];
-/// The blocklist entry an example matches, or null. An entry matches when the chapter file agrees AND
-/// EVERY substring in `match` (a string or an array — all must be present) appears in the snippet, so an
-/// entry can be as precise as needed (e.g. `["Qty.value", "Unit.in"]` blocks only the examples that wrap
-/// `Unit.in` in `Qty.value`, not a passing bare `Qty.value` example).
-function blockedBy(ex) {
-  return (
-    blocklist.find((b) => {
-      if (ex.file !== b.file) return false;
-      const needles = Array.isArray(b.match) ? b.match : [b.match];
-      return needles.every((n) => ex.snippet.includes(n));
-    }) ?? null
-  );
-}
+// blockedBy(ex, blocklist) is imported from ./example-extract.mjs (shared with the sharded nix matrix).
 
 // ---- the compiler (browser wasm) + runner (jco), loaded once ----
 const pkgDir = join(guideRoot, "src/wasm/pkg");
@@ -784,7 +772,7 @@ for (const ex of examples) {
   // guard region) so this long-lived process's virtual address space stays bounded instead of climbing into
   // the hundreds of GB. Runs under `--expose-gc` (package.json check:examples); a no-op if the flag is absent.
   if (globalThis.gc) globalThis.gc();
-  const block = blockedBy(ex);
+  const block = blockedBy(ex, blocklist);
   const fail = await checkExample(ex);
   if (block) {
     matchedEntries.add(block);
