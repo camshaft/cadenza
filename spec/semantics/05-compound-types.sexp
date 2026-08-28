@@ -2495,6 +2495,53 @@
   (output (: "ab" String))
   (live-objects known-leak 7))
 
+(case "ksd3 the PATTERN-BINDER form of the ksd1 grandchild consume is CLEAN — bind-early destructure takes the tight path"
+  (doc "ksd1's form-twin: the SAME record-fold grandchild consume, but the field is bound by a nested
+        record PATTERN in the list arm instead of an inline `(. e val)` projection. The bind-early
+        destructure transfers the field at match time, so no loop-param preservation dup is needed:
+        NO UAF and NO residual leak (live = the result string only). Fences the clean form — if
+        pattern-desugar ever routes through the arg-position projection path this flips 1→9 (leak) or
+        traps (UAF); it is also the target profile for the ksd1 residual's SITE-B tightening.")
+  (input (do
+    (def turn (list (record (= kind "k") (= val "a")) (record (= kind "k2") (= val "b"))))
+    (def (run (: xs (List (Record (: kind String) (: val String)))) (: acc String))
+      (match xs ((list) acc) ((list (record (= kind _k) (= val v)) .. rest) (run rest (String.concat acc v)))))
+    (def (main) (run turn ""))
+    (export main)))
+  (call main)
+  (output (: "ab" String))
+  (live-objects 1))
+
+(case "ksd4 the TUPLE-pattern form of the grandchild consume is CLEAN like the record-pattern twin"
+  (doc "ksd3's tuple sibling: the grandchild string rides slot 2 of a (Tuple Int64 String) element and is
+        bound by a tuple PATTERN in the list arm. Same clean profile as ksd3 (bind-early transfer, no
+        preservation dup, no residual) — proves the clean pattern path is compound-kind-general, not a
+        record-pattern special case.")
+  (input (do
+    (def turn (list (tuple 1 "a") (tuple 2 "b")))
+    (def (run (: xs (List (Tuple Int64 String))) (: acc String))
+      (match xs ((list) acc) ((list (tuple _k v) .. rest) (run rest (String.concat acc v)))))
+    (def (main) (run turn ""))
+    (export main)))
+  (call main)
+  (output (: "ab" String))
+  (live-objects 1))
+
+(case "ksd5 a DEPTH-3 projection chain still fires the grandchild fence — no UAF at any chain depth"
+  (doc "ksd1's depth twin: the consumed string sits TWO projections deep — `(. (. e inner) val)` — so the
+        #5142 grandchild gate (which matches any PROPER projection chain of the loop-param, not just
+        depth-2) must still keep the preservation dup. Same accepted residual class as ksd1
+        (leak-beats-UAF); if a future narrowing keys on exact depth-2 shape this case traps instead.")
+  (input (do
+    (def turn (list (record (= inner (record (= val "a")))) (record (= inner (record (= val "b"))))))
+    (def (run (: xs (List (Record (: inner (Record (: val String)))))) (: acc String))
+      (match xs ((list) acc) ((list e .. rest) (run rest (String.concat acc (. (. e inner) val))))))
+    (def (main) (run turn ""))
+    (export main)))
+  (call main)
+  (output (: "ab" String))
+  (live-objects known-leak 9))
+
 (case "a multi-level RRB list persistently updates deep interior-level indices leaving the original intact"
   (doc    "The WRITE-PATH analog of the 1100-element multi-level RRB read case. `build` pushes 0..n into an
            RRB vector (value at index i is i), and at n=1100 the vector is a THREE-level trie (32*32 = 1024
