@@ -2340,12 +2340,14 @@ fn collect_sumexpect_view_reclaim(
 /// and Owned (a fresh sum-new the SumExpect emit's `reclaim_shell` frees). (Option B would generalize the
 /// producer set with an explicit #heap-payloads==1 check; A scopes to these two inherently-single producers.)
 fn is_owned_single_view_producer(db: &mut Db, scrutinee: StructId) -> bool {
+    // `String.at` / `Bytes.slice` ALWAYS return a fresh `Some(one view)` — owned + single-heap-payload BY
+    // CONSTRUCTION (that IS the load-bearing fence for Option A). We check the NODE KIND directly rather than
+    // `heap_operand_ownership` because `StrAt` is deliberately NOT globally-Owned (to avoid perturbing the
+    // MatchSum Stage-B path — see the heap_operand_ownership note); being a StrAt/BytesSlice node is itself
+    // the owned-single-view proof, and the SumExpect `reclaim_shell` treats it as owned LOCALLY via the set.
     matches!(
         core_of(db, scrutinee),
         Core::StrAt { .. } | Core::BytesSlice { .. }
-    ) && matches!(
-        heap_operand_ownership(db, scrutinee),
-        Ok(HandleOwnership::Owned)
     )
 }
 
@@ -14762,11 +14764,16 @@ fn emit(
             // the rarer non-live-after compound expect; a residual leak there, never a double-free). Only a
             // FRESHLY-STASHED owned scrutinee is dropped: a reused param/kept-local slot (`reuse.is_some()`)
             // is borrowed and left to its owner (mirrors the `List.len`/`List.at` owned-operand reclaim gate).
+            // (2) SumExpect-LOCAL owned treatment: a `String.at`/`Bytes.slice` view in the view/shell reclaim
+            // sets is owned-single-payload BY CONSTRUCTION, so its shell is reclaimable HERE even though
+            // `heap_operand_ownership(StrAt)` is (deliberately) not globally Owned — this local check keeps the
+            // MatchSum Stage-B / value-eq consumers seeing StrAt UNCHANGED (the local>global discipline).
             let reclaim_shell = reuse.is_none()
-                && matches!(
+                && (matches!(
                     heap_operand_ownership(db, scrutinee),
                     Ok(HandleOwnership::Owned)
-                );
+                ) || out.sumexpect_view_reclaim.contains(&id)
+                    || out.sumexpect_shell_reclaim.contains(&id));
             // The result block type is this node's solved type (the payload type).
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
@@ -18035,13 +18042,13 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // emit); here we classify the fallible RESULT they hand out, which is a fresh owned sum.
         | Core::ListAt { .. }
         | Core::BytesAt { .. }
-        // `String.at` returns a FRESH owned `Some(bytes-slice(str, pos, len))` char-view (or None) —
-        // a fresh sum-new around a fresh String span, exactly like `BytesAt`/`StrSlice`. So a `String.at`
-        // result used as a MatchSum/SumExpect scrutinee is an OWNED computed boxed-sum whose shell the emit
-        // reclaims after the payload read (else the Some shell LEAKS one cell per call — the 13-strings
-        // String.at Some-shell leak, v-mem-safety's SA1/SA2). WITHOUT this it fell to `_ => decline`, so the
-        // SumExpect/MatchSum shell-reclaim never fired (the char-view analog of the pre-#4914 Bytes gap).
-        | Core::StrAt { .. }
+        // NOTE: `String.at` (`Core::StrAt`) also returns a FRESH owned `Some(char-view)`, but it is
+        // DELIBERATELY NOT classified Owned here — a GLOBAL reclassification perturbs the MatchSum Stage-B
+        // extraction-consume reclaim (a String.at-view consumed by an allowlisted `String.concat` nets +1 =
+        // a latent Stage-B imbalance, v-mem-safety's separate follow-up). Instead the (2) SumExpect view/shell
+        // reclaim treats a `StrAt` scrutinee as owned LOCALLY (in the SumExpect `reclaim_shell` emit, gated by
+        // the `sumexpect_view_reclaim`/`sumexpect_shell_reclaim` membership) — same local>global discipline as
+        // the reclaim_bytes-local (2) check, so the MatchSum/value-eq/Stage-B consumers see StrAt UNCHANGED.
         | Core::MapLookup { .. }
         | Core::MapNew { .. }
         | Core::MapInsert { .. }
