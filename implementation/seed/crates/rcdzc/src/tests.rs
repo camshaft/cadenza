@@ -19319,17 +19319,15 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0201")
         );
-        // NO OVER-REJECTION: a correctly-typed key pattern compiles + runs (Int key on an Int-keyed map).
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(module m (def (main) (match (map (1 10) (2 20)) ((map (1 v)) v) (_ 0))) (export main))"
-                )))
-                .expect("compile"),
-                "main"
-            ),
-            10,
-            "a well-typed map-pattern key matches and binds its value"
+        // NO OVER-REJECTION: a correctly-typed key pattern COMPILES (Int key on an Int-keyed map). Its RUN
+        // (key 1 present binds v=10) is corpus case 05-compound-types "a map pattern matches a present key
+        // and binds its value".
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (main) (match (map (1 10) (2 20)) ((map (1 v)) v) (_ 0))) (export main))"
+            )))
+            .is_ok(),
+            "a well-typed map-pattern key compiles (no over-rejection)"
         );
         // A RUNTIME map (built by a conditional, not a constant `MapNew`) is matched through
         // `desugar_runtime_map_match`, a SEPARATE path from the const matcher. A wrong-type key there used
