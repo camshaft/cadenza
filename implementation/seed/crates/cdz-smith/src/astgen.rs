@@ -742,12 +742,12 @@ fn gen_compound_ty<C: Choice>(c: &mut C) -> (String, String) {
 }
 
 /// A body that BUILDS a compound and immediately CONSUMES it — tuple/record projection (`(. c i/field)`),
-/// `(List.len …)`, or an Option `match`. The generator builds compounds elsewhere but rarely CONSUMES
-/// them; this exercises the distinct extract / project / list-len / match consumption emit (where the S52
-/// closure buckets lived). Self-contained + type-correct (payload types drive the leaves; a match's
-/// None arm defaults to the payload type). Reaches consumption lowering the construction arms never hit.
+/// `(List.len …)`, an Option `match`, or a `Result` `match`. The generator builds compounds elsewhere but
+/// rarely CONSUMES them; this exercises the distinct extract / project / list-len / sum-match consumption
+/// emit (where the S52 closure buckets lived). Self-contained + type-correct (payload types drive the
+/// leaves; every match arm is the same type). Reaches consumption lowering the construction arms never hit.
 fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
-    match c.variant(4) {
+    match c.variant(5) {
         // Tuple projection: (. (tuple <a> <b>) <0|1>).
         0 => {
             let (a, b) = (pick_scalar_ty(c), pick_scalar_ty(c));
@@ -780,13 +780,28 @@ fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
             out.push_str("))");
         }
         // Option match: (match (Some <t>) ((Some x) x) ((None) <t-default>)) — both arms type `t`.
-        _ => {
+        3 => {
             let t = pick_scalar_ty(c);
             out.push_str("(match (Some ");
             gen_scalar_leaf(c, t, out);
             out.push_str(") ((Some x) x) ((None) ");
             gen_scalar_leaf(c, t, out);
             out.push_str("))");
+        }
+        // Result match: (match (: (Ok/Err <t>) (Result t t)) ((Ok x) x) ((Err e) e)) — a two-variant sum
+        // (a sum value needs the type annotation), each arm returns its payload of the SAME type `t`, so the
+        // join is type-correct. The scrutinee constructor is Ok OR Err, exercising both sum-match arms.
+        _ => {
+            let t = pick_scalar_ty(c);
+            let ctor = if c.variant(2) == 0 { "Ok" } else { "Err" };
+            write!(out, "(match (: ({ctor} ").ok();
+            gen_scalar_leaf(c, t, out);
+            write!(
+                out,
+                ") (Result {t0} {t0})) ((Ok x) x) ((Err e) e))",
+                t0 = t.name()
+            )
+            .ok();
         }
     }
 }
@@ -1400,10 +1415,11 @@ mod tests {
         );
     }
 
-    /// Every `gen_compound_consume` (tuple/record projection, `List.len`, Option `match`) COMPILES — the
-    /// build+consume shapes are type-correct by construction and stay on the compile path (no overflow /
-    /// div0), so this exercises consumption emit and guards `gen_compound_consume` (a malformed
-    /// projection / match would surface as decline/InvalidWasm here).
+    /// Every `gen_compound_consume` (tuple/record projection, `List.len`, Option `match`, `Result` `match`)
+    /// COMPILES — the build+consume shapes are type-correct by construction and stay on the compile path
+    /// (no overflow / div0), so this exercises consumption emit and guards `gen_compound_consume` (a
+    /// malformed projection / match would surface as decline/InvalidWasm here). The 256 seeds hit every arm
+    /// across all scalar payload types (incl the `Result` Ok/Err ctors added in S97).
     #[test]
     fn gen_compound_consume_compiles() {
         for seed in 0u64..256 {
@@ -1422,6 +1438,37 @@ mod tests {
                 "compound-consume body must COMPILE: {src}"
             );
         }
+    }
+
+    /// `gen_compound_consume` REACHES a `Result` match with BOTH the `Ok` and the `Err` scrutinee ctor
+    /// (added S97), and every such body COMPILES — guards the sum-match consumption arm against a
+    /// regression that would stop generating it (silently shrinking differential reach into sum-match emit).
+    #[test]
+    fn result_match_consume_reaches_both_ctors_and_compiles() {
+        let (mut saw_ok, mut saw_err) = (false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(97);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_compound_consume(&mut ByteCursorChoice::new(&bytes), &mut body);
+            if !body.contains("(Result ") {
+                continue; // a non-Result arm this seed
+            }
+            saw_ok |= body.contains("(Ok ");
+            saw_err |= body.contains("(Err ");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "Result-match consume body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_ok, "Result-match should reach the Ok scrutinee ctor");
+        assert!(saw_err, "Result-match should reach the Err scrutinee ctor");
     }
 
     /// Every operator the generator can emit is a valid Int64→Int64→Int64 op the compiler CLEANLY
