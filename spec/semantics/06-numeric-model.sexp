@@ -86,6 +86,17 @@
   (input  (>> 1 2.0))
   (error  CDZ0301))
 
+(case "a constant shift by an OUT-OF-RANGE count is rejected at compile time with CDZ0304"
+  (doc    "A shift count must be a valid bit position 0..=63; a constant count outside that range has no
+           value and is rejected at COMPILE time (decline-don't-miscompile — it would trap at run time), CDZ0304
+           `shift count … out of range 0..64`. `(<< 5 -1)` — a NEGATIVE constant count — is the minimal repro
+           (bubbled from cdz-smith's coercing-generator campaign, original `(<< -861909 -93243)`); a `>= 64`
+           count (`(<< 5 64)`) and the right-shift twins (`(>> 5 -1)`, `(>> 5 64)`) reject identically. Distinct
+           from the shift-RESULT-overflow CDZ0304 (a valid count whose result exceeds the width, e.g. `(<< 5
+           63)` = 5·2^63 — adv-67b). The runtime out-of-range-count analogue traps (§tick-423).")
+  (input  (do (def (main) (<< 5 -1)) (export main)))
+  (error  CDZ0304))
+
 ; A bitwise/shift operator on a NON-NUMERIC operand is a DIFFERENT rejection from the mixed-numeric cases
 ; above. `& | ^ << >>` carry the scheme `∀a. (Int a) -> (Int a) -> (Int a)`, so a Bool/String/Char operand
 ; has no `(Int a)` instance at all — a type mismatch (CDZ0203), not a numeric-kind mix (CDZ0301). The
