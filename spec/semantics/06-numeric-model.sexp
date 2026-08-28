@@ -12114,3 +12114,29 @@
   (call main (: 0 Int64))
   (output (: 0 W))
   (live-objects 0))
+
+(case "cdzw25 the cadenza backend round-trips a bare (None) in a VARIANT-PAYLOAD position — the nested-Option join"
+  (doc "The #4996 fence (the LAST join-None cell, breaker-found): a bare `(None)` nested as a variant
+        PAYLOAD — `(Some (None))` typed `Option (Option Int64)` — recovers `Option Int64` via
+        payload-type instantiation at the concrete sum (the outer if-join solves only the OUTER type;
+        the inner None's type must derive from the variant's instantiated payload). All three arms
+        exercised: nested-Some, Some-of-bare-None, bare outer None. `(live-objects 2)` = the reachable
+        nested value on the first (asserted) call.")
+  (input (do (def (main (: n Int64)) (if (> n 5) (Some (Some n)) (if (> n 0) (Some (None)) (None)))) (export main)))
+  (call main (: 9 Int64))
+  (output (: (Some (Some 9)) (Option (Option Int64))))
+  (call main (: 3 Int64))
+  (output (: (Some (None unit)) (Option (Option Int64))))
+  (call main (: -4 Int64))
+  (output (: (None unit) (Option (Option Int64))))
+  (live-objects 2))
+
+(case "cdzw26 the cadenza backend round-trips a bare (None) as a LIST ELEMENT — the element-position join"
+  (doc "The compound-element face of the #4972/#4996 threading: a bare `(None)` as a list element derives
+        `Option Int64` from the list's element type (solved by the sibling `(Some …)` elements). A
+        threading that missed element positions declined here (the tick-446/474 cell). `(live-objects 4)`
+        = the reachable returned list + its Some cells.")
+  (input (do (def (main (: n Int64)) (list (Some n) (None) (Some (+ n 2)))) (export main)))
+  (call main (: 9 Int64))
+  (output (: (list (Some 9) (None unit) (Some 11)) (List (Option Int64))))
+  (live-objects 4))
