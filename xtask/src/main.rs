@@ -31,7 +31,10 @@ use cdz_rust_render::*;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use xshell::{Shell, cmd};
-use xtask_support::{Call, CorpusRecord, Trial, content_address, hash_tree};
+use xtask_support::{
+    Call, CorpusRecord, content_address, convert_bytes, default_corpus_files, first_line,
+    hash_tree, launch_fail, read_corpus, split_message_clause, to_binary,
+};
 
 /// The one interface for driving the Cadenza seed workspace. Every knob is a typed flag; there are
 /// no environment-variable knobs.
@@ -952,13 +955,6 @@ pub(crate) fn spans_overlap(spans: &[(u128, u128)]) -> bool {
         max_end = Some(max_end.map_or(e, |m| m.max(e)));
     }
     false
-}
-
-/// A stage's binary could not be spawned at all (missing/not-executable) — distinct from it running
-/// and exiting non-zero, which is surfaced by its wait status.
-fn launch_fail(stage: &str, e: std::io::Error) -> ! {
-    eprintln!("xtask run: could not launch {stage}: {e}");
-    std::process::exit(1);
 }
 
 /// Per-invocation wall-clock ceiling for a single compile/run child (`cdz compile`, `cdz-run`, …).
@@ -3833,14 +3829,6 @@ fn fnv1a(s: &str) -> u64 {
     h
 }
 
-fn first_line(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .next()
-        .unwrap_or("")
-        .to_string()
-}
-
 /// Whether a NON-SUCCESS wasm run's stderr (with no `: trap:` line) carries a MEANINGFUL diagnostic — vs a
 /// SILENT-DEATH crash that left nothing but informational noise (breaker's B1-sibling discriminator). A crash
 /// (the run started then died) leaves only the `live-objects run on value-heap runtime` provenance banner
@@ -4176,7 +4164,7 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
 
     let tools = build_tools(paths, profile);
     let files = if opts.files.is_empty() {
-        default_corpus_files(paths)
+        default_corpus_files(&paths.repo)
     } else {
         opts.files.clone()
     };
@@ -4197,7 +4185,7 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     // positional — a race in verdict order would spuriously flag regressions.
     let mut records: Vec<CorpusRecord> = files
         .iter()
-        .flat_map(|file| read_corpus(&tools, file))
+        .flat_map(|file| read_corpus(&tools.corpus, file))
         .collect();
     // `--shard I/N`: keep only every `n`-th case (offset `i-1`) of the flat, order-stable case list. Case-
     // level (not file-level) so shards balance even though per-file case counts vary wildly (e.g. one file
@@ -4324,7 +4312,7 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
     }
     let tools = build_tools(paths, profile);
     let files = if opts.files.is_empty() {
-        default_corpus_files(paths)
+        default_corpus_files(&paths.repo)
     } else {
         opts.files.clone()
     };
@@ -4339,7 +4327,7 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
     // divergences, no positional baseline), so a simple lock-collected result set suffices.
     let records: Vec<CorpusRecord> = files
         .iter()
-        .flat_map(|file| read_corpus(&tools, file))
+        .flat_map(|file| read_corpus(&tools.corpus, file))
         .collect();
     let (checked, skipped, divergences) = {
         use std::sync::Mutex;
@@ -4601,7 +4589,7 @@ fn gate_one_case(
 ) {
     let mut found = 0;
     for file in files {
-        for rec in read_corpus(tools, file) {
+        for rec in read_corpus(&tools.corpus, file) {
             if !rec.description.contains(needle) {
                 continue;
             }
@@ -4700,178 +4688,6 @@ enum Grade {
     Todo,
     /// Ran to an outcome that disagrees with the record — the actionable frontier.
     Fail(String),
-}
-
-/// Run `cdz-corpus records <file>` and parse its record stream.
-fn read_corpus(tools: &Tools, file: &Path) -> Vec<CorpusRecord> {
-    use std::process::Command;
-    let out = Command::new(&tools.corpus)
-        .arg("records")
-        .arg(file)
-        .output()
-        .unwrap_or_else(|e| launch_fail("cdz-corpus records", e));
-    if !out.status.success() {
-        eprintln!(
-            "xtask gate: reading {}: {}",
-            file.display(),
-            first_line(&out.stderr)
-        );
-        std::process::exit(1);
-    }
-    parse_records(&String::from_utf8_lossy(&out.stdout))
-}
-
-/// Parse the flat record stream: `key\tvalue` lines, records separated by a `---` line. Each TRIAL is a
-/// `call` line (the export) + its following `arg` lines + the `expect` line that CLOSES it — so an
-/// `expect` flushes the pending call/args into a trial. A single-trial case is the historical shape.
-fn parse_records(text: &str) -> Vec<CorpusRecord> {
-    let mut records = Vec::new();
-    let (mut desc, mut prog, mut needs) = (String::new(), String::new(), Vec::new());
-    let mut modules: Vec<(String, String)> = Vec::new();
-    let mut peers: Vec<(String, String)> = Vec::new();
-    let mut trials: Vec<Trial> = Vec::new();
-    let mut host_responses: Vec<(String, String)> = Vec::new();
-    let mut host_calls: Vec<String> = Vec::new();
-    let mut warns: Vec<(String, Option<String>)> = Vec::new();
-    let (mut wit_world, mut component_name): (Option<String>, Option<String>) = (None, None);
-    let mut live_objects: Option<u32> = None;
-    let (mut call_export, mut call_args): (Option<String>, Vec<String>) = (None, Vec::new());
-    // The pending `(then …)` continuation's args (two-call-on-one-handle), or `None` until a `then-call`
-    // marker line opens it. Flushed into the trial's `Call` alongside `call_args` on the `expect` line.
-    let mut second_call: Option<Vec<String>> = None;
-    // The pending `(drop)` flag (resource-drop the closure handle after the call), set by a `drop-handle`
-    // marker line, flushed into the trial's `Call` on the `expect` line.
-    let mut drop_handle = false;
-    // The pending `(call-method <member>)` value-resource member, set by a `call-method` line. A method
-    // case has NO `call` line (no export), so the trial's `Call` is produced from `method` alone.
-    let mut method: Option<String> = None;
-    for line in text.lines() {
-        if line == "---" {
-            records.push(CorpusRecord {
-                description: std::mem::take(&mut desc),
-                program: std::mem::take(&mut prog),
-                modules: std::mem::take(&mut modules),
-                peers: std::mem::take(&mut peers),
-                trials: std::mem::take(&mut trials),
-                needs: std::mem::take(&mut needs),
-                host_responses: std::mem::take(&mut host_responses),
-                host_calls: std::mem::take(&mut host_calls),
-                warns: std::mem::take(&mut warns),
-                wit_world: std::mem::take(&mut wit_world),
-                component_name: std::mem::take(&mut component_name),
-                live_objects: live_objects.take(),
-            });
-            // Defensive: a well-formed record ends every trial with an `expect`, so nothing is pending.
-            call_export = None;
-            call_args.clear();
-            second_call = None;
-            drop_handle = false;
-            method = None;
-            continue;
-        }
-        if let Some((key, val)) = line.split_once('\t') {
-            match key {
-                "case" => desc = val.to_string(),
-                "program" => prog = val.to_string(),
-                // `module\t<name>\t<program>` — a library file (two tab-separated values). Split the
-                // name off the program.
-                "module" => {
-                    if let Some((name, mprog)) = val.split_once('\t') {
-                        modules.push((name.to_string(), mprog.to_string()));
-                    }
-                }
-                // `peer\t<iface>\t<program>` — a cross-component provider (interface + its program). Split
-                // the interface off the program; the wasm gate compiles each peer to its own component and
-                // composes via `--peer <iface>=<path>`.
-                "peer" => {
-                    if let Some((iface, pprog)) = val.split_once('\t') {
-                        peers.push((iface.to_string(), pprog.to_string()));
-                    }
-                }
-                "call" => call_export = Some(val.to_string()),
-                // `call-method\t<member>` — a value-resource member drive (no export; the member is reached
-                // on the resource the program's producer makes).
-                "call-method" => method = Some(val.to_string()),
-                "arg" => call_args.push(val.to_string()),
-                // `then-call\t<n>` opens a two-call continuation (n = its arg count, unused — the args
-                // arrive as `then-arg` lines); a bare `(then)` emits `then-call\t0` and no `then-arg`, so
-                // `Some(vec![])` (a nullary second call) is distinct from `None` (no second call).
-                "then-call" => second_call = Some(Vec::new()),
-                "then-arg" => {
-                    if let Some(sc) = second_call.as_mut() {
-                        sc.push(val.to_string());
-                    }
-                }
-                // `drop-handle\t1` — the `(drop)` clause: resource-drop the minted handle after the call.
-                "drop-handle" => drop_handle = true,
-                "expect" => {
-                    // The `expect` closes a trial: pair the pending call (if any) with this payload,
-                    // carrying any `(then …)` second-call args and the `(drop)` flag.
-                    let sc = second_call.take();
-                    let dh = std::mem::take(&mut drop_handle);
-                    let m = method.take();
-                    // A trial has a call if it named an export OR a `(call-method)` member (the latter has
-                    // no export — the program's producer makes the value-resource).
-                    let call = if call_export.is_some() || m.is_some() {
-                        Some(Call {
-                            export: call_export.take().unwrap_or_default(),
-                            args: std::mem::take(&mut call_args),
-                            second_call: sc,
-                            drop_handle: dh,
-                            method: m,
-                        })
-                    } else {
-                        None
-                    };
-                    call_args.clear();
-                    trials.push(Trial {
-                        call,
-                        expect: val.to_string(),
-                    });
-                }
-                "needs" => needs.push(val.to_string()),
-                // `host-response\t<op>\t<value>` — a recorded host-call response (two tab-separated
-                // values). Split the op off the value.
-                "host-response" => {
-                    if let Some((op, value)) = val.split_once('\t') {
-                        host_responses.push((op.to_string(), value.to_string()));
-                    }
-                }
-                // `host-call\t<op>` — one recorded host operation, in call order.
-                "host-call" => host_calls.push(val.to_string()),
-                // `warns\t<CODE>` or `warns\t<CODE> (message "phrase")` — a compile-warning pin. Reuse
-                // split_message_clause (the `(message …)` parser shared with error/declines) to split the
-                // CODE from the optional phrase.
-                "warns" => {
-                    let (code, message) = split_message_clause(val);
-                    warns.push((code.to_string(), message.map(str::to_string)));
-                }
-                // `wit-world\t<world-sexpr>` / `component-name\t<iface>` — an explicit WIT world the case
-                // imposes on the guest (general WIT-ABI shape). Threaded into the wasm emit (world artifact +
-                // `--component-name`) and the run (`--call <iface>#<export>`).
-                "wit-world" => wit_world = Some(val.to_string()),
-                "component-name" => component_name = Some(val.to_string()),
-                // `live-objects\t<N>` (or `live-objects\tknown-leak\t<N>` for the opt-out marker) — the
-                // post-run heap-balance the case asserts on the debug-counters runtime. Both forms assert
-                // == N (the known-leak intent is source-only; the gate needs just the count), so strip an
-                // optional `known-leak\t` prefix and parse N.
-                "live-objects" => {
-                    let count = val.strip_prefix("known-leak\t").unwrap_or(val);
-                    // ONE count = uniform; 2+ TAB-separated counts = PER-CALL positional (`live-objects
-                    // 3 13 0`, from #5008's every-call surfacing). This DIRECT gate checks the FIRST call's
-                    // balance, so it uses the FIRST count; without splitting, `"3\t13\t0".parse` fails →
-                    // None → the case falls to the Default(0) check → a spurious pass→fail regression. (The
-                    // nix `cdz-run --grade` path reads the full per-call list; this direct path is call[0].)
-                    live_objects = count
-                        .split('\t')
-                        .next()
-                        .and_then(|s| s.trim().parse::<u32>().ok());
-                }
-                _ => {}
-            }
-        }
-    }
-    records
 }
 
 /// Grade one case: run EACH trial (the program is re-driven per trial's `(call …)`) and COMBINE. A
@@ -4985,29 +4801,6 @@ fn grade_ran(rec: &CorpusRecord, rans: &[Ran], target: GateTarget) -> Grade {
         }
     }
     if todo { Grade::Todo } else { Grade::Pass }
-}
-
-/// Split an `error`/`declines` payload into its leading token (the CODE, or empty for `declines`) and
-/// an optional `(message "PHRASE")` clause — the diagnostic-text half of the portable-diagnostic-test
-/// capability (operator seq353). E.g. `CDZ0201 (message "malformed record")` → `("CDZ0201", Some("malformed
-/// record"))`; `CDZ0201` → `("CDZ0201", None)`; `(message "IEEE partial order")` → `("", Some("IEEE partial
-/// order"))`. The PHRASE is graded as a case-sensitive SUBSTRING of the emitted diagnostic message, with
-/// NO normalization (v-diagnostics ruling: messages are single-source/single-line, case is load-bearing).
-/// A malformed/unterminated `(message …)` yields `None` (the clause is simply not asserted — never panics).
-fn split_message_clause(payload: &str) -> (&str, Option<&str>) {
-    match payload.find("(message ") {
-        None => (payload.trim(), None),
-        Some(at) => {
-            let head = payload[..at].trim();
-            let rest = &payload[at + "(message ".len()..];
-            // The phrase is a "double-quoted" span: take from the first `"` to the next `"`.
-            let phrase = rest
-                .strip_prefix('"')
-                .and_then(|r| r.split('"').next())
-                .filter(|p| !p.is_empty());
-            (head, phrase)
-        }
-    }
 }
 
 /// Compare ONE trial's run outcome against its recorded `expect` payload — the pure per-trial grading
@@ -5372,26 +5165,6 @@ fn parse_shard(spec: &str) -> Result<(usize, usize), String> {
     Ok((i, n))
 }
 
-fn default_corpus_files(paths: &Paths) -> Vec<PathBuf> {
-    let dir = paths.repo.join("spec/semantics");
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| {
-            eprintln!("xtask gate: reading {}: {e}", dir.display());
-            std::process::exit(1);
-        })
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "sexp"))
-        // Only the `NN-feature` corpus files (a numeric prefix).
-        .filter(|p| {
-            p.file_stem()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.starts_with(|c: char| c.is_ascii_digit()))
-        })
-        .collect();
-    files.sort();
-    files
-}
 // ============================================================================================
 // gate baseline — a committed per-case verdict snapshot, so a REGRESSION (a case that used to pass
 // and now doesn't) fails `gate --check` even while the pass/todo/fail totals drift.
@@ -5714,7 +5487,7 @@ fn corpus_titles(paths: &Paths, profile: &str) -> std::collections::BTreeSet<Str
     let subdir = if profile == "dev" { "debug" } else { profile };
     let corpus = paths.repo.join("target").join(subdir).join("cdz-corpus");
     let mut titles = std::collections::BTreeSet::new();
-    for file in default_corpus_files(paths) {
+    for file in default_corpus_files(&paths.repo) {
         let out = std::process::Command::new(&corpus)
             .arg("records")
             .arg(&file)
@@ -6759,7 +6532,7 @@ fn covered_corpus_files(paths: &Paths) -> Vec<PathBuf> {
         "06-numeric-model",
         "07-type-system",
     ];
-    default_corpus_files(paths)
+    default_corpus_files(&paths.repo)
         .into_iter()
         .filter(|p| {
             p.file_stem()
@@ -6864,7 +6637,7 @@ fn enforcing_conformance_verdict(r: &MlConformance) -> Result<(), String> {
 /// `compute_ml_conformance(paths, profile, &covered_corpus_files(paths))` and reds on `disagree > 0` via
 /// [`enforcing_conformance_verdict`].
 fn report_ml_conformance(paths: &Paths, profile: &str) {
-    let files = default_corpus_files(paths);
+    let files = default_corpus_files(&paths.repo);
     let r = compute_ml_conformance(paths, profile, &files);
     let total = r.agree + r.disagree + r.not_yet;
     println!(
@@ -6901,7 +6674,7 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
     let store = Some(paths.repo.join("target/cadenza-store"));
     let records: Vec<CorpusRecord> = files
         .iter()
-        .flat_map(|file| read_corpus(&tools, file))
+        .flat_map(|file| read_corpus(&tools.corpus, file))
         .collect();
 
     // Classify each case IN PARALLEL — this step shells `cdz run-ml` once per corpus case (and the
@@ -7046,10 +6819,10 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
 /// parallel per-case scaffold, but compares two CLI VERDICTS (emit vs interpret), not a grader backend.
 fn report_emit_conformance(paths: &Paths, profile: &str) {
     let tools = build_tools(paths, profile);
-    let files = default_corpus_files(paths);
+    let files = default_corpus_files(&paths.repo);
     let records: Vec<CorpusRecord> = files
         .iter()
-        .flat_map(|file| read_corpus(&tools, file))
+        .flat_map(|file| read_corpus(&tools.corpus, file))
         .collect();
 
     enum EmitOutcome {
@@ -8414,7 +8187,7 @@ impl CachedStep {
 fn roundtrip(paths: &Paths, profile: &str, files: Vec<PathBuf>) {
     let tools = build_tools(paths, profile);
     let files = if files.is_empty() {
-        default_corpus_files(paths)
+        default_corpus_files(&paths.repo)
     } else {
         files
     };
@@ -8425,7 +8198,7 @@ fn roundtrip(paths: &Paths, profile: &str, files: Vec<PathBuf>) {
     // messages are collected per case (in the SAME order as `records`) so the reported list is stable.
     let records: Vec<CorpusRecord> = files
         .iter()
-        .flat_map(|file| read_corpus(&tools, file))
+        .flat_map(|file| read_corpus(&tools.corpus, file))
         .collect();
     let per_case = roundtrip_all_parallel(&tools, records);
 
@@ -8492,7 +8265,7 @@ fn roundtrip_all_parallel(tools: &Tools, records: Vec<CorpusRecord>) -> Vec<Roun
                     let mut failures = Vec::new();
                     // The reference: the program's canonical binary AST. If it fails, the case is not
                     // counted ok (mirrors the serial loop's early `continue`).
-                    let counted_ok = match to_binary(tools, &rec.program) {
+                    let counted_ok = match to_binary(&tools.syntax, &rec.program) {
                         None => {
                             failures.push(format!("{}: sexpr→binary failed", rec.description));
                             false
@@ -8559,31 +8332,10 @@ fn roundtrip_all_parallel(tools: &Tools, records: Vec<CorpusRecord>) -> Vec<Roun
         .collect()
 }
 
-/// A program's sexpr text → its canonical binary AST bytes (via `cdz-syntax`).
-fn to_binary(tools: &Tools, program: &str) -> Option<Vec<u8>> {
-    convert_bytes(tools, program.as_bytes(), "sexpr", "binary")
-}
-
 /// binary → <surface> text → binary, returning the re-encoded bytes (to compare to the original).
 fn roundtrip_via(tools: &Tools, bin0: &[u8], surface: &str) -> Option<Vec<u8>> {
-    let text = convert_bytes(tools, bin0, "binary", surface)?;
-    convert_bytes(tools, &text, surface, "binary")
-}
-
-/// Run `cdz-syntax --from <from> --to <to>` over `input` bytes (stdin) and return its stdout.
-fn convert_bytes(tools: &Tools, input: &[u8], from: &str, to: &str) -> Option<Vec<u8>> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    let mut child = Command::new(&tools.syntax)
-        .args(["convert", "--from", from, "--to", to, "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
-    child.stdin.take().unwrap().write_all(input).ok();
-    let out = child.wait_with_output().expect("wait cdz-syntax");
-    out.status.success().then_some(out.stdout)
+    let text = convert_bytes(&tools.syntax, bin0, "binary", surface)?;
+    convert_bytes(&tools.syntax, &text, surface, "binary")
 }
 
 // ============================================================================================
@@ -8609,7 +8361,7 @@ fn fmt(paths: &Paths, profile: &str, files: Vec<PathBuf>, to: &str, check: bool)
             }
         };
         // Format = parse the surface and re-print it canonically (same surface in and out).
-        let formatted = match convert_bytes(&tools, &original, to, to) {
+        let formatted = match convert_bytes(&tools.syntax, &original, to, to) {
             Some(b) => b,
             None => {
                 eprintln!("xtask fmt: {}: does not parse as {to}", file.display());
@@ -8980,7 +8732,7 @@ mod trap_grading_tests {
             program: "(do (def (main) (let ((unused 99)) 42)) (export main))".to_string(),
             modules: Vec::new(),
             peers: Vec::new(),
-            trials: vec![Trial {
+            trials: vec![xtask_support::Trial {
                 call: None,
                 expect: "output (: 42 Int64)".to_string(),
             }],
