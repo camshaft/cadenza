@@ -34485,10 +34485,6 @@ mod stage1 {
         // re-read after the call as `10*n`) was NOT clobbered: send responds 5, so 5 + 10*7 = 75. The corpus
         // case pins the same shape cross-backend; this is the unit-level invalid-module guard.
         use crate::testkit::parse;
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!("[host-arg-slot-thread] runtime wasm not in the store; skipping run");
-            return;
-        };
         let src = "(do (effect io (op send (-> Bytes Int64 Int64))) \
                    (def (main (: k Int64)) \
                      (host (io) \
@@ -34500,25 +34496,10 @@ mod stage1 {
         wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes).expect(
             "the marshalled-arg-before-scalar component must be VALID (no i32/i64 slot-width clobber)",
         );
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["0".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: vec![cdz_run::HostResponse {
-                // Dotted `E.op` per the HostResponse.op contract (effect `io`, op `send`); responses are
-                // consumed in order, so the name is for the diagnostic, but match the documented form.
-                op: "io.send".to_string(),
-                value: "5".to_string(),
-            }],
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "75",
-                "the scalar arg (n=7, re-read after the call) survives distinct from the marshal scratch: 5 + 10*7"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("marshalled-arg-before-scalar run trapped: {t}"),
-        }
+        // The RUN — io.send responds 5, and the scalar n=7 (re-read as 10*n after the call) is NOT clobbered
+        // by the marshal scratch → 5 + 10*7 = 75 — is corpus-covered cross-backend by the host-arg-marshal
+        // shape case; this test keeps the unit-level INVALID-MODULE guard (the slot-width clobber was a
+        // wasm-validation failure — a compile-artifact the corpus cannot assert).
     }
 
     #[test]
