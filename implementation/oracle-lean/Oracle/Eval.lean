@@ -796,8 +796,8 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         else if h == "Ok".toUTF8 then evalUnaryCtor m env fuel children Value.ok
         else if h == "Err".toUTF8 then evalUnaryCtor m env fuel children Value.err
         else if h == "None".toUTF8 then Outcome.value Value.none
-        else if h == "tuple".toUTF8 then evalSeqCtor m env fuel children Value.tuple
-        else if h == "list".toUTF8 then evalSeqCtor m env fuel children Value.list
+        else if h == "tuple".toUTF8 then evalSeqCtor m env fuel children Value.tuple false
+        else if h == "list".toUTF8 then evalSeqCtor m env fuel children Value.list true
         else if h == "record".toUTF8 then evalRecord m env fuel children
         else if h == "map".toUTF8 then evalMapLiteral m env fuel children
         else if h == ".".toUTF8 then evalProject m env fuel children
@@ -1336,12 +1336,27 @@ element as a `poison` (deferred) rather than propagating it — an element that 
 (projected, or flowed to the result) never surfaces its trap. Construction itself always yields a
 value. -/
 partial def evalSeqCtor (m : Module) (env : Env) (fuel : Nat) (children : Array Nat)
-    (wrap : Array Value → Value) : Outcome :=
-  let rec go (js : List Nat) (acc : Array Value) : Array Value :=
+    (wrap : Array Value → Value) (strict : Bool) : Outcome :=
+  -- STRICT (list): a list is heap-MATERIALIZED, so construction FORCES each element — a non-value outcome
+  -- (trap/unsupported/diverges) PROPAGATES, i.e. a trapping element traps at construction even if only the
+  -- length is later taken (v-spec-oracle ruling 2026-08-28: list construction observes its elements; corpus
+  -- 28-compiler-primitives:2411, 06-numeric/0043). NON-strict (tuple/record): store a non-value element as a
+  -- `poison` (lazy — unobserved until projected, per core-semantics §Trap…Observed which names tuple/record).
+  let rec go (js : List Nat) (acc : Except Outcome (Array Value)) : Except Outcome (Array Value) :=
     match js with
     | [] => acc
-    | j :: rest => go rest (acc.push (outcomeToValue (evalNode m env defaultIntTy fuel j)))
-  .value (wrap (go (children.extract 1 children.size).toList #[]))
+    | j :: rest =>
+      match acc with
+      | .error o => .error o
+      | .ok vs =>
+        if strict then
+          match evalNode m env defaultIntTy fuel j with
+          | .value v => go rest (.ok (vs.push v))
+          | other => .error other
+        else go rest (.ok (vs.push (outcomeToValue (evalNode m env defaultIntTy fuel j))))
+  match go (children.extract 1 children.size).toList (.ok #[]) with
+  | .ok vs => .value (wrap vs)
+  | .error o => o
 
 /-- Evaluate two operands, propagating a non-value outcome by precedence unsupported > diverges > trap
 > value (an unmodeled sibling keeps a case a coverage-gap, never a spurious result); on two values,
