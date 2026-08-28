@@ -9046,3 +9046,5 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	nmb1 a RUNTIME Int8 multiply by -1 computes in range and traps at the MIN/-1 boundary (the narrow-width runtime companion of the checked-mul ladder)
 pass	shb1 a RUNTIME left-shift computes below the value-overflow boundary and traps at it (fold-vs-runtime agree; << is checked *2^n)
+pass	rmn1 MIN %/-1 is 0 (not a trap) on both fold and runtime — the remainder path avoids the divide-overflow trap
+pass	rmn2 a RUNTIME MIN %/-1 returns 0 while the same operand under / -1 would trap (rem is total, div is not)
