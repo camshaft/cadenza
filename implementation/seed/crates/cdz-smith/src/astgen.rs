@@ -277,7 +277,9 @@ fn gen_compound<C: Choice>(
 /// sized-int arm ([`gen_sized_int_body`]) returns an `Int8`/…/`UInt64` value, reaching narrow-width value
 /// lowering + the checked-conversion ops that the Int64-only expression grammar never hits; the float arm
 /// ([`gen_float_body`]) returns a `Float64`/`Float32` value, reaching float value/arith/compare/if-join/let
-/// lowering (uniform-width, so it stays on the compile path).
+/// lowering (uniform-width, so it stays on the compile path); the type-diverse-compound arm
+/// ([`gen_typed_compound`]) returns a HETEROGENEOUS tuple or a non-Int64 homogeneous list — the first
+/// type-directed step past the Int64-element compounds `gen_compound` builds.
 fn gen_main_body<C: Choice>(
     c: &mut C,
     scope: &mut Vec<String>,
@@ -285,7 +287,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(6) {
+    match c.variant(7) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -297,6 +299,8 @@ fn gen_main_body<C: Choice>(
         4 => gen_sized_int_body(c, out),
         // A FLOAT-typed body (`main : Float64`/`Float32`): float value/arith/compare/if-join/let lowering.
         5 => gen_float_body(c, fresh, out),
+        // A TYPE-DIVERSE compound: a heterogeneous tuple / a non-Int64 homogeneous list (type-directed).
+        6 => gen_typed_compound(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -402,6 +406,76 @@ fn gen_float<C: Choice>(
 fn gen_float_body<C: Choice>(c: &mut C, fresh: &mut usize, out: &mut String) {
     let is_f32 = c.variant(2) == 1;
     gen_float(c, is_f32, MAX_DEPTH, fresh, out);
+}
+
+/// A scalar type the TYPE-DIRECTED generator can emit a value of (increment 1 of the type-directed
+/// program: the coercing grammar was Int64-centric, so compounds were Int64-only). `Sized` carries a
+/// [`SIZED_INT_TYPES`] name (Int8/…/UInt64).
+#[derive(Clone, Copy)]
+enum ScalarTy {
+    Int64,
+    Float64,
+    Float32,
+    Sized(&'static str),
+    Bool,
+}
+
+/// Pick a scalar type uniformly (Int64 / Float64 / Float32 / Bool / a sized int).
+fn pick_scalar_ty<C: Choice>(c: &mut C) -> ScalarTy {
+    match c.variant(5) {
+        0 => ScalarTy::Int64,
+        1 => ScalarTy::Float64,
+        2 => ScalarTy::Float32,
+        3 => ScalarTy::Bool,
+        _ => ScalarTy::Sized(SIZED_INT_TYPES[c.variant(SIZED_INT_TYPES.len())]),
+    }
+}
+
+/// Append a LEAF value of a given scalar type — type-correct by construction (a Float32/sized leaf is
+/// ascribed; a bare int/float literal is Int64/Float64). The type-directed building block: it lets a
+/// compound hold elements of ARBITRARY (independently-chosen) scalar types, not just Int64.
+fn gen_scalar_leaf<C: Choice>(c: &mut C, ty: ScalarTy, out: &mut String) {
+    match ty {
+        ScalarTy::Int64 => gen_int_literal(c, out),
+        ScalarTy::Float64 => {
+            write!(out, "{}.0", c.int_bounded(0, 1000)).ok();
+        }
+        ScalarTy::Float32 => {
+            write!(out, "(: {}.0 Float32)", c.int_bounded(0, 1000)).ok();
+        }
+        ScalarTy::Bool => out.push_str(if c.variant(2) == 0 { "true" } else { "false" }),
+        ScalarTy::Sized(t) => {
+            write!(out, "(: {} {t})", c.int_bounded(0, 9)).ok();
+        }
+    }
+}
+
+/// A TYPE-DIVERSE compound body: a `(tuple …)` whose 2–3 elements each have an INDEPENDENTLY-chosen
+/// scalar type (heterogeneous product — Int64/float/bool/sized mixed), or a homogeneous `(list …)` of a
+/// single chosen scalar type. The existing [`gen_compound`] only builds Int64-element compounds; this
+/// reaches heterogeneous-product + non-Int64-list value lowering (a codec/emit surface Int64 compounds
+/// never exercise). Leaf elements keep it bounded + type-correct (increment 1 of type-directed gen).
+fn gen_typed_compound<C: Choice>(c: &mut C, out: &mut String) {
+    if c.variant(2) == 0 {
+        // Heterogeneous tuple of 2 or 3 independently-typed leaves.
+        let n = 2 + c.variant(2);
+        out.push_str("(tuple");
+        for _ in 0..n {
+            out.push(' ');
+            let ty = pick_scalar_ty(c);
+            gen_scalar_leaf(c, ty, out);
+        }
+        out.push(')');
+    } else {
+        // Homogeneous list of one chosen scalar type (3 elements).
+        let ty = pick_scalar_ty(c);
+        out.push_str("(list");
+        for _ in 0..3 {
+            out.push(' ');
+            gen_scalar_leaf(c, ty, out);
+        }
+        out.push(')');
+    }
 }
 
 /// Append one coerced `Int64` expression: at `depth == 0` (or when the base variant is picked) an
@@ -895,6 +969,47 @@ mod tests {
         assert!(
             saw,
             "the coercing generator should reach a float-typed body"
+        );
+    }
+
+    /// Every `gen_typed_compound` — a heterogeneous tuple (independently-typed leaves) or a non-Int64
+    /// homogeneous list — is CLEANLY HANDLED (leaf elements are type-correct by construction, so these
+    /// COMPILE); guards `gen_scalar_leaf`/`pick_scalar_ty` (a bad type name / ill-typed leaf would surface
+    /// as decline/InvalidWasm here). Also asserts a non-Int64-element compound is REACHED (real coverage
+    /// past the Int64-only `gen_compound`).
+    #[test]
+    fn gen_typed_compound_is_cleanly_handled_and_diverse() {
+        let mut saw_non_int64 = false;
+        for seed in 0u64..256 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(37);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut src = String::from("(do (def (main) ");
+            gen_typed_compound(&mut ByteCursorChoice::new(&bytes), &mut src);
+            src.push_str(") (export main))");
+            assert!(
+                matches!(
+                    compile_catching(&src),
+                    Verdict::Compiled { .. } | Verdict::Declined { .. }
+                ),
+                "type-diverse compound must be cleanly handled: {src}"
+            );
+            // Reached a non-Int64 element (float / bool / sized) → genuinely past Int64-only compounds.
+            if src.contains(".0")
+                || src.contains("true")
+                || src.contains("false")
+                || src.contains(": ")
+            {
+                saw_non_int64 = true;
+            }
+        }
+        assert!(
+            saw_non_int64,
+            "type-diverse compounds should reach non-Int64 element types"
         );
     }
 
