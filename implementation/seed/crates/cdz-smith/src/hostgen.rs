@@ -8,48 +8,21 @@
 //! multi-effect delegation, a higher-order host argument) — exactly the gaps breaker tracks.
 //!
 //! Shape: `(do (effect e (op o (-> <arg> <ret>))) [ (effect e2 (op o2 …)) ] (def (main) (host (e [e2])
-//! <body>)) (export main))`. Every generated program is well-formed and type-correct, so the compiler
-//! either COMPILES it (a supported boundary shape) or cleanly DECLINES it (a gap) — never a crash / invalid
-//! wasm. Unlike [`astgen`] this is NOT tuned for oracle-comparability (host programs need host-fn modeling);
-//! its product is the DECLINE, captured for the breaker hand-off.
+//! <body>)) (export main))`. The op arg/result types come from a FULLY-ALGEBRAIC WIT-type generator
+//! ([`gen_wit`]) — composed RECURSIVELY over the WIT type constructors (scalars + list/tuple/option/record,
+//! arbitrarily nested), NOT a hard-coded shape list (operator directive on #4924) — so the fuzzer explores
+//! the whole WIT shape space. Every generated program is well-formed + type-correct, so the compiler
+//! COMPILES it (a supported boundary) or cleanly DECLINES it (a "not this slice" gap) — never a crash /
+//! invalid wasm. Unlike [`astgen`] this is NOT tuned for oracle-comparability (host programs need host-fn
+//! modeling); its product is the DECLINE, captured for the breaker hand-off. The gradeable Unit-effect
+//! subset ([`generate_host_unit_effect`]) instead feeds the VALUE differential (v-lean-oracle H1a).
 
 use core::fmt::Write as _;
 
 use crate::generator::Program;
 
-/// Host-op ARGUMENT types — each with a matching literal ([`arg_literal`]) the body passes. Spans the
-/// scalar shapes that cross (`Unit`, `Int64`, `String`), flat compound / higher-order shapes that are
-/// KNOWN gaps, AND NESTED/wider compounds (`(List (List Int64))`, `(Tuple Int64 (List Int64))`) — the
-/// "later increment" slices the boundary model calls out — so the arg surface straddles the frontier
-/// across distinct "not this slice" faces.
-const ARG_TYPES: [&str; 8] = [
-    "Unit",
-    "Int64",
-    "String",
-    "(Tuple Int64 Int64)",
-    "(List Int64)",
-    "(-> Int64 Int64)",
-    "(List (List Int64))",
-    "(Tuple Int64 (List Int64))",
-];
-
-/// Host-op RESULT types — scalar shapes the bare-effect boundary DOES emit (`Int64`, `Unit`, `String`),
-/// flat compounds it does NOT yet (`Bytes`, `(Tuple Int64 Int64)`, `(List Int64)` → world-driven path),
-/// and NESTED/wider compounds (`(List (List Int64))`, `(List (Tuple Int64 Int64))`, `(Tuple Int64 Int64
-/// Int64)`, `(Tuple Int64 (List Int64))`) — the explicitly-named `list<list<…>>`/`list<tuple<…>>` "later
-/// increment" result slices — so the generator surfaces the full compound-result gap ladder.
-const RET_TYPES: [&str; 10] = [
-    "Int64",
-    "Unit",
-    "String",
-    "Bytes",
-    "(Tuple Int64 Int64)",
-    "(List Int64)",
-    "(List (List Int64))",
-    "(List (Tuple Int64 Int64))",
-    "(Tuple Int64 Int64 Int64)",
-    "(Tuple Int64 (List Int64))",
-];
+/// Max nesting depth of a composed WIT type — bounds program size while allowing arbitrary nestings.
+const MAX_TYPE_DEPTH: usize = 3;
 
 /// A minimal byte-cursor over the entropy: yields `0` once spent (so choices bottom out deterministically).
 struct Cursor<'a> {
@@ -72,63 +45,134 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// The literal a host call passes for an argument of type `arg` (matching [`ARG_TYPES`]); `""` for `Unit`
-/// (no argument). Kept to literals with no runtime/store dependency.
-fn arg_literal(arg: &str) -> &'static str {
-    match arg {
-        "Int64" => " 5",
-        "String" => " \"x\"",
-        "(Tuple Int64 Int64)" => " (tuple 1 2)",
-        "(List Int64)" => " (list 1 2 3)",
-        "(-> Int64 Int64)" => " (fn (x) x)",
-        "(List (List Int64))" => " (list (list 1 2) (list 3 4))",
-        "(Tuple Int64 (List Int64))" => " (tuple 1 (list 2 3))",
-        _ => "", // Unit: no argument
+/// A generated WIT type: its Cadenza type syntax `ty` and a matching VALUE literal `lit` (a valid,
+/// unambiguous value of that type, for a host-call argument).
+struct WitType {
+    ty: String,
+    lit: String,
+}
+
+/// FULLY-ALGEBRAIC WIT-type generator (operator directive on #4924: "generate arbitrary types … make the
+/// generator fully algebraic — NOT a hard-coded list"). Composes the WIT type algebra RECURSIVELY over
+/// its constructors so the fuzzer explores the whole shape space, not a curated catalog:
+/// * scalars — `Int64` / `Bool` / `String` / `Unit` (each with a value literal);
+/// * `(List T)` / `(Tuple T U)` / `(Option T)` / `(Record (: a T) (: b U))` — arbitrarily NESTED to
+///   `MAX_TYPE_DEPTH`, each with a matching literal (`(list …)` / `(tuple …)` / `(Some …)` /
+///   `(record (= a …) (= b …))`).
+///
+/// Deliberately unambiguous LITERALS only (so a value type-infers, reaching the compiler as a decline
+/// rather than a spurious inference error): `(Some v)` not bare `(None)`. Constructors whose bare value
+/// needs a type annotation to infer (`Result`/`Variant`/`Enum`/`Flags`) are a follow-up — they slot in as
+/// more `gen_wit` arms once value generation for them is settled. Types with no WIT equivalent
+/// (BigInt/Rational/Map/Set) stay out of scope per the same ruling.
+fn gen_wit(c: &mut Cursor, depth: usize) -> WitType {
+    // At depth 0 only scalars (4 arms); deeper also the compound constructors (4 more).
+    let compound = if depth == 0 { 0 } else { 4 };
+    match c.pick(4 + compound) {
+        0 => WitType {
+            ty: "Int64".into(),
+            lit: int_literal(c),
+        },
+        1 => WitType {
+            ty: "Bool".into(),
+            lit: (if c.pick(2) == 0 { "true" } else { "false" }).into(),
+        },
+        2 => WitType {
+            ty: "String".into(),
+            lit: "\"x\"".into(),
+        },
+        3 => WitType {
+            ty: "Unit".into(),
+            lit: "unit".into(),
+        },
+        // (List T)
+        4 => {
+            let e = gen_wit(c, depth - 1);
+            WitType {
+                ty: format!("(List {})", e.ty),
+                lit: format!("(list {} {})", e.lit, e.lit),
+            }
+        }
+        // (Tuple T U)
+        5 => {
+            let a = gen_wit(c, depth - 1);
+            let b = gen_wit(c, depth - 1);
+            WitType {
+                ty: format!("(Tuple {} {})", a.ty, b.ty),
+                lit: format!("(tuple {} {})", a.lit, b.lit),
+            }
+        }
+        // (Option T) — `(Some v)` (unambiguous); bare `(None)` would need an annotation.
+        6 => {
+            let e = gen_wit(c, depth - 1);
+            WitType {
+                ty: format!("(Option {})", e.ty),
+                lit: format!("(Some {})", e.lit),
+            }
+        }
+        // (Record (: a T) (: b U))
+        _ => {
+            let a = gen_wit(c, depth - 1);
+            let b = gen_wit(c, depth - 1);
+            WitType {
+                ty: format!("(Record (: a {}) (: b {}))", a.ty, b.ty),
+                lit: format!("(record (= a {}) (= b {}))", a.lit, b.lit),
+            }
+        }
     }
 }
 
-/// Emit one `(effect <name> (op <op> (-> <arg> <ret>)))` declaration into `out`.
-fn emit_effect(name: &str, op: &str, arg: &str, ret: &str, out: &mut String) {
-    write!(out, "(effect {name} (op {op} (-> {arg} {ret}))) ").ok();
+/// An edge-biased `Int64` literal (boundaries where width/marshalling bugs cluster).
+fn int_literal(c: &mut Cursor) -> String {
+    format!("{}", HOST_INT_BOUNDARIES[c.pick(HOST_INT_BOUNDARIES.len())])
 }
 
-/// Coerce arbitrary entropy into a valid HOST/EFFECT program (always well-formed + type-correct). The
-/// compiler COMPILES it (supported boundary) or cleanly DECLINES it (a gap) — the decline is the product.
+/// Coerce arbitrary entropy into a valid HOST/EFFECT program (always well-formed + type-correct), with
+/// op signatures drawn from the FULLY-ALGEBRAIC WIT-type generator [`gen_wit`] — so the compiler COMPILES
+/// it (a supported boundary shape) or cleanly DECLINES it (a "not this slice" gap); the decline is the
+/// product. Optionally emits a second effect (multi-interface delegation is itself a tracked gap).
 pub fn generate_host(entropy: &[u8]) -> Program {
     let mut c = Cursor::new(entropy);
     let mut source = String::from("(do ");
 
-    // Effect `e` with op `o`.
-    let arg = ARG_TYPES[c.pick(ARG_TYPES.len())];
-    let ret = RET_TYPES[c.pick(RET_TYPES.len())];
-    emit_effect("e", "o", arg, ret, &mut source);
+    // Effect `e` with op `o`: an arbitrary WIT arg type + an arbitrary WIT result type.
+    let arg = gen_wit(&mut c, MAX_TYPE_DEPTH);
+    let ret = gen_wit(&mut c, MAX_TYPE_DEPTH);
+    write!(source, "(effect e (op o (-> {} {}))) ", arg.ty, ret.ty).ok();
 
-    // Optionally a SECOND effect `e2` — delegating >1 host effect is itself a known gap (declines), and
-    // when it is supported this exercises the multi-interface boundary. Only `e2`'s ARG type flows to the
-    // body (its result type is consumed by `emit_effect`); `arg2` is `""` (Unit call) when absent.
     let two = c.pick(2) == 1;
     let arg2 = if two {
-        let a = ARG_TYPES[c.pick(ARG_TYPES.len())];
-        let r = RET_TYPES[c.pick(RET_TYPES.len())];
-        emit_effect("e2", "p", a, r, &mut source);
-        a
+        let a = gen_wit(&mut c, MAX_TYPE_DEPTH);
+        let r = gen_wit(&mut c, MAX_TYPE_DEPTH);
+        write!(source, "(effect e2 (op p (-> {} {}))) ", a.ty, r.ty).ok();
+        Some(a)
     } else {
-        "Unit"
+        None
     };
 
+    // The perform passes the arg's value literal; a `Unit` arg takes no value (`(e.o)`), matching the
+    // corpus `(-> Unit …)` call shape. `main` is the perform (or a `do`-sequence of both) → its value.
+    let call = |name: &str, a: &WitType| {
+        if a.ty == "Unit" {
+            format!("({name})")
+        } else {
+            format!("({name} {})", a.lit)
+        }
+    };
     source.push_str("(def (main) ");
-    if two {
-        // A two-effect host body — `(do (o …) (p …))` sequences both calls (delegating >1 host effect is
-        // itself a known gap that declines; when supported it exercises the multi-interface boundary).
-        write!(
-            source,
-            "(host (e e2) (do (e.o{}) (e2.p{})))",
-            arg_literal(arg),
-            arg_literal(arg2)
-        )
-        .ok();
-    } else {
-        write!(source, "(host (e) (e.o{}))", arg_literal(arg)).ok();
+    match &arg2 {
+        Some(a2) => {
+            write!(
+                source,
+                "(host (e e2) (do {} {}))",
+                call("e.o", &arg),
+                call("e2.p", a2)
+            )
+            .ok();
+        }
+        None => {
+            write!(source, "(host (e) {})", call("e.o", &arg)).ok();
+        }
     }
     source.push_str(") (export main))");
     Program { source }
