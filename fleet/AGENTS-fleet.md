@@ -248,6 +248,15 @@ pre-sends with the NARROW checks only:
   case(s) your slice touches.
 - `cargo test -p <your-crate> --lib` for a specific test `dev-gate` isn't surfacing.
 
+**🚦 DIRECT-TO-MAIN gate while pr-sync is PAUSED: `cargo xtask fleet gate-local`.** With pr-sync paused
+the fleet lands direct to main, so *you* run the authoritative required-set gate before landing — that is
+`cargo xtask fleet gate-local` (builds `.#checks.<arch>-linux.local-gate`, the aggregate of the 9
+merge-required checks + mandate-lint). It prints a clear verdict: `LANDABLE` (green) or `HOLD`, and on
+HOLD it now **names the failing sub-check(s)** — e.g. `HOLD — failing sub-check(s): wasm-runtime-build`
+with the exact `nix build .#checks.<arch>-linux.<name> -L` to see that check's error (no more opaque "1
+dependency failed"). If a sub-check is a KNOWN pre-existing red unrelated to your change, you may still
+`--admin`-merge your own-sound change — but now you can SEE which check + confirm it's not your regression.
+
 **🚫 NEVER run native `cargo test --workspace` (or `cargo xtask test`).** It is UNCACHED + full-workspace
 + fleet-hostile: it shares nothing across the fleet, cold-rebuilds, and fans test threads out to every
 core (the `[build] jobs=4` cap bounds COMPILE jobs, NOT test-thread execution) — it caused an
