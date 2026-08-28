@@ -338,6 +338,7 @@ impl Fleet {
             "prune-stale-targets.sh",
             "prune-tmp-inodes.sh",
             "reap-wedged-nix-clients.sh",
+            "refresh-tools.sh",
         ] {
             let src = self.src.join(f);
             if src.exists() {
@@ -14716,7 +14717,12 @@ mod tests {
         // executable bit — the concierge's maintenance cron calls the HUB copies, so a refactor that
         // drops one from the materialize set (or its chmod) would silently point the cron at a
         // stale/absent/non-exec file.
-        let scripts = ["prune-stale-targets.sh", "prune-tmp-inodes.sh"];
+        let scripts = [
+            "prune-stale-targets.sh",
+            "prune-tmp-inodes.sh",
+            "reap-wedged-nix-clients.sh",
+            "refresh-tools.sh",
+        ];
         let base = std::env::temp_dir().join(format!("cdz-materialize-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let src = base.join("fleet");
