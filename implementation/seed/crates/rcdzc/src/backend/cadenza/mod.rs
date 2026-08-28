@@ -620,7 +620,7 @@ fn emit_expr_viewed(
                 };
                 let operand_ty = crate::infer::type_of(db, lhs);
                 let module = match &operand_ty {
-                    Ty::Int(_) => operand_ty.render_name(&db.name_ctx()),
+                    Ty::Int(it) => int_module_ast(b, *it),
                     _ => {
                         return Err(Reject::decline(
                             "the Cadenza backend cannot recover the int type for a wrapping op"
@@ -628,7 +628,7 @@ fn emit_expr_viewed(
                         ));
                     }
                 };
-                let head = member_access(b, &module, member);
+                let head = member_access_node(b, module, member);
                 let l = emit_expr(db, b, lhs, None, env, emitted)?;
                 let r = emit_expr(db, b, rhs, None, env, emitted)?;
                 return Ok(b.list(vec![head, l, r]));
@@ -671,7 +671,7 @@ fn emit_expr_viewed(
         Core::BigIntToI64 { operand } => {
             let ty = crate::infer::type_of(db, id);
             let module = match &ty {
-                Ty::Int(_) => ty.render_name(&db.name_ctx()),
+                Ty::Int(it) => int_module_ast(b, *it),
                 _ => {
                     return Err(Reject::decline(
                         "the Cadenza backend cannot recover the target int type for a BigInt narrow"
@@ -679,7 +679,7 @@ fn emit_expr_viewed(
                     ));
                 }
             };
-            let head = member_access(b, &module, "of");
+            let head = member_access_node(b, module, "of");
             let x = emit_expr(db, b, operand, None, env, emitted)?;
             Ok(b.list(vec![head, x]))
         }
@@ -696,8 +696,23 @@ fn emit_expr_viewed(
         // first; a `Wrap` narrow is total, has no such `Trap`, and reaches here.)
         Core::Convert { op, operand } => {
             let ty = crate::infer::type_of(db, id);
-            let module = match &ty {
-                Ty::Int(_) | Ty::Float(_) => ty.render_name(&db.name_ctx()),
+            let member = match op {
+                crate::resolved::Prim::FloatOfInt => "of-int",
+                crate::resolved::Prim::Wrap => "wrap",
+                _ => "of",
+            };
+            // The target module head: a fixed-width int renders to its recompilable surface (a bare
+            // alias name, or the ctor application `(Int 24)` for an odd width); a float width is always
+            // aliased (`Float32`/`Float64`), so its bare name is fine.
+            let head = match &ty {
+                Ty::Int(it) => {
+                    let module = int_module_ast(b, *it);
+                    member_access_node(b, module, member)
+                }
+                Ty::Float(_) => {
+                    let module = ty.render_name(&db.name_ctx());
+                    member_access(b, &module, member)
+                }
                 _ => {
                     return Err(Reject::decline(
                         "the Cadenza backend does not yet lower a non-numeric Convert (e.g. a boolean \
@@ -706,12 +721,6 @@ fn emit_expr_viewed(
                     ));
                 }
             };
-            let member = match op {
-                crate::resolved::Prim::FloatOfInt => "of-int",
-                crate::resolved::Prim::Wrap => "wrap",
-                _ => "of",
-            };
-            let head = member_access(b, &module, member);
             let x = emit_expr(db, b, operand, None, env, emitted)?;
             Ok(b.list(vec![head, x]))
         }
@@ -1796,6 +1805,34 @@ fn member_access(b: &mut Builder, operand: &str, key: &str) -> StructId {
     let op = b.name(operand);
     let k = b.name(key);
     b.list(vec![dot, op, k])
+}
+
+/// A member access `(. <module> <key>)` where the module head is an already-built AST node (not a bare
+/// name) — used for a fixed-width int module whose surface may be the ctor application `(Int 24)`.
+fn member_access_node(b: &mut Builder, module: StructId, key: &str) -> StructId {
+    let dot = b.name(".");
+    let k = b.name(key);
+    b.list(vec![dot, module, k])
+}
+
+/// The recompilable SURFACE for a fixed-width integer type used as a MEMBER-ACCESS module head
+/// (`(. <module> wrap)` / `(. <module> of)` / `(. <module> wrapping-add)`). An ALIASED width
+/// (8/16/32/64) has a bound type name (`Int32`/`UInt8`), so the module is that bare name. An ODD width
+/// has NO alias — its surface is the constructor application `(Int 24)` / `(UInt 48)` (the `Int`/`UInt`
+/// ctor applied to the width), so a bare `Int24`/`UInt48` name would be UNBOUND (CDZ0101) on recompile.
+fn int_module_ast(b: &mut Builder, it: crate::ty::IntTy) -> StructId {
+    let width = it.ground_width();
+    let stem = if it.ground_signed() { "Int" } else { "UInt" };
+    if matches!(width, 8 | 16 | 32 | 64) {
+        b.name(format!("{stem}{width}"))
+    } else {
+        let ctor = b.name(stem);
+        let w = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_i64(i64::from(width)),
+            radix: Radix::Dec,
+        });
+        b.list(vec![ctor, w])
+    }
 }
 
 /// The SURFACE operator a runtime-operator prim re-emits as, or `None` for a prim that is not a binary
