@@ -2072,6 +2072,43 @@ fn expr_tail_is_call_consuming_payload(db: &mut Db, id: StructId, scrut: StructI
     }
 }
 
+/// The number of DISTINCT `Core::MatchSum` nodes in `top_body` whose scrutinee is a direct reference to
+/// `binder`. Used to detect a SHARED (borrowed) sum param: the non-tail-spine reclaim owns a param's shell
+/// ONLY when that param is matched EXACTLY ONCE (the single match holds its last owned ref, so the emit's
+/// tail-MatchSum param-slot drop reclaims it). A param matched by MORE THAN ONE MatchSum is SHARED/borrowed
+/// — its shell is NOT emit-reclaimed and `mark_binder_dups` already owns the dup of each shared payload
+/// extraction; the shell-reclaim dup-pass must NOT also mark that extraction, else the SAME SumPayload node
+/// is claimed by both collectors (the exactly-one-of B2 invariant breaks — a benign double-mark, dedup'd by
+/// the union set in emit, but a real collector over-claim). `count_param_consumes==0` does NOT catch this
+/// (a match scrutinee borrow is not a consume), so this is the missing shared-scrutinee guard. Cheap: one
+/// cycle-guarded walk. A `binder` that is a Sum param is read only through matches (a Sum has no borrowing
+/// op like `vec-len`), so counting MatchSum scrutinees is the complete sharing signal for this path.
+fn count_matchsum_over_binder(db: &mut Db, top_body: StructId, binder: StructId) -> usize {
+    fn go(
+        db: &mut Db,
+        id: StructId,
+        binder: StructId,
+        seen: &mut HashSet<StructId>,
+        n: &mut usize,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        if let Core::MatchSum { scrutinee, .. } = core_of(db, id)
+            && is_ref_to(db, scrutinee, binder)
+        {
+            *n += 1;
+        }
+        for c in core_child_ids(db, id) {
+            go(db, c, binder, seen, n);
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut n = 0usize;
+    go(db, top_body, binder, &mut seen, &mut n);
+    n
+}
+
 fn collect_shell_reclaim_child_dups(db: &mut Db, id: StructId, dup_sites: &mut HashSet<StructId>) {
     // SHARING-AWARE: a shared Core `StructId` reached under N parents would otherwise be re-descended N
     // times (the exponential DAG re-walk — v-core-opt profile: this walk was ~55% of one self-host body's
@@ -2127,7 +2164,12 @@ fn collect_shell_reclaim_child_dups_seen(
                 let mut seen2 = HashSet::new();
                 let mut total = 0usize;
                 count_param_consumes(db, top_body, binder, &mut seen2, &mut total);
-                total == 0
+                // SOLE-CONSUME (count_param_consumes==0) AND SOLE-MATCH: a param matched by >1 MatchSum is
+                // SHARED/borrowed — its shell is NOT emit-reclaimed and mark_binder_dups owns the shared
+                // payload dup, so the shell-reclaim pass must NOT also mark it (else the same SumPayload
+                // node is double-claimed: the b2 shared-scrutinee overlap, flagged by v-mem-safety). The
+                // single-match non-tail spine (sum-nat) matches its param exactly once → unaffected.
+                total == 0 && count_matchsum_over_binder(db, top_body, binder) <= 1
             })
             // §5-DISJOINTNESS: skip if the payload is consumed by a call in the arm's TAIL position — that is
             // §5's self-loop-tail spine shape (`(rec tail …)` as the arm tail), where emit_loop_iteration
@@ -23177,7 +23219,11 @@ mod tests {
         let (shell, row, dup) = b2_dup_site_sets(&mut db, body);
         // A SHARED scrutinee is BORROWED (not the last use), so shell_reclaim (which reclaims an OWNED
         // scrutinee's shell) does NOT fire — mark_binder_dups covers the shared scrutinee read instead. The
-        // Q2 ownership caveat thus resolves to exactly-one (dup), never both.
+        // Q2 ownership caveat thus resolves to exactly-one (dup), never both. #4857's non-tail-spine
+        // relaxation of `collect_shell_reclaim_child_dups` initially over-fired here (it marked w's first
+        // consuming payload extraction, a SumPayload the shared-read dup already owns, because
+        // count_param_consumes==0 does not detect a scrutinee matched TWICE) → the `count_matchsum_over_binder
+        // <= 1` sole-match guard now excludes the shared param, restoring exactly-one-of.
         assert!(!dup.is_empty(), "the shared scrutinee w must be a dup site");
         assert!(
             shell.is_empty(),
