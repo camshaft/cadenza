@@ -462,6 +462,23 @@
           [ (d + "/Cargo.toml") ]
           ++ pkgs.lib.optional (builtins.pathExists (d + "/src")) (d + "/src")
           ++ pkgs.lib.optional (builtins.pathExists (d + "/build.rs")) (d + "/build.rs");
+        # scopedToolSrc — a SCOPED src for a plain-cargo (stdenvNoCC) TOOL build (`cargo build -p CRATE`):
+        # FULL src/ for CRATE's dep-closure + Cargo.toml-only for every non-closure member (+ the buildPhase
+        # writes synthetic stubs via `stubNonClosure (crateClosure crate)` so cargo's `members` glob parses)
+        # + the pins + any `extra` runtime files the tool READS (e.g. a WIT dir). Replaces the broad
+        # `platformItestSrc` (which unioned ./xtask + ALL seed crates + compiler-ml + spec/semantics) for the
+        # pure-build tools — that breadth made ANY edit under those paths (xtask, a corpus .sexp, an unrelated
+        # crate) spuriously rotate the tool, and worldArtifacts/cdzComponentRewrite feed the runtime component
+        # → its hash → seedCompiler, so a single xtask edit rebuilt the whole compiler world + could flip
+        # guide-examples (v-xtask-decompose 87ba0546, v-nix 2026-08-28). Mirrors seedCompilerSrc's isolation.
+        scopedToolSrc = { crate, extra ? [ ] }: pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions (
+            (pkgs.lib.concatMap crateCompileSrc (crateClosure crate))
+            ++ nonClosureManifests (crateClosure crate)
+            ++ [ ./xtask/Cargo.toml ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]
+            ++ extra);
+        };
         # crane buildDepsOnly (operator fleet-velocity mandate — MR1, additive, NO consumer yet): compile the
         # workspace's DEPENDENCY closure ONCE into a content-addressed derivation cached in the /nix/store
         # (which the cache-nix-action rollout now shares across CI runs). Measured: deps are 61% of the
@@ -1225,10 +1242,19 @@
         worldArtifacts = pkgs.stdenvNoCC.mkDerivation {
           pname = "cdz-platform-world-artifacts";
           version = "0.0.0";
-          src = platformItestSrc;
+          # SCOPED (v-nix 2026-08-28): build cdz-world-artifact from its own closure, NOT the broad
+          # platformItestSrc — else an xtask/corpus/unrelated edit rotates this, and it feeds the runtime
+          # WIT world → runtime component → hash → seedCompiler. `extra` keeps the platform WIT the
+          # installPhase reads (world.wit + wit/test/arg-probe.wit).
+          src = scopedToolSrc {
+            crate = "cdz-world-artifact";
+            extra = [ ./implementation/seed/crates/cdz-platform/wit ];
+          };
           nativeBuildInputs = [ rustToolchain ];
           buildPhase = ''
             runHook preBuild
+            chmod -R u+w .
+            ${stubNonClosure (crateClosure "cdz-world-artifact")}
             ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
             cargo build --release --locked -p cdz-world-artifact --bin cdz-world-artifact
             runHook postBuild
@@ -1434,10 +1460,13 @@
         contractHasher = pkgs.stdenvNoCC.mkDerivation {
           pname = "cdz-contract";
           version = "0.0.0";
-          src = platformItestSrc;
+          # SCOPED (v-nix 2026-08-28): cdz-contract's own closure, not the broad platformItestSrc.
+          src = scopedToolSrc { crate = "cdz-contract"; };
           nativeBuildInputs = [ rustToolchain ];
           buildPhase = ''
             runHook preBuild
+            chmod -R u+w .
+            ${stubNonClosure (crateClosure "cdz-contract")}
             ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
             cargo build --release --locked -p cdz-contract --bin cdz-contract
             runHook postBuild
@@ -1455,13 +1484,25 @@
         # into the heap's `cadenza:nfc/normalize` import — making the heap self-describing (the runtime
         # resolves NFC purely from the import name, no `runtime.toml`/mapping; operator directive 2026-08-23),
         # exactly as `cargo xtask build` does. Reuses `platformItestSrc` (includes `crates/`) + `seedCargoVendor`.
+        # SCOPED src (v-nix 2026-08-28): cdzComponentRewrite is on the RUNTIME critical path — mkRuntime
+        # stamps the value-heap component with it, so its hash feeds runtime/nfc-hash → seedCompiler. It
+        # MUST NOT use the broad platformItestSrc (which unions ./xtask + ALL seed crates + compiler-ml +
+        # spec/semantics): that made ANY edit under those paths (xtask, a corpus .sexp, an unrelated seed
+        # crate — the fleet touches them every few min) spuriously rotate this tool → rebuild the runtime
+        # component + hashes + the whole compiler world (an incremental-cache regression; also exposed a
+        # latent OOB via non-reproducible rebuild — v-xtask-decompose 87ba0546). Scope it to just the
+        # cdz-component-rewrite crate + its dep-closure src + workspace-parse manifests, exactly like
+        # seedCompilerSrc / the crane per-crate checks, with synthetic stubs for non-closure members so
+        # `cargo -p cdz-component-rewrite` parses the workspace without their real src.
         cdzComponentRewrite = pkgs.stdenvNoCC.mkDerivation {
           pname = "cdz-component-rewrite";
           version = "0.0.0";
-          src = platformItestSrc;
+          src = scopedToolSrc { crate = "cdz-component-rewrite"; };
           nativeBuildInputs = [ rustToolchain ];
           buildPhase = ''
             runHook preBuild
+            chmod -R u+w .
+            ${stubNonClosure (crateClosure "cdz-component-rewrite")}
             ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
             cargo build --release --locked -p cdz-component-rewrite --bin cdz-component-rewrite
             runHook postBuild
