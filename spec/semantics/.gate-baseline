@@ -1361,6 +1361,7 @@ pass	a bare prelude Option is built via if and matched to its payload or a defau
 pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare primitive operator passed as a first-class function value folds via the annotation see-through
 pass	a bare reference to a nullary function denotes its body value
+pass	a bare subset map pattern (fewer keys, no rest) matches a larger runtime map — open key-presence semantics
 pass	a bare type-name-colliding variant name constructs as the local variant
 pass	a bare under-applied generic nested as a type argument declines, does not stack-overflow the compiler
 pass	a bare user constructor is passed as a first-class function to a higher-order function
