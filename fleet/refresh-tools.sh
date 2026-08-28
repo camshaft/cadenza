@@ -38,4 +38,14 @@ if timeout 300 nix build "$FLAKE#packages.aarch64-linux.cdz-shell-wrappers" --ou
   ln -sf "$ROOT"/bin/* "$BIN"/ 2>/dev/null || true
   date +%s > "$STAMP" 2>/dev/null || true
 fi
+
+# all-nix cargo shim (operator 2026-08-28): install fleet/cargo-nix-shim as ~/.local/bin/cargo so
+# `cargo test -p CRATE` routes to the nix per-crate test (cached deps, top-crate recompile). ~/.local/bin
+# is BEFORE rustup's ~/.cargo/bin on the snapshot PATH, so this shadows the fleet's cargo. The shim is
+# FAIL-OPEN (default = real cargo, fast-paths cargo xtask fleet orchestration) with a CDZ_NO_CARGO_SHIM=1
+# kill-switch. Idempotent cp from the sibling hub copy (materialized alongside this script).
+SHIM_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cargo-nix-shim.sh"
+if [ -f "$SHIM_SRC" ]; then
+  cp "$SHIM_SRC" "$BIN/cargo" 2>/dev/null && chmod +x "$BIN/cargo" 2>/dev/null || true
+fi
 exit 0
