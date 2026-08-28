@@ -9010,3 +9010,5 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	stt1 a runtime-built binary Exp tree evals exactly and leaks the whole tree (branching-walk calibration)
+pass	stt2 a tree-to-tree transform then eval preserves meaning and leaks BOTH trees (transform calibration)
