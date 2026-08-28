@@ -193,12 +193,6 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
-    /// Emoji-ban lint, standalone (operator directive): fail if any emoji/pictographic/dingbat char
-    /// appears in an `implementation/**/*.rs` source COMMENT. This is the same `emoji_free_lint` the
-    /// omnibus `check` runs, exposed as its own fast subcommand so CI can gate it as an isolated
-    /// advisory job (no full build). Comment-scoped + Unicode-test-doc-excluded, so functional emoji in
-    /// string/char literals (the language's own lex/parse/print fixtures) are correctly left alone.
-    LintEmoji,
     /// Format Cadenza program file(s) through the printer, rewriting them in place.
     Fmt {
         /// The `.cdz`/`.sexp` files to format.
@@ -374,13 +368,6 @@ fn main() {
         Cmd::CanonicalizeBaselines => canonicalize_baselines(&paths),
         Cmd::MergeBaseline { ours, theirs } => merge_baseline(&ours, &theirs),
         Cmd::PruneBaselines { check } => prune_baselines(&paths, profile, check),
-        Cmd::LintEmoji => match emoji_free_lint(&paths) {
-            Ok(()) => println!("lint-emoji: ok — no emoji in source comments"),
-            Err(msg) => {
-                eprintln!("lint-emoji: {msg}");
-                std::process::exit(1);
-            }
-        },
         Cmd::Fmt { files, to, check } => fmt(&paths, profile, files, &to, check),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
         Cmd::Codegen { check } => codegen::run(&paths, check),
@@ -5895,7 +5882,7 @@ fn dev_gate_emoji_warn(paths: &Paths) {
     let mut hits: Vec<(PathBuf, usize, char)> = Vec::new();
     for f in implementation_rs_touched(&names) {
         if let Ok(text) = std::fs::read_to_string(paths.repo.join(&f)) {
-            for (line, c) in banned_emoji_hits(&text) {
+            for (line, c) in xtask_support::banned_emoji_hits(&text) {
                 hits.push((f.clone(), line, c));
             }
         }
@@ -6415,7 +6402,7 @@ fn check(paths: &Paths, profile: &str) {
     // an `implementation/**/*.rs` source COMMENT. Cheap (a text walk, no rebuild) + comment-scoped so it
     // never touches functional emoji in string/char literals (Unicode test strings, output markers) or the
     // legitimate technical typography (em-dash/arrows/math) it deliberately allows. See `emoji_free_lint`.
-    log.step_native("emoji-free", || emoji_free_lint(paths));
+    log.step_native("emoji-free", || xtask_support::emoji_free_lint(&paths.repo));
     // Mandate-enforcement lint: NO LONGER an inline step here (v-xtask-decompose 2026-08-28). The
     // mandate lint now lives in the STANDALONE `xtask-mandates` crate + the nix `mandateLintCheck`
     // (rewired to `cargo run -p xtask-mandates`), which gate-local folds into its fail-set — the
@@ -7207,145 +7194,6 @@ fn needs_clause_lines(text: &str) -> Vec<usize> {
         .filter(|(_, line)| line.trim_start().starts_with("(needs "))
         .map(|(i, _)| i + 1)
         .collect()
-}
-
-/// True if `c` is an EMOJI / pictographic / dingbat character — the class the operator wants banned from
-/// source ("tired of seeing emojis"). Deliberately NARROW: it does NOT flag legitimate technical
-/// typography that pervades this compiler's comments — em-dash (—), arrows (→ ⇒ ↔), box-drawing (─),
-/// ellipsis (…), math (∀ ∈ ≥ ≤ ≠ ≡ × ²), section (§), Greek (β), or accented Latin (é) — banning THOSE
-/// would be a 282-file style-destroying sweep for no benefit (scope decision B, concierge-confirmed
-/// 2026-08-07). The ranges below are the Unicode emoji/symbol blocks that carry actual emojis + status
-/// dingbats (✓ ✗ ⚠ 🪤 🔴 🎉 …): Miscellaneous Symbols + Dingbats (U+2600–27BF), Miscellaneous Symbols and
-/// Arrows subset used for decorative marks (U+2B00–2BFF), the Variation Selectors that render text-glyphs
-/// as emoji (U+FE00–FE0F), the Supplemental/Emoticons/Pictographs planes (U+1F000–1FAFF), and Regional
-/// Indicators (U+1F1E6–1F1FF, flag letters). Pure so the range choice is unit-tested without the FS.
-fn is_emoji_char(c: char) -> bool {
-    let o = c as u32;
-    (0x2600..=0x27BF).contains(&o)      // Misc Symbols + Dingbats (✓ ✗ ✔ ⚠ ☃ ✉ ❯ …)
-        || (0x2B00..=0x2BFF).contains(&o)   // Misc Symbols & Arrows decorative (⬆ ⬇ ⭐ …)
-        || (0x2691..=0x2691).contains(&o)   // ⚑ flag (used as a status marker)
-        || (0xFE00..=0xFE0F).contains(&o)   // Variation Selectors (emoji-presentation ️)
-        || (0x1F000..=0x1FAFF).contains(&o) // Emoticons / Pictographs / Supplemental (😀 🔑 🎉 🪤 🔴 🩸 …)
-}
-
-/// True if a line is a Rust COMMENT (`///` doc, `//!` inner-doc, `//` line, or a `*` doc-block
-/// continuation) — the emoji-ban targets COMMENTS/DOCS (the operator's stated pain), not code. A
-/// functional emoji in a string/char literal (an output marker, a Unicode test string) is out of scope;
-/// scanning only comment lines skips those structurally instead of by a fragile per-file exception.
-fn line_is_comment(line: &str) -> bool {
-    let t = line.trim_start();
-    t.starts_with("///") || t.starts_with("//!") || t.starts_with("//") || t.starts_with('*')
-}
-
-/// True if a comment line legitimately DOCUMENTS a character as the subject of Unicode-handling test
-/// data (e.g. "surrogate PAIR U+1F600 😀", `"😀" = 4 bytes`) — stripping the emoji there would break the
-/// comment's meaning, and the operator excludes deliberate-Unicode test data. The distinction that
-/// matters is whether the emoji is the SUBJECT (documented test data) vs a decorative MARKER: a marker
-/// (⚠/⚡ opening a warning) is banned even on a comment that happens to say "byte"/"scalar" in prose (a
-/// compiler discusses byte-lengths + scalars constantly). So exclude ONLY on a STRONG codepoint signal
-/// (`U+…`, surrogate/astral/codepoint) OR when an emoji appears INSIDE a quoted `"…"` string in the
-/// comment (the emoji quoted AS the datum under test). Bare "byte"/"scalar" no longer excludes — that
-/// over-match was letting decorative ⚠ markers through (v-agent-harness caught component_store.rs:80).
-fn is_unicode_test_doc(line: &str) -> bool {
-    let strong = line.contains("U+")
-        || line.contains("surrogate")
-        || line.contains("astral")
-        || line.contains("codepoint");
-    strong || emoji_inside_a_quote(line)
-}
-
-/// True if any emoji char appears inside a double-quoted `"…"` substring of `line` — i.e. the emoji is
-/// quoted as a literal datum (a Unicode test string the comment documents, like `"😀" = 4 bytes`), not a
-/// bare decorative marker. A simple quote-state scan; pure + unit-tested.
-fn emoji_inside_a_quote(line: &str) -> bool {
-    let mut in_quote = false;
-    for c in line.chars() {
-        if c == '"' {
-            in_quote = !in_quote;
-        } else if in_quote && is_emoji_char(c) {
-            return true;
-        }
-    }
-    false
-}
-
-/// Every (1-based line, emoji char) an emoji-ban lint would FLAG in `text`: emoji chars that appear in a
-/// COMMENT line that is NOT Unicode-test documentation. This is the exact predicate the cleanup applied,
-/// factored out pure so both the lint and its scope are unit-tested off the filesystem.
-fn banned_emoji_hits(text: &str) -> Vec<(usize, char)> {
-    text.lines()
-        .enumerate()
-        .filter(|(_, line)| line_is_comment(line) && !is_unicode_test_doc(line))
-        .flat_map(|(i, line)| {
-            line.chars()
-                .filter(|c| is_emoji_char(*c))
-                .map(move |c| (i + 1, c))
-        })
-        .collect()
-}
-
-/// EMOJI-BAN lint (operator directive 2026-08-07: "ban emojis in the codebase ... tired of seeing
-/// emojis"). Walks every `implementation/**/*.rs` source file and FAILS `check` if any emoji /
-/// pictographic / dingbat char appears in a NON-Unicode-test-doc COMMENT. SCOPE (concierge-confirmed
-/// emoji-only, NOT all-non-ASCII — the compiler's em-dash/arrow/box/math typography is legitimate and
-/// stays): only `implementation/` source (the compiler + libraries), NOT `xtask/` (fleet-tooling output
-/// markers like the inbox glyphs are functional) and NOT `fleet/`. Comment-scoped, so a functional emoji
-/// in a string/char literal (a Unicode test string, an output marker) is structurally out of scope.
-/// Fails loudly if it cannot enumerate its inputs (a silent 0-file pass would let an emoji slip in),
-/// mirroring `needs_free_lint`.
-fn emoji_free_lint(paths: &Paths) -> Result<(), String> {
-    let root = paths.repo.join("implementation");
-    let mut files: Vec<PathBuf> = Vec::new();
-    collect_rs_files(&root, &mut files).map_err(|e| {
-        format!(
-            "cannot enumerate {} for the emoji lint: {e}",
-            root.display()
-        )
-    })?;
-    files.sort();
-    if files.is_empty() {
-        return Err(format!(
-            "no *.rs source files found under {} — the emoji lint would pass vacuously",
-            root.display()
-        ));
-    }
-    let mut hits: Vec<String> = Vec::new();
-    for file in &files {
-        let text = std::fs::read_to_string(file)
-            .map_err(|e| format!("cannot read {} for the emoji lint: {e}", file.display()))?;
-        let rel = file.strip_prefix(&paths.repo).unwrap_or(file).display();
-        for (line_no, ch) in banned_emoji_hits(&text) {
-            hits.push(format!("{rel}:{line_no}: {ch:?} (U+{:04X})", ch as u32));
-        }
-    }
-    if hits.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "found {} emoji character(s) in source COMMENTS — the codebase bans emojis (operator directive; \
-         legitimate technical typography — em-dash, arrows, box-drawing, math — is fine, only \
-         emoji/pictographic/dingbat chars are rejected). Replace with an ASCII label (e.g. WARNING:, \
-         CRITICAL:, KEYSTONE:) or drop it. At:\n  {}",
-        hits.len(),
-        hits.join("\n  ")
-    ))
-}
-
-/// Recursively collect every `*.rs` file under `dir` into `out`. Skips `target/` build dirs. A plain
-/// helper for the emoji lint's file walk (the corpus lints read a flat dir; source is a tree).
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            if path.file_name().is_some_and(|n| n == "target") {
-                continue;
-            }
-            collect_rs_files(&path, out)?;
-        } else if path.extension().is_some_and(|x| x == "rs") {
-            out.push(path);
-        }
-    }
-    Ok(())
 }
 
 /// The first-argument IDENTIFIER of every `(<head> <arg> …)` call in `program` whose head is exactly
@@ -8840,53 +8688,6 @@ mod trap_grading_tests {
     }
 
     #[test]
-    fn banned_emoji_hits_scopes_to_non_testdoc_comments() {
-        // The char classifier: emojis/dingbats flagged; technical typography (em-dash/arrows/box/math/
-        // section/Greek/accented-Latin) is NOT — banning THOSE would be scope (A), rejected.
-        assert!(
-            is_emoji_char('😀') && is_emoji_char('🔑') && is_emoji_char('⚠') && is_emoji_char('⚑')
-        );
-        assert!(!is_emoji_char('—') && !is_emoji_char('→') && !is_emoji_char('─'));
-        assert!(
-            !is_emoji_char('∀')
-                && !is_emoji_char('≥')
-                && !is_emoji_char('§')
-                && !is_emoji_char('é')
-        );
-
-        // FLAGGED: an emoji in a plain comment (1-based line + the char).
-        assert_eq!(
-            banned_emoji_hits("// 🪤 a trap\nlet x = 1;\n"),
-            vec![(1, '🪤')]
-        );
-        assert_eq!(
-            banned_emoji_hits("// ok\n// status ✓ vs ✗\n"),
-            vec![(2, '✓'), (2, '✗')]
-        );
-
-        // NOT flagged: technical typography in a comment (the whole point of scope B).
-        assert!(banned_emoji_hits("/// A → B ⇒ C — ∀x ∈ S, x ≥ 0 ≠ 1 … ── §4 café β\n").is_empty());
-
-        // NOT flagged: an emoji in CODE (a string/char literal) — comment-scoped, so functional emoji
-        // (output markers, Unicode test strings) are structurally out of scope.
-        assert!(banned_emoji_hits("let s = \"👍\".repeat(3);\n").is_empty());
-        assert!(banned_emoji_hits("let mark = if act { \"⚑\" } else { \".\" };\n").is_empty());
-
-        // NOT flagged: a COMMENT that documents Unicode test data — via a STRONG codepoint signal...
-        assert!(banned_emoji_hits("// surrogate PAIR U+1F600 😀 is a 4-byte scalar\n").is_empty());
-        assert!(banned_emoji_hits("// a😀b: scalar 1 = U+1F600\n").is_empty());
-        // ...OR the emoji QUOTED as the datum under test (no U+ needed, e.g. `"😀" = 4 bytes`).
-        assert!(banned_emoji_hits("// `\"😀\"` = 4 (four bytes vs one scalar)\n").is_empty());
-
-        // BUT a DECORATIVE marker is flagged even on a comment that says byte/scalar in prose — the
-        // over-broad bare-"byte" exclusion was letting these through (v-agent-harness, component_store).
-        assert_eq!(
-            banned_emoji_hits("/// ⚠ the 32-byte SHA-256 address — a scalar walk\n"),
-            vec![(1, '⚠')]
-        );
-    }
-
-    #[test]
     fn implementation_rs_touched_filters_to_implementation_rs_deduped() {
         // A git --name-only blob (staged+unstaged can list the same file twice) → only implementation/*.rs,
         // deduped + sorted. xtask/fleet/non-.rs are excluded (emoji-ban is implementation-scoped).
@@ -8907,7 +8708,7 @@ mod trap_grading_tests {
         assert!(implementation_rs_touched("").is_empty());
         // The exact v-core-opt miss: a ⚠️ marker line IS a banned hit the dev-gate scan would now surface.
         assert_eq!(
-            banned_emoji_hits(
+            xtask_support::banned_emoji_hits(
                 "/// ⚠️ RESUME-ESCAPE: a handler-arm re-reference is INVISIBLE here\n"
             ),
             vec![(1, '⚠'), (1, '\u{FE0F}')]

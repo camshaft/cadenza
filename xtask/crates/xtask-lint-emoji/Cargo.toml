@@ -1,0 +1,18 @@
+# xtask-lint-emoji — the emoji-ban source lint as its OWN minimal-dep crate (v-xtask-decompose:
+# per-command crate split). Depends ONLY on xtask-support (the shared `emoji_free_lint` detector, which
+# the xtask `check`/dev-gate steps also call — one source of truth, no drift); no dep on xtask itself, so
+# editing this command rebuilds only this crate + xtask-support. The nix `apps.lint-emoji` runs this bin
+# with CDZ_REPO_ROOT (the invoking worktree) — no cargo build of the toolchain, no full-tree compile.
+# `cargo xtask lint-emoji` forwards here via v-fleet-tooling's cargo→nix redirect.
+[package]
+name = "xtask-lint-emoji"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-lint-emoji"
+path = "src/main.rs"
+
+[dependencies]
+xtask-support = { path = "../xtask-support" }

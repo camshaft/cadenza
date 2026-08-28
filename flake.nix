@@ -276,6 +276,16 @@
           doCheck = false;
         });
 
+        # xtaskLintEmojiBin — the STANDALONE emoji-ban source lint (v-xtask-decompose). Built from ONLY the
+        # xtask-lint-emoji crate's closure (deps just xtask-support → cdz-contract → cadenza-ast), so it caches
+        # INDEPENDENTLY of xtask (operator 2026-08-28: "cache each subcrate independently"). `apps.lint-emoji`
+        # wraps it with CDZ_REPO_ROOT. Output: $out/bin/xtask-lint-emoji.
+        xtaskLintEmojiBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-lint-emoji"; }) // {
+          pname = "cdz-xtask-lint-emoji";
+          cargoExtraArgs = "-p xtask-lint-emoji";
+          doCheck = false;
+        });
+
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
         # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
@@ -430,6 +440,9 @@
           # xtask-roundtrip (v-xtask-decompose): the corpus round-trip check as its own bin crate, deps only
           # xtask-support. Registered here so the crane deps-src includes its Cargo.toml.
           xtask-roundtrip = "xtask/crates/xtask-roundtrip";
+          # xtask-lint-emoji (v-xtask-decompose): the emoji-ban source lint as its own bin crate, deps only
+          # xtask-support. Registered here so the crane deps-src includes its Cargo.toml.
+          xtask-lint-emoji = "xtask/crates/xtask-lint-emoji";
         };
         rootCrateNames = builtins.attrNames rootWorkspaceCrates;
         # direct member-edges of one crate across the three rebuild-relevant dep sections (A1 walk).
@@ -739,6 +752,8 @@
               xtask-support = [ "cadenza-ast" "cdz-contract" "xtask-support" ];
               # xtask-roundtrip deps xtask-support (which deps cdz-contract→cadenza-ast).
               xtask-roundtrip = [ "cadenza-ast" "cdz-contract" "xtask-roundtrip" "xtask-support" ];
+              # xtask-lint-emoji deps xtask-support (which deps cdz-contract→cadenza-ast).
+              xtask-lint-emoji = [ "cadenza-ast" "cdz-contract" "xtask-lint-emoji" "xtask-support" ];
               xtask-mandates = [ "xtask-mandates" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
@@ -3557,6 +3572,10 @@
         # The standalone roundtrip command bin. `nix build .#xtask-roundtrip` → result/bin/xtask-roundtrip.
         packages.xtask-roundtrip = xtaskRoundtripBin;
 
+        # The standalone emoji-ban lint bin (v-xtask-decompose). `nix build .#xtask-lint-emoji` →
+        # result/bin/xtask-lint-emoji. Backs `apps.lint-emoji`; caches independently of xtask.
+        packages.xtask-lint-emoji = xtaskLintEmojiBin;
+
         # The standalone mandate-lint binary (v-xtask-decompose). `nix build .#xtask-mandates` →
         # result/bin/xtask-mandates. Backs `apps.lint-mandates` + the mandate gate; caches independently
         # of xtask (its closure is just the crate + syn).
@@ -3682,6 +3701,7 @@
               clippy-xtask-mandates = mkCrateClippyCrane { crate = "xtask-mandates"; };
               clippy-xtask-support = mkCrateClippyCrane { crate = "xtask-support"; };
               clippy-xtask-roundtrip = mkCrateClippyCrane { crate = "xtask-roundtrip"; };
+              clippy-xtask-lint-emoji = mkCrateClippyCrane { crate = "xtask-lint-emoji"; };
             };
             # cdz's clippy stays in its workspace-src check (crateCdzCheck runs `cargo clippy -p cdz` inside).
             clippyCraneAggregate = pkgs.runCommand "cargo-clippy-crane-aggregate"
@@ -3725,6 +3745,7 @@
               test-xtask-mandates = mkCrateTestCrane { crate = "xtask-mandates"; };
               test-xtask-support = mkCrateTestCrane { crate = "xtask-support"; };
               test-xtask-roundtrip = mkCrateTestCrane { crate = "xtask-roundtrip"; };
+              test-xtask-lint-emoji = mkCrateTestCrane { crate = "xtask-lint-emoji"; };
             };
             # COVERAGE-PARITY assert (concierge mandate — no test silently dropped vs `cargo test
             # --workspace`): the per-crate test crates PLUS cdz (crateCdzCheck) must EXACTLY equal the
@@ -3789,9 +3810,9 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
-              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
+              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
             # flakeReproBackstop: the REPRODUCIBILITY-BACKSTOP subset — the checks the `nix-flake (advisory)`
             # CI job should run INSTEAD of a whole `nix flake check`. Data-driven CI-speed (operator standing
@@ -4620,6 +4641,28 @@
           {
             type = "app";
             program = "${wrapper}/bin/cdz-lint-mandates";
+          };
+
+        # apps.lint-emoji — the emoji-ban source lint as a nix-native app backed by the STANDALONE
+        # `xtaskLintEmojiBin` (v-xtask-decompose). `nix run .#lint-emoji`. Builds ONLY xtask-lint-emoji (+
+        # xtask-support), NOT the xtask monolith — and with the `Cmd::LintEmoji` arm removed, `cargo xtask
+        # lint-emoji` forwards here via v-fleet-tooling's cargo→nix redirect. Sets CDZ_REPO_ROOT so the
+        # relocated bin lints the invoking worktree. Mirrors apps.lint-mandates.
+        apps.lint-emoji =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-lint-emoji";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export CDZ_REPO_ROOT="$root"
+                exec ${xtaskLintEmojiBin}/bin/xtask-lint-emoji "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-lint-emoji";
           };
 
         # apps.xtask — the GENERAL xtask entrypoint through nix (v-nix, operator all-nix mandate 2026-08-28:
