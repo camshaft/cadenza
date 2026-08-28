@@ -1,0 +1,1 @@
+delegating more than one host effect is not yet emitted (one interface per envelope; the multi-interface host shape is a later increment)
