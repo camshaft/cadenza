@@ -1976,6 +1976,12 @@
               if cdz-compile "ast:main=$p" -t cadenza -o "$out/$pn.ast1" 2>>"$out/compile.err"; then
                 cdz-compile "ast:main=$out/$pn.ast1" --component-name "$(cat "$case/$pn.iface")" -t wasm \
                   -o "$out/$pn.wasm" 2>>"$out/compile.err" || true
+              else
+                # (v-cadenza-backend) SKIP the whole case if ANY component's cadenza hop declines — a
+                # cross-component case is only meaningful when EVERY part round-trips; a partial hop would
+                # leave the consumer's peer import unsatisfied and grade divergently (a false red, not a
+                # value-miscompile). Mark declined so the exec skips (like a consumer-hop decline).
+                touch "$out/cadenza-declined"
               fi
               cp "$case/$pn.iface" "$out/$pn.iface"
             done
