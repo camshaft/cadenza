@@ -164,7 +164,7 @@ export const EXAMPLES: Example[] = [
     source: `(do
   (def (main) (tuple 1 2 3))
   (export main))`,
-    expected: "(: (tuple 1 2 3) (Tuple Int64 Int64 Int64))",
+    expected: "(: #tuple(1 2 3) (Tuple Int64 Int64 Int64))",
   },
   {
     // Shows off: `Tuple.split-at` and `Tuple.concat` — tuples have STRUCTURAL, compile-time-known arity,
@@ -185,7 +185,7 @@ export const EXAMPLES: Example[] = [
         ((tuple head tail)
          (tuple head tail (Tuple.concat head tail))))))
   (export main))`,
-    expected: "(: (tuple (tuple 1 2) (tuple 3 4 5) (tuple 1 2 3 4 5)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64 Int64) (Tuple Int64 Int64 Int64 Int64 Int64)))",
+    expected: "(: #tuple(#tuple(1 2) #tuple(3 4 5) #tuple(1 2 3 4 5)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64 Int64) (Tuple Int64 Int64 Int64 Int64 Int64)))",
   },
   {
     id: "lists",
@@ -197,7 +197,7 @@ export const EXAMPLES: Example[] = [
   (def (main)
     (List.concat (list 1 2) (list 3 4 5)))
   (export main))`,
-    expected: "(: (list 1 2 3 4 5) (List Int64))",
+    expected: "(: #list(1 2 3 4 5) (List Int64))",
   },
   {
     // Shows off: `List.update` — a FUNCTIONAL element update: `(List.update xs i v)` returns a NEW list
@@ -216,7 +216,7 @@ export const EXAMPLES: Example[] = [
       ; Update index 0 and index 4 of xs; then show xs ITSELF is untouched.
       (tuple (set-at xs 0 99) (set-at xs 4 99) xs)))
   (export main))`,
-    expected: "(: (tuple (list 99 20 30 40 50) (list 10 20 30 40 99) (list 10 20 30 40 50)) (Tuple (List Int64) (List Int64) (List Int64)))",
+    expected: "(: #tuple(#list(99 20 30 40 50) #list(10 20 30 40 99) #list(10 20 30 40 50)) (Tuple (List Int64) (List Int64) (List Int64)))",
   },
   {
     // Shows off: a recursive sum type + structural pattern matching = a real (if tiny) interpreter.
@@ -356,7 +356,7 @@ export const EXAMPLES: Example[] = [
     (let ((xs (list 3 1 3 3 1 2)))
       (Map.to-list (tally xs 0 (List.len xs) (Map.empty)))))
   (export main))`,
-    expected: "(: (list (tuple 1 2) (tuple 2 1) (tuple 3 3)) (List (Tuple Int64 Int64)))",
+    expected: "(: #list(#tuple(1 2) #tuple(2 1) #tuple(3 3)) (List (Tuple Int64 Int64)))",
   },
   {
     // Shows off: `Map.swap` and `Map.take` — both return a (value, new-map) PAIR, a functional update
@@ -382,7 +382,7 @@ export const EXAMPLES: Example[] = [
            ((tuple gone-pears final)
             (tuple old-apples gone-pears (Map.to-list final))))))))
   (export main))`,
-    expected: "(: (tuple (Some 5) (Some 2) (list (tuple 1 9))) (Tuple (Option Int64) (Option Int64) (List (Tuple Int64 Int64))))",
+    expected: "(: #tuple((Some 5) (Some 2) #list(#tuple(1 9))) (Tuple (Option Int64) (Option Int64) (List (Tuple Int64 Int64))))",
   },
   {
     // Shows off: Bytes as a Map KEY. Bytes carries a total order (lexicographic over unsigned bytes),
@@ -406,7 +406,7 @@ export const EXAMPLES: Example[] = [
       (let ((m (bump (bump (bump (bump (Map.empty) red) blue) red) red)))
         (tuple (Map.lookup m red) (Map.lookup m blue)))))
   (export main))`,
-    expected: "(: (tuple (Some 3) (Some 1)) (Tuple (Option Int64) (Option Int64)))",
+    expected: "(: #tuple((Some 3) (Some 1)) (Tuple (Option Int64) (Option Int64)))",
   },
   {
     // Shows off: the `Symbol` type — an INTERNED name. Two symbols built from the same text are the SAME
@@ -433,7 +433,7 @@ export const EXAMPLES: Example[] = [
         (Map.lookup palette (Symbol.of "teal"))
         (= (Symbol.of "red") (Symbol.of "red")))))
   (export main))`,
-    expected: "(: (tuple (Some 65280) (None unit) true) (Tuple (Option Int64) (Option Int64) Bool))",
+    expected: "(: #tuple((Some 65280) (None unit) true) (Tuple (Option Int64) (Option Int64) Bool))",
   },
   {
     // Shows off: a byte-string literal — b"…" is a Bytes value directly, no String.to-bytes needed.
@@ -451,7 +451,7 @@ export const EXAMPLES: Example[] = [
         ((Some first) (tuple (Bytes.len magic) first))
         ((None) (trap "byte-literal: unexpectedly empty")))))
   (export main))`,
-    expected: "(: (tuple 6 71) (Tuple Int64 Int64))",
+    expected: "(: #tuple(6 71) (Tuple Int64 Int64))",
   },
   {
     // Shows off: `Value.encode` — the single canonical binary form of ANY value. Its type is
@@ -472,7 +472,7 @@ export const EXAMPLES: Example[] = [
       (size (Some 7))
       (size (list 1 2 3))))
   (export main))`,
-    expected: "(: (tuple 103 61 71) (Tuple Int64 Int64 Int64))",
+    expected: "(: (tuple 102 61 66) (Tuple Int64 Int64 Int64))",
   },
   {
     // Shows off: `Value.encode` is DETERMINISTIC and STRUCTURAL — two structurally-equal values encode to
@@ -493,7 +493,7 @@ export const EXAMPLES: Example[] = [
           (bc (Value.encode (record (x 3) (y 5)))))
       (tuple (Bytes.len ba) (= ba bb) (= ba bc))))
   (export main))`,
-    expected: "(: (tuple 103 true false) (Tuple Int64 Bool Bool))",
+    expected: "(: (tuple 102 true false) (Tuple Int64 Bool Bool))",
   },
   {
     // Shows off: a full `Value.encode` -> `Value.decode` ROUND-TRIP. encode : forall a. a -> Bytes (total);
@@ -516,7 +516,7 @@ export const EXAMPLES: Example[] = [
           ((Some (Point.Mk r)) (tuple (Bytes.len bytes) (+ (. r x) (. r y))))
           ((None) (tuple (Bytes.len bytes) 0))))))
   (export main))`,
-    expected: "(: (tuple 82 7) (Tuple Int64 Int64))",
+    expected: "(: (tuple 73 7) (Tuple Int64 Int64))",
   },
   {
     // Shows off: EXACT rational arithmetic — 1/2 + 1/3 + 1/6 is EXACTLY 1, with no floating-point
@@ -550,7 +550,7 @@ export const EXAMPLES: Example[] = [
   (def (main)
     (tuple (Rational.numerator (total)) (Rational.denominator (total))))
   (export main))`,
-    expected: "(: (tuple 11 12) (Tuple BigInt BigInt))",
+    expected: "(: #tuple(11 12) (Tuple BigInt BigInt))",
   },
   {
     // Shows off: projecting an EXACT rational back to an integer. `Rational.floor` rounds toward -inf and
@@ -572,7 +572,7 @@ export const EXAMPLES: Example[] = [
       (Rational.floor (/ -7 2))
       (Rational.ceil (/ -7 2))))
   (export main))`,
-    expected: "(: (tuple 3 4 -4 -3) (Tuple Int64 Int64 Int64 Int64))",
+    expected: "(: #tuple(3 4 -4 -3) (Tuple Int64 Int64 Int64 Int64))",
   },
   {
     // Shows off: Float64 rounding drift — the flip side of the exact-rational example. Adding 0.1 ten
@@ -624,7 +624,7 @@ export const EXAMPLES: Example[] = [
           (b (Set.of (list 3 4 5 6))))
       (Set.to-list (sym-diff a b))))
   (export main))`,
-    expected: "(: (list 1 2 5 6) (List Int64))",
+    expected: "(: #list(1 2 5 6) (List Int64))",
   },
   {
     // Shows off: `Set.intersection` — the members two sets share. Modeling each person's friends as a
@@ -643,7 +643,7 @@ export const EXAMPLES: Example[] = [
   (def (main)
     (mutual (list 1 2 3 4 5) (list 3 4 5 6 7)))
   (export main))`,
-    expected: "(: (list 3 4 5) (List Int64))",
+    expected: "(: #list(3 4 5) (List Int64))",
   },
   {
     // Shows off: a sum type as a functional STACK (cons list) with real push/pop via match, driving a
@@ -737,7 +737,7 @@ export const EXAMPLES: Example[] = [
   (def (gens xs k) (if (= k 0) xs (gens (step xs) (- k 1))))
   (def (main) (gens (list 0 0 0 0 0 0 0 1) 4))
   (export main))`,
-    expected: "(: (list 0 0 0 1 1 1 1 1) (List Int64))",
+    expected: "(: #list(0 0 0 1 1 1 1 1) (List Int64))",
   },
   {
     // Shows off: records + a list of them = a little data pipeline, returning BOTH the data and the
@@ -772,7 +772,7 @@ export const EXAMPLES: Example[] = [
       (tuple (ages people 0 (List.len people) (: (list) (List Int64)))
              (/ (sum-age people 0 (List.len people) 0) (List.len people)))))
   (export main))`,
-    expected: "(: (tuple (list 36 41 40) 39) (Tuple (List Int64) Int64))",
+    expected: "(: #tuple(#list(36 41 40) 39) (Tuple (List Int64) Int64))",
   },
   {
     // Shows off: 2D data — a matrix as a list of rows (list of lists), and building a NEW nested
@@ -802,7 +802,7 @@ export const EXAMPLES: Example[] = [
     (let ((m (list (list 1 2 3) (list 4 5 6))))
       (go m 0 3 2 (: (list) (List (List Int64))))))
   (export main))`,
-    expected: "(: (list (list 1 4) (list 2 5) (list 3 6)) (List (List Int64)))",
+    expected: "(: #list(#list(1 4) #list(2 5) #list(3 6)) (List (List Int64)))",
   },
   {
     // Shows off: exponential recursion made concrete — the minimum moves to solve Tower of Hanoi with
@@ -864,7 +864,7 @@ export const EXAMPLES: Example[] = [
       ; Annotate the empty seed so its element type is known before the first push.
       (go xs 1 (List.len xs) (at xs 0) 1 (: (list) (List (Tuple Int64 Int64))))))
   (export main))`,
-    expected: "(: (list (tuple 1 3) (tuple 2 1) (tuple 3 2)) (List (Tuple Int64 Int64)))",
+    expected: "(: #list(#tuple(1 3) #tuple(2 1) #tuple(3 2)) (List (Tuple Int64 Int64)))",
   },
   {
     // Shows off: quicksort as a divide-and-conquer recursion. Pivot on the head, partition the rest
@@ -897,7 +897,7 @@ export const EXAMPLES: Example[] = [
   (def (main)
     (qsort (list 5 3 8 1 9 2 7 4 6)))
   (export main))`,
-    expected: "(: (list 1 2 3 4 5 6 7 8 9) (List Int64))",
+    expected: "(: #list(1 2 3 4 5 6 7 8 9) (List Int64))",
   },
   {
     // Shows off: binary search over a SORTED list, halving the range each step. The result is an honest
@@ -930,7 +930,7 @@ export const EXAMPLES: Example[] = [
     (let ((xs (list 1 3 5 7 9 11 13 15 17 19)))
       (tuple (bsearch xs 11) (bsearch xs 8))))
   (export main))`,
-    expected: "(: (tuple (Some 5) (None unit)) (Tuple (Option Int64) (Option Int64)))",
+    expected: "(: #tuple((Some 5) (None unit)) (Tuple (Option Int64) (Option Int64)))",
   },
   {
     // Shows off: a binary search TREE — a recursive, branching sum type (distinct from the cons-list
@@ -972,7 +972,7 @@ export const EXAMPLES: Example[] = [
     (let ((xs (list 5 3 8 1 4 7 9 2 6)))
       (inorder (build xs 0 (Leaf unit)))))
   (export main))`,
-    expected: "(: (list 1 2 3 4 5 6 7 8 9) (List Int64))",
+    expected: "(: #list(1 2 3 4 5 6 7 8 9) (List Int64))",
   },
   {
     // Shows off: string work via bytes — check a word reads the same forwards and backwards by comparing
@@ -1046,7 +1046,7 @@ export const EXAMPLES: Example[] = [
     ; 'A' shifted by 3 -> 'D'; 'Y' shifted by 3 wraps around -> 'B'.
     (tuple (shift (letter "A") 3) (shift (letter "Y") 3)))
   (export main))`,
-    expected: "(: (tuple #\\D #\\B) (Tuple Char Char))",
+    expected: "(: #tuple(#\\D #\\B) (Tuple Char Char))",
   },
   {
     // Shows off: Unicode NFC normalization at string CONSTRUCTION. Concatenating a plain "e" with a lone
@@ -1089,7 +1089,7 @@ export const EXAMPLES: Example[] = [
     (let ((d "2026-08-14"))
       (tuple (field d 0 4) (field d 5 7) (field d 8 10))))
   (export main))`,
-    expected: "(: (tuple \"2026\" \"08\" \"14\") (Tuple String String String))",
+    expected: "(: #tuple(\"2026\" \"08\" \"14\") (Tuple String String String))",
   },
   {
     // Shows off: computing a result without a built-in — integer square root by searching upward for the
@@ -1204,7 +1204,7 @@ export const EXAMPLES: Example[] = [
     (let ((xs (list 1 2 3 4 5)))
       (rev xs (- (List.len xs) 1) (: (list) (List Int64)))))
   (export main))`,
-    expected: "(: (list 5 4 3 2 1) (List Int64))",
+    expected: "(: #list(5 4 3 2 1) (List Int64))",
   },
   {
     // Shows off: `List.prepend` — the O(1) front insert (receiver-first: `(List.prepend xs x)` puts x on
@@ -1224,7 +1224,7 @@ export const EXAMPLES: Example[] = [
     ; Push 10, then 20, then 30 — so 30 ends up on top of the stack.
     (push (push (push (: (list) (List Int64)) 10) 20) 30))
   (export main))`,
-    expected: "(: (list 30 20 10) (List Int64))",
+    expected: "(: #list(30 20 10) (List Int64))",
   },
   {
     // Shows off: metaprogramming — code is DATA. `quasiquote` builds an AST value without running it,
@@ -1247,7 +1247,7 @@ export const EXAMPLES: Example[] = [
       (build 6 5)
       (eval (quasiquote (+ (* (unquote 6) (unquote 6)) (unquote 5))))))
   (export main))`,
-    expected: "(: (tuple ((. Ast List) (list ((. Ast Name) \"+\") ((. Ast List) (list ((. Ast Name) \"*\") ((. Ast Int) 6) ((. Ast Int) 6))) ((. Ast Int) 5))) 41) (Tuple Ast Int64))",
+    expected: "(: #tuple(((. Ast List) #list(((. Ast Name) \"+\") ((. Ast List) #list(((. Ast Name) \"*\") ((. Ast Int) 6) ((. Ast Int) 6))) ((. Ast Int) 5))) 41) (Tuple Ast Int64))",
   },
   {
     // Shows off: algebraic effects & handlers — a signature Cadenza feature — discharged entirely
