@@ -1206,6 +1206,16 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (output (: (record (= c (Red unit))) (record (c Color))))
   (live-objects known-leak 2))
 
+(case "a payloadless enum EXPORT result crosses as a TYPED WIT enum (imposed world) — Direction A"
+  (doc "SHAPE 60 - a payloadless enum (Color = Red|Green|Blue) as a typed EXPORT result under an imposed world declaring `(result (\"enum\" red green blue))`. Before this, emit crossed the enum as a bare `u32` handle via the provider path (the declared WitType::Enum bypassed) - verified by WIT-dump. Fix (record_result_lower payloadless-enum arm → Passthrough i32 + needs_result_wrapper): the def already returns the raw i32 disc (= flatten(Enum)), so it passes straight through as the declared enum; the enum DEFINED type is emitted + re-exported by the typed-interface `note` pass. WIT-dump now shows `enum t0 { red, green, blue }` + `f: func(x: s64) -> t0` (NOT u32). Guard: guest decl-order case names must equal the WIT case order (else a runtime disc remap - declines). This closes the typed enum EXPORT (Direction A) in-algebra gap per the operator full-WIT-algebra ruling.")
+  (wit-world (world w (export cadenza:demo/iface (member f (func (param x (s64)) (result ("enum" red green blue)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type Color (Red) (Green) (Blue)) (def (f (: x Int64)) (if (= x 0) Color.Red Color.Green)) (export f)))
+  (call f (: 0 Int64))
+  (output (: (red unit) Color))
+  (call f (: 5 Int64))
+  (output (: (green unit) Color)))
+
 ; -- breaker batch 408 (2026-08-26): the scalar-param + compound-result acceptance ladder, promoted
 ; on the #3721 fix (gate admission: a scalar-param member with a SpillRecord compound result now takes
 ; the typed-interface wrapper instead of leaking the raw handle). All 8 faces flipped on the fix:

@@ -10187,6 +10187,40 @@ fn record_interface_export(
         if let Some(vts) = scalar_result_vts(gr) {
             return Some((ResultLower::Passthrough, vts));
         }
+        // A payloadless-enum RESULT (all-nullary `Ty::Sum`, `db.is_enum_disc`): the def already returns the
+        // raw i32 DISCRIMINANT (select's enum-disc build — no heap handle, no `sum-disc` read), which IS the
+        // canonical-ABI core rep of a WIT `enum` (`flatten(Enum) = [I32]`). So it passes straight through as
+        // the declared WIT enum — no memory spill. The declared `wr` (`WitType::Enum`, or an all-nullary
+        // `WitType::Variant`) becomes `TypedFunc.result` and its enum DEFINED type is emitted + re-exported by
+        // the `note` pass. GUARD (mirrors `canon_write_of`'s enum-disc arm): the guest decl-order case names
+        // (kebab) MUST equal the WIT case order, else the guest disc would index the wrong WIT case — a
+        // reorder needs a runtime disc remap (a later increment), so decline.
+        if let Ty::Sum { decl, .. } = gr
+            && db.is_enum_disc(*decl)
+        {
+            use crate::backend::common::export_name::kebab_extern_name;
+            let wit_cases: Vec<String> = match wr {
+                WitType::Enum(cs) => cs.clone(),
+                WitType::Variant(cs) if cs.iter().all(|(_, p)| p.is_none()) => {
+                    cs.iter().map(|(n, _)| n.clone()).collect()
+                }
+                _ => return None,
+            };
+            let guest_cases: Vec<String> = {
+                let dr = db.type_decl_by_occ(*decl)?;
+                dr.variants
+                    .iter()
+                    .map(|v| kebab_extern_name(&v.name))
+                    .collect()
+            };
+            if guest_cases != wit_cases {
+                return None; // a case REORDER would need a runtime disc remap — later increment
+            }
+            return Some((
+                ResultLower::Passthrough,
+                vec![crate::backend::wasm::lir::ValType::I32.byte()],
+            ));
+        }
         // Otherwise a compound that SPILLS to memory (flat count > MAX_FLAT_RESULTS): build the recursive
         // canonical writer. A flat 1-value record (a single-scalar-field record) is a later slice — the core
         // would return the flattened scalar, not a pointer (a different lower); decline here.
@@ -10272,6 +10306,14 @@ fn record_interface_export(
         // u32 handle (a leaked pointer, not the lifted value). The result-write machinery (`SpillRecord` /
         // `canon_write_of`) is identical to the record-param route — only the param-shape gate excluded it.
         if matches!(result_lower, serialize::ResultLower::SpillRecord { .. }) {
+            needs_result_wrapper = true;
+        }
+        // A payloadless-ENUM result is a `Passthrough` (raw i32 disc), NOT a `SpillRecord`, but it STILL needs
+        // this typed wrapper: without it the `!any_record && !needs_result_wrapper` gate bails and the export
+        // falls through to the PROVIDER path, which crosses the enum as a bare `u32` handle (`extern_abi_val_type`)
+        // instead of the declared WIT `enum{…}` (the enum-export twin of the compound-result case above). A plain
+        // scalar `Passthrough` must NOT trip this — a pure-scalar interface stays on `scalar_interface_export`.
+        if matches!(&e.result, Ty::Sum { decl, .. } if db.is_enum_disc(*decl)) {
             needs_result_wrapper = true;
         }
         let def_abs = layout.abs(e.def)?;
