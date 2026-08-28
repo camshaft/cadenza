@@ -166,6 +166,10 @@ enum TargetArg {
     /// Rust source in ASYNC, GAS-METERED form: every fn is `async` and threads `env: &mut impl CdzEnv`,
     /// awaiting `env.consume(1)` at entry so the host meters fuel and can yield cooperatively.
     RustAsync,
+    /// Cadenza binary AST — the OPTIMIZED program (after resolution/inference/const-fold/optimization)
+    /// lowered BACK to Cadenza and emitted as the binary AST (`.ast`). Feed it back through the compiler
+    /// (round-trip idempotence), pipe it into the syntax system for sexpr/ML, or hand it to the oracle.
+    Cadenza,
 }
 
 impl From<TargetArg> for Target {
@@ -176,6 +180,7 @@ impl From<TargetArg> for Target {
             TargetArg::Dwarf => Target::Dwarf,
             TargetArg::Rust => Target::Rust,
             TargetArg::RustAsync => Target::RustAsync,
+            TargetArg::Cadenza => Target::Cadenza,
         }
     }
 }

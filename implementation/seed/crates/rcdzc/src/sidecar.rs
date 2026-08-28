@@ -486,6 +486,7 @@ fn target_from(name: &str) -> Option<crate::backend::Target> {
         "dwarf" => Target::Dwarf,
         "rust" => Target::Rust,
         "rust-async" => Target::RustAsync,
+        "cadenza" => Target::Cadenza,
         _ => return None,
     })
 }
@@ -565,6 +566,7 @@ fn target_name(t: crate::backend::Target) -> &'static str {
         Target::Dwarf => "dwarf",
         Target::Rust => "rust",
         Target::RustAsync => "rust-async",
+        Target::Cadenza => "cadenza",
     }
 }
 
