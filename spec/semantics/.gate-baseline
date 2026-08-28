@@ -4242,6 +4242,7 @@ pass	a self-comparison keeps a trapping operand (b=0 still traps)
 pass	a self-comparison less-equal still traps on a zero divisor but folds true for a nonzero one
 pass	a self-comparison of a scalar folds to a constant (value parity)
 pass	a self-comparison of a trapping operand still traps (less-than)
+pass	a self-divide (/ v v) fold over a TRAPPING lazy binding preserves the trap (does not fold to 1)
 pass	a self-recursive AST walker consumes a node's child list while the node is threaded unchanged
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a self-recursive effectful loop sums a fresh-id draw per step — the gensym idiom
@@ -4969,6 +4970,7 @@ pass	an ABORT in the first handle leaves the SECOND handle's dispatch untouched
 pass	an ABORTING arm applies the CLOSURE STATE for its final answer
 pass	an ABORTING arm derives its answer from an Ast op-arg and discards the continuation
 pass	an ABORTIVE arm whose value is a COMPOUND matches the handle body type and folds
+pass	an ABSORBING (* v 0) fold over a TRAPPING lazy binding preserves the trap (does not fold to 0)
 pass	an ANAGRAM check builds per-string scalar frequency maps and compares them by map equality
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast as a MAP key looks up by structural content

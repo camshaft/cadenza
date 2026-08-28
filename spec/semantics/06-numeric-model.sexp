@@ -451,6 +451,27 @@
   (call   main (: 0 Int64)) (output (: 0 Int64))
   (call   main (: 5 Int64)) (output (: 0 Int64)))
 
+(case "an ABSORBING (* v 0) fold over a TRAPPING lazy binding preserves the trap (does not fold to 0)"
+  (doc    "The ABSORBING-fold sibling of the self-identity compare/subtract cases above (#4870): `(* v0 0)`→0
+           discards v0 via the zero absorbing element — a DIFFERENT discard-fold class (v0 appears ONCE, not
+           reflexively). It too must decline over a lazy binding whose force ÷0-traps: `(let ((v0 (/ 10 n)))
+           (* v0 0))` — at n=5 v0=2 and `(* 2 0)`=0 → 0; at n=0 the force `(/ 10 0)` divide-by-zero-traps
+           (a fold to 0 that dropped v0 would ELIDE the trap). `is_trap_free` follows the local-ref to its
+           `(/ 10 n)` init (not trap-free) so the absorbing fold is blocked and v0 is forced.")
+  (input  (do (def (main (: n Int64)) (let ((v0 (/ 10 n))) (* v0 0))) (export main)))
+  (call   main (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
+(case "a self-divide (/ v v) fold over a TRAPPING lazy binding preserves the trap (does not fold to 1)"
+  (doc    "The self-DIVIDE discard-fold `(/ v0 v0)`→1 (the reflexive-division sibling of `(- v0 v0)`→0): it
+           discards v0's value, so over a trapping lazy binding it must decline and force v0. `(let ((v0 (/ 10
+           n))) (/ v0 v0))` — at n=5 v0=2 and `(/ 2 2)`=1 → 1; at n=0 the force divide-by-zero-traps rather
+           than folding to 1. Pins is_trap_free over the self-divide fold site (distinct from compare/subtract/
+           absorbing).")
+  (input  (do (def (main (: n Int64)) (let ((v0 (/ 10 n))) (/ v0 v0))) (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
 ; `Rational.floor : Rational → Int64` (toward −∞) and `Rational.ceil` (toward +∞) — the other two exact
 ; integer projections. Like `truncate`, DERIVATIONS (no runtime op): `truncate` adjusted by ±1 off the
 ; remainder sign — floor = trunc−1 iff (numerator < 0 AND remainder ≠ 0); ceil = trunc+1 iff (numerator > 0
