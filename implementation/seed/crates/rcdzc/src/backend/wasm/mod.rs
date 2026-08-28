@@ -3330,7 +3330,11 @@ fn emit_runtime_resource(
         }
         let host_layout = layout
             .with_import_base(h + k + 2)
-            .with_host_order(host_order);
+            .with_host_order(host_order)
+            // Thread build-once static compounds onto the HOST-fused layout too, so a host-effecting body that
+            // ALSO returns a markable constant compound (`main() = host H in (do (H.op) (tuple 1 2))`) emits
+            // `global.get` for the constant instead of rebuilding it MORTAL per `make`. Empty → no-op.
+            .with_static_compounds(static_compounds.clone(), static_compound_init.clone());
         let host_layout = &host_layout;
 
         let mut funcs: Vec<SelectedFunc> = Vec::new();
@@ -3374,8 +3378,8 @@ fn emit_runtime_resource(
             &make_params.leaf_vts,
             &make_params.core_slots(),
             &escape_lifted_table(host_layout),
-            0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
-            &[], // no static-compound init
+            static_compounds.len(),
+            &static_compound_init,
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
