@@ -1216,6 +1216,16 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: 5 Int64))
   (output (: (green unit) Color)))
 
+(case "a variant-with-payload EXPORT result crosses as a typed WIT variant (declared world)"
+  (doc "SHAPE 61 - the payloaded-VARIANT twin of SHAPE 60: a bare `variant { continue, close(s64) }` EXPORT result under a declared world. Already WIRED (no emit change) via record_result_lower's SpillRecord path + canon_write_of's variant arm - this SHAPE VERIFIES the previously-untested cell (WIT-dump confirms `variant t0 { continue, close(s64) }` + `f: func(x: s64) -> t0`, NOT a bare u32/run-encode). Both arms exercised: x=0 -> Continue (nullary, disc 0), x!=0 -> Close(x) (s64 payload, disc 1). A broken variant lower (wrong disc, missing payload) renders a different arm. Complements SHAPE 2 (variant in a RECORD result) with the BARE (top-level) variant result.")
+  (wit-world (world w (export cadenza:demo/iface (member f (func (param x (s64)) (result ("variant" (continue) (close (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type Outcome (Continue) (Close Int64)) (def (f (: x Int64)) (if (= x 0) Outcome.Continue (Outcome.Close x))) (export f)))
+  (call f (: 0 Int64))
+  (output (: (continue unit) Outcome))
+  (call f (: 7 Int64))
+  (output (: (close 7) Outcome)))
+
 ; -- breaker batch 408 (2026-08-26): the scalar-param + compound-result acceptance ladder, promoted
 ; on the #3721 fix (gate admission: a scalar-param member with a SpillRecord compound result now takes
 ; the typed-interface wrapper instead of leaking the raw handle). All 8 faces flipped on the fix:
