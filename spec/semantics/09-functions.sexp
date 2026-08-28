@@ -9747,3 +9747,29 @@
               (export main)))
   (call   main (: 3 Int64))
   (output (: 0 Int64)))
+
+(case "a LIST-param entry + a reachable recursive fn emits VALID wasm (a different lift-op set, a different index shift)"
+  (doc    "The List face of the index-shift pin above (which lifts a String): a `(List Int64)` entry param
+           appends the ARR lift ops (arr-alloc/arr-set — a different op set, hence a different `added`
+           shift) — the re-shift must be keyed on the actual appended count, not a constant. The nested
+           `go` recursion keeps a real def-to-def call live, and the result mixes the recursion's value
+           with a read of the lifted param (`go(3)=6 + len=3 → 9`), so a mis-resolved callee corrupts the
+           value even where it happens to validate. Breaker acceptance-ladder face n1 (tick 462/468).")
+  (input  (do (def (main (: xs (List Int64)))
+                (do (def (go (: i Int64)) (if (<= i 0) 0 (+ i (go (- i 1))))) (+ (go 3) (List.len xs))))
+              (export main)))
+  (call   main (: (list 10 20 30) (List Int64)))
+  (output (: 9 Int64)))
+
+(case "must-hold: a heap-param entry + a NON-recursive nested fn CAPTURING the param compiles and runs"
+  (doc    "The capture-adjacent CONTROL of the index-shift class: a nested fn that reads the enclosing
+           heap param but does NOT recurse is fully inlined at its call site, so no def-to-def call
+           survives and no index is at risk — this must keep working. It is also the boundary fence for
+           the SEPARATE recursive-capture gap (a RECURSIVE nested fn capturing the param is an uncoded
+           no-local-slot error today, v-inference lane): when that fix lands, this control proves the
+           non-recursive face never regressed. Breaker acceptance-ladder face n6 (tick 462/468).")
+  (input  (do (def (main (: xs (List Int64)))
+                (do (def (peek) (List.len xs)) (+ (peek) 100)))
+              (export main)))
+  (call   main (: (list 10 20 30) (List Int64)))
+  (output (: 103 Int64)))
