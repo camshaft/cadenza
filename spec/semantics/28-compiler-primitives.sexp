@@ -790,6 +790,27 @@
             (export main)))
   (output (: 3 Int64)))
 
+; A WRAPPER-typed (Rational) field projected off a nullary record + fed to a rational op (#3543 regression, breaker-
+; bisected). #3543 folds `(. (rect) w)` so the record is eliminated; a SCALAR field folds to a bare `ConstInt`, and
+; an INTEGER-VALUED Rational field ALSO folds to a bare `ConstInt` (its numerator). The rational op over those
+; operands did NOT recognize a `ConstInt` as the rational `n/1`, so it fell through to the RUNTIME `RationalBinOp`
+; whose bare-`ConstInt` operand has no heap ownership class at emit → DECLINE ("borrowing op operand has an ownership
+; this backend cannot yet prove"). This was the notebook Rational-field regression. `const_rational_of` now reads a
+; `ConstInt(n)` as `n/1`, so the constant pair folds to a `Core::ConstRational` — no runtime op, no borrow
+; classification. `(pragma default-fraction Rational)` makes the record fields heap Rationals (the notebook shape).
+(case "a wrapper (Rational) field projected off a nullary record folds through a rational op — no borrow-ownership decline"
+  (doc    "`(rect)` returns `(record (w (width)) (h 3))` with Rational fields (default-fraction Rational). `(* (.
+           (rect) w) (. (rect) h))` folds each projection to its integer-valued Rational (a `ConstInt`) and the
+           multiply folds them as `4/1 * 3/1 = 12/1` — a `Core::ConstRational`, so the record is eliminated and NO
+           runtime rational op (hence no borrow-ownership classification) is reached. Before, the bare-`ConstInt`
+           operand of the runtime `RationalBinOp` had no ownership class and DECLINED.")
+  (input  (do (pragma default-fraction Rational)
+              (def (width) 4)
+              (def (rect) (record (w (width)) (h 3)))
+              (def (main) (* (. (rect) w) (. (rect) h)))
+              (export main)))
+  (output (: 12/1 Rational)))
+
 ; --- Primitive 2: const execution — a Tuple const param folds on the BARE-CALL path (ca06) ------------
 ; The recursive-call activation gate accepts a `const` param whose type is a bare NAME or a SHRINKING type-
 ; constructor, but EXCLUDED `(Tuple …)` (grouped with the product/dictionary forms). A `const (: t (Tuple …))`
