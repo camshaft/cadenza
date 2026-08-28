@@ -1350,26 +1350,42 @@
   (error  CDZ0201))
 
 ; ============================================================================================
-; Remainder (%) is not defined on quantities — a clean decline, not a leaked scheme mismatch
+; Remainder (%) on same-dimension quantities is a SAME-DIMENSION INTEGER operation (operator ruling)
 ; ============================================================================================
-; The units surface enumerates `+`/`-`/`*`/`/`/comparison; `%` (remainder) has no dimensional rule.
-; A `%` on a quantity operand DECLINES with a clear message rather than leaking the operator's internal
-; `∀a. (Int a) → …` scheme as a confusing "type mismatch: Int64 and (Qty Int64 meter)" (the Int64 is the
-; scheme's, never written by the author). Whether a same-dimension remainder (`7m % 3m = 1m`) should be
-; a quantity operation is a language-design call held for the operator; until then the clean decline is
-; the correct behavior — recover the numeric value with `Qty.value` first if the remainder is wanted.
+; The units surface enumerates `+`/`-`/`*`/`/`/comparison AND `%` (remainder). A `%` of two same-dimension
+; INTEGER quantities is well-formed — `7m % 3m = 1m` — mirroring `+`/`-` dimensionally: same dimension in,
+; SAME unit out (a remainder does not compose units the way `*`/`/` do). Defined only for an integer/bigint
+; inner numeric type (a float/rational has no remainder — exact division is total, so a float-quantity `%`
+; declines like the bare float `%`). A cross-DIMENSION remainder (`7m % 3s`) is CDZ0501; a quantity mixed
+; with a bare number (`7m % 3`) is CDZ0501 (no dimensionless coercion). (Operator ruling 2026-08-28:
+; same-dimension mod makes sense; the earlier clean-decline was superseded by this fold.)
 
-(case "remainder (%) on a quantity declines cleanly (not a leaked scheme mismatch)"
-  (doc    "`(% (Qty.of 7 meter) (Qty.of 3 meter))` — remainder on quantity operands — is DECLINED: the
-           units surface has no `%` rule (it enumerates +/-/*/`/`/comparison). The decline carries a clear
-           message ('remainder (%) is not defined on quantities … recover the numeric value with
-           `Qty.value` first'), NOT the confusing generic scheme mismatch 'type mismatch: Int64 and
-           (Qty Int64 meter)' the fall-through to scheme-unify used to leak (the Int64 is the operator's
-           `∀a.(Int a)→…` scheme, an internal detail). Whether a same-dimension remainder should be a
-           quantity operation is a design call held for the operator; the clean decline is today's
-           behavior. The repair is `(% (Qty.value q) (Qty.value r))` — take the remainder of the numbers.")
+(case "remainder (%) on same-dimension integer quantities keeps the unit (7m % 3m = 1m)"
+  (doc    "`(% (Qty.of 7 meter) (Qty.of 3 meter))` — remainder on same-dimension integer quantity operands —
+           yields `1 meter`, so `Qty.value` of it is 1. `%` on quantities is same-in/same-out like `+`/`-`
+           (SAME unit out, unlike `*`/`/` which compose units): the compiler checks the dimensions match
+           (cross-dimension is CDZ0501), runs the remainder on the erased magnitudes (7 % 3 = 1), and
+           recovers the unit from the solved `(Qty Int64 meter)`. Defined only for an integer inner (a
+           float/rational quantity `%` declines — no remainder on exact/floating arithmetic). Operator
+           ruling 2026-08-28: same-dimension mod is well-formed (superseded the prior clean-decline).")
   (input  (Qty.value (% (Qty.of 7 (Unit.base #"meter")) (Qty.of 3 (Unit.base #"meter")))))
-  (declines))
+  (output (: 1 Int64)))
+
+(case "remainder (%) of quantities of incompatible dimension is CDZ0501"
+  (doc    "`(% (Qty.of 7 meter) (Qty.of 3 second))` — a cross-DIMENSION remainder — is a dimensional error
+           (CDZ0501), exactly like `+`/`-` across dimensions: a remainder requires equal dimensions (units
+           are never silently converted across dimensions). The dimension pin for the new same-dimension `%`.")
+  (input  (Qty.value (% (Qty.of 7 (Unit.base #"meter")) (Qty.of 3 (Unit.base #"second")))))
+  (error  CDZ0501))
+
+(case "remainder (%) on a floating-point quantity is CDZ0301 (no float remainder)"
+  (doc    "`(% (Qty.of 7.0 meter) (Qty.of 3.0 meter))` — a remainder on a FLOAT-inner quantity — is rejected
+           CDZ0301, the SAME code a bare float `%` gets: a remainder is an integer operation (exact/floating
+           arithmetic has no remainder), so a float quantity `%` is rejected exactly as the bare float `%` is.
+           Pins that the same-dimension `%` fold is INTEGER-only; the repair is an integer quantity, or
+           recover the value with `Qty.value` first.")
+  (input  (Qty.value (% (Qty.of 7.0 (Unit.base #"meter")) (Qty.of 3.0 (Unit.base #"meter")))))
+  (error  CDZ0301))
 
 ; ============================================================================================
 ; Dimensional equality is by canonical form, not syntax — differently-written equal dimensions

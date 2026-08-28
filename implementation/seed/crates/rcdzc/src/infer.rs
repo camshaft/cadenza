@@ -5559,8 +5559,12 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             let b_qty = matches!(b, Ty::Qty { .. });
             if a_qty || b_qty {
                 match prim {
-                    crate::resolved::Prim::Add | crate::resolved::Prim::Sub => {
-                        // The result unit: when both operands are at the SAME unit (scale), keep it (the
+                    crate::resolved::Prim::Add
+                    | crate::resolved::Prim::Sub
+                    | crate::resolved::Prim::Rem => {
+                        // `+`/`-`/`%` on same-dimension quantities KEEP the shared unit (a remainder is
+                        // same-in/same-out like addition: `7m % 3m = 1m`), unlike `*`/`/` which compose
+                        // units. The result unit: when both operands are at the SAME unit (scale), keep it (the
                         // common Layer-1 case — no conversion); when they share a dimension but DIFFER in
                         // scale (`meter` + `kilometer`), the result is the dimension's REFERENCE unit (the
                         // deterministic common unit each operand converts to — units-of-measure.md
@@ -10036,12 +10040,89 @@ fn check_application(
         // clear decline, not a leaked scheme mismatch. (`is_rem` was already excluded from the `*`/`/`
         // dimensional skip; this replaces the fall-through with an explicit message.)
         if is_rem && any_qty {
-            trace!(target: "rcdzc::infer", node = head.0, "reject: remainder (%) is not defined on a quantity operand");
-            out.push(Reject::decline(
-                "remainder (%) is not defined on quantities — the units surface supports \
-                 +/-/*/`/`/comparison; recover the numeric value with `Qty.value` first if you need \
-                 the remainder of the underlying number",
-            ));
+            // `%` (remainder) on QUANTITIES is a SAME-DIMENSION INTEGER operation — `7m % 3m = 1m`
+            // (operator ruling 2026-08-28: same-dimension mod is well-formed). It mirrors `+`/`-`
+            // dimensionally (same dimension in, SAME unit out — a remainder does not compose units like
+            // `*`/`/`) and is defined only for an INTEGER/BigInt inner numeric type, exactly like the
+            // bare `%` (a float/rational has no remainder — exact division is total). `apply_type` gives
+            // the same-unit `(Qty T u)` result; `lower` erases each `Qty.of` to its magnitude and runs the
+            // inner integer `%`. Faults: cross-dimension → CDZ0501; a float/rational inner → clean decline
+            // (like bare float `%`); a quantity mixed with a bare number → CDZ0501 (no dimensionless coercion).
+            match (&a0, &b0) {
+                (
+                    Ty::Qty {
+                        inner: ia,
+                        unit: ua,
+                    },
+                    Ty::Qty {
+                        inner: ib,
+                        unit: ub,
+                    },
+                ) => {
+                    if !ua.same_dimension(ub) {
+                        trace!(target: "rcdzc::infer", head = head.0, "fault: remainder of quantities of incompatible dimension (CDZ0501)");
+                        out.push(Reject::coded(
+                            Code::DimensionMismatch,
+                            format!(
+                                "taking the remainder of quantities of incompatible dimension: {} and {} \
+                                 — a remainder requires equal dimensions (units are never silently \
+                                 converted across dimensions)",
+                                ua.render_human(),
+                                ub.render_human(),
+                            ),
+                        ));
+                    } else if matches!(**ia, Ty::Float(_) | Ty::Rational)
+                        || matches!(**ib, Ty::Float(_) | Ty::Rational)
+                    {
+                        // A remainder is an INTEGER operation — a float/rational has none (exact/floating
+                        // arithmetic is total). Reject with the SAME code a bare float `%` gets (CDZ0301):
+                        // the numeric type does not support the operator, not a not-yet-implemented decline.
+                        trace!(target: "rcdzc::infer", head = head.0, "reject: remainder is not defined on a floating/rational quantity (CDZ0301)");
+                        out.push(Reject::coded(
+                            Code::NumericMismatch,
+                            "remainder (%) is not defined on a floating-point or rational quantity — a \
+                             remainder is an integer operation; use an integer quantity, or recover the \
+                             numeric value with `Qty.value` first"
+                                .to_string(),
+                        ));
+                    } else {
+                        // Same dimension, integer inner — the INNER numeric types must still agree (no
+                        // promotion under a unit), the same check `+`/`-` make; report a mismatch CDZ0301
+                        // with the one-shot inner-value coercion fix.
+                        let mut subst = Subst::new();
+                        if let Err(mut reject) =
+                            crate::unify::unify(&mut subst, ia, ib, &db.name_ctx())
+                        {
+                            let inner_a = qty_of_value_arg(db, args[0]);
+                            let inner_b = qty_of_value_arg(db, args[1]);
+                            let fix = inner_a
+                                .and_then(|n| numeric_text_coercion_fix(db, ib, ia, n))
+                                .or_else(|| {
+                                    inner_b.and_then(|n| numeric_text_coercion_fix(db, ia, ib, n))
+                                });
+                            if let Some(fix) = fix {
+                                reject = reject.with_fix(fix);
+                            }
+                            out.push(reject);
+                        }
+                    }
+                }
+                // A quantity mixed with a BARE number — `7m % 3` — has no dimensionless coercion, exactly
+                // like `7m + 3`: CDZ0501.
+                _ => {
+                    trace!(target: "rcdzc::infer", head = head.0, "fault: remainder mixes a quantity and a bare number (CDZ0501)");
+                    out.push(Reject::coded(
+                        Code::DimensionMismatch,
+                        format!(
+                            "taking the remainder of a quantity and a bare number: {} and {} — a \
+                             remainder requires two quantities of equal dimension (recover the numeric \
+                             value with `Qty.value` first)",
+                            a0.render_name(&db.name_ctx()),
+                            b0.render_name(&db.name_ctx()),
+                        ),
+                    ));
+                }
+            }
             for &arg in args {
                 collect(db, arg, out);
             }
