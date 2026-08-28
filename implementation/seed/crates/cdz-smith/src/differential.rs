@@ -443,6 +443,121 @@ pub fn run_ast_corpus_sweep(
     Ok(stats)
 }
 
+// ── the Lean L2 differential (S4b) ────────────────────────────────────────────────────────────────
+//
+// The async-batched differential the operator asked for: run programs under the WASM backend, capture
+// rcdzc's output, hand the oracle a BATCH of trials `(batch (trial <program> (args) <output>) …)`, and
+// judge each (holds / mismatch / skip). A `mismatch` = the Lean oracle's re-derived value disagrees with
+// rcdzc's — a candidate miscompile the wasm-validity + crash oracles are blind to. Lean is a THIRD
+// differential Side (an independent implementation of the semantics), so this catches wrong-value
+// miscompiles just like the wasm-vs-rust oracle, but against a formally-modelled reference.
+
+/// Bridge one wasm [`Side`] into the rcdzc-output a Lean trial carries. `Value` renders → `(value <ast>)`
+/// (via [`crate::lean::RcdzcOutput::value_from_render`]); `Trap` → `(trap <kind>)`. A `Declined` /
+/// `ArtifactError` (or a value whose render doesn't parse) is NOT comparable → `None` (the trial is skipped).
+fn side_to_rcdzc_output(side: Side) -> Option<crate::lean::RcdzcOutput> {
+    match side {
+        Side::Value(v) => crate::lean::RcdzcOutput::value_from_render(&v),
+        Side::Trap(t) => Some(crate::lean::RcdzcOutput::Trap(t)),
+        Side::Declined(_) | Side::ArtifactError(_) => None,
+    }
+}
+
+/// Outcome tally of a Lean differential sweep.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LeanDiffStats {
+    /// Trials the oracle judged (comparable programs).
+    pub trials: usize,
+    /// The oracle's value/trap matched rcdzc's — no bug.
+    pub holds: usize,
+    /// The oracle disagreed with rcdzc — a candidate miscompile (collected in `mismatches`).
+    pub mismatches: usize,
+    /// The oracle skipped (a construct it does not model yet) — a coverage gap, not a bug.
+    pub skips: usize,
+    /// Programs that produced no comparable wasm output (declined / artifact-error / unparsable render).
+    pub not_comparable: usize,
+}
+
+/// Run each program source under the WASM backend, batch the comparable (program, rcdzc-output) trials,
+/// and judge each batch with `oracle-check --batch-stream`. Tallies holds/mismatch/skip; every
+/// `Mismatch` pushes `(source, oracle-detail)` into `mismatches` (a candidate rcdzc bug). Batching is
+/// the async unit the operator's pipeline overlaps (a fresh `oracle-check` per batch judges while the
+/// next batch compiles). `sources` should be TERMINATING programs (e.g. `generator::generate`'s
+/// structurally-terminating grammar) — the in-process wasm run has no hang guard.
+pub fn lean_differential_sweep(
+    sources: &[String],
+    store: &std::path::Path,
+    oracle_bin: &std::path::Path,
+    batch_size: usize,
+    mismatches: &mut Vec<(String, String)>,
+) -> std::io::Result<LeanDiffStats> {
+    let mut stats = LeanDiffStats::default();
+    let mut batch_srcs: Vec<String> = Vec::new();
+    let mut batch_trials: Vec<crate::lean::Trial> = Vec::new();
+    let batch_size = batch_size.max(1);
+
+    for src in sources {
+        let output = match side_to_rcdzc_output(run_wasm(src, store)) {
+            Some(o) => o,
+            None => {
+                stats.not_comparable += 1;
+                continue;
+            }
+        };
+        // The trial carries the FULL program (the oracle re-roots + executes it with empty args).
+        let Ok(program) = cadenza_syntax::sexpr::read(src) else {
+            stats.not_comparable += 1;
+            continue;
+        };
+        batch_srcs.push(src.clone());
+        batch_trials.push(crate::lean::Trial::main_0(program, output));
+        if batch_trials.len() >= batch_size {
+            judge_and_tally(
+                oracle_bin,
+                &batch_srcs,
+                &batch_trials,
+                &mut stats,
+                mismatches,
+            )?;
+            batch_srcs.clear();
+            batch_trials.clear();
+        }
+    }
+    if !batch_trials.is_empty() {
+        judge_and_tally(
+            oracle_bin,
+            &batch_srcs,
+            &batch_trials,
+            &mut stats,
+            mismatches,
+        )?;
+    }
+    Ok(stats)
+}
+
+/// Judge one batch of trials and fold the verdicts into `stats` (+ collect mismatches by source).
+fn judge_and_tally(
+    oracle_bin: &std::path::Path,
+    srcs: &[String],
+    trials: &[crate::lean::Trial],
+    stats: &mut LeanDiffStats,
+    mismatches: &mut Vec<(String, String)>,
+) -> std::io::Result<()> {
+    let verdicts = crate::lean::judge_batch(oracle_bin, trials)?;
+    for (src, verdict) in srcs.iter().zip(verdicts) {
+        stats.trials += 1;
+        match verdict {
+            crate::lean::Verdict::Holds => stats.holds += 1,
+            crate::lean::Verdict::Skip(_) => stats.skips += 1,
+            crate::lean::Verdict::Mismatch(detail) => {
+                stats.mismatches += 1;
+                mismatches.push((src.clone(), detail));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The full differential check for one program: run both backends and compare. `store` is the runtime
 /// store for the wasm run; `cdz` is the `cdz` binary for the rust run. A non-zero `run-rust` exit
 /// (per-program usage/harness error) is a non-comparable [`Side::Declined`] (→ `Diff::Agree`, skipped);
@@ -833,5 +948,53 @@ mod tests {
         assert_eq!(stats.traps, 0);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── the Lean L2 differential (`lean_differential_sweep`) ──────────────────────────────────────
+
+    /// The wasm-Side → Lean-trial-output bridge: a value render → `(value …)`, a trap → `(trap …)`, a
+    /// decline / artifact-error / unparsable render → not comparable (`None`). Pure — no wasm / oracle.
+    #[test]
+    fn side_to_rcdzc_output_bridges_each_side() {
+        use crate::lean::RcdzcOutput;
+        assert!(matches!(
+            side_to_rcdzc_output(Side::Value("42".into())),
+            Some(RcdzcOutput::Value(_))
+        ));
+        assert!(matches!(
+            side_to_rcdzc_output(Side::Trap("div-by-zero".into())),
+            Some(RcdzcOutput::Trap(_))
+        ));
+        assert!(side_to_rcdzc_output(Side::Declined("x".into())).is_none());
+        assert!(side_to_rcdzc_output(Side::ArtifactError("E0308".into())).is_none());
+        // A value whose render doesn't parse as an AST is not comparable.
+        assert!(side_to_rcdzc_output(Side::Value("(( unbalanced".into())).is_none());
+    }
+
+    /// END-TO-END Lean differential against the REAL `oracle-check` (skips unless `CDZ_SMITH_ORACLE_CHECK`
+    /// points at an AST-envelope oracle — `nix build .#oracle-lean`). Two benign scalar programs (which
+    /// import no runtime, so no store is needed) must HOLD against the oracle, with no mismatches.
+    #[test]
+    fn lean_differential_sweep_holds_for_benign_scalars() {
+        let Some(oracle) = crate::lean::discover_oracle_check() else {
+            eprintln!(
+                "skipping: no oracle-check (nix build .#oracle-lean; set CDZ_SMITH_ORACLE_CHECK)"
+            );
+            return;
+        };
+        let sources = vec![
+            "(do (def (main) (+ 1 2)) (export main))".to_string(),
+            "(do (def (main) 42) (export main))".to_string(),
+        ];
+        let store = std::path::Path::new("/nonexistent-store"); // pure scalars need no runtime
+        let mut mismatches = Vec::new();
+        let stats = lean_differential_sweep(&sources, store, &oracle, 8, &mut mismatches)
+            .expect("sweep runs");
+        assert_eq!(stats.trials, 2, "both scalars are comparable");
+        assert_eq!(
+            stats.mismatches, 0,
+            "benign scalars must not mismatch: {mismatches:?}"
+        );
+        assert!(mismatches.is_empty());
     }
 }
