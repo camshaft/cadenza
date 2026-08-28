@@ -68,8 +68,13 @@
 //!   `(: (<Variant> <payload-or-unit>) <sum-type>)` (the type ascription pins an under-determined sum,
 //!   e.g. a bare `(None unit)`). When the value's OWN solved type is under-determined (a bare `(None)` at a
 //!   join, whose own type is `Option<?>`), the `<sum-type>` is recovered from the `expected` type its
-//!   container passed down (see `emit_expr`'s `expected` / [`body_ctx`]); a still-free type declines.
-//!   All mirror lower's value surface.
+//!   container passed down (see `emit_expr`'s `expected` / [`body_ctx`]); a still-free type declines. The
+//!   `expected` also threads into COMPOUND-VALUE element positions — a list/set element gets the
+//!   collection's element type, a tuple element its slot type, a map entry its key/value types, a record
+//!   field its field type — so a bare `(None)` element (`(list (Some n) (None) …)`) recovers its type.
+//!   (A bare `(None)` NESTED as a variant PAYLOAD — `(Some (None))` — is not yet threaded and still
+//!   declines; the instantiated payload type is not available from a prelude payload occurrence — a later
+//!   slice.) All mirror lower's value surface.
 //!   A USER sum is re-declared: `emit` emits its `(type <Name> (<Variant> <PayloadTy>…)…)` decl (for a
 //!   MONOMORPHIC, CLOSED sum of ANY arity — recursive payloads OK) and its values then round-trip. A
 //!   SINGLE-variant sum is the ERASED `Ty::Nominal` newtype: its value re-emits the CONSTRUCTOR
@@ -596,8 +601,14 @@ fn emit_expr_viewed(
             let head = b.name("tuple");
             let mut children = Vec::with_capacity(1 + elems.len());
             children.push(head);
-            for e in elems.iter().copied() {
-                children.push(emit_expr(db, b, e, None, env, emitted)?);
+            // Each element's `expected` is the tuple's own type at that position — so an under-determined
+            // element (a bare `(None)` in `(tuple (None) 3)`) recovers its type from the tuple's slot type.
+            for (i, e) in elems.iter().copied().enumerate() {
+                let ex = match &eff_ty {
+                    Ty::Tuple(ts) => ts.get(i).cloned(),
+                    _ => None,
+                };
+                children.push(emit_expr(db, b, e, ex, env, emitted)?);
             }
             Ok(b.list(children))
         }
@@ -609,7 +620,13 @@ fn emit_expr_viewed(
             children.push(head);
             for (name, &v) in fields.iter() {
                 let fname = b.name(&*name.name);
-                let fval = emit_expr(db, b, v, None, env, emitted)?;
+                // The field's `expected` is the record type's field type (an under-determined field value
+                // recovers it from there).
+                let ex = match &eff_ty {
+                    Ty::Record(ftys) => ftys.get(name).cloned(),
+                    _ => None,
+                };
+                let fval = emit_expr(db, b, v, ex, env, emitted)?;
                 children.push(b.field_pair(fname, fval));
             }
             Ok(b.list(children))
@@ -620,8 +637,14 @@ fn emit_expr_viewed(
             let head = b.name("list");
             let mut children = Vec::with_capacity(1 + elems.len());
             children.push(head);
+            // Every element's `expected` is the list's element type — so a bare `(None)` element (in
+            // `(list (Some n) (None) …)`, whose own type is `Option<?>`) recovers `Option Int64` from it.
+            let elem_ty = match &eff_ty {
+                Ty::List(e) => Some((**e).clone()),
+                _ => None,
+            };
             for e in elems.iter().copied() {
-                children.push(emit_expr(db, b, e, None, env, emitted)?);
+                children.push(emit_expr(db, b, e, elem_ty.clone(), env, emitted)?);
             }
             Ok(b.list(children))
         }
@@ -636,9 +659,15 @@ fn emit_expr_viewed(
             let head = b.name("map");
             let mut children = Vec::with_capacity(1 + entries.len());
             children.push(head);
+            // Key/value `expected` are the map type's key/value types (an under-determined key or value —
+            // e.g. a `(None)` value — recovers its type from there).
+            let (key_ty, val_ty) = match &eff_ty {
+                Ty::Map(k, v) => (Some((**k).clone()), Some((**v).clone())),
+                _ => (None, None),
+            };
             for &(k, v) in entries.iter() {
-                let kv = emit_expr(db, b, k, None, env, emitted)?;
-                let vv = emit_expr(db, b, v, None, env, emitted)?;
+                let kv = emit_expr(db, b, k, key_ty.clone(), env, emitted)?;
+                let vv = emit_expr(db, b, v, val_ty.clone(), env, emitted)?;
                 children.push(b.list(vec![kv, vv]));
             }
             Ok(b.list(children))
@@ -651,8 +680,12 @@ fn emit_expr_viewed(
             let list_head = b.name("list");
             let mut list_children = Vec::with_capacity(1 + elems.len());
             list_children.push(list_head);
+            let elem_ty = match &eff_ty {
+                Ty::Set(e) => Some((**e).clone()),
+                _ => None,
+            };
             for e in elems.iter().copied() {
-                list_children.push(emit_expr(db, b, e, None, env, emitted)?);
+                list_children.push(emit_expr(db, b, e, elem_ty.clone(), env, emitted)?);
             }
             let inner_list = b.list(list_children);
             let dot = b.name(".");
@@ -707,6 +740,10 @@ fn emit_expr_viewed(
             })?;
             let payload = match payloads.len() {
                 0 => b.name("unit"),
+                // The payload emits with no `expected` (its own solved type governs). A bare `(None)` NESTED
+                // as a variant payload (`(Some (None))`) whose own type is `Option<?>` therefore still
+                // declines — recovering it needs the variant's instantiated payload type, which is not
+                // available from the payload occurrence for a prelude sum (a later slice; honest decline).
                 1 => emit_expr(db, b, payloads[0], None, env, emitted)?,
                 _ => {
                     return Err(Reject::decline(
