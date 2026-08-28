@@ -337,6 +337,7 @@ impl Fleet {
             "window.sh",
             "prune-stale-targets.sh",
             "prune-tmp-inodes.sh",
+            "reap-wedged-nix-clients.sh",
         ] {
             let src = self.src.join(f);
             if src.exists() {
