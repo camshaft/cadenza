@@ -944,11 +944,22 @@
         rcdzcWasmVendor = pkgs.rustPlatform.importCargoLock {
           lockFile = ./implementation/seed/crates/rcdzc-wasm/Cargo.lock;
         };
+        # The cadenza-syntax crate + its extracted surface sub-crates (#5076/#5082: core is the dep-light
+        # bottom; cedar/json/sexpr/toml are the per-surface splits). Enumerated ONCE and spliced into the
+        # hand-listed wasm/guide filesets below, which snapshot cadenza-syntax's transitive crate dirs for
+        # the STANDALONE rcdzc-wasm / cdz-wasm workspaces (their own leaf locks — NOT covered by
+        # rootWorkspaceCrates' crane machinery, so the closure walk can't feed them). A future surface-crate
+        # add now updates THIS one list instead of three filesets — the durable fix for the crate-split
+        # whack-a-mole (v-fleet-tooling flag: fast-gate #5056, then this #5076 gap in 3 more filesets).
+        cadenzaSyntaxCrateDirs = [
+          "cadenza-syntax" "cadenza-syntax-core" "cadenza-syntax-cedar"
+          "cadenza-syntax-json" "cadenza-syntax-sexpr" "cadenza-syntax-toml"
+        ];
         rcdzcWasmSrc = pkgs.lib.fileset.toSource {
           root = ./.;
-          fileset = pkgs.lib.fileset.unions (map (c: ./implementation/seed/crates + ("/" + c)) [
-            "rcdzc-wasm" "rcdzc" "cadenza-syntax" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num"
-          ] ++ [ ./rust-toolchain.toml ]);
+          fileset = pkgs.lib.fileset.unions (map (c: ./implementation/seed/crates + ("/" + c)) ([
+            "rcdzc-wasm" "rcdzc" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num"
+          ] ++ cadenzaSyntaxCrateDirs) ++ [ ./rust-toolchain.toml ]);
         };
         rcdzcWasm = pkgs.stdenvNoCC.mkDerivation {
           pname = "rcdzc-wasm";
@@ -2910,9 +2921,9 @@
         guideExamplesSrc = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions (
-            (map (c: ./implementation/seed/crates + ("/" + c)) [
-              "cdz-wasm" "rcdzc" "cadenza-syntax" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num"
-            ]) ++ [
+            (map (c: ./implementation/seed/crates + ("/" + c)) ([
+              "cdz-wasm" "rcdzc" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num"
+            ] ++ cadenzaSyntaxCrateDirs)) ++ [
               ./guide
               ./implementation/cad/src
               ./implementation/music/src
@@ -2947,9 +2958,9 @@
         guideCompilerWasmSrc = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions (
-            (map (c: ./implementation/seed/crates + ("/" + c)) [
-              "cdz-wasm" "rcdzc" "cadenza-syntax" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num"
-            ]) ++ [ ./rust-toolchain.toml ]);
+            (map (c: ./implementation/seed/crates + ("/" + c)) ([
+              "cdz-wasm" "rcdzc" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num"
+            ] ++ cadenzaSyntaxCrateDirs)) ++ [ ./rust-toolchain.toml ]);
         };
         cdzWasmPkg = pkgs.stdenvNoCC.mkDerivation {
           pname = "cdz-wasm-pkg";
