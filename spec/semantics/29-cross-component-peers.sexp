@@ -433,6 +433,43 @@
   (call   main)
   (output (: 6 Int64)))
 
+(case "a scalar tuple argument crosses INBOUND to a peer and both fields are summed there"
+  (doc    "The pure-scalar analogue of pca4: the consumer builds `(tuple x (+ x 1))` — two Int64 fields, no
+           heap — and passes it as ONE handle to the peer op `sum`, which projects both fields and adds them.
+           main(9) = S.sum((9,10)) = 9 + 10 = 19. Pins that a scalar-only compound crosses as a handle inbound
+           and the provider reads both fields. Relocated from rcdzc u16_a_compound_argument_crosses_to_a_peer.")
+  (peer   "cadenza:adder/api" (do (def (sum (: t (Tuple Int64 Int64))) (+ (. t 0) (. t 1))) (export sum)))
+  (input  (do (effect S (op sum (-> (Tuple Int64 Int64) Int64))) (bind S "cadenza:adder/api")
+              (def (main (: x Int64)) (host (S) (S.sum (tuple x (+ x 1))))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: 19 Int64)))
+
+(case "two compound arguments each cross as their own handle in one peer call"
+  (doc    "u16 pins a SINGLE compound arg; this pins that MULTIPLE compound args each cross as their OWN handle
+           in ONE call (the multi-handle inbound case). Peer `add4` takes TWO `(Tuple Int64 Int64)` and sums all
+           four fields; the consumer passes two freshly-built tuples. main(5) = add4((5,5),(5,5)) = 20 — both
+           tuple handles crossed inbound and were read. Relocated from rcdzc
+           two_compound_arguments_cross_to_a_peer_in_one_op.")
+  (peer   "cadenza:s/api" (do (def (add4 (: a (Tuple Int64 Int64)) (: b (Tuple Int64 Int64))) (+ (+ (. a 0) (. a 1)) (+ (. b 0) (. b 1)))) (export add4)))
+  (input  (do (effect S (op add4 (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Int64))) (bind S "cadenza:s/api")
+              (def (main (: x Int64)) (host (S) (S.add4 (tuple x x) (tuple x x)))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 20 Int64)))
+
+(case "a String argument handle passed to a peer stays live for a later local read (borrow not move)"
+  (doc    "A refcount/borrow-correctness pin: passing a String handle to a peer op must BORROW it, not consume
+           it. The consumer let-binds a runtime rope `s = String.concat \"ab\" \"cde\"`, passes it to peer `blen`,
+           THEN reads the SAME rope again locally: main = S.blen(s) + String.byte-len(s) = 5 + 5 = 10. If the
+           peer-arg emit treated the handle as OWNED (moved/freed by the call), the second local read would be a
+           use-after-free — a trap or a garbage length, NOT 10 (and it would still VALIDATE: byte-valid is not
+           refcount-correct). Running it e2e proves the handle stays live across the boundary. Relocated from
+           rcdzc a_string_argument_handle_survives_the_peer_call_and_is_reused_locally.")
+  (peer   "cadenza:reuse/api" (do (def (blen (: s String)) (String.byte-len s)) (export blen)))
+  (input  (do (effect S (op blen (-> String Int64))) (bind S "cadenza:reuse/api")
+              (def (main) (let ((s (String.concat "ab" "cde"))) (host (S) (+ (S.blen s) (String.byte-len s))))) (export main)))
+  (call   main)
+  (output (: 10 Int64)))
+
 (case "a string argument crosses to a peer and the doubled result byte-len is read"
   (doc    "The converse shape (string ARG + string RESULT both cross as rope handles over the shared runtime):
            PROVIDER `converse(prompt)` = String.concat prompt prompt BUILDS a new rope from the crossed arg;
