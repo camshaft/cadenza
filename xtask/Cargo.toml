@@ -31,10 +31,6 @@ cdz-rust-render = { path = "../implementation/seed/crates/cdz-rust-render" }
 # the same crate `cdz-platform` itself depends on, NOT the compiler (rcdzc) — to decode that AST and
 # re-project each contract's type declarations into `src/contracts/<name>.rs` as builder calls.
 cadenza-ast = { path = "../implementation/seed/crates/cadenza-ast" }
-# The mandate-lint, carved into its own minimal-dep crate (v-xtask-decompose). The monolith still runs
-# it via `cargo xtask lint-mandates` by dispatching to `xtask_mandates::lint_mandates` (non-breaking);
-# the crate itself deps only `syn`, so a nix check building just it doesn't rebuild xtask's world.
-xtask-mandates = { path = "crates/xtask-mandates" }
 # SHA-256 for the local build-cache tree-fingerprint (`hash_tree`), an internal cache key with no
 # cross-boundary contract. The CONTENT-ADDRESS digest (`content_address`) is `cdz-contract` (below).
 sha2 = "0.10"

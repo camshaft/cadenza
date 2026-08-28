@@ -196,12 +196,6 @@ enum Cmd {
     /// advisory job (no full build). Comment-scoped + Unicode-test-doc-excluded, so functional emoji in
     /// string/char literals (the language's own lex/parse/print fixtures) are correctly left alone.
     LintEmoji,
-    /// Mandate lint, standalone (operator directive): fail if any mechanizable STANDING MANDATE is
-    /// violated in `implementation/**/*.rs` — currently the no-integration-tests mandate (a NEW
-    /// `tests/*.rs` cargo integration test not on the grandfather allowlist). A cheap source-scan, the
-    /// same shape as `lint-emoji`; v-fleet-tooling folds it into `check`/`localGate` so a violating MR
-    /// fails the gate. (Follow-on: syn-based no-hex-except-tracing / no-thin-wrapper / no-hard-coded-name.)
-    LintMandates,
     /// Round-trip every corpus program through the syntax surfaces: `sexpr` must reproduce the exact
     /// binary AST; `ml` (the long-term syntax, allowed to canonicalize once) must round-trip to a
     /// FIXED POINT (`ml(ml(x)) == ml(x)`). Guards `cadenza-syntax` independently of the compiler.
@@ -379,20 +373,6 @@ fn main() {
             Ok(()) => println!("lint-emoji: ok — no emoji in source comments"),
             Err(msg) => {
                 eprintln!("lint-emoji: {msg}");
-                std::process::exit(1);
-            }
-        },
-        Cmd::LintMandates => match xtask_mandates::lint_mandates(&paths.repo) {
-            Ok(v) if v.is_empty() => println!("lint-mandates: ok — no mandate violations"),
-            Ok(violations) => {
-                for x in &violations {
-                    eprintln!("lint-mandates: {}: {}", x.file.display(), x.reason);
-                }
-                eprintln!("lint-mandates: {} mandate violation(s)", violations.len());
-                std::process::exit(1);
-            }
-            Err(msg) => {
-                eprintln!("lint-mandates: {msg}");
                 std::process::exit(1);
             }
         },
@@ -6665,27 +6645,12 @@ fn check(paths: &Paths, profile: &str) {
     // never touches functional emoji in string/char literals (Unicode test strings, output markers) or the
     // legitimate technical typography (em-dash/arrows/math) it deliberately allows. See `emoji_free_lint`.
     log.step_native("emoji-free", || emoji_free_lint(paths));
-    // Mandate-enforcement lint (operator directive 2026-08-09: mandates keep being violated + found
-    // post-hoc — make a violation UNMERGEABLE at the gate). A HARD step, mirroring emoji-free: fail the
-    // check on any DENY-level mandate violation in `implementation/**/*.rs`. Currently: no-new-integration
-    // -tests (a `tests/*.rs` not on the grandfather allowlist + not vendored). Cheap (a source walk, no
-    // rebuild). v-syntax authored `mandates::lint_mandates` (handed off as a patch — xtask is v-ft's
-    // crate); v-ft wires it here + into localGate (via v-nix, mirroring emojiLintCheck) so it gates the
-    // sole merge path. Follow-on syn rules (hex/thin-wrapper/hard-coded-names) extend mandates.rs behind
-    // this same entrypoint (no re-wire). Maps violations → one Err naming the count + first file.
-    log.step_native("mandates", || match xtask_mandates::lint_mandates(&paths.repo) {
-        Ok(v) if v.is_empty() => Ok(()),
-        Ok(violations) => {
-            let first = &violations[0];
-            Err(format!(
-                "{} mandate violation(s) — first: {}: {} (run `cargo xtask lint-mandates` for the full list)",
-                violations.len(),
-                first.file.display(),
-                first.reason
-            ))
-        }
-        Err(msg) => Err(msg),
-    });
+    // Mandate-enforcement lint: NO LONGER an inline step here (v-xtask-decompose 2026-08-28). The
+    // mandate lint now lives in the STANDALONE `xtask-mandates` crate + the nix `mandateLintCheck`
+    // (rewired to `cargo run -p xtask-mandates`), which gate-local folds into its fail-set — the
+    // authoritative merge gate. Keeping an inline call here would require `xtask` to DEPEND on
+    // `xtask-mandates`, defeating the independent-caching win (operator: no xtask→subcrate dep). Run it
+    // via `nix run .#lint-mandates` (or `cargo xtask lint-mandates`, redirected to the app by v-ft's wrapper).
     // WARN-only: surface the byte-len-bounds-scalar-String.at latent-ASCII shape (concierge ruling C
     // part 2). Never reds the gate — always Ok unless the corpus can't be enumerated.
     log.step_native("bytelen-scalar-walk-warn", || {

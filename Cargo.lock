@@ -3338,7 +3338,6 @@ dependencies = [
  "wasmparser 0.239.0",
  "wit-parser",
  "xshell",
- "xtask-mandates",
 ]
 
 [[package]]
