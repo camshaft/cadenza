@@ -20,11 +20,11 @@
 //! `backend::common`, never the sibling backends' internals. It DECLINES (attributed to this target) a
 //! construct it does not yet reconstruct — the same decline-don't-miscompile discipline the wasm/rust
 //! backends follow. Coverage so far:
-//! - **B0**: whole-program shape (`(do (def …)… (export …)…)`) with CONSTANT-bodied definitions —
-//!   the PLAIN constant leaves (Int/Bool/Str/Char/Float/Unit). A WRAPPER-typed constant
-//!   (`BigInt`/`Rational`/`Symbol`/`Qty`) shares a bare scalar core but has no bare-literal surface that
-//!   re-reads to the wrapper, so it DECLINES (emitting the bare scalar would drop the type and
-//!   miscompile the value); its constructor surface is a later slice.
+//! - **B0**: whole-program shape (`(do (def …)… (export …)…)`) with CONSTANT-bodied definitions — the
+//!   PLAIN constant leaves (Int/Bool/Str/Char/Float/Unit) as literals, and the WRAPPER-typed numeric-
+//!   tower / nominal-leaf constants via their CONSTRUCTOR surface: `BigInt`→`(BigInt.of n)`,
+//!   `Rational`→`(Rational.of n d)`, `Symbol`→`(Symbol.of "…")` (emitting the bare scalar would drop the
+//!   type and miscompile the value). `Ty::Qty` still declines (needs unit reconstruction — a later slice).
 //! - **B1a**: PARAMETERS — a def signature `(<name> (: <p> <Ty>)…)` (param types via lower's canonical
 //!   `type_ast`) and a `Core::Param`/`LocalRef` reference (the bare binder name). A parameter of a type
 //!   with no value-form surface (function/unsolved) declines.
@@ -182,23 +182,54 @@ fn emit_expr(
     env: &mut BinderEnv,
 ) -> Result<StructId, Reject> {
     match core_of(db, id) {
-        // A CONSTANT scalar leaf re-reads to the same value+type ONLY when its solved type is the PLAIN
-        // scalar type. A numeric-tower / nominal-leaf WRAPPER (`BigInt`/`Rational`/`Symbol`/`Qty`) shares
-        // a bare scalar core (`ConstInt`/`ConstStr`/`ConstFloat`) but has no bare-literal surface that
-        // re-reads to the WRAPPER — emitting the bare scalar would drop the type and MISCOMPILE the value
-        // (a `Ty::Symbol` value came back a `String`, confirmed). So a wrapper-typed constant DECLINES
-        // (its faithful constructor surface — `(Symbol.of …)` / `(Rational.of …)` / `(BigInt.of …)` — is a
-        // later slice), and only a plain scalar emits its literal. `radix` is display-only (Core drops it).
+        // A CONSTANT scalar leaf re-reads to its plain value+type when its solved type is the PLAIN scalar
+        // type; a numeric-tower / nominal-leaf WRAPPER (`BigInt`/`Rational`/`Symbol`) shares a bare scalar
+        // core (`ConstInt`/`ConstStr`/`ConstRational`) but re-reads to the WRAPPER only through its
+        // CONSTRUCTOR surface — emitting the bare scalar would drop the type and MISCOMPILE the value (a
+        // `Ty::Symbol` value came back a `String`, confirmed). So a plain scalar emits its literal and a
+        // wrapper constant emits `(X.of …)`. (`Ty::Qty` — a scaled/unit-bearing wrapper — needs unit
+        // reconstruction and still declines, a later slice.) `radix` is display-only (Core drops it).
         Core::ConstInt(v) if matches!(crate::infer::type_of(db, id), Ty::Int(_)) => Ok(b
             .atom_leaf(Leaf::Int {
                 value: v,
                 radix: Radix::Dec,
             })),
+        // A BigInt constant is a `ConstInt` typed `Ty::BigInt` — re-emit `(BigInt.of <n>)` so it re-reads
+        // as the arbitrary-precision value rather than a fixed-width Int.
+        Core::ConstInt(v) if matches!(crate::infer::type_of(db, id), Ty::BigInt) => {
+            let head = member_access(b, "BigInt", "of");
+            let n = b.atom_leaf(Leaf::Int {
+                value: v,
+                radix: Radix::Dec,
+            });
+            Ok(b.list(vec![head, n]))
+        }
         Core::ConstStr(s) if matches!(crate::infer::type_of(db, id), Ty::String) => {
             Ok(b.atom_leaf(Leaf::Str(s)))
         }
+        // A Symbol constant shares a `ConstStr` core typed `Ty::Symbol` — re-emit `(Symbol.of "…")` so it
+        // re-reads as a Symbol (a bare string would come back a `String`).
+        Core::ConstStr(s) if matches!(crate::infer::type_of(db, id), Ty::Symbol) => {
+            let head = member_access(b, "Symbol", "of");
+            let text = b.atom_leaf(Leaf::Str(s));
+            Ok(b.list(vec![head, text]))
+        }
         Core::ConstFloat(d) if matches!(crate::infer::type_of(db, id), Ty::Float(_)) => {
             Ok(b.atom_leaf(Leaf::Float(d)))
+        }
+        // An exact RATIONAL constant — its value-form `num/den` is not valid expression syntax, so
+        // re-emit the CONSTRUCTOR `(Rational.of <num> <den>)` over the normalized pair.
+        Core::ConstRational(n, d) => {
+            let head = member_access(b, "Rational", "of");
+            let num = b.atom_leaf(Leaf::Int {
+                value: n,
+                radix: Radix::Dec,
+            });
+            let den = b.atom_leaf(Leaf::Int {
+                value: d,
+                radix: Radix::Dec,
+            });
+            Ok(b.list(vec![head, num, den]))
         }
         // Bool / Char / Unit have no wrapping type, so they always emit their one literal form.
         Core::ConstBool(bo) => Ok(b.atom_leaf(Leaf::Bool(bo))),
@@ -319,6 +350,16 @@ fn emit_expr(
             core_node_kind(&other)
         ))),
     }
+}
+
+/// `(. <operand> <key>)` — the member-access form the reader normalizes a dotted `X.key` to. Used to
+/// re-emit a wrapper constant's CONSTRUCTOR (`(Symbol.of …)`, `(BigInt.of …)`, `(Rational.of …)`), whose
+/// value-form is not valid expression syntax. Mirrors `lower::member_access`.
+fn member_access(b: &mut Builder, operand: &str, key: &str) -> StructId {
+    let dot = b.name(".");
+    let op = b.name(operand);
+    let k = b.name(key);
+    b.list(vec![dot, op, k])
 }
 
 /// The SURFACE operator a runtime-operator prim re-emits as, or `None` for a prim that is not a binary
