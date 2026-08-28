@@ -955,11 +955,48 @@
           "cadenza-syntax" "cadenza-syntax-core" "cadenza-syntax-cedar"
           "cadenza-syntax-json" "cadenza-syntax-sexpr" "cadenza-syntax-toml"
         ];
+        # The FULL crate-dir list each standalone wasm workspace snapshots into its src fileset. Named
+        # (not inlined) so the DRIFT-ASSERT below can prove the list covers every LOCAL crate the workspace
+        # actually resolves. rcdzc-wasm builds the compiler-as-wasm; cdz-wasm builds the browser compiler
+        # (guide examples). Both carry the same closure minus/plus their own crate. `cdz-run cdz-rt cdz-num`
+        # are kept as a harmless superset (leftover from rcdzc's pre-#5000 dev-deps — unused-but-present
+        # source never breaks a build; the assert only requires COVERAGE, not exactness).
+        rcdzcWasmCrateDirs = [ "rcdzc-wasm" "rcdzc" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num" ] ++ cadenzaSyntaxCrateDirs;
+        cdzWasmCrateDirs = [ "cdz-wasm" "rcdzc" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num" ] ++ cadenzaSyntaxCrateDirs;
+        # DURABLE DRIFT-GUARD (v-fleet-tooling +1, 2026-08-28): the standalone rcdzc-wasm / cdz-wasm
+        # workspaces have their OWN leaf Cargo.lock and are NOT covered by rootWorkspaceCrates' crane
+        # closure machinery, so a crate split/add that changes what they resolve silently omits the new
+        # crate dir from the hand-listed src fileset → `--locked` build fails fleet-wide (the recurring
+        # class: fast-gate dirCaseArms #5056, then the #5076 source-filter gap in 3 filesets). This asserts,
+        # at EVAL, that every LOCAL (path, no `source =`) crate in each leaf lock has its dir present in that
+        # workspace's crate-dir list — so a future split that adds a local crate to the lock throws LOUD
+        # here instead of red-building later. Mirrors crateClosureAssert's fail-fast discipline for the
+        # workspaces the root closure-walk can't see. (Coverage, not equality — a superset dir list is fine.)
+        leafLockLocalCrates = lockPath:
+          let lock = builtins.fromTOML (builtins.readFile lockPath);
+          in map (p: p.name) (builtins.filter (p: !(p ? source)) (lock.package or [ ]));
+        standaloneWasmWorkspaceAssert =
+          let
+            checks = [
+              { name = "rcdzc-wasm"; lock = ./implementation/seed/crates/rcdzc-wasm/Cargo.lock; dirs = rcdzcWasmCrateDirs; }
+              { name = "cdz-wasm"; lock = ./implementation/seed/crates/cdz-wasm/Cargo.lock; dirs = cdzWasmCrateDirs; }
+            ];
+            missingFor = c: builtins.filter (n: !(builtins.elem n c.dirs)) (leafLockLocalCrates c.lock);
+            offenders = builtins.filter (c: (missingFor c) != [ ]) checks;
+          in
+          if offenders != [ ] then
+            throw ("flake.nix standalone-wasm-workspace drift-assert: a leaf Cargo.lock resolves LOCAL crates "
+              + "absent from its src fileset crate-dir list — the wasm/guide `--locked` build will fail. "
+              + "Add the missing dir(s) to the corresponding *CrateDirs list. "
+              + builtins.concatStringsSep " | " (map (c: c.name + " missing [" + builtins.concatStringsSep " " (missingFor c) + "]") offenders))
+          else
+            pkgs.runCommand "standalone-wasm-workspace-assert" { } ''
+              echo "ok: rcdzc-wasm + cdz-wasm src filesets cover every local crate in their leaf locks" > $out
+            '';
         rcdzcWasmSrc = pkgs.lib.fileset.toSource {
           root = ./.;
-          fileset = pkgs.lib.fileset.unions (map (c: ./implementation/seed/crates + ("/" + c)) ([
-            "rcdzc-wasm" "rcdzc" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num"
-          ] ++ cadenzaSyntaxCrateDirs) ++ [ ./rust-toolchain.toml ]);
+          fileset = pkgs.lib.fileset.unions (map (c: ./implementation/seed/crates + ("/" + c))
+            rcdzcWasmCrateDirs ++ [ ./rust-toolchain.toml ]);
         };
         rcdzcWasm = pkgs.stdenvNoCC.mkDerivation {
           pname = "rcdzc-wasm";
@@ -2921,9 +2958,7 @@
         guideExamplesSrc = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions (
-            (map (c: ./implementation/seed/crates + ("/" + c)) ([
-              "cdz-wasm" "rcdzc" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num"
-            ] ++ cadenzaSyntaxCrateDirs)) ++ [
+            (map (c: ./implementation/seed/crates + ("/" + c)) cdzWasmCrateDirs) ++ [
               ./guide
               ./implementation/cad/src
               ./implementation/music/src
@@ -2958,9 +2993,7 @@
         guideCompilerWasmSrc = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions (
-            (map (c: ./implementation/seed/crates + ("/" + c)) ([
-              "cdz-wasm" "rcdzc" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num"
-            ] ++ cadenzaSyntaxCrateDirs)) ++ [ ./rust-toolchain.toml ]);
+            (map (c: ./implementation/seed/crates + ("/" + c)) cdzWasmCrateDirs) ++ [ ./rust-toolchain.toml ]);
         };
         cdzWasmPkg = pkgs.stdenvNoCC.mkDerivation {
           pname = "cdz-wasm-pkg";
@@ -3666,7 +3699,7 @@
                 # advisory (exposed as a check but NOT in this fail-set).
                 inherit clippyShardA clippyShardB codegenCheck gateCheck gateCheckRust guideExamplesCheck
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
-                  mandateLintCheck cdzRunDependentsAssert;
+                  mandateLintCheck cdzRunDependentsAssert standaloneWasmWorkspaceAssert;
                 # gateCheckRust folded into the fail-set (v-nix+v-ft 2026-08-10): closes the RUST-backend gate
                 # hole — gateCheck is wasm-only, so a rust-only emit divergence (v-effects E0425 mutual-rec)
                 # reached trunk green. Narrow `--case mutual` subset (rustc-per-case → full 6686 is prohibitive
@@ -3759,6 +3792,7 @@
             # batch tests).
             crate-closure-assert = crateClosureAssert;
             cdz-run-dependents-assert = cdzRunDependentsAssert;
+            standalone-wasm-workspace-assert = standaloneWasmWorkspaceAssert;
             # cdz = WORKSPACE-SRC (concierge-confirmed 1a), NOT closure/tests-dir-scoped like the other 10.
             # WHY cdz differs: its run_rust_cli tests are WORKSPACE-INTEGRATION — they rustc-compile emitted
             # Rust linking the sibling cdz-num/cdz-rt rlibs "beside the cdz bin", which only a full-workspace
