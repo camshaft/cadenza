@@ -333,6 +333,6 @@ fn core_node_kind(c: &Core) -> &'static str {
         _ => "a non-constant node",
     }
 }
-
-#[cfg(test)]
-mod tests;
+// Behavioral coverage for this backend lives in the CORPUS round-trip check through the nix per-case
+// pipeline (operator directive: e2e behavior belongs in the conformance/corpus suite, NEVER a Rust
+// `#[test]`), not here — see the `corpus-cadenza` target (coordinated with v-nix).
