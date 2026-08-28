@@ -373,12 +373,22 @@ fn cmd_host_declines(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Decline signatures BREAKER has already TRIAGED as legitimate compile-time rejections (expected
-/// behavior, not gaps) and pinned into the corpus — so we stop re-surfacing them in the hand-off:
+/// Decline signatures BREAKER has already TRIAGED (legitimate compile-time rejections or tracked frontier
+/// gaps — not bugs) and is tracking/flip-watching — so we stop re-surfacing them in the hand-off:
 /// * `CDZ0304` — a const out-of-range shift count (must be `0..=63`); correctly rejected. Corpus-pinned
-///   by breaker in #4895 (`(<< 5 -1)` → CDZ0304). (Breaker triage note, 2026-08-28.)
+///   by breaker in #4895 (`(<< 5 -1)` → CDZ0304).
+/// * `delegating-more-than-one-host-effect` — multi-interface host delegation is a not-yet-emitted
+///   frontier gap (one interface per envelope); breaker-tracked + flip-watched.
+/// * `the-host-operation-has-a-result` — a compound/Bytes/String host RESULT on a bare `(effect …)` has
+///   no component-boundary form emitted yet (crosses on the world-driven path); breaker-tracked.
+///
+/// (Breaker triage notes, 2026-08-28.)
 #[cfg(feature = "differential")]
-const FILTERED_DECLINE_SIGNATURES: &[&str] = &["CDZ0304"];
+const FILTERED_DECLINE_SIGNATURES: &[&str] = &[
+    "CDZ0304",
+    "delegating-more-than-one-host-effect",
+    "the-host-operation-has-a-result",
+];
 
 /// Dedup declines by signature and write ONE minimal (shortest) repro `.sexp` + `.reason.txt` per
 /// distinct signature into `dir` — the breaker decline→corpus gap hand-off producer. Keeps the shortest
