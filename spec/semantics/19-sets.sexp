@@ -2148,10 +2148,10 @@
 
 (case "a set of a list with a trapping element forces it at construction — Set.len traps, not returns the count"
   (doc    "Set (heap-materialized) construction is STRICT: a trapping element is forced at construction, so
-           `(Set.len (Set.of (list (/ 5 d) 2 3)))` at d=0 — the element `(/ 5 0)` is a divide-by-zero — TRAPS
+           `(Set.len #set((/ 5 d) 2 3))` at d=0 — the element `(/ 5 0)` is a divide-by-zero — TRAPS
            rather than returning 3; at d=1 the elements are {5,2,3}, len 3. Pins set-construction strictness
-           (via the strict Set.of-over-list path), the set twin of the map/list trapping-element pins.")
-  (input  (do (def (main (: d Int64)) (Set.len (Set.of (list (/ 5 d) 2 3)))) (export main)))
+           (via the strict native #set literal), the set twin of the map/list trapping-element pins.")
+  (input  (do (def (main (: d Int64)) (Set.len #set((/ 5 d) 2 3))) (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64)) (trap "divide by zero"))
 
