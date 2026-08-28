@@ -1160,31 +1160,45 @@
         #
         # TIGHTLY SCOPED source: only the cdz-runtime crate (+ the workspace pin) — NOT the whole repo
         # — so a change ANYWHERE ELSE does not invalidate these derivations' cache.
+        # DRIFT-PROOF the codec-core staging: DERIVE the `#[path]`-included sources straight from
+        # cdz-runtime/src/lib.rs's `#[path = "../../…"]` declarations, so this fileset AUTO-FOLLOWS a move.
+        # #5158 relocated these (rcdzc→cadenza-ast) and the HAND-LISTED fileset then silently threw at eval
+        # FLEET-WIDE — three separate agents hit it (v-guide-infra / v-xtask-decompose / v-cdz-crate-split)
+        # before it was hand-fixed (#5174). Deriving from the source-of-truth `#[path]` means a future
+        # retarget needs NO manual fileset sync + can't re-break eval. Matches the `../../<crate>/src/<file>`
+        # cross-crate SHARE form (re-rooted at crates/); ASSERTS non-empty so a `#[path]`-FORMAT change fails
+        # LOUD here with a clear message rather than as an obscure downstream missing-file build error.
+        runtimePathIncludes =
+          let
+            libRs = builtins.readFile ./implementation/seed/crates/cdz-runtime/src/lib.rs;
+            # POSIX ERE (builtins.split): anchor on `path = "../../…"` — the `#[…]` bracket-escapes `\[`/`\]`
+            # are rejected by nix's regex engine, and `path = "../../<rel>"` is distinctive to the #[path]
+            # attrs (the only such construct in lib.rs). Captures the cross-crate share path after `../../`.
+            parts = builtins.split ''path *= *"\.\./\.\./([^"]+)"'' libRs;
+            rels = map (m: builtins.elemAt m 0) (builtins.filter builtins.isList parts);
+          in
+          if rels == [ ]
+          then throw ("flake.nix runtimeSrc: found no `#[path = \"../../…\"]` codec-core includes in "
+            + "cdz-runtime/src/lib.rs — did the #[path] declaration format change? Update runtimePathIncludes.")
+          else map (rel: ./implementation/seed/crates + ("/" + rel)) rels;
         runtimeSrc = pkgs.lib.fileset.toSource {
           root = ./.;
-          fileset = pkgs.lib.fileset.unions [
+          fileset = pkgs.lib.fileset.unions ([
             ./implementation/seed/crates/cdz-runtime
-            # cdz-runtime `#[path]`-includes the codec-core (ast/leb128/codec) from the sibling cadenza-ast
-            # crate — the shared canonical serializer the `ast-encode`/`ast-decode` heap ops reuse so the
-            # runtime bytes are byte-identical to the compile-time `Ast.encode` fold (copy-don't-depend via
-            # shared SOURCE, NOT a crate dep — the #459 cross-crate-LTO/frozen-hash lesson). Those three
-            # files ARE part of the runtime's source, so they must be staged into this tightly-scoped build
-            # sandbox or the relative `../../cadenza-ast/src/*.rs` include fails "No such file or directory".
-            # A change to any of the three correctly rotates the runtime component (its bytes depend on them).
-            # (#5158 ast-consolidation deleted the rcdzc copies and repointed the `#[path]` includes here — so
-            # this fileset must reference cadenza-ast, not the now-deleted `rcdzc/src/{ast,codec,leb128}.rs`.)
-            ./implementation/seed/crates/cadenza-ast/src/ast.rs
-            ./implementation/seed/crates/cadenza-ast/src/codec.rs
-            ./implementation/seed/crates/cadenza-ast/src/leb128.rs
-            # The runtime's world imports `cadenza:nfc/normalize` (FINDING#23), and its Cargo.toml points
-            # cargo-component's WIT resolution at the sibling NFC crate's WIT
-            # (`[package.metadata.component.target.dependencies] "cadenza:nfc" = { path = "../cdz-nfc/wit" }`).
-            # So the NFC WIT dir MUST be in the build source or `cargo component build` can't resolve the
-            # dep offline. Scope to just the WIT (not the whole cdz-nfc crate) — that's all the runtime
-            # build reads.
+          ]
+          # The codec-core (ast/leb128/codec) cdz-runtime `#[path]`-includes from cadenza-ast — the shared
+          # canonical serializer the `ast-encode`/`ast-decode` heap ops reuse so the runtime bytes are
+          # byte-identical to the compile-time `Ast.encode` fold (copy-don't-depend via shared SOURCE, NOT a
+          # crate dep — the #459 cross-crate-LTO/frozen-hash lesson). DERIVED from lib.rs's `#[path]` (above)
+          # so a move auto-follows. A change to any correctly rotates the runtime component (bytes depend).
+          ++ runtimePathIncludes
+          ++ [
+            # The runtime's world imports `cadenza:nfc/normalize` (FINDING#23); its Cargo.toml points
+            # cargo-component's WIT resolution at the sibling NFC crate's WIT. Scope to just the WIT (all the
+            # runtime build reads) so a cdz-nfc src change doesn't rotate the runtime.
             ./implementation/seed/crates/cdz-nfc/wit
             ./rust-toolchain.toml
-          ];
+          ]);
         };
 
         # Merged offline vendor dir: the runtime's crates.io deps + the toolchain's build-std deps.
