@@ -9317,16 +9317,17 @@
   (call   main (: 2 Int64)) (output (: 2000 Int64)))
 
 (case "a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)"
-  (doc    "breaker sr5 (HIGH silent-miscompile, restore-safe-decline). The ABORTIVE-arm sibling of the sr4
+  (doc    "breaker sr5 (was HIGH silent-miscompile, now FOLDED). The ABORTIVE-arm sibling of the sr4
            control: a recursive loop of same-effect `(Acc.put)` performs each advance the state, then a LATER
            same-effect `(Acc.fin)` whose arm is ABORTIVE (`(fin (u) s s)`, no resume) reads it. The
-           caller-observed-out-state machinery threads the advance to a RESUMING observer (sr4 -> 2), but the
-           abort collapse used to materialize fin's value against the PRE-recursion seed slot, silently
-           returning 0 instead of the advanced 2 on both backends. The compiler now DECLINES this shape
-           (a clean Todo) rather than emit the wrong value; the correct abort-collapse-reads-the-threaded-
-           out-state fold is a later increment. main(2) intends 2 (put ran twice -> state 2 -> fin reads 2);
-           until the fold lands this DECLINES (tracked as a todo). The pin guards that it is NEVER the silent
-           0 — a regression that folds it to 0 flips this todo to a FAIL against the recorded 2.")
+           caller-observed-out-state machinery threads the advance to a RESUMING observer (sr4 -> 2); the
+           abort collapse USED to materialize fin's value against the PRE-recursion seed slot, silently
+           returning 0. FIXED: specialize_recursive now takes multi-value mode for a caller-observed callee
+           even under an abortive observer (the `(grow k)` call returns `(value, out-state)`, threading its
+           `(. t 1)` into `cur[slot]`), and the bare-abort return path drains the pending multi-value temp —
+           so the abort reads the ADVANCED out-state. main(2) -> 2 (put ran twice -> state 2 -> fin reads 2).
+           A callee the multi-value machinery cannot bind still declines cleanly (the non-threadable floor).
+           The pin guards it is NEVER the silent 0 — a regression that drops the advance flips this to FAIL.")
   (input  (do
             (effect Acc (op put (-> Unit Int64)) (op fin (-> Unit Int64)))
             (def (grow (: n Int64)) (if (= n 0) 0 (+ (Acc.put) (grow (- n 1)))))
