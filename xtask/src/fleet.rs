@@ -9091,6 +9091,23 @@ fn parse_failing_subchecks(nix_output: &str) -> Vec<String> {
     out
 }
 
+/// The trailing advisory printed on a `gate-local` HOLD, classifying WHY the required set failed so an
+/// agent/operator knows whether to RETRY or ROUTE (concierge PART B 2026-08-28: naming the sub-check via
+/// [`parse_failing_subchecks`] isn't enough on its own — say whether it's a real regression or the known
+/// nix daemon flake). If the captured build output carries a nix daemon/remote-builder TRANSIENT signature
+/// (the same false-RED family dev-gate auto-retries, #4562), it's very likely infra flake → RE-RUN before
+/// treating it as a regression; otherwise there's no transient signature → treat it as a REAL sub-check
+/// failure to route/fix. Pure so the classification is unit-tested without running nix.
+fn gate_local_hold_advisory(captured: &str) -> &'static str {
+    if crate::fast_gate_output_is_remote_transient(captured) {
+        "gate-local: NOTE — the failure output matches a known nix daemon/remote-builder TRANSIENT (same \
+         family dev-gate auto-retries #4562); RE-RUN gate-local before treating this as a regression."
+    } else {
+        "gate-local: NOTE — no nix-transient signature in the output; treat this as a REAL sub-check \
+         failure (a regression to route/fix), not infra flake."
+    }
+}
+
 fn run_gate_local(arch: &str) -> CiVerdict {
     let target = format!(".#checks.{arch}-linux.local-gate");
     let nix_bin = nix_binary();
@@ -9145,6 +9162,7 @@ fn run_gate_local(arch: &str) -> CiVerdict {
                 eprintln!("  → for its error: {nix_bin} build .#checks.{arch}-linux.{f} -L");
             }
         }
+        eprintln!("{}", gate_local_hold_advisory(&captured));
     }
     verdict
 }
@@ -15494,6 +15512,21 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         let dup = "error: builder for '/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-oracle.drv' failed\n\
                    error: builder for '/nix/store/ffffffffffffffffffffffffffffffff-oracle.drv' failed";
         assert_eq!(parse_failing_subchecks(dup), vec!["oracle"]);
+    }
+
+    #[test]
+    fn gate_local_hold_advisory_flags_nix_transient_vs_real_failure() {
+        // A nix daemon/remote-builder transient (the #4562 family) → advise RE-RUN, not a regression.
+        let transient = "error: cannot open connection to remote store 'daemon': \
+                         reading from file: Connection reset by peer";
+        assert!(gate_local_hold_advisory(transient).contains("TRANSIENT"));
+        assert!(
+            gate_local_hold_advisory("Invalid BuildResult status from remote").contains("RE-RUN")
+        );
+        // A genuine sub-check builder failure → advise treating it as a REAL regression.
+        let real = "error: builder for '/nix/store/cccccccccccccccccccccccccccccccc-corpus-09-functions.drv' \
+                    failed with exit code 1";
+        assert!(gate_local_hold_advisory(real).contains("REAL sub-check"));
     }
 
     #[test]
