@@ -50982,6 +50982,42 @@ mod closure_host_resource {
         );
     }
 
+    /// The CLASS fix (v-cdz-smith + breaker + v-rb): `collect_node` now fault-checks an UNCALLED INLINE
+    /// closure body (with its params body-SOLVED), so a param used at TWO incompatible CONCRETE types faults
+    /// CDZ0201 at the CHECK — for EVERY conflict-kind, not one runtime lowering at a time. Previously each
+    /// kind (if-join, int-vs-list, …) escaped inference and emitted INVALID WASM. Here: an if-join over
+    /// Bool-vs-Float (`(if v0 v0 174.81)`) and an int-vs-List (`(+ v0 (List.len v0))`) — both DECLINE. The
+    /// SINGLE-use controls (`(if v0 1 2)` uses v0 only as a Bool cond; `(+ v0 1)` only as Int64) must still
+    /// COMPILE — an unpinned/consistently-used param is never over-rejected.
+    #[test]
+    fn the_uncalled_inline_closure_conflict_check_covers_every_conflict_kind_at_check() {
+        use crate::testkit::parse;
+        let prog = |body: &str| {
+            format!("(module m (def (main) (List.len (list (fn (v0) {body})))) (export main))")
+        };
+        // Each conflict-kind DECLINES (a coded reject) at the check — not a miscompile.
+        for body in [
+            "(if v0 v0 174.81)",    // Bool (cond+then) vs Float (else) — if-join
+            "(+ v0 (List.len v0))", // Int64 (+) vs List (List.len) — int-vs-collection
+        ] {
+            let err =
+                crate::compile::compile_component(&crate::codec::encode(&parse(&prog(body)))).err();
+            assert!(
+                err.as_ref().and_then(|e| e.code.as_deref()).is_some(),
+                "an uncalled inline closure with the conflict `{body}` must DECLINE (coded) at check, not \
+                 miscompile; got {err:?}"
+            );
+        }
+        // Single-use controls still COMPILE (no over-rejection of a consistently-used param).
+        for body in ["(if v0 1 2)", "(+ v0 1)"] {
+            assert!(
+                crate::compile::compile_component(&crate::codec::encode(&parse(&prog(body))))
+                    .is_ok(),
+                "a single-use closure param `{body}` must still COMPILE (not over-rejected)"
+            );
+        }
+    }
+
     /// A FIXED-SHAPE SCALAR tuple closure ARG on the direct-call path now COMPILES (the tuple crosses as a
     /// native component `tuple<s64,s64>` the canonical ABI flattens; the core `call` rebuilds the cell). But
     /// a compound arg with a VARIABLE-LENGTH element (a tuple/record CONTAINING a List/Map/Set) must still

@@ -12607,6 +12607,14 @@ fn collect_quote_body_syntax(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     }
 }
 
+thread_local! {
+    /// Re-entrancy depth of the uncalled-inline-lambda body check in [`collect_node`]'s `Lambda` arm —
+    /// bounds the collect/solve recursion so a synthesized lambda whose body re-enters (a map-match desugar
+    /// over a self-recursive def) cannot overflow the stack. Reset to 0 between top-level checks by being a
+    /// balanced increment/decrement around the recursive `collect`.
+    static INLINE_LAMBDA_CHECK_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     // A `do` SEQUENCING block resolves to a `Ref` to its LAST form (its value), so the `Resolved::Ref`
     // arm below descends only into that. But the INTERMEDIATE forms are still evaluated (their value
@@ -15457,22 +15465,53 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             inline_lambda_binding_pattern_faults(db, body, out);
             if db.def_index_by_body(id).is_some() {
                 collect(db, body, out);
-            } else if lambda_heads_an_application(db, id) && subtree_contains_try_form(db, body) {
-                // An IMMEDIATELY-APPLIED lambda `((fn (…) body) args)`. Its body is normally checked at the
-                // β-reduction call site — but that runs on the INLINED (β-copied) body, whose `?` node is a
-                // PARENTLESS synth copy, so `enclosing_boundary_ty`'s parent-walk falls off → `None` →
-                // `collect`'s `?` arm treats it as INCONCLUSIVE (the inlined-called-helper tolerance) and
-                // never fires the CDZ0230. An anon applied-lambda has no separate named-def body walk to
-                // catch it, so a `?` in a NON-fallible-result lambda body silently compiled + unwrapped
-                // instead of rejecting (v-try-operator ruling: a lambda is a function boundary EXACTLY like
-                // a def — fallible result ⇒ `?` works, non-fallible ⇒ CDZ0230, no auto-wrap). Check the
-                // ORIGINAL parented body here so the `?`'s boundary walk reaches THIS `(fn …)` body (parents
-                // intact) and the genuine CDZ0230 fires. Scoped to a lambda that HEADS an application (the
-                // immediately-applied shape) — a let-bound / HOF-argument lambda stays call-site-checked (its
-                // body may be generic/uninstantiated; double-checking it here risks a spurious fault, the
-                // hazard the def-only gate above guards). `dedup_faults` collapses any overlap with the
-                // inlined copy (which itself raises nothing for the `?`, being inconclusive).
-                collect(db, body, out);
+            } else if lambda_heads_an_application(db, id) {
+                // An IMMEDIATELY-APPLIED lambda `((fn (…) body) args)`. Its body is checked at the
+                // β-reduction call site, so only the `?`-boundary case needs a check here — and ONLY the
+                // try-bearing subset, because descending into EVERY applied-lambda body reintroduces the
+                // O(2^depth) re-reduce of a deep capturing chain (`((fn (a) …((fn (b) …) 1)) 0)`) the gate
+                // guards against. The inlined (β-copied) body's `?` node is a PARENTLESS synth copy, so
+                // `enclosing_boundary_ty`'s parent-walk falls off → `collect`'s `?` arm is INCONCLUSIVE and
+                // never fires CDZ0230; check the ORIGINAL parented body here so the `?` boundary reaches THIS
+                // `(fn …)` and the genuine CDZ0230 fires. `dedup_faults` collapses any overlap.
+                if subtree_contains_try_form(db, body) {
+                    collect(db, body, out);
+                }
+            } else {
+                // A NOT-immediately-applied INLINE lambda — STORED/uncalled (`(list (fn (v0) …))`),
+                // let-bound, or a HOF argument. Its body was previously UNCHECKED (it relied on the
+                // β-reduction call site, which never happens for a closure that is never called), so a param
+                // used at TWO INCOMPATIBLE CONCRETE types inside it ESCAPED the checker and the backend then
+                // emitted INVALID WASM (fuzzer class: `(fn (v0) (+ v0 (. v0 0)))` tuple, `(fn (v0) (if v0 v0
+                // 174.81))` if-join, `(+ v0 (List.len v0))` int-vs-list, `(+ v0 (Bytes.len v0))`, …). SOLVE +
+                // seed each param's body type (exactly as `lower_lambda_value` does, so the body walk's
+                // `type_of` reads the concrete type), then `collect` the body — the SAME CDZ0201 the
+                // top-level twin `(def (v0) (+ v0 (. v0 0)))` gets, catching EVERY conflict-kind at the check
+                // (not one runtime lowering at a time). An UNPINNED param solves to `Any` and is NOT seeded,
+                // so a genuinely-polymorphic body (`(fn (t) (. t 0))`, a closure passed to a generic HOF) is
+                // tolerated exactly as before — only a CONCRETE conflict faults. Not immediately-applied ⇒ no
+                // re-reduce, so the O(2^depth) blowup the applied gate guards cannot arise here.
+                // DEPTH GUARD: bound the re-entrant collect/solve. A synthesized lambda whose body re-enters
+                // this arm (a map-match desugar over a self-recursive def — `(match mp … ((Zorp x) (go mp)))`)
+                // otherwise recurses to a STACK OVERFLOW. The flat fuzzer shapes are depth 1; a few nesting
+                // levels are still checked; a deeper/cyclic body BAILS (a MISS — never a miscompile, and a
+                // strict SUBSET of the unbounded check, so it adds no new fault). Restored on every exit.
+                const MAX_INLINE_LAMBDA_CHECK_DEPTH: u32 = 4;
+                let depth = INLINE_LAMBDA_CHECK_DEPTH.with(|c| c.get());
+                if depth < MAX_INLINE_LAMBDA_CHECK_DEPTH {
+                    INLINE_LAMBDA_CHECK_DEPTH.with(|c| c.set(depth + 1));
+                    for &p in params.iter() {
+                        let occ = crate::eval::param_name_occ(db, p);
+                        if matches!(type_of(db, occ), Ty::Any) {
+                            let solved = solve_lambda_param_ty(db, occ, body);
+                            if !matches!(solved, Ty::Any) {
+                                db.param_types.entry(occ).or_insert(solved);
+                            }
+                        }
+                    }
+                    collect(db, body, out);
+                    INLINE_LAMBDA_CHECK_DEPTH.with(|c| c.set(depth));
+                }
             }
         }
     }
