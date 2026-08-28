@@ -22,7 +22,11 @@
 #      SCRATCH_THRESHOLD_PCT (default 70) so scratch is reaped ONLY near the wedge even when A/B run
 #      unconditionally — dormant during normal operation (zero risk of nuking live scratch).
 #   2. AGE-GUARDED: removes only entries older than a per-class age — a live buffer/transcript/scratch has
-#      a recent mtime. TELEMETRY_STALE_MIN (30), STALE_MIN (120), SCRATCH_STALE_MIN (240 = 4h) are knobs.
+#      a recent mtime. TELEMETRY_STALE_MIN (15), STALE_MIN (120), SCRATCH_STALE_MIN (240 = 4h) are knobs.
+#      NOTE: telemetry is the PRIMARY accumulator and the fleet generates toolbox-telemetry-* faster than a
+#      30min window cleared them net (observed monotonic /tmp inode creep 34%→46% over ~2h), so the window
+#      is 15min: standing backlog ≈ generation_rate × window, and a buffer idle 15min is flushed (EMF
+#      buffers flush in seconds), so 15min carries no live-buffer risk while ~halving the standing count.
 #      A `/tmp/claude-<pid>/` dir is SHARED across sessions (not tied to one agent), so AGE is the signal.
 #   3. LIVENESS (Class C): each scratch candidate is skipped unless `lsof +D` shows NO live user (open fd
 #      or cwd anywhere under it). FAIL-SAFE — missing lsof / any lsof output (users OR an error) → KEEP
@@ -36,7 +40,7 @@ set -euo pipefail
 
 TMPDIR_ROOT="${TMPDIR_ROOT:-/tmp}"
 INODE_THRESHOLD_PCT="${INODE_THRESHOLD_PCT:-80}"   # A/B sweep only when /tmp inode-use% is at/above this
-TELEMETRY_STALE_MIN="${TELEMETRY_STALE_MIN:-30}"   # remove toolbox-telemetry-* older than this (minutes)
+TELEMETRY_STALE_MIN="${TELEMETRY_STALE_MIN:-15}"   # remove toolbox-telemetry-* older than this (minutes; primary accumulator, kept short so the always-on sweep clears more per pass)
 STALE_MIN="${STALE_MIN:-120}"                      # remove claude task transcripts older than this (minutes)
 SCRATCH_THRESHOLD_PCT="${SCRATCH_THRESHOLD_PCT:-70}" # Class C fires ONLY at/above this — INDEPENDENT of INODE_THRESHOLD_PCT
 SCRATCH_STALE_MIN="${SCRATCH_STALE_MIN:-240}"      # remove agent-scratch dirs older than this (minutes, default 4h)
