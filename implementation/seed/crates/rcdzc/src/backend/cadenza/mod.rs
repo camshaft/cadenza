@@ -72,9 +72,9 @@
 //!   `expected` also threads into COMPOUND-VALUE element positions — a list/set element gets the
 //!   collection's element type, a tuple element its slot type, a map entry its key/value types, a record
 //!   field its field type — so a bare `(None)` element (`(list (Some n) (None) …)`) recovers its type.
-//!   (A bare `(None)` NESTED as a variant PAYLOAD — `(Some (None))` — is not yet threaded and still
-//!   declines; the instantiated payload type is not available from a prelude payload occurrence — a later
-//!   slice.) All mirror lower's value surface.
+//!   A bare `(None)` NESTED as a variant PAYLOAD (`(Some (None))`) recovers its type from the variant's
+//!   INSTANTIATED payload type ([`sum_payload_expected`] via `infer::payload_ty_at_instantiation`), so a
+//!   nested-`Option`/`Result` round-trips too. All mirror lower's value surface.
 //!   A USER sum is re-declared: `emit` emits its `(type <Name> (<Variant> <PayloadTy>…)…)` decl (for a
 //!   MONOMORPHIC, CLOSED sum of ANY arity — recursive payloads OK) and its values then round-trip. A
 //!   SINGLE-variant sum is the ERASED `Ty::Nominal` newtype: its value re-emits the CONSTRUCTOR
@@ -742,11 +742,13 @@ fn emit_expr_viewed(
             })?;
             let payload = match payloads.len() {
                 0 => b.name("unit"),
-                // The payload emits with no `expected` (its own solved type governs). A bare `(None)` NESTED
-                // as a variant payload (`(Some (None))`) whose own type is `Option<?>` therefore still
-                // declines — recovering it needs the variant's instantiated payload type, which is not
-                // available from the payload occurrence for a prelude sum (a later slice; honest decline).
-                1 => emit_expr(db, b, payloads[0], None, env, emitted)?,
+                // The payload's `expected` is the variant's INSTANTIATED payload type at this sum type — so a
+                // bare `(None)` nested as a variant payload (`(Some (None))` : `Option (Option Int64)`, whose
+                // inner own type is `Option<?>`) recovers `Option Int64` from the outer sum's instantiation.
+                1 => {
+                    let pexp = sum_payload_expected(db, decl, disc, &ty);
+                    emit_expr(db, b, payloads[0], pexp, env, emitted)?
+                }
                 _ => {
                     return Err(Reject::decline(
                         "the Cadenza backend does not yet lower a multi-argument variant"
@@ -1165,6 +1167,27 @@ fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp
         | Core::MatchList { .. } => NominalDisp::PassThrough,
         // Anything else (a `Call` that may return inner OR nominal, a compound builder, …) is ambiguous.
         _ => NominalDisp::Decline,
+    }
+}
+
+/// The `expected` type for a single-payload variant's payload at a CONCRETE sum instantiation: the variant's
+/// synthesized constructor scheme (`∀…. payload → Sum …`) unified against the concrete sum type via
+/// [`crate::infer::payload_ty_at_instantiation`], yielding the payload's instantiated type (`Option Int64`
+/// for `Some` at `Option (Option Int64)`). `None` when there is no ctor, no payload, or the result is STILL
+/// under-determined (a genuinely-ambiguous nesting) — the payload then emits with no expected. `sum_ty` must
+/// be the SumNew's own `Ty::Sum` (already `expected`-recovered by the caller).
+fn sum_payload_expected(db: &mut Db, decl: StructId, disc: u32, sum_ty: &Ty) -> Option<Ty> {
+    let ctor = db
+        .type_decl_by_occ(decl)?
+        .variants
+        .get(disc as usize)?
+        .ctor?;
+    let pty = crate::infer::payload_ty_at_instantiation(db, ctor, sum_ty)?;
+    // Only use a CONCRETE result — a still-free payload type is no better than the payload's own.
+    if ty_has_free_arg(&pty) {
+        None
+    } else {
+        Some(pty)
     }
 }
 
