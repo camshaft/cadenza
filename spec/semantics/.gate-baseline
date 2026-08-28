@@ -5825,6 +5825,7 @@ pass	cdzw5 the cadenza backend round-trip preserves a float comparison over a pa
 pass	cdzw6 the cadenza backend round-trip preserves a let-binding and an if over an integer parameter
 pass	cdzw7 the cadenza backend round-trips a nested let/if mixing int and float operators in one program
 pass	cdzw8 the cadenza backend round-trips recursive calls — self-recursion and mutual recursion
+pass	cdzw9 the cadenza backend round-trips a beyond-Int64 BigInt constant (emits (: n BigInt), not BigInt.of)
 pass	ce01 checked addition over a RUNTIME operand yields Some when it fits
 pass	ce02 checked addition over a RUNTIME operand yields None on overflow
 pass	ce03 Record.merge of two RUNTIME-built records projects the merged field
