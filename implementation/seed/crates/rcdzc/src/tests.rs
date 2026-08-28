@@ -17879,251 +17879,32 @@ mod match_engine {
 
     #[test]
     fn a_runtime_bin_construction_builds_and_range_checks_under_wasmtime() {
-        // A `(bin …)` whose segment value is a genuine RUNTIME value (an EXPORTED boundary parameter, which
-        // cannot fold) builds a Bytes on the rope heap at run time: `Core::BinBuild` allocs the buffer and
-        // writes each segment's bytes big-endian (`le` reversed). A fixed-width segment REQUIRES the width-
-        // matching typed value (`(u16 v)` takes a `UInt16`, `(bits v k)` takes a `(UInt k)`), so the value
-        // provably fits and construction NEVER traps — an out-of-range value is a compile-time TYPE error
-        // (CDZ0203), and narrowing (`UInt8.wrap` / `(UInt k).wrap`) is the caller's job. `main` reads a
-        // SCALAR out (a `Bytes.len` or a match round-trip) so no escape is needed.
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping runtime bin construction run");
-            return;
-        };
-        let run = |src: &str, args: &[&str]| -> cdz_run::Outcome {
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: args.iter().map(|s| s.to_string()).collect(),
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            cdz_run::run(&component(src), &opts).expect("run")
-        };
-        let val = |src: &str, args: &[&str]| -> String {
-            match run(src, args) {
-                cdz_run::Outcome::Value(s) => s,
-                cdz_run::Outcome::Trap(t) => panic!("unexpected trap: {t}"),
-            }
-        };
-        // A fixed-width int segment fed a WIDER runtime type is a COMPILE-TIME type error (CDZ0203): the
-        // value that does not fit becomes a type failure, not a runtime trap. Asserted on the diagnostics,
-        // since such a program never reaches the runtime.
+        // A fixed-width `(bin …)` segment REQUIRES the width-matching typed value (`(u8 v)` takes UInt8,
+        // `(bits v k)` takes `(UInt k)`), so a value that does not fit is a COMPILE-TIME TYPE error (CDZ0203),
+        // never a runtime trap — the caller narrows with `UInt8.wrap`/`(UInt k).wrap`. This test keeps only
+        // that compile-time segment-type guard (a diagnostic assertion the corpus cannot express). The runtime
+        // CONSTRUCTION behaviors — u16 big/little-endian, multi-segment, signed two's-complement, UInt8.wrap
+        // narrowing, a length-prefixed `(bytes …)` frame splice, and `(bits …)` bit-field packing — are
+        // corpus-covered by 16-binary-matching ("a u16 segment encodes big-endian by default" / "the le
+        // modifier encodes a u16 little-endian" / "a multi-segment bin concatenates mixed-width signed and
+        // unsigned segments in order" / the i8 two's-complement case / "bit-field segments pack sub-byte
+        // values into one byte" / "a length-prefixed frame is built from a size segment and a bytes segment" /
+        // "a runtime bin construction result compares equal to the Bytes it builds").
         let rejects_0203 = |src: &str| {
             let ds = crate::diagnostics(&mut crate::db::Db::load(crate::testkit::parse(src)));
             assert!(
-                ds.iter()
-                    .any(|d| d.code.as_deref() == Some("CDZ0203")
-                        && d.message.contains("segment takes")),
+                ds.iter().any(|d| d.code.as_deref() == Some("CDZ0203")
+                    && d.message.contains("segment takes")),
                 "expected a CDZ0203 segment type error for {src}, got: {ds:?}"
             );
         };
-        // (Runtime bin MATCHING — decoding a runtime Bytes scrutinee — is a separate slice, so these read the
-        // built bytes back with `Bytes.len` / `Bytes.at`, not a `(bin …)` pattern.)
-        // A runtime u16 built + measured: (bin (u16 n)) with n=258 → 2 bytes. `n : UInt16` (the segment width).
-        assert_eq!(
-            val(
-                "(module m (def (main (: n UInt16)) ((. Bytes len) (bin (u16 n)))) (export main))",
-                &["258"]
-            ),
-            "2",
-            "runtime u16 length"
-        );
-        // Big-endian byte order: (bin (u16 258)) = [0x01, 0x02]; read byte 0 → 1 (MSB first).
-        assert_eq!(
-            val(
-                "(module m (def (main (: n UInt16)) (match ((. Bytes at) (bin (u16 n)) 0) ((Some b) b) ((None _) -1))) (export main))",
-                &["258"]
-            ),
-            "1",
-            "runtime u16 big-endian MSB"
-        );
-        // Little-endian: (bin (u16 258 le)) = [0x02, 0x01]; byte 0 → 2.
-        assert_eq!(
-            val(
-                "(module m (def (main (: n UInt16)) (match ((. Bytes at) (bin (u16 n le)) 0) ((Some b) b) ((None _) -1))) (export main))",
-                &["258"]
-            ),
-            "2",
-            "runtime u16 little-endian LSB-first"
-        );
-        // Multi-segment: (u8 a)(u16 b) → 3 bytes. Each param is the segment's width type.
-        assert_eq!(
-            val(
-                "(module m (def (main (: a UInt8) (: b UInt16)) ((. Bytes len) (bin (u8 a) (u16 b)))) (export main))",
-                &["7", "258"]
-            ),
-            "3",
-            "runtime multi-segment length"
-        );
-        // A SIGNED i8 of -1 is IN range (two's complement) → byte 0xFF (255), no trap. `n : Int8`.
-        assert_eq!(
-            val(
-                "(module m (def (main (: n Int8)) (match ((. Bytes at) (bin (i8 n)) 0) ((Some b) b) ((None _) -1))) (export main))",
-                &["-1"]
-            ),
-            "255",
-            "runtime signed i8 -1 → 0xFF"
-        );
-        // A wider runtime value (`Int64`) into a `u8` segment is a COMPILE-TIME type error — NOT accepted and
-        // range-checked-then-trapped at run time. The former runtime out-of-range TRAP is gone: a width-typed
-        // segment provably fits its value.
+        // A wider runtime value (`Int64`) into a fixed-width `u8` segment is a compile-time type error.
         rejects_0203(
             "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u8 n)))) (export main))",
         );
-        // The caller's explicit narrowing makes it total: `(u8 (UInt8.wrap n))` with a runtime `Int64` n=258
-        // truncates to the low 8 bits = 2, so the byte sequence is one byte (no trap).
-        assert_eq!(
-            val(
-                "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u8 ((. UInt8 wrap) n))))) (export main))",
-                &["258"]
-            ),
-            "1",
-            "runtime u8 via UInt8.wrap: 258 truncates to 2, one byte"
-        );
-        // A `(bytes b)` splice of a RUNTIME Bytes value: `(bin (u16 3) (bytes b))` builds a length-prefixed
-        // frame at run time (a `bytes-concat` of the header + the runtime body). `mk` builds a 3-byte body
-        // from a runtime `n`; the frame length is 2 (header) + 3 (body) = 5. And byte 4 (= body[2]) is 30.
-        let splice = "(module m (def (frame (: b Bytes)) (bin (u16 3) (bytes b))) (def (mk (: n Int64)) ((. Bytes of) (list (UInt8.wrap n) 20 30))) (def (main (: n Int64)) ";
-        assert_eq!(
-            val(
-                &format!("{splice} ((. Bytes len) (frame (mk n)))) (export main))"),
-                &["7"]
-            ),
-            "5",
-            "runtime bytes-splice: length = header + body"
-        );
-        assert_eq!(
-            val(
-                &format!(
-                    "{splice} (match ((. Bytes at) (frame (mk n)) 4) ((Some x) x) ((None _) -1))) (export main))"
-                ),
-                &["7"]
-            ),
-            "30",
-            "runtime bytes-splice: body byte spliced after the header"
-        );
-        // RUNTIME BIT-FIELD packing: `(bits ((UInt 4).wrap n) 4) (bits 5 4)` packs the low nibble of `n`
-        // into the HIGH nibble and constant 5 into the low nibble of one byte (MSB-first). A `(bits v 4)`
-        // field takes a `(UInt 4)`, so the caller narrows `n` with `(UInt 4).wrap` (truncating to the low
-        // four bits) — the segment then provably fits and never traps. n=10 → 0xA5 = 165.
-        let nibble = "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (bits ((. (UInt 4) wrap) n) 4) (bits 5 4)) 0) ((Some b) b) ((None _) -1))) (export main))";
-        assert_eq!(
-            val(nibble, &["10"]),
-            "165",
-            "runtime bit-field: (n<<4)|5, n=10"
-        );
-        assert_eq!(
-            val(nibble, &["0"]),
-            "5",
-            "runtime bit-field: low nibble only, n=0"
-        );
-        // n=15 fits (UInt 4); (15<<4)|5 = 0xF5 = 245.
-        assert_eq!(
-            val(nibble, &["15"]),
-            "245",
-            "runtime bit-field: (15<<4)|5 = 0xF5"
-        );
-        // n=31 does NOT fit (UInt 4): `(UInt 4).wrap` truncates to the low four bits (31 → 15), so the pack is
-        // total (no trap) — the narrowing is the caller's explicit choice. (15<<4)|5 = 245.
-        assert_eq!(
-            val(nibble, &["31"]),
-            "245",
-            "runtime bit-field: (UInt 4).wrap truncates 31 → 15, no trap"
-        );
-        // A raw runtime `Int64` in a 4-bit field WITHOUT narrowing is a COMPILE-TIME type error — the value
-        // that does not fit the field is a type failure, not a runtime trap.
+        // Likewise a wider value into a `(bits _ 4)` bit-field segment.
         rejects_0203(
             "(module m (def (main (: n Int64)) ((. Bytes len) (bin (bits n 4) (bits 5 4)))) (export main))",
-        );
-        // A bit-field run spanning TWO bytes: three fields 8+4+4 = 16 bits = 2 bytes. `(bits n8 8)(bits 2
-        // 4)(bits 3 4)` → byte0 = n, byte1 = (2<<4)|3 = 0x23 = 35. The 8-bit field takes a `UInt8`, the two
-        // 4-bit constants ground to `(UInt 4)`. n=200 → len 2, byte0=200, byte1=35.
-        let two = "(module m (def (main (: n Int64)) ";
-        let n8 = "((. UInt8 wrap) n)"; // narrow the runtime Int64 to the 8-bit field's UInt8
-        assert_eq!(
-            val(
-                &format!(
-                    "{two} ((. Bytes len) (bin (bits {n8} 8) (bits 2 4) (bits 3 4)))) (export main))"
-                ),
-                &["200"]
-            ),
-            "2",
-            "runtime bit-field run: two bytes"
-        );
-        assert_eq!(
-            val(
-                &format!(
-                    "{two} (match ((. Bytes at) (bin (bits {n8} 8) (bits 2 4) (bits 3 4)) 0) ((Some b) b) ((None _) -1))) (export main))"
-                ),
-                &["200"]
-            ),
-            "200",
-            "runtime bit-field run: byte0 = the 8-bit field"
-        );
-        assert_eq!(
-            val(
-                &format!(
-                    "{two} (match ((. Bytes at) (bin (bits {n8} 8) (bits 2 4) (bits 3 4)) 1) ((Some b) b) ((None _) -1))) (export main))"
-                ),
-                &["200"]
-            ),
-            "35",
-            "runtime bit-field run: byte1 = (2<<4)|3"
-        );
-        // A bit-field run COMPOSED with an int segment: `(bits n4 4)(bits 1 4)(u8 42)` → byte0=(n<<4)|1,
-        // byte1=42. The 4-bit field narrows to `(UInt 4)`; the trailing `(u8 42)` is a bare literal → UInt8.
-        let mixed = "(module m (def (main (: n Int64)) ";
-        let n4 = "((. (UInt 4) wrap) n)";
-        assert_eq!(
-            val(
-                &format!(
-                    "{mixed} (match ((. Bytes at) (bin (bits {n4} 4) (bits 1 4) (u8 42)) 1) ((Some b) b) ((None _) -1))) (export main))"
-                ),
-                &["3"]
-            ),
-            "42",
-            "runtime bit-field run then an int segment: the int byte follows"
-        );
-        assert_eq!(
-            val(
-                &format!(
-                    "{mixed} (match ((. Bytes at) (bin (bits {n4} 4) (bits 1 4) (u8 42)) 0) ((Some b) b) ((None _) -1))) (export main))"
-                ),
-                &["3"]
-            ),
-            "49",
-            "runtime bit-field run then an int segment: (3<<4)|1 = 0x31 = 49"
-        );
-        // A runtime `(bin …)` result IS a Bytes value (16-binary-matching: "`(bin …)` CONSTRUCTS a Bytes
-        // value"), so it must be `=`-comparable like any Bytes — `Core::BinBuild`/`BinBitsBuild` build a
-        // FRESH owned Bytes on the rope heap exactly as `Core::BytesOf` does. Before, a runtime bin result
-        // as a `value-eq` operand fell to the "ownership this backend cannot yet prove" decline (its Core
-        // node was absent from `heap_operand_ownership`'s Owned list), so `(= (bin …) b"…")` DECLINED even
-        // though a runtime `Bytes.of` of the same content compared fine. These pin it compares by content.
-        assert_eq!(
-            val(
-                "(module m (def (main (: v Int64)) (if (= (bin (u8 ((. UInt8 wrap) v))) ((. Bytes of) (list 5))) 1 0)) (export main))",
-                &["5"]
-            ),
-            "1",
-            "a runtime (bin (u8 …)) result compares equal to the Bytes it builds (BinBuild is Owned)"
-        );
-        assert_eq!(
-            val(
-                "(module m (def (main (: v Int64)) (if (= (bin (u8 ((. UInt8 wrap) v))) ((. Bytes of) (list 5))) 1 0)) (export main))",
-                &["9"]
-            ),
-            "0",
-            "a runtime bin result unequal to different content is false (genuine content compare)"
-        );
-        assert_eq!(
-            val(
-                "(module m (def (main (: v Int64)) (if (= (bin (bits ((. UInt8 wrap) v) 8)) ((. Bytes of) (list 5))) 1 0)) (export main))",
-                &["5"]
-            ),
-            "1",
-            "a runtime bit-field (bin (bits …)) result compares equal too (BinBitsBuild is Owned)"
         );
     }
 
