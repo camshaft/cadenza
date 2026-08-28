@@ -4914,7 +4914,15 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 // optional `known-leak\t` prefix and parse N.
                 "live-objects" => {
                     let count = val.strip_prefix("known-leak\t").unwrap_or(val);
-                    live_objects = count.trim().parse::<u32>().ok();
+                    // ONE count = uniform; 2+ TAB-separated counts = PER-CALL positional (`live-objects
+                    // 3 13 0`, from #5008's every-call surfacing). This DIRECT gate checks the FIRST call's
+                    // balance, so it uses the FIRST count; without splitting, `"3\t13\t0".parse` fails →
+                    // None → the case falls to the Default(0) check → a spurious pass→fail regression. (The
+                    // nix `cdz-run --grade` path reads the full per-call list; this direct path is call[0].)
+                    live_objects = count
+                        .split('\t')
+                        .next()
+                        .and_then(|s| s.trim().parse::<u32>().ok());
                 }
                 _ => {}
             }
