@@ -23605,6 +23605,37 @@
   (output (: 50002 Int64))
   (live-objects 0))
 
+(case "nim1 a NESTED constant sum immortal is FBIP-safe — a map over it does not mutate the original"
+  (doc "#4841 recurses immortal markability into a constant recursive-sum literal `(Cons 1 (Cons 2 (Nil)))`,
+        marking the WHOLE nested tree immortal (rc=u32::MAX per node). Fences the soundness claim (no node
+        satisfies the strict rc==1 FBIP-reuse gate): a `bump` map that would normally FBIP-REUSE the spine
+        cells is applied to the immortal, then the ORIGINAL is read back — its head stays 1 (not mutated to 2),
+        so `100*head(orig) + head(mapped)` = 100*1 + 2 = 102. A regression that let FBIP reuse an immortal cell
+        in place would corrupt orig → 202. 0-leak: the immortal nested tree is excluded from the census (the
+        Cons-of-Cons that was census-4/NOT-immortalized before #4841).")
+  (input (do
+    (type L (Cons Int64 L) (Nil))
+    (def (mk (: n Int64)) (if (> n 0) (mk (- n 1)) (Cons 1 (Cons 2 (Nil)))))
+    (def (bump (: l L)) (match l ((Cons h t) (Cons (+ h 1) (bump t))) ((Nil) (Nil))))
+    (def (head (: l L)) (match l ((Cons h t) h) ((Nil) -1)))
+    (def (main) (let ((orig (mk 3))) (let ((mapped (bump orig))) (+ (* 100 (head orig)) (head mapped)))))
+    (export main)))
+  (output (: 102 Int64))
+  (live-objects 0))
+(case "nim2 nested constant-sum immortals differing at DEPTH stay distinct (deep mark does not conflate)"
+  (doc "Two nested recursive-sum literals differing only at the depth-2 payload — `(Cons 1 (Cons 2 Nil))` vs
+        `(Cons 1 (Cons 3 Nil))` — build immortal per #4841's per-child deep mark, and must stay `=`-distinct
+        (→ 0), not be conflated by a shared immortal cell. Built at a runtime recursion base (defeats fold).
+        0-leak.")
+  (input (do
+    (type L (Cons Int64 L) (Nil))
+    (def (mk2 (: n Int64)) (if (> n 0) (mk2 (- n 1)) (Cons 1 (Cons 2 (Nil)))))
+    (def (mk3 (: n Int64)) (if (> n 0) (mk3 (- n 1)) (Cons 1 (Cons 3 (Nil)))))
+    (def (main) (if (= (mk2 3) (mk3 3)) 1 0))
+    (export main)))
+  (output (: 0 Int64))
+  (live-objects 0))
+
 (case "a list rest pattern binds an EMPTY rest when the fixed heads exactly consume a runtime list"
   (doc    "The list-pattern boundary the #4798 oracle path (list patterns in match — fixed + `.. rest`) newly
            grades but the rest-form corpus family doesn't isolate: when a `(list a b .. rest)` pattern's fixed
