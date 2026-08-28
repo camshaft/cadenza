@@ -5107,14 +5107,14 @@ fn map_to_list_of_an_empty_map_folds_to_the_empty_list() {
     );
 }
 
-/// A PARTIALLY-APPLIED CONSTRUCTOR held in a GENUINELY-RUNTIME compound element, projected + applied,
-/// completes via the synthesized runtime eta-closure lift — the WORKING fix for the FACE-B miscompile
-/// (was invalid wasm: a newtype erased `(T.Mk 10)` to the bare `10`, storing a scalar where a closure
-/// handle belonged → `func N: expected i32, found i64`). `mk` builds `(tuple (T.Mk 10) n)` behind a
-/// recursive `if` so the tuple is not fold-visible; `((. p 0) 5)` projects the partial ctor and applies
-/// the last payload. `lower_sum_new`'s partial-arity path synthesizes `(fn (y) (T.Mk 10 y))` (capturing
-/// the supplied `10`), lifts it as an ordinary closure, and the application completes `(T.Mk 10 5)` → 15.
-/// Compiles to a VALID module (the miscompile was an INVALID one) and runs to 15.
+// A PARTIALLY-APPLIED CONSTRUCTOR held in a GENUINELY-RUNTIME compound element, projected + applied,
+// completes via the synthesized runtime eta-closure lift — the WORKING fix for the FACE-B miscompile
+// (was invalid wasm: a newtype erased `(T.Mk 10)` to the bare `10`, storing a scalar where a closure
+// handle belonged → `func N: expected i32, found i64`). `mk` builds `(tuple (T.Mk 10) n)` behind a
+// recursive `if` so the tuple is not fold-visible; `((. p 0) 5)` projects the partial ctor and applies
+// the last payload. `lower_sum_new`'s partial-arity path synthesizes `(fn (y) (T.Mk 10 y))` (capturing
+// the supplied `10`), lifts it as an ordinary closure, and the application completes `(T.Mk 10 5)` → 15.
+// Compiles to a VALID module (the miscompile was an INVALID one) and runs to 15.
 // ── value-heap H3a: a compound RETURNED transfers ownership; the HOST-facing return is a RESOURCE ──
 //
 // A compound leaving a function transfers ownership of its handle to the consumer (the callee does not
