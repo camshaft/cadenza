@@ -1353,6 +1353,17 @@ impl Arenas {
         match self.get(id) {
             Struct::Atom(l) => match self.leaf(*l) {
                 Leaf::Name(n) => Some(n),
+                // MIGRATION BRIDGE (M2, transitional): the native MEMBER (`.`) and FIELD_PAIR (`=`)
+                // structural head leaves report their legacy head SPELLING here, so every recognizer that
+                // detects a member access / field pair by head text (`as_form(id, ".")`, the raw
+                // `as_name(head) == Some("=")`/`Some(".")` checks, the field-key LABEL-position detection)
+                // works uniformly whether the head is the native leaf (what the reader now emits) or the
+                // legacy `Name(".")`/`Name("=")`. Deliberately NOT the ctor-head leaves (`Leaf::Ctor`): those
+                // are recognized by kind via `compound_ctor_leaf`/`compound_ctor_prim`/`compound_form_of`,
+                // and keeping them `None` here preserves ctor-leaf-is-its-own-identity (no name-collapse).
+                // M3 removes the legacy heads; these two bridge arms then just spell the native head.
+                Leaf::Member => Some("."),
+                Leaf::FieldPair => Some("="),
                 _ => None,
             },
             _ => None,
