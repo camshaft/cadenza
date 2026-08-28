@@ -2151,4 +2151,54 @@ mod tests {
             "with no mirroring guest sum the variant-typed op is skipped (hand-declared meanwhile)"
         );
     }
+
+    #[test]
+    fn an_enum_typed_import_op_is_synthesized_when_a_guest_named_sum_mirrors_it() {
+        // The ENUM-arm twin of the variant-mirror test above: a WIT `enum` is a DISTINCT descriptor arm
+        // (bare-NAME cases, not the variant's per-case lists) resolved by the SAME case-set→guest-sum-name
+        // path (`guest_sum_names` + `wit_type_to_type_expr_with_sums`'s `WitType::Enum` arm). Pins the
+        // enum-mirror path (previously only the variant arm was witnessed) so the enum
+        // synthesized-nominal-decl increment can't silently regress the ALREADY-wired guest-mirror case.
+        use crate::db::Db;
+        let mut b = Builder::new();
+        // set-status: (s: enum { active, closed }) -> unit
+        let status_enum = {
+            let eh = str_head(&mut b, "enum");
+            let c1 = b.name("active");
+            let c2 = b.name("closed");
+            b.list(vec![eh, c1, c2])
+        };
+        let rr = unit(&mut b);
+        let set_status = member(&mut b, "set-status", vec![("s", status_enum)], rr);
+        let ih = b.name("import");
+        let inm = b.name("cadenza:agent-kernel/lifecycle");
+        let lifecycle = b.list(vec![ih, inm, set_status]);
+        let wh = b.name("world");
+        let wn = b.name("reducer");
+        let world = b.list(vec![wh, wn, lifecycle]);
+        let a = b.finish(world);
+        let bytes = crate::codec::encode(&a);
+
+        // Guest declares `type Status = | Active | Closed` — case-set {active, closed} mirrors the world's
+        // anonymous enum, so the enum-typed op maps + is synthesized.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (type Status Active Closed) (def (main) 0) (export main))",
+        ));
+        let decls = synthesize_world_import_effect_decls(&mut db.ast, Some(&bytes));
+        assert_eq!(
+            decls.len(),
+            1,
+            "the enum-typed op maps via the guest's named Status → the effect is synthesized"
+        );
+
+        // Contrast: a guest with NO mirroring sum → the enum → None → the op is skipped.
+        let mut db2 = Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let decls2 = synthesize_world_import_effect_decls(&mut db2.ast, Some(&bytes));
+        assert!(
+            decls2.is_empty(),
+            "with no mirroring guest sum the enum-typed op is skipped (hand-declared meanwhile)"
+        );
+    }
 }
