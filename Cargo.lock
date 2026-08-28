@@ -1913,7 +1913,6 @@ dependencies = [
  "tracing-subscriber",
  "wasm-encoder 0.239.0",
  "wasmparser 0.239.0",
- "wasmtime",
 ]
 
 [[package]]

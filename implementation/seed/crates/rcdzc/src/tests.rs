@@ -595,124 +595,111 @@ fn import_envelope_is_a_valid_component_with_the_versioned_import() {
     );
 }
 
-// ── the behavior run (wasmtime) ────────────────────────────────────────────────────────────────
+// ── the behavior run (via cdz-run) ─────────────────────────────────────────────────────────────
 
-/// A component-boundary result type a behavior test can read back — one method decoding a wasmtime
-/// `Val` into the Rust value the test asserts on. Adding a new boundary return type (a `u32`, a
-/// string, later a compound) is one more `impl FromVal`, no new run helper.
+/// A component-boundary result type a behavior test can read back — one method parsing `cdz-run`'s
+/// canonical rendered result text into the Rust value the test asserts on. (Formerly decoded a
+/// `wasmtime::component::Val` directly; now parses `cdz_run::run`'s `Outcome::Value` string so these
+/// tests hold only the `cdz-run` dep, not a DIRECT `wasmtime` dep — the emitted scalar renders as a plain
+/// decimal / `true`/`false` / a finite-float literal, which round-trips through `parse`.) Adding a new
+/// boundary return type is one more `impl FromVal`, no new run helper.
 trait FromVal: Sized {
-    /// Decode a boundary result value, panicking with a type-named message on a mismatch.
-    fn from_val(v: &wasmtime::component::Val) -> Self;
+    /// Parse a boundary result from cdz-run's rendered text, panicking with a type-named message on a
+    /// mismatch.
+    fn from_rendered(s: &str) -> Self;
 }
 
 impl FromVal for i64 {
-    fn from_val(v: &wasmtime::component::Val) -> i64 {
-        match v {
-            wasmtime::component::Val::S64(n) => *n,
-            other => panic!("expected S64 result, got {other:?}"),
-        }
+    fn from_rendered(s: &str) -> i64 {
+        s.parse().unwrap_or_else(|_| panic!("expected i64 result, got {s:?}"))
     }
 }
 
 impl FromVal for bool {
-    fn from_val(v: &wasmtime::component::Val) -> bool {
-        match v {
-            wasmtime::component::Val::Bool(b) => *b,
-            other => panic!("expected Bool result, got {other:?}"),
+    fn from_rendered(s: &str) -> bool {
+        match s {
+            "true" => true,
+            "false" => false,
+            other => panic!("expected bool result, got {other:?}"),
         }
     }
 }
 
 impl FromVal for u64 {
-    fn from_val(v: &wasmtime::component::Val) -> u64 {
-        match v {
-            wasmtime::component::Val::U64(n) => *n,
-            other => panic!("expected U64 result, got {other:?}"),
-        }
+    fn from_rendered(s: &str) -> u64 {
+        s.parse().unwrap_or_else(|_| panic!("expected u64 result, got {s:?}"))
     }
 }
 
 impl FromVal for u32 {
-    fn from_val(v: &wasmtime::component::Val) -> u32 {
-        match v {
-            wasmtime::component::Val::U32(n) => *n,
-            other => panic!("expected U32 result, got {other:?}"),
-        }
+    fn from_rendered(s: &str) -> u32 {
+        s.parse().unwrap_or_else(|_| panic!("expected u32 result, got {s:?}"))
     }
 }
 
 impl FromVal for i32 {
-    fn from_val(v: &wasmtime::component::Val) -> i32 {
-        match v {
-            wasmtime::component::Val::S32(n) => *n,
-            other => panic!("expected S32 result, got {other:?}"),
-        }
+    fn from_rendered(s: &str) -> i32 {
+        s.parse().unwrap_or_else(|_| panic!("expected i32 result, got {s:?}"))
     }
 }
 
 // The narrow component primitives — an aliased ≤16-bit width crosses as its faithful `s8`/`u8`/`s16`/
-// `u16` (not the machine-slot `s32`/`u32`), so a behavior test reads it back as the matching Rust type.
+// `u16`, rendered as the same decimal, so a behavior test reads it back as the matching Rust type.
 impl FromVal for i8 {
-    fn from_val(v: &wasmtime::component::Val) -> i8 {
-        match v {
-            wasmtime::component::Val::S8(n) => *n,
-            other => panic!("expected S8 result, got {other:?}"),
-        }
+    fn from_rendered(s: &str) -> i8 {
+        s.parse().unwrap_or_else(|_| panic!("expected i8 result, got {s:?}"))
     }
 }
 
 impl FromVal for u8 {
-    fn from_val(v: &wasmtime::component::Val) -> u8 {
-        match v {
-            wasmtime::component::Val::U8(n) => *n,
-            other => panic!("expected U8 result, got {other:?}"),
-        }
+    fn from_rendered(s: &str) -> u8 {
+        s.parse().unwrap_or_else(|_| panic!("expected u8 result, got {s:?}"))
     }
 }
 
 impl FromVal for i16 {
-    fn from_val(v: &wasmtime::component::Val) -> i16 {
-        match v {
-            wasmtime::component::Val::S16(n) => *n,
-            other => panic!("expected S16 result, got {other:?}"),
-        }
+    fn from_rendered(s: &str) -> i16 {
+        s.parse().unwrap_or_else(|_| panic!("expected i16 result, got {s:?}"))
     }
 }
 
 impl FromVal for u16 {
-    fn from_val(v: &wasmtime::component::Val) -> u16 {
-        match v {
-            wasmtime::component::Val::U16(n) => *n,
-            other => panic!("expected U16 result, got {other:?}"),
-        }
+    fn from_rendered(s: &str) -> u16 {
+        s.parse().unwrap_or_else(|_| panic!("expected u16 result, got {s:?}"))
     }
 }
 
-// A Float64 crosses the boundary as the component `f64` primitive — read back as an `f64`. Compared by
-// BITS in the test (so `-0.0` ≠ `0.0` and a NaN is exact), the canonical-value contract.
+// A Float64/Float32 crosses as the component `f64`/`f32`; cdz-run renders it as a finite-float literal
+// (e.g. `2.5`) which `parse` reads back. (Bit-exact NaN/`-0.0` cases are not read this way — no such
+// caller remains; those live in the corpus, compared by canonical value.)
 impl FromVal for f64 {
-    fn from_val(v: &wasmtime::component::Val) -> f64 {
-        match v {
-            wasmtime::component::Val::Float64(n) => *n,
-            other => panic!("expected Float64 result, got {other:?}"),
-        }
+    fn from_rendered(s: &str) -> f64 {
+        s.parse().unwrap_or_else(|_| panic!("expected f64 result, got {s:?}"))
     }
 }
 
-// A Float32 crosses as the component `f32` primitive — read back as an `f32` (bits-compared in tests).
 impl FromVal for f32 {
-    fn from_val(v: &wasmtime::component::Val) -> f32 {
-        match v {
-            wasmtime::component::Val::Float32(n) => *n,
-            other => panic!("expected Float32 result, got {other:?}"),
-        }
+    fn from_rendered(s: &str) -> f32 {
+        s.parse().unwrap_or_else(|_| panic!("expected f32 result, got {s:?}"))
     }
 }
 
-/// Instantiate `component_bytes` under wasmtime, call its nullary export `name`, and return the single
-/// result decoded to `T` — the "run the artifact" behavior check, generic over the boundary type.
+/// Compile+run `component_bytes`' nullary export `name` via `cdz_run` and parse the single rendered
+/// result to `T` — the "run the artifact" behavior check, generic over the boundary type. Every caller
+/// compiles a runtime-FREE scalar-folding program (no value-heap import), so `runtime: None` suffices —
+/// exactly the components the former direct-wasmtime empty-`Linker` path could run.
 fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
-    run_returns_with(component_bytes, name, &[])
+    let opts = cdz_run::RunOpts {
+        export: Some(name.to_string()),
+        args: Vec::new(),
+        runtime: None,
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(component_bytes, &opts).expect("run the artifact via cdz-run") {
+        cdz_run::Outcome::Value(s) => T::from_rendered(&s),
+        cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+    }
 }
 
 /// Count the core-module instructions in `component_bytes` matching `pred` — an emission-strategy probe
@@ -732,32 +719,6 @@ fn count_opcode(component_bytes: &[u8], pred: impl Fn(&wasmparser::Operator) -> 
         }
     }
     n
-}
-
-/// Instantiate `component_bytes` and call export `name` WITH the given argument values, decoding the
-/// single result to `T` — the behavior check for a parameterized exported function.
-fn run_returns_with<T: FromVal>(
-    component_bytes: &[u8],
-    name: &str,
-    args: &[wasmtime::component::Val],
-) -> T {
-    use wasmtime::component::{Component, Linker, Val};
-    use wasmtime::{Engine, Store};
-
-    let engine = Engine::default();
-    let component = Component::from_binary(&engine, component_bytes).expect("valid component");
-    let linker: Linker<()> = Linker::new(&engine);
-    let mut store = Store::new(&engine, ());
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .expect("instantiate");
-    let func = instance.get_func(&mut store, name).expect("export present");
-    // A one-slot result buffer; the initial value is overwritten by the call (its variant is
-    // irrelevant — `call` writes the actual result), then decoded to `T`.
-    let mut results = [Val::Bool(false)];
-    func.call(&mut store, args, &mut results).expect("call");
-    func.post_return(&mut store).expect("post_return");
-    T::from_val(&results[0])
 }
 
 /// A KIND_WIT_WORLD declaring an export interface with TWO record-param members `f(m: record{a: s64}) -> s64`
@@ -2019,9 +1980,9 @@ fn cse_keeps_a_trapping_rhs_inside_a_short_circuit_or_at_the_lir_level() {
 /// conditional position (And/Or have the witnesses above; the if-arm has the cont.101 select.rs witness).
 ///
 /// The program is ALL-SCALAR (Int64 params/result, no value-heap), so it imports NO runtime — the test
-/// runs STORE-FREE (`run_returns_with`, no `find_runtime_wasm` skip) and therefore executes in storeless /
-/// clean CI too, where it must actually guard. (A `find_runtime_wasm() else return` skip — copied from the
-/// heap-value sibling tests — would silently disable this regression witness where no store is built.)
+/// runs STORE-FREE (`run_returns` with `runtime: None`, no `find_runtime_wasm` skip) and therefore executes
+/// in storeless / clean CI too, where it must actually guard. (A `find_runtime_wasm() else return` skip —
+/// copied from the heap-value sibling tests — would silently disable this regression witness.)
 #[test]
 fn cse_does_not_hoist_a_trapping_subexpr_out_of_a_match_arm() {
     use crate::testkit::parse;

@@ -20,7 +20,7 @@
 #      identity. Deliberately un-idiomatic Rust so the later Cadenza port is mechanical.
 #
 # Validated by INTERNAL UNIT TESTS ONLY (no `cadenza-seed` dependency — that crate is reworked
-# elsewhere): `wasmtime` runs the emitted component, `wasm-encoder` is the independent byte oracle.
+# elsewhere): `cdz-run` runs the emitted component, `wasm-encoder` is the independent byte oracle.
 # Neither enters the compile path (the byte path is hand-emitted so it ports to the self-host).
 [package]
 name = "rcdzc"
@@ -72,7 +72,7 @@ version = "0.3"
 features = ["env-filter", "fmt"]
 
 [dev-dependencies]
-# The real front-end reader (TESTS ONLY — like wasm-encoder/wasmtime below, never in the compile
+# The real front-end reader (TESTS ONLY — like wasm-encoder below, never in the compile
 # path, so the "copy, don't depend" round-trip is preserved). Test fixtures read the s-expression
 # surface with the SAME reader the corpus gate uses (`sexpr::read`, which desugars `a.b` → `(. a b)`)
 # rather than a hand-rolled reader that would drift from it. The bridge is BYTES: `sexpr::read` → its
@@ -86,8 +86,6 @@ wasm-encoder = "0.239"
 # The component/core validator (tests only): parses + type-checks a component to LOCALIZE a byte error
 # (`Component::from_binary`'s error is opaque). Diagnoses the resource-linking envelope during R1/R2.
 wasmparser = "0.239"
-# Runs the emitted component in tests (the "run the artifact" behavior check). Tests only.
-wasmtime = { version = "37", default-features = false, features = ["runtime", "cranelift", "component-model"] }
 # The canonical component RUNNER (tests only) — composes the value-heap runtime and invokes an export,
 # exactly as the desk/gate do. Used by the value-heap behavior tests to run a component that IMPORTS the
 # runtime (the composed round-trip) without re-implementing composition in the test. It takes no
