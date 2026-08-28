@@ -2121,7 +2121,7 @@ fn expr_tail_is_call_consuming_payload(db: &mut Db, id: StructId, scrut: StructI
 /// (so nothing uses the param after the match) and the shell `drop` is placed AFTER `emit_sum_cont` (so an
 /// in-arm `ValueEq` borrows the LIVE shell + yields a non-aliasing scalar `Bool`, shell dropped after). A
 /// param matched once but `=`-compared AFTER the match ⟹ the match is NON-tail ⟹ the reclaim never fires ⟹
-/// no UAF (benign dup-without-drop leak only). ⚠️ DO NOT reuse `count_matchsum_over_binder` as a "complete
+/// no UAF (benign dup-without-drop leak only). NOTE: DO NOT reuse `count_matchsum_over_binder` as a "complete
 /// sharing" signal in a NON-tail-gated reclaim context — a `ValueEq`-after-a-non-tail-reclaimed-match would
 /// be a real UAF; add a matched-once+eq (ValueEq-aware) predicate FIRST if you ever move the reclaim off
 /// tail-position gating.
@@ -9169,7 +9169,7 @@ pub(crate) fn variant_payload_ty_at(db: &mut Db, sum: &Ty, disc: u32) -> Option<
 /// LIVE AFTER the match, so the shell-deep-drop would free a still-live value → UAF. STRUCTURAL: any
 /// non-destructuring reference counts.
 ///
-/// ⚠️ RESUME-ESCAPE (v-effects #048389): a handler-arm `(resume -1 st)` re-reference is INVISIBLE here —
+/// NOTE: RESUME-ESCAPE (v-effects #048389): a handler-arm `(resume -1 st)` re-reference is INVISIBLE here —
 /// by select.rs the resume is REDUCED/threaded, so `st` is not a syntactic arm-body ref. TWO guards cover
 /// it: (1) the handler THREADED-STATE scrutinee is classified BORROWED, so the caller's `Owned` gate excludes
 /// it (rrb1); (2) a `CallClosure`/`HostCall` in the arm (an opaque consumer that could capture the scrutinee
