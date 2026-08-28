@@ -52328,6 +52328,39 @@ mod closure_host_resource {
         );
     }
 
+    /// PATH-PARITY diagnostic honesty (breaker tick 380): a bare-effect `Bytes` RESULT has no bare-path
+    /// wasm boundary emit yet — the `list<u8>` lift (`select::emit_result_lift`) is wired only on the
+    /// WORLD-DRIVEN / bytes-provider path (gated by `allow_option_bytes`), so the bare guard correctly
+    /// declines rather than emit invalid wasm. The PRIOR message self-contradicted: it listed `list<u8>`
+    /// (Bytes) as a supported RESULT form in the same breath it rejected a Bytes result. It now declines
+    /// HONESTLY — names the op/result/type, keeps `no component`, and points to the world-driven
+    /// `(wit-world …)` path instead of claiming a bare `list<u8>` result is supported. (The RUST backend
+    /// emits this natively as a `Vec<u8>`; this guard is the WASM boundary path only.)
+    #[test]
+    fn a_bare_effect_bytes_result_declines_pointing_to_the_world_driven_path() {
+        use crate::testkit::parse;
+        let src = "(do (effect H (op seed (-> Unit Bytes))) \
+                   (def (main) (host (H) (Bytes.len (H.seed)))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a bare-effect Bytes result has no bare-path boundary emit — must decline");
+        assert!(
+            err.message.contains("seed")
+                && err.message.contains("result")
+                && err.message.contains("Bytes")
+                && err.message.contains("no component")
+                && err.message.contains("WORLD-DRIVEN"),
+            "expected an honest decline that points to the world-driven path, got: {}",
+            err.message
+        );
+        // Must NOT self-contradict by listing a bare `list<u8>` RESULT as supported (the old wording did).
+        assert!(
+            !err.message
+                .contains("RESULTS cross as: a scalar/unit, a `list<u8>`"),
+            "must not list a bare `list<u8>` result as supported (the self-contradicting wording), got: {}",
+            err.message
+        );
+    }
+
     /// MULTI-EXPORT closures COMPILE for the same-signature (one resource type, shared `call`), the
     /// DISTINCT-signature (N resource types, per-group `call-g<n>`), AND the MIXED shape (closures ALONGSIDE
     /// a plain non-closure export — the closures via the resource envelope, the plain export as an ordinary
