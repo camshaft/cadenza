@@ -80,7 +80,7 @@
         (export main)))
   (call main (: 2 Int64)) (output (: 37 Int64))
   (call main (: 0 Int64)) (output (: 17 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "Record.with REPLACES one heap-list field while the sibling and the ORIGINAL stay live"
   (doc    "The update path's heap discipline: one LIST field replaced, the runtime-valued sibling
@@ -101,7 +101,7 @@
         (export main)))
   (call main (: 3 Int64)) (output (: 1003 Int64))
   (call main (: 0 Int64)) (output (: 973 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "an OPEN-sum value stored as a MAP VALUE matches back out with its open-tail arm"
   (doc    "The nesting pins put open sums in SUM payloads; this is the collection slot — stored as

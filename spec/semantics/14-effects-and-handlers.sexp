@@ -561,7 +561,7 @@
                 (if (and true (> (St.tick) 0)) (do (run-ops (list 1 2 3)) (St.tick)) -99)))
             (export main)))
   (call   main) (output (: 5 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a trap-init let in one handler branch short-circuits while the sibling threads state"
   (doc    "`(if b (let ((it (trap \"dead\"))) (+ it (St.tick))) (St.tick))` seeded 0, arm `(tick (u) s (resume
@@ -1364,7 +1364,7 @@
             (export main)))
   (call   main (: 999 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a handler arm RECURSES through a named helper before resuming"
   (doc    "The arm-calls-a-def face: `tally`'s arm computes `(triangle v 0)` — a RECURSIVE tail loop over
@@ -1961,7 +1961,7 @@
             (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) ((. List len) (build 3))))
             (export main)))
   (call   main) (output (: 3 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 9))
 
 (case "a self-call and a sibling perform as direct subtraction operands thread out-state via multi-value return"
   (doc    "`(- (build (- n 1)) (Idx.next))` — the recursive self-call is the LEFT operand and the perform the
@@ -4518,7 +4518,7 @@
                    0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 495000 Int64))
-  (live-objects known-leak 269))
+  (live-objects known-leak 268))
 
 (case "a Bytes.slice VIEW crosses as op ARGUMENT — the arm reads through the window it was handed"
   (doc    "A body-built slice VIEW (not a copy) crossing INTO a dispatch (the existing view pins put
@@ -8174,7 +8174,7 @@
                 (suml (grab 4 (list)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 26 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "MUTUALLY recursive helpers BOTH perform against the same handler"
   (doc    "The recursion pins above are all SINGLE functions; here `evens`/`odds` call each other and BOTH

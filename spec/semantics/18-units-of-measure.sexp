@@ -463,7 +463,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a MAX-fold over quantities compares through the erased unit wrapper per step"
   (doc    "The comparison-accumulator companion: the fold's step is `(if (> h best) h best)` — a Qty
@@ -483,7 +483,7 @@
   (output (: 42 Int64))
   (call   main (: 1 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a quantity over a BigInt magnitude runs unbounded arithmetic on the erased handles"
   (doc    "A `(Qty BigInt meter)` — a quantity whose inner numeric is the UNBOUNDED BigInt — runs bigint

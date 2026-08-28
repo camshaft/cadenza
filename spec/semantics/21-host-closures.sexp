@@ -5486,7 +5486,7 @@
         (export main)))
   (call   main (: 0 Int64)) (output (: 12 Int64))
   (call   main (: 7 Int64)) (output (: 789 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 13))
 
 (case "closures stored as MAP VALUES dispatch by key with distinct captures"
   (doc    "The dispatch-table shape — closures as CHAMP map VALUES (the collection pins cover

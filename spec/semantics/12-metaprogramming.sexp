@@ -3174,7 +3174,7 @@
             (def (main) (sum-form (quote (f 10 20 30))))
             (export main)))
   (output (: 60 BigInt))
-  (live-objects known-leak 14))
+  (live-objects known-leak 13))
 
 (case "a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)"
   (doc    "The DECLINE-GUARD companion of the two working walks above. The idiomatic fold shape — a recursive
@@ -3782,7 +3782,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 68))
+  (live-objects known-leak 64))
 
 (case "an eval splice consumes a value extracted from a CHAMP map at run time"
   (doc    "The splice pins feed literals and locals; this operand comes OUT of a Map — `(Map.lookup m k)`

@@ -517,7 +517,7 @@
         (export main)))
   (call   main (: 0 Int64)) (output (: 18 Int64))
   (call   main (: 100 Int64)) (output (: 118 Int64))
-  (live-objects known-leak 21))
+  (live-objects known-leak 20))
 
 (case "a compound Ast SUBTREE rides a template hole into the expansion intact"
   (doc    "The hole pins splice Ast.Int LEAVES; this hole is a whole `(Ast.List (* 3 4))` SUBTREE the

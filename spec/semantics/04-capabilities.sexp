@@ -338,7 +338,7 @@
   (host-responses (respond ask.size (: 3 Int64)))
   (host-calls (call ask.size))
   (output (: 63 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a host call's response is an ordinary value that feeds a LATER host call"
   (doc    "Witnesses capabilities-and-effects.md #A Host Call Returns A Response: a host call is a plain
