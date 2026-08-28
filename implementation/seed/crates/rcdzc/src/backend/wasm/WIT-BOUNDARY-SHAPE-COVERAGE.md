@@ -62,8 +62,6 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
   `ty_natural_wit` / `wit_type_to_ty` / `wit_type_to_type_expr` all decline these. Needs the
   **synthesized-nominal-decl increment**. NOTE: an *imposed*-world variant/enum WORKS — emit matches
   an explicit decl; the gap is guest-annotation-driven self-declaration. Biggest synth-side lever.
-- **[synth]** `Ty::Unit` OUTBOUND asymmetry: `wit_type_to_ty` unit→Unit is wired but `ty_natural_wit`
-  Ty::Unit→None. Trivial exact inverse; only bites a synthesized-world unit result.
 - **[synth]** option/result OUTBOUND: `wit_world.rs` maps `Ty::Sum`→None; outbound sum WIT is emitted
   here (`spilled_result_wit_type`). Imposed-world works; a synthesized-world option/result *result*
   cannot self-declare (rolls into the nominal-decl increment).
@@ -101,6 +99,12 @@ HOST-RESPONDER cannot yet ANSWER a String-result host op on the bound/simple-exp
 gate-blocked by the harness, not by emit (v-wasmtime-migration confirmed #4894 compiles run_agent's
 bound `converse (-> String String)` and the rcdzc U9 test passes). The same caveat likely applies to
 other host-RESULT shapes whose only running SHAPE is the reducer-export form.
+
+## Recently closed
+
+- host-string-RESULT (world path) — `result_is_liftable` gained the `string` leaf arm (#4894); SHAPE 57.
+- unit OUTBOUND synth — `ty_natural_wit` `Ty::Unit → WitType::Unit` (#4903), the exact inverse of
+  `wit_type_to_ty`'s inbound arm; a synthesized-world unit result now self-declares.
 
 ## Keeping this honest
 
