@@ -35076,16 +35076,13 @@ mod stage1 {
 
         // CONTROL: a bare (non-`#`) name binds fine in the SAME position, so it is the `#` prefix — not
         // backtick-ness or the position — that makes `#cv…` unbindable. If this control ever declines, the
-        // CDZ0210 above is a false witness and this pin is meaningless.
+        // CDZ0210 above is a false witness and this pin is meaningless. (The bare-let RUN value — `(let
+        // ((notcv 5)) notcv)` = 5 — is trivial let-binding, densely covered in 02-binding-and-control; here
+        // it need only COMPILE, the contrast against the `#cv0` rejects above.)
         let control = "(do (def (main) (let ((notcv 5)) notcv)) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(control)))
-                    .expect("a bare-ident binder in the same position binds fine (control)"),
-                "main"
-            ),
-            5,
-            "control: a non-`#` binder in the same position must bind"
+        assert!(
+            compile_component(&crate::codec::encode(&parse(control))).is_ok(),
+            "control: a non-`#` binder in the same position must bind (compile)"
         );
     }
 

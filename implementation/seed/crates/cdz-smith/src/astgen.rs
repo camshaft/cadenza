@@ -48,10 +48,35 @@ impl ValueGenerator for ProgramGen {
         // INFALLIBLE by design: a coercing generator always yields a valid program, even from empty /
         // exhausted entropy (every driver read falls back to a default), so `generate` never returns
         // `None`. That is the operator's "coerce ANY entropy → a valid value".
-        let mut source = String::from("(do (def (main) ");
-        let mut scope: Vec<String> = Vec::new();
+        let mut source = String::from("(do ");
         let mut fresh = 0usize;
-        gen_expr(driver, MAX_DEPTH, &mut scope, &mut fresh, &mut source);
+        // Optionally emit a NON-RECURSIVE helper `(def (f a b) <body>)`: its body uses the Int64 params
+        // `a`/`b` but CANNOT call `f` (so it always terminates), and `main`'s body may then call
+        // `(f <e> <e>)` — reaching multi-arg function-def + call lowering, kept total.
+        let has_helper = driver.gen_variant(2, 0).unwrap_or(0) == 1;
+        if has_helper {
+            source.push_str("(def (f a b) ");
+            let mut fscope = vec!["a".to_string(), "b".to_string()];
+            gen_expr(
+                driver,
+                MAX_DEPTH,
+                &mut fscope,
+                &mut fresh,
+                false,
+                &mut source,
+            );
+            source.push_str(") ");
+        }
+        source.push_str("(def (main) ");
+        let mut scope: Vec<String> = Vec::new();
+        gen_expr(
+            driver,
+            MAX_DEPTH,
+            &mut scope,
+            &mut fresh,
+            has_helper,
+            &mut source,
+        );
         source.push_str(") (export main))");
         Some(Program { source })
     }
@@ -65,14 +90,17 @@ fn gen_expr<D: Driver>(
     depth: usize,
     scope: &mut Vec<String>,
     fresh: &mut usize,
+    can_call_f: bool,
     out: &mut String,
 ) {
-    // At `depth == 0` force the base case (0); otherwise `gen_variant(4, 0)` biases toward it — so
-    // generation always terminates within the depth budget. Exhaustion → base case (0).
+    // At `depth == 0` force the base case (0); otherwise `gen_variant(n, 0)` biases toward it — so
+    // generation always terminates within the depth budget. The `(f …)` call arm is only offered when a
+    // helper is in scope (`can_call_f`). Exhaustion → base case (0).
+    let arms = if can_call_f { 5 } else { 4 };
     let variant = if depth == 0 {
         0
     } else {
-        driver.gen_variant(4, 0).unwrap_or(0)
+        driver.gen_variant(arms, 0).unwrap_or(0)
     };
     match variant {
         // Binary arithmetic `(op <e> <e>)`.
@@ -81,9 +109,9 @@ fn gen_expr<D: Driver>(
             out.push('(');
             out.push_str(op);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, out);
+            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, out);
+            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
             out.push(')');
         }
         // Conditional `(if (<rel> <e> <e>) <e> <e>)` — the condition is Int64→Int64→Bool, both branches
@@ -93,13 +121,13 @@ fn gen_expr<D: Driver>(
             out.push_str("(if (");
             out.push_str(rel);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, out);
+            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, out);
+            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
             out.push_str(") ");
-            gen_expr(driver, depth - 1, scope, fresh, out);
+            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, out);
+            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
             out.push(')');
         }
         // Let binding `(let ((vN <val>)) <body>)` — binds a FRESH Int64 name (so no shadowing) and adds
@@ -111,11 +139,20 @@ fn gen_expr<D: Driver>(
             out.push_str("(let ((");
             out.push_str(&name);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, out);
+            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
             out.push_str(")) ");
             scope.push(name);
-            gen_expr(driver, depth - 1, scope, fresh, out);
+            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
             scope.pop();
+            out.push(')');
+        }
+        // Call the in-scope helper `(f <e> <e>)` — `f: Int64,Int64 -> Int64` is non-recursive + total, so
+        // the call terminates. Only reachable when `can_call_f`. Reaches function-call lowering.
+        4 => {
+            out.push_str("(f ");
+            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
+            out.push(' ');
+            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
             out.push(')');
         }
         // Base case: an in-scope Int64 variable reference (when any is bound and the driver picks it) —
@@ -171,7 +208,8 @@ mod tests {
         for bytes in inputs {
             let program = gen_from(bytes);
             assert!(
-                program.source.starts_with("(do (def (main) ")
+                program.source.starts_with("(do ")
+                    && program.source.contains("(def (main) ")
                     && program.source.ends_with("(export main))"),
                 "shape: {}",
                 program.source
@@ -201,6 +239,17 @@ mod tests {
                 "operator `{op}` should compile as an Int64 op: {source}"
             );
         }
+    }
+
+    /// The helper + call shape the generator can emit compiles: a non-recursive `(def (f a b) …)` plus a
+    /// `(f <e> <e>)` call from main. Pins that function-def + multi-arg call lowering is valid Cadenza.
+    #[test]
+    fn helper_and_call_shape_compiles() {
+        let src = "(do (def (f a b) (+ a b)) (def (main) (f 3 4)) (export main))";
+        assert!(
+            matches!(compile_catching(src), Verdict::Compiled { .. }),
+            "helper + call must compile: {src}"
+        );
     }
 
     /// The base case (empty entropy) coerces to the simplest program — a single bounded literal main —

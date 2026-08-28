@@ -10277,3 +10277,20 @@
 (export main)))
   (call main (: 5 Int64))
   (output (: 16 Int64)))
+
+(case "mrs2 a PURE-body two-resume arm re-computes the continuation and sums (multi-shot on a re-computable body = 100; v-effects-ruled intended)"
+  (doc    "v-effects owner ruling (2026-08-28, verified by running): a two-resume arm over a PURE
+           re-computable body is INTENDED multi-shot — `(+ (resume s s) (resume s s))` with body `(* _ 10)`
+           and ask->5 re-runs the pure continuation twice (50 + 50 = 100). The header 'one-shot' is a
+           conservative SAFETY-FLOOR for HEAP-capturing continuations (where a 2nd resume would double-use
+           captured heap — mrs1 correctly declines that). So the boundary is principled: a pure continuation
+           is safely re-runnable, a heap one is not. Pins the intended pure-body multi-shot value.")
+  (input (do
+(effect E (op ask (-> Int64)))
+(def (main (: n Int64))
+  (handle E n
+    ((ask () s (+ (resume s s) (resume s s))))
+    (* (E.ask) 10)))
+(export main)))
+  (call main (: 5 Int64))
+  (output (: 100 Int64)))

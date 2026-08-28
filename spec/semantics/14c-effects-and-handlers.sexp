@@ -18738,3 +18738,23 @@
   (call main (: 4 Int64))
   (output (: 42 Int64))
   (live-objects known-leak 5))
+
+(case "nei1 cross-effect interleave: an inner B handler's arm performs the OUTER A effect, whose state advances across two B draws"
+  (doc    "Two DIFFERENT nested effects (distinct from the same-effect cn shadow series): the inner B arm's
+           resume value performs the OUTER A effect. Over `(+ (B.fb) (B.fb))` with A seeded n, B seeded 5:
+           each B.fb keeps t=5 and adds one A.fa; A advances +1 per draw (fa = resume s (+ s 1)). First
+           B.fb = 5 + A(n) ; second = 5 + A(n+1); sum = 10 + 2n + 1. n=100 -> 105 + 106 = 211. Pins that the
+           OUTER effect's state threads correctly across REPEATED performs from the inner handler's arm
+           while the inner state stays put — the cross-effect state-interleave.")
+  (input (do
+(effect A (op fa (-> Int64)))
+(effect B (op fb (-> Int64)))
+(def (main (: n Int64))
+  (handle A n
+    ((fa () s (resume s (+ s 1))))
+    (handle B 5
+      ((fb () t (resume (+ t (A.fa)) t)))
+      (+ (B.fb) (B.fb)))))
+(export main)))
+  (call main (: 100 Int64))
+  (output (: 211 Int64)))
