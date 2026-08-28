@@ -3745,6 +3745,7 @@
                   ".#checks.${system}.corpus" \
                   ".#checks.${system}.corpus-rust" \
                   ".#checks.${system}.corpus-rust-async" \
+                  ".#checks.${system}.corpus-cadenza" \
                   ".#checks.${system}.wasm-opt-gaps" \
                   --out-link "$root_dir/warm" --print-build-logs
                 echo "cdz warm-keep: done — local /nix/store warm layer pinned (gate-local stays fast)."
