@@ -60,10 +60,11 @@
 //!   to its binder, and nested list matches recurse. A GUARDED arm re-emits the `(guard <pattern> <cond>)`
 //!   surface form (cond with the arm's binders in scope). A NESTED/variant element sub-pattern (a deeper
 //!   `SumPayload` path this slice does not register) declines.
-//! - **DATA**: runtime compound VALUES — `Core::Tuple`→`(tuple …)`, `Core::Record`→`(record (= k v)…)`
-//!   (name-sorted), `Core::ListNew`→`(list …)`, `Core::MapNew`→`(map (<k> <v>)…)` and `Core::SetOf`→
-//!   `((. Set of) (list …))` (map/set entries emit in STORED order — the value is unordered, so the
-//!   round-trip is VALUE-equivalence, order-independent; the keys are runtime, no canonical sort applies);
+//! - **DATA**: runtime compound VALUES — via the M2 native ctor-leaf heads (`b.compound(CompoundCtor::…)`),
+//!   not name heads: `Core::Tuple`/`ListNew`/`SetOf`→`Tuple`/`List`/`Set` ctor over the element children;
+//!   `Core::Record`/`MapNew`→`Record`/`Map` ctor over `(= k v)` FieldPair leaves (record/map distinguished by
+//!   the head, both field-pair children). Map/set entries emit in STORED order — the value is unordered, so
+//!   the round-trip is VALUE-equivalence, order-independent; the keys are runtime, no canonical sort applies);
 //!   and a `Core::SumNew` variant →
 //!   `(: (<Variant> <payload-or-unit>) <sum-type>)` (the type ascription pins an under-determined sum,
 //!   e.g. a bare `(None unit)`). When the value's OWN solved type is under-determined (a bare `(None)` at a
@@ -901,9 +902,9 @@ fn emit_expr_viewed(
         // operands (a projection of a compile-time-visible tuple folds away in `lower`, so a surviving
         // `Core::Tuple` is a runtime value). Mirrors lower's constant value surface.
         Core::Tuple { elems } => {
-            let head = b.name("tuple");
-            let mut children = Vec::with_capacity(1 + elems.len());
-            children.push(head);
+            // M2: a native TUPLE ctor-leaf head (`b.compound`), not a `tuple` name head. Mirrors
+            // `const_value_ast`.
+            let mut children = Vec::with_capacity(elems.len());
             // Each element's `expected` is the tuple's own type at that position — so an under-determined
             // element (a bare `(None)` in `(tuple (None) 3)`) recovers its type from the tuple's slot type.
             for (i, e) in elems.iter().copied().enumerate() {
@@ -913,14 +914,13 @@ fn emit_expr_viewed(
                 };
                 children.push(emit_expr(db, b, e, ex, env, emitted)?);
             }
-            Ok(b.list(children))
+            Ok(b.compound(crate::ast::CompoundCtor::Tuple, &children))
         }
         // A runtime RECORD value `(record (= <k> <v>)…)` — fields in canonical (name-sorted `BTreeMap`)
         // order, each an `(= name value)` ascription pair (matching lower's `const_value_ast` surface).
         Core::Record { fields } => {
-            let head = b.name("record");
-            let mut children = Vec::with_capacity(1 + fields.len());
-            children.push(head);
+            // M2: a native RECORD ctor-leaf head; fields are `(= k v)` FieldPair leaves (`b.field_pair`).
+            let mut children = Vec::with_capacity(fields.len());
             for (name, &v) in fields.iter() {
                 let fname = b.name(&*name.name);
                 // The field's `expected` is the record type's field type (an under-determined field value
@@ -932,14 +932,13 @@ fn emit_expr_viewed(
                 let fval = emit_expr(db, b, v, ex, env, emitted)?;
                 children.push(b.field_pair(fname, fval));
             }
-            Ok(b.list(children))
+            Ok(b.compound(crate::ast::CompoundCtor::Record, &children))
         }
         // A runtime LIST value `(list <e>…)` — an ordered homogeneous sequence built from runtime
         // operands; the walk preserves element order.
         Core::ListNew { elems } => {
-            let head = b.name("list");
-            let mut children = Vec::with_capacity(1 + elems.len());
-            children.push(head);
+            // M2: a native LIST ctor-leaf head, not a `list` name head.
+            let mut children = Vec::with_capacity(elems.len());
             // Every element's `expected` is the list's element type — so a bare `(None)` element (in
             // `(list (Some n) (None) …)`, whose own type is `Option<?>`) recovers `Option Int64` from it.
             let elem_ty = match &eff_ty {
@@ -949,7 +948,7 @@ fn emit_expr_viewed(
             for e in elems.iter().copied() {
                 children.push(emit_expr(db, b, e, elem_ty.clone(), env, emitted)?);
             }
-            Ok(b.list(children))
+            Ok(b.compound(crate::ast::CompoundCtor::List, &children))
         }
         // A runtime MAP value `(map (<k> <v>)…)` — the entries are runtime operands (a fully-constant map
         // bakes via lower's constant escape, so a surviving `Core::MapNew` is a runtime value). Entries are
@@ -959,9 +958,9 @@ fn emit_expr_viewed(
         // map's order-independent identity satisfies. Each entry is the pair-list `(<k> <v>)` (distinct from
         // a record's `(= k v)`), key then value emitted left-to-right. Mirrors lower's constant map surface.
         Core::MapNew { entries, .. } => {
-            let head = b.name("map");
-            let mut children = Vec::with_capacity(1 + entries.len());
-            children.push(head);
+            // M2: a native MAP ctor-leaf head; entries are `(= k v)` FieldPair leaves (distinguished from a
+            // record only by the MAP head). Stored order (a map is unordered → value-eq is order-independent).
+            let mut children = Vec::with_capacity(entries.len());
             // Key/value `expected` are the map type's key/value types (an under-determined key or value —
             // e.g. a `(None)` value — recovers its type from there).
             let (key_ty, val_ty) = match &eff_ty {
@@ -971,31 +970,26 @@ fn emit_expr_viewed(
             for &(k, v) in entries.iter() {
                 let kv = emit_expr(db, b, k, key_ty.clone(), env, emitted)?;
                 let vv = emit_expr(db, b, v, val_ty.clone(), env, emitted)?;
-                children.push(b.list(vec![kv, vv]));
+                children.push(b.field_pair(kv, vv));
             }
-            Ok(b.list(children))
+            Ok(b.compound(crate::ast::CompoundCtor::Map, &children))
         }
         // A runtime SET value `((. Set of) (list <e>…))` — the `Set.of` application over a `(list …)` of the
         // elements (a fully-constant set bakes via lower's constant escape; a surviving `Core::SetOf` is a
         // runtime value). Like the map, elements emit in STORED order (a set is unordered, so value-identity
         // is order-independent). `Set.of` is the member access `(. Set of)`, matching lower's set surface.
         Core::SetOf { elems, .. } => {
-            let list_head = b.name("list");
-            let mut list_children = Vec::with_capacity(1 + elems.len());
-            list_children.push(list_head);
+            // M2: a native SET ctor-leaf head (`#set(…)`), REPLACING the old `((. Set of) (list …))`
+            // member-path. Stored order (a set is unordered → value-eq is order-independent).
+            let mut children = Vec::with_capacity(elems.len());
             let elem_ty = match &eff_ty {
                 Ty::Set(e) => Some((**e).clone()),
                 _ => None,
             };
             for e in elems.iter().copied() {
-                list_children.push(emit_expr(db, b, e, elem_ty.clone(), env, emitted)?);
+                children.push(emit_expr(db, b, e, elem_ty.clone(), env, emitted)?);
             }
-            let inner_list = b.list(list_children);
-            let dot = b.name(".");
-            let set_mod = b.name("Set");
-            let of_key = b.name("of");
-            let set_of = b.list(vec![dot, set_mod, of_key]);
-            Ok(b.list(vec![set_of, inner_list]))
+            Ok(b.compound(crate::ast::CompoundCtor::Set, &children))
         }
         // A runtime SUM (variant) value `(<Variant> <payload>)` — a constructed variant built from a
         // runtime payload. The variant NAME is recovered from the discriminant against the node's solved
