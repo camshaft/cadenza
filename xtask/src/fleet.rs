@@ -2261,6 +2261,29 @@ fn send(
         );
         std::process::exit(1);
     }
+    // pr-sync-PAUSED guidance (concierge 2026-08-28): when pr-sync isn't advancing `trunk`, the local
+    // trunk ref goes STALE, so the contamination guard below (which scans `trunk..<ref>`) fills with the
+    // DIRECT-TO-MAIN platform landings — files outside any one sender's zone — and FALSE-REJECTS a legit
+    // single-file MR with a misleading "peer's work" message (hit v-core-opt + v-cdz-smith). During the
+    // pause the merge-request→pr-sync flow is DEFUNCT anyway (the fleet lands DIRECT to main via a GitHub
+    // PR), so when trunk is far behind origin/main, emit that guidance UP-FRONT instead of the confusing
+    // contamination reject. `--force` still bypasses (the rare intentional queue-an-MR-for-later case).
+    if !force
+        && kind == "merge-request"
+        && let Some((_ahead, behind)) = trunk_vs_origin_main(&fleet.repo)
+        && pr_sync_paused_by_trunk_lag(behind)
+    {
+        eprintln!(
+            "fleet send: pr-sync appears PAUSED — local `trunk` is {behind} commits behind origin/main \
+             (pr-sync isn't advancing it). During the pause the fleet lands DIRECT to main, so a \
+             merge-request to pr-sync won't be integrated. Open a GitHub PR against main instead:\n\
+            \x20   gh pr create --base main --head <your-branch> --title \"…\" --body \"…\"\n\
+             then self-merge on local-green (see AGENTS-fleet.md). This supersedes the \
+             merge-request→pr-sync flow while pr-sync is paused. (Re-run with `--force` to send anyway.)"
+        );
+        std::process::exit(1);
+    }
+
     // CONTAMINATION GUARD (v-compiler-ml issue 10801): during an extreme-load window a fleet-sync
     // replay can strand a PEER's unlanded commit onto this branch (the shared-base HEAD/reflog vector).
     // If that stray commit rides along in a merge-request's `trunk..<ref>` range, the sender would
@@ -8557,6 +8580,19 @@ fn queued_ref_would_orphan(
         }
     }
     None
+}
+
+/// How far `trunk` must lag `origin/main` to read as pr-sync-PAUSED. In the healthy `--publish-origin`
+/// steady state pr-sync keeps `trunk == origin/main` (0 behind); a live drain lags by at most a batch
+/// (single digits). A lag of tens-to-hundreds means pr-sync ISN'T advancing trunk — i.e. the
+/// platform-pause era, where the fleet lands DIRECT to main. 50 sits well above any live-drain lag and
+/// far below the pause's hundreds, so it discriminates cleanly. Heuristic (a proxy for "pr-sync stopped").
+const PR_SYNC_PAUSED_TRUNK_LAG: usize = 50;
+
+/// Pure: does `trunk` being `behind` commits behind `origin/main` read as pr-sync-paused? Split out so
+/// the threshold is unit-testable without git.
+fn pr_sync_paused_by_trunk_lag(behind: usize) -> bool {
+    behind >= PR_SYNC_PAUSED_TRUNK_LAG
 }
 
 /// `(ahead, behind)` of `trunk` relative to `origin/main`, or `None` if either ref is unresolvable.
@@ -15308,6 +15344,17 @@ mod tests {
             &queued,
             old
         ));
+    }
+
+    #[test]
+    fn pr_sync_paused_by_trunk_lag_discriminates_pause_from_live_drain() {
+        // Healthy steady state / live drain — small lag → NOT paused.
+        assert!(!pr_sync_paused_by_trunk_lag(0));
+        assert!(!pr_sync_paused_by_trunk_lag(5));
+        assert!(!pr_sync_paused_by_trunk_lag(PR_SYNC_PAUSED_TRUNK_LAG - 1));
+        // At/over the threshold — the pause's tens-to-hundreds lag → paused (emit direct-to-main guidance).
+        assert!(pr_sync_paused_by_trunk_lag(PR_SYNC_PAUSED_TRUNK_LAG));
+        assert!(pr_sync_paused_by_trunk_lag(500));
     }
 
     #[test]
