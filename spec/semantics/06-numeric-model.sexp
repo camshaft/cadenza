@@ -12191,3 +12191,70 @@
   (call main (: 9 Int64))
   (output (: (list (Some 9) (None unit) (Some 11)) (List (Option Int64))))
   (live-objects 4))
+
+(case "cdzw27 the cadenza backend preserves compound-compare SHORT-CIRCUIT — a differing first component never forces the trapping second"
+  (doc "The #5026 short-circuit face (breaker twins): (= (tuple 1 <trapping-div>) (tuple 2 0)) — the first
+        components DIFFER, so the compound compare short-circuits and the runtime-zero division is NEVER
+        forced, on the direct path and through the hop alike. A re-emitted compare that pre-forced or
+        re-ordered operands would trap here. n=5 makes the divisor zero; answer stays 222 (not-equal arm).")
+  (input (do (def (main (: n Int64)) (if (= (tuple 1 (/ 8 (- n 5))) (tuple 2 0)) 111 222)) (export main)))
+  (call main (: 5 Int64))
+  (output (: 222 Int64))
+  (call main (: 3 Int64))
+  (output (: 222 Int64)))
+
+(case "cdzw28 the FORCING twin — equal first components force the second, and the div-by-zero trap surfaces identically"
+  (doc "cdzw27's forcing twin: first components EQUAL (2=2), so the compare must force the second
+        component — at n=5 the runtime-zero division traps divide-by-zero identically on both paths; at
+        other args it compares and answers 222. Pins the exact trap/no-trap boundary of compound-compare
+        short-circuit through the hop.")
+  (input (do (def (main (: n Int64)) (if (= (tuple 2 (/ 8 (- n 5))) (tuple 2 0)) 111 222)) (export main)))
+  (call main (: 3 Int64))
+  (output (: 222 Int64))
+  (call main (: 5 Int64))
+  (trap "divide by zero")
+  (live-objects 0))
+
+(case "cdzw29 the cadenza backend round-trips a GENERIC single-variant newtype instantiated at Int64"
+  (doc "The #5057 generic-decl fence (the last BUG2-era cell): `(type (Box a) (Mk a))` at Int64 — the
+        GENERIC declaration re-emits and the erased construct site re-wraps. Renders `(: 21 W)`-style
+        with the bare nominal (`Box`).")
+  (input (do (type (Box a) (Mk a)) (def (main (: n Int64)) (Mk (* n 3))) (export main)))
+  (call main (: 7 Int64))
+  (output (: 21 Box))
+  (live-objects 0))
+
+(case "cdzw30 the cadenza backend round-trips a GENERIC two-variant sum — both arms, join-composed"
+  (doc "A generic `(Opt2 a)` built at runtime with the join solving the instantiation: both the payload
+        arm and the nullary arm round-trip with the instantiated type ascription.")
+  (input (do (type (Opt2 a) (S a) (N)) (def (main (: n Int64)) (if (> n 0) (S n) (N))) (export main)))
+  (call main (: 7 Int64))
+  (output (: (S 7) (Opt2 Int64)))
+  (call main (: -3 Int64))
+  (output (: (N unit) (Opt2 Int64)))
+  (live-objects 1))
+
+(case "cdzw31 the cadenza backend round-trips a GENERIC sum MATCHED with a payload binder"
+  (doc "The match face over the generic decl: construct + MatchSum over `(Opt2 Int64)` in one program —
+        decl re-emit, SumNew ascription, and M4a payload binders compose. n=7 → 14; n=-3 → -1.")
+  (input (do (type (Opt2 a) (S a) (N)) (def (f (: o (Opt2 Int64))) (match o ((S v) (* v 2)) ((N u) -1))) (def (main (: n Int64)) (f (if (> n 0) (S n) (N)))) (export main)))
+  (call main (: 7 Int64))
+  (output (: 14 Int64))
+  (call main (: -3 Int64))
+  (output (: -1 Int64)))
+
+(case "cdzw32 the cadenza backend round-trips a generic newtype with a COMPOUND payload matched back"
+  (doc "The compound-payload face: `(Mk (tuple n (+ n 1)))` over the generic Box, matched back with the
+        payload binder and projected — the erased-construct classifier + M4a + Proj compose. n=7 → 7.")
+  (input (do (type (Box a) (Mk a)) (def (main (: n Int64)) (let ((b (Mk (tuple n (+ n 1))))) (match b ((Mk t) (. t 0))))) (export main)))
+  (call main (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case "cdzw33 the cadenza backend round-trips a COMPOUND-INNER monomorphic newtype value"
+  (doc "The compound-inner construct face (was an ambiguous-site decline before the generic-decl era):
+        `(Mk (list n (+ n 1)))` over `(type LW (Mk (List Int64)))` returned whole — decl + construct
+        re-emit with the heap payload. `(live-objects 2)` = the reachable returned value.")
+  (input (do (type LW (Mk (List Int64))) (def (main (: n Int64)) (Mk (list n (+ n 1)))) (export main)))
+  (call main (: 4 Int64))
+  (output (: (list 4 5) LW))
+  (live-objects 2))
