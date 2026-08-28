@@ -1,0 +1,26 @@
+# cadenza-syntax-cedar — the Cedar authorization-policy surface, split into its own crate.
+#
+# The Cedar surface (`(cedar-policyset (cedar-policy …)…)`, mirroring Cedar's `pst`) is a projection of
+# the same arena the code surfaces use — data, not a program; no authorization engine. It lived in
+# `cadenza-syntax` behind a `cedar` feature, but its transitive tree (`cedar-policy` → stacker / psm /
+# chrono / lalrpop) is by far the heaviest thing the front-end pulls, and it is referenced ONLY by the
+# Format driver + convert's Format enum — never by the ML-embedding core. Splitting it out (with
+# `cedar-policy` moving here) keeps that big tree off the HOT compilation path: a targeted build of a
+# runner / reducer / grader that does not enable the `cadenza-syntax/cedar` feature never compiles it.
+#
+# Depends on `cadenza-syntax-core` (spans + arena read-helpers), NOT on the `cadenza-syntax` facade —
+# the facade re-exports this crate, so a dependency the other way would cycle. The non-Cedar `--to cedar`
+# fallback (render a program as `//`-comment ML) needs the ML printer, which is INJECTED as a fn arg
+# (`print(…, ml_print)`) rather than depended on, keeping this crate below the ML surface.
+[package]
+name = "cadenza-syntax-cedar"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cadenza-ast = { path = "../cadenza-ast" }
+cadenza-syntax-core = { path = "../cadenza-syntax-core" }
+# The Cedar policy parser + policy-syntax-tree (pst). We use only its syntax layer (PolicySet::from_str
+# -> pst -> Display); NO evaluation/authorization engine is pulled into meaning. The one heavy dep this
+# split isolates from the front-end's hot path.
+cedar-policy = { version = "4" }

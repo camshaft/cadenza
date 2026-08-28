@@ -1,0 +1,21 @@
+# cadenza-syntax-json — the JSON data-document surface, split into its own crate.
+#
+# A faithful JSON document (`(json-object …)`/`(json-array …)`/`(json-null)` + bare scalar leaves) is a
+# projection of the same arena the code surfaces use — data, not a program. Hand-rolled reader/printer,
+# so NO external parser dependency (unlike toml/cedar/markdown); the split is purely architectural —
+# one crate per syntax, exposing the uniform `read`/`print` (text↔binary-AST) contract for the
+# WIT/wasm-per-syntax goal. The ML surface EMBEDS `json{…}` sub-documents (the ML crate depends on this
+# one).
+#
+# Depends on `cadenza-syntax-core` (spans + arena read-helpers + literal + MAX_NESTING_DEPTH), NOT the
+# `cadenza-syntax` facade (which re-exports this crate → a dependency the other way would cycle). The
+# non-JSON `--to json` fallback (a program as a JSON string) needs the ML printer, INJECTED as a fn arg
+# (`print(…, ml_print)`) rather than depended on, keeping this crate below the ML surface.
+[package]
+name = "cadenza-syntax-json"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cadenza-ast = { path = "../cadenza-ast" }
+cadenza-syntax-core = { path = "../cadenza-syntax-core" }

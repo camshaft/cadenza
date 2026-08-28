@@ -280,15 +280,21 @@ pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>,
         // A JSON value arena prints back to JSON; a NON-JSON root (a bare program handed to `--to json`)
         // becomes a single JSON string over its ML rendering (see `json::print`), so `--to json` stays
         // total.
-        Format::Json => Ok(crate::json::print(arenas, opts.width).into_bytes()),
+        Format::Json => {
+            Ok(crate::json::print(arenas, opts.width, crate::printer::print).into_bytes())
+        }
         // A `(toml-document …)` arena prints back BYTE-EXACT (unmutated); a NON-TOML root becomes a
         // single `program = "<ml>"` key (see `toml_surface::print`), so `--to toml` stays total.
-        Format::Toml => Ok(crate::toml_surface::print(arenas, opts.width).into_bytes()),
+        Format::Toml => {
+            Ok(crate::toml_surface::print(arenas, opts.width, crate::printer::print).into_bytes())
+        }
         // A `(cedar-policyset …)` arena prints back to Cedar policy text (rebuilding a pst); a NON-Cedar
         // root becomes a `//`-comment block over its ML rendering (see `cedar::print`), so `--to cedar`
         // stays total.
         #[cfg(feature = "cedar")]
-        Format::Cedar => Ok(crate::cedar::print(arenas, opts.width).into_bytes()),
+        Format::Cedar => {
+            Ok(crate::cedar::print(arenas, opts.width, crate::printer::print).into_bytes())
+        }
         // Lean build (no `cedar` feature): the Cedar surface isn't compiled — a clean error, not a panic.
         #[cfg(not(feature = "cedar"))]
         Format::Cedar => Err(ConvertError(

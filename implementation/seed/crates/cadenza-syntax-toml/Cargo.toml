@@ -1,0 +1,24 @@
+# cadenza-syntax-toml — the TOML config-document surface, split into its own crate.
+#
+# A source-faithful TOML document (`(toml-document …)` — comments/whitespace/raw scalar spellings stored
+# as `Str`-leaf decor nodes) is a projection of the same arena the code surfaces use — data, not a
+# program. Isolates its `toml_edit` dependency out of the front-end so a consumer that doesn't parse TOML
+# doesn't compile it (the ML surface still EMBEDS `toml{…}` sub-documents — the ML crate depends on this
+# one — but a runner/reducer that never reads TOML won't).
+#
+# Depends on `cadenza-syntax-core` (spans + arena read-helpers + literal), NOT the `cadenza-syntax`
+# facade (which re-exports this crate → a dependency the other way would cycle). The non-TOML `--to toml`
+# fallback (a program as a `program = "<ml text>"` key) needs the ML printer, INJECTED as a fn arg
+# (`print(…, ml_print)`) rather than depended on, keeping this crate below the ML surface.
+[package]
+name = "cadenza-syntax-toml"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cadenza-ast = { path = "../cadenza-ast" }
+cadenza-syntax-core = { path = "../cadenza-syntax-core" }
+# The format-preserving TOML parser/encoder (the library Cargo uses to edit `Cargo.toml`). REFERENCE-only,
+# like pulldown-cmark/cedar-policy; the durable artifact is the decor-in-arena node vocabulary + byte-exact
+# round-trip, not this parser. Lean feature set — only `parse`+`display`.
+toml_edit = { version = "0.22", default-features = false, features = ["parse", "display"] }

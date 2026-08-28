@@ -35,10 +35,10 @@
 //! `Decimal`), and a document is never type-checked, so `Int64`/`Float64` bounds never apply — a huge
 //! integer or a `1e400` survives as a leaf where it would overflow/reject as a typed value.
 
-use crate::arena_read::{child_tail, list_items};
-use crate::ast::{Arenas, Builder, Leaf, Radix, StructId};
-use crate::span::Span;
-use crate::spans::{FileId, SpanTable};
+use cadenza_syntax_core::arena_read::{child_tail, list_items};
+use cadenza_syntax_core::ast::{Arenas, Builder, Leaf, Radix, StructId};
+use cadenza_syntax_core::span::Span;
+use cadenza_syntax_core::spans::{FileId, SpanTable};
 
 /// A JSON parse failure, with a human-readable message (mirrors `sexpr::ReadError`). The message ends
 /// in `at byte N` where a position is meaningful, so a caller holding the source can turn it into a
@@ -51,7 +51,7 @@ pub struct ReadError(pub String);
 /// uses (`sexpr::MAX_NESTING_DEPTH`): recursive descent uses one native stack frame per level, so
 /// unbounded depth would overflow the stack on pathologically deep (but syntactically valid) input,
 /// which matters most for `cdz-wasm`'s ~1 MB stack parsing UNTRUSTED browser input.
-pub const MAX_NESTING_DEPTH: u32 = crate::sexpr::MAX_NESTING_DEPTH;
+pub const MAX_NESTING_DEPTH: u32 = cadenza_syntax_core::MAX_NESTING_DEPTH;
 
 /// Parse JSON `src` into a value arena (the root is the top-level value directly), or a [`ReadError`]
 /// on malformed input. Total-with-refusal: unlike CommonMark, JSON can fail, so a bad document is a
@@ -340,11 +340,11 @@ impl<'b, 's, 'c> Json<'b, 's, 'c> {
         let tok = &self.src[start..end];
         let span = Span::new(start, end);
         if is_float {
-            let d = crate::literal::parse_float(tok)
+            let d = cadenza_syntax_core::literal::parse_float(tok)
                 .ok_or_else(|| ReadError(format!("invalid number {tok:?} at byte {start}")))?;
             Ok(self.mk_atom_leaf(Leaf::Float(d), span))
         } else {
-            let (value, _radix) = crate::literal::parse_int(tok)
+            let (value, _radix) = cadenza_syntax_core::literal::parse_int(tok)
                 .ok_or_else(|| ReadError(format!("invalid number {tok:?} at byte {start}")))?;
             // A JSON integer is always base-10.
             Ok(self.mk_atom_leaf(
@@ -594,13 +594,18 @@ const INDENT_STEP: usize = 2;
 /// reflow. A NON-JSON root (e.g. a bare program handed to `cdz convert prog.cdz --to json`) is
 /// rendered as a single JSON STRING holding the program's ML rendering, so `--to json` stays total and
 /// meaningful (a program is not JSON data, but it is a value that can be carried as a string).
-pub fn print(arenas: &Arenas, width: usize) -> String {
+///
+/// `ml_print` renders an arbitrary arena as ML text — INJECTED (not called directly) so this crate stays
+/// BELOW the ML surface (the facade re-exports it, so a dependency on the ML printer would cycle). Only
+/// the non-JSON fallback path invokes it; a JSON-node root never touches it. The facade (and the ML
+/// printer, when embedding a `json{…}` sub-document) pass `cadenza_syntax::printer::print`.
+pub fn print(arenas: &Arenas, width: usize, ml_print: fn(&Arenas, usize) -> String) -> String {
     let mut out = String::new();
     if is_json_node(arenas, arenas.root) {
         print_value(arenas, arenas.root, 0, &mut out);
     } else {
         // Fallback: carry the program's ML text as a JSON string.
-        let ml = crate::printer::print(arenas, width);
+        let ml = ml_print(arenas, width);
         out.push_str(&json_string(&ml));
     }
     out.push('\n');
@@ -616,7 +621,7 @@ fn is_json_node(a: &Arenas, id: StructId) -> bool {
         None => matches!(
             a.get(id),
             // A bare scalar atom is a valid top-level JSON value.
-            crate::ast::Struct::Atom(_)
+            cadenza_syntax_core::ast::Struct::Atom(_)
         ),
     }
 }
@@ -689,21 +694,21 @@ fn print_array(a: &Arenas, id: StructId, indent: usize, out: &mut String) {
 /// emitting invalid JSON.
 fn print_scalar(a: &Arenas, id: StructId, out: &mut String) {
     match a.get(id) {
-        crate::ast::Struct::Atom(l) => match a.leaf(*l) {
+        cadenza_syntax_core::ast::Struct::Atom(l) => match a.leaf(*l) {
             Leaf::Str(s) => out.push_str(&json_string(s)),
             Leaf::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
             Leaf::Int { value, .. } => {
                 // Always base-10 for JSON, regardless of the leaf's recorded radix.
-                out.push_str(&crate::literal::render_int(value, Radix::Dec));
+                out.push_str(&cadenza_syntax_core::literal::render_int(value, Radix::Dec));
             }
-            Leaf::Float(d) => out.push_str(&crate::literal::render_decimal(d)),
+            Leaf::Float(d) => out.push_str(&cadenza_syntax_core::literal::render_decimal(d)),
             other => {
                 // Not a JSON scalar (a foreign leaf) — carry its rendered text as a string.
                 out.push_str(&json_string(&format!("{other:?}")));
             }
         },
         // A bare List with an unrecognized head reaching here — carry a placeholder rather than crash.
-        crate::ast::Struct::List(_) => out.push_str("null"),
+        cadenza_syntax_core::ast::Struct::List(_) => out.push_str("null"),
     }
 }
 
@@ -747,7 +752,7 @@ mod tests {
     /// source is NOT required — but the TREE is stable.
     fn assert_idempotent(json: &str) {
         let a1 = read(json).expect("valid JSON");
-        let printed = print(&a1, 100);
+        let printed = print(&a1, 100, |_, _| String::new());
         let a2 = read(&printed).expect("reprinted JSON parses");
         assert!(
             a1.structurally_eq(&a2),
@@ -779,7 +784,7 @@ mod tests {
         // Exactness: the parsed int is the true BigInt value.
         let a = read("123456789012345678901234567890").unwrap();
         match a.get(a.root) {
-            crate::ast::Struct::Atom(l) => match a.leaf(*l) {
+            cadenza_syntax_core::ast::Struct::Atom(l) => match a.leaf(*l) {
                 Leaf::Int { value, .. } => {
                     assert_eq!(value.to_decimal_string(), "123456789012345678901234567890")
                 }
@@ -902,28 +907,19 @@ mod tests {
         // Through the canonical binary form and back — the arena survives.
         let src = "{\"a\": [1, 2, {\"b\": null}], \"c\": \"x\"}";
         let a1 = read(src).unwrap();
-        let bin = crate::codec::encode(&a1);
-        let a2 = crate::codec::decode(&bin).expect("decodes");
+        let bin = cadenza_ast::codec::encode(&a1);
+        let a2 = cadenza_ast::codec::decode(&bin).expect("decodes");
         assert!(a1.structurally_eq(&a2));
         // And printing the decoded arena re-reads to the same tree.
-        let printed = print(&a2, 100);
+        let printed = print(&a2, 100, |_, _| String::new());
         let a3 = read(&printed).unwrap();
         assert!(a1.structurally_eq(&a3));
     }
 
-    #[test]
-    fn non_json_root_falls_back_to_json_string() {
-        // `cdz convert prog.cdz --to json` hands a bare program arena to print; it becomes a JSON
-        // string carrying the ML text.
-        let prog = crate::sexpr::read("(+ 1 2)").unwrap();
-        let json = print(&prog, 100);
-        // It is valid JSON (a string), and re-reads as a Str leaf.
-        let back = read(&json).expect("fallback output is valid JSON");
-        assert!(
-            back.as_str(back.root).is_some(),
-            "fallback yields a JSON string, got {json}"
-        );
-    }
+    // NOTE: `non_json_root_falls_back_to_json_string` moved to `cadenza-syntax`'s in-crate
+    // `surface_tests` — it exercises the ML-printer fallback (a non-JSON root → a JSON string carrying
+    // the ML text), which needs the ML printer + the sexpr reader, neither of which this
+    // below-the-surface crate may depend on.
 
     #[test]
     fn span_table_is_total_and_ordered() {
@@ -1043,9 +1039,9 @@ mod tests {
                 let depth = 1 + rng.below(4);
                 let src = gen_json(&mut rng, depth);
                 let Ok(a1) = read(&src) else { continue };
-                let bin = crate::codec::encode(&a1);
-                let a2 =
-                    crate::codec::decode(&bin).expect("a JSON arena decodes from its own encoding");
+                let bin = cadenza_ast::codec::encode(&a1);
+                let a2 = cadenza_ast::codec::decode(&bin)
+                    .expect("a JSON arena decodes from its own encoding");
                 assert!(
                     a1.structurally_eq(&a2),
                     "JSON arena survives binary round-trip for {src}"
@@ -1053,11 +1049,12 @@ mod tests {
                 // Determinism: re-encoding the decoded arena reproduces the exact bytes.
                 assert_eq!(
                     bin,
-                    crate::codec::encode(&a2),
+                    cadenza_ast::codec::encode(&a2),
                     "binary encode is deterministic for {src}"
                 );
                 // And the decoded arena prints back to a tree that re-reads identically.
-                let a3 = read(&print(&a2, 100)).expect("decoded-then-printed JSON re-reads");
+                let a3 = read(&print(&a2, 100, |_, _| String::new()))
+                    .expect("decoded-then-printed JSON re-reads");
                 assert!(
                     a1.structurally_eq(&a3),
                     "JSON survives binary → print → re-read for {src}"
@@ -1140,7 +1137,7 @@ mod tests {
             );
         }
         fn walk(a: &Arenas, id: StructId) {
-            if let crate::ast::Struct::List(kids) = a.get(id) {
+            if let cadenza_syntax_core::ast::Struct::List(kids) = a.get(id) {
                 for &c in kids {
                     assert!(
                         (c.0 as usize) < a.structure.len(),

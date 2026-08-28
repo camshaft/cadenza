@@ -1925,10 +1925,14 @@ pub mod driver {
             Format::Ml => Ok(printer::print(arena, width)),
             Format::Sexpr => Ok(sexpr::print(arena)),
             Format::Markdown => Ok(crate::markdown::print(arena, width)),
-            Format::Json => Ok(crate::json::print(arena, width)),
-            Format::Toml => Ok(crate::toml_surface::print(arena, width)),
+            Format::Json => Ok(crate::json::print(arena, width, crate::printer::print)),
+            Format::Toml => Ok(crate::toml_surface::print(
+                arena,
+                width,
+                crate::printer::print,
+            )),
             #[cfg(feature = "cedar")]
-            Format::Cedar => Ok(crate::cedar::print(arena, width)),
+            Format::Cedar => Ok(crate::cedar::print(arena, width, crate::printer::print)),
             // Lean build (no `cedar` feature): the Cedar surface isn't compiled — a clean error, not a panic.
             #[cfg(not(feature = "cedar"))]
             Format::Cedar => Err(

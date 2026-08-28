@@ -20,7 +20,10 @@ name = "cdz"
 path = "src/main.rs"
 
 [dependencies]
-cadenza-syntax = { path = "../cadenza-syntax" }
+# `cedar` is enabled here because the `cdz convert` front-end offers the Cedar surface (`--from/--to
+# cedar`). It is NO LONGER a cadenza-syntax default, so runner/reducer/grader consumers stay lean; the
+# heavy `cedar-policy` tree is pulled only into this convert bin.
+cadenza-syntax = { path = "../cadenza-syntax", features = ["cedar"] }
 # Arbitrary-precision integer for building `cadenza-syntax` `Leaf::Int` nodes — used by the
 # `delegate-compile` path to construct the sidecar QUERY request as a binary-AST value (a `(query
 # type-at <node>)` tree) via the front-end's Builder, byte-identical to `rcdzc::sidecar::encode`. Same

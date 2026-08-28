@@ -99,7 +99,6 @@ impl SpanTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sexpr;
 
     #[test]
     fn remap_rekeys_drops_unreachable_and_preserves_file() {
@@ -149,31 +148,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn node_at_offset_finds_the_innermost_node() {
-        // `(+ a b)` — hovering the `a` returns the `a` leaf, NOT the enclosing `(+ a b)` list, because
-        // the innermost (smallest) containing span wins.
-        let src = "(+ a b)";
-        let (arenas, spans) = sexpr::read_all_spanned(src).expect("parse");
-        let a_off = src.find('a').unwrap();
-        let node = spans.node_at_offset(a_off).expect("a node at `a`");
-        assert_eq!(
-            arenas.as_name(node),
-            Some("a"),
-            "innermost node under `a` is the `a` leaf"
-        );
-
-        // An offset on the `+` head returns the `+` leaf, not the list.
-        let plus_off = src.find('+').unwrap();
-        let head = spans.node_at_offset(plus_off).expect("a node at `+`");
-        assert_eq!(arenas.as_name(head), Some("+"));
-    }
-
-    #[test]
-    fn node_at_offset_past_the_source_is_none() {
-        let (_, spans) = sexpr::read_all_spanned("(+ 1 2)").expect("parse");
-        assert_eq!(spans.node_at_offset(9999), None);
-    }
+    // NOTE: the two `node_at_offset` tests that drove input through `sexpr::read_all_spanned` moved to
+    // `cadenza-syntax/tests/spans_surface.rs` — this crate (`cadenza-syntax-core`) is BELOW every surface
+    // reader, so a span test that needs a reader lives in the facade where both are available. The
+    // hand-built table tests below stay here (no reader dependency).
 
     #[test]
     fn node_at_offset_prefers_the_smallest_containing_span() {
@@ -284,30 +262,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn remap_then_resolve_round_trips_a_cursor_through_canonicalization() {
-        // End-to-end pairing with `canon::canonicalize_with_map` (the id_map producer): a span table
-        // built by the NON-canonical ML reader, remapped through the canonical id_map, must resolve a
-        // cursor to the SAME source node under the canonical ids — the ids `codec::encode` (and hence the
-        // compiler) uses. This is the `ml-parser-node-order` fix exercised through the whole chain.
-        let parsed = crate::parser::read_ml("def add(a, b) = a + b");
-        let (canon, id_map) = crate::canon::canonicalize_with_map(&parsed.arenas);
-        let remapped = parsed.spans.remap(&id_map, canon.structure.len());
-        // The body `a` is at byte 16 (`… = a + b`). Resolving that offset in the REMAPPED table yields a
-        // canonical id whose node is the `a` atom — proving remap re-keyed the span to the canonical id.
-        let body_a = "def add(a, b) = a + b".rfind('a').unwrap(); // byte 16
-        let id = remapped
-            .node_at_offset(body_a)
-            .expect("a canonical node contains the body `a` offset");
-        assert_eq!(
-            canon.as_name(id),
-            Some("a"),
-            "the cursor at the body `a` resolves to an `a` atom in the canonical arena"
-        );
-        // The remapped table is sized to the canonical arena (1:1), and preserves the file id.
-        assert_eq!(remapped.len(), canon.structure.len());
-        assert_eq!(remapped.file(), parsed.spans.file());
-    }
+    // NOTE: `remap_then_resolve_round_trips_a_cursor_through_canonicalization` moved to
+    // `cadenza-syntax/tests/spans_surface.rs` — it pairs the span remap with the ML reader +
+    // `canon::canonicalize_with_map`, neither of which this below-the-surface crate may depend on.
 
     #[test]
     fn remap_invariants_hold_over_generated_tables_and_id_maps() {

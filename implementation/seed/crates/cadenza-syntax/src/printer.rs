@@ -2392,8 +2392,8 @@ impl<'a> Printer<'a> {
     fn print_embedded(&mut self, grammar: &str, subtree: StructId) -> bool {
         let sub = crate::query::Tree::from_arena(self.a, subtree).to_arena();
         let body = match grammar {
-            "json" => crate::json::print(&sub, self.width),
-            "toml" => crate::toml_surface::print(&sub, self.width),
+            "json" => crate::json::print(&sub, self.width, crate::printer::print),
+            "toml" => crate::toml_surface::print(&sub, self.width, crate::printer::print),
             _ => return false,
         };
         // `grammar{ <body> }` — a single space inside the braces so it re-lexes as the region (the reader
