@@ -1,0 +1,4969 @@
+{
+  "count": 410,
+  "emitted": 403,
+  "deferred": 7,
+  "cases": [
+    {
+      "dir": "0001-adhocpolymorphism",
+      "file": "src/content/chapters/AdHocPolymorphism.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0002-adhocpolymorphism",
+      "file": "src/content/chapters/AdHocPolymorphism.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0003-adhocpolymorphism",
+      "file": "src/content/chapters/AdHocPolymorphism.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0004-adhocpolymorphism",
+      "file": "src/content/chapters/AdHocPolymorphism.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0005-adhocpolymorphism",
+      "file": "src/content/chapters/AdHocPolymorphism.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0006-adhocpolymorphism",
+      "file": "src/content/chapters/AdHocPolymorphism.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0007-adhocpolymorphism",
+      "file": "src/content/chapters/AdHocPolymorphism.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0008-basics",
+      "file": "src/content/chapters/Basics.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0009-basics",
+      "file": "src/content/chapters/Basics.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0010-basics",
+      "file": "src/content/chapters/Basics.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0011-basics",
+      "file": "src/content/chapters/Basics.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0012-basics",
+      "file": "src/content/chapters/Basics.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0013-basics",
+      "file": "src/content/chapters/Basics.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0014-basics",
+      "file": "src/content/chapters/Basics.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0015-basics",
+      "file": "src/content/chapters/Basics.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0016-basics",
+      "file": "src/content/chapters/Basics.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0017-binarymatching",
+      "file": "src/content/chapters/BinaryMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0018-binarymatching",
+      "file": "src/content/chapters/BinaryMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0019-binarymatching",
+      "file": "src/content/chapters/BinaryMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0020-binarymatching",
+      "file": "src/content/chapters/BinaryMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0021-binarymatching",
+      "file": "src/content/chapters/BinaryMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0022-binarymatching",
+      "file": "src/content/chapters/BinaryMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0023-binarymatching",
+      "file": "src/content/chapters/BinaryMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0024-binarymatching",
+      "file": "src/content/chapters/BinaryMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0025-binarymatching",
+      "file": "src/content/chapters/BinaryMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0026-binarymatching",
+      "file": "src/content/chapters/BinaryMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0027-binarymatching",
+      "file": "src/content/chapters/BinaryMatching.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0028-binarymatching",
+      "file": "src/content/chapters/BinaryMatching.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0029-bytes",
+      "file": "src/content/chapters/Bytes.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0030-bytes",
+      "file": "src/content/chapters/Bytes.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0031-bytes",
+      "file": "src/content/chapters/Bytes.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0032-bytes",
+      "file": "src/content/chapters/Bytes.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0033-bytes",
+      "file": "src/content/chapters/Bytes.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0034-bytes",
+      "file": "src/content/chapters/Bytes.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0035-bytes",
+      "file": "src/content/chapters/Bytes.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0036-bytes",
+      "file": "src/content/chapters/Bytes.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0037-bytes",
+      "file": "src/content/chapters/Bytes.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0038-constparameters",
+      "file": "src/content/chapters/ConstParameters.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0039-constparameters",
+      "file": "src/content/chapters/ConstParameters.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0040-constparameters",
+      "file": "src/content/chapters/ConstParameters.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0041-constparameters",
+      "file": "src/content/chapters/ConstParameters.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0042-constparameters",
+      "file": "src/content/chapters/ConstParameters.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0043-controlflow",
+      "file": "src/content/chapters/ControlFlow.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0044-controlflow",
+      "file": "src/content/chapters/ControlFlow.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0045-controlflow",
+      "file": "src/content/chapters/ControlFlow.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0046-controlflow",
+      "file": "src/content/chapters/ControlFlow.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0047-controlflow",
+      "file": "src/content/chapters/ControlFlow.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0048-controlflow",
+      "file": "src/content/chapters/ControlFlow.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0049-controlflow",
+      "file": "src/content/chapters/ControlFlow.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0050-data",
+      "file": "src/content/chapters/Data.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0051-data",
+      "file": "src/content/chapters/Data.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0052-data",
+      "file": "src/content/chapters/Data.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0053-data",
+      "file": "src/content/chapters/Data.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0054-data",
+      "file": "src/content/chapters/Data.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0055-data",
+      "file": "src/content/chapters/Data.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0056-data",
+      "file": "src/content/chapters/Data.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0057-data",
+      "file": "src/content/chapters/Data.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0058-data",
+      "file": "src/content/chapters/Data.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0059-data",
+      "file": "src/content/chapters/Data.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0060-designbycontract",
+      "file": "src/content/chapters/DesignByContract.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0061-designbycontract",
+      "file": "src/content/chapters/DesignByContract.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0062-designbycontract",
+      "file": "src/content/chapters/DesignByContract.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0063-designbycontract",
+      "file": "src/content/chapters/DesignByContract.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0064-designbycontract",
+      "file": "src/content/chapters/DesignByContract.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0065-designbycontract",
+      "file": "src/content/chapters/DesignByContract.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0066-designbycontract",
+      "file": "src/content/chapters/DesignByContract.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr"
+      ]
+    },
+    {
+      "dir": "0067-designbycontract",
+      "file": "src/content/chapters/DesignByContract.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr"
+      ]
+    },
+    {
+      "dir": "0068-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0069-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0070-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0071-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0072-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0073-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0074-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0075-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0076-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0077-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0078-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0079-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0080-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0081-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0082-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0083-effects",
+      "file": "src/content/chapters/Effects.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0084-errors",
+      "file": "src/content/chapters/Errors.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0085-errors",
+      "file": "src/content/chapters/Errors.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0086-errors",
+      "file": "src/content/chapters/Errors.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0087-errors",
+      "file": "src/content/chapters/Errors.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0088-errors",
+      "file": "src/content/chapters/Errors.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0089-errors",
+      "file": "src/content/chapters/Errors.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0090-errors",
+      "file": "src/content/chapters/Errors.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0091-errors",
+      "file": "src/content/chapters/Errors.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0092-errors",
+      "file": "src/content/chapters/Errors.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0093-errors",
+      "file": "src/content/chapters/Errors.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0094-errors",
+      "file": "src/content/chapters/Errors.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0095-floats",
+      "file": "src/content/chapters/Floats.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0096-floats",
+      "file": "src/content/chapters/Floats.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0097-floats",
+      "file": "src/content/chapters/Floats.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0098-floats",
+      "file": "src/content/chapters/Floats.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0099-floats",
+      "file": "src/content/chapters/Floats.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0100-floats",
+      "file": "src/content/chapters/Floats.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0101-floats",
+      "file": "src/content/chapters/Floats.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0102-floats",
+      "file": "src/content/chapters/Floats.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0103-floats",
+      "file": "src/content/chapters/Floats.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0104-floats",
+      "file": "src/content/chapters/Floats.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0105-floats",
+      "file": "src/content/chapters/Floats.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0106-floats",
+      "file": "src/content/chapters/Floats.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0107-functions",
+      "file": "src/content/chapters/Functions.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0108-functions",
+      "file": "src/content/chapters/Functions.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0109-functions",
+      "file": "src/content/chapters/Functions.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0110-functions",
+      "file": "src/content/chapters/Functions.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0111-functions",
+      "file": "src/content/chapters/Functions.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0112-functions",
+      "file": "src/content/chapters/Functions.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0113-functions",
+      "file": "src/content/chapters/Functions.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0114-functions",
+      "file": "src/content/chapters/Functions.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0115-irrefutablepatterns",
+      "file": "src/content/chapters/IrrefutablePatterns.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0116-irrefutablepatterns",
+      "file": "src/content/chapters/IrrefutablePatterns.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0117-irrefutablepatterns",
+      "file": "src/content/chapters/IrrefutablePatterns.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0118-irrefutablepatterns",
+      "file": "src/content/chapters/IrrefutablePatterns.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0119-irrefutablepatterns",
+      "file": "src/content/chapters/IrrefutablePatterns.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0120-irrefutablepatterns",
+      "file": "src/content/chapters/IrrefutablePatterns.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0121-irrefutablepatterns",
+      "file": "src/content/chapters/IrrefutablePatterns.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0122-irrefutablepatterns",
+      "file": "src/content/chapters/IrrefutablePatterns.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0123-irrefutablepatterns",
+      "file": "src/content/chapters/IrrefutablePatterns.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0124-irrefutablepatterns",
+      "file": "src/content/chapters/IrrefutablePatterns.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0125-iteration",
+      "file": "src/content/chapters/Iteration.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0126-iteration",
+      "file": "src/content/chapters/Iteration.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0127-iteration",
+      "file": "src/content/chapters/Iteration.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0128-iteration",
+      "file": "src/content/chapters/Iteration.tsx",
+      "kind": "test-mode",
+      "graded": false,
+      "expectKind": "value",
+      "deferred": true,
+      "reason": "mode=test @test examples run via the @test-export driver (v2 shred kind)"
+    },
+    {
+      "dir": "0129-iterators",
+      "file": "src/content/chapters/Iterators.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0130-iterators",
+      "file": "src/content/chapters/Iterators.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0131-iterators",
+      "file": "src/content/chapters/Iterators.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0132-iterators",
+      "file": "src/content/chapters/Iterators.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0133-iterators",
+      "file": "src/content/chapters/Iterators.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0134-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0135-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0136-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0137-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0138-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0139-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0140-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0141-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0142-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0143-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0144-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0145-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0146-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0147-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0148-lists",
+      "file": "src/content/chapters/Lists.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0149-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0150-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0151-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0152-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0153-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0154-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0155-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0156-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0157-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0158-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0159-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0160-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0161-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0162-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0163-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0164-mapssets",
+      "file": "src/content/chapters/MapsSets.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0165-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0166-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0167-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0168-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0169-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0170-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0171-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0172-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0173-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0174-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0175-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0176-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0177-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0178-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0179-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0180-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0181-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0182-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0183-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0184-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0185-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0186-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0187-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0188-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0189-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0190-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0191-metaprogramming",
+      "file": "src/content/chapters/Metaprogramming.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0192-modules",
+      "file": "src/content/chapters/Modules.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0193-modules",
+      "file": "src/content/chapters/Modules.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0194-modules",
+      "file": "src/content/chapters/Modules.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0195-modules",
+      "file": "src/content/chapters/Modules.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0196-modules",
+      "file": "src/content/chapters/Modules.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr"
+      ]
+    },
+    {
+      "dir": "0197-modules",
+      "file": "src/content/chapters/Modules.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0198-modules",
+      "file": "src/content/chapters/Modules.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0199-numbers",
+      "file": "src/content/chapters/Numbers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0200-numbers",
+      "file": "src/content/chapters/Numbers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0201-numbers",
+      "file": "src/content/chapters/Numbers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0202-numbers",
+      "file": "src/content/chapters/Numbers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0203-numbers",
+      "file": "src/content/chapters/Numbers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0204-numbers",
+      "file": "src/content/chapters/Numbers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0205-numbers",
+      "file": "src/content/chapters/Numbers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0206-numbers",
+      "file": "src/content/chapters/Numbers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0207-numbers",
+      "file": "src/content/chapters/Numbers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0208-numbers",
+      "file": "src/content/chapters/Numbers.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0209-numbers",
+      "file": "src/content/chapters/Numbers.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0210-opaquetypes",
+      "file": "src/content/chapters/OpaqueTypes.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0211-opaquetypes",
+      "file": "src/content/chapters/OpaqueTypes.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0212-opaquetypes",
+      "file": "src/content/chapters/OpaqueTypes.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0213-opaquetypes",
+      "file": "src/content/chapters/OpaqueTypes.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0214-opaquetypes",
+      "file": "src/content/chapters/OpaqueTypes.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0215-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0216-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0217-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0218-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0219-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0220-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0221-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0222-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0223-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0224-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0225-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0226-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0227-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0228-ordering",
+      "file": "src/content/chapters/Ordering.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0229-patternmatching",
+      "file": "src/content/chapters/PatternMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0230-patternmatching",
+      "file": "src/content/chapters/PatternMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0231-patternmatching",
+      "file": "src/content/chapters/PatternMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0232-patternmatching",
+      "file": "src/content/chapters/PatternMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0233-patternmatching",
+      "file": "src/content/chapters/PatternMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0234-patternmatching",
+      "file": "src/content/chapters/PatternMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0235-patternmatching",
+      "file": "src/content/chapters/PatternMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0236-patternmatching",
+      "file": "src/content/chapters/PatternMatching.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0237-patternmatching",
+      "file": "src/content/chapters/PatternMatching.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0238-patternmatching",
+      "file": "src/content/chapters/PatternMatching.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0239-platformexecution",
+      "file": "src/content/chapters/PlatformExecution.tsx",
+      "kind": "multi-file",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr"
+      ],
+      "multiFile": true,
+      "entryName": "main",
+      "peers": [
+        {
+          "name": "events",
+          "surface": "sexpr"
+        }
+      ]
+    },
+    {
+      "dir": "0240-platformstate",
+      "file": "src/content/chapters/PlatformState.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0241-propertytesting",
+      "file": "src/content/chapters/PropertyTesting.tsx",
+      "kind": "test-mode",
+      "graded": false,
+      "expectKind": "value",
+      "deferred": true,
+      "reason": "mode=test @test examples run via the @test-export driver (v2 shred kind)"
+    },
+    {
+      "dir": "0242-propertytesting",
+      "file": "src/content/chapters/PropertyTesting.tsx",
+      "kind": "test-mode",
+      "graded": false,
+      "expectKind": "error",
+      "deferred": true,
+      "reason": "mode=test @test examples run via the @test-export driver (v2 shred kind)"
+    },
+    {
+      "dir": "0243-propertytesting",
+      "file": "src/content/chapters/PropertyTesting.tsx",
+      "kind": "test-mode",
+      "graded": false,
+      "expectKind": "value",
+      "deferred": true,
+      "reason": "mode=test @test examples run via the @test-export driver (v2 shred kind)"
+    },
+    {
+      "dir": "0244-propertytesting",
+      "file": "src/content/chapters/PropertyTesting.tsx",
+      "kind": "test-mode",
+      "graded": false,
+      "expectKind": "value",
+      "deferred": true,
+      "reason": "mode=test @test examples run via the @test-export driver (v2 shred kind)"
+    },
+    {
+      "dir": "0245-propertytesting",
+      "file": "src/content/chapters/PropertyTesting.tsx",
+      "kind": "test-mode",
+      "graded": false,
+      "expectKind": "error",
+      "deferred": true,
+      "reason": "mode=test @test examples run via the @test-export driver (v2 shred kind)"
+    },
+    {
+      "dir": "0246-propertytesting",
+      "file": "src/content/chapters/PropertyTesting.tsx",
+      "kind": "test-mode",
+      "graded": false,
+      "expectKind": "error",
+      "deferred": true,
+      "reason": "mode=test @test examples run via the @test-export driver (v2 shred kind)"
+    },
+    {
+      "dir": "0247-propertytesting",
+      "file": "src/content/chapters/PropertyTesting.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0248-propertytesting",
+      "file": "src/content/chapters/PropertyTesting.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0249-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0250-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0251-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0252-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0253-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0254-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0255-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0256-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0257-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0258-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0259-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0260-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0261-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0262-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0263-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0264-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0265-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0266-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0267-rationals",
+      "file": "src/content/chapters/Rationals.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0268-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0269-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0270-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0271-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0272-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0273-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0274-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0275-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0276-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0277-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0278-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0279-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0280-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0281-recordstuples",
+      "file": "src/content/chapters/RecordsTuples.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0282-sizedintegers",
+      "file": "src/content/chapters/SizedIntegers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0283-sizedintegers",
+      "file": "src/content/chapters/SizedIntegers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0284-sizedintegers",
+      "file": "src/content/chapters/SizedIntegers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0285-sizedintegers",
+      "file": "src/content/chapters/SizedIntegers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0286-sizedintegers",
+      "file": "src/content/chapters/SizedIntegers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0287-sizedintegers",
+      "file": "src/content/chapters/SizedIntegers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0288-sizedintegers",
+      "file": "src/content/chapters/SizedIntegers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0289-sizedintegers",
+      "file": "src/content/chapters/SizedIntegers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0290-sizedintegers",
+      "file": "src/content/chapters/SizedIntegers.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0291-sizedintegers",
+      "file": "src/content/chapters/SizedIntegers.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0292-sizedintegers",
+      "file": "src/content/chapters/SizedIntegers.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0293-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0294-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0295-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0296-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0297-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0298-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0299-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0300-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0301-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0302-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0303-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0304-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0305-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0306-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0307-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0308-strings",
+      "file": "src/content/chapters/Strings.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0309-symbols",
+      "file": "src/content/chapters/Symbols.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0310-symbols",
+      "file": "src/content/chapters/Symbols.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0311-symbols",
+      "file": "src/content/chapters/Symbols.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0312-symbols",
+      "file": "src/content/chapters/Symbols.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0313-symbols",
+      "file": "src/content/chapters/Symbols.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0314-typesasvalues",
+      "file": "src/content/chapters/TypesAsValues.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0315-typesasvalues",
+      "file": "src/content/chapters/TypesAsValues.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0316-typesasvalues",
+      "file": "src/content/chapters/TypesAsValues.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0317-typesasvalues",
+      "file": "src/content/chapters/TypesAsValues.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0318-typesasvalues",
+      "file": "src/content/chapters/TypesAsValues.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0319-typesasvalues",
+      "file": "src/content/chapters/TypesAsValues.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0320-typesasvalues",
+      "file": "src/content/chapters/TypesAsValues.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0321-typesasvalues",
+      "file": "src/content/chapters/TypesAsValues.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0322-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0323-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0324-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0325-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0326-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0327-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0328-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0329-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0330-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0331-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0332-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0333-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0334-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0335-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0336-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0337-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0338-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0339-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0340-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0341-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0342-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0343-units",
+      "file": "src/content/chapters/Units.tsx",
+      "kind": "exercise",
+      "graded": true,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0344-welcome",
+      "file": "src/content/chapters/Welcome.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0345-welcome",
+      "file": "src/content/chapters/Welcome.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0346-whatsnext",
+      "file": "src/content/chapters/WhatsNext.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0347-writingareducer",
+      "file": "src/content/chapters/WritingAReducer.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "ml",
+      "surfaces": [
+        "ml",
+        "sexpr"
+      ]
+    },
+    {
+      "dir": "0348-writingareducer",
+      "file": "src/content/chapters/WritingAReducer.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "ml",
+      "surfaces": [
+        "ml",
+        "sexpr"
+      ]
+    },
+    {
+      "dir": "0349-writingareducer",
+      "file": "src/content/chapters/WritingAReducer.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "ml",
+      "surfaces": [
+        "ml",
+        "sexpr"
+      ]
+    },
+    {
+      "dir": "0350-writingareducer",
+      "file": "src/content/chapters/WritingAReducer.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "ml",
+      "surfaces": [
+        "ml",
+        "sexpr"
+      ]
+    },
+    {
+      "dir": "0351-homepage",
+      "file": "src/components/HomePage.tsx",
+      "kind": "runnable",
+      "graded": false,
+      "expectKind": "value",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0352-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "hello-arithmetic",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0353-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "recursive-sum",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0354-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "pattern-matching",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0355-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "option-sum-types",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0356-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "records",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0357-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "record-patterns",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0358-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "nested-record-patterns",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0359-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "variant-nested-record-patterns",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0360-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "tuple",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0361-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "tuple-split-concat",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0362-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "lists",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0363-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "list-update-functional",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0364-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "expression-interpreter",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0365-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "collatz-orbit",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0366-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "function-composition",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0367-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "higher-order-apply-n",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0368-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "memoized-fibonacci",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0369-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "frequency-count",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0370-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "map-swap-take-inventory",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0371-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "bytes-map-key",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0372-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "symbol-keyed-map",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0373-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "byte-string-literal",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0374-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "value-encode-canonical-bytes",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0375-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "value-encode-determinism",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0376-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "value-encode-roundtrip",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0377-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "exact-rational-arithmetic",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0378-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "rational-parts",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0379-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "rational-floor-ceil",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0380-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "float-rounding-drift",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0381-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "gcd-lcm-euclid",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0382-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "set-algebra",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0383-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "set-intersection-mutual",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0384-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "rpn-calculator",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0385-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "count-primes",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0386-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "rule-110",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0387-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "data-pipeline",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0388-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "matrix-transpose",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0389-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "tower-of-hanoi",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0390-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "population-count",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0391-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "run-length-encoding",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0392-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "quicksort",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0393-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "binary-search",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0394-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "binary-search-tree",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0395-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "palindrome-check",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0396-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "count-vowels",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0397-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "caesar-cipher-char",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0398-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "unicode-nfc-normalization",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0399-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "string-slice-date-fields",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0400-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "integer-square-root",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0401-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "mutual-recursion",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0402-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "ackermann",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0403-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "n-queens",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0404-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "reverse-a-list",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0405-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "stack-via-prepend",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0406-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "metaprogramming-quote-eval",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0407-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "effects-handlers-stateful",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0408-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "iterator-pipeline",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0409-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": true,
+      "expectKind": "value",
+      "playgroundId": "iterator-zip-dot-product",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    },
+    {
+      "dir": "0410-examples",
+      "file": "src/playground/examples.ts",
+      "kind": "playground",
+      "graded": false,
+      "expectKind": "error",
+      "playgroundId": "a-type-error",
+      "authoredSurface": "sexpr",
+      "surfaces": [
+        "sexpr",
+        "ml"
+      ]
+    }
+  ]
+}

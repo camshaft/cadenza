@@ -7,6 +7,14 @@
 /// Usage:  node --expose-gc scripts/shred-examples.mjs --out-dir DIR
 ///   (needs Node ≥ 22.6 for .ts type-stripping + the staged wasm pkg — `cargo xtask guide-wasm`.)
 ///
+/// COMMITTED EVAL-MANIFEST: `guide/examples-manifest.json` is a committed copy of the shred's
+/// `manifest.json`, read by the nix per-example matrix at EVAL time to enumerate one derivation per case
+/// (v-nix wires a drift-guard that fails if it != the freshly-shredded manifest). Its metadata is
+/// render-independent, so it is byte-identical whichever pkg renders. REGENERATE it whenever examples are
+/// added/removed/retyped:
+///   node --expose-gc scripts/shred-examples.mjs --out-dir /tmp/gs && cp /tmp/gs/manifest.json guide/examples-manifest.json
+/// (the drift-guard turns a stale manifest into a loud RED, never a silent skip.)
+///
 /// This is the FRONT-HALF of check-examples.mjs (extract → wrap → lower → render both surfaces), dumping
 /// each example's compilable program(s) + expected outcome + metadata INSTEAD of compiling/running inline.
 /// It reuses the SAME extraction (./example-extract.mjs) + the SAME wrapModule / lowerToCompile /
