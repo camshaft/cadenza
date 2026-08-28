@@ -1986,6 +1986,79 @@ mod tests {
     }
 
     #[test]
+    fn native_compound_value_golden_canonical_bytes() {
+        // GOLDEN VECTORS: the CANONICAL binary bytes the compiler codec (Builder + canon + encode) produces
+        // for representative Option-B compound VALUES. `encode` canonicalizes before serializing, so these
+        // bytes ARE the content-address form. They serve TWO purposes: (1) a wire-contract regression guard
+        // — a future canonical-form change that would silently move a compound value's content hash trips
+        // here; (2) the authoritative reference the RUNTIME value codec (op62/90's DocBuilder) must match
+        // byte-for-byte, or the value-wire forks from the AST-wire despite both being Option B (v-runtime +
+        // v-static-data flagged that op62's shared name-index pool can order leaves differently from the
+        // compiler Builder). Header is `cdzast\x00\x01`. Note the record/map share ONE payloadless
+        // FIELD_PAIR (25) leaf across both entries (pool dedup) — Option B removes the `=` NAME leaf whose
+        // ordering was the known op62/Builder divergence.
+        fn int(b: &mut Builder, n: i64) -> StructId {
+            b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i64(n),
+                radix: Radix::Dec,
+            })
+        }
+        // #record((= a 1) (= b 2)) — leaf pool: RECORD_CTOR=22, FIELD_PAIR=25, "a", 1, "b", 2.
+        let mut b = Builder::new();
+        let a = b.name("a");
+        let one = int(&mut b, 1);
+        let bn = b.name("b");
+        let two = int(&mut b, 2);
+        let fa = b.field_pair(a, one);
+        let fb = b.field_pair(bn, two);
+        let record = b.compound(CompoundCtor::Record, &[fa, fb]);
+        let ra = b.finish(record);
+        assert_eq!(
+            crate::codec::encode(&ra),
+            vec![
+                99, 100, 122, 97, 115, 116, 0, 1, 6, 22, 25, 10, 1, 97, 0, 1, 1, 10, 1, 98, 0, 1,
+                2, 10, 0, 0, 0, 1, 0, 2, 0, 3, 1, 3, 1, 2, 3, 0, 1, 0, 4, 0, 5, 1, 3, 5, 6, 7, 1,
+                3, 0, 4, 8, 9
+            ],
+            "record golden bytes"
+        );
+        // #set(1 2 3) — leaf pool: SET_CTOR=24, 1, 2, 3.
+        let mut b = Builder::new();
+        let (s1, s2, s3) = (int(&mut b, 1), int(&mut b, 2), int(&mut b, 3));
+        let set = b.compound(CompoundCtor::Set, &[s1, s2, s3]);
+        let sa = b.finish(set);
+        assert_eq!(
+            crate::codec::encode(&sa),
+            vec![
+                99, 100, 122, 97, 115, 116, 0, 1, 4, 24, 0, 1, 1, 0, 1, 2, 0, 1, 3, 5, 0, 0, 0, 1,
+                0, 2, 0, 3, 1, 4, 0, 1, 2, 3, 4
+            ],
+            "set golden bytes"
+        );
+        // #map((= 1 10) (= 2 20)) — leaf pool: MAP_CTOR=23, FIELD_PAIR=25, 1, 10, 2, 20.
+        let mut b = Builder::new();
+        let (k1, v1, k2, v2) = (
+            int(&mut b, 1),
+            int(&mut b, 10),
+            int(&mut b, 2),
+            int(&mut b, 20),
+        );
+        let e1 = b.field_pair(k1, v1);
+        let e2 = b.field_pair(k2, v2);
+        let map = b.compound(CompoundCtor::Map, &[e1, e2]);
+        let ma = b.finish(map);
+        assert_eq!(
+            crate::codec::encode(&ma),
+            vec![
+                99, 100, 122, 97, 115, 116, 0, 1, 6, 23, 25, 0, 1, 1, 0, 1, 10, 0, 1, 2, 0, 1, 20,
+                10, 0, 0, 0, 1, 0, 2, 0, 3, 1, 3, 1, 2, 3, 0, 1, 0, 4, 0, 5, 1, 3, 5, 6, 7, 1, 3,
+                0, 4, 8, 9
+            ],
+            "map golden bytes"
+        );
+    }
+
+    #[test]
     fn native_ctor_leaf_emit_api_round_trips_through_the_read_helpers_and_the_codec() {
         // The M2 emit primitives (`Builder::compound`/`field_pair`/`member`) build ctor-LEAF-KIND heads,
         // and the read primitives (`compound_ctor_leaf`/`field_pair_parts`/`member_parts`) recognize them
