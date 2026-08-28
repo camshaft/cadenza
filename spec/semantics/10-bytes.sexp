@@ -429,6 +429,49 @@
   (output (: 60 Int64))
   (live-objects 0))
 
+(case "bse1 the COMBINED reclaim levers — a SumExpect view-reclaim fires INSIDE an arm-borrow arm, and the outer view is read AFTER"
+  (doc    "The two slice-view reclaim levers composed in ONE arm: the outer match's arm holds w (the
+           arm-borrow lever's shell candidate), and inside it a `(Bytes.at (Option.expect (Bytes.slice w
+           1 2) \"m\") 0)` fires the SumExpect dup-at-extract + shell-drop + view-drop lever against a
+           slice OF w — then w itself is read. Either lever over-releasing into w's chain (or the two
+           levers double-marking one node — the b2 double-mark class) would corrupt or dangle the later
+           `(Bytes.at w n)`. w=(10,20,30,40), inner view (20,30) reads 20; n=0: 20+10=30; n=3: 20+40=60;
+           the heap fully balances.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((b (Bytes.of (list 10 20 30 40 50 60))))
+                (match (Bytes.slice b 0 4)
+                  ((Some w)
+                    (+ (match (Bytes.at (Option.expect (Bytes.slice w 1 2) "m") 0)
+                         ((Some v) v) ((None u) -4))
+                       (match (Bytes.at w n) ((Some v) v) ((None u) -3))))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 30 Int64))
+  (call   main (: 3 Int64))
+  (output (: 60 Int64))
+  (live-objects 0))
+
+(case "bse2 a THOUSAND SumExpect view-reclaims into one shared parent, and the parent is read AFTER the loop"
+  (doc    "The loop-scale face of the SumExpect view-reclaim: each of 1000 recursion steps expect-extracts
+           a fresh slice view of the SAME parent p, scalar-reads it, and reclaims shell+view at the step —
+           1000 reclaim cycles releasing into p's chain — and then p itself is read. A per-cycle
+           over-release would corrupt the parent long before the loop ends (and the final `(Bytes.at p 0)`
+           read); a per-cycle leak would balloon the balance. 1000×2 + 1 = 2001, heap fully balances.")
+  (input  (do
+            (def (go (: b Bytes) (: i Int64))
+              (if (= i 0) 0
+                (+ (match (Bytes.at (Option.expect (Bytes.slice b 1 2) "m") 0) ((Some v) v) ((None u) -4))
+                   (go b (- i 1)))))
+            (def (main (: n Int64))
+              (let ((p (Bytes.of (list 1 2 3))))
+                (+ (go p n) (match (Bytes.at p 0) ((Some v) v) ((None u) -9)))))
+            (export main)))
+  (call   main (: 1000 Int64))
+  (output (: 2001 Int64))
+  (live-objects 0))
+
 (case "a slice returned from a helper OUTLIVES the helper's local parent"
   (doc    "The strongest escape: `mk-slice` builds `parent` as a LOCAL and returns a view of it — the
            parent binding dies at the helper's return while the view crosses the boundary. The caller
