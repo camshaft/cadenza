@@ -2427,6 +2427,40 @@
   (call   main (: 1100 Int64)) (output (: 604450 Int64))
   (live-objects known-leak 39))
 
+(case "two PREPEND versions over one shared tail read independently and the tail survives both"
+  (doc    "The persistent-sharing must-hold of the #4982 balanced front-pack: `(List.prepend t 1)` and
+           `(List.prepend t 2)` build TWO versions over the SAME tail t — under the log-depth front-pack
+           builder each version must carry its own front while SHARING t's storage, and reading x[0], y[0]
+           and t[0] afterwards must see 1, 2 and the original element respectively (a builder that mutated
+           the shared tail, or a reclaim that credited only one version, would corrupt a read). n=5 →
+           100+20+5 = 125; the heap fully balances. Breaker fence w4 (ticks 471/480).")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((t (list n n)))
+                (let ((x (List.prepend t 1)))
+                  (let ((y (List.prepend t 2)))
+                    (+ (* (match (List.at x 0) ((Some v) v) ((None u) -9)) 100)
+                       (+ (* (match (List.at y 0) ((Some v) v) ((None u) -9)) 10)
+                          (match (List.at t 0) ((Some v) v) ((None u) -9))))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 125 Int64))
+  (live-objects 0))
+
+(case "a MULTI-leading-rest list pattern destructures a PREPEND-built list"
+  (doc    "The MatchList face over the #4982 front-pack shape: prepending twice onto a literal list and
+           destructuring with `(list a b .. r)` reads the two prepended fronts as the leading binders and
+           measures the original as the rest — a front-pack that mis-ordered the packed fronts (or a
+           vec-get that mis-navigated the balanced tree at the leading indices) answers a different value.
+           n=7: base=(9 9), after prepends (8 7 9 9) → 800+70+2 = 872. Breaker fence w3 (ticks 471/480).")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((base (List.prepend (List.prepend (list 9 9) n) (+ n 1))))
+                (match base ((list a b .. r) (+ (* a 100) (+ (* b 10) (List.len r)))) (_ -1))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 872 Int64)))
+
 (case "a multi-level RRB list persistently updates deep interior-level indices leaving the original intact"
   (doc    "The WRITE-PATH analog of the 1100-element multi-level RRB read case. `build` pushes 0..n into an
            RRB vector (value at index i is i), and at n=1100 the vector is a THREE-level trie (32*32 = 1024
