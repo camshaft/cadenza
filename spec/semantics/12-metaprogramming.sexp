@@ -2547,7 +2547,7 @@
                   (let ((g (peel h)) (tail (collect t)))
                     (if (= (head-name g) "type") (List.prepend tail g) tail)))))
             (def (build (const (: xs (List Ast))))
-              ("record" (= types (Ast.List (collect xs))) (= count 7)))
+              #record((= types (Ast.List (collect xs))) (= count 7)))
             (def (main)
               (> (Bytes.len (Ast.encode (. (build (list
                    (Ast.List (list (Ast.Name "comment") (Ast.Str "c")
