@@ -743,6 +743,24 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
                  | some false => some (.unsupported "eval: value-returning effect op (host response not yet modeled)")
                  | none => none
              | none => none)
+        -- a BARE (unapplied) member-access `(. T C)` naming a NULLARY constructor — the node's own head is
+        -- `.` (distinct from the APPLIED `((. T C) arg)` caught above via ctorAppName/qualHead). `(. Option
+        -- None)` (built-in or a user `(type Option … None)` redeclaration) unifies onto Value.none; any other
+        -- declared nullary ctor → its tagged nullary variant. Guard: if `T` is a locally BOUND value this is
+        -- a record projection `(. rec field)`, not a ctor ref → leave it for evalProject.
+        <|> (match m.headName? (Node.list children) with
+             | some dh =>
+               if dh == ".".toUTF8 && children.size == 3 then
+                 match (children[1]?).bind (nameOf? m), (children[2]?).bind (nameOf? m) with
+                 | some q, some mem =>
+                   if (env.lookup? q).isSome then none
+                   else if mem == "None".toUTF8 then some (Outcome.value Value.none)
+                   else match variantCtorArity? m mem with
+                        | some 0 => some (Outcome.value (.variant mem .unit))
+                        | _ => none
+                 | _, _ => none
+               else none
+             | none => none)
         <|> ((qualHead? m children).bind (fun (q, f) => evalModuleFn m env fuel q f children))
         <|> ((m.headName? (Node.list children)).bind (fun h =>
                if (env.lookup? h).isSome then none                     -- a local binding shadows: not a top-level call
@@ -1325,11 +1343,27 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
 /-- A generic sum constructor application `(C …)` / `((. T C) …)`: nullary → `variant C unit`; single-field
 → `variant C payload` (payload deferred as a `poison` if non-value, like a tuple/record field — spec Q2). -/
 partial def evalVariantCtor (m : Module) (env : Env) (fuel : Nat) (cname : ByteArray) (arity : Nat) (children : Array Nat) : Outcome :=
-  match arity with
-  | 0 => .value (.variant cname .unit)
-  | _ => match children[1]? with
-         | some pId => .value (.variant cname (outcomeToValue (evalNode m env defaultIntTy fuel pId)))
-         | none => .value (.variant cname .unit)
+  -- UNIFY the prelude Option/Result ctor NAMES with the built-in Value: a `Some`/`Ok`/`Err`/`None`
+  -- ctor — whether reached bare, qualified `(. Option Some)`, or scanned from a user `(type Option …)`
+  -- that redeclares the prelude sum — produces the SAME `Value.some`/`ok`/`err`/`none` the checker's
+  -- `expectedValue?` parses `(Some x)` etc. into. A sum value's form `(Some x)` is one value regardless
+  -- of how the ctor was named/declared, and the grader strips the type — so this keeps construction and
+  -- the expected value-form in one representation (fixes user-redeclared Option/Result escapes: 07-0041/0042).
+  let cs := (String.fromUTF8? cname).getD ""
+  let payload : Unit → Value := fun _ => match children[1]? with
+    | some pId => outcomeToValue (evalNode m env defaultIntTy fuel pId) | none => Value.unit
+  -- Guard on the CANONICAL arity (None nullary; Some/Ok/Err single-field): a user type that merely
+  -- reuses one of these names at a DIFFERENT arity is a distinct ctor → fall through to the generic
+  -- `variant` path rather than mis-unwrapping it into the built-in Option/Result value.
+  if cs == "None" && arity == 0 then .value Value.none
+  else if cs == "Some" && arity == 1 then .value (Value.some (payload ()))
+  else if cs == "Ok" && arity == 1 then .value (Value.ok (payload ()))
+  else if cs == "Err" && arity == 1 then .value (Value.err (payload ()))
+  else match arity with
+       | 0 => .value (.variant cname .unit)
+       | _ => match children[1]? with
+              | some pId => .value (.variant cname (outcomeToValue (evalNode m env defaultIntTy fuel pId)))
+              | none => .value (.variant cname .unit)
 
 /-- A sequence constructor `(tuple e…)` / `(list e…)`: evaluate each element, storing a non-value
 element as a `poison` (deferred) rather than propagating it — an element that is never observed
@@ -1551,11 +1585,21 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
       (match ctorAppName? m pc with
        | some cname =>
          if newtypeCtor? m cname then some (match pc[1]? with | some sp => matchPat m sp subj | none => .ok (some []))
-         else if (variantCtorArity? m cname).isSome then
-           some (match subj with
-                 | .variant tag payload => if tag == cname then (match pc[1]? with | some sp => matchPat m sp payload | none => .ok (some [])) else .ok none
-                 | _ => .ok none)
-         else none
+         else match variantCtorArity? m cname with
+           | some ar =>
+             -- SYMMETRIC with evalVariantCtor: a user ctor named None/Some/Ok/Err at the CANONICAL arity
+             -- constructs the built-in Value.none/some/ok/err, so its pattern must match that value form
+             -- (not a tagged `variant`); any other name/arity stays a tagged-variant pattern.
+             let csm := (String.fromUTF8? cname).getD ""
+             some (
+               if csm == "None" && ar == 0 then (match subj with | .none => .ok (some []) | _ => .ok none)
+               else if csm == "Some" && ar == 1 then (match subj, pc[1]? with | .some p, some sp => matchPat m sp p | .some _, none => .ok (some []) | _, _ => .ok none)
+               else if csm == "Ok" && ar == 1 then (match subj, pc[1]? with | .ok p, some sp => matchPat m sp p | .ok _, none => .ok (some []) | _, _ => .ok none)
+               else if csm == "Err" && ar == 1 then (match subj, pc[1]? with | .err p, some sp => matchPat m sp p | .err _, none => .ok (some []) | _, _ => .ok none)
+               else match subj with
+                    | .variant tag payload => if tag == cname then (match pc[1]? with | some sp => matchPat m sp payload | none => .ok (some [])) else .ok none
+                    | _ => .ok none)
+           | none => none
        | none => none)
       <|>
       -- a prelude `Ast` variant pattern `((. Ast Ctor) subpat)` (Int/Float/Name/…): the `Ast` sum is
