@@ -263,6 +263,7 @@ enum Cmd {
     /// fish, elvish, or powershell. Generated from the actual command tree, so it always matches the
     /// current subcommands + flags. Install by sourcing/placing per your shell (e.g.
     /// `cdz completions bash > /etc/bash_completion.d/cdz`, or `cdz completions zsh > _cdz` on `$fpath`).
+    #[cfg(feature = "completions")]
     Completions(CompletionsArgs),
 
     // ── toolchain health ────────────────────────────────────────────────────────────────────────
@@ -575,6 +576,7 @@ fn main() -> ExitCode {
         Cmd::Clean(a) => run_clean(&a),
         Cmd::New(a) => run_new(&a),
         Cmd::Init(a) => run_init(&a),
+        #[cfg(feature = "completions")]
         Cmd::Completions(a) => run_completions(&a),
         Cmd::Doctor(a) => run_doctor(&a),
         Cmd::Smith(a) => run_smith(&a),
@@ -3779,6 +3781,7 @@ fn scaffold_project(dir: &std::path::Path, sexpr: bool, created: bool) -> ExitCo
 
 // ── shell completions ────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "completions")]
 #[derive(clap::Args)]
 struct CompletionsArgs {
     /// The shell to generate a completion script for.
@@ -3789,6 +3792,7 @@ struct CompletionsArgs {
 /// `cdz completions <shell>` — print a shell completion script for `cdz` to stdout, generated from the
 /// clap command tree (so it can never drift from the real subcommands/flags). The user redirects it to
 /// their shell's completion location. Codegen only; always succeeds.
+#[cfg(feature = "completions")]
 fn run_completions(args: &CompletionsArgs) -> ExitCode {
     use clap::CommandFactory;
     let mut cmd = Cli::command();

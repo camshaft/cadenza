@@ -58,7 +58,7 @@ clap = { version = "4", features = ["derive"] }
 # Generate shell completion scripts (`cdz completions <shell>`) from the clap command tree — the
 # standard cargo-parity way (`clap_complete::generate`), so the completions never drift from the actual
 # subcommands/flags. Codegen only; no runtime cost on any other path.
-clap_complete = "4"
+clap_complete = { version = "4", optional = true }
 # The property-testing generator engine for `cdz test`: `bolero-generator` produces values from a seeded
 # driver (`driver::Rng`) — reproducible + shrinkable — used as a LIBRARY (not the `check!` cargo-test
 # harness), so `cdz test` loops trials itself. (The old seed-vs-bolero lockfile conflict the cdz-smith
@@ -100,7 +100,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # `cdz test` path is corpus-INDEPENDENT (cdz_corpus is referenced only by the `corpus` subcommand), so
 # dropping it removes cdz-corpus from that build's closure and breaks the seedCompiler→corpus dep edge —
 # a corpus-only MR no longer needlessly re-runs the ~28min spine. A normal `cdz` keeps `corpus` (default).
-default = ["corpus", "standalone", "lsp", "watch"]
+default = ["corpus", "standalone", "lsp", "watch", "completions"]
 corpus = ["dep:cdz-corpus"]
 # `lsp` (ON by default) mounts the `cdz lsp` stdio Language Server (its whole impl is `mod lsp`, the sole
 # user of `lsp-server`/`lsp-types`). `watch` (ON by default) mounts `cdz watch` (the sole user of `notify`,
@@ -110,6 +110,9 @@ corpus = ["dep:cdz-corpus"]
 # downstream fanout. A normal/dev/packaged `cdz` keeps both (default), so `cdz lsp`/`cdz watch` are unchanged.
 lsp = ["dep:lsp-server", "dep:lsp-types"]
 watch = ["dep:notify"]
+# `completions` (ON by default) mounts `cdz completions <shell>` (the sole user of `clap_complete`). Gated
+# so a `--no-default-features` seedCompiler build — which never generates shell completions — sheds it.
+completions = ["dep:clap_complete"]
 # `cedar` (OFF by default — operator ruling 2026-08-28: "we shouldn't need to default with cedar on, it's
 # not getting us anything right now") activates the `cadenza-syntax` Cedar convert surface (`cdz convert
 # --from/--to cedar`). Behind an OPT-IN cdz feature so the heavy `cedar-policy` tree (→ stacker/psm/chrono/
