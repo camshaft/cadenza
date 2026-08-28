@@ -39,6 +39,17 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         "seed-corpus" => cmd_seed_corpus(&args[1..]),
+        #[cfg(feature = "differential")]
+        "run-ast-corpus" => cmd_run_ast_corpus(&args[1..]),
+        #[cfg(not(feature = "differential"))]
+        "run-ast-corpus" => {
+            eprintln!(
+                "cdz-smith: the `run-ast-corpus` subcommand needs the `differential` feature \
+                 (it runs the wasm backend via cdz-run) — rebuild: \
+                 `cargo run --features differential -- run-ast-corpus …`."
+            );
+            ExitCode::from(2)
+        }
         "once" => cmd_once(&args[1..]),
         "gen" => cmd_gen(&args[1..]),
         "verify" => cmd_verify(&args[1..]),
@@ -63,6 +74,7 @@ fn usage() {
          \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR]\n\
          \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH]\n\
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
+         \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
          \x20 cdz-smith once             <SEED>\n\
          \x20 cdz-smith gen              <SEED>\n\
          \x20 cdz-smith verify           <FILE.sexp | SEED>\n\
@@ -312,6 +324,60 @@ fn cmd_fuzz(args: &[String]) -> ExitCode {
 /// `--semantics` overrides the corpus dir (default: discover `spec/semantics` from cwd); `--out`
 /// overrides the seed dir (default: `<semantics>/../../implementation/seed/crates/cdz-smith/corpus/
 /// ast-seeds`, i.e. this crate's `corpus/ast-seeds`).
+/// Run the wasm backend over the AST seed corpus (S3): run every `*.ast` seed through `run_wasm_ast`
+/// and print an outcome tally (value / trap / declined). Demonstrates the operator's "run the wasm
+/// backend on the semantics-corpus AST seeds" end to end. `--seeds` overrides the seed dir (default:
+/// this crate's `corpus/ast-seeds` — populate it via `seed-corpus`); `--store` overrides the runtime
+/// store (default: `<repo>/target/cadenza-store`; pass `$CDZ_STORE` to use the nix component store so
+/// seeds that import a runtime resolve it). Pure scalars need no store.
+#[cfg(feature = "differential")]
+fn cmd_run_ast_corpus(args: &[String]) -> ExitCode {
+    let mut seeds: Option<PathBuf> = None;
+    let mut store: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--seeds" => seeds = it.next().map(PathBuf::from),
+            "--store" => store = it.next().map(PathBuf::from),
+            other => {
+                eprintln!("cdz-smith run-ast-corpus: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let seeds_dir = seeds.unwrap_or_else(|| manifest.join("corpus").join("ast-seeds"));
+    let store_dir = store.unwrap_or_else(|| {
+        // implementation/seed/crates/cdz-smith → repo root is 4 ancestors up.
+        manifest
+            .ancestors()
+            .nth(4)
+            .map(|repo| repo.join("target").join("cadenza-store"))
+            .unwrap_or_else(|| PathBuf::from("target/cadenza-store"))
+    });
+
+    match cdz_smith::differential::run_ast_corpus_sweep(&seeds_dir, &store_dir) {
+        Ok(s) => {
+            eprintln!(
+                "[cdz-smith] run-ast-corpus: {} seed(s) from {} | store {} → {} value, {} trap, {} declined",
+                s.seeds,
+                seeds_dir.display(),
+                store_dir.display(),
+                s.values,
+                s.traps,
+                s.declined
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("cdz-smith run-ast-corpus: failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn cmd_seed_corpus(args: &[String]) -> ExitCode {
     let mut semantics: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
