@@ -52,6 +52,61 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
+// ── Corpus record model (v-xtask-decompose slice 2a) — the parsed shape of the `cdz-syntax corpus`
+// stream, SHARED by the gate/roundtrip/emit commands. Moved here so the per-command crates (xtask-gate,
+// xtask-roundtrip, …) reuse the ONE parser + model instead of duplicating it (drift-sensitive). All
+// std-only; fields are `pub` so a consumer crate can construct/read them.
+
+/// A parsed corpus record (the flat stream `cdz-syntax corpus` emits).
+pub struct CorpusRecord {
+    pub description: String,
+    pub program: String,
+    /// Sibling LIBRARY modules of a multi-file PACKAGE case, each a `(name, program)` from a `module`
+    /// record line. Empty for a single-file case.
+    pub modules: Vec<(String, String)>,
+    /// PEER components of a CROSS-COMPONENT case — each an `(interface, provider-program)` from a `peer`
+    /// record line. Empty for a single-component case.
+    pub peers: Vec<(String, String)>,
+    /// One or more TRIALS — each an optional `(call …)` paired with the `expect` payload it must produce.
+    pub trials: Vec<Trial>,
+    /// The `(needs …)` capabilities a case documents (documentation only now — grading is by what the
+    /// compiler actually does).
+    #[allow(dead_code)]
+    pub needs: Vec<String>,
+    /// The HOST-CALL RESPONSES (E2h) — `(op, value)` pairs from the stream's `host-response` lines.
+    pub host_responses: Vec<(String, String)>,
+    /// The recorded HOST-CALL sequence (E2h) — the dotted `E.op` names from the stream's `host-call` lines.
+    pub host_calls: Vec<String>,
+    /// The WARNING pins — `(code, optional message-substring)` from the case's `(warns …)` clauses.
+    pub warns: Vec<(String, Option<String>)>,
+    /// An explicit WIT WORLD the case imposes (from the stream's `wit-world` line). `None` for synthesized.
+    pub wit_world: Option<String>,
+    /// The interface a `(wit-world …)` case's guest exports under (stream `component-name` line).
+    pub component_name: Option<String>,
+    /// The live-heap-cell count a `(live-objects N)` clause asserts after the run. `None` if absent.
+    pub live_objects: Option<u32>,
+}
+
+/// One (call, expected-payload) trial of a case — a single run of the compiled program.
+pub struct Trial {
+    /// The `(call …)` for this trial, or `None` to invoke the sole export with no arguments.
+    pub call: Option<Call>,
+    /// The `expect` payload, e.g. `output (: 42 Int64)`, `error CDZ0201`, `trap "…"`.
+    pub expect: String,
+}
+
+/// A corpus case's `(call <export> <arg>…)` clause, parsed from the record stream.
+pub struct Call {
+    pub export: String,
+    pub args: Vec<String>,
+    /// A `(then <arg>…)` continuation (two-call-on-one-handle): the SECOND call's arguments, or `None`.
+    pub second_call: Option<Vec<String>>,
+    /// A `(drop)` clause: resource-drop the minted closure handle after the call(s) before reading.
+    pub drop_handle: bool,
+    /// A `(call-method <member> …)` clause: the NAMED value-resource member to invoke. `None` otherwise.
+    pub method: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

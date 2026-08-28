@@ -31,7 +31,7 @@ use cdz_rust_render::*;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use xshell::{Shell, cmd};
-use xtask_support::{content_address, hash_tree};
+use xtask_support::{Call, CorpusRecord, Trial, content_address, hash_tree};
 
 /// The one interface for driving the Cadenza seed workspace. Every knob is a typed flag; there are
 /// no environment-variable knobs.
@@ -4700,88 +4700,6 @@ enum Grade {
     Todo,
     /// Ran to an outcome that disagrees with the record — the actionable frontier.
     Fail(String),
-}
-
-/// A parsed corpus record (the flat stream `cdz-syntax corpus` emits).
-struct CorpusRecord {
-    description: String,
-    program: String,
-    /// Sibling LIBRARY modules of a multi-file PACKAGE case (`DESIGN-package-linking.md`), each a
-    /// `(name, program)` from a `module` record line. Empty for a single-file case (then `program` is
-    /// compiled alone). When non-empty, the wasm gate driver writes every module + the entry (`program`,
-    /// named `main`) to a temp dir and runs `cdz compile <files> --entry main` instead of the stdin pipe.
-    modules: Vec<(String, String)>,
-    /// PEER components of a CROSS-COMPONENT case — each an `(interface, provider-program)` from a `peer`
-    /// record line. Empty for a single-component case. When non-empty, the wasm gate compiles each peer to
-    /// its OWN component and runs the entry with `cdz-run --peer <iface>=<path>` (`run_with_peers`), rather
-    /// than linking them into one component like `modules`.
-    peers: Vec<(String, String)>,
-    /// One or more TRIALS — each an optional `(call …)` paired with the `expect` payload it must
-    /// produce. The program is compiled ONCE; each trial runs its call and grades against its expect,
-    /// and the case's verdict COMBINES them (see `grade_ran`). A single-result case is one trial with
-    /// `call: None`; a case interleaving several `(call …) (output …)` pairs has one trial each.
-    trials: Vec<Trial>,
-    /// The `(needs …)` capabilities a case documents. NO LONGER gates grading — every case is graded by
-    /// what the compiler ACTUALLY does (a construct it can't compile DECLINES → `Todo`, not skipped), so
-    /// `(needs)` is documentation only now, kept so a corpus `(needs …)` clause still parses. (Was a
-    /// blunt whole-feature skip that hid a case running to a WRONG value as a benign skip.)
-    #[allow(dead_code)]
-    needs: Vec<String>,
-    /// The HOST-CALL RESPONSES (E2h) — `(op, value)` pairs from the record stream's `host-response`
-    /// lines, in call order. A host-delegating case's program consumes these; the wasm gate driver
-    /// forwards each to `cdz-run --host-response`. Empty for a non-host case.
-    host_responses: Vec<(String, String)>,
-    /// The recorded HOST-CALL sequence (E2h) — the dotted `E.op` names from the record stream's
-    /// `host-call` lines, in call order. The gate verifies the run's observed host calls against this
-    /// (`grade_ran`); empty for a case with no `(host-calls …)`.
-    host_calls: Vec<String>,
-    /// The WARNING pins (operator seq353 inc2) — `(code, optional message-substring)` from the case's
-    /// `(warns …)` clauses. ORTHOGONAL to the trials' primary outcome: the case additionally requires the
-    /// compile to have emitted, for EACH pin, some warning with that code whose message contains the phrase
-    /// (a PRESENCE check, `grade_ran`). Empty for a case with no `(warns …)`.
-    warns: Vec<(String, Option<String>)>,
-    /// An explicit WIT WORLD the case imposes (general WIT-ABI shape), from the stream's `wit-world` line —
-    /// one-line world sexpr. When present, the wasm gate driver converts it to a `wit-world` binary-AST
-    /// artifact fed to `cdz compile` (the export boundary is DECLARED, not synthesized), pairs it with
-    /// `--component-name`, and qualifies the run `--call` as `<iface>#<export>`. `None` for a synthesized-world case.
-    wit_world: Option<String>,
-    /// The interface a `(wit-world …)` case's guest exports under (stream `component-name` line) — passed to
-    /// `cdz compile --component-name` and used to qualify the run export. `None` when no world is imposed.
-    component_name: Option<String>,
-    /// The live-heap-cell count a `(live-objects N)` clause asserts after the run (stream `live-objects` line).
-    /// When set, the wasm gate driver runs the program on the DEBUG-COUNTERS runtime with `cdz-run
-    /// --report-live-objects` and fails the case if the reported count differs from N — the heap-balance
-    /// invariant (N=0 is no leak / no double-free), orthogonal to the value outcome. `None` for a case with
-    /// no `(live-objects …)`.
-    live_objects: Option<u32>,
-}
-
-/// One (call, expected-payload) trial of a case — a single run of the compiled program.
-struct Trial {
-    /// The `(call …)` for this trial, or `None` to invoke the sole export with no arguments.
-    call: Option<Call>,
-    /// The `expect` payload, e.g. `output (: 42 Int64)`, `error CDZ0201`, `trap "…"`.
-    expect: String,
-}
-
-/// A corpus case's `(call <export> <arg>…)` clause, parsed from the record stream. The export is run
-/// with these arguments (already reduced to bare value text by `cdz-syntax corpus`), which cdz-run
-/// coerces to the export's declared parameter types — the path that exercises a parameterized entry.
-struct Call {
-    export: String,
-    args: Vec<String>,
-    /// A `(then <arg>…)` continuation (two-call-on-one-handle, `borrow<t>` repeatability): the SECOND
-    /// call's arguments, or `None` for the ordinary one-call form. `Some` (possibly empty) drives
-    /// `cdz-run --call-twice` so the same closure handle serves both calls; the run renders both results
-    /// as a tuple.
-    second_call: Option<Vec<String>>,
-    /// A `(drop)` clause: resource-drop the minted closure handle after the call(s) before reading the
-    /// result / heap balance (so a `(live-objects 0)` case can pin release). Drives `cdz-run --drop-handle`.
-    drop_handle: bool,
-    /// A `(call-method <member> …)` clause: the NAMED value-resource member to invoke (drives `cdz-run
-    /// --call-member <member>`). `None` for an ordinary call/escape. When `Some`, the case has no export
-    /// (the program's producer makes the resource; the member is reached after).
-    method: Option<String>,
 }
 
 /// Run `cdz-corpus records <file>` and parse its record stream.
