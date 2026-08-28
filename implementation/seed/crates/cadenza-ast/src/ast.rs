@@ -2056,6 +2056,54 @@ mod tests {
             ],
             "map golden bytes"
         );
+        // #tuple(1 2) — leaf pool [TUPLE_CTOR=21, 1, 2].
+        let mut b = Builder::new();
+        let (t1, t2) = (int(&mut b, 1), int(&mut b, 2));
+        let tuple = b.compound(CompoundCtor::Tuple, &[t1, t2]);
+        let ta = b.finish(tuple);
+        assert_eq!(
+            crate::codec::encode(&ta),
+            vec![
+                99, 100, 122, 97, 115, 116, 0, 1, 3, 21, 0, 1, 1, 0, 1, 2, 4, 0, 0, 0, 1, 0, 2, 1,
+                3, 0, 1, 2, 3
+            ],
+            "tuple golden bytes"
+        );
+        // #list(1 2) — leaf pool [LIST_CTOR=20, 1, 2].
+        let mut b = Builder::new();
+        let (l1, l2) = (int(&mut b, 1), int(&mut b, 2));
+        let list = b.compound(CompoundCtor::List, &[l1, l2]);
+        let la = b.finish(list);
+        assert_eq!(
+            crate::codec::encode(&la),
+            vec![
+                99, 100, 122, 97, 115, 116, 0, 1, 3, 20, 0, 1, 1, 0, 1, 2, 4, 0, 0, 0, 1, 0, 2, 1,
+                3, 0, 1, 2, 3
+            ],
+            "list golden bytes"
+        );
+        // NESTED #list(#record((= a 1)) #set(2 3)) — nested ctor heads; ALL four ctor kinds (LIST_CTOR,
+        // RECORD_CTOR, FIELD_PAIR, SET_CTOR) are deduped ONCE in the shared leaf pool across nesting levels
+        // — the cross-level dedup/order op62 must reproduce. Leaf pool [LIST_CTOR=20, RECORD_CTOR=22,
+        // FIELD_PAIR=25, "a", 1, SET_CTOR=24, 2, 3].
+        let mut b = Builder::new();
+        let na = b.name("a");
+        let n1 = int(&mut b, 1);
+        let nfp = b.field_pair(na, n1);
+        let nrec = b.compound(CompoundCtor::Record, &[nfp]);
+        let (ns2, ns3) = (int(&mut b, 2), int(&mut b, 3));
+        let nset = b.compound(CompoundCtor::Set, &[ns2, ns3]);
+        let nested = b.compound(CompoundCtor::List, &[nrec, nset]);
+        let na2 = b.finish(nested);
+        assert_eq!(
+            crate::codec::encode(&na2),
+            vec![
+                99, 100, 122, 97, 115, 116, 0, 1, 8, 20, 22, 25, 10, 1, 97, 0, 1, 1, 24, 0, 1, 2,
+                0, 1, 3, 12, 0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 1, 3, 2, 3, 4, 1, 2, 1, 5, 0, 5, 0, 6,
+                0, 7, 1, 3, 7, 8, 9, 1, 3, 0, 6, 10, 11
+            ],
+            "nested list-of-(record,set) golden bytes"
+        );
     }
 
     #[test]
