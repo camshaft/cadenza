@@ -4751,6 +4751,9 @@ pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a unary variant applied to a wrong-type payload is a type error
 pass	a unit MISMATCH in the op argument is rejected — the program cannot perform with a different unit
 pass	a unit MISMATCH in the resume value is rejected — the arm cannot resume a different unit
+pass	irj1 an if-JOIN whose arms resume with MISMATCHED value types is rejected per-arm CDZ0201 (not escaped to InvalidWasm)
+pass	irj2 an if-JOIN whose arms resume with MISMATCHED next-STATE types is rejected per-arm CDZ0201
+pass	irj3 a VALID if-JOIN where both arms resume the op-result type folds — the per-arm check does not over-reject
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a unit raised to the ZEROTH power is the dimensionless identity Unit.one
 pass	a unit-result host op consumes its response row so the next value op reads its own (adv-65)
