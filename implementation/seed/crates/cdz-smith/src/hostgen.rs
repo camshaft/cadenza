@@ -17,31 +17,38 @@ use core::fmt::Write as _;
 
 use crate::generator::Program;
 
-/// Host-op ARGUMENT types the generator uses — each with a matching literal the body passes. Kept to
-/// shapes with a known literal form (no bytes-literal syntax guessing): `Unit` (no arg), `Int64`, `String`.
-/// Host-op ARGUMENT types — each with a matching literal ([`arg_literal`]) the body passes. Includes the
-/// scalar shapes that cross (`Unit`, `Int64`, `String`) AND compound / higher-order shapes that are
-/// KNOWN gaps: a compound `(Tuple …)`/`(List …)` argument is a later increment, and a higher-order
-/// `(-> …)` argument has no machine representation — so the arg surface straddles the declined frontier.
-const ARG_TYPES: [&str; 6] = [
+/// Host-op ARGUMENT types — each with a matching literal ([`arg_literal`]) the body passes. Spans the
+/// scalar shapes that cross (`Unit`, `Int64`, `String`), flat compound / higher-order shapes that are
+/// KNOWN gaps, AND NESTED/wider compounds (`(List (List Int64))`, `(Tuple Int64 (List Int64))`) — the
+/// "later increment" slices the boundary model calls out — so the arg surface straddles the frontier
+/// across distinct "not this slice" faces.
+const ARG_TYPES: [&str; 8] = [
     "Unit",
     "Int64",
     "String",
     "(Tuple Int64 Int64)",
     "(List Int64)",
     "(-> Int64 Int64)",
+    "(List (List Int64))",
+    "(Tuple Int64 (List Int64))",
 ];
 
-/// Host-op RESULT types — a mix of shapes the bare-effect boundary DOES emit (`Int64`, `Unit`, `String`)
-/// and ones it does NOT yet (`Bytes`, `(Tuple Int64 Int64)`, `(List Int64)` → the world-driven path), so
-/// the generator straddles the supported/declined frontier and surfaces the compound-result gaps.
-const RET_TYPES: [&str; 6] = [
+/// Host-op RESULT types — scalar shapes the bare-effect boundary DOES emit (`Int64`, `Unit`, `String`),
+/// flat compounds it does NOT yet (`Bytes`, `(Tuple Int64 Int64)`, `(List Int64)` → world-driven path),
+/// and NESTED/wider compounds (`(List (List Int64))`, `(List (Tuple Int64 Int64))`, `(Tuple Int64 Int64
+/// Int64)`, `(Tuple Int64 (List Int64))`) — the explicitly-named `list<list<…>>`/`list<tuple<…>>` "later
+/// increment" result slices — so the generator surfaces the full compound-result gap ladder.
+const RET_TYPES: [&str; 10] = [
     "Int64",
     "Unit",
     "String",
     "Bytes",
     "(Tuple Int64 Int64)",
     "(List Int64)",
+    "(List (List Int64))",
+    "(List (Tuple Int64 Int64))",
+    "(Tuple Int64 Int64 Int64)",
+    "(Tuple Int64 (List Int64))",
 ];
 
 /// A minimal byte-cursor over the entropy: yields `0` once spent (so choices bottom out deterministically).
@@ -74,6 +81,8 @@ fn arg_literal(arg: &str) -> &'static str {
         "(Tuple Int64 Int64)" => " (tuple 1 2)",
         "(List Int64)" => " (list 1 2 3)",
         "(-> Int64 Int64)" => " (fn (x) x)",
+        "(List (List Int64))" => " (list (list 1 2) (list 3 4))",
+        "(Tuple Int64 (List Int64))" => " (tuple 1 (list 2 3))",
         _ => "", // Unit: no argument
     }
 }
