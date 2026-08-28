@@ -2583,4 +2583,97 @@ mod tests {
             "the op whose result nests the enum maps once the nested nominal is synthesized"
         );
     }
+
+    // Build a `status`-style nullary import op returning an `enum { active, closed }`, in interface
+    // `cadenza:agent-kernel/lifecycle`, as a `(world reducer (import …))` — the shared shape for the
+    // synthesis hardening tests below. `extra` adds a SECOND member with the SAME enum result.
+    fn world_bytes_with_enum_import(mut b: Builder, extra_member: bool) -> Vec<u8> {
+        let mk_enum = |b: &mut Builder| {
+            let eh = str_head(b, "enum");
+            let c1 = b.name("active");
+            let c2 = b.name("closed");
+            b.list(vec![eh, c1, c2])
+        };
+        let mut members = {
+            let e = mk_enum(&mut b);
+            vec![member(&mut b, "status", vec![], e)]
+        };
+        if extra_member {
+            let e = mk_enum(&mut b);
+            members.push(member(&mut b, "check", vec![], e));
+        }
+        let ih = b.name("import");
+        let inm = b.name("cadenza:agent-kernel/lifecycle");
+        let mut iface = vec![ih, inm];
+        iface.extend(members);
+        let lifecycle = b.list(iface);
+        let wh = b.name("world");
+        let wn = b.name("reducer");
+        let world = b.list(vec![wh, wn, lifecycle]);
+        let a = b.finish(world);
+        crate::codec::encode(&a)
+    }
+
+    fn synth_wit_type_names(ast: &Arenas) -> Vec<String> {
+        top_level_items(ast)
+            .into_iter()
+            .filter_map(|it| ast.as_form(it, "type").and_then(|t| t.first().copied()))
+            .filter_map(|n| ast.as_name(n).map(|s| s.to_string()))
+            .filter(|n| n.starts_with("Wit"))
+            .collect()
+    }
+
+    #[test]
+    fn the_same_enum_reused_across_two_import_ops_synthesizes_one_nominal() {
+        // DEDUP: a world that uses the same anonymous enum { active, closed } in TWO import ops must
+        // synthesize exactly ONE nominal (collect dedups by case-set) — two `(type Wit… …)` decls would be a
+        // duplicate-declaration resolve error. Realistic: worlds reuse a status/outcome enum across members.
+        use crate::db::Db;
+        let bytes = world_bytes_with_enum_import(Builder::new(), true);
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        inject_world_import_effects_from_bytes(&mut db.ast, &bytes);
+        assert_eq!(
+            synth_wit_type_names(&db.ast).len(),
+            1,
+            "the same enum reused across two ops synthesizes exactly ONE nominal (deduped by case-set)"
+        );
+    }
+
+    #[test]
+    fn a_synth_name_colliding_with_a_guest_type_is_disambiguated() {
+        // NAME COLLISION: the guest declares a type literally named `WitActiveClosed` (a DIFFERENT case-set),
+        // which is exactly the internal name the enum { active, closed } would synthesize. The synthesis must
+        // disambiguate (WitActiveClosed2) rather than emit a second `(type WitActiveClosed …)` (a duplicate
+        // declaration). Guards the disambiguation loop.
+        use crate::db::Db;
+        let bytes = world_bytes_with_enum_import(Builder::new(), false);
+        // Guest already has `type WitActiveClosed = Foo | Bar` (case-set {foo,bar} — does NOT mirror the enum).
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (type WitActiveClosed Foo Bar) (def (main) 0) (export main))",
+        ));
+        inject_world_import_effects_from_bytes(&mut db.ast, &bytes);
+        // The synthesized enum nominal must carry a DISAMBIGUATED name (not the guest's WitActiveClosed), with
+        // the Active/Closed cases.
+        let synth = top_level_items(&db.ast).into_iter().find_map(|it| {
+            let tail = db.ast.as_form(it, "type")?;
+            let (&nn, cases) = tail.split_first()?;
+            let name = db.ast.as_name(nn)?;
+            let ctors: Vec<String> = cases
+                .iter()
+                .filter_map(|&c| db.ast.as_name(c).map(|s| s.to_string()))
+                .collect();
+            if ctors == ["Active".to_string(), "Closed".to_string()] {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            synth.as_deref(),
+            Some("WitActiveClosed2"),
+            "the synthesized enum nominal disambiguates its name off the colliding guest type"
+        );
+    }
 }
