@@ -9023,3 +9023,5 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	bcr1 a runtime bin construction round-trips through its own pattern with explicit wrap semantics (300 → u16 300 / u8 44)
 pass	bcr2 fifty runtime bin construct+match cycles reclaim to zero
+pass	ubr1 a dependent-size utf8 segment decodes across a rope seam (prefix in the base, string spanning the concat)
+pass	ubr2 fifty dependent-size utf8 decodes over a deep rope leak linearly (~2 per decode)

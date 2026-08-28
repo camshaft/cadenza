@@ -2646,3 +2646,34 @@
   (call main (: 50 Int64))
   (output (: 2550 Int64))
   (live-objects 0))
+
+; ── breaker batch 576: dependent-size utf8 segments × DEEP ropes. ubr1 = the length prefix sits
+; in the rope BASE and the decoded string SPANS the first seam — exact decode + content check +
+; rest accounting (the 4-cell decode residue is the utf8 face of the view-residue family). ubr2 =
+; fifty decodes leak ~2/frame linearly (+1 borrowed rope) — calibration with slc/rp2.
+
+(case "ubr1 a dependent-size utf8 segment decodes across a rope seam (prefix in the base, string spanning the concat)"
+  (input (do
+(def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 104 105))) (- k 1))))
+(def (main (: n Int64))
+  (let ((r (grow (bin (u8 (UInt8.wrap (* n 2)))) 50)))
+    (match r
+      ((bin (u8 len) (utf8 s len) (bytes rest)) (+ (* 1000 (String.byte-len s)) (+ (if (= s "hi") 100 0) (Bytes.len rest))))
+      (_ -1))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 2198 Int64))
+  (live-objects known-leak 4))
+
+(case "ubr2 fifty dependent-size utf8 decodes over a deep rope leak linearly (~2 per decode)"
+  (input (do
+(def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 104 105))) (- k 1))))
+(def (frames (: r Bytes) (: k Int64))
+  (if (= k 0) 0
+      (+ (match r ((bin (u8 len) (utf8 s len) (bytes rest)) (String.byte-len s)) (_ -1))
+         (frames r (- k 1)))))
+(def (main (: n Int64)) (frames (grow (bin (u8 (UInt8.wrap (+ n 1)))) 50) n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 2550 Int64))
+  (live-objects known-leak 101))
