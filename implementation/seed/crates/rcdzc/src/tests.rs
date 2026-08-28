@@ -19874,6 +19874,38 @@ mod match_engine {
     }
 
     #[test]
+    fn eval_reconstructs_an_ast_list_whose_payload_is_a_native_list_ctor_literal() {
+        // M2 regression guard: `eval` desugars `(Ast.List <list-literal>)` by reconstructing the source the
+        // list denotes. The M2 printer renders a list literal as the native `[…]` (a ctor-LEAF-KIND head),
+        // which the reader re-reads as `#list(…)` — so a guide example whose ML toggle round-trips through the
+        // printer hands `eval` a NATIVE list-ctor payload, not the legacy name-head `(list …)`. Before the fix,
+        // `list_elems` recognized only the name (`(list …)`) and string (`("list" …)`) heads, so the native
+        // payload had "nothing to reconstruct" → a spurious CDZ0101 on the ML surface while the authored
+        // s-expr passed (a surface DIVERGENCE). `list_elems` now recognizes all three head spellings via
+        // `compound_form_of`, so `eval` folds identically regardless of how the list literal was spelled.
+        // Reconstructs to `(double 21)` → 42, so the whole program compiles clean.
+        assert!(
+            reject_code(
+                "(module m (def (double x) (* 2 x)) \
+                   (def (main) (eval (Ast.List #list((Ast.Name \"double\") (Ast.Int 21))))) \
+                 (export main))"
+            )
+            .is_none(),
+            "eval reconstructs an Ast.List whose payload is a NATIVE list-ctor literal (M2 printer form)"
+        );
+        // Control: the legacy name-head `(list …)` payload still reconstructs (no regression on the old form).
+        assert!(
+            reject_code(
+                "(module m (def (double x) (* 2 x)) \
+                   (def (main) (eval (Ast.List (list (Ast.Name \"double\") (Ast.Int 21))))) \
+                 (export main))"
+            )
+            .is_none(),
+            "eval still reconstructs an Ast.List whose payload is the legacy name-head (list …)"
+        );
+    }
+
+    #[test]
     fn eval_of_a_quote_with_a_non_reifiable_leaf_names_the_literal_not_nothing_to_reconstruct() {
         // A `(quote …)` IS compile-time-visible, so the generic "nothing to reconstruct" (runtime / non-
         // constant) phrasing is WRONG when the quote declined only because it carries a leaf the `Ast` sum

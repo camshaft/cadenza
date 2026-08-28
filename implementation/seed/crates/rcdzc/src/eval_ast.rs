@@ -32,7 +32,7 @@
 //! reconstruction. Runs during `Db::load` AFTER `reify_quotes` (so a quoted argument is already an
 //! `Ast.*` tree) and BEFORE the parent index — so the spliced-in source resolves like hand-written code.
 
-use crate::ast::{Arenas, Leaf, Struct, StructId};
+use crate::ast::{Arenas, CompoundCtor, Leaf, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
 
 /// A pending eval rewrite: overwrite the `(eval …)` node's structure entry with `replacement`, then blank
@@ -483,16 +483,16 @@ fn ast_ctor_arg(ast: &Arenas, node: StructId, variant: &str) -> Option<StructId>
 }
 
 /// The element occurrences of a `(list e…)` value-constructor form — the reader-shaped list literal the
-/// reifier wraps `Ast.List`'s payload in. Accepts EITHER the `list` name head or the unshadowable `"list"`
-/// string-ctor head (both denote the same list literal). `None` if `payload` is not a list form.
+/// reifier wraps `Ast.List`'s payload in. Accepts ALL THREE head spellings of the list ctor: the native
+/// ctor-LEAF-KIND head (the M2 `[…]` literal the reader now emits — e.g. from a `Ast.List([…])` printed by
+/// the M2 printer and re-read), the `list` NAME alias, and the unshadowable `"list"` STRING-ctor head (all
+/// denote the same list literal). Before M2 only name/string were reached — a reified `Ast.List` payload
+/// re-read from ML rendered as a native list literal, so `eval` of it declined CDZ0101 (nothing to
+/// reconstruct); `compound_form_of` closes that by recognizing the native leaf head too. `None` if `payload`
+/// is not a list form.
 fn list_elems(ast: &Arenas, payload: StructId) -> Option<Vec<StructId>> {
-    if let Some(tail) = ast.as_form(payload, "list") {
-        return Some(tail.to_vec());
-    }
-    if let Some(tail) = ast.as_ctor_form(payload, "list") {
-        return Some(tail.to_vec());
-    }
-    None
+    ast.compound_form_of(payload, CompoundCtor::List)
+        .map(<[StructId]>::to_vec)
 }
 
 /// Build `(trap "MSG")` — the diverging halt an eval of a malformed AST reconstructs to. `trap` is the
