@@ -403,6 +403,34 @@
   (output (: 210 Int64))
   (live-objects known-leak 4))
 
+(case "a SumExpect-unwrapped slice view returned from a helper OUTLIVES the local parent (SumExpect view-escape must-hold)"
+  (doc    "The Option.expect (→ Core::SumExpect) twin of the match-shape escape case above (v-memory-safety, the
+           view-escape MUST-HOLD control for the queued SumExpect view-reclaim). `mk-slice` builds `parent` as a
+           LOCAL and returns `(Option.expect (Bytes.slice parent a 2) …)` — the SumExpect-unwrapped view — so the
+           parent binding dies at the helper's return while the escaping view crosses the boundary. The caller
+           reads length (2) and content (a=2 → 30, a=0 → 10): the parent's bytes MUST survive the helper's frame
+           teardown because the escaping view holds them. `100·2 + 30` = 230 / `100·2 + 10` = 210. This is the
+           SumExpect analog of `a slice returned from a helper OUTLIVES the helper's local parent` — it fences
+           the boundary the SumExpect view-reclaim (dup-at-extract + shell-drop + liveness-placed view-drop) must
+           NOT cross: an ESCAPING SumExpect'd view gets NO liveness-view-drop (reclaim-IFF-scalar-extracted-NOT-
+           escaped), so this stays leaking (the escape is caught by the result-position occurrence), NOT reclaimed.
+           A SumExpect reclaim that freed the escaping view at scope exit would hand the caller a dangling view →
+           the value moves off 230/210 or an assert_node_live UAF trap. MUST-HOLD: known-leak 4 (unchanged when
+           the SumExpect view-reclaim lands — the scalar-extracted-dead corpus cases bar3/bar4 drop, this does not).")
+  (input  (do
+            (def (mk-slice (: a Int64))
+              (let ((parent (Bytes.of (list 10 20 30 40))))
+                (Option.expect (Bytes.slice parent a 2) "in bounds")))
+            (def (main (: a Int64))
+              (+ (* 100 (Bytes.len (mk-slice a)))
+                 (Option.expect (Bytes.at (mk-slice a) 0) "v")))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 230 Int64))
+  (call   main (: 0 Int64))
+  (output (: 210 Int64))
+  (live-objects known-leak 4))
+
 ; -- Bytes.at over an OWNED-TEMPORARY rope-producer reclaims it (migrated from rcdzc bytes_at_over_an_owned_
 ; temporary_* reclaim tests). Every rope-producer — Bytes.concat / Bytes.slice / Bytes.compact / String.to-bytes
 ; — CONSUMES its operand and returns a FRESH owned Bytes leaf, so a borrowing `Bytes.at` (bytes-len + bytes-get,
