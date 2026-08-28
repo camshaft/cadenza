@@ -314,6 +314,15 @@ enum Cmd {
         #[command(subcommand)]
         cmd: fleet::FleetCmd,
     },
+    /// Any UNRECOGNIZED subcommand is forwarded to the nix app of the same name:
+    /// `cargo xtask <cmd> [args…]` → `nix run <worktree-flake>#<cmd> -- [args…]`. This is the all-nix
+    /// COMPAT bridge (operator 2026-08-28: `cargo run` migrates to nix as tools land) for xtask
+    /// subcommands decomposed into standalone `apps.<cmd>` (v-xtask-decompose): once a `Cmd` arm is
+    /// removed + `apps.<cmd>` exists, `cargo xtask <cmd>` transparently routes to the nix app instead of
+    /// clap-erroring. If no such app exists nix reports it (that IS the unknown-command feedback).
+    /// Phased by app-existence; no cargo-shadowing shim needed for this compat.
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 fn main() {
@@ -387,7 +396,53 @@ fn main() {
         Cmd::GuideWasm { store } => guide_wasm(&paths, store),
         Cmd::InstallLsp { uninstall } => install_lsp::run(&paths, uninstall),
         Cmd::Fleet { cmd } => fleet::run(&paths, cmd),
+        Cmd::External(args) => run_external_subcommand(&args),
     }
+}
+
+/// Build the `nix run` argv that forwards an unrecognized `cargo xtask <cmd> [args…]` to the nix app of
+/// the same name: `[cmd, rest…]` → `["run", "<flake>#<cmd>", "--", rest…]` (the `--` only when there are
+/// args, so a bare `cargo xtask <cmd>` doesn't pass an empty `--`). Pure so the mapping is unit-tested.
+fn nix_run_external_argv(args: &[String], flake: &str) -> Vec<String> {
+    let cmd = args.first().map(String::as_str).unwrap_or("");
+    let mut v = vec!["run".to_string(), format!("{flake}#{cmd}")];
+    if args.len() > 1 {
+        v.push("--".to_string());
+        v.extend(args[1..].iter().cloned());
+    }
+    v
+}
+
+/// Forward an unrecognized `cargo xtask <cmd> [args…]` to `nix run <worktree-flake>#<cmd> -- [args…]` —
+/// the all-nix compat bridge for decomposed xtask subcommands (see `Cmd::External`). Resolves the flake
+/// as the current worktree toplevel (falls back to `.`), then `exec`s nix (replacing this process, so the
+/// nix app's exit code is the caller's). On a genuine typo the app won't exist and nix reports it — that
+/// is the "unknown command" feedback. Never returns on success.
+fn run_external_subcommand(args: &[String]) -> ! {
+    use std::os::unix::process::CommandExt;
+    let cmd = args.first().cloned().unwrap_or_default();
+    if cmd.is_empty() {
+        eprintln!("xtask: no subcommand given.");
+        std::process::exit(2);
+    }
+    let flake = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| ".".to_string());
+    let argv = nix_run_external_argv(args, &flake);
+    let nix = fleet::nix_binary();
+    eprintln!(
+        "xtask: '{cmd}' is not a built-in subcommand — forwarding to nix ({nix} {})",
+        argv.join(" ")
+    );
+    let e = std::process::Command::new(&nix).args(&argv).exec();
+    eprintln!("xtask: could not exec {nix} ({e}) — is nix installed + on PATH?");
+    std::process::exit(127);
 }
 
 /// Run the cdz-runtime tests under Miri (the UB oracle). See the `Cmd::Miri` doc for why. Uses the
@@ -9372,6 +9427,33 @@ mod trap_grading_tests {
                 "/// ⚠️ RESUME-ESCAPE: a handler-arm re-reference is INVISIBLE here\n"
             ),
             vec![(1, '⚠'), (1, '\u{FE0F}')]
+        );
+    }
+
+    #[test]
+    fn nix_run_external_argv_forwards_cmd_and_args_to_the_flake_app() {
+        // A bare unrecognized subcommand → `nix run <flake>#<cmd>` (no trailing `--`).
+        assert_eq!(
+            nix_run_external_argv(&["lint-mandates".to_string()], "/w"),
+            vec!["run".to_string(), "/w#lint-mandates".to_string()]
+        );
+        // With args → `nix run <flake>#<cmd> -- <args…>` (args forwarded verbatim after the `--`).
+        assert_eq!(
+            nix_run_external_argv(
+                &[
+                    "gate".to_string(),
+                    "--files".to_string(),
+                    "x.sexp".to_string()
+                ],
+                "/w"
+            ),
+            vec![
+                "run".to_string(),
+                "/w#gate".to_string(),
+                "--".to_string(),
+                "--files".to_string(),
+                "x.sexp".to_string()
+            ]
         );
     }
 
