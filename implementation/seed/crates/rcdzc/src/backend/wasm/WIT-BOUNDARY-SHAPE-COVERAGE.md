@@ -49,6 +49,7 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
 | variant (scalar / mixed-width join / compound payload) + payloadless enum | arg + result | world | `variant_scalar_payload_cases` / `variant_liftable_payload_cases` / `enum_cases` | 2, 18, 32, + vres/cvp/mwv/wen families |
 | scalar-param → spilled compound (record) result | export | export | `needs_result_wrapper` (SpillRecord retptr) | 56, sp1–sp7 |
 | payloadless enum RESULT as a typed WIT `enum` under a DECLARED world | export | export | `record_result_lower` enum arm (Passthrough i32) + `note` re-export | 60 (WIT-dump: `enum t0`) |
+| variant-with-payload RESULT as a typed WIT `variant` under a DECLARED world | export | export | `record_result_lower` SpillRecord + `canon_write_of` variant arm | 61 (WIT-dump: `variant t0 { continue, close(s64) }`) |
 
 **Value ROUND-TRIP only (NOT a typed-WIT-export verification):** SHAPE 58/59 pin that a payloadless
 enum value round-trips through the guest + the generic `cadenza:run/run` encode envelope. They do
@@ -133,7 +134,13 @@ other host-RESULT shapes whose only running SHAPE is the reducer-export form.
   `wit_type_to_ty`'s inbound arm; a synthesized-world unit result now self-declares.
 - typed enum RESULT export under a declared world (Direction A) — `record_result_lower` payloadless-enum
   arm → `Passthrough` i32 + `needs_result_wrapper`; crosses as WIT `enum{…}` not `u32` (SHAPE 60,
-  WIT-dump verified). Remaining: the no-world SYNTHESIZED enum export + the variant-payload export result.
+  WIT-dump verified).
+- variant-with-payload RESULT export under a declared world — already WIRED (SpillRecord +
+  `canon_write_of` variant arm); now VERIFIED (SHAPE 61, WIT-dump `variant t0 { continue, close(s64) }`).
+  No emit change — a previously-untested cell now pinned.
+- Remaining enum/variant export slice: the NO-WORLD SYNTHESIZED enum/variant export (guest annotates a
+  sum result with no world clause) — the enum result diverts to the resource-escape / provider path
+  before `try_bare_entry`, so it falls to run/encode; a proper multi-path trace is needed (deferred).
 
 ## Keeping this honest
 
