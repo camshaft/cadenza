@@ -2514,4 +2514,73 @@ mod tests {
             "the payloaded-variant import op maps once its nominal is synthesized → the effect is injected"
         );
     }
+
+    #[test]
+    fn a_nested_enum_in_a_result_import_result_synthesizes_its_nominal() {
+        // Full-WIT-algebra NESTING: the anonymous enum is not the whole result but NESTED inside a compound
+        // (`result<s64, enum{active,closed}>`). collect_nominal_sum_specs recurses through the result arms, so
+        // the nested enum is still collected + synthesized and the op maps (the result-expr becomes
+        // (Result (Int 64) Wit…)). Pins that the synth reaches sums nested in list/tuple/record/option/result.
+        use crate::db::Db;
+        let mut b = Builder::new();
+        let result_enum = {
+            let rh = str_head(&mut b, "result");
+            let ok = {
+                let h = b.name("s64");
+                b.list(vec![h])
+            };
+            let err = {
+                let eh = str_head(&mut b, "enum");
+                let c1 = b.name("active");
+                let c2 = b.name("closed");
+                b.list(vec![eh, c1, c2])
+            };
+            b.list(vec![rh, ok, err])
+        };
+        let status = member(&mut b, "status", vec![], result_enum);
+        let ih = b.name("import");
+        let inm = b.name("cadenza:agent-kernel/lifecycle");
+        let lifecycle = b.list(vec![ih, inm, status]);
+        let wh = b.name("world");
+        let wn = b.name("reducer");
+        let world = b.list(vec![wh, wn, lifecycle]);
+        let a = b.finish(world);
+        let bytes = crate::codec::encode(&a);
+
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        inject_world_import_effects_from_bytes(&mut db.ast, &bytes);
+
+        let items = top_level_items(&db.ast);
+        let synth = items.iter().find_map(|&it| {
+            let tail = db.ast.as_form(it, "type")?;
+            let (&nn, cases) = tail.split_first()?;
+            if !db.ast.as_name(nn)?.starts_with("Wit") {
+                return None;
+            }
+            Some(
+                cases
+                    .iter()
+                    .filter_map(|&c| db.ast.as_name(c).map(|s| s.to_string()))
+                    .collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(
+            synth.as_deref(),
+            Some(&["Active".to_string(), "Closed".to_string()][..]),
+            "an enum nested in a result import result is collected + synthesized (nesting reaches it)"
+        );
+        let has_effect = items.iter().any(|&it| {
+            db.ast
+                .as_form(it, "effect")
+                .and_then(|t| t.first().copied())
+                .and_then(|n| db.ast.as_name(n))
+                .is_some_and(|n| n == "lifecycle")
+        });
+        assert!(
+            has_effect,
+            "the op whose result nests the enum maps once the nested nominal is synthesized"
+        );
+    }
 }
