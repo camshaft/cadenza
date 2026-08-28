@@ -2444,6 +2444,63 @@ mod tests {
     }
 
     #[test]
+    fn structurally_eq_treats_a_native_ctor_leaf_head_as_its_own_identity() {
+        // A native ctor-LEAF-KIND head (`Leaf::Ctor`) is recognized by leaf identity, so node_eq compares
+        // it by kind (it is not a Name/Str, so `ctor_head_key` returns None and the head falls through to
+        // exact leaf comparison). This is the M2 content-addressing invariant: two same-kind ctor-leaf
+        // trees are equal; different ctor KINDS differ; and a ctor-leaf head does NOT cross-collapse with
+        // the LEGACY string/name head of the same spelling (they are distinct representations — the
+        // migration replaces the legacy heads rather than aliasing them). See
+        // `DESIGN-native-ast-compound-data.md` (node_eq: a ctor-leaf is its own identity).
+        let one = &[Leaf::Int {
+            value: IntValue::from_i64(1),
+            radix: Radix::Dec,
+        }];
+        let list_a = form(Leaf::Ctor(CompoundCtor::List), one);
+        let list_b = form(Leaf::Ctor(CompoundCtor::List), one);
+        let set = form(Leaf::Ctor(CompoundCtor::Set), one);
+        let str_list = form(Leaf::Str("list".into()), one);
+        let name_list = form(Leaf::Name("list".into()), one);
+        // Same ctor kind → equal, and symmetric.
+        assert!(
+            list_a.structurally_eq(&list_b),
+            "same ctor-leaf kind is equal"
+        );
+        assert!(list_b.structurally_eq(&list_a), "equality is symmetric");
+        // Different ctor kinds → distinct.
+        assert!(
+            !list_a.structurally_eq(&set),
+            "List-ctor and Set-ctor heads must differ"
+        );
+        // A ctor-leaf head does NOT collapse with the legacy string/name head (no cross-representation
+        // aliasing), in BOTH directions.
+        assert!(
+            !list_a.structurally_eq(&str_list),
+            "ctor-leaf head must not collapse with a string head"
+        );
+        assert!(
+            !str_list.structurally_eq(&list_a),
+            "no cross-collapse (symmetric)"
+        );
+        assert!(
+            !list_a.structurally_eq(&name_list),
+            "ctor-leaf head must not collapse with a name head"
+        );
+        // The two field-pair / member marker leaves are likewise their own identities.
+        let fp = form(Leaf::FieldPair, one);
+        let member = form(Leaf::Member, one);
+        let eq_name = form(Leaf::Name("=".into()), one);
+        assert!(
+            !fp.structurally_eq(&member),
+            "FieldPair and Member heads differ"
+        );
+        assert!(
+            !fp.structurally_eq(&eq_name),
+            "the FieldPair leaf head is distinct from a Name(\"=\") head"
+        );
+    }
+
+    #[test]
     fn structurally_eq_is_robust_to_interning_order() {
         // Structural equality compares the DENOTED tree, not the raw arena vectors — so two arenas that
         // intern the same leaves in different order (hence different leaf ids) are still equal.
