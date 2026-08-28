@@ -1344,7 +1344,7 @@ pass	a bare effect declaration that is never performed is well-formed
 pass	a bare empty list reflects an undetermined element, distinct from a concrete list type
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare in-range ConstFloat if-branch under a Float32 annotation emits valid f32 and runs
-pass	a bare list of scalars in a record result crosses the export boundary
+pass	a bare list of scalars in a record result VALUE round-trips via the run/encode envelope (no wit-world clause; a typed record/sum EXPORT is a separate gap)
 pass	a bare literal annotated Float32 is grounded at binary32 precision (literal path, not a runtime demote)
 pass	a bare literal argument out of range for a narrow parameter width is rejected at check
 pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
@@ -2563,7 +2563,7 @@ pass	a list of closures each keeps its own capture, selected by a runtime index
 pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of maps: a runtime index then looks a runtime key up in the found map
 pass	a list of nominal-over-quantity newtypes is a compound Map key
-pass	a list of records in a record result crosses the export boundary
+pass	a list of records in a record result VALUE round-trips via the run/encode envelope (no wit-world clause; a typed record/sum EXPORT is a separate gap)
 pass	a list of records with a bytes leaf crosses the export boundary via an imposed WIT world
 pass	a list of records with different field sets is a type error
 pass	a list of records: a runtime index then reads a field of the found record
@@ -2854,7 +2854,7 @@ pass	a multi-export compound-result shared call is a repeatable (borrow<t>) call
 pass	a multi-export record interface guest emits a wrapper per member and runs both (via an imposed WIT world)
 pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-export shared call is a repeatable (borrow<t>) callback
-pass	a multi-field record result crosses the export boundary
+pass	a multi-field record result VALUE round-trips via the run/encode envelope (no wit-world clause; a typed record/sum EXPORT is a separate gap)
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-level RRB list persistently updates deep interior-level indices leaving the original intact
 pass	a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall to the next field
@@ -2944,7 +2944,7 @@ pass	a named multi-argument function applies in explicit curried form
 pass	a named multi-argument function applies to all its arguments at once
 pass	a named rate unit converts to the reference rate (Float)
 pass	a named runtime binding computes its value exactly once
-pass	a named variant-with-payload field in a record result crosses the export boundary on both arms
+pass	a named variant-with-payload field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)
 pass	a named width alias and its width-indexed expansion name the same type
 pass	a named-variant result writer name-matches (not positionally) with a reversed guest decl (via an imposed WIT world)
 pass	a named-wildcard guard binder over a string binds in both the guard and the body
@@ -4638,7 +4638,7 @@ pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
 pass	a tuple payload extracted through a helper return must not be rejected as a type error
 pass	a tuple payload returned through a helper from a built-in Option must not trap
 pass	a tuple scrutinee built from TWO performs — the guard relates both dispatch results
-pass	a tuple with a Char leaf declines compound ordering — Char has no blessed order
+pass	a tuple with a Char leaf orders by codepoint — Char is a blessed compound-ordering leaf
 pass	a tuple with a Float64 element MISSES a Map key with a different float leaf
 pass	a tuple with a Float64 element is a Map key found by a separately-built equal key
 pass	a tuple with a Qty leaf as a map key hits by magnitude-and-unit content
@@ -5477,7 +5477,7 @@ pass	an operator applied inside a lambda passed to an annotated named HOF
 pass	an opposite-direction and over a non-empty interval computes its non-constant value
 pass	an opposite-direction or with a real gap computes its non-constant value
 pass	an option value annotated with the wrong payload type is rejected
-pass	an option<s64> field in a record result crosses the export boundary on both arms
+pass	an option<s64> field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)
 pass	an option<s64> param field is read and rebuilt by the wrapper on both arms (via an imposed WIT world)
 pass	an or connective with a non-boolean operand is a type error
 pass	an or whose left operand short-circuits elides the performing right operand
