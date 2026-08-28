@@ -1253,6 +1253,37 @@ fn emit_expr_viewed(
             let x = emit_expr(db, b, operand, None, env, emitted)?;
             Ok(b.list(vec![head, x]))
         }
+        // `Value.encode v` — the in-fold canonical binary-AST value-form encode (`∀a. a → Bytes`, TOTAL).
+        // Surface `((. Value encode) <value>)`. The `desc` byte string is DERIVED from `value`'s type at
+        // lowering, so it is NOT in the surface — recompile rebuilds the identical descriptor from the
+        // re-inferred type. `Value.encode` is THE single public canonical encoder (also backs `Ast.encode`).
+        Core::ValueEncode { value, .. } => {
+            let head = member_access(b, "Value", "encode");
+            let v = emit_expr(db, b, value, None, env, emitted)?;
+            Ok(b.list(vec![head, v]))
+        }
+        // `Value.decode b` — the PARTIAL inverse (`∀a. Bytes → (Option a)`). Surface
+        // `(: ((. Value decode) <bytes>) (Option <T>))`. The target `a` is grounded by the CALL-SITE
+        // expected type; the optimizer can fold a decode to a position that under-determines `a` on
+        // recompile, so we ASCRIBE the node's own solved `(Option T)` result type (via `type_ast`). An
+        // under-determined result type (`type_ast` returns `None`) DECLINES rather than emit an unsolved
+        // decode. `desc`/`disc_some`/`disc_none` are all rebuilt from that type on recompile.
+        Core::ValueDecode { bytes, .. } => {
+            let ty = crate::infer::type_of(db, id);
+            let ncx = db.name_ctx();
+            let ty_node = crate::lower::type_ast(b, &ty, &ncx).ok_or_else(|| {
+                Reject::decline(
+                    "the Cadenza backend does not yet lower a `Value.decode` whose result type is \
+                     under-determined (an unsolved decode target)"
+                        .to_string(),
+                )
+            })?;
+            let head = member_access(b, "Value", "decode");
+            let by = emit_expr(db, b, bytes, None, env, emitted)?;
+            let call = b.list(vec![head, by]);
+            let colon = b.name(":");
+            Ok(b.list(vec![colon, call, ty_node]))
+        }
         // STRING OPERATIONS — member-access ops `((. String <member>) <op>…)`. `String.at`/`scalar-at`
         // share ONE `Core::StrAt` (both walk the scalar buffer), distinguished by the RESULT's `Option`
         // payload — a `Char` payload came from `scalar-at`, a `String` payload from `at`. The others are 1:1.
