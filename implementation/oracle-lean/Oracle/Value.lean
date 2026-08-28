@@ -42,9 +42,13 @@ inductive Value where
   -- Float values are PASS-THROUGH of the canonical float leaf (we never COMPUTE floats): structural
   -- BEq gives the spec's equality — a single canonical `NaN` form (all NaN equal) and `-0.0` ≠ `0.0`
   -- (the sign bit differs). Floats offer NO total order (compareVals declines) and no arithmetic here.
-  | float (neg : Bool) (exp : Int) (sig : ByteArray)   -- a normal float (sign + exponent + significand)
+  | float (neg : Bool) (exp : Int) (sig : ByteArray)   -- a normal float LITERAL (sign + exponent + significand)
   | floatNan                                            -- the one canonical NaN
   | floatInf (neg : Bool)                               -- ±infinity
+  -- a COMPUTED f64 (a float arithmetic result): the pass-through `.float` decimal leaf can't be produced by
+  -- IEEE compute, so an arithmetic result carries the raw `f64` here. It has no leaf form (never encoded);
+  -- `asF64?` reads it directly and `valueEqSpec` compares it f64-bit-exact against any float spelling.
+  | f64 (f : Float)
   | unit
   -- compound values (their canonical forms, per `cdz-run`'s render): Option, Result, tuple, list
   | some (v : Value)
@@ -136,6 +140,7 @@ def asF64? : Value → Option Float
     Option.some (if neg then -f else f)
   | .floatNan => Option.some (0.0 / 0.0)
   | .floatInf neg => Option.some (if neg then -(1.0 / 0.0) else 1.0 / 0.0)
+  | .f64 f => Option.some f
   | _ => Option.none
 
 /-- Canonical `f64` bits for SPEC float equality: all NaN fold to one bit pattern (spec: a single NaN,

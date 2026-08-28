@@ -232,6 +232,27 @@ def evalArithOp (op : String) (a b : Int) (ty : IntTy) : Outcome :=
       let r := if op == "+" then a + b else if op == "-" then a - b else a * b
       if inB r then .value (.int r) else .trap "overflow"
 
+/-- Binary FLOAT arithmetic on the operands' `f64` values. A float arith result is a COMPUTED `f64`
+(`Value.f64`), compared bit-exact by `valueEqSpec` against any float spelling; IEEE division by zero
+yields ±inf / NaN (never a trap, unlike integer `/`). `%` (modulo) is not modeled for floats. -/
+def evalFloatOp (op : String) (a b : Float) : Outcome :=
+  if op == "+" then .value (.f64 (a + b))
+  else if op == "-" then .value (.f64 (a - b))
+  else if op == "*" then .value (.f64 (a * b))
+  else if op == "/" then .value (.f64 (a / b))
+  else .unsupported "eval: float % (modulo) not modeled"
+
+/-- Does the subtree at `i` mention a `Float32` type anywhere (a `(: e Float32)` ascription)? A SAFE
+over-approximation used to SKIP float arithmetic that involves Float32: exact f32 arith rounds at each op
+(the evaluator doesn't yet thread float precision), so grading it at f64 would be wrong. Float64 arith
+(no Float32 mention) is unaffected and grades normally. Float32 arithmetic is a pending increment. -/
+partial def mentionsFloat32? (m : Module) (i : Nat) : Bool :=
+  match m.nodes[i]? with
+  | some (Node.list cs) =>
+    (m.headName? (Node.list cs) == some ":".toUTF8 && (cs[2]?).bind (nameOf? m) == some "Float32".toUTF8)
+    || cs.any (mentionsFloat32? m)
+  | _ => false
+
 /-- The recognized binary arithmetic operator heads. -/
 def arithOps : List String := ["+", "-", "*", "/", "%"]
 
@@ -1049,7 +1070,18 @@ partial def evalIf (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children 
 keeps the enclosing `ty`). This is where a non-default width enters (e.g. `(: (+ a b) Int8)`). -/
 partial def evalAscribe (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children : Array Nat) : Outcome :=
   match children[1]?, children[2]? with
-  | some valId, some tyId => evalNode m env ((parseIntTy? m tyId).getD ty) fuel valId
+  | some valId, some tyId =>
+    let o := evalNode m env ((parseIntTy? m tyId).getD ty) fuel valId
+    -- A `Float32` ascription over a COMPUTED float (`.f64`, an arithmetic result) can't be graded at f64
+    -- precision: exact f32 arithmetic rounds at EACH op, and demoting only the final result would
+    -- double-round. The evaluator doesn't yet thread float precision through the operations, so SKIP
+    -- (preserving the pre-existing behavior — Float32 arithmetic is a pending increment). A Float64 (or
+    -- unascribed) computed float grades normally; a Float32 LITERAL is unaffected (handled elsewhere).
+    match o with
+    | .value (.f64 _) => if (nameOf? m tyId) == some "Float32".toUTF8
+                         then .unsupported "eval: Float32 arithmetic not modeled (per-op f32 demote pending)"
+                         else o
+    | _ => o
   | _, _ => .unsupported "eval: malformed ascription"
 
 /-- `(op a b)` for a binary integer operator — evaluate both operands at `ty` and apply, trapping on
@@ -1087,8 +1119,18 @@ partial def evalArith (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : S
       | _, .diverges => .diverges
       | .trap t, _ => .trap t
       | _, .trap t => .trap t
-      | .value (.int a), .value (.int b) => evalArithOp op a b opTy
-      | _, _ => .unsupported "eval: non-integer operand to arithmetic"
+      | .value va, .value vb =>
+        match va, vb with
+        | .int a, .int b => evalArithOp op a b opTy
+        | _, _ =>
+          -- both operands are floats (a literal, ±inf/NaN, or a computed f64) → IEEE float arithmetic.
+          -- Skip if a Float32 is involved (per-op f32 rounding not yet threaded → f64 compute would be wrong).
+          match Value.asF64? va, Value.asF64? vb with
+          | some fa, some fb =>
+            if mentionsFloat32? m aId || mentionsFloat32? m bId
+            then .unsupported "eval: Float32 arithmetic not modeled (per-op f32 demote pending)"
+            else evalFloatOp op fa fb
+          | _, _ => .unsupported "eval: non-numeric operand to arithmetic"
   | _, _ => .unsupported s!"eval: malformed {op}"
 
 /-- `(op a b)` for a binary bitwise / shift operator — same operand evaluation + width inference as
