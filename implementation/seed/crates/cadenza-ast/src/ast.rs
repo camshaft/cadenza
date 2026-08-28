@@ -1389,6 +1389,20 @@ impl Builder {
         }
     }
 
+    /// The `Str`-LITERAL spelling of `id` if it is an `Atom(Str)`, else `None` — the `Str` sibling of
+    /// [`Builder::as_name`], so a mid-build reader can recognize the unshadowable STRING-primitive
+    /// compound head (`("record" …)`) as well as the `Name` alias (`(record …)`). Mirrors
+    /// [`Arenas::as_str`].
+    pub fn as_str(&self, id: StructId) -> Option<&str> {
+        match self.get(id) {
+            Struct::Atom(l) => match &self.leaves[l.0 as usize] {
+                Leaf::Str(s) => Some(s),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Build the CANONICAL effect-schema tree `(effect Name (op OpName Sig)… (authz Authz)?)` and return
     /// its root — the single constructor for the shape whose `Hash::of(codec::encode(root))` is the
     /// effect-schema identity (DESIGN-userspace-effects; the wire key a resolver maps to a schema AST, its
