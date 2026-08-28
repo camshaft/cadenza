@@ -706,6 +706,30 @@
               echo "ok: per-crate closures match expected (${builtins.toString (builtins.attrNames expected)})" > $out
             '';
 
+        # cdz-run PATH-ONLY assert (v-cdz-crate-split, operator 2026-08-28): cdz-run holds wasmtime; NO
+        # crate may link it as a LIBRARY (reached only via PATH — the cdz plugin dispatcher forwards). A lib
+        # dependent rebuilds wasmtime constantly (seedCompiler does today via cdz). Pure-eval RATCHET: assert
+        # the workspace-member crates depending on cdz-run are a SUBSET of `allowed`, shrunk to [] as the
+        # crate-split severs each. A NEW dependent (or failure to shrink after severing) fails LOUD at eval.
+        # (cdz-smith deps cdz-run too but is in a SEPARATE excluded workspace → not a rootCrateName → out of scope.)
+        cdzRunDependentsAssert =
+          let
+            allowed = [ "cdz" "cdz-calc" ];  # DRIVE DOWN to [] as v-cdz-crate-split severs run/test/run-rust
+            dependents = builtins.filter
+              (c: c != "cdz-run" && builtins.elem "cdz-run" (crateDirectDeps { } c))
+              rootCrateNames;
+            illegal = builtins.filter (c: !(builtins.elem c allowed)) dependents;
+          in
+          if illegal != [ ] then
+            throw ("flake.nix cdz-run-dependents-assert: " + builtins.toString illegal
+              + " link `cdz-run` as a library, but cdz-run holds wasmtime and must be PATH-only. Forward to "
+              + "the cdz-run binary instead, or (if intentional) add to `allowed` — goal is []. dependents: "
+              + builtins.toString dependents + ".")
+          else
+            pkgs.runCommand "cdz-run-dependents-assert" { } ''
+              echo "ok: cdz-run lib dependents subset of allowed (goal: none - PATH-only)" > $out
+            '';
+
         # ── S2: build a CADENZA PROJECT through nix ───────────────────────────────────────────────
         #
         # Operator arc (2026-08-03): "then we can have it building cadenza projects." A reusable function
@@ -3592,7 +3616,7 @@
                 # advisory (exposed as a check but NOT in this fail-set).
                 inherit clippyShardA clippyShardB codegenCheck gateCheck gateCheckRust guideExamplesCheck
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
-                  mandateLintCheck;
+                  mandateLintCheck cdzRunDependentsAssert;
                 # gateCheckRust folded into the fail-set (v-nix+v-ft 2026-08-10): closes the RUST-backend gate
                 # hole — gateCheck is wasm-only, so a rust-only emit divergence (v-effects E0425 mutual-rec)
                 # reached trunk green. Narrow `--case mutual` subset (rustc-per-case → full 6686 is prohibitive
@@ -3684,6 +3708,7 @@
             # every crate whose closure has cdz-num: cdz-num/cdz-calc/rcdzc). extraInputs: git (xtask fleet
             # batch tests).
             crate-closure-assert = crateClosureAssert;
+            cdz-run-dependents-assert = cdzRunDependentsAssert;
             # cdz = WORKSPACE-SRC (concierge-confirmed 1a), NOT closure/tests-dir-scoped like the other 10.
             # WHY cdz differs: its run_rust_cli tests are WORKSPACE-INTEGRATION — they rustc-compile emitted
             # Rust linking the sibling cdz-num/cdz-rt rlibs "beside the cdz bin", which only a full-workspace
