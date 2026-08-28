@@ -21,7 +21,7 @@ structure Tally where
   deriving Inhabited
 
 /-- Run one case's assertions, printing any mismatch. Returns the trial tally. -/
-def checkCase (progPath otPath : String) : IO Tally := do
+def checkCase (progPath otPath : String) (skips : Bool := false) : IO Tally := do
   let progBytes ← IO.FS.readBinFile progPath
   let otBytes ← IO.FS.readBinFile otPath
   match Ast.decode progBytes, Ast.decode otBytes with
@@ -35,7 +35,9 @@ def checkCase (progPath otPath : String) : IO Tally := do
       for v in verdicts do
         match v with
         | .holds => t := { t with holds := t.holds + 1 }
-        | .skip _ => t := { t with skip := t.skip + 1 }
+        | .skip r =>
+          t := { t with skip := t.skip + 1 }
+          if skips then IO.eprintln s!"SKIP {progPath}: {r}"
         | .mismatch d =>
           t := { t with mismatch := t.mismatch + 1 }
           IO.eprintln s!"MISMATCH {progPath}: {d}"
@@ -64,16 +66,19 @@ def main (args : List String) : IO UInt32 := do
     match Batch.judgeBatchBytes input with
     | .error e => (← IO.getStderr).putStrLn s!"oracle-check --batch-stream: {e}"; return 1
     | .ok resp => (← IO.getStdout).write resp; return 0
+  -- `--skips` (diagnostic): also print each `skip`'s reason to stderr, for surveying coverage gaps.
+  let skips := args.contains "--skips"
+  let args := args.filter (· != "--skips")
   let mut total : Tally := {}
   match args with
   | ["--manifest", file] =>
     let dirs ← readDirs file
     for d in dirs do
-      total := total.add (← checkCase (d ++ "/program.ast") (d ++ "/oracle-trial.ast"))
+      total := total.add (← checkCase (d ++ "/program.ast") (d ++ "/oracle-trial.ast") skips)
   | [prog, ot] =>
-    total ← checkCase prog ot
+    total ← checkCase prog ot skips
   | _ =>
-    IO.eprintln "oracle-check: usage: oracle-check (<program.ast> <oracle-trial.ast> | --manifest FILE)"
+    IO.eprintln "oracle-check: usage: oracle-check [--skips] (<program.ast> <oracle-trial.ast> | --manifest FILE)"
     return 2
   IO.println s!"oracle-check: {total.holds} holds, {total.mismatch} mismatch, {total.skip} skip"
   return (if total.mismatch == 0 then 0 else 1)
