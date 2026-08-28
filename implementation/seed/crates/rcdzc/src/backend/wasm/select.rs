@@ -11977,6 +11977,35 @@ pub fn build_static_compound_init(
     Ok(std::mem::take(&mut *out))
 }
 
+/// The EXACT runtime-op set the static-compound init (`build_static_compound_init` → `emit_immortal_static`)
+/// will emit, derived by a DRY-RUN into a throwaway `Emit` + scanning its `CallImport`s. This makes the
+/// module import set PRECISE (only the ops each compound's SHAPE actually builds) instead of the prior
+/// unconditional over-approximation (which force-imported the full arr/box/bytes/vec/map/set/canonicalize
+/// batch whenever ANY static compound existed — leaving e.g. map/set/vec/bytes imports DEAD in a program
+/// whose only constants are sums/tuples). No mirror-divergence: this runs the SAME emit path
+/// (`emit_immortal_static`), so the collected op set is exactly what the real init emits. A compound that
+/// DECLINES in the dry-run is not built by the real init either (`build_static_compound_init` propagates the
+/// same `Reject`, so no module is emitted), so ignoring the dry `Err` never under-collects an op that the
+/// real init actually emits. The dry `Emit` is discarded; `emit_immortal_static` only reads/memoizes `db`.
+pub fn collect_static_compound_ops(
+    db: &mut Db,
+    compounds: &[StructId],
+    layout: &Layout,
+) -> std::collections::BTreeSet<&'static str> {
+    let mut ops = std::collections::BTreeSet::new();
+    for &root in compounds {
+        let mut probe = Emit::new();
+        if emit_immortal_static(db, root, layout, &mut probe).is_ok() {
+            for instr in probe.code.iter() {
+                if let Lir::CallImport(op) = instr {
+                    ops.insert(*op);
+                }
+            }
+        }
+    }
+    ops
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit(
     db: &mut Db,
