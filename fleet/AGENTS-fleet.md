@@ -232,6 +232,28 @@ heartbeat, so even a missed nudge is eventually picked up. Pass `--no-wake` when
 
 ## The gate (what "green" means)
 
+**🚦 THE LAND MODEL (OPERATOR DIRECTIVE 2026-08-28, fleet-wide): open your OWN PR, gate it LOCALLY with
+`gate-local`, `--admin`-merge. GitHub Actions is HOURLY-ADVISORY only — never a per-PR/merge gate.** The
+operator's words, verbatim: *"I want agents to be opening their own PRs and merging after testing locally."*
+This is the STANDING model for EVERY agent (not just the platform lane), and it supersedes the
+`pr-sync`-integrator framing further down while pr-sync is stood down:
+- **`cargo xtask fleet gate-local` is the AUTHORITATIVE merge-truth.** It builds
+  `.#checks.<arch>-linux.local-gate` (the aggregate of the 9 merge-required checks + mandate-lint) and
+  prints `LANDABLE` (green) or `HOLD` — naming the failing sub-check(s) (see the gate-local paragraph below).
+- **GitHub Actions CI is HOURLY-ADVISORY ONLY — it is NOT a per-PR/merge gate and NEVER blocks a PR or
+  merge** (v-nix moved CI off PRs/merges to an hourly advisory run). Do NOT wait on GHA to land; a green
+  GHA is a bonus signal, not a requirement, and a `reject`-for-CI-red is not a thing under this model.
+- **Flow:** iterate with `dev-gate` + a scoped spot-check (below) → run `cargo xtask fleet gate-local` → on
+  `LANDABLE` (or a `HOLD` whose ONLY failing sub-check is a KNOWN pre-existing red unrelated to your change)
+  open your OWN PR against `main` and `gh pr merge --admin`. Each PR stays a meaningful coherent unit (the
+  FLOOR/CEILING rules below still apply).
+- **The hourly advisory run needs an eyeball:** a RED hourly run is surfaced by the `concierge`, who relays
+  it to the owning lane to fix — it does not auto-block anyone.
+
+(The `pr-sync` `merge-request` protocol documented elsewhere is the model WHEN pr-sync is the active
+integrator; while pr-sync is stood down the direct-to-main model above is the standing one. `dev-gate` +
+a scoped spot-check remain your fast inner loop under BOTH models — full gates are never your per-iteration job.)
+
 **🚦 FULL GATES ARE pr-sync's JOB — you iterate on `dev-gate` + a scoped spot-check (OPERATOR DIRECTIVE
 2026-08-11: "restrict full gates to the pr-sync").** The full `cargo xtask gate`/`check` battery is
 ~8-15min AND pr-sync RE-GATES the full battery on every MR anyway, so an agent running the full battery —
@@ -248,8 +270,8 @@ pre-sends with the NARROW checks only:
   case(s) your slice touches.
 - `cargo test -p <your-crate> --lib` for a specific test `dev-gate` isn't surfacing.
 
-**🚦 DIRECT-TO-MAIN gate while pr-sync is PAUSED: `cargo xtask fleet gate-local`.** With pr-sync paused
-the fleet lands direct to main, so *you* run the authoritative required-set gate before landing — that is
+**🚦 `cargo xtask fleet gate-local` — THE authoritative merge gate (per THE LAND MODEL above; standing while
+pr-sync is stood down).** You run the authoritative required-set gate yourself before landing direct to main:
 `cargo xtask fleet gate-local` (builds `.#checks.<arch>-linux.local-gate`, the aggregate of the 9
 merge-required checks + mandate-lint). It prints a clear verdict: `LANDABLE` (green) or `HOLD`, and on
 HOLD it now **names the failing sub-check(s)** — e.g. `HOLD — failing sub-check(s): wasm-runtime-build`
