@@ -16488,6 +16488,24 @@
   (call   main (: 4 Int64))
   (output (: 45 Int64)))
 
+(case "a repeated same-index List.at shared by CSE leaves the list live for a later length read"
+  (doc    "The List companion of the shared-Map.lookup refcount pin above: `(Option.expect (List.at xs 2))`
+           appears TWICE over the same list and index, so CSE shares it to ONE `list-at`. `List.at` BORROWS
+           xs, so the share must leave xs live — the program adds the two shared reads AND reads `List.len xs`
+           after. A premature drop or double-consume of the shared boxed element would corrupt the later
+           length read. xs built at run time (push 4,3,2,1,0) = [4,3,2,1,0]; element 2 = 2, so 2 + 2 + len(5)
+           = 9. Relocated from rcdzc a_cse_shared_indexed_read_is_refcount_correct_and_leaves_the_list_live.")
+  (input  (do
+            (def (build (: n Int64) (: acc (List Int64)))
+              (if (< n 0) acc (build (- n 1) (List.push acc n))))
+            (def (f (: xs (List Int64)))
+              (+ (+ (Option.expect (List.at xs 2) "v") (Option.expect (List.at xs 2) "v"))
+                 (List.len xs)))
+            (def (main (: n Int64)) (f (build n (list))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 9 Int64)))
+
 (case "a keyed lookup of an updated map is not shared with the original's"
   (doc    "`(expect (Map.lookup m 1))` = 10 and `(expect (Map.lookup (Map.insert m 1 99) 1))` = 99 — the
            SAME key, but the second lookup targets a DIFFERENT map value (the persistent update's result):
