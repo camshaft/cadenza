@@ -37,6 +37,27 @@ const OPS: [&str; 10] = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"];
 /// Int64 → Int64 → Bool relational operators, for the condition of an `if` (both branches are Int64).
 const RELS: [&str; 4] = ["<=", "<", ">=", ">"];
 
+/// Boundary Int64 literals — where width / overflow / wrap / sign-extend miscompiles cluster (mirrors
+/// `generator.rs`'s `INT_BOUNDARIES`). Index 0 is `0`, so exhausted entropy still yields a trivial
+/// compilable literal. Includes i64 / i32 / i16 / i8 / u* edges and the small ±1 neighbours.
+const INT_BOUNDARIES: [i64; 15] = [
+    0,
+    1,
+    -1,
+    i64::MAX,
+    i64::MIN,
+    i32::MAX as i64,
+    i32::MIN as i64,
+    i32::MAX as i64 + 1,
+    127,
+    -128,
+    255,
+    256,
+    32767,
+    -32768,
+    4_294_967_295,
+];
+
 /// A bolero [`ValueGenerator`] that coerces the driver's entropy into a valid `(do (def (main) …)
 /// (export main))` program. Wire it with `check!().with_generator(ProgramGen)`.
 pub struct ProgramGen;
@@ -157,9 +178,15 @@ fn gen_expr<D: Driver>(
                 let idx = driver.gen_variant(scope.len(), 0).unwrap_or(0);
                 out.push_str(&scope[idx]);
             } else {
-                let n = driver
-                    .gen_i64(Bound::Included(&-1_000_000), Bound::Included(&1_000_000))
-                    .unwrap_or(0);
+                // Bias toward boundary values (where width/overflow/wrap miscompiles cluster); else a
+                // bounded random int. Both are valid Int64 literals.
+                let n = if driver.gen_variant(2, 0).unwrap_or(0) == 1 {
+                    INT_BOUNDARIES[driver.gen_variant(INT_BOUNDARIES.len(), 0).unwrap_or(0)]
+                } else {
+                    driver
+                        .gen_i64(Bound::Included(&-1_000_000), Bound::Included(&1_000_000))
+                        .unwrap_or(0)
+                };
                 write!(out, "{n}").ok();
             }
         }
