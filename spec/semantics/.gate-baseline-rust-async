@@ -8477,3 +8477,4 @@ pass	constant tuple projections fold at boundary and multi-digit indices
 pass	a nested constant tuple projection folds through both levels
 pass	the unit value observes its total order — equal to itself, never less
 pass	an integer width reached through a let-bound constant folds and is honored
+pass	a list-arm map element binds both of two named keys

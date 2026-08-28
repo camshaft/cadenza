@@ -5838,6 +5838,20 @@
             (export main)))
   (output (: -1 Int64)))
 
+(case "a list-arm map element binds both of two named keys"
+  (doc    "The multi-key extension of the single-key list-arm map element above: `(map (1 a) (2 b))` as a list
+           element names TWO keys and binds both values — the key-presence guard requires both present and the
+           body re-match binds each. On `(list (map (1 100) (2 5)))`, `(+ a b)` = 105. Relocated from rcdzc
+           a_map_list_element_dispatches_by_key_presence.")
+  (input  (do
+            (def (f (: xs (List (Map Int64 Int64))))
+              (match xs
+                ((list (map (1 a) (2 b)) .. rest) (+ a b))
+                (_ (- 0 1))))
+            (def (main) (f (list (map (1 100) (2 5)))))
+            (export main)))
+  (output (: 105 Int64)))
+
 (case "a literal list element dispatches a runtime list by its value"
   (doc    "A list element position MAY be a refutable SCALAR/STRING LITERAL — `((list 0 a .. rest) …)` matches
            only a list whose FIRST element is 0, binding the SECOND to `a`. This is the opcode/keyword
