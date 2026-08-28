@@ -1687,6 +1687,8 @@ pass	a compose combinator captures TWO function values and applies them in decla
 pass	a compose combinator over HEAP-typed functions pipelines list transformers
 pass	a composed call over a record-transforming function with an arithmetic field compiles
 pass	a composed proof chains the equational, λ, and logical rule families into one derivation
+pass	a composed record-transform call bumps a field, applied twice, and the result field is read
+pass	a composed three-field record-transform triples a field twice and reads it last
 pass	a compound Ast SUBTREE rides a template hole into the expansion intact
 pass	a compound built from two distinct peers escapes the entrypoint as a resource
 pass	a compound child borrowed out of a sum shell via a match binder is not use-after-freed -- UAF guard + known leak
@@ -2566,6 +2568,7 @@ pass	a list past 1024 elements builds a three-level RRB trie and indexes correct
 pass	a list pattern in a sum-variant payload matches a runtime node by its child count
 pass	a list pattern over a map scrutinee is a type error
 pass	a list pattern over a non-list scrutinee is a type error
+pass	a list rest pattern binds an EMPTY rest when the fixed heads exactly consume a runtime list
 pass	a list type whose element position holds a value is rejected
 pass	a list value consumed by two operations in one function is not freed early
 pass	a list with a runtime element is returned as a program result
@@ -9073,5 +9076,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a composed record-transform call bumps a field, applied twice, and the result field is read
-pass	a composed three-field record-transform triples a field twice and reads it last
