@@ -150,14 +150,51 @@ Slice order (roughly cheapest-dep-drop first; each is one merge-request):
 - **S2 — corpus.** Replace `Cmd::Corpus` in-process arm with a passthrough to `cdz-corpus` (already a
   bin); drop `cdz-corpus` dep (and the `corpus` feature) from `cdz`.
 - **S3 — calc.** Passthrough to `cdz-calc`; drop `cdz-calc` dep.
-- **S4 — run / rust-run (wasmtime quarantine).** Passthrough `cdz run`→`cdz-run`,
-  `cdz run-rust`→`cdz-rust-run`; drop `cdz-run` + `cdz-rust-render` deps. **This removes `wasmtime`
-  from `cdz`'s graph** — a major win, and the first step of the operator's "exactly one wasmtime crate"
-  goal: `cdz-run` becomes the SOLE wasmtime holder (coordinate with v-wasmtime-migration to sweep any
-  other workspace wasmtime dep into it). The runner reads a compiled component (or, per the stdio
-  protocol, a `cadenza-ast`/artifact stream) and executes it. (Care: the `cdz run <source>` /
-  `cdz run <project>` project-vs-file dispatch that today decides in-process moves into `cdz-run` or a
-  thin `cdz-project` bin — see S6.)
+- **S4 — shed `cdz-run` (and thus `wasmtime`) from `cdz` (THE operator-priority cut).** The operator's
+  sharpened framing (2026-08-28): the pain is not "one crate holds wasmtime" but that **crates link
+  `cdz-run` as a LIBRARY** — `cdz-run` must be PATH-only so `wasmtime` compiles once. Reverse-dep audit:
+  `cdz-run`'s workspace lib dependents are exactly **`cdz` and `cdz-calc`** (both normal path deps;
+  `cdz-smith`'s is optional + a separate excluded workspace). `wasmtime` is directly held only by
+  `cdz-run`. So `seedCompiler` (which builds `cdz --no-default-features`, and `cdz-run` is NON-optional)
+  drags `wasmtime` into the whole seed + its huge downstream fanout on every `cdz-run`/wasmtime change.
+  The guard for this invariant is the pure-eval **`cdz-run-dependents-assert`** (allowlist `{cdz,cdz-calc}`
+  ratcheting to `[]`; handed to v-nix for `localGate`). `cdz`'s `cdz-run` usage is THREE surfaces, of very
+  different weight — so S4 is sub-sliced:
+  - **S4a — `cdz test` → extract to a `cdz-test` bin (the crux, ~1500 lines).** `cdz test` is a
+    sophisticated in-process compile+run @test harness: `precompile_tests_per_file` (JIT-caches
+    `cdz_run::CompiledProvider`s) → `run_test_file` → `run_one_trial_with_pool`
+    (`cdz_run::run_capturing_compiled` / `run_composition_capturing`, `RunTarget`, property-gen). It uses
+    the DEEP `cdz-run` API and its perf model (a warm JIT-provider cache across trials) forbids
+    shell-per-trial. So it moves WHOLESALE into a new `cdz-test` crate/bin that links `rcdzc` (compile) +
+    `cdz-run` (run) — exactly like `cdz-calc` does — and `cdz` forwards `cdz test` to it. This is the
+    single largest extraction and unblocks the dep-drop; it is its own multi-step slice (skeleton crate →
+    move runner + its `param_generators`/`decode_value`/`narrow_from_predicate` helpers → wire forward →
+    gate `cdz test` e2e).
+  - **S4b — the shallow runners.** `cdz run` (plain component) + `run_project`'s run-step + `cdz run-rust`
+    verdict use only `cdz_run::cli::run` / `run_core_module` — forward these to the `cdz-run` /
+    `cdz-rust-run` binaries (like `smith`/`cad`). `run_project`'s BUILD step stays in `cdz` (compiler), only
+    its run-step shells `cdz-run`. `run-rust`→`cdz-rust-run` also drops `cdz-rust-render`.
+  - **S4c — flip + drop.** Once S4a+S4b land, `cdz` has no `cdz-run` caller → make `cdz-run` optional
+    (`standalone = ["dep:cdz-run", …]`) and drop it from the default/`!standalone` build; **`wasmtime` leaves
+    `cdz`'s (and `seedCompiler`'s) graph** — the headline win. Shrink the assert allowlist to `["cdz-calc"]`.
+  - **S4d — `cdz-calc`.** Sever `cdz-calc`'s `cdz-run` lib dep (its `runtime.rs run_component` / `lib.rs`
+    `cdz_run::run`) → shell the `cdz-run` binary. Coordinate with v-guide-infra (owns the calc engine). Then
+    `cdz-run` has ZERO lib dependents; shrink the allowlist to `[]` (goal met).
+- **S4.5 — strip `cedar` from `seedCompiler` (a feature-unification leak; operator "cedar is a top
+  recompile").** `cedar-policy` (→ stacker/psm/chrono/lalrpop) is a top cache-thrash source. Its only
+  entry to the compiler graph is **`cdz/Cargo.toml`: `cadenza-syntax = { features = ["cedar"] }`** — an
+  UNCONDITIONAL dep-feature activation (for `cdz convert cedar`). `cadenza-syntax` gates cedar correctly
+  (`cedar = ["dep:cadenza-syntax-cedar"]`, non-default, all usage `#[cfg(feature="cedar")]`), but cargo
+  **feature unification** means `cdz` turning it on forces `cedar-policy` into every workspace crate that
+  links `cadenza-syntax` (rcdzc, cdz-run, cdz-corpus, …) — and into `seedCompiler`, whose `cdz
+  --no-default-features` build still activates the unconditional dep-feature. `cdz`'s own code never
+  references cedar (it's entirely inside `cadenza-syntax::convert`), so the fix is pure-Cargo.toml: make
+  cdz's cedar activation a **cdz feature** (`cedar = ["cadenza-syntax/cedar"]`) instead of unconditional,
+  so a `--no-default-features` build (seedCompiler — the huge downstream fanout) sheds `cedar-policy`.
+  Keep `cedar` in cdz `default` (dev + gate behavior unchanged); coordinate with v-nix so the user-facing
+  packaged `cdz` still enables `cedar` where `cdz convert cedar` is wanted (end-state: cedar convert moves
+  to the external `cdz-syntax` bin in S5, off the core entirely). Same disease/cure as the wasmtime
+  shedding: a heavy leaf dep dragged through the compiler graph by one convenience linkage.
 - **S5 — syntax surfaces.** Mint `cdz-syntax` (bin over `cadenza-syntax::cli`) covering
   convert/fmt/query/rewrite/diff/lint/clones/normalize; passthrough those arms; drop `cadenza-syntax`
   + `num-bigint`. (Coordinate with the nix eval callers `cdz rewrite`/`cdz convert` — they must resolve

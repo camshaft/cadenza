@@ -20,10 +20,15 @@ name = "cdz"
 path = "src/main.rs"
 
 [dependencies]
-# `cedar` is enabled here because the `cdz convert` front-end offers the Cedar surface (`--from/--to
-# cedar`). It is NO LONGER a cadenza-syntax default, so runner/reducer/grader consumers stay lean; the
-# heavy `cedar-policy` tree is pulled only into this convert bin.
-cadenza-syntax = { path = "../cadenza-syntax", features = ["cedar"] }
+# The Cedar surface (`cdz convert --from/--to cedar`) rides the `cadenza-syntax/cedar` feature — but that
+# feature is NOT activated unconditionally here. WHY: cargo FEATURE UNIFICATION would then compile the
+# heavy `cedar-policy` tree (→ stacker/psm/chrono/lalrpop) into EVERY workspace crate that links
+# `cadenza-syntax` (rcdzc, cdz-run, cdz-corpus, …) AND into `seedCompiler` (its `cdz --no-default-features`
+# build), a top cache-thrash source even though the compiler never needs cedar. Instead cedar is a `cdz`
+# FEATURE (`cedar` below, in `default`): a normal/dev/packaged `cdz` still gets `cdz convert cedar`, but a
+# `--no-default-features` build (seedCompiler + its huge downstream fanout) SHEDS `cedar-policy` entirely.
+# (End state: the cedar convert surface moves to the external `cdz-syntax` bin — off the core `cdz`.)
+cadenza-syntax = { path = "../cadenza-syntax" }
 # Arbitrary-precision integer for building `cadenza-syntax` `Leaf::Int` nodes — used by the
 # `delegate-compile` path to construct the sidecar QUERY request as a binary-AST value (a `(query
 # type-at <node>)` tree) via the front-end's Builder, byte-identical to `rcdzc::sidecar::encode`. Same
@@ -95,8 +100,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # `cdz test` path is corpus-INDEPENDENT (cdz_corpus is referenced only by the `corpus` subcommand), so
 # dropping it removes cdz-corpus from that build's closure and breaks the seedCompiler→corpus dep edge —
 # a corpus-only MR no longer needlessly re-runs the ~28min spine. A normal `cdz` keeps `corpus` (default).
-default = ["corpus", "standalone"]
+default = ["corpus", "standalone", "cedar"]
 corpus = ["dep:cdz-corpus"]
+# `cedar` (ON by default) activates the `cadenza-syntax` Cedar convert surface (`cdz convert --from/--to
+# cedar`). Split out as a cdz feature — NOT an unconditional dep-feature — so a `--no-default-features`
+# build (seedCompiler + the compiler-ml spine's test-runner cdz) SHEDS the heavy `cedar-policy` tree that
+# cargo feature-unification would otherwise force into the whole compiler graph. See the `cadenza-syntax`
+# dep comment above for the full rationale.
+cedar = ["cadenza-syntax/cedar"]
 # `standalone` (ON by default) BUNDLES the compiler in-process: `cdz` links `rcdzc` and compiles in this
 # process, the self-contained behavior a plain `cargo build` / dev `cdz` wants (operator ruling 2026-08-25:
 # "a standalone feature that pulls everything in and bundles it rather than delegates … enabled by default").
