@@ -851,3 +851,32 @@
   (call main (: 50 Int64))
   (output (: 100 Int64))
   (live-objects known-leak 500))
+
+; ── breaker batch 573: runtime Ast CONSTRUCTION cells (the constructor face; quotes covered by
+; aq1/2). ac1 = the identity contract: a runtime-built Ast (constructors, BigInt payload from the
+; arg) is structurally EQUAL to the quoted constant, discriminates against the wrong quote, and
+; fully reclaims. ac2 = the built-Ast walk calibration: build+walk leaks ~17/frame (linear ×10) —
+; the runtime-construction face of the walk-leak family (with aq2 = the hoisted-quote face).
+
+(case "ac1 a runtime-BUILT Ast equals the quoted constant structurally and reclaims clean (the construction/quote identity contract)"
+  (input (do (def (main (: n Int64))
+  (let ((built (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of n))))))
+    (+ (if (= built (quote (f 1))) 1000 0)
+       (if (= built (quote (f 2))) 100 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1000 Int64))
+  (live-objects 0))
+
+(case "ac2 ten build+walk frames over runtime-constructed Ast chains leak linearly (the construction face of the walk-leak)"
+  (input (do
+(def (depth (: node Ast)) (match node
+  ((Ast.List es) (match es ((list) 1) ((list h .. rest) (+ 1 (depth h)))))
+  (_ 1)))
+(def (mk (: d Int64)) (if (= d 0) (Ast.Int (BigInt.of d)) (Ast.List (list (mk (- d 1)) (Ast.Int (BigInt.of d))))))
+(def (frames (: k Int64)) (if (= k 0) 0 (+ (depth (mk 3)) (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 10 Int64))
+  (output (: 40 Int64))
+  (live-objects known-leak 170))
