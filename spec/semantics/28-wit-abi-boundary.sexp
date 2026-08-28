@@ -1182,6 +1182,17 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (output (: (record (= b1 7) (= b2 14) (= b3 107)) (record (b1 Int64) (b2 Int64) (b3 Int64))))
   (live-objects known-leak 1))
 
+(case "a typed reducer threading a string host-op result branches on its byte-len (via an imposed WIT world)"
+  (doc "SHAPE 57 - a STRING host-import RESULT (kv.lookup : (Bytes) -> string) driven through an imposed WIT world - the result-side twin of the string ARG (which already crosses on every path). A `string` result crosses on the WORLD-DRIVEN boundary as the SAME (ptr,len) spill a `list<u8>` (Bytes) result rides: the guest lift (emit_result_lift's `Ty::Bytes | Ty::String` arm) copies the host's bytes into a value-heap byte-rope handle, and the WIT type is `string` (ty_natural_wit). Before #(this) the result gate (result_is_liftable) admitted `list<u8>` but NOT `string`, so a bare string host-result DECLINED at compile despite the lift + WIT machinery being shape-identical - a one-shape hole in the otherwise-general world-import result surface. The reducer on-message performs kv.lookup(m.token) and branches on String.byte-len(result) > 0: non-empty -> one echo request, empty -> no requests. Stubbing lookup -> \"hi\" (byte-len 2) and asserting the non-empty branch fires makes the string result lift load-bearing (a broken lift reading len 0 would take the empty branch). Closes the host-string-RESULT wasm-emit gap (operator-blocking for run_agent + io.fetch).")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/kv (member lookup (func (param key ("list" (u8))) (result (string)))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect kv (op lookup (-> Bytes String))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (kv) (if (> (String.byte-len (kv.lookup (. m token))) 0) (record (= requests (list (record (= contract (. m contract)) (= payload (. m payload)) (= token (. m token)) (= deadline-nanos Option.None)))) (= outcome Outcome.Continue)) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-responses (respond kv.lookup (: "hi" String)))
+  (host-calls (call cadenza:platform/kv.lookup))
+  (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 8))
+
 ; -- breaker batch 408 (2026-08-26): the scalar-param + compound-result acceptance ladder, promoted
 ; on the #3721 fix (gate admission: a scalar-param member with a SpillRecord compound result now takes
 ; the typed-interface wrapper instead of leaking the raw handle). All 8 faces flipped on the fix:

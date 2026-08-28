@@ -684,15 +684,20 @@ pub fn enum_cases(db: &mut Db, ty: &Ty) -> Option<Vec<String>> {
 /// Whether a SPILLED-COMPOUND host result of type `ty` is one the general result path handles end-to-end —
 /// the guest lift (`select::emit_result_lift`) AND the component defined-type emission (a Ty→WitType→CDef
 /// tree of STRUCTURAL, anonymous-allowed component types). The recursion mirrors `emit_result_lift`'s wired
-/// arms: a `list<u8>` (Bytes) leaf; a `List<T>` of a liftable element (so `list<list<u8>>` = graph.neighbors,
-/// and `list<tuple<list<u8>,list<u8>>>` = kv.prefix-scan); a `Tuple` of liftable fields; and an option-shaped
-/// sum over `Bytes` (`option<list<u8>>` = kv.get). A `Record`/general-`Sum`/`String`/scalar leaf is NOT yet
-/// admitted here — a record/variant/enum component type must be NAMED+exported (not anonymous), a later slice;
-/// a scalar is not spilled. This is the GENERAL admit predicate that supersedes the three per-shape checks: a
-/// new structural shape composes without a new branch.
+/// arms: a `list<u8>` (Bytes) / `string` leaf (both cross as a `(ptr,len)` spilled to the retptr and lift into
+/// a value-heap byte-rope handle — identical layout, so `emit_result_lift`'s `Ty::Bytes | Ty::String` arm and
+/// `ty_natural_wit`'s `string`→`WitType::String` mapping already handle both); a `List<T>` of a liftable
+/// element (so `list<list<u8>>` = graph.neighbors, and `list<tuple<list<u8>,list<u8>>>` = kv.prefix-scan); a
+/// `Tuple` of liftable fields; and an option-shaped sum over `Bytes` (`option<list<u8>>` = kv.get). A
+/// `Record`/general-`Sum`/scalar leaf is NOT yet admitted here — a record/variant/enum component type must be
+/// NAMED+exported (not anonymous), a later slice; a scalar is not spilled. This is the GENERAL admit predicate
+/// that supersedes the three per-shape checks: a new structural shape composes without a new branch.
 pub fn result_is_liftable(db: &mut Db, ty: &Ty) -> bool {
     match ty.strip_nominal() {
-        Ty::Bytes => true,
+        // A `list<u8>` (Bytes) or a `string` — the same `(ptr,len)` spilled shape (a guest `String` is a
+        // byte-rope handle, the same value-heap representation a `Bytes` result lifts into), so the two share
+        // the leaf arm, `emit_result_lift`'s arm, and the shared retptr layout.
+        Ty::Bytes | Ty::String => true,
         Ty::List(e) => {
             let e = (**e).clone();
             leaf_liftable(db, &e)
