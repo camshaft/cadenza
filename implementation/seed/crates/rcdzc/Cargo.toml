@@ -20,8 +20,10 @@
 #      identity. Deliberately un-idiomatic Rust so the later Cadenza port is mechanical.
 #
 # Validated by INTERNAL UNIT TESTS ONLY (no `cadenza-seed` dependency — that crate is reworked
-# elsewhere): `cdz-run` runs the emitted component, `wasm-encoder` is the independent byte oracle.
-# Neither enters the compile path (the byte path is hand-emitted so it ports to the self-host).
+# elsewhere): `wasmparser`/`wasm-encoder` are the independent byte oracles. These tests never RUN a
+# component (no `wasmtime`/`cdz-run` dev-dep — behavioral verification lives in the language-agnostic
+# corpus at `spec/semantics/*.sexp`, gated on all backends); they compile + byte-check emitted artifacts.
+# Nothing here enters the compile path (the byte path is hand-emitted so it ports to the self-host).
 [package]
 name = "rcdzc"
 version = "0.0.0"
@@ -86,11 +88,6 @@ wasm-encoder = "0.239"
 # The component/core validator (tests only): parses + type-checks a component to LOCALIZE a byte error
 # (`Component::from_binary`'s error is opaque). Diagnoses the resource-linking envelope during R1/R2.
 wasmparser = "0.239"
-# The canonical component RUNNER (tests only) — composes the value-heap runtime and invokes an export,
-# exactly as the desk/gate do. Used by the value-heap behavior tests to run a component that IMPORTS the
-# runtime (the composed round-trip) without re-implementing composition in the test. It takes no
-# compiler-crate dependency, so this dev-dep introduces no cycle and never enters the compile path.
-cdz-run = { path = "../cdz-run" }
 # The shared native runtime interface an emitted ASYNC module links against (`cdz_rt::CdzEnv`). A
 # dev-dependency so `cargo test` builds its rlib into the target dir, where the Rust-async round-trip
 # tests locate it to pass `rustc --extern cdz_rt=…`. Tests only — never in the compile path.

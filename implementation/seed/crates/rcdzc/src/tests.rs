@@ -1198,56 +1198,6 @@ fn option_result_world_bytes() -> Vec<u8> {
     crate::codec::encode(&a)
 }
 
-// ── value-heap H2b: a program that IMPORTS the runtime, run COMPOSED with it ─────────────────────
-//
-// A tuple built and projected at run time lowers to the heap ops (`arr-alloc`/`box-*`/`arr-set`/
-// `arr-get`/`get-*`), so the emitted component IMPORTS `cadenza:runtime/heap`. Running it needs the
-// runtime composed in — `cdz-run` does exactly that (the canonical runner), so the behavior test
-// drives the composed round-trip through it rather than re-implementing composition.
-
-/// Locate the built value-heap runtime component `.wasm` whose content hash matches the compiler's
-/// `REQUIRED_RUNTIME_HASH`, or `None` if it is not present (so the test SKIPS rather than fails when the
-/// runtime has not been built — `cargo xtask build`/`codegen` produces it). When `CADENZA_STORE` is set it
-/// is AUTHORITATIVE — resolve ONLY `<CADENZA_STORE>/<hash>.wasm`, with NO fallback to the hardcoded
-/// candidates (matching `cdz-calc`'s `store_dir()` and `cdz-test`'s store guard) — so an `xtask check`
-/// storeless rerun (`CADENZA_STORE`=empty temp dir) makes this return `None` and the tests SKIP, faithfully
-/// reproducing storeless CI; a prepend-then-fallback would instead fall through to the real store and
-/// defeat the rerun. When UNSET, searches the content-addressed store and the `cargo component` build
-/// output, relative to the repo root.
-fn find_runtime_wasm() -> Option<Vec<u8>> {
-    use crate::backend::wasm::runtime_abi::REQUIRED_RUNTIME_HASH;
-    let candidates: Vec<std::path::PathBuf> = if let Ok(dir) = std::env::var("CADENZA_STORE") {
-        // AUTHORITATIVE: the caller pins the store; resolve only there, no fallback.
-        vec![std::path::PathBuf::from(dir).join(format!("{REQUIRED_RUNTIME_HASH}.wasm"))]
-    } else {
-        // `CARGO_MANIFEST_DIR` is `.../implementation/seed/crates/rcdzc`; the seed workspace root is
-        // three levels up, and the repo root one more.
-        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let seed = manifest.join("../..").canonicalize().ok()?; // .../implementation/seed
-        let repo = seed.join("../..").canonicalize().ok()?; // repo root
-        vec![
-            // The content-addressed store (populated by `xtask build`).
-            repo.join(format!("target/cadenza-store/{REQUIRED_RUNTIME_HASH}.wasm")),
-            // The `cargo component build` output (populated by `xtask codegen`/`build`).
-            seed.join("crates/cdz-runtime/target/wasm32-unknown-unknown/release/cdz_runtime.wasm"),
-        ]
-    };
-    for path in candidates {
-        if let Ok(bytes) = std::fs::read(&path) {
-            // Only accept a runtime whose content hash matches what the compiler compiled against —
-            // a stale runtime would compose wrong ops (the /loop gotcha). Verify before use. The pinned
-            // `REQUIRED_RUNTIME_HASH` is a BLAKE3 content address (the tree-wide unified digest), so verify
-            // with the canonical `content_address` (BLAKE3), NOT SHA-256 — a SHA-256 digest never matches
-            // the BLAKE3 constant, so the store runtime was silently rejected and value-encode tests skipped.
-            let hash = cdz_run::cli::content_address(&bytes);
-            if hash == REQUIRED_RUNTIME_HASH {
-                return Some(bytes);
-            }
-        }
-    }
-    None
-}
-
 /// A `let`-bound tuple built from runtime params but ONLY PROJECTED (never used as a whole value)
 /// FOLDS AWAY: each `(. t i)` reduces straight to its element (the param), so the body is just
 /// `(+ a b)` — no `arr-alloc`, no heap round-trip, no runtime import at all. Building the tuple only to
@@ -53004,20 +52954,21 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
-    // U9 — the agent-harness EMBEDDER (`cdz_run::run_agent`): a `String -> String` model call answered by
-    // a HOST CLOSURE, not a peer component. This is the Inc-1b bring-up path — the native agent loop's
-    // `Model.converse` bound to a Rust closure that reads the prompt rope (str-get), computes a
-    // completion, and mints the result rope (str-new), all over the SHARED value-heap runtime. It is how
-    // a Bedrock call plugs in (the closure does the SigV4/HTTPS) WITHOUT a Cadenza peer (no TLS in
-    // Cadenza) or the host-String-result ABI (unbuilt). Here the closure is a deterministic MOCK
-    // (uppercases the prompt) so the test needs no network — the same seam a real Bedrock converse fills.
+    // U9 (WHITE-BOX compile pin) — a `(-> String String)` model op bound to a host interface COMPILES to a
+    // VALID component that imports the value-heap runtime (the String prompt/completion each cross as a rope
+    // handle). The end-to-end RUNTIME round-trip (a String prompt crosses OUT to a host closure, the
+    // completion crosses back IN, byte-len read → 2) was verified via `cdz_run::run_agent`; that run is
+    // DROPPED with the cdz-run dev-dep (operator-accepted coverage gap 2026-08-28): the corpus gate harness
+    // cannot yet answer a bound/simple-export String-RESULT host op (only a reducer-export one, 28 SHAPE 57),
+    // and the test can't move to cdz-run (it needs rcdzc to compile → dev-dep cycle). v-rb #4894 landed the
+    // host-String-result EMIT so this consumer now COMPILES + validates; the host-closure embedder round-trip
+    // itself lives in cdz-run's own domain. When the corpus harness gains the bound-String-host-op capability
+    // this pin is superseded by a corpus case (see 29-cross-component-peers's String-peer converse case for
+    // the peer-answered analogue). Was u9/u10/u11 (embedder run_agent tests); reduced to this compile pin.
     // ------------------------------------------------------------------------------------------------
     #[test]
-    fn u9_the_embedder_answers_a_string_model_call_with_a_host_closure() {
+    fn u9_a_string_model_op_bound_to_a_host_interface_compiles_and_imports_the_runtime() {
         use crate::testkit::parse;
-        // CONSUMER (source): a peer-bound effect Model `(-> String String)`; main converses on an
-        // in-program prompt and reads the completion's byte-len (scalar entrypoint — no resource escape).
-        // The prompt "hi" (2 bytes) → the mock uppercases → "HI" (2 bytes) → byte-len 2.
         let src = "(do \
             (effect Model (op converse (-> String String))) \
             (bind Model \"cadenza:model/api\") \
@@ -53025,115 +52976,13 @@ mod cross_component_oracle {
             (export main))";
         let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
             .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[U9] runtime wasm not found; skipping");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: Vec::new(),
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        // The MOCK model: uppercase the prompt. A real embedder swaps this closure for a Bedrock invoke.
-        let converse = |prompt: String| prompt.to_uppercase();
-        match cdz_run::run_agent(&consumer, "cadenza:model/api", "converse", &opts, converse)
-            .expect("the embedder answers the String model call with a host closure")
-        {
-            // main("hi") → converse → "HI" → byte-len 2. A String crossed OUT to a host closure and the
-            // completion crossed back IN, both as shared-runtime rope handles the embedder marshalled.
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "2",
-                "the host-closure completion's byte-len proves the String round-tripped through the embedder"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("embedder run trapped: {t}"),
-        }
-    }
-
-    // ------------------------------------------------------------------------------------------------
-    // U10 — the embedder REJECTS a mis-shaped model op with a clear message, not a panic. `run_agent`
-    // binds `converse` assuming the imported op is `(u32) -> u32` (a String prompt/completion each cross
-    // as one runtime rope handle). A consumer whose model op has a DIFFERENT shape (here `(Int64) ->
-    // Int64`, which crosses as `(s64) -> s64` — a scalar, not a handle) must fail up front naming the op
-    // + the required shape (robustness hardening — Copilot PR#463 flagged the unchecked `results[0]`).
-    // ------------------------------------------------------------------------------------------------
-    #[test]
-    fn u10_the_embedder_rejects_a_mis_shaped_model_op_clearly() {
-        use crate::testkit::parse;
-        // A consumer whose Model.converse is `(Int64) -> Int64` (scalar, crosses as s64) — NOT the
-        // `(String) -> String` (u32 handle) shape the embedder binds. It still imports the runtime (an
-        // unrelated String literal forces the heap import) so run_agent reaches the shape check.
-        let src = "(do \
-            (effect Model (op converse (-> Int64 Int64))) \
-            (bind Model \"cadenza:model/api\") \
-            (def (main) (+ (host (Model) (Model.converse 1)) (String.byte-len \"x\"))) \
-            (export main))";
-        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: Vec::new(),
-            // No runtime needed: the shape check fails BEFORE the runtime is required.
-            runtime: super::find_runtime_wasm(),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        let err = cdz_run::run_agent(&consumer, "cadenza:model/api", "converse", &opts, |p| p)
-            .expect_err("a mis-shaped model op must be REJECTED, not run (or panic)");
-        let msg = format!("{err}");
+        let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        v.validate_all(&consumer)
+            .expect("the String-model-op consumer validates");
         assert!(
-            msg.contains("must be `(u32) -> u32`") && msg.contains("converse"),
-            "the rejection must name the op + the required (u32)->u32 shape, got: {msg}"
+            super::imports_value_heap_runtime(&consumer),
+            "the String prompt/completion cross as rope handles → the consumer imports the value-heap runtime"
         );
-    }
-
-    // ------------------------------------------------------------------------------------------------
-    // U11 — the embedder's model loop runs correctly at DEPTH (a many-turn agent loop). The existing u7-9
-    // fixtures do one turn; a real agent loops. This drives a 50-turn recursive loop where EACH turn
-    // performs `Model.converse` (a String prompt IN, a String completion OUT — a fresh rope allocated +
-    // consumed per turn) and folds the completion's byte-len. It pins that repeated rope alloc across the
-    // host-closure boundary over a real recursion has no rc-leak / miscompile / fold error at depth (a
-    // class the 1-turn tests can't surface). The host `converse` appends "X" (so "turn"→"turnX", 5 bytes);
-    // 50 turns × 5 = 250.
-    // ------------------------------------------------------------------------------------------------
-    #[test]
-    fn u11_the_embedder_model_loop_runs_at_depth() {
-        use crate::testkit::parse;
-        let src = "(do \
-            (effect Model (op converse (-> String String))) \
-            (bind Model \"cadenza:model/api\") \
-            (def (loop (: n Int64) (: acc Int64)) \
-                (if (= n 0) acc \
-                    (loop (- n 1) (+ acc (String.byte-len (host (Model) (Model.converse \"turn\"))))))) \
-            (def (main) (loop 50 0)) \
-            (export main))";
-        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[U11] runtime wasm not found; skipping");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: Vec::new(),
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        // The host model appends "X": "turn" -> "turnX" (5 bytes). Fresh rope per turn, 50 turns.
-        let converse = |prompt: String| format!("{prompt}X");
-        match cdz_run::run_agent(&consumer, "cadenza:model/api", "converse", &opts, converse)
-            .expect("the many-turn model loop runs")
-        {
-            // 50 turns × byte-len("turnX")=5 → 250. Repeated rope alloc/consume across the boundary at
-            // depth, no leak/miscompile.
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "250",
-                "a 50-turn loop folds 50×5 = 250 — the model loop runs correctly at depth"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("deep model-loop run trapped: {t}"),
-        }
     }
 
     // ------------------------------------------------------------------------------------------------

@@ -1907,7 +1907,6 @@ dependencies = [
  "cadenza-syntax",
  "cdz-num",
  "cdz-rt",
- "cdz-run",
  "clap",
  "tracing",
  "tracing-subscriber",
