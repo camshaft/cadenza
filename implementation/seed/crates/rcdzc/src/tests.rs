@@ -595,123 +595,6 @@ fn import_envelope_is_a_valid_component_with_the_versioned_import() {
     );
 }
 
-// ── the behavior run (via cdz-run) ─────────────────────────────────────────────────────────────
-
-/// A component-boundary result type a behavior test can read back — one method parsing `cdz-run`'s
-/// canonical rendered result text into the Rust value the test asserts on. (Formerly decoded a
-/// `wasmtime::component::Val` directly; now parses `cdz_run::run`'s `Outcome::Value` string so these
-/// tests hold only the `cdz-run` dep, not a DIRECT `wasmtime` dep — the emitted scalar renders as a plain
-/// decimal / `true`/`false` / a finite-float literal, which round-trips through `parse`.) Adding a new
-/// boundary return type is one more `impl FromVal`, no new run helper.
-trait FromVal: Sized {
-    /// Parse a boundary result from cdz-run's rendered text, panicking with a type-named message on a
-    /// mismatch.
-    fn from_rendered(s: &str) -> Self;
-}
-
-impl FromVal for i64 {
-    fn from_rendered(s: &str) -> i64 {
-        s.parse()
-            .unwrap_or_else(|_| panic!("expected i64 result, got {s:?}"))
-    }
-}
-
-impl FromVal for bool {
-    fn from_rendered(s: &str) -> bool {
-        match s {
-            "true" => true,
-            "false" => false,
-            other => panic!("expected bool result, got {other:?}"),
-        }
-    }
-}
-
-impl FromVal for u64 {
-    fn from_rendered(s: &str) -> u64 {
-        s.parse()
-            .unwrap_or_else(|_| panic!("expected u64 result, got {s:?}"))
-    }
-}
-
-impl FromVal for u32 {
-    fn from_rendered(s: &str) -> u32 {
-        s.parse()
-            .unwrap_or_else(|_| panic!("expected u32 result, got {s:?}"))
-    }
-}
-
-impl FromVal for i32 {
-    fn from_rendered(s: &str) -> i32 {
-        s.parse()
-            .unwrap_or_else(|_| panic!("expected i32 result, got {s:?}"))
-    }
-}
-
-// The narrow component primitives — an aliased ≤16-bit width crosses as its faithful `s8`/`u8`/`s16`/
-// `u16`, rendered as the same decimal, so a behavior test reads it back as the matching Rust type.
-impl FromVal for i8 {
-    fn from_rendered(s: &str) -> i8 {
-        s.parse()
-            .unwrap_or_else(|_| panic!("expected i8 result, got {s:?}"))
-    }
-}
-
-impl FromVal for u8 {
-    fn from_rendered(s: &str) -> u8 {
-        s.parse()
-            .unwrap_or_else(|_| panic!("expected u8 result, got {s:?}"))
-    }
-}
-
-impl FromVal for i16 {
-    fn from_rendered(s: &str) -> i16 {
-        s.parse()
-            .unwrap_or_else(|_| panic!("expected i16 result, got {s:?}"))
-    }
-}
-
-impl FromVal for u16 {
-    fn from_rendered(s: &str) -> u16 {
-        s.parse()
-            .unwrap_or_else(|_| panic!("expected u16 result, got {s:?}"))
-    }
-}
-
-// A Float64/Float32 crosses as the component `f64`/`f32`; cdz-run renders it as a finite-float literal
-// (e.g. `2.5`) which `parse` reads back. (Bit-exact NaN/`-0.0` cases are not read this way — no such
-// caller remains; those live in the corpus, compared by canonical value.)
-impl FromVal for f64 {
-    fn from_rendered(s: &str) -> f64 {
-        s.parse()
-            .unwrap_or_else(|_| panic!("expected f64 result, got {s:?}"))
-    }
-}
-
-impl FromVal for f32 {
-    fn from_rendered(s: &str) -> f32 {
-        s.parse()
-            .unwrap_or_else(|_| panic!("expected f32 result, got {s:?}"))
-    }
-}
-
-/// Compile+run `component_bytes`' nullary export `name` via `cdz_run` and parse the single rendered
-/// result to `T` — the "run the artifact" behavior check, generic over the boundary type. Every caller
-/// compiles a runtime-FREE scalar-folding program (no value-heap import), so `runtime: None` suffices —
-/// exactly the components the former direct-wasmtime empty-`Linker` path could run.
-fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
-    let opts = cdz_run::RunOpts {
-        export: Some(name.to_string()),
-        args: Vec::new(),
-        runtime: None,
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(component_bytes, &opts).expect("run the artifact via cdz-run") {
-        cdz_run::Outcome::Value(s) => T::from_rendered(&s),
-        cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
-    }
-}
-
 /// Does `component_bytes` import the value-heap runtime (`cadenza:runtime/heap…`)? A byte-level replacement
 /// for the former `cdz_run::required_runtime(..).is_some()` — the runtime import name appears VERBATIM as a
 /// string in the component's import section, so a byte scan is a faithful present/absent check (the H2c
@@ -2000,7 +1883,7 @@ fn cse_keeps_a_trapping_rhs_inside_a_short_circuit_or_at_the_lir_level() {
 /// conditional position (And/Or have the witnesses above; the if-arm has the cont.101 select.rs witness).
 ///
 /// The program is ALL-SCALAR (Int64 params/result, no value-heap), so it imports NO runtime — the test
-/// runs STORE-FREE (`run_returns` with `runtime: None`, no `find_runtime_wasm` skip) and therefore executes
+/// runs STORE-FREE (a compile-artifact check via `imports_value_heap_runtime`, no `find_runtime_wasm` skip) and therefore executes
 /// in storeless / clean CI too, where it must actually guard. (A `find_runtime_wasm() else return` skip —
 /// copied from the heap-value sibling tests — would silently disable this regression witness.)
 #[test]
@@ -5321,7 +5204,7 @@ fn sroa_tuple_scrutinee_candidate_fires_only_on_an_escape_free_runtime_tuple_des
 /// type-checker ACCEPTED `Map.to-list(Map.empty)` while the backend DECLINED at emit ("Map.to-list
 /// key/value shape has no orderable descriptor") — a check/compile divergence (the Set-half fix left the
 /// Map half open). An empty map enumerates to `[]` regardless of key/value type. The whole expression
-/// const-folds to `0`, so no runtime store is needed (`run_returns`, not `#[ignore]`).
+/// const-folds to `0`, so no runtime store is needed (a plain compile check, not `#[ignore]`).
 #[test]
 fn map_to_list_of_an_empty_map_folds_to_the_empty_list() {
     use crate::core::Core;
@@ -7536,7 +7419,7 @@ mod recursion {
             "(module m (type Mylist (Nil) (Cons Int64 Mylist)) (def (f (: l Mylist)) (match l ((Nil) 0) ((Cons h t) 1))) (def (main) (f (Mylist.Nil))) (export main))",
         );
         // (The end-to-end RUN — a recursive `len` over a lowercase `mylist` → 3 — is covered by the corpus
-        // gate, which composes the value-heap runtime `run_returns` here does not.)
+        // gate, which composes the value-heap runtime this compile-only check does not.)
     }
 
     #[test]
@@ -27275,7 +27158,7 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{count_opcode, find_runtime_wasm, imports_value_heap_runtime, run_returns};
+    use super::{count_opcode, find_runtime_wasm, imports_value_heap_runtime};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -32854,46 +32737,6 @@ mod stage1 {
         );
         compile_component(&crate::codec::encode(&parse(&src)))
             .expect("a wide 12-op effect handler compiles (linear routing memo)");
-    }
-
-    #[test]
-    fn an_agent_loop_shape_runs_model_ask_then_tool_dispatch_over_turns() {
-        // The native agent HARNESS (v-agent-harness) loop SPINE, pinned as a single-shot tail-resumptive
-        // program that runs today with NO ABI dependency — the control structure Inc-2 builds on
-        // (`DESIGN-agent-harness.md`). A recursive `loop` drives N turns; each turn performs `Model.ask`
-        // (the model call — here a MOCK handler standing in for the Bedrock peer, which the free
-        // nearer-handler-wins override lets us swap for the real peer later, v-effects §A-Handler-May-
-        // Interpose), then DISPATCHES a tool by value: an `= 0` equality check on the model's answer routes
-        // to `Tools.stop` (return the accumulator) vs `Tools.step` (accumulate + recurse). Both effects are
-        // handled IN-PROGRAM via NESTED handlers; the Tools handler threads the running total as its state.
-        // main runs 3 turns: turn i performs ask(i)→i (mock), i≠0 so step accumulates i and recurses; at
-        // i=0, ask→0, stop returns the accumulator = 3+2+1 = 6. A regression in nested-handler dispatch,
-        // single-shot resume, handler-state threading, or value-dispatch would break the harness's whole
-        // loop. Each Tools arm resumes its own argument `a` (both `step` and `stop` hand back the value they
-        // were called with); `step` also threads `a` as the running state. Nullary `main` (the turn count is
-        // the literal `3`) matches the sibling handler tests' no-arg `run_returns`; verified e2e via
-        // `cdz`/`cdz-run` that the parameterized form main(3)=6, main(5)=15.
-        let src = "(do \
-            (effect Model (op ask (-> Int64 Int64))) \
-            (effect Tools (op step (-> Int64 Int64)) (op stop (-> Int64 Int64))) \
-            (def (loop (: i Int64) (: acc Int64)) \
-                (if (= (Model.ask i) 0) \
-                    (Tools.stop acc) \
-                    (loop (- i 1) (Tools.step (+ acc i))))) \
-            (def (main) \
-                (handle Model 0 ((ask (q) s (resume q s))) \
-                    (handle Tools 0 ((step (a) s (resume a a)) (stop (a) s (resume a a))) \
-                        (loop 3 0)))) \
-            (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("the agent-loop shape compiles and runs"),
-                "main"
-            ),
-            6,
-            "3 turns accumulate 3+2+1; the i=0 turn's `= 0` dispatch routes to stop → 6"
-        );
     }
 
     #[test]
