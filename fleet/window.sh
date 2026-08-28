@@ -67,24 +67,12 @@ if [ ! -d "$WORKTREE" ]; then
 fi
 cd "$WORKTREE"
 
-# ── ALL-NIX cutover (operator 2026-08-28) — put the nix entrypoint wrappers on the agent's EFFECTIVE
-# PATH so agents can use the warm nix closure (cdz/gate/fast-gate/…) instead of cold bare-cargo builds.
-# The Claude Bash-tool zsh subshells source a snapshot that HARD-RESETS PATH, so a `nix develop` PATH
-# would be discarded per-command; instead we symlink the self-contained wrapper bins (each `exec nix run`,
-# needing only nix+git which the snapshot PATH already has) into ~/.local/bin — a dir ALREADY in the
-# snapshot PATH (pos ~49, before rustup ~/.cargo/bin), so they resolve in every agent subshell (v-nix
-# #5052 `packages.cdz-shell-wrappers`; delivery co-designed w/ v-fleet-tooling). FAIL-OPEN: any failure
-# here still launches the agent — the all-nix wrappers are a convenience, never a launch prerequisite.
-# (The cargo-redirect shim that shadows raw `cargo` is a SEPARATE, policy-gated step — not here yet.)
-_alln_wrappers_root="$HOME/.cdz-warm-roots/cdz-shell-wrappers"
-if mkdir -p "$HOME/.local/bin" "$(dirname "$_alln_wrappers_root")" 2>/dev/null \
-   && timeout 300 nix build ".#packages.aarch64-linux.cdz-shell-wrappers" --out-link "$_alln_wrappers_root" 2>/dev/null; then
-  ln -sf "$_alln_wrappers_root"/bin/* "$HOME/.local/bin/" 2>/dev/null \
-    && echo "window.sh: linked cdz-shell-wrappers (cdz/cdz-run/cdz-compile/roundtrip/gate/fast-gate/cdz-help) into ~/.local/bin" \
-    || echo "window.sh: cdz-shell-wrappers symlink skipped (non-fatal)" >&2
-else
-  echo "window.sh: all-nix wrapper build unavailable — launching without the ~/.local/bin wrappers (non-fatal)" >&2
-fi
+# ── ALL-NIX cutover (operator 2026-08-28) — put the nix entrypoint wrappers (cdz/gate/fast-gate/…) on the
+# agent's EFFECTIVE PATH so agents use the warm nix closure instead of cold bare-cargo builds. Delegated
+# to the shared refresh-tools.sh (also called by the post-merge/post-checkout git hooks + `fleet sync`),
+# so the wrapper SET stays in sync with the flake from one place. FAIL-OPEN: it exits 0 on any failure, so
+# a launch is never blocked on the all-nix setup. (The cargo-redirect shim is a SEPARATE, policy-gated step.)
+bash "$HUB/.claude/fleet/refresh-tools.sh" 2>/dev/null || true
 
 # The kickoff. Role bodies + contract are read from the agent's OWN worktree tracked `fleet/` (git-
 # synced with the code it works on). Runtime state (inbox, queue) is hub-anchored under .claude/fleet,
