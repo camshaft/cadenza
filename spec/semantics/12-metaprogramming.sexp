@@ -143,7 +143,7 @@
               (depth (eval (quote (S (S (Z)))))))
             (export main)))
   (call   main) (output (: 2 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "an Ast.Int carries a BEYOND-64-bit literal losslessly through quote"
   (doc    "The lossless-storage acceptance witness of the Ast.Int Int64→BigInt flip: a 26-digit literal

@@ -1231,7 +1231,7 @@
             (def (main) (sm (mk)))
             (export main)))
   (output (: 11 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 4))
 
 (case "a GENERIC user sum crosses a module boundary at a concrete instantiation"
   (doc    "The generic companion of the recursive-sum crossing above: `lib` declares a GENERIC `(type Box

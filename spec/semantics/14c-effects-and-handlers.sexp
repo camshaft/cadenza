@@ -2463,7 +2463,7 @@
   (call   main (: 1 Int64)) (output (: 304 Int64))
   (call   main (: 0 Int64)) (output (: 203 Int64))
   (call   main (: -2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 5))
 
 (case "fa5 a TWO-effect fold — each level's step multiplies a draw from each thread, both threads advancing independently"
   (input  (do

@@ -3784,7 +3784,7 @@
                 (relabel (Node (Node (Leaf) (Leaf)) (Leaf)))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 4))
 
 (case "sibling-recursive effect threading is left-to-right (order-observing)"
   (doc    "The same tree walk but with a NON-COMMUTATIVE combiner `(- (relabel l) (relabel r))`, so the
@@ -3804,7 +3804,7 @@
                 (relabel (Node (Leaf) (Leaf)))))
             (export main)))
   (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a perform BETWEEN two sibling recursive calls threads the intervening state"
   (doc    "`relabel(Node l r) = (relabel l) + Fresh.next() + (relabel r)` — a discharged perform sits
@@ -3824,7 +3824,7 @@
                 (relabel (Node (Leaf) (Leaf)))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "sibling recursive calls sequenced through let bindings thread state"
   (doc    "The `let`-sequenced form of the sibling walk — `(Node l r) => let a = relabel l in let b =
@@ -3847,7 +3847,7 @@
                 (relabel (Node (Leaf) (Leaf)))))
             (export main)))
   (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a sibling-recursive walk threads a HEAP list accumulator across the siblings"
   (doc    "The ssa/collect face of the multi-value-return walk: each leaf draws a fresh id into a
@@ -3870,7 +3870,7 @@
                 ((. List len) (collect (Node (Node (Leaf) (Leaf)) (Leaf))))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 17))
+  (live-objects known-leak 14))
 
 (case "a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)"
   (doc    "The exact SSA register-allocation shape: a node's own id is drawn AFTER lowering both children
@@ -4097,7 +4097,7 @@
                 (root-id (relabel (Node (Node (Leaf) (Leaf)) (Leaf))))))
             (export main)))
   (output (: 4 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 15))
 
 (case "a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms"
   (doc    "The gensym walk generalized to a real `Expr` sum with THREE constructors of DIFFERENT arities —
@@ -4119,7 +4119,7 @@
                 (count-ids (Add (Neg (Lit)) (Lit)))))
             (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 (case "an effect-performing helper called inside a recursive self-call's argument folds"
   (doc    "A recursive driver `run` whose SELF-CALL argument contains a call to a separate effect-performing
@@ -7873,7 +7873,7 @@
                 (+ (T.grow) (+ (* 10 (T.grow)) (* 100 (T.grow))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 420 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 6))
 
 (case "su4 a sum variant carrying a HEAP list — Empty seeds on first put, Full grows the payload thereafter"
   (input  (do

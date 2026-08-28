@@ -590,6 +590,10 @@ pub fn emit(
         used.insert("map-insert");
         used.insert("set-empty");
         used.insert("set-insert");
+        // A hoisted NULLARY mixed-sum terminal (`(Z)`/`(Nil)`) builds via `sum-new(disc, IMM_UNIT)` in the
+        // init (`is_markable_constant_sum_nullary`); force it too (not in any body when the only such
+        // construction is hoisted → its `CallImport` would otherwise resolve to u32::MAX).
+        used.insert("sum-new");
     }
     // A typed interface-export member with a RECORD param emits a boundary WRAPPER that BUILDS the record
     // from the flattened fields (`arr-alloc`/`arr-set` + per-field `box-*`). Those ops are the wrapper's,
@@ -1556,6 +1560,7 @@ pub fn collect_static_compounds(db: &mut Db, order: &[usize]) -> Vec<crate::ast:
                 || crate::lower::is_markable_constant_list(db, id)
                 || crate::lower::is_markable_constant_map(db, id)
                 || crate::lower::is_markable_constant_set(db, id)
+                || crate::lower::is_markable_constant_sum_nullary(db, id)
             {
                 roots.push(id);
                 continue; // the whole subtree is built inline under this root — don't collect nested
@@ -3222,6 +3227,8 @@ fn emit_runtime_resource(
         used.insert("map-insert");
         used.insert("set-empty");
         used.insert("set-insert");
+        // A hoisted NULLARY mixed-sum terminal builds via `sum-new(disc, IMM_UNIT)` in the init — force it.
+        used.insert("sum-new");
     }
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
@@ -8969,6 +8976,7 @@ fn emit_recursive_sum_resource(
             "map-insert",
             "set-empty",
             "set-insert",
+            "sum-new", // hoisted nullary mixed-sum terminal builds via sum-new(disc, IMM_UNIT) in the init
         ] {
             used.insert(op);
         }
@@ -10473,6 +10481,7 @@ fn emit_bytes_provider_member(
             "map-insert",
             "set-empty",
             "set-insert",
+            "sum-new", // hoisted nullary mixed-sum terminal builds via sum-new(disc, IMM_UNIT) in the init
         ] {
             used.insert(op);
         }

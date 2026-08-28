@@ -1055,4 +1055,4 @@
 (export main)))
   (call main (: 10 Int64))
   (output (: 55 Int64))
-  (live-objects known-leak 91))
+  (live-objects known-leak 86))

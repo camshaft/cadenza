@@ -384,7 +384,7 @@
             (def (count it) (match it ((GIter.Nil) 0) ((GIter.Cons h rest) (+ 1 (count rest)))))
             (def (main) (count (: (empty) (GIter Int64))))
             (export main)))
-  (call   main) (output (: 0 Int64)) (live-objects known-leak 1))
+  (call   main) (output (: 0 Int64)) (live-objects 0))
 
 (case "a valid deeply-nested generic type argument still resolves and runs (the crash-guard control)"
   (doc    "The passing control for the cyclic-substitution guard above: the SAME shape but the nested generic

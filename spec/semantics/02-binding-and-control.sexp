@@ -1391,7 +1391,7 @@
                 ((Some p)  p)
                 ((None _u) (trap "unreachable")))) (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "a reference to an unbound name is rejected before running"
   (doc    "Witnesses core-semantics.md #Binding Is Lexical: a reference to a name with no enclosing
