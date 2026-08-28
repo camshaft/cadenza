@@ -3703,14 +3703,16 @@
             # `git add`) reusing the warm dep-closure, so there is no bare-cargo per-worktree cold rebuild.
             # FUNCTIONS not PATH: `nix run` rebuilds from the dirty tree each call, whereas a PATH-injected
             # binary would freeze at shell-entry rev and miss your edits (v-nix+operator 2026-08-28).
-            cdz()       { __cdz_ensure_store; nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz"       -- "$@"; }
-            cdz-run()   { __cdz_ensure_store; nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz-run"   -- "$@"; }
-            gate()      { nix run --option warn-dirty false "$(__cdz_flakeroot)#gate"      -- "$@"; }
-            fast-gate() { nix run --option warn-dirty false "$(__cdz_flakeroot)#fast-gate" -- "$@"; }
-            export -f __cdz_flakeroot __cdz_ensure_store cdz cdz-run gate fast-gate 2>/dev/null || true
+            cdz()         { __cdz_ensure_store; nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz"         -- "$@"; }
+            cdz-run()     { __cdz_ensure_store; nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz-run"     -- "$@"; }
+            cdz-compile() { nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz-compile" -- "$@"; }
+            gate()        { nix run --option warn-dirty false "$(__cdz_flakeroot)#gate"        -- "$@"; }
+            fast-gate()   { nix run --option warn-dirty false "$(__cdz_flakeroot)#fast-gate"   -- "$@"; }
+            export -f __cdz_flakeroot __cdz_ensure_store cdz cdz-run cdz-compile gate fast-gate 2>/dev/null || true
             echo "cdz all-nix shell (LAZY boot) — tools compile on FIRST use, reusing the warm cache:"
             echo "  cdz …               compile / run / test / doctor  (builds the component store on 1st run)"
             echo "  cdz-run FILE.wasm   run a component"
+            echo "  cdz-compile …       the standalone compiler (what cdz delegates to)"
             echo "  fast-gate [crates]  fast touched-crate gate (inner loop)"
             echo "  gate                full local-gate battery (convenience)"
             echo "  → authoritative MERGE gate stays: cargo xtask fleet gate-local"
@@ -3965,13 +3967,53 @@
         # The tight inner loop stays `nix run .#fast-gate`; the full merge gate is
         # `nix build .#checks.<system>.local-gate`. Together these remove every reason to reach for raw
         # cargo (v-fleet-tooling wires the boot-into-nix-develop + the cargo-redirect wrapper).
-        apps.cdz = {
+        #
+        # WRAPPED (not a bare bin): the nix `seedCompiler` builds `cdz` in DELEGATE mode
+        # (`--no-default-features`, v-cdz-delegate #3397) — so `cdz compile` SPAWNS the external
+        # `cdz-compile` binary rather than linking rcdzc, and needs `$CDZ_COMPILE_BIN` set (else
+        # `cdz: cdz-compile not found`). And `cdz run`/`cdz test` resolve the runtime/NFC/guest components
+        # via `$CDZ_STORE`. So each app is a thin wrapper that injects both (respecting a caller override
+        # via `:-`), exactly as the flake's corpus checks do (flake.nix ~L665/1555) — making the app
+        # SELF-CONTAINED (works outside `nix develop` too). Because `nix run .#cdz` evaluates the CURRENT
+        # (dirty) flake, `cdzCompile`/`componentStore` still rebuild-on-edit from the worktree.
+        apps.cdz =
+          let
+            cdzw = pkgs.writeShellApplication {
+              name = "cdz";
+              runtimeInputs = [ ];
+              text = ''
+                export CDZ_COMPILE_BIN="''${CDZ_COMPILE_BIN:-${cdzCompile}/bin/cdz-compile}"
+                export CDZ_STORE="''${CDZ_STORE:-${componentStore}}"
+                exec "${seedCompiler}/bin/cdz" "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${cdzw}/bin/cdz";
+          };
+        apps.cdz-run =
+          let
+            cdzrunw = pkgs.writeShellApplication {
+              name = "cdz-run";
+              runtimeInputs = [ ];
+              text = ''
+                export CDZ_STORE="''${CDZ_STORE:-${componentStore}}"
+                exec "${seedCompiler}/bin/cdz-run" "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${cdzrunw}/bin/cdz-run";
+          };
+        # apps.cdz-compile — the STANDALONE compiler (rcdzc's `cdz-compile` bin) directly, bypassing
+        # `cdz`'s delegate spawn. Same bin `cdz compile` delegates to; useful to invoke the compiler
+        # on its own (`nix run .#cdz-compile -- prog.sexp -t wasm -o out.wasm`). No CDZ_STORE (compile
+        # only emits; it does not run). Rebuilds-on-edit like the others (dirty-flake eval).
+        apps.cdz-compile = {
           type = "app";
-          program = "${seedCompiler}/bin/cdz";
-        };
-        apps.cdz-run = {
-          type = "app";
-          program = "${seedCompiler}/bin/cdz-run";
+          program = "${cdzCompile}/bin/cdz-compile";
         };
 
         # apps.gate — a uniform `nix run .#gate` convenience surface for the FULL local-gate battery
