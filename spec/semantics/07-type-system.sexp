@@ -533,6 +533,23 @@
   (input  (do (def (main) (: (None) (Option Int64))) (export main)))
   (output (: (None unit) (Option Int64))))
 
+(case "a USER-declared monomorphic sum's Some variant escapes to the host rendering its bare name"
+  (doc    "A user `(type Option (Some Int64) None)` (monomorphic, shadowing the prelude generic Option) —
+           `(Option.Some 5)` escapes as the program result, a compile-time CONSTANT whose bytes are baked, and
+           renders `(: (Some 5) Option)` (the variant by its BARE name, the type as the user's monomorphic
+           `Option`). Relocated from rcdzc a_nullary_sum_export_escapes_to_the_host (its constant-baked
+           no-value-heap-import compile pin stays in rcdzc).")
+  (input  (do (type Option (Some Int64) None) (def (main) (Option.Some 5)) (export main)))
+  (output (: (Some 5) Option)))
+
+(case "a USER-declared monomorphic sum's nullary None variant escapes as its unit payload"
+  (doc    "The nullary arm: over the same user `(type Option (Some Int64) None)`, `Option.None` escapes and
+           renders `(: (None unit) Option)` — a nullary variant carries the unit value and renders by its bare
+           name. A compile-time constant (bytes baked). Relocated from rcdzc
+           a_nullary_variant_export_escapes_as_unit_payload.")
+  (input  (do (type Option (Some Int64) None) (def (main) Option.None) (export main)))
+  (output (: (None unit) Option)))
+
 (case "a consumed bare None type-checks without annotation (ambiguity is escape-only)"
   (doc    "`(match (None) ((Some x) x) ((None) 42))` consumes a bare `None`: the match arms constrain the
            payload type variable, so no annotation is needed and the None arm yields 42. Pins that the

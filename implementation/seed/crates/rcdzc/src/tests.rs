@@ -37920,63 +37920,10 @@ mod stage1 {
             !imports_value_heap_runtime(&bytes),
             "a CONSTANT sum escape bakes its bytes — no value-heap runtime import"
         );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!(
-                "runtime wasm not found (run `cargo xtask build`); skipping composed sum-escape run"
-            );
-            return;
-        };
-        // `export: None` — a sum escape is a RESOURCE component (`make`/`encode`), auto-detected by
-        // `cdz_run`, not a bare function export.
-        let opts = cdz_run::RunOpts {
-            export: None,
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(
-                    s, "(: (Some 5) Option)",
-                    "sum escape renders the bare variant name"
-                )
-            }
-            cdz_run::Outcome::Trap(t) => panic!("composed sum-escape run trapped: {t}"),
-        }
-    }
-
-    #[test]
-    fn a_nullary_variant_export_escapes_as_unit_payload() {
-        // The nullary arm: `Option.None` over a USER `(type Option …)` renders `(: (None unit) Option)` —
-        // a nullary variant carries the unit value, and the variant renders as its BARE name `None`
-        // (uniform with a built-in sum). The value is a compile-time constant, so its bytes are baked (no
-        // runtime import); the `None` template has NO holes (the `unit` payload is static).
-        use crate::testkit::parse;
-        let src = "(module m (type Option (Some Int64) None) \
-                     (def (main) Option.None) (export main))";
-        let bytes =
-            compile_component(&crate::codec::encode(&parse(src))).expect("compile None escape");
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping composed None-escape run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: None,
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(
-                    s, "(: (None unit) Option)",
-                    "nullary variant escape renders the bare variant name"
-                )
-            }
-            cdz_run::Outcome::Trap(t) => panic!("composed None-escape run trapped: {t}"),
-        }
+        // The RUN — `(Option.Some 5)` escapes as a resource and renders `(: (Some 5) Option)` (the bare
+        // variant name) — is corpus-covered by 07-type-system "a USER-declared monomorphic sum's Some variant
+        // escapes to the host rendering its bare name"; this test keeps the constant-baked no-heap pin above
+        // (a compile-artifact the corpus cannot assert).
     }
 
     #[test]
