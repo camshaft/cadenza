@@ -255,6 +255,15 @@
           doCheck = false;
         });
 
+        # The standalone corpus round-trip command as its own relocatable crane bin (v-xtask-decompose):
+        # only xtask-roundtrip + xtask-support compile (no xtask), so it caches independently. `apps.roundtrip`
+        # runs it with CDZ_SEED_BIN_DIR (nix-built cdz/cdz-corpus). Output: $out/bin/xtask-roundtrip.
+        xtaskRoundtripBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-roundtrip"; }) // {
+          pname = "cdz-xtask-roundtrip";
+          cargoExtraArgs = "-p xtask-roundtrip";
+          doCheck = false;
+        });
+
         # xtaskMandatesBin — the STANDALONE mandate-lint binary (v-xtask-decompose). Built from ONLY the
         # xtask-mandates crate's closure (`craneCrateCommon { crate = "xtask-mandates"; }` → src is just
         # that crate + its sole dep syn), so it caches INDEPENDENTLY of xtask (operator 2026-08-28: "we
@@ -418,6 +427,9 @@
           # xtask/crates/*, so — like the others — it MUST be registered here or the crane deps-src omits its
           # Cargo.toml and the workspace fails to load.
           xtask-support = "xtask/crates/xtask-support";
+          # xtask-roundtrip (v-xtask-decompose): the corpus round-trip check as its own bin crate, deps only
+          # xtask-support. Registered here so the crane deps-src includes its Cargo.toml.
+          xtask-roundtrip = "xtask/crates/xtask-roundtrip";
         };
         rootCrateNames = builtins.attrNames rootWorkspaceCrates;
         # direct member-edges of one crate across the three rebuild-relevant dep sections (A1 walk).
@@ -725,6 +737,8 @@
               # cadenza-ast; sha2 is external).
               xtask = [ "cadenza-ast" "cdz-contract" "cdz-rust-render" "xtask" "xtask-support" ];
               xtask-support = [ "cadenza-ast" "cdz-contract" "xtask-support" ];
+              # xtask-roundtrip deps xtask-support (which deps cdz-contract→cadenza-ast).
+              xtask-roundtrip = [ "cadenza-ast" "cdz-contract" "xtask-roundtrip" "xtask-support" ];
               xtask-mandates = [ "xtask-mandates" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
@@ -3540,6 +3554,9 @@
         # -- <cmd>` works too if `CDZ_REPO_ROOT` is set (the apps set it for you).
         packages.xtask = xtaskBin;
 
+        # The standalone roundtrip command bin. `nix build .#xtask-roundtrip` → result/bin/xtask-roundtrip.
+        packages.xtask-roundtrip = xtaskRoundtripBin;
+
         # The standalone mandate-lint binary (v-xtask-decompose). `nix build .#xtask-mandates` →
         # result/bin/xtask-mandates. Backs `apps.lint-mandates` + the mandate gate; caches independently
         # of xtask (its closure is just the crate + syn).
@@ -3664,6 +3681,7 @@
               clippy-xtask = mkCrateClippyCrane { crate = "xtask"; extraSrc = [ ./spec/semantics ./implementation/compiler-ml ]; extraInputs = [ pkgs.git ]; };
               clippy-xtask-mandates = mkCrateClippyCrane { crate = "xtask-mandates"; };
               clippy-xtask-support = mkCrateClippyCrane { crate = "xtask-support"; };
+              clippy-xtask-roundtrip = mkCrateClippyCrane { crate = "xtask-roundtrip"; };
             };
             # cdz's clippy stays in its workspace-src check (crateCdzCheck runs `cargo clippy -p cdz` inside).
             clippyCraneAggregate = pkgs.runCommand "cargo-clippy-crane-aggregate"
@@ -3706,6 +3724,7 @@
               test-xtask = mkCrateTestCrane { crate = "xtask"; extraSrc = [ ./spec/semantics ./implementation/compiler-ml ]; extraInputs = [ pkgs.git ]; };
               test-xtask-mandates = mkCrateTestCrane { crate = "xtask-mandates"; };
               test-xtask-support = mkCrateTestCrane { crate = "xtask-support"; };
+              test-xtask-roundtrip = mkCrateTestCrane { crate = "xtask-roundtrip"; };
             };
             # COVERAGE-PARITY assert (concierge mandate — no test silently dropped vs `cargo test
             # --workspace`): the per-crate test crates PLUS cdz (crateCdzCheck) must EXACTLY equal the
@@ -3770,7 +3789,7 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
               echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
@@ -3867,7 +3886,13 @@
             };
             roundtripCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-roundtrip";
-              cargoCmd = "cargo run --locked --package xtask --profile release -- roundtrip";
+              # STANDALONE crate (v-xtask-decompose): the round-trip check now runs the `xtask-roundtrip`
+              # bin (deps only xtask-support, NOT the xtask monolith). It needs the cdz + cdz-corpus tool
+              # binaries, so build those first and hand them to the bin via CDZ_SEED_BIN_DIR (the same env
+              # the nix app uses) — the bin then spawns them for the surface conversions. cwd is the
+              # seedRoundtripSrc root (carries spec/semantics), so the bin's repo-root cwd fallback finds
+              # the corpus. Same tool-build cost as before (the old `xtask roundtrip` cargo-built them too).
+              cargoCmd = "cargo build --locked --profile release -p cdz -p cdz-corpus && CDZ_SEED_BIN_DIR=\"$PWD/target/release\" cargo run --locked --profile release -p xtask-roundtrip";
               src = seedRoundtripSrc;
             };
             # emoji-lint (v-nix 2026-08-09): the GHA `emoji-lint` job (checks.yml — `cargo xtask lint-emoji`,
@@ -4565,7 +4590,7 @@
                 root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
                 export CDZ_REPO_ROOT="$root"
                 export CDZ_SEED_BIN_DIR="${seedTools}/bin"
-                exec ${xtaskBin}/bin/xtask roundtrip "$@"
+                exec ${xtaskRoundtripBin}/bin/xtask-roundtrip "$@"
               '';
             };
           in
