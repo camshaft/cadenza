@@ -1952,6 +1952,20 @@ impl Arenas {
         }
     }
 
+    /// The `(key, value)` of a canonical `(= key value)` FIELD PAIR node — a `List` of exactly three whose
+    /// head is the NAME `=`. The transitional NAME-headed reader (distinct from [`Arenas::field_pair_parts`],
+    /// which recognizes the M2 [`Leaf::FieldPair`] leaf-kind head); a consumer dual-reads
+    /// `field_pair_parts(id).or_else(|| field_pair(id))` across the M2 flip. `None` for anything not a
+    /// well-formed `(= k v)` triple.
+    pub fn field_pair(&self, id: StructId) -> Option<(StructId, StructId)> {
+        match self.get(id) {
+            Struct::List(kv) if kv.len() == 3 && self.as_name(kv[0]) == Some("=") => {
+                Some((kv[1], kv[2]))
+            }
+            _ => None,
+        }
+    }
+
     /// The DECLARED NAME of an effect-schema AST: the `Name` head of a root `(effect Name (op …) …)`
     /// form — e.g. `Weather` for `(effect Weather (op get (-> Unit Reading)))`. `None` if the root is
     /// not an `(effect …)` form or its name slot is absent/not a name.

@@ -1952,6 +1952,7 @@ name = "rcdzc"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "cadenza-ast",
  "cadenza-syntax",
  "cdz-num",
  "cdz-rt",

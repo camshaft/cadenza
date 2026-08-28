@@ -1749,7 +1749,10 @@ fn classify_highlight(db: &mut Db, id: StructId) -> Option<HighlightKind> {
         crate::ast::Leaf::Int { .. }
         | crate::ast::Leaf::Float(_)
         | crate::ast::Leaf::FloatNan
-        | crate::ast::Leaf::FloatInf { .. } => {
+        | crate::ast::Leaf::FloatInf { .. }
+        // A type-suffixed numeric literal (`100N`/`0.5R`) is a number for highlighting. (The codec
+        // decodes it to a plain Int/Float for the compiler, so it only survives on the syntax side.)
+        | crate::ast::Leaf::Suffixed { .. } => {
             return Some(HighlightKind::Number);
         }
         crate::ast::Leaf::Str(_) => return Some(HighlightKind::Str),

@@ -380,7 +380,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // A byte-string literal `b"…"` — the reader unescaped it to raw bytes. A `Ty::Bytes`
             // constant (lowers to a `Core::BytesOf` of its bytes, so it bakes/compares/slices exactly
             // like `(Bytes.of (list …))`, and renders back `b"…"`). The companion of the `Str` literal.
-            Leaf::Bytes(bs) => Resolved::Bytes(bs.clone()),
+            Leaf::Bytes(bs) => Resolved::Bytes(bs.to_vec()),
             // A FLOAT literal — types as `Ty::Float`, distinct from `Ty::Int` (so an int↔float mix
             // rejects, no silent promotion). A literal whose magnitude exceeds the finite Float64 range
             // rounds to `±inf`, which has no written form the reader accepts — so it is a MALFORMED
@@ -435,6 +435,15 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             Leaf::Ctor(_) | Leaf::FieldPair | Leaf::Member => Resolved::Poison(Reject::coded(
                 Code::Malformed,
                 "a compound-constructor head leaf is not a value on its own".to_string(),
+            )),
+            // A type-suffixed numeric literal (`100N`/`0.5R`) is a SYNTAX-side leaf: the reader desugars a
+            // suffixed atom to a `(: <leaf> BigInt|Rational)` annotation and the codec decodes the leaf kind
+            // straight to `Int`/`Float`, so a bare `Suffixed` leaf never reaches the decoded compiler AST. A
+            // stray occurrence is therefore malformed (like the structural head leaves above).
+            Leaf::Suffixed { .. } => Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "a type-suffixed literal must be decoded to Int/Float before resolution"
+                    .to_string(),
             )),
         },
         Struct::List(children) => {

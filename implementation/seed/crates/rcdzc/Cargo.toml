@@ -33,9 +33,17 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-# The PURE COMPILER CORE (lib) carries no VALUE dependencies — an integer literal is a plain
-# (sign, magnitude bytes) struct, so nothing is pulled in for arbitrary precision, and the core
-# ports cleanly to the Cadenza self-host.
+# COPY-DON'T-DEPEND, with ONE sanctioned exception: `cadenza-ast` (operator directive 2026-08-28,
+# "Cadenza-AST is the only exception to the no dep policy"). The AST value model + canonical binary
+# codec are NO LONGER copied in (`ast.rs`/`codec.rs`/`leb128.rs` deleted); the compiler depends on the
+# single shared `cadenza-ast` crate so there is ONE source of truth, not diverging copies. Taken with
+# `default-features = false` = its `no_std`+alloc CORE (no num-bigint / unicode-normalization / canon /
+# fxhash), so the compiler stays dependency-light and ports cleanly to the Cadenza self-host — the
+# reason cadenza-ast was kept lightweight. An integer literal is still a plain (sign, magnitude bytes)
+# `IntValue`, no arbitrary-precision library pulled in.
+[dependencies.cadenza-ast]
+path = "../cadenza-ast"
+default-features = false
 
 [dependencies.blake3]
 # The ONE exception to COPY-DON'T-DEPEND, waived by the operator (2026-08-25) specifically for blake3:
