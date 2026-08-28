@@ -12258,3 +12258,32 @@
   (call main (: 4 Int64))
   (output (: (list 4 5) LW))
   (live-objects 2))
+
+(case "cdzw34 two width-DIFFERENT .wrap Converts of one operand keep their OWN widths (the CSE-key fence), Int32-first order"
+  (doc "The width-blind-CSE regression fence (6594f7dc83, breaker-found): core_eq's Convert arm compared
+        only (op, operand) — the truncation TARGET width lives on the node's solved type — so
+        `(Int32.wrap n)` and `(UInt8.wrap n)` over one operand CSE-merged and the second took the first's
+        width (this program answered 600 = both un-masked). n=300 → 300 + 44 = 344. Also the wrap-semantics
+        hop fence (#5066): the re-emit must stay `.wrap` (truncating) — the `.of` mis-emit trapped here.")
+  (input (do (def (main (: n Int64)) (+ (Int64.of (Int32.wrap n)) (Int64.of (UInt8.wrap n)))) (export main)))
+  (call main (: 300 Int64))
+  (output (: 344 Int64)))
+
+(case "cdzw35 the ORDER-SWAPPED twin — UInt8-first must not narrow the Int32 wrap"
+  (doc "cdzw34's order twin: with `(UInt8.wrap n)` FIRST, the width-blind merge gave 88 (both masked to
+        a byte). Same correct answer, opposite failure value — together the twins pin the CSE key from
+        both directions. n=300 → 44 + 300 = 344.")
+  (input (do (def (main (: n Int64)) (+ (Int64.of (UInt8.wrap n)) (Int64.of (Int32.wrap n)))) (export main)))
+  (call main (: 300 Int64))
+  (output (: 344 Int64)))
+
+(case "cdzw36 a MULTI-PAYLOAD single-variant newtype round-trips slot-wise through the cadenza hop"
+  (doc "The #5063 fence (breaker-found regression): the tuple-erased multi-payload construct must re-emit
+        SLOT-WISE (`(Both 5 6)`) against its two-slot declaration — the wrapped-tuple mis-emit
+        (`(Both (tuple 5 6))`) failed recompile CDZ0201. Renders the erased value `(: (tuple 5 6) P2)`.")
+  (input (do (type P2 (Both Int64 Int64)) (def (main (: n Int64)) (Both n (+ n 1))) (export main)))
+  (call main (: 5 Int64))
+  (output (: (tuple 5 6) P2))
+  (call main (: -4 Int64))
+  (output (: (tuple -4 -3) P2))
+  (live-objects 1))
