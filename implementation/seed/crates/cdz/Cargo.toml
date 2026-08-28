@@ -76,15 +76,15 @@ rand_xoshiro = "0.7"
 # in-process query logic the one-shot `cdz check`/`type-at`/… subcommands use — the one-binary design
 # (both libraries + spans in one process) is exactly what a persistent server needs. `serde_json` is
 # the wire codec for the LSP params (already transitively in the tree).
-lsp-server = "0.9"
-lsp-types = "0.97"
+lsp-server = { version = "0.9", optional = true }
+lsp-types = { version = "0.97", optional = true }
 serde = "1"
 serde_json = "1"
 # Cross-platform filesystem watching for `cdz watch` (the cargo-watch analogue): re-run
 # `check`/`test`/`build` when a project source changes. `notify` is the standard FS-watch crate
 # (inotify/FSEvents/kqueue), the same choice cargo-watch makes. DEV-CLI ONLY — it lives on the `cdz`
 # binary, NEVER in the frozen `cdz-runtime` dep set (whose hash determinism a new crate would break).
-notify = "6"
+notify = { version = "6", optional = true }
 # The trace SINK for the one-binary CLI: rcdzc's lib emits rich `trace!` events (lower/eval/resolve
 # decisions) but a bin must INSTALL a subscriber for them to fire. `cdz` is the user-facing entry (NOT
 # an internal `cargo xtask` pipeline stage), so it gates on the shared `RUST_LOG` — the standard knob a
@@ -100,8 +100,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # `cdz test` path is corpus-INDEPENDENT (cdz_corpus is referenced only by the `corpus` subcommand), so
 # dropping it removes cdz-corpus from that build's closure and breaks the seedCompiler→corpus dep edge —
 # a corpus-only MR no longer needlessly re-runs the ~28min spine. A normal `cdz` keeps `corpus` (default).
-default = ["corpus", "standalone", "cedar"]
+default = ["corpus", "standalone", "cedar", "lsp", "watch"]
 corpus = ["dep:cdz-corpus"]
+# `lsp` (ON by default) mounts the `cdz lsp` stdio Language Server (its whole impl is `mod lsp`, the sole
+# user of `lsp-server`/`lsp-types`). `watch` (ON by default) mounts `cdz watch` (the sole user of `notify`,
+# → mio/inotify/filetime). Split out as cdz features — same rationale as `cedar` — so a `--no-default-features`
+# build (seedCompiler, which only drives rewrite/convert/compile at eval and NEVER runs an editor server or a
+# file-watcher) SHEDS lsp-server + lsp-types + notify's whole tree, keeping them out of the seed's huge
+# downstream fanout. A normal/dev/packaged `cdz` keeps both (default), so `cdz lsp`/`cdz watch` are unchanged.
+lsp = ["dep:lsp-server", "dep:lsp-types"]
+watch = ["dep:notify"]
 # `cedar` (ON by default) activates the `cadenza-syntax` Cedar convert surface (`cdz convert --from/--to
 # cedar`). Split out as a cdz feature — NOT an unconditional dep-feature — so a `--no-default-features`
 # build (seedCompiler + the compiler-ml spine's test-runner cdz) SHEDS the heavy `cedar-policy` tree that
