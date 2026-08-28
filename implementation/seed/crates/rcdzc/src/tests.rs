@@ -21246,33 +21246,45 @@ mod match_engine {
     }
 
     #[test]
-    fn remainder_on_a_quantity_declines_cleanly_not_a_leaked_scheme_mismatch() {
-        // `%` (remainder) on a quantity operand is not defined (the units surface has no `%` rule). It must
-        // DECLINE with a clear message, NOT leak the operator's `∀a.(Int a)→…` scheme as a confusing
-        // "type mismatch: Int64 and (Qty Int64 meter)" (the Int64 is the scheme's — an internal detail the
-        // author never wrote). Whether a same-dimension remainder should be supported is a design call
-        // held for the operator; the clean decline is today's shipped behavior.
-        let diag = reject_full(
-            "(module m (def (main) ((. Qty value) \
+    fn remainder_on_same_dimension_integer_quantities_is_well_formed() {
+        use crate::testkit::parse;
+        // `%` on same-dimension INTEGER quantities is well-formed — `7m % 3m = 1m` (operator ruling
+        // 2026-08-28: same-dimension mod makes sense). It mirrors `+`/`-` (same dimension in, SAME unit out)
+        // and runs the remainder on the erased magnitudes, so `Qty.value` of `(% 7m 3m)` is `7 % 3 = 1`.
+        let ok = "(module m (def (main) ((. Qty value) \
              (% ((. Qty of) 7 ((. Unit base) #\"meter\")) ((. Qty of) 3 ((. Unit base) #\"meter\"))))) \
+             (export main))";
+        // Compiles cleanly (the run value 7 % 3 = 1 is corpus-covered by 18-units-of-measure).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
+            "same-dimension integer remainder on quantities must be well-formed (7m % 3m = 1m)"
+        );
+        // A cross-DIMENSION remainder is a dimensional error (CDZ0501), exactly like `+`/`-` across
+        // dimensions — a remainder requires equal dimensions.
+        let cross = reject_full(
+            "(module m (def (main) ((. Qty value) \
+             (% ((. Qty of) 7 ((. Unit base) #\"meter\")) ((. Qty of) 3 ((. Unit base) #\"second\"))))) \
              (export main))",
         )
-        .expect("remainder on a quantity is rejected");
+        .expect("cross-dimension remainder is rejected");
         assert!(
-            diag.message
-                .contains("remainder (%) is not defined on quantities"),
-            "the message must name the real cause (% not defined on quantities): {}",
-            diag.message
+            cross.message.contains("incompatible dimension"),
+            "cross-dimension % names the dimensional cause: {}",
+            cross.message
         );
+        // A FLOAT-inner quantity `%` is CDZ0301 (a remainder is an integer operation) — the SAME code a
+        // bare float `%` gets; it must NOT leak the operator's `∀a.(Int a)→…` scheme.
+        let flt = reject_full(
+            "(module m (def (main) ((. Qty value) \
+             (% ((. Qty of) 7.0 ((. Unit base) #\"meter\")) ((. Qty of) 3.0 ((. Unit base) #\"meter\"))))) \
+             (export main))",
+        )
+        .expect("float quantity remainder is rejected");
         assert!(
-            !diag.message.contains("must be the same type here"),
-            "the leaky scheme-unify mismatch must NOT surface for % on a quantity: {}",
-            diag.message
+            flt.message.contains("floating-point or rational quantity"),
+            "float quantity % names the integer-only cause: {}",
+            flt.message
         );
-        // The repair the message suggests (recover each magnitude with Qty.value, then take the bare
-        // remainder → 7 % 3 = 1) is corpus-covered by 18-units-of-measure "recovering two quantities'
-        // magnitudes takes their remainder as bare numbers"; this rcdzc test keeps only the clean-decline
-        // white-box pin (the % message names the real cause and does not leak the operator's scheme).
     }
 
     #[test]
