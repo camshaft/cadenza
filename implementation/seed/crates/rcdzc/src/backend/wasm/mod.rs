@@ -628,10 +628,6 @@ pub fn emit(
                 canon_write_ops(write, &mut |op| {
                     used.insert(op);
                 });
-                // The spill also DROPS the def result cell after copying its canonical form out (see
-                // `emit_result_spill`), so the wrapper body must be able to resolve the reclaim op even
-                // when the canonical writer itself never emits a `drop`.
-                used.insert("drop");
             }
         }
     }
