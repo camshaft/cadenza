@@ -4128,3 +4128,30 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 1 Int64)))
+
+(case "salg1 the set-algebra laws hold over two runtime HAMT sets — idempotence, commutativity, self-difference, membership"
+  (doc    "Structural-law fence for the persistent Set (HAMT) algebra, complementing the reclaim-focused
+           union/intersection/difference cases above. Over two overlapping RUNTIME-built sets A={0..29},
+           B={15..44} (recursive `Set.insert` at 30-element scale forces multi-level HAMT branching; the bound
+           is a literal but the inserts run, so the sets are heap values not folded), asserts the laws that a
+           HAMT node-merge/split regression would break: A∪A = A (idempotent union, 1), A\\A = the empty set
+           (len 0), A∪B = B∪A (commutative, 1), A∩A = A (1), and post-op MEMBERSHIP — 44∈A∪B (from B, 1),
+           20∈A∩B (the overlap, 1), 5∈A\\B (A-only, 1). Packed positionally: `1*10^6 + 0 + 1*10^4 + 1*10^3 +
+           1*10^2 + 1*10 + 1` = 1011111. A union that dropped a merged element, an intersection that kept a
+           non-common one, or a difference that mis-split a shared node would move a digit. 0-leak.")
+  (input (do
+    (def (mkrange (: s (Set Int64)) (: i Int64) (: lo Int64) (: hi Int64))
+      (if (< (+ lo i) hi) (mkrange (Set.insert s (+ lo i)) (+ i 1) lo hi) s))
+    (def (main)
+      (let ((a (mkrange (Set.of (list)) 0 0 30))
+            (b (mkrange (Set.of (list)) 0 15 45)))
+        (+ (* 1000000 (if (= (Set.union a a) a) 1 0))
+        (+ (* 100000  (Set.len (Set.difference a a)))
+        (+ (* 10000   (if (= (Set.union a b) (Set.union b a)) 1 0))
+        (+ (* 1000    (if (= (Set.intersection a a) a) 1 0))
+        (+ (* 100     (if (Set.contains (Set.union a b) 44) 1 0))
+        (+ (* 10      (if (Set.contains (Set.intersection a b) 20) 1 0))
+           (if (Set.contains (Set.difference a b) 5) 1 0)))))))))
+    (export main)))
+  (output (: 1011111 Int64))
+  (live-objects 0))
