@@ -3210,23 +3210,34 @@
             set -euo pipefail
             mkdir -p "$out"
             case=${guideShred}/${dir}
-            cdz convert --from ${surface} --to binary "$case/program.${surface}" > program.ast
+            # Forward the grade inputs up front so every early-exit path carries them.
+            cp "$case/expect-kind" "$out/expect-kind"
+            [ -e "$case/expected" ] && cp "$case/expected" "$out/expected" || true
+            # CONVERT (parse) program.<surface> → binary AST. A PARSE error is a VALID decline outcome — many
+            # guide expect-kind=error examples fail here, not at compile (e.g. two `(world …)` forms →
+            # "trailing input"). So tolerate it: record a non-zero status + emit no wasm, and let the exec
+            # grade expect-kind against it (a parse decline = ok for error, = FAIL for value). Without this the
+            # unwrapped convert under `set -e` would KILL the derivation on any error-example that doesn't
+            # parse (sharded-vs-serial discrepancy — the serial check treats a parse error as the outcome).
+            if ! cdz convert --from ${surface} --to binary "$case/program.${surface}" > program.ast 2>"$out/compile.err"; then
+              printf 'parse-declined' > "$out/compile.status"; exit 0
+            fi
             inputs=("ast:main=program.ast")
             entry=()
             ${pkgs.lib.concatMapStringsSep "\n" (p: ''
-              cdz convert --from ${p.surface} --to binary "$case/module-${p.name}.${p.surface}" > "module-${p.name}.ast"
+              if ! cdz convert --from ${p.surface} --to binary "$case/module-${p.name}.${p.surface}" > "module-${p.name}.ast" 2>>"$out/compile.err"; then
+                printf 'parse-declined' > "$out/compile.status"; exit 0
+              fi
               inputs+=("ast:${p.name}=module-${p.name}.ast")
               entry=(--entry ${entryName})
             '') peers}
-            if cdz-compile "''${inputs[@]}" "''${entry[@]}" -t wasm -o "$out/emit.wasm" 2>"$out/compile.err"; then
+            # COMPILE. A refusal (declines/error case) is captured, NOT a derivation failure — the exec grades
+            # it. emit.wasm is present only on success.
+            if cdz-compile "''${inputs[@]}" "''${entry[@]}" -t wasm -o "$out/emit.wasm" 2>>"$out/compile.err"; then
               printf '0' > "$out/compile.status"
             else
               printf '%s' "$?" > "$out/compile.status"
             fi
-            # Forward the grade inputs so the exec depends ONLY on this build output (+ cdzRun): expect-kind
-            # (value|error) and, for a graded case, the expected rendered value.
-            cp "$case/expect-kind" "$out/expect-kind"
-            [ -e "$case/expected" ] && cp "$case/expected" "$out/expected" || true
           '';
         # EXEC one (case, surface) — grade against the guide model (compiler-free: cdzRun + the runtime store).
         #   expect-kind=value : compile+run must succeed; if the case is graded, stdout must equal `expected`.
