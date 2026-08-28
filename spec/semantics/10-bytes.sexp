@@ -379,7 +379,7 @@
   (output (: 13 Int64))
   (call   main (: 2 Int64))
   (output (: 35 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "brv1 a sibling view's arm-end reclaim leaves the surviving view's window intact"
   (doc    "The post-reclaim ALIAS-READ-ORDERING face of the shared-storage pin above (there both views
@@ -1296,7 +1296,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 439816 Int64))
   (call   main (: 0 Int64)) (output (: -4 Int64))
-  (live-objects known-leak 195))
+  (live-objects known-leak 195 171))
 
 ; --- A runtime `Bytes.at` Option is MATCHED — the reader's core idiom -------------------------------
 ; The reader walks the input bytes with `(match (Bytes.at input i) ((Some b) …) (None …))` on every
@@ -1907,7 +1907,7 @@
   (call main (: 1 Int64)) (output (: 25660 Int64))
   (call main (: 4 Int64)) (output (: 52720 Int64))
   (call main (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 3 13 0))
 
 (case "a Fletcher-16 over a seam-spanning slice VIEW equals the checksum of its logical bytes"
   (doc    "Composes the checksum with #Sharing Is Not Observable: slice(2,2) of [10,20,30]⧺[40,50,60]
@@ -1937,7 +1937,7 @@
   (call main (: 2 Int64) (: 2 Int64)) (output (: 25670 Int64))
   (call main (: 0 Int64) (: 6 Int64)) (output (: 13010 Int64))
   (call main (: 3 Int64) (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 4 8 1))
 
 (case "a slice OF a seam-spanning slice re-offsets into the logical bytes of the parent view"
   (doc    "The NESTED-view face: outer slice(1,4) of the seamed rope spans the seam; an inner slice
@@ -1971,7 +1971,7 @@
   (call main (: 1 Int64) (: 2 Int64)) (output (: 25670 Int64))
   (call main (: 0 Int64) (: 4 Int64)) (output (: 11660 Int64))
   (call main (: 3 Int64) (: 1 Int64)) (output (: 12850 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 4 6 3))
 
 (case "String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts"
   (doc    "The None face of the decode path (the landed from-bytes pins are happy-path): the bytes of
