@@ -37,12 +37,12 @@
 /// the crate's `[features]` in Cargo.toml.
 #[cfg(feature = "differential")]
 pub mod differential;
-// The coercing bolero generator lives behind `#[cfg(test)]` because it uses the `bolero` generator
-// traits, and `bolero` is a DEV-dependency (kept out of the lean lib/bin + the instrumented libFuzzer
-// link — see Cargo.toml). It is exercised by the `cdz_smith_gen_never_panics` target under `cargo test`
-// / `cargo bolero test`, which is exactly the coverage-guided path the operator directed.
-#[cfg(test)]
-mod astgen;
+// The coercing generator: its grammar + `generate_coerced` (byte-cursor `Choice`) are LIB-available so
+// non-test callers (the `lean-differential` subcommand) can drive it. Only the bolero `ValueGenerator`
+// adapter inside is `#[cfg(test)]` (bolero is a DEV-dependency kept out of the lean lib/bin + the
+// instrumented libFuzzer link — see Cargo.toml); the `cdz_smith_gen_never_panics` target drives the same
+// grammar coverage-guided under `cargo bolero test`.
+pub mod astgen;
 pub mod driver;
 pub mod finding;
 pub mod generator;
