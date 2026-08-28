@@ -9724,3 +9724,26 @@
   (call   main (: 4 Int64))
   (output (: 10004 Int64))
   (live-objects known-leak 8))
+
+(case "a heap-typed EXPORTED-entry param + a reachable RECURSIVE fn emits VALID wasm (the def-call index survives the entry's lift-op imports)"
+  (doc    "Fuzzer/breaker bucket-1 regression (rcdzc-wasm miscompile). An EXPORTED entry with a HEAP param
+           (String/Bytes/List/Option) makes `try_bare_entry_param_component` APPEND lift-op imports
+           (bytes-alloc/set for the String lift), which shifts every DEFINED func index up by `added`. The
+           def bodies were selected with the ORIGINAL import_base, so a baked def-to-def call — here the
+           recursive `v1`'s reachable call (recursion cannot be inlined away, so a REAL `Lir::Call`/
+           `ReturnCall` survives) — pointed at the pre-shift index and resolved to an APPENDED import op,
+           emitting INVALID wasm (`requires [i64] but callee returns [i32]`). The fix re-shifts baked
+           def-target call indices (>= import_base) by `added`. `v1(byte-len \"hi\"=2)` = 2->1->0 = 0. A
+           scalar-param entry (no lift ops, added=0) was always fine — the control below.")
+  (input  (do (def (main (: v0 String))
+                (do (def (v1 v2) (if (<= v2 0) v2 (v1 (- v2 1)))) (v1 (String.byte-len v0))))
+              (export main)))
+  (call   main (: "hi" String))
+  (output (: 0 Int64)))
+
+(case "control: a SCALAR-param entry + a reachable recursive fn (no lift-op imports, no index shift)"
+  (input  (do (def (main (: v0 Int64))
+                (do (def (v1 v2) (if (<= v2 0) v2 (v1 (- v2 1)))) (v1 v0)))
+              (export main)))
+  (call   main (: 3 Int64))
+  (output (: 0 Int64)))

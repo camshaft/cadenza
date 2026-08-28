@@ -3983,6 +3983,7 @@ fn emit_box_i32_to_i64_extend(db: &mut Db, id: StructId, out: &mut Emit) {
 /// parameter) locals in slot order, its parameter value types, and its solved return type (for the
 /// type section). A body may take parameters and declare locals (the scratch a guarded operation
 /// reserves, and any persistent slot a kept `let` binding holds).
+#[derive(Clone)]
 pub struct SelectedFunc {
     pub params: Vec<ValType>,
     pub ret: Ty,
