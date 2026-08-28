@@ -18,6 +18,7 @@
 // and `wasm` arms within this crate) — NOT part of rcdzc's public surface, so `pub(crate)`. External
 // consumers reach only `backend::wasm` (cdz/cdz-wasm/cdz-kernel/rcdzc-wasm); none names `backend::common`,
 // so tightening it avoids accidentally stabilizing an internal analysis (PR#584 API-hygiene nit).
+pub mod cadenza;
 pub(crate) mod common;
 pub mod rust;
 pub mod wasm;
@@ -67,6 +68,12 @@ pub enum Target {
     /// is the async/`env`-threaded calling convention, so it composes into an async Rust codebase where
     /// untrusted Cadenza code must be fuel-bounded.
     RustAsync,
+    /// Cadenza surface — the optimized program lowered BACK to a Cadenza binary-AST artifact
+    /// (`backend::cadenza`). Not a runnable artifact: it re-emits the program itself, AFTER
+    /// resolution/inference/const-fold/optimization, as the binary AST (`kind == "ast"`), so it can be
+    /// fed back through `compile` for round-trip idempotence, piped into the syntax system for sexpr/ML
+    /// inspection of what lowering did, or handed to the Lean oracle. The "inspect the meaning" backend.
+    Cadenza,
 }
 
 impl Target {
@@ -81,6 +88,9 @@ impl Target {
             // Both Rust forms are `rust`-kinded `.rs` source — they differ in calling convention, not
             // in artifact kind (a consumer picks the flavor by which target it asked to emit).
             Target::Rust | Target::RustAsync => "rust",
+            // The re-emitted program is a binary-AST artifact — the same `"ast"` kind an `ast` input
+            // artifact carries, since it IS a Cadenza program (round-trippable straight back in).
+            Target::Cadenza => "ast",
         }
     }
 
@@ -123,6 +133,9 @@ pub fn emit(
         },
         Target::Rust => rust::emit(db, layout, rust::Mode::Sync),
         Target::RustAsync => rust::emit(db, layout, rust::Mode::Async),
+        // The Cadenza backend re-emits the optimized program as binary AST; it reads only the same
+        // upstream columns + layout, and ignores `spans`/`external_debug_info` (not a debug target).
+        Target::Cadenza => cadenza::emit(db, layout),
     };
     match &result {
         Ok(bytes) => {
