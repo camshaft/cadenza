@@ -474,6 +474,13 @@ pub struct LeanDiffStats {
     pub mismatches: usize,
     /// The oracle skipped (a construct it does not model yet) — a coverage gap, not a bug.
     pub skips: usize,
+    /// The oracle disagreed, but ONLY on trap KIND — rcdzc trapped AND the oracle also trapped, differing
+    /// only in the trap kind (e.g. rcdzc lowers a runtime div0/overflow fault to a generic `unreachable`
+    /// while the oracle keeps the semantic kind). Per v-lean-oracle this is a systematic runtime-fault
+    /// divergence PENDING an operator policy call — NOT filed as an rcdzc bug — and it mirrors the
+    /// wasm-vs-rust `compare` rule that `(Trap, Trap)` AGREES (the trap reason is not backend-comparable).
+    /// Tallied separately so a campaign's `mismatches` surface only REAL (value-vs-trap / value) divergences.
+    pub trap_kind_pending: usize,
     /// Programs that produced no comparable wasm output (declined / artifact-error / unparsable render).
     pub not_comparable: usize,
 }
@@ -535,6 +542,16 @@ pub fn lean_differential_sweep(
     Ok(stats)
 }
 
+/// A Lean `Mismatch` is a trap-KIND-only disagreement — PENDING an operator policy ruling, NOT a filed
+/// rcdzc bug — iff rcdzc itself TRAPPED (`output` is a `Trap`) AND the oracle's detail is a "trap kind …"
+/// difference (the oracle also trapped, only the kind differs). This mirrors the wasm-vs-rust `compare`
+/// rule that `(Trap, Trap)` AGREES (the trap reason is not backend-comparable). Crucially it returns
+/// `false` when rcdzc produced a VALUE the oracle traps on — a dropped-trap miscompile (e.g. the
+/// self-identity-fold bug) — so genuine value-vs-trap divergences still surface as mismatches.
+fn is_trap_kind_pending(output: &crate::lean::RcdzcOutput, detail: &str) -> bool {
+    matches!(output, crate::lean::RcdzcOutput::Trap(_)) && detail.contains("trap kind")
+}
+
 /// Judge one batch of trials and fold the verdicts into `stats` (+ collect mismatches by source).
 fn judge_and_tally(
     oracle_bin: &std::path::Path,
@@ -544,17 +561,22 @@ fn judge_and_tally(
     mismatches: &mut Vec<(String, String)>,
 ) -> std::io::Result<()> {
     let verdicts = crate::lean::judge_batch(oracle_bin, trials)?;
-    for (src, verdict) in srcs.iter().zip(verdicts) {
+    for ((src, verdict), trial) in srcs.iter().zip(verdicts).zip(trials) {
         stats.trials += 1;
         match verdict {
             crate::lean::Verdict::Holds => stats.holds += 1,
             crate::lean::Verdict::Skip(_) => stats.skips += 1,
             crate::lean::Verdict::Mismatch(detail) => {
-                // Float-literal mismatches are trustworthy again: v-lean-oracle landed f64 rounding
-                // (#4818) so the oracle compares floats by f64 value, matching rcdzc — the interim
-                // float-literal filter is removed. Any mismatch is now a candidate rcdzc bug.
-                stats.mismatches += 1;
-                mismatches.push((src.clone(), detail));
+                // A trap-KIND-only disagreement is the systematic runtime-fault class v-lean-oracle
+                // flagged as PENDING an operator policy ruling ("don't file rcdzc bugs on them") — bucket
+                // it separately so it does NOT pollute `mismatches`. Everything else is a candidate rcdzc
+                // bug (float-literal mismatches included again since v-lean-oracle's f64 rounding #4818).
+                if is_trap_kind_pending(&trial.output, &detail) {
+                    stats.trap_kind_pending += 1;
+                } else {
+                    stats.mismatches += 1;
+                    mismatches.push((src.clone(), detail));
+                }
             }
         }
     }
@@ -972,6 +994,33 @@ mod tests {
         assert!(side_to_rcdzc_output(Side::ArtifactError("E0308".into())).is_none());
         // A value whose render doesn't parse as an AST is not comparable.
         assert!(side_to_rcdzc_output(Side::Value("(( unbalanced".into())).is_none());
+    }
+
+    /// `is_trap_kind_pending` isolates the PENDING-policy runtime-fault trap-KIND class (rcdzc trapped +
+    /// oracle's "trap kind …" difference) WITHOUT swallowing real value-vs-trap miscompiles.
+    #[test]
+    fn trap_kind_only_is_pending_but_value_vs_trap_is_a_real_mismatch() {
+        use crate::lean::RcdzcOutput;
+        let a_value = side_to_rcdzc_output(Side::Value("42".into())).expect("a value");
+        let a_trap = RcdzcOutput::Trap("wasm `unreachable`".into());
+
+        // rcdzc trapped + oracle reports a trap-KIND difference → PENDING (not a filed bug).
+        assert!(is_trap_kind_pending(
+            &a_trap,
+            "expected trap kind unreachable, got trap divide by zero"
+        ));
+        // rcdzc produced a VALUE the oracle traps on (dropped-trap miscompile, e.g. self-identity fold)
+        // → NOT pending; a real candidate bug must still fire.
+        assert!(!is_trap_kind_pending(
+            &a_value,
+            "expected a value, got trap divide by zero"
+        ));
+        // rcdzc trapped but the disagreement is NOT about trap kind (e.g. a value the oracle expected) →
+        // not pending; still a real mismatch.
+        assert!(!is_trap_kind_pending(
+            &a_trap,
+            "expected a trap, got value 7"
+        ));
     }
 
     /// END-TO-END Lean differential against the REAL `oracle-check` (skips unless `CDZ_SMITH_ORACLE_CHECK`
