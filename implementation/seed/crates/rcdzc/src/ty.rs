@@ -1767,6 +1767,29 @@ impl Ty {
     /// width renders as its default — so an observed value's type is always concrete (`Int64`,
     /// `UInt32`, …). A language-level fact, target-neutral.
     pub fn render_name(&self, ncx: &NameCtx) -> String {
+        // DEPTH GUARD (DoS-harden + readability): a type renders one recursive level per structural layer, so
+        // an explosively-deep type — a self-application fixpoint building `(List (List … (-> Any Any)))` — can
+        // recurse this renderer to a STACK OVERFLOW on the `rcdzc-compile` thread while BUILDING a CDZ0201
+        // diagnostic (v-cdz-smith fuzzer DoS). Past a GENEROUS depth, truncate with `…`: a diagnostic never
+        // needs deeper, no real (non-pathological) type reaches it, and this only affects MESSAGE TEXT — never
+        // compile logic. (The type-BUILD/unify structural recursion is a separate bound, pending a reproducible
+        // repro.) The counter is balanced by the RAII `Restore` on every exit path.
+        thread_local! {
+            static RENDER_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+        }
+        const MAX_RENDER_DEPTH: u32 = 24;
+        let depth = RENDER_DEPTH.with(|c| c.get());
+        if depth >= MAX_RENDER_DEPTH {
+            return "…".to_string();
+        }
+        RENDER_DEPTH.with(|c| c.set(depth + 1));
+        struct Restore(u32);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                RENDER_DEPTH.with(|c| c.set(self.0));
+            }
+        }
+        let _restore = Restore(depth);
         match self {
             Ty::Int(it) => {
                 let stem = if it.ground_signed() { "Int" } else { "UInt" };
