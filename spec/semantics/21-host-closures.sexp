@@ -5729,3 +5729,29 @@
   (drop)
   (output (: (list 1 2 3) (List Int64)))
   (live-objects 0))
+
+; ── breaker batch 568: nested-closure + CHAMP-capture cells (campaign cells 3-4; the tuple-capture
+; projection cells stay blocked on the hcx1 ICE). A closure capturing ANOTHER closure dispatches
+; through it; a CHAMP (Map) capture serves lookups by the call arg; and the handle drop cascades
+; through the CHAMP capture to zero.
+
+(case "hcn1 a closure CAPTURING another closure crosses and dispatches through it"
+  (input (do (def (f (: k Int64)) (let ((g (fn ((: x Int64)) (+ x k)))) (fn ((: y Int64)) (g (* y 2))))) (export f)))
+  (call f (: 100 Int64) (: 5 Int64))
+  (output (: 110 Int64))
+  (live-objects known-leak 2))
+
+(case "hcn2 a closure capturing a runtime-built MAP looks up by the call argument"
+  (input (do (def (bld (: i Int64) (: m (Map Int64 Int64))) (if (= i 0) m (bld (- i 1) (Map.insert m i (* i 10)))))
+             (def (f (: n Int64)) (let ((m (bld n (Map.empty)))) (fn ((: k Int64)) (match (Map.lookup m k) ((Option.Some v) v) ((Option.None) -1))))) (export f)))
+  (call f (: 5 Int64) (: 3 Int64))
+  (output (: 30 Int64))
+  (live-objects known-leak 2))
+
+(case "hcn3 dropping a closure with a CHAMP capture cascades the reclaim to zero"
+  (input (do (def (bld (: i Int64) (: m (Map Int64 Int64))) (if (= i 0) m (bld (- i 1) (Map.insert m i (* i 10)))))
+             (def (f (: n Int64)) (let ((m (bld n (Map.empty)))) (fn ((: k Int64)) (match (Map.lookup m k) ((Option.Some v) v) ((Option.None) -1))))) (export f)))
+  (call f (: 5 Int64) (: 3 Int64))
+  (drop)
+  (output (: 30 Int64))
+  (live-objects 0))
