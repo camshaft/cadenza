@@ -2204,6 +2204,14 @@
         # AST, and only the run step re-executes.
         mkHarnessAst = { name, specFile }:
           let
+            # NATIVE-COMPOUND (v-nix 2026-08-29): the three `cdz rewrite` patterns below match records in the
+            # native-compound `#record((= k v) …)` form, NOT the retired list-tagged `("record" …)` form. The
+            # M2 native-compound migration (v-ast-compound; reader-side #5223) changed how `cdz convert --from ml`
+            # serializes records, so the old `("record" …)` patterns matched 0 nodes → the blob program→path +
+            # deps-inject + contract-id rewrites SILENTLY no-op'd → every program-blob harness run failed at load
+            # ("blob … must give exactly one of bytes or path"). #5223 fixed the harness READERS; this fixes the
+            # WRITER-side rewrites here. NB field-pairs `(= k v)` are only matchable INSIDE a `#record(…)` (not
+            # standalone), so the contract rewrite matches the CONTAINING record `#record((= contract …) ,@rest)`.
             specText = builtins.readFile specFile;
             uses = harnessProgramsIn specText;
             contractUses = harnessContractsIn specText;
@@ -2216,7 +2224,7 @@
             # record-scoped pattern hits only the blobs.
             rewrites = pkgs.lib.concatMapStringsSep "\n"
               (n: ''
-                ${seedCompiler}/bin/cdz rewrite '("record" (= name ,nm) (= program "${n}"))' '("record" (= name ,nm) (= path "${harnessPrograms.${n}}"))' \
+                ${seedCompiler}/bin/cdz rewrite '#record((= name ,nm) (= program "${n}"))' '#record((= name ,nm) (= path "${harnessPrograms.${n}}"))' \
                   run.ml --from ml --to ml > run.ml.next
                 mv run.ml.next run.ml
               '')
@@ -2234,7 +2242,7 @@
                   echo "(the mapping is ${contractHashes}; check the name matches an @!contract source)" >&2
                   exit 1
                 fi
-                ${seedCompiler}/bin/cdz rewrite "(= contract \"${cname}\")" "(= contract \"$id\")" \
+                ${seedCompiler}/bin/cdz rewrite "#record((= contract \"${cname}\") ,@rest)" "#record((= contract \"$id\") ,@rest)" \
                   run.ml --from ml --to ml > run.ml.next
                 mv run.ml.next run.ml
               '')
@@ -2252,10 +2260,10 @@
             depsInject = ''
               deps=""
               for f in ${componentStore}/*.wasm; do
-                deps="$deps (\"record\" (= path \"$f\"))"
+                deps="$deps #record((= path \"$f\"))"
               done
-              ${seedCompiler}/bin/cdz rewrite '("record" (= registry ,reg) ,@rest)' \
-                "(\"record\" (= registry ,reg) (= deps (\"list\" $deps)) ,@rest)" \
+              ${seedCompiler}/bin/cdz rewrite '#record((= registry ,reg) ,@rest)' \
+                "#record((= registry ,reg) (= deps #list($deps)) ,@rest)" \
                 run.ml --from ml --to ml > run.ml.next
               mv run.ml.next run.ml
             '';
