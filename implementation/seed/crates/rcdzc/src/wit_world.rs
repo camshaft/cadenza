@@ -70,35 +70,45 @@ pub enum WitType {
 
 /// Decode one type descriptor occurrence `id` in `a` into its [`WitType`]. `None` if the descriptor
 /// is malformed or its shape is a component-model type this reader does not yet cover (a later-slice type).
-/// The head is a NAME (canonical, `(list <e>)`) OR a legacy STRING (`("list" <e>)`) — both accepted; a
-/// primitive is a lone marker `(kind)`, a compound reads its children.
+/// A PRIMITIVE is a lone NAME-head marker `(kind)` (name-head ONLY — see below); a COMPOUND reads its
+/// children and accepts a NAME head `(list <e>)` (canonical) OR the legacy STRING head `("list" <e>)`.
 pub fn parse_wit_type(a: &Arenas, id: StructId) -> Option<WitType> {
-    // Accept EITHER a NAME head `(list <e>)` (the canonical spelling — heads are Names "like everything
-    // else", operator seq-206, matching the scalar primitives `(s64)`) OR a legacy STRING head
-    // `("list" <e>)`. Both resolve to the same spelling, so the corpus migrates to name-heads WITHOUT a
-    // flag-day (string-headed descriptors keep parsing). In this WIT-descriptor context a `(record …)` /
-    // `(list …)` is unambiguously a TYPE (never a value literal), so name-heads carry no value/pattern
-    // ambiguity — orthogonal to the M3 value/pattern flip. One match over primitives + compounds.
-    let spelling = a.head_name(id).or_else(|| a.head_ctor(id))?;
     let Struct::List(items) = a.get(id) else {
         return None;
     };
+    // PRIMITIVE — a lone marker `(kind)`; the children are ignored. Primitives were ALWAYS name-head
+    // (`(bool)`/`(s64)`): seq-206 did NOT introduce a legacy quoted-STRING spelling for them (only COMPOUNDS
+    // ever had one, `("list" …)`). So a primitive matches the NAME head ONLY — a string-head `("bool")` is
+    // malformed, NOT back-compat, and must still be flagged (else a bad descriptor silently drops the whole
+    // world → misleading unbound-import cascade). Fall through to the compound match on a non-primitive name.
+    if let Some(name) = a.head_name(id) {
+        let prim = match name {
+            "bool" => Some(WitType::Bool),
+            "u8" => Some(WitType::U8),
+            "u16" => Some(WitType::U16),
+            "u32" => Some(WitType::U32),
+            "u64" => Some(WitType::U64),
+            "s8" => Some(WitType::S8),
+            "s16" => Some(WitType::S16),
+            "s32" => Some(WitType::S32),
+            "s64" => Some(WitType::S64),
+            "char" => Some(WitType::Char),
+            "string" => Some(WitType::String),
+            "f32" => Some(WitType::F32),
+            "f64" => Some(WitType::F64),
+            _ => None,
+        };
+        if prim.is_some() {
+            return prim;
+        }
+    }
+    // COMPOUND — reads its children. Accepts EITHER a NAME head `(list <e>)` (the canonical spelling — heads
+    // are Names "like everything else", operator seq-206) OR the legacy quoted-STRING head `("list" <e>)`,
+    // the actual back-compat spelling the corpus migrates from (so string-headed COMPOUND descriptors keep
+    // parsing WITHOUT a flag-day). In this WIT-descriptor context a `(record …)`/`(list …)` is unambiguously
+    // a TYPE (never a value literal), so name-heads carry no value/pattern ambiguity.
+    let spelling = a.head_name(id).or_else(|| a.head_ctor(id))?;
     match spelling {
-        // PRIMITIVE — a lone marker `(kind)`; the children are ignored.
-        "bool" => Some(WitType::Bool),
-        "u8" => Some(WitType::U8),
-        "u16" => Some(WitType::U16),
-        "u32" => Some(WitType::U32),
-        "u64" => Some(WitType::U64),
-        "s8" => Some(WitType::S8),
-        "s16" => Some(WitType::S16),
-        "s32" => Some(WitType::S32),
-        "s64" => Some(WitType::S64),
-        "char" => Some(WitType::Char),
-        "string" => Some(WitType::String),
-        "f32" => Some(WitType::F32),
-        "f64" => Some(WitType::F64),
-        // COMPOUND — reads the children.
         // (list <elem>)  [or legacy ("list" <elem>)]
         "list" => {
             let elem = *items.get(1)?;
@@ -1463,6 +1473,26 @@ mod tests {
             Some(None),
             "name-head (none) is the absent result arm"
         );
+    }
+
+    #[test]
+    fn a_string_head_primitive_is_malformed_not_back_compat() {
+        // seq-206 back-compat accepts a legacy STRING head ONLY for COMPOUNDS (`("list" …)`) — the spelling
+        // the corpus migrates from. PRIMITIVES were ALWAYS name-head (`(bool)`), so a string-head `("bool")`
+        // was NEVER a legacy form: it must DECLINE (→ None), which lets `collect_faults` report the malformed
+        // world instead of silently dropping it (regression guard for the #5710 over-broad head unification,
+        // which briefly accepted `("bool")` as Bool and swallowed the malformed diagnostic).
+        for kind in ["bool", "u8", "s64", "char", "string", "f64"] {
+            let mut b = Builder::new();
+            let head = str_head(&mut b, kind);
+            let root = b.list(vec![head]);
+            let a = b.finish(root);
+            assert_eq!(
+                parse_wit_type(&a, root),
+                None,
+                "string-head primitive (\"{kind}\") must be malformed, not accepted"
+            );
+        }
     }
 
     #[test]
