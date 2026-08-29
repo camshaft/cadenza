@@ -2301,7 +2301,7 @@
             (@ (ensures (>= ret 0)) (def (f (: ret Int64)) (- ret 100)))
             (def (main) (f 5))
             (export main)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "cannot carry `@ensures`")))
 
 (case "a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result"
   (doc    "The scope-boundary pin between the two annotations: `ret` is the @ENSURES result binder, and NOTHING
