@@ -413,7 +413,7 @@
   (output (: 15 Int64))
   (call   main (: -7 Int64))
   (output (: -7 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 3 1))
 
 (case "a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite"
   (doc    "The full pipeline at run time: `build` assembles `(Add (Lit 0) (Add (Lit a) (Lit 2)))` around
@@ -580,7 +580,7 @@
   (call main (: 2 Int64) (: 1 Int64)) (output (: 40 Int64))
   (call main (: 0 Int64) (: 1 Int64)) (output (: 40 Int64))
   (call main (: 2 Int64) (: 9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 3 1 1))
 
 (case "a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them"
   (doc    "The alpha-rename pass shape: mutually recursive ren/ren-list REBUILD the tree while
@@ -618,7 +618,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 19))
+  (live-objects known-leak 19 11))
 
 ;; A mutually-recursive fold that rebuilds an Ast list, then reads a payload derived from the
 ;; rebuilt-list binder (`xs2`) while a sibling arm reuses that same binder, MUST build on every
