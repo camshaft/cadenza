@@ -260,6 +260,28 @@
   (input  (do (def (main) (: 5 List)) (export main)))
   (error  CDZ0203))
 
+; ── OVER/WRONG-arity generic type application (migrated from rcdzc
+; a_wrong_arity_generic_type_application_in_an_annotation_is_cdz0203_for_user_and_builtin) ──
+; A generic type applied with the WRONG NUMBER of type arguments — over-supplied, under-supplied, or bare —
+; rejects CDZ0203 with an ACTIONABLE message naming the true arity (correct singular/plural grammar) and the
+; canonical name, UNIFORMLY for a USER generic and a BUILT-IN (the #1683 user-generic-by-name path agrees with
+; the built-in one and does not panic / silently accept).
+(case "a built-in generic Option over-applied with two type arguments is rejected with the arity"
+  (input  (do (def (f (: x (Option Int64 Bool))) 0) (def (main) (f (Some 1))) (export main)))
+  (error  CDZ0203 (message "`Option` takes 1 type argument") (message "but 2 were supplied")))
+
+(case "a user generic Box over-applied with two type arguments is rejected with the same arity shape"
+  (input  (do (type (Box a) (Mk a)) (def (f (: x (Box Int64 Bool))) 0) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "`Box` takes 1 type argument") (message "but 2 were supplied")))
+
+(case "a multi-parameter user generic Pair under-applied with one type argument names the plural arity"
+  (input  (do (type (Pair a b) (Both a b)) (def (f (: x (Pair Int64))) 0) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "`Pair` takes 2 type arguments") (message "but 1 was supplied")))
+
+(case "a user generic Box applied with ZERO type arguments names the arity and the zero supplied"
+  (input  (do (type (Box a) (Mk a)) (def (f (: x (Box))) 0) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "`Box` takes 1 type argument") (message "but 0 were supplied")))
+
 ; The single-param applied case above covers the flat one-argument face; the resolve path also handles
 ; MULTI-parameter generics and NESTED type-arguments (a user generic inside a built-in generic, or inside
 ; another user generic). Each was equally CDZ0101-unresolvable under the parenthesized-head `""`-name bug
