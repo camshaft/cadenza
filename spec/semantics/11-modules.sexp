@@ -129,7 +129,11 @@
            closed-record CDZ0201 (modules-and-namespaces.md §Visibility Is Explicit: a definition not made
            visible MUST NOT be reachable outside the module). Before this, a module's record carried EVERY
            definition regardless of the export clause, so `(. m secret)` reached a private helper — an
-           over-exposure the explicit-visibility rule forbids. The export clause now filters the record.")
+           over-exposure the explicit-visibility rule forbids. The export clause now filters the record.
+           The message names the MODULE category — 'the `m` module has no member `secret`' — not the
+           internal 'record has no field' (a module is a module to the author, not a bare record; the export
+           record is an implementation detail). (message pin migrated from rcdzc
+           an_absent_user_module_member_names_the_module_not_a_record.)")
   (input  (do
             (module m
               (def (pub x) (+ x 1))
@@ -137,7 +141,17 @@
               (export pub))
             (def (main) ((. m secret) 5))
             (export main)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "the `m` module has no member `secret`")))
+
+(case "an absent member of a PRELUDE module names the module, not a record"
+  (doc    "The prelude-module face of the member-miss message: `(. Int64 bogus)` projects a member the
+           `Int64` module does not carry. It rejects the same closed-record CDZ0201 a user module does, and
+           the message names the MODULE category — 'the `Int64` module has no member `bogus`' — not the
+           generic 'record has no field' (a prelude module is not a record to the author). Realized /
+           unrealized / absent members are one uniform projection. (migrated from rcdzc
+           an_absent_builtin_field_rejects_like_a_closed_record.)")
+  (input  (do (def (main) (. Int64 bogus)) (export main)))
+  (error  CDZ0201 (message "the `Int64` module has no member `bogus`")))
 
 (case "a module member named by the export clause is reachable"
   (doc    "The visible companion of the private case: `pub` IS named by `(export pub)`, so it is a field
