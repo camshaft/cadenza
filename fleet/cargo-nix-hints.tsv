@@ -7,8 +7,8 @@
 # shim computes from argv (see cargo-nix-shim.sh key_for): the `xtask:<sub>` forms for `cargo xtask <sub>`,
 # else the bare cargo subcommand. A cargo command with NO key here → generic warn + logged to the gaps file
 # (~/.cdz-cargo-gaps.tsv) for v-nix to add an equivalent. `cargo xtask fleet …` is EXEMPT (control plane).
-xtask:build	nix run .#build   (interim until apps.build lands: nix run .#cdz — self-contained warm bin+store)
-xtask:gate	cargo xtask fleet gate-local   (nix local-gate; or nix run .#gate)
+xtask:build	nix run .#build   (materializes warm cdz/cdz-run/cdz-compile + the CA store from the shared /nix/store — zero cargo; shim routes this)
+xtask:gate	cargo xtask fleet gate-local (authoritative full gate) · nix run .#gate (full, convenience) · nix run .#fast-gate (touched crates = --files) · nix build .#checks.<sys>.gate-check-rust (--target rust) · for a single --case, build that chapter: nix build .#checks.<sys>.corpus-<NN-chapter>
 xtask:dev-gate	nix run .#fast-gate [-- CRATE]
 xtask:check	nix run .#fast-gate   (+ nix run .#fmt)
 xtask:test	nix run .#test
