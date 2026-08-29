@@ -98,6 +98,7 @@ enum Block<'a> {
     Runnable(StructId),
     Exercise(StructId),
     Why(StructId),
+    StatusLegend, // carve-out: zero-prop block
 }
 
 // ---- render: chapter Arenas → @generated TSX string ----
@@ -119,6 +120,7 @@ fn render_chapter(a: &Arenas, chapter: StructId) -> String {
             Some("runnable") => blocks.push(Block::Runnable(f)),
             Some("exercise") => blocks.push(Block::Exercise(f)),
             Some("why") => blocks.push(Block::Why(f)),
+            Some("status-legend") => blocks.push(Block::StatusLegend),
             _ => {}
         }
     }
@@ -132,25 +134,55 @@ fn render_chapter(a: &Arenas, chapter: StructId) -> String {
     }
     let mut uses_ch = false;
     let mut uses_app = false;
-    let (mut uses_runnable, mut uses_exercise, mut uses_why) = (false, false, false);
+    let mut uses_try_change = false;
+    let (mut uses_runnable, mut uses_exercise, mut uses_why, mut uses_status_legend) =
+        (false, false, false, false);
     if let Some(l) = lede {
-        scan_inline(a, l, &mut prose, &mut uses_ch, &mut uses_app);
+        scan_inline(
+            a,
+            l,
+            &mut prose,
+            &mut uses_ch,
+            &mut uses_app,
+            &mut uses_try_change,
+        );
     }
     for b in &blocks {
         match *b {
             Block::Prose(tag, ch) => {
                 prose.insert(tag);
-                scan_inline(a, ch, &mut prose, &mut uses_ch, &mut uses_app);
+                scan_inline(
+                    a,
+                    ch,
+                    &mut prose,
+                    &mut uses_ch,
+                    &mut uses_app,
+                    &mut uses_try_change,
+                );
             }
             Block::Runnable(_) => uses_runnable = true,
             Block::Exercise(n) => {
                 uses_exercise = true;
                 // prompt/hint inline prose may carry (c …)/links → contribute imports.
                 if let Some(p) = named_child(a, n, "prompt") {
-                    scan_inline(a, p, &mut prose, &mut uses_ch, &mut uses_app);
+                    scan_inline(
+                        a,
+                        p,
+                        &mut prose,
+                        &mut uses_ch,
+                        &mut uses_app,
+                        &mut uses_try_change,
+                    );
                 }
                 if let Some(h) = named_child(a, n, "hint") {
-                    scan_inline(a, h, &mut prose, &mut uses_ch, &mut uses_app);
+                    scan_inline(
+                        a,
+                        h,
+                        &mut prose,
+                        &mut uses_ch,
+                        &mut uses_app,
+                        &mut uses_try_change,
+                    );
                 }
             }
             Block::Why(n) => {
@@ -161,8 +193,10 @@ fn render_chapter(a: &Arenas, chapter: StructId) -> String {
                     &mut prose,
                     &mut uses_ch,
                     &mut uses_app,
+                    &mut uses_try_change,
                 );
             }
+            Block::StatusLegend => uses_status_legend = true,
         }
     }
 
@@ -195,6 +229,12 @@ fn render_chapter(a: &Arenas, chapter: StructId) -> String {
     if uses_why {
         out.push_str("import { Why } from \"../../components/Why.tsx\";\n");
     }
+    if uses_status_legend {
+        out.push_str("import { StatusLegend } from \"../../components/StatusIcon.tsx\";\n");
+    }
+    if uses_try_change {
+        out.push_str("import { TryChange } from \"../../components/TryChange.tsx\";\n");
+    }
     out.push('\n');
     out.push_str(&format!("export default function {}() {{\n", pascal(slug)));
     out.push_str("  return (\n");
@@ -211,6 +251,7 @@ fn render_chapter(a: &Arenas, chapter: StructId) -> String {
             Block::Runnable(n) => out.push_str(&render_runnable(a, n)),
             Block::Exercise(n) => out.push_str(&render_exercise(a, n)),
             Block::Why(n) => out.push_str(&render_why(a, n)),
+            Block::StatusLegend => out.push_str("      <StatusLegend />\n"),
         }
     }
     out.push_str("    </article>\n");
@@ -358,6 +399,7 @@ fn scan_inline(
     prose: &mut std::collections::BTreeSet<&'static str>,
     uses_ch: &mut bool,
     uses_app: &mut bool,
+    uses_try_change: &mut bool,
 ) {
     for &i in ins {
         match a.head_name(i) {
@@ -366,13 +408,41 @@ fn scan_inline(
             }
             Some("link") => {
                 *uses_ch = true;
-                scan_inline(a, &children(a, i)[1..], prose, uses_ch, uses_app);
+                scan_inline(
+                    a,
+                    &children(a, i)[1..],
+                    prose,
+                    uses_ch,
+                    uses_app,
+                    uses_try_change,
+                );
             }
             Some("app-link") => {
                 *uses_app = true;
-                scan_inline(a, &children(a, i)[1..], prose, uses_ch, uses_app);
+                scan_inline(
+                    a,
+                    &children(a, i)[1..],
+                    prose,
+                    uses_ch,
+                    uses_app,
+                    uses_try_change,
+                );
             }
-            Some("em") | Some("strong") => scan_inline(a, children(a, i), prose, uses_ch, uses_app),
+            Some("try-change") => {
+                *uses_try_change = true;
+                // children after the 3 (example)(find)(replace) attrs are the inline label.
+                scan_inline(
+                    a,
+                    &children(a, i)[3..],
+                    prose,
+                    uses_ch,
+                    uses_app,
+                    uses_try_change,
+                );
+            }
+            Some("em") | Some("strong") => {
+                scan_inline(a, children(a, i), prose, uses_ch, uses_app, uses_try_change)
+            }
             _ => {}
         }
     }
@@ -411,6 +481,16 @@ fn render_inline(a: &Arenas, i: StructId) -> String {
             format!(
                 "<AppLink to=\"{route}\">{}</AppLink>",
                 render_inlines(a, &children(a, i)[1..])
+            )
+        }
+        Some("try-change") => {
+            // (try-change (example ..)(find ..)(replace ..) <inline>…). find/replace may hold </>; valid in a JSX string attr.
+            let ex = named_attr(a, i, "example").unwrap_or("");
+            let find = named_attr(a, i, "find").unwrap_or("");
+            let rep = named_attr(a, i, "replace").unwrap_or("");
+            format!(
+                "<TryChange example=\"{ex}\" find=\"{find}\" replace=\"{rep}\">{}</TryChange>",
+                render_inlines(a, &children(a, i)[3..])
             )
         }
         _ => String::new(),

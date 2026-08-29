@@ -98,6 +98,17 @@ function renderMark(name, attrs, inner) {
     }
     case "AppLink":
       return `(app-link (route ${sexpString(attrTo(attrs))}) ${kids})`;
+    // Carve-out inline links: local wrappers over <AppLink to="/playground"|"/calculator"> → reuse app-link.
+    case "PlaygroundLink":
+      return `(app-link (route "/playground") ${kids})`;
+    case "CalculatorLink":
+      return `(app-link (route "/calculator") ${kids})`;
+    case "TryChange": {
+      const ex = /\bexample="([^"]*)"/.exec(attrs)?.[1] ?? "";
+      const find = /\bfind="([^"]*)"/.exec(attrs)?.[1] ?? "";
+      const rep = /\breplace="([^"]*)"/.exec(attrs)?.[1] ?? "";
+      return `(try-change (example ${sexpString(ex)}) (find ${sexpString(find)}) (replace ${sexpString(rep)}) ${kids})`;
+    }
     default:
       // Unknown mark — keep its children (don't drop content); flag for review.
       return kids;
@@ -231,10 +242,14 @@ export function convertChapter(tsxPath) {
   const tsx = readFileSync(tsxPath, "utf8");
   const meta = chapterMeta(tsxPath);
   const body = articleBody(tsx);
+  // (title …) = the rendered <H1> text (the page heading), NOT the registry title — they can differ
+  // (e.g. Welcome: H1 "Welcome to Cadenza" vs registry "Welcome"). Falls back to the registry title.
+  const h1 = /<H1>([\s\S]*?)<\/H1>/.exec(body)?.[1];
+  const title = h1 != null ? inlineVisible(h1) : meta.title;
 
   // Walk top-level block elements in document order. Elements are self-closing (Runnable/Exercise) or paired
   // (H1/Lede/P/H2/Note/Why). Chunk by the next block-open position (block elements never nest each other).
-  const BLOCK = /<(H1|Lede|P|H2|Note|Why|Runnable|Exercise)\b/g;
+  const BLOCK = /<(H1|Lede|P|H2|Note|Why|Runnable|Exercise|StatusLegend)\b/g;
   const opens = [];
   let m;
   while ((m = BLOCK.exec(body))) opens.push({ tag: m[1], at: m.index });
@@ -243,7 +258,9 @@ export function convertChapter(tsxPath) {
     const { tag, at } = opens[k];
     const end = k + 1 < opens.length ? opens[k + 1].at : body.length;
     const chunk = body.slice(at, end);
-    if (tag === "Runnable") {
+    if (tag === "StatusLegend") {
+      lines.push("  (status-legend)"); // zero-prop block
+    } else if (tag === "Runnable") {
       lines.push(runnableBlock(chunk, tsxPath));
     } else if (tag === "Exercise") {
       lines.push(exerciseBlock(chunk));
@@ -259,7 +276,7 @@ export function convertChapter(tsxPath) {
     }
   }
 
-  let out = `(chapter\n  (slug ${sexpString(meta.slug)})\n  (title ${sexpString(meta.title)})\n`;
+  let out = `(chapter\n  (slug ${sexpString(meta.slug)})\n  (title ${sexpString(title)})\n`;
   out += `  (pillar ${sexpString(meta.pillar)})\n`;
   if (meta.section) out += `  (section ${sexpString(meta.section)})\n`;
   if (meta.blurb) out += `  (blurb ${sexpString(meta.blurb)})\n`;
