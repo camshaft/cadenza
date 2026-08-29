@@ -14,32 +14,41 @@ export default function OpaqueTypes() {
       <P>Here's where it earns its keep. A <em>percentage</em> should always be between 0 and 100, since a discount of 150% or −20% is nonsense. Model it as an opaque <C>Percent</C> whose only maker, <C>percent</C>, <em>validates</em>: it clamps anything out of range into <C>[0, 100]</C>. Feed it a wild <C>150</C> and what comes back is a legitimate <C>100</C>:</P>
       <Runnable
         source={`(type Percent (Pct Int64))
-(def (percent (: n Int64))
-  (if (< n 0) (Percent.Pct 0)
-    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
-(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
+
+(def
+  (percent (: n Int64))
+  (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
+
+(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+
 (def (main) (rate (percent 150)))`}
       />
       <P>What this buys you isn't the clamping itself but what every <em>downstream</em> function can now assume. Because a <C>Percent</C> can only come from <C>percent</C>, any code that receives one <em>knows</em> it's in range, with no re-checking. Here <C>apply-discount</C> takes a price and a <C>Percent</C> and subtracts that fraction, so a 25% discount off 200 is 150:</P>
       <Runnable
         source={`(type Percent (Pct Int64))
-(def (percent (: n Int64))
-  (if (< n 0) (Percent.Pct 0)
-    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
-(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
-(def (apply-discount (: price Int64) (: p Percent))
-  (- price (/ (* price (rate p)) 100)))
+
+(def
+  (percent (: n Int64))
+  (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
+
+(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+
+(def (apply-discount (: price Int64) (: p Percent)) (- price (/ (* price (rate p)) 100)))
+
 (def (main) (apply-discount 200 (percent 25)))`}
       />
       <P>And the invariant is what makes <C>apply-discount</C> <em>safe</em>: a discount can never exceed 100%, so a price can never go negative. Try to discount by a nonsensical 150% and the <C>percent</C> maker has already clamped it to 100%, so the worst case is a free item (price <C>0</C>), never a negative one:</P>
       <Runnable
         source={`(type Percent (Pct Int64))
-(def (percent (: n Int64))
-  (if (< n 0) (Percent.Pct 0)
-    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
-(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
-(def (apply-discount (: price Int64) (: p Percent))
-  (- price (/ (* price (rate p)) 100)))
+
+(def
+  (percent (: n Int64))
+  (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
+
+(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+
+(def (apply-discount (: price Int64) (: p Percent)) (- price (/ (* price (rate p)) 100)))
+
 (def (main) (apply-discount 200 (percent 150)))`}
       />
       <P><C>apply-discount</C> never validates its <C>Percent</C> because it doesn't have to. The type is a <em>proof</em> the value was checked once, at the only place it could be made. That's the difference between a bare <C>Int64</C> (which every consumer must defensively re-check) and an opaque <C>Percent</C> (checked once, trusted everywhere).</P>
@@ -53,16 +62,22 @@ export default function OpaqueTypes() {
         id="opaque-types:1"
         prompt={<>The validator clamps out-of-range input into <C>[0, 100]</C>. Fill an input that's <em>too large</em> so that reading the rate back gives <C>100</C>, the ceiling the invariant enforces.</>}
         starter={`(type Percent (Pct Int64))
-(def (percent (: n Int64))
-  (if (< n 0) (Percent.Pct 0)
-    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
-(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
+
+(def
+  (percent (: n Int64))
+  (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
+
+(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+
 (def (main) (rate (percent ?)))`}
         solution={`(type Percent (Pct Int64))
-(def (percent (: n Int64))
-  (if (< n 0) (Percent.Pct 0)
-    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
-(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
+
+(def
+  (percent (: n Int64))
+  (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
+
+(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+
 (def (main) (rate (percent 250)))`}
         expected="100"
         hint={<>Any value above <C>100</C> clamps to <C>100</C>, so <C>250</C> does too. The maker is the one place the ceiling is enforced, so <C>rate</C> can never read more than <C>100</C>.</>}
@@ -71,20 +86,26 @@ export default function OpaqueTypes() {
         id="opaque-types:2"
         prompt={<>Because a <C>Percent</C> is always in range, <C>apply-discount</C> is safe. Fill the discount so that 300 becomes 210, a 30% discount off 300.</>}
         starter={`(type Percent (Pct Int64))
-(def (percent (: n Int64))
-  (if (< n 0) (Percent.Pct 0)
-    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
-(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
-(def (apply-discount (: price Int64) (: p Percent))
-  (- price (/ (* price (rate p)) 100)))
+
+(def
+  (percent (: n Int64))
+  (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
+
+(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+
+(def (apply-discount (: price Int64) (: p Percent)) (- price (/ (* price (rate p)) 100)))
+
 (def (main) (apply-discount 300 (percent ?)))`}
         solution={`(type Percent (Pct Int64))
-(def (percent (: n Int64))
-  (if (< n 0) (Percent.Pct 0)
-    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
-(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
-(def (apply-discount (: price Int64) (: p Percent))
-  (- price (/ (* price (rate p)) 100)))
+
+(def
+  (percent (: n Int64))
+  (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
+
+(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+
+(def (apply-discount (: price Int64) (: p Percent)) (- price (/ (* price (rate p)) 100)))
+
 (def (main) (apply-discount 300 (percent 30)))`}
         expected="210"
         hint={<>30% of 300 is 90, and 300 − 90 is 210, so the discount is <C>30</C>. Because the type guarantees the rate is at most 100, the discounted price is never negative.</>}

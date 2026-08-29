@@ -29,10 +29,13 @@ export default function PlatformExecution() {
           {
             name: "events",
             source: `(do
-  (def turn #list(#record((= kind #"task")  (= val "count files"))
-                  #record((= kind #"model") (= val "shell"))
-                  #record((= kind #"tool")  (= val "3"))
-                  #record((= kind #"done")  (= val "there are 3"))))
+  (def
+    turn
+    #list(#record((= kind #"task") (= val "count files"))
+      #record((= kind #"model") (= val "shell"))
+      #record((= kind #"tool") (= val "3"))
+      #record((= kind #"done") (= val "there are 3"))))
+
   (export turn))`,
             surface: "sexpr",
           },
@@ -40,17 +43,26 @@ export default function PlatformExecution() {
             name: "reducer",
             source: `(do
   (import "events" (turn))
-  (def (step acc e)
-    (let ((k (. e kind)) (v (. e val)))
-      (if (= k #"task")  (String.concat acc "asked-model; ")
-      (if (= k #"model") (String.concat acc (String.concat "run-tool:" (String.concat v "; ")))
-      (if (= k #"tool")  (String.concat acc (String.concat "folded-result:" (String.concat v "; ")))
-      (String.concat acc (String.concat "done:" v)))))))
-  (def (run xs acc)
-    (match xs
-      (#list() acc)
-      (#list(e .. rest) (run rest (step acc e)))))
+
+  (def
+    (step acc e)
+    (let
+      ((k (. e kind)) (v (. e val)))
+      (if
+        (= k #"task")
+        ((. String concat) acc "asked-model; ")
+        (if
+          (= k #"model")
+          ((. String concat) acc ((. String concat) "run-tool:" ((. String concat) v "; ")))
+          (if
+            (= k #"tool")
+            ((. String concat) acc ((. String concat) "folded-result:" ((. String concat) v "; ")))
+            ((. String concat) acc ((. String concat) "done:" v)))))))
+
+  (def (run xs acc) (match xs (#list() acc) (#list(e .. rest) (run rest (step acc e)))))
+
   (def (main) (run turn ""))
+
   (export main))`,
             surface: "sexpr",
             entry: true,

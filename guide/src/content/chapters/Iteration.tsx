@@ -16,39 +16,38 @@ export default function Iteration() {
       <P>The workhorse pattern is a function that carries the answer-so-far in an argument, the <em>accumulator</em>, and calls itself with an updated one. It needs two things: a <strong>base case</strong> that stops the recursion and returns the accumulator, and a <strong>recursive case</strong> that does one step and recurses on the rest. Here is a sum from <C>n</C> down to <C>1</C>:</P>
       <Runnable
         source={`(def (main) (sum-to 5 0))
-(def (sum-to n acc)
-  (if (= n 0)
-    acc
-    (sum-to (- n 1) (+ acc n))))`}
+
+(def (sum-to n acc) (if (= n 0) acc (sum-to (- n 1) (+ acc n))))`}
       />
       <P>Read it as a loop turned inside out: <C>acc</C> is the running total, <C>n</C> counts down, the <C>(= n 0)</C> check is the exit condition, and each call adds <C>n</C> to <C>acc</C> and continues. When <C>n</C> reaches <C>0</C> the base case hands back the total, <C>15</C>. Nothing mutates; each call just receives the next pair of values.</P>
       <P>The same shape works over a list. Match the list by its structure, either the empty list <C>#list()</C> or a non-empty <C>#list(x .. rest)</C> that binds the first element to <C>x</C> and the remainder to <C>rest</C>, and thread the accumulator through:</P>
       <Runnable
         source={`(def (main) (sum-list #list(10 20 30) 0))
-(def (sum-list xs acc)
-  (match xs
-    (#list() acc)
-    (#list(x .. rest) (sum-list rest (+ acc x)))))`}
+
+(def (sum-list xs acc) (match xs (#list() acc) (#list(x .. rest) (sum-list rest (+ acc x)))))`}
       />
       <P>The empty list is the base case (return the accumulator); the non-empty case adds the head to the accumulator and recurses on the tail. Toggle to the ML surface and the pattern reads as <C>[x, .. rest]</C>. Building a value instead of a number is the identical move. Here it reverses a list by taking each element off the front and putting it on the <em>front</em> of the accumulator, so the first element read ends up deepest and the last read ends up first:</P>
       <Runnable
         source={`(def (main) (rev #list(1 2 3) #list()))
-(def (rev xs acc)
-  (match xs
-    (#list() acc)
-    (#list(x .. rest) (rev rest (List.prepend acc x)))))`}
+
+(def (rev xs acc) (match xs (#list() acc) (#list(x .. rest) (rev rest ((. List prepend) acc x)))))`}
       />
       <P>Prepending is what does the reversing: element <C>1</C> is placed first, then <C>2</C> goes in front of it, then <C>3</C> in front of that, so <C>#list(1 2 3)</C> comes back as <C>#list(3 2 1)</C>. <Ch to="/lists"> <C>List.prepend</C></Ch> adds an element to the front, which is what flips the order; appending each element to the end with <C>List.push</C> would instead copy the list unchanged. A quick <C>@test</C> pins it, reading the three positions of the result back and checking they spell <C>3</C>, <C>2</C>, <C>1</C> (as the single number <C>321</C>):</P>
       <Runnable
-        source={`(def (rev xs acc)
-  (match xs
-    (#list() acc)
-    (#list(x .. rest) (rev rest (List.prepend acc x)))))
-(def (nth xs i) (match (List.at xs i) ((Some v) v) ((None _) 0)))
-(@ test (def (rev-reverses)
-  (let ((r (rev #list(1 2 3) #list())))
-    (assert-eq (+ (* 100 (nth r 0)) (+ (* 10 (nth r 1)) (nth r 2))) 321
-      "rev of (1 2 3) should read back as 3,2,1"))))`}
+        source={`(def (rev xs acc) (match xs (#list() acc) (#list(x .. rest) (rev rest ((. List prepend) acc x)))))
+
+(def (nth xs i) (match ((. List at) xs i) ((Some v) v) ((None _) 0)))
+
+(@
+  test
+  (def
+    (rev-reverses)
+    (let
+      ((r (rev #list(1 2 3) #list())))
+      (assert-eq
+        (+ (* 100 (nth r 0)) (+ (* 10 (nth r 1)) (nth r 2)))
+        321
+        "rev of (1 2 3) should read back as 3,2,1"))))`}
         mode="test"
       />
       <Note>Notice the recursive call is the <em>last</em> thing each step does: it sits in <em>tail position</em>. A recursion in tail position compiles to a loop. It reuses one stack frame rather than stacking a new one per element, so an accumulator over a long list runs in constant stack space. Threading the accumulator is what puts the call in tail position; a version that adds <em>after</em> the recursive call (<C>(+ x (sum rest))</C>) does not, and you meet exactly that shape in the next chapter.</Note>

@@ -15,8 +15,11 @@ export default function Modules() {
         source={`(do
   (module Temp
     (def (c-to-f c) (+ (/ (* c 9) 5) 32))
+
     (export c-to-f))
-  (def (main) (Temp.c-to-f 100))
+
+  (def (main) ((. Temp c-to-f) 100))
+
   (export main))`}
       />
       <P>100°C is 212°F. <C>Temp</C> names the group and exports <C>c-to-f</C>; <C>main</C> reaches the conversion with the qualified name <C>Temp.c-to-f</C>. The definition lives in the module's namespace rather than loose in the surrounding scope, the same dotted access you already use for a record's field.</P>
@@ -26,9 +29,13 @@ export default function Modules() {
         source={`(do
   (module Circle
     (def pi 3)
+
     (def (area r) (* pi (* r r)))
+
     (export area))
-  (def (main) (Circle.area 10))
+
+  (def (main) ((. Circle area) 10))
+
   (export main))`}
       />
       <P><C>area 10</C> is <C>3 × 10 × 10</C> = <C>300</C>. The function reads <C>pi</C> directly, because inside the module they're siblings; from outside you just call <C>area</C> and don't think about how it's computed.</P>
@@ -36,9 +43,18 @@ export default function Modules() {
       <P>Two modules, each with its own job, combine cleanly, since a qualified name says exactly which piece you mean, so there's never a question of whose <C>f</C> is whose:</P>
       <Runnable
         source={`(do
-  (module Inc (def (f x) (+ x 1)) (export f))
-  (module Scale (def (g x) (* x 10)) (export g))
-  (def (main) (Scale.g (Inc.f 4)))
+  (module Inc
+    (def (f x) (+ x 1))
+
+    (export f))
+
+  (module Scale
+    (def (g x) (* x 10))
+
+    (export g))
+
+  (def (main) ((. Scale g) ((. Inc f) 4)))
+
   (export main))`}
       />
       <P><C>Inc.f 4</C> is 5, then <C>Scale.g 5</C> is <C>50</C>. Swap the order to <C>(Inc.f (Scale.g 4))</C> and you'd get 41 instead, so the qualified names make the pipeline unambiguous either way.</P>
@@ -49,9 +65,13 @@ export default function Modules() {
   (module Geometry
     (module Square
       (def (area s) (* s s))
+
       (export area))
+
     (export Square))
-  (def (main) (Geometry.Square.area 5))
+
+  (def (main) ((. (. Geometry Square) area) 5))
+
   (export main))`}
       />
       <P><C>Geometry.Square.area 5</C> reads left to right, into <C>Geometry</C>, then <C>Square</C>, then <C>area</C>, and gives <C>25</C>. It's the same field access as a record inside a record; nesting modules is nothing new, because a module was a record all along.</P>
@@ -64,6 +84,7 @@ export default function Modules() {
       <P>Two rules keep the declaration unambiguous as a compile target. First, an <em>external</em> world artifact wins: if a component is compiled with a separate WIT world <em>and</em> the source also carries an inline <C>world</C> declaration, the external artifact overrides the in-source one, the same way a bound effect request overrides the source's own declaration. Second, a module may name <em>at most one</em> world, because a component targets exactly one: two top-level <C>world</C> declarations are rejected outright.</P>
       <Runnable
         source={`(world Reducer (export fold (member apply (func (param event Bytes) (result Bytes)))))
+
 (world Other (export fold (member apply (func (param event Bytes) (result Bytes)))))`}
         expect="error"
         wrap={false}
@@ -76,14 +97,32 @@ export default function Modules() {
         id="modules:1"
         prompt={<>Two modules, each with one job: <C>Money.cents</C> turns dollars into cents (×100), and <C>Tax.add</C> adds <C>5</C>. Compose them by feeding <C>2</C> dollars through both, qualifying the inner call with the right module name, so the answer is <C>205</C>.</>}
         starter={`(do
-  (module Money (def (cents d) (* d 100)) (export cents))
-  (module Tax   (def (add c) (+ c 5)) (export add))
-  (def (main) (Tax.add (?.cents 2)))
+  (module Money
+    (def (cents d) (* d 100))
+
+    (export cents))
+
+  (module Tax
+    (def (add c) (+ c 5))
+
+    (export add))
+
+  (def (main) ((. Tax add) (?.cents 2)))
+
   (export main))`}
         solution={`(do
-  (module Money (def (cents d) (* d 100)) (export cents))
-  (module Tax   (def (add c) (+ c 5)) (export add))
-  (def (main) (Tax.add (Money.cents 2)))
+  (module Money
+    (def (cents d) (* d 100))
+
+    (export cents))
+
+  (module Tax
+    (def (add c) (+ c 5))
+
+    (export add))
+
+  (def (main) ((. Tax add) ((. Money cents) 2)))
+
   (export main))`}
         expected="205"
         hint={<><C>cents</C> lives in <C>Money</C>, so the qualified name is <C>Money.cents</C>. Then <C>2 × 100 = 200</C>, and <C>Tax.add</C> makes it <C>205</C>. (Qualify it with <C>Tax</C> and the compiler declines, since <C>Tax</C> has no <C>cents</C>.)</>}
@@ -95,17 +134,25 @@ export default function Modules() {
   (module Mathy
     (module Double
       (def (f x) (* x 2))
+
       (export f))
+
     (export Double))
+
   (def (main) (?.f 8))
+
   (export main))`}
         solution={`(do
   (module Mathy
     (module Double
       (def (f x) (* x 2))
+
       (export f))
+
     (export Double))
-  (def (main) (Mathy.Double.f 8))
+
+  (def (main) ((. (. Mathy Double) f) 8))
+
   (export main))`}
         expected="16"
         hint={<>Name each level from the outside in, separated by dots: <C>Mathy.Double.f</C>. Then <C>8 × 2 = 16</C>.</>}

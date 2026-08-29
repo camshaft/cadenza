@@ -27,24 +27,22 @@ export default function ControlFlow() {
       <H2>Nesting choices</H2>
       <P>An <C>if</C> selects among more than two outcomes by nesting in the else position:</P>
       <Runnable
-        source={`(let ((n 0))
-  (if (< n 0) -1
-      (if (= n 0) 0 1)))`}
+        source={`(let ((n 0)) (if (< n 0) -1 (if (= n 0) 0 1)))`}
       />
       <P>This is the sign of <C>n</C>, giving <C>-1</C> if negative, <C>0</C> if zero, and <C>1</C> if positive. With <C>n = 0</C> the first test fails and the inner <C>(= n 0)</C> fires, so the answer is <C>0</C>. Change <C>n</C> to <C>-4</C> or <C>7</C> and Run to take a different branch.</P>
       <H2>Booleans compose and short-circuit</H2>
       <P>Comparisons produce <C>Bool</C> values, and <C>and</C>, <C>or</C>, <C>not</C> combine them. They <em>short-circuit</em>, so a false <C>and</C> never evaluates its right side. That's what makes a guard-then-use pattern safe, because here <C>safe</C> checks <C>n</C> isn't zero <em>before</em> dividing by it, so the division never runs when it would trap:</P>
       <Runnable
-        source={`(def (safe n)
-  (and (not (= n 0)) (> (/ 100 n) 5)))
+        source={`(def (safe n) (and (not (= n 0)) (> (/ 100 n) 5)))
+
 (def (main) (safe 0))`}
       />
       <P>With <C>n = 0</C> the first test is false, so <C>(/ 100 0)</C> is skipped entirely and the whole thing renders <C>false</C>. Were <C>and</C> not short-circuiting, that division would trap.</P>
       <H2>Recursion</H2>
       <P>A function can call itself, and that's how you loop in Cadenza. A base case stops the recursion, and each step reduces toward it. Here <C>sm</C> sums the integers from <C>n</C> down to 0:</P>
       <Runnable
-        source={`(def (sm n)
-  (if (= n 0) 0 (+ n (sm (- n 1)))))
+        source={`(def (sm n) (if (= n 0) 0 (+ n (sm (- n 1)))))
+
 (def (main) (sm 5))`}
       />
       <P><C>(sm 5)</C> adds <C>5 + 4 + 3 + 2 + 1</C> down to the base case, giving <C>15</C>. Each call peels off <C>n</C> and recurses on <C>n - 1</C> until it reaches <C>0</C>.</P>
@@ -52,11 +50,11 @@ export default function ControlFlow() {
       <Exercise
         id="control-flow:1"
         prompt={<>Write <C>pow2</C>, which computes 2 to the <C>n</C>. Here <C>n</C> is just a <em>counter</em> that says how many times to double, while the doubling itself is always the same. Fill in the step so <C>(pow2 5)</C> gives <C>32</C>.</>}
-        starter={`(def (pow2 n)
-  (if (= n 0) 1 ?))
+        starter={`(def (pow2 n) (if (= n 0) 1 ?))
+
 (def (main) (pow2 5))`}
-        solution={`(def (pow2 n)
-  (if (= n 0) 1 (* 2 (pow2 (- n 1)))))
+        solution={`(def (pow2 n) (if (= n 0) 1 (* 2 (pow2 (- n 1)))))
+
 (def (main) (pow2 5))`}
         expected="32"
         hint={<>Unlike <C>sm</C> above, <C>n</C> doesn't appear in the step, since you just double the result of one fewer step with <C>(* 2 (pow2 (- n 1)))</C>. Writing <C>(* n …)</C> by habit would give factorial, <C>120</C>, not <C>32</C>.</>}
@@ -64,13 +62,11 @@ export default function ControlFlow() {
       <Exercise
         id="control-flow:2"
         prompt={<><C>fare</C> picks a ticket price by age tier: under 5 rides free (<C>0</C>), 65 and over pays <C>5</C>, everyone in between pays <C>10</C>. The free case is done; fill the hole with the <em>nested</em> <C>if</C> that decides between the adult and senior fares, so that <C>(fare 70)</C> gives <C>5</C>.</>}
-        starter={`(def (fare age)
-  (if (< age 5) 0
-      ?))
+        starter={`(def (fare age) (if (< age 5) 0 ?))
+
 (def (main) (fare 70))`}
-        solution={`(def (fare age)
-  (if (< age 5) 0
-      (if (< age 65) 10 5)))
+        solution={`(def (fare age) (if (< age 5) 0 (if (< age 65) 10 5)))
+
 (def (main) (fare 70))`}
         expected="5"
         hint={<>The hole is a second <C>if</C> in the else position, like the sign-of-<C>n</C> example above. In <C>(if (&lt; age 65) 10 5)</C>, under 65 is the adult fare <C>10</C> and otherwise the senior <C>5</C>.</>}

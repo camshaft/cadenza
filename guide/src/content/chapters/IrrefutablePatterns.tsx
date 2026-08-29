@@ -31,18 +31,22 @@ export default function IrrefutablePatterns() {
       <P>The same move works right in a parameter position. <C>add-pair</C> takes one tuple argument and names both of its parts in the parameter list, so the body can use <C>a</C> and <C>b</C> directly:</P>
       <Runnable
         source={`(def (add-pair #tuple(a b)) (+ a b))
+
 (def (main) (add-pair #tuple(3 4)))`}
       />
       <P>A single-constructor type is irrefutable in the same way, since there's no other shape it could be, so a pattern like <C>(C c)</C> on a one-constructor type unwraps its payload directly in the parameter, with no <C>match</C>. Here <C>Celsius</C> wraps an <C>Int64</C>, and <C>to-f</C> names the wrapped value <C>c</C> right in its parameter list:</P>
       <Runnable
         source={`(type Celsius (C Int64))
+
 (def (to-f (C c)) (+ (/ (* c 9) 5) 32))
+
 (def (main) (to-f (C 100)))`}
       />
       <P><C>(to-f (C 100))</C> is <C>212</C>, unwrapping the <C>100</C> and converting it. One constructor means one shape, so the compiler knows the pattern can't miss.</P>
       <P>Records destructure in a parameter too. <C>mag</C> takes one point record and names its <C>x</C> and <C>y</C> fields directly in the parameter list, so the body reads <C>a</C> and <C>b</C> with no accessor. The squared magnitude of <C>(3, 4)</C> is <C>3² + 4² = 25</C>:</P>
       <Runnable
         source={`(def (mag #record((= x a) (= y b))) (+ (* a a) (* b b)))
+
 (def (main) (mag #record((= x 3) (= y 4))))`}
       />
       <H2>Where the line is drawn</H2>
@@ -50,7 +54,9 @@ export default function IrrefutablePatterns() {
       <Note>This one is <strong>meant to be refused</strong>. Run it and read the status bar: <C>CDZ0210</C>, "a multi-variant constructor pattern is refutable ... only in a <C>match</C> arm". That's the dividing line, the same exhaustiveness guarantee from <strong>Pattern matching</strong>, now deciding where a pattern is allowed to bind.</Note>
       <Runnable
         source={`(type Opt (Some Int64) (None unit))
+
 (def (unwrap (Some x)) x)
+
 (def (main) (unwrap (Some 5)))`}
         expect="error"
       />
@@ -69,8 +75,10 @@ export default function IrrefutablePatterns() {
         id="irrefutable-patterns:2"
         prompt={<><C>fst</C> destructures its tuple argument in the parameter list. Finish the body so it returns the <em>first</em> part. With <C>(fst #tuple(7 9))</C> the answer is <C>7</C>.</>}
         starter={`(def (fst #tuple(a b)) ?)
+
 (def (main) (fst #tuple(7 9)))`}
         solution={`(def (fst #tuple(a b)) a)
+
 (def (main) (fst #tuple(7 9)))`}
         expected="7"
         hint={<>The parameter pattern binds both parts; return the first one, <C>a</C>.</>}

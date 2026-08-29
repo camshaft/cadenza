@@ -13,27 +13,28 @@ export default function ConstParameters() {
       <H2>A constant, inlined and specialized</H2>
       <P>The simplest const parameter is a constant scalar. Here <C>scale</C> takes a <C>const</C> factor <C>k</C> and a runtime <C>x</C>. Each call fixes <C>k</C> to a literal, so the compiler bakes that factor into a specialized <C>scale</C>, giving one copy with <C>k = 3</C> and another with <C>k = 2</C>:</P>
       <Runnable
-        source={`(def (scale (const (: k Int64)) (: x Int64))
-  (* k x))
-(def (main)
-  (+ (scale 3 5) (scale 2 3)))`}
+        source={`(def (scale (const (: k Int64)) (: x Int64)) (* k x))
+
+(def (main) (+ (scale 3 5) (scale 2 3)))`}
       />
       <P>That's <C>15 + 6 = 21</C>. The two calls compile to two distinct functions with the factor already substituted, the same way a generic function is monomorphized per type. A const parameter is that idea for <em>values</em>: specialize per compile-time-known argument, then erase it.</P>
       <H2>A dictionary of behaviour</H2>
       <P>The const value doesn't have to be a scalar, since it can be a whole <em>record of functions</em>, a "dictionary" that tells the function how to behave. Here <C>fold-n</C> applies an operation <C>n</C> times, and the operation lives in a const dictionary <C>d</C>. Calling it with two different dictionaries, one that adds 10 and one that doubles, specializes each call with its operation inlined:</P>
       <Runnable
-        source={`(def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
+        source={`(def
+  (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
   (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
-(def (main)
-  (+ (fold-n #record((= op (fn (x) (+ x 10)))) 3 0)
-     (fold-n #record((= op (fn (x) (* x 2)))) 3 1)))`}
+
+(def
+  (main)
+  (+ (fold-n #record((= op (fn (x) (+ x 10)))) 3 0) (fold-n #record((= op (fn (x) (* x 2)))) 3 1)))`}
       />
       <P>The first fold adds 10 three times from <C>0</C> to reach <C>30</C>, the second doubles three times from <C>1</C> to reach <C>8</C>, and together they make <C>38</C>. Because <C>d</C> is const, the <C>(. d op)</C> lookup folds to the concrete function in each specialized copy, so no record is passed at run time and no indirect call is emitted. You've hand-written the mechanism a typeclass or trait system would automate, handing the implementation to the function as a compile-time argument.</P>
       <H2>A const type parameter</H2>
       <P>The const argument can even be a <em>type</em>. A <C>(const (: t Type))</C> parameter takes a type-value at compile time (types are ordinary values, as shown in <em>Types as values</em>), and the body can branch on it with <C>Type.eq</C>, folding to a constant per specialization. Here <C>is-int</C> asks whether the type it was handed is <C>Int64</C>:</P>
       <Runnable
-        source={`(def (is-int (const (: t Type)) (: x Int64))
-  (Type.eq t Int64))
+        source={`(def (is-int (const (: t Type)) (: x Int64)) ((. Type eq) t Int64))
+
 (def (main) (is-int Int64 5))`}
       />
       <P>Called with <C>Int64</C> it folds to <C>true</C>, and calling it with <C>Bool</C> folds the same code to <C>false</C>, because each call site is specialized for the type it named so the comparison is settled at compile time rather than run time. The caller hands the type in as an argument and the compiler bakes a dedicated copy for it.</P>
@@ -43,11 +44,11 @@ export default function ConstParameters() {
       <Exercise
         id="const-parameters:1"
         prompt={<><C>scale</C> bakes its <C>const</C> factor <C>k</C> into each specialized copy. Fill the factor so <C>(scale ? 5)</C> gives <C>20</C>.</>}
-        starter={`(def (scale (const (: k Int64)) (: x Int64))
-  (* k x))
+        starter={`(def (scale (const (: k Int64)) (: x Int64)) (* k x))
+
 (def (main) (scale ? 5))`}
-        solution={`(def (scale (const (: k Int64)) (: x Int64))
-  (* k x))
+        solution={`(def (scale (const (: k Int64)) (: x Int64)) (* k x))
+
 (def (main) (scale 4 5))`}
         expected="20"
         hint={<><C>k * 5 = 20</C> needs <C>k = 4</C>. That <C>4</C> is inlined into the specialized <C>scale</C> at compile time, so being a const argument it must be a literal rather than a runtime value.</>}
@@ -55,11 +56,15 @@ export default function ConstParameters() {
       <Exercise
         id="const-parameters:2"
         prompt={<>The const dictionary decides the operation. Fill the body of <C>op</C> so that folding it three times from <C>0</C>, adding the same amount each step, reaches <C>15</C>.</>}
-        starter={`(def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
+        starter={`(def
+  (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
   (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
+
 (def (main) (fold-n #record((= op (fn (x) (+ x ?)))) 3 0))`}
-        solution={`(def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
+        solution={`(def
+  (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
   (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
+
 (def (main) (fold-n #record((= op (fn (x) (+ x 5)))) 3 0))`}
         expected="15"
         hint={<>Three steps from <C>0</C>, each adding the same amount <C>a</C>, gives <C>3 × a</C>. For <C>15</C> that's <C>a = 5</C>, so <C>op</C> is <C>(fn (x) (+ x 5))</C>. The dictionary is const, so this operation is inlined into the specialized <C>fold-n</C>.</>}
