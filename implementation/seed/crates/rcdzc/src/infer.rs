@@ -117,6 +117,35 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     t
 }
 
+/// STAGE 2a of the configurable-overflow build (operator-greenlit #5290, ruling B): the single resolved
+/// [`crate::db::OverflowMode`] for an unqualified `+`/`-`/`*` arithmetic `node`. Ruling B = ONE authoritative
+/// mode per node, so const-fold + backend codegen (2b) + the oracle all read the SAME trap-vs-wrap decision
+/// and cannot drift. Precedence (numeric-model §"Overflow Behavior Is Configurable By Policy", #5313): the
+/// governing MODULE `(pragma overflow …)` — from the load-time `db.overflow_specs` map (stage 1, #5353),
+/// selected by the operand's concrete SIGNEDNESS — then the GLOBAL `Project.cdz` manifest default, then
+/// `Trap`.
+///
+/// Signedness is read from the node's SOLVED type, so this MUST be called POST-monomorphization (once the
+/// operand's concrete type is fixed — a homogeneous arithmetic op shares one sign across both operands and
+/// the result, so the node's own `Ty::Int` sign IS the operand signedness). An unconstrained bare literal
+/// (`Sign::Deferred`/`Var`) resolves as SIGNED — the `Int64` default. A node absent from `overflow_specs` (an
+/// op written outside any `(pragma overflow …)` module, or a named `Int64.wrapping-*` form which is never
+/// keyed) falls straight through to the global/`Trap` level.
+pub fn overflow_mode_of(db: &mut Db, node: StructId) -> crate::db::OverflowMode {
+    use crate::db::OverflowMode;
+    let spec = db.overflow_specs.get(&node).copied();
+    // A `Ty::Int` with a FIXED unsigned sign selects the pragma's `unsigned` mode; everything else (signed,
+    // or a still-deferred/var sign that will default signed, or a non-int node) selects `signed`.
+    let unsigned = matches!(
+        type_of(db, node),
+        Ty::Int(it) if it.sign == crate::ty::Sign::Fixed(false)
+    );
+    let module_mode = spec.and_then(|s| if unsigned { s.unsigned } else { s.signed });
+    module_mode
+        .or_else(|| db.global_overflow_default(unsigned))
+        .unwrap_or(OverflowMode::Trap)
+}
+
 /// `Ty::has_free_var`, but MEMOIZED per shared compound `Rc` — for the `type_of` memoization guard above,
 /// which runs on EVERY node's solved type. A wide `Ty::Record`/`Ty::Tuple` (an N-field record annotation)
 /// is referenced from N nodes, each of which had the guard walk the whole O(N) payload → O(N²). The payload
