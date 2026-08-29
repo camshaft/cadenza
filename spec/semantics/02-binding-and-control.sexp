@@ -3047,6 +3047,25 @@
             (def (main (: n Int64)) (f (Some n))) (export main)))
   (error  CDZ0210))
 
+; The rustc-gold non-exhaustive diagnostic: a plain missing-arm sum match is CDZ0210, NAMES the uncovered
+; variant(s), and carries an add-arms INSERT fix that appends a covering arm per missing variant (a `trap`
+; placeholder body, so the synthesized arm type-checks against the sibling arms and is a heuristic — not
+; verified). A nullary missing variant → `(V (trap "TODO: V"))`; multiple missing → all arms space-joined.
+; (migrated from rcdzc a_non_exhaustive_sum_match_is_rejected /
+; a_non_exhaustive_sum_match_names_the_missing_variants_and_offers_an_add_arms_fix /
+; a_non_exhaustive_match_synthesizes_payload_binders_and_lists_multiple_missing.)
+(case "a non-exhaustive sum match names the uncovered variant and offers an add-arms fix"
+  (input  (do (type Option (Some Int64) None)
+              (def (f (: s Int64)) (match (Option.Some s) ((Option.Some x) x))) (export f)))
+  (error  CDZ0210 (message "`None`") (message "not covered")
+                  (fix (kind insert-into) (replacement "(None (trap \"TODO: None\"))"))))
+
+(case "a non-exhaustive match lists MULTIPLE missing variants and appends an arm for each"
+  (input  (do (type T (A Int64) B C)
+              (def (f (: t T)) (match t ((A x) x))) (export f)))
+  (error  CDZ0210 (message "`B`") (message "`C`")
+                  (fix (kind insert-into) (replacement "(B (trap \"TODO: B\")) (C (trap \"TODO: C\"))"))))
+
 (case "a false variant guard shields its arm's trapping body"
   (doc    "A guarded arm's body runs only when the guard holds (core-semantics.md #Boolean Connectives
            Short-Circuit, applied to a guard): `(Some x) if x > 0` over `(Some 0)` must NOT evaluate its
