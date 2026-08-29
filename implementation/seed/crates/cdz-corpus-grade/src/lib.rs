@@ -196,14 +196,14 @@ pub enum GExpect {
     Output(String),
     Trap(String),
     /// `(expect-error CODE msg?)` — the compiler must REFUSE with exactly `CODE` (+ optional message substring).
-    Error(String, Option<String>),
+    Error(String, Vec<String>),
     /// `(expect-warning CODE msg?)` — the compiler must COMPILE (produce an artifact) AND emit a WARNING with
     /// exactly `CODE` (+ optional message substring). Severity-distinct from `Error` (which DENIES the
     /// artifact): a warning ACCOMPANIES a produced component. Pairs with a `(count N)` for the exact-count
     /// warning cases (e.g. "exactly one CDZ0305 dead-trap warning") a presence-only `(warns …)` can't express.
-    Warning(String, Option<String>),
+    Warning(String, Vec<String>),
     /// `(expect-declines msg?)` — the compiler must refuse (any code, or codeless); optional message substring.
-    Declines(Option<String>),
+    Declines(Vec<String>),
 }
 
 /// A decoded `test-run.ast`: the case's run/grade metadata.
@@ -342,12 +342,7 @@ where
         // COMPILE-OUTCOME expectations (error/declines) are graded against the captured diagnostic, no run.
         match &trial.expect {
             GExpect::Error(code, msg) => {
-                worst = worst.worse(grade_compile_error(
-                    compiled,
-                    compile_diag,
-                    code,
-                    msg.as_deref(),
-                ));
+                worst = worst.worse(grade_compile_error(compiled, compile_diag, code, msg));
                 // DIAGNOSTIC-QUALITY facets (`(fix …)`/`(no-fix)`/`(count …)`) — graded against the captured
                 // structured faults for THIS error's `(Error, code)`. Only when the wire was captured.
                 if let (Some(faults), Some(diag)) = (&faults, &trial.diag) {
@@ -359,23 +354,14 @@ where
                 continue;
             }
             GExpect::Declines(msg) => {
-                worst = worst.worse(grade_compile_declines(
-                    compiled,
-                    compile_diag,
-                    msg.as_deref(),
-                ));
+                worst = worst.worse(grade_compile_declines(compiled, compile_diag, msg));
                 if matches!(worst, Grade::Fail(_)) {
                     break;
                 }
                 continue;
             }
             GExpect::Warning(code, msg) => {
-                worst = worst.worse(grade_compile_warning(
-                    compiled,
-                    compile_diag,
-                    code,
-                    msg.as_deref(),
-                ));
+                worst = worst.worse(grade_compile_warning(compiled, compile_diag, code, msg));
                 // Same diagnostic-QUALITY facets, graded for THIS warning's `(Warning, code)`.
                 if let (Some(faults), Some(diag)) = (&faults, &trial.diag) {
                     worst = worst.worse(grade_diag_quality(faults, Severity::Warning, code, diag));
@@ -564,9 +550,11 @@ pub fn grade_trial(expect: &GExpect, outcome: &Outcome) -> Grade {
     }
 }
 
-/// Grade an `(expect-error CODE msg?)` against the compile outcome — running an ill-formed program is a
-/// Fail (miscompile); the right CODE (+ optional message substring) is a Pass; a DIFFERENT code is Todo.
-pub fn grade_compile_error(compiled: bool, diag: &str, want: &str, msg: Option<&str>) -> Grade {
+/// Grade an `(expect-error CODE msg*)` against the compile outcome — running an ill-formed program is a
+/// Fail (miscompile); the right CODE with the message containing EVERY pinned substring is a Pass; a
+/// DIFFERENT code is Todo. `msgs` is the list of `(message …)` substrings (AND — all required; empty =
+/// code-only).
+pub fn grade_compile_error(compiled: bool, diag: &str, want: &str, msgs: &[String]) -> Grade {
     if compiled {
         return Grade::Fail(format!(
             "expected compile error {want} but the program COMPILED (miscompile)"
@@ -574,31 +562,27 @@ pub fn grade_compile_error(compiled: bool, diag: &str, want: &str, msg: Option<&
     }
     let (got, message) = first_error_diag(diag);
     match got {
-        Some(code) if code == want => match msg {
-            None => Grade::Pass,
-            Some(p) if message.contains(p) => Grade::Pass,
+        Some(code) if code == want => match msgs.iter().find(|p| !message.contains(p.as_str())) {
             Some(p) => Grade::Fail(format!("error {want} but message {message:?} lacks {p:?}")),
+            None => Grade::Pass,
         },
         _ => Grade::Todo(format!("refused, but not with {want} (got {got:?})")),
     }
 }
 
-/// Grade an `(expect-declines msg?)` — ANY refusal passes (coded or codeless); a compiled program is a
-/// Fail; the optional message substring must appear.
-pub fn grade_compile_declines(compiled: bool, diag: &str, msg: Option<&str>) -> Grade {
+/// Grade an `(expect-declines msg*)` — ANY refusal passes (coded or codeless); a compiled program is a
+/// Fail; EVERY pinned message substring must appear (empty = any refusal passes).
+pub fn grade_compile_declines(compiled: bool, diag: &str, msgs: &[String]) -> Grade {
     if compiled {
         return Grade::Fail("expected the compiler to DECLINE but it COMPILED (miscompile)".into());
     }
-    match msg {
+    if msgs.is_empty() {
+        return Grade::Pass;
+    }
+    let (_, message) = first_error_diag(diag);
+    match msgs.iter().find(|p| !message.contains(p.as_str())) {
+        Some(p) => Grade::Fail(format!("declined, but message {message:?} lacks {p:?}")),
         None => Grade::Pass,
-        Some(p) => {
-            let (_, message) = first_error_diag(diag);
-            if message.contains(p) {
-                Grade::Pass
-            } else {
-                Grade::Fail(format!("declined, but message {message:?} lacks {p:?}"))
-            }
-        }
     }
 }
 
@@ -608,7 +592,7 @@ pub fn grade_compile_declines(compiled: bool, diag: &str, msg: Option<&str>) -> 
 /// [CODE]` with that exact code (+ optional message substring). Distinct from the presence-only `(warns …)`
 /// clause: this is a first-class outcome kind, so it composes with a `(count N)` for the exact-count warning
 /// cases. A DIFFERENT/absent warning code is `Todo` (refused-to-confirm), never a false pass.
-pub fn grade_compile_warning(compiled: bool, diag: &str, want: &str, msg: Option<&str>) -> Grade {
+pub fn grade_compile_warning(compiled: bool, diag: &str, want: &str, msgs: &[String]) -> Grade {
     if !compiled {
         return Grade::Fail(format!(
             "expected the program to COMPILE with warning {want} but the compiler REFUSED it"
@@ -617,13 +601,17 @@ pub fn grade_compile_warning(compiled: bool, diag: &str, want: &str, msg: Option
     let emitted = collect_warnings(diag);
     let hit = emitted
         .iter()
-        .any(|(c, m)| c == want && msg.is_none_or(|p| m.contains(p)));
+        .any(|(c, m)| c == want && msgs.iter().all(|p| m.contains(p.as_str())));
     if hit {
         Grade::Pass
     } else {
         Grade::Todo(format!(
             "compiled, but warning {want}{} not among {emitted:?}",
-            msg.map(|p| format!(" (~ {p:?})")).unwrap_or_default()
+            if msgs.is_empty() {
+                String::new()
+            } else {
+                format!(" (~ {msgs:?})")
+            }
         ))
     }
 }
@@ -1118,27 +1106,31 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
             Some("expect-error") => {
                 if let Some(t) = a.as_form(child, "expect-error") {
                     let code = t.first().copied().and_then(|id| str_leaf(a, id));
-                    let msg = t.get(1).copied().and_then(|id| str_leaf(a, id));
+                    // code is leaf[0]; every remaining leaf is a required message substring (AND).
+                    let msgs: Vec<String> =
+                        t.iter().skip(1).filter_map(|&id| str_leaf(a, id)).collect();
                     if let Some(code) = code {
-                        expect = Some(GExpect::Error(code, msg));
+                        expect = Some(GExpect::Error(code, msgs));
                     }
                 }
             }
             Some("expect-warning") => {
                 if let Some(t) = a.as_form(child, "expect-warning") {
                     let code = t.first().copied().and_then(|id| str_leaf(a, id));
-                    let msg = t.get(1).copied().and_then(|id| str_leaf(a, id));
+                    let msgs: Vec<String> =
+                        t.iter().skip(1).filter_map(|&id| str_leaf(a, id)).collect();
                     if let Some(code) = code {
-                        expect = Some(GExpect::Warning(code, msg));
+                        expect = Some(GExpect::Warning(code, msgs));
                     }
                 }
             }
             Some("expect-declines") => {
-                let msg = a
+                // declines has no code — every leaf is a required message substring (AND).
+                let msgs: Vec<String> = a
                     .as_form(child, "expect-declines")
-                    .and_then(|t| t.first().copied())
-                    .and_then(|id| str_leaf(a, id));
-                expect = Some(GExpect::Declines(msg));
+                    .map(|t| t.iter().filter_map(|&id| str_leaf(a, id)).collect())
+                    .unwrap_or_default();
+                expect = Some(GExpect::Declines(msgs));
             }
             // `(count N)` — the fault-count the `(severity, code)` set must match exactly; `(once)` is the
             // common `(count 1)` shorthand.
@@ -1596,16 +1588,34 @@ mod tests {
     #[test]
     fn compile_error_grade() {
         assert_eq!(
-            grade_compile_error(false, "cdz: error [CDZ0201] (node 4): sep", "CDZ0201", None),
+            grade_compile_error(false, "cdz: error [CDZ0201] (node 4): sep", "CDZ0201", &[]),
             Grade::Pass
         );
         // Different code → Todo (still refused). Compiled → Fail.
         assert!(matches!(
-            grade_compile_error(false, "error [CDZ0300]: x", "CDZ0201", None),
+            grade_compile_error(false, "error [CDZ0300]: x", "CDZ0201", &[]),
             Grade::Todo(_)
         ));
         assert!(matches!(
-            grade_compile_error(true, "", "CDZ0201", None),
+            grade_compile_error(true, "", "CDZ0201", &[]),
+            Grade::Fail(_)
+        ));
+        // MULTI-SUBSTRING (AND): the message must contain EVERY pinned substring — a diagnostic that names
+        // the rule AND both operand types passes only when all are present; a missing one fails.
+        let diag = "cdz: error [CDZ0301] (node 2): no implicit conversion from Float64 to Int64";
+        let all = [
+            "no implicit conversion".to_string(),
+            "Float64".to_string(),
+            "Int64".to_string(),
+        ];
+        assert_eq!(
+            grade_compile_error(false, diag, "CDZ0301", &all),
+            Grade::Pass
+        );
+        // One substring absent (UInt64 not in the message) → Fail naming the missing phrase.
+        let miss = ["no implicit conversion".to_string(), "UInt64".to_string()];
+        assert!(matches!(
+            grade_compile_error(false, diag, "CDZ0301", &miss),
             Grade::Fail(_)
         ));
     }
@@ -1620,7 +1630,7 @@ mod tests {
                 true,
                 "cdz: warning [CDZ0305] (node 3): this trap is unreachable (dead code)",
                 "CDZ0305",
-                Some("unreachable")
+                &["unreachable".to_string()]
             ),
             Grade::Pass
         );
@@ -1629,18 +1639,18 @@ mod tests {
                 true,
                 "warning [CDZ0306] (node 1): unused binding",
                 "CDZ0306",
-                None
+                &[]
             ),
             Grade::Pass
         );
         // Refused (didn't compile) → Fail (the warning never fired).
         assert!(matches!(
-            grade_compile_warning(false, "", "CDZ0305", None),
+            grade_compile_warning(false, "", "CDZ0305", &[]),
             Grade::Fail(_)
         ));
         // Compiled but a DIFFERENT/absent warning code → Todo (refused-to-confirm, not a false pass).
         assert!(matches!(
-            grade_compile_warning(true, "warning [CDZ0999] (node 2): other", "CDZ0305", None),
+            grade_compile_warning(true, "warning [CDZ0999] (node 2): other", "CDZ0305", &[]),
             Grade::Todo(_)
         ));
         // Right code, message substring MISSING → Todo (the code matched but the phrase check failed).
@@ -1649,7 +1659,7 @@ mod tests {
                 true,
                 "warning [CDZ0305] (node 3): dead trap",
                 "CDZ0305",
-                Some("nope")
+                &["nope".to_string()]
             ),
             Grade::Todo(_)
         ));
@@ -1757,7 +1767,7 @@ mod tests {
             description: "diag-quality".into(),
             trials: vec![GTrial {
                 call: None,
-                expect: GExpect::Error("CDZ0201".into(), None),
+                expect: GExpect::Error("CDZ0201".into(), vec![]),
                 diag: Some(DiagExpect {
                     fix: Some(FixExpect {
                         kind: None,

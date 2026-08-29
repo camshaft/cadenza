@@ -575,7 +575,7 @@ fn expect_form(b: &mut Builder, e: &Expect) -> StructId {
         Expect::Error(code, msg) => {
             let cl = str_leaf(b, code);
             let mut leaves = vec![cl];
-            if let Some(m) = msg {
+            for m in msg {
                 leaves.push(str_leaf(b, m));
             }
             form(b, "expect-error", leaves)
@@ -583,7 +583,7 @@ fn expect_form(b: &mut Builder, e: &Expect) -> StructId {
         Expect::Warning(code, msg) => {
             let cl = str_leaf(b, code);
             let mut leaves = vec![cl];
-            if let Some(m) = msg {
+            for m in msg {
                 leaves.push(str_leaf(b, m));
             }
             form(b, "expect-warning", leaves)
@@ -593,10 +593,7 @@ fn expect_form(b: &mut Builder, e: &Expect) -> StructId {
             form(b, "expect-trap", vec![leaf])
         }
         Expect::Declines(msg) => {
-            let leaves = match msg {
-                Some(m) => vec![str_leaf(b, m)],
-                None => vec![],
-            };
+            let leaves: Vec<_> = msg.iter().map(|m| str_leaf(b, m)).collect();
             form(b, "expect-declines", leaves)
         }
     }
