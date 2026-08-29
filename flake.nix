@@ -4281,6 +4281,16 @@
               else if !valid then
                 throw "flake.nix: `${decl}` found but its `None =>` arm holds no 45-char base62 default literal"
               else hash;
+            parity = { name, hashFile, constName }:
+              pkgs.runCommand "${name}-hash-parity" { } ''
+                got=$(cat ${hashFile})
+                want=${recordedHash constName}
+                if [ "$got" != "$want" ]; then
+                  echo "PARITY FAIL: nix-built ${name} hash $got != runtime_abi.rs ${constName} $want" >&2
+                  exit 1
+                fi
+                echo "ok: nix-built ${name} == ${constName} ($want)" > $out
+              '';
             # VALIDITY: assert a built artifact is a well-formed wasm COMPONENT. The guest derivations
             # end in `wasm-tools component new` (the lift); nothing else gates that the result is valid,
             # so a future guest/WIT/toolchain change could silently produce a broken component that only
@@ -4517,20 +4527,9 @@
             '';
             # bindings the backstop aggregate references (kept as `let` so both the aggregate + the individual
             # `checks.*` attrs below share ONE derivation each — no rebuild).
-            # FLAG-DAY (2026-08-29, v-nix part c): the committed REQUIRED_RUNTIME_HASH/DEBUG_RUNTIME_HASH/
-            # REQUIRED_NFC_HASH are now deliberate PLACEHOLDERS — the real hashes are nix-COMPUTED (hashOf) +
-            # INJECTED into the compiler via option_env (mkPhaseBin injectRuntimeHash). So the old "nix-built
-            # hash == committed const" parity is OBSOLETE (would compare a real hash to a placeholder). What
-            # still needs guarding here is that each runtime component BUILDS + is a VALID wasm component (a
-            # broken emit / WIT / toolchain change would otherwise only surface at test-load); the hash is now
-            # inherently reproducible (nix) and the compiler-injection is guarded end-to-end by harness-runs.
-            # So these 3 checks become component-VALIDITY. (Attr names kept — runtime-hash-parity etc. — as the
-            # backstop/ruleset reference them; a grep-the-injected-hash-into-cdz-compile variant was rejected:
-            # rustc DEAD-CODE-ELIMINATES an unreferenced const like REQUIRED_NFC_HASH from cdz-compile, so a
-            # strings-grep false-fails — caught by gating before land.)
-            runtimeHashParity = validComponent { name = "runtime"; drv = runtime; };
-            runtimeDebugHashParity = validComponent { name = "runtime-debug"; drv = runtimeDebug; };
-            nfcHashParity = validComponent { name = "nfc"; drv = nfc; };
+            runtimeHashParity = parity { name = "runtime"; hashFile = runtimeHash; constName = "REQUIRED_RUNTIME_HASH"; };
+            runtimeDebugHashParity = parity { name = "runtime-debug"; hashFile = runtimeDebugHash; constName = "DEBUG_RUNTIME_HASH"; };
+            nfcHashParity = parity { name = "nfc"; hashFile = nfcHash; constName = "REQUIRED_NFC_HASH"; };
             # The contract name→hash mapping is well-formed: a non-empty JSON object whose every value is a
             # base62 contract-id (§8 text form — `[0-9A-Za-z]`, the one post-flag-day form; no hex/base64url).
             # Catches a silently-empty mapping (e.g. a contracts dir that stopped parsing) that a run not
