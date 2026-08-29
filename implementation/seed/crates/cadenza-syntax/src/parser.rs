@@ -3610,10 +3610,15 @@ impl<'a> Parser<'a> {
                 self.list(items, rlspan)
             }
             Kind::Hash if self.nth_kind(1) == Kind::LBrace => {
-                // `#{ k = p, … }` / `#{ k = p, …, .. rest }` — a map pattern, the s-expr `(map (k p) ..
-                // rest)` twin. Head is the NAME `map`; each entry is a `(key sub-pattern)` pair (the key
-                // is a value expression to look up, the value slot a sub-pattern), and an optional `..
-                // rest` binds the remaining map — the same key-directed shape the corpus authors.
+                // `#{ k = p, … }` / `#{ k = p, …, .. rest }` — a map pattern, the s-expr
+                // `(map (= k p) .. rest)` twin. Head is the NAME `map`; each entry is the canonical
+                // `(= key sub-pattern)` `FieldPair` triple — the SAME form as a map-VALUE entry and a
+                // record-pattern field (M2/M2b native ctor-leaf canonical, operator M3 ruling), so a native
+                // `#map` PATTERN (`Leaf::Ctor(Map)` + `FieldPair` entries, what rcdzc #5229 resolves)
+                // round-trips through this surface `structurally_eq`. The key is a value expression to look
+                // up, the value slot a sub-pattern; an optional `.. rest` binds the remaining map. Was a bare
+                // 2-element `(key sub-pattern)` pair, which did not `structurally_eq` a native `FieldPair`
+                // map pattern (the ML map-PATTERN round-trip gap, FACE 2 / breaker cdzw45).
                 self.bump(); // '#'
                 self.bump(); // '{'
                 let head = self.name("map", span);
@@ -3627,7 +3632,8 @@ impl<'a> Parser<'a> {
                             self.expect(Kind::Eq, "`=`");
                             let value = self.pattern();
                             let e_span = e_start.merge(self.prev_span());
-                            items.push(self.list(vec![key, value], e_span));
+                            let eq = self.atom(Leaf::FieldPair, e_start);
+                            items.push(self.list(vec![eq, key, value], e_span));
                         }
                         if !self.sep_continue(Kind::RBrace) {
                             break;

@@ -463,7 +463,7 @@
            `collect_pattern_binders` recurses through a `(map (k p))` element's VALUE sub-pattern — the map
            face of the variant/tuple/list-rest binder-kind family above (the key `1` is a literal, not a
            binder, so only the value sub-pattern is renamed).")
-  (input  (let ((x 10)) (eval (quasiquote (match (map (= 1 2)) ((map (1 x)) (unquote x)) (_ 0))))))
+  (input  (let ((x 10)) (eval (quasiquote (match (map (= 1 2)) ((map (= 1 x)) (unquote x)) (_ 0))))))
   (output (: 10 Int64)))
 
 (case "the hygiene rename recurses into a NESTED compound match pattern"
