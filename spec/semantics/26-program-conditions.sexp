@@ -523,6 +523,37 @@
             (export main)))
   (trap   "integer overflow"))
 
+; ── @requires/@ensures ARITY discipline: each takes EXACTLY ONE predicate argument ────────────────────
+; A `@requires`/`@ensures` with the wrong number of predicate arguments — zero, or two — is a shape error
+; REJECTED at strip time (CDZ0201, the same arity discipline `@tag` gets); a silently-unrecorded predicate
+; would mask the author's mistake and surface far away when the denotation consumes it. A valid one-predicate
+; `@requires(pred)`/`@ensures(pred)` is accepted and runs. (Name-resolution / boolean-typedness of the
+; predicate is checked LATER, at denotation, where the param scope + `ret` binder are available.) Migrated
+; from rcdzc a_malformed_requires_ensures_arity_is_rejected_not_silently_dropped.
+(case "a @requires annotation with zero predicate arguments is rejected"
+  (input (do (@ (requires) (def (c) 3)) (export c)))
+  (error CDZ0201 (message "takes exactly one PREDICATE argument")))
+
+(case "a @requires annotation with two predicate arguments is rejected"
+  (input (do (@ (requires (> x 0) (< x 9)) (def (c (: x Int64)) 3)) (export c)))
+  (error CDZ0201 (message "takes exactly one PREDICATE argument")))
+
+(case "a @ensures annotation with zero predicate arguments is rejected"
+  (input (do (@ (ensures) (def (c) 3)) (export c)))
+  (error CDZ0201 (message "takes exactly one PREDICATE argument")))
+
+(case "a @ensures annotation with two predicate arguments is rejected"
+  (input (do (@ (ensures (> ret 0) 5) (def (c) 3)) (export c)))
+  (error CDZ0201 (message "takes exactly one PREDICATE argument")))
+
+(case "a valid one-predicate @requires is accepted and the def runs"
+  (input (do (@ (requires (> x 0)) (def (c (: x Int64)) 3)) (export c)))
+  (call  c (: 4 Int64)) (output (: 3 Int64)))
+
+(case "a valid one-predicate @ensures is accepted and the def runs"
+  (input (do (@ (ensures (> ret 0)) (def (c) 3)) (export c)))
+  (call  c) (output (: 3 Int64)))
+
 ; ── b4b: the DENOTATION — a predicate `Ast` → an obligation `Term` (the semantics→logic bridge, §1A) ──
 ; b4a records a `@requires(pred)`/`@ensures(pred)` predicate as its `Ast` occurrence. b4b DENOTES that
 ; predicate Ast into a HOL `Term` the kernel discharges — the §1A shallow embedding on the pure-arith

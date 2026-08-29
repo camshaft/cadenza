@@ -9272,42 +9272,12 @@ mod match_engine {
         assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
     }
 
-    /// Verification Inc-b b4a2: a `@requires`/`@ensures` with NOT-exactly-one predicate argument
-    /// (`@requires()`, `@requires(a b)`) is a shape error REJECTED at strip time (CDZ0201), the same arity
-    /// discipline `@tag` gets — a silently-unrecorded predicate would mask the author's mistake and surface
-    /// far away when the denotation consumes it. A valid `@requires(pred)`/`@ensures(pred)` is accepted.
-    /// (Name-resolution/boolean-typedness of the predicate is checked later, at denotation, where the def
-    /// param scope + `ret` binder are available — flagged by breaker; scoped here to arity only.)
-    #[test]
-    fn a_malformed_requires_ensures_arity_is_rejected_not_silently_dropped() {
-        use crate::testkit::parse;
-        for src in [
-            "(module m (@ (requires) (def (c) 3)) (export c))", // zero args
-            "(module m (@ (requires (> x 0) (< x 9)) (def (c (: x Int64)) 3)) (export c))", // two args
-            "(module m (@ (ensures) (def (c) 3)) (export c))", // zero args
-            "(module m (@ (ensures (> ret 0) 5) (def (c) 3)) (export c))", // two args
-        ] {
-            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.message.contains("takes exactly one PREDICATE argument"))
-                .unwrap_or_else(|| {
-                    panic!("a malformed `@requires`/`@ensures` must be rejected: {src}")
-                });
-            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        }
-        // NO false positive: a valid one-predicate `@requires`/`@ensures` is accepted silently.
-        for ok in [
-            "(module m (@ (requires (> x 0)) (def (c (: x Int64)) 3)) (export c))",
-            "(module m (@ (ensures (> ret 0)) (def (c) 3)) (export c))",
-        ] {
-            assert!(
-                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                    .iter()
-                    .any(|d| d.message.contains("takes exactly one PREDICATE argument")),
-                "a valid one-predicate @requires/@ensures is not flagged: {ok}"
-            );
-        }
-    }
+    // (a_malformed_requires_ensures_arity_is_rejected_not_silently_dropped migrated to corpus
+    // 26-program-conditions, the "@requires/@ensures ARITY discipline" block: zero-arg and two-arg
+    // @requires/@ensures → CDZ0201 (message "takes exactly one PREDICATE argument"), plus the two valid
+    // one-predicate controls that run (c → 3). --case grades the code + message (all 6 PASS). Arity is a
+    // strip-time shape check; name-resolution/boolean-typedness is checked later at denotation, see
+    // requires_ensures_predicate_unbound_name_is_cdz0101_valid_names_ok below.)
 
     /// Verification Inc-b b4c: a `@requires`/`@ensures` predicate references only names in scope — the
     /// def's PARAMETERS, `ret` (for `@ensures`), and prelude/global names. A name that is none of those is
