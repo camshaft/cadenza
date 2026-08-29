@@ -1614,6 +1614,23 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
           | some (.trap t), _ | _, some (.trap t) => .trap t
           | some .diverges, _ | _, some .diverges => .diverges
           | _, _ => .unsupported "String.at: operand")
+  else if is "Bytes" "len" then
+    some (match a1 with | some (.value (.bytes b)) => .value (.int (Int.ofNat b.size))
+                        | some (.value _) => .unsupported "Bytes.len: not a bytes" | some o => o | none => .unsupported "Bytes.len arity")
+  else if is "Bytes" "slice" then
+    -- `Bytes.slice b start LENGTH` → `Some b[start .. start+length)` (byte-indexed, start/LENGTH — NOT
+    -- start/end like String.slice) when `0 ≤ start`, `0 ≤ length`, `start+length ≤ len`, else `None`
+    -- (fallible VIEW; 10-bytes §172/185: `(Bytes.slice [10 20 30 40] 1 2)` = Some [20 30]). Three operands.
+    let a3 := (children[3]?).map (fun i => evalNode m env defaultIntTy fuel i)
+    some (match a1, a2, a3 with
+          | some (.value (.bytes b)), some (.value (.int start)), some (.value (.int len)) =>
+            if 0 ≤ start && 0 ≤ len && start + len ≤ Int.ofNat b.size then
+              .value (.some (.bytes (b.extract start.toNat (start.toNat + len.toNat))))
+            else .value .none
+          | some (.unsupported r), _, _ | _, some (.unsupported r), _ | _, _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _, _ | _, some (.trap t), _ | _, _, some (.trap t) => .trap t
+          | some .diverges, _, _ | _, some .diverges, _ | _, _, some .diverges => .diverges
+          | _, _, _ => .unsupported "Bytes.slice: operand")
   else if is "Bytes" "at" then
     -- indexed BYTE access → Option Int: `Some b[i]` when 0 ≤ i < len, else `None`.
     some (match a1, a2 with
