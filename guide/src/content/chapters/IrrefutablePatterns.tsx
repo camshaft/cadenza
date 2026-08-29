@@ -26,23 +26,23 @@ export default function IrrefutablePatterns() {
         apart in place, binding each part to its own name. Here <C>a</C> is <C>3</C> and <C>b</C> is{" "}
         <C>4</C>, so the sum is <C>7</C>, with no <C>.0</C> or <C>.1</C> indexing:
       </P>
-      <Runnable source={`(def (main) (let (((tuple a b) (tuple 3 4))) (+ a b)))`} />
+      <Runnable source={`(def (main) (let ((#tuple(a b) #tuple(3 4))) (+ a b)))`} />
       <P>
         Patterns nest, so one binder can reach several layers deep in a single step. Here the inner tuple
         is destructured at the same time as the outer one, binding <C>a</C>, <C>b</C>, and <C>c</C> at once:
       </P>
-      <Runnable source={`(def (main) (let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c))))`} />
+      <Runnable source={`(def (main) (let ((#tuple(a #tuple(b c)) #tuple(1 #tuple(2 3)))) (+ a (+ b c))))`} />
       <P>
         A record binder works the same way, naming fields instead of positions. This one binds{" "}
         <C>a</C> to the <C>x</C> field and <C>b</C> to the <C>y</C> field, so the sum is <C>7</C>:
       </P>
-      <Runnable source={`(def (main) (let (((record (x a) (y b)) (record (x 3) (y 4)))) (+ a b)))`} />
+      <Runnable source={`(def (main) (let ((#record((= x a) (= y b)) #record((= x 3) (= y 4)))) (+ a b)))`} />
       <P>
         And a record pattern needn't name every field: bind just the one you want and leave the rest. Since
         a record is keyed by name, the fields you skip simply don't appear, and the order you write them in
         doesn't matter. Here only <C>x</C> is bound, reading back <C>3</C>:
       </P>
-      <Runnable source={`(def (main) (let (((record (x a)) (record (x 3) (y 4)))) a))`} />
+      <Runnable source={`(def (main) (let ((#record((= x a)) #record((= x 3) (= y 4)))) a))`} />
 
       <H2>Destructuring in a function's arguments</H2>
       <P>
@@ -50,8 +50,8 @@ export default function IrrefutablePatterns() {
         names both of its parts in the parameter list, so the body can use <C>a</C> and <C>b</C> directly:
       </P>
       <Runnable
-        source={`(def (add-pair (tuple a b)) (+ a b))
-(def (main) (add-pair (tuple 3 4)))`}
+        source={`(def (add-pair #tuple(a b)) (+ a b))
+(def (main) (add-pair #tuple(3 4)))`}
       />
       <P>
         A single-constructor type is irrefutable in the same way, since there's no other shape it could
@@ -74,8 +74,8 @@ export default function IrrefutablePatterns() {
         accessor. The squared magnitude of <C>(3, 4)</C> is <C>3² + 4² = 25</C>:
       </P>
       <Runnable
-        source={`(def (mag (record (x a) (y b))) (+ (* a a) (* b b)))
-(def (main) (mag (record (x 3) (y 4))))`}
+        source={`(def (mag #record((= x a) (= y b))) (+ (* a a) (* b b)))
+(def (main) (mag #record((= x 3) (= y 4))))`}
       />
 
       <H2>Where the line is drawn</H2>
@@ -121,7 +121,7 @@ export default function IrrefutablePatterns() {
           </>
         }
         starter={`(def (main) (let (((tuple a b) (tuple 10 20))) ?))`}
-        solution={`(def (main) (let (((tuple a b) (tuple 10 20))) (+ a b)))`}
+        solution={`(def (main) (let ((#tuple(a b) #tuple(10 20))) (+ a b)))`}
         expected="30"
         hint={<>Both names come from the tuple pattern, so the body is <C>(+ a b)</C>.</>}
       />
@@ -136,8 +136,8 @@ export default function IrrefutablePatterns() {
         }
         starter={`(def (fst (tuple a b)) ?)
 (def (main) (fst (tuple 7 9)))`}
-        solution={`(def (fst (tuple a b)) a)
-(def (main) (fst (tuple 7 9)))`}
+        solution={`(def (fst #tuple(a b)) a)
+(def (main) (fst #tuple(7 9)))`}
         expected="7"
         hint={<>The parameter pattern binds both parts; return the first one, <C>a</C>.</>}
       />
