@@ -10090,7 +10090,7 @@
            the unary twin of arithmetic-on-a-non-number. Cadenza never coerces a String to a number. A
            generation that does not yet cover unary negation declines (reject-don't-miscompile).")
   (input  (let ((s "hi")) (- s)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "negation is not defined on")))
 
 (case "a multiply crossing the single-limb boundary lands exactly and divides back"
   (doc    "A multiply whose product CROSSES the single-limb boundary (2^62 · k for k=4 reaches 2^64, k=7 exceeds it) then
