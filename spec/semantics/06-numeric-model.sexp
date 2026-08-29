@@ -13689,3 +13689,31 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 419 Int64))
   (call main (: -3 Int64)) (output (: 419 Int64)))
+
+(case "lk1 LIST keys — structural dedup in a set + list-keyed map lookup — through both targets"
+  (doc "The list member of the compound-key family (#5564 territory): a #set of lists dedups a
+        runtime-selected structural duplicate (n=1 → [1,2] twice → 2) with the length-1 list distinct,
+        and a #map keyed BY a list looks up a runtime-branch-built list key. n=7 → 30+5 = 35;
+        n=1 → 20+5 = 25; n=-2 → 30-1 = 29.")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 10 (Set.len #set(#list(1 2) #list(n 2) #list(1))))
+         (match (Map.lookup #map((= #list(1 2) 5)) #list((if (> n 0) 1 9) 2)) ((Some v) v) ((None _u) -1))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 35 Int64))
+  (call main (: 1 Int64)) (output (: 25 Int64))
+  (call main (: -2 Int64)) (output (: 29 Int64)))
+
+(case "if2 the Float64.Infinity CONSTANT compares byte-equal to a runtime-produced inf"
+  (doc "The Infinity-constant face (#5563 oracle territory): the named constant orders above any finite
+        (inf > n → 1) and equals a runtime ÷0-produced inf by canonical bytes (n=7 makes the divisor an
+        opaque zero → 1/0.0 = inf → equal → 11; n=20 → 1/13.0 finite → 10). NOTE: a const-foldable
+        NON-FINITE result still rejects ('no value form yet' — the const twin of ConstFloatNan), so the
+        divisor stays runtime-opaque here.")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 10 (if (> Float64.Infinity (Float64.of-int n)) 1 0))
+         (if (= Float64.Infinity (/ 1.0 (Float64.of-int (- n 7)))) 1 0)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 11 Int64))
+  (call main (: 20 Int64)) (output (: 10 Int64)))
