@@ -2664,6 +2664,39 @@ fn send(
         std::process::exit(1);
     }
 
+    // STOPPED-RECIPIENT DEAD-LETTER GUARD (concierge dead-letter-hygiene 2026-08-29): a reply-EXPECTING
+    // message (merge-request/ask/issue) delivered to a `stopped` agent's inbox sits UNREAD forever — its
+    // `/loop` isn't running to drain it, so the sender waits on a reply/action that never comes (the
+    // dead-letter class the watchdog can't repair after the fact). The wake path already SKIPS a stopped
+    // recipient (no nudge), but delivery still happens — so catch it HERE and REFUSE at the source with
+    // routing guidance, the same fail-fast discipline as the unresolved-sender / empty-ref guards. This
+    // COMPLEMENTS the trunk-lag pr-sync guard above: that fires only when trunk is measurably behind (the
+    // pause proxy) and only for a merge-request; this catches a STOPPED recipient even when trunk is fresh
+    // (e.g. pr-sync stopped but just-synced) and for ask/issue too, and covers ANY stopped agent, not just
+    // pr-sync. Self-disarming: `fleet resume` flips status back to `active`, so it stops firing the instant
+    // the recipient is reactivated. An UNKNOWN recipient (not-yet-in-registry seed) is NOT refused
+    // (`deliver` creates the inbox on demand). `--force` bypasses — deliberately pre-seed a message for an
+    // agent you are about to reactivate.
+    if !force {
+        let reg = fleet.load();
+        let recipient_status = reg
+            .agents
+            .iter()
+            .find(|a| a.name == to)
+            .map(|a| a.status.as_str());
+        if stopped_recipient_dead_letters(kind, recipient_status) {
+            eprintln!(
+                "fleet send: REFUSING a `{kind}` to `{to}` — that agent is STOPPED (its `/loop` isn't \
+                 running, so it will never drain this reply-expecting message → your reply/action \
+                 dead-letters forever). Route to an ACTIVE owner instead, or ask concierge to \
+                 `fleet resume {to}` first. (If this is pr-sync: the fleet lands DIRECT to main during \
+                 the pause — self-merge on local-green per AGENTS-fleet.md.) Re-run with `--force` to \
+                 deliver anyway (e.g. to pre-seed a message for an agent you are about to reactivate)."
+            );
+            std::process::exit(1);
+        }
+    }
+
     // CONTAMINATION GUARD (v-compiler-ml issue 10801): during an extreme-load window a fleet-sync
     // replay can strand a PEER's unlanded commit onto this branch (the shared-base HEAD/reflog vector).
     // If that stray commit rides along in a merge-request's `trunk..<ref>` range, the sender would
@@ -3421,6 +3454,19 @@ fn stranded_message_summary(path: &Path) -> String {
 /// ref-less MR flags as a phantom orphan forever). `send` refuses a merge-request when this is true.
 fn merge_request_ref_is_missing(r#ref: &str) -> bool {
     r#ref.trim().is_empty()
+}
+
+/// Should `send` REFUSE because the message would DEAD-LETTER at a STOPPED recipient (concierge
+/// dead-letter-hygiene 2026-08-29)? A reply-EXPECTING kind (`merge-request` | `ask` | `issue` — the
+/// same set the unresolved-sender guard uses) delivered to a `stopped` agent sits in its inbox UNREAD
+/// forever: its `/loop` isn't running to drain it, so the sender waits on a reply/action that never
+/// comes. Refuse iff BOTH hold: the kind expects a reply AND the recipient is KNOWN-`stopped`. An
+/// UNKNOWN recipient (`None` — the legit seed-before-`add` case where `deliver` creates the inbox on
+/// demand) is NEVER refused, and a fire-and-forget kind (`note`/`status`/`backlog`/…) is delivered so
+/// it can await the agent's reactivation. Self-disarming: `fleet resume` flips status to `active`, so
+/// this stops firing the instant the recipient is revived. Pure so the gate pins the exact condition.
+fn stopped_recipient_dead_letters(kind: &str, recipient_status: Option<&str>) -> bool {
+    matches!(kind, "merge-request" | "ask" | "issue") && recipient_status == Some("stopped")
 }
 
 fn mr_qualifies_for_landed_check(
@@ -18595,6 +18641,33 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(merge_request_ref_is_missing("\t\n"));
         assert!(!merge_request_ref_is_missing("deadbeef"));
         assert!(!merge_request_ref_is_missing("  deadbeef  ")); // has content once trimmed
+    }
+
+    #[test]
+    fn stopped_recipient_dead_letters_only_for_reply_expecting_kinds_to_a_known_stopped_agent() {
+        // The exact refuse condition `send` applies: a reply-EXPECTING kind delivered to a KNOWN-stopped
+        // recipient dead-letters (its loop won't drain it). Refuse iff BOTH: reply-expecting kind AND
+        // recipient status == "stopped".
+        for kind in ["merge-request", "ask", "issue"] {
+            assert!(
+                stopped_recipient_dead_letters(kind, Some("stopped")),
+                "{kind} to a stopped recipient must refuse (would dead-letter)"
+            );
+            // Same kind, but recipient is ACTIVE → deliver (its loop will drain it).
+            assert!(!stopped_recipient_dead_letters(kind, Some("active")));
+            // UNKNOWN recipient (not yet in registry — the seed-before-add case) → NEVER refuse.
+            assert!(!stopped_recipient_dead_letters(kind, None));
+        }
+        // Fire-and-forget kinds to a stopped agent → delivered (they may legitimately await reactivation,
+        // and the sender isn't blocked waiting on a reply). None of these refuse even when stopped.
+        for kind in [
+            "note", "status", "backlog", "merged", "reject", "answer", "assign",
+        ] {
+            assert!(
+                !stopped_recipient_dead_letters(kind, Some("stopped")),
+                "{kind} is not reply-expecting — must deliver even to a stopped recipient"
+            );
+        }
     }
 
     #[test]
