@@ -34,6 +34,7 @@ inductive SymExpr where
   | const (v : Value)                        -- a concrete value (a literal, or a future folded constant)
   | app (op : String) (args : Array SymExpr) -- a modeled operator (`+ - * / % < > <= >= = and or not`)
   | ite (c t e : SymExpr)                    -- a conditional on a (possibly symbolic) condition
+  | tuple (elems : Array SymExpr)            -- a tuple value (lazy elements); positional projection reads one
   deriving BEq, Inhabited
 
 /-- The symbolic OUTCOME of evaluating a program with symbolic inputs. `cannotProve` records WHY so the
@@ -76,6 +77,7 @@ partial def mayTrap : SymExpr → Bool
   | .const _ => false
   | .app op args => arithOps.contains op || bitwiseOps.contains op || args.any mayTrap
   | .ite c t e => mayTrap c || mayTrap t || mayTrap e
+  | .tuple es => es.any mayTrap
 
 /-- Canonicalize a symbolic expression by SOUND rewrites only: recurse into subterms; SOUND constant
 folding of comparison/boolean ops (`foldConst?`); an `if` on a (now possibly-folded) constant boolean
@@ -91,6 +93,7 @@ partial def normalize : SymExpr → SymExpr
     match foldConst? op args' with
     | some v => .const v
     | none => .app op args'
+  | .tuple es => .tuple (es.map normalize)
   | .ite c t e =>
     match normalize c with
     | .const (.bool true) => normalize t
@@ -151,6 +154,31 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
           | some (Node.list pairs) => symLet m senv pairs.toList bodyId
           | _ => .cannotProve "symeval: let bindings not a list"
         | _, _ => .cannotProve "symeval: malformed let"
+      else if h == "tuple".toUTF8 then
+        -- a tuple value (lazy elements). Build `.tuple` of the element SymExprs; an unmodelable element
+        -- sinks the whole tuple (conservative — the value can't be fully compared).
+        let outs := (children.extract 1 children.size).map (fun c => symEval m senv c)
+        match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
+        | some r => .cannotProve r
+        | none => .sym (.tuple (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
+      else if h == ".".toUTF8 && children.size == 3 then
+        -- POSITIONAL tuple projection `(. t i)` with `i` an integer literal (record/member `.` = boundary).
+        match children[1]?, children[2]? with
+        | some tId, some iId =>
+          match (m.nodes[iId]?).bind (fun n => match n with | .atom lid => m.leaves[lid]? | _ => none) with
+          | some l =>
+            (match Value.ofLeaf l with
+             | some (.int n) =>
+               if n < 0 then .cannotProve "symeval: negative tuple index"
+               else (match symEval m senv tId with
+                     | .sym (.tuple es) => (match es[n.toNat]? with
+                                            | some e => .sym e
+                                            | none => .cannotProve "symeval: tuple index out of range")
+                     | .sym _ => .cannotProve "symeval: positional projection of a non-tuple"
+                     | .cannotProve r => .cannotProve r)
+             | _ => .cannotProve "symeval: non-positional projection (record field / member not modeled)")
+          | none => .cannotProve "symeval: malformed projection index"
+        | _, _ => .cannotProve "symeval: malformed projection"
       else match String.fromUTF8? h with
         | some hs =>
           if arithOps.contains hs || cmpOps.contains hs || hs == "=" || hs == "and" || hs == "or" || hs == "not" then
@@ -287,5 +315,18 @@ private def _letExpr : Module :=
     nodes := #[.atom 1, .atom 2, .list #[0, 1], .list #[2], .atom 1, .atom 0, .list #[5, 3, 4]],
     root := 6 }
 #guard symEval _letExpr [] 6 == SymOutcome.sym (.const (.int 5))
+
+-- tuples + positional projection: `(. (tuple 7 8) 1)`.
+-- leaves 0:tuple 1:(7) 2:(8) 3:. 4:(1); nodes 0-2 atoms, 3:(tuple 7 8), 4:.atom `.`, 5:.atom idx, 6:(. (tuple 7 8) 1).
+private def _projExpr : Module :=
+  { leaves := #[Leaf.name "tuple".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[7]),
+                Leaf.intLit false .dec (ByteArray.mk #[8]), Leaf.name ".".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[1])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[4, 3, 5]],
+    root := 6 }
+-- constructing `(tuple 7 8)` → `.tuple [const 7, const 8]` (node 3).
+#guard symEval _projExpr [] 3 == SymOutcome.sym (.tuple #[.const (.int 7), .const (.int 8)])
+-- projecting element 1 of `(tuple 7 8)` → `const 8`.
+#guard symEval _projExpr [] 6 == SymOutcome.sym (.const (.int 8))
 
 end Oracle
