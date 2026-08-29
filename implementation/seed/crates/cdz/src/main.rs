@@ -5004,7 +5004,12 @@ fn list_test_bytes(files: &[String]) -> Result<Vec<u8>, ExitCode> {
 /// here we REWRITE it to this group's real `main-<group>.wasm` (or keep "" for standalone) and MERGE all
 /// groups' entries into the one manifest a runner reads (`cdz-run <target> --call <export> [--peer
 /// <main-iface>=<main-file>] --store S`). Compile-only; exits non-zero if any file fails to compile.
-fn run_emit_shred(files: &[String], out_dir: &std::path::Path, standalone: bool) -> ExitCode {
+fn run_emit_shred(
+    files: &[String],
+    out_dir: &std::path::Path,
+    standalone: bool,
+    two_stage: bool,
+) -> ExitCode {
     if let Err(e) = std::fs::create_dir_all(out_dir) {
         eprintln!(
             "{PROG}: --emit-shred: cannot create {}: {e}",
@@ -5012,14 +5017,21 @@ fn run_emit_shred(files: &[String], out_dir: &std::path::Path, standalone: bool)
         );
         return ExitCode::FAILURE;
     }
-    // STANDALONE (`--standalone`, the operator hybrid for small-closure suites) drives `EmitTestsShredStandalone`
-    // (each `@test` self-contained, NO main → full coverage, no #4031 peer-boundary declines); else the shared-
-    // main peer shred.
-    let shred_req = if standalone {
+    // Mode selection (§S6b): TWO-STAGE (`--two-stage`) emits cadenza-ast FRAGMENTS — one shared-closure
+    // `closure-<i>.cdzb` + one per-`@test` `test-<name>.cdzb` — spliced+compiled LATER by the fan-out
+    // (`rcdzc closure.cdzb test.cdzb --export <name>`), for standalone-everywhere heavy suites without the
+    // O(tests×closure) blowup. STANDALONE (`--standalone`) emits each `@test` as a self-contained WASM
+    // component (NO main). Else the shared-main peer WASM shred. `--two-stage` wins if both are set.
+    let shred_req = if two_stage {
+        rcdzc::Request::EmitTestsShredTwoStage
+    } else if standalone {
         rcdzc::Request::EmitTestsShredStandalone
     } else {
         rcdzc::Request::EmitTestsShred
     };
+    // The shared-artifact file EXTENSION + per-test target extension: two-stage writes cadenza-ast fragments
+    // (`.cdzb`), the wasm modes write components (`.wasm`).
+    let ext = if two_stage { "cdzb" } else { "wasm" };
     // The merged manifest's entries, collected across groups as owned fields (each group's arena is dropped
     // before the next): (name, is_property, file, export, target, main-iface, main-file).
     let mut all_entries: Vec<(String, bool, String, String, String, String, String)> = Vec::new();
@@ -5075,11 +5087,22 @@ fn run_emit_shred(files: &[String], out_dir: &std::path::Path, standalone: bool)
         // only those tests' components. An independent-file suite (iterators) has file == entry_stem for all
         // (its closure is just itself), so nothing is dropped there.
         let entry_stem = closure[0].name.clone();
-        let has_main = out.artifacts.iter().any(|a| a.kind == "component-provider");
-        let group_main_file = if has_main {
-            format!("main-{i}.wasm")
+        // The group's SHARED artifact: two-stage → the `closure` ast fragment (→ `closure-<i>.cdzb`); the
+        // wasm modes → the `component-provider` main (→ `main-<i>.wasm`). Empty when the group has none (a
+        // standalone wasm shred, or a two-stage suite whose closure declined).
+        let has_main = if two_stage {
+            out.artifacts
+                .iter()
+                .any(|a| a.kind == rcdzc::Artifact::KIND_AST && a.name == "closure")
         } else {
+            out.artifacts.iter().any(|a| a.kind == "component-provider")
+        };
+        let group_main_file = if !has_main {
             String::new()
+        } else if two_stage {
+            format!("closure-{i}.cdzb")
+        } else {
+            format!("main-{i}.wasm")
         };
         // Decode the group's manifest → the OWN `@test`s (this file's own, by the `file` field). For each, pick
         // a UNIQUE target FILE name (disambiguate a cross-file name collision with `-<group>`), map the
@@ -5109,11 +5132,12 @@ fn run_emit_shred(files: &[String], out_dir: &std::path::Path, standalone: bool)
                     if test_file != entry_stem {
                         continue; // an imported file's @test — its OWN group emits it (no cross-file dup)
                     }
-                    // Unique target file: `test-<name>.wasm`, else `test-<name>-<group>.wasm` on a cross-file
-                    // name collision (group index is unique, and within a group `@test` names are unique).
-                    let mut target = format!("test-{name}.wasm");
+                    // Unique target file: `test-<name>.<ext>`, else `test-<name>-<group>.<ext>` on a
+                    // cross-file name collision (group index is unique, and within a group `@test` names are
+                    // unique). `<ext>` = `cdzb` (two-stage fragment) or `wasm` (compiled component).
+                    let mut target = format!("test-{name}.{ext}");
                     if written_targets.contains(&target) {
-                        target = format!("test-{name}-{i}.wasm");
+                        target = format!("test-{name}-{i}.{ext}");
                     }
                     written_targets.insert(target.clone());
                     own.insert(format!("test-{name}"), target.clone());
@@ -5129,27 +5153,41 @@ fn run_emit_shred(files: &[String], out_dir: &std::path::Path, standalone: bool)
                 }
             }
         }
-        // Write MAIN (only when this file HAS own tests that link it — else the main is an orphan) + the OWN
-        // per-@test consumer components, each to its UNIQUE target file (from `own`).
+        // Write the group's SHARED artifact (the closure fragment / main provider — only when this file HAS
+        // own tests that link it, else it is an orphan) + the OWN per-`@test` artifacts, each to its UNIQUE
+        // target file (from `own`). Two-stage artifacts are kind `ast` (`closure` + `test-<name>` fragments);
+        // the wasm modes are `component-provider` (main) + `component` (per-test consumer).
+        let write_to = |rel: &str, bytes: &[u8], any_fail: &mut bool| {
+            let p = out_dir.join(rel);
+            if let Err(e) = std::fs::write(&p, bytes) {
+                eprintln!("{PROG}: --emit-shred: cannot write {}: {e}", p.display());
+                *any_fail = true;
+            }
+        };
         for a in &out.artifacts {
-            match a.kind.as_str() {
-                "component-provider" if !own.is_empty() => {
-                    let p = out_dir.join(&group_main_file);
-                    if let Err(e) = std::fs::write(&p, &a.bytes) {
-                        eprintln!("{PROG}: --emit-shred: cannot write {}: {e}", p.display());
-                        any_fail = true;
-                    }
+            if two_stage {
+                if a.kind != rcdzc::Artifact::KIND_AST {
+                    continue;
                 }
-                "component" => {
-                    if let Some(target) = own.get(&a.name) {
-                        let p = out_dir.join(target);
-                        if let Err(e) = std::fs::write(&p, &a.bytes) {
-                            eprintln!("{PROG}: --emit-shred: cannot write {}: {e}", p.display());
-                            any_fail = true;
+                if a.name == "closure" {
+                    if !own.is_empty() {
+                        write_to(&group_main_file, &a.bytes, &mut any_fail);
+                    }
+                } else if let Some(target) = own.get(&a.name) {
+                    write_to(target, &a.bytes, &mut any_fail);
+                }
+            } else {
+                match a.kind.as_str() {
+                    "component-provider" if !own.is_empty() => {
+                        write_to(&group_main_file, &a.bytes, &mut any_fail)
+                    }
+                    "component" => {
+                        if let Some(target) = own.get(&a.name) {
+                            write_to(target, &a.bytes, &mut any_fail)
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
@@ -5308,7 +5346,7 @@ fn run_test(args: &TestArgs) -> ExitCode {
             eprintln!("{PROG} test: --emit-shred requires --out-dir <DIR>");
             return ExitCode::FAILURE;
         };
-        return run_emit_shred(&files, out_dir, args.standalone);
+        return run_emit_shred(&files, out_dir, args.standalone, args.two_stage);
     }
 
     // GATE ON `cdz check` CLEAN FIRST — before running any `@test`. A source file that fails to PARSE (an
@@ -6204,6 +6242,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 emit_shred: false, // watch RE-RUNS; the shred build-output is a one-shot direct-run mode
                 out_dir: None,
                 standalone: false,
+                two_stage: false,
             }),
             WatchCmd::Build => run_build(&BuildArgs {
                 dir: Some(dir_str.clone()),
@@ -7802,6 +7841,15 @@ struct TestArgs {
     /// compiler-ml closure). Only meaningful with `--emit-shred`.
     #[arg(long)]
     standalone: bool,
+    /// TWO-STAGE `--emit-shred` (§S6b, standalone-everywhere heavy suites): emit cadenza-ast FRAGMENTS, not
+    /// wasm — one shared-closure `closure-<group>.cdzb` (the reachable non-`@test` library) + one per-`@test`
+    /// `test-<name>.cdzb`, with `main-file=closure-<group>.cdzb`/`target=test-<name>.cdzb` in the manifest.
+    /// The fan-out then splice-COMPILES each: `rcdzc <closure> <test> --export <name> -o <name>.wasm` — so the
+    /// heavy closure lowers ONCE + CA-caches (v-nix), each test is cheap codegen: O(closure_once + tests×body)
+    /// instead of `--standalone`'s O(tests×closure). Only meaningful with `--emit-shred`; wins over
+    /// `--standalone` if both are set.
+    #[arg(long)]
+    two_stage: bool,
 }
 
 // ── cdz watch ──────────────────────────────────────────────────────────────────────────────────
