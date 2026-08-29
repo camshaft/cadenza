@@ -1914,6 +1914,9 @@ partial def evalProject (m : Module) (env : Env) (fuel : Nat) (children : Array 
     -- the canonical NaN (all NaN spellings unify via specFloatEq / valEq's canonical-bits order).
     else if ((nameOf? m recId == some "Float64".toUTF8) || (nameOf? m recId == some "Float32".toUTF8))
             && (nameOf? m fieldId == some "nan".toUTF8) then .value .floatNan
+    -- prelude float constant `Float64.Infinity` / `Float32.Infinity` → +∞ (negative infinity is `(- …)`).
+    else if ((nameOf? m recId == some "Float64".toUTF8) || (nameOf? m recId == some "Float32".toUTF8))
+            && (nameOf? m fieldId == some "Infinity".toUTF8) then .value (.floatInf false)
     else
     match evalNode m env defaultIntTy fuel recId with
     | .value (.record fields) =>
