@@ -95,6 +95,19 @@ features = ["derive"]
 version = "0.3"
 features = ["env-filter", "fmt"]
 
+[dependencies.wasmparser]
+# EMIT-PATH WELL-FORMEDNESS VALIDATION (operator seq-212): the compiler MUST assert the component it
+# emits is well-formed BEFORE handing it off — "if a runtime linker is going to complain, we've failed
+# as a compiler." `wasmparser` is a PURE parse+type-check validator (component-model aware, NO wasmtime /
+# NO JIT), so it keeps the no-wasmtime discipline while catching an ill-formed emit at the SOURCE (every
+# `compile` caller + bin, not just the CLI). A sanctioned exception to COPY-DON'T-DEPEND (like blake3):
+# component-model validation is far too large to copy + is a fixed spec, and the assertion has to live
+# where the artifact is produced. Previously a DEV-only dep (byte-oracle tests); promoting it to a compile
+# dep is a crate-CLOSURE change landed atomically with the nix fileset/closure-assert updates (#5638
+# lesson). Default features (the `validate` feature that provides `Validator` is default-on, as the
+# prior byte-oracle test usage relied on).
+version = "0.239"
+
 [dev-dependencies]
 # The real front-end reader (TESTS ONLY — like wasm-encoder below, never in the compile
 # path, so the "copy, don't depend" round-trip is preserved). Test fixtures read the s-expression
@@ -107,9 +120,8 @@ cadenza-syntax = { path = "../cadenza-syntax" }
 # The independent byte ORACLE (tests only): licenses the hand-emitted byte path by asserting it is
 # byte-identical to the authoritative component-model encoder. NEVER in the compile path.
 wasm-encoder = "0.239"
-# The component/core validator (tests only): parses + type-checks a component to LOCALIZE a byte error
-# (`Component::from_binary`'s error is opaque). Diagnoses the resource-linking envelope during R1/R2.
-wasmparser = "0.239"
+# (`wasmparser` is now a real [dependencies] entry — the emit-path well-formedness validator, seq-212 —
+# so it is NOT re-listed here; a compile dep is available to tests too.)
 # The shared native runtime interface an emitted ASYNC module links against (`cdz_rt::CdzEnv`). A
 # dev-dependency so `cargo test` builds its rlib into the target dir, where the Rust-async round-trip
 # tests locate it to pass `rustc --extern cdz_rt=…`. Tests only — never in the compile path.

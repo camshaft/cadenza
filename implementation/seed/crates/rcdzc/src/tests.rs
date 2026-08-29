@@ -52669,3 +52669,76 @@ fn collect_static_compounds_gathers_markable_roots_only() {
         "a runtime tuple must not be collected"
     );
 }
+
+/// seq-212 EMIT WELL-FORMEDNESS: the compile funnel asserts every emitted component is well-formed before
+/// handoff. `validate_emitted_components` DROPS an ill-formed `"component"` artifact + surfaces an `Error`
+/// diagnostic (a compiler emit bug, "a runtime linker complaining = we failed"), while a well-formed
+/// component + any non-component artifact pass untouched. Guards the invariant against a later weakening.
+/// (The POSITIVE path is also covered implicitly: every `compile` test in this suite now funnels through
+/// the same validation, so a wrongly-rejected valid emit would red the whole suite.)
+#[test]
+fn emit_well_formedness_drops_and_diagnoses_an_ill_formed_component() {
+    use crate::abi::{Artifact, CompileOutput, Severity};
+    use crate::backend::Target;
+
+    let component_kind = Target::Wasm.artifact_kind();
+
+    // A genuinely well-formed component (a real compile) — the positive control.
+    let good_bytes = crate::compile::compile_component(&crate::codec::encode(
+        &crate::testkit::parse("(module m (def (main) 7) (export main))"),
+    ))
+    .expect("a trivial program compiles to a well-formed component");
+
+    // (a) MALFORMED "component" bytes → DROPPED + an Error diagnostic; a valid component + a non-component
+    // artifact both survive.
+    let mut out = CompileOutput {
+        artifacts: vec![
+            Artifact::new(Artifact::KIND_AST, "keep-ast", vec![1, 2, 3]),
+            Artifact::new(component_kind, "bad", vec![0, 1, 2, 3, 4, 5, 6, 7]),
+            Artifact::new(component_kind, "good", good_bytes.clone()),
+        ],
+        diagnostics: vec![],
+        cse_partition_core_eq_calls: 0,
+    };
+    crate::compile::validate_emitted_components(&mut out);
+
+    // The ill-formed component is gone; the valid component + the non-component artifact remain.
+    let names: Vec<&str> = out.artifacts.iter().map(|a| a.name.as_str()).collect();
+    assert!(
+        !names.contains(&"bad"),
+        "the ill-formed component is dropped: {names:?}"
+    );
+    assert!(
+        names.contains(&"good"),
+        "the well-formed component survives: {names:?}"
+    );
+    assert!(
+        names.contains(&"keep-ast"),
+        "a non-component artifact is untouched: {names:?}"
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error
+                && d.message.contains("ill-formed component `bad`")),
+        "an Error diagnostic names the ill-formed component: {:?}",
+        out.diagnostics
+    );
+
+    // (b) A well-formed-only output validates clean — no drop, no new diagnostic.
+    let mut clean = CompileOutput {
+        artifacts: vec![Artifact::new(component_kind, "good", good_bytes)],
+        diagnostics: vec![],
+        cse_partition_core_eq_calls: 0,
+    };
+    crate::compile::validate_emitted_components(&mut clean);
+    assert!(
+        clean.artifact(component_kind).is_some(),
+        "a well-formed component is retained"
+    );
+    assert!(
+        clean.diagnostics.is_empty(),
+        "no diagnostic for a well-formed emit: {:?}",
+        clean.diagnostics
+    );
+}

@@ -130,8 +130,51 @@ pub fn compile_with_opt_and_overflow(
     // no longer wraps — it reaches its guard-sized stack through this sink like every other caller.) The
     // borrowed inputs/targets and the `CompileOutput` result are all `Send`, so the scoped worker is sound.
     crate::host::run_with_compiler_stack(|| {
-        compile_with_opt_inner(inputs, targets, opt_level, overflow)
+        let mut out = compile_with_opt_inner(inputs, targets, opt_level, overflow);
+        // seq-212: assert every emitted component is well-formed BEFORE handoff. This is the ONE sink all
+        // emit modes' `CompileOutput`s funnel through (the early-returning EmitTests/composed/per-file paths
+        // included), so validating here covers every path exactly once.
+        validate_emitted_components(&mut out);
+        out
     })
+}
+
+/// seq-212 EMIT WELL-FORMEDNESS assertion — "if a runtime linker is going to complain, we've failed as a
+/// compiler." Validate every `"component"`-kind artifact with `wasmparser` (a pure component-model
+/// parse+type-check — NO wasmtime/JIT, keeping the no-wasmtime discipline). A validation failure is a
+/// COMPILER BUG (an ill-formed emit), not a user-program error, so it is surfaced as an `Error` diagnostic
+/// naming the `wasmparser` fault AND the offending artifact is DROPPED — the tool then reports failure
+/// (`artifact("component")` absent) rather than handing off bytes a runtime linker would reject. A
+/// well-formed emit (the invariant) validates clean, so this is a no-op beyond the linear validation parse.
+pub(crate) fn validate_emitted_components(out: &mut CompileOutput) {
+    let component_kind = Target::Wasm.artifact_kind();
+    let mut faults: Vec<String> = Vec::new();
+    out.artifacts.retain(|a| {
+        if a.kind != component_kind {
+            return true;
+        }
+        let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        match v.validate_all(&a.bytes) {
+            Ok(_) => true,
+            Err(e) => {
+                faults.push(format!(
+                    "the compiler emitted an ill-formed component `{}`: {e} — a runtime linker would \
+                     reject it. This is a compiler emit bug, not a program error (seq-212).",
+                    a.name
+                ));
+                false // DROP the ill-formed artifact — never hand it off.
+            }
+        }
+    });
+    for message in faults {
+        out.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            code: None,
+            message,
+            node: None,
+            fix: None,
+        });
+    }
 }
 
 fn compile_with_opt_inner(
