@@ -667,6 +667,33 @@ pub struct EffectDecl {
     pub synth: Option<StructId>,
 }
 
+/// How an unqualified fixed-width integer arithmetic operator (`+`/`-`/`*`) behaves when its result
+/// overflows the operand type: `Trap` rejects/aborts (the language default — `numeric-model.md` §Overflow),
+/// `Wrap` computes modulo 2^width. Selected per node by the governing `(pragma overflow …)` (or the global
+/// `Project.cdz` manifest, or the `Trap` default). A named `Int64.wrapping-*` / `*.checked-*` form is IMMUNE
+/// — it carries its own overflow contract and is never governed by the pragma.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OverflowMode {
+    /// Overflow is a fault (reject at compile time for a constant, abort at run time otherwise). The default.
+    Trap,
+    /// Overflow wraps modulo 2^width (two's-complement for signed).
+    Wrap,
+}
+
+/// A module's declared overflow policy — the `(pragma overflow (signed <mode>) (unsigned <mode>))`
+/// directive, split by operand SIGNEDNESS: `signed` governs an op over a signed type (`Int8`…`Int64`),
+/// `unsigned` an op over an unsigned type (`UInt8`…`UInt64`). Either sub-form may be absent (`None`), in
+/// which case that signedness falls through to the next precedence level (global manifest, then `Trap`).
+/// The signed/unsigned SELECTION for a given node is deferred to `infer` (post-monomorphization, once the
+/// operand's concrete signedness is known); this pair is the load-time source the selection reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct OverflowSpec {
+    /// Mode for an op over a SIGNED integer type, or `None` if the pragma omits `(signed …)`.
+    pub signed: Option<OverflowMode>,
+    /// Mode for an op over an UNSIGNED integer type, or `None` if the pragma omits `(unsigned …)`.
+    pub unsigned: Option<OverflowMode>,
+}
+
 /// A `(module NAME def…)` declaration reachable in a `do`-block — a namespace binding `NAME` to a record
 /// of its exported definitions (`core-semantics.md` §A Module Groups Definitions Under A Name). Its
 /// members are reached by member access `(. NAME field)`, exactly like a sum's variants or an effect's
@@ -703,6 +730,12 @@ pub struct ModuleDecl {
     /// Literal Type). The float twin of `default_int`. `None` for a module with no such pragma. Kept as the
     /// un-reduced occurrence; the load-time `default_float_literals` map records which literals it applies to.
     pub default_float: Option<StructId>,
+    /// The overflow policy of a `(pragma overflow (signed <mode>) (unsigned <mode>))` member, if the module
+    /// declares one — the trap/wrap behavior an unqualified `+`/`-`/`*` WRITTEN in this module takes,
+    /// selected by operand signedness (`numeric-model.md` §A Module May Declare Its Overflow Policy). `None`
+    /// for a module with no such pragma. Applied at load by the per-node `overflow_specs` map (β-copy-robust,
+    /// like the default-literal maps); the signed-vs-unsigned selection is resolved in `infer`.
+    pub overflow: Option<OverflowSpec>,
 }
 
 /// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
@@ -999,6 +1032,17 @@ pub struct Db {
     /// no-promotion still holds (the default fixes a type, not a coercion — like the integer default, a
     /// float default keeps the value form a `ConstFloat`, so no annotated-literal guard is needed).
     pub default_float_literals: crate::fxhash::FxHashMap<StructId, StructId>,
+
+    /// Each unqualified `+`/`-`/`*` arithmetic-operator NODE WRITTEN inside a `(module … (pragma overflow
+    /// …) …)` (or at a root-scope `(pragma overflow …)`'s def bodies) → the governing [`OverflowSpec`] (the
+    /// declared signed/unsigned trap-or-wrap pair). The overflow twin of `default_int_literals`: built ONCE
+    /// at load by an ARENA walk (`collect_overflow_modes`), keyed by the ORIGINAL operator node so it
+    /// survives the β-copy an inlined body performs (the parent-walk a naive lookup would use is unusable
+    /// post-copy). DEFINITION-SITE scoped (a nested `(module …)` keeps its own policy). A named
+    /// `Int64.wrapping-*` form is never a key (it is not an unqualified `+`/`-`/`*`). `infer` reads this per
+    /// node and SELECTS the single [`OverflowMode`] by the operand's concrete signedness (decision B — one
+    /// authoritative resolved value per node, so const-fold + backend + oracle cannot drift).
+    pub overflow_specs: crate::fxhash::FxHashMap<StructId, OverflowSpec>,
 
     /// The declaration occurrences of sums that are C-style ENUMS — MORE than one variant, EVERY variant
     /// nullary (no payloads). Such a value carries no data beyond WHICH variant it is, so it needs no heap
@@ -2710,6 +2754,17 @@ impl Db {
                 collect_default_float_literals(&ast, m.occ, ty_expr, &mut default_float_literals);
             }
         }
+        // Map each unqualified `+`/`-`/`*` arithmetic node written inside a `(pragma overflow …)` module to
+        // its governing OverflowSpec — an ARENA walk of each pragma-module's member subtrees (before `ast`
+        // moves, before any β-copy), keyed by the original operator node so an inlined body's op still finds
+        // its policy. The signed-vs-unsigned SELECTION is deferred to `infer` (post-monomorphization). See
+        // `overflow_specs`.
+        let mut overflow_specs = crate::fxhash::FxHashMap::default();
+        for m in &modules {
+            if let Some(spec) = m.overflow {
+                collect_overflow_modes(&ast, m.occ, spec, &mut overflow_specs);
+            }
+        }
         // ROOT/FILE-TOP scope. A `(pragma <key> <T>)` written as a TOP-LEVEL item — the root `(do …)`'s
         // own child or a bare-file form (`read_all` wraps top-level forms in a synthetic `(do …)`), NOT
         // inside a nested `(module NAME …)` — declares the default for the WHOLE root module, exactly as
@@ -2754,6 +2809,11 @@ impl Db {
             // below is trivially true, so behavior is unchanged there).
             let pragma_file = file_of(item);
             let same_file = |sib: StructId| link_files.is_none() || file_of(sib) == pragma_file;
+            // `overflow`'s second element is a `(signed …)` sub-form, not a type-expr — parse the whole
+            // spec once from the pragma form (the default-* keys use `ty_expr` directly).
+            let overflow_spec = (key == "overflow")
+                .then(|| parse_overflow_spec(&ast, item))
+                .flatten();
             for &sib in &top_items(&ast) {
                 if !same_file(sib) {
                     continue;
@@ -2776,6 +2836,11 @@ impl Db {
                     ),
                     "default-float" => {
                         mark_float_literals(&ast, def_body, ty_expr, &mut default_float_literals)
+                    }
+                    "overflow" => {
+                        if let Some(spec) = overflow_spec {
+                            mark_overflow_nodes(&ast, def_body, spec, &mut overflow_specs);
+                        }
                     }
                     _ => {}
                 }
@@ -2832,6 +2897,7 @@ impl Db {
             bigint_ctor_arg_literals,
             resume_escape_operands: None,
             default_float_literals,
+            overflow_specs,
             enum_disc: crate::fxhash::FxHashSet::default(),
             parent,
             child_ix,
@@ -6050,7 +6116,7 @@ fn collect_module_decl(
         ast.as_form(member, "pragma").is_some_and(|t| {
             matches!(
                 t.first().and_then(|&k| ast.as_name(k)),
-                Some("default-integer" | "default-fraction" | "default-float")
+                Some("default-integer" | "default-fraction" | "default-float" | "overflow")
             )
         })
     };
@@ -6079,6 +6145,16 @@ fn collect_module_decl(
     let default_int = pragma_ty("default-integer");
     let default_fraction = pragma_ty("default-fraction");
     let default_float = pragma_ty("default-float");
+    // The overflow policy — parsed from the whole `(pragma overflow (signed …) (unsigned …))` member (its
+    // operands are sub-forms, not a single type-expr, so `pragma_ty` does not apply).
+    let overflow = members
+        .iter()
+        .find(|&&m| {
+            ast.as_form(m, "pragma")
+                .and_then(|t| t.first().and_then(|&k| ast.as_name(k)))
+                == Some("overflow")
+        })
+        .and_then(|&m| parse_overflow_spec(ast, m));
     if all_modeled
         && let Some(&name) = mod_tail.first()
         && let Some(name_str) = ast.as_name(name)
@@ -6090,6 +6166,7 @@ fn collect_module_decl(
             default_int,
             default_fraction,
             default_float,
+            overflow,
         });
     }
     for &member in &members {
@@ -6174,6 +6251,87 @@ fn mark_int_literals(
     if let Struct::List(children) = ast.get(node) {
         for &c in children {
             mark_int_literals(ast, c, ty_expr, out);
+        }
+    }
+}
+
+/// The `trap`/`wrap` mode named by a `(signed <mode>)` / `(unsigned <mode>)` sub-form's argument `node`, or
+/// `None` if it is not one of the two mode names (a malformed mode is reported as CDZ0602 by the pragma
+/// validation pass; here an unrecognized name simply yields no policy for that signedness).
+fn parse_overflow_mode(ast: &Arenas, node: StructId) -> Option<OverflowMode> {
+    match ast.as_name(node)? {
+        "trap" => Some(OverflowMode::Trap),
+        "wrap" => Some(OverflowMode::Wrap),
+        _ => None,
+    }
+}
+
+/// Parse a `(pragma overflow (signed <mode>) (unsigned <mode>))` form into an [`OverflowSpec`]. Either
+/// sub-form may be absent (that signedness stays `None` → falls through to the next precedence level). Order
+/// is irrelevant; each sub-form is matched by its head (`signed`/`unsigned`). Returns `None` only when the
+/// form carries NEITHER a well-formed `signed` nor `unsigned` sub-form (nothing to record).
+fn parse_overflow_spec(ast: &Arenas, pragma_form: StructId) -> Option<OverflowSpec> {
+    let ptail = ast.as_form(pragma_form, "pragma")?;
+    // Skip the `overflow` key; the rest are the `(signed …)` / `(unsigned …)` sub-forms.
+    let mut spec = OverflowSpec::default();
+    for &sub in ptail.get(1..).unwrap_or(&[]) {
+        if let Some(t) = ast.as_form(sub, "signed") {
+            spec.signed = t.first().and_then(|&m| parse_overflow_mode(ast, m));
+        } else if let Some(t) = ast.as_form(sub, "unsigned") {
+            spec.unsigned = t.first().and_then(|&m| parse_overflow_mode(ast, m));
+        }
+    }
+    (spec.signed.is_some() || spec.unsigned.is_some()).then_some(spec)
+}
+
+/// Record every unqualified `+`/`-`/`*` arithmetic node in the DEF-BODY subtrees of a `(pragma overflow …)`
+/// module `mod_form` → the module's `spec`, into `out`. The overflow twin of [`collect_default_int_literals`]
+/// — DEFINITION-SITE scoped (descends only the module's OWN `(def …)` bodies; a nested `(module inner …)`
+/// keeps its own policy), keyed by the ORIGINAL operator node so a later β-copy that reparents the op still
+/// finds its policy.
+fn collect_overflow_modes(
+    ast: &Arenas,
+    mod_form: StructId,
+    spec: OverflowSpec,
+    out: &mut crate::fxhash::FxHashMap<StructId, OverflowSpec>,
+) {
+    let Some(mod_tail) = ast.as_form(mod_form, "module") else {
+        return;
+    };
+    for &member in mod_tail.get(1..).unwrap_or(&[]) {
+        if let Some(def_tail) = ast.as_form(member, "def")
+            && let Some(&def_body) = def_tail.get(1)
+        {
+            mark_overflow_nodes(ast, def_body, spec, out);
+        }
+    }
+}
+
+/// Mark every unqualified `+`/`-`/`*` arithmetic node reachable from `node` (recursively) with `spec` in
+/// `out`, WITHOUT descending into a nested `(module …)` (its own scope). A node already recorded is left
+/// as-is (the nearest enclosing pragma wins — the outer walk visits an inner module separately). Only the
+/// bare `+`/`-`/`*` head is matched: a named `Int64.wrapping-add` / `(. Int64 checked-add)` form is a
+/// different head and is IMMUNE (it carries its own overflow contract).
+fn mark_overflow_nodes(
+    ast: &Arenas,
+    node: StructId,
+    spec: OverflowSpec,
+    out: &mut crate::fxhash::FxHashMap<StructId, OverflowSpec>,
+) {
+    // A nested module carries its OWN policy (or none) — do not leak this module's into it.
+    if ast.as_form(node, "module").is_some() {
+        return;
+    }
+    if let Struct::List(children) = ast.get(node) {
+        // A `(+ a b)` / `(- a b)` / `(* a b)` whose HEAD is the bare operator name is a governed arithmetic
+        // op. (`as_name` on the head is `None` for a dotted `(. Int64 wrapping-add)` head — never matched.)
+        if let Some(&head) = children.first()
+            && matches!(ast.as_name(head), Some("+" | "-" | "*"))
+        {
+            out.entry(node).or_insert(spec);
+        }
+        for &c in children {
+            mark_overflow_nodes(ast, c, spec, out);
         }
     }
 }
