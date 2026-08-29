@@ -193,17 +193,6 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
-    /// Citation-coverage regression gate (wired into `check`): run `duvet report`, count the `//=` /
-    /// `//#` citation annotations, and fail if the count drops below the committed floor in
-    /// `.duvet/coverage-floor.json` — a deleted/stranded citation turns the gate red. Gates on a
-    /// machine-STABLE count, NOT the churny (gitignored) `.duvet/snapshot.txt`. Fail-soft: SKIPS (does
-    /// not fail) when `duvet` isn't installed, so it never reddens `check` on a machine lacking the tool.
-    DuvetCheck {
-        /// Record the current counts as the new floor (what `v-duvet-coverage` runs after adding
-        /// citations), then exit. Without it, enforce the committed floor.
-        #[arg(long)]
-        save: bool,
-    },
     /// Run the cdz-runtime test suite under Miri — the UB oracle for the refcount/FBIP heap core.
     /// Miri interprets the tests and flags use-after-free, out-of-bounds, uninitialized reads, and
     /// aliasing violations (Stacked Borrows) that the normal test run cannot see. The runtime's
@@ -226,16 +215,6 @@ enum Cmd {
         /// Content-addressed store the runtime is staged from. [default: <repo>/target/cadenza-store]
         #[arg(long)]
         store: Option<PathBuf>,
-    },
-    /// Build the `cdz` LSP server and install the Cadenza VS Code extension into the local editor, in
-    /// one command: builds `cdz` (release), installs the extension's npm deps, bakes the built binary's
-    /// path into the extension, and symlinks `integrations/vscode` into every VS Code extensions dir
-    /// found (`~/.vscode`, `~/.vscode-server`, forks). Reload the editor window afterward and open a
-    /// `.cdz` file. Re-run after rebuilding `cdz`. No `code`/`vsce` CLI needed — the symlink IS the install.
-    InstallLsp {
-        /// Remove the extension symlinks (leaves the built binary + npm deps in place).
-        #[arg(long)]
-        uninstall: bool,
     },
     /// Orchestrate the autonomous-agent fleet: bring agents up as named tmux windows, tear them
     /// down, inspect the board, add/remove agents, and route inbox messages. The durable manifest is
@@ -308,10 +287,8 @@ fn main() {
         Cmd::MergeBaseline { ours, theirs } => merge_baseline(&ours, &theirs),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
         Cmd::Codegen { check } => codegen::run(&paths, check),
-        Cmd::DuvetCheck { save } => duvet_check::run(&paths, save),
         Cmd::Miri { filter } => miri(&paths, &filter),
         Cmd::GuideWasm { store } => guide_wasm(&paths, store),
-        Cmd::InstallLsp { uninstall } => install_lsp::run(&paths, uninstall),
         Cmd::Fleet { cmd } => fleet::run(&paths, cmd),
         Cmd::External(args) => run_external_subcommand(&args),
     }
@@ -399,9 +376,7 @@ fn miri(paths: &Paths, filter: &str) {
 }
 
 mod codegen;
-mod duvet_check;
 mod fleet;
-mod install_lsp;
 
 /// The workspace directory anchors, resolved once from this crate's manifest location. xtask lives
 /// at `<repo>/xtask`, so the repo root is the manifest's parent and the seed workspace is the fixed
@@ -5969,14 +5944,12 @@ fn check(paths: &Paths, profile: &str) {
 
     // Citation-coverage regression gate: fail if a `//=` / `//#` duvet citation was deleted/stranded
     // (live cited < the committed floor). Skips only when `duvet` isn't installed; a present-but-
-    // erroring duvet (a stranded citation) FAILS loudly. Thread `--profile` through like the gate step
-    // so `cargo xtask --profile <p> check` runs every nested self-invocation under the SAME profile
-    // (no cross-profile rebuild of this xtask binary between steps).
-    log.step_show(
-        "duvet-check",
-        &format!("{xtask} --profile {profile} duvet-check"),
-        repo,
-    );
+    // erroring duvet (a stranded citation) FAILS loudly. The `duvet-check` command was decomposed into
+    // the standalone `xtask-duvet-check` crate + `apps.duvet-check` (v-xtask-decompose), so `xtask
+    // duvet-check` no longer has a built-in arm — it routes through the all-nix compat bridge
+    // (`Cmd::External`) to `nix run <worktree>#duvet-check`, running the cached crane bin against this
+    // worktree (CDZ_REPO_ROOT). No `--profile` to thread (the nix app is its own build).
+    log.step_show("duvet-check", &format!("{xtask} duvet-check"), repo);
 
     // Corpus-hygiene lint: the `(needs …)` capability tag is RETIRED (the grade mechanism no longer
     // early-returns on it @d572403 — decline is the sole "todo" signal; see
