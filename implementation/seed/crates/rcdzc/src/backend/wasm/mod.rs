@@ -9777,6 +9777,131 @@ fn canon_write_of(
     }
 }
 
+/// The BOUNDARY POSITION a typed-export conformance check is for. The PARAM and RESULT emit paths differ
+/// in what they can produce, so the predicate must know which: a `result<…>` / `list<u8>`(Bytes) / `option`
+/// FIELD is emittable in a PARAM record (the field-rebuild wrapper `param_field_rebuild` handles
+/// option/result/list<u8>/enum fields — e.g. the reducer response's `answer: result<list<u8>, error>`),
+/// but a top-level `result<…>` RESULT is NOT yet (the canonical writer `canon_write_of` has no `Result`
+/// arm). Checking a param with the result-path truth (or vice versa) would false-reject or false-accept.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ConformancePosition {
+    /// A member PARAM (or a record-param field) — the field-rebuild wrapper path.
+    Param,
+    /// A member RESULT — the canonical value-writer path.
+    Result,
+}
+
+/// seq-212 — the EMIT-TRUTH typed-export CONFORMANCE predicate. `Ok(())` iff the guest `guest_ty` is
+/// actually EMITTABLE as the declared WIT `declared` at the given boundary `position`, `Err(reason)` (a
+/// human clause the caller splices into a CDZ fault) otherwise.
+///
+/// v-inference calls this from `world_export_conformance_faults` per-param (`Param`) + on the result
+/// (`Result`) INSTEAD of a naive `ty_natural_wit(guest) == declared` equality — which FALSE-REJECTS every
+/// Option/list/variant-bearing shape (`ty_natural_wit` returns `None` for a `Sum`/`Qty`) though the boundary
+/// emits many of them fine (a `record { a: option<s64>, b: list<u8> }` param, an `option<s64>` result, a
+/// `record { answer: result<list<u8>, error> }` param). The emit is the source of truth, not a structural
+/// type equality — hence deferring to the actual emit-truth functions here (so this NEVER drifts).
+///
+/// Guard (both positions): a bare MACHINE-scalar guest (`Int`/`Bool`/`Char`/`Float`) cannot satisfy a
+/// COMPOUND declared type — a genuine mismatch (declared `record`/`option`/… but guest `s64`) the writer's
+/// `_ => Scalar` fallthrough would silently accept. The opposite direction (a compound guest declared as a
+/// scalar WIT) the writer/rebuild already reject (`let WitType::X = wty else { return None }`).
+///
+/// - `Param`: a bare MACHINE scalar (valtype-carrying), or a RECORD whose fields all rebuild via
+///   `record_fields_rebuild` (which — crucially — recurses `option`/`result`/`list<u8>`/`enum`/nested-record
+///   fields, so a record param with a `result<…>` field conforms). A top-level Bytes/Sum/List/Tuple/Map/
+///   String/heap-scalar param is not yet a supported top-level param → `Err`.
+/// - `Result`: whatever `canon_write_of` (the canonical result writer) can produce — record/tuple/list/
+///   option/variant/enum/scalar/bytes + nested compositions. A `result<…>` / `map<…>` RESULT has NO writer
+///   arm yet → `Err` (a genuine not-yet-emittable, NOT a false-reject — the caller reports it as such).
+pub(crate) fn export_type_conforms_emittable(
+    db: &mut Db,
+    guest_ty: &crate::ty::Ty,
+    declared: &crate::wit_world::WitType,
+    position: ConformancePosition,
+) -> Result<(), String> {
+    use crate::backend::wasm::lir::valtype_of;
+    use crate::ty::Ty;
+    use crate::wit_world::WitType;
+    let g = guest_ty.strip_nominal();
+    // A bare MACHINE scalar (the writer's `_` arm / the param loop's scalar arm accept these).
+    let guest_machine_scalar = matches!(g, Ty::Int(_) | Ty::Bool | Ty::Char | Ty::Float(_));
+    let declared_compound = matches!(
+        declared,
+        WitType::Record(_)
+            | WitType::Tuple(_)
+            | WitType::List(_)
+            | WitType::Option(_)
+            | WitType::Variant(_)
+            | WitType::Enum(_)
+            | WitType::Result { .. }
+            | WitType::Flags(_)
+    );
+    if guest_machine_scalar && declared_compound {
+        return Err(
+            "type shape mismatch — the guest is a scalar, but the world declares a compound type"
+                .to_string(),
+        );
+    }
+    match position {
+        ConformancePosition::Param => match (g, declared) {
+            // A RECORD param: its fields rebuild through the field-rebuild wrapper, which handles
+            // option/result/list<u8>/enum/nested-record fields (so a `result<…>` FIELD conforms here).
+            (Ty::Record(map), WitType::Record(wfs)) => {
+                let mut vts: Vec<u8> = Vec::new();
+                if record_fields_rebuild(db, map, wfs, &mut vts).is_some() {
+                    Ok(())
+                } else {
+                    Err(
+                        "a field of this record param is not yet emittable at the typed-export boundary"
+                            .to_string(),
+                    )
+                }
+            }
+            // Otherwise only a bare MACHINE scalar crosses as a top-level param (the param loop's scalar
+            // arm needs `valtype_of` Some); a heap scalar (Symbol/BigInt/String/Bytes) or a top-level
+            // compound (Tuple/Sum/List/Map/Set) is not yet a supported top-level param.
+            _ if valtype_of(g).is_some() => Ok(()),
+            _ => Err(
+                "this top-level param is not yet emittable (only a machine-scalar or a record param crosses the typed-export boundary)"
+                    .to_string(),
+            ),
+        },
+        ConformancePosition::Result => {
+            // A `list<u8>` (Bytes) declared RESULT is the REDUCER VALUE-ENCODE / bytes-provider path
+            // (`emit_bytes_provider_member`): a reducer returns a RICH domain value that the emit
+            // VALUE-ENCODES to the value-form document (bytes) — the reify path, the whole point of a reducer
+            // — so the guest result Ty does NOT structurally match `list<u8>` yet emits fine. A guest that IS
+            // structurally `list<u8>`/`Bytes` crosses directly instead. Either way a `list<u8>` result accepts
+            // any (value-encodable) guest → Ok. This is a DISTINCT emit path from `canon_write_of` (which
+            // models only the typed-interface structural lift + would false-reject a rich guest vs `list<u8>`
+            // — the reducer-path gap v-inference hit on 10 world-reducer emit tests). The `list<u8>` declared
+            // result is the tell.
+            if matches!(declared, WitType::List(inner) if matches!(inner.as_ref(), WitType::U8)) {
+                return Ok(());
+            }
+            if canon_write_of(db, guest_ty, declared).is_some() {
+                Ok(())
+            } else {
+                Err(match declared {
+                    WitType::Result { .. } => {
+                        "a `result<…>` result is not yet emittable at the typed-export boundary (a later increment)"
+                            .to_string()
+                    }
+                    _ if matches!(g, Ty::Map(_, _)) => {
+                        "a `map<…>` result is not yet emittable at the typed-export boundary (a later increment)"
+                            .to_string()
+                    }
+                    _ => {
+                        "the guest type is not emittable as the declared WIT result type at the typed-export boundary"
+                            .to_string()
+                    }
+                })
+            }
+        }
+    }
+}
+
 /// Register (via `out`) every runtime op the recursive canonical writer `cw` emits, so the wrapper's core
 /// imports them: `arr-get` + a scalar's unbox for a record; `vec-len`/`vec-get` for a list; `bytes-len`/
 /// `bytes-get` for a `Bytes` leaf.

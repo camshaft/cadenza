@@ -52523,3 +52523,71 @@ fn collect_static_compounds_gathers_markable_roots_only() {
         "a runtime tuple must not be collected"
     );
 }
+
+/// seq-212 — the emit-truth typed-export conformance predicate (`export_type_conforms_emittable`) that
+/// v-inference calls to avoid false-rejecting emittable Option/list/variant-bearing exports. Sanity: a
+/// scalar guest conforms to a scalar WIT (Ok); a machine-scalar guest declared as a COMPOUND type is a
+/// shape mismatch (Err — the guard `canon_write_of`'s scalar fallthrough would otherwise silently accept);
+/// a `result<…>` is not yet emittable (Err). (v-inference owns the compound-field false-reject fixture —
+/// record{option,list} params/results → Ok — added on their side once this is on main.)
+#[test]
+fn export_type_conforms_emittable_scalar_ok_and_shape_mismatch() {
+    use crate::ty::{IntTy, Ty};
+    use crate::wit_world::WitType;
+    let mut db = crate::db::Db::load(crate::testkit::parse(
+        "(module m (def (main) 0) (export main))",
+    ));
+    use crate::backend::wasm::ConformancePosition::{Param, Result as ResultPos};
+    let conforms = |db: &mut crate::db::Db, g: &Ty, w: &WitType, p| {
+        crate::backend::wasm::export_type_conforms_emittable(db, g, w, p)
+    };
+    // scalar guest ↔ scalar WIT → Ok in BOTH positions (the simplest positive; must NOT be rejected).
+    assert!(
+        conforms(&mut db, &Ty::Int(IntTy::i64()), &WitType::S64, ResultPos).is_ok(),
+        "an s64 result conforms"
+    );
+    assert!(
+        conforms(&mut db, &Ty::Int(IntTy::i64()), &WitType::S64, Param).is_ok(),
+        "an s64 param conforms"
+    );
+    assert!(
+        conforms(&mut db, &Ty::Bool, &WitType::Bool, ResultPos).is_ok(),
+        "a bool result conforms"
+    );
+    // machine-scalar guest declared as a COMPOUND type → shape mismatch (the guard), both positions.
+    let rec = WitType::Record(vec![("a".to_string(), WitType::S64)]);
+    assert!(
+        conforms(&mut db, &Ty::Int(IntTy::i64()), &rec, ResultPos).is_err(),
+        "a scalar guest declared as a record is a mismatch (not silently accepted as a scalar write)"
+    );
+    assert!(
+        conforms(
+            &mut db,
+            &Ty::Int(IntTy::i64()),
+            &WitType::Option(Box::new(WitType::S64)),
+            ResultPos
+        )
+        .is_err(),
+        "a scalar guest declared as option<…> is a mismatch"
+    );
+    // a `result<…>` RESULT is not yet emittable → Err (a genuine decline, not a false-reject). (A
+    // `result<…>` PARAM field, by contrast, IS emittable via the field-rebuild wrapper — v-inference's
+    // fixture pins that positive with a real Ty::Sum result-field.)
+    let res = WitType::Result {
+        ok: Some(Box::new(WitType::S64)),
+        err: Some(Box::new(WitType::S64)),
+    };
+    assert!(
+        conforms(&mut db, &Ty::Int(IntTy::i64()), &res, ResultPos).is_err(),
+        "a result<…> result declared type does not conform to a scalar guest / is not emittable"
+    );
+    // REDUCER value-encode path: a `list<u8>` (Bytes) declared RESULT accepts a RICH guest value the
+    // reducer emit VALUE-ENCODES to the value-form document — here a `String` guest → `list<u8>` result.
+    // canon_write_of REJECTS this (String is not a `list<u8>` structurally), but the reducer/bytes-provider
+    // path emits it, so the predicate must return Ok (the reducer-path gap v-inference hit on 10 tests).
+    let bytes_result = WitType::List(Box::new(WitType::U8));
+    assert!(
+        conforms(&mut db, &Ty::String, &bytes_result, ResultPos).is_ok(),
+        "a rich guest value declared as a list<u8> result conforms via the reducer value-encode path"
+    );
+}
