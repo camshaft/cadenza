@@ -6431,6 +6431,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 grade: None,
                 baseline: None,
                 diagnostics: None, // watch `run` doesn't grade diagnostics (a compile-phase grade wire)
+                emit_verdict: None, // watch `run` doesn't classify/emit a verdict file (mirrors `diagnostics: None`)
                 compile_status: 0,
                 compile_diag: None,
                 component_name: None,
