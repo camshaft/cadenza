@@ -139,6 +139,12 @@ struct Cli {
     command: Cmd,
 }
 
+// `large_enum_variant` (Run's `RunArgs` ~424 bytes vs the ~176-byte next): INTENTIONAL, not worth boxing.
+// `Cmd` is a SHORT-LIVED CLI DISPATCH value — clap parses it ONCE at startup, `main` matches it ONCE, and it
+// is dropped; it is never stored in bulk, cloned in a loop, or on a hot path, so the inter-variant size gap
+// costs nothing. Boxing the large variant (`Run(Box<RunArgs>)`) would ALSO fight the clap `Subcommand` derive
+// (it flattens the variant's `Args` fields; `Box<RunArgs>` is not `Args`), forcing a manual parse. So suppress.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Cmd {
     // ── front-end (cadenza-syntax) ──────────────────────────────────────────────────────────────
@@ -4981,7 +4987,7 @@ fn run_emit_shred(files: &[String], out_dir: &std::path::Path, standalone: bool)
         inputs.push(rcdzc::Artifact::new(
             rcdzc::sidecar::KIND_SIDECAR,
             "drive",
-            rcdzc::sidecar::encode(&[shred_req.clone()]),
+            rcdzc::sidecar::encode(std::slice::from_ref(&shred_req)),
         ));
         inputs.push(compiler_cli::entry_artifact(&closure[0].name));
         let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
