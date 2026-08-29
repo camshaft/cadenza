@@ -476,6 +476,200 @@ pub fn compound_ctor_word(ctor: CompoundCtor) -> &'static str {
     }
 }
 
+// ============================================================================
+// M3 SOURCE NATIVIZATION (throwaway migration aid; deleted at M3 Phase-2 completion).
+//
+// Rewrite name-head compound LITERALS/PATTERNS — `(list …)`/`(tuple …)`/`(record …)`/`(set …)`/`(map …)`
+// — to the native `#word(…)` surface across a WHOLE s-expr program source, for the guide-source
+// nativization (v-guide-infra drives it per extracted source via the `cdz-nativize` bin, stdin→stdout).
+// Span-based surgical edit over the exact reader: surface (comments/formatting/digit-separators) is byte-
+// preserved, and strings/comments/char-literals/existing native `#word(` forms are untouched. Shadow-aware
+// (a `let`/`fn`/`def`-bound ctor name — a user `(def (map …) …)` — stays name-head), and `map` is HOF-guarded
+// (a `(map (\ …) coll)` / `(map inc xs)` HOF CALL is left name-head — only genuine map literals/patterns,
+// whose children are all `(k v)`/`(= k v)` entries or a `..` rest, are nativized + their 2-element entries
+// field-paired). Handles a BARE multi-form snippet (`read_all` wraps it in a synthetic `(do …)`).
+// ============================================================================
+
+/// A shadowable compound-ctor head NAME (the aliases the native `#word(` head replaces).
+fn nat_is_ctor_name(n: &str) -> bool {
+    matches!(n, "list" | "tuple" | "record" | "map" | "set")
+}
+
+/// Push `x`'s name into `out` if it is a ctor NAME (a bare-atom binder that shadows a ctor).
+fn nat_push_ctor_name(a: &Arenas, x: StructId, out: &mut Vec<String>) {
+    if let Some(n) = a.as_name(x)
+        && nat_is_ctor_name(n)
+    {
+        out.push(n.to_string());
+    }
+}
+
+/// Push a `fn`/`def` PARAM's binder name (bare atom, or `(: name T)`) if it shadows a ctor.
+fn nat_push_param(a: &Arenas, p: StructId, out: &mut Vec<String>) {
+    if a.as_name(p).is_some() {
+        nat_push_ctor_name(a, p, out);
+    } else if let Struct::List(pc) = a.get(p)
+        && a.head_name(p) == Some(":")
+        && pc.len() >= 2
+    {
+        nat_push_ctor_name(a, pc[1], out);
+    }
+}
+
+/// The ctor NAMES a `let`/`fn`/`def` form BINDS (shadowing the ctor for its subtree).
+fn nat_collect_binders(a: &Arenas, id: StructId, out: &mut Vec<String>) {
+    let Struct::List(ch) = a.get(id) else {
+        return;
+    };
+    match a.head_name(id) {
+        Some("let") if ch.len() >= 2 => {
+            if let Struct::List(binds) = a.get(ch[1]) {
+                for &b in binds {
+                    if let Some(n) = a.head_name(b)
+                        && nat_is_ctor_name(n)
+                    {
+                        out.push(n.to_string());
+                    }
+                }
+            }
+        }
+        Some("fn") if ch.len() >= 2 => {
+            if let Struct::List(params) = a.get(ch[1]) {
+                for &p in params {
+                    nat_push_param(a, p, out);
+                }
+            }
+        }
+        Some("def") if ch.len() >= 2 => {
+            if let Struct::List(sig) = a.get(ch[1]) {
+                if let Some(&f) = sig.first() {
+                    nat_push_ctor_name(a, f, out);
+                }
+                for &p in sig.iter().skip(1) {
+                    nat_push_param(a, p, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether a name-head `map` node is a LITERAL/PATTERN (vs a HOF `(map f coll)` call): every non-head child
+/// must be an ENTRY (a 2-element `(k v)` or a 3-element FieldPair `(= k v)`) or a REST indicator (`..` / the
+/// bare name immediately after it). A lambda / bare-atom arg not in rest position ⇒ HOF ⇒ not eligible.
+fn nat_map_eligible(a: &Arenas, ch: &[StructId]) -> bool {
+    let mut prev_dd = false;
+    for &c in ch.iter().skip(1) {
+        match a.get(c) {
+            Struct::List(gc) => {
+                let ok = gc.len() == 2
+                    || (gc.len() == 3
+                        && (a.head_name(c) == Some("=")
+                            || matches!(a.get(gc[0]), Struct::Atom(_))
+                                && a.head_name(c).is_none()));
+                if !ok {
+                    return false;
+                }
+                prev_dd = false;
+            }
+            Struct::Atom(_) => match a.as_name(c) {
+                Some("..") => prev_dd = true,
+                Some(_) if prev_dd => prev_dd = false,
+                _ => return false,
+            },
+        }
+    }
+    true
+}
+
+/// Recurse `id`, collecting head-nativize + map-entry-field-pairify edits (start, end, replacement) into
+/// `edits`, tracking ctor-name `shadow` scopes.
+fn nat_walk(
+    a: &Arenas,
+    spans: &SpanTable,
+    bytes: &[u8],
+    id: StructId,
+    shadow: &mut std::collections::HashMap<String, u32>,
+    edits: &mut Vec<(usize, usize, String)>,
+) {
+    let Struct::List(ch) = a.get(id) else {
+        return;
+    };
+    let ch = ch.clone();
+    let mut introduced = Vec::new();
+    nat_collect_binders(a, id, &mut introduced);
+    for n in &introduced {
+        *shadow.entry(n.clone()).or_insert(0) += 1;
+    }
+    if let Some(name) = a.head_name(id)
+        && nat_is_ctor_name(name)
+        && shadow.get(name).copied().unwrap_or(0) == 0
+        && (name != "map" || nat_map_eligible(a, &ch))
+    {
+        // Head-nativize `(name` → `#name(`, consuming the head→first-child HORIZONTAL whitespace.
+        let ls = spans.get(id).expect("list span");
+        let hs = spans.get(ch[0]).expect("head span");
+        let mut end = hs.end;
+        while end < bytes.len() && (bytes[end] == b' ' || bytes[end] == b'\t') {
+            end += 1;
+        }
+        edits.push((ls.start, end, alloc_head(name)));
+        // A map/record's 2-element POSITIONAL entries `(k v)` → FieldPair `(= k v)` (insert `= ` after the
+        // entry's `(`) — the canonical native entry form (map values #5120 + map patterns #5310, record
+        // fields #5120). A 3-element entry is already FieldPair; list/tuple/set have elements, not entries.
+        if matches!(name, "map" | "record") {
+            for &entry in ch.iter().skip(1) {
+                if let Struct::List(ec) = a.get(entry)
+                    && ec.len() == 2
+                {
+                    let es = spans.get(entry).expect("entry span");
+                    edits.push((es.start + 1, es.start + 1, "= ".to_string()));
+                }
+            }
+        }
+    }
+    for &c in ch.iter() {
+        nat_walk(a, spans, bytes, c, shadow, edits);
+    }
+    for n in &introduced {
+        if let Some(v) = shadow.get_mut(n) {
+            *v -= 1;
+        }
+    }
+}
+
+fn alloc_head(name: &str) -> String {
+    let mut s = String::with_capacity(name.len() + 2);
+    s.push('#');
+    s.push_str(name);
+    s.push('(');
+    s
+}
+
+/// Nativize every name-head compound LITERAL/PATTERN in an s-expr program `src` to the native `#word(…)`
+/// surface (see the module comment above). `Err` if `src` does not parse. The transform is behavior-
+/// preserving (a native ctor-leaf head is `structurally_eq` to its name-alias) and surface-preserving
+/// (only the target head bytes change). The M3 guide-source migration entry (`cdz-nativize` bin wraps it).
+pub fn nativize_compound_source(src: &str) -> Result<String, ReadError> {
+    let (arenas, spans) = read_all_spanned(src)?;
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let mut shadow: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    nat_walk(
+        &arenas,
+        &spans,
+        src.as_bytes(),
+        arenas.root,
+        &mut shadow,
+        &mut edits,
+    );
+    edits.sort_by_key(|e| core::cmp::Reverse(e.0)); // descending: apply back-to-front, offsets stay valid
+    let mut out = src.to_string();
+    for (start, end, repl) in &edits {
+        out.replace_range(*start..*end, repl);
+    }
+    Ok(out)
+}
+
 struct Reader<'a, 'b> {
     src: &'a [u8],
     pos: usize,
@@ -1213,6 +1407,53 @@ mod tests {
     fn reads_a_form() {
         let a = read("(+ 1 2)").unwrap();
         assert_eq!(a.head_name(a.root), Some("+"));
+    }
+
+    #[test]
+    fn nativize_compound_source_nativizes_literals_and_guards_hof_shadow() {
+        let n = |s: &str| super::nativize_compound_source(s).unwrap();
+        // Bare single-form literals of each kind → native head.
+        assert_eq!(n("(list 1 2)"), "#list(1 2)");
+        assert_eq!(n("(tuple a b)"), "#tuple(a b)");
+        assert_eq!(n("(record (= x 1))"), "#record((= x 1))");
+        // A record's 2-element POSITIONAL entry is field-paired as the head nativizes.
+        assert_eq!(n("(record (x 1) (y 2))"), "#record((= x 1) (= y 2))");
+        assert_eq!(n("(set 1 2)"), "#set(1 2)");
+        assert_eq!(n("(map (= 1 2))"), "#map((= 1 2))");
+        // A map's 2-element positional entries are field-paired as the head nativizes.
+        assert_eq!(n("(map (1 2) (3 4))"), "#map((= 1 2) (= 3 4))");
+        // Nesting + a map REST pattern.
+        assert_eq!(n("(list (tuple 1 2))"), "#list(#tuple(1 2))");
+        assert_eq!(n("(map (1 v) .. rest)"), "#map((= 1 v) .. rest)");
+        // Empty forms.
+        assert_eq!(n("(list)"), "#list()");
+        assert_eq!(n("(map)"), "#map()");
+        // HOF `map` calls are NOT nativized (lambda arg; bare-atom args).
+        assert_eq!(n("(map (\\ (x) x) xs)"), "(map (\\ (x) x) xs)");
+        assert_eq!(n("(map inc xs)"), "(map inc xs)");
+        // A `let`/`def`-shadowed ctor name stays name-head (its uses are calls to the bound value).
+        assert_eq!(
+            n("(let ((list (fn (a b) a))) (list 1 2))"),
+            "(let ((list (fn (a b) a))) (list 1 2))"
+        );
+        assert_eq!(
+            n("(do (def (map k) (map (= 0 k))) (export map))"),
+            "(do (def (map k) (map (= 0 k))) (export map))"
+        );
+        // Multi-form (bare) input → each form nativized independently; surface (spacing) preserved.
+        assert_eq!(n("(list 1)  (tuple 2 3)"), "#list(1)  #tuple(2 3)");
+        // A full module with a pattern match nativizes both value and pattern heads; comments/strings safe.
+        assert_eq!(
+            n(
+                "(do (def (f xs) (match xs (#list() 0) ((list h .. t) h))) (export f)) ; (list x) in a comment"
+            ),
+            "(do (def (f xs) (match xs (#list() 0) (#list(h .. t) h))) (export f)) ; (list x) in a comment"
+        );
+        // A doc-string mentioning (map k v) must not be touched.
+        assert_eq!(
+            n("(def (g) \"(list x) in a string\")"),
+            "(def (g) \"(list x) in a string\")"
+        );
     }
 
     // `#word(…)` collection literals (DESIGN-native-ast-compound-data.md §D-SURFACE / M2). The `#word(`
