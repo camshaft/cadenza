@@ -13442,3 +13442,15 @@
   (call main (: 9 Int64)) (output (: 99 Int64))
   (call main (: 3 Int64)) (output (: -97 Int64))
   (call main (: -2 Int64)) (output (: -4 Int64)))
+
+(case "cdzw75 a let-bound PARTIAL APPLICATION reused twice round-trips the cadenza hop"
+  (doc "Currying face (the oracle gained the model in #5488; an older corpus note called residual-closure
+        lift 'a later capability' — it works now): (add n) partially applies a two-arg def, the residual
+        is bound and applied twice with different second args. n=7 → 12+17 = 29; n=-3 → 2+7 = 9.
+        Dual-path verified, byte-idempotent.")
+  (input (do
+    (def (add (: a Int64) (: b Int64)) (+ a b))
+    (def (main (: n Int64)) (do (def add-n (add n)) (+ (add-n 5) (add-n 10))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 29 Int64))
+  (call main (: -3 Int64)) (output (: 9 Int64)))
