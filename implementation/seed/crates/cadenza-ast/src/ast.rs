@@ -1902,24 +1902,6 @@ impl Arenas {
         }
     }
 
-    /// The compound constructor a `List` node denotes accepting EITHER head spelling — the unshadowable
-    /// STRING primitive (`("list" …)`) OR the shadowable NAME alias (`(list …)`). This is the transitional
-    /// DUAL-READ recognizer for consumers that already accept both spellings (the
-    /// `as_ctor_form(…).or_else(as_form(…))` idiom); it deliberately does NOT distinguish a shadowed name
-    /// binding, so use it only where a compound literal is already expected, NOT for structural dispatch
-    /// (that is [`Arenas::compound_ctor`], the primitive-only form the resolver uses). See
-    /// `implementation/design/DESIGN-native-ast-compound-data.md` (M1 dual-read).
-    pub fn compound_ctor_either(&self, id: StructId) -> Option<CompoundCtor> {
-        match self.get(id) {
-            Struct::List(items) => {
-                let &h = items.first()?;
-                let spelling = self.as_name(h).or_else(|| self.as_str(h))?;
-                CompoundCtor::from_spelling(spelling)
-            }
-            _ => None,
-        }
-    }
-
     /// The compound constructor a `List` node denotes for STRUCTURAL DISPATCH — accepting EITHER the native
     /// ctor-LEAF-KIND head ([`Arenas::compound_ctor_leaf`], the M2 form the reader now emits) OR the legacy
     /// unshadowable STRING-primitive head ([`Arenas::compound_ctor`], transitional). BOTH are unshadowable (a
@@ -1933,8 +1915,8 @@ impl Arenas {
     }
 
     /// The child occurrences of `id` if it is a `List` headed by the compound ctor `want`, accepting
-    /// EITHER head spelling (the transitional dual-read of [`Arenas::compound_ctor_either`]) — the tag-typed twin
-    /// of the `as_form(id, "…").or_else(|| as_ctor_form(id, "…"))` idiom for the four compound ctors.
+    /// EITHER head spelling (a transitional dual-read) — the tag-typed twin of the
+    /// `as_form(id, "…").or_else(|| as_ctor_form(id, "…"))` idiom for the four compound ctors.
     /// Like `as_form`/`as_ctor_form`, an empty tail (a head-only list) yields `Some(&[])`.
     pub fn compound_form_of(&self, id: StructId, want: CompoundCtor) -> Option<&[StructId]> {
         match self.get(id) {
@@ -2094,7 +2076,7 @@ mod tests {
     #[test]
     fn arenas_leaf_accessors_and_compound_recognizers() {
         // Pins the leaf-atom accessors (`as_int`/`as_float`/`as_bool`) and the transitional compound
-        // recognizers (`compound_ctor_either`/`compound_ctor_prim`/`compound_form_of`) + `type_decl_head_name`
+        // recognizers (`compound_ctor_prim`/`compound_form_of`) + `type_decl_head_name`
         // — the `Arenas` surface `rcdzc` re-exports from this crate once it consolidates off its own copy.
         let mut b = Builder::new();
         let iatom = b.atom_leaf(Leaf::Int {
@@ -2130,8 +2112,7 @@ mod tests {
             Some(1)
         );
         assert_eq!(a.compound_form_of(native_list, CompoundCtor::Map), None);
-        // Dual-read accepts EITHER spelling, so the NAME alias resolves here.
-        assert_eq!(a.compound_ctor_either(alias), Some(CompoundCtor::Tuple));
+        // Dual-read (compound_form_of) accepts the shadowable NAME alias spelling too.
         assert_eq!(
             a.compound_form_of(alias, CompoundCtor::Tuple)
                 .map(<[_]>::len),
