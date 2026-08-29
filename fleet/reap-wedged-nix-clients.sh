@@ -60,8 +60,24 @@ builders() {
 candidates="$(ps -eo pid,etimes,args 2>/dev/null \
   | awk -v min=$((WEDGED_CLIENT_MIN * 60)) -v exempt="$REAP_EXEMPT_REGEX" \
       '$2 > min && /nix build \.#checks/ && !/awk/ && (exempt == "" || $0 !~ exempt) {print $1}')"
+# (1b) LEASED/OWNED SKIP (v-nix ask 2026-08-29): a candidate whose process env carries CDZ_LEASED_NIX=1 is
+# a SANCTIONED leased build (set by run_gate_local / run_gate_local_bounded / with_lease / a `fleet
+# with-lease -- nix build …`) — its owner manages it, so NEVER reap it, even under a confirmed wedge (the
+# reaper still frees the pool via the OTHER, unleased/orphaned clients). /proc/<pid>/environ is NUL-
+# separated + own-user-readable (the client runs as us, not nixbld). Belt-and-braces atop the 180min floor.
+_kept=""
+_leased=0
+for _p in $candidates; do
+  if grep -qz 'CDZ_LEASED_NIX=1' "/proc/$_p/environ" 2>/dev/null; then
+    _leased=$((_leased + 1))
+    log "SKIP leased pid=$_p (CDZ_LEASED_NIX=1 — owned build, never reaped)"
+  else
+    _kept="${_kept:+$_kept }$_p"
+  fi
+done
+candidates="$_kept"
 if [ -z "$candidates" ]; then
-  echo "reap-wedged-nix-clients: no non-exempt 'nix build .#checks' client older than ${WEDGED_CLIENT_MIN}min — nothing to consider${REAP_EXEMPT_REGEX:+ (exempting /$REAP_EXEMPT_REGEX/)}."
+  echo "reap-wedged-nix-clients: no non-exempt REAPABLE 'nix build .#checks' client older than ${WEDGED_CLIENT_MIN}min — nothing to consider${REAP_EXEMPT_REGEX:+ (exempting /$REAP_EXEMPT_REGEX/)}$([ "$_leased" -gt 0 ] && echo " (${_leased} leased/owned build(s) skipped — never reaped)")."
   exit 0
 fi
 n_cand="$(printf '%s\n' "$candidates" | grep -c .)"
