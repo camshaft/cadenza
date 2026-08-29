@@ -1805,6 +1805,22 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
                  | _ => .ok none)
          else none
        | none => none)
+      <|>
+      -- a QUALIFIED built-in Option/Result ctor pattern `((. Option Some) p)` / `(. Option None)` /
+      -- `((. Result Ok) p)` / `((. Result Err) p)` — the bare `(Some p)`/… forms are handled by the
+      -- name-head branch below; the qualified forms match the SAME built-in Value.some/none/ok/err.
+      (match qualHead? m pc with
+       | some (q, c) =>
+         if q == "Option".toUTF8 && c == "Some".toUTF8 then
+           some (match subj, pc[1]? with | .some p, some sp => matchPat m sp p | .some _, none => .ok (some []) | _, _ => .ok none)
+         else if q == "Option".toUTF8 && c == "None".toUTF8 then
+           some (match subj with | .none => .ok (some []) | _ => .ok none)
+         else if q == "Result".toUTF8 && c == "Ok".toUTF8 then
+           some (match subj, pc[1]? with | .ok p, some sp => matchPat m sp p | .ok _, none => .ok (some []) | _, _ => .ok none)
+         else if q == "Result".toUTF8 && c == "Err".toUTF8 then
+           some (match subj, pc[1]? with | .err p, some sp => matchPat m sp p | .err _, none => .ok (some []) | _, _ => .ok none)
+         else none
+       | none => none)
     match ctorMatch with
     | some r => r
     | none =>
@@ -2033,6 +2049,30 @@ partial def evalMatch (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (childr
                          | .ok (some ext) => some (evalNode m (ext ++ env) ty fuel bodyId)
           | other => some other
         | other => some other
+      -- a GUARDED arm `(guard <pat> <cond>)`: match `<pat>`, and if it binds, evaluate `<cond>` in those
+      -- bindings — TRUE takes the arm, FALSE means the arm does NOT match so we fall through to the next
+      -- (guard-first ordering: a guarded arm and a later unguarded arm for the same variant are exhaustive).
+      match (m.nodes[patId]?).bind (fun n => match n with
+              | Node.list gc => if m.headName? (Node.list gc) == some "guard".toUTF8 && gc.size == 3
+                                then (match gc[1]?, gc[2]? with | some p, some c => some (p, c) | _, _ => none)
+                                else none
+              | _ => none) with
+      | some (innerPat, condId) =>
+        (match evalNode m env defaultIntTy fuel scrutId with
+         | .value sv0 =>
+           (match observeShallow sv0 with
+            | .value sv =>
+              (match matchPat m innerPat sv with
+               | .error o => some o
+               | .ok none => none
+               | .ok (some ext) =>
+                 (match evalNode m (ext ++ env) defaultIntTy fuel condId with
+                  | .value (.bool true) => some (evalNode m (ext ++ env) ty fuel bodyId)
+                  | .value (.bool false) => none                    -- guard failed → try the next arm
+                  | other => some other))                           -- non-bool / trap / unsupported cond → decide with it
+            | other => some other)
+         | other => some other)
+      | none =>
       match m.nodes[patId]? with
       | some (Node.atom lid) =>
         match m.leaves[lid]? with
