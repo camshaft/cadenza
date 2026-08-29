@@ -6,11 +6,12 @@
 //! type differs. The world reaches rcdzc as a PREPARSED binary-AST artifact (from an external producer OR an
 //! inline module declaration — both lower to the same structured world); **rcdzc never parses WIT text.**
 //!
-//! This module is the TYPE-DESCRIPTOR reader — it decodes one `build_type` descriptor occurrence into a
-//! [`WitType`]. It matches `cdz-kernel::ast_marshal::build_type` EXACTLY (the shared type-node vocabulary):
-//! a PRIMITIVE is a lone NAME-head marker `(u8)` / `(string)`; a COMPOUND is a STRING-head form —
-//! `("list" <elem>)`, `("record" (fieldname <ty>)…)`, `("tuple" <ty>…)`. So `list<u8>` (a "byte-list", all
-//! the reducer `apply` boundary needs) decodes to `WitType::List(U8)`.
+//! This module is the TYPE-DESCRIPTOR reader — it decodes one type descriptor occurrence into a
+//! [`WitType`]. The shared type-node vocabulary: a PRIMITIVE is a lone NAME-head marker `(u8)` / `(string)`;
+//! a COMPOUND is `(list <elem>)`, `(record (fieldname <ty>)…)`, `(tuple <ty>…)`, etc. Heads are NAMES like
+//! everything else (operator seq-206); the legacy STRING-head spelling `("list" <elem>)` is also accepted
+//! for back-compat (see [`parse_wit_type`]). So `list<u8>` (a "byte-list", all the reducer `apply` boundary
+//! needs) decodes to `WitType::List(U8)`.
 //!
 //! The WORLD-STRUCTURE reader (world → import/export interfaces → members → func → params/result) is added
 //! once v-agent-harness formalizes the exact world node encoding (their lane, §3b); the vocabulary is locked
@@ -67,39 +68,38 @@ pub enum WitType {
     Unit,
 }
 
-/// Decode one `build_type` descriptor occurrence `id` in `a` into its [`WitType`]. `None` if the descriptor
+/// Decode one type descriptor occurrence `id` in `a` into its [`WitType`]. `None` if the descriptor
 /// is malformed or its shape is a component-model type this reader does not yet cover (a later-slice type).
-/// EXACT mirror of `ast_marshal::build_type`: a NAME-head 1-list is a primitive; a STR-head form is a
-/// compound (`list`/`record`/`tuple`).
+/// The head is a NAME (canonical, `(list <e>)`) OR a legacy STRING (`("list" <e>)`) — both accepted; a
+/// primitive is a lone marker `(kind)`, a compound reads its children.
 pub fn parse_wit_type(a: &Arenas, id: StructId) -> Option<WitType> {
-    // PRIMITIVE — a lone NAME-head marker `(kind)`. (A string head is a compound; handled below.)
-    if let Some(kind) = a.head_name(id) {
-        return match kind {
-            "bool" => Some(WitType::Bool),
-            "u8" => Some(WitType::U8),
-            "u16" => Some(WitType::U16),
-            "u32" => Some(WitType::U32),
-            "u64" => Some(WitType::U64),
-            "s8" => Some(WitType::S8),
-            "s16" => Some(WitType::S16),
-            "s32" => Some(WitType::S32),
-            "s64" => Some(WitType::S64),
-            "char" => Some(WitType::Char),
-            "string" => Some(WitType::String),
-            "f32" => Some(WitType::F32),
-            "f64" => Some(WitType::F64),
-            // A not-yet-covered primitive spelling → decline (never misread).
-            _ => None,
-        };
-    }
-    // COMPOUND — a STRING-head form. Read the raw children (the head is a Str leaf, so `as_form`, which
-    // matches a NAME head, does not apply here).
-    let ctor = a.head_ctor(id)?;
+    // Accept EITHER a NAME head `(list <e>)` (the canonical spelling — heads are Names "like everything
+    // else", operator seq-206, matching the scalar primitives `(s64)`) OR a legacy STRING head
+    // `("list" <e>)`. Both resolve to the same spelling, so the corpus migrates to name-heads WITHOUT a
+    // flag-day (string-headed descriptors keep parsing). In this WIT-descriptor context a `(record …)` /
+    // `(list …)` is unambiguously a TYPE (never a value literal), so name-heads carry no value/pattern
+    // ambiguity — orthogonal to the M3 value/pattern flip. One match over primitives + compounds.
+    let spelling = a.head_name(id).or_else(|| a.head_ctor(id))?;
     let Struct::List(items) = a.get(id) else {
         return None;
     };
-    match ctor {
-        // ("list" <elem>)
+    match spelling {
+        // PRIMITIVE — a lone marker `(kind)`; the children are ignored.
+        "bool" => Some(WitType::Bool),
+        "u8" => Some(WitType::U8),
+        "u16" => Some(WitType::U16),
+        "u32" => Some(WitType::U32),
+        "u64" => Some(WitType::U64),
+        "s8" => Some(WitType::S8),
+        "s16" => Some(WitType::S16),
+        "s32" => Some(WitType::S32),
+        "s64" => Some(WitType::S64),
+        "char" => Some(WitType::Char),
+        "string" => Some(WitType::String),
+        "f32" => Some(WitType::F32),
+        "f64" => Some(WitType::F64),
+        // COMPOUND — reads the children.
+        // (list <elem>)  [or legacy ("list" <elem>)]
         "list" => {
             let elem = *items.get(1)?;
             Some(WitType::List(Box::new(parse_wit_type(a, elem)?)))
@@ -186,7 +186,8 @@ pub fn parse_wit_type(a: &Arenas, id: StructId) -> Option<WitType> {
 /// type descriptor → `Some(ty)`. The outer `Option` is the malformed-input signal (a descriptor that does
 /// not decode), kept distinct from the inner `None` (a well-formed absent arm).
 fn parse_result_slot(a: &Arenas, id: StructId) -> Option<Option<Box<WitType>>> {
-    if a.head_ctor(id) == Some("none") {
+    // The absent-arm marker — a NAME head `(none)` (canonical) or the legacy STRING head `("none")`.
+    if a.head_name(id).or_else(|| a.head_ctor(id)) == Some("none") {
         return Some(None);
     }
     Some(Some(Box::new(parse_wit_type(a, id)?)))
@@ -1408,6 +1409,59 @@ mod tests {
                 WitType::U8
             )])))),
             "list-of-record nests"
+        );
+    }
+
+    #[test]
+    fn parses_name_head_compounds_identically_to_string_head() {
+        // seq-206: compound type heads are NAMES `(list <e>)` (like the scalar primitives `(s64)`), not
+        // strings `("list" <e>)`. A name head must decode identically to the legacy string head (back-compat).
+        let name_head = |b: &mut Builder, h: &str, kids: Vec<StructId>| {
+            let head = b.name(h);
+            let mut v = vec![head];
+            v.extend(kids);
+            b.list(v)
+        };
+        // (list (s64)) name-headed → List(S64), same as the legacy ("list" (s64)).
+        let mut b = Builder::new();
+        let s64 = prim(&mut b, "s64");
+        let list = name_head(&mut b, "list", vec![s64]);
+        let a = b.finish(list);
+        assert_eq!(
+            parse_wit_type(&a, list),
+            Some(WitType::List(Box::new(WitType::S64))),
+            "name-head (list …)"
+        );
+        // (record (a (s64)) (d (option (s64)))) name-headed, with a nested name-head (option …) — the sp3 shape.
+        let mut b = Builder::new();
+        let a_ty = prim(&mut b, "s64");
+        let a_name = b.name("a");
+        let a_field = b.list(vec![a_name, a_ty]);
+        let opt_inner = prim(&mut b, "s64");
+        let opt = name_head(&mut b, "option", vec![opt_inner]);
+        let d_name = b.name("d");
+        let d_field = b.list(vec![d_name, opt]);
+        let rec = name_head(&mut b, "record", vec![a_field, d_field]);
+        let a = b.finish(rec);
+        assert_eq!(
+            parse_wit_type(&a, rec),
+            Some(WitType::Record(vec![
+                ("a".to_string(), WitType::S64),
+                ("d".to_string(), WitType::Option(Box::new(WitType::S64))),
+            ])),
+            "name-head (record …) with nested name-head (option …)"
+        );
+        // (none) name-head result-slot marker → absent arm, parity with the legacy ("none").
+        let mut b = Builder::new();
+        let none = {
+            let h = b.name("none");
+            b.list(vec![h])
+        };
+        let a = b.finish(none);
+        assert_eq!(
+            parse_result_slot(&a, none),
+            Some(None),
+            "name-head (none) is the absent result arm"
         );
     }
 
