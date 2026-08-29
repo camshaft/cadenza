@@ -3460,10 +3460,16 @@ fn bake_ast_discs(disc: &AstDiscs) -> std::rc::Rc<[u8]> {
     bytes.into()
 }
 
-/// Bake the descriptor for the runtime `ast-encode`/`ast-decode` ops — NINE ULEB `u32` discs in the fixed
-/// slot order `[int, float, bool, str, name, list, bytes, char, symbol]` (the `AstDiscs` struct field order,
-/// matching the runtime's `read_ast_discs` for ops 93/94). Two more than the 7-disc `ast-print` descriptor:
-/// encode/decode round-trip EVERY variant, including `char` and `symbol`. Same by-name lookup + LEB layout.
+/// Bake the descriptor for the runtime `ast-encode`/`ast-decode` ops — SIXTEEN ULEB `u32` discs in the fixed
+/// slot order `[int, float, bool, str, name, list, bytes, char, symbol, list_ctor, tuple_ctor, record_ctor,
+/// map_ctor, set_ctor, field_pair, member]` (the `AstDiscs` struct field order, matching the runtime's
+/// `read_ast_enc_discs` for ops 93/94). The scalar/name/list/bytes/char/symbol NINE plus the SEVEN M2
+/// native-collection reflected ctors (Option B): a compound decoded from a ctor-leaf head reflects to the
+/// DISTINCT `Ast` ctor variant, so encode/decode MUST round-trip all 16. (`ast-print` bakes a separate 7-disc
+/// descriptor.) The runtime reader is TOTAL over exactly 16 discs and returns `None` on a shorter descriptor —
+/// so baking fewer than 16 truncates the read and yields an EMPTY runtime `Ast.encode` (the M2-flag-day
+/// regression this restores: the runtime was updated to 16, the compiler baker was left at 9). By-name lookup,
+/// same LEB layout.
 fn bake_ast_discs_9(disc: &AstDiscs) -> std::rc::Rc<[u8]> {
     let mut bytes = Vec::new();
     for d in [
@@ -3476,6 +3482,13 @@ fn bake_ast_discs_9(disc: &AstDiscs) -> std::rc::Rc<[u8]> {
         disc.bytes,
         disc.char,
         disc.symbol,
+        disc.list_ctor,
+        disc.tuple_ctor,
+        disc.record_ctor,
+        disc.map_ctor,
+        disc.set_ctor,
+        disc.field_pair,
+        disc.member,
     ] {
         crate::leb128::write_u64(&mut bytes, d as u64);
     }
