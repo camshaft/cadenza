@@ -263,6 +263,44 @@ v-ast-consolidate's `cadenza-ast` serialization — align on their codec, do not
 queries still need the `spans` side-channel; those stay artifact-based or carry spans in the AST stream —
 settle with v-ast-consolidate + v-cdz-delegate at S6.)
 
+### S6b — COMPILER-DRIVEN test SHRED emit (operator refinement 2026-08-29, 3rd)
+Operator (verbatim): *"the compiler did the shredding with a query. you give it a file and it emits an
+artifact for the MAIN target and then a TARGET PER TEST. the test links against the main target and calls
+the function."* Ownership (concierge): **v-cdz-crate-split owns the cdz-compile query/subcommand surface**
+(this "emit main + per-test targets" mode); v-test-shred owns the shred design + the ca-derivation-per-
+emitted-target matrix; v-nix builds the emitted targets.
+
+**🔑 It maps DIRECTLY onto the existing Option-C composed-test emit** (`layout.rs`) — this is NOT a new
+lowering, it's a per-TEST bucketing of machinery `EmitTestsComposed` already runs per-FILE:
+- **`main.wasm`** = the shared-closure PROVIDER component — `layout::compute_shared_closure_provider` over
+  the whole closure's cross-edges (the library defs the `@test`s call), exported under one interface. The
+  ~215s heavy closure emit happens ONCE here (the shared CA dep every test target links).
+- **`test-<k>.wasm`** = a per-`@test` CONSUMER component — `layout::compute_tests_consumer(db, &[test_k],
+  provider_edges, iface)`. `compute_tests_consumer` ALREADY takes an arbitrary `test_defs` slice (today
+  `EmitTestsComposed` passes a per-FILE bucket); passing a SINGLE-def slice yields one component per test,
+  exporting just `@test_k` and importing `main`'s iface. Index-agreement (consumer import idx == provider
+  export idx) holds unchanged — a single-test consumer still imports the WHOLE provider interface at the
+  right positions (unused imports harmless, per the existing invariant).
+- **exec (v-test-shred):** `cdz-run test-<k>.wasm --peer <iface>=main.wasm --store S` → exit code
+  (0=PASS/trap=FAIL). Component `--peer` compose (NOT static link) — answers v-test-shred's open Q1.
+- **finer caching (the win):** editing `@test_k` rebuilds only `test-<k>.wasm`; `main.wasm` is the shared CA
+  dep. This is why per-test beats the old one-consumer-N-exports+provider model.
+
+**Surface (mine):** a new rcdzc sidecar `Request::EmitTestsShred` (sibling of `EmitTests*`) that buckets
+`@test`s ONE-per-component + emits N per-test consumers + 1 provider + the manifest; `cdz test --emit-shred
+PROJECT --out-dir D` spawns cdz-compile with it (delegate machinery) and writes flat `D/main.wasm`,
+`D/test-<k>.wasm`, `D/manifest.bin`. ONE command (answers Q2). Manifest (cadenza-ast BINARY, no JSON):
+per test `{name (raw def name = --list/drift identity), export (the wasm call symbol — `compute_tests_
+consumer`'s boundary export name, may be kebab ≠ raw; the grader `--call`s THIS), target (test-<k>.wasm),
+main-iface (the `--peer` interface), is_property}`. Emit compiles IN-PROCESS in cdz-compile (rcdzc-linked
+there); cdz stays rcdzc-free — cdz only spawns + marshals bytes.
+
+**Open ownership Q → v-inference:** the `Request::EmitTestsShred` rcdzc EMIT (compile.rs artifact assembly +
+the per-test bucketing) is contained (reuses `compute_tests_consumer`/`compute_shared_closure_provider` +
+the existing composed-emit component wrap), but lives in rcdzc's sidecar/emit (v-inference's lane; they own
+`Query::TestList` too). Settle: I build it (subsystem rcdzc) with their review, or they fold it in. Blocks on
+nothing except that ownership call — the mechanism is proven above.
+
 ## Coordination (critical — adjacent lanes)
 
 - **v-cdz-delegate / DESIGN-cdz-delegate-compile.md.** The `!standalone` compiler delegation IS S6's
