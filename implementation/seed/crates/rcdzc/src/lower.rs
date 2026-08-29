@@ -7692,10 +7692,21 @@ fn map_pattern_with_wildcard_values(db: &mut Db, map_pat: StructId) -> StructId 
         if db.ast.as_name(entry) == Some("..") {
             break;
         }
-        if let crate::ast::Struct::List(kv) = db.ast.get(entry)
-            && kv.len() == 2
-        {
-            let key = kv[0];
+        // Extract the entry's KEY, handling the native `FieldPair (= k v)` (3-element) + the name-head
+        // `(= k v)` alias + the legacy positional `(k v)` (2-element). The native `#map` element's FieldPair
+        // entry was previously SKIPPED (only `kv.len() == 2` matched) → the presence guard got an EMPTY map
+        // pattern that gates nothing → an ABSENT key passed the guard, and the body re-match then trapped
+        // ("keys already gated by guard") instead of the arm failing + falling through (05 case 0367).
+        let key = db
+            .ast
+            .field_pair_parts(entry)
+            .or_else(|| db.ast.field_pair(entry))
+            .map(|(k, _)| k)
+            .or_else(|| match db.ast.get(entry) {
+                crate::ast::Struct::List(kv) if kv.len() == 2 => Some(kv[0]),
+                _ => None,
+            });
+        if let Some(key) = key {
             let wild = db.push_name("_");
             let new_entry = db.push_list(vec![key, wild]);
             children.push(new_entry);
