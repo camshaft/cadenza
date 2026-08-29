@@ -23,13 +23,35 @@ fn main() {
     let repo = std::env::var_os("CDZ_REPO_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
-    let out = std::env::args_os()
-        .nth(1)
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // BOOTSTRAP (`--emit-sexpr`): derive the AUTHORITATIVE Cadenza sexpr source (wasm-abi.sexp) from the
+    // wasm-encoder oracle, correct-by-construction. This seeds the operator's codegen-sexpr model (sexpr =
+    // source of truth); thereafter the committed sexpr is hand-editable + wasm-encoder is only the
+    // cross-check oracle, and this stays a re-derive-from-oracle convenience.
+    if args.iter().any(|a| a == "--emit-sexpr") {
+        let out = repo.join("implementation/seed/crates/rcdzc/src/backend/wasm/wasm-abi.sexp");
+        let tables = wasm_abi::collect();
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&out, wasm_abi::render_sexpr(&tables)).unwrap_or_else(|e| {
+            eprintln!("xtask codegen: writing {}: {e}", out.display());
+            std::process::exit(1);
+        });
+        println!("xtask codegen: wrote {}", out.display());
+        return;
+    }
+
+    // Default: emit wasm_abi.rs (the byte table the backend consumes). Today still from wasm-encoder; the
+    // producer pivots to reading wasm-abi.sexp (byte-identical output) in the next increment.
+    let out = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             repo.join("implementation/seed/crates/rcdzc/src/backend/wasm/wasm_abi.rs")
         });
-
     let tables = wasm_abi::collect();
     let source = format!(
         "{}{}",
@@ -693,6 +715,46 @@ mod wasm_abi {
             byte: u8::from(id),
             doc,
         }
+    }
+
+    /// Render the tables as the AUTHORITATIVE Cadenza SEXPR source (`wasm-abi.sexp`) — the operator's
+    /// codegen-sexpr model. One entry per line inside a `(do …)`: `(opcode NAME byte)` for the opcode
+    /// table, `(single NAME byte "doc")` for the named single bytes (valtypes/sections/forms/export-kinds,
+    /// carrying their `///` doc), `(magic NAME b0 b1 … b7 "doc")` for the 8-byte headers. Bytes are DECIMAL
+    /// (the `render` hex formatting is a codegen concern, not the source's). This is the `--emit-sexpr`
+    /// bootstrap dump: it derives wasm-abi.sexp from the wasm-encoder oracle correct-by-construction; the
+    /// committed sexpr is then the hand-editable single source of truth, cross-checked back against the
+    /// oracle by a derived test. The `sexpr → cadenza-ast binary → this-crate-reads-it → render` pipeline is
+    /// what makes the sexpr reusable repo-wide (operator).
+    pub fn render_sexpr(t: &Tables) -> String {
+        // A Cadenza string literal: quote + escape `\` and `"` (doc text has backticks/em-dashes/unicode,
+        // which need no escaping — they round-trip through `cdz convert` verbatim, verified).
+        fn lit(doc: &str) -> String {
+            format!("\"{}\"", doc.replace('\\', "\\\\").replace('"', "\\\""))
+        }
+        let mut out = String::from("(do\n");
+        for o in &t.opcodes {
+            out.push_str(&format!("  (opcode {} {})\n", o.ident, o.byte));
+        }
+        for s in &t.singles {
+            out.push_str(&format!(
+                "  (single {} {} {})\n",
+                s.ident,
+                s.byte,
+                lit(s.doc)
+            ));
+        }
+        for m in &t.magics {
+            let bytes = m
+                .bytes
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.push_str(&format!("  (magic {} {} {})\n", m.ident, bytes, lit(m.doc)));
+        }
+        out.push_str(")\n");
+        out
     }
 
     /// Render the extracted tables as the generated `wasm_abi.rs` body: the `op` opcode module, then
