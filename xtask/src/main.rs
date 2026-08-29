@@ -209,23 +209,6 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
-    /// Produce the platform's `KIND_WIT_WORLD` binary-AST artifacts from `cdz-platform/wit/world.wit` — one
-    /// `<world>.bin` per reducer world (`reducer-world`, `event-reducer-world`). A Cadenza reducer guest
-    /// targets the shared world by consuming the artifact: `cdz compile guest.cdz wit-world:reducer-world=
-    /// reducer-world.bin`, so it need not re-declare the world inline. Parses `world.wit` with `wit-parser`
-    /// and rebuilds each world as the canonical `cadenza_ast` `world_schema_tree` node the compiler reads.
-    /// Regenerated on demand (single source of truth = `world.wit`), for the nix reducer-guest derivation.
-    WorldArtifact {
-        /// Where to write `<world>.bin`. Defaults to `<repo>/target/wit-worlds`.
-        #[arg(long)]
-        out: Option<PathBuf>,
-        /// The `.wit` to read. Defaults to `crates/cdz-platform/wit/world.wit`.
-        #[arg(long)]
-        wit: Option<PathBuf>,
-        /// A single world to emit (by name). Defaults to the platform reducer worlds.
-        #[arg(long)]
-        world: Option<String>,
-    },
     /// Run the runtime allocation benchmark (gross heap allocs per hot op) and diff against the
     /// committed baseline `spec/bench/.alloc-baseline`. Allocation count — not wall-clock — is the
     /// tracked metric: it is identical native↔wasm and deterministic, so it catches an allocation
@@ -351,7 +334,6 @@ fn main() {
         Cmd::PruneBaselines { check } => prune_baselines(&paths, profile, check),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
         Cmd::Codegen { check } => codegen::run(&paths, check),
-        Cmd::WorldArtifact { out, wit, world } => world_artifact::run(&paths, out, wit, world),
         Cmd::Bench { save } => bench::run(&paths, save),
         Cmd::DuvetCheck { save } => duvet_check::run(&paths, save),
         Cmd::Miri { filter } => miri(&paths, &filter),
@@ -448,7 +430,6 @@ mod codegen;
 mod duvet_check;
 mod fleet;
 mod install_lsp;
-mod world_artifact;
 
 /// The workspace directory anchors, resolved once from this crate's manifest location. xtask lives
 /// at `<repo>/xtask`, so the repo root is the manifest's parent and the seed workspace is the fixed
