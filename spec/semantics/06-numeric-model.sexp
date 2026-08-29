@@ -13060,3 +13060,12 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 507 Int64))
   (call main (: -2 Int64)) (output (: 498 Int64)))
+
+(case "cepn2 CONST-EVAL folds a sum-payload NATIVE #tuple sub-pattern — the #5412 extension of cepn1"
+  (doc "A fully-constant match whose Some arm destructures the payload with a native #tuple sub-pattern
+        folds at compile time (7); the hop emits the folded literal (fixpoint teeth via corpus-cadenza).
+        Regressed at the M2 flag-day for the native spelling; #5412 recognizes the native sub-pattern in
+        the sum-payload destructure fold.")
+  (input (do (def (main) (match (Some #tuple(3 4)) ((Some #tuple(a b)) (+ a b)) ((None _u) -1))) (export main)))
+  (call main)
+  (output (: 7 Int64)))
