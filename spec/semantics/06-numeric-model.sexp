@@ -14102,3 +14102,17 @@
   (call main (: 0 Int64)) (output (: 0 Int64))
   (call main (: -5 Int64)) (output (: 95 Int64))
   (live-objects known-leak 4 0 2))
+
+(case "ow1 a wrap PRAGMA round-trips the cadenza hop as explicit per-node wrapping members"
+  (doc "The hop face of the overflow-policy build (#5739 const + #5757 runtime, ruling B): a module
+        under (pragma overflow (signed wrap)) re-emits with the resolved MODE BAKED PER NODE — the
+        hop output spells (. Int64 wrapping-add)/(. Int64 wrapping-sub) explicitly and carries NO
+        pragma, so the recompile is policy-independent and value-identical (max+1 wraps to Int64.min
+        through a 300k-deep opaque feed on BOTH the direct and hopped paths; byte-idempotent).
+        Pins ruling B's one-mode-per-node design at the re-emit boundary.")
+  (input (do
+    (pragma overflow (signed wrap))
+    (def (f (: k Int64)) (if (> k 0) (f (- k 1)) 9223372036854775807))
+    (def (main) (+ (f 300000) 1))
+    (export main)))
+  (output (: -9223372036854775808 Int64)))
