@@ -150,23 +150,31 @@ struct Caps {
 /// Returns `(type_decl, main_body)`.
 fn gen_usersum<C: Choice>(c: &mut C) -> (String, String) {
     let (a, b) = (c.int_bounded(0, 9), c.int_bounded(0, 9));
-    if c.variant(2) == 0 {
+    match c.variant(3) {
         // MULTI-variant tagged sum — construct Circle OR Rect, match both arms (each returns Int64).
-        let ctor = if c.variant(2) == 0 {
-            format!("(Circle {a})")
-        } else {
-            format!("(Rect {a} {b})")
-        };
-        (
-            "(type Shape (Circle Int64) (Rect Int64 Int64))".to_string(),
-            format!("(match {ctor} ((Circle x) x) ((Rect p q) (+ p q)))"),
-        )
-    } else {
+        0 => {
+            let ctor = if c.variant(2) == 0 {
+                format!("(Circle {a})")
+            } else {
+                format!("(Rect {a} {b})")
+            };
+            (
+                "(type Shape (Circle Int64) (Rect Int64 Int64))".to_string(),
+                format!("(match {ctor} ((Circle x) x) ((Rect p q) (+ p q)))"),
+            )
+        }
         // SINGLE-variant struct-newtype (erases to a field tuple) — construct + destructure.
-        (
+        1 => (
             "(type Pt (Mk Int64 Int64))".to_string(),
             format!("(match (Pt.Mk {a} {b}) ((Mk x y) (+ x y)))"),
-        )
+        ),
+        // NULLARY-ctor enum — `main` returns a BARE nullary-ctor NAME as its value (the #5589 shape:
+        // a bare nullary ctor as a value now grades; a payload-carrying ctor value the other arms never
+        // reach the nullary case of).
+        _ => (
+            "(type Color (Red) (Green) (Blue))".to_string(),
+            ["Red", "Green", "Blue"][(a % 3) as usize].to_string(),
+        ),
     }
 }
 
@@ -2052,7 +2060,7 @@ mod tests {
     /// decline here). Top-level `(type …)` is required to GRADE (a local one SKIPs) — this pins it top-level.
     #[test]
     fn build_program_reaches_user_sum_shapes_and_compiles() {
-        let (mut saw_multi, mut saw_newtype) = (false, false);
+        let (mut saw_multi, mut saw_newtype, mut saw_nullary) = (false, false, false);
         for seed in 0u64..1024 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(719);
             let mut bytes = Vec::new();
@@ -2072,6 +2080,7 @@ mod tests {
             );
             saw_multi |= src.contains("(type Shape ");
             saw_newtype |= src.contains("(type Pt ");
+            saw_nullary |= src.contains("(type Color ");
             assert!(
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
                 "user-sum program must COMPILE: {src}"
@@ -2085,6 +2094,7 @@ mod tests {
             saw_newtype,
             "should reach a single-variant newtype (type Pt)"
         );
+        assert!(saw_nullary, "should reach a nullary-ctor enum (type Color)");
     }
 
     /// `gen_bignum_body` REACHES both BigInt (`N`) and Rational (`R`) forms and every body COMPILES (S132:
