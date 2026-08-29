@@ -68,7 +68,7 @@ mod arg_probe_world {
 // --- the TEST-ONLY arg-probe host import (§9 arg-value capture) ---
 use crate::contract_value::{ascribe, bare_ctor, record, uint_leaf, unit};
 use arg_probe_world::cadenza::test_arg_probe::arg_probe as ap;
-use cadenza_ast::ast::{Builder, Leaf, Radix, StructId};
+use cadenza_ast::ast::{Builder, CompoundCtor, Leaf, Radix, StructId};
 use cadenza_ast::codec;
 
 /// A signed-integer value leaf. The value model's integer is arbitrary-precision (`Leaf::Int`); the target
@@ -131,17 +131,19 @@ fn encode_probe_record(r: &ap::ProbeRecord) -> Vec<u8> {
     codec::encode(&b.finish(root))
 }
 
-/// Encode the received `list<narrow>` to canonical Value bytes: the name-headed `(list <narrow>…)` ascribed
+/// Encode the received `list<narrow>` to canonical Value bytes: the M2 NATIVE `Ctor(List)` list ascribed
 /// with the PARAMETERIZED type `(List Narrow)` — byte-for-byte what a Cadenza checker's `Value.encode` of the
-/// same `List(Narrow)` produces. The root ascription of a generic value carries the type CONSTRUCTOR APPLIED
-/// to its argument (`(List Narrow)`, mirroring `(: (Some 5) (Option Int64))` in the codec), not the bare
-/// constructor name — a bare `List` decodes fine (the decoder is type-directed and ignores the token) but does
-/// not byte-match the checker.
+/// same `List(Narrow)` produces. Native, not the legacy name-headed `(list …)`: the guest runtime's
+/// `decode_value` REQUIRES the native ctor-leaf head and rejects a name/string head, and the checker
+/// byte-matches this against the guest's native `Value.encode` — so a name-headed list neither decodes nor
+/// byte-matches (mirrors `contract_value::record` / `log_value::list_value`). The root ascription of a generic
+/// value carries the type CONSTRUCTOR APPLIED to its argument (`(List Narrow)`, mirroring `(: (Some 5) (Option
+/// Int64))` in the codec), not the bare constructor name — a bare `List` decodes fine (the decoder is
+/// type-directed and ignores the token) but does not byte-match the checker.
 fn encode_narrow_list(items: &[ap::Narrow]) -> Vec<u8> {
     let mut b = Builder::new();
     let vals: Vec<StructId> = items.iter().map(|n| narrow_value(&mut b, n)).collect();
-    let head = b.name("list");
-    let list = b.list(std::iter::once(head).chain(vals).collect());
+    let list = b.compound(CompoundCtor::List, &vals);
     // The `(List Narrow)` type node — the list type constructor applied to its element type.
     let list_ty = b.name("List");
     let elem_ty = b.name("Narrow");
@@ -1681,12 +1683,14 @@ mod tests {
         let tag = record_field(&arenas, rec, "tag").expect("field tag");
         assert_eq!(read_uint(&arenas, tag), Some(42), "tag");
 
-        // list<narrow> [A(7), Absent, B(300)] -> (: (list (A 7) (Absent unit) (B 300)) (List Narrow))
+        // list<narrow> [A(7), Absent, B(300)] -> (: <native Ctor(List)>[(A 7) (Absent unit) (B 300)] (List Narrow))
         let bytes =
             super::encode_narrow_list(&[ap::Narrow::A(7), ap::Narrow::Absent, ap::Narrow::B(300)]);
         let arenas = codec::decode(&bytes).expect("list decodes");
         let list = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
-        let elems = as_bare_ctor(&arenas, list, "list").expect("name-headed (list …)");
+        let elems = arenas
+            .compound_form_of(list, CompoundCtor::List)
+            .expect("native Ctor(List) list");
         assert_eq!(elems.len(), 3, "three narrow elements");
         let a = as_bare_ctor(&arenas, elems[0], "A").expect("(A _)");
         assert_eq!(read_uint(&arenas, a[0]), Some(7), "A payload");
