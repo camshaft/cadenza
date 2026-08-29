@@ -332,6 +332,18 @@
           doCheck = false;
         });
 
+        # xtaskCodegenWasmAbiBin — the backend wasm/component-model byte-table extractor (v-xtask-decompose,
+        # codegen→build-time-nix). Carved from codegen.rs's generate_wasm_abi + its wasm_abi module. PURE
+        # data extraction from wasm-encoder (no compiler dep, no cdz, no store, no runtime hash), so its
+        # closure is just itself + the wasm-encoder/syn/quote/prettyplease deps — caches independently. A
+        # `cdzWasmAbi` derivation runs it to EMIT rcdzc/src/backend/wasm/wasm_abi.rs at build time (overlay
+        # copies it in). Output: $out/bin/xtask-codegen-wasm-abi. Verified: BYTE-IDENTICAL to the committed file.
+        xtaskCodegenWasmAbiBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-codegen-wasm-abi"; }) // {
+          pname = "cdz-xtask-codegen-wasm-abi";
+          cargoExtraArgs = "-p xtask-codegen-wasm-abi";
+          doCheck = false;
+        });
+
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
         # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
@@ -498,6 +510,9 @@
           # xtask-codegen-contracts (v-xtask-decompose): the contract-schema projector (codegen→build-time-nix),
           # deps cadenza-ast + cdz-contract. Registered here so the crane deps-src includes its Cargo.toml.
           xtask-codegen-contracts = "xtask/crates/xtask-codegen-contracts";
+          # xtask-codegen-wasm-abi (v-xtask-decompose): the wasm/component byte-table extractor
+          # (codegen→build-time-nix), deps only wasm-encoder (external). Registered so crane sees its Cargo.toml.
+          xtask-codegen-wasm-abi = "xtask/crates/xtask-codegen-wasm-abi";
         };
         rootCrateNames = builtins.attrNames rootWorkspaceCrates;
         # direct member-edges of one crate across the three rebuild-relevant dep sections (A1 walk).
@@ -815,6 +830,9 @@
               xtask-fmt = [ "cadenza-ast" "cdz-contract" "xtask-fmt" "xtask-support" ];
               # xtask-codegen-contracts deps cadenza-ast + cdz-contract (cdz-contract deps cadenza-ast).
               xtask-codegen-contracts = [ "cadenza-ast" "cdz-contract" "xtask-codegen-contracts" ];
+              # xtask-codegen-wasm-abi deps only external crates (wasm-encoder/syn/quote/prettyplease) — its
+              # workspace closure is just itself.
+              xtask-codegen-wasm-abi = [ "xtask-codegen-wasm-abi" ];
               xtask-mandates = [ "xtask-mandates" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
@@ -3677,6 +3695,11 @@
         # derivation (v-nix, in progress) runs it to emit cdz-platform/src/contracts/*.rs at build time.
         packages.xtask-codegen-contracts = xtaskCodegenContractsBin;
 
+        # The wasm/component byte-table extractor bin (v-xtask-decompose, codegen→build-time-nix). `nix build
+        # .#xtask-codegen-wasm-abi` → result/bin/xtask-codegen-wasm-abi. A `cdzWasmAbi` derivation runs it to
+        # emit rcdzc/src/backend/wasm/wasm_abi.rs at build time.
+        packages.xtask-codegen-wasm-abi = xtaskCodegenWasmAbiBin;
+
         # The standalone mandate-lint binary (v-xtask-decompose). `nix build .#xtask-mandates` →
         # result/bin/xtask-mandates. Backs `apps.lint-mandates` + the mandate gate; caches independently
         # of xtask (its closure is just the crate + syn).
@@ -3809,6 +3832,7 @@
               clippy-xtask-canonicalize-baselines = mkCrateClippyCrane { crate = "xtask-canonicalize-baselines"; };
               clippy-xtask-fmt = mkCrateClippyCrane { crate = "xtask-fmt"; };
               clippy-xtask-codegen-contracts = mkCrateClippyCrane { crate = "xtask-codegen-contracts"; };
+              clippy-xtask-codegen-wasm-abi = mkCrateClippyCrane { crate = "xtask-codegen-wasm-abi"; };
             };
             # cdz's clippy stays in its workspace-src check (crateCdzCheck runs `cargo clippy -p cdz` inside).
             clippyCraneAggregate = pkgs.runCommand "cargo-clippy-crane-aggregate"
@@ -3856,6 +3880,7 @@
               test-xtask-canonicalize-baselines = mkCrateTestCrane { crate = "xtask-canonicalize-baselines"; };
               test-xtask-fmt = mkCrateTestCrane { crate = "xtask-fmt"; };
               test-xtask-codegen-contracts = mkCrateTestCrane { crate = "xtask-codegen-contracts"; };
+              test-xtask-codegen-wasm-abi = mkCrateTestCrane { crate = "xtask-codegen-wasm-abi"; };
             };
             # COVERAGE-PARITY assert (concierge mandate — no test silently dropped vs `cargo test
             # --workspace`): the per-crate test crates PLUS cdz (crateCdzCheck) must EXACTLY equal the
@@ -3920,9 +3945,9 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
-              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
+              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + xtask-codegen-wasm-abi + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
             # flakeReproBackstop: the REPRODUCIBILITY-BACKSTOP subset — the checks the `nix-flake (advisory)`
             # CI job should run INSTEAD of a whole `nix flake check`. Data-driven CI-speed (operator standing

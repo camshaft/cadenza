@@ -1,0 +1,25 @@
+# xtask-codegen-wasm-abi — extract the backend's wasm/component-model byte table (`wasm_abi.rs`) from the
+# `wasm-encoder` crate, as its OWN minimal-dep crate (v-xtask-decompose: the codegen→build-time-nix
+# directive). Carved out of xtask/src/codegen.rs's `generate_wasm_abi` + its `wasm_abi` module. Pure data
+# extraction — encodes a one-off value with `wasm-encoder` for each opcode/valtype/section/form byte and
+# reads the emitted byte back (nothing hand-transcribed); NO compiler dep, NO cdz, NO runtime store, NO
+# runtime hash. A `cdzWasmAbi` nix derivation runs this bin to EMIT rcdzc/src/backend/wasm/wasm_abi.rs at
+# build time (a build-phase overlay copies it in), so nothing generated is committed.
+[package]
+name = "xtask-codegen-wasm-abi"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-codegen-wasm-abi"
+path = "src/main.rs"
+
+[dependencies]
+# The spec byte encoder — the ORACLE the table is extracted from. Same version family as xtask's codegen.
+wasm-encoder = "0.239"
+# The render stack: build the table as a token tree (`quote!`), pretty-print (prettyplease) + rustfmt.
+prettyplease = "0.2"
+syn = { version = "2", features = ["full", "parsing"] }
+quote = "1"
+proc-macro2 = "1"
