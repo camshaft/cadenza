@@ -1143,16 +1143,16 @@ fn gen_float_ordering_body<C: Choice>(c: &mut C, out: &mut String) {
 fn gen_compound_keyed_collection_body<C: Choice>(c: &mut C, out: &mut String) {
     // Pick the FORM + key-KIND before consuming the operand choices (variant-ordering).
     let form = c.variant(3);
-    let is_record = c.variant(2) == 1;
+    let key_kind = c.variant(4);
     let (a, b) = (c.int_bounded(0, 9), c.int_bounded(0, 9));
     let (cc, d) = (c.int_bounded(20, 29), c.int_bounded(20, 29));
-    // The compound KEY is a `(tuple …)` or a `(record …)` — #5540's structural total order covers both.
-    let key = |x: i64, y: i64| {
-        if is_record {
-            format!("(record (= a {x}) (= b {y}))")
-        } else {
-            format!("(tuple {x} {y})")
-        }
+    // The compound KEY is a tuple / record / NESTED tuple / list — #5540's structural total order over
+    // compound values covers all of them.
+    let key = |x: i64, y: i64| match key_kind {
+        0 => format!("(record (= a {x}) (= b {y}))"),
+        1 => format!("(tuple (tuple {x} {y}) {x})"),
+        2 => format!("(list {x} {y})"),
+        _ => format!("(tuple {x} {y})"),
     };
     let (k1, k2) = (key(a, b), key(cc, d));
     match form {
@@ -2258,7 +2258,8 @@ mod tests {
     #[test]
     fn gen_compound_keyed_collection_body_reaches_all_forms_and_compiles() {
         let (mut saw_set, mut saw_insert, mut saw_map) = (false, false, false);
-        let (mut saw_tuple_key, mut saw_record_key) = (false, false);
+        let (mut saw_tuple_key, mut saw_record_key, mut saw_nested_key, mut saw_list_key) =
+            (false, false, false, false);
         for seed in 0u64..512 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1409);
             let mut bytes = Vec::new();
@@ -2272,8 +2273,10 @@ mod tests {
             saw_insert |= body.contains("Set.insert");
             saw_set |= body.starts_with("(Set.len #set(");
             saw_map |= body.contains("Map.len");
-            saw_tuple_key |= body.contains("(tuple ");
             saw_record_key |= body.contains("(record ");
+            saw_nested_key |= body.contains("(tuple (tuple ");
+            saw_list_key |= body.contains("(list ");
+            saw_tuple_key |= body.contains("(tuple ") && !body.contains("(tuple (tuple ");
             let src = format!("(do (def (main) {body}) (export main))");
             assert!(
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
@@ -2283,8 +2286,10 @@ mod tests {
         assert!(saw_set, "should reach a compound-keyed set (Set.len #set)");
         assert!(saw_insert, "should reach a Set.insert form");
         assert!(saw_map, "should reach a compound-keyed map (Map.len)");
-        assert!(saw_tuple_key, "should reach a tuple-keyed form");
+        assert!(saw_tuple_key, "should reach a flat-tuple-keyed form");
         assert!(saw_record_key, "should reach a record-keyed form");
+        assert!(saw_nested_key, "should reach a nested-tuple-keyed form");
+        assert!(saw_list_key, "should reach a list-keyed form");
     }
 
     /// `gen_float_keyed_collection_body` REACHES all four forms (Float64 set, Float64 map, NaN-key set,
