@@ -1,6 +1,9 @@
 # Per-`@test` nix caching for the Cadenza test gate (test-shred)
 
-Status: DESIGN (v-test-shred, 2026-08-29, operator-requested). Goal: replace the coarse per-PROJECT
+Status: LANDED / EVOLVING (v-test-shred, 2026-08-29). The matrix is live on main (iterators standalone,
+360/360); cad/choreography standalone + the arm-drops are in flight (contention-gated). See "Status
+(LANDED)" at the bottom for the current state and "Scale + the per-suite mode split" for how the original
+single-model idea below evolved into the shipped standalone/two-stage per-suite modes. Goal: replace the coarse per-PROJECT
 `cdz test` gate derivations (`testCadenzaProject` / the `cad-tests` aggregate over
 `implementation/{cad,compiler-ml,choreography,iterators}`) with a per-`@test` content-addressed matrix,
 so an unrelated change is a cache hit and each `@test` runs in parallel — **without any persistent
@@ -19,6 +22,13 @@ run goes through the `cdz-run` BINARY (exec, not link), and a `@test` re-runs on
 wasm changes.
 
 ## The idea — the compiler shreds via a query
+
+> **NOTE (superseded shape):** this section describes the original single model — a shared MAIN target +
+> per-test CONSUMERS linked via a COMPONENT `--peer` compose. What SHIPPED generalized this into a per-suite
+> `mode` (see "Scale + the per-suite mode split"): **standalone** emits self-contained per-test wasm (no
+> main, no `--peer`) and **two-stage** keeps the shared-closure + per-test-fragment idea but splices via
+> `cdz-compile … --export` rather than a runtime `--peer` compose. The manifest + `cdz-run`-binary exec +
+> aggregate structure below are accurate; the "main + `--peer` consumer" specifics are the two-stage lineage.
 
 Per operator refinement (2026-08-29): **the compiler does the shredding.** Given a project, `cdz-compile`
 (driven by a query/mode) emits a **MAIN-target artifact + one target per `@test`**, where each per-test
@@ -60,26 +70,25 @@ Caching: the shred is `__contentAddressed`, so a COMPILER change that leaves `ma
 byte-identical yields the same output paths and every exec cache-hits — the nix CA cache REPLACES the
 in-process JIT/provider cache. That is the operator's "heavily cached on no changes to the emitted wasm."
 
-## Enumeration — a committed plain-text index (no IFD, no JSON-as-data)
+## Enumeration — compiler-informed discovery via a scoped, cached IFD (LANDED)
 
 Per-`@test` **content-addressed exec derivations require the `@test` list at EVAL time** (to `genList`/map
 N derivations). Two hard constraints collide: nix **cannot decode cadenza-ast binary at eval** (there is
-no `builtins.fromJSON` equivalent for binary), and **IFD is banned** (`flake.nix`), so nix can neither
-decode the authoritative binary manifest nor read a build output to fan out. The compiler-emits-per-test-
-targets refinement is ORTHOGONAL to this — it shapes the build artifacts, not the eval fan-out.
+no `builtins.fromJSON` equivalent for binary), and the global **no-IFD convention** means nix eval must not
+trigger builds. An earlier resolution shipped a committed PLAIN-TEXT index — but the operator VETOED any
+committed hard-coded test list ("what if someone adds a test and forgets to include it — massive pain"):
+discovery must be COMPILER-INFORMED (`db.test_defs`), not a committed artifact or a source text-scan.
 
-Resolution (shared with v-nix's guide matrix, which hits the identical wall): keep a tiny **committed
-PLAIN-TEXT enumeration index** (newline records, tab fields: `name\tis_property`) that nix reads via
-`builtins.readFile` + `splitString` (NOT `fromJSON`). The FULL cadenza-ast BINARY manifest stays
-authoritative and is decoded at BUILD time inside the exec derivation (no IFD there). A **drift-guard**
-(mirroring `guideManifestDriftAssert`) asserts the committed text index equals a freshly-derived index
-(decode the binary at build, compare) → loud red if they diverge.
-
-The text index is not itself cadenza-ast binary, so it is a minimal **eval-time exception** to "binary
-everywhere" — unavoidable since nix eval is text/JSON-only. This needs an operator nod (v-nix is carrying
-that ask, covering both guide + `@test`). If rejected, the fallback is a coarser ONE-derivation-loops-all-
-targets model (no per-`@test` CA caching or parallelism) — which contradicts "ca-derivation per test", so
-per-test CA + a tiny text index is the recommended reading.
+Landed resolution (operator OK'd IFD for this one scoped use; concierge greenlit scoped-cached-IFD): a
+`testDiscovery` derivation runs `cdz test --list --format nix <proj>` (#5461) → `$out` = a SORTED, PURE,
+importable nix list `[{ name; is_property; file } …]`. The flake **`import`s `$out` at EVAL** to fan out
+the per-`@test` derivations (`testShredIndexEntries = import (testDiscovery …)`). This is IFD, but SCOPED
+to discovery ONLY (the global no-IFD convention otherwise stands); nix caches the drv output, so eval
+re-reads only when the suite source changes (rotates the drv), not on every eval. It is compiler-
+authoritative (no committed index, no text-scan) and eval-readable. Reversible to a pure dynamic-derivation
+on a future nix upgrade. The committed `tests-shred-index.txt` was built (#5298) then REMOVED (#5477) once
+discovery landed (#5473). Keyed by `(file-stem, name)` — an `@test` name repeats across a suite's files
+(iterators has 20 such), and the stem disambiguates + matches the manifest's `file` field.
 
 ## Property `@tests` — v1 deferral (safe for the spine)
 
@@ -92,35 +101,57 @@ to emit/build time).
 
 ## Division of labor
 
-- **v-test-shred**: the shred DESIGN + the nix ca-derivation matrix (`mkTestShred` → per-`@test`
-  `mkTestExec` → per-project + `cad-tests` aggregates), the committed text index + drift-guard, and the
-  atomic retirement of `testCadenzaProject`/`cad-tests`' in-process path (same PR as the replacement).
-- **v-cdz-crate-split**: the `cdz-compile` query/subcommand surface — the "emit main + per-test targets"
-  mode + the binary manifest + the enumeration query (`Query::TestList` → binary), and (downstream)
-  reimplementing interactive `cdz test` to emit-shred + exec the `cdz-run` binary per test in parallel
-  subprocesses, then dropping `cdz-run`'s lib dep from `cdz`.
-- **v-nix**: the flake mechanism (builds the emitted targets; owns the CA-build + drift-assert patterns);
-  the guide manifest migration to the same plain-text-index shape (which this mirrors).
+- **v-test-shred**: the shred DESIGN + coverage AUDITING (per-suite standalone-vs-two-stage coverage
+  measurement, the hollow-green ritual = emit-N == authoritative + zero-skip), and the ARM-DROP specs (per
+  suite, rewire the required `cad-tests` aggregate to depend on `test-shred-<suite>` instead of the coarse
+  `cad-test-<suite>`, keeping the aggregate NAME so no ruleset edit). Additive-then-retire, per suite.
+- **v-cdz-crate-split**: the `cdz-compile` query/subcommand surface — the emit-shred modes (`--standalone`
+  monomorphized-per-test, `--two-stage` shared-closure + per-test fragment splice) + the binary manifest +
+  the `--list --format nix` discovery projection, and (downstream) dropping `cdz-run`'s lib dep from `cdz`.
+- **v-nix**: the flake mechanism (single-writer of the shred matrix — `mkTestShred`/`mkTestExec`/
+  `testShredSuiteChecks`/`mkTestShredSuiteAgg`, per-suite `mode`, the `testDiscovery` scoped-cached-IFD,
+  and the `cad-tests` aggregate rewiring); builds the emitted targets; owns the CA-build patterns.
 
-## Scale
+## Scale + the per-suite mode split (standalone vs two-stage)
 
 Authoritative `@test` counts (from `db.test_defs`, not a source regex — #5196): compiler-ml 854, cad 138,
-choreography 177, iterators 360 = **~1529 `@tests`**, all `is_property = false`. So the matrix is ~1529
-per-`@test` exec derivations (parallel + CA-cached) replacing the 4 coarse per-project derivations.
+choreography 177, iterators 360 = **~1529 `@tests`**, all `is_property = false`.
 
-## Status (2026-08-29)
+Two emit modes, chosen PER SUITE (`testShredSuites.<suite>.mode`):
+- **standalone** — monomorphize the WHOLE closure per `@test` → each `test-<name>.wasm` is self-contained;
+  `mkTestExec` runs it directly via the `cdz-run` binary (no splice). FULL coverage (no `emit_fragment`
+  gaps), and a manifest-MISSING entry HARD-FAILS (the full suite emits, so absence = real drift — this
+  structurally kills the hollow-green trap: a green aggregate genuinely means every `@test` ran). Right for
+  SMALL-closure suites where per-test monomorphization is cheap. Measured full: **iterators 360/360, cad
+  138/138, choreography 177/177** — all retire-ready, collision-safe (same-name cross-file tests get a
+  numeric-suffix target basename).
+- **two-stage** — emit the shared closure ONCE (`emit_fragment`, CA-cached) + a thin per-test fragment,
+  spliced via `cdz-compile … --export`. O(closure + tests×body) instead of O(tests×closure) — required for
+  HEAVY suites (compiler-ml's ~1360-def / ~215s closure makes standalone cost-prohibitive). BUT
+  `emit_fragment` has cadenza-backend re-emit gaps (higher-order params, nested sum projections), so its
+  coverage is PARTIAL and a decliner SKIPS. compiler-ml is a LAYERED PEEL: each backend fix lets defs
+  progress and exposes deeper classes (1392 payload-projection → newtype-read → generic/open `(type …)`
+  emission …); coverage climbs incrementally (64 → 80 → …), not in one jump. compiler-ml stays COARSE
+  (its `cad-test-compiler-ml` arm) until two-stage coverage is ~full.
 
-Design is APPROVED and the interface is settled. Formerly-open items, now resolved:
-1. ✅ Plain-text eval-enumeration index — APPROVED by concierge (no-json reading at the text-only nix
-   boundary; operator FYI'd, veto-only). Shared with v-nix's guide-manifest migration.
-2. ✅ `cdz test --list` project-mode bug — FIXED (#5196 manifest_strings dual-read for the M2 native
-   Ctor(List) head + #5193 as_name bridge). Works on all 4 gate projects.
-3. ✅ Per-test target links main via COMPONENT `--peer` compose (main = provider, test-`<k>` = consumer);
-   shred is ONE command (`cdz test --emit-shred`), `--list` separate — confirmed by v-cdz-crate-split (S6b,
-   `DESIGN-cdz-plugin-dispatch.md`).
+## Status (LANDED — 2026-08-29)
 
-Remaining before the nix matrix + drift-guard land: (a) rcdzc `Query::TestList` → binary + the
-`cdz test --list` binary output (v-inference), (b) `Request::EmitTestsShred` emit (v-cdz-crate-split,
-reusing `compute_tests_consumer`), (c) v-nix's guide committed-text-index migration (this mirrors it).
-Sequencing: `Query::TestList` first, then `EmitTestsShred`; v-test-shred wires `mkTestShred`/`mkTestExec`
-+ the drift-guard + the atomic `testCadenzaProject` retirement the moment those land.
+The matrix is LIVE on main and the discovery mechanism is settled:
+1. ✅ **Compiler-informed discovery** — `cdz test --list --format nix` (#5461) + the `testDiscovery`
+   scoped-cached-IFD (#5473); the committed `tests-shred-index.txt` was built (#5298) then REMOVED (#5477).
+   Closes the operator's banned-committed-list concern for iterators.
+2. ✅ **iterators shred matrix GREEN on main** — first as two-stage (#5473; discovered to be a hollow 56/360
+   — two-stage `emit_fragment` can't lower higher-order params), then corrected to `mode=standalone`
+   (#5530) → 360/360 REAL, zero-skip, hard-fail-on-missing. The audit lesson: a green shred aggregate does
+   NOT prove coverage unless emit-N == authoritative AND zero-skip (standalone enforces this structurally).
+3. ✅ **Per-suite mode** — `mkTestShred`/`mkTestExec`/… take `mode = standalone | two-stage` (#5530);
+   `testShredSuites` entries are `{ dir; mode }`.
+
+Remaining (in flight, contention-gated on nix builder starvation):
+- (a) **iterators arm-drop** — rewire `cad-tests` to depend on `test-shred-iterators` instead of the coarse
+  `cad-test-iterators` (spec delivered + re-audited GREEN; v-nix executes as single-writer in a calm window).
+- (b) **cad + choreography standalone** — wired `mode=standalone` (v-nix branch, gate-pending), then their
+  arm-drops (each 138/138, 177/177, retire-ready). After these, in-process `cdz test` runs ONLY compiler-ml.
+- (c) **compiler-ml** — stays COARSE; two-stage coverage climbs as v-cadenza peels the backend re-emit
+  layers on general merits (not a test-shred blocker). Retiring its coarse arm (→ dropping `cdz-run`'s lib
+  dep from `cdz`, the headline win) waits on ~full two-stage coverage.
