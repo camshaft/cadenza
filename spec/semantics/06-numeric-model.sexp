@@ -12809,3 +12809,18 @@
   (output (: 7 Wrap))
   (call main (: -3 Int64))
   (output (: -3 Wrap)))
+
+(case "rbp1 native and classic RECORD destructuring PARAMS bind identically — M3 spelling parity"
+  (doc "The #5359 fence (breaker refutability-matrix find r4): check_binding_pattern's record arm was
+        as_form-only, so a native `#record((= x a))` def PARAM rejected 'not a tuple, record, or
+        constructor' while classic `(record (= x a))` and native `#tuple` both bound fine. Pins both
+        spellings binding the same field to the same value, plus the native #tuple param neighbor.
+        Refutable params stay rejected (the #5346 CDZ0210 pins cover those).")
+  (input (do
+    (def (getn #record((= x a))) a)
+    (def (getc (record (= y b))) b)
+    (def (gett #tuple(p q)) (+ p q))
+    (def (main (: n Int64)) (+ (getn #record((= x n))) (+ (getc (record (= y 20))) (gett #tuple(n 4)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 38 Int64))
+  (call main (: -3 Int64)) (output (: 18 Int64)))
