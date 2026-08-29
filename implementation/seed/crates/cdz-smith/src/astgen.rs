@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(20) {
+    match c.variant(21) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -422,6 +422,10 @@ fn gen_main_body<C: Choice>(
         // A BYTES-op body: `Bytes.len` / `Bytes.at` (→ scalar) or a `b"…"` literal / `Bytes.of` / concat
         // (→ Bytes value) — the Bytes construct family, distinct from String and the Int64/compound grammar.
         19 => gen_bytes_body(c, out),
+        // A NESTED / DEEPER compound body: `List.at` / `List.concat`, or a compound-of-compounds value
+        // (tuple-of-lists / list-of-tuples / record with compound fields) — deeper structural shapes the
+        // flat single-level compound arms never reach.
+        20 => gen_nested_compound_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1250,6 +1254,36 @@ fn gen_bytes_body<C: Choice>(c: &mut C, out: &mut String) {
         3 => write!(out, "(Bytes.of (list {x} {y} {z}))").ok(),
         // Concatenation → a Bytes value.
         _ => write!(out, "(Bytes.concat b\"{s}\" b\"{s}\")").ok(),
+    };
+}
+
+/// A NESTED / DEEPER compound body: `List.at` (→ scalar) / `List.concat` (→ a list value), or a
+/// compound-of-compounds VALUE — a tuple of two lists, a list of two tuples, or a record whose fields are
+/// a tuple and a list. Reaches DEEPER structural shapes than the flat single-level tuple/list/record arms
+/// (the oracle grades compound values structurally, #5540). All Int64 leaves; `List.at` index in-bounds.
+fn gen_nested_compound_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the FORM before consuming operand choices (variant-ordering).
+    let form = c.variant(5);
+    let (a, b, x, y) = (
+        c.int_bounded(0, 99),
+        c.int_bounded(0, 99),
+        c.int_bounded(0, 99),
+        c.int_bounded(0, 99),
+    );
+    match form {
+        // `List.at` a 3-element list at an in-bounds index → an Int64 element.
+        0 => {
+            let i = c.variant(3);
+            write!(out, "(List.at (list {a} {b} {x}) {i})").ok()
+        }
+        // `List.concat` two lists → a list value.
+        1 => write!(out, "(List.concat (list {a} {b}) (list {x} {y}))").ok(),
+        // A tuple of two lists → a nested compound value.
+        2 => write!(out, "(tuple (list {a} {b}) (list {x} {y}))").ok(),
+        // A list of two tuples → a nested compound value.
+        3 => write!(out, "(list (tuple {a} {b}) (tuple {x} {y}))").ok(),
+        // A record whose fields are a tuple and a list → a nested compound value.
+        _ => write!(out, "(record (= a (tuple {a} {b})) (= b (list {x} {y})))").ok(),
     };
 }
 
@@ -2467,6 +2501,41 @@ mod tests {
         assert!(saw_lit, "should reach a b\"…\" literal");
         assert!(saw_of, "should reach Bytes.of");
         assert!(saw_concat, "should reach Bytes.concat");
+    }
+
+    /// `gen_nested_compound_body` REACHES all five forms (List.at, List.concat, tuple-of-lists,
+    /// list-of-tuples, record-of-compounds) and every body COMPILES (S168: deeper structural shapes than
+    /// the flat single-level compound arms).
+    #[test]
+    fn gen_nested_compound_body_reaches_all_forms_and_compiles() {
+        let (mut saw_at, mut saw_concat, mut saw_tol, mut saw_lot, mut saw_rec) =
+            (false, false, false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1913);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_nested_compound_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_at |= body.contains("List.at");
+            saw_concat |= body.contains("List.concat");
+            saw_tol |= body.starts_with("(tuple (list ");
+            saw_lot |= body.starts_with("(list (tuple ");
+            saw_rec |= body.starts_with("(record (= a (tuple ");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "nested-compound body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_at, "should reach List.at");
+        assert!(saw_concat, "should reach List.concat");
+        assert!(saw_tol, "should reach a tuple-of-lists");
+        assert!(saw_lot, "should reach a list-of-tuples");
+        assert!(saw_rec, "should reach a record-of-compounds");
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
