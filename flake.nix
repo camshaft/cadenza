@@ -3275,6 +3275,35 @@
           '';
         };
 
+        # gateCheckVerify — a SOLO full-corpus verify path with a GENEROUS per-case timeout (v-nix, for v-effects'
+        # UAF-critical #5090 SITE-B verification, concierge 2026-08-29). WHY: gateCheck (above) sets NO
+        # CDZ_RUN_TIMEOUT_SECS, so `gate --check` uses run_timeout()'s 30s DEFAULT per-case deadline — a
+        # multi-file effects-grade case that folds >30s UNDER FLEET LOAD false-traps ("did not finish within
+        # 30s"), so a heavy effects grade can't be solo-verified. This clone raises CDZ_RUN_TIMEOUT_SECS to 1800
+        # (30 min/case) so a legitimately-slow case runs to completion; identical full-corpus grade otherwise
+        # (same gateSrc + baselines + store). NOT a localGate constituent: a 30-min per-case ceiling is a
+        # VERIFY affordance, NOT a merge gate (a real infinite loop must still be caught fast by the 30s gate).
+        # And a plain `nix build .#checks.<sys>.gate-check-verify` runs with NO fleet batch-prefilter wall cap
+        # (that 15-min cap is pr-sync's, not a solo build) → the two caps v-effects hit are both lifted here.
+        # Strictly a timeout-RELAXATION of the green gateCheck → cannot newly fail a case gateCheck passes.
+        gateCheckVerify = craneLib.mkCargoDerivation {
+          pname = "cdz-gate-check-verify";
+          version = "0.0.0";
+          src = gateSrc;
+          cargoArtifacts = cargoArtifactsRelease;
+          cargoVendorDir = seedCargoVendor;
+          CARGO_PROFILE = "release";
+          CDZ_RUN_TIMEOUT_SECS = "1800";
+          doInstallCargoArtifacts = false;
+          nativeBuildInputs = [ pkgs.wasm-tools ];
+          buildPhaseCargoCommand = ''
+            cargo run --locked --package xtask --profile release -- gate --check --store "${componentStore}"
+          '';
+          installPhaseCommand = ''
+            echo "ok: cdz-gate-check-verify (full-corpus gate --check, CDZ_RUN_TIMEOUT_SECS=1800 — solo verify, not a merge gate)" > "$out"
+          '';
+        };
+
         # gateCheckRust — the RUST-BACKEND gate, a NARROW per-MR subset (v-nix+v-ft 2026-08-10). WHY: gateCheck
         # above runs `gate --check` with NO --target → it defaults to WASM, so the RUST backend emit was NEVER
         # gated in localGate. A rust-only divergence (v-effects E0425: mutual-recursive effect-spec dedup dropped
@@ -4598,6 +4627,9 @@
             codegen-check = codegenCheck;
             # Full-CI-in-nix increment 6c: the GHA gate job (cargo xtask gate --check — THE behavior gate).
             gate-check = gateCheck;
+            # gate-check-verify: SOLO full-corpus grade with a 30-min/case timeout (for v-effects' UAF-critical
+            # verify past the 30s gate cap + the fleet batch cap). NOT in localGate — verify affordance only.
+            gate-check-verify = gateCheckVerify;
             gate-check-rust = gateCheckRust;
             # Full-CI-in-nix increment 6d: the GHA bench job (cargo xtask bench — runtime alloc ceilings).
             bench-check = benchCheck;
