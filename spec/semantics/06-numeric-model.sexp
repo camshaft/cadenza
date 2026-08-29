@@ -13939,8 +13939,8 @@
         scalar value ({a,b,a,sel} → 3 when sel=c, 2 when sel=a), `<` orders chars by scalar value, and
         literal char match arms select on a runtime-branch-built scrutinee (x→1 y→2 _→9). n=7 →
         300+10+1 = 311; n=0 → 200+0+2 = 202; n=3 → 300+10+2 = 312. Both targets agree; live-0.
-        (The cadenza hop DECLINES the char-literal match — 'non-scalar match probe' — while
-        STRING-literal arms re-emit (cdzw71): the Char arm is the actual gap, routed v-c-b; flip-watch.)")
+        (The hop char-literal match gap this pin originally documented was FIXED by #5681 —
+        char-equality if-chain re-emit — verified 311/202/312 through the hop; flip-watch disarmed.)")
   (input (do
     (def (main (: n Int64))
       (+ (* 100 (Set.len #set(#\a #\b #\a (if (> n 0) #\c #\a))))
@@ -13994,3 +13994,24 @@
   (call main (: 2 Int64)) (output (: 1 Int64))
   (call main (: 0 Int64)) (output (: 1 Int64))
   (live-objects known-leak 4 3 3))
+
+(case "lp1 multi-length LIST arms with a head-pair rest binder — decision-tree dispatch through the hop"
+  (doc "The list-pattern face of the #5657 decision-tree family (beyond cdzw63's nested rests): a
+        recursive def dispatches over #list() / #list(a) / #list(a b .. rest) / wildcard — three
+        length classes + a rest binder consumed by the recursion. n=7 walks [1,2,3,4,5] pairwise:
+        (10·1+2) + (10·3+4) + (100+5) = 151; n=0 → empty → 0; n=-5 → singleton → 100-5 = 95.
+        Dual-path value-eq, byte-idempotent, rust-agreed; walked spine cells retained per depth.")
+  (input (do
+    (def (walk (: xs (List Int64)))
+      (match xs
+        (#list() 0)
+        (#list(a) (+ 100 a))
+        (#list(a b .. rest) (+ (* 10 a) (+ b (walk rest))))
+        (_w -1)))
+    (def (main (: n Int64))
+      (walk (if (> n 0) #list(1 2 3 4 5) (if (< n -2) #list(n) #list()))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 151 Int64))
+  (call main (: 0 Int64)) (output (: 0 Int64))
+  (call main (: -5 Int64)) (output (: 95 Int64))
+  (live-objects known-leak 4 0 2))
