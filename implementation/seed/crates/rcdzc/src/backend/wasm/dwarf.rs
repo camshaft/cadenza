@@ -430,8 +430,9 @@ pub fn external_debug_info_section(sidecar_path: &str) -> Vec<u8> {
     custom_section("external_debug_info", &payload)
 }
 
-/// A wasm CUSTOM section (id 0): its contents are `<name-len-uleb><name-bytes><payload>`.
-fn custom_section(name: &str, payload: &[u8]) -> Vec<u8> {
+/// A wasm CUSTOM section (id 0): its contents are `<name-len-uleb><name-bytes><payload>`. Reused by
+/// `compile` to append the component-level `cdz-result-type` run-wiring section (bytes-second).
+pub(crate) fn custom_section(name: &str, payload: &[u8]) -> Vec<u8> {
     let mut contents = Vec::new();
     uleb128(name.len() as u64, &mut contents);
     contents.extend_from_slice(name.as_bytes());

@@ -1087,6 +1087,64 @@ fn compile_with_opt_inner(
             }
         }
     }
+
+    // GUEST export RESULT-TYPE map (bytes-second run-wiring, `KIND_RESULT_TYPES`): surface each boundary
+    // export's COMPILED result type as a `<name>\t<Ty::render_name>` line so `cdz-run` can disambiguate a
+    // WIT-erased leaf at render (`render_val_typed` — a `list<u8>` as `Bytes` `b"…"` vs `List UInt8`
+    // `#list(…)`, a `string` as a `Symbol` `#"…"`). Computed HERE (db + layout still live; the db is dropped
+    // below) — `type_of` needs `&mut db`, so collect the Tys first, then render (`name_ctx` borrows `&db`).
+    if !layout.exports.is_empty() {
+        let export_tys: Vec<(String, crate::ty::Ty)> = layout
+            .exports
+            .iter()
+            .map(|e| (e.name.clone(), crate::infer::type_of(&mut db, e.body)))
+            .collect();
+        let ncx = db.name_ctx();
+        let map_lines: Vec<String> = export_tys
+            .iter()
+            .map(|(name, ty)| format!("{}\t{}", name, ty.render_name(&ncx)))
+            .collect();
+        let map_bytes = map_lines.join("\n").into_bytes();
+        // Surface the map as a standalone artifact (an IN-PROCESS consumer reads it via `out.artifact`).
+        artifacts.push(Artifact::new(
+            Artifact::KIND_RESULT_TYPES,
+            program_name(&db),
+            map_bytes.clone(),
+        ));
+        // ALSO EMBED it as a COMPONENT-TOP-LEVEL custom section `cdz-result-type` (the run-wiring): the corpus
+        // gate is a multi-process pipe — it spawns the `cdz-run` BINARY over the component bytes, so no
+        // in-process artifact reaches it; the runner byte-scans this section from the piped component to
+        // disambiguate the WIT-erased leaves. A COMPONENT-level custom section (NOT inside a nested core
+        // module — those have their own id-0 customs a top-level scan must not false-match) that wasmtime
+        // ignores, appended to the finished component bytes (valid at the end of the top-level section
+        // sequence). See `cdz-run`'s `scan_result_type_section`.
+        //
+        // ONLY for a PLAIN single-component build (the corpus gate / `cdz run` — every request is a Query or
+        // a plain Emit): `layout.exports` describes THIS one component. The `EmitTests*` builds emit
+        // per-`@test`/per-file test components from per-file layout views — the whole-layout map would
+        // mis-describe them + appending it breaks the per-file byte-identity invariant
+        // (`emit_tests_per_file_..._byte_identical`); those run IN-PROCESS via `cdz test` anyway, and the
+        // typed-render cases are CORPUS cases (plain single-component builds).
+        let plain_build = requests
+            .iter()
+            .all(|r| matches!(r, sidecar::Request::Query(_) | sidecar::Request::Emit(_)));
+        let one_component = artifacts
+            .iter()
+            .filter(|a| a.kind == Target::Wasm.artifact_kind())
+            .count()
+            == 1;
+        if plain_build
+            && one_component
+            && let Some(comp) = artifacts
+                .iter_mut()
+                .find(|a| a.kind == Target::Wasm.artifact_kind())
+        {
+            let section =
+                crate::backend::wasm::dwarf::custom_section("cdz-result-type", &map_bytes);
+            comp.bytes.extend_from_slice(&section);
+        }
+    }
+
     CompileOutput {
         artifacts,
         diagnostics,
