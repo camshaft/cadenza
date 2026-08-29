@@ -10236,7 +10236,7 @@
       (handle St 3 ((get (u) s (resume s s)))
         (+ (St.get) (List.len xs))))
     (export main)))
-  (call main (: (list 1 2 3) (List UInt8)))
+  (call main (: #list(1 2 3) (List UInt8)))
   (output (: 6 Int64)))
 
 ; -- breaker batch 490→495 (2026-08-27): the cp4 arc, CLOSED. History: silent re-draw 170 (the

@@ -1979,7 +1979,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
                          #tuple((. p 0) #tuple((. p 1) (+ (. p 0) (. p 1))))))
               (export mk)))
-  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (tuple 10 (tuple 3 13)) (Tuple Int64 (Tuple Int64 Int64))))
   (live-objects known-leak 1))
 
@@ -2000,7 +2000,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
                          #tuple((. p 0) #tuple((. (. p 1) 0) (. (. p 1) 1)))))
               (export mk)))
-  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (live-objects known-leak 3))
 
@@ -3103,7 +3103,7 @@
            (A VARIABLE-LENGTH collection arg genuinely still needs runtime decode — out of scope.)")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
               (export mk)))
-  (call   mk (: (tuple 3 4) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(3 4) (Tuple Int64 Int64)))
   (output (: 7 Int64)))
 
 (case "a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary"
@@ -3114,7 +3114,7 @@
            in field order; the `record` head token is dropped by the runner's tuple-literal parser.)")
   (input  (do (def (mk) (fn ((: p (Record (: a Int64) (: b Int64)))) (+ (. p a) (. p b))))
               (export mk)))
-  (call   mk (: (record 3 4) (Record (: a Int64) (: b Int64))))
+  (call   mk (: #record(3 4) (Record (: a Int64) (: b Int64))))
   (output (: 7 Int64)))
 
 (case "a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)"
@@ -3124,7 +3124,7 @@
            → 123, proving the narrow-field extend path in `TupleArgRebuild`.")
   (input  (do (def (mk) (fn ((: p (Tuple Int32 Int32))) (+ (. p 0) (. p 1))))
               (export mk)))
-  (call   mk (: (tuple 100 23) (Tuple Int32 Int32)))
+  (call   mk (: #tuple(100 23) (Tuple Int32 Int32)))
   (output (: 123 Int32)))
 
 (case "a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)"
@@ -3138,7 +3138,7 @@
            `call(handle, (42, true))` → `(if (. p 1) (. p 0) 0)` = 42.")
   (input  (do (def (mk) (fn ((: p (Tuple Int32 Bool))) (if (. p 1) (. p 0) 0)))
               (export mk)))
-  (call   mk (: (tuple 42 true) (Tuple Int32 Bool)))
+  (call   mk (: #tuple(42 true) (Tuple Int32 Bool)))
   (output (: 42 Int32)))
 
 (case "a BOOL-field Tuple closure ARG, false discriminant"
@@ -3147,7 +3147,7 @@
            boundary (not a constant), on the same `(Tuple Int32 Bool)` closure arg.")
   (input  (do (def (mk) (fn ((: p (Tuple Int32 Bool))) (if (. p 1) (. p 0) 0)))
               (export mk)))
-  (call   mk (: (tuple 42 false) (Tuple Int32 Bool)))
+  (call   mk (: #tuple(42 false) (Tuple Int32 Bool)))
   (output (: 0 Int32)))
 
 (case "a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)"
@@ -3157,7 +3157,7 @@
            → `(. p 0)` = 2.5. Pins the Float-field box op alongside the Bool one.")
   (input  (do (def (mk) (fn ((: p (Tuple Float64 Float64))) (. p 0)))
               (export mk)))
-  (call   mk (: (tuple 2.5 9.0) (Tuple Float64 Float64)))
+  (call   mk (: #tuple(2.5 9.0) (Tuple Float64 Float64)))
   (output (: 2.5 Float64)))
 
 (case "a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)"
@@ -3167,7 +3167,7 @@
            Confirms a per-field mix of box ops all resolve.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Float64))) (. p 0)))
               (export mk)))
-  (call   mk (: (tuple 7 3.5) (Tuple Int64 Float64)))
+  (call   mk (: #tuple(7 3.5) (Tuple Int64 Float64)))
   (output (: 7 Int64)))
 
 (case "a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary"
@@ -3177,7 +3177,7 @@
            The make-forwarded capture cell and the rebuilt arg cell coexist in the one `call`.")
   (input  (do (def (mk (: k Int64)) (fn ((: p (Tuple Int64 Int64))) (+ (+ (. p 0) (. p 1)) k)))
               (export mk)))
-  (call   mk (: 10 Int64) (: (tuple 3 4) (Tuple Int64 Int64)))
+  (call   mk (: 10 Int64) (: #tuple(3 4) (Tuple Int64 Int64)))
   (output (: 17 Int64)))
 
 (case "MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`"
@@ -3191,7 +3191,7 @@
   (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
               (def (mk-diff) (fn ((: p (Tuple Int64 Int64))) (- (. p 0) (. p 1))))
               (export mk-sum) (export mk-diff)))
-  (call   mk-diff (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk-diff (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: 7 Int64)))
 
 (case "MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export"
@@ -3203,7 +3203,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
               (def (twice (: n Int64)) (* n 2))
               (export mk) (export twice)))
-  (call   mk (: (tuple 3 4) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(3 4) (Tuple Int64 Int64)))
   (output (: 7 Int64)))
 
 (case "MIXED: driving the PLAIN export alongside a Tuple-arg closure"
@@ -3226,7 +3226,7 @@
   (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
               (def (mk-eq) (fn ((: p (Tuple Int64 Int64))) (= (. p 0) (. p 1))))
               (export mk-sum) (export mk-eq)))
-  (call   mk-sum (: (tuple 3 4) (Tuple Int64 Int64)))
+  (call   mk-sum (: #tuple(3 4) (Tuple Int64 Int64)))
   (output (: 7 Int64))
   (live-objects known-leak 1))
 
@@ -3237,7 +3237,7 @@
   (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
               (def (mk-eq) (fn ((: p (Tuple Int64 Int64))) (= (. p 0) (. p 1))))
               (export mk-sum) (export mk-eq)))
-  (call   mk-eq (: (tuple 5 5) (Tuple Int64 Int64)))
+  (call   mk-eq (: #tuple(5 5) (Tuple Int64 Int64)))
   (output (: true Bool))
   (live-objects known-leak 1))
 
@@ -3256,7 +3256,7 @@
   (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
               (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) (. q 0)))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: 113 Int64))
   (live-objects known-leak 1))
 
@@ -3267,7 +3267,7 @@
   (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
               (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) (. q 0)))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: 5 Int64) (: (tuple 7 true) (Tuple Int64 Bool)))
+  (call   mk-b (: 5 Int64) (: #tuple(7 true) (Tuple Int64 Bool)))
   (output (: 7 Int64))
   (live-objects known-leak 1))
 
@@ -3279,7 +3279,7 @@
   (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
               (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) #list((. q 0) n)))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 1))
 
@@ -3290,7 +3290,7 @@
   (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
               (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) #list((. q 0) n)))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: 100 Int64) (: (tuple 7 true) (Tuple Int64 Bool)))
+  (call   mk-b (: 100 Int64) (: #tuple(7 true) (Tuple Int64 Bool)))
   (output (: #list(7 100) (List Int64)))
   (live-objects known-leak 1))
 
@@ -3307,7 +3307,7 @@
            `(5 6)`. Proves the tuple-arg rebuild threads through the byte-rope-result core + envelope.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. p 1))))))
               (export mk)))
-  (call   mk (: (tuple 5 6) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(5 6) (Tuple Int64 Int64)))
   (output (: (5 6) Bytes))
   (live-objects known-leak 1))
 
@@ -3327,7 +3327,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
                          #tuple((+ (. p 0) (. p 1)) (- (. p 0) (. p 1)))))
               (export mk)))
-  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (tuple 13 7) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
 
@@ -3339,7 +3339,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
                          #record((= sum (+ (. p 0) (. p 1))) (= diff (- (. p 0) (. p 1))))))
               (export mk)))
-  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (record (= diff 7) (= sum 13)) (Record (: diff Int64) (: sum Int64))))
   (live-objects known-leak 1))
 
@@ -3358,7 +3358,7 @@
            tuple-arg closure now composes with EVERY result shape.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))))
               (export mk)))
-  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(10 3) (List Int64)))
   (live-objects known-leak 1))
 
@@ -3370,7 +3370,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
                          ((. Map insert) ((. Map insert) #map() (. p 0) 100) (. p 1) 200)))
               (export mk)))
-  (call   mk (: (tuple 1 2) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(1 2) (Tuple Int64 Int64)))
   (output (: #map((= 1 100) (= 2 200)) (Map Int64 Int64)))
   (live-objects known-leak 1))
 
@@ -3381,7 +3381,7 @@
            byte-rope `call` for a String result (representationally identical to Bytes).")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (if (= (. p 0) (. p 1)) "eq" "ne")))
               (export mk)))
-  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(5 5) (Tuple Int64 Int64)))
   (output (: (101 113) Bytes))
   (live-objects known-leak 1))
 
@@ -3392,7 +3392,7 @@
            value-encode result path (distinct from the fixed-compound static-template path).")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (if (= (. p 0) (. p 1)) (Some (. p 0)) None)))
               (export mk)))
-  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(5 5) (Tuple Int64 Int64)))
   (output (: (: (Some 5) (Option Int64)) (Option Int64)))
   (live-objects known-leak 1))
 
@@ -3408,7 +3408,7 @@
   (input  (do (def (mk-fwd) (fn ((: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))))
               (def (mk-rev) (fn ((: p (Tuple Int64 Int64))) #list((. p 1) (. p 0))))
               (export mk-fwd) (export mk-rev)))
-  (call   mk-rev (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk-rev (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(3 10) (List Int64)))
   (live-objects known-leak 1))
 
@@ -3421,7 +3421,7 @@
               (def (mk-prod) (fn ((: p (Tuple Int64 Int64)))
                            #tuple((* (. p 0) (. p 1)) (. p 0))))
               (export mk-sum) (export mk-prod)))
-  (call   mk-sum (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk-sum (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (tuple 13 7) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
 
@@ -3437,7 +3437,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))))
               (def (twice (: n Int64)) (* n 2))
               (export mk) (export twice)))
-  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(10 3) (List Int64)))
   (live-objects known-leak 1))
 
@@ -3462,7 +3462,7 @@
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
               (def (two) 2)
               (export mk) (export two)))
-  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: 113 Int64)))
 
 (case "MIXED among-scalars: driving the PLAIN export alongside a scalar-then-Tuple closure"
@@ -3481,7 +3481,7 @@
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
               (def (two) 2)
               (export mk) (export two)))
-  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 1))
 
@@ -3493,7 +3493,7 @@
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #tuple(n (. p 0) (. p 1))))
               (def (two) 2)
               (export mk) (export two)))
-  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64)))
   (live-objects known-leak 1))
 
@@ -3511,7 +3511,7 @@
   (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))))
               (def (mk-b) (fn ((: p (Tuple Int64 Bool))) #list((. p 0))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk-a (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(10 3) (List Int64)))
   (live-objects known-leak 1))
 
@@ -3523,7 +3523,7 @@
   (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))))
               (def (mk-b) (fn ((: p (Tuple Int64 Bool))) #list((. p 0))))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: (tuple 7 true) (Tuple Int64 Bool)))
+  (call   mk-b (: #tuple(7 true) (Tuple Int64 Bool)))
   (output (: #list(7) (List Int64)))
   (live-objects known-leak 1))
 
@@ -3539,7 +3539,7 @@
            after the scalar — a prefix scalar + the rebuilt tuple.")
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
               (export mk)))
-  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: 113 Int64)))
 
 (case "a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)"
@@ -3548,7 +3548,7 @@
            `call(handle, (10, 3), 100)` → `p.0 + p.1 + n` = 113. Confirms the tuple + a suffix scalar.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: n Int64)) (+ (+ (. p 0) (. p 1)) n)))
               (export mk)))
-  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
+  (call   mk (: #tuple(10 3) (Tuple Int64 Int64)) (: 100 Int64))
   (output (: 113 Int64)))
 
 (case "a Tuple ARG BETWEEN two scalar args crosses the direct-call boundary (scalar, tuple, scalar)"
@@ -3559,7 +3559,7 @@
   (input  (do (def (mk) (fn ((: a Int64) (: p (Tuple Int64 Int64)) (: b Int64))
                          (+ (+ a (+ (. p 0) (. p 1))) b)))
               (export mk)))
-  (call   mk (: 1 Int64) (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
+  (call   mk (: 1 Int64) (: #tuple(10 3) (Tuple Int64 Int64)) (: 100 Int64))
   (output (: 114 Int64)))
 
 ; The tuple-among-scalars arg shape now composes with EVERY result shape on the SINGLE-export path: the shared
@@ -3574,7 +3574,7 @@
            → `(list 100 10 3)`. The among-scalars interleaving now reaches the list-result cores.")
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
               (export mk)))
-  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 1))
 
@@ -3584,7 +3584,7 @@
            Bytes out as `list<u8>`. `call(handle, 100, (10, 3))` → the bytes `(100 10 3)`.")
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. p 1))))))
               (export mk)))
-  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (100 10 3) Bytes))
   (live-objects known-leak 1))
 
@@ -3595,7 +3595,7 @@
            3))` → `(tuple 100 10 3)`, decoded by the host to the typed document.")
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #tuple(n (. p 0) (. p 1))))
               (export mk)))
-  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64)))
   (live-objects known-leak 1))
 
@@ -3606,7 +3606,7 @@
            Confirms the interleaving handles a suffix scalar on the list-result path too.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: n Int64)) #list((. p 0) (. p 1) n)))
               (export mk)))
-  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
+  (call   mk (: #tuple(10 3) (Tuple Int64 Int64)) (: 100 Int64))
   (output (: #list(10 3 100) (List Int64)))
   (live-objects known-leak 1))
 
@@ -3621,7 +3621,7 @@
            into the cell. `call(handle, 100, (record (x 10) (y 3)))` → `n + r.x + r.y` = 113.")
   (input  (do (def (mk) (fn ((: n Int64) (: r (Record (: x Int64) (: y Int64)))) (+ n (+ (. r x) (. r y)))))
               (export mk)))
-  (call   mk (: 100 Int64) (: (record (= x 10) (= y 3)) (Record (: x Int64) (: y Int64))))
+  (call   mk (: 100 Int64) (: #record((= x 10) (= y 3)) (Record (: x Int64) (: y Int64))))
   (output (: 113 Int64)))
 
 (case "a SOLE RECORD closure ARG crosses the direct-call boundary"
@@ -3629,7 +3629,7 @@
            to `tuple<s64,s64>`, rebuilt in the `call`. `call(handle, (record (a 10) (b 3)))` → `r.a + r.b` = 13.")
   (input  (do (def (mk) (fn ((: r (Record (: a Int64) (: b Int64)))) (+ (. r a) (. r b))))
               (export mk)))
-  (call   mk (: (record (= a 10) (= b 3)) (Record (: a Int64) (: b Int64))))
+  (call   mk (: #record((= a 10) (= b 3)) (Record (: a Int64) (: b Int64))))
   (output (: 13 Int64)))
 
 (case "a RECORD closure ARG whose fields are NOT in sorted source order"
@@ -3639,7 +3639,7 @@
            `r.z - r.a` = 97 (proving the sorted-field round-trip is sound, not a coincidental positional match).")
   (input  (do (def (mk) (fn ((: r (Record (: z Int64) (: a Int64)))) (- (. r z) (. r a))))
               (export mk)))
-  (call   mk (: (record (= z 100) (= a 3)) (Record (: z Int64) (: a Int64))))
+  (call   mk (: #record((= z 100) (= a 3)) (Record (: z Int64) (: a Int64))))
   (output (: 97 Int64)))
 
 (case "a RECORD closure ARG with a narrow Bool field, among scalars"
@@ -3648,7 +3648,7 @@
            (flag true)))` → `if r.flag then n + r.v else n` = 110.")
   (input  (do (def (mk) (fn ((: n Int64) (: r (Record (: v Int64) (: flag Bool)))) (if (. r flag) (+ n (. r v)) n)))
               (export mk)))
-  (call   mk (: 100 Int64) (: (record (= v 10) (= flag true)) (Record (: v Int64) (: flag Bool))))
+  (call   mk (: 100 Int64) (: #record((= v 10) (= flag true)) (Record (: v Int64) (: flag Bool))))
   (output (: 110 Int64)))
 
 (case "a RECORD closure ARG with a LIST result"
@@ -3657,7 +3657,7 @@
            `call(handle, 100, (record (x 10) (y 3)))` → `(list 100 10 3)`.")
   (input  (do (def (mk) (fn ((: n Int64) (: r (Record (: x Int64) (: y Int64)))) #list(n (. r x) (. r y))))
               (export mk)))
-  (call   mk (: 100 Int64) (: (record (= x 10) (= y 3)) (Record (: x Int64) (: y Int64))))
+  (call   mk (: 100 Int64) (: #record((= x 10) (= y 3)) (Record (: x Int64) (: y Int64))))
   (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 1))
 
@@ -3667,7 +3667,7 @@
   (input  (do (def (mk-a) (fn ((: r (Record (: x Int64) (: y Int64)))) (+ (. r x) (. r y))))
               (def (mk-b) (fn ((: r (Record (: x Int64) (: y Int64)))) (- (. r x) (. r y))))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: (record (= x 10) (= y 3)) (Record (: x Int64) (: y Int64))))
+  (call   mk-b (: #record((= x 10) (= y 3)) (Record (: x Int64) (: y Int64))))
   (output (: 7 Int64)))
 
 ; A NESTED fixed-shape compound ARG — a tuple/record whose FIELD is itself a tuple/record — crosses the
@@ -3685,7 +3685,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
                          (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1)))))
               (export mk)))
-  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 113 Int64))
   (live-objects known-leak 2))
 
@@ -3696,7 +3696,7 @@
   (input  (do (def (mk) (fn ((: r (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
                          (+ (. r n) (+ (. (. r inner) x) (. (. r inner) y)))))
               (export mk)))
-  (call   mk (: (record (= n 100) (= inner (record (= x 10) (= y 3))))
+  (call   mk (: #record((= n 100) (= inner #record((= x 10) (= y 3))))
                 (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
   (output (: 113 Int64))
   (live-objects known-leak 2))
@@ -3708,7 +3708,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Record (: x Int64) (: y Int64)))))
                          (+ (. p 0) (+ (. (. p 1) x) (. (. p 1) y)))))
               (export mk)))
-  (call   mk (: (tuple 100 (record (= x 10) (= y 3))) (Tuple Int64 (Record (: x Int64) (: y Int64)))))
+  (call   mk (: #tuple(100 #record((= x 10) (= y 3))) (Tuple Int64 (Record (: x Int64) (: y Int64)))))
   (output (: 113 Int64))
   (live-objects known-leak 2))
 
@@ -3719,7 +3719,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 (Tuple Int64 Int64)))))
                          (+ (. p 0) (+ (. (. p 1) 0) (+ (. (. (. p 1) 1) 0) (. (. (. p 1) 1) 1))))))
               (export mk)))
-  (call   mk (: (tuple 1000 (tuple 100 (tuple 10 3)))
+  (call   mk (: #tuple(1000 #tuple(100 #tuple(10 3)))
                 (Tuple Int64 (Tuple Int64 (Tuple Int64 Int64)))))
   (output (: 1113 Int64))
   (live-objects known-leak 3))
@@ -3731,7 +3731,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Bool))))
                          (if (. (. p 1) 1) (+ (. p 0) (. (. p 1) 0)) (. p 0))))
               (export mk)))
-  (call   mk (: (tuple 100 (tuple 10 true)) (Tuple Int64 (Tuple Int64 Bool))))
+  (call   mk (: #tuple(100 #tuple(10 true)) (Tuple Int64 (Tuple Int64 Bool))))
   (output (: 110 Int64))
   (live-objects known-leak 2))
 
@@ -3742,7 +3742,7 @@
   (input  (do (def (mk) (fn ((: r (Record (: n Int64) (: pair (Tuple Int64 Int64)))))
                          (+ (. r n) (+ (. (. r pair) 0) (. (. r pair) 1)))))
               (export mk)))
-  (call   mk (: (record (= n 100) (= pair (tuple 10 3)))
+  (call   mk (: #record((= n 100) (= pair #tuple(10 3)))
                 (Record (: n Int64) (: pair (Tuple Int64 Int64)))))
   (output (: 113 Int64))
   (live-objects known-leak 2))
@@ -3754,7 +3754,7 @@
   (input  (do (def (mk) (fn ((: r (Record (: a Int64) (: b (Record (: c Int64) (: d (Record (: e Int64) (: f Int64))))))))
                          (+ (. r a) (+ (. (. r b) c) (+ (. (. (. r b) d) e) (. (. (. r b) d) f))))))
               (export mk)))
-  (call   mk (: (record (= a 1000) (= b (record (= c 100) (= d (record (= e 10) (= f 3))))))
+  (call   mk (: #record((= a 1000) (= b #record((= c 100) (= d #record((= e 10) (= f 3))))))
                 (Record (: a Int64) (: b (Record (: c Int64) (: d (Record (: e Int64) (: f Int64))))))))
   (output (: 1113 Int64))
   (live-objects known-leak 3))
@@ -3770,7 +3770,7 @@
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 (Tuple Int64 Int64))))
                          (+ n (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))))
               (export mk)))
-  (call   mk (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 1113 Int64))
   (live-objects known-leak 2))
 
@@ -3781,7 +3781,7 @@
   (input  (do (def (mk) (fn ((: a Int64) (: p (Tuple Int64 (Tuple Int64 Int64))) (: c Int64))
                          (+ (+ a c) (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))))
               (export mk)))
-  (call   mk (: 1 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))) (: 1000 Int64))
+  (call   mk (: 1 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))) (: 1000 Int64))
   (output (: 1114 Int64))
   (live-objects known-leak 2))
 
@@ -3793,7 +3793,7 @@
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 (Tuple Int64 Int64))))
                          #list(n (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (export mk)))
-  (call   mk (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(1000 100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
@@ -3809,7 +3809,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
                          #list((. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (export mk)))
-  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
@@ -3820,7 +3820,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
                          (bin (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. (. p 1) 0))) (u8 (UInt8.wrap (. (. p 1) 1))))))
               (export mk)))
-  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (100 10 3) Bytes))
   (live-objects known-leak 3))
 
@@ -3831,7 +3831,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
                          #tuple((. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (export mk)))
-  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64)))
   (live-objects known-leak 3))
 
@@ -3842,7 +3842,7 @@
   (input  (do (def (mk) (fn ((: r (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
                          #list((. r n) (. (. r inner) x) (. (. r inner) y))))
               (export mk)))
-  (call   mk (: (record (= n 100) (= inner (record (= x 10) (= y 3))))
+  (call   mk (: #record((= n 100) (= inner #record((= x 10) (= y 3))))
                 (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
   (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 3))
@@ -3861,7 +3861,7 @@
               (def (mk-b) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
                            (- (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1)))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk-a (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 113 Int64))
   (live-objects known-leak 2))
 
@@ -3874,7 +3874,7 @@
               (def (mk-b) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
                            (- (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1)))))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk-b (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 87 Int64))
   (live-objects known-leak 2))
 
@@ -3887,7 +3887,7 @@
               (def (mk-b) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
                            #list((. (. p 1) 1) (. (. p 1) 0) (. p 0))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk-a (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
@@ -3904,7 +3904,7 @@
                          (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1)))))
               (def (two) 2)
               (export mk) (export two)))
-  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 113 Int64))
   (live-objects known-leak 2))
 
@@ -3926,7 +3926,7 @@
                          #list((. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (def (two) 2)
               (export mk) (export two)))
-  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
@@ -3945,7 +3945,7 @@
               (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 (Tuple Int64 Int64))))
                            (- n (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk-a (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 1113 Int64))
   (live-objects known-leak 2))
 
@@ -3957,7 +3957,7 @@
               (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 (Tuple Int64 Int64))))
                            (- n (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk-b (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 887 Int64))
   (live-objects known-leak 2))
 
@@ -3969,7 +3969,7 @@
                          #list(n (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (def (two) 2)
               (export mk) (export two)))
-  (call   mk (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(1000 100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
@@ -3988,7 +3988,7 @@
               (def (mk-b) (fn ((: q (Tuple Int64 (Tuple Int64 Bool))))
                            (if (. (. q 1) 1) (+ (. q 0) (. (. q 1) 0)) (. q 0))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk-a (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 113 Int64))
   (live-objects known-leak 3))
 
@@ -4002,7 +4002,7 @@
               (def (mk-b) (fn ((: q (Tuple Int64 (Tuple Int64 Bool))))
                            (if (. (. q 1) 1) (+ (. q 0) (. (. q 1) 0)) (. q 0))))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: (tuple 100 (tuple 10 true)) (Tuple Int64 (Tuple Int64 Bool))))
+  (call   mk-b (: #tuple(100 #tuple(10 true)) (Tuple Int64 (Tuple Int64 Bool))))
   (output (: 110 Int64))
   (live-objects known-leak 3))
 
@@ -4015,7 +4015,7 @@
                            #list((. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (def (mk-b) (fn ((: q (Tuple Int64 (Tuple Int64 Bool)))) #list((. q 0))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk-a (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
@@ -4035,7 +4035,7 @@
               (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 (Tuple Int64 Bool))))
                            (if (. (. q 1) 1) (+ n (. q 0)) n)))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk-a (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 1113 Int64))
   (live-objects known-leak 3))
 
@@ -4048,7 +4048,7 @@
               (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 (Tuple Int64 Bool))))
                            (if (. (. q 1) 1) (+ n (. q 0)) n)))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: 1000 Int64) (: (tuple 100 (tuple 10 true)) (Tuple Int64 (Tuple Int64 Bool))))
+  (call   mk-b (: 1000 Int64) (: #tuple(100 #tuple(10 true)) (Tuple Int64 (Tuple Int64 Bool))))
   (output (: 1100 Int64))
   (live-objects known-leak 3))
 
@@ -4060,7 +4060,7 @@
                            #list(n (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 (Tuple Int64 Bool)))) #list(n (. q 0))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (call   mk-a (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(1000 100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
@@ -4073,7 +4073,7 @@
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64 Int64)))
                          (+ n (+ (. p 0) (+ (. p 1) (. p 2))))))
               (export mk)))
-  (call   mk (: 100 Int64) (: (tuple 10 3 1) (Tuple Int64 Int64 Int64)))
+  (call   mk (: 100 Int64) (: #tuple(10 3 1) (Tuple Int64 Int64 Int64)))
   (output (: 114 Int64)))
 
 (case "TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary"
@@ -4083,7 +4083,7 @@
   (input  (do (def (mk) (fn ((: a Int64) (: b Int64) (: p (Tuple Int64 Int64)) (: c Int64))
                          (+ (+ a b) (+ (+ (. p 0) (. p 1)) c))))
               (export mk)))
-  (call   mk (: 1 Int64) (: 2 Int64) (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
+  (call   mk (: 1 Int64) (: 2 Int64) (: #tuple(10 3) (Tuple Int64 Int64)) (: 100 Int64))
   (output (: 116 Int64)))
 
 ; The flatten/rebuild machinery is FIELD-TYPE agnostic: a tuple's fields may be FLOATS, mixed WIDTHS, or a
@@ -4095,7 +4095,7 @@
            core param). `call(handle, (1.5, 2.5))` → `p.0 + p.1` = 4.0. The field type need not be an integer.")
   (input  (do (def (mk) (fn ((: p (Tuple Float64 Float64))) (+ (. p 0) (. p 1))))
               (export mk)))
-  (call   mk (: (tuple 1.5 2.5) (Tuple Float64 Float64)))
+  (call   mk (: #tuple(1.5 2.5) (Tuple Float64 Float64)))
   (output (: 4.0 Float64)))
 
 (case "a Tuple ARG with a Bool field between Int64 fields crosses the direct-call boundary"
@@ -4103,7 +4103,7 @@
            it via `box-bool`). `call(handle, (10, true, 100))` → `if p.1 then p.0 + p.2 else p.2` = 110.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Bool Int64))) (if (. p 1) (+ (. p 0) (. p 2)) (. p 2))))
               (export mk)))
-  (call   mk (: (tuple 10 true 100) (Tuple Int64 Bool Int64)))
+  (call   mk (: #tuple(10 true 100) (Tuple Int64 Bool Int64)))
   (output (: 110 Int64)))
 
 (case "a Tuple ARG of MIXED widths (Int32, Int64) crosses the direct-call boundary"
@@ -4111,7 +4111,7 @@
            as its own aliased-width core param (Int32 → i32, Int64 → i64). `call(handle, (42, 100))` → `p.0` = 42.")
   (input  (do (def (mk) (fn ((: p (Tuple Int32 Int64))) (. p 0)))
               (export mk)))
-  (call   mk (: (tuple 42 100) (Tuple Int32 Int64)))
+  (call   mk (: #tuple(42 100) (Tuple Int32 Int64)))
   (output (: 42 Int32)))
 
 (case "a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)"
@@ -4122,7 +4122,7 @@
   (input  (do (type Pair (Mk (Tuple Int64 Int64)))
               (def (mk) (fn ((: p Pair)) (match p ((Mk t) (+ (. t 0) (. t 1))))))
               (export mk)))
-  (call   mk (: (tuple 10 3) Pair))
+  (call   mk (: #tuple(10 3) Pair))
   (output (: 13 Int64)))
 
 ; The tuple-among-scalars arg shape extends to the MULTI-EXPORT path — for EVERY result shape: N same-sig
@@ -4139,7 +4139,7 @@
   (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
               (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (- n (+ (. p 0) (. p 1)))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: 113 Int64)))
 
 (case "MULTI-EXPORT: driving the second among-scalars closure (subtract)"
@@ -4148,7 +4148,7 @@
   (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
               (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (- n (+ (. p 0) (. p 1)))))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk-b (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: 87 Int64)))
 
 (case "MULTI-EXPORT: among-scalars tuple arg with a LIST result (shared interleaving list-`call`)"
@@ -4159,7 +4159,7 @@
   (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
               (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list((. p 0) (. p 1) n)))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 1))
 
@@ -4170,7 +4170,7 @@
   (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
               (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list((. p 0) (. p 1) n)))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk-b (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(10 3 100) (List Int64)))
   (live-objects known-leak 1))
 
@@ -4181,7 +4181,7 @@
   (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. p 1))))))
               (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap (. p 0))))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (100 10 3) Bytes))
   (live-objects known-leak 1))
 
@@ -4193,7 +4193,7 @@
   (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #tuple(n (. p 0) (. p 1))))
               (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #tuple((. p 0) n (. p 1))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (call   mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64)))
   (live-objects known-leak 1))
 
@@ -4212,7 +4212,7 @@
            `call(handle, (5,5), (5,10))` → `5 + 10` = 15. The N-compound-args path with N=2.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
               (export mk)))
-  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 15 Int64)))
 
 (case "TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)"
@@ -4223,7 +4223,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: n Int64) (: q (Tuple Int64 Int64)))
                 (+ (+ (. p 0) n) (. q 1))))
               (export mk)))
-  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: 10 Int64) (: (tuple 1 20) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: 10 Int64) (: #tuple(1 20) (Tuple Int64 Int64)))
   (output (: 35 Int64)))
 
 (case "THREE Tuple args cross the direct-call boundary"
@@ -4234,8 +4234,8 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)) (: r (Tuple Int64 Int64)))
                 (+ (+ (. p 0) (. q 1)) (. r 0))))
               (export mk)))
-  (call   mk (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64))
-             (: (tuple 100 200) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(1 2) (Tuple Int64 Int64)) (: #tuple(3 4) (Tuple Int64 Int64))
+             (: #tuple(100 200) (Tuple Int64 Int64)))
   (output (: 105 Int64)))
 
 (case "a NESTED Tuple arg ALONGSIDE a flat Tuple arg"
@@ -4246,8 +4246,8 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))) (: q (Tuple Int64 Int64)))
                 (+ (. (. p 1) 0) (. q 1))))
               (export mk)))
-  (call   mk (: (tuple 1 (tuple 7 8)) (Tuple Int64 (Tuple Int64 Int64)))
-             (: (tuple 3 40) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(1 #tuple(7 8)) (Tuple Int64 (Tuple Int64 Int64)))
+             (: #tuple(3 40) (Tuple Int64 Int64)))
   (output (: 47 Int64)))
 
 (case "a CAPTURING closure taking TWO Tuple args"
@@ -4258,7 +4258,7 @@
   (input  (do (def (mk (: k Int64)) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
                 (+ (+ (. p 0) (. q 1)) k)))
               (export mk)))
-  (call   mk (: 100 Int64) (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk (: 100 Int64) (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 115 Int64)))
 
 (case "TWO Record args cross the direct-call boundary"
@@ -4269,8 +4269,8 @@
   (input  (do (def (mk) (fn ((: p (Record (: a Int64) (: b Int64))) (: q (Record (: a Int64) (: b Int64))))
                 (+ (. p a) (. q b))))
               (export mk)))
-  (call   mk (: (record (= a 5) (= b 5)) (Record (: a Int64) (: b Int64)))
-             (: (record (= a 5) (= b 10)) (Record (: a Int64) (: b Int64))))
+  (call   mk (: #record((= a 5) (= b 5)) (Record (: a Int64) (: b Int64)))
+             (: #record((= a 5) (= b 10)) (Record (: a Int64) (: b Int64))))
   (output (: 15 Int64)))
 
 ; N-COMPOUND-ARGS × LIST-RESULT: the N-compound-args path composes with EVERY closure RESULT shape that crosses
@@ -4287,7 +4287,7 @@
            → `(list 5 10)`. The N-compound-args path now reaches the collection-result core.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. q 1))))
               (export mk)))
-  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: #list(5 10) (List Int64)))
   (live-objects known-leak 1))
 
@@ -4297,7 +4297,7 @@
            the value-form template. `call(handle, (5,5), (5,10))` → `(tuple 5 10)`, decoded to the typed doc.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #tuple((. p 0) (. q 1))))
               (export mk)))
-  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: (tuple 5 10) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
 
@@ -4308,7 +4308,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
                 (bin (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. q 1))))))
               (export mk)))
-  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: (5 10) Bytes))
   (live-objects known-leak 1))
 
@@ -4320,8 +4320,8 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)) (: r (Tuple Int64 Int64)))
                 #list((. p 0) (. q 1) (. r 0))))
               (export mk)))
-  (call   mk (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64))
-             (: (tuple 100 200) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(1 2) (Tuple Int64 Int64)) (: #tuple(3 4) (Tuple Int64 Int64))
+             (: #tuple(100 200) (Tuple Int64 Int64)))
   (output (: #list(1 4 100) (List Int64)))
   (live-objects known-leak 1))
 
@@ -4333,7 +4333,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: n Int64) (: q (Tuple Int64 Int64)))
                 #list((. p 0) n (. q 1))))
               (export mk)))
-  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: 10 Int64) (: (tuple 1 20) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: 10 Int64) (: #tuple(1 20) (Tuple Int64 Int64)))
   (output (: #list(5 10 20) (List Int64)))
   (live-objects known-leak 1))
 
@@ -4345,7 +4345,7 @@
   (input  (do (def (mk (: k Int64)) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
                 #list((. p 0) (. q 1) k)))
               (export mk)))
-  (call   mk (: 100 Int64) (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk (: 100 Int64) (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: #list(5 10 100) (List Int64)))
   (live-objects known-leak 1))
 
@@ -4365,7 +4365,7 @@
   (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
               (def (mk-diff) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (- (. p 0) (. q 1))))
               (export mk-sum) (export mk-diff)))
-  (call   mk-diff (: (tuple 10 3) (Tuple Int64 Int64)) (: (tuple 1 2) (Tuple Int64 Int64)))
+  (call   mk-diff (: #tuple(10 3) (Tuple Int64 Int64)) (: #tuple(1 2) (Tuple Int64 Int64)))
   (output (: 8 Int64)))
 
 (case "MULTI-EXPORT: driving the FIRST two-Tuple-arg closure (add)"
@@ -4375,7 +4375,7 @@
   (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
               (def (mk-diff) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (- (. p 0) (. q 1))))
               (export mk-sum) (export mk-diff)))
-  (call   mk-sum (: (tuple 10 3) (Tuple Int64 Int64)) (: (tuple 1 2) (Tuple Int64 Int64)))
+  (call   mk-sum (: #tuple(10 3) (Tuple Int64 Int64)) (: #tuple(1 2) (Tuple Int64 Int64)))
   (output (: 12 Int64)))
 
 (case "MULTI-EXPORT: two same-sig closures each taking THREE Tuple args"
@@ -4388,8 +4388,8 @@
               (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)) (: r (Tuple Int64 Int64)))
                 (- (. p 0) (. r 1))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64))
-             (: (tuple 100 200) (Tuple Int64 Int64)))
+  (call   mk-a (: #tuple(1 2) (Tuple Int64 Int64)) (: #tuple(3 4) (Tuple Int64 Int64))
+             (: #tuple(100 200) (Tuple Int64 Int64)))
   (output (: 105 Int64)))
 
 (case "MULTI-EXPORT: two capturing closures each taking TWO Tuple args"
@@ -4402,7 +4402,7 @@
               (def (mk-b (: k Int64)) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
                 (- (. p 0) k)))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: 100 Int64) (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk-a (: 100 Int64) (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 115 Int64)))
 
 (case "MULTI-EXPORT: two Tuple args with a scalar BETWEEN them, shared `call`"
@@ -4415,7 +4415,7 @@
               (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: n Int64) (: q (Tuple Int64 Int64)))
                 (- (. p 0) n)))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: (tuple 5 5) (Tuple Int64 Int64)) (: 10 Int64) (: (tuple 1 20) (Tuple Int64 Int64)))
+  (call   mk-a (: #tuple(5 5) (Tuple Int64 Int64)) (: 10 Int64) (: #tuple(1 20) (Tuple Int64 Int64)))
   (output (: 35 Int64)))
 
 (case "MIXED: a TWO-Tuple-arg closure ALONGSIDE a plain (non-closure) export"
@@ -4426,7 +4426,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
               (def (twice (: n Int64)) (* n 2))
               (export mk) (export twice)))
-  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 15 Int64)))
 
 (case "MIXED: driving the PLAIN export alongside a two-Tuple-arg closure"
@@ -4447,8 +4447,8 @@
                 (+ (. (. p 1) 0) (. q 1))))
               (def (twice (: n Int64)) (* n 2))
               (export mk) (export twice)))
-  (call   mk (: (tuple 1 (tuple 7 8)) (Tuple Int64 (Tuple Int64 Int64)))
-             (: (tuple 3 40) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(1 #tuple(7 8)) (Tuple Int64 (Tuple Int64 Int64)))
+             (: #tuple(3 40) (Tuple Int64 Int64)))
   (output (: 47 Int64)))
 
 ; N-COMPOUND-ARGS × MULTI-EXPORT/MIXED × LIST-CROSSING RESULT: the ≥2-compound-arg path now reaches EVERY
@@ -4467,7 +4467,7 @@
   (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. q 1))))
               (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. q 1) (. p 0))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk-a (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: #list(5 10) (List Int64)))
   (live-objects known-leak 1))
 
@@ -4478,7 +4478,7 @@
   (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. q 1))))
               (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. q 1) (. p 0))))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk-b (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: #list(10 5) (List Int64)))
   (live-objects known-leak 1))
 
@@ -4489,7 +4489,7 @@
   (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #tuple((. p 0) (. q 1))))
               (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #tuple((. q 1) (. p 0))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk-a (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: (tuple 5 10) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
 
@@ -4501,7 +4501,7 @@
                 (bin (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. q 1))))))
               (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap (. p 1))))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk-a (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: (5 10) Bytes))
   (live-objects known-leak 1))
 
@@ -4515,8 +4515,8 @@
               (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)) (: r (Tuple Int64 Int64)))
                 #list((. r 1))))
               (export mk-a) (export mk-b)))
-  (call   mk-a (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64))
-             (: (tuple 100 200) (Tuple Int64 Int64)))
+  (call   mk-a (: #tuple(1 2) (Tuple Int64 Int64)) (: #tuple(3 4) (Tuple Int64 Int64))
+             (: #tuple(100 200) (Tuple Int64 Int64)))
   (output (: #list(1 4 100) (List Int64)))
   (live-objects known-leak 1))
 
@@ -4528,7 +4528,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. q 1))))
               (def (twice (: n Int64)) (* n 2))
               (export mk) (export twice)))
-  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: #list(5 10) (List Int64)))
   (live-objects known-leak 1))
 
@@ -4558,7 +4558,7 @@
   (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
               (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
               (export mk-i) (export mk-b)))
-  (call   mk-i (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk-i (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 15 Int64))
   (live-objects known-leak 1))
 
@@ -4569,7 +4569,7 @@
   (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
               (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
               (export mk-i) (export mk-b)))
-  (call   mk-b (: (tuple 10 3) (Tuple Int32 Int32)) (: (tuple 1 2) (Tuple Int32 Int32)))
+  (call   mk-b (: #tuple(10 3) (Tuple Int32 Int32)) (: #tuple(1 2) (Tuple Int32 Int32)))
   (output (: 8 Int32))
   (live-objects known-leak 1))
 
@@ -4581,7 +4581,7 @@
   (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
               (def (mk-b) (fn ((: p (Tuple Int32 Int32))) (- (. p 0) (. p 1))))
               (export mk-i) (export mk-b)))
-  (call   mk-i (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk-i (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 15 Int64))
   (live-objects known-leak 1))
 
@@ -4593,7 +4593,7 @@
   (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. q 1))))
               (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
               (export mk-i) (export mk-b)))
-  (call   mk-i (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk-i (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: #list(5 10) (List Int64)))
   (live-objects known-leak 1))
 
@@ -4607,7 +4607,7 @@
               (def (mk-b (: k Int32)) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32)))
                 (- (. p 0) k)))
               (export mk-i) (export mk-b)))
-  (call   mk-i (: 100 Int64) (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call   mk-i (: 100 Int64) (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 115 Int64))
   (live-objects known-leak 1))
 
@@ -4844,7 +4844,7 @@
   (input  (do (def (mk-o) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0))))
               (def (mk-t) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
               (export mk-o) (export mk-t)))
-  (call   mk-t (: (tuple 3 4) (Tuple Int64 Int64)))
+  (call   mk-t (: #tuple(3 4) (Tuple Int64 Int64)))
   (output (: 7 Int64))
   (live-objects known-leak 1))
 
@@ -4949,7 +4949,7 @@
            the payload tuple cell, matches `(Some p)`, and folds `p.0 + p.1` → 7.")
   (input  (do (def (mk) (fn ((: o (Option (Tuple Int64 Int64)))) (match o ((Some p) (+ (. p 0) (. p 1))) (None 0))))
               (export mk)))
-  (call   mk (: (Some (tuple 3 4)) (Option (Tuple Int64 Int64))))
+  (call   mk (: (Some #tuple(3 4)) (Option (Tuple Int64 Int64))))
   (output (: 7 Int64)))
 
 (case "COMPOUND SUM PAYLOAD: (Option (Tuple Int64 Int64)) arg, drive None"
@@ -4966,7 +4966,7 @@
            compile-time). Driving `Some({x:10, y:20})`: `r.x + r.y` → 30.")
   (input  (do (def (mk) (fn ((: o (Option (Record (: x Int64) (: y Int64))))) (match o ((Some r) (+ (. r x) (. r y))) (None -1))))
               (export mk)))
-  (call   mk (: (Some (record (= x 10) (= y 20))) (Option (Record (: x Int64) (: y Int64)))))
+  (call   mk (: (Some #record((= x 10) (= y 20))) (Option (Record (: x Int64) (: y Int64)))))
   (output (: 30 Int64)))
 
 (case "COMPOUND SUM PAYLOAD: (Option (Tuple Int64 (Tuple Int64 Int64))) — a NESTED tuple payload"
@@ -4975,7 +4975,7 @@
            recursively. Driving `Some((1,(2,3)))`: `p.0 + p.1.0 + p.1.1` → 6.")
   (input  (do (def (mk) (fn ((: o (Option (Tuple Int64 (Tuple Int64 Int64))))) (match o ((Some p) (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1)))) (None 0))))
               (export mk)))
-  (call   mk (: (Some (tuple 1 (tuple 2 3))) (Option (Tuple Int64 (Tuple Int64 Int64)))))
+  (call   mk (: (Some #tuple(1 #tuple(2 3))) (Option (Tuple Int64 (Tuple Int64 Int64)))))
   (output (: 6 Int64)))
 
 (case "COMPOUND SUM PAYLOAD: mixed-width tuple payload (Int32, Int64, Bool)"
@@ -4984,7 +4984,7 @@
            the bool/narrow-int leaves inside a compound sum payload.")
   (input  (do (def (mk) (fn ((: o (Option (Tuple Int32 Int64 Bool)))) (match o ((Some p) (if (. p 2) (. p 1) 0)) (None -1))))
               (export mk)))
-  (call   mk (: (Some (tuple 5 100 true)) (Option (Tuple Int32 Int64 Bool))))
+  (call   mk (: (Some #tuple(5 100 true)) (Option (Tuple Int32 Int64 Bool))))
   (output (: 100 Int64)))
 
 (case "COMPOUND SUM PAYLOAD: two same-sig Option-tuple closures share one call (multi-export)"
@@ -4993,7 +4993,7 @@
   (input  (do (def (mk-a) (fn ((: o (Option (Tuple Int64 Int64)))) (match o ((Some p) (+ (. p 0) (. p 1))) (None 0))))
               (def (mk-b) (fn ((: o (Option (Tuple Int64 Int64)))) (match o ((Some p) (* (. p 0) (. p 1))) (None 1))))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: (Some (tuple 6 7)) (Option (Tuple Int64 Int64))))
+  (call   mk-b (: (Some #tuple(6 7)) (Option (Tuple Int64 Int64))))
   (output (: 42 Int64)))
 
 (case "COMPOUND SUM PAYLOAD: an Option-tuple closure beside a scalar closure (distinct-sig)"
@@ -5003,7 +5003,7 @@
   (input  (do (def (mk-o) (fn ((: o (Option (Tuple Int64 Int64)))) (match o ((Some p) (+ (. p 0) (. p 1))) (None 0))))
               (def (mk-s) (fn ((: n Int64)) (* n 3)))
               (export mk-o) (export mk-s)))
-  (call   mk-o (: (Some (tuple 8 9)) (Option (Tuple Int64 Int64))))
+  (call   mk-o (: (Some #tuple(8 9)) (Option (Tuple Int64 Int64))))
   (output (: 17 Int64))
   (live-objects known-leak 1))
 
@@ -5027,7 +5027,7 @@
            the guest rebuilds the ok tuple cell, matches `(Ok p)`, folds `p.0 + p.1` → 7.")
   (input  (do (def (mk) (fn ((: r (Result (Tuple Int64 Int64) Int64))) (match r ((Ok p) (+ (. p 0) (. p 1))) ((Err e) (- 0 e)))))
               (export mk)))
-  (call   mk (: (Ok (tuple 3 4)) (Result (Tuple Int64 Int64) Int64)))
+  (call   mk (: (Ok #tuple(3 4)) (Result (Tuple Int64 Int64) Int64)))
   (output (: 7 Int64)))
 
 (case "COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Err (scalar side)"
@@ -5044,7 +5044,7 @@
            cell from both slots. Driving `Err((6,7))`: `q.0 * q.1` → 42.")
   (input  (do (def (mk) (fn ((: r (Result (Tuple Int64 Int64) (Tuple Int64 Int64)))) (match r ((Ok p) (+ (. p 0) (. p 1))) ((Err q) (* (. q 0) (. q 1))))))
               (export mk)))
-  (call   mk (: (Err (tuple 6 7)) (Result (Tuple Int64 Int64) (Tuple Int64 Int64))))
+  (call   mk (: (Err #tuple(6 7)) (Result (Tuple Int64 Int64) (Tuple Int64 Int64))))
   (output (: 42 Int64)))
 
 (case "COMPOUND RESULT PAYLOAD: (Result Int64 (Tuple Int64 Int64)) — the ERR side is compound"
@@ -5053,7 +5053,7 @@
            compound side may be either arm.")
   (input  (do (def (mk) (fn ((: r (Result Int64 (Tuple Int64 Int64)))) (match r ((Ok x) x) ((Err q) (+ (. q 0) (. q 1))))))
               (export mk)))
-  (call   mk (: (Err (tuple 10 20)) (Result Int64 (Tuple Int64 Int64))))
+  (call   mk (: (Err #tuple(10 20)) (Result Int64 (Tuple Int64 Int64))))
   (output (: 30 Int64)))
 
 (case "COMPOUND RESULT PAYLOAD: two same-sig closures share one call (multi-export)"
@@ -5062,7 +5062,7 @@
   (input  (do (def (mk-a) (fn ((: r (Result (Tuple Int64 Int64) Int64))) (match r ((Ok p) (+ (. p 0) (. p 1))) ((Err e) e))))
               (def (mk-b) (fn ((: r (Result (Tuple Int64 Int64) Int64))) (match r ((Ok p) (* (. p 0) (. p 1))) ((Err e) e))))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: (Ok (tuple 6 7)) (Result (Tuple Int64 Int64) Int64)))
+  (call   mk-b (: (Ok #tuple(6 7)) (Result (Tuple Int64 Int64) Int64)))
   (output (: 42 Int64)))
 
 (case "COMPOUND RESULT PAYLOAD: a compound-Result closure beside a scalar closure (distinct-sig)"
@@ -5072,7 +5072,7 @@
   (input  (do (def (mk-r) (fn ((: r (Result (Tuple Int64 Int64) Int64))) (match r ((Ok p) (+ (. p 0) (. p 1))) ((Err e) (- 0 e)))))
               (def (mk-s) (fn ((: n Int64)) (* n 3)))
               (export mk-r) (export mk-s)))
-  (call   mk-r (: (Ok (tuple 8 9)) (Result (Tuple Int64 Int64) Int64)))
+  (call   mk-r (: (Ok #tuple(8 9)) (Result (Tuple Int64 Int64) Int64)))
   (output (: 17 Int64))
   (live-objects known-leak 1))
 

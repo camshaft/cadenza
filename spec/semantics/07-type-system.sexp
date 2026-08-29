@@ -176,7 +176,7 @@
            companion of the bare-literal `(: 5 42)` case above. A value compound is not a type, so the
            annotation is meaningless and rejects CDZ0203 ('expected a type'), rather than being resolved as
            a value and silently dropped. (migrated from rcdzc a_non_type_in_a_type_annotation_position.)")
-  (input  (do (def (main) (: 5 (tuple 1 2))) (export main)))
+  (input  (do (def (main) (: 5 #tuple(1 2))) (export main)))
   (error  CDZ0203))
 
 (case "a non-constructor type applied to arguments in type position is rejected"
@@ -2195,7 +2195,7 @@
            the `Resolved::Set`/`Resolved::Map` literal nodes. A `#list` of functions stays legal (a list does
            not hash its elements) — only the set/map literals are gated.")
   (input  (do
-            (def (main) (Set.len ("set" (fn (x) (+ x 1)))))
+            (def (main) (Set.len #set((fn (x) (+ x 1)))))
             (export main)))
   (error  CDZ0216))
 
@@ -2441,7 +2441,7 @@
             (+ (* 10 (match (Map.lookup (. p 0) 1) ((Some v) v) ((None _u) -1)))
                (Map.len (. p 1)))))
         (export main)))
-  (module "base" (do (def (dup x) (tuple x x)) (export dup)))
+  (module "base" (do (def (dup x) #tuple(x x)) (export dup)))
   (module "mid" (do (import "base" (dup)) (export dup)))
   (call   main (: 5 Int64)) (output (: 51 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64)))

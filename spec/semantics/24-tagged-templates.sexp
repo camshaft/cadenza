@@ -567,7 +567,7 @@
     (do
       (def (wrap chunks holes)
         (match holes
-          ((list h) (Ast.List (list (Ast.Name "f") h)))
+          (#list(h) (Ast.List #list((Ast.Name "f") h)))
           (_ (Ast.Int -1))))
       (export wrap)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
@@ -632,7 +632,7 @@
     (do
       (def (wrap chunks holes)
         (match holes
-          ((list h) (Ast.List (list (Ast.Name "f") h)))
+          (#list(h) (Ast.List #list((Ast.Name "f") h)))
           (_ (Ast.Int -1))))
       (export wrap)))
   (module "mid" (do (import "tags" (wrap)) (export wrap)))

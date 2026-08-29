@@ -381,31 +381,31 @@
 ; "not an element pattern" decline it once gave. Migrated from rcdzc
 ; a_structural_pattern_over_a_mismatched_scrutinee_kind_is_a_type_error.
 (case "a list pattern over an Int64 scrutinee is a type error naming both kinds"
-  (input  (do (def (f (: n Int64)) (match n ((list a b) 0) (_ 0))) (export f)))
+  (input  (do (def (f (: n Int64)) (match n (#list(a b) 0) (_ 0))) (export f)))
   (error  CDZ0203 (message "a List value") (message "Int64")))
 
 (case "a list pattern over a String scrutinee is a type error"
-  (input  (do (def (f (: s String)) (match s ((list a b) 0) (_ 0))) (export f)))
+  (input  (do (def (f (: s String)) (match s (#list(a b) 0) (_ 0))) (export f)))
   (error  CDZ0203 (message "a List value")))
 
 (case "a map pattern over an Int64 scrutinee (definite) is a type error"
-  (input  (do (def (f (: n Int64)) (match n ((map (1 v)) v) (_ 0))) (export f)))
+  (input  (do (def (f (: n Int64)) (match n (#map((= 1 v)) v) (_ 0))) (export f)))
   (error  CDZ0203 (message "a Map value")))
 
 (case "a tuple pattern over an Int64 scrutinee is a type error"
-  (input  (do (def (f (: n Int64)) (match n ((tuple a b) 0) (_ 0))) (export f)))
+  (input  (do (def (f (: n Int64)) (match n (#tuple(a b) 0) (_ 0))) (export f)))
   (error  CDZ0203 (message "a Tuple value")))
 
 (case "a tuple pattern over a Map scrutinee is a type error"
-  (input  (do (def (f (: mm (Map Int64 Int64))) (match mm ((tuple a b) 0) (_ 0))) (export f)))
+  (input  (do (def (f (: mm (Map Int64 Int64))) (match mm (#tuple(a b) 0) (_ 0))) (export f)))
   (error  CDZ0203 (message "a Tuple value")))
 
 (case "a list pattern over a Map scrutinee is a type error"
-  (input  (do (def (f (: mm (Map Int64 Int64))) (match mm ((list a b) 0) (_ 0))) (export f)))
+  (input  (do (def (f (: mm (Map Int64 Int64))) (match mm (#list(a b) 0) (_ 0))) (export f)))
   (error  CDZ0203 (message "a List value")))
 
 (case "a list pattern over its matching List scrutinee kind is valid and matches (no over-rejection)"
-  (input  (do (def (main) (match (list 1 2) ((list a b) a) (_ 0))) (export main)))
+  (input  (do (def (main) (match #list(1 2) (#list(a b) a) (_ 0))) (export main)))
   (call   main) (output (: 1 Int64)))
 
 (case "a map pattern over its matching Map scrutinee kind is valid and matches (no over-rejection)"
@@ -413,7 +413,7 @@
   (call   main) (output (: 10 Int64)))
 
 (case "a tuple pattern over its matching Tuple scrutinee kind is valid and matches (no over-rejection)"
-  (input  (do (def (main) (match (tuple 3 4) ((tuple a b) (+ a b)))) (export main)))
+  (input  (do (def (main) (match #tuple(3 4) (#tuple(a b) (+ a b)))) (export main)))
   (call   main) (output (: 7 Int64)))
 
 ; A `(map (k v)…)` pattern tests only that the NAMED keys are PRESENT (it is refutable on key-presence, not
@@ -3510,7 +3510,7 @@
                 (_ 0)))
             (def (fl (: elems (List Ast)))
               (match elems (#list() 0) (#list(h .. r) (+ (fc h) (fl r)))))
-            (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
+            (def (main) (fc ((. Ast List) #list(((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
   (live-objects known-leak 1))
@@ -3551,7 +3551,7 @@
                 (_ 0)))
             (def (fl (: elems (List Ast)))
               (match elems (#list() 0) (#list(h .. r) (+ (fc h) (fl r)))))
-            (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
+            (def (main) (fc ((. Ast List) #list(((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
   (live-objects 0))
@@ -5412,7 +5412,7 @@
   (doc    "The tag does NOT swallow the closed-record check: `.z` on a newtype over `(Record (x …))` rejects
            CDZ0212 (absent-record-field) exactly as it would on the bare record — seeing through the tag
            reaches the SAME field-set validation.")
-  (input  (do (type UserId (Mk (Record (: x Int64)))) (def (main) (. (UserId.Mk (record (= x 1))) z)) (export main)))
+  (input  (do (type UserId (Mk (Record (: x Int64)))) (def (main) (. (UserId.Mk #record((= x 1))) z)) (export main)))
   (error  CDZ0212))
 
 (case "a wrong-constructor pattern over a newtype scrutinee is a type error"
@@ -6477,38 +6477,38 @@
 ; non-exhaustive. Migrated from rcdzc a_bool_list_match_missing_a_lead_value_or_the_empty_arm_still_rejects +
 ; a_sum_list_payload_with_an_uncovered_length_still_rejects + a_ctor_list_match_missing_a_variant_or_the_empty_arm_still_rejects.
 (case "a bool-lead list match covering only one bool value still rejects (the other first-element value is uncovered)"
-  (input  (do (def (f (: xs (List Bool))) (match xs ((list) 0) ((list true .. r) 1)))
-              (def (main) (f (list true))) (export main)))
+  (input  (do (def (f (: xs (List Bool))) (match xs (#list() 0) (#list(true .. r) 1)))
+              (def (main) (f #list(true))) (export main)))
   (error  CDZ0210))
 
 (case "a bool-lead-saturating list match with no empty arm still rejects (length 0 uncovered)"
-  (input  (do (def (f (: xs (List Bool))) (match xs ((list true .. r) 1) ((list false .. r) 2)))
-              (def (main) (f (list true))) (export main)))
+  (input  (do (def (f (: xs (List Bool))) (match xs (#list(true .. r) 1) (#list(false .. r) 2)))
+              (def (main) (f #list(true))) (export main)))
   (error  CDZ0210))
 
 (case "a sum-payload list match with only the non-empty arm still rejects (length 0 uncovered)"
-  (input  (do (type Box (Bx (List Int64))) (def (f (: b Box)) (match b ((Bx (list x .. _r)) x)))
-              (def (main) (f (Bx (list 7)))) (export main)))
+  (input  (do (type Box (Bx (List Int64))) (def (f (: b Box)) (match b ((Bx #list(x .. _r)) x)))
+              (def (main) (f (Bx #list(7)))) (export main)))
   (error  CDZ0210))
 
 (case "a sum-payload list match with exact-0 and at-least-2 arms still rejects (length 1 is a gap)"
-  (input  (do (type Box (Bx (List Int64))) (def (f (: b Box)) (match b ((Bx (list)) 0) ((Bx (list a b .. _r)) a)))
-              (def (main) (f (Bx (list 7)))) (export main)))
+  (input  (do (type Box (Bx (List Int64))) (def (f (: b Box)) (match b ((Bx #list()) 0) ((Bx #list(a b .. _r)) a)))
+              (def (main) (f (Bx #list(7)))) (export main)))
   (error  CDZ0210))
 
 (case "an Option-of-list match covering only Some still rejects (the None sibling is uncovered)"
-  (input  (do (def (f (: o (Option (List Int64)))) (match o ((Some (list)) 0) ((Some (list x .. _r)) x)))
-              (def (main) (f (Some (list 7)))) (export main)))
+  (input  (do (def (f (: o (Option (List Int64)))) (match o ((Some #list()) 0) ((Some #list(x .. _r)) x)))
+              (def (main) (f (Some #list(7)))) (export main)))
   (error  CDZ0210))
 
 (case "a ctor-lead list match missing a variant still rejects (that first-element value is uncovered)"
-  (input  (do (type C (R) (G) (B)) (def (f (: xs (List C))) (match xs ((list) 0) ((list (R) .. _r) 1) ((list (G) .. _r) 2)))
-              (def (main) (f (list (R)))) (export main)))
+  (input  (do (type C (R) (G) (B)) (def (f (: xs (List C))) (match xs (#list() 0) (#list((R) .. _r) 1) (#list((G) .. _r) 2)))
+              (def (main) (f #list((R)))) (export main)))
   (error  CDZ0210))
 
 (case "a ctor-lead-saturating list match with no empty arm still rejects (length 0 uncovered)"
-  (input  (do (def (f (: xs (List (Option Int64)))) (match xs ((list (Some x) .. _r) x) ((list (None) .. _r) 99)))
-              (def (main) (f (list (None)))) (export main)))
+  (input  (do (def (f (: xs (List (Option Int64)))) (match xs (#list((Some x) .. _r) x) (#list((None) .. _r) 99)))
+              (def (main) (f #list((None)))) (export main)))
   (error  CDZ0210))
 
 (case "a leading nested-list element dispatches on the inner list's length"
@@ -16086,11 +16086,11 @@
 ; runtime, and no-over-rejection cases; the diagnostic also anchors the squiggle at the offending key — a
 ; node-position refinement the corpus (error …) surface does not pin).
 (case "a map pattern with a wrong-type (String) key on an Int-keyed map is a type error"
-  (input  (do (def (main) (match (map (1 10) (2 20)) ((map ("x" v)) v) (_ 0))) (export main)))
+  (input  (do (def (main) (match #map((= 1 10) (= 2 20)) (#map((= "x" v)) v) (_ 0))) (export main)))
   (error  CDZ0201 (message "map-pattern key is String") (message "the map's keys are Int64")))
 
 (case "a map pattern with a wrong-type (Int) key on a String-keyed map is a type error (symmetric)"
-  (input  (do (def (main) (match (map ("a" 10)) ((map (5 v)) v) (_ 0))) (export main)))
+  (input  (do (def (main) (match #map((= "a" 10)) (#map((= 5 v)) v) (_ 0))) (export main)))
   (error  CDZ0201))
 
 (case "a correctly-typed map-pattern key compiles and matches (no over-rejection)"
@@ -16102,7 +16102,7 @@
            desugar path; a wrong-type key there once slipped the const-path key check. The key check now runs
            at the top of lower_match_map, before the desugar, so a runtime map's wrong-type key rejects too.")
   (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.empty) 1 10) (Map.insert (Map.empty) 2 20)))
-              (def (look (: m (Map Int64 Int64))) (match m ((map ("x" v) .. rest) v) (_ -1)))
+              (def (look (: m (Map Int64 Int64))) (match m (#map((= "x" v) .. rest) v) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (error  CDZ0201))
 
@@ -16560,7 +16560,7 @@
            cell before running the body — so `main((tuple 7 9)) = (list 7 9)`. Closes the compound-PARAM
            side of the heap-return boundary (a scalar param already worked); the value is a runtime List.")
   (input  (do (def (main (: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))) (export main)))
-  (call   main (: (tuple 7 9) (Tuple Int64 Int64)))
+  (call   main (: #tuple(7 9) (Tuple Int64 Int64)))
   (output (: #list(7 9) (List Int64)))
   (live-objects known-leak 3))
 
@@ -16568,7 +16568,7 @@
   (doc    "`main((tuple 5000000000 6000000000)) = 5e9 + 6e9 = 11000000000` as a BigInt — a heap numeric
            value computed from a tuple parameter's fields, past Int64's reach.")
   (input  (do (def (main (: p (Tuple Int64 Int64))) (+ (BigInt.of (. p 0)) (BigInt.of (. p 1)))) (export main)))
-  (call   main (: (tuple 5000000000 6000000000) (Tuple Int64 Int64)))
+  (call   main (: #tuple(5000000000 6000000000) (Tuple Int64 Int64)))
   (output (: 11000000000 BigInt))
   (live-objects known-leak 4))
 
@@ -16576,7 +16576,7 @@
   (doc    "A RECORD parameter crosses as a `tuple<…>` in canonical sorted-key order; `main((record (x 3)
            (y 8))) = (tuple 8 3)` swaps the fields. Proves the record-param + tuple-result compound path.")
   (input  (do (def (main (: p (Record (: x Int64) (: y Int64)))) #tuple((. p y) (. p x))) (export main)))
-  (call   main (: (record (= x 3) (= y 8)) (Record (: x Int64) (: y Int64))))
+  (call   main (: #record((= x 3) (= y 8)) (Record (: x Int64) (: y Int64))))
   (output (: (tuple 8 3) (Tuple Int64 Int64)))
   (live-objects known-leak 2))
 
@@ -16585,7 +16585,7 @@
            native `tuple<…>` the ABI flattens, rebuilt in-guest) compose in one export. `main(5, (tuple 7
            9)) = (list 5 7 9)` draws from both — the scalar directly, the tuple's fields rebuilt.")
   (input  (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) #list(a (. p 0) (. p 1))) (export main)))
-  (call   main (: 5 Int64) (: (tuple 7 9) (Tuple Int64 Int64)))
+  (call   main (: 5 Int64) (: #tuple(7 9) (Tuple Int64 Int64)))
   (output (: #list(5 7 9) (List Int64)))
   (live-objects known-leak 3))
 
@@ -16594,7 +16594,7 @@
            20 30), 40) = (list 20 30 40)` — the leaf cursor threads the tuple's flattened fields then the
            trailing scalar.")
   (input  (do (def (main (: p (Tuple Int64 Int64)) (: a Int64)) #list((. p 0) (. p 1) a)) (export main)))
-  (call   main (: (tuple 20 30) (Tuple Int64 Int64)) (: 40 Int64))
+  (call   main (: #tuple(20 30) (Tuple Int64 Int64)) (: 40 Int64))
   (output (: #list(20 30 40) (List Int64)))
   (live-objects known-leak 3))
 
@@ -16603,7 +16603,7 @@
            envelope mints one type per compound), each rebuilt from its own run of flattened leaves.
            `main((tuple 1 2), (tuple 3 4)) = (list 1 2 3 4)`.")
   (input  (do (def (main (: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. p 1) (. q 0) (. q 1))) (export main)))
-  (call   main (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64)))
+  (call   main (: #tuple(1 2) (Tuple Int64 Int64)) (: #tuple(3 4) (Tuple Int64 Int64)))
   (output (: #list(1 2 3 4) (List Int64)))
   (live-objects known-leak 4))
 
@@ -16611,7 +16611,7 @@
   (doc    "The mixed-param compound path composes with a BigInt result: `main(1e9, (tuple 2e9 3e9)) =
            1e9 + 2e9 + 3e9 = 6000000000`, past Int64, from a scalar and a tuple parameter.")
   (input  (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) (+ (BigInt.of a) (+ (BigInt.of (. p 0)) (BigInt.of (. p 1))))) (export main)))
-  (call   main (: 1000000000 Int64) (: (tuple 2000000000 3000000000) (Tuple Int64 Int64)))
+  (call   main (: 1000000000 Int64) (: #tuple(2000000000 3000000000) (Tuple Int64 Int64)))
   (output (: 6000000000 BigInt))
   (live-objects known-leak 4))
 
@@ -16621,7 +16621,7 @@
            which `make` rebuilds into the nested cell (recursive `FieldRebuild`). `main((tuple (tuple 1 2)
            3)) = (list 1 2 3)`.")
   (input  (do (def (main (: p (Tuple (Tuple Int64 Int64) Int64))) #list((. (. p 0) 0) (. (. p 0) 1) (. p 1))) (export main)))
-  (call   main (: (tuple (tuple 1 2) 3) (Tuple (Tuple Int64 Int64) Int64)))
+  (call   main (: #tuple(#tuple(1 2) 3) (Tuple (Tuple Int64 Int64) Int64)))
   (output (: #list(1 2 3) (List Int64)))
   (live-objects known-leak 4))
 
@@ -16629,7 +16629,7 @@
   (doc    "A record whose field is a tuple is likewise a nested fixed-shape compound; its fields cross in
            canonical sorted-key order. `main((record (pt (tuple 10 20)) (n 30))) = (list 10 20 30)`.")
   (input  (do (def (main (: p (Record (: pt (Tuple Int64 Int64)) (: n Int64)))) #list((. (. p pt) 0) (. (. p pt) 1) (. p n))) (export main)))
-  (call   main (: (record (= pt (tuple 10 20)) (= n 30)) (Record (: pt (Tuple Int64 Int64)) (: n Int64))))
+  (call   main (: #record((= pt #tuple(10 20)) (= n 30)) (Record (: pt (Tuple Int64 Int64)) (: n Int64))))
   (output (: #list(10 20 30) (List Int64)))
   (live-objects known-leak 4))
 
@@ -16637,7 +16637,7 @@
   (doc    "A nested compound composes with a scalar param: `main(9, (tuple (tuple 5 6) 7)) = (list 9 5 7)`
            — the scalar leaf, then the nested tuple's depth-first leaves, rebuilt.")
   (input  (do (def (main (: a Int64) (: p (Tuple (Tuple Int64 Int64) Int64))) #list(a (. (. p 0) 0) (. p 1))) (export main)))
-  (call   main (: 9 Int64) (: (tuple (tuple 5 6) 7) (Tuple (Tuple Int64 Int64) Int64)))
+  (call   main (: 9 Int64) (: #tuple(#tuple(5 6) 7) (Tuple (Tuple Int64 Int64) Int64)))
   (output (: #list(9 5 7) (List Int64)))
   (live-objects known-leak 4))
 
@@ -24135,7 +24135,7 @@
   (error CDZ0201 (message "a map entry is a (key value) pair") (fix (kind delete))))
 
 (case "a surplus map entry (primitive form) carries a delete-the-surplus fix"
-  (input (do (def (main) ("map" (1 2 3))) (export main)))
+  (input (do (def (main) #map((1 2 3))) (export main)))
   (error CDZ0201 (message "a map entry is a (key value) pair") (fix (kind delete))))
 
 (case "a too-few record field element carries NO delete fix"
@@ -24159,7 +24159,7 @@
         over-reach freed the shared child (UAF). Both arms concat the binder (left/right positions);
         values and a fully-clean reclaim (live 0) on both branches.")
   (input (do
-    (def (main (: n Int64)) (do (def b (list n 2)) (List.len (if (> n 0) (List.concat b (list 3)) (List.concat (list 0) b)))))
+    (def (main (: n Int64)) (do (def b #list(n 2)) (List.len (if (> n 0) (List.concat b #list(3)) (List.concat #list(0) b)))))
     (export main)))
   (call main (: 7 Int64)) (output (: 3 Int64))
   (call main (: -1 Int64)) (output (: 3 Int64))
@@ -24170,7 +24170,7 @@
         #5382 predicate keeps the skip and the reclaim stays tight (live 0) — the narrowing must not
         over-retain the sound family.")
   (input (do
-    (def (main (: n Int64)) (do (def b (list n 2 9)) (List.len (if (> n 0) (List.push b 7) (List.update b 1 5)))))
+    (def (main (: n Int64)) (do (def b #list(n 2 9)) (List.len (if (> n 0) (List.push b 7) (List.update b 1 5)))))
     (export main)))
   (call main (: 7 Int64)) (output (: 4 Int64))
   (call main (: -1 Int64)) (output (: 3 Int64))
@@ -24192,7 +24192,7 @@
         sibling) — pre-fix the let-drop elision double-freed r1. Values = the branch-selected lengths
         (1/2) with a fully-clean reclaim (live 0) on both branches.")
   (input (do
-    (def (main (: n Int64)) (do (def r1 (list n 2)) (def r2 (if (> n 0) (list r1) (list r1 (list 9)))) (List.len r2)))
+    (def (main (: n Int64)) (do (def r1 #list(n 2)) (def r2 (if (> n 0) #list(r1) #list(r1 #list(9)))) (List.len r2)))
     (export main)))
   (call main (: 7 Int64)) (output (: 1 Int64))
   (call main (: -1 Int64)) (output (: 2 Int64))
@@ -24205,8 +24205,8 @@
         cascade). Arm 2 requires key 1 — present — and binds the runtime value: n·10. Falls to the
         wildcard when no map arm matches is covered by the single-arm twin below.")
   (input (do
-    (def (f xs) (match xs ((list #map((= 5 v)) _r) v) ((list #map((= 1 w)) _r) (* w 10)) (_ -1)))
-    (def (main (: n Int64)) (f (list #map((= 1 n)) #map((= 2 20)))))
+    (def (f xs) (match xs (#list(#map((= 5 v)) _r) v) (#list(#map((= 1 w)) _r) (* w 10)) (_ -1)))
+    (def (main (: n Int64)) (f #list(#map((= 1 n)) #map((= 2 20)))))
     (export main)))
   (call main (: 7 Int64)) (output (: 70 Int64))
   (call main (: -2 Int64)) (output (: -20 Int64)))
@@ -24215,8 +24215,8 @@
   (doc "mfp1's minimal twin (the mf3 repro): one map arm requiring the absent key 5, wildcard fallback —
         must yield -1, not the pre-#5472 'arm mis-selected' compile error.")
   (input (do
-    (def (f xs) (match xs ((list #map((= 5 v)) _r) v) (_ -1)))
-    (def (main (: n Int64)) (f (list #map((= 1 n)) #map((= 2 20)))))
+    (def (f xs) (match xs (#list(#map((= 5 v)) _r) v) (_ -1)))
+    (def (main (: n Int64)) (f #list(#map((= 1 n)) #map((= 2 20)))))
     (export main)))
   (call main (: 7 Int64)) (output (: -1 Int64))
   (call main (: -2 Int64)) (output (: -1 Int64)))

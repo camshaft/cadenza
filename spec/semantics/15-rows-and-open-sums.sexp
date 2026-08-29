@@ -242,11 +242,11 @@
 ; record (member_category = "field"); a module MEMBER miss and a sum-type VARIANT miss keep CDZ0201 (their
 ; own category word). Migrated from rcdzc an_absent_record_field_access_is_cdz0212_like_record_project.
 (case "a dot-access of an absent record field is CDZ0212, the Record.project twin"
-  (input  (do (def (main) (. (record (x 1)) z)) (export main)))
+  (input  (do (def (main) (. #record((= x 1)) z)) (export main)))
   (error  CDZ0212))
 
 (case "a dot-access of an absent field on a let-bound record is also CDZ0212"
-  (input  (do (def (main) (let ((p (record (x 1)))) (. p z))) (export main)))
+  (input  (do (def (main) (let ((p #record((= x 1)))) (. p z))) (export main)))
   (error  CDZ0212))
 
 (case "a user-module member miss stays CDZ0201 (not a record field)"

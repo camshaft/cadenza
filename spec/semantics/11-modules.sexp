@@ -1328,7 +1328,7 @@
     (do
       (def (first xs)
         (match xs
-          ((list h .. _t) h)
+          (#list(h .. _t) h)
           (_ (trap "empty"))))
       (export first)))
   (call main (: 5 Int64)) (output (: 52 Int64))
@@ -2088,7 +2088,7 @@
             (+ (* 100 (+ (. p 0) (. p 1)))
                (String.byte-len (. q 0)))))
         (export main)))
-  (module "base" (do (def (dup x) (tuple x x)) (export dup)))
+  (module "base" (do (def (dup x) #tuple(x x)) (export dup)))
   (module "mid" (do (import "base" (dup)) (export dup)))
   (call   main (: 3 Int64)) (output (: 602 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64)))
@@ -2386,16 +2386,16 @@
         (if (= (head-name x) "comment") (peel (child x 2)) x))
       (def (collect (const (: xs (List Ast))))
         (match xs
-          ((list) (: (list) (List Ast)))
-          ((list h .. t)
+          (#list() (: #list() (List Ast)))
+          (#list(h .. t)
             (let ((g (peel h)) (tail (collect t)))
               (if (= (head-name g) "type") (List.prepend tail g) tail)))))
       (def (contract (const (: mm Ast)))
         (match mm
           ((Ast.List forms)
-            (record (= id (Blake3.of (Ast.encode (Ast.List (List.prepend (collect forms) (Ast.Name "types"))))))
+            #record((= id (Blake3.of (Ast.encode (Ast.List (List.prepend (collect forms) (Ast.Name "types"))))))
                     (= nm "")))
-          (_ (record (= id b"") (= nm "")))))
+          (_ #record((= id b"") (= nm "")))))
       (def (cid) (. (contract Ast.module) id))
       (export cid)))
   (input  (do

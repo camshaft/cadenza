@@ -143,7 +143,7 @@
   (error  CDZ0201 (message "`Qty.of`'s second argument must be a UNIT")))
 
 (case "a Qty.of second argument that is a tuple is rejected as not a unit"
-  (input  (do (def (main) (Qty.value (Qty.of 5 (tuple 1 2)))) (export main)))
+  (input  (do (def (main) (Qty.value (Qty.of 5 #tuple(1 2)))) (export main)))
   (error  CDZ0201 (message "`Qty.of`'s second argument must be a UNIT")))
 
 (case "a valid base-unit Qty.of is accepted and Qty.value recovers the magnitude (no over-rejection)"
