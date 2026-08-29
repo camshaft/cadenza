@@ -13,6 +13,7 @@
 
 pub mod abi;
 pub mod opt;
+pub mod overflow;
 pub mod sidecar;
 pub mod spans;
 pub mod target;
@@ -22,5 +23,6 @@ pub use abi::{
     wrap_prefix_suffix,
 };
 pub use opt::OptLevel;
+pub use overflow::{OverflowMode, OverflowSpec};
 pub use sidecar::{Query, Request, decode, encode};
 pub use target::Target;

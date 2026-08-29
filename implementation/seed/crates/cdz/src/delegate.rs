@@ -62,12 +62,12 @@ fn opt_cli(o: OptLevel) -> &'static str {
     }
 }
 
-/// The `--overflow-signed`/`--overflow-unsigned` value string for an [`rcdzc::db::OverflowMode`] —
+/// The `--overflow-signed`/`--overflow-unsigned` value string for an [`cadenza_compile_abi::OverflowMode`] —
 /// matched to `rcdzc::cli`'s `OverflowModeArg` spelling.
-fn overflow_cli(m: rcdzc::db::OverflowMode) -> &'static str {
+fn overflow_cli(m: cadenza_compile_abi::OverflowMode) -> &'static str {
     match m {
-        rcdzc::db::OverflowMode::Trap => "trap",
-        rcdzc::db::OverflowMode::Wrap => "wrap",
+        cadenza_compile_abi::OverflowMode::Trap => "trap",
+        cadenza_compile_abi::OverflowMode::Wrap => "wrap",
     }
 }
 
@@ -75,7 +75,7 @@ fn overflow_cli(m: rcdzc::db::OverflowMode) -> &'static str {
 /// command, one flag per present side. An absent side (`None`) emits NOTHING — so `cdz-compile` sees no
 /// flag and applies its own `None` (fall through to the built-in `Trap`), preserving the precedence
 /// (module pragma > this global > trap) exactly as the in-process path does.
-fn append_overflow_flags(cmd: &mut Command, overflow: rcdzc::db::OverflowSpec) {
+fn append_overflow_flags(cmd: &mut Command, overflow: cadenza_compile_abi::OverflowSpec) {
     if let Some(m) = overflow.signed {
         cmd.arg("--overflow-signed").arg(overflow_cli(m));
     }
@@ -97,7 +97,7 @@ fn spawn(
     entry: Option<&str>,
     component_name: Option<&str>,
     opt_level: OptLevel,
-    overflow: rcdzc::db::OverflowSpec,
+    overflow: cadenza_compile_abi::OverflowSpec,
     prog: &str,
 ) -> ExitCode {
     let program = locate();
@@ -167,7 +167,7 @@ pub fn delegate_from_artifacts(
     targets: &[Target],
     out: Option<&Path>,
     opt_level: OptLevel,
-    overflow: rcdzc::db::OverflowSpec,
+    overflow: cadenza_compile_abi::OverflowSpec,
     prog: &str,
 ) -> ExitCode {
     let dir = scratch_dir();
@@ -194,7 +194,7 @@ pub fn delegate_from_artifacts(
 pub fn delegate_project_to_bytes(
     inputs: &[Artifact],
     opt_level: OptLevel,
-    overflow: rcdzc::db::OverflowSpec,
+    overflow: cadenza_compile_abi::OverflowSpec,
     prog: &str,
 ) -> Result<Option<Vec<u8>>, ()> {
     let dir = scratch_dir();

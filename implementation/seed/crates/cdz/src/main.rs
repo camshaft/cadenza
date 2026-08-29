@@ -2076,7 +2076,7 @@ fn dispatch_compile_prepared(
     targets: &[cadenza_compile_abi::Target],
     out: Option<PathBuf>,
     opt_level: cadenza_compile_abi::OptLevel,
-    overflow: rcdzc::db::OverflowSpec,
+    overflow: cadenza_compile_abi::OverflowSpec,
 ) -> ExitCode {
     #[cfg(not(feature = "standalone"))]
     {
@@ -2219,7 +2219,7 @@ fn compile_source_specs(
     out: Option<PathBuf>,
     targets: &[cadenza_compile_abi::Target],
     opt_level: cadenza_compile_abi::OptLevel,
-    overflow: rcdzc::db::OverflowSpec,
+    overflow: cadenza_compile_abi::OverflowSpec,
 ) -> ExitCode {
     let mut inputs: Vec<cadenza_compile_abi::Artifact> = Vec::new();
     for spec in specs {
@@ -2289,7 +2289,7 @@ fn compile_project_component_bytes(
     specs: &[String],
     entry: &str,
     opt_level: cadenza_compile_abi::OptLevel,
-    overflow: rcdzc::db::OverflowSpec,
+    overflow: cadenza_compile_abi::OverflowSpec,
 ) -> Result<Option<Vec<u8>>, ()> {
     compile_project_component_bytes_named(specs, entry, opt_level, overflow, None)
 }
@@ -2301,7 +2301,7 @@ fn compile_project_component_bytes_named(
     specs: &[String],
     entry: &str,
     opt_level: cadenza_compile_abi::OptLevel,
-    overflow: rcdzc::db::OverflowSpec,
+    overflow: cadenza_compile_abi::OverflowSpec,
     component_name: Option<&str>,
 ) -> Result<Option<Vec<u8>>, ()> {
     let mut inputs: Vec<cadenza_compile_abi::Artifact> = Vec::new();
@@ -2342,7 +2342,7 @@ fn compile_project_component_bytes_named(
 fn dispatch_project_to_bytes(
     inputs: Vec<cadenza_compile_abi::Artifact>,
     opt_level: cadenza_compile_abi::OptLevel,
-    overflow: rcdzc::db::OverflowSpec,
+    overflow: cadenza_compile_abi::OverflowSpec,
 ) -> Result<Option<Vec<u8>>, ()> {
     #[cfg(not(feature = "standalone"))]
     {
@@ -2568,7 +2568,7 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
 fn build_path_deps(
     project: &ProjectSpecs,
     opt_level: cadenza_compile_abi::OptLevel,
-    overflow: rcdzc::db::OverflowSpec,
+    overflow: cadenza_compile_abi::OverflowSpec,
 ) -> Result<Vec<(String, std::path::PathBuf)>, ()> {
     // Delegate to the fallible core; on ANY error, clean up the temp dep components already written so a
     // mid-loop failure (dep N fails to build) doesn't leak deps 1..N-1's `.cdz-run-dep-*` files (the
@@ -2590,7 +2590,7 @@ fn build_path_deps(
 fn build_path_deps_into(
     project: &ProjectSpecs,
     opt_level: cadenza_compile_abi::OptLevel,
-    overflow: rcdzc::db::OverflowSpec,
+    overflow: cadenza_compile_abi::OverflowSpec,
     peers: &mut Vec<(String, std::path::PathBuf)>,
 ) -> Result<(), ()> {
     if project.m.deps.is_empty() {
@@ -3006,7 +3006,7 @@ fn resolve_opt_level_precedence(
     Ok(cadenza_compile_abi::OptLevel::default())
 }
 
-/// The GLOBAL overflow policy a `Project.cdz` manifest declares, as the `rcdzc::db::OverflowSpec` the
+/// The GLOBAL overflow policy a `Project.cdz` manifest declares, as the `cadenza_compile_abi::OverflowSpec` the
 /// compiler seeds `db.global_overflow` with. Precedence (numeric-model.md §Overflow): a module
 /// `(pragma overflow …)` overrides this global manifest default, which overrides the built-in `Trap`.
 /// Reads the validated `def overflow-signed`/`overflow-unsigned` fields (#5290): a valid `"trap"`/`"wrap"`
@@ -3014,18 +3014,18 @@ fn resolve_opt_level_precedence(
 /// the built-in `Trap` — a malformed value was already WARNED at parse and uses the default, so `None`
 /// matches). No CLI-flag precedence here: a project build (`cdz run`/`build`) has no `--overflow` flag,
 /// so the manifest IS the global level.
-fn manifest_overflow_spec(m: &Manifest) -> rcdzc::db::OverflowSpec {
-    fn mode(field: &Option<String>, malformed: bool) -> Option<rcdzc::db::OverflowMode> {
+fn manifest_overflow_spec(m: &Manifest) -> cadenza_compile_abi::OverflowSpec {
+    fn mode(field: &Option<String>, malformed: bool) -> Option<cadenza_compile_abi::OverflowMode> {
         if malformed {
             return None;
         }
         match field.as_deref() {
-            Some("trap") => Some(rcdzc::db::OverflowMode::Trap),
-            Some("wrap") => Some(rcdzc::db::OverflowMode::Wrap),
+            Some("trap") => Some(cadenza_compile_abi::OverflowMode::Trap),
+            Some("wrap") => Some(cadenza_compile_abi::OverflowMode::Wrap),
             _ => None,
         }
     }
-    rcdzc::db::OverflowSpec {
+    cadenza_compile_abi::OverflowSpec {
         signed: mode(&m.overflow_signed, m.overflow_signed_malformed),
         unsigned: mode(&m.overflow_unsigned, m.overflow_unsigned_malformed),
     }
@@ -12144,7 +12144,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// `manifest_overflow_spec` projects the parsed manifest overflow fields to the `rcdzc::db::OverflowSpec`
+    /// `manifest_overflow_spec` projects the parsed manifest overflow fields to the `cadenza_compile_abi::OverflowSpec`
     /// the compile threads into `db.global_overflow` (O2): a valid `"trap"`/`"wrap"` → the matching mode,
     /// ABSENT or MALFORMED → `None` (falls through to the built-in `Trap` — a malformed value was warned +
     /// uses the default, so `None` matches). Signed + unsigned independent. This is the manifest→compiler
