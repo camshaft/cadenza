@@ -1502,6 +1502,97 @@ fn ensure_cpu_monitor_cron(fleet: &Fleet) {
     }
 }
 
+/// The desired user-crontab lines for the disk/inode-hygiene safety-net scripts (concierge-greenlit
+/// 2026-08-29 — a SYSTEM-crontab driver replaces concierge's Claude-scheduler prune PROMPTS: it survives a
+/// concierge restart/wedge and offloads the recurring sweep off concierge's context). Each is tagged so
+/// [`reconcile_tagged_crons`] can find/heal it. Cadence per concierge: `prune-tmp-inodes` FREQUENT (every
+/// 15min, to preserve the always-on-low inode design — run with `INODE_THRESHOLD_PCT=0` so the age-sweep
+/// fires unconditionally, matching concierge's prompt) and `prune-stale-targets` 6-HOURLY (gentle; target/
+/// dirs age over days). Both `--apply` (the auto-delete is already operator-approved via the prompts
+/// concierge runs, and both scripts are age/threshold/race-guarded + own-user-only + exclude the live
+/// coordination agents). Silent (`>/dev/null 2>&1`) — a sweep tick never emits cron mail.
+fn prune_cron_lines(tmp_script: &str, targets_script: &str) -> [(&'static str, String); 2] {
+    [
+        (
+            "# fleet:prune-tmp-inodes",
+            format!(
+                "*/15 * * * * INODE_THRESHOLD_PCT=0 bash {tmp_script} --apply >/dev/null 2>&1 # fleet:prune-tmp-inodes"
+            ),
+        ),
+        (
+            "# fleet:prune-stale-targets",
+            format!(
+                "0 */6 * * * bash {targets_script} --apply >/dev/null 2>&1 # fleet:prune-stale-targets"
+            ),
+        ),
+    ]
+}
+
+/// Pure reconcile for a SET of tagged fleet crontab lines: given the current `crontab -l` text and the
+/// desired `(tag, line)` pairs, return `Some(new_crontab)` iff a write is needed — any desired line is
+/// absent, OR an existing line carries one of our tags but has DRIFTED from its desired form (stale hub
+/// path / cadence / a duplicate). Returns `None` (no-op) when every desired line is present verbatim and no
+/// tagged line has drifted. On a write: drop every line carrying one of our tags (heal/dedup) and re-append
+/// the desired lines, preserving all OTHER entries (e.g. the `# fleet:cpu-monitor` line) in order. Split out
+/// so the crontab-rewrite policy is unit-tested without touching the real crontab. Trailing newline included.
+fn reconcile_tagged_crons(current: &str, desired: &[(&str, String)]) -> Option<String> {
+    let all_present = desired
+        .iter()
+        .all(|(_, line)| current.lines().any(|l| l == line));
+    let no_drift = current.lines().all(|l| {
+        desired
+            .iter()
+            .all(|(tag, line)| !l.contains(tag) || l == line)
+    });
+    if all_present && no_drift {
+        return None;
+    }
+    let mut kept: Vec<&str> = current
+        .lines()
+        .filter(|l| !desired.iter().any(|(tag, _)| l.contains(tag)))
+        .collect();
+    for (_, line) in desired {
+        kept.push(line);
+    }
+    let mut out = kept.join("\n");
+    out.push('\n');
+    Some(out)
+}
+
+/// Ensure the disk/inode-hygiene safety-net crontab entries (`prune-tmp-inodes` + `prune-stale-targets`)
+/// exist + point at THIS hub's materialized scripts. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN
+/// discipline as [`ensure_cpu_monitor_cron`], and INDEPENDENT of it (a separate reconcile/write, run after
+/// it in `up`; each preserves the other's lines). Skips silently if the scripts aren't materialized yet
+/// (older tree) or `crontab` is absent/errs — never blocks `fleet up`. HANDOFF: once this system-cron is
+/// verified firing, concierge retires the two prune cron-PROMPTS it replaces (kept running until then —
+/// idempotent + gated, so overlap is harmless and there's zero hygiene gap during cutover).
+fn ensure_prune_crons(fleet: &Fleet) {
+    use std::io::Write;
+    let tmp = fleet.root.join("prune-tmp-inodes.sh");
+    let targets = fleet.root.join("prune-stale-targets.sh");
+    if !tmp.exists() || !targets.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = prune_cron_lines(&tmp.display().to_string(), &targets.display().to_string());
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 fn up(fleet: &Fleet) {
     // Materialize the tracked source (role bodies + contract + window.sh) into the runtime dir so
     // window.sh has a stable hub-anchored path. Then reconcile the tracked ROSTER into the runtime
@@ -1515,6 +1606,10 @@ fn up(fleet: &Fleet) {
     // Re-arm the CPU-monitor user-crontab (idempotent + drift-heals) so the daemon survives relaunches
     // without a manual host-recipe re-add — same re-arm-on-relaunch discipline as the other self-crons.
     ensure_cpu_monitor_cron(fleet);
+    // Re-arm the disk/inode-hygiene prune crontab entries (prune-tmp-inodes + prune-stale-targets) — a
+    // system-crontab driver replacing concierge's Claude-scheduler prune prompts (survives a concierge
+    // restart, offloads the sweep off its context). Independent of the cpu-monitor reconcile; fail-open.
+    ensure_prune_crons(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -16219,6 +16314,79 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
                 .count(),
             1,
             "exactly one fleet:cpu-monitor line after heal (no duplicates)"
+        );
+    }
+
+    #[test]
+    fn reconcile_tagged_crons_installs_heals_dedups_and_is_idempotent() {
+        let want = prune_cron_lines("/hub/prune-tmp-inodes.sh", "/hub/prune-stale-targets.sh");
+        let tmp_line = &want[0].1;
+        let tgt_line = &want[1].1;
+        // The cron lines carry the concierge-specified cadence + always-on-low setting.
+        assert!(tmp_line.starts_with(
+            "*/15 * * * * INODE_THRESHOLD_PCT=0 bash /hub/prune-tmp-inodes.sh --apply"
+        ));
+        assert!(tgt_line.starts_with("0 */6 * * * bash /hub/prune-stale-targets.sh --apply"));
+
+        // Empty crontab → installs BOTH lines, trailing newline.
+        let out = reconcile_tagged_crons("", &want).expect("installs when absent");
+        assert!(out.contains(tmp_line) && out.contains(tgt_line));
+        assert!(out.ends_with('\n'));
+
+        // Both present verbatim (alongside the cpu-monitor + unrelated lines) → no-op.
+        let full = format!(
+            "0 5 * * * /usr/bin/backup\n\
+             */2 * * * * bash /hub/cpu-monitor.sh >/dev/null 2>&1 # fleet:cpu-monitor\n\
+             {tmp_line}\n{tgt_line}\n"
+        );
+        assert!(
+            reconcile_tagged_crons(&full, &want).is_none(),
+            "verbatim-present (both) → no needless rewrite"
+        );
+
+        // One absent → rewrite installs the missing one, keeps the present one + unrelated + cpu-monitor.
+        let one_missing = format!(
+            "*/2 * * * * bash /hub/cpu-monitor.sh >/dev/null 2>&1 # fleet:cpu-monitor\n{tmp_line}\n"
+        );
+        let healed =
+            reconcile_tagged_crons(&one_missing, &want).expect("installs the missing line");
+        assert!(
+            healed.contains(tgt_line),
+            "installs the absent stale-targets line"
+        );
+        assert!(
+            healed.contains("# fleet:cpu-monitor"),
+            "preserves the unrelated cpu-monitor line"
+        );
+
+        // STALE drift (old hub path) + a DUPLICATE tagged line → heal to exactly one of each, current path.
+        let drifted = format!(
+            "0 5 * * * /usr/bin/backup\n\
+             */30 * * * * INODE_THRESHOLD_PCT=0 bash /OLD/prune-tmp-inodes.sh --apply >/dev/null 2>&1 # fleet:prune-tmp-inodes\n\
+             {tmp_line}\n{tgt_line}\n"
+        );
+        let h2 = reconcile_tagged_crons(&drifted, &want).expect("heals stale/dup");
+        assert!(
+            h2.contains("/usr/bin/backup"),
+            "preserves unrelated entries"
+        );
+        assert!(
+            !h2.contains("/OLD/prune-tmp-inodes.sh"),
+            "drops the stale hub path"
+        );
+        assert_eq!(
+            h2.lines()
+                .filter(|l| l.contains("# fleet:prune-tmp-inodes"))
+                .count(),
+            1,
+            "exactly one prune-tmp-inodes line after heal (dedup)"
+        );
+        assert_eq!(
+            h2.lines()
+                .filter(|l| l.contains("# fleet:prune-stale-targets"))
+                .count(),
+            1,
+            "exactly one prune-stale-targets line"
         );
     }
 
