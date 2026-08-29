@@ -1990,6 +1990,24 @@ fn emit_expr_viewed(
             // `index`-th key. Emitting the positional index for a record is NON-re-compilable — `(. r 1)`
             // re-reads as a tuple projection → CDZ0201 "tuple projection requires a tuple, found (Record …)".
             let operand_ty = crate::infer::type_of(db, operand);
+            // A projection whose OPERAND is a BINDER declared a single-variant NOMINAL (`(. w i)` where
+            // `w : WrapT`, `type WrapT = | MkWT (Tuple …)`): the optimizer folds the irrefutable `(MkWT t)`
+            // match away, so the projection reads `w` directly. The Core node type is the ERASED inner tuple,
+            // but `w`'s SURFACE-declared type is the nominal, and surface `.` cannot cross it (`(. w i)`
+            // recompiles to CDZ0201 "tuple projection requires a tuple, found WrapT" — breaker). Detect it by
+            // the BINDER's declared type (not the erased node type), and peel via a ctor pattern
+            // ([`emit_nominal_elem_peel`]): `(match w ((MkWT t) (. t i)))`.
+            if let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, operand)
+                && let Ty::Nominal { decl, inner, .. } = crate::infer::type_of(db, binder)
+                && emitted.contains(&decl)
+                && db
+                    .type_decl_by_occ(decl)
+                    .is_some_and(|t| t.variants.len() == 1)
+            {
+                let op = emit_expr(db, b, operand, None, env, emitted)?;
+                let (n, _) = emit_nominal_elem_peel(db, b, op, index, decl, &inner, env, emitted)?;
+                return Ok(n);
+            }
             let dot = b.name(".");
             let op = emit_expr(db, b, operand, None, env, emitted)?;
             let key = match &operand_ty {
@@ -2814,6 +2832,90 @@ fn qty_disposition(db: &mut Db, id: StructId) -> NominalDisp {
 /// for `Some` at `Option (Option Int64)`). `None` when there is no ctor, no payload, or the result is STILL
 /// under-determined (a genuinely-ambiguous nesting) — the payload then emits with no expected. `sum_ty` must
 /// be the SumNew's own `Ty::Sum` (already `expected`-recovered by the caller).
+/// Re-emit "element `index` of the single-variant NOMINAL value whose emitted surface is `node`". The
+/// surface `.` operator cannot cross a nominal (the erasure wall: `(. <nominal> i)` recompiles to CDZ0201
+/// "tuple projection requires a tuple, found <Nominal>"), so NAME the ctor via an inline single-arm match,
+/// then index the ERASED payload. TWO layouts, discriminated by the newtype ARITY vs the inner tuple's arity.
+/// A MULTI-payload variant (`arity == inner_len`, e.g. `Subst(Map,Map,Map)`) has each payload AS a tuple
+/// element → `(match node ((Ctor b0 … b_{n-1}) b_index))`, body the `index`-th binder. An ARITY-1
+/// TUPLE-payload newtype (`arity == 1`, inner a `Tuple` of len > 1, e.g. `WrapT(Tuple(a,b))`) has the sole
+/// payload AS the tuple, so `index` projects INTO it → `(match node ((Ctor t) (. t index)))`.
+/// Returns the surface node + the element's type. IRREFUTABLE (one variant → exhaustive) and value-eq
+/// (recompile re-erases the newtype). CALLER gates to an EMITTED single-variant nominal (the `(type …)` must
+/// resolve the ctor on recompile). Used by the `Core::Proj` arm (a folded `(MkWT t)` match leaving `(. w i)`
+/// on the nominal-declared binder).
+#[allow(clippy::too_many_arguments)]
+fn emit_nominal_elem_peel(
+    db: &mut Db,
+    b: &mut Builder,
+    node: StructId,
+    index: usize,
+    decl: StructId,
+    inner: &Ty,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Result<(StructId, Ty), Reject> {
+    let _ = emitted; // caller gates; kept for call-site symmetry.
+    let arity = db
+        .type_decl_by_occ(decl)
+        .and_then(|t| t.variants.first())
+        .map(|v| v.payloads.len())
+        .unwrap_or(0);
+    let inner_len = match inner {
+        Ty::Tuple(ts) => Some(ts.len()),
+        _ => None,
+    };
+    let slot_ty = match inner {
+        Ty::Tuple(ts) => ts.get(index).cloned().unwrap_or(Ty::Any),
+        _ => Ty::Any,
+    };
+    let head = crate::lower::variant_head_ast(db, b, decl, 0).ok_or_else(|| {
+        Reject::decline(
+            "the Cadenza backend could not recover the single-variant ctor name for a payload projection"
+                .to_string(),
+        )
+    })?;
+    let match_head = b.name("match");
+    if inner_len == Some(arity) && index < arity {
+        // Multi-payload: bind every slot, return slot `index`.
+        let mut pat_children = vec![head];
+        let mut bi = None;
+        for slot in 0..arity {
+            let nm = synth_payload_name(env.next_payload);
+            env.next_payload += 1;
+            if slot == index {
+                bi = Some(nm.clone());
+            }
+            pat_children.push(b.name(nm));
+        }
+        let pat = b.list(pat_children);
+        let body = b.name(bi.expect("index < arity is bound"));
+        let arm = b.list(vec![pat, body]);
+        Ok((b.list(vec![match_head, node, arm]), slot_ty))
+    } else if arity == 1 && inner_len.is_some_and(|l| index < l) {
+        // Arity-1 tuple-payload newtype: bind the sole payload `t`, project `(. t index)`.
+        let t = synth_payload_name(env.next_payload);
+        env.next_payload += 1;
+        let t_pat = b.name(t.clone());
+        let pat = b.list(vec![head, t_pat]);
+        let dot = b.name(".");
+        let idx = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_i64(index as i64),
+            radix: Radix::Dec,
+        });
+        let t_ref = b.name(t);
+        let proj = b.list(vec![dot, t_ref, idx]);
+        let arm = b.list(vec![pat, proj]);
+        Ok((b.list(vec![match_head, node, arm]), slot_ty))
+    } else {
+        Err(Reject::decline(
+            "the Cadenza backend reached a payload projection over a single-variant sum whose erased \
+             payload layout it does not yet index"
+                .to_string(),
+        ))
+    }
+}
+
 fn sum_payload_expected(db: &mut Db, decl: StructId, disc: u32, sum_ty: &Ty) -> Option<Ty> {
     let ctor = db
         .type_decl_by_occ(decl)?
