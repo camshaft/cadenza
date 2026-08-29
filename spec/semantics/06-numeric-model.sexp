@@ -13733,3 +13733,17 @@
   (call main (: 3 Int64)) (output (: 100 Int64))
   (call main (: -2 Int64)) (output (: 111 Int64))
   (live-objects 1))
+
+(case "cdzw86 STRING lexicographic ordering (prefix rule + equal boundary) round-trips the cadenza hop"
+  (doc "String-ordering faces: a runtime-selected string compared with < > <= — including the PREFIX
+        rule (apple < apples: a proper prefix orders first) and the equal boundary (banana <= banana).
+        n=7 (apple) → 100+0+1 = 101; n=-3 (banana) → 0+10+1 = 11. Dual-path verified, byte-idempotent.")
+  (input (do
+    (def (main (: n Int64))
+      (do (def s (if (> n 0) "apple" "banana"))
+          (+ (* 100 (if (< s "az") 1 0))
+             (+ (* 10 (if (> s "apples") 1 0))
+                (if (<= s "banana") 1 0)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 101 Int64))
+  (call main (: -3 Int64)) (output (: 11 Int64)))
