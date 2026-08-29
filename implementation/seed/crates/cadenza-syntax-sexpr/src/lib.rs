@@ -1523,6 +1523,46 @@ mod tests {
     }
 
     #[test]
+    fn a_compound_value_renders_and_round_trips_as_the_native_ctor_form() {
+        // DRIFT GUARD (requested by v-rust-backend; protects #5586 + its bytes-second render_val + the M3
+        // name-head-alias removal): the CANONICAL render of a compound VALUE is the native `#ctor` form
+        // (#record/#list/#tuple/#map/#set), NOT a name-head `(record …)` (which is a TYPE descriptor's
+        // spelling, seq-206 — a distinct, orthogonal axis). A `#ctor` VALUE must (a) render `#ctor` compact,
+        // (b) render `#ctor` pretty (the `cdz convert --to sexpr` path), (c) be idempotent, and (d) survive a
+        // binary encode→decode round-trip as `#ctor` (the bytes-second path). If a future change flips the
+        // value render back to name-head, this fails HERE.
+        for form in [
+            "#record((= a 5) (= b 2))",
+            "#list(1 2 3)",
+            "#tuple(1 2)",
+            "#map((= 1 2) (= 3 4))",
+            "#set(1 2 3)",
+            "#list(#tuple(1 2) #record((= x 9)))", // nested compounds render #ctor at every level
+        ] {
+            let a = read(form).unwrap();
+            let ctor_head = form.split('(').next().unwrap(); // `#record` / `#list` / …
+            // (a) compact render is the byte-identical `#ctor` form.
+            assert_eq!(print(&a), form, "compact render of {form}");
+            // (b) pretty render (the convert-to-sexpr path) also emits the `#ctor` head.
+            let pretty = print_pretty_width(&a, 80);
+            assert!(
+                pretty.contains(ctor_head),
+                "pretty render of {form} must keep the #ctor head, got {pretty:?}"
+            );
+            // (c) idempotent: read(print(x)) prints the same canonical form.
+            assert_eq!(
+                print(&read(&print(&a)).unwrap()),
+                form,
+                "idempotent render of {form}"
+            );
+            // (d) binary encode→decode round-trip stays `#ctor` (bytes-second / value-encode path).
+            let bytes = cadenza_ast::codec::encode(&a);
+            let back = cadenza_ast::codec::decode(&bytes).expect("compound value decodes");
+            assert_eq!(print(&back), form, "binary round-trip of {form}");
+        }
+    }
+
+    #[test]
     fn nativize_compound_source_exempts_effect_op_handler_arm_heads() {
         // An effect op-handler arm names its operation BARE at the arm head. When the op is named after a
         // compound ctor (`set` is the real case — a State effect's setter; also list/map/tuple/record), that
