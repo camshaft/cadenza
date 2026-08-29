@@ -329,23 +329,43 @@ fn emit_type_decl(db: &mut Db, b: &mut Builder, decl: &crate::db::TypeDecl) -> O
         let vname = b.name(v.name.as_str());
         let mut vchildren = vec![vname];
         for &p in &v.payloads {
-            // A BARE-NAME payload — a type parameter (`a`) or a concrete type name (`Int64`, `MyType`) —
-            // re-emits its source spelling (a type param has no value-form `Ty` surface, so it must come
-            // from the name, not `type_ast`). A COMPOUND payload (`(List a)`, `(Option Int64)`) renders via
-            // `typeval_of` + `type_ast` — concrete only; a param nested in a compound has no surface and
-            // declines the whole decl (a later slice).
-            let ty_node = if let Some(nm) = db.ast.as_name(p) {
-                b.name(nm)
-            } else {
-                let ty = crate::eval::typeval_of(db, p)?;
-                let ncx = db.name_ctx();
-                crate::lower::type_ast(b, &ty, &ncx)?
-            };
+            // Re-emit the payload's SOURCE type-surface directly (a structural copy — see
+            // [`emit_type_surface`]). This reproduces a BARE type parameter (`a`) or concrete name
+            // (`Int64`), AND a COMPOUND carrying a param (`(Vec3 a)`, `(List (PathSeg a))`) — the last of
+            // which the previous `typeval_of`+`type_ast` path could not render (a param is a `Ty::Var`,
+            // `type_ast` → `None`), which declined the whole generic sum and gated the cad / compiler-ml
+            // generic-sum coverage for the two-stage shred (v-test-shred). Copying the source surface is
+            // both simpler and avoids `type_ast` partial-building into `b` on a `None` return.
+            let ty_node = emit_type_surface(db, b, p)?;
             vchildren.push(ty_node);
         }
         children.push(b.list(vchildren));
     }
     Some(b.list(children))
+}
+
+/// Re-emit a TYPE SURFACE (a variant payload's declared type) by structurally copying the source AST at
+/// `occ` into the fresh builder `b`: a bare NAME atom (`a` / `Int64` / `Vec3`) → the name; an application
+/// `(Head arg…)` (`(Vec3 a)`, `(List (PathSeg a))`) → each child re-emitted recursively. Unlike
+/// `typeval_of` + [`crate::lower::type_ast`], this faithfully reproduces a type PARAMETER nested inside a
+/// compound (a param is a `Ty::Var` that `type_ast` cannot render), which is what a generic sum's
+/// compound payload needs. `None` for a non-name, non-application leaf (an int/symbol in a type surface —
+/// e.g. the width in `(Int 24)` — is a rare later slice; declining it declines the whole decl, safe).
+fn emit_type_surface(db: &Db, b: &mut Builder, occ: StructId) -> Option<StructId> {
+    if let Some(nm) = db.ast.as_name(occ) {
+        return Some(b.name(nm));
+    }
+    match db.ast.get(occ) {
+        crate::ast::Struct::List(items) => {
+            let items = items.clone();
+            let mut out = Vec::with_capacity(items.len());
+            for it in items {
+                out.push(emit_type_surface(db, b, it)?);
+            }
+            Some(b.list(out))
+        }
+        crate::ast::Struct::Atom(_) => None,
+    }
 }
 
 /// Reconstruct `(def (<name> (: <p> <Ty>)…) <body>)` for definition `def`. B1a handles NULLARY defs and
