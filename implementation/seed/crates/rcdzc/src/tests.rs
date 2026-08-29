@@ -33753,49 +33753,33 @@ mod stage1 {
     }
 
     #[test]
-    fn param_apply_extra_handled_stays_polynomial_on_a_nested_applied_lambda_tree() {
+    fn param_apply_extra_handled_stays_polynomial_on_a_nested_applied_lambda_chain() {
         // REGRESSION (perf, EXPONENTIAL — seq-203 #5755): `effects::param_apply_extra_handled`'s transitive
-        // apply-site homing follows a known non-recursive sub-callee by RE-ENTERING itself. When a callee's
-        // body applies the SAME sub-callee TWICE at the same inter-procedural depth — a binary DOUBLING tree
-        // `f_i(b) = (+ (f_{i-1} b) (f_{i-1} b))`, `f0(b) = handle R … (b unit)` — the un-memoized follow
-        // re-analyzes each shared sub-callee body 2× per level = 2^N compile-time (v-compiler-perf: the
-        // operator's "compiler hangs" class). FIX: memoize on `(callee_body, arity, depth)` — the two sibling
-        // `(f_{i-1} b)` calls share the key, so the 2nd is a cache HIT → the analysis collapses to POLYNOMIAL
-        // (measured EXACTLY N²: N=4→16, N=6→36, N=8→64, N=10→100). The NOISE-FREE signal is the per-`Db`
+        // apply-site homing follows a known non-recursive sub-callee by RE-ENTERING itself, and its inner
+        // `walk` ALSO re-descends the same head with no shared memo — so over N-deep NESTED
+        // IMMEDIATELY-APPLIED lambdas each capturing the outer param, `((fn (q_i) (+ q_i <inner>)) p)`, the
+        // follow re-analyzes each shared inner body via BOTH routes = 2^N compile-time (the operator's
+        // "compiler hangs" class; v-compiler-perf's original repro, measured pre-#5755: N=12 .018s … N=24
+        // 14s, ×4/+2 = 2^N). FIX: memoize on `(callee_body, arity, depth)` → identical re-analyses collapse
+        // to a cache HIT, so the count drops to POLYNOMIAL. The NOISE-FREE signal is the per-`Db`
         // `param_apply_extra_handled_calls` count read off THIS compile's `CompileOutput` (a single-compile
-        // metric, not a parallel-test-contaminated global). A future un-memoization flips the count back to
-        // EXPONENTIAL (measured un-memoized: N=4→37, N=6→177, N=8→749, N=10→3049 ≈ ×2.05/N); this pins it
-        // POLYNOMIAL. The lambda performs `R.roll`, homed transitively by `f0`'s `handle R`, so it COMPILES
-        // (exercises the full transitive-homing walk, not an early decline).
+        // metric, not a parallel-test-contaminated global): MEMOIZED it is polynomial (measured N=12→298,
+        // N=24→2324 ≈ cubic); UN-MEMOIZED it is EXACTLY 2^N−1 (measured N=8→255, N=10→1023, N=12→4095,
+        // N=14→16383 → N=24 = 16_777_215). A future un-memoization flips the count back to exponential; this
+        // pins it POLYNOMIAL.
         //
-        // WHY SMALL N (4 and 10, not the 2^N-hang region): the doubling ALSO drives an exponential effect-
-        // CONTINUATION lowering, so FULL-compile time is 2^N regardless of this memo (measured with the memo
-        // intact: N=8 0.45s, N=10 2s, N=12 9.4s, N=14 45s — the emit, not the param_apply analysis). We
-        // therefore pin the param_apply analysis via its COUNT (which the memo alone controls) at a tractable
-        // N where emit still finishes, NOT via wall-time. N also stays under the `depth < 32` follow-gate —
-        // beyond it the `{R}` grant cannot propagate the whole tree, the lambda false-declines CDZ0401, and
-        // the compile returns via `fail_with` (counter 0), which is not what this measures.
+        // This repro's EMIT is LINEAR (wasm 480→864B across the whole range — the analysis was the sole
+        // superlinear pole, no effect handler needed), so unlike a handler-driven doubling tree (whose
+        // effect-continuation lowering is independently 2^N) the FULL compile stays fast under the memo
+        // (N=24 ≈ 260ms) and we can pin a large N gap for a sharp exponential-vs-polynomial signal.
         fn chain_src(n: usize) -> String {
-            // f0 applies its param under `handle R`; each f_i applies f_{i-1} TWICE with `b` (a binary
-            // DOUBLING tree). Both sibling `(f_{i-1} b)` calls sit at the SAME inter-procedural depth → the
-            // memo key `(f_{i-1}_body, arity, depth)` is IDENTICAL, so the 2nd is a cache HIT. Without the
-            // memo both re-analyze → 2^N. (A LINEAR pass-through `f_i(b)=f_{i-1}(b)` never revisits a key, so
-            // it would NOT exercise the memo — the doubling is essential.)
-            let mut defs = String::from(
-                "(def (f0 (: b (-> Unit Int64))) (handle R 5 ((roll (u) s (resume s s))) (b unit))) ",
-            );
-            for i in 1..n {
-                defs.push_str(&format!(
-                    "(def (f{i} (: b (-> Unit Int64))) (+ (f{} b) (f{} b))) ",
-                    i - 1,
-                    i - 1
-                ));
+            // N-deep nested immediately-applied lambdas, each capturing the accumulated inner expression and
+            // the outer param `p` — v-compiler-perf's original param_apply_extra_handled 2^N reproducer.
+            let mut inner = String::from("p");
+            for i in 0..n {
+                inner = format!("((fn (q{i}) (+ q{i} {inner})) p)");
             }
-            format!(
-                "(do (effect R (op roll (-> Unit Int64))) {defs}\
-                 (def (main) (f{} (fn (u) (R.roll)))) (export main))",
-                n - 1
-            )
+            format!("(module m (def (main (: p Int64)) {inner}) (export main))")
         }
         fn homed_calls(src: &str) -> u64 {
             // Read the per-`Db` `param_apply_extra_handled_calls` count off THIS compile's `CompileOutput`
@@ -33822,18 +33806,26 @@ mod stage1 {
         // neutralizing the `(callee_body, arity, depth)` memo makes N=10 report 3049 (> 20·37 = 740) → this
         // assertion FAILS. Both counts must be > 0 (the tree ran the transitive homing — a 0 would mean a
         // false-decline via `fail_with`, see the header note).
-        let c4 = homed_calls(&chain_src(4));
-        let c10 = homed_calls(&chain_src(10));
+        // Grow the nesting N=12 → 24 (v-compiler-perf's canonical points; both COMPILE with linear emit).
+        // The count ratio is a normalized signal that cancels constant factors: MEMOIZED it is polynomial —
+        // 298 → 2324 = 7.8× (~cubic); UN-MEMOIZED it is exponential — 4095 → 16_777_215 = 4096× (= 2^12).
+        // Assert the ratio stays sub-exponential (< 50×): comfortably ABOVE the polynomial 7.8× (>6× slack
+        // for constant-factor/degree drift), astronomically BELOW the exponential 4096× (>80× margin).
+        // VERIFIED the guard bites: neutralizing the `(callee_body, arity, depth)` memo makes N=24 report
+        // 16_777_215 (≫ 50·4095) → this assertion FAILS. Both counts must be > 0 (the compile ran the
+        // transitive-homing walk).
+        let c12 = homed_calls(&chain_src(12));
+        let c24 = homed_calls(&chain_src(24));
         assert!(
-            c4 > 0 && c10 > 0,
-            "the transitive homing ran on the tree (nonzero = it compiled, not a false-decline): {c4}, {c10}"
+            c12 > 0 && c24 > 0,
+            "the transitive homing ran on the nested-lambda chain: {c12}, {c24}"
         );
         assert!(
-            c10 < 20 * c4,
-            "param_apply_extra_handled must stay POLYNOMIAL on a nested applied-lambda doubling tree (memo \
-             intact): N=4 made {c4} body-runs, N=10 made {c10} (a quadratic ratio ~ {}×; the 2^N recompute \
-             is ~82× — a regression un-memoized param_apply_extra_handled, the seq-203 hang)",
-            c10 / c4.max(1)
+            c24 < 50 * c12,
+            "param_apply_extra_handled must stay POLYNOMIAL on N-deep nested immediately-applied lambdas \
+             (memo intact): N=12 made {c12} body-runs, N=24 made {c24} (a ~cubic ratio ~ {}×; the 2^N \
+             recompute is ~4096× — a regression un-memoized param_apply_extra_handled, the seq-203 hang)",
+            c24 / c12.max(1)
         );
     }
 
