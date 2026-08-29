@@ -6962,6 +6962,19 @@
   (input  (do (@ (tag "slow") (def (c) 3)) (export c)))
   (call   c) (output (: 3 Int64)))
 
+; A NESTED `(@ …)` in EXPRESSION position (inside a `do`-block / an `(: … T)` annotation), NOT wrapping a
+; top-level def, is a MISPLACED annotation: `strip_annotations` unwraps only def-wrapping annotations, so a
+; nested survivor is CDZ0201 "annotation cannot appear here" — general to all annotation names (@param, @tag).
+; Migrated from rcdzc a_nested_annotation_reports_one_clean_reject_not_an_unbound_name_cascade (the reject +
+; message; its NO-cascade invariant — no spurious unbound-name for `@`/the internal tokens — stays in rust).
+(case "a nested @param annotation in expression position cannot appear here"
+  (input  (do (def (main) (do (: (@ (param (: widget slider)) width) Int64) 1)) (export main)))
+  (error  CDZ0201 (message "annotation cannot appear here")))
+
+(case "a nested @tag annotation in expression position cannot appear here"
+  (input  (do (def (main) (do (: (@ (tag x) foo) Int64) 1)) (export main)))
+  (error  CDZ0201 (message "annotation cannot appear here")))
+
 ; COST HEURISTIC (Addendum 4). The UNANNOTATED default is always-inline, but a LARGE, MULTIPLY-CALLED def
 ; whose call has a runtime-dependent argument is emitted ONCE and called instead of duplicated at each site.
 ; This is an EMISSION-STRATEGY choice — it does NOT change semantics — so it is observable only via the

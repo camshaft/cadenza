@@ -8920,16 +8920,16 @@ mod match_engine {
     // "unbound name `@`" negative is the corpus-inexpressible remainder, covered by the positive shape message;
     // the no-false-positive controls are covered by the transparent-unknown-annotation case above.)
 
-    /// A NESTED `(@ …)` annotation — one in EXPRESSION position (a `do`-block, an argument), NOT wrapping a
-    /// top-level def — must report ONE clean CDZ0201 "cannot appear here", not a CASCADE of unbound-name
-    /// errors for its internal tokens. `strip_annotations` unwraps a well-formed def-wrapping `(@ …)` in
-    /// place; the top-level `malformed_annotation_forms` scan (in `collect_faults`) catches a top-level
-    /// survivor — but it MISSES a nested one, which fell through to resolve as "unbound name `@`" PLUS a
-    /// spurious unbound-name for each internal token (`param`/`tag`, `widget`/`x`, …) — a baffling pile for
-    /// a user who wrote an annotation, not name references (v-metaprogramming diagnostic-quality report,
-    /// 2026-07-17). A resolve-time `(@ …)` guard now reports it once and resolves none of its internals.
+    /// A NESTED `(@ …)` annotation in EXPRESSION position (a `do`-block, an argument), NOT wrapping a
+    /// top-level def, is a misplaced annotation. The REJECT + "annotation cannot appear here" message
+    /// migrated to corpus 09-functions ("a nested @param/@tag annotation in expression position cannot
+    /// appear here"). What STAYS here is the corpus-inexpressible NO-CASCADE invariant: the misleading
+    /// "unbound name `@`" AND a spurious unbound-name for each internal token (`param`/`tag`, `widget`/`x`,
+    /// …) must NOT surface — a resolve-time `(@ …)` guard reports the misplacement ONCE and resolves none of
+    /// its internals. "No OTHER (unbound-name) diagnostics" is a no-other-code assertion the corpus (error …)
+    /// surface cannot express (v-metaprogramming diagnostic-quality report, 2026-07-17).
     #[test]
-    fn a_nested_annotation_reports_one_clean_reject_not_an_unbound_name_cascade() {
+    fn a_nested_annotation_reports_no_unbound_name_cascade() {
         use crate::testkit::parse;
         for (src, internal_tokens) in [
             // nested @param ANNOTATION in a do-block (the reported repro A) — this tests the `(@ …)`
@@ -8946,17 +8946,8 @@ mod match_engine {
             ),
         ] {
             let ds = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            // ONE clean CDZ0201 naming the misplacement.
-            let anno = ds
-                .iter()
-                .find(|d| d.message.contains("annotation cannot appear here"))
-                .unwrap_or_else(|| panic!("a nested `(@ …)` must be named: {src}"));
-            assert_eq!(
-                anno.code.as_deref(),
-                Some("CDZ0201"),
-                "got: {}",
-                anno.message
-            );
+            // The misplacement IS rejected (CDZ0201 "annotation cannot appear here" — corpus-verified in
+            // 09-functions); here we pin only that it does so WITHOUT a cascade.
             // NO cascade: the misleading "unbound name `@`" and the annotation's internal tokens must NOT
             // surface as spurious unbound-name errors.
             assert!(
