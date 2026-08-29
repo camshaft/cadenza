@@ -6118,47 +6118,12 @@ mod runtime_ops {
         );
     }
 
-    #[test]
-    fn an_oversize_constant_in_a_narrowed_control_flow_operand_is_rejected() {
-        // A compile-time-constant branch value that overflows the NARROW type must be CDZ0302, NOT a
-        // silent `i32.wrap_i64` truncation. When an `if`/`match`/`let` is an OPERAND of a narrow op, its
-        // branches emit at the node's own deferred→i64 width, so an out-of-range literal (`2^40`) slipped
-        // through the c78/c80 wrap to a wrong value (`(+ (if c 2^40 2) 5) : Int8` ran to `5`). The wrap
-        // site now range-checks a constant branch value at the op width — matching how the DIRECT `(: (if
-        // c 2^40 2) Int8)` form rejects. `2^40 = 1099511627776` overflows every ≤32-bit width.
-        let rejects = |params: &str, body: &str| {
-            let src = format!("(module m (def (f {params}) {body}) (export f))");
-            let d = compile_component(&crate::codec::encode(&parse(&src)))
-                .expect_err("an oversize constant branch value must be rejected");
-            assert_eq!(
-                d.code.as_deref(),
-                Some("CDZ0302"),
-                "expected CDZ0302 for {body}, got: {}",
-                d.message
-            );
-        };
-        // Consumed by `+` (the wrap-then-add path), by `&` (the emit_operand path), by a nested `+`
-        // (the emit_operand_into path), through a `let`, and via a `match` arm — every operand route.
-        rejects("(: c Bool)", "(: (+ (if c 1099511627776 2) 5) Int8)");
-        rejects("(: c Bool)", "(: (& (if c 1099511627776 2) 7) Int8)");
-        rejects(
-            "(: c Bool) (: d Bool)",
-            "(: (+ (+ (if c 1099511627776 2) (if d 3 4)) 5) Int8)",
-        );
-        rejects(
-            "(: c Bool)",
-            "(: (+ (let ((y (if c 1099511627776 2))) y) 5) Int8)",
-        );
-        rejects(
-            "(: x Int8)",
-            "(: (+ (match x (0 1099511627776) (_ 2)) 5) Int8)",
-        );
-        // A value that fits i32 but NOT the sub-i32 target is caught too (Int16 max 32767; the branch
-        // literal still defaults to i64, so the wrap fires): `40000` overflows Int16.
-        rejects("(: c Bool)", "(: (+ (if c 40000 2) 5) Int16)");
-        // IN-RANGE constants and RUNTIME branch values are UNAFFECTED — they compile (checked by the
-        // sibling run tests); only a compile-time-constant OVERFLOW is the error.
-    }
+    // (an_oversize_constant_in_a_narrowed_control_flow_operand_is_rejected migrated to corpus 06-numeric-model,
+    // the CONTROL-FLOW-OPERAND face of the narrow-width fit-check (by the compound-payload descent group): a
+    // compile-time-constant if/match/let branch value that overflows a narrow op width → CDZ0302 (not a silent
+    // i32.wrap_i64), across every operand route (+, &, nested +, through a let, via a match arm) + a
+    // fits-i32-not-Int16 value. --case grades the reject code (all 6 PASS). In-range/runtime branch values are
+    // unaffected — covered by the sibling run tests.)
 
     #[test]
     fn cdz_check_rejects_an_oversize_literal_in_a_runtime_if_branch_under_a_narrow_annotation() {
