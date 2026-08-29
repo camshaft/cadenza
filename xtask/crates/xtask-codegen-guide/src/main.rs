@@ -12,9 +12,9 @@
 use cadenza_ast::ast::{Arenas, Struct, StructId};
 use cadenza_syntax_core::spans::SpanTable;
 
-// Module-wrapping for the guide shred (operator: shred in Rust from binary AST). The `--shred` mode that
-// consumes these lands in the next increment; for now the module is unit-tested in isolation.
-#[allow(dead_code)]
+// Guide shred (operator: shred in Rust from the binary AST). `wrap` = the wrapModule port; `shred` = the
+// `--shred` mode (decode binary AST → walk (source) subtrees → wrap + render + emit the corpus cases).
+mod shred;
 mod wrap;
 
 fn main() {
@@ -22,6 +22,25 @@ fn main() {
     let check = args.iter().any(|a| a == "--check");
     let migrate = args.iter().any(|a| a == "--migrate");
     let registry = args.iter().any(|a| a == "--registry");
+
+    // --shred <out-dir> <cdz-bin> <ordered .cdzb list>: the guide shred (binary-AST-in). Positional args:
+    // out-dir, the cdz binary (for the sexpr→ml render), then the chapter binary-AST files in case order.
+    if args.iter().any(|a| a == "--shred") {
+        let pos: Vec<String> = args
+            .iter()
+            .filter(|a| !a.starts_with("--"))
+            .cloned()
+            .collect();
+        if pos.len() < 3 {
+            eprintln!(
+                "usage: xtask-codegen-guide --shred <out-dir> <cdz-bin> <ch1.cdzb> [ch2.cdzb …]"
+            );
+            std::process::exit(2);
+        }
+        shred::run_shred(&pos[0], &pos[1], &pos[2..]);
+        return;
+    }
+
     let path = match args.iter().find(|a| !a.starts_with("--")) {
         Some(p) => p.clone(),
         None => {
