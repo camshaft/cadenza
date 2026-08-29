@@ -1,0 +1,22 @@
+# xtask-duvet-check — the citation-coverage regression gate as its OWN standalone crate
+# (v-xtask-decompose: the decompose-the-monolith directive). Carved out of xtask/src/duvet_check.rs
+# verbatim. Runs `duvet report --json`, counts the `//=` / `//#` citation annotations, and FAILS if the
+# live count drops below the committed `.duvet/coverage-floor.json` floor; `--save` rewrites the floor.
+# Fail-soft: a missing `duvet` binary SKIPS, a stranded citation WARNS (doesn't block).
+#
+# LEAF crate: only `serde_json` + std (no xtask / xtask-support dep — the independent-caching rule).
+# Repo root from `CDZ_REPO_ROOT` (else cwd), matching xtask's `Paths::resolve`.
+[package]
+name = "xtask-duvet-check"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-duvet-check"
+path = "src/main.rs"
+
+[dependencies]
+# Parses `duvet report --json` (count SPEC requirements vs untyped citation annotations) + the committed
+# floor file. The only dep this leaf needs.
+serde_json = "1"
