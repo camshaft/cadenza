@@ -126,11 +126,17 @@
 //!   dropped at lowering (the trap is textless), so a placeholder `""` re-emits (byte-idempotent, and
 //!   value-equivalent — present → the payload, absent → the same trap).
 //!
-//! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
-//! (Seq/Block/Break), `Bytes.of` / `Str` ops, richer SUM decision trees (guarded /
-//! literal-test / nested-switch / default sum arms — the `SumCont::Guarded` continuation), nested-element
-//! list arms, non-scalar scalar-match probes, and a multi-argument variant CONSTRUCTOR (`SumNew` — the
-//! match side already binds multi-payload slots).
+//! Now EMITTED (this comment was long stale): closures (`Closure`/`Captured`/`CallClosure`, #5108),
+//! `Bytes.of` / `Str` ops (#5020/#5032), the full SUM decision-tree family (guarded / literal-test /
+//! nested-switch / default arms, #5146/#5155/#5159/#5184), multi-argument variant constructors (#5044/
+//! #5063), the Qty-return control-flow family (If/Let/Match*, #5341/#5355/#5362), and runtime binary
+//! CONSTRUCTION `(bin (uNN v)…)` (`BinBuild`, #5376).
+//!
+//! Still declining, for later increments: `HostCall` (a genuine host effect that does not erase),
+//! sequencing (`Seq`/`Block`/`Break`), binary PATTERN reads (`BinIntRead`) + runtime bit-fields
+//! (`BinBitsBuild`), the richer-sum LONG TAIL (multi-payload-OUTER nested-switch, deep literal-test),
+//! non-scalar scalar-match probes, generic / open user sums, a Qty over a heap `BigInt`/`Rational`
+//! magnitude (not boundary-representable), and runtime `Ast.print` / `Ast.encode`.
 
 use crate::ast::{Builder, IntValue, Leaf, Radix, StructId};
 use crate::core::Core;
