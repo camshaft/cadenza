@@ -4856,17 +4856,22 @@ fn provider_cache_dir() -> Option<std::path::PathBuf> {
     Some(default_store().join("providers"))
 }
 
-/// Enumerate the resolved suite's `@test` definitions as JSON and return — the body of `cdz test --list`.
-/// WASMTIME-FREE by construction: it loads each file's import closure, builds the compiler `Db`, and reads
-/// `db.test_defs()` — the same front-half `cdz test` runs BEFORE any wasm emit/JIT (`run_test_file`'s
-/// 5172-5285 enumeration head), stopping there. It compiles nothing and links no runtime, so a
+/// Enumerate the resolved suite's `@test` definitions as a CADENZA-AST-BINARY value and return — the body
+/// of `cdz test --list`. WASMTIME-FREE by construction: it loads each file's import closure, builds the
+/// compiler `Db`, and reads `db.test_defs()` — the same front-half `cdz test` runs BEFORE any wasm emit/JIT
+/// (`run_test_file`'s enumeration head), stopping there. It compiles nothing and links no runtime, so a
 /// `--no-default-features` `cdz` (no `cdz-run`) still produces it.
 ///
-/// Output: `{ "project": <target>, "tests": [ { "name", "file", "is_property" }, … ] }`. The names come
+/// Output: the SAME `(test-list (test <name> <is-property> <file>)…)` cadenza-ast value the DELEGATE path
+/// (`rcdzc::sidecar` `Query::TestList`, `KIND_TEST_LIST`) emits — one `(test …)` child per test, POSITIONAL:
+/// `name` (`Str`), `is-property` (`Bool`), `file` (`Str`) — `codec::encode`d and written verbatim to stdout.
+/// This is the operator cadenza-ast-binary-everywhere directive (NO JSON) and keeps `--list` FORMAT-IDENTICAL
+/// across the `standalone` (this in-process path) and delegate builds, so v-nix's dynamic-derivations
+/// discovery decodes ONE format with the shared `codec` regardless of which `cdz` it invokes. The names come
 /// from the `Db`, NOT a regex (the compiler's own source carries `@test` as a parsed token — a regex would
-/// massively over-count, per v-test-shred). `is_property` is `!def.params.is_empty()` — a `@test` that
-/// takes parameters is a property test (run over generated inputs); a nullary `@test` is a plain unit test.
-/// (The gate suites carry no property tests, so the field is uniformly `false` there — kept for the future.)
+/// massively over-count, per v-test-shred). `is-property` is `!def.params.is_empty() || name.ends_with("-gen")`
+/// — a `@test` taking parameters (or the `Test.gen` property wrapper) is a property test; a nullary one is a
+/// plain unit test (matches the delegate path's `compile_tests` classification exactly).
 ///
 /// Enumeration mirrors `run_test_file` exactly: a PACKAGE (a file that declares imports) links its whole
 /// closure and keeps only the ENTRY file's own `@test`s (an imported library's tests belong to THAT file,
@@ -4874,9 +4879,33 @@ fn provider_cache_dir() -> Option<std::path::PathBuf> {
 /// is PER FILE (`seen`), matching the run. Order is the resolved-`files` order (path-sorted / manifest
 /// order) then declaration order — deterministic, so a drift-guard comparing a fresh `--list` to a
 /// committed one is stable. Ignores `--filter`/`--tag`: a manifest must enumerate the WHOLE suite.
-fn list_tests(target: &str, files: &[String]) -> ExitCode {
-    // One JSON record per test. Built with `serde_json` so quoting/escaping of a test name is correct.
-    let mut records: Vec<serde_json::Value> = Vec::new();
+fn list_tests(files: &[String]) -> ExitCode {
+    match list_test_bytes(files) {
+        Ok(bytes) => {
+            // Write the `(test-list …)` cadenza-ast-binary value VERBATIM to stdout (the delegate path's
+            // `Query::TestList` bytes are likewise forwarded raw; consumers decode with the shared `codec`).
+            use std::io::Write as _;
+            match std::io::stdout().write_all(&bytes) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{PROG}: --list: could not write the test-list: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Err(code) => code,
+    }
+}
+
+/// Enumerate the resolved suite's `@test`s and return the `codec::encode`d `(test-list (test <name>
+/// <is-property> <file>)…)` cadenza-ast value (the enumeration half of [`list_tests`], factored out so it
+/// is unit-testable without capturing stdout). `Err(ExitCode::FAILURE)` on a load/decode/link fault (a
+/// broken project cannot be honestly enumerated — failing red is what the drift-guard wants).
+fn list_test_bytes(files: &[String]) -> Result<Vec<u8>, ExitCode> {
+    // Accumulate one `(test <name> <is-property> <file>)` child per test into ONE `(test-list …)` value —
+    // the cadenza-ast-binary tooling format (mirrors the delegate `Query::TestList` shape byte-for-byte).
+    let mut b = cadenza_syntax::Builder::new();
+    let mut test_nodes: Vec<cadenza_syntax::StructId> = Vec::new();
     for file in files {
         // Follow the file's import closure — the SAME linked program `cdz test`/`cdz check` sees, so a test
         // in a module that imports a sibling enumerates against the same package. A load error is FATAL for
@@ -4885,7 +4914,7 @@ fn list_tests(target: &str, files: &[String]) -> ExitCode {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("{PROG}: {e}");
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
         };
         let is_package = !declared_import_paths(&closure[0].arenas).is_empty();
@@ -4907,7 +4936,7 @@ fn list_tests(target: &str, files: &[String]) -> ExitCode {
             for art in &ast_arts {
                 let Some(a) = rcdzc::codec::decode(&art.bytes) else {
                     eprintln!("{PROG}: {file}: could not decode `{}`'s AST", art.name);
-                    return ExitCode::FAILURE;
+                    return Err(ExitCode::FAILURE);
                 };
                 rcdzc_files.push((art.name.clone(), a));
             }
@@ -4915,7 +4944,7 @@ fn list_tests(target: &str, files: &[String]) -> ExitCode {
                 Ok(p) => p,
                 Err(r) => {
                     eprintln!("{PROG}: {file}: {}", r.message);
-                    return ExitCode::FAILURE;
+                    return Err(ExitCode::FAILURE);
                 }
             };
             let linkage = program.linkage();
@@ -4925,7 +4954,7 @@ fn list_tests(target: &str, files: &[String]) -> ExitCode {
         } else {
             let Some(rcdzc_arenas) = rcdzc::codec::decode(&ast_arts[0].bytes) else {
                 eprintln!("{PROG}: {file}: could not decode the program's AST");
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             };
             (rcdzc::db::Db::load(rcdzc_arenas), None)
         };
@@ -4944,27 +4973,25 @@ fn list_tests(target: &str, files: &[String]) -> ExitCode {
             if !seen.insert(name.clone()) {
                 continue;
             }
-            // A `@test` taking parameters is a PROPERTY test (run over generated inputs); a nullary one is a
-            // plain unit test. `params` is empty for a nullary def (`db::Def`), the cheap wasmtime-free signal.
-            let is_property = !db.defs[i].params.is_empty();
-            records.push(serde_json::json!({
-                "name": name,
-                "file": file,
-                "is_property": is_property,
-            }));
+            // A `@test` taking parameters (or the `Test.gen` `-gen` property wrapper) is a PROPERTY test (run
+            // over generated inputs); a nullary one is a plain unit test. This matches the delegate path's
+            // `compile_tests` classification EXACTLY, so `--list` agrees across both builds.
+            let is_property = !db.defs[i].params.is_empty() || name.ends_with("-gen");
+            let head = b.name("test");
+            let name_n = b.atom_leaf(cadenza_syntax::Leaf::Str(name.as_str().into()));
+            let isprop_n = b.atom_leaf(cadenza_syntax::Leaf::Bool(is_property));
+            let file_n = b.atom_leaf(cadenza_syntax::Leaf::Str(file.as_str().into()));
+            test_nodes.push(b.list(vec![head, name_n, isprop_n, file_n]));
         }
     }
-    let doc = serde_json::json!({ "project": target, "tests": records });
-    match serde_json::to_string_pretty(&doc) {
-        Ok(s) => {
-            println!("{s}");
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("{PROG}: --list: could not serialize the test manifest: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    // Wrap the per-test children in the `(test-list …)` root and return its `codec::encode`d bytes — the same
+    // cadenza-ast-binary value the delegate `Query::TestList` produces (consumers decode with the shared
+    // `codec` / `cdz convert --from binary`).
+    let mut children: Vec<cadenza_syntax::StructId> = Vec::with_capacity(test_nodes.len() + 1);
+    children.push(b.name("test-list"));
+    children.extend(test_nodes);
+    let root = b.list(children);
+    Ok(cadenza_syntax::codec::encode(&b.finish(root)))
 }
 
 /// `cdz test --emit-shred` — the compiler-driven test SHRED (the operator model), the body behind the flag.
@@ -5266,13 +5293,13 @@ fn run_test(args: &TestArgs) -> ExitCode {
         vec![target.clone()]
     };
 
-    // `--list`: ENUMERATE the resolved suite's `@test` names as JSON and EXIT — no check-gate, no emit, no
-    // JIT, no wasmtime. This is the eval-time enumeration the test-shred nix matrix reads from a committed
-    // file; it must be cheap and touch NONE of the run machinery below. Short-circuit here, right after
-    // resolving `files`, so it shares the exact file-resolution `cdz test` uses (manifest / dir walk / one
-    // file) but nothing after it.
+    // `--list`: ENUMERATE the resolved suite's `@test` names as a cadenza-ast-binary `(test-list …)` value
+    // and EXIT — no check-gate, no emit, no JIT, no wasmtime. This is the compiler-informed discovery source
+    // v-nix's dynamic-derivations fan-out reads (no committed index, no IFD); it must be cheap and touch NONE
+    // of the run machinery below. Short-circuit here, right after resolving `files`, so it shares the exact
+    // file-resolution `cdz test` uses (manifest / dir walk / one file) but nothing after it.
     if args.list {
-        return list_tests(&target, &files);
+        return list_tests(&files);
     }
     // `--emit-shred`: shred the suite into per-@test wasm + a manifest (compile-only), then EXIT. Shares the
     // exact file-resolution above; the per-group emit + write is `run_emit_shred`.
@@ -7734,17 +7761,20 @@ struct TestArgs {
     /// suite fails RED, same as a normal run). Exit 0 iff the check passed and the providers were warmed.
     #[arg(long)]
     warm_only: bool,
-    /// ENUMERATE the resolved suite's `@test` definitions as JSON and EXIT — compile NOTHING, run nothing,
-    /// link no wasmtime. Prints `{ "project": <target>, "tests": [ { "name", "file", "is_property" }, … ] }`
-    /// where the names come from the compiler `Db` (`db.test_defs`), NOT a source regex (the compiler's own
-    /// source contains `@test` as a parsed token, so a regex massively over-counts). `is_property` is true
-    /// for a `@test` that takes parameters (a nullary test is a plain unit test). This is the EVAL-time
-    /// enumeration the test-shred nix matrix reads from a COMMITTED file to fan out one derivation per test
-    /// (no IFD) + drift-guard against (fresh `--list` ≠ committed ⇒ loud red). Wasmtime-free by construction:
-    /// it loads the import closure, builds the `Db`, and enumerates — the same front-half `cdz test` runs
-    /// BEFORE any emit/JIT — so a `--no-default-features` `cdz` (no `cdz-run` link) can still produce it.
-    /// Ignores `--filter`/`--tag` (a manifest must list the WHOLE suite). Peer of `--emit-shred` (which adds
-    /// the per-test wasm + the full manifest as a BUILD output); `--list` is the eval-time NAMES-only half.
+    /// ENUMERATE the resolved suite's `@test` definitions as a cadenza-ast-binary value and EXIT — compile
+    /// NOTHING, run nothing, link no wasmtime. Writes the `(test-list (test <name> <is-property> <file>)…)`
+    /// value (`codec::encode`d, POSITIONAL fields) verbatim to stdout — the SAME shape the delegate compiler
+    /// query (`Query::TestList`) emits, so `--list` is format-identical across the standalone + delegate
+    /// builds (operator cadenza-ast-binary-everywhere directive, NO JSON; decode with `cdz convert --from
+    /// binary` / the shared `codec`). The names come from the compiler `Db` (`db.test_defs`), NOT a source
+    /// regex (the compiler's own source contains `@test` as a parsed token, so a regex massively over-counts).
+    /// `is-property` is true for a `@test` that takes parameters or the `Test.gen` `-gen` wrapper (a nullary
+    /// test is a plain unit test). This is the compiler-informed discovery source v-nix's DYNAMIC-DERIVATIONS
+    /// fan-out reads to build one CA-derivation per test (no committed index, no IFD). Wasmtime-free by
+    /// construction: it loads the import closure, builds the `Db`, and enumerates — the same front-half `cdz
+    /// test` runs BEFORE any emit/JIT — so a `--no-default-features` `cdz` (no `cdz-run` link) can still
+    /// produce it. Ignores `--filter`/`--tag` (a manifest must list the WHOLE suite). Peer of `--emit-shred`
+    /// (which adds the per-test wasm + the full manifest as a BUILD output); `--list` is the NAMES-only half.
     #[arg(long)]
     list: bool,
     /// SHRED the resolved suite into per-`@test` wasm COMPONENTS + a manifest, into `--out-dir`, and EXIT
@@ -11772,6 +11802,47 @@ mod tests {
         assert!(!m.overflow_signed_malformed, "absent is not malformed");
         assert_eq!(m.overflow_unsigned, None);
         assert!(!m.overflow_unsigned_malformed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `cdz test --list` emits the cadenza-ast-binary `(test-list (test <name> <is-property> <file>)…)`
+    /// value (NOT JSON) — the operator cadenza-ast-binary-everywhere directive + format-identical to the
+    /// delegate `Query::TestList` path, so v-nix's dynamic-derivations discovery decodes ONE format. Pins:
+    /// the bytes DECODE as cadenza-ast (a JSON regression would fail `codec::decode`), the root is a
+    /// `(test-list …)` form, and each `@test` appears once as a positional `(test name is-property file)`.
+    #[test]
+    fn list_tests_emits_cadenza_ast_binary_test_list() {
+        let dir = tmp("list-tests-binary");
+        let f = dir.join("suite.cdz");
+        // Two nullary @tests: a plain unit test + a `-gen` name (the `Test.gen` property wrapper the delegate
+        // path flags is-property, exercised here without needing a param so the file loads trivially).
+        std::fs::write(
+            &f,
+            "@test\ndef alpha-passes() = unit\n\n@test\ndef beta-gen() = unit\n",
+        )
+        .unwrap();
+        let bytes =
+            list_test_bytes(&[f.to_string_lossy().into_owned()]).expect("enumerates the suite");
+        // Must DECODE as a cadenza-ast value — a JSON regression (serde bytes) would not.
+        let a = cadenza_syntax::codec::decode(&bytes)
+            .expect("--list output is cadenza-ast binary, not JSON");
+        let children = a
+            .as_form(a.root, "test-list")
+            .expect("root is a `(test-list …)` form");
+        assert_eq!(children.len(), 2, "both @tests enumerated once");
+        let mut names: Vec<String> = Vec::new();
+        for &c in children {
+            let fields = a
+                .as_form(c, "test")
+                .expect("each child is a `(test …)` form");
+            assert_eq!(fields.len(), 3, "positional name / is-property / file");
+            names.push(a.as_str(fields[0]).expect("name is a Str").to_string());
+        }
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["alpha-passes".to_string(), "beta-gen".to_string()]
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
