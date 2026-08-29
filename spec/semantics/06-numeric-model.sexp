@@ -14118,3 +14118,39 @@
     (def (main) (+ (f 300000) 1))
     (export main)))
   (output (: -9223372036854775808 Int64)))
+
+(case "eh1 handler STATE-THREADING across a runtime-count recursion — through the cadenza hop"
+  (doc "The first effect-family hop fence (breaker): an in-program (handle T 100 …) whose tick arm
+        resumes (+ p s) and advances state, driven by a RECURSIVE loop performing n times (n runtime —
+        the optimizer cannot discharge it). The hop re-emits the FULLY-LOWERED form: the handler
+        becomes an explicit state param (loop#eff2$s0) on a specialized loop, no effect syntax — and
+        values are exact through it. p decrements as s increments so each perform yields a constant:
+        n=3 → 3·103 = 309; n=5 → 5·105 = 525; n=0 → 0; n=100 → 100·200 = 20000. Byte-idempotent;
+        rust-agreed (undischargeable 300k-opaque feed → 525).")
+  (input (do
+    (effect T (op tick (-> Int64 Int64)))
+    (def (loop (: k Int64) (: acc Int64))
+      (if (> k 0) (loop (- k 1) (+ acc (T.tick k))) acc))
+    (def (main (: n Int64))
+      (handle T 100
+        ((tick (p) s (resume (+ p s) (+ s 1))))
+        (loop n 0)))
+    (export main)))
+  (call main (: 3 Int64)) (output (: 309 Int64))
+  (call main (: 5 Int64)) (output (: 525 Int64))
+  (call main (: 0 Int64)) (output (: 0 Int64))
+  (call main (: 100 Int64)) (output (: 20000 Int64)))
+
+(case "sy1 SYMBOL unit values in collections — set dedup + equality, through the cadenza hop"
+  (doc "The symbol member of the unit-value collection family (chars cc1, nullary ctors uc1): a #set
+        of #\"sym\" values dedups a runtime-branch-selected duplicate ({red,green,blue} → 3 when
+        sel=blue, {red,green} → 2 when sel=red) and symbol equality discriminates a runtime-selected
+        probe. n=7 → 30+1 = 31; n=0 → 20+0 = 20. Dual-path value-eq, byte-idempotent, rust-agreed,
+        live-0.")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 10 (Set.len #set(#"red" #"green" #"red" (if (> n 0) #"blue" #"red"))))
+         (if (= (if (> n 0) #"red" #"green") #"red") 1 0)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 31 Int64))
+  (call main (: 0 Int64)) (output (: 20 Int64)))
