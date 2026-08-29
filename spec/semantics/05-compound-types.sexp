@@ -1414,7 +1414,7 @@
   (input  (do
             (def (f n) (tuple n 1))
             (def (main) (f 3)) (export main)))
-  (output (: (tuple 3 1) (Tuple Int64 Int64))))
+  (output (: #tuple(3 1) (Tuple Int64 Int64))))
 
 (case "a constant tuple is returned as a program result"
   (doc    "The control the case above must match: a compile-time-known `(tuple 3 1)` returns fine
@@ -1422,7 +1422,7 @@
            result; the difference is only whether an element is known at compile time.")
   (input  (do
             (def (main) (tuple 3 1)) (export main)))
-  (output (: (tuple 3 1) (Tuple Int64 Int64))))
+  (output (: #tuple(3 1) (Tuple Int64 Int64))))
 
 (case "a constant mixed-leaf tuple (Int64 beside Bool) is returned as a program result"
   (doc    "`(tuple 0 true)` — a compile-time-known compound whose leaves span two scalar reps: an Int64
@@ -1432,7 +1432,7 @@
            decodes to its exact value form (companion to the homogeneous `(tuple 3 1)` control above).")
   (input  (do
             (def (main) (tuple 0 true)) (export main)))
-  (output (: (tuple 0 true) (Tuple Int64 Bool))))
+  (output (: #tuple(0 true) (Tuple Int64 Bool))))
 
 (case "a constant nested tuple is returned as a program result"
   (doc    "`(tuple 2 (tuple 2 2))` — a compound one of whose elements is itself a compound. The value
@@ -1441,7 +1441,7 @@
            Pins that a nested constant compound crosses the run boundary and decodes at full depth.")
   (input  (do
             (def (main) (tuple 2 (tuple 2 2))) (export main)))
-  (output (: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))))
+  (output (: #tuple(2 #tuple(2 2)) (Tuple Int64 (Tuple Int64 Int64)))))
 
 (case "a constant record is returned as a program result"
   (doc    "`(record (= a 3) (= b 1))` — a compile-time-known record. The value head is lowercase
@@ -1450,7 +1450,7 @@
            static type). The constant control companion to the runtime-field record result below.")
   (input  (do
             (def (main) (record (= a 3) (= b 1))) (export main)))
-  (output (: (record (= a 3) (= b 1)) (Record (: a Int64) (: b Int64)))))
+  (output (: #record((= a 3) (= b 1)) (Record (: a Int64) (: b Int64)))))
 
 ; A compound result crosses as a resource-with-display (`cadenza:run/run`'s make/encode), NOT a bare
 ; function — so the host reaches it by taking the escape path, NOT by looking up a function of the export's
@@ -1473,7 +1473,7 @@
            result crosses the escape under a named export, same as the String case.")
   (input  (do (def (pair) (tuple 1 2)) (export pair)))
   (call   pair)
-  (output (: (tuple 1 2) (Tuple Int64 Int64))))
+  (output (: #tuple(1 2) (Tuple Int64 Int64))))
 
 (case "a list compound export under a non-main name crosses to the host"
   (doc    "`(def (nums) (list 1 2 3))` exported as `nums`, driven by `(call nums)` → `(list 1 2 3)`. A
@@ -1481,7 +1481,7 @@
            agnostic to the compound's shape (String/tuple/list all route the same way).")
   (input  (do (def (nums) (list 1 2 3)) (export nums)))
   (call   nums)
-  (output (: (list 1 2 3) (List Int64))))
+  (output (: #list(1 2 3) (List Int64))))
 
 ; The `(tuple n 1)` case above carries ONE runtime element beside a constant. A runtime compound built
 ; on the heap must carry the general shape too: EVERY element computed at run time, MORE than two
@@ -1499,7 +1499,7 @@
   (input  (do
             (def (f a b) (tuple (+ a 1) (* b 2)))
             (def (main) (f 3 4)) (export main)))
-  (output (: (tuple 4 8) (Tuple Int64 Int64))))
+  (output (: #tuple(4 8) (Tuple Int64 Int64))))
 
 (case "a three-element runtime tuple is returned as a result"
   (doc    "`(tuple n (+ n 1) (+ n 2))` with n=10 produces `(tuple 10 11 12)`. Pins that a runtime tuple
@@ -1508,7 +1508,7 @@
   (input  (do
             (def (f n) (tuple n (+ n 1) (+ n 2)))
             (def (main) (f 10)) (export main)))
-  (output (: (tuple 10 11 12) (Tuple Int64 Int64 Int64))))
+  (output (: #tuple(10 11 12) (Tuple Int64 Int64 Int64))))
 
 (case "a runtime tuple with a boolean element is returned as a result"
   (doc    "`(tuple n (= n 0))` with n=0 produces `(tuple 0 true)` — a mixed Int64/Bool runtime tuple. A
@@ -1518,7 +1518,7 @@
   (input  (do
             (def (f n) (tuple n (= n 0)))
             (def (main) (f 0)) (export main)))
-  (output (: (tuple 0 true) (Tuple Int64 Bool))))
+  (output (: #tuple(0 true) (Tuple Int64 Bool))))
 
 (case "a nested runtime tuple is returned as a result"
   (doc    "`(tuple n (tuple n n))` with n=2 produces `(tuple 2 (tuple 2 2))` — a runtime tuple whose
@@ -1528,7 +1528,7 @@
   (input  (do
             (def (f n) (tuple n (tuple n n)))
             (def (main) (f 2)) (export main)))
-  (output (: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))))
+  (output (: #tuple(2 #tuple(2 2)) (Tuple Int64 (Tuple Int64 Int64)))))
 
 (case "an element is projected from a runtime-constructed tuple"
   (doc    "`(. (tuple n (+ n 1)) 1)` with n=5 projects element 1 of a runtime-built tuple, yielding
@@ -1774,7 +1774,7 @@
   (input  (do
             (def (f n) (record (= a n) (= b 1)))
             (def (main) (f 3)) (export main)))
-  (output (: (record (= a 3) (= b 1)) (Record (: a Int64) (: b Int64)))))
+  (output (: #record((= a 3) (= b 1)) (Record (: a Int64) (: b Int64)))))
 
 (case "record fields render in canonical (key-sorted) order regardless of source order"
   (doc    "`(record (b n) (a 1))` with n=2 renders `(record (a 1) (b 2))` — fields in sorted key
@@ -1784,7 +1784,7 @@
   (input  (do
             (def (f n) (record (= b n) (= a 1)))
             (def (main) (f 2)) (export main)))
-  (output (: (record (= a 1) (= b 2)) (Record (: a Int64) (: b Int64)))))
+  (output (: #record((= a 1) (= b 2)) (Record (: a Int64) (: b Int64)))))
 
 (case "a list with a runtime element is returned as a program result"
   (doc    "`(list n 2 3)` with n=1 produces `(list 1 2 3)` — a list one of whose elements is a runtime
@@ -1794,7 +1794,7 @@
   (input  (do
             (def (f n) (list n 2 3))
             (def (main) (f 1)) (export main)))
-  (output (: (list 1 2 3) (List Int64))))
+  (output (: #list(1 2 3) (List Int64))))
 
 (case "a list built at run time by a push-loop escapes to the host"
   (doc    "A list whose LENGTH is decided at run time — built by a recursive push-loop, not a literal
@@ -1808,7 +1808,7 @@
   (input  (do
             (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out i)) out))
             (def (main) (build 0 3 (list))) (export main)))
-  (output (: (list 0 1 2) (List Int64)))
+  (output (: #list(0 1 2) (List Int64)))
   (live-objects known-leak 2))
 
 (case "a list of Bool built at run time by a push-loop escapes with its Bool element type"
@@ -1820,7 +1820,7 @@
   (input  (do
             (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out (> i 0))) out))
             (def (main) (build 0 2 (list))) (export main)))
-  (output (: (list false true) (List Bool)))
+  (output (: #list(false true) (List Bool)))
   (live-objects known-leak 2))
 
 ; --- A consuming List op leaves a shared let-bound operand UNCHANGED (persistence) ----------------
@@ -2102,7 +2102,7 @@
   (input  (do
             (def (build m n) (if (< n 1) m (build (Map.insert m n n) (- n 1))))
             (def (main) (build Map.empty 3)) (export main)))
-  (output (: (map (= 1 1) (= 2 2) (= 3 3)) (Map Int64 Int64)))
+  (output (: #map((= 1 1) (= 2 2) (= 3 3)) (Map Int64 Int64)))
   (live-objects known-leak 1))
 
 (case "a map built at run time with list values escapes with its nested value type"
@@ -2114,7 +2114,7 @@
   (input  (do
             (def (build m n) (if (< n 1) m (build (Map.insert m n (list n)) (- n 1))))
             (def (main) (build Map.empty 2)) (export main)))
-  (output (: (map (= 1 (list 1)) (= 2 (list 2))) (Map Int64 (List Int64))))
+  (output (: #map((= 1 #list(1)) (= 2 #list(2))) (Map Int64 (List Int64))))
   (live-objects known-leak 5))
 
 ; The runtime-built maps above stop at a handful of keys — small enough that the CHAMP never splits a
@@ -3541,7 +3541,7 @@
            not force qualification; only a real variant-name collision does. Pins the sum_needs_qualified_heads
            predicate's BARE arm + cross-backend parity (was rust-qualified / wasm-bare before the fix).")
   (input  (do (type Ast (Lit Int64) (Node (List Ast))) (def (main) (Node (list (Lit 5) (Lit 6)))) (export main)))
-  (output (: (Node (list (Lit 5) (Lit 6))) Ast)))
+  (output (: (Node #list((Lit 5) (Lit 6))) Ast)))
 
 (case "a user sum named Ast renders BARE with RUNTIME payloads through one compiled body"
   (doc    "The runtime companion of the BARE-heads case above: the payloads are computed from a boundary
@@ -3554,7 +3554,7 @@
             (def (main (: n Int64))
               (Node (list (Lit n) (Lit (+ n 1)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: (Node (list (Lit 5) (Lit 6))) Ast))
+  (call   main (: 5 Int64)) (output (: (Node #list((Lit 5) (Lit 6))) Ast))
   (live-objects known-leak 5))
 
 (case "a user sum whose variant name collides with a built-in renders that head QUALIFIED on all backends"
@@ -4012,7 +4012,7 @@
             (def (build i n out)
               (if (< i n) (build (+ i 1) n (List.push out (list i))) out))
             (def (main) (build 0 3 (list))) (export main)))
-  (output (: (list (list 0) (list 1) (list 2)) (List (List Int64))))
+  (output (: #list(#list(0) #list(1) #list(2)) (List (List Int64))))
   (live-objects known-leak 8))
 
 (case "a two-level index reads an inner element of a list of lists"
@@ -4046,7 +4046,7 @@
            unobservable (#A List's Representation Is Unspecified And Unobservable), so it renders as one
            flat `(list …)`. The self-hosting compiler assembles output in linear time with this op.")
   (input  (do (def (main) (List.concat (list 1 2) (list 3 4))) (export main)))
-  (output (: (list 1 2 3 4) (List Int64))))
+  (output (: #list(1 2 3 4) (List Int64))))
 
 (case "the length of a concatenation is the sum of the two lengths"
   (doc    "`(List.len (List.concat (list 1 2 3) (list 4 5)))` = 5 — concatenation appends every element
@@ -4464,7 +4464,7 @@
   (input  (do
             (def (f n) (record (= x n) (= y (tuple n 1))))
             (def (main) (f 5)) (export main)))
-  (output (: (record (= x 5) (= y (tuple 5 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))))
+  (output (: #record((= x 5) (= y #tuple(5 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))))
 
 ; --- A constructor whose payload is itself a constructor keeps its own variant tag -------
 ; A Sum value is (variant-tag, payload); its canonical form is `(Variant payload)`
@@ -5017,7 +5017,7 @@
   (input  (do
             (def (f n) (Some (tuple n 1)))
             (def (main) (f 7)) (export main)))
-  (output (: (Some (tuple 7 1)) (Option (Tuple Int64 Int64)))))
+  (output (: (Some #tuple(7 1)) (Option (Tuple Int64 Int64)))))
 
 (case "a built-in Option is unwrapped by a helper that binds its payload"
   (doc    "A helper takes an `Option Int64` as a PARAMETER and matches it, binding and returning the
@@ -5263,7 +5263,7 @@
            3)` renders `(: (tuple 1 2 3) Rec)` — the erased escape, NOT the boxed `(Mk 1 2 3)` a
            multi-VARIANT sum's variant would render. Pins construction + escape of an erased struct.")
   (input  (do (type Rec (Mk Int64 Int64 Int64)) (def (main) (Rec.Mk 1 2 3)) (export main)))
-  (output (: (tuple 1 2 3) Rec)))
+  (output (: #tuple(1 2 3) Rec)))
 
 (case "a newtype over a sum escapes to the host as its erased underlying sum value-form"
   (doc    "A newtype over a sum — `(type Cached (Mk (Option Int64)))` — erases its `Mk` box to nothing, so a
@@ -5281,7 +5281,7 @@
            point (the nested `Mk None`) is tagged `Lst` too. `(type Lst (Mk (Option (Tuple Int64 Lst))))`,
            `(Mk (Some (tuple 7 (Mk None))))` renders `(: (Some (tuple 7 (: (None unit) Lst))) Lst)`.")
   (input  (do (type Lst (Mk (Option (Tuple Int64 Lst)))) (def (main) (Mk (Some (tuple 7 (Mk None))))) (export main)))
-  (output (: (Some (tuple 7 (: (None unit) Lst))) Lst))
+  (output (: (Some #tuple(7 (: (None unit) Lst))) Lst))
   (live-objects 0))
 
 (case "a recursive NEWTYPE traversal recurses on its projected recursive field"
@@ -7112,7 +7112,7 @@
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (f n) (IntList.Cons (tuple n (IntList.Nil ()))))
             (def (main) (f 5)) (export main)))
-  (output (: (Cons (tuple 5 (Nil unit))) IntList)))
+  (output (: (Cons #tuple(5 (Nil unit))) IntList)))
 
 (case "a generic recursive sum references itself bare and carries its own type parameter"
   (doc    "A GENERIC recursive sum — `(type Tree (Leaf a) (Branch (Tuple Tree Tree)))` — where the
@@ -7249,7 +7249,7 @@
                                (IntList.Nil ())
                                (IntList.Cons (tuple n (count (- n 1))))))
             (def (main) (count 3)) (export main)))
-  (output (: (Cons (tuple 3 (Cons (tuple 2 (Cons (tuple 1 (Nil unit))))))) IntList))
+  (output (: (Cons #tuple(3 (Cons #tuple(2 (Cons #tuple(1 (Nil unit))))))) IntList))
   (live-objects known-leak 6))
 
 ; -- recursive-sum render with a NON-Int64 scalar payload (behavioral migration from rcdzc
@@ -7265,7 +7265,7 @@
             (def (build (: n Int64)) (if (< n 1) (StrList.Nil ())
                                         (StrList.Cons (tuple "x" (build (- n 1))))))
             (def (main) (build 2)) (export main)))
-  (output (: (Cons (tuple "x" (Cons (tuple "x" (Nil unit))))) StrList))
+  (output (: (Cons #tuple("x" (Cons #tuple("x" (Nil unit))))) StrList))
   (live-objects known-leak 6))
 
 (case "a recursive sum carrying a Float64 renders its full runtime spine"
@@ -7276,7 +7276,7 @@
             (def (build (: n Int64)) (if (< n 1) (FloatList.Nil ())
                                         (FloatList.Cons (tuple 1.5 (build (- n 1))))))
             (def (main) (build 2)) (export main)))
-  (output (: (Cons (tuple 1.5 (Cons (tuple 1.5 (Nil unit))))) FloatList))
+  (output (: (Cons #tuple(1.5 (Cons #tuple(1.5 (Nil unit))))) FloatList))
   (live-objects known-leak 6))
 
 (case "a recursive sum carrying a Float32 renders its full runtime spine"
@@ -7287,7 +7287,7 @@
             (def (build (: n Int64)) (if (< n 1) (F32List.Nil ())
                                         (F32List.Cons (tuple (: 1.5 Float32) (build (- n 1))))))
             (def (main) (build 2)) (export main)))
-  (output (: (Cons (tuple 1.5 (Cons (tuple 1.5 (Nil unit))))) F32List))
+  (output (: (Cons #tuple(1.5 (Cons #tuple(1.5 (Nil unit))))) F32List))
   (live-objects known-leak 6))
 
 (case "a runtime-PARAMETERIZED recursive sum renders per-call depths from one export"
@@ -7320,9 +7320,7 @@
                                (Tree.Leaf n)
                                (Tree.Node (tuple (build (- n 1)) (build (- n 1))))))
             (def (main) (build 2)) (export main)))
-  (output (: (Node (tuple
-                (Node (tuple (Leaf 0) (Leaf 0)))
-                (Node (tuple (Leaf 0) (Leaf 0))))) Tree))
+  (output (: (Node #tuple((Node #tuple((Leaf 0) (Leaf 0))) (Node #tuple((Leaf 0) (Leaf 0))))) Tree))
   (live-objects known-leak 10))
 
 (case "a deep balanced tree is built and folded to a scalar, consuming both children"
@@ -10893,7 +10891,7 @@
   (input  (do
             (type P (Pt (Record (: x Int64) (: y Int64))) O)
             (def (main) (P.Pt (record (= x 1) (= y 2)))) (export main)))
-  (output (: (Pt (record (= x 1) (= y 2))) P)))
+  (output (: (Pt #record((= x 1) (= y 2))) P)))
 
 ; --- A user variant renders its BARE name, uniformly with built-in sums -----------------------------
 ; The escaped value form of a variant is its BARE variant name applied to its payload — `(Sm 42)`,
@@ -10956,7 +10954,7 @@
             (def (main) (mk 5))
             (export main)))
   (call   main)
-  (output (: (tuple 5 5) Pt)))
+  (output (: #tuple(5 5) Pt)))
 
 (case "a MULTI-payload struct newtype escapes as its payload tuple under the type header"
   (doc    "The multi-payload STRUCT form: `(type Pt (Mk Int64 Int64))` — a single-variant newtype with TWO
@@ -10973,7 +10971,7 @@
             (def (main) (mk 5))
             (export main)))
   (call   main)
-  (output (: (tuple 5 5) Pt)))
+  (output (: #tuple(5 5) Pt)))
 
 (case "a user sum's nullary variant escapes with its bare variant name"
   (doc    "The nullary companion: `(Opt.Nn)` (a nullary user variant, its payload the unit value) escapes
@@ -10996,7 +10994,7 @@
             (def (main) (mk 5))
             (export main)))
   (call   main)
-  (output (: (A (tuple)) V)))
+  (output (: (A #tuple()) V)))
 
 (case "an empty-tuple element on the HEAP path renders its (Tuple)-typed (tuple), not unit (type-directed, RULED-B ask-17874)"
   (doc    "The heap/runtime-encode companion of the distinct-type pin above: rendering is TYPE-DIRECTED, so
@@ -11013,7 +11011,7 @@
            heap element are the same rule: type-directed `(tuple)`.")
   (input  (do (def (main) (let ((v0 (tuple 21.04))) (tuple v0 (tuple (tuple v0 (tuple)))))) (export main)))
   (call   main)
-  (output (: (tuple (tuple 21.04) (tuple (tuple (tuple 21.04) (tuple)))) (Tuple (Tuple Float64) (Tuple (Tuple (Tuple Float64) Tuple)))))
+  (output (: #tuple(#tuple(21.04) #tuple(#tuple(#tuple(21.04) #tuple()))) (Tuple (Tuple Float64) (Tuple (Tuple (Tuple Float64) Tuple)))))
   (live-objects known-leak 5))
 
 ; --- A UNIT element in a HEAP-STORED compound occupies its slot with the inline-unit sentinel ----------
@@ -14088,7 +14086,7 @@
            (Tuple Int64 Bool). Tuples are how multi-field constructors pass 'multiple arguments'
            to a single-arity function/constructor.")
   (input  (tuple 1 true))
-  (output (: (tuple 1 true) (Tuple Int64 Bool))))
+  (output (: #tuple(1 true) (Tuple Int64 Bool))))
 
 (case "tuple elements are accessed by index"
   (doc    "Witnesses core-semantics.md: tuple elements are accessed positionally. (. t 0) gets
@@ -14468,7 +14466,7 @@
   (input  (do
             (def (mk n) (List.push (List.push (List.push (list) n) 8) 9))
             (def (main)  (mk 7)) (export main)))
-  (output (: (list 7 8 9) (List Int64))))
+  (output (: #list(7 8 9) (List Int64))))
 
 (case "the length of a grown list is its element count"
   (doc    "`List.len` reads the element count as a scalar — the fold-to-scalar half of the idiom, like
@@ -14486,7 +14484,7 @@
   (input  (do
             (def (put n) (List.update (List.push (List.push (list) 1) 2) 0 n))
             (def (main)  (put 99)) (export main)))
-  (output (: (list 99 2) (List Int64))))
+  (output (: #list(99 2) (List Int64))))
 
 (case "prepending an element onto a list inserts it at the front"
   (doc    "`List.prepend` is the front-insertion companion of `List.push` (which appends at the tail):
@@ -14497,7 +14495,7 @@
   (input  (do
             (def (front n) (List.prepend (List.push (List.push (list) 8) 9) n))
             (def (main)  (front 7)) (export main)))
-  (output (: (list 7 8 9) (List Int64))))
+  (output (: #list(7 8 9) (List Int64))))
 
 (case "the length of a prepended-onto list grows by one"
   (doc    "`List.prepend` grows the list by one exactly as `List.push` does — only the insertion position
@@ -15770,7 +15768,7 @@
            Canonical Key Order, §Map Iteration Is Deterministic) — independent of insertion order, and
            distinguishable from a record. Inserting 2↦20 then 1↦10 renders in key order.")
   (input  (do (def (main) (Map.insert (Map.insert Map.empty 2 20) 1 10)) (export main)))
-  (output (: (map (= 1 10) (= 2 20)) (Map Int64 Int64))))
+  (output (: #map((= 1 10) (= 2 20)) (Map Int64 Int64))))
 
 ; Map homogeneity (collections-and-text.md #A Map Associates Keys With Values: "A map MUST associate keys
 ; of one type with values of one type") holds under `Map.insert` too, not only for a map literal. The
@@ -16240,7 +16238,7 @@
            now forwards scalar params, so a computed-from-input collection crosses.")
   (input  (do (def (main (: a Int64)) (list a (* a 2))) (export main)))
   (call   main (: 7 Int64))
-  (output (: (list 7 14) (List Int64)))
+  (output (: #list(7 14) (List Int64)))
   (live-objects known-leak 2))
 
 (case "a parameterized export returns a tuple computed from its argument"
@@ -16315,8 +16313,8 @@
            value form, alongside the populated branch — the degenerate boundary the non-empty
            parameterized-return cases above cannot witness.")
   (input  (do (def (main (: n Int64)) (if (> n 0) (list n) (list))) (export main)))
-  (call   main (: 0 Int64)) (output (: (list) (List Int64)))
-  (call   main (: 5 Int64)) (output (: (list 5) (List Int64)))
+  (call   main (: 0 Int64)) (output (: #list() (List Int64)))
+  (call   main (: 5 Int64)) (output (: #list(5) (List Int64)))
   (live-objects 0))
 
 (case "a parameterized export returns a runtime-selected empty-or-nonempty map"
@@ -16325,8 +16323,8 @@
            Pins that `Map.empty` crosses the boundary as the canonical empty map form from a parameterized
            export, not only a populated map.")
   (input  (do (def (main (: n Int64)) (if (> n 0) (Map.insert Map.empty n n) Map.empty)) (export main)))
-  (call   main (: 0 Int64)) (output (: (map) (Map Int64 Int64)))
-  (call   main (: 5 Int64)) (output (: (map (= 5 5)) (Map Int64 Int64)))
+  (call   main (: 0 Int64)) (output (: #map() (Map Int64 Int64)))
+  (call   main (: 5 Int64)) (output (: #map((= 5 5)) (Map Int64 Int64)))
   (live-objects 0))
 
 (case "a parameterized export returns a runtime-selected empty-or-nonempty set"
@@ -16353,8 +16351,8 @@
            resource escape renders a NESTED element type (a tuple inside a list) from a runtime argument,
            the key-value-list shape a compiler emits (distinct from the flat parameterized-list return).")
   (input  (do (def (main (: n Int64)) (list (tuple n (* n 10)) (tuple (+ n 1) (* (+ n 1) 10)))) (export main)))
-  (call   main (: 5 Int64)) (output (: (list (tuple 5 50) (tuple 6 60)) (List (Tuple Int64 Int64))))
-  (call   main (: 0 Int64)) (output (: (list (tuple 0 0) (tuple 1 10)) (List (Tuple Int64 Int64))))
+  (call   main (: 5 Int64)) (output (: #list(#tuple(5 50) #tuple(6 60)) (List (Tuple Int64 Int64))))
+  (call   main (: 0 Int64)) (output (: #list(#tuple(0 0) #tuple(1 10)) (List (Tuple Int64 Int64))))
   (live-objects known-leak 4))
 
 (case "a parameterized export returns a list of lists built from its argument"
@@ -16363,8 +16361,8 @@
            collection (a list of lists, each a genuine sub-vector) crosses the resource-escape boundary from
            a runtime argument, the operand-lists shape a code emitter builds.")
   (input  (do (def (main (: n Int64)) (list (list n) (list n n))) (export main)))
-  (call   main (: 5 Int64)) (output (: (list (list 5) (list 5 5)) (List (List Int64))))
-  (call   main (: 0 Int64)) (output (: (list (list 0) (list 0 0)) (List (List Int64))))
+  (call   main (: 5 Int64)) (output (: #list(#list(5) #list(5 5)) (List (List Int64))))
+  (call   main (: 0 Int64)) (output (: #list(#list(0) #list(0 0)) (List (List Int64))))
   (live-objects known-leak 6))
 
 (case "a parameterized export builds a list of tuples by a runtime-length loop and measures it"
@@ -16386,7 +16384,7 @@
            side of the heap-return boundary (a scalar param already worked); the value is a runtime List.")
   (input  (do (def (main (: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))) (export main)))
   (call   main (: (tuple 7 9) (Tuple Int64 Int64)))
-  (output (: (list 7 9) (List Int64)))
+  (output (: #list(7 9) (List Int64)))
   (live-objects known-leak 3))
 
 (case "a tuple-parameter export returns a BigInt computed from its fields"
@@ -16411,7 +16409,7 @@
            9)) = (list 5 7 9)` draws from both — the scalar directly, the tuple's fields rebuilt.")
   (input  (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) (list a (. p 0) (. p 1))) (export main)))
   (call   main (: 5 Int64) (: (tuple 7 9) (Tuple Int64 Int64)))
-  (output (: (list 5 7 9) (List Int64)))
+  (output (: #list(5 7 9) (List Int64)))
   (live-objects known-leak 3))
 
 (case "an export with a tuple parameter before a scalar returns a list from both"
@@ -16420,7 +16418,7 @@
            trailing scalar.")
   (input  (do (def (main (: p (Tuple Int64 Int64)) (: a Int64)) (list (. p 0) (. p 1) a)) (export main)))
   (call   main (: (tuple 20 30) (Tuple Int64 Int64)) (: 40 Int64))
-  (output (: (list 20 30 40) (List Int64)))
+  (output (: #list(20 30 40) (List Int64)))
   (live-objects known-leak 3))
 
 (case "an export with two tuple parameters returns a list from both"
@@ -16429,7 +16427,7 @@
            `main((tuple 1 2), (tuple 3 4)) = (list 1 2 3 4)`.")
   (input  (do (def (main (: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. p 1) (. q 0) (. q 1))) (export main)))
   (call   main (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64)))
-  (output (: (list 1 2 3 4) (List Int64)))
+  (output (: #list(1 2 3 4) (List Int64)))
   (live-objects known-leak 4))
 
 (case "an export mixing a scalar and a tuple parameter returns a BigInt from both"
@@ -16447,7 +16445,7 @@
            3)) = (list 1 2 3)`.")
   (input  (do (def (main (: p (Tuple (Tuple Int64 Int64) Int64))) (list (. (. p 0) 0) (. (. p 0) 1) (. p 1))) (export main)))
   (call   main (: (tuple (tuple 1 2) 3) (Tuple (Tuple Int64 Int64) Int64)))
-  (output (: (list 1 2 3) (List Int64)))
+  (output (: #list(1 2 3) (List Int64)))
   (live-objects known-leak 4))
 
 (case "an export with a record-with-a-tuple-field parameter returns a list from its leaves"
@@ -16455,7 +16453,7 @@
            canonical sorted-key order. `main((record (pt (tuple 10 20)) (n 30))) = (list 10 20 30)`.")
   (input  (do (def (main (: p (Record (: pt (Tuple Int64 Int64)) (: n Int64)))) (list (. (. p pt) 0) (. (. p pt) 1) (. p n))) (export main)))
   (call   main (: (record (= pt (tuple 10 20)) (= n 30)) (Record (: pt (Tuple Int64 Int64)) (: n Int64))))
-  (output (: (list 10 20 30) (List Int64)))
+  (output (: #list(10 20 30) (List Int64)))
   (live-objects known-leak 4))
 
 (case "an export mixing a scalar and a nested-tuple parameter returns a list from both"
@@ -16463,7 +16461,7 @@
            — the scalar leaf, then the nested tuple's depth-first leaves, rebuilt.")
   (input  (do (def (main (: a Int64) (: p (Tuple (Tuple Int64 Int64) Int64))) (list a (. (. p 0) 0) (. p 1))) (export main)))
   (call   main (: 9 Int64) (: (tuple (tuple 5 6) 7) (Tuple (Tuple Int64 Int64) Int64)))
-  (output (: (list 9 5 7) (List Int64)))
+  (output (: #list(9 5 7) (List Int64)))
   (live-objects known-leak 4))
 
 (case "a composed call over a record-transforming function with an arithmetic field compiles"
@@ -18653,7 +18651,7 @@
   (input  (do (def (build (: n Int64)) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n)))
               (def (main) (tuple (build 3) 30))
               (export main)))
-  (output (: (tuple (list 1 2 3) 30) (Tuple (List Int64) Int64)))
+  (output (: #tuple(#list(1 2 3) 30) (Tuple (List Int64) Int64)))
   (live-objects known-leak 3))
 
 (case "a runtime-built list nested in a record field crosses the host boundary rendering the nested collection"
@@ -18666,7 +18664,7 @@
   (input  (do (def (build (: n Int64)) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n)))
               (def (main) (record (= data (build 2)) (= n 2)))
               (export main)))
-  (output (: (record (= data (list 1 2)) (= n 2)) (record (= data (List Int64)) (= n Int64))))
+  (output (: #record((= data #list(1 2)) (= n 2)) (record (data (List Int64)) (n Int64))))
   (live-objects known-leak 3))
 
 (case "a runtime list of sum-typed elements escapes rendering each element as its sum value-form"
@@ -18681,7 +18679,7 @@
                     (build (+ i 1) n ((. List push) out (if (> i 0) (: ((. Option Some) i) (Option Int64)) (: (. Option None) (Option Int64)))))
                     out))
               (def (main) (build 0 2 (: (list) (List (Option Int64))))) (export main)))
-  (output (: (list (None unit) (Some 1)) (List (Option Int64))))
+  (output (: #list((None unit) (Some 1)) (List (Option Int64))))
   (live-objects known-leak 3))
 
 (case "a runtime list of record elements escapes rendering each element as its named-field record form"
@@ -18694,8 +18692,8 @@
   (input  (do (def (build i n out)
                 (if (< i n) (build (+ i 1) n (List.push out (record (= op "x") (= seq i)))) out))
               (def (main) (build 0 2 (: (list) (List (Record (: op String) (: seq Int64)))))) (export main)))
-  (output (: (list (record (= op "x") (= seq 0)) (record (= op "x") (= seq 1)))
-             (List (record (= op String) (= seq Int64)))))
+  (output (: #list(#record((= op "x") (= seq 0)) #record((= op "x") (= seq 1)))
+             (List (record (op String) (seq Int64)))))
   (live-objects known-leak 6))
 
 (case "two sibling Option fields of different arg do not alias in the value-encode descriptor"
@@ -18713,8 +18711,8 @@
                 (record (= pl (: ((. Option Some) (: ((. P B) (record (= x "hi"))) P)) (Option P)))
                         (= corr (: (. Option None) (Option Bytes))))))
               (def (main) (build 0)) (export main)))
-  (output (: (record (= corr (None unit)) (= pl (Some (B (record (= x "hi"))))))
-             (record (= corr (Option Bytes)) (= pl (Option P)))))
+  (output (: #record((= corr (None unit)) (= pl (Some (B #record((= x "hi"))))))
+             (record (corr (Option Bytes)) (pl (Option P)))))
   ; WIT static encoding: the record-return value-encode assembler now hoists embedded constants build-once
   ; (census-excluded immortals), so the residual leak drops 6→4.
   (live-objects 0))
@@ -20234,7 +20232,7 @@
                       (= correlation (: (None unit) (Option Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= correlation (None unit)) (= payload (Some (B (record (= x "hi")))))) (record (= correlation (Option Bytes)) (= payload (Option P)))))
+  (output (: #record((= correlation (None unit)) (= payload (Some (B #record((= x "hi")))))) (record (correlation (Option Bytes)) (payload (Option P)))))
   ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 6→4.
   (live-objects 0))
 
@@ -20247,7 +20245,7 @@
                       (= second (Some (Q.D (record (= y 7)))))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= first (Some (B (record (= x "hi"))))) (= second (Some (D (record (= y 7)))))) (record (= first (Option P)) (= second (Option Q)))))
+  (output (: #record((= first (Some (B #record((= x "hi"))))) (= second (Some (D #record((= y 7)))))) (record (first (Option P)) (second (Option Q)))))
   ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 8→5.
   (live-objects 0))
 
@@ -20259,7 +20257,7 @@
                       (= zcorrelation (: (None unit) (Option Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= apayload (Some (B (record (= x "hi"))))) (= zcorrelation (None unit))) (record (= apayload (Option P)) (= zcorrelation (Option Bytes)))))
+  (output (: #record((= apayload (Some (B #record((= x "hi"))))) (= zcorrelation (None unit))) (record (apayload (Option P)) (zcorrelation (Option Bytes)))))
   ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 6→4.
   (live-objects 0))
 
@@ -20270,7 +20268,7 @@
                       (= second (: (Err (String.to-bytes "no")) (Result Int64 Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= first (Ok 7)) (= second (Err b"no"))) (record (= first (Result Int64 String)) (= second (Result Int64 Bytes)))))
+  (output (: #record((= first (Ok 7)) (= second (Err b"no"))) (record (first (Result Int64 String)) (second (Result Int64 Bytes)))))
   (live-objects 0))
 
 (case "vse11 two LIST fields of different element types encode independently — the list control of the generic-instantiation family"
@@ -20280,7 +20278,7 @@
                       (= tags (list "a" "b"))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= nums (list 1 2)) (= tags (list "a" "b"))) (record (= nums (List Int64)) (= tags (List String)))))
+  (output (: #record((= nums #list(1 2)) (= tags #list("a" "b"))) (record (nums (List Int64)) (tags (List String)))))
   ; WIT static encoding: record-return build-once hoists the two constant list fields → residual leak 7→1.
   (live-objects 0))
 
@@ -21051,7 +21049,7 @@
     (def (main (: n Int64)) (if (> n 0) (list n (+ n 1)) (list 9)))
     (export main)))
   (call main (: 5 Int64))
-  (output (: (list 5 6) (List Int64)))
+  (output (: #list(5 6) (List Int64)))
   (live-objects 2))
 
 (case "rlv1 a returned list plus a DISCARDED sibling temp — live count stays exactly the result"
@@ -21061,7 +21059,7 @@
         (if (> (List.len tmp) 1) (list n (+ n 1)) (list 0))))
     (export main)))
   (call main (: 5 Int64))
-  (output (: (list 5 6) (List Int64)))
+  (output (: #list(5 6) (List Int64)))
   (live-objects 2))
 
 ; ── Reclaim: Map.remove drops the owned boxed key temporary it only borrows (migrated from rcdzc) ──
