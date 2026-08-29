@@ -6913,6 +6913,31 @@
             (export main)))
   (output (: 5 Int64)))
 
+; A MALFORMED top-level `(@ …)` — one that wraps NO well-formed definition — is the counterpart reject: the
+; strip pass unwraps every def-wrapping annotation IN PLACE (even an unknown name, above), so any SURVIVING
+; top-level `(@ …)` wrapped no def to unwrap. Left alone the head `@` resolved as the misleading "unbound name
+; `@`"; instead each is CDZ0201 naming the `(@ <name> (def …))` shape. Migrated from rcdzc
+; a_malformed_top_level_annotation_names_the_annotation_shape_not_an_unbound_at (the five malformed shapes).
+(case "a name-only top-level annotation wraps no definition and is rejected"
+  (input  (do (@ test) (def (main) 0) (export main)))
+  (error  CDZ0201 (message "annotation wraps no definition") (message "`(@ <name> (def …))`")))
+
+(case "an empty top-level annotation wraps no definition and is rejected"
+  (input  (do (@) (def (main) 0) (export main)))
+  (error  CDZ0201 (message "annotation wraps no definition") (message "`(@ <name> (def …))`")))
+
+(case "a top-level annotation over a non-form target wraps no definition and is rejected"
+  (input  (do (@ test 5) (def (main) 0) (export main)))
+  (error  CDZ0201 (message "annotation wraps no definition") (message "`(@ <name> (def …))`")))
+
+(case "a top-level annotation over a non-def list target wraps no definition and is rejected"
+  (input  (do (@ test (foo 1)) (def (main) 0) (export main)))
+  (error  CDZ0201 (message "annotation wraps no definition") (message "`(@ <name> (def …))`")))
+
+(case "a top-level annotation over a malformed inner def wraps no definition and is rejected"
+  (input  (do (@ test (def)) (def (main) 0) (export main)))
+  (error  CDZ0201 (message "annotation wraps no definition") (message "`(@ <name> (def …))`")))
+
 ; COST HEURISTIC (Addendum 4). The UNANNOTATED default is always-inline, but a LARGE, MULTIPLY-CALLED def
 ; whose call has a runtime-dependent argument is emitted ONCE and called instead of duplicated at each site.
 ; This is an EMISSION-STRATEGY choice — it does NOT change semantics — so it is observable only via the
