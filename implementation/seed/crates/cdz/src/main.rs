@@ -5060,7 +5060,7 @@ fn run_test(args: &TestArgs) -> ExitCode {
             if covered.contains(&canon_f) {
                 continue;
             }
-            let (had_error, closure_paths) = check_one(f, false, false);
+            let (had_error, closure_paths) = check_one(f, false, false, false);
             check_failed |= had_error;
             covered.insert(canon_f);
             for path in &closure_paths {
@@ -5907,6 +5907,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 file: Some(dir_str.clone()),
                 json: false,
                 verify_fixes: false,
+                diagnostics_wire: false, // watch is an interactive re-check; the raw grader wire is a one-shot mode
             }),
             WatchCmd::Test => run_test(&TestArgs {
                 file: Some(dir_str.clone()),
@@ -7606,6 +7607,15 @@ struct CheckArgs {
     /// rule-verified fixes (e.g. the `_`-prefix silence) are always `verified` regardless.
     #[arg(long)]
     verify_fixes: bool,
+    /// Dump the compiler's RAW `KIND_DIAGNOSTICS` artifact bytes to stdout VERBATIM (the 8-column TAB wire
+    /// `severity  code  node  fix-node  fix-replacement  fix-verified  message` that `Query::Diagnostics`
+    /// emits) and exit 0 REGARDLESS of fault presence — the pass/fail call belongs to the CONSUMER, not the
+    /// exit code. This is the machine wire a GRADER reads (`cdz-corpus-grade::parse_diagnostics`, the C1
+    /// diagnostic-QUALITY grade), distinct from `--json` (which PROJECTS diagnostics to editor fix-edits
+    /// `[{start,end,text}]` for an IDE/agent). Takes precedence over `--json`/`--verify-fixes` when combined;
+    /// on a compile that produces no diagnostics artifact, emits nothing and still exits 0.
+    #[arg(long)]
+    diagnostics_wire: bool,
 }
 
 #[derive(clap::Args)]
@@ -8290,7 +8300,8 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         // same closure here (the redundant second load this used to do). A later target that is one of
         // those imported modules is then skipped. On a load error the returned closure is empty, so f
         // itself is still covered below (check_one already reported the error).
-        let (had_error, closure_paths) = check_one(f, args.json, args.verify_fixes);
+        let (had_error, closure_paths) =
+            check_one(f, args.json, args.verify_fixes, args.diagnostics_wire);
         any_error |= had_error;
         covered.insert(canon_f);
         for path in &closure_paths {
@@ -8421,7 +8432,12 @@ fn resolve_check_targets(target: Option<&str>) -> Result<Vec<String>, String> {
 /// `03-equality-and-observation.sexp:720/739/783`, so the category flip is an operator call). If the
 /// ruling keeps them declines but asks check to surface PERMANENT ones, that marker-consumption lands
 /// HERE (this crate); if it makes them coded, no change here is needed.
-fn check_one(file: &str, json: bool, verify_fixes: bool) -> (bool, Vec<String>) {
+fn check_one(
+    file: &str,
+    json: bool,
+    verify_fixes: bool,
+    diagnostics_wire: bool,
+) -> (bool, Vec<String>) {
     // Follow the entry file's IMPORT CLOSURE so a cross-file reference (an imported type or definition)
     // resolves and checks — `cdz check FILE` then sees the SAME linked program the package compile does.
     // A file that imports nothing loads as a lone file, byte-identical to a standalone check; only a file
@@ -8480,12 +8496,26 @@ fn check_one(file: &str, json: bool, verify_fixes: bool) -> (bool, Vec<String>) 
         )
     };
     let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
+        // `--diagnostics-wire`: no artifact = the diagnostics query failed to produce a wire (a compile that
+        // didn't reach the fault set). The GRADER decides pass/fail, so emit nothing + exit 0 (never a hard
+        // error), rather than the normal error path — the wire mode's contract is "the raw bytes, or empty".
+        if diagnostics_wire {
+            return (false, files.into_iter().map(|f| f.path).collect());
+        }
         report_errors(&out);
         // The diagnostics query itself failed = an error. The closure DID load, so still hand its paths
         // back for the caller's coverage set (the files were checked as far as this point).
         let closure_paths = files.into_iter().map(|f| f.path).collect();
         return (true, closure_paths);
     };
+    // `--diagnostics-wire`: dump the RAW `KIND_DIAGNOSTICS` bytes to stdout VERBATIM and return WITHOUT
+    // demuxing/formatting (that is `--json`/human's job) — the machine wire a grader parses. Exit 0
+    // regardless of faults (`had_error=false`): the CONSUMER judges quality, not this exit code.
+    if diagnostics_wire {
+        use std::io::Write;
+        let _ = std::io::stdout().write_all(bytes);
+        return (false, files.into_iter().map(|f| f.path).collect());
+    }
     let text = String::from_utf8_lossy(bytes);
     let mut any_error = false;
     // The package demux table (`link-map`) — absent for a single file, so every node belongs to the
