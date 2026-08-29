@@ -1883,7 +1883,22 @@ fn compile_and_run_rust_driver(exe: &std::path::Path, driver: &str) -> Result<St
     // rlib means a cryptic `E0433 cannot find crate cdz_num` — find-either-anywhere fixes it wherever the
     // artifact lives. `--extern` only MAKES a crate available (not force-linked), so naming an unused one
     // stays harmless.
-    for crate_name in ["cdz_rt", "cdz_num"] {
+    //
+    // The full set MIRRORS the corpus rust-exec grader (`cdz-rust-run`'s `compile_and_run`): a native
+    // VALUE-ENCODE program references `cadenza_ast` (the AST builder) + `num_bigint` (IntValue bridge), and a
+    // runtime `String.concat`/`from-bytes` NFC-normalizes via `unicode_normalization` (the `Core::NfcNormalize`
+    // emit, FINDING #23 rust parity). Those three are STAGED beside `cdz_rt`/`cdz_num` in the nix
+    // `CDZ_RUST_RLIB_DIR` rlib set (`cadenza_ast` plain top-level; `num_bigint` + `unicode_normalization`
+    // hashed in its `deps/`, pulled in via cadenza-ast's `std` feature), so `find_backend_rlib`'s
+    // plain-then-hashed search resolves each. Without them a `cdz run-rust` differential run of such a program
+    // failed `E0433 cannot find crate …` where the corpus grader (which links the full set) passed.
+    for crate_name in [
+        "cdz_rt",
+        "cdz_num",
+        "cadenza_ast",
+        "num_bigint",
+        "unicode_normalization",
+    ] {
         if let Some(rlib) = roots
             .iter()
             .find_map(|root| find_backend_rlib(root, &resolve_deps_dir(root), crate_name))
