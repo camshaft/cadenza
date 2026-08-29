@@ -3600,6 +3600,7 @@
               patchShebangs node_modules
               npm run test:unit
               npm run check:prose
+              npm run check:prose-native
               npm run check:diagnostics
               npm run check:examples
               npm run check:calculator
