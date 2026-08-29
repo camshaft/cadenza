@@ -13769,6 +13769,97 @@ mod match_engine {
     }
 
     #[test]
+    fn an_overflow_pragma_marks_each_unqualified_arith_node_with_its_policy() {
+        // `numeric-model.md` §A Module May Declare Its Overflow Policy: a `(pragma overflow (signed <mode>)
+        // (unsigned <mode>))` module governs the trap/wrap behavior of each unqualified `+`/`-`/`*` WRITTEN
+        // in it. STAGE 1 (this test): the load-time `overflow_specs` map records each such operator node →
+        // the declared spec (the infer-time signed/unsigned SELECTION is stage 2). Keyed by the original
+        // node, DEFINITION-SITE scoped, and a named `Int64.wrapping-*` form is IMMUNE (not an entry).
+        use crate::db::{OverflowMode, OverflowSpec};
+        let want = OverflowSpec {
+            signed: Some(OverflowMode::Wrap),
+            unsigned: Some(OverflowMode::Trap),
+        };
+        // (1) THE EFFECT: `(+ (* x 2) 1)` in an overflow module contributes TWO governed ops (`+` and `*`),
+        //     each mapped to the declared spec.
+        let db = crate::db::Db::load(parse(
+            "(module top (def (main) (do (module m (pragma overflow (signed wrap) (unsigned trap)) \
+               (def (f x) (+ (* x 2) 1))) unit)) (export main))",
+        ));
+        assert!(
+            !db.overflow_specs.is_empty(),
+            "an overflow-pragma module marks its arithmetic nodes"
+        );
+        assert!(
+            db.overflow_specs.values().all(|&s| s == want),
+            "every marked node carries the declared (signed wrap)(unsigned trap) spec: {:?}",
+            db.overflow_specs.values().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            db.overflow_specs.len(),
+            2,
+            "the `+` and the `*` are both marked (the bare `1`/`2` literals are not ops)"
+        );
+        // (2) IMMUNITY: a named `Int64.wrapping-add` form in the SAME module is not an unqualified `+`, so it
+        //     contributes NO entry (it carries its own overflow contract).
+        let db_named = crate::db::Db::load(parse(
+            "(module top (def (main) (do (module m (pragma overflow (signed wrap) (unsigned trap)) \
+               (def (f x) ((. Int64 wrapping-add) x 1))) unit)) (export main))",
+        ));
+        assert!(
+            db_named.overflow_specs.is_empty(),
+            "a named wrapping-* form is immune — not governed by the pragma: {:?}",
+            db_named.overflow_specs.values().collect::<Vec<_>>()
+        );
+        // (3) DEFINITION-SITE SCOPE: an op OUTSIDE any overflow module has no entry.
+        let db_none = crate::db::Db::load(parse("(module m (def (main) (+ 2 3)) (export main))"));
+        assert!(
+            db_none.overflow_specs.is_empty(),
+            "an op outside an overflow-pragma module is unmarked"
+        );
+    }
+
+    #[test]
+    fn an_overflow_pragma_validates_its_shape_and_does_not_block_registration() {
+        // The `overflow` pragma is a MODELED module directive — a well-formed one is accepted (no fault, and
+        // it does not block the module's registration), a malformed one is CDZ0602. Mirrors the
+        // default-integer validation discipline.
+        // (1) WELL-FORMED: accepted, module registers (the `(. m f)` member access resolves).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma overflow (signed wrap) (unsigned trap)) \
+                   (def (f) 1)) ((. m f) unit))) (export main))"
+            ),
+            None,
+            "a well-formed overflow pragma is accepted and does not block module registration"
+        );
+        // (2) ONE SUB-FORM is enough (the other signedness falls through to the default).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma overflow (signed wrap)) \
+                   (def (f) 1)) ((. m f) unit))) (export main))"
+            ),
+            None,
+            "a single-signedness overflow pragma is well-formed"
+        );
+        // (3) MALFORMED — a mode outside {trap, wrap} is CDZ0602.
+        assert_eq!(
+            reject_code(
+                "(module m (pragma overflow (signed nonesuch)) (def (main) 1) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0602"),
+            "an unknown overflow mode is a malformed directive"
+        );
+        // (4) MALFORMED — no sub-forms at all is CDZ0602.
+        assert_eq!(
+            reject_code("(module m (pragma overflow) (def (main) 1) (export main))").as_deref(),
+            Some("CDZ0602"),
+            "an overflow pragma with no signedness sub-form is malformed"
+        );
+    }
+
+    #[test]
     fn a_default_fraction_pragma_grounds_a_bare_numeric_literal_to_rational() {
         // THE EFFECT: a bare, otherwise-unconstrained numeric literal in a `(pragma default-fraction
         // Rational)` module is a `Rational` — so `(/ 1 3)` is EXACT rational division (not integer

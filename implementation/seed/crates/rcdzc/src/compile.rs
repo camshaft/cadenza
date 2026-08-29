@@ -1059,6 +1059,7 @@ const PRAGMA_REGISTRY: &[&str] = &[
     "default-fraction",
     "default-float",
     "param",
+    "overflow",
 ];
 
 /// The numeric-domain check for a well-formed `(pragma default-integer <T>)`: the directive names the
@@ -1974,6 +1975,36 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                             Code::MalformedDirective,
                             "`@!param` must be `@!param(config…) name : Type` — a module parameter with an \
                              explicit type (e.g. `@!param(widget: slider) width : Int64`)",
+                        )
+                        .at(form),
+                    );
+                }
+            }
+            // `overflow (signed <mode>) (unsigned <mode>)` — the module overflow policy (`numeric-model.md`
+            // §A Module May Declare Its Overflow Policy). At least one of the two SIGNEDNESS sub-forms must
+            // be present; each present one must be `(signed <mode>)` / `(unsigned <mode>)` naming a `trap` or
+            // `wrap` mode. A stray non-`signed`/`unsigned` sub-form, a missing/extra mode argument, or a mode
+            // name outside {trap, wrap} → malformed. (The EFFECT — selecting each unqualified `+`/`-`/`*`
+            // node's mode — is realized by `db.overflow_specs` + the infer-time signedness selection.)
+            Some("overflow") => {
+                let subs = &ptail[1..];
+                let well_formed_sub = |sub: StructId| -> bool {
+                    let Some(t) = db
+                        .ast
+                        .as_form(sub, "signed")
+                        .or_else(|| db.ast.as_form(sub, "unsigned"))
+                    else {
+                        return false;
+                    };
+                    // Exactly one argument, naming `trap` or `wrap`.
+                    matches!(t, [m] if matches!(db.ast.as_name(*m), Some("trap" | "wrap")))
+                };
+                if subs.is_empty() || !subs.iter().all(|&s| well_formed_sub(s)) {
+                    faults.push(
+                        Reject::coded(
+                            Code::MalformedDirective,
+                            "`overflow` takes one or both of `(signed <mode>)` and `(unsigned <mode>)`, \
+                             each naming `trap` or `wrap` (e.g. `(pragma overflow (signed trap) (unsigned wrap))`)",
                         )
                         .at(form),
                     );
