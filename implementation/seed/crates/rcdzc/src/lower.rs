@@ -6222,8 +6222,10 @@ pub(crate) fn sroa_tuple_scrutinee_candidate(
             _ => pat,
         };
         // A non-`(tuple …)` head at the root — a bare name / `_` / other — binds the aggregate whole =
-        // ESCAPE; `?` returns `None` (fail-closed), disqualifying the whole match.
-        db.ast.as_form(inner, "tuple")?;
+        // ESCAPE; `?` returns `None` (fail-closed), disqualifying the whole match. `compound_form_of`
+        // recognizes the native `#tuple(…)` ctor-leaf head too (not only the name/string alias).
+        db.ast
+            .compound_form_of(inner, crate::ast::CompoundCtor::Tuple)?;
     }
     // PRE-BIND each element to a KEPT let (v-patterns' interface ask): eval-once/trap-once belongs at THIS
     // bind site, not the dispatch — an element read by ≥2 arms (or a lit-tested position also bound in
@@ -6960,8 +6962,12 @@ fn ctor_payload_arg_is_irrefutable(db: &mut Db, arg: StructId) -> bool {
         return true;
     }
     // A tuple payload `(tuple a b)` is irrefutable iff every element is (recursively). Any other compound
-    // (a nested ctor, a list pattern) or a literal is refutable.
-    if let Some(elems) = db.ast.as_form(arg, "tuple") {
+    // (a nested ctor, a list pattern) or a literal is refutable. `compound_form_of` recognizes the native
+    // `#tuple(…)` ctor-leaf head too (not only the name/string alias).
+    if let Some(elems) = db
+        .ast
+        .compound_form_of(arg, crate::ast::CompoundCtor::Tuple)
+    {
         let elems = elems.to_vec();
         return elems
             .iter()
