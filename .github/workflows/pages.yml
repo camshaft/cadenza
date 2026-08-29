@@ -2,12 +2,20 @@
 #
 # Self-contained on purpose: it owns only the Pages deploy, so it composes cleanly with whatever
 # general CI workflow lives alongside it. The guide runs the Cadenza compiler in the browser, so the
-# build has to produce the compiler wasm first:
-#   1. build the value-heap runtime component into the content-addressed store  (cargo xtask build)
-#   2. build the browser compiler wasm + stage it and the runtime into guide/   (cargo xtask guide-wasm)
-#   3. build the static site with the Pages base path                           (npm run build)
+# deployable site (guide/dist/) needs the value-heap runtime store + the browser compiler wasm + the
+# static Vite build all produced together.
 #
-# The site is a project page at https://<owner>.github.io/<repo>/, so VITE_BASE is the repo path.
+# NIXIFIED (v-nix #5809 + v-gha-green, operator directive): the whole build is now the single nix
+# derivation `packages.<sys>.guide-site` (flake `guideSite`) — it produces the exact deployable
+# guide/dist/ (index.html + assets + 404 + version.json), reusing the cached cdzWasmPkg + component
+# store + guideNpmDeps + codegen bin, and bakes VITE_BASE=/cadenza/ (the Pages base path; the repo is
+# `cadenza`) at build time. Because it is input-addressed on the guide + compiler-wasm closure, an
+# unchanged-trunk cron deploy is a nix-store CACHE HIT (near-instant) instead of a full ARM rebuild —
+# the reason the deploy was rebuilding cold every 30-min cron. This replaces the former per-step
+# cargo-xtask-build / guide-wasm / npm-build pipeline.
+#
+# The site is a project page at https://<owner>.github.io/<repo>/, so VITE_BASE (baked in the
+# derivation) is the repo path `/cadenza/`.
 
 name: Deploy guide to Pages
 
@@ -45,65 +53,42 @@ permissions:
 
 jobs:
   build:
-    # aarch64 to match the rest of CI: `cargo xtask build` produces the value-heap runtime whose
+    # aarch64 to match the rest of CI: the guide-site derivation builds the value-heap runtime whose
     # content hash the compiler pins, and that hash is only reproducible per-arch until the function-
     # order canonicalizer lands (see runtime-cross-arch-determinism / checks.yml). The guide bundles
-    # that runtime, so it must be the same build.
+    # that runtime, so it must be the aarch64 build → packages.aarch64-linux.guide-site.
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
 
-      # The pinned toolchain (rust-toolchain.toml: 1.95.0 + rust-src + wasm32) and the exact
-      # cargo-component / wasm-tools versions the rest of CI uses. Using `rustup default stable` +
-      # `cargo install` (as before) diverged tool/compiler versions from `checks.yml`, which can stage
-      # a subtly different browser wasm — the likely cause of the guide build's flaky module graph.
-      - uses: ./.github/actions/setup-rust
+      # Install nix + wire the SHARED /nix/store cache (same pattern as the checks.yml nix jobs: the
+      # installer enables ca-derivations for the content-addressed corpus/component cache, and the
+      # nix-store-cache composite restores+saves the store so an unchanged-trunk cron is a cache hit).
+      - uses: DeterminateSystems/nix-installer-action@v22
         with:
-          wasm-tools: "true"
-          cache-key: pages
+          # Enable ca-derivations so the deploy reuses the shared content-addressed store (#3363)
+          # instead of rebuilding the world. Appends to the installer nix-command/flakes.
+          extra-conf: "extra-experimental-features = ca-derivations"
+      - uses: ./.github/actions/nix-store-cache
 
-      # wasm-pack is not in setup-rust (only the guide uses it); install it here.
-      - name: Install wasm-pack
-        run: cargo binstall -y --force wasm-pack
+      # Build the DEPLOYABLE guide site through nix (v-nix #5809 packages.guide-site / flake guideSite).
+      # This one derivation replaces the former cargo-xtask-build + guide-wasm + npm-build pipeline: it
+      # produces guide/dist/ (index.html + assets + 404 + version.json) with VITE_BASE=/cadenza/ baked
+      # in, reusing the cached cdzWasmPkg + component store + guideNpmDeps + codegen bin. Input-addressed
+      # on the guide + compiler-wasm closure → an unchanged-trunk cron deploy is a near-instant cache hit.
+      - name: Build the deployable guide site (via nix)
+        run: nix build .#packages.aarch64-linux.guide-site --print-build-logs
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: guide/package-lock.json
-
-      # 1. Build the value-heap runtime component into the store (the guide bundles the runtime whose
-      #    content hash the compiler pins). RUSTC_BOOTSTRAP=1 enables the runtime's build-std (see
-      #    cdz-runtime/.cargo/config.toml).
-      - name: Build value-heap runtime
-        run: cargo xtask build
-
-      # 2. Build the browser compiler wasm and stage it + the runtime into guide/src/wasm/.
-      - name: Build & stage guide wasm
-        run: cargo xtask guide-wasm
-
-      # 3. Verify every guide example compiles + every graded exercise runs to its expected value
-      #    (against the wasm compiler staged above), then build the static site under the Pages base
-      #    path. The example check gates the deploy: a chapter can't ship an example that doesn't run.
-      - name: Build site
-        working-directory: guide
-        env:
-          VITE_BASE: /${{ github.event.repository.name }}/
-        run: |
-          npm ci
-          npm run check:codegen
-          npm run check:codegen-sync
-          npm run check:examples
-          npm run check:calculator
-          npm run check:prose
-          npm run check:prose-native
-          npm run build
+      # Deref the nix `result` symlink into a real directory — upload-pages-artifact tars the path and
+      # cannot follow the store symlink, so `cp -rL` materializes guide/dist/'s contents into guide-dist/.
+      - name: Stage the Pages artifact (deref the nix result symlink)
+        run: cp -rL result guide-dist
 
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: guide/dist
+          path: guide-dist
 
   deploy:
     needs: build
