@@ -5105,7 +5105,7 @@ fn collect_test_entries(files: &[String]) -> Result<Vec<(String, bool, String)>,
         let (db, entry_filter) = if is_package {
             let mut rcdzc_files = Vec::with_capacity(ast_arts.len());
             for art in &ast_arts {
-                let Some(a) = rcdzc::codec::decode(&art.bytes) else {
+                let Some(a) = cadenza_syntax::codec::decode(&art.bytes) else {
                     eprintln!("{PROG}: {file}: could not decode `{}`'s AST", art.name);
                     return Err(ExitCode::FAILURE);
                 };
@@ -5123,7 +5123,7 @@ fn collect_test_entries(files: &[String]) -> Result<Vec<(String, bool, String)>,
             let db = rcdzc::db::Db::load_linked(program.arenas, Some(linkage.clone()));
             (db, Some((linkage, entry_ix)))
         } else {
-            let Some(rcdzc_arenas) = rcdzc::codec::decode(&ast_arts[0].bytes) else {
+            let Some(rcdzc_arenas) = cadenza_syntax::codec::decode(&ast_arts[0].bytes) else {
                 eprintln!("{PROG}: {file}: could not decode the program's AST");
                 return Err(ExitCode::FAILURE);
             };
@@ -5808,7 +5808,7 @@ fn run_test_file(
     let (mut db, entry_filter) = if is_package {
         let mut rcdzc_files = Vec::with_capacity(ast_arts.len());
         for art in &ast_arts {
-            let Some(a) = rcdzc::codec::decode(&art.bytes) else {
+            let Some(a) = cadenza_syntax::codec::decode(&art.bytes) else {
                 eprintln!("{PROG}: {file}: could not decode `{}`'s AST", art.name);
                 return Err(());
             };
@@ -5826,7 +5826,7 @@ fn run_test_file(
         let db = rcdzc::db::Db::load_linked(program.arenas, Some(linkage.clone()));
         (db, Some((linkage, entry_ix)))
     } else {
-        let Some(rcdzc_arenas) = rcdzc::codec::decode(&ast_arts[0].bytes) else {
+        let Some(rcdzc_arenas) = cadenza_syntax::codec::decode(&ast_arts[0].bytes) else {
             eprintln!("{PROG}: {file}: could not decode the program's AST");
             return Err(());
         };
@@ -6760,7 +6760,7 @@ fn param_bounds(db: &rcdzc::db::Db, def: usize) -> (Vec<ParamBound>, Vec<Relatio
 /// a non-linear predicate) is left unrecognized — no change, exactly as before.
 fn narrow_from_predicate(
     db: &rcdzc::db::Db,
-    pred: rcdzc::ast::StructId,
+    pred: cadenza_syntax::ast::StructId,
     pos_of: &std::collections::HashMap<&str, usize>,
     bounds: &mut [ParamBound],
     relations: &mut Vec<Relation>,
@@ -6794,7 +6794,7 @@ fn narrow_from_predicate(
             return;
         }
         let (lhs, rhs) = (t[0], t[1]);
-        let as_i128 = |v: &rcdzc::ast::IntValue| v.to_i128();
+        let as_i128 = |v: &cadenza_syntax::ast::IntValue| v.to_i128();
         // `(OP param lit)` — the common spelling.
         if let (Some(name), Some(lit)) = (db.ast.as_name(lhs), db.ast.as_int(rhs).and_then(as_i128))
         {
