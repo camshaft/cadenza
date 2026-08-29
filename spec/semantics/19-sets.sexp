@@ -1638,11 +1638,17 @@
            element set ('no orderable descriptor') while rust computed the sorted order; the fix sorts by the
            descriptor-guided total order (`value_cmp_shaped`) on both. Expected: 1.")
   (input  (do
-            (def (main) (match (List.at (Set.to-list #set((tuple 3 1) (tuple 1 2) (tuple 2 0))) 0)
+            ; RUNTIME-IFIED (coord v-corpus-harness): thread the arg `n` into the first components so the
+            ; #set is built at RUNTIME (not const-folded), exercising the compound-element Set.to-list
+            ; reclaim. At n=0 the tuples are (3,1)/(1,2)/(2,0) — order + answer unchanged (index-0 (1,2), first 1).
+            (def (main (: n Int64)) (match (List.at (Set.to-list #set((tuple (+ 3 n) 1) (tuple (+ 1 n) 2) (tuple (+ 2 n) 0))) 0)
                           ((Some t) (. t 0))
                           ((None u) -1))) (export main)))
-  (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  ; RECLAIM WIN: was known-leak 2 (on an older compiler + when this const-folded); the native-#set-literal
+  ; compound-element Set.to-list now reclaims fully at runtime (measured 0 on 05WfA5uY, fresh cdz, arg-varied
+  ; n=5->6 confirms non-fold). Coverage preserved as a clean-0 reclaim assertion. (v-memory-safety)
+  (live-objects 0))
 
 (case "Set.to-list orders (Int,Bytes) tuples with the Bytes component as the tie-breaker"
   (doc    "The tuple case above decides order on the FIRST (Int) component; this pins that when the first
@@ -1657,14 +1663,20 @@
            Expected: 197.")
   (input  (do
             (def (main (: k Int64))
-              (match (List.at (Set.to-list #set((tuple 1 (Bytes.of (list 98)))
-                                                         (tuple 1 (Bytes.of (list 97)))
-                                                         (tuple 2 (Bytes.of (list 0))))) 0)
+              ; RUNTIME-IFIED (coord v-corpus-harness): thread `k` into the first components so the #set is
+              ; built at RUNTIME (not const-folded). At k=0 the tuples are (1,[98])/(1,[97])/(2,[0]) — the
+              ; first-component tie + Bytes tie-break + answer 197 all unchanged.
+              (match (List.at (Set.to-list #set((tuple (+ 1 k) (Bytes.of (list 98)))
+                                                         (tuple (+ 1 k) (Bytes.of (list 97)))
+                                                         (tuple (+ 2 k) (Bytes.of (list 0))))) 0)
                 ((Some t) (match (Bytes.at (. t 1) 0) ((Some v) (+ (* 100 (. t 0)) v)) ((None u) -1)))
                 ((None u) -1)))
             (export main)))
   (call   main (: 0 Int64)) (output (: 197 Int64))
-  (live-objects known-leak 2))
+  ; RECLAIM WIN: was known-leak 2 (older compiler + const-fold); the native-#set-literal compound-element
+  ; Set.to-list reclaims fully at runtime (measured 0 on 05WfA5uY, fresh cdz; k=5->697 confirms non-fold).
+  ; Coverage preserved as a clean-0 reclaim assertion. (v-memory-safety)
+  (live-objects 0))
 
 (case "Set.to-list orders a set of RECORD elements canonically"
   (doc    "The record companion of the tuple-element case: records order by comparing field values in the
