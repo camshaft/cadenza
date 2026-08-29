@@ -12606,3 +12606,20 @@
   (input (do (def (f (: x Int64)) (+ 2.0 x)) (export f)))
   (error CDZ0301 (message "no implicit conversion") (message "Float64") (message "Int64")
                  (fix (kind wrap) (replacement "(Float64.of-int …)") (unverified))))
+
+; ── annotation-position int-width coercion FIX (migrated from rcdzc an_int_annotation_mismatch_offers_an_of_conversion_fix) ──
+; An `(: value T)` annotation whose value is a DIFFERENT integer width than T is CDZ0203 (no silent
+; promotion), repaired by WRAPPING the value in the annotation type's checked `.of` — the annotation-position
+; mirror of the argument-position of-int coercion. Heuristic (`.of` is checked, can trap). Unrelated types get
+; no coercion. (replacement-contains matches the "(<Type>.of " prefix; the wrapped operand fills the hole.)
+(case "an int annotation to a wider type offers an of-conversion wrap fix"
+  (input (do (def (f (: n Int8)) (: n Int64)) (export f)))
+  (error CDZ0203 (fix (kind wrap) (replacement-contains "(Int64.of ") (unverified))))
+
+(case "an int annotation to a narrower type offers an of-conversion wrap fix"
+  (input (do (def (f (: n Int64)) (: n Int8)) (export f)))
+  (error CDZ0203 (fix (kind wrap) (replacement-contains "(Int8.of ") (unverified))))
+
+(case "a bool value annotated an integer type carries NO coercion fix"
+  (input (do (def (f (: b Bool)) (: b Int64)) (export f)))
+  (error CDZ0203 (no-fix)))
