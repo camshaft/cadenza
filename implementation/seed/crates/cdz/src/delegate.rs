@@ -534,6 +534,8 @@ mod tests {
             Request::EmitTestsPerFile,
             Request::EmitTestsComposed,
             Request::EmitTestsConsumerOnly,
+            Request::EmitTestsShred,
+            Request::Query(Query::TestList),
         ];
         // Each request individually (isolates a per-variant mismatch)…
         for r in &reqs {
@@ -578,6 +580,7 @@ mod tests {
             (Q::ParamManifest, sidecar::KIND_PARAM_MANIFEST),
             (Q::FuncLayout, sidecar::KIND_FUNC_LAYOUT),
             (Q::ClosureHash, sidecar::KIND_CLOSURE_HASH),
+            (Q::TestList, sidecar::KIND_TEST_LIST),
         ];
         for (q, kind) in cases {
             assert_eq!(
