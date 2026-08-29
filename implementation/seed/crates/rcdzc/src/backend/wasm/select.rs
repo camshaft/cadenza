@@ -6277,12 +6277,10 @@ pub fn select_function(
 /// - **Debug-named locals:** a `let`-binding / match-binder that a DWARF DIE points at is PINNED — it
 ///   keeps a distinct slot, so a debugger never reads another variable's value within its scope.
 fn coalesce_func(f: &mut SelectedFunc) {
-    // Loop-soundness guard (see the module doc): the only loop is the self-tail-call→loop transform,
-    // whose carried state is in PARAMETER slots, but we do not assume a declared local is never
-    // loop-carried — skip loopy functions until the analysis is loop-aware.
-    if f.code.iter().any(|op| matches!(op, Lir::Loop(_))) {
-        return;
-    }
+    // Coalescing is sound across ALL control flow — the interference graph is built from precise
+    // backward liveness iterated to a fixpoint over the structured CFG (loop back-edges included), so
+    // a loop-carried declared local is correctly kept live across its back-edge (see the `coalesce`
+    // module doc). No loop-skip guard is needed.
     let nparams = f.params.len() as u32;
     // DECLARED slots a DWARF DIE references (let-binding locals + match-binder scopes). Param debug
     // locals are slots < nparams — already fixed, so they need no pin.

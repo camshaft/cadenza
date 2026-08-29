@@ -5,26 +5,24 @@
 //! temps (e.g. the corpus `glb1` case emits 18,738 locals of which only ~7 are ever simultaneously
 //! live — wasm-opt coalesces them, and this pass does the same at emit).
 //!
-//! SOUNDNESS (why this never miscompiles in FORWARD-only control flow, without a CFG): interference
-//! is defined as OVERLAPPING `[first-mention, last-mention]` flat-instruction-index spans. With only
-//! forward branches (`block`/`if`/`br`-to-`end`), a slot's live range is bounded by its def/use
-//! occurrences — every point where it is live lies between its first and last mention, because there
-//! is no path from after its last mention back to a use. Hence if two slots are simultaneously live
-//! at a point `P`, then `P` lies in both spans and they overlap → we mark them interfering and do NOT
-//! share a slot. So overlapping-span is a SUPERSET of real interference: we never coalesce two slots
-//! live at once (sound); we may only conservatively keep some coalescable slots apart (a missed
-//! opportunity, never a miscompile). Forward branches only SHRINK real liveness (mutually-exclusive
-//! arms), so the span stays a sound superset. No explicit control-flow graph is needed.
+//! SOUNDNESS (why this never miscompiles, across ALL wasm control flow including LOOPS): interference
+//! is computed from PRECISE per-instruction backward liveness ([`compute_live_out`]) over wasm's
+//! structured CFG, iterated to a FIXPOINT so a loop back-edge (a `br` that jumps BACKWARD, keeping a
+//! value read early in the body live across the edge for a later iteration) is captured. Two declared
+//! slots INTERFERE iff they can be simultaneously live: at every def of a slot `s` (a `local.set`/
+//! `local.tee`), `s` interferes with every slot in `live_out` of that def; and all slots live at
+//! function ENTRY (read-before-write locals reading the implicit zero-init) interfere with each other.
+//! That def-point + entry-point rule is COMPLETE for real interference (proof: if `X` and `Y` are
+//! simultaneously live at any point `P`, then either both are entry-live, or one has a def where the
+//! other is live-out — see `build_interference`). Liveness OVER-approximates by construction (claiming
+//! a slot live when dead only adds spurious edges = fewer coalesces, never a miscompile), so the
+//! interference relation is a sound superset of the truth. We then GRAPH-COLOR the interference graph
+//! (greedy, register-allocation style): two interfering slots never share a color (slot).
 //!
-//! WARNING: LOOPS (back-edges) BREAK this: a `loop`'s `br` jumps BACKWARD, so a declared local read early in
-//! a loop body is live ACROSS the back-edge — PAST its textual last mention (a later iteration
-//! re-reads it) — which the flat span misses. The only loop the wasm backend emits is the
-//! self-tail-call→loop transform, whose loop-carried state lives in PARAMETER slots (never coalesced),
-//! but we do not assume a declared local is never loop-carried. So the CALLER (`select.rs`'s
-//! `coalesce_func`) conservatively SKIPS coalescing any function that contains a `loop`. A loop-aware
-//! span extension (widen a declared slot's span to cover any enclosing loop body) is a later slice
-//! that would let loopy functions coalesce too; until then this analysis is applied to loop-free
-//! functions only.
+//! This SUBSUMES the older flat `[first-mention, last-mention]` span coloring, which was imprecise for
+//! re-defined/sparse slots (it treated a slot as live across a "hole" where it is actually dead) AND
+//! unsound for loops (so the caller had to skip loopy functions). Precise liveness fixes both: it
+//! coalesces through holes AND handles loops directly, so the caller no longer skips any function.
 //!
 //! PARAMETERS are fixed (slots `0..nparams` — the function's signature); only DECLARED locals
 //! (`nparams..`) are coalesced, and only within the SAME `ValType` (an i32 and an i64 can never
@@ -61,57 +59,44 @@ pub fn coalesce_locals(
     let nparams = params.len() as u32;
     let total = nparams + declared.len() as u32;
 
-    // First and last flat-index mention per slot (None = never mentioned).
-    //
-    // WARNING: READ-BEFORE-WRITE: if a slot's FIRST mention is a `local.get` (a read, not a
-    // `set`/`tee` write), the slot is live from function ENTRY — it reads wasm's implicit
-    // zero-initialization, so its true live range starts at index 0, not at that read. We anchor its
-    // first-mention at 0 so an earlier-dying slot can never be coalesced into it and clobber that
-    // initial value. (A `tee` writes-then-leaves, so a tee-first is a WRITE-first and safe.)
+    // Which slots are ever mentioned, and each mentioned slot's FIRST flat index (used only to order
+    // color assignment for stable, low debug slots — NOT for interference, which is precise below). A
+    // free (non-pinned) unmentioned declared local is dead → dropped; a pinned unmentioned one is
+    // kept (a DWARF DIE references it).
+    let mut mentioned: Vec<bool> = vec![false; total as usize];
     let mut first: Vec<Option<usize>> = vec![None; total as usize];
-    let mut last: Vec<Option<usize>> = vec![None; total as usize];
     for (i, op) in code.iter().enumerate() {
-        let (slot, is_read) = match op {
-            Lir::LocalGet(s) => (*s, true),
-            Lir::LocalSet(s) | Lir::LocalTee(s) => (*s, false),
+        let s = match op {
+            Lir::LocalGet(s) | Lir::LocalSet(s) | Lir::LocalTee(s) => *s as usize,
             _ => continue,
         };
-        let s = slot as usize;
-        if s >= first.len() {
+        if s >= mentioned.len() {
             continue; // defensive: an out-of-range slot ref is left untouched
         }
+        mentioned[s] = true;
         if first[s].is_none() {
-            first[s] = Some(if is_read { 0 } else { i });
+            first[s] = Some(i);
         }
-        last[s] = Some(i);
     }
+
+    // PRECISE interference graph: `adj[a]` = the slots that can be simultaneously live with `a`
+    // (register-allocation style). Two slots sharing a color (new slot) must not interfere.
+    let adj = build_interference(total, code);
 
     // Identity remap; parameters stay put.
     let mut remap: Vec<u32> = (0..total).collect();
-
-    // Linear-scan interval coloring over DECLARED slots, per ValType. Process declared slots in
-    // ascending first-mention order; a "color" (a new slot) is reusable for an interval when its
-    // current occupant's last mention is strictly before this interval's first mention.
-    struct Color {
-        end: usize,
-        new_slot: u32,
-    }
-    // Group colors by ValType. `ValType` is `Copy + Eq` (not `Hash`), and there are only a handful of
-    // variants, so a small linear-scanned assoc list is simpler than a map.
-    let mut colors_by_ty: Vec<(ValType, Vec<Color>)> = Vec::new();
     let mut new_declared: Vec<ValType> = Vec::new();
 
-    // Assign new slots in this order: (0) DEBUG-NAMED + mentioned slots FIRST, so a `let`-binding /
-    // match-binder that a DWARF DIE points at keeps a STABLE, LOW slot (right above the params) — its
-    // debug location stays predictable and doesn't get bumped above a transient scratch temp; then
-    // (1) free scratch (coalesced among themselves, numbered above the pinned block); then (2) any
-    // debug-named-but-unmentioned slot last (rare). Within each tier, ascending first-mention (the
-    // linear-scan coloring needs free slots in first-mention order). Pinned assignment is independent
-    // of the free coalescing, so this changes only slot NUMBERING, never the coalesced COUNT.
+    // Assign new slots in this order: (0) DEBUG-NAMED (pinned) + mentioned slots FIRST, so a
+    // `let`-binding / match-binder that a DWARF DIE points at keeps a STABLE, LOW slot (right above
+    // the params) — its debug location stays predictable and doesn't get bumped above a transient
+    // scratch temp; then (1) free scratch (coalesced among themselves, numbered above the pinned
+    // block); then (2) any debug-named-but-unmentioned slot last (rare). Within each tier, ascending
+    // first-mention (a stable, deterministic greedy-coloring order). Pinned slots each take their own
+    // slot, so this changes only slot NUMBERING, never the coalesced COUNT of the free slots.
     let mut order: Vec<u32> = (nparams..total).collect();
     order.sort_by_key(|&s| {
-        let mentioned = first[s as usize].is_some();
-        let tier = match (pinned.contains(&s), mentioned) {
+        let tier = match (pinned.contains(&s), mentioned[s as usize]) {
             (true, true) => 0u8, // debug-named + used → lowest, stable slots
             (false, _) => 1,     // free scratch
             (true, false) => 2,  // debug-named but unused → last
@@ -119,43 +104,43 @@ pub fn coalesce_locals(
         (tier, first[s as usize].unwrap_or(usize::MAX))
     });
 
+    // A color is a new declared slot with a fixed `ValType` and the set of OLD free slots assigned to
+    // it. A free slot may join a color only if it shares the `ValType` AND does not interfere with any
+    // member already there (greedy graph coloring). Pinned slots never join a color — each takes a
+    // fresh, non-shareable slot so its DWARF location stays correct.
+    struct Color {
+        new_slot: u32,
+        ty: ValType,
+        members: Vec<u32>,
+    }
+    let mut colors: Vec<Color> = Vec::new();
+
     for old in order {
         let ty = declared[(old - nparams) as usize];
         let is_pinned = pinned.contains(&old);
-        let (st, en) = match (first[old as usize], last[old as usize]) {
-            (Some(a), Some(b)) => (a, b),
-            // Unmentioned declared local. A FREE one is dead — drop it (no new slot; `remap[old]`
-            // stays identity but is never used). A PINNED one is kept anyway (a DWARF DIE references
-            // it), given its own fresh slot so that reference stays valid.
-            _ => {
-                if is_pinned {
-                    let ns = nparams + new_declared.len() as u32;
-                    new_declared.push(ty);
-                    remap[old as usize] = ns;
-                }
-                continue;
+        if !mentioned[old as usize] {
+            // Unmentioned: a FREE one is dead — drop it (identity remap, never referenced). A PINNED
+            // one is kept, given its own fresh slot so its DWARF reference stays valid.
+            if is_pinned {
+                let ns = nparams + new_declared.len() as u32;
+                new_declared.push(ty);
+                remap[old as usize] = ns;
             }
-        };
-        // A pinned slot always takes a fresh, NON-reusable slot (never shared with another variable —
-        // keeps its DWARF location correct). A free slot reuses an expired free color of its ValType,
-        // else takes a fresh one.
+            continue;
+        }
         if is_pinned {
             let ns = nparams + new_declared.len() as u32;
             new_declared.push(ty);
             remap[old as usize] = ns;
             continue;
         }
-        let colors = match colors_by_ty.iter_mut().position(|(t, _)| *t == ty) {
-            Some(i) => &mut colors_by_ty[i].1,
-            None => {
-                colors_by_ty.push((ty, Vec::new()));
-                &mut colors_by_ty.last_mut().unwrap().1
-            }
-        };
+        // Free mentioned slot: reuse the first same-ValType color none of whose members interfere with
+        // `old`; else allocate a fresh slot.
+        let interferes = &adj[old as usize];
         let mut chosen = None;
         for c in colors.iter_mut() {
-            if c.end < st {
-                c.end = en; // reuse this expired color for the new interval
+            if c.ty == ty && !c.members.iter().any(|m| interferes.contains(m)) {
+                c.members.push(old);
                 chosen = Some(c.new_slot);
                 break;
             }
@@ -166,8 +151,9 @@ pub fn coalesce_locals(
                 let ns = nparams + new_declared.len() as u32;
                 new_declared.push(ty);
                 colors.push(Color {
-                    end: en,
                     new_slot: ns,
+                    ty,
+                    members: vec![old],
                 });
                 ns
             }
@@ -176,6 +162,57 @@ pub fn coalesce_locals(
     }
 
     (remap, new_declared)
+}
+
+/// Build the precise interference graph over ALL slots (`0..total`): `adj[a]` holds every slot that
+/// can be live at the same time as `a`. Interference is generated from two rules over precise liveness
+/// ([`compute_liveness`]):
+///
+/// 1. DEF-POINT: at each def of `s` (`local.set`/`local.tee`), `s` interferes with every slot live
+///    immediately after the def (`live_out[i]`) — those values must survive across the def, so they
+///    cannot occupy `s`'s slot.
+/// 2. ENTRY-POINT: every pair of slots live at function ENTRY interferes (a read-before-write local
+///    reads wasm's implicit zero-init and so is live from entry; two such must not share a slot or the
+///    later write clobbers the other's zero-init before it is read).
+///
+/// COMPLETENESS (this misses no real interference): if `X` and `Y` are simultaneously live at any
+/// point `P`, take the last def of `X` before `P` (if any). `X` is continuously live from that def
+/// through `P`; if `Y` has no def in that range then `Y` is live at the def's `live_out` (rule 1); if
+/// `Y` IS def'd in the range then at that def `X` is live (rule 1, roles swapped). If neither `X` nor
+/// `Y` has a def before `P`, both are entry-live (rule 2). Either way an edge is generated. Since
+/// liveness over-approximates, the graph is a sound superset of true interference.
+fn build_interference(total: u32, code: &[Lir]) -> Vec<std::collections::HashSet<u32>> {
+    use std::collections::HashSet;
+    let (live_out, entry_live) = compute_liveness(code);
+    let mut adj: Vec<HashSet<u32>> = vec![HashSet::new(); total as usize];
+    let n = adj.len() as u32;
+
+    // ENTRY-POINT: all entry-live slots mutually interfere.
+    let ev: Vec<u32> = entry_live.iter().copied().filter(|&s| s < n).collect();
+    for a in 0..ev.len() {
+        for b in (a + 1)..ev.len() {
+            adj[ev[a] as usize].insert(ev[b]);
+            adj[ev[b] as usize].insert(ev[a]);
+        }
+    }
+
+    // DEF-POINT: a def of `s` interferes with everything live after it.
+    for (i, op) in code.iter().enumerate() {
+        let s = match op {
+            Lir::LocalSet(s) | Lir::LocalTee(s) => *s,
+            _ => continue,
+        };
+        if s >= n {
+            continue;
+        }
+        for &t in &live_out[i] {
+            if t != s && t < n {
+                adj[s as usize].insert(t);
+                adj[t as usize].insert(s);
+            }
+        }
+    }
+    adj
 }
 
 /// A control-construct kind for the backward-liveness frame stack.
@@ -235,6 +272,18 @@ fn branch_target_live(
 /// no-op that keeps `live`); an unconditional `br` sets `live` to the target label's set because the
 /// fall-through after it genuinely never executes.
 fn compute_live_out(code: &[Lir]) -> Vec<std::collections::HashSet<u32>> {
+    compute_liveness(code).0
+}
+
+/// Like [`compute_live_out`] but also returns the ENTRY live set — the slots live-IN at instruction 0
+/// (read-before-write locals reading the implicit zero-init), needed for the entry-point interference
+/// rule in [`build_interference`].
+fn compute_liveness(
+    code: &[Lir],
+) -> (
+    Vec<std::collections::HashSet<u32>>,
+    std::collections::HashSet<u32>,
+) {
     use std::collections::{HashMap, HashSet};
     let n = code.len();
     // Pair each control construct: `End` index → (opener index, kind), via a forward depth stack.
@@ -256,6 +305,7 @@ fn compute_live_out(code: &[Lir]) -> Vec<std::collections::HashSet<u32>> {
         }
     }
     let mut live_out: Vec<HashSet<u32>> = vec![HashSet::new(); n];
+    let mut entry_live: HashSet<u32> = HashSet::new();
     let mut loop_live_in: HashMap<usize, HashSet<u32>> = HashMap::new();
     // Fixpoint: repeat the reverse pass until `loop_live_in` stops growing (bounded by `n + 2` passes;
     // the `break` on `!changed` exits as soon as it converges — usually 2 passes).
@@ -333,11 +383,13 @@ fn compute_live_out(code: &[Lir]) -> Vec<std::collections::HashSet<u32>> {
                 _ => {}
             }
         }
+        // After the reverse pass, `live` = live-in of instruction 0 = the function's entry-live set.
+        entry_live = live;
         if !changed {
             break;
         }
     }
-    live_out
+    (live_out, entry_live)
 }
 
 #[cfg(test)]
@@ -593,6 +645,62 @@ mod tests {
             lo[2].contains(&0),
             "loop-carried slot0 live after its def (read next iteration via the back-edge)"
         );
+    }
+
+    #[test]
+    fn hole_reused_slot_coalesces_with_hole_slot_precise_win() {
+        // The precise-liveness WIN over flat spans. slot0 def@0 use@1 (dead), def@4 use@5 — with a
+        // HOLE [1,4] where slot0 is DEAD. slot1 def@2 use@3 lives ONLY in that hole. A flat
+        // [first,last] span makes slot0 = [0,5] which OVERLAPS slot1's [2,3] → the old pass kept them
+        // apart (2 slots). Precise liveness sees no simultaneous liveness → they COALESCE to 1 slot.
+        let code = vec![
+            Lir::LocalSet(0), // 0
+            Lir::LocalGet(0), // 1
+            Lir::LocalSet(1), // 2
+            Lir::LocalGet(1), // 3
+            Lir::LocalSet(0), // 4
+            Lir::LocalGet(0), // 5
+        ];
+        let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins());
+        assert_eq!(decl, vec![ValType::I64]); // 2 → 1: the hole is exploited
+        assert_eq!(remap[0], remap[1]); // both old slots share the one new slot
+    }
+
+    #[test]
+    fn loop_within_iteration_disjoint_temps_coalesce() {
+        // Loops are now handled (no caller skip). Two temps each def-before-use WITHIN the iteration
+        // and disjoint from each other → neither is loop-carried → they coalesce to 1 slot.
+        let code = vec![
+            Lir::Loop(BlockType::Empty), // 0
+            Lir::LocalSet(0),            // 1
+            Lir::LocalGet(0),            // 2
+            Lir::LocalSet(1),            // 3
+            Lir::LocalGet(1),            // 4
+            Lir::Br(0),                  // 5
+            Lir::End,                    // 6
+        ];
+        let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins());
+        assert_eq!(decl, vec![ValType::I64]); // 2 → 1
+        assert_eq!(remap[0], remap[1]);
+    }
+
+    #[test]
+    fn loop_carried_slot_stays_distinct_from_within_iteration_slot() {
+        // SOUNDNESS on loops. slot0 is read BEFORE its def in the body ⇒ loop-carried: live across the
+        // back-edge, so it stays live through slot1's def@3 → they INTERFERE and must NOT coalesce.
+        // The old pass skipped loopy functions entirely; the precise pass keeps them apart safely.
+        let code = vec![
+            Lir::Loop(BlockType::Empty), // 0
+            Lir::LocalGet(0),            // 1  read-before-write: loop-carried
+            Lir::LocalSet(0),            // 2
+            Lir::LocalSet(1),            // 3
+            Lir::LocalGet(1),            // 4
+            Lir::Br(0),                  // 5
+            Lir::End,                    // 6
+        ];
+        let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins());
+        assert_eq!(decl, vec![ValType::I64, ValType::I64]); // stay distinct
+        assert_ne!(remap[0], remap[1]);
     }
 
     #[test]
