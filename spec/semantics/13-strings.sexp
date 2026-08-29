@@ -3218,22 +3218,24 @@
 
 ; The three scalar-at cases above use a CONSTANT string AND a CONSTANT index, so they fold to a
 ; `Leaf::Char` at compile time (`lower_str_scalar_at`) and never exercise a runtime read. `String.scalar-at`
-; with a RUNTIME index — even over a constant string — cannot fold: its result is a `Char`, and a runtime
-; Char has NO machine representation in the seed yet (`Ty::Char` → no boundary/slot valtype, lir.rs ~394;
-; `Core::ConstChar` only folds, select.rs ~5698). So the op soundly DECLINES rather than emitting a
-; possibly-truncated scalar read. This is the reject-don't-miscompile boundary for the scalar-at EMIT path
-; (distinct from the runtime-char MATCH decline below): the runtime half `op_bytes_scalar_at` is built +
-; proven in cdz-runtime but stays UNEXPORTED (frozen hash unchanged) until the runtime Char rep lands. A
-; future change that emitted a runtime scalar-at (a wrong i32-codepoint box, a truncated read) instead of
-; declining would flip this `(declines)`; it upgrades to an executing witness when the Char rep is wired.
-(case "String.scalar-at over a runtime index declines pending the runtime Char rep"
-  (doc    "`(String.scalar-at \"café\" i)` with `i` a runtime Int64 PARAMETER cannot fold (the result is a
-           Char, and a runtime Char has no seed representation yet), so `String.scalar-at` soundly DECLINES
-           rather than emitting a possibly-truncated scalar read — the reject-don't-miscompile boundary for
-           the scalar-at emit path. Contrast the constant-index `(String.scalar-at \"café\" 3)` case above,
-           which folds to `(Some #\\é)`. Grades the scalar-at emit-path decline as an intentional, tracked
-           boundary: the runtime read `op_bytes_scalar_at` is proven in cdz-runtime but unexported until the
-           runtime Char rep lands (companion to the runtime-char match decline below).")
+; with a RUNTIME index — even over a constant string — is INTENTIONALLY not provided (operator char-rep
+; WONTFIX). Not a technical gap: at runtime a char IS just its integer code-point, so the `(Option Char)`
+; result IS buildable — but there is NO distinct char BOUNDARY representation, so a runtime char renders as
+; its code-point NUMBER, not a `#\c` literal. By design we DECLINE rather than hand back a `Char` that would
+; render as a number, and steer callers to the alternatives that render: `String.at` (a runtime
+; `(Option String)` one-scalar read) for a char-scan, or `Bytes.at` on `String.to-bytes` for byte scanning.
+; (Distinct from the runtime-char MATCH below, which EXECUTES: char COMPUTE — `=`/`<`/`match`/`from-int`/
+; `to-int` — works on the i32 code-point slot; only the boundary RENDER-as-char-literal is WONTFIX.)
+(case "String.scalar-at over a runtime index is intentionally declined (char-rep WONTFIX — a runtime char renders as its code-point number)"
+  (doc    "`(String.scalar-at \"café\" i)` with `i` a runtime Int64 PARAMETER cannot fold, and a runtime
+           `String.scalar-at` is INTENTIONALLY not provided (operator char-rep WONTFIX). Not a technical gap:
+           at runtime a char IS just its integer code-point, so the `(Option Char)` IS buildable — but there
+           is no distinct char BOUNDARY representation, so the result would render as a code-point NUMBER, not
+           a `#\\c` literal. By design it DECLINES and steers callers to `String.at` (a runtime `(Option
+           String)` one-scalar read) for a char-scan. Contrast the constant-index `(String.scalar-at \"café\"
+           3)` case above, which folds to `(Some #\\é)` at compile time (a statically-known char renders as a
+           literal). Companion to the runtime-char MATCH case below, which EXECUTES: char COMPUTE works on the
+           i32 code-point slot; only the boundary render-as-char-literal is WONTFIX.")
   (input  (do
             (def (main (: i Int64)) (String.scalar-at "café" i))
             (export main)))
@@ -3683,16 +3685,18 @@
 ; Every char-pattern case above dispatches a CONSTANT char scrutinee — even the "runtime char" case folds,
 ; because its `(Char.from-int 98)` argument is a compile-time constant that reduces to `#\b` before the
 ; match. A GENUINELY runtime char — `(Char.from-int n)` where `n` is a def PARAMETER supplied by `(call …)`
-; — has no runtime Char representation in the seed yet (a Char is not `ty_heap_walkable`: the scalar runtime
-; char rep has since LANDED (Char-rep 1-4/N: a Char is an i32 code-point slot, dispatched by scalar value,
-; boxable as a compound element / sum payload; runtime `Char.from-int` computes the Option at run time). So a
-; runtime char match now EXECUTES by scalar value — the executing witness the old decline-pin promised (case
-; below). A future change that made it silently MISCOMPILE (a truncated-code-unit compare, a wrong scalar
-; box) instead of dispatching correctly would flip this case's outputs.
+; — EXECUTES on the i32 code-point COMPUTE slot (Char-rep 1-4/N: a Char is an i32 code-point value, dispatched
+; by scalar value, boxable as a compound element / sum payload; runtime `Char.from-int` computes the Option at
+; run time). So a runtime char match dispatches by scalar value — the executing witness the old decline-pin
+; promised (case below). This is the COMPUTE slot; there is NO distinct char BOUNDARY representation — that is
+; the operator char-rep WONTFIX (a char renders at the boundary as its code-point number, not a `#\c` literal;
+; see the runtime `String.scalar-at` intentional decline above). A future change that made the match silently
+; MISCOMPILE (a truncated-code-unit compare, a wrong scalar box) instead of dispatching correctly would flip
+; this case's outputs.
 (case "a match on a genuinely-runtime char (from a runtime Char.from-int) dispatches by scalar value"
   (doc    "`classify` matches a Char against char-literal arms; called with `(Char.from-int n)` where `n` is
            a runtime Int64 PARAMETER (so the char is NOT constant-folded to a literal like the cases above).
-           This EXECUTES now that the runtime Char rep landed (Char-rep 1-4/N + runtime `Char.from-int`): the
+           This EXECUTES now that the runtime char COMPUTE slot landed (Char-rep 1-4/N + runtime `Char.from-int`): the
            runtime char is an i32 code-point slot dispatched by scalar value (3/N), and `Char.from-int` on a
            runtime int computes the Option at run time. `(call main 97)` → `#\\a` → arm 1; `98` → `#\\b` → arm
            2; `99` → `#\\c` → wildcard 0. (Was a decline-pin pending the rep; now the executing witness the
