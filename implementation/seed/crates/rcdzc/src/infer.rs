@@ -6836,14 +6836,24 @@ fn map_entry_nodes(db: &mut Db, expr: StructId) -> Option<Vec<(StructId, StructI
         Resolved::Apply { head, args }
             if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::MapNew) =>
         {
-            // Each arg is a `(key value)` two-element entry list — read its two children.
+            // Each arg is a map ENTRY: the native `(= k v)` FieldPair leaf (M2, what `#map`/`(map (= k v))`
+            // emit), the transitional name-head `(= k v)`, or the legacy 2-element `(k v)` pair — mirror
+            // `resolve_map`. Before this, a native FieldPair entry (3-element) failed the 2-element read →
+            // the whole `.collect()` returned `None` → `map_entry_nodes` yielded no entries → the map's
+            // key/value TYPE stayed `Any`, so the value/key-type HOMOGENEITY + duplicate-key checks never
+            // ran → a two-different-value-types / duplicate-key map silently type-checked (miscompile).
             args.iter()
-                .map(|&pair| match db.ast.get(pair) {
-                    crate::ast::Struct::List(kids) => match kids.as_slice() {
-                        [k, v] => Some((*k, *v)),
-                        _ => None,
-                    },
-                    _ => None,
+                .map(|&pair| {
+                    db.ast
+                        .field_pair_parts(pair)
+                        .or_else(|| db.ast.field_pair(pair))
+                        .or_else(|| match db.ast.get(pair) {
+                            crate::ast::Struct::List(kids) => match kids.as_slice() {
+                                [k, v] => Some((*k, *v)),
+                                _ => None,
+                            },
+                            _ => None,
+                        })
                 })
                 .collect()
         }
@@ -11079,11 +11089,24 @@ fn check_application(
         Some(crate::resolved::Prim::MapNew)
     ) {
         // Read the entry pairs' (key, value) child occurrences (a malformed entry is faulted at resolve).
+        // An entry is the native `(= k v)` FieldPair leaf (M2, what `#map`/`(map (= k v))` emit), the
+        // transitional name-head `(= k v)`, or the legacy 2-element `(k v)` pair — mirror `resolve_map`.
+        // Before reading the FieldPair, a native-FieldPair entry (3-element) failed the 2-element check → the
+        // whole `(map (= k v)…)` name-alias literal collected ZERO entries, so the key/value HOMOGENEITY +
+        // duplicate-const-key checks never ran → a mixed-type / duplicate-key map silently type-checked
+        // (soundness miscompile; the native `#map` `Resolved::Map` arm already saw its entries and worked).
         let entries: Vec<(StructId, StructId)> = args
             .iter()
-            .filter_map(|&e| match db.ast.get(e) {
-                crate::ast::Struct::List(items) if items.len() == 2 => Some((items[0], items[1])),
-                _ => None,
+            .filter_map(|&e| {
+                db.ast
+                    .field_pair_parts(e)
+                    .or_else(|| db.ast.field_pair(e))
+                    .or_else(|| match db.ast.get(e) {
+                        crate::ast::Struct::List(items) if items.len() == 2 => {
+                            Some((items[0], items[1]))
+                        }
+                        _ => None,
+                    })
             })
             .collect();
         let mut ksubst = Subst::new();
