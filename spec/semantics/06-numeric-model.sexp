@@ -3348,14 +3348,16 @@
   (call   main (: 27 Int64)) (output (: 21 Int64))
   (call   main (: 702 Int64)) (output (: 21 Int64))
   (call   main (: 703 Int64)) (output (: 31 Int64))
-  ; INTERIM RE-PIN (v-memory-safety, breaker-routed high issue): the String.at Option-String sum-shell is
-  ; not reclaimed on match in the RECURSIVE find-at/fromcol arms, so the leak now SCALES ~2 cells per
-  ; String.at iteration (was a uniform 5; a regression, prime-suspect #5640 Call-args Vec->Rc). Bumped to
-  ; the measured per-call values to UNBLOCK the fleet-wide corpus-06 red — NOT an accepted leak. Real fix =
-  ; classify String.at (StrAt) as an Owned Option producer so MatchSum sum-shell-reclaim fires (the #5659
-  ; Char.from-int class, extended to String.at), routed to v-core-opt; RE-PIN TO THE FIXED (lower/0) VALUES
-  ; ON LANDING. Measured on b6cb4be3ef, debug 05oOIIN4: n=1->5, 26->55, 27->9, 702->109, 703->13.
-  (live-objects known-leak 5 55 9 109 13))
+  ; FIXED (v-core-opt): the String.at Option-String sum-shell is now reclaimed. `find-at`'s recursive scan
+  ; matched over `(String.at alpha i)` (a MatchSum over an owned-single-view StrAt producer) and leaked its
+  ; Some shell EVERY loop iteration — the shell is not globally Owned (Stage-B note) AND arms_tail_call
+  ; disabled the post-match reclaim, whose drop the loop-back `br` skips anyway (so it scaled ~2/iteration →
+  ; the old 55/109). Fixed by matchsum_view_shell_reclaim_ok (owned-single-view local reclaim, whole-match
+  ; payload-safety gated) + a TailLoop back-edge drop in emit_loop_iteration + the body_reclaims_view_shell
+  ; import companion. The dominant loop-back leak is gone + no longer scales; the RESIDUAL (2·len+1) is
+  ; `fromcol`'s Some arm CONSUMING the view into a `find-at` Call (not borrow-clean → correctly not reclaimed,
+  ; leak beats a double-free). Measured on the debug-counters runtime: n=1→3, 26→3, 27→5, 702→5, 703→7.
+  (live-objects known-leak 3 3 5 5 7))
 
 (case "the LUHN checksum doubles alternate digits from the right with the nine-fold correction"
   (doc    "The check-digit walk over the digit peel: positions count from the RIGHT (the `% 10` /
