@@ -2125,7 +2125,7 @@
            resolves to `Resolved::Map`/`Set`, not a prim app, so the fault-walk must check the literal node
            itself). The map VALUE axis is unconstrained (a fn value is legal); only the KEY is hashed.")
   (input  (do
-            (def (main) (Map.len (map ((fn (x) x) 1))))
+            (def (main) (Map.len (map (= (fn (x) x) 1))))
             (export main)))
   (error  CDZ0216))
 

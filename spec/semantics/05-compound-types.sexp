@@ -370,7 +370,7 @@
   (doc    "`(match 5 ((map (1 v)) v) (_ 0))` — a `(map …)` pattern matches a Map value, and the Int64 `5`
            is not a Map, rejected CDZ0203. Pins the map pattern head's scrutinee-kind check, the map twin
            of the list case.")
-  (input  (do (def (main) (match 5 ((map (1 v)) v) (_ 0))) (export main)))
+  (input  (do (def (main) (match 5 ((map (= 1 v)) v) (_ 0))) (export main)))
   (error  CDZ0203))
 
 ; A `(map (k v)…)` pattern tests only that the NAMED keys are PRESENT (it is refutable on key-presence, not
@@ -6049,7 +6049,7 @@
   (input  (do
             (def (f (: xs (List (Map Int64 Int64))))
               (match xs
-                (#list((map (1 a)) .. rest) a)
+                (#list((map (= 1 a)) .. rest) a)
                 (_ (- 0 1))))
             (def (main) (f #list((map (= 1 77)))))
             (export main)))
@@ -6063,7 +6063,7 @@
   (input  (do
             (def (f (: xs (List (Map Int64 Int64))))
               (match xs
-                (#list((map (9 a)) .. rest) a)
+                (#list((map (= 9 a)) .. rest) a)
                 (_ (- 0 1))))
             (def (main) (f #list((map (= 1 77)))))
             (export main)))
@@ -6077,7 +6077,7 @@
   (input  (do
             (def (f (: xs (List (Map Int64 Int64))))
               (match xs
-                (#list((map (1 a) (2 b)) .. rest) (+ a b))
+                (#list((map (= 1 a) (= 2 b)) .. rest) (+ a b))
                 (_ (- 0 1))))
             (def (main) (f #list((map (= 1 100) (= 2 5)))))
             (export main)))
@@ -15916,7 +15916,7 @@
   (input  (do
             (def (main)
               (match (Map.insert Map.empty 1 10)
-                ((map (1 v)) v)
+                ((map (= 1 v)) v)
                 (_           0))) (export main)))
   (output (: 10 Int64)))
 
@@ -15927,7 +15927,7 @@
   (input  (do
             (def (main)
               (match (Map.insert Map.empty 1 10)
-                ((map (2 v)) v)
+                ((map (= 2 v)) v)
                 (_           99))) (export main)))
   (output (: 99 Int64)))
 
@@ -15938,7 +15938,7 @@
   (input  (do
             (def (main)
               (match (Map.insert (Map.insert Map.empty 1 10) 2 20)
-                ((map (1 v) .. rest) (Map.len rest))
+                ((map (= 1 v) .. rest) (Map.len rest))
                 (_                   0))) (export main)))
   (output (: 1 Int64)))
 
@@ -15955,7 +15955,7 @@
               (if b (Map.insert (Map.empty) "a" 5) (Map.insert (Map.empty) "b" 9)))
             (def (look (: m (Map String Int64)))
               (match m
-                ((map ("a" v) .. rest) (+ v (Map.len rest)))
+                ((map (= "a" v) .. rest) (+ v (Map.len rest)))
                 (_                     -1)))
             (def (main) (look (pick true))) (export main)))
   (output (: 5 Int64)))
@@ -15977,7 +15977,7 @@
   (input  (do
             (def (f (: t (Tuple (Map Int64 Int64) Int64)))
               (match t
-                (#tuple((map (1 a)) k) (+ a k))
+                (#tuple((map (= 1 a)) k) (+ a k))
                 (_ (- 0 1))))
             (def (main) (f #tuple((map (= 1 100)) 5)))
             (export main)))
@@ -15991,7 +15991,7 @@
   (input  (do
             (def (f (: t (Tuple (Map Int64 Int64) Int64)))
               (match t
-                (#tuple((map (7 a)) k) (+ a k))
+                (#tuple((map (= 7 a)) k) (+ a k))
                 (_ (- 0 1))))
             (def (main) (f #tuple((map (= 1 100)) 5)))
             (export main)))
@@ -16009,7 +16009,7 @@
             (def (pick (: n Int64)) (Map.insert (Map.empty) "a" n))
             (def (look (: m (Map String Int64)))
               (match m
-                ((map ("a" 0) .. rest) 1)
+                ((map (= "a" 0) .. rest) 1)
                 (_                     -1)))
             (def (main) (look (pick 0))) (export main)))
   (output (: 1 Int64)))
@@ -16025,7 +16025,7 @@
   (input  (do
             (def (main)
               (match (Map.insert (Map.empty) "a" #tuple(3 4))
-                ((map ("a" #tuple(x y)) .. rest) (+ x y))
+                ((map (= "a" #tuple(x y)) .. rest) (+ x y))
                 (_                               -1)))
             (export main)))
   (output (: 7 Int64)))
@@ -16042,7 +16042,7 @@
               (if b (Map.insert (Map.empty) "a" #tuple(3 4)) (Map.empty)))
             (def (look (: m (Map String (Tuple Int64 Int64))))
               (match m
-                ((map ("a" #tuple(x y)) .. rest) (+ x y))
+                ((map (= "a" #tuple(x y)) .. rest) (+ x y))
                 (_                               -1)))
             (def (main) (look (pick true))) (export main)))
   (output (: 7 Int64)))
@@ -16057,7 +16057,7 @@
   (input  (do
             (def (look (: m (Map String (Option Int64))))
               (match m
-                ((map ("a" (Some n)) .. rest) n)
+                ((map (= "a" (Some n)) .. rest) n)
                 (_                            -1)))
             (def (main) (look (Map.insert (Map.empty) "a" (Some 5)))) (export main)))
   (output (: 5 Int64)))
@@ -16072,7 +16072,7 @@
             (type Box (Mk Int64))
             (def (main)
               (match (Map.insert (Map.empty) "a" (Box.Mk 5))
-                ((map ("a" (Box.Mk n)) .. rest) n)
+                ((map (= "a" (Box.Mk n)) .. rest) n)
                 (_                             -1)))
             (export main)))
   (output (: 5 Int64)))
@@ -16085,7 +16085,7 @@
   (input  (do
             (def (main)
               (match (Map.insert (Map.empty) "a" #tuple(#tuple(1 2) 3))
-                ((map ("a" #tuple(#tuple(x y) z)) .. rest) x)
+                ((map (= "a" #tuple(#tuple(x y) z)) .. rest) x)
                 (_                                        -1)))
             (export main)))
   (output (: 1 Int64)))
@@ -16103,8 +16103,8 @@
            → first fails, second `3 > 0` holds → 200; h=0 → both fail → wildcard 300.")
   (input  (do (def (main (: h Int64))
                 (match (Map.insert (Map.insert (Map.empty) 1 h) 2 20)
-                  ((guard (map (1 v) .. r) (> v 5)) 100)
-                  ((guard (map (1 v) .. r) (> v 0)) 200)
+                  ((guard (map (= 1 v) .. r) (> v 5)) 100)
+                  ((guard (map (= 1 v) .. r) (> v 0)) 200)
                   (_ 300)))
               (export main)))
   (call   main (: 9 Int64))
@@ -16122,8 +16122,8 @@
            TRUE → arm 1 (100). Pins that a guarded map arm's guard is EVALUATED (not ignored) on the const
            path and that a TRUE fold selects the arm — the const analogue of the runtime fall-through case.")
   (input  (match (Map.insert (Map.insert (Map.empty) 1 7) 2 20)
-            ((guard (map (1 v) .. r) (> v 5)) 100)
-            ((guard (map (1 v) .. r) (> v 0)) 200)
+            ((guard (map (= 1 v) .. r) (> v 5)) 100)
+            ((guard (map (= 1 v) .. r) (> v 0)) 200)
             (_ 300)))
   (output (: 100 Int64)))
 
@@ -16134,8 +16134,8 @@
            a trap, not a wrong-arm selection) — the const twin of the runtime fall-through, closing the map
            const-path guard fold's false branch.")
   (input  (match (Map.insert (Map.insert (Map.empty) 1 3) 2 20)
-            ((guard (map (1 v) .. r) (> v 5)) 100)
-            ((guard (map (1 v) .. r) (> v 0)) 200)
+            ((guard (map (= 1 v) .. r) (> v 5)) 100)
+            ((guard (map (= 1 v) .. r) (> v 0)) 200)
             (_ 300)))
   (output (: 200 Int64)))
 
@@ -16155,7 +16155,7 @@
   (input  (do
             (def (main (: n Int64))
               (match (Map.insert (Map.insert (Map.empty) 1 5) 2 n)
-                ((guard (map (1 v) .. r) (> v 3)) v)
+                ((guard (map (= 1 v) .. r) (> v 3)) v)
                 (_ -1)))
             (export main)))
   (call   main (: 9 Int64)) (output (: 5 Int64)))
@@ -16172,8 +16172,8 @@
   (input  (do
             (def (f (: n Int64))
               (match (Map.insert (Map.insert (Map.empty) 1 5) 2 n)
-                ((guard (map (1 v) .. r) (> v 100)) v)
-                ((guard (map (1 v) .. r) (> v 3)) (+ v 1))
+                ((guard (map (= 1 v) .. r) (> v 100)) v)
+                ((guard (map (= 1 v) .. r) (> v 3)) (+ v 1))
                 (_ -1)))
             (def (main (: d Int64)) (f 9))
             (export main)))
@@ -16698,7 +16698,7 @@
             (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
             (def (main)
               (match (map (= (add 2 3) 42))
-                ((map (5 v) .. rest) v)
+                ((map (= 5 v) .. rest) v)
                 (_ (- 0 1))))
             (export main)))
   (output (: 42 Int64)))
@@ -17022,7 +17022,7 @@
   (input  (do
             (def (main (: k Int64))
               (match (map (= k 42))
-                ((map (5 v) .. rest) v)
+                ((map (= 5 v) .. rest) v)
                 (_ -1)))
             (export main)))
   (call   main (: 5 Int64))
@@ -17038,7 +17038,7 @@
   (input  (do
             (def (main (: k Int64))
               (match (map (= k 1) (= 5 42))
-                ((map (5 v) .. rest) v)
+                ((map (= 5 v) .. rest) v)
                 (_ -1)))
             (export main)))
   (call   main (: 7 Int64))
@@ -17052,7 +17052,7 @@
   (input  (do
             (def (main (: k Int64))
               (match (map (= 5 (+ k 1)))
-                ((map (5 v) .. rest) v)
+                ((map (= 5 v) .. rest) v)
                 (_ -1)))
             (export main)))
   (call   main (: 9 Int64))
@@ -17066,7 +17066,7 @@
   (input  (do
             (def (main (: k Int64))
               (match (map (= k 1) (= 7 2))
-                ((map (5 a) (7 b) .. rest) (+ (* a 10) b))
+                ((map (= 5 a) (= 7 b) .. rest) (+ (* a 10) b))
                 (_ -1)))
             (export main)))
   (call   main (: 5 Int64))
@@ -17083,7 +17083,7 @@
   (input  (do
             (def (main (: k Int64))
               (match (map (= k 42) (= 7 9))
-                ((map (5 v) .. rest) (+ v (Map.len rest)))
+                ((map (= 5 v) .. rest) (+ v (Map.len rest)))
                 (_ -1)))
             (export main)))
   (call   main (: 5 Int64))
@@ -18050,7 +18050,7 @@
            the CDZ0101. A generation that skipped this would let a mistyped map-pattern head error only at
            emit, hiding it from the fast diagnostics path.")
   (input  (do (def (go (: mp (Map Int64 Int64)))
-                (match mp ((map (1 v)) v) ((Zorp x) (go mp)) (_ 0)))
+                (match mp ((map (= 1 v)) v) ((Zorp x) (go mp)) (_ 0)))
               (export go)))
   (error CDZ0101))
 
@@ -18347,7 +18347,7 @@
            unbound-name cascade accompanies it. A generation that skipped this would leave a mistyped map
            rest pattern blaming the user's binder instead of naming the shape rule.")
   (input  (do (def (f (: mp (Map Int64 Int64)))
-                (match mp ((map (1 v) .. rest (2 w)) v) (_ 0)))
+                (match mp ((map (= 1 v) .. rest (= 2 w)) v) (_ 0)))
               (export f)))
   (error CDZ0201))
 
@@ -18361,7 +18361,7 @@
            in suppressing the unbound cascade. Sibling of the top-level map-rest + record-pattern cases.")
   (input  (do (type W (Wrap (Map Int64 Int64)))
               (def (f (: w W))
-                (match w ((Wrap (map (1 v) .. r (2 x))) v) (_ 0)))
+                (match w ((Wrap (map (= 1 v) .. r (= 2 x))) v) (_ 0)))
               (export f)))
   (error CDZ0201))
 
@@ -23284,7 +23284,7 @@
   (doc    "`(map (\"a\" 0) .. rest)` matches only a map whose value at key \"a\" is 0. Over a RUNTIME map
            `{\"a\": 0}` (built by a conditional so not const-folded) the literal sub-pattern matches → 1.")
   (input  (do (def (pick (: n Int64)) (Map.insert (Map.empty) "a" n))
-              (def (look (: m (Map String Int64))) (match m ((map ("a" 0) .. rest) 1) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m ((map (= "a" 0) .. rest) 1) (_ -1)))
               (def (main (: n Int64)) (look (pick n))) (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
@@ -23293,7 +23293,7 @@
   (doc    "The refutation face: over `{\"a\": 9}` the value at \"a\" is not the literal 0, so the
            `(map (\"a\" 0) …)` arm does not fire and the match falls through to the catch-all → -1.")
   (input  (do (def (pick (: n Int64)) (Map.insert (Map.empty) "a" n))
-              (def (look (: m (Map String Int64))) (match m ((map ("a" 0) .. rest) 1) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m ((map (= "a" 0) .. rest) 1) (_ -1)))
               (def (main (: n Int64)) (look (pick n))) (export main)))
   (call   main (: 9 Int64))
   (output (: -1 Int64)))
@@ -23302,7 +23302,7 @@
   (doc    "`(map (\"a\" 0) (\"b\" y) .. rest)` fires only when \"a\"'s value is the literal 0 AND \"b\" is
            present, binding `y` to \"b\"'s value. Over `{\"a\": 0, \"b\": 5}` → binds y = 5.")
   (input  (do (def (pick (: a Int64)) (Map.insert (Map.insert (Map.empty) "a" a) "b" 5))
-              (def (look (: m (Map String Int64))) (match m ((map ("a" 0) ("b" y) .. rest) y) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m ((map (= "a" 0) (= "b" y) .. rest) y) (_ -1)))
               (def (main (: a Int64)) (look (pick a))) (export main)))
   (call   main (: 0 Int64))
   (output (: 5 Int64)))
@@ -23312,7 +23312,7 @@
            \"b\" is present but \"a\"'s value 1 is not the literal 0, so the whole arm is refuted and the match
            falls through to the catch-all → -1 (a literal value sub-pattern gates the WHOLE arm).")
   (input  (do (def (pick (: a Int64)) (Map.insert (Map.insert (Map.empty) "a" a) "b" 5))
-              (def (look (: m (Map String Int64))) (match m ((map ("a" 0) ("b" y) .. rest) y) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m ((map (= "a" 0) (= "b" y) .. rest) y) (_ -1)))
               (def (main (: a Int64)) (look (pick a))) (export main)))
   (call   main (: 1 Int64))
   (output (: -1 Int64)))
@@ -23325,7 +23325,7 @@
   (doc    "`(map (\"a\" (Some n)) .. rest)` over a RUNTIME map `{\"a\": Some 5}` (built by a conditional so
            not const-folded): the value at \"a\" matches `(Some n)`, binding n = 5.")
   (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.empty) "a" (Some 5)) (Map.insert (Map.empty) "a" None)))
-              (def (look (: m (Map String (Option Int64)))) (match m ((map ("a" (Some n)) .. rest) n) (_ -1)))
+              (def (look (: m (Map String (Option Int64)))) (match m ((map (= "a" (Some n)) .. rest) n) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: true Bool))
   (output (: 5 Int64))
@@ -23335,7 +23335,7 @@
   (doc    "The refutation face: over `{\"a\": None}` the value at \"a\" is not `(Some n)`, so the arm is
            refuted and the match falls through to the catch-all → -1.")
   (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.empty) "a" (Some 5)) (Map.insert (Map.empty) "a" None)))
-              (def (look (: m (Map String (Option Int64)))) (match m ((map ("a" (Some n)) .. rest) n) (_ -1)))
+              (def (look (: m (Map String (Option Int64)))) (match m ((map (= "a" (Some n)) .. rest) n) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: false Bool))
   (output (: -1 Int64))
@@ -23344,7 +23344,7 @@
 (case "a refutable map value sub-pattern folds the same over a constant map"
   (doc    "The constant-map form folds identically: matching `{\"a\": Some 7}` against `(map (\"a\" (Some n)) …)`
            binds n = 7.")
-  (input  (do (def (main) (match (Map.insert (Map.empty) "a" (Some 7)) ((map ("a" (Some n)) .. rest) n) (_ -1)))
+  (input  (do (def (main) (match (Map.insert (Map.empty) "a" (Some 7)) ((map (= "a" (Some n)) .. rest) n) (_ -1)))
               (export main)))
   (output (: 7 Int64)))
 
@@ -23356,7 +23356,7 @@
   (doc    "Over a RUNTIME map `{\"a\": k}` (built by a conditional so not const-folded), the `(map (\"a\" v) …)`
            arm fires — key \"a\" is present → binds v to its runtime value. main(7) → 7.")
   (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" k) (Map.insert (Map.empty) "b" 2)))
-              (def (look (: m (Map String Int64))) (match m ((map ("a" v) .. rest) v) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m ((map (= "a" v) .. rest) v) (_ -1)))
               (def (main (: k Int64)) (look (pick true k))) (export main)))
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
@@ -23365,7 +23365,7 @@
   (doc    "The refutation face: `pick false` → `{\"b\": 2}`, so the `(map (\"a\" v) …)` arm's key \"a\" is
            ABSENT → the match falls through to the catch-all → -1.")
   (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" k) (Map.insert (Map.empty) "b" 2)))
-              (def (look (: m (Map String Int64))) (match m ((map ("a" v) .. rest) v) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m ((map (= "a" v) .. rest) v) (_ -1)))
               (def (main (: k Int64)) (look (pick false k))) (export main)))
   (call   main (: 7 Int64))
   (output (: -1 Int64)))
@@ -23374,7 +23374,7 @@
   (doc    "A multi-key arm `(map (\"a\" x) (\"b\" y) …)` fires only when EVERY named key is present. Over
            `{\"a\": 3, \"b\": 4}` both are present → binds x=3,y=4 → x+y = 7.")
   (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.insert (Map.empty) "a" 3) "b" 4) (Map.insert (Map.empty) "a" 3)))
-              (def (look (: m (Map String Int64))) (match m ((map ("a" x) ("b" y) .. rest) (+ x y)) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m ((map (= "a" x) (= "b" y) .. rest) (+ x y)) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: true Bool))
   (output (: 7 Int64)))
@@ -23392,7 +23392,7 @@
            refutes, pinned by the multi-key case above.")
   (input  (do
             (def (mk (: s Int64)) (Map.insert (Map.insert (Map.insert (Map.empty) 1 (+ s 10)) 2 (+ s 20)) 3 (+ s 30)))
-            (def (main (: s Int64)) (match (mk s) ((map (2 x)) x) (_ -1)))
+            (def (main (: s Int64)) (match (mk s) ((map (= 2 x)) x) (_ -1)))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 20 Int64)))
@@ -23401,7 +23401,7 @@
   (doc    "Over `{\"a\": 3}` (missing \"b\") the two-key arm `(map (\"a\" x) (\"b\" y) …)` is refuted → falls
            through to the catch-all → -1.")
   (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.insert (Map.empty) "a" 3) "b" 4) (Map.insert (Map.empty) "a" 3)))
-              (def (look (: m (Map String Int64))) (match m ((map ("a" x) ("b" y) .. rest) (+ x y)) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m ((map (= "a" x) (= "b" y) .. rest) (+ x y)) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: false Bool))
   (output (: -1 Int64)))
@@ -23423,14 +23423,14 @@
            at run time (a non-foldable recursive call), so the `5` arm matches by VALUE and binds v = 42. The
            const-fold path would report the runtime key absent and wrongly take the catch-all.")
   (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-              (def (main) (match (map (= (add 2 3) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) (export main)))
+              (def (main) (match (map (= (add 2 3) 42)) ((map (= 5 v) .. rest) v) (_ (- 0 1)))) (export main)))
   (output (: 42 Int64)))
 
 (case "a map match over a map literal with a non-matching runtime key falls through"
   (doc    "The dual: the literal's runtime key is 6 (`add 2 4`), so the `5` arm misses by value → the match
            falls through to the catch-all → -1.")
   (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-              (def (main) (match (map (= (add 2 4) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) (export main)))
+              (def (main) (match (map (= (add 2 4) 42)) ((map (= 5 v) .. rest) v) (_ (- 0 1)))) (export main)))
   (output (: -1 Int64)))
 
 (case "Map.lookup of a map literal with a runtime key finds the value by value, not a const-fold"
@@ -23488,7 +23488,7 @@
            from the solved construct type (not defaulted to i64), so it composes on the rust backend too
            (rcdzc #4601). Completes the runtime-map-match family with cases above.")
   (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.insert (Map.insert (Map.empty) "a" 1) "b" 2) "c" 3) (Map.empty)))
-              (def (look (: m (Map String Int64))) (match m ((map ("a" v) .. rest) (+ v (Map.len rest))) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m ((map (= "a" v) .. rest) (+ v (Map.len rest))) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: true Bool))
   (output (: 3 Int64)))
@@ -23500,7 +23500,7 @@
   (doc    "`(map (\"a\" (tuple x y)) .. rest)` over a RUNTIME map `{\"a\": (k, 4)}` binds x=k, y=4 → (+ x y).
            With k=3 → 7.")
   (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" #tuple(k 4)) (Map.empty)))
-              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m ((map ("a" #tuple(x y)) .. rest) (+ x y)) (_ -1)))
+              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m ((map (= "a" #tuple(x y)) .. rest) (+ x y)) (_ -1)))
               (def (main (: k Int64)) (look (pick true k))) (export main)))
   (call   main (: 3 Int64))
   (output (: 7 Int64)))
@@ -23509,7 +23509,7 @@
   (doc    "An ABSENT key falls through to the catch-all — the presence test fails before the value read. Here
            `pick false` → empty map, so the `\"a\"` arm's key is absent → -1.")
   (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" #tuple(k 4)) (Map.empty)))
-              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m ((map ("a" #tuple(x y)) .. rest) (+ x y)) (_ -1)))
+              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m ((map (= "a" #tuple(x y)) .. rest) (+ x y)) (_ -1)))
               (def (main (: k Int64)) (look (pick false k))) (export main)))
   (call   main (: 3 Int64))
   (output (: -1 Int64)))
@@ -23519,7 +23519,7 @@
            n = k (the value read walks the ctor payload after the Map.lookup unwrap). With k=9 → 9.")
   (input  (do (type Box (Mk Int64))
               (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" (Box.Mk k)) (Map.empty)))
-              (def (look (: m (Map String Box))) (match m ((map ("a" (Box.Mk n)) .. rest) n) (_ -1)))
+              (def (look (: m (Map String Box))) (match m ((map (= "a" (Box.Mk n)) .. rest) n) (_ -1)))
               (def (main (: k Int64)) (look (pick true k))) (export main)))
   (call   main (: 9 Int64))
   (output (: 9 Int64)))
@@ -23559,7 +23559,7 @@
            guard `(> 5 3)` holds → body returns v = 5. The run re-verifies a VALID artifact.")
   (input  (do (def (main (: n Int64))
                 (match (Map.insert (Map.insert (Map.empty) 1 5) 2 n)
-                  ((guard (map (1 v) .. r) (> v 3)) v)
+                  ((guard (map (= 1 v) .. r) (> v 3)) v)
                   (_ (- 0 1)))) (export main)))
   (call   main (: 9 Int64))
   (output (: 5 Int64)))
