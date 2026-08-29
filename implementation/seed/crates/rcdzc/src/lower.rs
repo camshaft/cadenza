@@ -4657,7 +4657,8 @@ fn value_ctor_can_trap(db: &mut Db, id: StructId) -> bool {
             fs.into_iter().any(|v| value_ctor_can_trap(db, v))
         }
         Core::SumNew { payloads, .. } => {
-            let ps: Vec<StructId> = payloads.iter().copied().collect();
+            // Copy to an owned Vec (releasing the `payloads` borrow) before the `&mut db` calls in `.any`.
+            let ps: Vec<StructId> = payloads.to_vec();
             ps.into_iter().any(|p| value_ctor_can_trap(db, p))
         }
         // A non-collection leaf: trap-possible iff not trap-free.
