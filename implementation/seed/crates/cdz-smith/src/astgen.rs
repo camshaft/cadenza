@@ -350,7 +350,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(13) {
+    match c.variant(14) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -379,6 +379,9 @@ fn gen_main_body<C: Choice>(
         // closure over the remaining params, later completed — the def-call under-arity + applyClosure
         // currying that #5488 grades (was a skip: "operator/application not modeled").
         12 => gen_partial_application_body(c, out),
+        // A HIGHER-ORDER body: a fn value (a `(fn …)` lambda or a named def) passed as an ARGUMENT to
+        // another def and applied inside it — the applyClosure over a closure-valued parameter.
+        13 => gen_higher_order_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1023,6 +1026,39 @@ fn gen_partial_application_body<C: Choice>(c: &mut C, out: &mut String) {
         _ => write!(
             out,
             "(do (def (pa3 a b c) (+ (+ a b) c)) (let ((g (pa3 {a} {b}))) (g {k})))"
+        )
+        .ok(),
+    };
+}
+
+/// A HIGHER-ORDER body: a function VALUE — either a `(fn …)` lambda or a NAMED def used by name — is
+/// passed as an ARGUMENT to another def, which applies it inside its body. Reaches the applyClosure path
+/// over a CLOSURE-VALUED parameter (the closure flows through a param, then is called), distinct from the
+/// partial-application arm (which under-applies a def directly). Self-contained (a nested `(do (def …) …)`
+/// with small Int64 literals), so it stays type-correct and on the compile path. Verified compiles;
+/// exact-arity applyClosure is the base closure path the oracle already grades.
+fn gen_higher_order_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the FORM before consuming the operand choices (variant-ordering: a short seed must still reach
+    // the twice/named forms).
+    let form = c.variant(3);
+    let (a, b) = (c.int_bounded(1, 20), c.int_bounded(0, 20));
+    match form {
+        // Pass a LAMBDA to a 1-shot applier: `(apply (fn (y) (+ y A)) B)`.
+        0 => write!(
+            out,
+            "(do (def (apply f x) (f x)) (apply (fn (y) (+ y {a})) {b}))"
+        )
+        .ok(),
+        // Pass a LAMBDA to a fn that applies it TWICE: `(twice (fn (y) (* y A)) B)`.
+        1 => write!(
+            out,
+            "(do (def (twice g n) (g (g n))) (twice (fn (y) (* y {a})) {b}))"
+        )
+        .ok(),
+        // Pass a NAMED def by name as a fn value: `(apply inc B)`.
+        _ => write!(
+            out,
+            "(do (def (inc y) (+ y {a})) (def (apply f x) (f x)) (apply inc {b}))"
         )
         .ok(),
     };
@@ -1954,6 +1990,36 @@ mod tests {
         assert!(saw_2ary, "should reach a 2-ary `let`-partial form");
         assert!(saw_chain, "should reach a 3-ary chained-currying form");
         assert!(saw_2arg, "should reach a 3-ary 2-arg `let`-partial form");
+    }
+
+    /// `gen_higher_order_body` REACHES all three higher-order forms (lambda-applied-once, lambda-applied-
+    /// twice, named-def-as-value) and every body COMPILES (S146: a fn value passed as an argument and
+    /// applied inside another def — the applyClosure-over-a-closure-valued-param path).
+    #[test]
+    fn gen_higher_order_body_reaches_all_forms_and_compiles() {
+        let (mut saw_once, mut saw_twice, mut saw_named) = (false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(941);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_higher_order_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_once |= body.contains("(def (apply f x) (f x)) (apply (fn ");
+            saw_twice |= body.contains("(def (twice g n)");
+            saw_named |= body.contains("(apply inc ");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "higher-order body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_once, "should reach a lambda-applied-once form");
+        assert!(saw_twice, "should reach a lambda-applied-twice form");
+        assert!(saw_named, "should reach a named-def-as-value form");
     }
 
     /// `gen_try_body` REACHES all four `?`/`try` forms (Ok/Err success+short-circuit for Result, Some/None
