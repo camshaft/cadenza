@@ -907,10 +907,16 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
     | some (Node.atom lid) =>
       match m.leaves[lid]? with
       | some (Leaf.name b) =>
-        -- a bare name: force its (lazy) binding, or (unmodeled) a free/prelude name
+        -- a bare name: force its (lazy) binding; else a bare NULLARY CONSTRUCTOR used as a value (`None`,
+        -- or a user/prelude nullary ctor) — the value form of `(None)`/`(C)` written without parens; else
+        -- an (unmodeled) free/prelude name.
         match env.lookup? b with
         | some (thunk, _) => thunk.get  -- propagates the binding's value / trap / unsupported / diverges
-        | none => .unsupported "eval: free name (variable not bound; prelude/global not yet modeled)"
+        | none =>
+          if b == "None".toUTF8 then .value Value.none
+          else match variantCtorArity? m b with
+               | some 0 => .value (if soleNullaryCtor? m b then .unit else .variant b .unit)
+               | _ => .unsupported "eval: free name (variable not bound; prelude/global not yet modeled)"
       | some l =>
         match Value.ofLeaf l with
         | some v => .value v
