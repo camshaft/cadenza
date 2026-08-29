@@ -1186,25 +1186,28 @@ fn package_diagnostics_for(
     let files = crate::closure::load(entry_path, open).ok()?;
     // Splice every closure file's AST + a Diagnostics request + the entry marker — exactly `run_check`'s
     // package build, so the compiler links the package and resolves cross-file names.
-    let mut inputs: Vec<rcdzc::Artifact> = files
+    let mut inputs: Vec<cadenza_compile_abi::Artifact> = files
         .iter()
         .map(|f| {
-            rcdzc::Artifact::new(
-                rcdzc::Artifact::KIND_AST,
+            cadenza_compile_abi::Artifact::new(
+                cadenza_compile_abi::Artifact::KIND_AST,
                 f.name.clone(),
                 cadenza_syntax::codec::encode(&f.arenas),
             )
         })
         .collect();
-    inputs.push(rcdzc::Artifact::new(
-        rcdzc::sidecar::KIND_SIDECAR,
+    inputs.push(cadenza_compile_abi::Artifact::new(
+        cadenza_compile_abi::sidecar::KIND_SIDECAR,
         "drive",
-        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics)]),
+        cadenza_compile_abi::sidecar::encode(&[cadenza_compile_abi::Request::Query(
+            cadenza_compile_abi::sidecar::Query::Diagnostics,
+        )]),
     ));
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
     // Single-result package query — delegated to `cdz-compile` under `!standalone`, in-process otherwise.
-    let compiled = crate::dispatch_query_over_inputs(inputs, rcdzc::sidecar::KIND_DIAGNOSTICS);
-    let Some(bytes) = compiled.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
+    let compiled =
+        crate::dispatch_query_over_inputs(inputs, cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS);
+    let Some(bytes) = compiled.artifact(cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS) else {
         // The `Diagnostics` query produced NO artifact — the package failed to LINK before the query
         // could run (e.g. a CYCLIC import: `link()` rejects the import graph up front). The compile still
         // carries the link faults in `compiled.diagnostics`; surface THOSE (mirroring the CLI's
@@ -1262,14 +1265,14 @@ fn package_diagnostics_for(
 /// is out of the entry's span range (a global package id, or a sibling's) is shown at the document start
 /// rather than dropped, so a real package-level fault is never silently lost.
 fn package_link_faults_as_diagnostics(
-    compiled: &rcdzc::CompileOutput,
+    compiled: &cadenza_compile_abi::CompileOutput,
     files: &[crate::closure::LoadedFile],
 ) -> Vec<Diagnostic> {
     let entry = &files[0];
     compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == rcdzc::Severity::Error)
+        .filter(|d| d.severity == cadenza_compile_abi::Severity::Error)
         .map(|d| {
             let range = d
                 .node
@@ -1372,14 +1375,25 @@ fn diagnostics_for(text: &str, is_ml: bool) -> Vec<Diagnostic> {
     //    each to a `Range` through the span table.
     let ast_bytes = cadenza_syntax::codec::encode(&arenas);
     let sidecar_bytes =
-        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics)]);
+        cadenza_compile_abi::sidecar::encode(&[cadenza_compile_abi::Request::Query(
+            cadenza_compile_abi::sidecar::Query::Diagnostics,
+        )]);
     let inputs = vec![
-        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
-        rcdzc::Artifact::new(rcdzc::sidecar::KIND_SIDECAR, "drive", sidecar_bytes),
+        cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::Artifact::KIND_AST,
+            "main",
+            ast_bytes,
+        ),
+        cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::sidecar::KIND_SIDECAR,
+            "drive",
+            sidecar_bytes,
+        ),
     ];
     // Single-result Diagnostics query — delegated to `cdz-compile` under `!standalone`, in-process otherwise.
-    let compiled = crate::dispatch_query_over_inputs(inputs, rcdzc::sidecar::KIND_DIAGNOSTICS);
-    if let Some(bytes) = compiled.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) {
+    let compiled =
+        crate::dispatch_query_over_inputs(inputs, cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS);
+    if let Some(bytes) = compiled.artifact(cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS) {
         let diag_text = String::from_utf8_lossy(bytes);
         for line in diag_text.lines() {
             if let Some(d) = parse_diag_line(line, text, &spans) {
@@ -1591,17 +1605,29 @@ fn hover_at(text: &str, is_ml: bool, pos: Position) -> Option<Hover> {
     // Read the TYPE (`TypeAt`) and the DOCSTRING (`DocAt`) of the node in ONE compile — a hover shows both
     // (rust-analyzer-style: the signature, then its doc prose). Distinct query kinds → distinct artifacts.
     let ast_bytes = cadenza_syntax::codec::encode(&arenas);
-    let sidecar_bytes = rcdzc::sidecar::encode(&[
-        rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt { node: node.0 }),
-        rcdzc::Request::Query(rcdzc::sidecar::Query::DocAt { node: node.0 }),
+    let sidecar_bytes = cadenza_compile_abi::sidecar::encode(&[
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::TypeAt {
+            node: node.0,
+        }),
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::DocAt {
+            node: node.0,
+        }),
     ]);
     let inputs = vec![
-        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
-        rcdzc::Artifact::new(rcdzc::sidecar::KIND_SIDECAR, "drive", sidecar_bytes),
+        cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::Artifact::KIND_AST,
+            "main",
+            ast_bytes,
+        ),
+        cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::sidecar::KIND_SIDECAR,
+            "drive",
+            sidecar_bytes,
+        ),
     ];
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
     let ty = compiled
-        .artifact(rcdzc::sidecar::KIND_TYPE_AT)
+        .artifact(cadenza_compile_abi::sidecar::KIND_TYPE_AT)
         .map(|b| String::from_utf8_lossy(b).trim().to_string())
         .unwrap_or_default();
     // A total-but-uninformative answer ("unknown", or empty) is not worth a hover popup — return None so
@@ -1610,7 +1636,7 @@ fn hover_at(text: &str, is_ml: bool, pos: Position) -> Option<Hover> {
         return None;
     }
     let doc = compiled
-        .artifact(rcdzc::sidecar::KIND_DOC)
+        .artifact(cadenza_compile_abi::sidecar::KIND_DOC)
         .map(|b| String::from_utf8_lossy(b).trim().to_string())
         .filter(|d| !d.is_empty());
     // The hovered node's source range, so the editor underlines exactly the sub-expression it typed.
@@ -1642,14 +1668,14 @@ fn hover_contents(ty: &str, doc: Option<&str>) -> HoverContents {
 /// `None` if the compile produced no such artifact. Shared by the query-backed analyses.
 fn run_query_text(
     arenas: &cadenza_syntax::Arenas,
-    query: rcdzc::sidecar::Query,
+    query: cadenza_compile_abi::sidecar::Query,
     kind: &str,
 ) -> Option<String> {
     // Route through the shared `run_sidecar` chokepoint (which builds the same `[ast "main", sidecar
     // "drive"]` inputs) so a `!standalone` build DELEGATES this single query to `cdz-compile` — this one
     // refactor delegates every LSP single-query handler (~14 call sites) that funnels through here. Under
     // `standalone` it is the in-process compile, byte-for-byte as before.
-    let compiled = crate::run_sidecar(arenas, rcdzc::Request::Query(query));
+    let compiled = crate::run_sidecar(arenas, cadenza_compile_abi::Request::Query(query));
     compiled
         .artifact(kind)
         .map(|b| String::from_utf8_lossy(b).into_owned())
@@ -1679,8 +1705,8 @@ fn definition_at(text: &str, is_ml: bool, pos: Position, uri: &Uri) -> Option<Lo
     let node = spans.node_at_offset(byte)?;
     let answer = run_query_text(
         &arenas,
-        rcdzc::sidecar::Query::ResolveOf { node: node.0 },
-        rcdzc::sidecar::KIND_RESOLVE,
+        cadenza_compile_abi::sidecar::Query::ResolveOf { node: node.0 },
+        cadenza_compile_abi::sidecar::KIND_RESOLVE,
     )?;
     // The `ResolveOf` answer is the defining occurrence's node id (empty = not a navigable reference).
     let target: u32 = answer.trim().parse().ok()?;
@@ -1699,8 +1725,8 @@ fn type_definition_at(text: &str, is_ml: bool, pos: Position, uri: &Uri) -> Opti
     let node = spans.node_at_offset(byte)?;
     let ty = run_query_text(
         &arenas,
-        rcdzc::sidecar::Query::TypeAt { node: node.0 },
-        rcdzc::sidecar::KIND_TYPE_AT,
+        cadenza_compile_abi::sidecar::Query::TypeAt { node: node.0 },
+        cadenza_compile_abi::sidecar::KIND_TYPE_AT,
     )?;
     let name = navigable_type_name(&ty)?;
     // Map the type NAME to its top-level declaration node (the same `Symbols` lookup references uses),
@@ -1743,28 +1769,28 @@ fn package_type_definition_at(
     let cursor = entry_spans.node_at_offset(byte)?;
 
     let files = crate::closure::load(entry_path, open).ok()?;
-    let mut inputs: Vec<rcdzc::Artifact> = files
+    let mut inputs: Vec<cadenza_compile_abi::Artifact> = files
         .iter()
         .map(|f| {
-            rcdzc::Artifact::new(
-                rcdzc::Artifact::KIND_AST,
+            cadenza_compile_abi::Artifact::new(
+                cadenza_compile_abi::Artifact::KIND_AST,
                 f.name.clone(),
                 cadenza_syntax::codec::encode(&f.arenas),
             )
         })
         .collect();
-    inputs.push(rcdzc::Artifact::new(
-        rcdzc::sidecar::KIND_SIDECAR,
+    inputs.push(cadenza_compile_abi::Artifact::new(
+        cadenza_compile_abi::sidecar::KIND_SIDECAR,
         "drive",
         // Entry is spliced FIRST (base 0), so the cursor's entry-local node id is the linked query input.
-        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt {
-            node: cursor.0,
-        })]),
+        cadenza_compile_abi::sidecar::encode(&[cadenza_compile_abi::Request::Query(
+            cadenza_compile_abi::sidecar::Query::TypeAt { node: cursor.0 },
+        )]),
     ));
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
     let ty = compiled
-        .artifact(rcdzc::sidecar::KIND_TYPE_AT)
+        .artifact(cadenza_compile_abi::sidecar::KIND_TYPE_AT)
         .map(|b| String::from_utf8_lossy(b).trim().to_string())?;
     let name = navigable_type_name(&ty)?;
 
@@ -1804,26 +1830,28 @@ fn package_definition_at(
     let cursor = entry_spans.node_at_offset(byte)?;
 
     let files = crate::closure::load(entry_path, open).ok()?;
-    let mut inputs: Vec<rcdzc::Artifact> = files
+    let mut inputs: Vec<cadenza_compile_abi::Artifact> = files
         .iter()
         .map(|f| {
-            rcdzc::Artifact::new(
-                rcdzc::Artifact::KIND_AST,
+            cadenza_compile_abi::Artifact::new(
+                cadenza_compile_abi::Artifact::KIND_AST,
                 f.name.clone(),
                 cadenza_syntax::codec::encode(&f.arenas),
             )
         })
         .collect();
-    inputs.push(rcdzc::Artifact::new(
-        rcdzc::sidecar::KIND_SIDECAR,
+    inputs.push(cadenza_compile_abi::Artifact::new(
+        cadenza_compile_abi::sidecar::KIND_SIDECAR,
         "drive",
-        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::ResolveOf {
-            node: cursor.0, // entry-local == global (entry is base 0)
-        })]),
+        cadenza_compile_abi::sidecar::encode(&[cadenza_compile_abi::Request::Query(
+            cadenza_compile_abi::sidecar::Query::ResolveOf {
+                node: cursor.0, // entry-local == global (entry is base 0)
+            },
+        )]),
     ));
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
-    let bytes = compiled.artifact(rcdzc::sidecar::KIND_RESOLVE)?;
+    let bytes = compiled.artifact(cadenza_compile_abi::sidecar::KIND_RESOLVE)?;
     let target: u32 = String::from_utf8_lossy(bytes).trim().parse().ok()?;
 
     // Demux the global target to its owning file, then a Location in that file (its URI + local span).
@@ -1868,36 +1896,40 @@ fn package_hover_at(
     let cursor = entry_spans.node_at_offset(byte)?;
 
     let files = crate::closure::load(entry_path, open).ok()?;
-    let mut inputs: Vec<rcdzc::Artifact> = files
+    let mut inputs: Vec<cadenza_compile_abi::Artifact> = files
         .iter()
         .map(|f| {
-            rcdzc::Artifact::new(
-                rcdzc::Artifact::KIND_AST,
+            cadenza_compile_abi::Artifact::new(
+                cadenza_compile_abi::Artifact::KIND_AST,
                 f.name.clone(),
                 cadenza_syntax::codec::encode(&f.arenas),
             )
         })
         .collect();
-    inputs.push(rcdzc::Artifact::new(
-        rcdzc::sidecar::KIND_SIDECAR,
+    inputs.push(cadenza_compile_abi::Artifact::new(
+        cadenza_compile_abi::sidecar::KIND_SIDECAR,
         "drive",
         // TYPE + DOCSTRING of the cursor node in one linked compile (entry-local == global at base 0).
-        rcdzc::sidecar::encode(&[
-            rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt { node: cursor.0 }),
-            rcdzc::Request::Query(rcdzc::sidecar::Query::DocAt { node: cursor.0 }),
+        cadenza_compile_abi::sidecar::encode(&[
+            cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::TypeAt {
+                node: cursor.0,
+            }),
+            cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::DocAt {
+                node: cursor.0,
+            }),
         ]),
     ));
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
     let ty = compiled
-        .artifact(rcdzc::sidecar::KIND_TYPE_AT)
+        .artifact(cadenza_compile_abi::sidecar::KIND_TYPE_AT)
         .map(|b| String::from_utf8_lossy(b).trim().to_string())
         .unwrap_or_default();
     if ty.is_empty() || ty == "unknown" {
         return None; // let the single-buffer path try (or show nothing)
     }
     let doc = compiled
-        .artifact(rcdzc::sidecar::KIND_DOC)
+        .artifact(cadenza_compile_abi::sidecar::KIND_DOC)
         .map(|b| String::from_utf8_lossy(b).trim().to_string())
         .filter(|d| !d.is_empty());
     // Hover range = the cursor node's span in the ENTRY file (base 0, so the entry spans apply directly).
@@ -1995,8 +2027,8 @@ fn references_at(
     let top_node = top_level_symbol_node(&arenas, &name);
     let resolves_to = run_query_text(
         &arenas,
-        rcdzc::sidecar::Query::ResolveOf { node: node.0 },
-        rcdzc::sidecar::KIND_RESOLVE,
+        cadenza_compile_abi::sidecar::Query::ResolveOf { node: node.0 },
+        cadenza_compile_abi::sidecar::KIND_RESOLVE,
     )
     .and_then(|a| a.trim().parse::<u32>().ok());
     let cursor_is_top_level =
@@ -2008,8 +2040,8 @@ fn references_at(
     let mut locations: Vec<Location> = Vec::new();
     if let Some(answer) = run_query_text(
         &arenas,
-        rcdzc::sidecar::Query::UsesOf { name: name.clone() },
-        rcdzc::sidecar::KIND_USES,
+        cadenza_compile_abi::sidecar::Query::UsesOf { name: name.clone() },
+        cadenza_compile_abi::sidecar::KIND_USES,
     ) {
         for line in answer.lines() {
             if let Ok(id) = line.trim().parse::<u32>()
@@ -2166,10 +2198,10 @@ fn incoming_calls_for(
     // Each reference's range, from `UsesOf` (node-id-keyed → source range).
     let Some(answer) = run_query_text(
         &arenas,
-        rcdzc::sidecar::Query::UsesOf {
+        cadenza_compile_abi::sidecar::Query::UsesOf {
             name: name.to_string(),
         },
-        rcdzc::sidecar::KIND_USES,
+        cadenza_compile_abi::sidecar::KIND_USES,
     ) else {
         return Vec::new();
     };
@@ -2336,8 +2368,8 @@ fn range_contains(range: &Range, pos: Position) -> bool {
 fn top_level_symbol_node(arenas: &cadenza_syntax::Arenas, name: &str) -> Option<u32> {
     let answer = run_query_text(
         arenas,
-        rcdzc::sidecar::Query::Symbols,
-        rcdzc::sidecar::KIND_SYMBOLS,
+        cadenza_compile_abi::sidecar::Query::Symbols,
+        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
     )?;
     for line in answer.lines() {
         // `name<TAB>kind<TAB>name-node-id`
@@ -2388,24 +2420,28 @@ fn package_references_at(
     // A query is TOTAL and rides alongside the others, so one linked compile answers all three (and
     // carries the `link-map` for the demux), instead of one full compile PER query. Distinct query kinds
     // → distinct artifacts, retrieved by `KIND_*` below.
-    let ast_inputs: Vec<rcdzc::Artifact> = files
+    let ast_inputs: Vec<cadenza_compile_abi::Artifact> = files
         .iter()
         .map(|f| {
-            rcdzc::Artifact::new(
-                rcdzc::Artifact::KIND_AST,
+            cadenza_compile_abi::Artifact::new(
+                cadenza_compile_abi::Artifact::KIND_AST,
                 f.name.clone(),
                 cadenza_syntax::codec::encode(&f.arenas),
             )
         })
         .collect();
     let mut inputs = ast_inputs;
-    inputs.push(rcdzc::Artifact::new(
-        rcdzc::sidecar::KIND_SIDECAR,
+    inputs.push(cadenza_compile_abi::Artifact::new(
+        cadenza_compile_abi::sidecar::KIND_SIDECAR,
         "drive",
-        rcdzc::sidecar::encode(&[
-            rcdzc::Request::Query(rcdzc::sidecar::Query::Symbols),
-            rcdzc::Request::Query(rcdzc::sidecar::Query::ResolveOf { node: cursor.0 }),
-            rcdzc::Request::Query(rcdzc::sidecar::Query::UsesOf { name: name.clone() }),
+        cadenza_compile_abi::sidecar::encode(&[
+            cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Symbols),
+            cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::ResolveOf {
+                node: cursor.0,
+            }),
+            cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::UsesOf {
+                name: name.clone(),
+            }),
         ]),
     ));
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
@@ -2430,7 +2466,8 @@ fn package_references_at(
     // the top-level's uses. Requiring the resolve TARGET to be a `Symbols` node is what distinguishes a
     // genuine top-level from a shadowing local. `symbols_lines` is parsed once and reused for the
     // declaration-node lookup below (avoiding a separate entry-only `Symbols` compile).
-    let symbols_answer = artifact_text(rcdzc::sidecar::KIND_SYMBOLS).unwrap_or_default();
+    let symbols_answer =
+        artifact_text(cadenza_compile_abi::sidecar::KIND_SYMBOLS).unwrap_or_default();
     let symbol_nodes: std::collections::HashSet<u32> = symbols_answer
         .lines()
         .filter_map(|line| {
@@ -2439,8 +2476,8 @@ fn package_references_at(
                 .and_then(|c| c.trim().parse::<u32>().ok())
         })
         .collect();
-    let resolves_to =
-        artifact_text(rcdzc::sidecar::KIND_RESOLVE).and_then(|a| a.trim().parse::<u32>().ok());
+    let resolves_to = artifact_text(cadenza_compile_abi::sidecar::KIND_RESOLVE)
+        .and_then(|a| a.trim().parse::<u32>().ok());
     // The cursor belongs to a top-level symbol iff it IS a `Symbols` name-node (a declaration occurrence,
     // entry-local == global at base 0) or RESOLVES to one (a use of a top-level/imported name).
     let cursor_is_symbol = symbol_nodes.contains(&cursor.0);
@@ -2486,7 +2523,7 @@ fn package_references_at(
             range: byte_range_to_range(&file.source, span.start, span.end),
         })
     };
-    if let Some(bytes) = compiled.artifact(rcdzc::sidecar::KIND_USES) {
+    if let Some(bytes) = compiled.artifact(cadenza_compile_abi::sidecar::KIND_USES) {
         for line in String::from_utf8_lossy(bytes).lines() {
             if let Ok(global) = line.trim().parse::<u32>()
                 && let Some(loc) = loc_of_global(global)
@@ -2547,8 +2584,8 @@ fn fill_completions_from(
     // Top-level declarations (name<TAB>kind<TAB>node) — kind ∈ value/function/type/effect/module.
     if let Some(answer) = run_query_text(
         &arenas,
-        rcdzc::sidecar::Query::Symbols,
-        rcdzc::sidecar::KIND_SYMBOLS,
+        cadenza_compile_abi::sidecar::Query::Symbols,
+        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
     ) {
         for line in answer.lines() {
             let mut cols = line.splitn(3, '\t');
@@ -2571,8 +2608,8 @@ fn fill_completions_from(
     if let Some(node) = spans.node_at_offset(byte)
         && let Some(answer) = run_query_text(
             &arenas,
-            rcdzc::sidecar::Query::ScopeAt { node: node.0 },
-            rcdzc::sidecar::KIND_SCOPE,
+            cadenza_compile_abi::sidecar::Query::ScopeAt { node: node.0 },
+            cadenza_compile_abi::sidecar::KIND_SCOPE,
         )
     {
         for line in answer.lines() {
@@ -2625,13 +2662,13 @@ fn package_completions_at(
         // query over the library's OWN arenas — no linking needed for these per-file facts.
         let types = query_columns(
             &lib.arenas,
-            rcdzc::sidecar::Query::Exports,
-            rcdzc::sidecar::KIND_EXPORTS,
+            cadenza_compile_abi::sidecar::Query::Exports,
+            cadenza_compile_abi::sidecar::KIND_EXPORTS,
         );
         let kinds = query_columns(
             &lib.arenas,
-            rcdzc::sidecar::Query::Symbols,
-            rcdzc::sidecar::KIND_SYMBOLS,
+            cadenza_compile_abi::sidecar::Query::Symbols,
+            cadenza_compile_abi::sidecar::KIND_SYMBOLS,
         );
         for name in imported {
             // A local binder of the same spelling already won — don't shadow it with the import.
@@ -2700,7 +2737,7 @@ fn imported_names(arenas: &cadenza_syntax::Arenas) -> Vec<(String, Vec<String>)>
 /// `Exports` (name → type) and `Symbols` (name → kind) as lookup tables. Empty on a query with no answer.
 fn query_columns(
     arenas: &cadenza_syntax::Arenas,
-    query: rcdzc::sidecar::Query,
+    query: cadenza_compile_abi::sidecar::Query,
     kind: &str,
 ) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
@@ -2753,8 +2790,8 @@ fn code_lenses_for(text: &str, is_ml: bool) -> Vec<CodeLens> {
     // The top-level declaration names + their name-node ids (for lens placement) — the `Symbols` query.
     let Some(symbols) = run_query_text(
         &arenas,
-        rcdzc::sidecar::Query::Symbols,
-        rcdzc::sidecar::KIND_SYMBOLS,
+        cadenza_compile_abi::sidecar::Query::Symbols,
+        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
     ) else {
         return Vec::new();
     };
@@ -2774,18 +2811,24 @@ fn code_lenses_for(text: &str, is_ml: bool) -> Vec<CodeLens> {
     // whole-program, so it runs once); each answer is a distinct `KIND_INSTANTIATIONS` artifact keyed by
     // its `name`.
     let ast_bytes = cadenza_syntax::codec::encode(&arenas);
-    let requests: Vec<rcdzc::Request> = names
+    let requests: Vec<cadenza_compile_abi::Request> = names
         .iter()
         .map(|(name, _)| {
-            rcdzc::Request::Query(rcdzc::sidecar::Query::Instantiations { name: name.clone() })
+            cadenza_compile_abi::Request::Query(
+                cadenza_compile_abi::sidecar::Query::Instantiations { name: name.clone() },
+            )
         })
         .collect();
     let inputs = vec![
-        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
-        rcdzc::Artifact::new(
-            rcdzc::sidecar::KIND_SIDECAR,
+        cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::Artifact::KIND_AST,
+            "main",
+            ast_bytes,
+        ),
+        cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::sidecar::KIND_SIDECAR,
             "drive",
-            rcdzc::sidecar::encode(&requests),
+            cadenza_compile_abi::sidecar::encode(&requests),
         ),
     ];
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
@@ -2796,7 +2839,9 @@ fn code_lenses_for(text: &str, is_ml: bool) -> Vec<CodeLens> {
         let Some(answer) = compiled
             .artifacts
             .iter()
-            .find(|a| a.kind == rcdzc::sidecar::KIND_INSTANTIATIONS && &a.name == name)
+            .find(|a| {
+                a.kind == cadenza_compile_abi::sidecar::KIND_INSTANTIATIONS && &a.name == name
+            })
             .map(|a| String::from_utf8_lossy(&a.bytes).into_owned())
         else {
             continue;
@@ -2905,8 +2950,8 @@ fn top_level_symbols_of(text: &str, is_ml: bool) -> Vec<(String, String, Range)>
     };
     let Some(answer) = run_query_text(
         &arenas,
-        rcdzc::sidecar::Query::Symbols,
-        rcdzc::sidecar::KIND_SYMBOLS,
+        cadenza_compile_abi::sidecar::Query::Symbols,
+        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
     ) else {
         return Vec::new();
     };
@@ -3100,10 +3145,10 @@ fn signature_help_at(text: &str, is_ml: bool, pos: Position) -> Option<Signature
     let callee = arenas.as_name(children[0])?.to_string();
     let arrow = run_query_text(
         &arenas,
-        rcdzc::sidecar::Query::TypeOf {
+        cadenza_compile_abi::sidecar::Query::TypeOf {
             name: callee.clone(),
         },
-        rcdzc::sidecar::KIND_TYPE_INFO,
+        cadenza_compile_abi::sidecar::KIND_TYPE_INFO,
     )
     .map(|s| s.trim().to_string())
     // A signature must be a FUNCTION type — an arrow `(-> …)`. This is also the guard that keeps signature
@@ -3379,8 +3424,8 @@ fn emit_param_type_hints(
             }
             let Some(ty) = run_query_text(
                 arenas,
-                rcdzc::sidecar::Query::TypeAt { node: param.0 },
-                rcdzc::sidecar::KIND_TYPE_AT,
+                cadenza_compile_abi::sidecar::Query::TypeAt { node: param.0 },
+                cadenza_compile_abi::sidecar::KIND_TYPE_AT,
             ) else {
                 continue;
             };
@@ -3582,8 +3627,8 @@ fn code_actions_at(text: &str, is_ml: bool, uri: &Uri, range: Range) -> Vec<Code
     };
     let Some(diag_text) = run_query_text(
         &arenas,
-        rcdzc::sidecar::Query::Diagnostics,
-        rcdzc::sidecar::KIND_DIAGNOSTICS,
+        cadenza_compile_abi::sidecar::Query::Diagnostics,
+        cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS,
     ) else {
         return Vec::new();
     };
@@ -3735,13 +3780,23 @@ fn semantic_tokens_for(text: &str, is_ml: bool) -> Vec<SemanticToken> {
     };
     let ast_bytes = cadenza_syntax::codec::encode(&arenas);
     let sidecar_bytes =
-        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::Highlight)]);
+        cadenza_compile_abi::sidecar::encode(&[cadenza_compile_abi::Request::Query(
+            cadenza_compile_abi::sidecar::Query::Highlight,
+        )]);
     let inputs = vec![
-        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
-        rcdzc::Artifact::new(rcdzc::sidecar::KIND_SIDECAR, "drive", sidecar_bytes),
+        cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::Artifact::KIND_AST,
+            "main",
+            ast_bytes,
+        ),
+        cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::sidecar::KIND_SIDECAR,
+            "drive",
+            sidecar_bytes,
+        ),
     ];
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
-    let Some(bytes) = compiled.artifact(rcdzc::sidecar::KIND_HIGHLIGHT) else {
+    let Some(bytes) = compiled.artifact(cadenza_compile_abi::sidecar::KIND_HIGHLIGHT) else {
         return Vec::new();
     };
     let hl_text = String::from_utf8_lossy(bytes);
