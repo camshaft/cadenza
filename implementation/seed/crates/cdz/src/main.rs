@@ -11758,6 +11758,84 @@ mod tests {
     }
 
     #[test]
+    fn run_target_is_project_recognizes_bare_dir_and_manifest_not_wasm_or_source() {
+        use std::path::Path;
+        // A bare `cdz run` (no arg) → the current-directory project (the `cargo run` analogue).
+        assert!(run_target_is_project(None), "bare `cdz run` is a project");
+
+        // A real DIRECTORY → a project (build+run its `Project.cdz`) — even when the directory's
+        // name ends in a source extension. `run_target_is_project` is checked BEFORE the
+        // source-file arm (main.rs Cmd::Run arms), so a directory always wins the project route.
+        let dir = tmp("runtarget");
+        assert!(
+            run_target_is_project(Some(&dir)),
+            "a directory is a project target"
+        );
+        let dir_named_like_source = dir.join("weird.cdz");
+        std::fs::create_dir_all(&dir_named_like_source).unwrap();
+        assert!(
+            run_target_is_project(Some(&dir_named_like_source)),
+            "a DIRECTORY named `weird.cdz` is still a project, not a loose source"
+        );
+
+        // A path whose file name IS the manifest (`Project.cdz`) → the project itself.
+        let manifest = dir.join(MANIFEST_NAME);
+        std::fs::write(&manifest, "").unwrap();
+        assert!(
+            run_target_is_project(Some(&manifest)),
+            "a `Project.cdz` path is a project target"
+        );
+
+        // A pre-built `.wasm` component, a loose (non-dir, non-manifest) source file, and `-`
+        // (stdin) are NOT projects → they take the direct run path, not the project build.
+        assert!(
+            !run_target_is_project(Some(Path::new("app.wasm"))),
+            "a `.wasm` component is not a project"
+        );
+        assert!(
+            !run_target_is_project(Some(Path::new("loose.cdz"))),
+            "a loose source file is not a project"
+        );
+        assert!(
+            !run_target_is_project(Some(Path::new("-"))),
+            "`-` (stdin) is not a project"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_arg_is_source_file_recognizes_source_specs_but_not_wasm_dir_or_stdin() {
+        use std::path::Path;
+        // The four source surfaces route to the "you passed SOURCE to `cdz run`" arm (the common
+        // `cdz run foo.sexp` mistake path, which builds+runs the loose file).
+        for ext in [".cdz", ".ml", ".sexp", ".sexpr"] {
+            assert!(
+                run_arg_is_source_file(Some(Path::new(&format!("prog{ext}")))),
+                "a loose {ext} path is a source-file run arg"
+            );
+        }
+        // A compiled component, an extensionless path, `-` (stdin), and the absent arg are NOT
+        // source-file specs → they fall through to the direct-component run path.
+        assert!(
+            !run_arg_is_source_file(Some(Path::new("app.wasm"))),
+            "a `.wasm` component is not a source file"
+        );
+        assert!(
+            !run_arg_is_source_file(Some(Path::new("app"))),
+            "an extensionless path is not a source file"
+        );
+        assert!(
+            !run_arg_is_source_file(Some(Path::new("-"))),
+            "`-` (stdin) is not a source-file spec"
+        );
+        assert!(
+            !run_arg_is_source_file(None),
+            "a bare `cdz run` has no source-file arg"
+        );
+    }
+
+    #[test]
     fn an_empty_program_is_an_error_on_both_surfaces() {
         // An empty (or whitespace-only) file has no top-level form → an "empty program" error on BOTH
         // the s-expr AND ML surfaces (so `cdz check` exits nonzero). The s-expr `read_all_spanned`
