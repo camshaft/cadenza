@@ -4929,7 +4929,16 @@
            Accepts An Irrefutable Pattern), the same code the wrong-arity tuple MATCH arm gets. Pins that a
            binding pattern's arity is checked against the bound value's type.")
   (input  (let ((#tuple(a b c) #tuple(1 2))) a))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "this tuple pattern binds 3 elements, but the value is a tuple with 2 elements")))
+
+(case "a tuple binding pattern over a non-tuple value is a shape error"
+  (doc    "`(let (((tuple a b) 5)) a)` destructures a tuple pattern over a NON-tuple value (Int64) — a shape
+           mismatch, CDZ0201. The message says the tuple pattern cannot destructure a value of type Int64
+           (it does NOT call the bound value a `payload`, the earlier conflated phrasing). Distinct from the
+           wrong-ARITY case above (a tuple value of the wrong length). (migrated from rcdzc
+           an_ill_formed_let_binding_pattern_is_rejected_not_miscompiled.)")
+  (input  (do (def (main) (let ((#tuple(a b) 5)) a)) (export main)))
+  (error  CDZ0201 (message "this tuple pattern cannot destructure a value of type Int64")))
 
 ; A `let`/`fn` takes EXACTLY ONE body — `(let (binds) b1 b2)` / `(fn (params) b1 b2)` with a trailing form
 ; is malformed (the surplus form was silently DROPPED — a miscompile). Rejected CDZ0201 naming the form +
