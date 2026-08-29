@@ -43,6 +43,35 @@
 ; Construction — `(bin …)` in expression position builds a Bytes value
 ; ============================================================================================
 
+; A fixed-width segment REQUIRES its exact width type in BOTH axes (width AND sign): `(u8 v)` takes UInt8,
+; `(u16 v)` UInt16, `(i8 v)` Int8, `(bits v k)` `(UInt k)`. A value whose concrete integer type differs —
+; wider, narrower, or differently-signed (a runtime `Int64` param most commonly) — is a COMPILE-TIME type
+; error CDZ0203 ("segment takes …"), never a runtime trap: construction is total, and narrowing is the
+; caller's explicit job. The suggested conversion names a spelling that RESOLVES — an aliased width
+; ({8,16,32,64}) suggests the bound `UInt8.wrap`/`UInt8.of`; a non-aliased bit width `(UInt 4)` (no bound
+; module) suggests the member form `(. (UInt 4) wrap)`, never the unbound `UInt4.wrap`. (migrated from rcdzc
+; a_bin_segment_requires_its_width_typed_value_cdz0203.)
+(case "an Int64 value into a u8 segment is a width type error naming the aliased wrap+of conversions"
+  (input  (do (def (main (: n Int64)) (Bytes.len (bin (u8 n)))) (export main)))
+  (error  CDZ0203 (message "segment takes") (message "UInt8")
+                  (message "UInt8.wrap to truncate") (message "UInt8.of to check")))
+
+(case "an Int8 value into an unsigned u8 segment is a signedness mismatch"
+  (input  (do (def (main (: n Int8)) (Bytes.len (bin (u8 n)))) (export main)))
+  (error  CDZ0203 (message "segment takes") (message "UInt8")))
+
+(case "a narrower UInt8 into a u16 segment is not silently widened — a width type error"
+  (input  (do (def (main (: n UInt8)) (Bytes.len (bin (u16 n)))) (export main)))
+  (error  CDZ0203 (message "UInt16")))
+
+(case "a wider signed Int16 into a signed i8 segment is a width type error"
+  (input  (do (def (main (: n Int16)) (Bytes.len (bin (i8 n)))) (export main)))
+  (error  CDZ0203 (message "Int8")))
+
+(case "an Int64 into a non-aliased bits field names the member-form wrap conversion"
+  (input  (do (def (main (: n Int64)) (Bytes.len (bin (bits n 4) (bits 5 4)))) (export main)))
+  (error  CDZ0203 (message "UInt4") (message "(. (UInt 4) wrap) to truncate")))
+
 (case "a u16 segment encodes an integer big-endian by default"
   (doc    "`(bin (u16 258))` encodes 258 (0x0102) as two bytes, most-significant first — big-endian is
            the default byte order, so the result is `(Bytes.of (list 1 2))`. Pins the default-endianness
