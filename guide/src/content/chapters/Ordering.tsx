@@ -109,8 +109,8 @@ export default function Ordering() {
       <H2>Ordered types can be keys</H2>
       <P>
         <C>Bytes</C> is ordered too, lexicographically over its <em>unsigned</em> byte values, the same way
-        Text compares in dictionary order. So <C>(Bytes.of (list 1 2))</C> comes before{" "}
-        <C>(Bytes.of (list 1 3))</C>, decided at the first byte that differs:
+        Text compares in dictionary order. So <C>(Bytes.of #list(1 2))</C> comes before{" "}
+        <C>(Bytes.of #list(1 3))</C>, decided at the first byte that differs:
       </P>
       <Runnable source={`(< (Bytes.of #list(1 2)) (Bytes.of #list(1 3)))`} />
       <P>

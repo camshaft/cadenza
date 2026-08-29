@@ -53,7 +53,7 @@ export default function Iteration() {
       </P>
       <P>
         The same shape works over a list. Match the list by its structure, either the empty list{" "}
-        <C>(list)</C> or a non-empty <C>(list x .. rest)</C> that binds the first element to <C>x</C> and
+        <C>#list()</C> or a non-empty <C>#list(x .. rest)</C> that binds the first element to <C>x</C> and
         the remainder to <C>rest</C>, and thread the accumulator through:
       </P>
       <Runnable
@@ -79,8 +79,8 @@ export default function Iteration() {
       />
       <P>
         Prepending is what does the reversing: element <C>1</C> is placed first, then <C>2</C> goes in
-        front of it, then <C>3</C> in front of that, so <C>(list 1 2 3)</C> comes back as{" "}
-        <C>(list 3 2 1)</C>. <Link to="/lists" className="text-cadenza-300 underline-offset-2 hover:underline">
+        front of it, then <C>3</C> in front of that, so <C>#list(1 2 3)</C> comes back as{" "}
+        <C>#list(3 2 1)</C>. <Link to="/lists" className="text-cadenza-300 underline-offset-2 hover:underline">
         <C>List.prepend</C></Link> adds an element to the front, which is what flips the order; appending each
         element to the end with <C>List.push</C> would instead copy the list unchanged. A quick{" "}
         <C>@test</C> pins it, reading the three positions of the result back and checking they spell{" "}

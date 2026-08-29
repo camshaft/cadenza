@@ -121,7 +121,7 @@ export default function Functions() {
         The same holds for a <em>multi-argument</em> callback, as in the classic accumulator fold. Here{" "}
         <C>fold-list</C> takes a two-argument <C>f</C> and threads an accumulator through the list, and the
         lambda <C>(fn (x a) (+ a x))</C> is again fully unannotated on both sides. Folding{" "}
-        <C>(list 5 7 30)</C> from <C>0</C> sums them to <C>42</C>:
+        <C>#list(5 7 30)</C> from <C>0</C> sums them to <C>42</C>:
       </P>
       <Runnable
         source={`(def (fold-list f acc xs)

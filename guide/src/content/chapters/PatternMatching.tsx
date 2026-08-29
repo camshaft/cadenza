@@ -158,7 +158,7 @@ export default function PatternMatching() {
       <H2>Matching a map by key</H2>
       <P>
         A <C>match</C> can also look <em>inside a collection</em>. A map pattern,{" "}
-        <C>(map (key binder) .. rest)</C>, fires when the map contains that key, binding the associated
+        <C>#map((= key binder) .. rest)</C>, fires when the map contains that key, binding the associated
         value to <C>binder</C> (and the leftover entries to <C>rest</C>). It's the pattern-matching
         counterpart to a <C>Map.lookup</C>: here <C>setting</C> reads the <C>"width"</C> from a config map,
         returning <C>{`(Some v)`}</C> when the key is present and <C>{`(None unit)`}</C> when it's absent,

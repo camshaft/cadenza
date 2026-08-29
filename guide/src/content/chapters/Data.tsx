@@ -50,8 +50,8 @@ export default function Data() {
       <H2>Compared by value</H2>
       <P>
         Two tuples or two records are equal when their contents are, which is structural equality, not
-        identity. A tuple matches position by position, so <C>(tuple 1 2)</C> equals another{" "}
-        <C>(tuple 1 2)</C>:
+        identity. A tuple matches position by position, so <C>#tuple(1 2)</C> equals another{" "}
+        <C>#tuple(1 2)</C>:
       </P>
       <Runnable source={`(= #tuple(1 2) #tuple(1 2))`} />
       <P>
@@ -72,7 +72,7 @@ export default function Data() {
   (#tuple(a b) (+ a b)))`}
       />
       <P>
-        One arm is enough: a two-tuple always has exactly this shape, so <C>(tuple a b)</C> is an{" "}
+        One arm is enough: a two-tuple always has exactly this shape, so <C>#tuple(a b)</C> is an{" "}
         <em>irrefutable</em> pattern that can't fail to match, and no catch-all is needed. Destructuring like
         this is the subject of <strong>Pattern matching</strong>; the point here is that a tuple or record is
         an ordinary value a pattern can name and take apart.
