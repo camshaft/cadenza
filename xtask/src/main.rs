@@ -126,14 +126,6 @@ enum Cmd {
     /// (`target/xtask-logs/`); the console shows one ✓ per step, and the first failing step prints
     /// the whole log + its path.
     Check,
-    /// GUARDRAIL — NOT a test runner. Native `cargo test --workspace` is UNCACHED + full-workspace +
-    /// fleet-hostile: it shares nothing across the ~40-agent fleet, cold-rebuilds, and fans test threads
-    /// out to every core (the `[build] jobs=4` cap bounds COMPILE jobs, NOT test-thread execution), which
-    /// caused an operator-flagged host load spike (~57; concierge 2026-08-27). So `cargo xtask test` does
-    /// NOT run it — it points at the nix-CACHED paths (`dev-gate` for the touched-crate inner loop,
-    /// `check` for the full cached battery) and exits non-zero, so the fleet-hostile run never happens by
-    /// muscle memory. A deliberate native run must be scoped to one crate by hand (`cargo test -p <crate>`).
-    Test,
     /// Git MERGE DRIVER for the `.gate-baseline*` files — the durable fix for the recurring `merge=union`
     /// duplicate-append toil (corpus-bugfix hand-cleaned it twice in a few ticks). `merge=union` (the old
     /// built-in) resolves a concurrent-append conflict by CONCATENATING both sides, so the same
@@ -247,7 +239,6 @@ fn main() {
             }
         }
         Cmd::Check => check(&paths, profile),
-        Cmd::Test => test_guardrail(),
         Cmd::MergeBaseline { ours, theirs } => merge_baseline(&ours, &theirs),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
         Cmd::Codegen { check } => codegen::run(&paths, check),
@@ -5106,27 +5097,6 @@ fn fast_gate_output_is_remote_transient(output: &str) -> bool {
         || output.contains("error: build failure on remote")
         || output.contains("cannot build on remote")
         || output.contains("cannot open connection to remote store")
-}
-
-// ============================================================================================
-/// See [`Cmd::Test`]. A guardrail — it runs NO tests. Native `cargo test --workspace` is uncached +
-/// full-workspace + fleet-hostile (it caused an operator-flagged host load spike), so instead of running
-/// it we print the nix-cached alternatives and exit non-zero, so the fleet-hostile run never happens by
-/// muscle memory. Exit code 2 (a guardrail refusal, distinct from 1 = "tests failed") also stops any
-/// `cargo xtask test && …` chain from proceeding as if tests had passed.
-fn test_guardrail() -> ! {
-    eprintln!(
-        "cargo xtask test: REFUSED — no cached full-workspace test exists, and native `cargo test \
-         --workspace` is fleet-hostile: uncached (shares nothing across the ~40-agent fleet), cold-rebuilds, \
-         and fans test threads out to every core (`[build] jobs=4` caps COMPILE jobs only, not test \
-         execution). It caused an operator-flagged host load spike (~57).\n\
-         Use a nix-CACHED path instead:\n\
-        \x20   cargo xtask dev-gate     fast touched-crate test+clippy+fmt (cached, seconds-to-2min)\n\
-        \x20   cargo xtask check        the full cached battery (pre-merge authoritative)\n\
-         If you truly need a native run, SCOPE it to one crate yourself: `cargo test -p <crate>` — never \
-         the whole workspace on the shared host."
-    );
-    std::process::exit(2);
 }
 
 // ============================================================================================
