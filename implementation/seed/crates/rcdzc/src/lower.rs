@@ -27035,7 +27035,11 @@ fn cval_seq_eq(x: &[CVal], y: &[CVal]) -> Option<bool> {
 /// nil / leading+rest, scalar literals, and VARIANT patterns (a constructor, nullary or applied — matched by
 /// discriminant, with payload sub-patterns matched recursively).
 fn const_pattern_matches(db: &mut Db, pat: StructId, v: &CVal) -> Option<bool> {
-    if let Some(items) = db.ast.as_form(pat, "list").map(<[StructId]>::to_vec) {
+    if let Some(items) = db
+        .ast
+        .compound_form_of(pat, crate::ast::CompoundCtor::List)
+        .map(<[StructId]>::to_vec)
+    {
         let CVal::List(xs) = v else {
             return Some(false);
         };
@@ -27065,7 +27069,14 @@ fn const_pattern_matches(db: &mut Db, pat: StructId, v: &CVal) -> Option<bool> {
     // well-typed scrutinee always has the pattern's arity, but guard anyway.) Handled BEFORE the variant/ctor
     // dispatch because `tuple` is the tuple constructor, not a `(meta variant)`, so it would otherwise fall
     // through to the undecidable tail and decline — the gap that blocked a `(const (: t (Tuple …)))` recursion.
-    if let Some(items) = db.ast.as_form(pat, "tuple").map(<[StructId]>::to_vec) {
+    // Recognizes the native `#tuple(…)` ctor-leaf head too (`compound_form_of`), not only the name-head alias
+    // `(tuple …)` — the M2 native-compound migration nativized corpus tuple patterns, and reading only the
+    // alias here silently declined the whole const-eval (a `(const …)` tuple-pattern recursion lost its trap).
+    if let Some(items) = db
+        .ast
+        .compound_form_of(pat, crate::ast::CompoundCtor::Tuple)
+        .map(<[StructId]>::to_vec)
+    {
         let CVal::Tuple(vs) = v else {
             return Some(false);
         };

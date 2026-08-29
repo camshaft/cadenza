@@ -5180,7 +5180,11 @@ fn arm_cover(db: &mut Db, pat: StructId) -> Option<ArmCover> {
     // matches EVERY value of its tuple type — it is a whole-type CatchAll, so it shadows every later arm
     // (the product-subsumption whole-tuple case). Otherwise it is a STRUCTURAL-KEY candidate: two identical
     // tuple arms (`(tuple true a)`/`(tuple true b)`) are exact duplicates. `is_irrefutable_cover` decides.
-    if db.ast.as_form(pat, "tuple").is_some() || db.ast.as_ctor_form(pat, "tuple").is_some() {
+    if db
+        .ast
+        .compound_form_of(pat, crate::ast::CompoundCtor::Tuple)
+        .is_some()
+    {
         if is_irrefutable_cover(db, pat) {
             return Some(ArmCover::CatchAll);
         }
