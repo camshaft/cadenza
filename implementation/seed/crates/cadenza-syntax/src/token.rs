@@ -21,6 +21,7 @@ pub enum Kind {
     // ---- literals ----
     Int,
     Float,
+    Rational, // `3r2` — a native rational literal `<int>r<int>` (seq-204); the parser builds a rational node
     Str,
     ByteStr, // `b"…"` — a byte-string literal (arbitrary bytes), the surface form of a `Bytes` value
     CharLit, // `#\a` / `#\newline` / `#\u+00E9` — a char literal (one Unicode scalar)
