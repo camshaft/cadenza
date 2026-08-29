@@ -59,111 +59,16 @@ use crate::ast::{Builder, CompoundCtor, Leaf, Struct, StructId};
 use crate::db::Db;
 use crate::resolved::Resolved;
 
-/// The kinded input artifact carrying the request list.
-pub const KIND_SIDECAR: &str = "sidecar";
-
-/// The output artifact kind for a `TypeOf` query result — the rendered type of the queried node(s).
-pub const KIND_TYPE_INFO: &str = "type-info";
-
-/// The output artifact kind for a `UsesOf` query result — the node indices that reference a name.
-pub const KIND_USES: &str = "uses";
-
-/// The output artifact kind for a `TypeAt` query result — the rendered type of a specific node.
-pub const KIND_TYPE_AT: &str = "type-at";
-
-/// The output artifact kind for a `Diagnostics` query result — the program's well-formedness faults.
-pub const KIND_DIAGNOSTICS: &str = "diagnostics";
-
-/// The output artifact kind for a `ResolveOf` query result — the defining occurrence's node id.
-pub const KIND_RESOLVE: &str = "resolve";
-
-/// The output artifact kind for a `ScopeAt` query result — the bindings visible at a node.
-pub const KIND_SCOPE: &str = "scope";
-
-/// The output artifact kind for an `Exports` query result — the module's exported names + types.
-pub const KIND_EXPORTS: &str = "exports";
-
-/// The output artifact kind for a `Highlight` query result — one `node-id  kind` line per classified
-/// token (SEMANTIC SYNTAX HIGHLIGHTING), the LSP `semanticTokens` analogue.
-pub const KIND_HIGHLIGHT: &str = "highlight";
-
-/// The output artifact kind for a `DocOf`/`DocAt` query result — a definition's (or a built-in's)
-/// documentation text, the "hover documentation" companion of `KIND_TYPE_AT`.
-pub const KIND_DOC: &str = "doc";
-
-/// The output artifact kind for an `Instantiations` query result — every concrete monomorphization of a
-/// generic / ad-hoc-polymorphic definition (recursive-generic, type-valued-param, and `const`-dictionary
-/// specializations), one per line.
-pub const KIND_INSTANTIATIONS: &str = "instantiations";
-
-/// The output artifact kind for a `Symbols` query result — the module's DOCUMENT OUTLINE: every top-level
-/// declaration (value/function def, type, effect, module) classified by kind, the LSP `documentSymbol`
-/// analogue.
-pub const KIND_SYMBOLS: &str = "symbols";
-
-/// The output artifact kind for a `ParamManifest` query result — the `@param` WIDGET MANIFEST: one record
-/// per `@param` site (name, declared type, widget, range/options/default, name-node), the data a HOST
-/// (browser/CAD/notebook) reads to render controls for a program's parameters.
-pub const KIND_PARAM_MANIFEST: &str = "param-manifest";
-
-/// The output artifact kind for the Option-C shared-closure CONTENT-HASH — a `u64` (hex) folding each
-/// cross-edge def's content-hash over the sorted union edge set ([`closure_content_hash`]). Emitted by the
-/// `EmitTestsComposed` (MISS) path alongside the `component-provider`, so a runner persists the provider
-/// keyed by this hash (recompute-free) and validates its own HIT-decision hash against this canonical one.
-pub const KIND_CLOSURE_HASH: &str = "closure-hash";
-
-/// The output artifact kind for a `FuncLayout` query result — the emitted-function layout: each reachable
-/// definition's absolute wasm func-index paired with a content-hash of its AST subtree, in func-index
-/// order, preceded by a `defs-begin` marker row carrying the def-region base (`import_base`). The
-/// observation mechanism behind the compile-reuse prove-first witness (shared defs must get stable
-/// func-indices + identical content across per-file test builds) and the Option-A cache-key basis.
-pub const KIND_FUNC_LAYOUT: &str = "func-layout";
-
-/// The output artifact kind for an `ExportedTypes` query result — each exported definition's RESOLVED
-/// type as a STRUCTURED cdzast sub-AST (not the rendered string `Exports` carries). The bytes are a
-/// length-prefixed bulk blob: `u32_le count`, then `count` records of `u32_le name_len | name (UTF-8) |
-/// u32_le ty_len | ty_bytes`, where `ty_bytes` is a full `cdzast` codec artifact rooted at
-/// `eval::encode_ty_payload` of the def's `def_scheme.ty`. The cadenza-docs I2 fact: `cdz doc` decodes
-/// each `ty_bytes` (byte-identical codec) and grafts it as the doc-item's `(ty …)` — so the doc type is
-/// structured/queryable, not a printed string. An export whose type does not resolve is OMITTED (so
-/// `count` is the number of exports WITH a resolved type — the graceful-degrade the doc-item's optional
-/// `(ty …)` expects). All-in-one so `cdz doc` makes ONE sidecar round-trip. Co-owned with v-syntax
-/// (I emit the fact; the `cdz doc` CLI merges it into the I1 doc-module).
-pub const KIND_EXPORT_TYPES: &str = "export-types";
-
-/// The output artifact kind for a `TestList` query result — the `@test`-marked definitions the runner
-/// would run, so `cdz test --list` gets them from a SIDECAR QUERY (no rcdzc link in `cdz`). The bytes are
-/// a CADENZA-AST VALUE (`codec::encode`d — the universal tooling exchange format, per the operator
-/// cadenza-ast-binary-everywhere directive), NOT a bespoke blob: `cdz --list` FORWARDS them verbatim and
-/// consumers (v-test-shred/v-nix) decode with the ONE shared `codec`. Shape: `(test-list (test <name>
-/// <is-property> <file>)…)` — a `test-list`-headed form, one `(test …)` child per test, POSITIONAL: `name`
-/// (a `Str` leaf, the raw def name = the drift-guard identity), `is-property` (a `Bool` leaf — true when
-/// the test takes arguments OR its name ends `-gen`, i.e. `!params.is_empty() || name.ends_with("-gen")`,
-/// the canonical `compile_tests` classification incl the `-gen` `Test.gen` wrapper), `file` (a `Str` leaf,
-/// the def's source path; empty if none). Enumeration is `db.test_defs()` (already package-linkage-scoped
-/// by the linked closure the db is loaded from). Deterministic (`test_defs` order). Operator
-/// no-rcdzc-in-`cdz` step (v-cdz-crate-split); its emit-shred manifest mirrors this shape + extra fields.
-pub const KIND_TEST_LIST: &str = "test-list";
-
-/// The output artifact kind for the `EmitTestsShred` MANIFEST — the per-`@test` metadata a runner needs to
-/// EXECUTE the shredded targets, paired with the emitted `main.wasm` + `test-<name>.wasm` components. Same
-/// CADENZA-AST-VALUE approach as [`KIND_TEST_LIST`] (`codec::encode`d, NOT a bespoke blob — the operator
-/// cadenza-ast-binary directive; `cdz test --emit-shred` forwards it + consumers decode with the ONE shared
-/// `codec`), MIRRORING its shape with the extra exec fields. Shape: `(shred-manifest (entry <name>
-/// <is-property> <file> <export> <target> <main-iface>)…)` — a `shred-manifest`-headed form, one `(entry …)`
-/// child per SUCCESSFULLY-EMITTED test, POSITIONAL `Str`/`Bool` leaves (7 fields): `name` (raw def name = the
-/// `test-list` identity), `is-property` (`Bool`, same `!params.is_empty() || name.ends_with("-gen")`
-/// classification), `file` (source path, empty if none), `export` (the wasm export symbol the runner
-/// `--call`s — for a plain `@test` this equals `name`), `target` (the per-test component file,
-/// `test-<name>.wasm`), `main-iface` (the interface the target imports `main` under, `cadenza:closure/api`),
-/// `main-file` (the MAIN component file this test `--peer`s — `main.wasm` when the program has a shared
-/// library, or "" for a STANDALONE test that runs with NO `--peer`; the cdz side rewrites it to
-/// `main-<group>.wasm` when merging per-group manifests). The runner: `cdz-run <target> --call <export>
-/// [--peer <main-iface>=<main-file>] --store S` → exit code (the `--peer` conditional on a non-empty
-/// `main-file`). Only tests whose consumer EMITTED are listed (a compound-param test that declined pre-#4031
-/// has no target, so it is omitted — the runner never runs a missing component). Deterministic (`test_defs`
-/// order). Emit-shred build output (v-cdz-crate-split); v-test-shred's `mkTestExec` reads it per entry.
-pub const KIND_SHRED_MANIFEST: &str = "shred-manifest";
+// The result-artifact KIND vocabulary now lives in the shared `cadenza-compile-abi` crate (the
+// compile-boundary wire `cdz` and `rcdzc` agree on — moved alongside the `Request`/`Query`
+// vocabulary + codec). Re-exported here so `crate::sidecar::KIND_*` / `rcdzc::sidecar::KIND_*`
+// stay byte-stable and the `run_query` producer below keeps resolving each answer's kind.
+pub use cadenza_compile_abi::sidecar::{
+    KIND_CLOSURE_HASH, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORT_TYPES, KIND_EXPORTS,
+    KIND_FUNC_LAYOUT, KIND_HIGHLIGHT, KIND_INSTANTIATIONS, KIND_PARAM_MANIFEST, KIND_RESOLVE,
+    KIND_SCOPE, KIND_SHRED_MANIFEST, KIND_SIDECAR, KIND_SYMBOLS, KIND_TEST_LIST, KIND_TYPE_AT,
+    KIND_TYPE_INFO, KIND_USES,
+};
 
 // The `Request` (materialize an output column) + `Query` (read a fact column) enums that make up one
 // sidecar request list now live in the shared `cadenza-compile-abi` crate — the compile-boundary
