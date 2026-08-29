@@ -6115,10 +6115,11 @@ mod tests {
             sexpr::print(&parse_ok("def head([x, .. rest]) = x")),
             "(def (head (list x .. rest)) x)"
         );
-        // A `#{`-led MAP pattern parameter.
+        // A `#{`-led MAP pattern parameter. The entry is the canonical `(= key sub)` `FieldPair` triple
+        // (symmetric with map VALUES + record-pattern fields, operator M3 ruling — was a 2-element pair).
         assert_eq!(
             sexpr::print(&parse_ok("def get(#{ 1 = v }) = v")),
-            "(def (get (map (1 v))) v)"
+            "(def (get (map (= 1 v))) v)"
         );
         // A `{`-led RECORD pattern parameter — the destructuring-record-arg the operator's DB-records
         // fast-follow needed (backlog flagged it once mis-parsed "expected a name" in the param slot; it
