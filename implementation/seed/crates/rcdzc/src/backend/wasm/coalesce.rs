@@ -178,10 +178,172 @@ pub fn coalesce_locals(
     (remap, new_declared)
 }
 
+/// A control-construct kind for the backward-liveness frame stack.
+#[derive(Clone, Copy, PartialEq)]
+enum CtrlKind {
+    Loop,
+    Block,
+    If,
+}
+
+/// One OPEN control construct during the backward-liveness reverse walk.
+struct Frame {
+    /// The opener's instruction index (`Loop`/`Block`/`If`).
+    open: usize,
+    kind: CtrlKind,
+    /// The live set immediately AFTER this construct's `End` — the branch target for a `Br` to a
+    /// `block`/`if` label (jump-to-end), and the reset point at `else` (both arms rejoin here).
+    join_live: std::collections::HashSet<u32>,
+    /// The `else`-branch's live-IN, stashed at the `Else` marker and unioned into `live` at the `If`
+    /// opener (so `live-in(if) = live-in(then) ∪ live-in(else)`).
+    else_in: Option<std::collections::HashSet<u32>>,
+}
+
+/// The live set at the LABEL a `br <depth>` targets: the `(depth+1)`-th enclosing open construct
+/// (innermost = the last frame). A `loop` label is its TOP (its live-IN, from `loop_live_in`); a
+/// `block`/`if` label is its END (`join_live`). A depth past the function's blocks is a return — no
+/// locals live.
+fn branch_target_live(
+    frames: &[Frame],
+    depth: u32,
+    loop_live_in: &std::collections::HashMap<usize, std::collections::HashSet<u32>>,
+) -> std::collections::HashSet<u32> {
+    let Some(k) = frames.len().checked_sub(1 + depth as usize) else {
+        return std::collections::HashSet::new();
+    };
+    match frames.get(k) {
+        Some(f) if f.kind == CtrlKind::Loop => {
+            loop_live_in.get(&f.open).cloned().unwrap_or_default()
+        }
+        Some(f) => f.join_live.clone(),
+        None => std::collections::HashSet::new(),
+    }
+}
+
+/// Per-instruction LIVE-OUT: `live_out[i]` = the local slots live immediately AFTER `code[i]`.
+///
+/// Backward liveness over wasm's STRUCTURED control flow, iterated to a fixpoint (loop back-edges
+/// converge, monotone growth). A slot is live at a point if a forward path reads it (`local.get`)
+/// before the next def (`local.set`/`local.tee` — a `tee` DEFS its slot from the stack, it does NOT
+/// read the slot). This gives a PRECISE interference relation: a re-defined slot that is dead in a
+/// "hole" is correctly NOT live there, so it does not interfere with a slot live only in that hole —
+/// the imprecision a flat `[first-mention, last-mention]` span has.
+///
+/// SOUNDNESS: liveness here must OVER-approximate. Claiming a slot LIVE when it is dead only adds
+/// spurious interference (fewer coalesces — safe); claiming it DEAD when live would let two live slots
+/// share one slot = a MISCOMPILE. So no case ever spuriously CLEARS `live` (e.g. `unreachable` is a
+/// no-op that keeps `live`); an unconditional `br` sets `live` to the target label's set because the
+/// fall-through after it genuinely never executes.
+fn compute_live_out(code: &[Lir]) -> Vec<std::collections::HashSet<u32>> {
+    use std::collections::{HashMap, HashSet};
+    let n = code.len();
+    // Pair each control construct: `End` index → (opener index, kind), via a forward depth stack.
+    let mut end_to_open: HashMap<usize, (usize, CtrlKind)> = HashMap::new();
+    {
+        let mut stack: Vec<(usize, CtrlKind)> = Vec::new();
+        for (i, op) in code.iter().enumerate() {
+            match op {
+                Lir::Loop(_) => stack.push((i, CtrlKind::Loop)),
+                Lir::Block(_) => stack.push((i, CtrlKind::Block)),
+                Lir::If(_) => stack.push((i, CtrlKind::If)),
+                Lir::End => {
+                    if let Some(o) = stack.pop() {
+                        end_to_open.insert(i, o);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut live_out: Vec<HashSet<u32>> = vec![HashSet::new(); n];
+    let mut loop_live_in: HashMap<usize, HashSet<u32>> = HashMap::new();
+    // Fixpoint: repeat the reverse pass until `loop_live_in` stops growing (bounded by `n + 2` passes;
+    // the `break` on `!changed` exits as soon as it converges — usually 2 passes).
+    for _ in 0..n + 2 {
+        let mut changed = false;
+        let mut frames: Vec<Frame> = Vec::new();
+        let mut live: HashSet<u32> = HashSet::new();
+        for i in (0..n).rev() {
+            live_out[i] = live.clone();
+            match &code[i] {
+                Lir::End => {
+                    let (open, kind) = end_to_open.get(&i).copied().unwrap_or((i, CtrlKind::Block));
+                    frames.push(Frame {
+                        open,
+                        kind,
+                        join_live: live.clone(),
+                        else_in: None,
+                    });
+                }
+                Lir::Loop(_) => {
+                    // `live` now = the loop's live-IN (its top) — the `br`-to-top target. Record it;
+                    // a change means the fixpoint has not converged.
+                    let start = frames.pop().map(|f| f.open).unwrap_or(i);
+                    match loop_live_in.get(&start) {
+                        Some(p) if p == &live => {}
+                        _ => {
+                            loop_live_in.insert(start, live.clone());
+                            changed = true;
+                        }
+                    }
+                }
+                Lir::Block(_) => {
+                    frames.pop(); // a block always executes → live-in(block) = live-in(body)
+                }
+                Lir::If(_) => {
+                    if let Some(f) = frames.pop() {
+                        match f.else_in {
+                            // with an `else`, both arms are covered → union the else-branch live-in
+                            Some(else_in) => live.extend(else_in),
+                            // no `else` → the cond-false path skips to the end → its live is `join_live`
+                            None => live.extend(f.join_live.iter().copied()),
+                        }
+                    }
+                }
+                Lir::Else => {
+                    // Reverse: we have processed the else-body (`live` = its live-in). Stash it, then
+                    // reset `live` to the join (live-after-End) for the then-body.
+                    if let Some(f) = frames.last_mut() {
+                        f.else_in = Some(live.clone());
+                        live = f.join_live.clone();
+                    }
+                }
+                Lir::Br(d) => {
+                    // Unconditional: the fall-through never runs → live-in = target label only.
+                    live = branch_target_live(&frames, *d, &loop_live_in);
+                }
+                Lir::BrIf(d) => {
+                    // Conditional: live-in = fall-through ∪ target label.
+                    live.extend(branch_target_live(&frames, *d, &loop_live_in));
+                }
+                Lir::BrTable(ts, def) => {
+                    // Always branches → live-in = ∪ of every target's + the default's label live.
+                    let mut u = branch_target_live(&frames, *def, &loop_live_in);
+                    for d in ts {
+                        u.extend(branch_target_live(&frames, *d, &loop_live_in));
+                    }
+                    live = u;
+                }
+                Lir::LocalGet(s) => {
+                    live.insert(*s);
+                }
+                Lir::LocalSet(s) | Lir::LocalTee(s) => {
+                    live.remove(s);
+                }
+                _ => {}
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    live_out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::wasm::lir::{Lir, ValType};
+    use crate::backend::wasm::lir::{BlockType, Lir, ValType};
     use std::collections::HashSet;
 
     /// The common "coalesce everything" case — no pinned (debug-named) slots.
@@ -365,5 +527,89 @@ mod tests {
         let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &pinned);
         assert_eq!(decl, vec![ValType::I64, ValType::I64]); // both kept (the pinned dead one survives)
         assert_eq!(remap[1], 1); // pinned slot gets a valid distinct slot
+    }
+
+    fn set_of(xs: &[u32]) -> HashSet<u32> {
+        xs.iter().copied().collect()
+    }
+
+    #[test]
+    fn live_out_straight_line() {
+        let code = vec![
+            Lir::LocalSet(0),
+            Lir::LocalGet(0),
+            Lir::LocalSet(1),
+            Lir::LocalGet(1),
+        ];
+        let lo = compute_live_out(&code);
+        assert_eq!(lo[0], set_of(&[0])); // 0 live (used at 1)
+        assert_eq!(lo[1], set_of(&[])); // 0 dead after last use; 1 not yet live
+        assert_eq!(lo[2], set_of(&[1])); // 1 live (used at 3)
+        assert_eq!(lo[3], set_of(&[])); // end
+    }
+
+    #[test]
+    fn live_out_hole_reused_slot_not_colive_with_hole_slot() {
+        // slot0 def@0 use@1 (dead), def@4 use@5 — a HOLE [1,4] where slot0 is DEAD; slot1 def@2 use@3
+        // lives ONLY in that hole. Precise liveness: at NEITHER of slot0's defs is slot1 live, and at
+        // slot1's def slot0 is not live → never simultaneously live (a flat [0,5] span would wrongly
+        // overlap [2,3]). This imprecision is exactly what the precise pass fixes.
+        let code = vec![
+            Lir::LocalSet(0), // 0
+            Lir::LocalGet(0), // 1
+            Lir::LocalSet(1), // 2
+            Lir::LocalGet(1), // 3
+            Lir::LocalSet(0), // 4
+            Lir::LocalGet(0), // 5
+        ];
+        let lo = compute_live_out(&code);
+        assert!(
+            !lo[0].contains(&1),
+            "slot1 not live after slot0's first def"
+        );
+        assert!(
+            !lo[4].contains(&1),
+            "slot1 not live after slot0's second def"
+        );
+        assert!(
+            !lo[2].contains(&0),
+            "slot0 not live after slot1's def (slot0's hole)"
+        );
+    }
+
+    #[test]
+    fn live_out_loop_carried_slot_live_across_back_edge() {
+        // loop { get0 ; set0 ; br 0 } — slot0 READ at the top before its def ⇒ loop-carried, live
+        // across the back-edge. After the fixpoint it is live after its def (re-read next iteration).
+        let code = vec![
+            Lir::Loop(BlockType::Empty), // 0
+            Lir::LocalGet(0),            // 1
+            Lir::LocalSet(0),            // 2
+            Lir::Br(0),                  // 3
+            Lir::End,                    // 4
+        ];
+        let lo = compute_live_out(&code);
+        assert!(
+            lo[2].contains(&0),
+            "loop-carried slot0 live after its def (read next iteration via the back-edge)"
+        );
+    }
+
+    #[test]
+    fn live_out_within_iteration_loop_slot_dead_after_last_use() {
+        // loop { set0 ; get0 ; br 0 } — slot0 def-before-use each iteration ⇒ within-iteration, NOT
+        // live across the back-edge.
+        let code = vec![
+            Lir::Loop(BlockType::Empty), // 0
+            Lir::LocalSet(0),            // 1
+            Lir::LocalGet(0),            // 2
+            Lir::Br(0),                  // 3
+            Lir::End,                    // 4
+        ];
+        let lo = compute_live_out(&code);
+        assert!(
+            !lo[2].contains(&0),
+            "within-iteration slot0 dead after its last use"
+        );
     }
 }
