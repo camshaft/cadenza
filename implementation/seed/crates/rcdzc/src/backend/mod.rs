@@ -47,6 +47,13 @@ pub fn emit(
     spans: Option<&crate::spans::SpanData>,
     external_debug_info: Option<&str>,
 ) -> Result<Vec<u8>, Reject> {
+    // Tell the wasm local-slot coalescer whether this emit produces DWARF that references local slots,
+    // so it pins debug-named slots ONLY then (see `Db::emit_debug`). A `wasm-debug` embeds DWARF; a
+    // `dwarf` sidecar IS DWARF; a lean `wasm` paired with a `dwarf` sidecar (`external_debug_info`
+    // set) must keep slot numbering matching that sidecar. A plain standalone `wasm` has no DWARF
+    // consumer → coalesce fully.
+    db.emit_debug = matches!(target, Target::WasmDebug | Target::Dwarf)
+        || (matches!(target, Target::Wasm) && external_debug_info.is_some());
     let result = match target {
         // A plain component may still carry an `external_debug_info` pointer at a detached sidecar (Mode
         // S) — the debug sections themselves stay out of it (that is the point of a lean component).
