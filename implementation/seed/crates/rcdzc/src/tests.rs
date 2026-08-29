@@ -715,13 +715,15 @@ fn a_partial_guest_of_any_multi_member_interface_declines_cleanly() {
     );
 }
 
-/// seq-212 world-export CONFORMANCE — NAME half (v-inference `world_export_conformance_faults`): a guest
-/// that does NOT provide a definition for a declared world export must DECLINE pre-emit, naming the missing
-/// export — never emit a component a runtime linker would reject. v-cdz-smith's CASE 1 (declared `f`
-/// unimplemented, only `g` exported) COMPILED before. (The TYPE half — CASE 2, `f` present but wrong
-/// signature — is deferred: a correct comparison must match the emit's typed-export reconciliation, not a
-/// naive `ty_natural_wit` equality; tracked separately with v-rust-backend.) World: `export iface { f:
-/// func(m: record{a: s64}) -> s64 }`.
+/// seq-212 world-export CONFORMANCE (v-inference `world_export_conformance_faults`, NAME + TYPE): a guest
+/// must implement every declared world export by NAME and by a CONFORMING func TYPE, else DECLINE pre-emit
+/// — never emit a component a runtime linker would reject. CASE 1 (declared `f` unimplemented, only `g`
+/// exported) — must decline naming the missing export. CASE 2 (`f` present but WRONG signature — result
+/// `String` where the world declares `s64`) — must decline naming the result mismatch, via the emit-truth
+/// predicate `export_type_conforms_emittable` (NOT a naive `ty_natural_wit` equality). The CONFORMANT guest
+/// (`f: record{a: s64} -> s64`) still compiles — the predicate accepts what the boundary actually emits, so
+/// it does NOT false-reject (the compound false-reject-avoidance — records with option/list fields — is
+/// covered by the 28-wit-abi corpus). World: `export iface { f: func(m: record{a: s64}) -> s64 }`.
 #[test]
 fn a_guest_missing_a_declared_world_export_by_name_declines_pre_emit() {
     use crate::ast::{Builder, Leaf};
@@ -798,8 +800,28 @@ fn a_guest_missing_a_declared_world_export_by_name_declines_pre_emit() {
             .is_none(),
         "no component emitted for a guest missing a declared export"
     );
-    // (CASE 2 — `f` present but wrong signature — is the deferred TYPE half; not asserted here.)
-    // The CONFORMANT guest compiles (f present at the declared record->s64 type).
+    // CASE 2 — `f` PRESENT but WRONG signature: it returns a `String` where the world declares `s64`.
+    // The TYPE-half must decline naming the RESULT mismatch (emit-truth predicate, `Result` position).
+    let c2 = compile_guest("(module m (def (f (: m (Record (a Int64)))) \"hi\") (export f))");
+    assert!(
+        c2.has_error()
+            && c2
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("the guest returns") && d.message.contains("result")),
+        "CASE 2 (f returns String, world declares s64 result) must decline naming the result mismatch: {:?}",
+        c2.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        c2.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "no component emitted for a guest whose export type does not conform"
+    );
+    // The CONFORMANT guest compiles (f present at the declared record->s64 type) — the TYPE predicate
+    // accepts what the boundary emits, so a conforming guest is NOT false-rejected.
     let ok = compile_guest("(module m (def (f (: m (Record (a Int64)))) (. m a)) (export f))");
     assert!(
         !ok.has_error(),
@@ -3719,12 +3741,15 @@ fn a_bytes_member_with_a_scalar_param_declines_cleanly_no_miscompile() {
             .is_none(),
         "a scalar-param bytes member must NOT emit a component (decline-don't-miscompile)"
     );
-    // …and the decline names WHY (the param has no value-form shape descriptor).
+    // …and the decline names WHY. seq-212 world-export CONFORMANCE now catches this PRE-EMIT: the guest's
+    // `apply` param is a scalar `Int64` but the world declares it `Bytes` (a compound) — a shape mismatch
+    // `world_export_conformance_faults` reports before emit (clearer than the old emit-path "no value-form
+    // shape descriptor" decline, which it subsumes).
     assert!(
-        out.diagnostics
-            .iter()
-            .any(|d| d.message.contains("no value-form shape descriptor")),
-        "the decline names the missing param shape descriptor: {:?}",
+        out.diagnostics.iter().any(|d| d
+            .message
+            .contains("the guest is a scalar, but the world declares a compound type")),
+        "the decline names the scalar-vs-compound param shape mismatch: {:?}",
         out.diagnostics
             .iter()
             .map(|d| &d.message)

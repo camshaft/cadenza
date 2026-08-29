@@ -370,9 +370,12 @@ pub fn wit_type_to_ty(db: &crate::db::Db, t: &WitType) -> Option<Ty> {
 /// For each declared export interface member `(member <name> (func (param …) (result …)))`: (1) the guest
 /// must export a definition of `<name>` (kebab-matched) — a missing one is a fault; (2) that def's function
 /// type — its parameter types (each param binder's solved type) and result (`type_of` of the body) — must
-/// match the declared WIT func, compared via [`ty_natural_wit`] (guest `Ty` → its natural `WitType`). A
-/// count/param/result mismatch is a fault anchored at the def's signature. An empty `Vec` = conformant. Only
-/// def-backed exports are checked (a re-export of a non-def is out of scope here).
+/// CONFORM to the declared WIT func, position-aware, via the EMIT-TRUTH predicate
+/// [`crate::backend::wasm::export_type_conforms_emittable`] (NOT a naive `ty_natural_wit(guest) == declared`
+/// equality, which false-rejects every Option/list/variant-bearing shape the boundary emits fine). A param
+/// arity mismatch, a non-conforming param, or a non-conforming result is a fault carrying the predicate's
+/// precise reason, anchored at the guest def's signature. An empty `Vec` = conformant. Only def-backed
+/// exports are checked (a re-export of a non-def is out of scope here).
 pub fn world_export_conformance_faults(
     db: &mut crate::db::Db,
     world: &TargetWorld,
@@ -397,7 +400,7 @@ pub fn world_export_conformance_faults(
                 .iter()
                 .find(|e| e.def.is_some() && kebab_extern_name(&e.name) == want_name)
                 .and_then(|e| e.def);
-            let Some(_d) = guest_def else {
+            let Some(gd) = guest_def else {
                 faults.push(Reject::coded(
                     Code::TypeMismatch,
                     format!(
@@ -408,16 +411,88 @@ pub fn world_export_conformance_faults(
                 ));
                 continue;
             };
-            // NAME conformance only, for now. The TYPE-side reconciliation (does the guest def's func type
-            // match the declared WIT func) is DEFERRED: a naive `ty_natural_wit(guest) == declared` check
-            // false-rejects a legitimately-conformant reducer whose exports carry records with
-            // option/list/variant fields (and `Sum`/`Qty` types `ty_natural_wit` returns `None` for) — the
-            // real conformance is what the emit's typed-export reconciliation (`record_interface_export`)
-            // accepts, not a structural `WitType` equality. Building that correctly is the larger,
-            // emit-coupled piece (coordinated with v-rust-backend); this NAME check closes v-cdz-smith's
-            // CASE 1 (a declared export with no matching guest definition) safely without false-rejecting a
-            // conformant guest. `render_wit`/param/result reconciliation return once that comparison is right.
-            let _ = &render_wit;
+            // TYPE conformance (v-rust-backend's emit-truth predicate). Pull the guest def's param
+            // occurrences + body + sig anchor first, so the immutable `db.defs` borrow drops before the
+            // `&mut db` `type_of`/predicate calls below.
+            let (param_occs, body_occ, sig_occ) = {
+                let def = &db.defs[gd];
+                (def.params.clone(), def.body, def.sig_occ)
+            };
+            // (a) ARITY — the guest must define exactly the params the world declares.
+            if member.func.params.len() != param_occs.len() {
+                faults.push(
+                    Reject::coded(
+                        Code::TypeMismatch,
+                        format!(
+                            "export `{}`: the guest defines {} parameter(s), but the world declares {}",
+                            member.name,
+                            param_occs.len(),
+                            member.func.params.len()
+                        ),
+                    )
+                    .at(sig_occ),
+                );
+                continue;
+            }
+            // (b) each PARAM must CONFORM to its declared WIT type (position `Param` — the field-rebuild
+            // path, so a `result<…>`/option/list field conforms; a scalar-vs-compound mismatch declines).
+            for ((pname, declared), p_occ) in member.func.params.iter().zip(param_occs) {
+                // The name occurrence — bare `a`, or the inner name of an annotated binder `(: a T)` (as
+                // `export_params` unwraps it), so `type_of` reads the param's solved type.
+                let binder = db
+                    .ast
+                    .as_form(p_occ, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p_occ);
+                let gty = crate::infer::type_of(db, binder);
+                if let Err(reason) = crate::backend::wasm::export_type_conforms_emittable(
+                    db,
+                    &gty,
+                    declared,
+                    crate::backend::wasm::ConformancePosition::Param,
+                ) {
+                    faults.push(
+                        Reject::coded(
+                            Code::TypeMismatch,
+                            format!(
+                                "export `{}` parameter `{}`: the guest has `{}`, but the world declares \
+                                 `{}` — {}",
+                                member.name,
+                                pname,
+                                gty.render_name(&db.name_ctx()),
+                                render_wit(db, declared),
+                                reason
+                            ),
+                        )
+                        .at(binder),
+                    );
+                }
+            }
+            // (c) the RESULT must CONFORM (position `Result` — the canonical value-writer path).
+            if let Some(body) = body_occ {
+                let rty = crate::infer::type_of(db, body);
+                if let Err(reason) = crate::backend::wasm::export_type_conforms_emittable(
+                    db,
+                    &rty,
+                    &member.func.result,
+                    crate::backend::wasm::ConformancePosition::Result,
+                ) {
+                    faults.push(
+                        Reject::coded(
+                            Code::TypeMismatch,
+                            format!(
+                                "export `{}` result: the guest returns `{}`, but the world declares `{}` \
+                                 — {}",
+                                member.name,
+                                rty.render_name(&db.name_ctx()),
+                                render_wit(db, &member.func.result),
+                                reason
+                            ),
+                        )
+                        .at(sig_occ),
+                    );
+                }
+            }
         }
     }
     faults
