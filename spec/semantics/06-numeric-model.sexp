@@ -13888,3 +13888,56 @@
   (call main (: 0 Int64)) (output (: 127 Int64))
   (call main (: -4 Int64)) (output (: -273 Int64))
   (live-objects known-leak 2))
+
+(case "sn1 SIGNED Int8 shifts — arithmetic >> sign-extends; << range-checks the negative boundary"
+  (doc "The signed sibling of the UInt8 logical-shift pins (#5639 territory): `>>` on a signed narrow
+        int is an ARITHMETIC shift — the sign bit smears in (-128 >> 1 = -64, -1 >> 7 = -1), never
+        zero-fill. `<<` on a negative value range-checks the RESULT against the signed width: -2 << 6
+        = -128 fits exactly at the lower boundary; -2 << 7 = -256 traps the narrow overflow check; and
+        a count at the type width (8) traps unreachable (the count bound is the TYPE width). All five
+        cells agree wasm/rust (runtime-opaque operands trap 'integer overflow in left shift' on rust);
+        the const twins compile-reject CDZ0304 on both targets.")
+  (input (do
+    (def (shr (: a Int8) (: b Int8)) (>> a b))
+    (def (shl (: a Int8) (: b Int8)) (<< a b))
+    (export shr) (export shl)))
+  (call shr (: -128 Int8) (: 1 Int8)) (output (: -64 Int8))
+  (call shr (: -1 Int8) (: 7 Int8)) (output (: -1 Int8))
+  (call shl (: -2 Int8) (: 6 Int8)) (output (: -128 Int8))
+  (call shl (: -2 Int8) (: 7 Int8)) (trap "overflow")
+  (call shl (: -1 Int8) (: 8 Int8)) (trap "unreachable"))
+
+(case "uc1 user NULLARY ctors as first-class values — set dedup + runtime-selected match, through the cadenza hop"
+  (doc "The compiler-side twin of #5589 (oracle bare nullary-ctor names): a MULTI-variant all-nullary
+        user sum's unit values participate in a #set (structural dedup by discriminant: {Red,Green,Red,
+        sel} → 3 when sel=Blue, 2 when sel=Red) and a runtime-branch-selected value matches by variant
+        (Green→1 Blue→2 Red→3). n=7 → 30+1 = 31; n=0 → 20+2 = 22; n=3 → 30+2 = 32. Notably the hop
+        RE-EMITS the multi-variant sum + match arms (the #5569 peel declines multi-variant PROJECTIONS,
+        but plain multi-variant match re-emit is live) — dual-path value-eq, byte-idempotent, rust-agreed,
+        live-0 both paths.")
+  (input (do
+    (type Color (Red) (Green) (Blue))
+    (def (main (: n Int64))
+      (+ (* 10 (Set.len #set((Red) (Green) (Red) (if (> n 0) (Blue) (Red)))))
+         (match (if (> n 5) (Green) (Blue)) ((Green) 1) ((Blue) 2) ((Red) 3))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 31 Int64))
+  (call main (: 0 Int64)) (output (: 22 Int64))
+  (call main (: 3 Int64)) (output (: 32 Int64)))
+
+(case "cc1 CHAR unit values in collections — scalar-value set dedup, ordering, literal match arms"
+  (doc "Char as a first-class scalar value in compound positions: a #set of chars dedups by Unicode
+        scalar value ({a,b,a,sel} → 3 when sel=c, 2 when sel=a), `<` orders chars by scalar value, and
+        literal char match arms select on a runtime-branch-built scrutinee (x→1 y→2 _→9). n=7 →
+        300+10+1 = 311; n=0 → 200+0+2 = 202; n=3 → 300+10+2 = 312. Both targets agree; live-0.
+        (The cadenza hop DECLINES the char-literal match — 'non-scalar match probe' — while
+        STRING-literal arms re-emit (cdzw71): the Char arm is the actual gap, routed v-c-b; flip-watch.)")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 100 (Set.len #set(#\a #\b #\a (if (> n 0) #\c #\a))))
+         (+ (* 10 (if (< #\a (if (> n 0) #\b #\a)) 1 0))
+            (match (if (> n 5) #\x #\y) (#\x 1) (#\y 2) (_c 9)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 311 Int64))
+  (call main (: 0 Int64)) (output (: 202 Int64))
+  (call main (: 3 Int64)) (output (: 312 Int64)))
