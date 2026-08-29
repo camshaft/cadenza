@@ -610,6 +610,12 @@ pub fn run_with_live_objects(
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     bind_host_imports(&engine, &component, &mut linker, opts, &observed, &[])?;
 
+    // bytes-second run-wiring: byte-scan the component's `cdz-result-type` section + resolve the running
+    // export's guest result-Ty, so a WIT-erased leaf renders its value-form via `render_val_typed`
+    // (Bytes `b"…"` vs `list<u8>` `#list`, Symbol `#"…"`). Absent/no-match → `None` = the type-blind render.
+    let result_types = parse_result_types(scan_result_type_section(component_bytes).as_deref());
+    let result_ty = lookup_result_ty(&result_types, opts.export.as_deref());
+
     let outcome = run_export(
         &engine,
         &component,
@@ -619,6 +625,7 @@ pub fn run_with_live_objects(
         second_call,
         drop_handle,
         call_member,
+        result_ty,
     )?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     // Read the heap balance ONLY on a clean VALUE return: a trapping run aborted mid-computation, so its
@@ -1056,6 +1063,19 @@ pub fn run_capturing(
 /// deadlines all refer to it).
 pub struct CompiledComponent {
     component: Component,
+    /// The GUEST export result-Ty map (bytes-second run-wiring), byte-scanned from the component's
+    /// `cdz-result-type` custom section at compile time (rides IN the component, so it reaches every run).
+    /// Consulted by [`run_capturing_compiled`] via [`Self::result_ty_for`] so a WIT-erased leaf renders its
+    /// value-form (`render::render_val_typed`). Empty when absent → the type-blind render.
+    result_types: std::collections::HashMap<String, String>,
+}
+
+impl CompiledComponent {
+    /// The result-Ty (`Ty::render_name` s-expr) for the export being run — `[lookup_result_ty]` over the
+    /// scanned map. `None` (empty map / no match) → the type-blind render.
+    fn result_ty_for(&self, export: Option<&str>) -> Option<&str> {
+        lookup_result_ty(&self.result_types, export)
+    }
 }
 
 /// JIT-compile `component_bytes` into a reusable [`CompiledComponent`] — the expensive step (see the type
@@ -1064,7 +1084,14 @@ pub fn compile_component(component_bytes: &[u8]) -> Result<CompiledComponent> {
     let engine = engine();
     let component =
         jit_component(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
-    Ok(CompiledComponent { component })
+    // Byte-scan the component's own `cdz-result-type` custom section (bytes-second): the guest export
+    // result-Ty map rides IN the component, so it reaches EVERY invocation (this in-process API AND the
+    // spawned corpus-gate binary that pipes the raw component). Absent → empty map (type-blind).
+    let result_types = parse_result_types(scan_result_type_section(component_bytes).as_deref());
+    Ok(CompiledComponent {
+        component,
+        result_types,
+    })
 }
 
 /// Run an already-[`compile_component`]d component — [`run_capturing`] minus the per-call JIT. Every call
@@ -1100,6 +1127,11 @@ pub fn run_capturing_compiled(
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     bind_host_imports(&engine, component, &mut linker, opts, &observed, &[])?;
 
+    // bytes-second run-wiring (same as `run_with_live_objects`): the guest result-Ty rides on the compiled
+    // component (scanned from its `cdz-result-type` section at `compile_component`), so `cdz run` /
+    // `run_capturing_compiled` also disambiguates a WIT-erased leaf via `render_val_typed`.
+    let result_ty = compiled.result_ty_for(opts.export.as_deref());
+
     let outcome = run_export(
         &engine,
         component,
@@ -1109,6 +1141,7 @@ pub fn run_capturing_compiled(
         second_call,
         drop_handle,
         call_member,
+        result_ty,
     )?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     Ok((outcome, calls))
@@ -1513,6 +1546,9 @@ fn run_composition_hosted_capturing(
         second_call,
         drop_handle,
         call_member,
+        // Composition (multi-component) result-Ty threading is a follow-up — the single-component gate
+        // paths (run_with_live_objects / run_capturing) carry it; a composed run stays type-blind for now.
+        None,
     )?;
     // Take (not clone) the observed list — nothing reads `observed` after this, so move it out (avoids an
     // O(n) copy of the op list). The mutex guard is dropped immediately.
@@ -1733,7 +1769,7 @@ where
     })?;
 
     run_export(
-        &engine, &consumer, &mut store, &linker, opts, None, false, None,
+        &engine, &consumer, &mut store, &linker, opts, None, false, None, None,
     )
 }
 
@@ -1877,7 +1913,7 @@ where
     }
 
     run_export(
-        &engine, &consumer, &mut store, &linker, opts, None, false, None,
+        &engine, &consumer, &mut store, &linker, opts, None, false, None, None,
     )
 }
 
@@ -1988,7 +2024,7 @@ pub fn run_agent_hosted(
     bind_host_op_bindings(&mut store, &mut linker, &rt_instance, bindings)?;
 
     run_export(
-        &engine, &consumer, &mut store, &linker, opts, None, false, None,
+        &engine, &consumer, &mut store, &linker, opts, None, false, None, None,
     )
 }
 
@@ -2187,6 +2223,105 @@ fn check_host_op_shape(
 // The run context (engine/component/store/linker/opts) plus the resource-drive knobs (second_call/
 // drop_handle/call_member) it forwards to the closure/escape dispatch — genuinely 8 arguments.
 #[allow(clippy::too_many_arguments)]
+/// Byte-scan a COMPONENT's top-level sections for the `cdz-result-type` custom section (bytes-second
+/// run-wiring): the guest export result-Ty map rides IN the component (rcdzc appends it), so it reaches
+/// EVERY invocation incl. the spawned corpus-gate binary that pipes the raw component. No `wasmparser` dep
+/// (INTERP-1): a hand walk. Skips the 8-byte preamble; a top-level id-0 custom whose name is
+/// `cdz-result-type` yields its payload. Nested core modules are opaque section blobs (skipped whole), so
+/// their own id-0 customs never false-match. `None` when absent/malformed -> the type-blind render.
+fn scan_result_type_section(bytes: &[u8]) -> Option<Vec<u8>> {
+    // magic (4) + version (2) + layer (2) — a component's layer differs from a core module, but we only skip.
+    let mut pos = 8usize;
+    while pos < bytes.len() {
+        let id = bytes[pos];
+        pos += 1;
+        let (size, adv) = read_uleb(bytes, pos)?;
+        pos += adv;
+        let section_end = pos.checked_add(size as usize)?;
+        if section_end > bytes.len() {
+            return None; // a mis-read size would mis-locate every later section — bail rather than guess.
+        }
+        if id == 0 {
+            // custom section: <name-len:uleb><name><payload>.
+            let (name_len, nadv) = read_uleb(bytes, pos)?;
+            let name_start = pos + nadv;
+            let name_end = name_start.checked_add(name_len as usize)?;
+            if name_end <= section_end && &bytes[name_start..name_end] == b"cdz-result-type" {
+                return Some(bytes[name_end..section_end].to_vec());
+            }
+        }
+        pos = section_end; // skip the section (nested modules are opaque blobs).
+    }
+    None
+}
+
+/// Decode an unsigned LEB128 at `bytes[pos..]`, returning `(value, bytes_consumed)`. `None` on truncation
+/// or an over-long (> u32) encoding (a section size never needs more).
+fn read_uleb(bytes: &[u8], pos: usize) -> Option<(u32, usize)> {
+    let mut result: u32 = 0;
+    let mut shift = 0u32;
+    let mut i = 0usize;
+    loop {
+        let byte = *bytes.get(pos + i)?;
+        result |= u32::from(byte & 0x7f).checked_shl(shift)?;
+        i += 1;
+        if byte & 0x80 == 0 {
+            return Some((result, i));
+        }
+        shift += 7;
+        if shift >= 32 {
+            return None;
+        }
+    }
+}
+
+/// Parse rcdzc's `KIND_RESULT_TYPES` payload — newline-separated `<export-name>\t<Ty::render_name>` lines —
+/// into the export->result-Ty map. A missing/empty/non-UTF-8 payload yields an empty map (type-blind).
+fn parse_result_types(map_bytes: Option<&[u8]>) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Some(bytes) = map_bytes
+        && let Ok(text) = std::str::from_utf8(bytes)
+    {
+        for line in text.lines() {
+            if let Some((name, ty)) = line.split_once('\t') {
+                map.insert(name.to_string(), ty.to_string());
+            }
+        }
+    }
+    map
+}
+
+/// Look up the result-Ty for the export being run. Keyed by the requested export name (or its kebab-
+/// normalized extern form, or an interface-qualified `iface#member`'s member tail); a nullary run (no
+/// `--call`) with a SOLE export uses that one entry. `None` -> the type-blind render.
+fn lookup_result_ty<'a>(
+    map: &'a std::collections::HashMap<String, String>,
+    export: Option<&str>,
+) -> Option<&'a str> {
+    if map.is_empty() {
+        return None;
+    }
+    if let Some(name) = export {
+        let member = name.rsplit('#').next().unwrap_or(name);
+        return map
+            .get(name)
+            .or_else(|| map.get(member))
+            .or_else(|| {
+                let kebab = cadenza_syntax::extern_name::kebab_extern_name(member);
+                map.get(&kebab)
+            })
+            .map(String::as_str);
+    }
+    if map.len() == 1 {
+        return map.values().next().map(String::as_str);
+    }
+    None
+}
+
+// The runner threads the fixed per-run set (engine/component/store/linker/opts + the closure-escape
+// second_call/drop_handle/call_member + the bytes-second result_ty) — a cohesive arg set, not worth a
+// bundle struct for one internal helper.
+#[allow(clippy::too_many_arguments)]
 fn run_export(
     engine: &Engine,
     component: &Component,
@@ -2198,6 +2333,11 @@ fn run_export(
     second_call: Option<&[String]>,
     drop_handle: bool,
     call_member: Option<&str>,
+    // The GUEST result-Ty (`Ty::render_name` s-expr) for the export being run, from the component's
+    // `cdz-result-type` section (bytes-second run-wiring). `Some` → the render sites disambiguate a
+    // WIT-erased leaf via `render::render_val_typed` (Bytes `b"…"` vs `list<u8>` `#list`, Symbol `#"…"`);
+    // `None` → the type-blind `render_val` (unchanged behavior).
+    result_ty: Option<&str>,
 ) -> Result<Outcome> {
     let instance = linker
         .instantiate(&mut *store, component)
@@ -2242,7 +2382,10 @@ fn run_export(
                 let rendered = match results.first() {
                     None => "unit".to_string(),
                     Some(Val::String(s)) => s.clone(),
-                    Some(other) => render_val(other),
+                    Some(other) => match result_ty {
+                        Some(t) => render::render_val_typed(other, t),
+                        None => render_val(other),
+                    },
                 };
                 let _ = func.post_return(&mut *store);
                 Ok(Outcome::Value(rendered))
@@ -2354,7 +2497,10 @@ fn run_export(
                 // (the program walked its value through the runtime and assembled the string); take a
                 // returned string verbatim rather than re-quoting it. A scalar result renders directly.
                 Some(Val::String(s)) => s.clone(),
-                Some(other) => render_val(other),
+                Some(other) => match result_ty {
+                    Some(t) => render::render_val_typed(other, t),
+                    None => render_val(other),
+                },
             };
             let _ = func.post_return(&mut *store);
             Ok(Outcome::Value(rendered))
@@ -4017,6 +4163,49 @@ fn parse_tuple_fields(s: &str) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bytes-second run-wiring: the byte-scanner walks a component's top-level sections + returns the
+    /// `cdz-result-type` custom section's payload; `parse_result_types` + `lookup_result_ty` resolve the
+    /// running export's Ty. A component with no such section → None (type-blind).
+    #[test]
+    fn scan_and_lookup_result_type_section() {
+        // A minimal component-shaped blob: 8-byte preamble, then ONE custom section (id 0) named
+        // `cdz-result-type` with a `<name>\t<Ty>` payload. `custom_section` framing mirrors the emit side.
+        fn uleb(mut v: u32, out: &mut Vec<u8>) {
+            loop {
+                let b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v == 0 {
+                    out.push(b);
+                    break;
+                }
+                out.push(b | 0x80);
+            }
+        }
+        fn custom(name: &str, payload: &[u8]) -> Vec<u8> {
+            let mut contents = Vec::new();
+            uleb(name.len() as u32, &mut contents);
+            contents.extend_from_slice(name.as_bytes());
+            contents.extend_from_slice(payload);
+            let mut sec = vec![0u8]; // id 0 = custom
+            uleb(contents.len() as u32, &mut sec);
+            sec.extend_from_slice(&contents);
+            sec
+        }
+        let mut comp = vec![0, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00]; // preamble
+        comp.extend_from_slice(&custom("some-other", b"ignored"));
+        comp.extend_from_slice(&custom("cdz-result-type", b"g\tBytes\nf\t(List Int64)"));
+
+        let payload = scan_result_type_section(&comp).expect("finds cdz-result-type");
+        assert_eq!(payload, b"g\tBytes\nf\t(List Int64)");
+        let map = parse_result_types(Some(&payload));
+        assert_eq!(lookup_result_ty(&map, Some("g")), Some("Bytes"));
+        assert_eq!(lookup_result_ty(&map, Some("f")), Some("(List Int64)"));
+        assert_eq!(lookup_result_ty(&map, Some("absent")), None);
+        // No section → None (type-blind).
+        let bare = vec![0, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00];
+        assert!(scan_result_type_section(&bare).is_none());
+    }
 
     #[test]
     fn empty_bytes_is_invalid() {
