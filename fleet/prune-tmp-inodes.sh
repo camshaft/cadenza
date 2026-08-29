@@ -3,7 +3,7 @@
 #
 # WHY: /tmp is a tmpfs with a FIXED inode budget (~1M here) independent of its byte capacity. Tiny-but-
 # numerous files exhaust its inodes at low BYTE usage (seen: 100% inodes / 16% bytes), after which every
-# agent's Bash fails ENOSPC (it cannot write its output file) and the fleet wedges. Three classes:
+# agent's Bash fails ENOSPC (it cannot write its output file) and the fleet wedges. Four classes:
 #   A. TOOLBOX TELEMETRY (the PRIMARY accumulator, operator-confirmed): `/tmp/toolbox-telemetry-*` dirs
 #      created ~2/min by the internal toolbox EMF wrapper, each holding a few log/metric files, with NO
 #      cleanup — hundreds pile up per hour.
@@ -15,12 +15,23 @@
 #      conservative: a SEPARATE higher threshold (dormant in normal operation, fires only near the wedge),
 #      a long age floor, a fail-safe liveness check, an allowlist (never a blanket /tmp/* sweep), and
 #      own-user only. `prune-stale-targets.sh` reclaims worktree `target/` on /local — a distinct class.
+#   D. ORACLE DIFFERENTIAL RUN DIRS (concierge root-cause 2026-08-29, the DOMINANT inode hog behind a
+#      near-ENOSPC wedge): `/tmp/oracle-all*`, `oall*`, `surv*` — v-lean-oracle's full-corpus oracle
+#      differential run dirs, each a whole corpus tree ≈ 47K INODES, leaked (not cleaned after each run) →
+#      ~11 accumulated over ~7h ≈ 522K inodes = the bulk of a 977K-inode wedge (the small classes above are
+#      ~3-5 inodes/dir and were NOT the growth). Reaped like Class C (own-user + lsof-idle + age) but with
+#      its OWN shorter age floor (ORACLE_STALE_MIN, 2h — a couple leaked 47K-inode dirs already threaten the
+#      wall, and the owner confirmed >2h dirs are completed/safe) + the `*-out.txt`/`*-manifest.txt` sibling
+#      files. The owner (v-lean-oracle) is routed to stop leaking (clean each run dir on completion); this
+#      reaper is the safety net.
 #
 # SAFETY (per-class gates + guards):
 #   1. THRESHOLD-GATED, PER CLASS: A/B sweep only when /tmp inode-use% >= INODE_THRESHOLD_PCT (default
 #      80; the maintenance cron runs it at 0 = unconditional). Class C has its OWN, INDEPENDENT gate
 #      SCRATCH_THRESHOLD_PCT (default 70) so scratch is reaped ONLY near the wedge even when A/B run
-#      unconditionally — dormant during normal operation (zero risk of nuking live scratch).
+#      unconditionally — dormant during normal operation (zero risk of nuking live scratch). Class D
+#      (oracle) has its OWN gate ORACLE_THRESHOLD_PCT (default 60, LOWER than scratch) — it's the dominant
+#      inode hog + pure-leak + lsof-protected, so it's reaped earlier, well before the 90% ENOSPC wedge.
 #   2. AGE-GUARDED: removes only entries older than a per-class age — a live buffer/transcript/scratch has
 #      a recent mtime. TELEMETRY_STALE_MIN (15), STALE_MIN (120), SCRATCH_STALE_MIN (240 = 4h) are knobs.
 #      NOTE: telemetry is the PRIMARY accumulator and the fleet generates toolbox-telemetry-* faster than a
@@ -28,11 +39,12 @@
 #      is 15min: standing backlog ≈ generation_rate × window, and a buffer idle 15min is flushed (EMF
 #      buffers flush in seconds), so 15min carries no live-buffer risk while ~halving the standing count.
 #      A `/tmp/claude-<pid>/` dir is SHARED across sessions (not tied to one agent), so AGE is the signal.
-#   3. LIVENESS (Class C): each scratch candidate is skipped unless `lsof +D` shows NO live user (open fd
+#   3. LIVENESS (Classes C + D): each candidate dir is skipped unless `lsof +D` shows NO live user (open fd
 #      or cwd anywhere under it). FAIL-SAFE — missing lsof / any lsof output (users OR an error) → KEEP
-#      the dir. Only a clean, empty lsof permits removal, so an active probe's scratch is never reaped.
+#      the dir. Only a clean, empty lsof permits removal, so an active probe/oracle-run dir is never reaped.
 #   4. SCOPE: A/B touch only those two ephemeral classes (Claude excludes `journal.jsonl`, the Workflow
-#      RESUME journal). Class C touches only allowlisted, own-user dirs. Nothing else in /tmp is touched.
+#      RESUME journal). Class C touches only allowlisted, own-user dirs; Class D only the oracle-run dir
+#      shapes (own-user). Nothing else in /tmp is touched.
 #
 # DRY-RUN by default (prints WOULD-REMOVE counts). Pass --apply to actually delete.
 # Meant to be run periodically (e.g. a maintenance cron) from the materialized hub copy.
@@ -44,9 +56,13 @@ TELEMETRY_STALE_MIN="${TELEMETRY_STALE_MIN:-15}"   # remove toolbox-telemetry-* 
 STALE_MIN="${STALE_MIN:-120}"                      # remove claude task transcripts older than this (minutes)
 SCRATCH_THRESHOLD_PCT="${SCRATCH_THRESHOLD_PCT:-70}" # Class C fires ONLY at/above this — INDEPENDENT of INODE_THRESHOLD_PCT
 SCRATCH_STALE_MIN="${SCRATCH_STALE_MIN:-240}"      # remove agent-scratch dirs older than this (minutes, default 4h)
+ORACLE_STALE_MIN="${ORACLE_STALE_MIN:-120}"        # Class D: remove oracle-run dirs older than this (minutes, default 2h; each ≈47K inodes so shorter than scratch)
+ORACLE_THRESHOLD_PCT="${ORACLE_THRESHOLD_PCT:-60}" # Class D fires at/above this — LOWER than scratch (70): oracle dirs are the dominant hog + pure-leak + lsof-protected, so reap the hog earlier (well before the 90% wedge)
 
 # Class C allowlist — ONLY these known agent-scratch dir SHAPES are ever candidates (never a blanket sweep).
 SCRATCH_PATTERNS=(mphome shredall 'shred-*' otc 'vrb*' 'latentleak-*' 'cdz-*-smoke*' 'node-compile-cache')
+# Class D allowlist — ONLY these oracle differential run-dir SHAPES (v-lean-oracle full-corpus runs).
+ORACLE_PATTERNS=('oracle-all*' 'oall*' 'surv*')
 
 iuse_pct() { df -i "$TMPDIR_ROOT" | awk 'NR==2 {gsub(/%/,"",$5); print $5}'; }
 
@@ -65,8 +81,8 @@ APPLY=0
 
 iuse="$(iuse_pct)"
 iuse="${iuse:-0}"
-printf 'prune-tmp-inodes: %s inode-use=%s%% ab-threshold=%s%% scratch-threshold=%s%% telemetry-stale=%smin claude-stale=%smin scratch-stale=%smin apply=%s\n' \
-  "$TMPDIR_ROOT" "$iuse" "$INODE_THRESHOLD_PCT" "$SCRATCH_THRESHOLD_PCT" "$TELEMETRY_STALE_MIN" "$STALE_MIN" "$SCRATCH_STALE_MIN" "$APPLY"
+printf 'prune-tmp-inodes: %s inode-use=%s%% ab-threshold=%s%% scratch-threshold=%s%% telemetry-stale=%smin claude-stale=%smin scratch-stale=%smin oracle-stale=%smin apply=%s\n' \
+  "$TMPDIR_ROOT" "$iuse" "$INODE_THRESHOLD_PCT" "$SCRATCH_THRESHOLD_PCT" "$TELEMETRY_STALE_MIN" "$STALE_MIN" "$SCRATCH_STALE_MIN" "$ORACLE_STALE_MIN" "$APPLY"
 
 # ── Classes A + B: gated on INODE_THRESHOLD_PCT (the cron runs this at 0 = unconditional). ────────────
 if [ "$iuse" -ge "$INODE_THRESHOLD_PCT" ]; then
@@ -139,4 +155,47 @@ if [ "$iuse" -ge "$SCRATCH_THRESHOLD_PCT" ]; then
     "$SCRATCH_THRESHOLD_PCT" "$verb" "$scratch_idle" "$scratch_live" "${#scratch_cands[@]}" "$SCRATCH_STALE_MIN"
 else
   printf 'prune-tmp-inodes: scratch class DORMANT — inode-use %s%% below scratch threshold %s%% (fires only near the wedge).\n' "$iuse" "$SCRATCH_THRESHOLD_PCT"
+fi
+
+# ── Class D: oracle differential run dirs — the DOMINANT inode hog (≈47K each). Armed at its OWN
+# ORACLE_THRESHOLD_PCT (LOWER than scratch — reap the hog early), reaped own-user + lsof-idle + age (its OWN
+# shorter ORACLE_STALE_MIN floor), plus the small `*-out.txt`/`*-manifest.txt` sibling files. ─────────
+if [ "$iuse" -ge "$ORACLE_THRESHOLD_PCT" ]; then
+  # Build the `-name p1 -o -name p2 …` group from the oracle allowlist.
+  oracle_name_args=()
+  for p in "${ORACLE_PATTERNS[@]}"; do
+    [ "${#oracle_name_args[@]}" -gt 0 ] && oracle_name_args+=(-o)
+    oracle_name_args+=(-name "$p")
+  done
+  # Candidate DIRS (each ≈47K inodes), own-user, aged.
+  oracle_cands=()
+  while IFS= read -r -d '' d; do oracle_cands+=("$d"); done \
+    < <(find "$TMPDIR_ROOT" -maxdepth 1 -type d -uid "$(id -u)" \
+          \( "${oracle_name_args[@]}" \) -mmin +"$ORACLE_STALE_MIN" -print0 2>/dev/null)
+  oracle_idle=0
+  oracle_live=0
+  if [ "${#oracle_cands[@]}" -gt 0 ]; then
+    for d in "${oracle_cands[@]}"; do
+      if scratch_dir_is_idle "$d"; then
+        [ "$APPLY" = 1 ] && rm -rf "$d" 2>/dev/null || true
+        oracle_idle=$((oracle_idle + 1))
+      else
+        oracle_live=$((oracle_live + 1))
+      fi
+    done
+  fi
+  # Sibling artifact FILES (`oracle-all*-out.txt`, `oall*-manifest.txt`, …): tiny, no liveness needed — the
+  # allowlist patterns already match them as top-level files; age-guard + own-user is enough.
+  oracle_files="$(find "$TMPDIR_ROOT" -maxdepth 1 -type f -uid "$(id -u)" \
+    \( "${oracle_name_args[@]}" \) -mmin +"$ORACLE_STALE_MIN" 2>/dev/null | wc -l)"
+  if [ "$APPLY" = 1 ]; then
+    find "$TMPDIR_ROOT" -maxdepth 1 -type f -uid "$(id -u)" \
+      \( "${oracle_name_args[@]}" \) -mmin +"$ORACLE_STALE_MIN" -delete 2>/dev/null || true
+  fi
+  verb="WOULD remove"
+  [ "$APPLY" = 1 ] && verb="removed"
+  printf 'prune-tmp-inodes: oracle (>=%s%%): %s %s idle oracle-run dir(s) + %s sibling file(s), KEPT %s live/held (of %s dir candidate(s), age>%smin, own-user)\n' \
+    "$ORACLE_THRESHOLD_PCT" "$verb" "$oracle_idle" "$oracle_files" "$oracle_live" "${#oracle_cands[@]}" "$ORACLE_STALE_MIN"
+else
+  printf 'prune-tmp-inodes: oracle class DORMANT — inode-use %s%% below oracle threshold %s%% (fires before the wedge).\n' "$iuse" "$ORACLE_THRESHOLD_PCT"
 fi
