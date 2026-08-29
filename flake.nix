@@ -344,6 +344,19 @@
           doCheck = false;
         });
 
+        # xtaskCodegenGuideBin — the guide sexp→TSX codegen (v-guide-infra I5, the whole-guide→sexpr flip;
+        # v-nix owns the nix wiring). Mirrors xtaskCodegenWasmAbiBin: crane-built from its OWN closure
+        # (cadenza-syntax-sexpr + cadenza-syntax-core + cadenza-ast), so it caches independently of xtask.
+        # `guideExamplesCheck` sets CDZ_XTASK_CODEGEN_GUIDE=${this}/bin/xtask-codegen-guide so the guide's
+        # `npm run codegen` uses the PREBUILT bin (guideExamplesCheck has rustToolchain but NO cargo vendor, so
+        # an in-gate `cargo build -p` can't run offline — v-guide-infra's scripts resolve the env-bin when set,
+        # else fall back to `cargo build -p` for local dev). Output: $out/bin/xtask-codegen-guide.
+        xtaskCodegenGuideBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-codegen-guide"; }) // {
+          pname = "cdz-xtask-codegen-guide";
+          cargoExtraArgs = "-p xtask-codegen-guide";
+          doCheck = false;
+        });
+
         # xtaskPruneBaselinesBin — the `.gate-baseline*` unreferenced-entry pruner (v-xtask-decompose). Built
         # from ONLY the xtask-prune-baselines crate's closure (deps xtask-support → cdz-contract → cadenza-ast),
         # so it caches INDEPENDENTLY of xtask. `apps.prune-baselines` runs it with CDZ_SEED_BIN_DIR (the
@@ -637,6 +650,10 @@
           # xtask-codegen-wasm-abi (v-xtask-decompose): the wasm/component byte-table extractor
           # (codegen→build-time-nix), deps only wasm-encoder (external). Registered so crane sees its Cargo.toml.
           xtask-codegen-wasm-abi = "xtask/crates/xtask-codegen-wasm-abi";
+          # xtask-codegen-guide (v-guide-infra I5, whole-guide→sexpr flip; v-nix owns the nix wiring): the guide
+          # sexp→TSX codegen (deps cadenza-syntax-sexpr + cadenza-ast). Registered so crane sees its Cargo.toml +
+          # `xtaskCodegenGuideBin` builds it; guideExamplesCheck sets CDZ_XTASK_CODEGEN_GUIDE to the prebuilt bin.
+          xtask-codegen-guide = "xtask/crates/xtask-codegen-guide";
           # xtask-bench (v-xtask-decompose): the runtime allocation benchmark carved out of xtask/src/bench.rs
           # into its own STD-ONLY leaf bin crate (NO deps — not even xtask-support). Registered here so the crane
           # deps-src includes its Cargo.toml (else the workspace fails to load). `benchCheck` runs it; the
@@ -990,6 +1007,10 @@
               # workspace closure is just itself.
               # now deps cadenza-ast (reads wasm-abi.sexp's cadenza-ast binary in the --from-sexpr producer).
               xtask-codegen-wasm-abi = [ "cadenza-ast" "xtask-codegen-wasm-abi" ];
+              # xtask-codegen-guide (v-guide-infra I5): reads a chapter .sexp via the MAIN reader
+              # (cadenza-syntax-sexpr → cadenza-syntax-core + cadenza-ast) into a cadenza-ast Arenas and emits
+              # the @generated .tsx. Closure = the sexpr-reader stack + itself.
+              xtask-codegen-guide = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-sexpr" "xtask-codegen-guide" ];
               xtask-mandates = [ "xtask-mandates" ];
               # xtask-bench is a std-only leaf: NO workspace deps (not even xtask-support) — closure is just itself.
               xtask-bench = [ "xtask-bench" ];
@@ -3706,6 +3727,7 @@
             rustToolchain
             pkgs.nodejs_22 # node 22 (>=22.6 for --experimental-strip-types in test:unit)
             pkgs.npmHooks.npmConfigHook # wires npmDeps → the offline npm cache (npm ci runs offline)
+            xtaskCodegenGuideBin # I5: the prebuilt guide sexp→TSX codegen bin on PATH (+ CDZ_XTASK_CODEGEN_GUIDE)
           ];
           # npmConfigHook reads these: the vendored dep set + the dir holding package-lock.json.
           npmDeps = guideNpmDeps;
@@ -3713,6 +3735,13 @@
           # The base the guide's vite build fingerprints assets under — mirror the GHA env
           # (VITE_BASE=/<repo>/). The repo is `cadenza`; a bundle-path check reads it.
           VITE_BASE = "/cadenza/";
+          # I5 (v-guide-infra whole-guide→sexpr flip): the guide's `npm run codegen` (+ check:codegen[-sync])
+          # regenerate the 42 @generated .tsx from the .sexp source-of-truth via the xtask-codegen-guide bin.
+          # guideExamplesCheck has rustToolchain but NO cargo vendor, so an in-gate `cargo build -p` can't run
+          # offline — instead point the guide's scripts at the PREBUILT bin (they resolve $CDZ_XTASK_CODEGEN_GUIDE
+          # when set, else fall back to `cargo build -p` for local dev). Mirrors cdzWasmAbi/cdzPlatformContracts
+          # consuming their carved codegen bins. xtaskCodegenGuideBin is also on PATH (nativeBuildInputs below).
+          CDZ_XTASK_CODEGEN_GUIDE = "${xtaskCodegenGuideBin}/bin/xtask-codegen-guide";
           buildPhase = ''
             runHook preBuild
 
@@ -4206,6 +4235,11 @@
         # emit rcdzc/src/backend/wasm/wasm_abi.rs at build time.
         packages.xtask-codegen-wasm-abi = xtaskCodegenWasmAbiBin;
 
+        # The guide sexp→TSX codegen bin (v-guide-infra I5; v-nix nix wiring). `nix build .#xtask-codegen-guide`
+        # → result/bin/xtask-codegen-guide. guideExamplesCheck sets CDZ_XTASK_CODEGEN_GUIDE to this so the
+        # guide's `npm run codegen` regenerates the @generated .tsx from the .sexp source-of-truth in-gate.
+        packages.xtask-codegen-guide = xtaskCodegenGuideBin;
+
         # The standalone baseline pruner bin (v-xtask-decompose). `nix build .#xtask-prune-baselines` →
         # result/bin/xtask-prune-baselines. Backs `apps.prune-baselines`; caches independently of xtask.
         packages.xtask-prune-baselines = xtaskPruneBaselinesBin;
@@ -4374,6 +4408,7 @@
               clippy-xtask-fmt = mkCrateClippyCrane { crate = "xtask-fmt"; };
               clippy-xtask-codegen-contracts = mkCrateClippyCrane { crate = "xtask-codegen-contracts"; };
               clippy-xtask-codegen-wasm-abi = mkCrateClippyCrane { crate = "xtask-codegen-wasm-abi"; };
+              clippy-xtask-codegen-guide = mkCrateClippyCrane { crate = "xtask-codegen-guide"; };
               clippy-xtask-prune-baselines = mkCrateClippyCrane { crate = "xtask-prune-baselines"; };
               clippy-xtask-bench = mkCrateClippyCrane { crate = "xtask-bench"; };
               clippy-xtask-install-lsp = mkCrateClippyCrane { crate = "xtask-install-lsp"; };
@@ -4432,6 +4467,7 @@
               test-xtask-fmt = mkCrateTestCrane { crate = "xtask-fmt"; };
               test-xtask-codegen-contracts = mkCrateTestCrane { crate = "xtask-codegen-contracts"; };
               test-xtask-codegen-wasm-abi = mkCrateTestCrane { crate = "xtask-codegen-wasm-abi"; };
+              test-xtask-codegen-guide = mkCrateTestCrane { crate = "xtask-codegen-guide"; };
               test-xtask-prune-baselines = mkCrateTestCrane { crate = "xtask-prune-baselines"; };
               # xtask-bench: runs its 4 pure unit tests (tolerance, parse_alloc_lines, baseline round-trip, diff
               # classification). Leaf like the other xtask-* bins. REQUIRED by testCrateCoverageAssert.
@@ -4502,7 +4538,7 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-prune-baselines clippy-xtask-bench clippy-xtask-install-lsp clippy-xtask-duvet-check clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-codegen-guide clippy-xtask-prune-baselines clippy-xtask-bench clippy-xtask-install-lsp clippy-xtask-duvet-check clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
               echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + xtask-codegen-wasm-abi + xtask-prune-baselines + xtask-bench + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
