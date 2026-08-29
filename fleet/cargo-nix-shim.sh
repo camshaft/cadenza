@@ -52,6 +52,33 @@ _sub="${1:-}"
 # its xtask bin is tiny, not the target-dir bloat). Run the real cargo immediately, silently.
 if [ "$_sub" = "xtask" ] && [ "${2:-}" = "fleet" ]; then run_real "$@"; fi
 
+# ROUTE `cargo xtask build` → `nix run <flake>#build` (v-nix apps.build #5603) — the #1 rebuild-the-world
+# hotspot: front-end (cdz/cdz-run/cdz-compile) + component-store materialized from the SHARED /nix/store,
+# ZERO cargo, target/ becomes symlinks (kills the 174-worktree × multi-GB target/ recompile of cdz/rcdzc/
+# deps). Only the bare `cargo xtask build` (no extra args that could change semantics); anything with a
+# trailing arg → soft-warn + real cargo (conservative).
+if [ "$_sub" = "xtask" ] && [ "${2:-}" = "build" ] && [ -z "${3:-}" ]; then
+  _flake="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+  echo "cargo-shim: routing 'cargo xtask build' → nix run $_flake#build (all-nix: front-end + store from the shared /nix/store, zero cargo/target bloat; bypass with CDZ_NO_CARGO_SHIM=1)." >&2
+  exec nix run "$_flake#build"
+fi
+
+# ROUTE a whole-workspace / front-end `cargo build` (NO `-p`) → `nix run <flake>#build`. A `cargo build -p
+# CRATE` targets a SPECIFIC crate (maybe not the front-end, so `.#build` is not its equivalent) → falls
+# through to soft-warn + real cargo (conservative, like the `test -p` gate). `--release`/`--bin cdz…` (no
+# `-p`) still route: `.#build` materializes all the front-end bins.
+if [ "$_sub" = "build" ]; then
+  _has_p=0
+  for a in "$@"; do
+    case "$a" in -p | --package | -p=* | --package=*) _has_p=1 ;; esac
+  done
+  if [ "$_has_p" = 0 ]; then
+    _flake="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+    echo "cargo-shim: routing 'cargo build' → nix run $_flake#build (all-nix: front-end bins from the shared store, zero target/ bloat; a specific crate — cargo build -p CRATE — still runs cargo; bypass CDZ_NO_CARGO_SHIM=1)." >&2
+    exec nix run "$_flake#build"
+  fi
+fi
+
 # Compute the all-nix hint KEY for this cargo shape (empty = a cargo cmd we don't warn on — `--version`,
 # `+toolchain`, `cargo xtask <non-build-subcmd>`, …). `xtask:<sub>` for the build/gate/test xtask subcmds.
 _key=""
