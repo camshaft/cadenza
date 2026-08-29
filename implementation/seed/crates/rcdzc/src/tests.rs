@@ -34167,6 +34167,63 @@ mod stage1 {
     }
 
     #[test]
+    fn arm_cascade_entries_stay_linear_on_a_nested_match() {
+        // REGRESSION (perf): the per-arm BINDER-name fast-reject (`Db::arm_cannot_bind`) keeps the match-arm
+        // case cascade O(N) on a deeply-nested match. A reference to a global/prelude/CTOR name
+        // (`Some`/`None`/`+`) is bound by NO arm; because the fast-reject set EXCLUDES pattern heads, a ctor
+        // name is rejected in O(1) at every enclosing arm → cascade entries stay O(N) (only genuine binder
+        // references `x_i` enter, at their binding arm). Were heads kept in the set (or no fast-reject), the
+        // ctor references `Some`/`None` would enter the cascade at each of O(depth) arms → O(N²).
+        // `ARM_CASCADE_ENTRIES` is the noise-free signal (`BINDER_IN_CALLS` cannot pin this — the fast-reject
+        // is INSIDE binder_in, so invocation count is unchanged; only cascade ENTRIES drop). Right-nested
+        // Option match, each arm binding `x_i` fed to the next scrutinee (runtime-derived from `p`, 2 arms).
+        fn nested_option_match(depth: usize) -> String {
+            fn build(i: usize, depth: usize) -> String {
+                if i >= depth {
+                    return if i > 0 {
+                        format!("x{}", i - 1)
+                    } else {
+                        "p".into()
+                    };
+                }
+                let prev = if i > 0 {
+                    format!("x{}", i - 1)
+                } else {
+                    "p".into()
+                };
+                format!(
+                    "(match (Some (+ {prev} 1)) ((Some x{i}) {}) ((None _) 0))",
+                    build(i + 1, depth)
+                )
+            }
+            format!(
+                "(module m (def (main (: p Int64)) {}) (export main))",
+                build(0, depth)
+            )
+        }
+        fn cascade_entries(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::ARM_CASCADE_ENTRIES.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::ARM_CASCADE_ENTRIES.with(|c| c.get())
+            })
+        }
+        // Depth 100→200 is a 2× nest; the head-excluding fast-reject keeps cascade entries ~linear (~2×),
+        // the O(N²) all-atoms/un-rejected cascade was ~4×. Require < 3× (between the regimes, margin for
+        // constant terms).
+        let n100 = cascade_entries(&nested_option_match(100));
+        let n200 = cascade_entries(&nested_option_match(200));
+        let ratio = n200 as f64 / (n100.max(1)) as f64;
+        assert!(
+            n100 > 0 && ratio < 3.0,
+            "the match-arm cascade must stay O(N) entries on a nested match, not O(N²) (a global/ctor-name \
+             reference ascending O(depth) arms needs the head-excluding pattern-name fast-reject): depth \
+             100→200 grew cascade entries {ratio:.1}× (n100={n100}, n200={n200}); linear is ~2×, the \
+             un-rejected/all-atoms cascade was ~4×"
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the

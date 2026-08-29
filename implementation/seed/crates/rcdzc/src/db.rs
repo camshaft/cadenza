@@ -107,6 +107,17 @@ thread_local! {
     /// `a_wide_runtime_map_match_resolves_synth_names_in_bounded_time`.
     pub(crate) static BINDER_IN_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 
+    /// Test-only: total times `resolve::binder_in` ENTERED the match-arm case cascade (Cases 5..6mg) since
+    /// the last reset — i.e. hops NOT fast-rejected by the per-arm BINDER-name over-approx
+    /// (`Db::arm_cannot_bind`). A reference to a global/prelude/CTOR name in a DEEPLY-NESTED match ascends
+    /// O(depth) arms; because the fast-reject set excludes pattern HEADS, a ctor name (`Some`/`None`) is
+    /// fast-rejected at every arm → cascade entries stay O(N) (only genuine binder-name references enter,
+    /// at their binding arm). An all-atoms set (or no fast-reject) would keep ctor-name refs entering the
+    /// cascade at every enclosing arm → O(N²). `BINDER_IN_CALLS` cannot pin this (it counts INVOCATIONS,
+    /// unchanged — the fast-reject is inside binder_in); only cascade ENTRIES drop. Noise-free signal — see
+    /// `arm_cascade_entries_stay_linear_on_a_nested_match`.
+    pub(crate) static ARM_CASCADE_ENTRIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+
     /// Test-only: total LEADING elements enumerated by `resolve::find_leading_binder_in_list_pattern`
     /// since the last reset — the elements examined while building a list pattern's binder index PLUS any
     /// visited by the linear fallback (a non-simple pattern). Resolving a name against a `(list p… .. r)`
@@ -1246,26 +1257,31 @@ pub struct Db {
     /// allocation on the hot resolve path.
     scope_binders: crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, StructId>>,
 
-    /// Per-MATCH-ARM pattern-name OVER-APPROXIMATION: `arm_form_occ → the set of every NAME atom that
-    /// appears anywhere in the arm's PATTERN region` (all children of the arm form except the last, which
-    /// is the body). Built once at load ([`build_arm_pattern_names`]).
+    /// Per-MATCH-ARM BINDER-name OVER-APPROXIMATION: `arm_form_occ → the set of the name atoms in the arm's
+    /// PATTERN region (all children except the body) that sit in a BINDER position` — i.e. every name
+    /// EXCEPT the HEAD (child 0) of each list form (see [`build_arm_pattern_names`], built once at load).
     ///
     /// A match arm's `binder_in` cases (`resolve::binder_in` Cases 5/5g/6/6l/6r/6mr/6g/…) all bind a name
-    /// that occurs as a NAME atom in the arm's pattern (a whole-scrutinee binder, a variant/tuple/list/
-    /// record/map/bin payload binder, or a guard-cond binder — every one is written into the pattern). So
-    /// this set is a SUPERSET of the names the arm can bind. A lexical-scope walk ascends EVERY enclosing
-    /// binder, and in a DEEPLY-NESTED match (recursive-AST-walk shape) the vast majority of the ~20
-    /// per-arm case probes conclude "binds nothing" — a reference to a GLOBAL/prelude/ctor name (`Some`,
-    /// `None`, `+`) is bound by no arm, so it ran the whole `match_arm_*_binds`/`guard_cond_*_binds`
-    /// cascade at each of O(depth) enclosing arms before falling through to the prelude (measured: the arm
-    /// cascade was ~66% of resolve self-time, O(depth)-per-reference on a depth-N nested match). This set
-    /// lets `binder_in` fast-REJECT such a hop in O(1): if `name` is not in the arm's pattern-name set, no
-    /// arm case can bind it, so return `None` without the cascade. OVER-approximation is safe by
-    /// construction — a name genuinely bound is always in the set (it is a pattern atom), so a real
-    /// binding is never skipped; a spurious extra name only forgoes the skip (runs the cascade, which
-    /// returns the same result). Load-time arm patterns are immutable (arena lists are immutable;
-    /// desugars build fresh nodes with NEW ids that are absent from this map → they take the cascade), so
-    /// the load-time set stays a valid over-approximation for the arm ids it holds.
+    /// written into the arm's pattern in a NON-HEAD position (a whole-scrutinee bare binder, or a variant/
+    /// tuple/list/record/map/bin payload binder — a ctor PAYLOAD, tuple/list ELEMENT, record field VALUE,
+    /// seg-binder, map VALUE, or rest binder). A pattern HEAD (`Some` in `(Some x)`; `tuple`/`list`/
+    /// `record`/`bin`/`map`/`guard`; a record field NAME; a seg TYPE; a map KEY) is NEVER a binder, so
+    /// excluding heads keeps a safe SUPERSET of the arm's binders while dropping constructor/keyword names.
+    /// A lexical-scope walk ascends EVERY enclosing binder, and in a DEEPLY-NESTED match (recursive-AST-walk
+    /// shape) the vast majority of the ~20 per-arm case probes conclude "binds nothing" — a reference to a
+    /// GLOBAL/prelude/CTOR name (`Some`, `None`, `+`) is bound by no arm, so it ran the whole
+    /// `match_arm_*_binds`/`guard_cond_*_binds` cascade at each of O(depth) enclosing arms before falling
+    /// through to the prelude (measured: the arm cascade was ~66% of resolve self-time, O(depth)-per-
+    /// reference on a depth-N nested match). This set lets `binder_in` fast-REJECT such a hop in O(1): if
+    /// `name` is not in the arm's binder-name set, no arm case can bind it, so return `None` without the
+    /// cascade. Excluding heads is what extends the fast-reject to CONSTRUCTOR-name references (`Some`/
+    /// `None` appear ONLY as pattern heads, so an all-atoms set would keep running the cascade for them —
+    /// leaving ctor-name references O(N²)). OVER-approximation is safe by construction — a name genuinely
+    /// bound is always in the set (a binder is a non-head pattern atom), so a real binding is never skipped;
+    /// a spurious extra name only forgoes the skip (runs the cascade, which returns the same result). Load-
+    /// time arm patterns are immutable (arena lists are immutable; desugars build fresh nodes with NEW ids
+    /// that are absent from this map → they take the cascade), so the load-time set stays a valid over-
+    /// approximation for the arm ids it holds.
     arm_pattern_names: crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashSet<String>>,
 
     /// Per-LET-BINDINGS-LIST binder index: `(bindings_list_occ, name) → the ASCENDING positions of that
@@ -5037,13 +5053,17 @@ fn build_scope_binders(
     out
 }
 
-/// Build the per-MATCH-ARM pattern-name over-approximation (`Db::arm_pattern_names`): for every match arm
-/// in the arena, the set of every NAME atom appearing in the arm's PATTERN region (all children except
-/// the body). A match arm is a tail element (other than the scrutinee) of a `(match …)` — the same shape
-/// [`is_binding_candidate`] recognizes for a match arm. The arm's binders (whole-scrutinee, variant/list/
-/// tuple/record/map/bin payload, guard-cond) are all written into the pattern, so the collected set is a
-/// SUPERSET of the names the arm can bind — an over-approximation that lets `binder_in` fast-reject a
-/// scope-walk hop whose `name` is absent, without running the ~20-case arm cascade.
+/// Build the per-MATCH-ARM binder-name over-approximation (`Db::arm_pattern_names`): for every match arm
+/// in the arena, the BINDER-POSITION name atoms of the arm's PATTERN region (all children except the body)
+/// — every name EXCEPT the HEAD (child 0) of each list form (see `collect_binder_names`). A match arm is a
+/// tail element (other than the scrutinee) of a `(match …)` — the same shape [`is_binding_candidate`]
+/// recognizes for a match arm. The arm's binders (whole-scrutinee, variant/list/tuple/record/map/bin
+/// payload, guard-cond) all sit in a NON-HEAD pattern position, so the collected set is a SUPERSET of the
+/// names the arm can bind — an over-approximation that lets `binder_in` fast-reject a scope-walk hop whose
+/// `name` is absent, without running the ~20-case arm cascade. Excluding heads drops constructor/keyword
+/// names (`Some`/`None`/`tuple`/…), extending the fast-reject to references to a CONSTRUCTOR name (which
+/// appear only as pattern heads) — the ctor-name references an all-atoms set would leave running the
+/// cascade O(N²) times on a deeply-nested match.
 ///
 /// The pattern region is "all children except the LAST": an unguarded arm is `(pattern body)` (child 0 =
 /// pattern) and a guarded arm is `((guard pat cond) body)` (child 0 = the guard, holding both pat and
@@ -5055,15 +5075,30 @@ fn build_arm_pattern_names(
     ast: &Arenas,
     parent: &[Option<StructId>],
 ) -> crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashSet<String>> {
-    // Collect every NAME atom in `node`'s subtree into `acc`.
-    fn collect_names(ast: &Arenas, node: StructId, acc: &mut crate::fxhash::FxHashSet<String>) {
-        if let Some(n) = ast.as_name(node) {
-            acc.insert(n.to_string());
-        }
+    // Collect the BINDER-POSITION name atoms of a pattern subtree into `acc` — every name EXCEPT the HEAD
+    // (child 0) of each list form. In a match pattern the head is ALWAYS a constructor / keyword / field
+    // name / segment type / map key (`Some` in `(Some x)`; `tuple`/`list`/`record`/`bin`/`map`/`guard`; the
+    // field name `x` in `(record (x a))`; the seg type `u8` in `(bin (u8 n))`; the key `k` in `(map (k v))`)
+    // and NEVER a binder — a binder is a bare whole-scrutinee name or a NON-head child (a ctor payload, a
+    // tuple/list element, a record field VALUE, a seg-binder, a map VALUE, a rest binder). So skipping heads
+    // keeps a safe SUPERSET of the arm's binders while EXCLUDING constructor names — extending the
+    // `arm_cannot_bind` fast-reject to references to a CONSTRUCTOR name (`Some`/`None`), which appear only as
+    // pattern heads and which the earlier all-atoms set still ran the cascade for (leaving ctor-name
+    // references O(N²) on a deeply-nested match). A bare-name pattern (a whole-scrutinee binder, not a list)
+    // is not a head, so it is kept as itself.
+    fn collect_binder_names(
+        ast: &Arenas,
+        node: StructId,
+        acc: &mut crate::fxhash::FxHashSet<String>,
+    ) {
         if let Struct::List(children) = ast.get(node) {
-            for &c in children.iter() {
-                collect_names(ast, c, acc);
+            // Skip child 0 (the head — a ctor/keyword/field-name/seg-type/map-key, never a binder); recurse
+            // the remaining children, where every binder lives.
+            for &c in children.iter().skip(1) {
+                collect_binder_names(ast, c, acc);
             }
+        } else if let Some(n) = ast.as_name(node) {
+            acc.insert(n.to_string());
         }
     }
 
@@ -5091,7 +5126,7 @@ fn build_arm_pattern_names(
         }
         let mut names: crate::fxhash::FxHashSet<String> = crate::fxhash::FxHashSet::default();
         for &c in &children[..children.len() - 1] {
-            collect_names(ast, c, &mut names);
+            collect_binder_names(ast, c, &mut names);
         }
         out.insert(form, names);
     }

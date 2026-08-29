@@ -1647,6 +1647,10 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if db.arm_cannot_bind(form, name) {
         return None;
     }
+    // Count entries into the arm cascade below — the noise-free signal that the head-excluding fast-reject
+    // above keeps cascade entries O(N) (not O(N²)) on a deeply-nested match (see `ARM_CASCADE_ENTRIES`).
+    #[cfg(test)]
+    crate::db::ARM_CASCADE_ENTRIES.with(|c| c.set(c.get() + 1));
     // Case 5: `form` is a MATCH ARM `(pattern body)`, ascended from `body`, and `pattern` is a bare
     // BINDER name (not a literal, not `_`) equal to `name` → the binder binds the whole scrutinee for
     // this arm's body. The bound value IS the scrutinee, so a reference resolves to the scrutinee
