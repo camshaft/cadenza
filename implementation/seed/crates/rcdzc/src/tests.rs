@@ -6125,91 +6125,14 @@ mod runtime_ops {
     // fits-i32-not-Int16 value. --case grades the reject code (all 6 PASS). In-range/runtime branch values are
     // unaffected — covered by the sibling run tests.)
 
-    #[test]
-    fn cdz_check_rejects_an_oversize_literal_in_a_runtime_if_branch_under_a_narrow_annotation() {
-        // A check-vs-emit gap: `(: (if c 10000 0) UInt8)` — a RUNTIME `if` (runtime condition `c`) with a
-        // bare out-of-range literal in a branch, under a narrow-width annotation — was ACCEPTED by `cdz
-        // check` while the EMIT path rejected it CDZ0302. `check`'s nested width-fault descent range-checked
-        // compound payloads (Sum/Tuple/List) but bailed on a runtime `if` (it folds to neither a
-        // `Resolved::Int` nor a `Core::ConstInt`), so an out-of-range branch literal slipped `check`. The fix
-        // descends BOTH live branches of a runtime `if` against the annotation width. Both the direct
-        // annotation form and the same literal reaching a narrow PARAMETER (`(f (if c 10000 0))` where
-        // `f : UInt8 → …`) now reject at check, agreeing with emit. Nested `if`s descend recursively.
-        // The SAME descent covers a runtime `match` (one body per arm, guarded on a runtime `Core::Match`).
-        let check_rejects = |src: &str| {
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            let d = diags
-                .iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
-                .unwrap_or_else(|| panic!("expected a check-level reject for: {src}"));
-            assert_eq!(
-                d.code.as_deref(),
-                Some("CDZ0302"),
-                "expected CDZ0302 for {src}, got: {}",
-                d.message
-            );
-        };
-        // Direct annotation on a runtime if.
-        check_rejects("(module m (def (f (: c Bool)) (: (if c 10000 0) UInt8)) (export f))");
-        // The same literal reaching a narrow PARAMETER through a runtime if.
-        check_rejects(
-            "(module m (def (g (: x UInt8)) x) (def (f (: c Bool)) (g (if c 10000 0))) (export f))",
-        );
-        // A NESTED runtime if — the descent recurses into the inner if's branches.
-        check_rejects(
-            "(module m (def (f (: c Bool) (: d Bool)) (: (if c (if d 10000 0) 0) UInt8)) (export f))",
-        );
-        // Negative literal in an unsigned annotation via a runtime if (the sign-flip CDZ0302 face).
-        check_rejects("(module m (def (f (: c Bool)) (: (if c -1 0) UInt8)) (export f))");
-        // The MATCH sibling: a RUNTIME `match` (runtime scrutinee) with an out-of-range literal in an arm
-        // body — the same gap + the same descent (one body per arm, guarded on a runtime `Core::Match`).
-        // Direct annotation and narrow-parameter forms.
-        check_rejects(
-            "(module m (def (f (: n Int64)) (: (match n (0 10000) (_ 0)) UInt8)) (export f))",
-        );
-        check_rejects(
-            "(module m (def (g (: x UInt8)) x) (def (f (: n Int64)) (g (match n (0 10000) (_ 0)))) (export f))",
-        );
-        // A DIRECT bare-literal argument to a narrow parameter — no `if`/`match` wrapper: `(f 300)` where
-        // `f : UInt8 → …`. The literal's range is checked against the callee's parameter width at the call
-        // site (the range-check reaches the param directly, not only through a runtime conditional).
-        check_rejects("(module m (def (f (: x UInt8)) x) (def (main) (f 300)) (export main))");
-        // TRANSITIVE through a two-call chain: `(f 300)` where `f` is UNANNOTATED and passes its arg to
-        // `g : UInt8` — so `g`'s param width is the SOLE narrowing source, threaded back through `f`'s
-        // inferred param to the literal at `main → f` (the `callee_param_ty` seeding). `f` MUST be
-        // unannotated: an explicit `(: x UInt8)` on `f` would narrow directly at `main → f`, so the test
-        // would pass even if the transitive threading failed — this genuinely exercises the chain (#1869 rev).
-        check_rejects(
-            "(module m (def (g (: y UInt8)) y) (def (f x) (g x)) (def (main) (f 300)) (export main))",
-        );
-
-        // NO OVER-REJECTION: fitting branch literals, a constant-condition if (folds to its taken branch),
-        // both-branches-fit, and a bare if with NO narrow context (stays Int64) must all pass check clean.
-        let check_clean = |src: &str| {
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            assert!(
-                diags
-                    .iter()
-                    .all(|d| d.severity != crate::abi::Severity::Error),
-                "expected NO check reject for: {src}\ngot: {diags:?}"
-            );
-        };
-        check_clean("(module m (def (f (: c Bool)) (: (if c 100 0) UInt8)) (export f))");
-        check_clean("(module m (def (f (: c Bool)) (: (if c 200 100) UInt8)) (export f))");
-        check_clean("(module m (def (f) (: (if true 100 0) UInt8)) (export f))");
-        check_clean("(module m (def (f (: c Bool)) (if c 10000 0)) (export f))");
-        // MATCH clean controls: fitting arms, and a bare match with no narrow context (stays Int64).
-        check_clean(
-            "(module m (def (f (: n Int64)) (: (match n (0 100) (_ 0)) UInt8)) (export f))",
-        );
-        check_clean("(module m (def (f (: n Int64)) (match n (0 10000) (_ 0))) (export f))");
-        // IN-RANGE direct + transitive: a fitting literal to a narrow param (direct, and through a two-call
-        // chain) must pass — the range check rejects only genuinely-out-of-range literals, not every arg.
-        check_clean("(module m (def (f (: x UInt8)) x) (def (main) (f 200)) (export main))");
-        check_clean(
-            "(module m (def (g (: y UInt8)) y) (def (f x) (g x)) (def (main) (f 200)) (export main))",
-        );
-    }
+    // (cdz_check_rejects_an_oversize_literal_in_a_runtime_if_branch_under_a_narrow_annotation migrated to
+    // corpus 06-numeric-model, the "`cdz check` agrees with EMIT on a runtime-if/match branch literal + a
+    // narrow parameter width" block: 8 CDZ0302 rejects — direct runtime-if annotation, narrow-param via
+    // runtime if, nested if, negative-in-unsigned, runtime-match arm (direct + narrow-param), direct bare
+    // literal to a narrow param, and the transitive two-call chain — plus 6 no-over-rejection controls that
+    // RUN (fitting if-branch, constant-condition fold, fitting narrow-param arg, fitting match arm, and two
+    // no-narrow-context large literals that stay Int64 → 10000). --case grades the reject codes + the run
+    // values (all verified PASS).)
 
     #[test]
     fn cdz_check_rejects_a_float32_overflowing_literal_in_a_runtime_if_or_match_branch() {
