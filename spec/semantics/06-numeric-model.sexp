@@ -13156,3 +13156,16 @@
   (call main (: 7 Int64)) (output (: 8 Int64))
   (call main (: -1 Int64)) (output (: -2 Int64))
   (live-objects 1))
+
+(case "unp2 native #list and #record patterns over UNTYPED scrutinees — the #5436 kind-completion of unp1"
+  (doc "Completes the untyped-scrutinee inference family: an unannotated param whose #list pattern shapes
+        its scrutinee type (sum of three inferred elements) and one whose #record pattern binds the
+        inferred field. n=7 → 10·12 + 7 = 127; n=-2 → 10·3 + (-2) = 28. Dual-path verified, hop
+        byte-idempotent. With unp1 (#tuple/#map) all four native kinds now drive inference.")
+  (input (do
+    (def (h xs) (match xs (#list(a b c) (+ a (+ b c))) (_ -1)))
+    (def (r p) (match p (#record((= x v)) v)))
+    (def (main (: n Int64)) (+ (* 10 (h #list(n 2 3))) (r #record((= x n)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 127 Int64))
+  (call main (: -2 Int64)) (output (: 28 Int64)))
