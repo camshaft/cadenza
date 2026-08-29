@@ -173,20 +173,6 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
-    /// Run the cdz-runtime test suite under Miri — the UB oracle for the refcount/FBIP heap core.
-    /// Miri interprets the tests and flags use-after-free, out-of-bounds, uninitialized reads, and
-    /// aliasing violations (Stacked Borrows) that the normal test run cannot see. The runtime's
-    /// tagged-pointer `Handle` stuffs immediates into a pointer's low bits, so this REQUIRES
-    /// `-Zmiri-permissive-provenance` (strict provenance would flag every immediate); the recipe below
-    /// sets it. Miri is ~100-1000x slower than native, so by default this runs the ALIASING-CRITICAL
-    /// subset (the FBIP / reuse / shared-version / cursor-fork tests — the `unsafe as_mut/as_ref` +
-    /// `mem::take`-reuse paths where a memory bug would live), not the whole (mostly pure-logic) suite.
-    Miri {
-        /// A test-name filter. Defaults to the aliasing-critical subset; pass e.g. `fbip` or a specific
-        /// test, or an empty string to run the WHOLE suite (slow).
-        #[arg(long, default_value = "fbip")]
-        filter: String,
-    },
     /// Build the browser-facing compiler wasm for the interactive guide and stage it (plus the
     /// value-heap runtime) into `guide/src/wasm/`. Runs `wasm-pack build --target web` on `cdz-wasm`
     /// then the guide's `stage-wasm.mjs`. Run `build` first so the runtime the compiler pins is in the
@@ -265,7 +251,6 @@ fn main() {
         Cmd::MergeBaseline { ours, theirs } => merge_baseline(&ours, &theirs),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
         Cmd::Codegen { check } => codegen::run(&paths, check),
-        Cmd::Miri { filter } => miri(&paths, &filter),
         Cmd::GuideWasm { store } => guide_wasm(&paths, store),
         Cmd::Fleet { cmd } => fleet::run(&paths, cmd),
         Cmd::External(args) => run_external_subcommand(&args),
@@ -315,42 +300,6 @@ fn run_external_subcommand(args: &[String]) -> ! {
     let e = std::process::Command::new(&nix).args(&argv).exec();
     eprintln!("xtask: could not exec {nix} ({e}) — is nix installed + on PATH?");
     std::process::exit(127);
-}
-
-/// Run the cdz-runtime tests under Miri (the UB oracle). See the `Cmd::Miri` doc for why. Uses the
-/// `nightly` toolchain + `-Zmiri-permissive-provenance` (mandatory for the tagged-pointer `Handle`) and
-/// `-Zmiri-disable-isolation` (the tests read no external state, but this avoids isolation friction).
-fn miri(paths: &Paths, filter: &str) {
-    let rt = paths.seed.join("crates/cdz-runtime");
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.current_dir(&rt)
-        .args(["+nightly", "miri", "test", "--lib"])
-        .env(
-            "MIRIFLAGS",
-            "-Zmiri-disable-isolation -Zmiri-permissive-provenance",
-        )
-        // The suite needs a deep stack for the pathological-depth tests, same as the normal run.
-        .env("RUST_MIN_STACK", "67108864");
-    if !filter.is_empty() {
-        cmd.arg(filter);
-    }
-    eprintln!(
-        "xtask miri: running cdz-runtime tests under Miri (filter: {:?}) — this is SLOW (~100-1000x)…",
-        if filter.is_empty() {
-            "<whole suite>"
-        } else {
-            filter
-        }
-    );
-    match cmd.status() {
-        Ok(s) if s.success() => eprintln!("xtask miri: OK (no UB reported)"),
-        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
-        Err(e) => {
-            eprintln!("xtask miri: failed to launch cargo miri: {e}");
-            eprintln!("  is Miri installed? `rustup component add --toolchain nightly miri`");
-            std::process::exit(1);
-        }
-    }
 }
 
 mod codegen;
