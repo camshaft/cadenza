@@ -410,6 +410,33 @@
             ./spec/semantics
           ];
         };
+        # crateCdzCheckSrc = seedTestSrc MINUS spec/semantics — the caching fast-path narrowing for the ONE
+        # whole-workspace localGate constituent (crateCdzCheck). MEASURED (v-nix caching push 2026-08-29): a
+        # 1-line corpus edit (spec/semantics/*.sexp — the HIGHEST-frequency fleet change) was rotating
+        # crate-cdz (gby9sksi->48j2v1a8) and rebuilding the whole first-party workspace + rerunning cdz tests,
+        # pure waste. crateCdzCheck runs `cargo build --workspace` (libs/bins only, NOT --all-targets) +
+        # `cargo clippy -p cdz --all-targets` + `cargo test -p cdz` — NONE of which read spec/semantics: there
+        # is NO build.rs and NO include_str!/include_bytes! of spec/semantics in any crate (verified), and cdz's
+        # own inline tests are corpus-independent (v-cml). The only spec/semantics readers are cadenza-syntax's
+        # corpus_roundtrip / markdown TESTS (via CARGO_MANIFEST_DIR at test-RUN time), which run under
+        # test-cadenza-syntax / the workspace testCheck — NOT here. So dropping spec/semantics from THIS check's
+        # src is coverage-neutral and stops corpus edits from rotating it. compiler-ml STAYS (cdz's run_ml_cli
+        # tests read implementation/compiler-ml/src at test-run time — a legit rotation). The `cargo build
+        # --workspace` STAYS too: cdz's run_rust_cli tests rustc-link the sibling cdz-num/cdz-rt rlibs the
+        # full-workspace build lays out (a bare `-p cdz` -> E0433) — do NOT split to per-crate crane (concierge
+        # ack notwithstanding: the split is unsafe for those tests; this surgical src-narrowing is the safe win).
+        crateCdzCheckSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates
+            ./implementation/compiler-ml
+            ./xtask
+            ./Cargo.toml
+            ./Cargo.lock
+            ./.cargo
+            ./rust-toolchain.toml
+          ];
+        };
         cargoWorkspaceCheck = { name, cargoCmd, src ? seedSrc, extraInputs ? [ ] }:
           pkgs.stdenvNoCC.mkDerivation {
             pname = name;
@@ -3913,7 +3940,10 @@
             crateCdzCheck = cargoWorkspaceCheck {
               name = "cargo-crate-cdz";
               cargoCmd = "cargo build --workspace --locked && cargo clippy -p cdz --all-targets --locked -- -D warnings && cargo test -p cdz --locked";
-              src = seedTestSrc;
+              # crateCdzCheckSrc = seedTestSrc MINUS spec/semantics (caching fast-path — see its binding note):
+              # a corpus edit no longer rotates this whole-workspace check. compiler-ml + all crate src + xtask
+              # stay (cdz's run_ml_cli/run_rust_cli tests + the workspace build need them).
+              src = crateCdzCheckSrc;
               extraInputs = [ pkgs.git ];
             };
             # cdz-default-features check (v-nix, gate-hardening for the default-only-arm class — v-ft-agreed,
@@ -4367,11 +4397,14 @@
             # Rust linking the sibling cdz-num/cdz-rt rlibs "beside the cdz bin", which only a full-workspace
             # build lays out (a bare `-p cdz` does NOT even emit libcdz_num.rlib — cdz uses cdz-num only
             # transitively via rcdzc → E0433). So crateCdzCheck does `cargo build --workspace` FIRST (lays
-            # every rlib) THEN `test -p cdz`, from seedTestSrc (crates+xtask+compiler-ml+spec/semantics; git
-            # for xtask fleet batch tests). cdz is the TOP crate (reruns on ~every edit anyway → tests-dir
-            # granularity is ~nil), so workspace-src costs ~nothing AND is DRIFT-FREE — a `--test`-exclusion
-            # list to keep it closure-scoped would silently drop a new cdz test (the coverage regression the
-            # parity guard forbids). Do NOT "fix" this back to a split.
+            # every rlib) THEN `test -p cdz`, from crateCdzCheckSrc (crates+xtask+compiler-ml; git for xtask
+            # fleet batch tests). cdz is the TOP crate (reruns on ~every edit anyway → tests-dir granularity is
+            # ~nil), so workspace-src costs ~nothing AND is DRIFT-FREE — a `--test`-exclusion list to keep it
+            # closure-scoped would silently drop a new cdz test (the coverage regression the parity guard
+            # forbids). Do NOT "fix" this back to a split. NOTE (v-nix caching push 2026-08-29): src is
+            # crateCdzCheckSrc = seedTestSrc MINUS spec/semantics — that corpus dir is a test-RUNTIME input for
+            # cadenza-syntax only (NOT a cdz build/test input), so dropping it stops the highest-frequency fleet
+            # change (corpus migrations) from rotating this whole-workspace check. See crateCdzCheckSrc's note.
             crate-cdz = crateCdzCheck;
             # cdz-default-features: exposed for fast-gate (crateChecks "cdz") + explicit `nix build`. NOT a
             # localGate constituent (crateCdzCheck's workspace build already covers default-features at the
