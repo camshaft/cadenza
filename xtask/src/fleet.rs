@@ -5661,14 +5661,19 @@ fn file_mtime_unix(path: &Path) -> Option<u64> {
 // convenience must never HARD-BLOCK a developer's gate on an fs hiccup).
 
 /// Max concurrent NON-priority (`vertical`) checks. Small by design — a full check is a whole build +
-/// gate; ~3 keeps the 64-core host usable while several verticals make progress. Tunable for a bigger/
-/// smaller host via `CDZ_CHECK_LEASE_MAX`.
+/// gate; the heaviest is gate-local (the 12-constituent required-set aggregate EVERY agent runs pre-merge).
+/// Lowered 3→2 (concierge+v-compiler-perf 2026-08-29: with the fleet RESUMED to ~28+ active agents,
+/// gate-local was UNCOMPLETABLE most of a session — even 3 concurrent full gate-locals crawled/were evicted
+/// under the daemon contention). 2 lets each concurrent heavy build get more of the daemon and actually
+/// COMPLETE instead of all thrashing. Tunable per-host via `CDZ_CHECK_LEASE_MAX`. NB this only bounds
+/// builds that go THROUGH the lease (`cargo xtask {check,gate,gate-local}` / `fleet with-lease`); a bare
+/// `nix build .#checks…` escapes it (the with-lease mandate + the reaper cover that class).
 fn check_lease_max() -> usize {
     std::env::var("CDZ_CHECK_LEASE_MAX")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(3)
+        .unwrap_or(2)
 }
 
 /// Per-HOLDER nix fan-out budget (cores) for a leased build. The check-lease caps the NUMBER of
@@ -20353,17 +20358,18 @@ branch refs/heads/fleet/trunk-tools
 
     #[test]
     fn check_lease_max_reads_env_with_sane_default() {
-        // Default is 3; a positive override parses; garbage/zero fall back to the default.
+        // Default is 2 (lowered from 3, 2026-08-29 gate-local starvation relief); a positive override
+        // parses; garbage/zero fall back to the default.
         // (Env is process-global; set+clear around the assert to avoid cross-test bleed.)
         // SAFETY: single-threaded test, no other thread reads the env concurrently.
         unsafe { std::env::remove_var("CDZ_CHECK_LEASE_MAX") };
-        assert_eq!(check_lease_max(), 3);
+        assert_eq!(check_lease_max(), 2);
         unsafe { std::env::set_var("CDZ_CHECK_LEASE_MAX", "5") };
         assert_eq!(check_lease_max(), 5);
         unsafe { std::env::set_var("CDZ_CHECK_LEASE_MAX", "0") };
-        assert_eq!(check_lease_max(), 3, "zero is rejected → default");
+        assert_eq!(check_lease_max(), 2, "zero is rejected → default");
         unsafe { std::env::set_var("CDZ_CHECK_LEASE_MAX", "nonsense") };
-        assert_eq!(check_lease_max(), 3, "garbage → default");
+        assert_eq!(check_lease_max(), 2, "garbage → default");
         unsafe { std::env::remove_var("CDZ_CHECK_LEASE_MAX") };
     }
 
