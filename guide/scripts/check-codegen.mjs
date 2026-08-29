@@ -16,21 +16,30 @@
 /// VACUOUS-PASS FLOOR (v-guide-infra discipline): ZERO fixtures discovered ⇒ FAIL loudly. A codegen gate
 /// that silently checks nothing (moved dir / broken glob) must not read green. Floor = 1.
 
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, delimiter } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const guideRoot = join(here, "..");
 const repoRoot = join(guideRoot, "..");
 const fixturesDir = join(guideRoot, "src/content/codegen/fixtures");
 
+// Find `name` on $PATH (pure node, no `which` dependency — the nix sandbox may lack one).
+function resolveOnPath(name) {
+  for (const d of (process.env.PATH || "").split(delimiter)) {
+    if (d && existsSync(join(d, name))) return join(d, name);
+  }
+  return null;
+}
+
 // ENGINE (cadenza-docs I5): render via the Rust xtask `xtask-codegen-guide` (the MAIN parser reads the .sexp
-// → binary AST → TSX), retiring the node chapterModel.ts. `cargo build -p …` falls through the cargo-shim.
-// Prefer the nix-provided prebuilt binary ($CDZ_XTASK_CODEGEN_GUIDE, v-nix standalone-derivation); else
-// build via cargo for local dev (the gate has rust but no cargo vendor, so it uses the prebuilt binary).
-let xtaskBin = process.env.CDZ_XTASK_CODEGEN_GUIDE;
+// → binary AST → TSX), retiring the node chapterModel.ts. Binary resolution mirrors codegen-chapters.mjs:
+// (1) explicit override env $CDZ_XTASK_CODEGEN_GUIDE; (2) `xtask-codegen-guide` on $PATH (v-nix's crane
+// `xtaskCodegenGuideBin` via nativeBuildInputs — the nix path, no cargo vendor needed); (3) `cargo build -p`
+// fallback for native dev (the `-p` form falls through the all-nix cargo-shim to real cargo).
+let xtaskBin = process.env.CDZ_XTASK_CODEGEN_GUIDE || resolveOnPath("xtask-codegen-guide");
 if (!xtaskBin) {
   try {
     execFileSync("cargo", ["build", "-p", "xtask-codegen-guide", "--quiet"], { cwd: repoRoot, stdio: "inherit" });
