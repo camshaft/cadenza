@@ -75,16 +75,52 @@ impl Trial {
     }
 }
 
-/// Encode a whole batch as a single binary-AST blob: `(batch <trial>…)`. This is the entire REQUEST —
-/// the oracle `Ast.decode`s it and iterates the children; there is no separate frame.
-pub fn encode_batch_request(trials: &[Trial]) -> Vec<u8> {
+/// One symbolic-equivalence trial (v-lean-oracle T2 / #5719): prove the ORIGINAL program and its
+/// `--target-cadenza` round-trip are functionally equivalent over ALL inputs. Unlike a [`Trial`] (which
+/// asserts a captured OUTPUT), an equiv trial carries only the two PROGRAMS — the oracle binds fresh
+/// symbolic input vars itself. Verdicts reuse the existing protocol: `(holds)` = proven-equivalent,
+/// `(skip <reason>)` = cannot-prove — where the reason distinguishes `equiv: boundary: …` (hit the
+/// incompleteness limit: let/match/collections/calls/recursion → degrade to the sampled cadenza-diff net)
+/// from `equiv: normalized-but-different` (both sides fully normalized yet differ = a STRONG suspected
+/// cadenza-backend miscompile to CONFIRM with a sampled run, then route to v-cadenza-backend).
+#[derive(Debug, Clone)]
+pub struct EquivTrial {
+    /// The original program AST — a self-contained `(do (def (main …) BODY) (export main))`.
+    pub orig: Arenas,
+    /// Its `--target-cadenza` round-trip program AST (`program1.ast` from the cadenza build).
+    pub cadenza: Arenas,
+}
+
+/// One item in a batch: either an output-assertion [`Trial`] or a symbolic-equivalence [`EquivTrial`].
+/// The oracle iterates batch children and emits one verdict per child IN ORDER, reusing the verdict
+/// protocol for both — so a batch may freely MIX the two kinds (an equiv node needs no decoder change).
+#[derive(Debug, Clone)]
+pub enum BatchItem {
+    Trial(Trial),
+    Equiv(EquivTrial),
+}
+
+/// Encode a batch of mixed [`BatchItem`]s as one `(batch <item>…)` binary-AST blob — the entire REQUEST
+/// (the oracle `Ast.decode`s it and iterates the children; there is no separate frame). Each item is a
+/// `(trial …)` or an `(equiv <P> <P'>)` node.
+pub fn encode_batch(items: &[BatchItem]) -> Vec<u8> {
     let mut b = Builder::new();
     let mut kids = vec![b.name("batch")];
-    for t in trials {
-        kids.push(build_trial(t, &mut b));
+    for it in items {
+        kids.push(match it {
+            BatchItem::Trial(t) => build_trial(t, &mut b),
+            BatchItem::Equiv(e) => build_equiv(e, &mut b),
+        });
     }
     let root = b.list(kids);
     cadenza_syntax::codec::encode(&b.finish(root))
+}
+
+/// Encode a batch of output-assertion trials (the original S4b path): a thin wrapper over
+/// [`encode_batch`], kept so existing trial-only callers are unchanged.
+pub fn encode_batch_request(trials: &[Trial]) -> Vec<u8> {
+    let items: Vec<BatchItem> = trials.iter().cloned().map(BatchItem::Trial).collect();
+    encode_batch(&items)
 }
 
 /// Build one `(trial <program> (args <v>…) (value <v>)|(trap "<reason>"))` node into builder `b`.
@@ -112,6 +148,17 @@ fn build_trial(t: &Trial, b: &mut Builder) -> StructId {
     };
 
     b.list(vec![head, prog, args_node, output_node])
+}
+
+/// Build one `(equiv <orig-program> <cadenza-roundtrip-program>)` node into builder `b` — the T2
+/// symbolic-equivalence trial (v-lean-oracle #5719). Head is the `equiv` name-leaf; child 0 = the
+/// original program AST, child 1 = its `--target-cadenza` round-trip. No args/output node: the oracle
+/// binds fresh symbolic input vars and proves equivalence for all inputs.
+fn build_equiv(e: &EquivTrial, b: &mut Builder) -> StructId {
+    let head = b.name("equiv");
+    let orig = graft(&e.orig, e.orig.root, b);
+    let cadenza = graft(&e.cadenza, e.cadenza.root, b);
+    b.list(vec![head, orig, cadenza])
 }
 
 /// Copy the subtree at `id` of `src` into builder `b`, returning its new id (structural graft — the AST
@@ -205,7 +252,21 @@ pub fn discover_oracle_check() -> Option<PathBuf> {
 /// invocation (read-all-stdin → one response), so this spawns a fresh process per batch — which is the
 /// async unit the pipeline overlaps (run this on a worker thread while the next batch compiles).
 pub fn judge_batch(oracle_bin: &Path, trials: &[Trial]) -> std::io::Result<Vec<Verdict>> {
-    let request = encode_batch_request(trials);
+    run_oracle(oracle_bin, &encode_batch_request(trials))
+}
+
+/// Judge a batch of MIXED [`BatchItem`]s (output-assertion trials and/or symbolic-equivalence equiv
+/// trials). Identical process protocol to [`judge_batch`] — one `--batch-stream` invocation, one
+/// `(verdicts …)` response, one verdict per item in order.
+pub fn judge_batch_items(oracle_bin: &Path, items: &[BatchItem]) -> std::io::Result<Vec<Verdict>> {
+    run_oracle(oracle_bin, &encode_batch(items))
+}
+
+/// Send an already-encoded `(batch …)` request blob to `oracle-check --batch-stream` and decode the
+/// `(verdicts …)` response. The shared tail of [`judge_batch`] / [`judge_batch_items`]: spawns a fresh
+/// process per batch (the async unit the pipeline overlaps — run on a worker thread while the next batch
+/// compiles), writes the request to stdin (drop → EOF), reads stdout, decodes.
+fn run_oracle(oracle_bin: &Path, request: &[u8]) -> std::io::Result<Vec<Verdict>> {
     let mut child = Command::new(oracle_bin)
         .arg("--batch-stream")
         .stdin(Stdio::piped())
@@ -214,7 +275,7 @@ pub fn judge_batch(oracle_bin: &Path, trials: &[Trial]) -> std::io::Result<Vec<V
         .spawn()?;
     {
         let mut stdin = child.stdin.take().expect("stdin was piped");
-        stdin.write_all(&request)?;
+        stdin.write_all(request)?;
     } // drop stdin → EOF, so the oracle's read-all-stdin returns
     let output = child.wait_with_output()?;
     if !output.status.success() {
@@ -311,6 +372,89 @@ mod tests {
         assert_eq!(a.as_name(output[0]), Some("value"));
         // A render that isn't a well-formed value → None (the caller skips the trial).
         assert!(RcdzcOutput::value_from_render("(( not balanced").is_none());
+    }
+
+    /// An `(equiv <orig> <cadenza-roundtrip>)` node encodes with head `equiv` and the two PROGRAM
+    /// children in order (no args/output node) — the T2 symbolic-equivalence wire shape (#5719).
+    #[test]
+    fn encode_equiv_builds_the_equiv_node() {
+        let orig = ast("(do (def (main (: n Int64)) (+ n 1)) (export main))");
+        let cadenza = ast("(do (def (main (: n Int64)) (+ 1 n)) (export main))");
+        let items = vec![BatchItem::Equiv(EquivTrial { orig, cadenza })];
+        let blob = encode_batch(&items);
+        let a = cadenza_syntax::codec::decode(&blob).expect("equiv batch decodes");
+        let Struct::List(kids) = a.get(a.root) else {
+            panic!("root not a list");
+        };
+        assert_eq!(a.as_name(kids[0]), Some("batch"));
+        assert_eq!(kids.len(), 2, "batch head + 1 equiv item");
+        let Struct::List(eq) = a.get(kids[1]) else {
+            panic!("equiv not a list");
+        };
+        assert_eq!(
+            a.as_name(eq[0]),
+            Some("equiv"),
+            "head is the equiv name-leaf"
+        );
+        assert_eq!(
+            eq.len(),
+            3,
+            "equiv head + 2 program children (no args/output)"
+        );
+        // Both children are programs — a `(do …)`-rooted list, not an atom.
+        for &child in &eq[1..] {
+            assert!(
+                matches!(a.get(child), Struct::List(_)),
+                "each equiv child is a program AST"
+            );
+        }
+    }
+
+    /// A batch may MIX a `(trial …)` and an `(equiv …)`; both appear as children in order (the oracle
+    /// emits one verdict per child, reusing the verdict protocol for both).
+    #[test]
+    fn encode_batch_mixes_trial_and_equiv() {
+        let items = vec![
+            BatchItem::Trial(Trial::main_0(
+                ast("(do (def (main) 42) (export main))"),
+                RcdzcOutput::Value(ast("42")),
+            )),
+            BatchItem::Equiv(EquivTrial {
+                orig: ast("(do (def (main) (+ 1 2)) (export main))"),
+                cadenza: ast("(do (def (main) 3) (export main))"),
+            }),
+        ];
+        let blob = encode_batch(&items);
+        let a = cadenza_syntax::codec::decode(&blob).expect("mixed batch decodes");
+        let Struct::List(kids) = a.get(a.root) else {
+            panic!("root not a list");
+        };
+        assert_eq!(a.as_name(kids[0]), Some("batch"));
+        assert_eq!(kids.len(), 3, "batch head + trial + equiv");
+        let Struct::List(t) = a.get(kids[1]) else {
+            panic!("first item not a list");
+        };
+        assert_eq!(a.as_name(t[0]), Some("trial"), "first child is the trial");
+        let Struct::List(e) = a.get(kids[2]) else {
+            panic!("second item not a list");
+        };
+        assert_eq!(
+            a.as_name(e[0]),
+            Some("equiv"),
+            "second child is the equiv node"
+        );
+        // The trial-only wrapper produces the identical bytes as the equivalent BatchItem list.
+        assert_eq!(
+            encode_batch_request(&[Trial::main_0(
+                ast("(do (def (main) 42) (export main))"),
+                RcdzcOutput::Value(ast("42")),
+            )]),
+            encode_batch(&[BatchItem::Trial(Trial::main_0(
+                ast("(do (def (main) 42) (export main))"),
+                RcdzcOutput::Value(ast("42")),
+            ))]),
+            "encode_batch_request is a thin wrapper over encode_batch"
+        );
     }
 
     /// A hand-built `(verdicts (holds) (mismatch "d") (skip "r"))` AST decodes to the three verdicts in
