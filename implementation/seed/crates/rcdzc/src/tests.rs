@@ -12995,7 +12995,6 @@ mod match_engine {
         );
     }
 
-    #[test]
     // (under_applying_a_unary_variant_constructor_is_a_type_error migrated to corpus 09-functions, the
     // low-arity mirror after the over-applying-a-constructor cases: `(Some)` → CDZ0201 (message "`Some` needs
     // its payload argument")(message "`(Some <value>)`") [generic payload omits the "carries" clause]; a
@@ -17507,7 +17506,6 @@ mod match_engine {
         }
     }
 
-    #[test]
     // (an_ill_formed_bin_form_is_rejected_cdz0220 migrated to corpus 16-binary-matching, the structural
     // well-formedness reject block after the CDZ0304 value-fit case: bit-fields not closing to a whole byte
     // → CDZ0220 (message "total 4 bits")(message "add 4 more bits to reach 1 byte"); a non-final unsized
@@ -17670,13 +17668,11 @@ mod match_engine {
         );
     }
 
-    #[test]
     // (a_bin_pattern_over_a_non_bytes_scrutinee_is_a_type_error migrated to corpus 16-binary-matching, in the
     // bin-pattern MATCH section: a `(bin …)` pattern over a definite non-Bytes scrutinee (Int64/String/List)
     // → CDZ0203 (message "`(bin …)` pattern matches a Bytes value")(message <scrutinee type>); + the
     // no-false-reject control (bin over a Bytes param is not a type error — it declines only on the
     // non-scalar-param boundary). --case grades the codes + messages + the bare declines.)
-    #[test]
     // (a_structural_pattern_over_a_mismatched_scrutinee_kind_is_a_type_error migrated to corpus
     // 05-compound-types, next to "a map pattern over a non-map scrutinee is a type error": a list/map/tuple
     // pattern over a definite scrutinee of a DIFFERENT kind → CDZ0203 (message "a List/Map/Tuple value")
@@ -18301,7 +18297,6 @@ mod match_engine {
         );
     }
 
-    #[test]
     // (a_bool_list_match_missing_a_lead_value_or_the_empty_arm_still_rejects migrated to corpus
     // 05-compound-types, the saturation-soundness reject block after the bool/ctor-lead-saturating cases:
     // a bool-lead match covering only one bool value → CDZ0210 (the other first-element value uncovered);
@@ -18823,7 +18818,6 @@ mod match_engine {
         );
     }
 
-    #[test]
     // (a_cross_width_nan_comparison_is_a_type_error migrated to corpus 06-numeric-model, the nan-comparison
     // type block in the NaN section: a cross-WIDTH nan comparison (Float32.nan vs Float64.nan / vs a Float64
     // literal, either order) → CDZ0301, exactly as the finite cross-width comparison; a nan vs a non-float →
@@ -20147,7 +20141,6 @@ mod match_engine {
             .expect("the erased-type-param scalar-compare component validates");
     }
 
-    #[test]
     // (a_cross_type_variant_pattern_is_rejected_not_type_confused was already fully covered by corpus
     // 05-compound-types (the cross-type variant-pattern section): "a match on a value of one sum type rejects
     // a pattern from a different sum type" (T value vs Option Some → CDZ0203), "a cross-type variant pattern
