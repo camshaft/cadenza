@@ -382,6 +382,68 @@ def cmpHolds (op : String) : Ordering → Bool
          | ">=" => o != .lt
          | _ => false
 
+/-- A distinct rank per `Value` constructor, so two DIFFERENT (non-float) constructors get a total order. -/
+def valRank : Value → Nat
+  | .int _ => 0 | .bool _ => 1 | .str _ => 2 | .char _ => 3 | .bytes _ => 4
+  | .float .. => 5 | .floatNan => 6 | .floatInf _ => 7 | .f64 _ => 8 | .unit => 9
+  | .some _ => 10 | .none => 11 | .ok _ => 12 | .err _ => 13 | .tuple _ => 14
+  | .list _ => 15 | .record _ => 16 | .set _ => 17 | .map _ => 18 | .variant .. => 19
+  | .closure .. => 20 | .poison _ => 21
+
+mutual
+/-- A total STRUCTURAL order over NON-FLOAT values, for CANONICALIZING a set/map with COMPOUND keys/
+elements. A set/map value is order-INSENSITIVE, so any CONSISTENT total order canonicalizes it (sort +
+dedupe); this recursive lexicographic order is consistent with structural `==`. `none` if a FLOAT (no total
+order threaded here — float-form-mixing / NaN) or a `closure`/`poison` is encountered → that key/element
+stays "unorderable" (a sound skip, as before). Different non-float constructors are ordered by `valRank`. -/
+partial def cmpValue (a b : Value) : Option Ordering :=
+  match a, b with
+  | .int x, .int y => some (compare x y)
+  | .bool x, .bool y => some (compare (x == true) (y == true))
+  | .str x, .str y => some (cmpBytes x y)
+  | .char x, .char y => some (cmpBytes x y)
+  | .bytes x, .bytes y => some (cmpBytes x y)
+  | .unit, .unit => some .eq
+  | .none, .none => some .eq
+  | .some x, .some y => cmpValue x y
+  | .ok x, .ok y => cmpValue x y
+  | .err x, .err y => cmpValue x y
+  | .tuple xs, .tuple ys => cmpValSeq xs ys 0
+  | .list xs, .list ys => cmpValSeq xs ys 0
+  | .set xs, .set ys => cmpValSeq xs ys 0
+  | .variant t1 p1, .variant t2 p2 => (match cmpBytes t1 t2 with | .eq => cmpValue p1 p2 | o => some o)
+  | .record fs, .record gs => cmpValFields fs gs 0
+  | .map xs, .map ys => cmpValMapEntries xs ys 0
+  | .float .., _ | .f64 _, _ | .floatNan, _ | .floatInf _, _ => none
+  | _, .float .. | _, .f64 _ | _, .floatNan | _, .floatInf _ => none
+  | .closure .., _ | _, .closure .. | .poison _, _ | _, .poison _ => none
+  | _, _ => some (compare (valRank a) (valRank b))
+
+/-- Lexicographic order over a value sequence; prefix-equal → the shorter sequence is less. -/
+partial def cmpValSeq (xs ys : Array Value) (i : Nat) : Option Ordering :=
+  if i < xs.size && i < ys.size then
+    match cmpValue (xs[i]!) (ys[i]!) with
+    | some .eq => cmpValSeq xs ys (i + 1)
+    | r => r
+  else some (compare xs.size ys.size)
+
+/-- Order sorted record fields lexicographically (key bytes, then value). -/
+partial def cmpValFields (fs gs : Array (ByteArray × Value)) (i : Nat) : Option Ordering :=
+  if i < fs.size && i < gs.size then
+    match cmpBytes (fs[i]!.1) (gs[i]!.1) with
+    | .eq => (match cmpValue (fs[i]!.2) (gs[i]!.2) with | some .eq => cmpValFields fs gs (i + 1) | r => r)
+    | o => some o
+  else some (compare fs.size gs.size)
+
+/-- Order sorted map entries lexicographically (key, then value). -/
+partial def cmpValMapEntries (xs ys : Array (Value × Value)) (i : Nat) : Option Ordering :=
+  if i < xs.size && i < ys.size then
+    match cmpValue (xs[i]!.1) (ys[i]!.1) with
+    | some .eq => (match cmpValue (xs[i]!.2) (ys[i]!.2) with | some .eq => cmpValMapEntries xs ys (i + 1) | r => r)
+    | r => r
+  else some (compare xs.size ys.size)
+end
+
 /-- ENV-AWARE operand-width inference: a `(: e T)` ascription gives its integer type; an arithmetic op is
 BigInt if EITHER operand is (BigInt is contagious — unbounded, no overflow); a qualified `((. BigInt …) …)`
 call is BigInt; and a bare-NAME operand consults its binding's stored `IntTy` (a param ascription or a
@@ -616,15 +678,17 @@ def qualHead? (m : Module) (children : Array Nat) : Option (ByteArray × ByteArr
 it), SORT by that order, then DEDUPE adjacent equals — the canonical Set form (spec: a Set renders as
 `(Set.of (list …sorted-unique))`). `none` if any element is unorderable (a compound/poison) → skip. -/
 def canonSet (elems : Array Value) : Option (Array Value) :=
-  if elems.all (fun e => (compareVals e e).isSome) then
-    let sorted := elems.qsort (fun a b => compareVals a b == some Ordering.lt)
+  -- `cmpValue` is a total STRUCTURAL order (also over COMPOUND elements — sets of tuples/lists/records/…);
+  -- `none` only on a float/closure/poison element (stays unorderable → skip).
+  if elems.all (fun e => (cmpValue e e).isSome) then
+    let sorted := elems.qsort (fun a b => cmpValue a b == some Ordering.lt)
     some (sorted.foldl (fun acc e => if acc.size > 0 && acc[acc.size - 1]! == e then acc else acc.push e) #[])
   else none
 
 /-- Canonicalize a Map's entries: require every KEY be orderable, SORT by key, dedupe by key (a later
 entry wins — the canonical Map form is sorted-by-key with unique keys). `none` on an unorderable key. -/
 def canonMap (entries : Array (Value × Value)) : Option (Array (Value × Value)) :=
-  if entries.all (fun e => (compareVals e.1 e.1).isSome) then
+  if entries.all (fun e => (cmpValue e.1 e.1).isSome) then
     -- LAST-insert-wins per key, in INSERTION order, THEN sort by key. Deduping BEFORE the sort makes the
     -- survivor independent of qsort stability — a duplicate key `(map (= n 1) (= n 2))` must keep the LAST
     -- value (2), not an arbitrary one (06-numeric cdzw19: last-insert-wins survives the stored-order replay).
@@ -632,7 +696,7 @@ def canonMap (entries : Array (Value × Value)) : Option (Array (Value × Value)
       match acc.findIdx? (fun a => a.1 == e.1) with
       | some i => acc.set! i e
       | none => acc.push e) #[]
-    some (deduped.qsort (fun a b => compareVals a.1 b.1 == some Ordering.lt))
+    some (deduped.qsort (fun a b => cmpValue a.1 b.1 == some Ordering.lt))
   else none
 
 /-- `Map.insert m k v`: replace any existing entry for `k`, then add `k ↦ v` (canonicalized by `canonMap`). -/
@@ -1471,6 +1535,15 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
           | some (.trap t), _ | _, some (.trap t) => .trap t
           | some .diverges, _ | _, some .diverges => .diverges
           | _, _ => .unsupported "Set.contains: operand")
+  else if is "Set" "insert" then
+    -- add an element, re-canonicalize (sort + dedupe) — the Set twin of Map.insert.
+    some (match a1, a2 with
+          | some (.value (.set es)), some (.value x) =>
+            (match canonSet (es.push x) with | some s => .value (.set s) | none => .unsupported "Set.insert: unorderable element")
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "Set.insert: operand")
   else if is "Map" "lookup" then
     some (match a1, a2 with
           | some (.value (.map es)), some (.value k) =>
