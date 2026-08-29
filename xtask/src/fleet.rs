@@ -1229,6 +1229,70 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
 
 // ── up / down / status ────────────────────────────────────────────────────────────────────────
 
+/// The desired per-2min user-crontab line for the CPU-monitor daemon (#5571), tagged with the
+/// `# fleet:cpu-monitor` marker so [`reconcile_cpu_monitor_cron`] can find/heal it. Runs the HUB copy of
+/// `cpu-monitor.sh` (materialized by `up`), silently (a sampler tick never emits cron mail).
+fn cpu_monitor_cron_line(hub_script: &str) -> String {
+    format!("*/2 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:cpu-monitor")
+}
+
+/// Pure reconcile for the CPU-monitor crontab: given the CURRENT `crontab -l` text and the DESIRED line,
+/// return `Some(new_crontab)` iff a write is needed, or `None` if the desired line is already present
+/// verbatim (idempotent no-op). DRIFT-HEALS: any existing `# fleet:cpu-monitor` line (e.g. a stale hub
+/// path from a prior worktree) is dropped and replaced with `desired`, while EVERY other crontab entry is
+/// preserved in order. Split out so the "when do we rewrite the crontab" policy is unit-tested without
+/// touching the real crontab. Trailing newline included (crontab expects a final newline).
+fn reconcile_cpu_monitor_cron(current: &str, desired: &str) -> Option<String> {
+    // Already present verbatim → no-op (don't rewrite the crontab needlessly).
+    if current.lines().any(|l| l == desired) {
+        return None;
+    }
+    // Keep every non-marker line in order, then append the desired marker line (heal/install).
+    let mut kept: Vec<&str> = current
+        .lines()
+        .filter(|l| !l.contains("# fleet:cpu-monitor"))
+        .collect();
+    kept.push(desired);
+    let mut out = kept.join("\n");
+    out.push('\n');
+    Some(out)
+}
+
+/// Ensure the `# fleet:cpu-monitor` per-2min user-crontab entry exists + points at THIS hub's
+/// `cpu-monitor.sh` (concierge-greenlit fold-into-`up` 2026-08-29). Makes the CPU-monitor daemon survive
+/// relaunches automatically — the same re-arm-on-relaunch discipline as the other fleet self-crons —
+/// instead of a manual host-recipe re-add. Idempotent (verbatim-present → no write) + drift-heals a stale
+/// entry. FAIL-OPEN: no `crontab` binary, no materialized script yet, or ANY error → skip silently (never
+/// block `fleet up`). Runs AFTER `materialize_source`, so the hub `cpu-monitor.sh` is already in place.
+fn ensure_cpu_monitor_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("cpu-monitor.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let hub_script = script.display().to_string();
+    let desired = cpu_monitor_cron_line(&hub_script);
+    // Current crontab (empty string if the user has none). No `crontab` binary → fail-open skip.
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return,
+    };
+    let Some(new_tab) = reconcile_cpu_monitor_cron(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    // Install via `crontab -` (reads the new table from stdin). Fail-open on any spawn/write error.
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 fn up(fleet: &Fleet) {
     // Materialize the tracked source (role bodies + contract + window.sh) into the runtime dir so
     // window.sh has a stable hub-anchored path. Then reconcile the tracked ROSTER into the runtime
@@ -1239,6 +1303,9 @@ fn up(fleet: &Fleet) {
     fleet.materialize_source();
     register_merge_drivers(fleet);
     install_git_hooks(fleet);
+    // Re-arm the CPU-monitor user-crontab (idempotent + drift-heals) so the daemon survives relaunches
+    // without a manual host-recipe re-add — same re-arm-on-relaunch discipline as the other self-crons.
+    ensure_cpu_monitor_cron(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -15610,6 +15677,40 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             argv.get(mj + 1).map(String::as_str),
             Some(NIX_GATE_MAX_JOBS),
             "--max-jobs must be immediately followed by NIX_GATE_MAX_JOBS"
+        );
+    }
+
+    #[test]
+    fn reconcile_cpu_monitor_cron_installs_heals_and_is_idempotent() {
+        let want = cpu_monitor_cron_line("/hub/.claude/fleet/cpu-monitor.sh");
+        // Empty crontab → install the line (with a trailing newline for crontab).
+        let out = reconcile_cpu_monitor_cron("", &want).expect("installs when absent");
+        assert!(out.contains(&want));
+        assert!(out.ends_with('\n'));
+        // Verbatim already present → no-op (None), so `up` never rewrites the crontab needlessly.
+        assert!(reconcile_cpu_monitor_cron(&format!("{want}\n"), &want).is_none());
+        // Unrelated entries preserved + a STALE fleet:cpu-monitor line (old hub path) drift-healed.
+        let existing = "0 5 * * * /usr/bin/backup\n\
+                        */2 * * * * bash /OLD/hub/cpu-monitor.sh >/dev/null 2>&1 # fleet:cpu-monitor\n\
+                        @reboot /usr/bin/thing";
+        let healed = reconcile_cpu_monitor_cron(existing, &want).expect("heals a stale entry");
+        assert!(
+            healed.contains("/usr/bin/backup"),
+            "preserves unrelated entries"
+        );
+        assert!(
+            healed.contains("@reboot /usr/bin/thing"),
+            "preserves unrelated entries"
+        );
+        assert!(healed.contains(&want), "installs the current hub path");
+        assert!(!healed.contains("/OLD/hub/"), "drops the stale hub path");
+        assert_eq!(
+            healed
+                .lines()
+                .filter(|l| l.contains("# fleet:cpu-monitor"))
+                .count(),
+            1,
+            "exactly one fleet:cpu-monitor line after heal (no duplicates)"
         );
     }
 
