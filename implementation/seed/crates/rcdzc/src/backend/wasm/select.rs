@@ -2831,8 +2831,31 @@ fn binder_has_dup_site_in(
 /// Used by `collect_heap_let_binders` to find nested `let`s; positions do not matter here. Also drives
 /// `layout::collect_closure_call_sigs` (the extra closure-application functype collection) — hence `pub`.
 pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
+    // Read the child occurrence ids WITHOUT cloning the whole `Core` node. During emit the tree is fully
+    // lowered/memoized, so the common path BORROWS the memoized `Core` from the column and extracts its
+    // Copy `StructId` children by reference (`child_ids_of`) — eliminating the per-node `core_of` clone
+    // that dominated the compiler-ml provider emit (a `cdz test compiler-ml` perf profile showed
+    // `Core::clone` + its malloc/free churn as the top self-time, driven by `core_of` under this walk and
+    // its siblings). Falls back to the cloning `core_of` only when a `core_override` is installed (the O2+
+    // pass seam, which `core_of` itself prefers) or the node is not yet in the column — so the child set is
+    // byte-identical to the prior `match core_of(db, id)`.
     let mut cs: Vec<StructId> = Vec::new();
-    match core_of(db, id) {
+    if db.core_override.is_empty()
+        && let crate::arena::Slot::Filled(c) = db.core.get(id)
+    {
+        child_ids_of(c, &mut cs);
+        return cs;
+    }
+    let c = core_of(db, id);
+    child_ids_of(&c, &mut cs);
+    cs
+}
+
+/// Extract the child occurrence ids of `c` into `cs` BY REFERENCE (no clone). The child set of each `Core`
+/// variant — the sub-expression `StructId`s, all `Copy` — for the emit-side tree walks. Split out of
+/// [`core_child_ids`] so the memoized-column borrow fast path there needs no `Core` clone.
+fn child_ids_of(c: &Core, cs: &mut Vec<StructId>) {
+    match c {
         Core::ListLen { operand }
         | Core::BytesLen { operand }
         | Core::StrScalarLen { operand }
@@ -2866,7 +2889,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::ValueEncode { value: operand, .. }
         | Core::ValueDecode { bytes: operand, .. }
         | Core::Convert { operand, .. }
-        | Core::Not { operand } => cs.push(operand),
+        | Core::Not { operand } => cs.push(*operand),
         // A `BinIntRead`/`BinRestRead` reads `bytes`, plus a `off_plus` size-sum child (§4a dynamic offset).
         Core::BinIntRead {
             bytes, off_plus, ..
@@ -2874,9 +2897,9 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::BinRestRead {
             bytes, off_plus, ..
         } => {
-            cs.push(bytes);
+            cs.push(*bytes);
             if let Some(op) = off_plus {
-                cs.push(op);
+                cs.push(*op);
             }
         }
         // A `BinSizedRead` has children: the sliced bytes, the runtime length read, and (§4a) `off_plus`.
@@ -2886,10 +2909,10 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
             len,
             ..
         } => {
-            cs.push(bytes);
-            cs.push(len);
+            cs.push(*bytes);
+            cs.push(*len);
             if let Some(op) = off_plus {
-                cs.push(op);
+                cs.push(*op);
             }
         }
         Core::ListAt {
@@ -2937,38 +2960,38 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::StrCmp { lhs: a, rhs: b, .. }
         | Core::FloatCompare { lhs: a, rhs: b, .. }
         | Core::And { lhs: a, rhs: b, .. } => {
-            cs.push(a);
-            cs.push(b);
+            cs.push(*a);
+            cs.push(*b);
         }
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
-            cs.push(bytes);
-            cs.push(start);
-            cs.push(len);
+            cs.push(*bytes);
+            cs.push(*start);
+            cs.push(*len);
         }
         Core::StrSlice {
             string, start, end, ..
         } => {
-            cs.push(string);
-            cs.push(start);
-            cs.push(end);
+            cs.push(*string);
+            cs.push(*start);
+            cs.push(*end);
         }
         Core::ListUpdate { list, index, elem } => {
-            cs.push(list);
-            cs.push(index);
-            cs.push(elem);
+            cs.push(*list);
+            cs.push(*index);
+            cs.push(*elem);
         }
         Core::MapInsert { map, key, val, .. } => {
-            cs.push(map);
-            cs.push(key);
-            cs.push(val);
+            cs.push(*map);
+            cs.push(*key);
+            cs.push(*val);
         }
         Core::Tuple { elems }
         | Core::ListNew { elems }
         | Core::BytesOf { elems }
         | Core::SetOf { elems, .. } => cs.extend(elems.iter().copied()),
-        Core::SumNew { payloads, .. } => cs.extend(payloads),
+        Core::SumNew { payloads, .. } => cs.extend(payloads.iter().copied()),
         Core::Record { fields } => cs.extend(fields.values().copied()),
         Core::MapNew { entries, .. } => {
             for (k, v) in entries.iter().copied() {
@@ -2978,31 +3001,31 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         }
         Core::BinBuild { segs } => cs.extend(segs.iter().map(|s| s.value)),
         Core::BinBitsBuild { fields } => cs.extend(fields.iter().map(|f| f.value)),
-        Core::Call { args, .. } | Core::HostCall { args, .. } => cs.extend(args),
+        Core::Call { args, .. } | Core::HostCall { args, .. } => cs.extend(args.iter().copied()),
         Core::CallClosure { closure, args } => {
-            cs.push(closure);
-            cs.extend(args);
+            cs.push(*closure);
+            cs.extend(args.iter().copied());
         }
-        Core::Closure { captures, .. } => cs.extend(captures),
+        Core::Closure { captures, .. } => cs.extend(captures.iter().copied()),
         Core::Seq { stmts, tail } => {
-            cs.extend(stmts);
-            cs.push(tail);
+            cs.extend(stmts.iter().copied());
+            cs.push(*tail);
         }
         // A boundary block's child is its body; a break's child is its value.
-        Core::Block { body, .. } => cs.push(body),
-        Core::Break { value } => cs.push(value),
+        Core::Block { body, .. } => cs.push(*body),
+        Core::Break { value } => cs.push(*value),
         Core::Let { bindings, body } => {
             cs.extend(bindings.iter().map(|(_, v)| *v));
-            cs.push(body);
+            cs.push(*body);
         }
         Core::If { cond, then_, else_ } => {
-            cs.push(cond);
-            cs.push(then_);
-            cs.push(else_);
+            cs.push(*cond);
+            cs.push(*then_);
+            cs.push(*else_);
         }
         Core::Match { scrutinee, arms } => {
-            cs.push(scrutinee);
-            for a in &arms {
+            cs.push(*scrutinee);
+            for a in arms {
                 if let Some(g) = a.guard {
                     cs.push(g);
                 }
@@ -3010,8 +3033,8 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
             }
         }
         Core::MatchList { scrutinee, arms } => {
-            cs.push(scrutinee);
-            for a in &arms {
+            cs.push(*scrutinee);
+            for a in arms {
                 if let Some(g) = a.guard {
                     cs.push(g);
                 }
@@ -3019,8 +3042,8 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
             }
         }
         Core::MatchSum { scrutinee, root } => {
-            cs.push(scrutinee);
-            cont_child_ids(&root, &mut cs);
+            cs.push(*scrutinee);
+            cont_child_ids(root, cs);
         }
         Core::LocalRef { .. }
         | Core::Param { .. }
@@ -3040,7 +3063,6 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::Captured { .. }
         | Core::Poison(_) => {}
     }
-    cs
 }
 
 /// Collect the body/guard/`cond` occurrence ids of a sum-match continuation (the arms `core_child_ids`
