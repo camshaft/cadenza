@@ -29,6 +29,10 @@ inductive Outcome where
   | trap (kind : String)
   | diverges
   | unsupported (reason : String)
+  -- a `?`/`try` short-circuit in flight: the enclosing fallible function must abruptly RETURN this
+  -- value (an `Err e` / `None`). Propagates like a trap through every combinator until it reaches the
+  -- FUNCTION BOUNDARY (evalCall / applyClosure / execute), where it becomes the function's `.value`.
+  | errReturn (v : Value)
   deriving Inhabited, BEq
 
 namespace Eval
@@ -253,6 +257,21 @@ partial def mentionsFloat32? (m : Module) (i : Nat) : Bool :=
     || cs.any (mentionsFloat32? m)
   | _ => false
 
+/-- Does the subtree at `i` contain a `(try …)` whose boundary is THIS function (a `?` that would
+short-circuit here)? Used to make a `let` binding whose value contains a `?` EAGER: the `?` short-circuit
+is control flow that fires when the binding is reached, even if the bound name is never forced (the oracle
+otherwise binds LAZILY). Does NOT descend into a nested `(fn …)` — an inner closure's `?` binds to that
+closure's boundary, not this one (and building the closure runs no `?`). -/
+partial def mentionsTry? (m : Module) (i : Nat) : Bool :=
+  match m.nodes[i]? with
+  | some (Node.list cs) =>
+    match m.headName? (Node.list cs) with
+    | some h => if h == "try".toUTF8 then true
+                else if h == "fn".toUTF8 then false
+                else cs.any (mentionsTry? m)
+    | none => cs.any (mentionsTry? m)
+  | _ => false
+
 /-- The recognized binary arithmetic operator heads. -/
 def arithOps : List String := ["+", "-", "*", "/", "%"]
 
@@ -383,6 +402,11 @@ def outcomeToValue : Outcome → Value
   | .trap k => .poison (.trap k)
   | .diverges => .poison .diverges
   | .unsupported r => .poison (.unsupported r)
+  -- a `?` short-circuit reaching a LAZY store position (e.g. a `(try …)` as a tuple/record element, or a
+  -- non-try-containing binding) is an unmodeled control-flow-in-a-lazy-slot shape → a poison (sound skip
+  -- if ever observed). A try in a STRICT position (list element #5194, let binding, fn body) short-circuits
+  -- eagerly and never reaches here.
+  | .errReturn _ => .poison (.unsupported "try short-circuit reached a lazy element position (not modeled)")
 
 /-- SHALLOW observation (a projection reads one field/element): a TOP-LEVEL poison surfaces its
 outcome; any other value is returned as-is — a nested compound's inner poisons stay deferred until they
@@ -839,6 +863,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         else if h == "if".toUTF8 then evalIf m env ty fuel children
         else if h == ":".toUTF8 then evalAscribe m env ty fuel children
         else if h == "fn".toUTF8 then evalFn m env fuel children
+        else if h == "try".toUTF8 then evalTry m env fuel children
         else if (env.lookup? h).isSome then
           -- the head is a BOUND local — an application of that binding. If it forces to a CLOSURE,
           -- apply it; otherwise (a non-function value applied) it is not modeled → skip.
@@ -1031,8 +1056,12 @@ partial def evalLet (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children
     match m.nodes[bindingsId]? with
     | some (Node.list pairs) =>
       -- Extend the env LAZILY: each binding a thunk capturing the env-so-far (sequential — a later
-      -- binding sees the earlier). A binding is evaluated only when its variable is forced.
-      let rec extend (env : Env) (ps : List Nat) : Except String Env :=
+      -- binding sees the earlier). A binding is evaluated only when its variable is forced — EXCEPT a
+      -- binding whose value contains a `?`/`try` (mentionsTry?), which is EAGER: the `?` short-circuit is
+      -- control flow that fires at the binding even if the name is never forced. `.error` carries an
+      -- Outcome — `.errReturn ev` short-circuits the whole `let` (→ the fn boundary), `.unsupported` a
+      -- malformed binding.
+      let rec extend (env : Env) (ps : List Nat) : Except Outcome Env :=
         match ps with
         | [] => .ok env
         | pid :: rest =>
@@ -1049,13 +1078,23 @@ partial def evalLet (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children
                 -- so a binding whose VALUE is arithmetic over PRIOR BigInt let-vars (`q = (/ n d)`) also
                 -- infers BigInt — the chain that fixes the multi-limb division identity (06-numeric 0215/0255).
                 let bindTy := (operandTyEnv? m env vId).filter (fun t => t.width == .big)
-                extend ((nm, (Thunk.mk (fun _ => evalNode m captured defaultIntTy fuel vId)), bindTy) :: env) rest
-              | none => .error "eval: let binding target is not a name"
-            | _, _ => .error "eval: malformed let binding pair"
-          | _ => .error "eval: malformed let binding"
+                let lazyThunk := Thunk.mk (fun _ => evalNode m captured defaultIntTy fuel vId)
+                if mentionsTry? m vId then
+                  -- EAGER: fire the `?`. errReturn → short-circuit the let; a value → bind it (already
+                  -- forced); a trap/diverges/unsupported → fall back to a LAZY thunk (do NOT force a pure
+                  -- trap for an unused binding — only the `?` control flow needs eagerness).
+                  match evalNode m captured defaultIntTy fuel vId with
+                  | .errReturn ev => .error (.errReturn ev)
+                  | .value v => extend ((nm, (Thunk.mk (fun _ => .value v)), bindTy) :: env) rest
+                  | _ => extend ((nm, lazyThunk, bindTy) :: env) rest
+                else
+                  extend ((nm, lazyThunk, bindTy) :: env) rest
+              | none => .error (.unsupported "eval: let binding target is not a name")
+            | _, _ => .error (.unsupported "eval: malformed let binding pair")
+          | _ => .error (.unsupported "eval: malformed let binding")
       match extend env pairs.toList with
       | .ok env' => evalNode m env' ty fuel bodyId
-      | .error msg => .unsupported msg
+      | .error o => o
     | _ => .unsupported "eval: let bindings are not a list"
   | _, _ => .unsupported "eval: malformed let"
 
@@ -1122,6 +1161,8 @@ partial def evalArith (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : S
       | _, .diverges => .diverges
       | .trap t, _ => .trap t
       | _, .trap t => .trap t
+      | .errReturn v, _ => .errReturn v
+      | _, .errReturn v => .errReturn v
       | .value va, .value vb =>
         match va, vb with
         | .int a, .int b => evalArithOp op a b opTy
@@ -1154,6 +1195,8 @@ partial def evalBitwise (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op :
       | _, .diverges => .diverges
       | .trap t, _ => .trap t
       | _, .trap t => .trap t
+      | .errReturn v, _ => .errReturn v
+      | _, .errReturn v => .errReturn v
       | .value (.int a), .value (.int b) => evalBitOp op a b opTy
       | _, _ => .unsupported "eval: non-integer operand to bitwise/shift"
   | _, _ => .unsupported s!"eval: malformed {op}"
@@ -1166,6 +1209,25 @@ partial def evalUnaryCtor (m : Module) (env : Env) (fuel : Nat) (children : Arra
   match children[1]? with
   | some eId => .value (wrap (outcomeToValue (evalNode m env defaultIntTy fuel eId)))
   | none => .unsupported "eval: malformed unary constructor"
+
+/-- `(try E)` (the `?` operator): evaluate the fallible operand `E` and either UNWRAP its success payload
+or SHORT-CIRCUIT the enclosing fallible function with its failure (§4 boundary). `Ok v`/`Some v` → `v`;
+`Err e` → `.errReturn (Err e)`; `None` → `.errReturn None` — the errReturn propagates up to the function
+boundary (evalCall/applyClosure/execute), which turns it into the function's `.value`. The unwrapped/failed
+payload stays as-is (a lazy `poison` payload is not forced here — `?` inspects only the Ok/Err discriminant).
+A non-Option/Result operand is a type error the compiler rejects (sound skip); the operand's own
+trap/diverges/errReturn propagates. -/
+partial def evalTry (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  match children[1]? with
+  | some eId =>
+    match evalNode m env defaultIntTy fuel eId with
+    | .value (.ok v) => .value v
+    | .value (.some v) => .value v
+    | .value (.err e) => .errReturn (.err e)
+    | .value .none => .errReturn .none
+    | .value _ => .unsupported "eval: try operand is not an Option/Result value"
+    | other => other
+  | none => .unsupported "eval: malformed try"
 
 /-- `(Set.of (list e…))` = `((. Set of) (list e…))` — evaluate the list argument, then canonicalize its
 elements (sort + dedupe) into a Set value. A non-list arg or an unorderable element → skip. -/
@@ -1213,7 +1275,11 @@ partial def evalCall (m : Module) (env : Env) (fuel : Nat) (paramSpecs : Array N
     let args := children.extract 1 children.size
     let bindings := (paramSpecs.zip args).filterMap (fun (specId, argId) =>
       (paramSpec? m specId).map (fun (nm, ty) => (nm, (Thunk.mk (fun _ => evalNode m env defaultIntTy fuel' argId)), ty)))
-    if bindings.size == paramSpecs.size then evalNode m bindings.toList defaultIntTy fuel' bodyId
+    if bindings.size == paramSpecs.size then
+      -- FUNCTION BOUNDARY: a `?`/`try` short-circuit (errReturn) from the body becomes this call's value.
+      (match evalNode m bindings.toList defaultIntTy fuel' bodyId with
+       | .errReturn ev => .value ev
+       | o => o)
     else .unsupported "eval: call has a malformed parameter spec"
 
 /-- `(fn (param…) body)` → a closure value capturing the CURRENT env (each binding forced now to a value
@@ -1241,7 +1307,11 @@ partial def applyClosure (m : Module) (env : Env) (fuel : Nat) (params : Array N
       let argBindings : Env := (params.zip args).toList.filterMap (fun (specId, argId) =>
         (paramSpec? m specId).map (fun (nm, ty) => (nm, (Thunk.mk (fun _ => evalNode m env defaultIntTy fuel' argId)), ty)))
       let capBindings : Env := cap.map (fun (nm, v) => (nm, (Thunk.mk (fun _ => observeShallow v)), Option.none))
-      if argBindings.length == params.size then evalNode m (argBindings ++ capBindings) defaultIntTy fuel' body
+      if argBindings.length == params.size then
+        -- FUNCTION BOUNDARY: a `?`/`try` short-circuit from the closure body becomes the application's value.
+        (match evalNode m (argBindings ++ capBindings) defaultIntTy fuel' body with
+         | .errReturn ev => .value ev
+         | o => o)
       else .unsupported "eval: closure has a malformed parameter spec"
 
 /-- Function-FREE collection query/update module fns (flat `((. Mod fn) args…)`): `List.len`,
@@ -1472,6 +1542,8 @@ partial def evalBinValues (m : Module) (env : Env) (fuel : Nat) (aId bId : Nat)
   | _, .diverges => .diverges
   | .trap t, _ => .trap t
   | _, .trap t => .trap t
+  | .errReturn v, _ => .errReturn v
+  | _, .errReturn v => .errReturn v
   | .value va, .value vb =>
     -- comparing INSPECTS both operands fully → observe deeply so a deferred poison (a trapping compound
     -- element) surfaces its trap rather than being compared as data (spec observation rule).
@@ -1968,6 +2040,8 @@ def execute (m : Ast.Module) (args : Array Value) : Outcome :=
         -- element of a returned compound) surfaces its trap at the output boundary.
         match Eval.evalNode m bindings.toList Eval.defaultIntTy Eval.defaultFuel bodyId with
         | .value v => Eval.observeDeep v
+        -- main IS the fallible boundary when a top-level `?` short-circuits its body → return the Err/None.
+        | .errReturn ev => Eval.observeDeep ev
         | other => other
   | none => .unsupported "execute: program is not a (do (def (main …) BODY) (export main)) form"
 

@@ -268,6 +268,9 @@ def checkTrial (prog : Module) (ot : Module) (t : OTrial) : Verdict :=
     | .value _ => .mismatch s!"expected trap {kind}, got a value"
     | .unsupported r => .skip r
     | .diverges => .skip "diverges"
+    -- a `?` short-circuit that reached the top level unconverted = a `?` with no fallible fn boundary
+    -- (a compile error the oracle doesn't reject) → a sound skip, never a spurious verdict.
+    | .errReturn _ => .skip "unbounded ? short-circuit (no fallible function boundary) — not modeled"
   | .value node =>
     match outcome with
     | .value v =>
@@ -277,6 +280,7 @@ def checkTrial (prog : Module) (ot : Module) (t : OTrial) : Verdict :=
     | .trap k => .mismatch s!"expected a value, got trap {k}"
     | .unsupported r => .skip r
     | .diverges => .skip "diverges"
+    | .errReturn _ => .skip "unbounded ? short-circuit (no fallible function boundary) — not modeled"
 
 /-- Assert every trial; returns the verdicts in order. -/
 def check (prog : Module) (ot : Module) : Except String (Array Verdict) := do

@@ -53,6 +53,8 @@ def firstDiff (a b : ByteArray) : Option Nat :=
 /-- The realized-coverage category of a reduce `Outcome` (for the coverage report). -/
 def outcomeCategory : Oracle.Outcome → String
   | .value _ => "value" | .trap _ => "trap" | .diverges => "diverges" | .unsupported _ => "unsupported"
+  -- a `?` short-circuit never reaches the top level (the fn boundary converts it) → bucket as unsupported
+  | .errReturn _ => "unsupported"
 
 /-- Check one corpus module: AST byte round-trip (L0.2), scalar-value round-trip over its leaves
 (L0.3), and reduce SOUNDNESS (L1.1) — reduce is deterministic and stage-parity holds
