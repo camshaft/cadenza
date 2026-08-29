@@ -3604,23 +3604,38 @@ fn mark_binder_dups_inner(
             let else_alias = aliases_as_result(db, else_, &mut occ);
             let mut occ2 = HashMap::new();
             let then_alias = aliases_as_result(db, then_, &mut occ2);
-            // A consuming occurrence in THIS arm dups iff the OTHER arm aliases the binder as its dropped result.
-            let then_occurs = mark_binder_dups(
-                db,
-                then_,
-                binder,
-                consuming,
-                live_after || else_alias,
-                sites,
-            );
-            let else_occurs = mark_binder_dups(
-                db,
-                else_,
-                binder,
-                consuming,
-                live_after || then_alias,
-                sites,
-            );
+            // IF-JOIN-SHARED-CHILD family fix (v-mem-directed): when the binder is the result of BOTH arms
+            // (then_alias: moved out as the then-result; else_alias: consumed-into the else-result by a sunk
+            // builder) AND is FULLY SUBSUMED by the if-result (`!live_after`: its ONLY post-if reach is
+            // through `keep`) — then the cross-arm dup is SPURIOUS: the two arms are MUTUALLY EXCLUSIVE, so
+            // the binder (rc1, fully-subsumed) is used on exactly ONE arm at runtime and need NOT survive
+            // across them. Skipping that dup lets the else-arm builder FBIP-CONSUME the rc1 binder in place
+            // (the binder's slot BECOMES `keep`), so the binder's own post-if scope drop is exactly `keep`'s
+            // reclaim — balanced, no leak, no double-free. (Dropping the dup was the family's mode-2
+            // over-retain: 712/MAP/LIST/ROPE mode-2 leak = the dup's extra ref left the shared interior
+            // over-retained. The separate scope drop is KEPT — it reclaims the FBIP-reused `keep`; only the
+            // DUP is removed.) `!live_after` is the fence: any other post-if use means the binder is NOT
+            // fully subsumed → keep the dup. ESCAPE detection uses `binding_escapes(arm, .., false)` (binder
+            // flows CONSUMING into the arm's result), NOT `then_alias`/`else_alias`: a builder-consumed
+            // binder (`else = (List.push base …)`) escapes CONSUMING (push's list-operand is consuming), so
+            // `aliases_as_result` reads it as escaping BOTH ways → `else_alias=false`, yet it DOES flow into
+            // the else-result. The condition is "binder escapes-consuming into the result on BOTH arms".
+            let then_consumed = binder_occurs(db, then_, binder, &mut HashMap::new())
+                && binding_escapes(db, then_, binder, false);
+            let else_consumed = binder_occurs(db, else_, binder, &mut HashMap::new())
+                && binding_escapes(db, else_, binder, false);
+            let escapes_into_if_result =
+                !consuming && !live_after && then_consumed && else_consumed;
+            // SKIP the spurious cross-arm dup when the binder escapes-into-the-if-result (fully subsumed):
+            // do NOT propagate the sibling alias into the arm's `live_after` (that propagation is what marks
+            // the cross-arm consume a dup_site).
+            let (then_la, else_la) = if escapes_into_if_result {
+                (live_after, live_after)
+            } else {
+                (live_after || else_alias, live_after || then_alias)
+            };
+            let then_occurs = mark_binder_dups(db, then_, binder, consuming, then_la, sites);
+            let else_occurs = mark_binder_dups(db, else_, binder, consuming, else_la, sites);
             let cond_la = live_after || then_occurs || else_occurs;
             let cond_occurs = mark_binder_dups(db, cond, binder, false, cond_la, sites);
             cond_occurs || then_occurs || else_occurs
