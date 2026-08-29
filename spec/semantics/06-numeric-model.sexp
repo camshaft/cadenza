@@ -12682,6 +12682,22 @@
   (error CDZ0301 (message "no implicit conversion")
                  (fix (kind wrap) (replacement "(Float64.of-int (Int64.of …))") (unverified))))
 
+; ── operator-position int-WIDTH coercion FIX (migrated from rcdzc an_integer_width_mismatch_offers_an_of_conversion_fix) ──
+(case "an integer-width mismatch under an operator offers an of-conversion wrap fix"
+  (doc "`(+ a b)` with `a:Int32`, `b:Int64` mixes two integer WIDTHS under the ONE arithmetic operator — CDZ0301
+        (no silent promotion). The repair conforms the second operand to the first (the EXPECTED type) with the
+        corpus-blessed CHECKED conversion `(Int32.of …)` (heuristic: `.of` is checked, can trap). The
+        integer-width sibling of the D7 float-precision case. From rcdzc
+        an_integer_width_mismatch_offers_an_of_conversion_fix.")
+  (input (do (def (f (: a Int32) (: b Int64)) (+ a b)) (export f)))
+  (error CDZ0301 (fix (kind wrap) (replacement-contains "(Int32.of ") (unverified))))
+
+(case "applying the integer-width of-conversion wrap clears the mismatch and runs"
+  (doc "ROUND TRIP: applying the `(Int32.of …)` fix — `(+ a (Int32.of b))`, both Int32 — clears the CDZ0301 and
+        RUNS: 5 + Int32.of(3) = 8. (`Int32.of` is a CHECKED narrowing but 3 fits, so no trap.)")
+  (input (do (def (f (: a Int32) (: b Int64)) (+ a (Int32.of b))) (export f)))
+  (call f (: 5 Int32) (: 3 Int64)) (output (: 8 Int32)))
+
 ; ── annotation-position int-width coercion FIX (migrated from rcdzc an_int_annotation_mismatch_offers_an_of_conversion_fix) ──
 ; An `(: value T)` annotation whose value is a DIFFERENT integer width than T is CDZ0203 (no silent
 ; promotion), repaired by WRAPPING the value in the annotation type's checked `.of` — the annotation-position
