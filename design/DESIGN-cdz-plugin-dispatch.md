@@ -231,11 +231,14 @@ S4/S6 are the two that actually delete the heavy transitive graph.
 >   standalone in-process `list_tests` (flipped from JSON → the identical value, #5360). `is-property` =
 >   `!params.is_empty() || name.ends_with("-gen")` (the `-gen` fix landed in #5360). The encoding open-Q is
 >   RESOLVED: `KIND_TEST_LIST` is a cadenza-ast VALUE, forwarded verbatim.
-> - The EVAL-time nix-enumeration "open piece" (a committed text name-index vs …) is CLOSED. Operator
->   FINALIZED discovery as nix **DYNAMIC-DERIVATIONS**: compiler-informed via `cdz test --list` at BUILD time,
->   **NO committed index, NO IFD** (v-nix vetoed literal IFD — it triggers a compiler build per eval; operator
->   seq 171). The eval source-scan v-test-shred briefly considered was vetoed ("want the compiler to tell
->   us"). So `--list`'s final shape is pure cadenza-ast-binary — already landed, no text-index needed.
+> - The EVAL-time nix-enumeration "open piece" (a committed text name-index vs …) is CLOSED on DIRECTION:
+>   discovery is **compiler-informed via `cdz test --list`, NO committed index** (operator seq 171; the eval
+>   source-scan v-test-shred briefly considered was vetoed — "want the compiler to tell us"). The nix
+>   MECHANISM is still a v-nix A/B (per v-nix 2026-08-29): **pure dyn-drv** (build-time-emitted per-test .drvs)
+>   vs **scoped-CACHED-IFD** (flake reads the `--list` binary at eval, creates N per-test drvs) — BOTH consume
+>   the same `cdz test --list` binary + both give the shared-closure CA amortization, so the two-stage is
+>   agnostic to the A/B. NB scoped-cached-IFD ≠ the *literal* per-eval IFD that was vetoed (that one triggers a
+>   compiler build every eval). So `--list`'s final shape is pure cadenza-ast-binary — landed, no text-index.
 > - `standalone` still links rcdzc for `list_tests` (in-process); the delegate build spawns cdz-compile. The
 >   rcdzc-free-cdz end-state is the full S6 (runner + query arms all spawn-cdz-compile), not this slice.
 
