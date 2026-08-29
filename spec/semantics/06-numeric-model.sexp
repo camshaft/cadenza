@@ -13239,7 +13239,8 @@
   (doc "Both helper params are UNANNOTATED — the native #tuple and #map patterns must drive inference of
         the scrutinee types (pre-#5429 this rejected, an M3 Phase-2 blocker). f sums the inferred tuple
         slots; g key-selects from the inferred map. n=7 → 10·11 + 7 = 117; n=-2 → 10·2 + (-2) = 18.
-        Dual-path verified, hop byte-idempotent.")
+        Dual-path verified, hop byte-idempotent; live 1 = the surviving
+        closure-map cell (the cdzw66 retained-cell class).")
   (input (do
     (def (f p) (match p (#tuple(a b) (+ a b))))
     (def (g m) (match m (#map((= 1 v)) v) (_ -1)))
@@ -13285,3 +13286,19 @@
   (input (do (def (main (: n Int64)) (match (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple n 1) 2) 3) 4) 5) 6) 7) 8) 9) 10) 11) 12) 13) 14) 15) 16) 17) 18) 19) 20) 21) 22) 23) 24) (#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(a b) c0) c1) c2) c3) c4) c5) c6) c7) c8) c9) c10) c11) c12) c13) c14) c15) c16) c17) c18) c19) c20) c21) c22) (+ a b)))) (export main)))
   (call main (: 7 Int64)) (output (: 8 Int64))
   (call main (: -3 Int64)) (output (: -2 Int64)))
+
+(case "cdzw68 MAP-KEYED closure dispatch round-trips the cadenza hop"
+  (doc "The map composite of cdzw66's data-structure closure face: a #map from Int64 keys to lambdas,
+        Map.lookup with a runtime-branch-selected key, the Some-matched closure applied to the runtime
+        arg — dynamic dispatch through a map value. n=7 → key 1 → (+ 7 100) = 107; n=-1 → key 2 →
+        (* -1 3) = -3. Dual-path verified, hop byte-idempotent; live 1 = the surviving
+        closure-map cell (the cdzw66 retained-cell class).")
+  (input (do
+    (def (main (: n Int64))
+      (match (Map.lookup #map((= 1 (fn ((: k Int64)) (+ k 100))) (= 2 (fn ((: k Int64)) (* k 3)))) (if (> n 0) 1 2))
+        ((Some f) (f n))
+        ((None _u) -999)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 107 Int64))
+  (call main (: -1 Int64)) (output (: -3 Int64))
+  (live-objects 1))
