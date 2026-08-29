@@ -126,22 +126,6 @@ enum Cmd {
     /// (`target/xtask-logs/`); the console shows one ✓ per step, and the first failing step prints
     /// the whole log + its path.
     Check,
-    /// FAST INNER-LOOP dev gate (operator per-agent-latency priority 2026-08-10): a thin wrapper over
-    /// v-nix's `nix run .#fast-gate` flake app, which builds ONLY the touched crate's test+clippy+fmt
-    /// checks (warm = seconds-to-2min) instead of the full ~8-15min `check`/`gate` battery. For an
-    /// agent's ITERATE-test-iterate inner loop; the full battery + pr-sync's authoritative pass remain
-    /// the pre-merge catch, so a green here is NOT merge-safe (the app prints that caveat). This wrapper
-    /// exists because the agent loop speaks `cargo xtask` (the alias is wired) and a bare `nix run` needs
-    /// nix on PATH + `NIX_REMOTE=daemon` (the scripted-shell gotcha) — the wrapper resolves the nix
-    /// binary + sets the daemon env so `cargo xtask dev-gate` Just Works from any vertical worktree.
-    /// With no args it lets the app auto-detect touched crates (git diff vs origin/main, override via
-    /// `CDZ_FAST_GATE_BASE`); pass crate names to check those explicitly.
-    DevGate {
-        /// Crates to check explicitly (e.g. `rcdzc cdz-runtime`). Empty = the app auto-detects touched
-        /// crates from `git diff` against the base ref.
-        #[arg(trailing_var_arg = true)]
-        crates: Vec<String>,
-    },
     /// GUARDRAIL — NOT a test runner. Native `cargo test --workspace` is UNCACHED + full-workspace +
     /// fleet-hostile: it shares nothing across the ~40-agent fleet, cold-rebuilds, and fans test threads
     /// out to every core (the `[build] jobs=4` cap bounds COMPILE jobs, NOT test-thread execution), which
@@ -277,7 +261,6 @@ fn main() {
             }
         }
         Cmd::Check => check(&paths, profile),
-        Cmd::DevGate { crates } => dev_gate(&paths, &crates),
         Cmd::Test => test_guardrail(),
         Cmd::MergeBaseline { ours, theirs } => merge_baseline(&ours, &theirs),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
@@ -5163,191 +5146,20 @@ fn check_baseline(
     }
 }
 
-// ============================================================================================
-/// FAST inner-loop dev gate (operator per-agent-latency priority 2026-08-10). Thin wrapper over v-nix's
-/// `nix run .#fast-gate` flake app: it builds ONLY the touched crate's test+clippy+fmt (warm = seconds-
-/// to-2min) vs the full ~8-15min `check`/`gate` battery, for an agent's iterate-test loop. NOT
-/// merge-safe (the full battery + pr-sync's pass stay the authoritative pre-merge catch — the app prints
-/// that caveat). Exists because the agent loop speaks `cargo xtask` while a bare `nix run` needs nix on
-/// PATH + `NIX_REMOTE=daemon` (the scripted-shell gotcha) — this resolves the nix binary (via
-/// `fleet::nix_binary`, PATH-or-profile) + sets the daemon env so it Just Works from any worktree.
-/// Passes `crates` through as explicit args; empty lets the app auto-detect touched crates. Inherits
-/// stdio so the agent sees the verdict live. Exits with the app's status. If the app isn't present yet
-/// (its MR not landed), nix errors cleanly and we surface a hint rather than a cryptic failure.
-/// A nix REMOTE-BUILDER / DAEMON transient in the fast-gate output — NOT a real test/clippy/fmt failure
-/// of the touched crate. In nix protocol the local multi-user DAEMON is the "remote" store, so two
-/// instability shapes are the same false-RED family: (1) the builder/daemon hiccups mid-build and
-/// reports a build-result the caller can't interpret ("Invalid BuildResult status from remote");
-/// (2) the daemon connection itself is reset mid-build ("cannot open connection to remote store
-/// 'daemon': … Connection reset by peer") — the SAME Determinate-daemon instability that causes the CI
-/// resets (v-nix, 2026-08-27), which can strike a local dev-gate build on its one long-running derivation.
-/// Either way verifying directly (`cargo clippy/test -p <crate>`) is clean and the change lands fine
-/// (v-core-opt saw shape (1) 3 ticks running on cadenza-ast's clippy check). Detecting it lets dev-gate
-/// AUTO-RETRY once (a transient clears; a real failure re-fails deterministically) + label it so an agent
-/// isn't misled into thinking its code is broken. Pure so the match rule is unit-testable.
+/// A nix REMOTE-BUILDER / DAEMON transient in a gate's output — NOT a real test/clippy/compile failure.
+/// In nix protocol the local multi-user daemon is the "remote" store, so the daemon/builder-hiccup shapes
+/// are one false-RED family: a build-result the caller can't interpret ("Invalid BuildResult status from
+/// remote"), a remote build failure, or a daemon-connection reset ("cannot open connection to remote
+/// store"). Used by fleet's `gate_local_hold_advisory` to flag a re-run rather than a regression. Pure so
+/// the match rule is unit-tested; kept narrow so a real error merely mentioning "remote" doesn't trip it.
 fn fast_gate_output_is_remote_transient(output: &str) -> bool {
-    // The observed signatures; keep the match narrow so a real error mentioning "remote" doesn't trip it.
-    // Each is a nix store/daemon-connection failure — never a deterministic clippy/test/compile result —
-    // so if it somehow persists across the retry it still surfaces non-zero after MAX_ATTEMPTS.
     output.contains("Invalid BuildResult status from remote")
         || output.contains("error: build failure on remote")
         || output.contains("cannot build on remote")
-        // Daemon-connection-reset family (same instability as the CI daemon resets). The store-connection
-        // phrase is the stable, unambiguous part — a bare "Connection reset by peer" could appear in a
-        // test's own output, but "cannot open connection to remote store" is specifically the nix daemon.
         || output.contains("cannot open connection to remote store")
 }
 
-/// The `implementation/**/*.rs` paths among a git `--name-only` blob — the touched Rust sources the
-/// dev-gate emoji pre-check scans. The operator emoji-ban is `implementation/`-scoped (xtask/fleet are
-/// exempt — their output markers are functional), so we filter to that subtree + `.rs`, deduped (a file
-/// that is both staged and unstaged appears twice). Pure so the path filter is unit-tested off the FS.
-fn implementation_rs_touched(name_only: &str) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = name_only
-        .lines()
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .filter(|p| p.starts_with("implementation/") && p.ends_with(".rs"))
-        .map(PathBuf::from)
-        .collect();
-    v.sort();
-    v.dedup();
-    v
-}
-
-/// WARN (non-blocking) on banned emoji in the COMMENTS of touched `implementation/**/*.rs` files, so an
-/// agent catches + strips them in the fast inner loop instead of at `cargo xtask check` / the advisory
-/// merge-gate `emojiLintCheck` / the operator's eye (v-core-opt 2026-08-28: two `⚠️` markers reached the
-/// operator because emoji-free ran ONLY in `check`, never in dev-gate). Reuses the exact `banned_emoji_hits`
-/// predicate the gate uses. WARN-only on purpose: the merge-side `emojiLintCheck` is ADVISORY, so dev-gate
-/// must not be STRICTER than the gate — this is an early heads-up, not a hard fail. Touched = changed vs
-/// origin/main + vs HEAD + staged + untracked (best-effort; a missing ref just contributes nothing).
-fn dev_gate_emoji_warn(paths: &Paths) {
-    let mut names = String::new();
-    for args in [
-        &["diff", "--name-only", "origin/main"][..],
-        &["diff", "--name-only", "HEAD"][..],
-        &["diff", "--name-only", "--cached"][..],
-        &["ls-files", "--others", "--exclude-standard"][..],
-    ] {
-        if let Ok(o) = std::process::Command::new("git")
-            .current_dir(&paths.repo)
-            .args(args)
-            .output()
-        {
-            names.push_str(&String::from_utf8_lossy(&o.stdout));
-        }
-    }
-    let mut hits: Vec<(PathBuf, usize, char)> = Vec::new();
-    for f in implementation_rs_touched(&names) {
-        if let Ok(text) = std::fs::read_to_string(paths.repo.join(&f)) {
-            for (line, c) in xtask_support::banned_emoji_hits(&text) {
-                hits.push((f.clone(), line, c));
-            }
-        }
-    }
-    if !hits.is_empty() {
-        eprintln!(
-            "dev-gate: WARN operator EMOJI-BAN — banned emoji in touched implementation/ comment(s); strip \
-             before landing (advisory at the merge gate, but the operator will flag it):"
-        );
-        for (f, line, c) in &hits {
-            eprintln!("  {}:{} — U+{:04X}", f.display(), line, *c as u32);
-        }
-    }
-}
-
-fn dev_gate(paths: &Paths, crates: &[String]) {
-    // Operator emoji-ban pre-check (WARN-only) on touched implementation/ comments — see fn doc.
-    dev_gate_emoji_warn(paths);
-    let nix_bin = fleet::nix_binary();
-    // `nix run .#fast-gate [-- crate1 crate2]` — the `--` separates flake-app args from nix's own.
-    let mut args: Vec<String> = vec!["run".into(), ".#fast-gate".into()];
-    if !crates.is_empty() {
-        args.push("--".into());
-        args.extend(crates.iter().cloned());
-    }
-    eprintln!(
-        "dev-gate: `{nix_bin} {}` (fast inner-loop gate — touched-crate test+clippy+fmt; NOT merge-safe, \
-         the full gate + pr-sync stay authoritative)…",
-        args.join(" ")
-    );
-    // Up to 2 attempts: a nix remote-builder transient (see `fast_gate_output_is_remote_transient`) is a
-    // false-RED, not a code failure, so retry it ONCE (a transient clears; a real failure re-fails and is
-    // surfaced). To detect the signature we CAPTURE combined output — then echo it verbatim so the agent
-    // still sees the full streamed gate result (just after each attempt completes rather than live).
-    const MAX_ATTEMPTS: u32 = 2;
-    let mut attempt = 0u32;
-    loop {
-        attempt += 1;
-        let out = std::process::Command::new(&nix_bin)
-            .args(&args)
-            // The scripted-shell gotcha: a non-login shell needs NIX_REMOTE=daemon to reach the multi-user
-            // daemon (else a local build that needs the caller in `nixbld` fails). Set it if unset.
-            .env(
-                "NIX_REMOTE",
-                std::env::var("NIX_REMOTE").unwrap_or_else(|_| "daemon".into()),
-            )
-            .current_dir(&paths.repo)
-            .output();
-        let out = match out {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!(
-                    "dev-gate: could not invoke `{nix_bin} run .#fast-gate` ({e}). Ensure nix is installed; \
-                     until v-nix's fast-gate app lands, use `cargo xtask gate --files <yours> --target wasm`."
-                );
-                std::process::exit(1);
-            }
-        };
-        // Echo the captured output verbatim (the app's own green/red + caveats), so the agent sees it.
-        use std::io::Write;
-        let _ = std::io::stdout().write_all(&out.stdout);
-        let _ = std::io::stderr().write_all(&out.stderr);
-        if out.status.success() {
-            return; // app printed its own green + not-merge-safe caveat.
-        }
-        // Non-zero. If it's the nix remote-builder transient AND we have a retry left, retry — it's a
-        // false-RED, not the touched crate's code failing.
-        let combined = format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        if fast_gate_output_is_remote_transient(&combined) && attempt < MAX_ATTEMPTS {
-            eprintln!(
-                "dev-gate: fast-gate hit a nix REMOTE-BUILDER/DAEMON transient ('Invalid BuildResult status \
-                 from remote' / remote build failure / daemon connection reset) — this is NOT your code \
-                 failing. Retrying once (attempt {}/{})…",
-                attempt + 1,
-                MAX_ATTEMPTS
-            );
-            continue;
-        }
-        if fast_gate_output_is_remote_transient(&combined) {
-            // Retries exhausted and it's STILL the transient — don't mislabel it as a code failure. Exit
-            // non-zero (the gate did NOT verify), but tell the agent it's a remote hiccup, not their bug.
-            eprintln!(
-                "dev-gate: fast-gate STILL hit the nix remote-builder transient after {MAX_ATTEMPTS} \
-                 attempts — this is a nix REMOTE-BUILD hiccup, NOT your code. Verify directly with `cargo \
-                 clippy/test -p <your-crate>` (that bypasses the remote builder) and re-run dev-gate later; \
-                 the remote transient usually clears. (Flagged to v-nix as a recurring remote-builder issue.)"
-            );
-            std::process::exit(s_code(&out.status));
-        }
-        // A genuine non-zero: real failure / unrecognized app / excluded crate (the app streamed which).
-        eprintln!(
-            "dev-gate: fast-gate exit {} — see its output above. If it's TEST/clippy/fmt failures, fix \
-             them. If it says a crate is 'not a gated root crate' (a workspace-excluded crate like \
-             cdz-runtime), dev-gate can't cover it — iterate with `cargo test`/`cargo clippy` from that \
-             crate's own dir instead. If `.#fast-gate` is unrecognized, its app MR isn't on trunk yet — \
-             fall back to `cargo xtask gate --files <yours> --target wasm`.",
-            s_code(&out.status)
-        );
-        std::process::exit(s_code(&out.status));
-    }
-}
-
+// ============================================================================================
 /// See [`Cmd::Test`]. A guardrail — it runs NO tests. Native `cargo test --workspace` is uncached +
 /// full-workspace + fleet-hostile (it caused an operator-flagged host load spike), so instead of running
 /// it we print the nix-cached alternatives and exit non-zero, so the fleet-hostile run never happens by
@@ -5366,15 +5178,6 @@ fn test_guardrail() -> ! {
          the whole workspace on the shared host."
     );
     std::process::exit(2);
-}
-
-/// A child's exit code to propagate on a FAILURE path — guaranteed non-zero (a signal-killed child with
-/// no code, or a spurious 0, maps to 1) so dev-gate never exits 0 after surfacing a failure.
-fn s_code(status: &std::process::ExitStatus) -> i32 {
-    match status.code() {
-        Some(c) if c != 0 => c,
-        _ => 1,
-    }
 }
 
 // ============================================================================================
@@ -7210,31 +7013,34 @@ mod trap_grading_tests {
     }
 
     #[test]
-    fn implementation_rs_touched_filters_to_implementation_rs_deduped() {
-        // A git --name-only blob (staged+unstaged can list the same file twice) → only implementation/*.rs,
-        // deduped + sorted. xtask/fleet/non-.rs are excluded (emoji-ban is implementation-scoped).
-        let blob = "implementation/seed/crates/rcdzc/src/backend/wasm/select.rs\n\
-                    implementation/seed/crates/rcdzc/src/backend/wasm/select.rs\n\
-                    xtask/src/main.rs\n\
-                    implementation/seed/crates/cdz/src/lib.rs\n\
-                    fleet/AGENTS-fleet.md\n\
-                    implementation/README.md\n\
-                    \n";
-        assert_eq!(
-            implementation_rs_touched(blob),
-            vec![
-                PathBuf::from("implementation/seed/crates/cdz/src/lib.rs"),
-                PathBuf::from("implementation/seed/crates/rcdzc/src/backend/wasm/select.rs"),
-            ]
-        );
-        assert!(implementation_rs_touched("").is_empty());
-        // The exact v-core-opt miss: a ⚠️ marker line IS a banned hit the dev-gate scan would now surface.
-        assert_eq!(
-            xtask_support::banned_emoji_hits(
-                "/// ⚠️ RESUME-ESCAPE: a handler-arm re-reference is INVISIBLE here\n"
-            ),
-            vec![(1, '⚠'), (1, '\u{FE0F}')]
-        );
+    fn fast_gate_remote_transient_matches_the_nix_signature_not_ordinary_clippy_output() {
+        // A nix daemon/remote-builder signature → transient (a gate re-run is warranted), not a code failure.
+        assert!(fast_gate_output_is_remote_transient(
+            "cargo-clippy-rcdzc-clippy> Checking cadenza-ast v0.0.0\nerror: Invalid BuildResult status from remote"
+        ));
+        assert!(fast_gate_output_is_remote_transient(
+            "error: build failure on remote 'ssh://builder'"
+        ));
+        // The daemon-connection-reset family (same instability as the CI resets) → transient too.
+        assert!(fast_gate_output_is_remote_transient(
+            "error: cannot open connection to remote store 'daemon': read of 32768 bytes: Connection reset by peer"
+        ));
+        // A bare "Connection reset by peer" WITHOUT the store-connection phrase must NOT trip it.
+        assert!(!fast_gate_output_is_remote_transient(
+            "test tcp_client ... FAILED\n  assertion failed: Connection reset by peer"
+        ));
+        // A REAL clippy/test failure must NOT be misread as a transient.
+        assert!(!fast_gate_output_is_remote_transient(
+            "error[E0308]: mismatched types\n  --> src/lib.rs:10:5"
+        ));
+        assert!(!fast_gate_output_is_remote_transient(
+            "error: this lint expectation is unfulfilled"
+        ));
+        // The word "remote" alone (a doc comment / git-remote mention) must not trip it.
+        assert!(!fast_gate_output_is_remote_transient(
+            "note: the remote branch is ahead; a clippy warning about remote_data follows"
+        ));
+        assert!(!fast_gate_output_is_remote_transient(""));
     }
 
     #[test]
@@ -7618,39 +7424,6 @@ mod trap_grading_tests {
             corpus_check_attr(GateTarget::Wasm, Some("zz-scratch")),
             None
         );
-    }
-
-    #[test]
-    fn fast_gate_remote_transient_matches_the_nix_signature_not_ordinary_clippy_output() {
-        // The v-core-opt signature → transient (retry-worthy), not a code failure.
-        assert!(fast_gate_output_is_remote_transient(
-            "cargo-clippy-rcdzc-clippy> Checking cadenza-ast v0.0.0\nerror: Invalid BuildResult status from remote"
-        ));
-        assert!(fast_gate_output_is_remote_transient(
-            "error: build failure on remote 'ssh://builder'"
-        ));
-        // The daemon-connection-reset family (same instability as the CI resets) → transient too, so a
-        // local dev-gate build that hits the daemon hiccup on its long derivation auto-retries.
-        assert!(fast_gate_output_is_remote_transient(
-            "error: cannot open connection to remote store 'daemon': read of 32768 bytes: Connection reset by peer"
-        ));
-        // But a bare "Connection reset by peer" WITHOUT the store-connection phrase (e.g. printed by a
-        // test's own network code) must NOT trip it — we only retry the daemon-connection failure itself.
-        assert!(!fast_gate_output_is_remote_transient(
-            "test tcp_client ... FAILED\n  assertion failed: Connection reset by peer"
-        ));
-        // A REAL clippy/test failure must NOT be misread as a transient (else we'd retry a genuine bug).
-        assert!(!fast_gate_output_is_remote_transient(
-            "error[E0308]: mismatched types\n  --> src/lib.rs:10:5"
-        ));
-        assert!(!fast_gate_output_is_remote_transient(
-            "error: this lint expectation is unfulfilled"
-        ));
-        // The word "remote" alone (e.g. in a doc comment / a git-remote mention) must not trip it.
-        assert!(!fast_gate_output_is_remote_transient(
-            "note: the remote branch is ahead; a clippy warning about remote_data follows"
-        ));
-        assert!(!fast_gate_output_is_remote_transient(""));
     }
 
     #[test]
