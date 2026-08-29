@@ -1256,7 +1256,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             if !out.iter().any(|h| h.effect == imp.effect && h.op == imp.op) {
                 out.push(imp);
             }
-            for a in args {
+            for &a in args.iter() {
                 collect_host_imports(db, a, out);
             }
         }
@@ -1264,13 +1264,13 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         // walked when it is itself expanded from `layout.order`. A CallClosure likewise descends the
         // closure value + args.
         Core::Call { args, .. } => {
-            for a in args {
+            for &a in args.iter() {
                 collect_host_imports(db, a, out);
             }
         }
         Core::CallClosure { closure, args } => {
             collect_host_imports(db, closure, out);
-            for a in args {
+            for &a in args.iter() {
                 collect_host_imports(db, a, out);
             }
         }
@@ -1664,7 +1664,7 @@ pub fn first_unrepresentable_host_op(
         // (host) a scalar. A `Bytes` arg now crosses as `list<u8>` at the host boundary (the `(ptr,len)`
         // shared-memory shape, same as String), so it is emittable — no longer a deferred compound. An
         // undetermined arg type (a synthesized node) is skipped for the same reason as the result.
-        for &a in &args {
+        for &a in args.iter() {
             let at = crate::infer::type_of(db, a);
             // A shape-d all-scalar RECORD argument crosses NATIVELY (flattened per field) on the reducer
             // typed/host-fused path — gated on `allow_option_bytes` (which marks that path) and `!peer_bound`
@@ -1709,7 +1709,7 @@ pub fn first_unrepresentable_host_op(
             }
         }
         // Descend the args too (a host call may be nested in an arg).
-        for a in args {
+        for &a in args.iter() {
             if let Some(hit) = first_unrepresentable_host_op(db, a, allow_option_bytes) {
                 return Some(hit);
             }

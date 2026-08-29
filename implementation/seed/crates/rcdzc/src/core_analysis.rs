@@ -127,7 +127,7 @@ pub(crate) fn licm_children(db: &mut Db, id: StructId) -> Vec<StructId> {
             v.extend(arms.iter().map(|a| a.body));
             v
         }
-        Core::Call { args, .. } => args,
+        Core::Call { args, .. } => args.to_vec(),
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => elems.to_vec(),
         Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => vec![list, elem],
         Core::ListAt { list, index, .. } => vec![list, index],

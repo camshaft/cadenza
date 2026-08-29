@@ -5712,7 +5712,7 @@ fn collect_used_ops_into_seen(
         Core::Call { args, .. } => {
             // A CONSTANT-BigInt argument to a BigInt param materializes via `bigint-of-i64` in the
             // `Core::ConstInt` collect arm (matching its emit) — no per-call special-case needed here.
-            for arg in args {
+            for &arg in args.iter() {
                 collect_used_ops_into_seen(db, arg, out, visited);
             }
         }
@@ -5745,7 +5745,7 @@ fn collect_used_ops_into_seen(
             if !peer_bound && crate::backend::wasm::host::result_is_liftable(db, &result) {
                 super::declare_result_lift_ops(db, &result, out);
             }
-            for arg in args {
+            for &arg in args.iter() {
                 match crate::infer::type_of(db, arg) {
                     Ty::Unit => {}
                     // A CONSTANT string/bytes host arg crosses via the data segment (no runtime op). A
@@ -6028,7 +6028,7 @@ fn collect_used_ops_into_seen(
                 out.insert(OP_DROP);
             }
             collect_used_ops_into_seen(db, closure, out, visited);
-            for arg in args {
+            for &arg in args.iter() {
                 collect_used_ops_into_seen(db, arg, out, visited);
             }
         }
@@ -17255,7 +17255,7 @@ fn emit(
             // host-call arg emit below already threads `arg_base` for the identical two-widths hazard.)
             let arg_base = (*high).max(cell_slot + 1);
             out.push(Lir::LocalGet(cell_slot)); // env (the cell)
-            for &arg in &args {
+            for &arg in args.iter() {
                 emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?;
             }
             match known_code {
@@ -17367,7 +17367,7 @@ fn emit(
                          effect in-program instead of binding it to a peer"
                     ))
                 })?;
-                for &arg in &args {
+                for &arg in args.iter() {
                     if matches!(crate::infer::type_of(db, arg), Ty::Unit) {
                         continue;
                     }

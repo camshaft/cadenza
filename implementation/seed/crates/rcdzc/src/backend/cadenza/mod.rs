@@ -1163,7 +1163,7 @@ fn emit_expr_viewed(
             let head = b.name(callee_name.as_str());
             let mut children = Vec::with_capacity(1 + args.len());
             children.push(head);
-            for arg in args {
+            for &arg in args.iter() {
                 children.push(emit_expr(db, b, arg, None, env, emitted)?);
             }
             Ok(b.list(children))
