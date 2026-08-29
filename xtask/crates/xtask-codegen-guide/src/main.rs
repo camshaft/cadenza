@@ -12,6 +12,11 @@
 use cadenza_ast::ast::{Arenas, Struct, StructId};
 use cadenza_syntax_core::spans::SpanTable;
 
+// Module-wrapping for the guide shred (operator: shred in Rust from binary AST). The `--shred` mode that
+// consumes these lands in the next increment; for now the module is unit-tested in isolation.
+#[allow(dead_code)]
+mod wrap;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let check = args.iter().any(|a| a == "--check");
