@@ -474,7 +474,7 @@
            escaped as a claimed `Int64` error — a soundness hole (the ordinary `(: (Err true) (Result Int64
            Int64))` annotation path already rejects it). CDZ0203.")
   (input  (do (def (main) (: (let ((y (try (Err true)))) (Ok y)) (Result Int64 Int64))) (export main)))
-  (error  CDZ0203))
+  (error  CDZ0203 (message "error type")))
 
 (case "an agreeing Result error type short-circuits through the boundary"
   (doc    "The positive control of the error-type soundness reject: `(try (Err 7))` under a
