@@ -82,7 +82,18 @@ jobs:
       # `nix-<os>-<arch>-`) so a warm-start prefix-matches the NEWEST c2-* entry — incl. the drv-suffixed key the
       # save step below writes on aarch64 — while never picking up a PRE-c2 stale cache. The composite is
       # untouched → zero blast radius on the other 10 callers (they prefix-restore the newest c2-* too).
+      # RESTORE DISABLED (2026-08-29, v-gha-green) — same daemon-reset escape as #4491 did for the
+      # nix-store-cache composite (checks.yml). ROOT CAUSE: cache-nix-action's post-restore DB-merge
+      # rm+mv's /nix/var/nix/db/db.sqlite out from under the already-running Determinate daemon
+      # (nix-installer-action start-daemon:true) -> the next `nix build` connection is reset ("cannot
+      # open connection to remote store 'daemon': Connection reset by peer"). #4491 fixed the composite
+      # but cache-warm calls cache-nix-action/restore DIRECTLY, so it still swapped the DB and every
+      # scheduled warm run died instantly at the first `nix build .#cargo-artifacts`. Skipping the
+      # restore keeps the daemon healthy; this job builds cold (fine on the */30 cron) and the trailing
+      # save below still uploads a warm store, so a one-line re-enable (drop the `if: false`) restores
+      # full warm behavior once Determinate ships a daemon tolerant of the cache DB swap (revert with #4491).
       - name: restore /nix/store (no save — the trailing step saves on success)
+        if: ${{ false }} # DISABLED — daemon-reset stopgap; see comment above and #4491
         uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7 (pin matches composite)
         with:
           primary-key: nix-${{ runner.os }}-${{ runner.arch }}-c2-${{ hashFiles('flake.lock', 'flake.nix') }}
