@@ -13506,3 +13506,19 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 46 Int64))
   (call main (: -5 Int64)) (output (: -2 Int64)))
+
+(case "nan1 NaN EQUALITY is canonical-byte TRUE while NaN ORDERING is IEEE-unordered FALSE — the float-comparison asymmetry"
+  (doc "The doctrine asymmetry fence (cdzw60's equality face × #5519/#5525's ordering model): Cadenza `=`
+        compares floats by canonical BYTES so (= NaN NaN) is TRUE, while the ordering ops < > <= are IEEE
+        NaN-unordered so every NaN comparison — even (<= NaN NaN) — is FALSE. 1000 for any n (only the
+        equality digit set). (The cadenza hop declines this shape — ConstFloatNan has no re-emit yet, a
+        named gap banked as a flip witness; HOP-1 declines SKIP in corpus-cadenza.)")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 1000 (if (= Float64.nan Float64.nan) 1 0))
+         (+ (* 100 (if (< Float64.nan (Float64.of-int n)) 1 0))
+            (+ (* 10 (if (> Float64.nan (Float64.of-int n)) 1 0))
+               (if (<= Float64.nan Float64.nan) 1 0)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 1000 Int64))
+  (call main (: -3 Int64)) (output (: 1000 Int64)))
