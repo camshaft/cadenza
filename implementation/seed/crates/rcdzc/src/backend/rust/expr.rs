@@ -3358,12 +3358,19 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 "{{ let __s = {s}; let __i = ({i}) as usize; __s.chars().nth(__i).map(|__c| __c.to_string()) }}"
             ))
         }
-        // STUB (v-rust-backend #5516 to wire the real emit): runtime String.scalar-at yields (Option Char)
-        // via the bytes-scalar-at codepoint op + Char box. Declines cleanly until wired (front-lands-first
-        // per the coordinated split; 13-strings:3218 stays `declines`, not a red).
-        Core::StrScalarAt { .. } => Err(Reject::decline(
-            "Core::StrScalarAt rust emit not yet wired (v-rust-backend, #5516 bytes-scalar-at)",
-        )),
+        // `String.scalar-at` on a RUNTIME string → the `index`-th Unicode SCALAR, fallibly, as a native
+        // `Option<char>`. The Char-payload twin of `StrAt` (which yields `(Option String)`): `.chars()`
+        // iterates by Unicode scalar (spec scalar-value addressing, NOT byte), `.nth(i)` reads the i-th and
+        // is `None` past the end — and a Cadenza `Char` maps to a Rust `char` (see `Core::ConstChar`), so
+        // `chars().nth(i)` IS the `Option<Char>` directly (no `.to_string()` box the String twin needs).
+        // `disc_some`/`disc_none` are the wasm sum tags, irrelevant on the native-`Option` rust path.
+        Core::StrScalarAt { operand, index, .. } => {
+            let s = emit(db, operand, env, ctx)?;
+            let i = emit(db, index, env, ctx)?;
+            Ok(format!(
+                "{{ let __s = {s}; let __i = ({i}) as usize; __s.chars().nth(__i) }}"
+            ))
+        }
         // `String.slice` on a RUNTIME string → the half-open SCALAR sub-range `[start, end)`, fallibly, as a
         // native `Option<String>`. `.chars()` iterates by Unicode scalar (matching the spec's scalar-value
         // addressing, NOT byte), collected once into a `Vec<char>` so the two bounds index the same scalar

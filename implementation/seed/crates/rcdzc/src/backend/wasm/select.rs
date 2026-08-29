@@ -286,6 +286,11 @@ const OP_BYTES_LEN: &str = "bytes-len";
 /// `bytes-get(b, index) -> u32` — the byte at `index`, a RAW value in `0..=255` (NOT a heap handle,
 /// unlike `vec-get`), so no `dup` is needed; the caller bounds-checks (an OOB index TRAPS).
 const OP_BYTES_GET: &str = "bytes-get";
+/// `bytes-scalar-at(buf, scalar-index) -> u32` (#5516) — the `scalar-index`-th Unicode SCALAR codepoint of
+/// the String's UTF-8 buffer, or `u32::MAX` (0xFFFFFFFF) for out-of-range / ill-formed. Borrows `buf` (does
+/// not consume). The runtime does the UTF-8 walk, so `Core::StrScalarAt` emits a single call (unlike `StrAt`,
+/// which walks the buffer in wasm).
+const OP_BYTES_SCALAR_AT: &str = "bytes-scalar-at";
 /// `bytes-concat(a, b) -> handle` — a then b (consumes both, empty is the identity).
 const OP_BYTES_CONCAT: &str = "bytes-concat";
 /// The runtime BigInt ops (B3a) the compiler emits for RUNTIME-valued BigInt (a constant folds in
@@ -5516,10 +5521,24 @@ fn collect_used_ops_into_seen(
         // scalar span (`bytes-slice`, which CONSUMES the string handle → the borrowed scan `dup`s first,
         // and the None branch `drop`s the un-consumed handle), and builds `Some`/`None` (`sum-new`,
         // `arr-alloc` for the unit payload).
-        // STUB (v-rust-backend #5516 wires the real emit): runtime String.scalar-at emit DECLINES until
-        // wired, so it imports no runtime ops of its own here (children are walked generically). v-rust-backend
-        // adds OPS.bytes_scalar_at here when they land the emit.
-        Core::StrScalarAt { .. } => {}
+        // `String.scalar-at` on a runtime string calls `bytes-scalar-at` (borrows the string — its owner
+        // reclaims, like `StrAt`, so no `drop` is imported here), boxes the returned codepoint into a Char
+        // scalar cell (`box-int`, #5252 rep), and builds `Some`/`None` (`sum-new`; the unit payload is inline).
+        Core::StrScalarAt { operand, index, .. } => {
+            out.insert(OP_BYTES_SCALAR_AT);
+            out.insert(OP_BOX_INT);
+            out.insert(OP_SUM_NEW);
+            // An OWNED-temporary string operand is dropped after the borrow-read (see the emit); a borrowed
+            // one is not (its owner reclaims) — so `drop` is imported only when the operand is owned.
+            if matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.insert(OP_DROP);
+            }
+            collect_used_ops_into_seen(db, operand, out, visited);
+            collect_used_ops_into_seen(db, index, out, visited);
+        }
         Core::StrAt { string, index, .. } => {
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_GET);
@@ -14597,12 +14616,68 @@ fn emit(
         // scalar's byte span (lead byte + its continuation bytes) and `bytes-slice`s it into `Some`. A
         // negative index or one at/beyond the scalar count → `None`. The string handle is BORROWED for the
         // scan (`bytes-len`/`bytes-get`) and CONSUMED by the final `bytes-slice`; the None branch drops it.
-        // STUB (v-rust-backend #5516 wires the real emit): runtime String.scalar-at → (Option Char) via the
-        // bytes-scalar-at codepoint op + Char box (#5252 rep) + u32::MAX→None. Declines cleanly until wired
-        // (front-lands-first per the coordinated split; 13-strings:3218 stays `declines`, not a red).
-        Core::StrScalarAt { .. } => Err(Reject::decline(
-            "Core::StrScalarAt wasm emit not yet wired (v-rust-backend, #5516 bytes-scalar-at)",
-        )),
+        // `String.scalar-at` on a RUNTIME string → the `index`-th Unicode scalar as `(Option Char)`. The
+        // runtime op `bytes-scalar-at(buf, scalar-index) -> u32` does the UTF-8 walk (unlike `StrAt`, which
+        // walks the buffer in wasm), returning the codepoint or `u32::MAX` for out-of-range / ill-formed. Box
+        // the codepoint into a Char scalar cell for `Some` (#5252: zero-extend i32→i64, `box-int`); `u32::MAX
+        // → None`. The string is BORROWED (its owner reclaims — like `StrAt`), so it is not dropped here.
+        Core::StrScalarAt {
+            operand,
+            index,
+            disc_some,
+            disc_none,
+        } => {
+            let str_slot = base;
+            let index_slot = base + 1;
+            let cp_slot = base + 2;
+            *high = (*high).max(cp_slot + 1);
+            scratch_ty.insert(str_slot, ValType::I32);
+            scratch_ty.insert(index_slot, ValType::I64);
+            scratch_ty.insert(cp_slot, ValType::I32);
+            // `bytes-scalar-at` only BORROWS the string (reads the buffer), so if the operand is a fresh
+            // OWNED TEMPORARY (`String.scalar-at (String.concat …) i`, or an inline constant), nothing else
+            // reclaims it → it LEAKS; drop it after the read. A BORROWED operand (a param / kept-local) is
+            // reclaimed by its owner — never dropped here (mirrors `Core::ListAt`'s `reclaim_list`).
+            let reclaim = matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            );
+            emit(db, operand, slots, base + 3, high, scratch_ty, layout, out)?; // [str]
+            out.push(Lir::LocalSet(str_slot));
+            // Float the index operand's scratch floor above the running high-water — the i32/i64 slot-width
+            // collision guard `StrAt`/`ListAt`/`BytesAt` apply (a computed i64 index must not reuse a slot the
+            // string emit typed i32; harmless when nothing above `base + 3` was claimed).
+            let index_floor = (base + 3).max(*high);
+            emit(db, index, slots, index_floor, high, scratch_ty, layout, out)?; // [index:i64]
+            out.push(Lir::LocalSet(index_slot));
+            // codepoint = bytes-scalar-at(str, wrap(index)) — the runtime does the OOR/ill-formed check.
+            out.push(Lir::LocalGet(str_slot));
+            out.push(Lir::LocalGet(index_slot));
+            out.push(Lir::I32WrapI64); // scalar-index crosses as a u32
+            out.push(Lir::CallImport(OP_BYTES_SCALAR_AT)); // [codepoint:i32]
+            out.push(Lir::LocalSet(cp_slot));
+            // in_range = codepoint != u32::MAX (0xFFFFFFFF).
+            out.push(Lir::LocalGet(cp_slot));
+            out.push(Lir::ConstI32(-1)); // 0xFFFFFFFF
+            out.push(Lir::I32Ne); // [codepoint != u32::MAX]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // Some(char): box the codepoint into a Char scalar cell (zero-extend into the box-int i64 cell).
+            out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
+            out.push(Lir::LocalGet(cp_slot));
+            out.push(Lir::I64ExtendI32U);
+            out.push(Lir::CallImport(OP_BOX_INT)); // [disc_some, boxed-char]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            out.push(Lir::Else);
+            emit_none_option(disc_none, out); // [None-handle]
+            out.push(Lir::End);
+            if reclaim {
+                // [Option] — drop the owned-temporary string now the borrow-read is done (recursively frees
+                // its cells → the census balances). `drop` pops the string; the Option result stays on top.
+                out.push(Lir::LocalGet(str_slot));
+                out.push(Lir::CallImport(OP_DROP)); // → [Option] (string reclaimed)
+            }
+            Ok(())
+        }
         Core::StrAt {
             string,
             index,
