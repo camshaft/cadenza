@@ -1636,6 +1636,17 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if def_sig_list_of(db, form).is_some() {
         return param_binder_before(db, form, name, from);
     }
+    // FAST-REJECT for the O(depth)-per-reference match-arm pole: everything below (Cases 5..6mg) fires
+    // only when `form` is a MATCH ARM, and every one binds a name written into the arm's PATTERN. If the
+    // load-time index knows `form` is an arm whose pattern has no `name` atom, no arm case can bind it —
+    // skip the ~20-case cascade and return `None` in O(1). A reference to a GLOBAL/prelude/ctor name
+    // (`Some`, `None`, `+`) is bound by no arm, so in a deeply-nested match it ascends O(depth) arms; this
+    // makes each such hop O(1) instead of running the full cascade (the measured resolve pole). SAFE: the
+    // index over-approximates the arm's bound names, so a name the arm CAN bind is never fast-rejected;
+    // an arm absent from the index (a synthesized β-copy) returns `false` here and takes the cascade.
+    if db.arm_cannot_bind(form, name) {
+        return None;
+    }
     // Case 5: `form` is a MATCH ARM `(pattern body)`, ascended from `body`, and `pattern` is a bare
     // BINDER name (not a literal, not `_`) equal to `name` → the binder binds the whole scrutinee for
     // this arm's body. The bound value IS the scrutinee, so a reference resolves to the scrutinee

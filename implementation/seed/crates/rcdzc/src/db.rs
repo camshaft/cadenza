@@ -1246,6 +1246,28 @@ pub struct Db {
     /// allocation on the hot resolve path.
     scope_binders: crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, StructId>>,
 
+    /// Per-MATCH-ARM pattern-name OVER-APPROXIMATION: `arm_form_occ → the set of every NAME atom that
+    /// appears anywhere in the arm's PATTERN region` (all children of the arm form except the last, which
+    /// is the body). Built once at load ([`build_arm_pattern_names`]).
+    ///
+    /// A match arm's `binder_in` cases (`resolve::binder_in` Cases 5/5g/6/6l/6r/6mr/6g/…) all bind a name
+    /// that occurs as a NAME atom in the arm's pattern (a whole-scrutinee binder, a variant/tuple/list/
+    /// record/map/bin payload binder, or a guard-cond binder — every one is written into the pattern). So
+    /// this set is a SUPERSET of the names the arm can bind. A lexical-scope walk ascends EVERY enclosing
+    /// binder, and in a DEEPLY-NESTED match (recursive-AST-walk shape) the vast majority of the ~20
+    /// per-arm case probes conclude "binds nothing" — a reference to a GLOBAL/prelude/ctor name (`Some`,
+    /// `None`, `+`) is bound by no arm, so it ran the whole `match_arm_*_binds`/`guard_cond_*_binds`
+    /// cascade at each of O(depth) enclosing arms before falling through to the prelude (measured: the arm
+    /// cascade was ~66% of resolve self-time, O(depth)-per-reference on a depth-N nested match). This set
+    /// lets `binder_in` fast-REJECT such a hop in O(1): if `name` is not in the arm's pattern-name set, no
+    /// arm case can bind it, so return `None` without the cascade. OVER-approximation is safe by
+    /// construction — a name genuinely bound is always in the set (it is a pattern atom), so a real
+    /// binding is never skipped; a spurious extra name only forgoes the skip (runs the cascade, which
+    /// returns the same result). Load-time arm patterns are immutable (arena lists are immutable;
+    /// desugars build fresh nodes with NEW ids that are absent from this map → they take the cascade), so
+    /// the load-time set stays a valid over-approximation for the arm ids it holds.
+    arm_pattern_names: crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashSet<String>>,
+
     /// Per-LET-BINDINGS-LIST binder index: `(bindings_list_occ, name) → the ASCENDING positions of that
     /// name's bare bindings + each one's value occurrence`. The `let` analog of [`scope_binders`].
     ///
@@ -2565,6 +2587,10 @@ impl Db {
         // Index each SCOPE FORM's parameter binders by name (last-wins), so `binder_in`'s per-reference
         // "does this scope declare `name`?" probe is O(1) rather than an O(params) signature scan.
         let scope_binders = build_scope_binders(&ast);
+        // Over-approximate each MATCH ARM's pattern name set, so a `binder_in` hop over an arm that cannot
+        // bind `name` (the common global/prelude/ctor reference in a deeply-nested match) fast-rejects in
+        // O(1) instead of running the ~20-case arm cascade — the O(depth)-per-reference resolve pole.
+        let arm_pattern_names = build_arm_pattern_names(&ast, &parent);
         // Index each let bindings-list's bare-name binders by name (ascending positions + value occ), so
         // `last_binder_named`'s per-reference reverse scan is O(log N) rather than an O(N) prefix walk — a
         // wide accumulation `let` was O(N²). Destructuring-pattern lists fall back to the linear scan.
@@ -2953,6 +2979,7 @@ impl Db {
             type_decl_by_occ_index,
             effect_decl_index,
             scope_binders,
+            arm_pattern_names,
             let_binder_index,
             do_binder_index,
             prelude,
@@ -3564,6 +3591,22 @@ impl Db {
                     stack.push(c);
                 }
             }
+        }
+    }
+
+    /// True iff `form` is an INDEXED match arm that PROVABLY cannot bind `name` — i.e. `name` does not
+    /// occur as a NAME atom anywhere in the arm's pattern region (all children except the body). Lets
+    /// `binder_in` fast-reject a scope-walk hop over such an arm in O(1), skipping the ~20-case arm
+    /// cascade. Returns `false` when `form` is not an indexed arm (e.g. a synthesized β-copy arm absent
+    /// from the load-time index, or any non-arm candidate) — then the caller runs the full cascade, which
+    /// is always correct. SAFE by construction: the index over-approximates the arm's bound names, so a
+    /// name the arm can genuinely bind is never reported as "cannot bind". See [`arm_pattern_names`].
+    ///
+    /// [`arm_pattern_names`]: Db::arm_pattern_names
+    pub fn arm_cannot_bind(&self, form: StructId, name: &str) -> bool {
+        match self.arm_pattern_names.get(&form) {
+            Some(names) => !names.contains(name),
+            None => false,
         }
     }
 
@@ -4981,6 +5024,67 @@ fn build_scope_binders(
         if !map.is_empty() {
             out.insert(form, map);
         }
+    }
+    out
+}
+
+/// Build the per-MATCH-ARM pattern-name over-approximation (`Db::arm_pattern_names`): for every match arm
+/// in the arena, the set of every NAME atom appearing in the arm's PATTERN region (all children except
+/// the body). A match arm is a tail element (other than the scrutinee) of a `(match …)` — the same shape
+/// [`is_binding_candidate`] recognizes for a match arm. The arm's binders (whole-scrutinee, variant/list/
+/// tuple/record/map/bin payload, guard-cond) are all written into the pattern, so the collected set is a
+/// SUPERSET of the names the arm can bind — an over-approximation that lets `binder_in` fast-reject a
+/// scope-walk hop whose `name` is absent, without running the ~20-case arm cascade.
+///
+/// The pattern region is "all children except the LAST": an unguarded arm is `(pattern body)` (child 0 =
+/// pattern) and a guarded arm is `((guard pat cond) body)` (child 0 = the guard, holding both pat and
+/// cond) — in both the body is the last child and every binder lives before it, so excluding only the
+/// last child keeps all binders while dropping the body's references (which would otherwise bloat the set
+/// and defeat the skip). One pass over the arena, each pattern node visited once (patterns are disjoint
+/// from the bodies that hold inner arms) → O(nodes) total.
+fn build_arm_pattern_names(
+    ast: &Arenas,
+    parent: &[Option<StructId>],
+) -> crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashSet<String>> {
+    // Collect every NAME atom in `node`'s subtree into `acc`.
+    fn collect_names(ast: &Arenas, node: StructId, acc: &mut crate::fxhash::FxHashSet<String>) {
+        if let Some(n) = ast.as_name(node) {
+            acc.insert(n.to_string());
+        }
+        if let Struct::List(children) = ast.get(node) {
+            for &c in children.iter() {
+                collect_names(ast, c, acc);
+            }
+        }
+    }
+
+    let mut out: crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashSet<String>> =
+        crate::fxhash::FxHashMap::default();
+    for i in 0..ast.structure.len() {
+        let form = StructId(i as u32);
+        // An arm is a tail element (≠ the scrutinee at tail position 0) of a `(match …)` — mirrors the
+        // match-arm branch of `is_binding_candidate` so coverage matches the scope-skip candidates.
+        let Some(p) = parent.get(i).copied().flatten() else {
+            continue;
+        };
+        let Some(tail) = ast.as_form(p, "match") else {
+            continue;
+        };
+        if tail.first().copied() == Some(form) || !tail.contains(&form) {
+            continue; // the scrutinee, or not a tail element of this match
+        }
+        // The arm form's children; the pattern region is all but the last (the body).
+        let Struct::List(children) = ast.get(form) else {
+            continue;
+        };
+        if children.len() < 2 {
+            continue; // a degenerate arm with no body — leave to the cascade
+        }
+        let mut names: crate::fxhash::FxHashSet<String> = crate::fxhash::FxHashSet::default();
+        for &c in &children[..children.len() - 1] {
+            collect_names(ast, c, &mut names);
+        }
+        out.insert(form, names);
     }
     out
 }
