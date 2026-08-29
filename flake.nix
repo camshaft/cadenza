@@ -2298,7 +2298,13 @@
                   echo "(the mapping is ${contractHashes}; check the name matches an @!contract source)" >&2
                   exit 1
                 fi
-                ${seedCompiler}/bin/cdz rewrite "#record((= contract \"${cname}\") ,@rest)" "#record((= contract \"$id\") ,@rest)" \
+                # POSITION-INDEPENDENT (v-nix 2026-08-29): match the contract field ANYWHERE in its record via
+                # ,@pre + ,@post — a `#record((= contract …) ,@rest)` (contract-FIRST) pattern MISSED specs where
+                # contract is not the first field (e.g. reducer-graph-cdz-forward `{ from, contract, to }`,
+                # pure-run-emit-then-close), leaving the NAME unresolved → the itest rejected "field contract has
+                # the wrong shape (expected a base62 contract-id)". ,@pre/,@post capture the surrounding fields so
+                # the rewrite fires regardless of position + preserves them.
+                ${seedCompiler}/bin/cdz rewrite "#record(,@pre (= contract \"${cname}\") ,@post)" "#record(,@pre (= contract \"$id\") ,@post)" \
                   run.ml --from ml --to ml > run.ml.next
                 mv run.ml.next run.ml
               '')
