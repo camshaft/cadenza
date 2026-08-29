@@ -28,3 +28,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# The AST value model + canonical binary codec the sidecar `Request`/`Query` encode/decode builds on
+# (`cadenza_ast::Builder` + `cadenza_ast::codec`). Taken with `default-features = false` = the `no_std`
+# + alloc CORE (no num-bigint / unicode-normalization), the same way `rcdzc` takes it, so this crate
+# stays dependency-light and the compile-boundary codec ports cleanly to the self-host.
+[dependencies.cadenza-ast]
+path = "../cadenza-ast"
+default-features = false

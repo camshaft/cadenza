@@ -1,14 +1,17 @@
-//! The sidecar request/query VOCABULARY — the `Request` (materialize an output column) and `Query`
-//! (read a fact column) enums that make up one sidecar request list. These are the pure TYPE contract
-//! both sides of the compiler boundary agree on: `rcdzc` decodes a request list + runs it, and `cdz`
-//! (in a `!standalone` build) builds the identical list to hand `cdz-compile`. The encode/decode CODEC
-//! for these (which builds on `cadenza_ast::Builder`) + the query IMPLEMENTATION (`run_query` over a
-//! live `Db`) stay in `rcdzc`; only the plain-data enums live here. `rcdzc` `pub use`s them, so
-//! `rcdzc::Request` / `rcdzc::Query` (and the `crate::sidecar::` paths) stay byte-stable.
+//! The sidecar request/query WIRE — the `Request` (materialize an output column) and `Query` (read a
+//! fact column) enums that make up one sidecar request list, plus the [`encode`]/[`decode`] CODEC that
+//! serializes a request list to/from the canonical binary AST (`cadenza_ast::codec`). This is the wire
+//! contract both sides of the compiler boundary agree on: `rcdzc` decodes a request list + runs it, and
+//! `cdz` (in a `!standalone` build) builds + encodes the identical list to hand `cdz-compile`. Only the
+//! query IMPLEMENTATION (`run_query`, which reads a live `Db`) stays in `rcdzc`; the vocabulary + its
+//! codec live here. `rcdzc` `pub use`s them, so `rcdzc::Request`/`Query`/`encode`/`decode` (and the
+//! `crate::sidecar::` paths) stay byte-stable.
 //!
 //! NOTE: the doc comments below reference `rcdzc`-internal producers (`layout::…`, `backend::…`) that
 //! describe HOW each variant is materialized; those intra-doc links resolve only in `rcdzc` (they are
 //! plain prose here). The sibling-variant / `Target` links resolve locally.
+
+use cadenza_ast::ast::{Arenas, Builder, IntValue, Leaf, Radix, Struct, StructId};
 
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
@@ -306,4 +309,234 @@ pub enum Query {
     /// runner's own validation all agree (drift-guard). TOTAL: a build with no cross-edge (single-file / no
     /// shared closure) reports the fold over the empty set (a defined, stable "no closure" hash), never errors.
     ClosureHash,
+}
+
+/// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
+/// caller turns that into a decline diagnostic), never a panic. Mirrors `codec::decode`'s discipline
+/// exactly so the format ports to the self-host.
+pub fn decode(bytes: &[u8]) -> Option<Vec<Request>> {
+    // The request list is a BINARY-AST value (operator ruling 2026-08-26: "the sidecar absolutely needs
+    // to use the binary AST" — not a bespoke tag+LEB128 vocabulary). Decode via the SAME `crate::codec`
+    // a program's AST uses — rcdzc's copy; a delegating `cdz` builds the byte-identical tree via
+    // cadenza-syntax's copy (copy-don't-depend, no shared crate). The ROOT is an `Ast.List` of per-request
+    // forms. Total: a malformed tree / unknown head / bad operand yields `None` (the caller declines).
+    let a = cadenza_ast::codec::decode(bytes)?;
+    let Struct::List(forms) = a.get(a.root).clone() else {
+        return None;
+    };
+    forms.iter().map(|&f| decode_request(&a, f)).collect()
+}
+
+/// Decode one request FORM: `(emit <target>)` | `(emit-tests…)` | `(query <selector> <args>…)`.
+fn decode_request(a: &Arenas, form: StructId) -> Option<Request> {
+    let Struct::List(children) = a.get(form) else {
+        return None;
+    };
+    Some(match a.as_name(*children.first()?)? {
+        "emit" => Request::Emit(target_from(a.as_name(*children.get(1)?)?)?),
+        "emit-tests" => Request::EmitTests,
+        "emit-tests-per-file" => Request::EmitTestsPerFile,
+        "emit-tests-composed" => Request::EmitTestsComposed,
+        "emit-tests-consumer-only" => Request::EmitTestsConsumerOnly,
+        "emit-tests-shred" => Request::EmitTestsShred,
+        "emit-tests-shred-standalone" => Request::EmitTestsShredStandalone,
+        "emit-tests-shred-two-stage" => Request::EmitTestsShredTwoStage,
+        "query" => Request::Query(decode_query(
+            a,
+            a.as_name(*children.get(1)?)?,
+            &children[2..],
+        )?),
+        _ => return None,
+    })
+}
+
+/// Map a `(query <selector> <args>…)` selector + operands to a `Query`. A NAME-arg query reads an
+/// `Ast.Str`; a NODE-arg query reads an `Ast.Int` (the `u32` StructId); a nullary query takes none.
+fn decode_query(a: &Arenas, selector: &str, args: &[StructId]) -> Option<Query> {
+    Some(match selector {
+        "type-of" => Query::TypeOf {
+            name: qname(a, args)?,
+        },
+        "uses-of" => Query::UsesOf {
+            name: qname(a, args)?,
+        },
+        "doc-of" => Query::DocOf {
+            name: qname(a, args)?,
+        },
+        "instantiations" => Query::Instantiations {
+            name: qname(a, args)?,
+        },
+        "type-at" => Query::TypeAt {
+            node: qnode(a, args)?,
+        },
+        "resolve-of" => Query::ResolveOf {
+            node: qnode(a, args)?,
+        },
+        "scope-at" => Query::ScopeAt {
+            node: qnode(a, args)?,
+        },
+        "doc-at" => Query::DocAt {
+            node: qnode(a, args)?,
+        },
+        "diagnostics" => Query::Diagnostics,
+        "highlight" => Query::Highlight,
+        "exports" => Query::Exports,
+        "exported-types" => Query::ExportedTypes,
+        "test-list" => Query::TestList,
+        "symbols" => Query::Symbols,
+        "param-manifest" => Query::ParamManifest,
+        "func-layout" => Query::FuncLayout,
+        "closure-hash" => Query::ClosureHash,
+        _ => return None,
+    })
+}
+
+/// A `(query <selector> "name")` operand — the first arg as an `Ast.Str`.
+fn qname(a: &Arenas, args: &[StructId]) -> Option<String> {
+    a.as_str(*args.first()?).map(str::to_string)
+}
+
+/// A `(query <selector> <node>)` operand — the first arg as an `Ast.Int` narrowed to a `u32` StructId.
+fn qnode(a: &Arenas, args: &[StructId]) -> Option<u32> {
+    u32::try_from(a.as_int(*args.first()?)?.to_i64()?).ok()
+}
+
+/// The `Target` an `(emit <target>)` selector names.
+fn target_from(name: &str) -> Option<crate::Target> {
+    use crate::Target;
+    Some(match name {
+        "wasm" => Target::Wasm,
+        "wasm-debug" => Target::WasmDebug,
+        "dwarf" => Target::Dwarf,
+        "rust" => Target::Rust,
+        "rust-async" => Target::RustAsync,
+        "cadenza" => Target::Cadenza,
+        _ => return None,
+    })
+}
+
+/// Encode a request list to its wire bytes — the counterpart to `decode`, used by a driver (and the
+/// tests) to build a sidecar input. `decode(encode(rs)) == rs`.
+pub fn encode(requests: &[Request]) -> Vec<u8> {
+    // Build the request list as a BINARY-AST value (root = an `Ast.List` of per-request forms) and encode
+    // it with the SAME `crate::codec` a program's AST uses — the counterpart to `decode`, so
+    // `decode(encode(rs)) == rs`, and byte-identical to the tree a delegating `cdz` builds via
+    // cadenza-syntax's codec copy.
+    let mut b = Builder::new();
+    let forms: Vec<StructId> = requests
+        .iter()
+        .map(|req| encode_request(&mut b, req))
+        .collect();
+    let root = b.list(forms);
+    cadenza_ast::codec::encode(&b.finish(root))
+}
+
+/// Build one request FORM: `(emit <target>)` | `(emit-tests…)` | `(query <selector> <args>…)`.
+fn encode_request(b: &mut Builder, req: &Request) -> StructId {
+    match req {
+        Request::Emit(t) => {
+            let head = b.name("emit");
+            let target = b.name(target_name(*t));
+            b.list(vec![head, target])
+        }
+        Request::EmitTests => nullary_form(b, "emit-tests"),
+        Request::EmitTestsPerFile => nullary_form(b, "emit-tests-per-file"),
+        Request::EmitTestsComposed => nullary_form(b, "emit-tests-composed"),
+        Request::EmitTestsConsumerOnly => nullary_form(b, "emit-tests-consumer-only"),
+        Request::EmitTestsShred => nullary_form(b, "emit-tests-shred"),
+        Request::EmitTestsShredStandalone => nullary_form(b, "emit-tests-shred-standalone"),
+        Request::EmitTestsShredTwoStage => nullary_form(b, "emit-tests-shred-two-stage"),
+        Request::Query(q) => encode_query(b, q),
+    }
+}
+
+/// A `(<head>)` form — an emit-tests variant with no operands.
+fn nullary_form(b: &mut Builder, head: &str) -> StructId {
+    let h = b.name(head);
+    b.list(vec![h])
+}
+
+/// Build a `(query <selector> <arg>…)` form: a NAME-arg query carries an `Ast.Str`, a NODE-arg query an
+/// `Ast.Int`, a nullary query none. Mirror-inverse of `decode_query`.
+fn encode_query(b: &mut Builder, q: &Query) -> StructId {
+    let (selector, arg): (&str, Option<StructId>) = match q {
+        Query::TypeOf { name } => ("type-of", Some(atom_str(b, name))),
+        Query::UsesOf { name } => ("uses-of", Some(atom_str(b, name))),
+        Query::DocOf { name } => ("doc-of", Some(atom_str(b, name))),
+        Query::Instantiations { name } => ("instantiations", Some(atom_str(b, name))),
+        Query::TypeAt { node } => ("type-at", Some(atom_int(b, *node))),
+        Query::ResolveOf { node } => ("resolve-of", Some(atom_int(b, *node))),
+        Query::ScopeAt { node } => ("scope-at", Some(atom_int(b, *node))),
+        Query::DocAt { node } => ("doc-at", Some(atom_int(b, *node))),
+        Query::Diagnostics => ("diagnostics", None),
+        Query::Highlight => ("highlight", None),
+        Query::Exports => ("exports", None),
+        Query::ExportedTypes => ("exported-types", None),
+        Query::TestList => ("test-list", None),
+        Query::Symbols => ("symbols", None),
+        Query::ParamManifest => ("param-manifest", None),
+        Query::FuncLayout => ("func-layout", None),
+        Query::ClosureHash => ("closure-hash", None),
+    };
+    let head = b.name("query");
+    let sel = b.name(selector);
+    let mut children = vec![head, sel];
+    children.extend(arg);
+    b.list(children)
+}
+
+/// The selector name for an `(emit <target>)` form.
+fn target_name(t: crate::Target) -> &'static str {
+    use crate::Target;
+    match t {
+        Target::Wasm => "wasm",
+        Target::WasmDebug => "wasm-debug",
+        Target::Dwarf => "dwarf",
+        Target::Rust => "rust",
+        Target::RustAsync => "rust-async",
+        Target::Cadenza => "cadenza",
+    }
+}
+
+/// An `Ast.Str` leaf atom for a query name operand.
+fn atom_str(b: &mut Builder, s: &str) -> StructId {
+    b.atom_leaf(Leaf::Str(s.into()))
+}
+
+/// An `Ast.Int` leaf atom (decimal) for a query node-id operand.
+fn atom_int(b: &mut Builder, n: u32) -> StructId {
+    b.atom_leaf(Leaf::Int {
+        value: IntValue::from_i64(i64::from(n)),
+        radix: Radix::Dec,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Round-trips over the encode/decode codec now that it lives here — one representative Emit(Target),
+    // a nullary EmitTests* variant, and a Query with a String and a u32 operand. Mirrors the discipline
+    // of rcdzc's fuller sidecar round-trip suite (which still exercises this codec through the re-export).
+    #[test]
+    fn encode_decode_round_trips_representative_requests() {
+        let requests = vec![
+            Request::Emit(crate::Target::Wasm),
+            Request::EmitTestsShred,
+            Request::Query(Query::TypeOf {
+                name: "foo".to_string(),
+            }),
+            Request::Query(Query::TypeAt { node: 42 }),
+            Request::Query(Query::TestList),
+        ];
+        assert_eq!(decode(&encode(&requests)), Some(requests));
+    }
+
+    #[test]
+    fn decode_rejects_malformed_bytes() {
+        // Total decode: garbage yields None (a decline), never a panic.
+        assert_eq!(decode(&[0xff, 0xff, 0xff, 0xff]), None);
+        // An empty request list round-trips to the empty vec.
+        assert_eq!(decode(&encode(&[])), Some(vec![]));
+    }
 }

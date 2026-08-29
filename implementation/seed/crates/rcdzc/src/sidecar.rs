@@ -55,7 +55,7 @@
 //! Total decode (the codec's discipline): a malformed tree / unknown head / bad operand is a DECLINE (a
 //! diagnostic), never a panic or a silent drop — reject-don't-miscompile at the tool edge.
 
-use crate::ast::{Arenas, Builder, CompoundCtor, IntValue, Leaf, Radix, Struct, StructId};
+use crate::ast::{Builder, CompoundCtor, Leaf, Struct, StructId};
 use crate::db::Db;
 use crate::resolved::Resolved;
 
@@ -172,204 +172,18 @@ pub const KIND_SHRED_MANIFEST: &str = "shred-manifest";
 // resolving. The encode/decode CODEC below + the `run_query` IMPLEMENTATION (over a live `Db`) stay.
 pub use cadenza_compile_abi::{Query, Request};
 
-/// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
-/// caller turns that into a decline diagnostic), never a panic. Mirrors `codec::decode`'s discipline
-/// exactly so the format ports to the self-host.
-pub fn decode(bytes: &[u8]) -> Option<Vec<Request>> {
-    // The request list is a BINARY-AST value (operator ruling 2026-08-26: "the sidecar absolutely needs
-    // to use the binary AST" — not a bespoke tag+LEB128 vocabulary). Decode via the SAME `crate::codec`
-    // a program's AST uses — rcdzc's copy; a delegating `cdz` builds the byte-identical tree via
-    // cadenza-syntax's copy (copy-don't-depend, no shared crate). The ROOT is an `Ast.List` of per-request
-    // forms. Total: a malformed tree / unknown head / bad operand yields `None` (the caller declines).
-    let a = crate::codec::decode(bytes)?;
-    let Struct::List(forms) = a.get(a.root).clone() else {
-        return None;
-    };
-    forms.iter().map(|&f| decode_request(&a, f)).collect()
-}
+// The `Request`/`Query` encode/decode CODEC now lives in the shared `cadenza-compile-abi` crate (moved
+// alongside the request/query vocabulary — the compile-boundary wire `cdz` and `rcdzc` agree on). Re-
+// exported here so `crate::sidecar::encode`/`decode` and `rcdzc::encode`/`decode` stay byte-stable and
+// every caller keeps resolving. `run_query` + `diagnostics_wire` (below) stay in `rcdzc`; `run_query`
+// builds its result AST values with the small `atom_str` helper kept here (the codec has its own copy).
+pub use cadenza_compile_abi::{decode, encode};
 
-/// Decode one request FORM: `(emit <target>)` | `(emit-tests…)` | `(query <selector> <args>…)`.
-fn decode_request(a: &Arenas, form: StructId) -> Option<Request> {
-    let Struct::List(children) = a.get(form) else {
-        return None;
-    };
-    Some(match a.as_name(*children.first()?)? {
-        "emit" => Request::Emit(target_from(a.as_name(*children.get(1)?)?)?),
-        "emit-tests" => Request::EmitTests,
-        "emit-tests-per-file" => Request::EmitTestsPerFile,
-        "emit-tests-composed" => Request::EmitTestsComposed,
-        "emit-tests-consumer-only" => Request::EmitTestsConsumerOnly,
-        "emit-tests-shred" => Request::EmitTestsShred,
-        "emit-tests-shred-standalone" => Request::EmitTestsShredStandalone,
-        "emit-tests-shred-two-stage" => Request::EmitTestsShredTwoStage,
-        "query" => Request::Query(decode_query(
-            a,
-            a.as_name(*children.get(1)?)?,
-            &children[2..],
-        )?),
-        _ => return None,
-    })
-}
-
-/// Map a `(query <selector> <args>…)` selector + operands to a `Query`. A NAME-arg query reads an
-/// `Ast.Str`; a NODE-arg query reads an `Ast.Int` (the `u32` StructId); a nullary query takes none.
-fn decode_query(a: &Arenas, selector: &str, args: &[StructId]) -> Option<Query> {
-    Some(match selector {
-        "type-of" => Query::TypeOf {
-            name: qname(a, args)?,
-        },
-        "uses-of" => Query::UsesOf {
-            name: qname(a, args)?,
-        },
-        "doc-of" => Query::DocOf {
-            name: qname(a, args)?,
-        },
-        "instantiations" => Query::Instantiations {
-            name: qname(a, args)?,
-        },
-        "type-at" => Query::TypeAt {
-            node: qnode(a, args)?,
-        },
-        "resolve-of" => Query::ResolveOf {
-            node: qnode(a, args)?,
-        },
-        "scope-at" => Query::ScopeAt {
-            node: qnode(a, args)?,
-        },
-        "doc-at" => Query::DocAt {
-            node: qnode(a, args)?,
-        },
-        "diagnostics" => Query::Diagnostics,
-        "highlight" => Query::Highlight,
-        "exports" => Query::Exports,
-        "exported-types" => Query::ExportedTypes,
-        "test-list" => Query::TestList,
-        "symbols" => Query::Symbols,
-        "param-manifest" => Query::ParamManifest,
-        "func-layout" => Query::FuncLayout,
-        "closure-hash" => Query::ClosureHash,
-        _ => return None,
-    })
-}
-
-/// A `(query <selector> "name")` operand — the first arg as an `Ast.Str`.
-fn qname(a: &Arenas, args: &[StructId]) -> Option<String> {
-    a.as_str(*args.first()?).map(str::to_string)
-}
-
-/// A `(query <selector> <node>)` operand — the first arg as an `Ast.Int` narrowed to a `u32` StructId.
-fn qnode(a: &Arenas, args: &[StructId]) -> Option<u32> {
-    u32::try_from(a.as_int(*args.first()?)?.to_i64()?).ok()
-}
-
-/// The `Target` an `(emit <target>)` selector names.
-fn target_from(name: &str) -> Option<crate::backend::Target> {
-    use crate::backend::Target;
-    Some(match name {
-        "wasm" => Target::Wasm,
-        "wasm-debug" => Target::WasmDebug,
-        "dwarf" => Target::Dwarf,
-        "rust" => Target::Rust,
-        "rust-async" => Target::RustAsync,
-        "cadenza" => Target::Cadenza,
-        _ => return None,
-    })
-}
-
-/// Encode a request list to its wire bytes — the counterpart to `decode`, used by a driver (and the
-/// tests) to build a sidecar input. `decode(encode(rs)) == rs`.
-pub fn encode(requests: &[Request]) -> Vec<u8> {
-    // Build the request list as a BINARY-AST value (root = an `Ast.List` of per-request forms) and encode
-    // it with the SAME `crate::codec` a program's AST uses — the counterpart to `decode`, so
-    // `decode(encode(rs)) == rs`, and byte-identical to the tree a delegating `cdz` builds via
-    // cadenza-syntax's codec copy.
-    let mut b = Builder::new();
-    let forms: Vec<StructId> = requests
-        .iter()
-        .map(|req| encode_request(&mut b, req))
-        .collect();
-    let root = b.list(forms);
-    crate::codec::encode(&b.finish(root))
-}
-
-/// Build one request FORM: `(emit <target>)` | `(emit-tests…)` | `(query <selector> <args>…)`.
-fn encode_request(b: &mut Builder, req: &Request) -> StructId {
-    match req {
-        Request::Emit(t) => {
-            let head = b.name("emit");
-            let target = b.name(target_name(*t));
-            b.list(vec![head, target])
-        }
-        Request::EmitTests => nullary_form(b, "emit-tests"),
-        Request::EmitTestsPerFile => nullary_form(b, "emit-tests-per-file"),
-        Request::EmitTestsComposed => nullary_form(b, "emit-tests-composed"),
-        Request::EmitTestsConsumerOnly => nullary_form(b, "emit-tests-consumer-only"),
-        Request::EmitTestsShred => nullary_form(b, "emit-tests-shred"),
-        Request::EmitTestsShredStandalone => nullary_form(b, "emit-tests-shred-standalone"),
-        Request::EmitTestsShredTwoStage => nullary_form(b, "emit-tests-shred-two-stage"),
-        Request::Query(q) => encode_query(b, q),
-    }
-}
-
-/// A `(<head>)` form — an emit-tests variant with no operands.
-fn nullary_form(b: &mut Builder, head: &str) -> StructId {
-    let h = b.name(head);
-    b.list(vec![h])
-}
-
-/// Build a `(query <selector> <arg>…)` form: a NAME-arg query carries an `Ast.Str`, a NODE-arg query an
-/// `Ast.Int`, a nullary query none. Mirror-inverse of `decode_query`.
-fn encode_query(b: &mut Builder, q: &Query) -> StructId {
-    let (selector, arg): (&str, Option<StructId>) = match q {
-        Query::TypeOf { name } => ("type-of", Some(atom_str(b, name))),
-        Query::UsesOf { name } => ("uses-of", Some(atom_str(b, name))),
-        Query::DocOf { name } => ("doc-of", Some(atom_str(b, name))),
-        Query::Instantiations { name } => ("instantiations", Some(atom_str(b, name))),
-        Query::TypeAt { node } => ("type-at", Some(atom_int(b, *node))),
-        Query::ResolveOf { node } => ("resolve-of", Some(atom_int(b, *node))),
-        Query::ScopeAt { node } => ("scope-at", Some(atom_int(b, *node))),
-        Query::DocAt { node } => ("doc-at", Some(atom_int(b, *node))),
-        Query::Diagnostics => ("diagnostics", None),
-        Query::Highlight => ("highlight", None),
-        Query::Exports => ("exports", None),
-        Query::ExportedTypes => ("exported-types", None),
-        Query::TestList => ("test-list", None),
-        Query::Symbols => ("symbols", None),
-        Query::ParamManifest => ("param-manifest", None),
-        Query::FuncLayout => ("func-layout", None),
-        Query::ClosureHash => ("closure-hash", None),
-    };
-    let head = b.name("query");
-    let sel = b.name(selector);
-    let mut children = vec![head, sel];
-    children.extend(arg);
-    b.list(children)
-}
-
-/// The selector name for an `(emit <target>)` form.
-fn target_name(t: crate::backend::Target) -> &'static str {
-    use crate::backend::Target;
-    match t {
-        Target::Wasm => "wasm",
-        Target::WasmDebug => "wasm-debug",
-        Target::Dwarf => "dwarf",
-        Target::Rust => "rust",
-        Target::RustAsync => "rust-async",
-        Target::Cadenza => "cadenza",
-    }
-}
-
-/// An `Ast.Str` leaf atom for a query name operand.
+/// An `Ast.Str` leaf atom — a tiny `Builder` helper the query engine (`run_query`) uses to build a
+/// query result's AST value. The request/query codec keeps its own copy in `cadenza-compile-abi`; this
+/// serves the STAYING query-result construction, so neither crate reaches across the boundary for it.
 fn atom_str(b: &mut Builder, s: &str) -> StructId {
     b.atom_leaf(Leaf::Str(s.into()))
-}
-
-/// An `Ast.Int` leaf atom (decimal) for a query node-id operand.
-fn atom_int(b: &mut Builder, n: u32) -> StructId {
-    b.atom_leaf(Leaf::Int {
-        value: IntValue::from_i64(i64::from(n)),
-        radix: Radix::Dec,
-    })
 }
 
 /// Run one `Query` against the loaded `Db`, producing its answer as UTF-8 text bytes. This is the
