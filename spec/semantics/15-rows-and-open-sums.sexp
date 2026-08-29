@@ -168,7 +168,7 @@
            `(Record.project (record (a 1) (b 2) (c 3)) (a c))` keeps `a` and `c`, dropping `b`, yielding
            the closed record `(record (a 1) (c 3))`. The result renders in canonical key-sorted order.")
   (input  (Record.project #record((= a 1) (= b 2) (= c 3)) (a c)))
-  (output (: (record (= a 1) (= c 3)) (Record (: a Int64) (: c Int64)))))
+  (output (: #record((= a 1) (= c 3)) (Record (: a Int64) (: c Int64)))))
 
 (case "a row op over a constant record folds through a single-use let binding"
   (doc    "Witnesses type-system.md #A Record Is Restricted To A Named Set Of Its Fields (the compile-time
@@ -254,7 +254,7 @@
            (record (a 1) (b 2) (c 3)) (b))` drops `b`, yielding `(record (a 1) (c 3))` — the complement of
            projecting the fields kept.")
   (input  (Record.without #record((= a 1) (= b 2) (= c 3)) (b)))
-  (output (: (record (= a 1) (= c 3)) (Record (: a Int64) (: c Int64)))))
+  (output (: #record((= a 1) (= c 3)) (Record (: a Int64) (: c Int64)))))
 
 (case "dropping an absent field from a record is rejected"
   (doc    "Witnesses type-system.md #A Record Is Reduced By Dropping A Named Set Of Its Fields (2nd

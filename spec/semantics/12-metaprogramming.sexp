@@ -75,10 +75,10 @@
            Renders the exact deferred shape. A compiler that spliced the level-2 unquote would embed
            `(Ast.Int 7)` where `(Ast.Name \"x\")` must stand.")
   (input  (let ((x 7)) `(a `(b ,x))))
-  (output (: (Ast.List (list (Ast.Name "a")
-                             (Ast.List (list (Ast.Name "quasiquote")
-                                             (Ast.List (list (Ast.Name "b")
-                                                             (Ast.List (list (Ast.Name "unquote") (Ast.Name "x")))))))))
+  (output (: ((. Ast List) #list(((. Ast Name) "a")
+                               ((. Ast List) #list(((. Ast Name) "quasiquote")
+                                                   ((. Ast List) #list(((. Ast Name) "b")
+                                                                       ((. Ast List) #list(((. Ast Name) "unquote") ((. Ast Name) "x")))))))))
              Ast)))
 
 (case "nested quasiquote: a level-2 deferred unquote is INDEPENDENT of the enclosing binding"
