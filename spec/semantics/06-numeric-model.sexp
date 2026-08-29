@@ -12661,6 +12661,17 @@
   (error CDZ0301 (message "no implicit conversion") (message "Float64") (message "Int64")
                  (fix (kind wrap) (replacement "(Float64.of-int …)") (unverified))))
 
+(case "a NARROWER integer operand to a float operator nests the Int64 widening in the of-int wrap"
+  (doc "`of-int : Int64 → Float` takes EXACTLY Int64. For a NARROWER second operand (`x : Int32`) mixed with a
+        leading float under the ONE arithmetic operator (`(+ 2.0 x)`, conform-second-to-first), a bare
+        `(Float64.of-int x)` would ITSELF fail (Int32 ≠ Int64), so the fix must first WIDEN: `(Float64.of-int
+        (Int64.of x))` — a suggested fix must resolve the fault in ONE shot, not cascade. The OPERATOR-position
+        twin of the annotation-position `(: n Float64)` n:Int32 nested case below. From rcdzc
+        a_narrower_int_operand_to_a_float_operator_nests_the_int64_widening.")
+  (input (do (def (f (: x Int32)) (+ 2.0 x)) (export f)))
+  (error CDZ0301 (message "no implicit conversion")
+                 (fix (kind wrap) (replacement "(Float64.of-int (Int64.of …))") (unverified))))
+
 ; ── annotation-position int-width coercion FIX (migrated from rcdzc an_int_annotation_mismatch_offers_an_of_conversion_fix) ──
 ; An `(: value T)` annotation whose value is a DIFFERENT integer width than T is CDZ0203 (no silent
 ; promotion), repaired by WRAPPING the value in the annotation type's checked `.of` — the annotation-position

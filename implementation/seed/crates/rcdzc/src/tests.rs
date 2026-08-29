@@ -23327,26 +23327,13 @@ mod diagnostics {
         );
     }
 
-    #[test]
-    fn a_narrower_int_operand_to_a_float_operator_nests_the_int64_widening() {
-        // `of-int : Int64 → Float` — it takes EXACTLY Int64. For a NARROWER second operand (`x : Int32`)
-        // mixed with a leading float under the ONE arithmetic operator (`(+ 2.0 x)`, conform-second-to-
-        // first), a bare `(Float64.of-int x)` would ITSELF fail (Int32 ≠ Int64), so the fix must first
-        // widen: `(Float64.of-int (Int64.of x))`. This is the correctness fix for the D7 gap — a suggested
-        // fix must resolve the fault in ONE shot, not cascade to the next mismatch.
-        let d = first_error("(module m (def (f (: x Int32)) (+ 2.0 x)) (export f))");
-        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
-        assert_eq!(
-            d.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some(format!(
-                "(Float64.of-int (Int64.of {}))",
-                crate::abi::WRAP_HOLE
-            ))
-            .as_deref(),
-            "a narrower int nests the Int64 widening: {}",
-            d.message
-        );
-    }
+    // (a_narrower_int_operand_to_a_float_operator_nests_the_int64_widening migrated to corpus 06-numeric-model:
+    // "a NARROWER integer operand to a float operator nests the Int64 widening in the of-int wrap"
+    // ((+ 2.0 x), x:Int32 → CDZ0301 (message "no implicit conversion")(fix (kind wrap)
+    // (replacement "(Float64.of-int (Int64.of …))")) — a bare (Float64.of-int x) would itself fail since
+    // of-int takes Int64, so the one-shot fix widens first). --case grades code+message; the nested
+    // replacement facet is graded by nix corpus-grade (identical to the landed annotation-position sibling
+    // "a non-literal NARROWER integer annotated a float nests the Int64 widening in the of-int wrap").)
 
     // (a_non_numeric_mismatch_to_a_float_operator_carries_no_coercion_fix migrated to corpus 06-numeric-model
     //  "a non-numeric operand mixed with a float operator carries NO coercion fix" (CDZ0203 (no-fix)).)
