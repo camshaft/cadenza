@@ -3383,7 +3383,7 @@
   (call   main (: 55296 Int64)) (output (: -1 Int64))
   (call   main (: 1114112 Int64)) (output (: -1 Int64))
   (call   main (: -1 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a char literal naming a surrogate is a reader error"
   (doc    "`#\\u+D800` names U+D800, a high surrogate — NOT a Unicode scalar value — so the char literal
@@ -3693,7 +3693,7 @@
   (call   main (: 97 Int64)) (output (: 1 Int64))
   (call   main (: 98 Int64)) (output (: 2 Int64))
   (call   main (: 99 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; --- String operations at RUN TIME: a string not fixed at compile time ---------------------------------
 ; The string cases above operate on CONSTANT string literals, so their lengths / slices / concatenations
