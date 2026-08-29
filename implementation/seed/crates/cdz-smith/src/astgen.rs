@@ -361,7 +361,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(16) {
+    match c.variant(17) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -399,6 +399,10 @@ fn gen_main_body<C: Choice>(
         // A FLOAT-ORDERING body: `main : Bool` from a float comparison `(< f f)` / `> / <= / >=` — the
         // IEEE float ordering (#5519) as the RETURNED value (my float bodies only used it in `if` guards).
         15 => gen_float_ordering_body(c, out),
+        // A COMPOUND-KEYED set/map body: a set or map whose KEYS are `(tuple …)` compounds, consumed to
+        // Int64 via `Set.len` / `Map.len` / `Set.insert` — the structural total order over compound values
+        // that #5540 grades (my set/map arm only used scalar keys via `pick_hashable_ty`).
+        16 => gen_compound_keyed_collection_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1125,6 +1129,34 @@ fn gen_float_ordering_body<C: Choice>(c: &mut C, out: &mut String) {
     out.push(' ');
     gen_float_lit(c, is_f32, out);
     out.push(')');
+}
+
+/// A COMPOUND-KEYED collection body: a set or map whose KEYS are `(tuple …)` compounds (not scalars),
+/// consumed to Int64 via `Set.len` / `Map.len` / `Set.insert`. Reaches the structural total order over
+/// COMPOUND values + `Set.insert` that #5540 grades — my scalar-only `pick_hashable_ty` set/map arm never
+/// used a compound key. The two keys have DISJOINT first elements (0..=9 vs 20..=29), so they are always
+/// distinct compounds → a deterministic `.len` (no dedup ambiguity).
+fn gen_compound_keyed_collection_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the FORM before consuming the operand choices (variant-ordering).
+    let form = c.variant(3);
+    let (a, b) = (c.int_bounded(0, 9), c.int_bounded(0, 9));
+    let (cc, d) = (c.int_bounded(20, 29), c.int_bounded(20, 29));
+    match form {
+        // A set with two DISTINCT tuple keys → `Set.len` = 2.
+        0 => write!(out, "(Set.len #set((tuple {a} {b}) (tuple {cc} {d})))").ok(),
+        // `Set.insert` a distinct tuple key into a one-key set → `Set.len` = 2.
+        1 => write!(
+            out,
+            "(Set.len (Set.insert #set((tuple {a} {b})) (tuple {cc} {d})))"
+        )
+        .ok(),
+        // A map keyed by two DISTINCT tuple keys → `Map.len` = 2.
+        _ => write!(
+            out,
+            "(Map.len #map((= (tuple {a} {b}) {a}) (= (tuple {cc} {d}) {cc})))"
+        )
+        .ok(),
+    };
 }
 
 /// A MUTUALLY-RECURSIVE program: two TOP-LEVEL sibling defs that call EACH OTHER, plus a param-less `main`
@@ -2191,6 +2223,36 @@ mod tests {
             4,
             "should reach all four ordering relations"
         );
+    }
+
+    /// `gen_compound_keyed_collection_body` REACHES all three forms (compound-keyed set, `Set.insert`,
+    /// compound-keyed map) and every body COMPILES (S154: sets/maps keyed by `(tuple …)` compounds — the
+    /// structural total order over compound values #5540 grades).
+    #[test]
+    fn gen_compound_keyed_collection_body_reaches_all_forms_and_compiles() {
+        let (mut saw_set, mut saw_insert, mut saw_map) = (false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1409);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_compound_keyed_collection_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_insert |= body.contains("Set.insert");
+            saw_set |= body.starts_with("(Set.len #set(");
+            saw_map |= body.contains("Map.len");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "compound-keyed collection body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_set, "should reach a compound-keyed set (Set.len #set)");
+        assert!(saw_insert, "should reach a Set.insert form");
+        assert!(saw_map, "should reach a compound-keyed map (Map.len)");
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
