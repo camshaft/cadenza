@@ -2072,10 +2072,10 @@ fn dispatch_compile_args(args: compiler_cli::CompileArgs) -> ExitCode {
 /// compiler in-process (`compiler_cli::run_prepared`). The delegated path is behavior-identical because
 /// `cdz-compile` runs the same `run_prepared` over the same artifacts (located diagnostics included).
 fn dispatch_compile_prepared(
-    inputs: Vec<rcdzc::Artifact>,
-    targets: &[rcdzc::Target],
+    inputs: Vec<cadenza_compile_abi::Artifact>,
+    targets: &[cadenza_compile_abi::Target],
     out: Option<PathBuf>,
-    opt_level: rcdzc::OptLevel,
+    opt_level: cadenza_compile_abi::OptLevel,
     overflow: rcdzc::db::OverflowSpec,
 ) -> ExitCode {
     #[cfg(not(feature = "standalone"))]
@@ -2151,24 +2151,24 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
     // wasm compile (verified byte-identical), so attaching them unconditionally is free. (An explicit
     // `spans:` input still works and takes precedence for its own program.)
     let targets = args.targets();
-    let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
+    let mut inputs: Vec<cadenza_compile_abi::Artifact> = Vec::new();
     for spec in &specs {
         if is_source_file(spec) {
             // Parse the source in-process, keeping the span table (the whole-program form, as the gate
             // and the semantic queries use).
             let (source, arenas, spantable) = load_spanned_or_bail!(spec);
             let name = program_name(spec);
-            inputs.push(rcdzc::Artifact::new(
-                rcdzc::Artifact::KIND_AST,
+            inputs.push(cadenza_compile_abi::Artifact::new(
+                cadenza_compile_abi::Artifact::KIND_AST,
                 name.clone(),
                 cadenza_syntax::codec::encode(&arenas),
             ));
             {
                 let span_data = span_data_of(spec, &source, &spantable);
-                inputs.push(rcdzc::Artifact::new(
-                    rcdzc::spans::KIND_SPANS,
+                inputs.push(cadenza_compile_abi::Artifact::new(
+                    cadenza_compile_abi::spans::KIND_SPANS,
                     name,
-                    rcdzc::spans::encode(&span_data),
+                    cadenza_compile_abi::spans::encode(&span_data),
                 ));
             }
         } else {
@@ -2217,24 +2217,24 @@ fn compile_source_specs(
     specs: &[String],
     entry: Option<&str>,
     out: Option<PathBuf>,
-    targets: &[rcdzc::Target],
-    opt_level: rcdzc::OptLevel,
+    targets: &[cadenza_compile_abi::Target],
+    opt_level: cadenza_compile_abi::OptLevel,
     overflow: rcdzc::db::OverflowSpec,
 ) -> ExitCode {
-    let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
+    let mut inputs: Vec<cadenza_compile_abi::Artifact> = Vec::new();
     for spec in specs {
         let (source, arenas, spantable) = load_spanned_or_bail!(spec);
         let name = program_name(spec);
-        inputs.push(rcdzc::Artifact::new(
-            rcdzc::Artifact::KIND_AST,
+        inputs.push(cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::Artifact::KIND_AST,
             name.clone(),
             cadenza_syntax::codec::encode(&arenas),
         ));
         let span_data = span_data_of(spec, &source, &spantable);
-        inputs.push(rcdzc::Artifact::new(
-            rcdzc::spans::KIND_SPANS,
+        inputs.push(cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::spans::KIND_SPANS,
             name,
-            rcdzc::spans::encode(&span_data),
+            cadenza_compile_abi::spans::encode(&span_data),
         ));
     }
     if let Some(entry) = entry {
@@ -2268,7 +2268,7 @@ fn run_build(args: &BuildArgs) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-    let targets = [rcdzc::Target::from(args.target)];
+    let targets = [cadenza_compile_abi::Target::from(args.target)];
     compile_source_specs(
         &project.specs,
         Some(&project.entry_name),
@@ -2288,7 +2288,7 @@ fn run_build(args: &BuildArgs) -> ExitCode {
 fn compile_project_component_bytes(
     specs: &[String],
     entry: &str,
-    opt_level: rcdzc::OptLevel,
+    opt_level: cadenza_compile_abi::OptLevel,
     overflow: rcdzc::db::OverflowSpec,
 ) -> Result<Option<Vec<u8>>, ()> {
     compile_project_component_bytes_named(specs, entry, opt_level, overflow, None)
@@ -2300,11 +2300,11 @@ fn compile_project_component_bytes(
 fn compile_project_component_bytes_named(
     specs: &[String],
     entry: &str,
-    opt_level: rcdzc::OptLevel,
+    opt_level: cadenza_compile_abi::OptLevel,
     overflow: rcdzc::db::OverflowSpec,
     component_name: Option<&str>,
 ) -> Result<Option<Vec<u8>>, ()> {
-    let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
+    let mut inputs: Vec<cadenza_compile_abi::Artifact> = Vec::new();
     for spec in specs {
         let (source, arenas, spantable) = match load_program_spanned(spec) {
             Ok(t) => t,
@@ -2314,16 +2314,16 @@ fn compile_project_component_bytes_named(
             }
         };
         let name = program_name(spec);
-        inputs.push(rcdzc::Artifact::new(
-            rcdzc::Artifact::KIND_AST,
+        inputs.push(cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::Artifact::KIND_AST,
             name.clone(),
             cadenza_syntax::codec::encode(&arenas),
         ));
         let span_data = span_data_of(spec, &source, &spantable);
-        inputs.push(rcdzc::Artifact::new(
-            rcdzc::spans::KIND_SPANS,
+        inputs.push(cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::spans::KIND_SPANS,
             name,
-            rcdzc::spans::encode(&span_data),
+            cadenza_compile_abi::spans::encode(&span_data),
         ));
     }
     inputs.push(compiler_cli::entry_artifact(entry));
@@ -2340,8 +2340,8 @@ fn compile_project_component_bytes_named(
 /// build (`cdz run`/`test`) stays behavior-identical across the two builds. `Ok(Some(bytes))` = a
 /// component was produced; `Ok(None)` = compiled but none; `Err(())` = a reported compile failure.
 fn dispatch_project_to_bytes(
-    inputs: Vec<rcdzc::Artifact>,
-    opt_level: rcdzc::OptLevel,
+    inputs: Vec<cadenza_compile_abi::Artifact>,
+    opt_level: cadenza_compile_abi::OptLevel,
     overflow: rcdzc::db::OverflowSpec,
 ) -> Result<Option<Vec<u8>>, ()> {
     #[cfg(not(feature = "standalone"))]
@@ -2354,7 +2354,7 @@ fn dispatch_project_to_bytes(
         let out = rcdzc::run_with_compiler_stack(|| {
             rcdzc::compile_with_opt_and_overflow(
                 &inputs,
-                &[rcdzc::Target::Wasm],
+                &[cadenza_compile_abi::Target::Wasm],
                 opt_level,
                 overflow,
             )
@@ -2567,7 +2567,7 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
 /// any dep-resolve/build failure; the caller cleans up whatever temps were produced.
 fn build_path_deps(
     project: &ProjectSpecs,
-    opt_level: rcdzc::OptLevel,
+    opt_level: cadenza_compile_abi::OptLevel,
     overflow: rcdzc::db::OverflowSpec,
 ) -> Result<Vec<(String, std::path::PathBuf)>, ()> {
     // Delegate to the fallible core; on ANY error, clean up the temp dep components already written so a
@@ -2589,7 +2589,7 @@ fn build_path_deps(
 /// Kept separate so the wrapper can clean up `peers`' temps on an error return (no leak on mid-failure).
 fn build_path_deps_into(
     project: &ProjectSpecs,
-    opt_level: rcdzc::OptLevel,
+    opt_level: cadenza_compile_abi::OptLevel,
     overflow: rcdzc::db::OverflowSpec,
     peers: &mut Vec<(String, std::path::PathBuf)>,
 ) -> Result<(), ()> {
@@ -2971,7 +2971,7 @@ fn resolve_build_opt_level(
     args: &BuildArgs,
     manifest_opt_level: Option<&str>,
     mpath: &std::path::Path,
-) -> Result<rcdzc::OptLevel, String> {
+) -> Result<cadenza_compile_abi::OptLevel, String> {
     resolve_opt_level_precedence(
         args.opt_level.as_deref(),
         args.release,
@@ -2990,19 +2990,20 @@ fn resolve_opt_level_precedence(
     release: bool,
     manifest_opt_level: Option<&str>,
     mpath: &std::path::Path,
-) -> Result<rcdzc::OptLevel, String> {
+) -> Result<cadenza_compile_abi::OptLevel, String> {
     use std::str::FromStr;
     if let Some(s) = flag_opt_level {
-        return rcdzc::OptLevel::from_str(s).map_err(|e| format!("--opt-level `{s}`: {e}"));
+        return cadenza_compile_abi::OptLevel::from_str(s)
+            .map_err(|e| format!("--opt-level `{s}`: {e}"));
     }
     if let Some(s) = manifest_opt_level {
-        return rcdzc::OptLevel::from_str(s)
+        return cadenza_compile_abi::OptLevel::from_str(s)
             .map_err(|e| format!("{}: `opt-level` `{s}`: {e}", mpath.display()));
     }
     if release {
-        return Ok(rcdzc::OptLevel::O2);
+        return Ok(cadenza_compile_abi::OptLevel::O2);
     }
-    Ok(rcdzc::OptLevel::default())
+    Ok(cadenza_compile_abi::OptLevel::default())
 }
 
 /// The GLOBAL overflow policy a `Project.cdz` manifest declares, as the `rcdzc::db::OverflowSpec` the
@@ -3664,9 +3665,9 @@ fn clean_output_stems(entry_file: Option<&str>) -> Vec<String> {
     };
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::Exports),
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Exports),
     );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_EXPORTS) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_EXPORTS) else {
         return Vec::new();
     };
     // Each line is `name<TAB>type<TAB>def-node`. The output component is named after the export; collect
@@ -4640,17 +4641,17 @@ struct Precompiled {
 /// HIT; folding to one emit pays it once. Best-effort throughout: a decline yields `(None, [])` and every file
 /// in the group falls back to its own `EmitTests`.
 fn precompile_group(
-    ast_inputs: Vec<rcdzc::Artifact>,
+    ast_inputs: Vec<cadenza_compile_abi::Artifact>,
     entry: &str,
     cache_dir: Option<&std::path::Path>,
 ) -> (Option<ProviderPeer>, Vec<(String, Vec<u8>)>) {
     let entry_marker = compiler_cli::entry_artifact(entry);
-    let drive = |req: rcdzc::Request| -> rcdzc::CompileOutput {
+    let drive = |req: cadenza_compile_abi::Request| -> cadenza_compile_abi::CompileOutput {
         let mut inputs = ast_inputs.clone();
-        inputs.push(rcdzc::Artifact::new(
-            rcdzc::sidecar::KIND_SIDECAR,
+        inputs.push(cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::sidecar::KIND_SIDECAR,
             "drive",
-            rcdzc::sidecar::encode(&[req]),
+            cadenza_compile_abi::sidecar::encode(&[req]),
         ));
         inputs.push(entry_marker.clone());
         rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
@@ -4679,9 +4680,9 @@ fn precompile_group(
     // changes) for a large win on the COMMON hit (every re-gate against a stable closure). NOTE the hash is
     // over THIS GROUP's closure only — grouping shrinks each provider AND scopes each cache entry to one
     // closure (a lib change busts only the groups whose closure includes it).
-    let consumer_out = drive(rcdzc::Request::EmitTestsConsumerOnly);
+    let consumer_out = drive(cadenza_compile_abi::Request::EmitTestsConsumerOnly);
     let closure_hash = consumer_out
-        .artifact(rcdzc::sidecar::KIND_CLOSURE_HASH)
+        .artifact(cadenza_compile_abi::sidecar::KIND_CLOSURE_HASH)
         .map(|b| String::from_utf8_lossy(b).trim().to_string())
         .filter(|h| !h.is_empty());
 
@@ -4724,7 +4725,7 @@ fn precompile_group(
         (None, consumer_out)
     } else {
         // MISS: emit the provider via Composed (the only drive that emits it), then persist by the hash.
-        let composed_out = drive(rcdzc::Request::EmitTestsComposed);
+        let composed_out = drive(cadenza_compile_abi::Request::EmitTestsComposed);
         let emitted_provider = composed_out
             .artifacts
             .iter()
@@ -4845,7 +4846,7 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
     // group key (sorted, `\0`-joined imported-closure names) → (union ASTs by link name, an entry name, the
     // TARGET file stems bucketed into this group).
     struct Group {
-        asts: HashMap<String, rcdzc::Artifact>,
+        asts: HashMap<String, cadenza_compile_abi::Artifact>,
         entry: String,
         // The stems of the TARGET `@test` files that fell into THIS group (their `closure[0].name`). A group's
         // composed emit produces a consumer for EVERY closure member that has `@test`s — but an
@@ -4885,8 +4886,8 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
             group.targets.insert(closure[0].name.clone());
             for cf in &closure {
                 group.asts.entry(cf.name.clone()).or_insert_with(|| {
-                    rcdzc::Artifact::new(
-                        rcdzc::Artifact::KIND_AST,
+                    cadenza_compile_abi::Artifact::new(
+                        cadenza_compile_abi::Artifact::KIND_AST,
                         cf.name.clone(),
                         cadenza_syntax::codec::encode(&cf.arenas),
                     )
@@ -4918,7 +4919,7 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
     };
     for (key, group) in groups {
         let targets = group.targets;
-        let ast_inputs: Vec<rcdzc::Artifact> = group.asts.into_values().collect();
+        let ast_inputs: Vec<cadenza_compile_abi::Artifact> = group.asts.into_values().collect();
         let (provider, consumers) =
             precompile_group(ast_inputs, &group.entry, cache_dir.as_deref());
         let Some(provider) = provider else {
@@ -5091,11 +5092,11 @@ fn collect_test_entries(files: &[String]) -> Result<Vec<(String, bool, String)>,
         // Encode each closure file's AST to the canonical binary form (the front-end↔compiler bridge), then
         // build the `Db` the enumeration reads — a package links every file into one arena + loads it WITH
         // its linkage (so `file_of` can scope tests to the entry); a lone file decodes directly.
-        let ast_arts: Vec<rcdzc::Artifact> = closure
+        let ast_arts: Vec<cadenza_compile_abi::Artifact> = closure
             .iter()
             .map(|f| {
-                rcdzc::Artifact::new(
-                    rcdzc::Artifact::KIND_AST,
+                cadenza_compile_abi::Artifact::new(
+                    cadenza_compile_abi::Artifact::KIND_AST,
                     f.name.clone(),
                     cadenza_syntax::codec::encode(&f.arenas),
                 )
@@ -5182,11 +5183,11 @@ fn run_emit_shred(
     // O(tests×closure) blowup. STANDALONE (`--standalone`) emits each `@test` as a self-contained WASM
     // component (NO main). Else the shared-main peer WASM shred. `--two-stage` wins if both are set.
     let shred_req = if two_stage {
-        rcdzc::Request::EmitTestsShredTwoStage
+        cadenza_compile_abi::Request::EmitTestsShredTwoStage
     } else if standalone {
-        rcdzc::Request::EmitTestsShredStandalone
+        cadenza_compile_abi::Request::EmitTestsShredStandalone
     } else {
-        rcdzc::Request::EmitTestsShred
+        cadenza_compile_abi::Request::EmitTestsShred
     };
     // The shared-artifact file EXTENSION + per-test target extension: two-stage writes cadenza-ast fragments
     // (`.cdzb`), the wasm modes write components (`.wasm`).
@@ -5211,20 +5212,20 @@ fn run_emit_shred(
                 continue;
             }
         };
-        let mut inputs: Vec<rcdzc::Artifact> = closure
+        let mut inputs: Vec<cadenza_compile_abi::Artifact> = closure
             .iter()
             .map(|f| {
-                rcdzc::Artifact::new(
-                    rcdzc::Artifact::KIND_AST,
+                cadenza_compile_abi::Artifact::new(
+                    cadenza_compile_abi::Artifact::KIND_AST,
                     f.name.clone(),
                     cadenza_syntax::codec::encode(&f.arenas),
                 )
             })
             .collect();
-        inputs.push(rcdzc::Artifact::new(
-            rcdzc::sidecar::KIND_SIDECAR,
+        inputs.push(cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::sidecar::KIND_SIDECAR,
             "drive",
-            rcdzc::sidecar::encode(std::slice::from_ref(&shred_req)),
+            cadenza_compile_abi::sidecar::encode(std::slice::from_ref(&shred_req)),
         ));
         inputs.push(compiler_cli::entry_artifact(&closure[0].name));
         let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
@@ -5252,7 +5253,7 @@ fn run_emit_shred(
         let has_main = if two_stage {
             out.artifacts
                 .iter()
-                .any(|a| a.kind == rcdzc::Artifact::KIND_AST && a.name == "closure")
+                .any(|a| a.kind == cadenza_compile_abi::Artifact::KIND_AST && a.name == "closure")
         } else {
             out.artifacts.iter().any(|a| a.kind == "component-provider")
         };
@@ -5271,7 +5272,7 @@ fn run_emit_shred(
         if let Some(m) = out
             .artifacts
             .iter()
-            .find(|a| a.kind == rcdzc::sidecar::KIND_SHRED_MANIFEST)
+            .find(|a| a.kind == cadenza_compile_abi::sidecar::KIND_SHRED_MANIFEST)
         {
             let Some(arenas) = cadenza_syntax::codec::decode(&m.bytes) else {
                 eprintln!("{PROG}: --emit-shred: could not decode {file}'s shred manifest");
@@ -5325,7 +5326,7 @@ fn run_emit_shred(
         };
         for a in &out.artifacts {
             if two_stage {
-                if a.kind != rcdzc::Artifact::KIND_AST {
+                if a.kind != cadenza_compile_abi::Artifact::KIND_AST {
                     continue;
                 }
                 if a.name == "closure" {
@@ -5787,11 +5788,11 @@ fn run_test_file(
     // Encode each closure file's `ast` ONCE — the per-file artifacts feed BOTH the `Db` that enumerates
     // the ENTRY file's `@test` names and the package emit compile below. The front-end (`cadenza_syntax`)
     // and compiler (`rcdzc`) have DISTINCT arena types; the canonical binary form is the bridge.
-    let ast_arts: Vec<rcdzc::Artifact> = closure
+    let ast_arts: Vec<cadenza_compile_abi::Artifact> = closure
         .iter()
         .map(|f| {
-            rcdzc::Artifact::new(
-                rcdzc::Artifact::KIND_AST,
+            cadenza_compile_abi::Artifact::new(
+                cadenza_compile_abi::Artifact::KIND_AST,
                 f.name.clone(),
                 cadenza_syntax::codec::encode(&f.arenas),
             )
@@ -5918,10 +5919,10 @@ fn run_test_file(
         consumer.clone()
     } else {
         let mut inputs = ast_arts;
-        inputs.push(rcdzc::Artifact::new(
-            rcdzc::sidecar::KIND_SIDECAR,
+        inputs.push(cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::sidecar::KIND_SIDECAR,
             "drive",
-            rcdzc::sidecar::encode(&[rcdzc::Request::EmitTests]),
+            cadenza_compile_abi::sidecar::encode(&[cadenza_compile_abi::Request::EmitTests]),
         ));
         if is_package {
             inputs.push(compiler_cli::entry_artifact(&closure[0].name));
@@ -7789,7 +7790,7 @@ fn span_data_of(
     spec: &str,
     source: &str,
     spantable: &cadenza_syntax::spans::SpanTable,
-) -> rcdzc::spans::SpanData {
+) -> cadenza_compile_abi::spans::SpanData {
     let spans: Vec<(u32, u32)> = (0..spantable.len())
         .map(
             |i| match spantable.get(cadenza_syntax::StructId(i as u32)) {
@@ -7798,7 +7799,7 @@ fn span_data_of(
             },
         )
         .collect();
-    rcdzc::spans::SpanData {
+    cadenza_compile_abi::spans::SpanData {
         module_path: debug_module_path(spec),
         spans,
         source: source.to_string(),
@@ -7830,11 +7831,11 @@ fn debug_module_path(spec: &str) -> String {
 
 /// Read a raw artifact from a `kind:name=path` (or `name=path`, or `path`) spec — the same spec grammar
 /// the compiler CLI parses, so a mixed `cdz compile prog.cdz sidecar:d=drive.bin` works. `-` reads stdin.
-fn read_artifact_spec(spec: &str) -> Result<rcdzc::Artifact, String> {
+fn read_artifact_spec(spec: &str) -> Result<cadenza_compile_abi::Artifact, String> {
     // Split an optional `kind:` prefix (only when it looks like one), then an optional `name=` prefix.
     let (kind, rest) = match spec.split_once(':') {
         Some((k, r)) if !k.contains('/') && !k.contains('=') => (k.to_string(), r),
-        _ => (rcdzc::Artifact::KIND_AST.to_string(), spec),
+        _ => (cadenza_compile_abi::Artifact::KIND_AST.to_string(), spec),
     };
     let (name, path) = match rest.split_once('=') {
         Some((n, p)) => (n.to_string(), p.to_string()),
@@ -7848,7 +7849,7 @@ fn read_artifact_spec(spec: &str) -> Result<rcdzc::Artifact, String> {
     } else {
         std::fs::read(&path).map_err(|e| format!("cannot read {path}: {e}"))?
     };
-    Ok(rcdzc::Artifact::new(kind, name, bytes))
+    Ok(cadenza_compile_abi::Artifact::new(kind, name, bytes))
 }
 
 // ── project build ─────────────────────────────────────────────────────────────────────────────────
@@ -7888,11 +7889,11 @@ enum BuildTargetArg {
     Rust,
 }
 
-impl From<BuildTargetArg> for rcdzc::Target {
-    fn from(t: BuildTargetArg) -> rcdzc::Target {
+impl From<BuildTargetArg> for cadenza_compile_abi::Target {
+    fn from(t: BuildTargetArg) -> cadenza_compile_abi::Target {
         match t {
-            BuildTargetArg::Wasm => rcdzc::Target::Wasm,
-            BuildTargetArg::Rust => rcdzc::Target::Rust,
+            BuildTargetArg::Wasm => cadenza_compile_abi::Target::Wasm,
+            BuildTargetArg::Rust => cadenza_compile_abi::Target::Rust,
         }
     }
 }
@@ -8365,11 +8366,11 @@ fn run_type(args: &TypeArgs) -> ExitCode {
     let _ = source; // type output carries no span
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::TypeOf {
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::TypeOf {
             name: args.name.clone(),
         }),
     );
-    match out.artifact(rcdzc::sidecar::KIND_TYPE_INFO) {
+    match out.artifact(cadenza_compile_abi::sidecar::KIND_TYPE_INFO) {
         Some(bytes) => {
             let text = String::from_utf8_lossy(bytes);
             println!("{text}");
@@ -8404,9 +8405,11 @@ fn run_type_at(args: &TypeAtArgs) -> ExitCode {
     };
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt { node: node.0 }),
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::TypeAt {
+            node: node.0,
+        }),
     );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_TYPE_AT) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_TYPE_AT) else {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
@@ -8438,11 +8441,11 @@ fn run_doc(args: &DocArgs) -> ExitCode {
     let _ = source; // doc output carries no span
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::DocOf {
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::DocOf {
             name: args.name.clone(),
         }),
     );
-    match out.artifact(rcdzc::sidecar::KIND_DOC) {
+    match out.artifact(cadenza_compile_abi::sidecar::KIND_DOC) {
         Some(bytes) => {
             let text = String::from_utf8_lossy(bytes);
             // The `DocOf` query is TOTAL — it returns a doc artifact for THREE outcomes: the doc text, a
@@ -8522,9 +8525,9 @@ fn run_doc_module(args: &DocModuleArgs) -> ExitCode {
     // 1. Resolved types from the compiler sidecar (Query::ExportedTypes → the KIND_EXPORT_TYPES blob).
     let sidecar_out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::ExportedTypes),
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::ExportedTypes),
     );
-    let types = match sidecar_out.artifact(rcdzc::sidecar::KIND_EXPORT_TYPES) {
+    let types = match sidecar_out.artifact(cadenza_compile_abi::sidecar::KIND_EXPORT_TYPES) {
         Some(blob) => doc_module::parse_export_types(blob),
         // No blob (a program with no exports / a compile fault): proceed with no types — the structural
         // doc-module still emits, items just carry no (ty …). A doc build never hard-fails here.
@@ -8575,9 +8578,11 @@ fn run_doc_at(args: &DocAtOffsetArgs) -> ExitCode {
     };
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::DocAt { node: node.0 }),
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::DocAt {
+            node: node.0,
+        }),
     );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DOC) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_DOC) else {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
@@ -8598,11 +8603,11 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
     let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::UsesOf {
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::UsesOf {
             name: args.name.clone(),
         }),
     );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_USES) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_USES) else {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
@@ -8697,9 +8702,9 @@ fn program_diagnostic_keys(text: &str, is_ml: bool) -> Option<Vec<(String, Strin
     };
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Diagnostics),
     );
-    let bytes = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS)?; // no artifact → failed at entry
+    let bytes = out.artifact(cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS)?; // no artifact → failed at entry
     let text_out = String::from_utf8_lossy(bytes);
     // The wire is one fault per line: `severity<TAB>code<TAB>node<TAB>fix-kind<TAB>fix-node<TAB>
     // fix-repl<TAB>fix-verified<TAB>message` (8 cols). Key each fault by `(SEVERITY, code, MESSAGE)` — NOT
@@ -8998,30 +9003,32 @@ fn check_one(
     let out = if is_package {
         // Splice all closure files into one program and run Diagnostics over the WHOLE package (so a name
         // defined in an imported file resolves). `link()` needs the entry named — it is `files[0]`.
-        let mut inputs: Vec<rcdzc::Artifact> = files
+        let mut inputs: Vec<cadenza_compile_abi::Artifact> = files
             .iter()
             .map(|f| {
-                rcdzc::Artifact::new(
-                    rcdzc::Artifact::KIND_AST,
+                cadenza_compile_abi::Artifact::new(
+                    cadenza_compile_abi::Artifact::KIND_AST,
                     f.name.clone(),
                     cadenza_syntax::codec::encode(&f.arenas),
                 )
             })
             .collect();
-        inputs.push(rcdzc::Artifact::new(
-            rcdzc::sidecar::KIND_SIDECAR,
+        inputs.push(cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::sidecar::KIND_SIDECAR,
             "drive",
-            rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics)]),
+            cadenza_compile_abi::sidecar::encode(&[cadenza_compile_abi::Request::Query(
+                cadenza_compile_abi::sidecar::Query::Diagnostics,
+            )]),
         ));
         inputs.push(compiler_cli::entry_artifact(&files[0].name));
-        dispatch_query_over_inputs(inputs, rcdzc::sidecar::KIND_DIAGNOSTICS)
+        dispatch_query_over_inputs(inputs, cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS)
     } else {
         run_sidecar(
             &files[0].arenas,
-            rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
+            cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Diagnostics),
         )
     };
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS) else {
         // `--diagnostics-wire`: no artifact = the diagnostics query failed to produce a wire (a compile that
         // didn't reach the fault set). The GRADER decides pass/fail, so emit nothing + exit 0 (never a hard
         // error), rather than the normal error path — the wire mode's contract is "the raw bytes, or empty".
@@ -9393,9 +9400,9 @@ fn run_fix(args: &FixArgs) -> ExitCode {
     for _ in 0..64 {
         let out = run_sidecar(
             &current_arenas,
-            rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
+            cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Diagnostics),
         );
-        let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
+        let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS) else {
             report_errors(&out);
             return ExitCode::FAILURE;
         };
@@ -9545,9 +9552,11 @@ fn run_def(args: &DefArgs) -> ExitCode {
     };
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::ResolveOf { node: node.0 }),
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::ResolveOf {
+            node: node.0,
+        }),
     );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_RESOLVE) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_RESOLVE) else {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
@@ -9598,9 +9607,11 @@ fn run_scope(args: &ScopeArgs) -> ExitCode {
     };
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::ScopeAt { node: node.0 }),
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::ScopeAt {
+            node: node.0,
+        }),
     );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_SCOPE) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_SCOPE) else {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
@@ -9669,9 +9680,9 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
     let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::Exports),
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Exports),
     );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_EXPORTS) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_EXPORTS) else {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
@@ -9738,9 +9749,9 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
     let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::Symbols),
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Symbols),
     );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_SYMBOLS) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_SYMBOLS) else {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
@@ -9817,9 +9828,9 @@ fn run_param_manifest(args: &ParamManifestArgs) -> ExitCode {
     let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::ParamManifest),
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::ParamManifest),
     );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_PARAM_MANIFEST) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_PARAM_MANIFEST) else {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
@@ -9965,11 +9976,11 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
     let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::Instantiations {
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Instantiations {
             name: args.name.clone(),
         }),
     );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_INSTANTIATIONS) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_INSTANTIATIONS) else {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
@@ -10092,30 +10103,32 @@ fn run_func_layout(args: &FuncLayoutArgs) -> ExitCode {
     // files into one program so cross-file references resolve, exactly as the `check` package path does.
     let is_package = !declared_import_paths(&files[0].arenas).is_empty();
     let out = if is_package {
-        let mut inputs: Vec<rcdzc::Artifact> = files
+        let mut inputs: Vec<cadenza_compile_abi::Artifact> = files
             .iter()
             .map(|f| {
-                rcdzc::Artifact::new(
-                    rcdzc::Artifact::KIND_AST,
+                cadenza_compile_abi::Artifact::new(
+                    cadenza_compile_abi::Artifact::KIND_AST,
                     f.name.clone(),
                     cadenza_syntax::codec::encode(&f.arenas),
                 )
             })
             .collect();
-        inputs.push(rcdzc::Artifact::new(
-            rcdzc::sidecar::KIND_SIDECAR,
+        inputs.push(cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::sidecar::KIND_SIDECAR,
             "drive",
-            rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::FuncLayout)]),
+            cadenza_compile_abi::sidecar::encode(&[cadenza_compile_abi::Request::Query(
+                cadenza_compile_abi::sidecar::Query::FuncLayout,
+            )]),
         ));
         inputs.push(compiler_cli::entry_artifact(&files[0].name));
-        dispatch_query_over_inputs(inputs, rcdzc::sidecar::KIND_FUNC_LAYOUT)
+        dispatch_query_over_inputs(inputs, cadenza_compile_abi::sidecar::KIND_FUNC_LAYOUT)
     } else {
         run_sidecar(
             &files[0].arenas,
-            rcdzc::Request::Query(rcdzc::sidecar::Query::FuncLayout),
+            cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::FuncLayout),
         )
     };
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_FUNC_LAYOUT) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_FUNC_LAYOUT) else {
         // No artifact = the AST itself failed to decode/compile at the entry (a total query otherwise
         // always produces the func-layout artifact — the marker + rows, or the EMPTY string when the
         // layout declines with neither an export nor a `@test`).
@@ -10165,9 +10178,9 @@ fn run_highlight(args: &HighlightArgs) -> ExitCode {
     let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let out = run_sidecar(
         &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::Highlight),
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Highlight),
     );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_HIGHLIGHT) else {
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_HIGHLIGHT) else {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
@@ -10224,7 +10237,10 @@ fn run_highlight(args: &HighlightArgs) -> ExitCode {
 // ── shared plumbing ────────────────────────────────────────────────────────────────────────────────
 
 /// Compile `arenas` under a single sidecar request, on the compiler's stack-guarded worker thread.
-fn run_sidecar(arenas: &cadenza_syntax::Arenas, request: rcdzc::Request) -> rcdzc::CompileOutput {
+fn run_sidecar(
+    arenas: &cadenza_syntax::Arenas,
+    request: cadenza_compile_abi::Request,
+) -> cadenza_compile_abi::CompileOutput {
     run_sidecar_many(arenas, &[request])
 }
 
@@ -10233,8 +10249,8 @@ fn run_sidecar(arenas: &cadenza_syntax::Arenas, request: rcdzc::Request) -> rcdz
 /// binding, for `--where`) cost one `Db::load` + shared inference, not N separate compiles.
 fn run_sidecar_many(
     arenas: &cadenza_syntax::Arenas,
-    requests: &[rcdzc::Request],
-) -> rcdzc::CompileOutput {
+    requests: &[cadenza_compile_abi::Request],
+) -> cadenza_compile_abi::CompileOutput {
     // Under `!standalone` (the nix delegating build), a SINGLE query spawns `cdz-compile` instead of
     // running the compiler in-process — the request is built as a binary-AST tree via cadenza-syntax and
     // the single result artifact is captured off `cdz-compile`'s `-o -` stdout. A batch (`--where`, N
@@ -10247,10 +10263,14 @@ fn run_sidecar_many(
         }
     }
     let ast = cadenza_syntax::codec::encode(arenas);
-    let sidecar = rcdzc::sidecar::encode(requests);
+    let sidecar = cadenza_compile_abi::sidecar::encode(requests);
     let inputs = vec![
-        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast),
-        rcdzc::Artifact::new(rcdzc::sidecar::KIND_SIDECAR, "drive", sidecar),
+        cadenza_compile_abi::Artifact::new(cadenza_compile_abi::Artifact::KIND_AST, "main", ast),
+        cadenza_compile_abi::Artifact::new(
+            cadenza_compile_abi::sidecar::KIND_SIDECAR,
+            "drive",
+            sidecar,
+        ),
     ];
     // No emit target: a query-only run (`DESIGN-sidecar-api.md` query-only mode). The stack guard keeps
     // pathologically deep input a decline, not a crash.
@@ -10263,9 +10283,9 @@ fn run_sidecar_many(
 /// capture the `-o -` result, tagged `result_kind`); under `standalone` it runs the compiler in-process.
 /// The caller knows the request yields exactly one result of `result_kind` (a lone `Query`).
 fn dispatch_query_over_inputs(
-    inputs: Vec<rcdzc::Artifact>,
+    inputs: Vec<cadenza_compile_abi::Artifact>,
     result_kind: &str,
-) -> rcdzc::CompileOutput {
+) -> cadenza_compile_abi::CompileOutput {
     #[cfg(not(feature = "standalone"))]
     {
         delegate::run_query_over_inputs(&inputs, result_kind, PROG)
@@ -10294,9 +10314,9 @@ fn report_malformed_query_row(query: &str, line: &str) {
 
 /// Report a compile output's error diagnostics to stderr (used when a query produced no artifact —
 /// which for a TOTAL query means the AST itself failed to decode/compile at the entry).
-fn report_errors(out: &rcdzc::CompileOutput) {
+fn report_errors(out: &cadenza_compile_abi::CompileOutput) {
     for d in &out.diagnostics {
-        if d.severity == rcdzc::Severity::Error {
+        if d.severity == cadenza_compile_abi::Severity::Error {
             match &d.code {
                 Some(code) => eprintln!("{PROG}: error [{code}]: {}", d.message),
                 None => eprintln!("{PROG}: error: {}", d.message),
@@ -10313,7 +10333,7 @@ fn report_errors(out: &rcdzc::CompileOutput) {
 /// declines with a well-anchored diagnostic (e.g. an invalid-kebab `@test`/export name, `node = Some`) yet
 /// the reporter dropped the anchor and printed only `cdz: error [CODE]: …`. A diagnostic with no anchor (or
 /// an unmappable node) falls back to the bare `cdz: error …` line, so it is never worse than `report_errors`.
-fn report_errors_located(out: &rcdzc::CompileOutput, files: &[closure::LoadedFile]) {
+fn report_errors_located(out: &cadenza_compile_abi::CompileOutput, files: &[closure::LoadedFile]) {
     // Per-file line index (binary-searched line:col), parallel to `files` — linear even with many faults.
     let indices: Vec<_> = files
         .iter()
@@ -10344,7 +10364,7 @@ fn report_errors_located(out: &rcdzc::CompileOutput, files: &[closure::LoadedFil
         Some(format!("{}:{l}:{c}", files[fi].path))
     };
     for d in &out.diagnostics {
-        if d.severity != rcdzc::Severity::Error {
+        if d.severity != cadenza_compile_abi::Severity::Error {
             continue;
         }
         let code = match &d.code {
@@ -11189,9 +11209,13 @@ fn run_query_where(args: &syntax_cli::QueryArgs) -> ExitCode {
     }
 
     // ONE compile, a batch of TypeAt requests — the type column is shared/warm across the batch.
-    let requests: Vec<rcdzc::Request> = typed_nodes
+    let requests: Vec<cadenza_compile_abi::Request> = typed_nodes
         .iter()
-        .map(|&n| rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt { node: n }))
+        .map(|&n| {
+            cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::TypeAt {
+                node: n,
+            })
+        })
         .collect();
     let out = run_sidecar_many(&arenas, &requests);
     // node id → rendered type. The `type-at` result artifacts come back in REQUEST ORDER (the compiler
@@ -11199,10 +11223,10 @@ fn run_query_where(args: &syntax_cli::QueryArgs) -> ExitCode {
     // `typed_nodes` rather than parsing a per-artifact node-id NAME. This keeps the reader agnostic to the
     // result-artifact NAMING, so the delegated batch path (which names results positionally, not by the
     // queried node) reads the same — and a naming change on the compiler side is transparent here.
-    let type_at: Vec<&rcdzc::Artifact> = out
+    let type_at: Vec<&cadenza_compile_abi::Artifact> = out
         .artifacts
         .iter()
-        .filter(|a| a.kind == rcdzc::sidecar::KIND_TYPE_AT)
+        .filter(|a| a.kind == cadenza_compile_abi::sidecar::KIND_TYPE_AT)
         .collect();
     let mut node_ty: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
     for (&n, art) in typed_nodes.iter().zip(&type_at) {
@@ -11724,7 +11748,7 @@ mod tests {
 
     #[test]
     fn resolve_opt_level_precedence_follows_flag_then_manifest_then_release_then_default() {
-        use rcdzc::OptLevel;
+        use cadenza_compile_abi::OptLevel;
         let mp = std::path::Path::new("Project.cdz");
         // The FLAG wins over everything (manifest + release both present, flag still decides).
         assert_eq!(
@@ -11998,10 +12022,10 @@ mod tests {
         let (source, arenas, spans) = load_program_spanned(&file.to_string_lossy()).expect("loads");
         let out = run_sidecar(
             &arenas,
-            rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
+            cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Diagnostics),
         );
         let bytes = out
-            .artifact(rcdzc::sidecar::KIND_DIAGNOSTICS)
+            .artifact(cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS)
             .expect("a diagnostics artifact");
         let text = String::from_utf8_lossy(bytes);
         // Find the CDZ0306 line; its fix-node (column 5) span must cover exactly the binder `y`.
