@@ -13906,3 +13906,21 @@
   (call shl (: -2 Int8) (: 6 Int8)) (output (: -128 Int8))
   (call shl (: -2 Int8) (: 7 Int8)) (trap "overflow")
   (call shl (: -1 Int8) (: 8 Int8)) (trap "unreachable"))
+
+(case "uc1 user NULLARY ctors as first-class values — set dedup + runtime-selected match, through the cadenza hop"
+  (doc "The compiler-side twin of #5589 (oracle bare nullary-ctor names): a MULTI-variant all-nullary
+        user sum's unit values participate in a #set (structural dedup by discriminant: {Red,Green,Red,
+        sel} → 3 when sel=Blue, 2 when sel=Red) and a runtime-branch-selected value matches by variant
+        (Green→1 Blue→2 Red→3). n=7 → 30+1 = 31; n=0 → 20+2 = 22; n=3 → 30+2 = 32. Notably the hop
+        RE-EMITS the multi-variant sum + match arms (the #5569 peel declines multi-variant PROJECTIONS,
+        but plain multi-variant match re-emit is live) — dual-path value-eq, byte-idempotent, rust-agreed,
+        live-0 both paths.")
+  (input (do
+    (type Color (Red) (Green) (Blue))
+    (def (main (: n Int64))
+      (+ (* 10 (Set.len #set((Red) (Green) (Red) (if (> n 0) (Blue) (Red)))))
+         (match (if (> n 5) (Green) (Blue)) ((Green) 1) ((Blue) 2) ((Red) 3))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 31 Int64))
+  (call main (: 0 Int64)) (output (: 22 Int64))
+  (call main (: 3 Int64)) (output (: 32 Int64)))
