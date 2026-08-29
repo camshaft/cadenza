@@ -205,6 +205,19 @@ pub enum Request {
     /// Same single-dir/stem-collision guard + fallback as `EmitTestsComposed`. See
     /// `backend/wasm/DESIGN-option-c-shared-closure-component.md` (the single-file provider-cache follow-on).
     EmitTestsConsumerOnly,
+    /// The COMPILER-DRIVEN test SHRED (the operator's "emit main + a target per test" model): emit ONE
+    /// whole-library MAIN component (every reachable non-`@test` def, exported under the closure interface —
+    /// the shared library the tests call, lowered ONCE) plus ONE thin CONSUMER component PER `@test` (each
+    /// exports just its one test and imports the whole library from main). A runner then executes each test
+    /// target linked against main (`cdz-run test-<k>.wasm --peer <iface>=main.wasm`), grading by exit code —
+    /// a per-TEST ca-derivation matrix (parallel + content-addressed) instead of one coarse per-project run.
+    /// Reuses [`layout::compute_provider_for_edges`] (main, over the whole-library edge set) +
+    /// [`layout::compute_tests_consumer`] (each test, a single-def slice over that same boundary) — the SAME
+    /// machinery [`EmitTestsComposed`] runs, but the boundary is the WHOLE library (not just cross-FILE edges),
+    /// so a SAME-FILE suite (no cross-file imports) still gets a non-empty main + uniform per-test linking. See
+    /// `design/DESIGN-cdz-plugin-dispatch.md` §S6b. Runs on its OWN branch (multiple artifacts from one shared
+    /// lowering), like the composed request.
+    EmitTestsShred,
     /// Read a fact column.
     Query(Query),
 }
@@ -438,6 +451,7 @@ fn decode_request(a: &Arenas, form: StructId) -> Option<Request> {
         "emit-tests-per-file" => Request::EmitTestsPerFile,
         "emit-tests-composed" => Request::EmitTestsComposed,
         "emit-tests-consumer-only" => Request::EmitTestsConsumerOnly,
+        "emit-tests-shred" => Request::EmitTestsShred,
         "query" => Request::Query(decode_query(
             a,
             a.as_name(*children.get(1)?)?,
@@ -540,6 +554,7 @@ fn encode_request(b: &mut Builder, req: &Request) -> StructId {
         Request::EmitTestsPerFile => nullary_form(b, "emit-tests-per-file"),
         Request::EmitTestsComposed => nullary_form(b, "emit-tests-composed"),
         Request::EmitTestsConsumerOnly => nullary_form(b, "emit-tests-consumer-only"),
+        Request::EmitTestsShred => nullary_form(b, "emit-tests-shred"),
         Request::Query(q) => encode_query(b, q),
     }
 }
@@ -2690,6 +2705,7 @@ mod tests {
             Request::EmitTestsPerFile,
             Request::EmitTestsComposed,
             Request::EmitTestsConsumerOnly,
+            Request::EmitTestsShred,
         ];
         // Exhaustiveness guard: adding a Request/Query variant fails to compile until listed above AND here.
         for r in &each {
@@ -2699,6 +2715,7 @@ mod tests {
                 | Request::EmitTestsPerFile
                 | Request::EmitTestsComposed
                 | Request::EmitTestsConsumerOnly
+                | Request::EmitTestsShred
                 | Request::Query(
                     Query::TypeOf { .. }
                     | Query::UsesOf { .. }

@@ -330,6 +330,7 @@ fn compile_with_opt_inner(
     let mut emit_tests_per_file = false;
     let mut emit_tests_composed = false;
     let mut emit_tests_consumer_only = false;
+    let mut emit_tests_shred = false;
     for req in &requests {
         match req {
             sidecar::Request::Query(q) => queries.push(q.clone()),
@@ -358,6 +359,12 @@ fn compile_with_opt_inner(
             // distinguishes whether to emit the provider.
             sidecar::Request::EmitTestsConsumerOnly => {
                 emit_tests_consumer_only = true;
+            }
+            // `EmitTestsShred` (compiler-driven shred, §S6b): emit ONE whole-library MAIN provider + one thin
+            // CONSUMER per `@test`. Its OWN branch below (multiple artifacts from one shared lowering), like the
+            // composed request — sets the flag, pushes no `Target`.
+            sidecar::Request::EmitTestsShred => {
+                emit_tests_shred = true;
             }
         }
     }
@@ -440,6 +447,7 @@ fn compile_with_opt_inner(
         || emit_tests_per_file
         || emit_tests_composed
         || emit_tests_consumer_only
+        || emit_tests_shred
     {
         layout::compute_tests(&mut db)
     } else {
@@ -746,6 +754,96 @@ fn compile_with_opt_inner(
                     sanitize_origin(&db, &mut r);
                     diagnostics.push(Diagnostic::from_reject(&r));
                 }
+            }
+        }
+    }
+
+    // `EmitTestsShred` (compiler-driven shred, `design/DESIGN-cdz-plugin-dispatch.md` §S6b): emit ONE
+    // whole-library MAIN provider component (every reachable NON-`@test` def, exported under `CLOSURE_IFACE`)
+    // + one thin CONSUMER component PER `@test` (each exports just its own test and imports the whole library
+    // from main). A runner links each test target against main (`cdz-run test-<name>.wasm --peer
+    // <iface>=main.wasm`) and grades by exit code — a per-TEST ca-derivation matrix. The KEY difference from
+    // `EmitTestsComposed`: the provider boundary is the WHOLE LIBRARY (`layout.order` minus the `@test`
+    // entries), NOT just the CROSS-FILE closure (`cross_component_edges`) — so a SAME-FILE suite (no cross-file
+    // imports, e.g. `iterators`) still gets a NON-EMPTY main + uniform per-test linking (no empty-main special
+    // case for the runner). Reuses `compute_provider_for_edges` (main) + `compute_tests_consumer` (each test, a
+    // single-def slice over that whole-library boundary — a single-element bucket is the degenerate consumer
+    // case; it imports the whole provider interface at the right positions, unused imports harmless). Runs on
+    // its OWN branch (multiple artifacts from one shared lowering), so the emit loop below stays empty.
+    if emit_tests_shred {
+        const CLOSURE_IFACE: &str = "cadenza:closure/api";
+        let test_defs = db.test_defs();
+        // The whole-library boundary: every reachable def in emission (`layout.order`) order that is NOT a
+        // `@test` entry AND has a body (a body-having VALUE def). main EXPORTS these; each consumer EXCLUDES +
+        // imports them. The `body.is_some()` filter is REQUIRED (v-inference review): `compute_provider_for_edges`
+        // DECLINES on a bodyless edge ("export has no body") — a bodyless entry in `layout.order` (a malformed /
+        // decl-only def) must not enter the provider export set. Empty result (a suite whose tests call no
+        // body-having user def — only prims/literals) → `compute_provider_for_edges` declines below (no library
+        // to hoist); the real gate suites all have library defs.
+        //
+        // NOTE (deferred #4031, v-inference caveats 2/3): a library fn with a NON-SCALAR/compound param
+        // (List/tuple/record/Char/arrow) is not boundary-representable, so `compute_provider_for_edges` →
+        // `export_params` DECLINES it as a provider export (and the consumer's cross-boundary call to it hits the
+        // same limit). The cross-FILE-edge subset the composed path uses happened to be boundary-exportable; the
+        // WHOLE library pulls in more, some non-exportable. So whole-library shred is GREEN for a suite whose
+        // reachable library fns are all scalar-boundary, and DECLINES (handled gracefully below) on a
+        // compound-param library fn until the deferred #4031 compound-entry-param emit lands (v-rust-backend).
+        let test_set: crate::fxhash::FxHashSet<usize> = test_defs.iter().copied().collect();
+        let library_edges: Vec<usize> = layout
+            .order
+            .iter()
+            .copied()
+            .filter(|d| !test_set.contains(d) && db.defs[*d].body.is_some())
+            .collect();
+        // MAIN: the whole-library provider. `component_name` = `CLOSURE_IFACE` for the provider emit only,
+        // restored after (so the per-test consumer emits stay non-provider), exactly as the composed branch does.
+        let saved_component_name = db.component_name.take();
+        db.component_name = Some(CLOSURE_IFACE.to_string());
+        let main_result = layout::compute_provider_for_edges(&mut db, &library_edges)
+            .and_then(|pl| backend::emit(Target::Wasm, &mut db, &pl, span_data.as_ref(), None));
+        db.component_name = saved_component_name;
+        match main_result {
+            Ok(main_bytes) => {
+                artifacts.push(Artifact::new(
+                    "component-provider",
+                    CLOSURE_IFACE,
+                    main_bytes,
+                ));
+                artifacts.push(Artifact::new(
+                    link::KIND_COMPONENT_NAME,
+                    CLOSURE_IFACE,
+                    CLOSURE_IFACE.as_bytes().to_vec(),
+                ));
+                // One thin CONSUMER per `@test` — NAMED by the test's def name (unique; the runner/manifest
+                // demux key). Each imports the whole library from main and exports just its own test.
+                for &def in &test_defs {
+                    let name = db.defs[def].name.clone();
+                    match layout::compute_tests_consumer(
+                        &mut db,
+                        &[def],
+                        &library_edges,
+                        CLOSURE_IFACE,
+                    )
+                    .and_then(|cl| {
+                        backend::emit(Target::Wasm, &mut db, &cl, span_data.as_ref(), None)
+                    }) {
+                        Ok(bytes) => artifacts.push(Artifact::new(
+                            Target::Wasm.artifact_kind(),
+                            &name,
+                            bytes,
+                        )),
+                        Err(mut r) => {
+                            trace!(target: "rcdzc::compile", test = %name, reason = %r.message, "shred consumer emit declined");
+                            sanitize_origin(&db, &mut r);
+                            diagnostics.push(Diagnostic::from_reject(&r));
+                        }
+                    }
+                }
+            }
+            Err(mut r) => {
+                trace!(target: "rcdzc::compile", reason = %r.message, "shred main (whole-library provider) emit declined");
+                sanitize_origin(&db, &mut r);
+                diagnostics.push(Diagnostic::from_reject(&r));
             }
         }
     }

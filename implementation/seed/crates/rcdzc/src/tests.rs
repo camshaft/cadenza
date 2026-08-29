@@ -41865,6 +41865,93 @@ mod sidecar_driven {
         }
     }
 
+    /// `Request::EmitTestsShred` (compiler-driven shred, §S6b): emit ONE whole-library MAIN provider + one
+    /// thin CONSUMER per `@test`. This pins the KEY property the composed path lacks — the main is the WHOLE
+    /// library (all reachable EMITTED non-`@test` defs), NOT just the cross-FILE closure — so a SAME-FILE suite
+    /// (no cross-file imports) STILL gets a non-empty main + one per-test consumer each (uniform per-test
+    /// linking). Fixture: a single file with a RECURSIVE helper `tri` (recursive ⇒ emitted as a standalone
+    /// function, not inlined into each test — a trivial non-recursive helper would β-inline and leave `main`
+    /// empty; the caching-relevant shared defs are exactly the emitted ones) + two `@test`s that call it, so the
+    /// whole-library boundary is `{tri}` and there are exactly 2 per-test consumers (`t-a`, `t-b`).
+    #[test]
+    fn emit_tests_shred_same_file_suite_gets_a_whole_library_main_and_per_test_consumers() {
+        let src = crate::codec::encode(&parse(
+            "(do \
+             (def (tri (: n Int64)) (if (= n 0) 0 (+ n (tri (- n 1))))) \
+             (@ test (def (t-a) (if (= (tri 3) 6) unit (trap \"x\")))) \
+             (@ test (def (t-b) (if (= (tri 4) 10) unit (trap \"x\")))))",
+        ));
+        let out = crate::host::run_with_compiler_stack(|| {
+            crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "suite", src.clone()),
+                    Artifact::new(
+                        sidecar::KIND_SIDECAR,
+                        "drive",
+                        sidecar::encode(&[Request::EmitTestsShred]),
+                    ),
+                ],
+                &[],
+            )
+        });
+        assert!(
+            !out.has_error(),
+            "shred emit does not error: {:?}",
+            out.diagnostics
+        );
+        // Exactly ONE whole-library MAIN provider, named + carrying the closure interface.
+        let providers: Vec<&Artifact> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == "component-provider")
+            .collect();
+        assert_eq!(
+            providers.len(),
+            1,
+            "one whole-library main provider (even though the suite is SAME-FILE — no cross-file closure): \
+             kinds={:?}",
+            out.artifacts.iter().map(|a| &a.kind).collect::<Vec<_>>()
+        );
+        assert_eq!(providers[0].name, "cadenza:closure/api");
+        let iface_sidecar: Vec<&Artifact> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == crate::link::KIND_COMPONENT_NAME)
+            .collect();
+        assert_eq!(iface_sidecar.len(), 1, "one component-name iface sidecar");
+        assert_eq!(
+            String::from_utf8(iface_sidecar[0].bytes.clone()).unwrap(),
+            "cadenza:closure/api"
+        );
+        // ONE thin CONSUMER per @test, named by the test's def name (`t-a`, `t-b`).
+        let consumer_names: Vec<&str> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == crate::backend::Target::Wasm.artifact_kind())
+            .map(|a| a.name.as_str())
+            .collect();
+        assert!(
+            consumer_names.contains(&"t-a") && consumer_names.contains(&"t-b"),
+            "one consumer component per @test (by def name): {consumer_names:?}"
+        );
+        assert_eq!(
+            consumer_names.len(),
+            2,
+            "exactly two per-test consumers: {consumer_names:?}"
+        );
+        // Every emitted component (main + per-test consumers) validates as a wasm component.
+        for a in &out.artifacts {
+            if a.kind == "component-provider"
+                || a.kind == crate::backend::Target::Wasm.artifact_kind()
+            {
+                let mut v =
+                    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+                v.validate_all(&a.bytes)
+                    .unwrap_or_else(|e| panic!("shred artifact `{}` validates: {e}", a.name));
+            }
+        }
+    }
+
     #[test]
     fn consumer_only_emits_the_closure_hash_sidecar() {
         // GATE-PERF (codegen-skip-on-HIT, v-compiler-perf ↔ v-cdz-tooling): `EmitTestsConsumerOnly` now
