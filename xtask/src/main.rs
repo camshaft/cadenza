@@ -57,9 +57,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// One-time checkout bootstrap: symlink the gitignored `.claude/{skills,commands}` at the tracked
-    /// `skills/`/`commands/` at the repo root, so this checkout's Claude picks them up. Idempotent.
-    Setup,
     /// Build the value-heap runtime component, content-address it, and store it under `--store`.
     Build {
         /// Content-addressed store directory. [default: <repo>/target/cadenza-store]
@@ -238,7 +235,6 @@ fn main() {
     let cli = Cli::parse();
     let profile = cli.profile.as_str();
     match cli.command {
-        Cmd::Setup => setup(&paths),
         // `build` builds the runtime component under its own release settings (cargo component), not
         // the tool profile — so the profile flag doesn't apply to it.
         Cmd::Build { store } => build(&paths, store),
@@ -407,62 +403,6 @@ impl Paths {
         };
         let seed = repo.join("implementation/seed");
         Paths { repo, seed }
-    }
-}
-
-/// One-time checkout bootstrap: point the gitignored `.claude/{skills,commands}` at the tracked
-/// `skills/`/`commands/` at the repo root. `.claude/` is not committed (so a fresh clone or a new
-/// worktree lacks these links), but the sources travel with the repo — this wires them up. Idempotent:
-/// an already-correct link is left alone; a real directory or wrong link in the way is reported, not
-/// clobbered, so a hand-made setup is never destroyed silently.
-fn setup(paths: &Paths) {
-    let claude = paths.repo.join(".claude");
-    std::fs::create_dir_all(&claude).expect("create .claude dir");
-
-    let mut any_change = false;
-    for name in ["skills", "commands"] {
-        // The source must exist to link at (it is tracked in the repo).
-        if !paths.repo.join(name).is_dir() {
-            eprintln!("  ! {name}: no `{name}/` at the repo root to link — skipped");
-            continue;
-        }
-        let link = claude.join(name);
-        let want = PathBuf::from("..").join(name); // relative: `.claude/<name>` → `../<name>`
-
-        // Already the correct symlink? Leave it.
-        if link.is_symlink() && std::fs::read_link(&link).ok() == Some(want.clone()) {
-            println!("  ✓ .claude/{name} already linked");
-            continue;
-        }
-        // A real directory (e.g. the old copied layout) — do not delete the user's files.
-        if link.exists() && !link.is_symlink() {
-            eprintln!(
-                "  ! .claude/{name} is a real directory, not a symlink — move it aside and re-run \
-                 `cargo xtask setup` to link it to `{name}/`"
-            );
-            continue;
-        }
-        // A stale/wrong symlink: safe to replace (a symlink owns no content).
-        if link.is_symlink() {
-            let _ = std::fs::remove_file(&link);
-        }
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&want, &link).expect("create symlink");
-        #[cfg(not(unix))]
-        {
-            eprintln!(
-                "  ! symlinks not supported on this platform — link .claude/{name} → {name}/ by hand"
-            );
-            continue;
-        }
-        println!("  + linked .claude/{name} → {}", want.display());
-        any_change = true;
-    }
-
-    if any_change {
-        println!("\nsetup: done — Claude will pick up this checkout's skills and commands.");
-    } else {
-        println!("\nsetup: nothing to do (already wired up).");
     }
 }
 
