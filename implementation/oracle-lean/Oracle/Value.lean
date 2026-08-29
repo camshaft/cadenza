@@ -110,6 +110,12 @@ def ofLeaf : Leaf → Option Value
   | .floatNan => Option.some .floatNan
   | .floatInf n => Option.some (.floatInf n)
   | .name b => if b == unitName then Option.some .unit else Option.none
+  -- an `N`-suffixed BigInt literal (`5N`, suffix 0): arbitrary-precision, but the VALUE is just that
+  -- integer — the oracle's `.int` is unbounded `Int`, so BigInt arith is exact int arith at `.big` width
+  -- (no overflow; see operandTyEnv?). (An `R`-suffixed Rational literal stays unmodeled → skip.)
+  | .suffixed 0 (.intBody neg _ mag) =>
+    let n := Int.ofNat (beBytesToNat mag)
+    Option.some (.int (if neg then -n else n))
   | _ => Option.none
 
 /-- A SCALAR value as its standalone canonical value-AST module (root atom → the value's leaf). A

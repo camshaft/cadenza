@@ -397,6 +397,8 @@ partial def operandTyEnv? (m : Module) (env : Env) (i : Nat) : Option IntTy :=
   | some (Node.atom lid) =>
     match m.leaves[lid]? with
     | some (Leaf.name nm) => (env.lookup? nm).bind (·.2)
+    -- an `N`-suffixed BigInt literal operand is BigInt-typed → arith over it is unbounded (no overflow).
+    | some (Leaf.suffixed 0 _) => some { signed := true, width := .big }
     | _ => none
   | some (Node.list cs) =>
     match m.headName? (Node.list cs) with
