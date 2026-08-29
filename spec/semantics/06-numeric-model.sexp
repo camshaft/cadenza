@@ -13069,3 +13069,18 @@
   (input (do (def (main) (match (Some #tuple(3 4)) ((Some #tuple(a b)) (+ a b)) ((None _u) -1))) (export main)))
   (call main)
   (output (: 7 Int64)))
+
+(case "cdzw64 runtime String.slice + String.byte-len round-trip the cadenza hop re-compilably"
+  (doc "The #5416 fence (breaker-found recompilability miscompile): Bytes.len and String.byte-len share
+        Core::BytesLen and the emit head-selection was type-blind — a runtime String.byte-len re-emitted
+        ((. Bytes len) <string>) and the hop output REJECTED on recompile. #5416 disambiguates by the
+        operand's type. Slice hit (bytes 2..6 of hello-X → 4) weighted + out-of-range slice → None (-1):
+        10·4 + (-1) = 39 on both args. Dual-path verified, hop byte-idempotent, re-compiles. live 2 = the known
+        arg-position over-retain residual class (may tighten with SITE-B-lineage work; re-pin then).")
+  (input (do
+    (def (sl (: s String) (: a Int64) (: b Int64)) (match (String.slice s a b) ((Some t) (String.byte-len t)) ((None _u) -1)))
+    (def (main (: n Int64)) (do (def s (String.concat "hello" (if (> n 0) "world" "!"))) (+ (* 10 (sl s 2 6)) (sl s 2 (+ 20 n)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 39 Int64))
+  (call main (: -1 Int64)) (output (: 39 Int64))
+  (live-objects 2))
