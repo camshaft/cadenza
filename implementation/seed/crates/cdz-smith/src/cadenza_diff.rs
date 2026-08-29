@@ -43,6 +43,9 @@ pub enum Outcome {
     Value(String),
     /// Trapped at runtime (non-zero exit + a trap on stderr).
     Trap,
+    /// The step exceeded the per-call timeout ([`CDZ_STEP_TIMEOUT_SECS`]) — a HANG (operator seq-203: the
+    /// compiler/runtime must never hang the sweep indefinitely). Captured as a hang-witness, not skipped.
+    Timeout,
     /// Not comparable for THIS program (a decline / compile-not-yet / param'd-main usage error / infra) —
     /// carries a reason. Never a mismatch: a skip on either side means the pair is skipped.
     Skip(String),
@@ -55,6 +58,15 @@ pub enum CzDiff {
     Agree,
     /// The two paths DISAGREE — a cadenza-backend miscompile candidate. `direct`/`cadenza` render the sides.
     Mismatch { direct: String, cadenza: String },
+    /// A step HUNG (hit the per-call timeout) — a compiler/runtime non-termination witness. `at` names the
+    /// step (direct-compile / cadenza-emit / recompile-ast / run). Persisted + routed to v-compiler-perf.
+    Hang { at: &'static str },
+}
+
+/// True if the process was KILLED by `timeout -s KILL` (SIGKILL → exit 137 = 128+9) — i.e. it HUNG past
+/// [`CDZ_STEP_TIMEOUT_SECS`].
+fn is_timeout(status: &std::process::ExitStatus) -> bool {
+    status.code() == Some(137)
 }
 
 /// Render an [`Outcome`] for a finding detail.
@@ -62,18 +74,25 @@ fn show(o: &Outcome) -> String {
     match o {
         Outcome::Value(v) => format!("value {v}"),
         Outcome::Trap => "trap".to_string(),
+        Outcome::Timeout => "timeout".to_string(),
         Outcome::Skip(r) => format!("skip({r})"),
     }
 }
 
-/// Run `cdz compile <inputs…> [--target cadenza] -o <out>`; returns `Err(reason)` if the compile does not
-/// produce an artifact (a front-end decline or a not-yet — a per-program SKIP condition, not infra).
+/// A compile that did not produce an artifact: a HANG (timed out) or a per-program DECLINE (front-end
+/// reject / not-yet — a SKIP condition, not infra).
+enum CompileErr {
+    Timeout,
+    Decline(String),
+}
+
+/// Run `cdz compile <inputs…> [--target cadenza] -o <out>`.
 fn cdz_compile(
     cdz: &Path,
     inputs: &[&Path],
     target_cadenza: bool,
     out: &Path,
-) -> Result<(), String> {
+) -> Result<(), CompileErr> {
     let mut cmd = cdz_cmd(cdz);
     cmd.arg("compile");
     for i in inputs {
@@ -85,9 +104,14 @@ fn cdz_compile(
     cmd.arg("-o").arg(out);
     let output = cmd
         .output()
-        .map_err(|e| format!("spawn `cdz compile` failed: {e}"))?;
+        .map_err(|e| CompileErr::Decline(format!("spawn `cdz compile` failed: {e}")))?;
+    if is_timeout(&output.status) {
+        return Err(CompileErr::Timeout);
+    }
     if !output.status.success() || !out.is_file() {
-        return Err(first_line(&String::from_utf8_lossy(&output.stderr)));
+        return Err(CompileErr::Decline(first_line(&String::from_utf8_lossy(
+            &output.stderr,
+        ))));
     }
     Ok(())
 }
@@ -103,6 +127,9 @@ fn cdz_run(cdz: &Path, wasm: &Path, store: &Path) -> Outcome {
         Ok(o) => o,
         Err(e) => return Outcome::Skip(format!("spawn `cdz run` failed: {e}")),
     };
+    if is_timeout(&output.status) {
+        return Outcome::Timeout;
+    }
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let v = stdout
@@ -141,18 +168,27 @@ pub fn cadenza_diff(cdz: &Path, source: &str, store: &Path, tmp: &Path) -> CzDif
         return CzDiff::Agree; // scratch write failed — skip (never a false mismatch)
     }
 
-    // DIRECT path: source -> wasm.
+    // DIRECT path: source -> wasm. A compile HANG here = the compiler hangs on P (seq-203 hang-witness).
     let direct_wasm = tmp.join("direct.wasm");
     let direct = match cdz_compile(cdz, &[&src_path], false, &direct_wasm) {
         Ok(()) => cdz_run(cdz, &direct_wasm, store),
+        Err(CompileErr::Timeout) => {
+            return CzDiff::Hang {
+                at: "direct-compile",
+            };
+        }
         // The FRONT-END declined P — nothing to compare (both paths share the front-end). Skip.
-        Err(r) => {
+        Err(CompileErr::Decline(r)) => {
             return CzDiff::from_sides(
                 &Outcome::Skip(format!("direct-compile: {r}")),
                 &Outcome::Skip(String::new()),
             );
         }
     };
+    // A run HANG on the direct side is also a hang-witness (runtime non-termination).
+    if direct == Outcome::Timeout {
+        return CzDiff::Hang { at: "direct-run" };
+    }
     // A direct skip (e.g. param'd main) → nothing to compare.
     if let Outcome::Skip(_) = direct {
         return CzDiff::Agree;
@@ -160,16 +196,27 @@ pub fn cadenza_diff(cdz: &Path, source: &str, store: &Path, tmp: &Path) -> CzDif
 
     // CADENZA path: source -> .ast (--target cadenza) -> wasm.
     let ast_path = tmp.join("mid.ast");
-    if let Err(r) = cdz_compile(cdz, &[&src_path], true, &ast_path) {
-        // `--target cadenza` itself refused to emit — a cadenza-emit DECLINE (coverage gap, not a value
-        // miscompile). Skip rather than false-flag.
-        return CzDiff::from_sides(&direct, &Outcome::Skip(format!("cadenza-emit: {r}")));
+    match cdz_compile(cdz, &[&src_path], true, &ast_path) {
+        Ok(()) => {}
+        Err(CompileErr::Timeout) => return CzDiff::Hang { at: "cadenza-emit" },
+        // `--target cadenza` refused to emit — a cadenza-emit DECLINE (coverage gap, not a value miscompile).
+        Err(CompileErr::Decline(r)) => {
+            return CzDiff::from_sides(&direct, &Outcome::Skip(format!("cadenza-emit: {r}")));
+        }
     }
     let cadenza_wasm = tmp.join("cadenza.wasm");
     let cadenza = match cdz_compile(cdz, &[&ast_path], false, &cadenza_wasm) {
         Ok(()) => cdz_run(cdz, &cadenza_wasm, store),
-        Err(r) => Outcome::Skip(format!("recompile-ast: {r}")),
+        Err(CompileErr::Timeout) => {
+            return CzDiff::Hang {
+                at: "recompile-ast",
+            };
+        }
+        Err(CompileErr::Decline(r)) => Outcome::Skip(format!("recompile-ast: {r}")),
     };
+    if cadenza == Outcome::Timeout {
+        return CzDiff::Hang { at: "cadenza-run" };
+    }
     CzDiff::from_sides(&direct, &cadenza)
 }
 
@@ -178,7 +225,11 @@ impl CzDiff {
     /// equal `Value` → `Agree`; anything else (differing values, or one traps + one values) → `Mismatch`.
     fn from_sides(direct: &Outcome, cadenza: &Outcome) -> CzDiff {
         match (direct, cadenza) {
-            (Outcome::Skip(_), _) | (_, Outcome::Skip(_)) => CzDiff::Agree,
+            // A Timeout is a HANG handled by an early return in `cadenza_diff`; if one reaches here treat it
+            // as non-comparable (never a false value-mismatch).
+            (Outcome::Skip(_) | Outcome::Timeout, _) | (_, Outcome::Skip(_) | Outcome::Timeout) => {
+                CzDiff::Agree
+            }
             (Outcome::Trap, Outcome::Trap) => CzDiff::Agree,
             (Outcome::Value(a), Outcome::Value(b)) if a == b => CzDiff::Agree,
             _ => CzDiff::Mismatch {
