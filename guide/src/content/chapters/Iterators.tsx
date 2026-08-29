@@ -16,7 +16,7 @@ export default function Iterators() {
       <P>
         The shape is a <em>lazy pull</em>: an iterator answers one question, <C>next</C>, "give me the
         next element, and the iterator for the rest." When there's nothing left it says so. We model the
-        answer as an <C>Option</C> of a <C>(element, rest)</C> pair: <C>(Some (tuple v rest))</C> yields{" "}
+        answer as an <C>Option</C> of a <C>(element, rest)</C> pair: <C>(Some #tuple(v rest))</C> yields{" "}
         <C>v</C> and hands back the iterator <C>rest</C> for what follows, or <C>(None unit)</C> when the
         sequence is exhausted.
       </P>
