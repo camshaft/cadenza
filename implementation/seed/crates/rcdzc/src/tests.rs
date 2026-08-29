@@ -23268,62 +23268,15 @@ mod diagnostics {
         );
     }
 
-    #[test]
-    fn a_float_precision_mismatch_names_floats_and_offers_an_of_conversion_fix() {
-        // A `Float32`/`Float64` mismatch is CDZ0301 like the integer-width case — but its message must name
-        // the FLOAT domain: "floating-point precisions differ … never silently widens or narrows a FLOAT",
-        // NOT the "integer widths differ … an integer" a shared width-unify might (mis)report. The two
-        // floats are combined with the ONE arithmetic operator (`(+ a b)`); the Float skip arm produces
-        // the float-domain message. It carries the same `(<Type>.of …)` coercion fix (float `.of` is
-        // total, not "checked").
-        let d = first_error("(module m (def (f (: a Float32) (: b Float64)) (+ a b)) (export f))");
-        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
-        assert!(
-            d.message.contains("floating-point precisions differ")
-                && d.message.contains("a float")
-                && !d.message.contains("integer"),
-            "the message names the FLOAT domain, not integer: {}",
-            d.message
-        );
-        let fix = d.fix.expect("a float coercion fix is carried");
-        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-        assert_eq!(
-            fix.replacement,
-            format!("(Float32.of {})", crate::abi::WRAP_HOLE),
-            "wraps the operand in the expected float type's `.of`"
-        );
-        // The float `.of` is TOTAL (no trap), so the verb OMITS "(checked)".
-        assert!(
-            !fix.label.contains("checked"),
-            "float `.of` is total, not checked: {}",
-            fix.label
-        );
-        // The annotation position mirrors it: `(: n Float64)` for `n : Float32` → `(Float64.of n)`.
-        let a = first_error("(module m (def (f (: n Float32)) (: n Float64)) (export f))");
-        assert_eq!(
-            a.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some(format!("(Float64.of {})", crate::abi::WRAP_HOLE)).as_deref(),
-            "annotation-position float coercion: {}",
-            a.message
-        );
-        // ROUND TRIP: applying the wrap on each site recompiles clean. The operator site becomes
-        // `(+ a (Float32.of b))` (both Float32); the annotation site becomes `(: (Float64.of n) Float64)`
-        // (the demoted-then-widened value now matches). Float `.of` is total, so no residual fault.
-        assert!(
-            crate::compile::compile_component(&crate::codec::encode(&parse(
-                "(module m (def (f (: a Float32) (: b Float64)) (+ a (Float32.of b))) (export f))"
-            )))
-            .is_ok(),
-            "applying the `(Float32.of …)` operator coercion must recompile clean"
-        );
-        assert!(
-            crate::compile::compile_component(&crate::codec::encode(&parse(
-                "(module m (def (f (: n Float32)) (: (Float64.of n) Float64)) (export f))"
-            )))
-            .is_ok(),
-            "applying the `(Float64.of …)` annotation coercion must recompile clean"
-        );
-    }
+    // (a_float_precision_mismatch_names_floats_and_offers_an_of_conversion_fix migrated to corpus
+    // 06-numeric-model: "a float precision mismatch under an operator names floats and offers an
+    // of-conversion wrap fix" (CDZ0301, (message "floating-point precisions differ")(message "a float")
+    // (fix (kind wrap)(replacement "(Float32.of …)")(unverified))) + "a float annotation to a wider
+    // precision offers an of-conversion wrap fix" (CDZ0203, (Float64.of …) wrap) + the two ROUND-TRIP
+    // value cases "applying the {operator,annotation} float coercion wrap recompiles and runs" (float
+    // `.of` is total, so the applied wrap RUNS: 4.0 and 1.5 — a stronger pin than the rust compiles-clean
+    // assert). The "not integer" negative + the not-"checked" label are the corpus-inexpressible remainder
+    // covered by the positive float-domain (message …) substrings.)
 
     #[test]
     fn over_application_offers_a_delete_the_extra_argument_fix() {
