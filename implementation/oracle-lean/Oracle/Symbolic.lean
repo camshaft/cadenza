@@ -46,6 +46,14 @@ inductive SymOutcome where
   | cannotProve (reason : String)
   deriving BEq, Inhabited
 
+/-- A fully-CONSTANT symbolic expression → its concrete `Value` (`none` if any leaf is symbolic). Lets the
+constant folder decide `=` over COMPOUND constants (e.g. `(= (tuple 1 2) (tuple 1 3))`), not just scalars. -/
+partial def symToValue? : SymExpr → Option Value
+  | .const v => some v
+  | .tuple es => (es.mapM symToValue?).map Value.tuple
+  | .record fs => (fs.mapM (fun kv => (symToValue? kv.2).map (fun v => (kv.1, v)))).map Value.record
+  | _ => none
+
 /-- Constant-fold an operator applied to fully-CONSTANT operands, iff the fold is SOUND independent of
 integer width (the symbolic evaluator does not yet track width). So this folds ONLY operators that can
 never overflow / trap: COMPARISONS over integer constants (`< > <= >=`, total on `Int`), value EQUALITY
@@ -54,7 +62,7 @@ non-constant operand, a non-integer comparison, or ARITHMETIC (`+ - * / %`) — 
 width/overflow-trap-aware semantics (T2.0d); folding it here could produce a value where the program
 traps = a FALSE "proven", the one outcome worse than `cannotProve`. -/
 def foldConst? (op : String) (args : Array SymExpr) : Option Value :=
-  let consts := args.map (fun a => match a with | .const v => some v | _ => none)
+  let consts := args.map symToValue?
   if consts.any (·.isNone) then none
   else match op, consts.filterMap id with
     | "=",  #[a, b] => some (.bool (Value.valueEqSpec a b))
@@ -591,6 +599,12 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 #guard symEquiv (.sym (.var 0)) (.sym (.var 1)) == EquivVerdict.cannotProve "normalized-but-different"
 -- an unmodeled operand poisons the whole side → boundary cannotProve.
 #guard symEquiv (.cannotProve "unmodeled") (.sym (.var 0)) == EquivVerdict.cannotProve "boundary: unmodeled"
+-- `=` folds over COMPOUND constants (tuples of consts), not just scalars — closes v-cdz-smith's short-circuit
+-- boolean FP whose root was `(= (tuple …) (tuple …))` staying symbolic. Equal tuples → true, differing → false.
+#guard normalize (.app "=" #[.tuple #[.const (.int 1), .const (.int 2)], .tuple #[.const (.int 1), .const (.int 2)]]) == SymExpr.const (.bool true)
+#guard normalize (.app "=" #[.tuple #[.const (.int 1), .const (.int 2)], .tuple #[.const (.int 1), .const (.int 3)]]) == SymExpr.const (.bool false)
+-- and then `(or false true)` / `(or true …)` fold to true via the existing scalar bool fold → the cascade closes.
+#guard normalize (.app "or" #[.app "=" #[.tuple #[.const (.int 5)], .tuple #[.const (.int 6)]], .const (.bool true)]) == SymExpr.const (.bool true)
 
 -- ── T2.0b: symEval over a real program Module (bind params → vars) ──
 -- `(do (def (main) N) (export main))` — a nullary main whose body is the literal N (the proven program
