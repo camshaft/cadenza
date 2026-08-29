@@ -9647,6 +9647,49 @@ mod match_engine {
     }
 
     #[test]
+    fn native_compound_extreme_shapes_compile_or_diagnose_like_the_alias() {
+        // Hardening (complements #5645's reader/printer round-trip with the COMPILE layer): the extreme
+        // native #-form shapes compile-or-diagnose exactly like the alias.
+        let rc = |s: &str| reject_code(&format!("(module m (def (main) {s}) (export main))"));
+        // Empty #tuple/#record have a determined type → compile. Non-empty + deeply-nested + #-form-as-map-key
+        // all compile.
+        assert_eq!(rc("#tuple()"), None, "empty tuple compiles");
+        assert_eq!(rc("#record()"), None, "empty record compiles");
+        assert_eq!(rc("#set(1)"), None, "non-empty set compiles");
+        assert_eq!(
+            rc("#list(#tuple(#record((= x #map((= 1 2))))))"),
+            None,
+            "deep all-kinds nesting compiles"
+        );
+        // Empty #set/#map/#list have no elements to infer the element type from → CDZ0203 "result type not
+        // fully determined — annotate" (a helpful diagnostic, not a bug). The native #-form matches its
+        // unshadowable STRING-primitive alias exactly (a set has NO name alias — `(set)` is unbound `set` —
+        // only `#set`/`("set")`).
+        for (native, strprim) in [
+            ("#set()", "(\"set\")"),
+            ("#map()", "(\"map\")"),
+            ("#list()", "(\"list\")"),
+        ] {
+            assert_eq!(
+                rc(native),
+                Some("CDZ0203".to_string()),
+                "{native}: an empty compound needs a type annotation (CDZ0203)"
+            );
+            assert_eq!(
+                rc(native),
+                rc(strprim),
+                "{native} diagnoses like its string alias {strprim}"
+            );
+        }
+        // A #-form as a MAP KEY (compound-keyed map — native ctor-leaf hash/eq) compiles like the alias.
+        assert_eq!(
+            rc("(Map.insert (Map.empty) #tuple(1 2) 3)"),
+            rc("(Map.insert (Map.empty) (tuple 1 2) 3)"),
+            "a #-form map key compiles like the alias"
+        );
+    }
+
+    #[test]
     fn a_native_compound_equality_compiles_like_the_alias() {
         // M3 parity: an equality `(= a b)` over NATIVE compound literals compiles exactly like the
         // name-alias, across every kind — so `Eq`/`const_compound_eq`'s structural walk (order-independent
