@@ -1655,6 +1655,22 @@
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
+(case "a dead-let list construction with a trapping scalar arg traps — args forced though the list is discarded"
+  (doc    "The bound-and-discarded face of strict list construction (operator ruling A, #5194; v-core-opt CASE2
+           #5328): `(let ((x #list(1 (/ 5 d)))) 0)` binds a list to `x`, DISCARDS it, and returns 0 — yet the
+           construction still evaluates its element ARGUMENTS, so at d=0 the trapping `(/ 5 d)` TRAPS even though
+           the list object is never observed (the optimizer elides the allocation but force-evaluates the
+           trap-possible arg rather than §283-eliding it — decompose-and-mark, not build-and-reclaim). At d=1 the
+           arg is fine and the discarded list folds away → 0. A PURE dead list (no trapping/effectful arg) is
+           still fully elided (§283). Completes the consumer-independent strict-construction set alongside the
+           List.len and `=` operand cases above — same construction, ANY consumer (even discard), the trapping
+           argument traps. (Interim backend limitation: only SCALAR trap args are forced here; a heap-PRODUCING
+           trap arg — e.g. a Rational.of overflow — inside a dead discarded ctor is not yet forced, pinned once
+           the backend extends forcing to heap args.)")
+  (input  (do (def (main (: d Int64)) (let ((x #list(1 (/ 5 d)))) 0)) (export main)))
+  (call   main (: 0 Int64)) (trap   "divide by zero")
+  (call   main (: 1 Int64)) (output (: 0 Int64)))
+
 (case "list construction strictly evaluates an EFFECTFUL element argument — the perform runs even when the list is discarded"
   (doc    "The effect companion of the strict-construction rule (operator ruling — strict list construction;
            core-semantics.md #A Trap Occurs Only Where Its Computation Is Observed says a heap-collection ctor
