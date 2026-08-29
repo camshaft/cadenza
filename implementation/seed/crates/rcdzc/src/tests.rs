@@ -10128,6 +10128,46 @@ mod match_engine {
     }
 
     #[test]
+    fn a_namespaced_ctor_pattern_binds_its_payload_and_a_record_eq_pattern_resolves() {
+        // M3 regression guard (consolidation #5158 dropped rcdzc's `as_name` MIGRATION BRIDGE when it deleted
+        // rcdzc/ast.rs + unified onto cadenza-ast, whose `as_name` did not bridge). Without the bridge, the
+        // native `Member`/`FieldPair` leaf heads report `None` from `as_name`, so every `as_form(head, ".")` /
+        // `as_name(head) == Some("=")` recognizer broke on native leaves:
+        //   - a NAMESPACED ctor pattern `((. Option Some) v)` no longer bound its payload `v` (Case-6
+        //     `find_binder_in_pattern` needs `as_form(head, ".")` to see the member-headed constructor) →
+        //     CDZ0101 unbound `v`, while the BARE `(Some v)` still worked.
+        //   - a record `(= k v)` PATTERN's field key/binder recognition broke → CDZ0201.
+        // The bridge is restored in cadenza-ast's `as_name`; both forms resolve again.
+        // Namespaced ctor pattern binds its payload (`v` → 7):
+        assert!(
+            reject_code(
+                "(module m (def (f (: x (Option Int64))) (match x ((Option.Some v) v) ((Option.None) 0))) \
+                 (def (main) (f (Option.Some 7))) (export main))"
+            )
+            .is_none(),
+            "a namespaced ctor pattern (Option.Some v) binds its payload v — no CDZ0101 unbound"
+        );
+        // Bare ctor pattern still works (control):
+        assert!(
+            reject_code(
+                "(module m (def (f (: x (Option Int64))) (match x ((Some v) v) ((None) 0))) \
+                 (def (main) (f (Some 7))) (export main))"
+            )
+            .is_none(),
+            "a bare ctor pattern (Some v) still binds its payload"
+        );
+        // Record `(= k v)` pattern resolves its field binders:
+        assert!(
+            reject_code(
+                "(module m (def (g (: r (Record (x Int64) (y Int64)))) \
+                   (match r ((record (= x a) (= y b)) (+ a b)))) (export g))"
+            )
+            .is_none(),
+            "a record (= k v) pattern resolves its field binders — no CDZ0201"
+        );
+    }
+
+    #[test]
     fn a_non_exhaustive_scalar_match_offers_a_wildcard_arm_fix() {
         // An open Int scalar match with no wildcard is CDZ0210; it now carries an INSERT fix that appends
         // a `(_ (trap "TODO"))` wildcard arm (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A
