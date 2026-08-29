@@ -69,6 +69,22 @@ An integer type MUST offer a named wrapping form of each of addition, subtractio
 
 The wrapping form MUST be opted into by name at the operation, so that it never displaces the trapping default an unqualified operator selects.
 
+### Overflow Behavior Is Configurable By Policy
+
+The overflow behavior an unqualified `+`, `-`, or `*` takes MUST be selectable, per integer type, between the trapping default and the modular wrapping outcome by an overflow policy, so that a program may make wrapping the ambient behavior without annotating every operation, while trap remains the behavior no policy sets.
+
+The overflow mode of an unqualified operation MUST be resolved by the precedence, most specific first: a module overflow pragma, then the project's global overflow setting, then the language default of trap — so that a more local declaration overrides a more global one and, absent any, the operation traps.
+
+A module MAY carry an overflow pragma `(pragma overflow (signed <mode>) (unsigned <mode>))` whose `<mode>` is `trap` or `wrap`, fixing the overflow mode — independently for signed and unsigned integer types — of the unqualified `+`, `-`, and `*` operations WRITTEN in that module, at their definition site, so that a function's arithmetic follows its own module's pragma regardless of the caller.
+
+A project MAY set the global overflow default through the manifest fields `overflow-signed` and `overflow-unsigned`, each `trap` or `wrap`, an absent field meaning the trapping default and a malformed value being rejected with a diagnostic and the trapping default rather than silently applied, so that the effective global policy is always well-defined.
+
+The resolved overflow mode MUST be a single mode fixed on each arithmetic operation once its operand type's signedness is concrete, so that constant folding, the backend, and any external checker read one authoritative mode for the operation and cannot disagree on whether it traps.
+
+The named wrapping and overflow-fallible forms MUST remain selectable per operation and MUST NOT be displaced by any overflow policy, so that an author who writes the named form always gets exactly that outcome regardless of the ambient pragma or global setting.
+
+The effective overflow policy MUST be part of the reproducible build inputs, entering the build's content identity alongside the source and manifest, so that a program's overflow behavior is fixed by its source and manifest rather than by an ambient invocation setting.
+
 ## Arbitrary Precision
 
 ### An Arbitrary-Precision Integer Has Unbounded Range
