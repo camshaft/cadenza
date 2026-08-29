@@ -46,6 +46,15 @@ if [ -z "${CARGO_BUILD_JOBS:-}" ]; then
   export CARGO_BUILD_JOBS="$_jobs"
 fi
 
+# Concurrent-heavy-check cap in the MATERIALIZED env (concierge 2026-08-29, load-108 acute relief). The
+# #5611 default is already 2, but that only takes effect when an agent REBUILDS its xtask binary; exporting
+# it here makes the CURRENT binary honor cap-2 at runtime (acquire_check_lease reads the env each call) the
+# moment a window (re)launches — no rebuild wait. Every agent agreeing on the same max keeps the shared
+# lease consistent. Respect an explicit operator override if already set.
+if [ -z "${CDZ_CHECK_LEASE_MAX:-}" ]; then
+  export CDZ_CHECK_LEASE_MAX=2
+fi
+
 # Resolve the agent's config from the registry. The hub is BARE (no Cargo workspace), so run the
 # xtask from any worktree that has one — the pr-sync worktree always exists and holds trunk.
 XTASK_WT="$HUB/.claude/worktrees/pr-sync"
