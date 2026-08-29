@@ -1280,7 +1280,19 @@ fn param_apply_extra_handled(
     // against overflow than an independent fresh-0 budget, and still sound (a shared budget only trips the
     // follow-gate EARLIER, never later). The internal recursive follow re-enters at `depth + 1`.
     depth: u32,
+    // MEMO (seq-203 EXPONENTIAL fix): dedup the inter-procedural transitive-follow re-analysis. Without it, a
+    // nested immediately-applied-lambda chain re-analyzes each shared sub-callee body via BOTH the follow
+    // (`sub_extra`) AND `walk(head)`'s re-walk of the same lambda → 2^N compile-time hang (v-compiler-perf:
+    // N=24 = 14s, N~40 = hang). Keyed on `(callee_body, arity, depth)`: identical inputs yield an identical
+    // result (a re-analysis is redundant), and DEPTH is in the key so a body reached at a different
+    // inter-procedural depth — where the `depth < 32` follow-gate may differ — is a DISTINCT entry, never
+    // reusing a result computed under a different gate state (sound). Mirrors the sibling `check_no_home`'s
+    // `followed` (callee_body, handled) dedup. The `handled` set is NOT in the key: this fn re-seeds it empty.
+    memo: &mut crate::fxhash::FxHashMap<(StructId, usize, u32), Vec<Vec<u32>>>,
 ) -> Vec<Vec<u32>> {
+    if let Some(cached) = memo.get(&(callee_body, arity, depth)) {
+        return cached.clone();
+    }
     let Some(params) = crate::eval::lambda_params_of(db, head) else {
         return Vec::new();
     };
@@ -1294,6 +1306,7 @@ fn param_apply_extra_handled(
         handled: &mut Vec<u32>,
         out: &mut [Vec<u32>],
         depth: u32,
+        memo: &mut crate::fxhash::FxHashMap<(StructId, usize, u32), Vec<Vec<u32>>>,
     ) {
         if depth > 64 {
             return;
@@ -1326,7 +1339,7 @@ fn param_apply_extra_handled(
                     // sub-call's inner walk must SEE the accumulated depth (it re-seeds at this value), or a
                     // graph-invisible cycle (a self-call hidden in a nested fold closure) never trips the gate.
                     let sub_extra =
-                        param_apply_extra_handled(db, head, sub_body, args.len(), depth + 1);
+                        param_apply_extra_handled(db, head, sub_body, args.len(), depth + 1, memo);
                     for (j, &a) in args.iter().enumerate() {
                         if let Some(i) = param_index_of_head(db, a, params)
                             && i < out.len()
@@ -1339,15 +1352,15 @@ fn param_apply_extra_handled(
                         }
                     }
                 }
-                walk(db, head, params, handled, out, depth);
+                walk(db, head, params, handled, out, depth, memo);
                 for &a in args.iter() {
-                    walk(db, a, params, handled, out, depth);
+                    walk(db, a, params, handled, out, depth, memo);
                 }
             }
             Resolved::Handle { init, arms, body } => {
-                walk(db, init, params, handled, out, depth);
+                walk(db, init, params, handled, out, depth, memo);
                 for arm in arms.iter() {
-                    walk(db, arm.body, params, handled, out, depth);
+                    walk(db, arm.body, params, handled, out, depth, memo);
                 }
                 let added: Vec<u32> = arms
                     .iter()
@@ -1355,7 +1368,7 @@ fn param_apply_extra_handled(
                     .collect();
                 let before = handled.len();
                 handled.extend(&added);
-                walk(db, body, params, handled, out, depth);
+                walk(db, body, params, handled, out, depth, memo);
                 handled.truncate(before);
             }
             Resolved::Host { effects, body } => {
@@ -1365,13 +1378,13 @@ fn param_apply_extra_handled(
                     .collect();
                 let before = handled.len();
                 handled.extend(&added);
-                walk(db, body, params, handled, out, depth);
+                walk(db, body, params, handled, out, depth, memo);
                 handled.truncate(before);
             }
             _ => {
                 if let Struct::List(children) = db.ast.get(node).clone() {
                     for c in children {
-                        walk(db, c, params, handled, out, depth);
+                        walk(db, c, params, handled, out, depth, memo);
                     }
                 }
             }
@@ -1382,7 +1395,16 @@ fn param_apply_extra_handled(
     // (a finite arena walk that always terminates) and the transitive follow re-enters at `depth + 1`, so
     // seeding here at the accumulated depth is what lets the `depth < 32` follow-gate actually fire on a
     // graph-invisible cycle — otherwise every re-entry restarts at 0 and the chase never terminates.
-    walk(db, callee_body, &params, &mut handled, &mut out, depth);
+    walk(
+        db,
+        callee_body,
+        &params,
+        &mut handled,
+        &mut out,
+        depth,
+        memo,
+    );
+    memo.insert((callee_body, arity, depth), out.clone());
     out
 }
 
@@ -1497,7 +1519,10 @@ fn check_no_home_walk(
                 .filter(|&c| !crate::eval::is_recursive(db, c));
             let param_extra: Vec<Vec<u32>> = match callee {
                 Some(callee_body) => {
-                    param_apply_extra_handled(db, head, callee_body, args.len(), depth)
+                    // Fresh memo per external entry (seq-203): shared through this call's transitive-follow
+                    // recursion to kill the 2^N re-analysis of a nested applied-lambda chain.
+                    let mut memo = crate::fxhash::FxHashMap::default();
+                    param_apply_extra_handled(db, head, callee_body, args.len(), depth, &mut memo)
                 }
                 None => Vec::new(),
             };
