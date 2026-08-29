@@ -606,12 +606,14 @@ pub fn cdz_render_at(
             on_path,
         );
     }
-    // `(Tuple T0 T1 …)` → `(tuple …)`. The EMPTY tuple `(Tuple)` (a variant's explicit empty-tuple payload,
-    // distinct from `Unit`) renders the literal `(tuple)` — no elements, no `path` read, and NO trailing
-    // space (a `format!("(tuple {})", "")` would render `(tuple )`).
+    // `(Tuple T0 T1 …)` → the M2 native ctor `#tuple(…)`. The EMPTY tuple `(Tuple)` (a variant's explicit
+    // empty-tuple payload, distinct from `Unit`) renders the literal `#tuple()` — no elements, no `path` read.
+    // (M2 native-compound-data flag-day: the canonical value spelling is `#ctor(…)`, matching cdz-run's
+    // in-process render + the migrated corpus/wasm `.gate-baseline`; the head has NO trailing space —
+    // `#tuple(e0 e1)`, not `#tuple( e0 e1)`.)
     if let Some(elems) = parse_head_type(ty, "Tuple") {
         if elems.is_empty() {
-            return "\"(tuple)\".to_string()".to_string();
+            return "\"#tuple()\".to_string()".to_string();
         }
         let placeholders = vec!["{}"; elems.len()].join(" ");
         let args: Vec<String> = elems
@@ -642,7 +644,7 @@ pub fn cdz_render_at(
                 )
             })
             .collect();
-        return format!("format!(\"(tuple {placeholders})\", {})", args.join(", "));
+        return format!("format!(\"#tuple({placeholders})\", {})", args.join(", "));
     }
     // A record TYPE `(Record (: a T0) (: b T1) …)` → the VALUE form `(record (a …) (b …) …)`. Each element
     // is a `(: name Type)` ASCRIPTION node (RT3, DESIGN-record-type-syntax — the canonical record-TYPE
@@ -697,11 +699,12 @@ pub fn cdz_render_at(
             ));
         }
         // Each field renders as the canonical `(= name value)` ascription triple (DESIGN-record-type-
-        // syntax Phase B), matching the wasm runtime's value-output render + the migrated corpus — so the
-        // -rust / -rust-async baselines agree with the wasm `.gate-baseline`. `args` still interleaves
-        // name + value per field; only the emitted group wrapper gains the `=` head.
+        // syntax Phase B) under the M2 native `#record(…)` ctor head, matching the wasm runtime's
+        // value-output render + the migrated corpus — so the -rust / -rust-async baselines agree with the
+        // wasm `.gate-baseline`. `args` still interleaves name + value per field; the group wrapper is `(= _ _)`
+        // and the head gained the M2 `#` prefix (`#record((= a 1) (= b 2))`, no trailing space after the head).
         let groups = vec!["(= {} {})"; fields.len()].join(" ");
-        return format!("format!(\"(record {groups})\", {})", args.join(", "));
+        return format!("format!(\"#record({groups})\", {})", args.join(", "));
     }
     // A `(List T)` value is the Rust `Vec<T>` the backend emits — render it as cdz-run's canonical
     // `(list e0 e1 …)` (empty → `(list)`), each element rendered as its own type `T`. Emit a Rust block
@@ -734,14 +737,16 @@ pub fn cdz_render_at(
             helpers,
             on_path,
         );
-        // Build `(list <e0> <e1> …)`: seed with "(list", push a space + each element's render, close ")".
+        // Build the M2 native `#list(<e0> <e1> …)` (empty → `#list()`): seed with "#list(", then each
+        // element's render SPACE-SEPARATED — a leading space only BEFORE elements after the first (via
+        // `enumerate`), so the head `#list(` has no trailing space and elements are `e0 e1`, not ` e0 e1`.
         return format!(
-            "{{ let mut __s = String::from(\"(list\"); for {ebind} in ({path}).iter() {{ __s.push(' '); __s.push_str(&({inner})); }} __s.push(')'); __s }}"
+            "{{ let mut __s = String::from(\"#list(\"); for (__i, {ebind}) in ({path}).iter().enumerate() {{ if __i > 0 {{ __s.push(' '); }} __s.push_str(&({inner})); }} __s.push(')'); __s }}"
         );
     }
     // A `(Set E)` value is the Rust `BTreeSet<E>` the backend emits — render it as cdz-run's canonical
-    // `((. Set of) (list e0 e1 …))` (empty → `((. Set of) (list))`), each element rendered as its type.
-    // A `BTreeSet` iterates in SORTED order, which IS the canonical element-value order the runtime uses.
+    // M2 native `#set(e0 e1 …)` (empty → `#set()`), each element rendered as its type. A `BTreeSet`
+    // iterates in SORTED order, which IS the canonical element-value order the runtime uses.
     if let Some(args) = parse_head_type(ty, "Set") {
         let elem_ty = args.first().map(String::as_str).unwrap_or("");
         // `.*` element segment — same uniform-per-element scale as a list (see the List arm).
@@ -765,12 +770,13 @@ pub fn cdz_render_at(
             on_path,
         );
         return format!(
-            "{{ let mut __s = String::from(\"((. Set of) (list\"); for {ebind} in ({path}).iter() {{ __s.push(' '); __s.push_str(&({inner})); }} __s.push_str(\"))\"); __s }}"
+            "{{ let mut __s = String::from(\"#set(\"); for (__i, {ebind}) in ({path}).iter().enumerate() {{ if __i > 0 {{ __s.push(' '); }} __s.push_str(&({inner})); }} __s.push(')'); __s }}"
         );
     }
     // A `(Map K V)` value is the Rust `BTreeMap<K, V>` the backend emits — render it as cdz-run's canonical
-    // `(map (k0 v0) (k1 v1) …)` (empty → `(map)`), each entry a `(<key> <value>)` group with key and value
-    // rendered as their own types. A `BTreeMap` iterates in SORTED KEY order — the canonical key order.
+    // M2 native `#map((= k0 v0) (= k1 v1) …)` (empty → `#map()`), each entry the `(= <key> <value>)` ascription
+    // triple with key and value rendered as their own types. A `BTreeMap` iterates in SORTED KEY order — the
+    // canonical key order.
     if let Some(args) = parse_head_type(ty, "Map") {
         let key_ty = args.first().map(String::as_str).unwrap_or("");
         let val_ty = args.get(1).map(String::as_str).unwrap_or("");
@@ -817,7 +823,7 @@ pub fn cdz_render_at(
             on_path,
         );
         return format!(
-            "{{ let mut __s = String::from(\"(map\"); for ({kbind}, {vbind}) in ({path}).iter() {{ __s.push_str(&format!(\" ({{}} {{}})\", {kr}, {vr})); }} __s.push(')'); __s }}"
+            "{{ let mut __s = String::from(\"#map(\"); for (__i, ({kbind}, {vbind})) in ({path}).iter().enumerate() {{ if __i > 0 {{ __s.push(' '); }} __s.push_str(&format!(\"(= {{}} {{}})\", {kr}, {vr})); }} __s.push(')'); __s }}"
         );
     }
     // A QUANTITY result `(Qty <inner> <unit>)` — the rust backend maps a `Ty::Qty { inner }` at a scale-1

@@ -290,7 +290,7 @@
            its source's value. `(Record.merge (record (a 1)) (record (b 2)))` yields `(record (a 1) (b 2))`
            — the row analogue of forming a record from two groups of fields.")
   (input  (Record.merge #record((= a 1)) #record((= b 2))))
-  (output (: (record (= a 1) (= b 2)) (Record (: a Int64) (: b Int64)))))
+  (output (: #record((= a 1) (= b 2)) (Record (: a Int64) (: b Int64)))))
 
 ; The merge above builds both operand records from CONSTANT literals, so the union folds to a constant
 ; record. A record carrying a RUNTIME field value cannot fold — the merge runs on the value heap. These
@@ -663,7 +663,7 @@
            `(Record.extend (record (a 1)) #"b" 2)` yields `(record (a 1) (b 2))`. The added field may hold
            any type. The field name is a `#field` label operand (a static label, not a runtime value).")
   (input  (Record.extend #record((= a 1)) #"b" 2))
-  (output (: (record (= a 1) (= b 2)) (Record (: a Int64) (: b Int64)))))
+  (output (: #record((= a 1) (= b 2)) (Record (: a Int64) (: b Int64)))))
 
 (case "extending a record with an already-present field is rejected"
   (doc    "Witnesses type-system.md #A Field Is Added To Or Replaced In A Record By A Derived Operation
@@ -680,7 +680,7 @@
            (Record.without r (z)) (record (z v)))`. `(Record.with (record (a 1) (b 2)) #"b" 9)` yields
            `(record (a 1) (b 9))` — an explicit update distinct from `extend`.")
   (input  (Record.with #record((= a 1) (= b 2)) #"b" 9))
-  (output (: (record (= a 1) (= b 9)) (Record (: a Int64) (: b Int64)))))
+  (output (: #record((= a 1) (= b 9)) (Record (: a Int64) (: b Int64)))))
 
 (case "updating a record field changes its type to the new value's"
   (doc    "Witnesses type-system.md #A Field Is Added To Or Replaced In A Record By A Derived Operation
@@ -688,7 +688,7 @@
            whose field `b` has whatever type the new value holds. `(Record.with (record (a 1) (b 2)) #"b"
            true)` retypes `b` from Int64 to Bool, yielding `(record (a 1) (b true))` of type `(Record (: a Int64) (: b Bool))`. Pins that `with` is not constrained to the field's prior type.")
   (input  (Record.with #record((= a 1) (= b 2)) #"b" true))
-  (output (: (record (= a 1) (= b true)) (Record (: a Int64) (: b Bool)))))
+  (output (: #record((= a 1) (= b true)) (Record (: a Int64) (: b Bool)))))
 
 (case "Record.with over a RUNTIME field leaves the original record readable (persistence)"
   (doc    "The runtime + persistence face of `Record.with` (the pins above are const-folded whole-value
@@ -873,7 +873,7 @@
            (b 2)))`. No Option: field presence is static, so a missing field is CDZ0212, not a runtime None
            (contrast `List.at` on a runtime index).")
   (input  (Record.pop #record((= a 1) (= b 2)) a))
-  (output (: (tuple 1 (record (= b 2))) (Tuple Int64 (Record (: b Int64))))))
+  (output (: #tuple(1 #record((= b 2))) (Tuple Int64 (Record (: b Int64))))))
 
 (case "popping an absent field is rejected"
   (doc    "Witnesses type-system.md #A Record Is Reduced By Dropping A Named Set Of Its Fields (2nd
@@ -937,7 +937,7 @@
            `(Tuple.concat (tuple 1 2) (tuple 3 4))` yields `(tuple 1 2 3 4)` of arity 4 — the first tuple's
            elements in order followed by the second's, each keeping its source position's type.")
   (input  (Tuple.concat #tuple(1 2) #tuple(3 4)))
-  (output (: (tuple 1 2 3 4) (Tuple Int64 Int64 Int64 Int64))))
+  (output (: #tuple(1 2 3 4) (Tuple Int64 Int64 Int64 Int64))))
 
 (case "concatenating tuples preserves each element's type"
   (doc    "The heterogeneous companion: `(Tuple.concat (tuple 1 true) (tuple \"x\"))` yields `(tuple 1 true
@@ -945,7 +945,7 @@
            source position rather than unifying to one element type — a tuple is a heterogeneous product,
            unlike a homogeneous list.")
   (input  (Tuple.concat #tuple(1 true) #tuple("x")))
-  (output (: (tuple 1 true "x") (Tuple Int64 Bool String))))
+  (output (: #tuple(1 true "x") (Tuple Int64 Bool String))))
 
 ; The concatenation cases above build both operand tuples from CONSTANT literals, so the result folds to a
 ; constant tuple at compile time. A tuple carrying a RUNTIME element — a boundary parameter — cannot fold:
@@ -981,14 +981,14 @@
            (which join two non-empty tuples) do not exercise — the tuple companion of the empty-string /
            empty-bytes concatenation-identity cases.")
   (input  (Tuple.concat #tuple() #tuple(1 2)))
-  (output (: (tuple 1 2) (Tuple Int64 Int64))))
+  (output (: #tuple(1 2) (Tuple Int64 Int64))))
 
 (case "concatenating an empty tuple on the right is the identity"
   (doc    "The mirror: `(Tuple.concat (tuple 1 2) (tuple))` appends no elements, so the result is `(tuple 1
            2)`. Pins that the empty tuple is the identity on the right as well as the left, so a cat with an
            empty operand on either side is a no-op on value.")
   (input  (Tuple.concat #tuple(1 2) #tuple()))
-  (output (: (tuple 1 2) (Tuple Int64 Int64))))
+  (output (: #tuple(1 2) (Tuple Int64 Int64))))
 
 (case "concatenating two empty tuples is the empty tuple"
   (doc    "The degenerate boundary: `(Tuple.concat (tuple) (tuple))` joins nothing to nothing, yielding the
@@ -996,7 +996,7 @@
            underflowing or producing a novel form, the tuple companion of the empty+empty string/bytes/set
            cases.")
   (input  (Tuple.concat #tuple() #tuple()))
-  (output (: (tuple) (Tuple))))
+  (output (: #tuple() (Tuple))))
 
 (case "splitting a tuple at a position yields a prefix and a suffix"
   (doc    "Witnesses type-system.md #A Tuple Is Split At A Position Into A Prefix And A Suffix:
@@ -1004,7 +1004,7 @@
            1-tuple prefix and the rest as a 2-tuple suffix — yielding `(tuple (tuple 1) (tuple 2 3))`. The
            position `k` is a compile-time literal.")
   (input  (Tuple.split-at #tuple(1 2 3) 1))
-  (output (: (tuple (tuple 1) (tuple 2 3)) (Tuple (Tuple Int64) (Tuple Int64 Int64)))))
+  (output (: #tuple(#tuple(1) #tuple(2 3)) (Tuple (Tuple Int64) (Tuple Int64 Int64)))))
 
 (case "splitting a tuple at zero yields an empty prefix"
   (doc    "The degenerate boundary of #A Tuple Is Split At A Position Into A Prefix And A Suffix: a split at
@@ -1014,7 +1014,7 @@
            the prefix typed `Unit`. Pins that 0 is in range and the empty prefix is the unit value, not a
            novel zero-arity tuple form.")
   (input  (Tuple.split-at #tuple(1 2) 0))
-  (output (: (tuple unit (tuple 1 2)) (Tuple Unit (Tuple Int64 Int64)))))
+  (output (: #tuple(unit #tuple(1 2)) (Tuple Unit (Tuple Int64 Int64)))))
 
 (case "splitting a tuple at its full arity yields an empty suffix"
   (doc    "The symmetric boundary of the split-at-zero case: a split at position `k` = the tuple's ARITY
@@ -1024,7 +1024,7 @@
            range (the split point may sit just past the last element) and the empty suffix is unit — the
            k=arity end of the k=0/k=arity boundary the split-at-zero case pins at the other end.")
   (input  (Tuple.split-at #tuple(1 2) 2))
-  (output (: (tuple (tuple 1 2) unit) (Tuple (Tuple Int64 Int64) Unit))))
+  (output (: #tuple(#tuple(1 2) unit) (Tuple (Tuple Int64 Int64) Unit))))
 
 (case "splitting a tuple beyond its arity is rejected"
   (doc    "Witnesses type-system.md #A Tuple Is Split At A Position Into A Prefix And A Suffix (2nd
@@ -1066,7 +1066,7 @@
            3))` yields `(tuple 1 (tuple 2 3))`. It is `(Tuple.split-at t 1)` with the singleton prefix
            unwrapped to its element.")
   (input  (Tuple.remove #tuple(1 2 3)))
-  (output (: (tuple 1 (tuple 2 3)) (Tuple Int64 (Tuple Int64 Int64)))))
+  (output (: #tuple(1 #tuple(2 3)) (Tuple Int64 (Tuple Int64 Int64)))))
 
 (case "popping a tuple with a runtime element separates the head from the rest"
   (doc    "The runtime companion: `(Tuple.remove (tuple n 20 30))` with `n` a boundary parameter splits the

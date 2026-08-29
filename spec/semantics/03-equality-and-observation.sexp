@@ -2784,7 +2784,7 @@
 
 (case "a nested all-nullary sum renders the correct variant across the boundary (render half, v-runtime f9f8717c)"
   (input  (do (type Tri (Lo) (Mid) (Hi)) (def (main) #tuple((Tri.Hi unit) 5)) (export main)))
-  (call main) (output (: (tuple (Hi unit) 5) (Tuple Tri Int64))))
+  (call main) (output (: #tuple((Hi unit) 5) (Tuple Tri Int64))))
 
 
 (case "a tuple key with a computed-NaN leaf is found by the canonical NaN probe"

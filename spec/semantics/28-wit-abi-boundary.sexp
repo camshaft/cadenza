@@ -81,7 +81,7 @@
              #record((= d (if (= (. m x) 0) Option.None (Option.Some (. m x))))))
            (export f)))
   (call f (: (record (= x 42)) (Record (: x Int64))))
-  (output (: (record (= d (Some 42))) (record (= d (Option Int64)))))
+  (output (: #record((= d (Some 42))) (record (d (Option Int64)))))
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (output (: (record (= d (None unit))) (record (= d (Option Int64)))))
   (live-objects known-leak 3))
@@ -100,7 +100,7 @@
              #record((= o (if (= (. m x) 0) Outcome.Continue (Outcome.Close (. m x))))))
            (export f)))
   (call f (: (record (= x 0)) (Record (: x Int64))))
-  (output (: (record (= o (Continue unit))) (record (= o Outcome))))
+  (output (: #record((= o (Continue unit))) (record (o Outcome))))
   (call f (: (record (= x 7)) (Record (: x Int64))))
   (output (: (record (= o (Close 7))) (record (= o Outcome))))
   (live-objects known-leak 2))
@@ -134,7 +134,7 @@
              #record((= xs #list((. m x) (+ (. m x) (. m x))))))
            (export f)))
   (call f (: (record (= x 5)) (Record (: x Int64))))
-  (output (: (record (= xs (list 5 10))) (record (= xs (List Int64)))))
+  (output (: #record((= xs #list(5 10))) (record (xs (List Int64)))))
   (live-objects known-leak 4))
 
 (case "a list of records in a record result VALUE round-trips via the run/encode envelope (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
@@ -149,7 +149,7 @@
              #record((= items #list(#record((= a (. m x)) (= b (+ (. m x) (. m x))))))))
            (export f)))
   (call f (: (record (= x 7)) (Record (: x Int64))))
-  (output (: (record (= items (list (record (= a 7) (= b 14))))) (record (= items (List (record (= a Int64) (= b Int64)))))))
+  (output (: #record((= items #list(#record((= a 7) (= b 14))))) (record (items (List (record (a Int64) (b Int64)))))))
   (live-objects known-leak 5))
 
 (case "a none-only option<s64> record field resolves its element type from an imposed WIT world"
@@ -324,7 +324,7 @@
   (component-name "cadenza:demo/iface")
   (input (do (type Rev (Close Int64) (Continue)) (def (f (: m (Record (: x Int64)))) #record((= o (if (= (. m x) 0) Rev.Continue (Rev.Close (. m x)))))) (export f)))
   (call f (: (record (= x 0)) (Record (: x Int64))))
-  (output (: (record (= o (continue unit))) (record (= o Rev))))
+  (output (: #record((= o (Continue unit))) (record (o Rev))))
   (call f (: (record (= x 5)) (Record (: x Int64))))
   (output (: (record (= o (close 5))) (record (= o Rev))))
   (live-objects known-leak 2))
@@ -1203,7 +1203,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (doc "SHAPE 59 - the record-wrapped twin of SHAPE 58: a payloadless enum as a record-result FIELD (record{c: Color}), no wit-world clause. Like SHAPE 58 this does NOT emit a typed WIT record/enum export - it falls back to the generic run/encode envelope (verified by WIT-dump), so it pins the enum-in-record VALUE ROUND-TRIP, not typed self-declaration. Complements SHAPE 2 (variant-WITH-payload) with the NULLARY-enum face. The typed enum EXPORT (and typed record-with-enum-field export) is a DECLINED emit gap tracked in WIT-BOUNDARY-SHAPE-COVERAGE.md. Promoted from a v-rust-backend probe (honest round-trip pin).")
   (input (do (type Color (Red) (Green) (Blue)) (def (f (: m (Record (: x Int64)))) #record((= c (if (= (. m x) 0) Color.Red Color.Green)))) (export f)))
   (call f (: (record (= x 0)) (Record (: x Int64))))
-  (output (: (record (= c (Red unit))) (record (= c Color))))
+  (output (: #record((= c (Red unit))) (record (c Color))))
   (live-objects known-leak 2))
 
 (case "a payloadless enum EXPORT result crosses as a TYPED WIT enum (imposed world) — Direction A"
@@ -1262,7 +1262,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (wit-world (world w (export cadenza:demo/iface (member f (func (param x (s64)) (result ("record" (= o ("variant" (continue) (close (s64)))) (= n (s64)))))))))
   (component-name "cadenza:demo/iface")
   (input (do (type Outcome (Continue) (Close Int64)) (def (f (: x Int64)) #record((= o (if (= x 0) Outcome.Continue (Outcome.Close x))) (= n x))) (export f)))
-  (call f (: 0 Int64)) (output (: (record (= o (continue unit)) (= n 0)) (record (= o Outcome) (= n Int64))))
+  (call f (: 0 Int64)) (output (: #record((= n 0) (= o (Continue unit))) (record (n Int64) (o Outcome))))
   (call f (: 7 Int64)) (output (: (record (= o (close 7)) (= n 7)) (record (= o Outcome) (= n Int64))))
   (live-objects known-leak 1 2))
 
@@ -1271,7 +1271,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (wit-world (world w (export cadenza:demo/iface (member f (func (param x (s64)) (result ("record" (= d ("option" ("record" (= a (s64))))) (= n (s64)))))))))
   (component-name "cadenza:demo/iface")
   (input (do (def (f (: x Int64)) #record((= d (if (= x 0) Option.None (Option.Some #record((= a x))))) (= n x))) (export f)))
-  (call f (: 0 Int64)) (output (: (record (= d (None unit)) (= n 0)) (record (= d (Option (Record (: a Int64)))) (= n Int64))))
+  (call f (: 0 Int64)) (output (: #record((= d (None unit)) (= n 0)) (record (d (Option (record (a Int64)))) (n Int64))))
   (call f (: 5 Int64)) (output (: (record (= d (Some (record (= a 5)))) (= n 5)) (record (= d (Option (Record (: a Int64)))) (= n Int64))))
   (live-objects known-leak 1 3))
 
@@ -1310,7 +1310,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (def (f (: x Int64)) #record((= a 9) (= d (Option.Some x))))
     (export f)))
   (call f (: 5 Int64))
-  (output (: (record (= a 9) (= d (Some 5))) (record (= a Int64) (= d (Option Int64)))))
+  (output (: #record((= a 9) (= d (Some 5))) (record (a Int64) (d (Option Int64)))))
   (live-objects known-leak 2))
 
 (case "sp3n SCALAR param + record result with an Option field (None side, branch-selected)"
@@ -1320,7 +1320,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (def (f (: x Int64)) #record((= a x) (= d (if (> x 0) (Option.Some x) Option.None))))
     (export f)))
   (call f (: 0 Int64))
-  (output (: (record (= a 0) (= d (None unit))) (record (= a Int64) (= d (Option Int64)))))
+  (output (: #record((= a 0) (= d (None unit))) (record (a Int64) (d (Option Int64)))))
   (live-objects known-leak 1))
 
 (case "sp4 SCALAR param + bare option result"
@@ -1340,7 +1340,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (def (f (: x Int64)) #list(x (* x 2) (* x 3)))
     (export f)))
   (call f (: 2 Int64))
-  (output (: (2 4 6) (List Int64)))
+  (output (: #list(2 4 6) (List Int64)))
   (live-objects known-leak 2))
 
 (case "sp6 TWO scalar params + 2-field record result (multi-scalar face)"

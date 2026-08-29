@@ -1990,7 +1990,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) #tuple(n #list(n (+ n 1)))))
               (export mk)))
   (call   mk (: 100 Int64))
-  (output (: (tuple 100 (list 100 101)) (Tuple Int64 (List Int64))))
+  (output (: #tuple(100 #list(100 101)) (Tuple Int64 (List Int64))))
   (live-objects known-leak 1))
 
 (case "a NESTED-tuple ARG composes with a NESTED-tuple RESULT"
@@ -2010,7 +2010,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) (if (> n 0) (Some #tuple(n (+ n 1))) None)))
               (export mk)))
   (call   mk (: 100 Int64))
-  (output (: (: (Some (tuple 100 101)) (Option (Tuple Int64 Int64))) (Option (Tuple Int64 Int64))))
+  (output (: (Some #tuple(100 101)) (Option (Tuple Int64 Int64))))
   (live-objects known-leak 1))
 
 (case "a closure returning a LIST of tuples (direct-call)"
@@ -2019,7 +2019,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) #list(#tuple(n (+ n 1)) #tuple((+ n 2) (+ n 3)))))
               (export mk)))
   (call   mk (: 100 Int64))
-  (output (: (list (tuple 100 101) (tuple 102 103)) (List (Tuple Int64 Int64))))
+  (output (: #list(#tuple(100 101) #tuple(102 103)) (List (Tuple Int64 Int64))))
   (live-objects known-leak 1))
 
 ; A COMPOUND (tuple/record) closure RESULT on the MULTI-EXPORT path — N same-signature closures each
@@ -2374,7 +2374,7 @@
            VARIABLE-LENGTH collection result (no static template — the runtime walks the handle).")
   (input  (do (def (mk) (fn ((: n Int64)) #list(n (+ n 1) (+ n 2)))) (export mk)))
   (call   mk (: 10 Int64))
-  (output (: (list 10 11 12) (List Int64)))
+  (output (: #list(10 11 12) (List Int64)))
   (live-objects known-leak 1))
 
 (case "a closure returning a Set — canonical member order"
@@ -2390,7 +2390,7 @@
            entries in canonical key order.")
   (input  (do (def (mk) (fn ((: n Int64)) #map((= 1 n) (= 2 (+ n 1))))) (export mk)))
   (call   mk (: 100 Int64))
-  (output (: (map (= 1 100) (= 2 101)) (Map Int64 Int64)))
+  (output (: #map((= 1 100) (= 2 101)) (Map Int64 Int64)))
   (live-objects known-leak 1))
 
 (case "a closure returning a NESTED List"
@@ -2399,7 +2399,7 @@
            recurses over the inner lists.")
   (input  (do (def (mk) (fn ((: n Int64)) #list(#list(n) #list((+ n 1) (+ n 2))))) (export mk)))
   (call   mk (: 7 Int64))
-  (output (: (list (list 7) (list 8 9)) (List (List Int64))))
+  (output (: #list(#list(7) #list(8 9)) (List (List Int64))))
   (live-objects known-leak 1))
 
 (case "a CAPTURING closure returning a List"
@@ -2407,7 +2407,7 @@
            `(: (list 100 5 105) (List Int64))`. Confirms a captured value flows into the collection result.")
   (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) #list(k n (+ k n)))) (export mk)))
   (call   mk (: 100 Int64) (: 5 Int64))
-  (output (: (list 100 5 105) (List Int64)))
+  (output (: #list(100 5 105) (List Int64)))
   (live-objects known-leak 1))
 
 (case "a closure returning an EMPTY List"
@@ -2415,7 +2415,7 @@
            walker handles a zero-length collection (the empty document).")
   (input  (do (def (mk) (fn ((: n Int64)) (: #list() (List Int64)))) (export mk)))
   (call   mk (: 0 Int64))
-  (output (: (list) (List Int64)))
+  (output (: #list() (List Int64)))
   (live-objects known-leak 1))
 
 ; The capture cases above hold SCALARS (a captured k flowing into a heap RESULT); the host-supplied
@@ -2586,7 +2586,7 @@
               (def (dn) (fn ((: n Int64)) #list(n (- n 1))))
               (export up) (export dn)))
   (call   up (: 5 Int64))
-  (output (: (list 5 6) (List Int64)))
+  (output (: #list(5 6) (List Int64)))
   (live-objects known-leak 1))
 
 (case "multi-export collection result — the second list closure"
@@ -2597,7 +2597,7 @@
               (def (dn) (fn ((: n Int64)) #list(n (- n 1))))
               (export up) (export dn)))
   (call   dn (: 5 Int64))
-  (output (: (list 5 4) (List Int64)))
+  (output (: #list(5 4) (List Int64)))
   (live-objects known-leak 1))
 
 (case "multi-export Set-result closures — three sharing one call"
@@ -2636,7 +2636,7 @@
               (def (two) 2)
               (export mk) (export two)))
   (call   mk (: 5 Int64))
-  (output (: (list 5 6) (List Int64)))
+  (output (: #list(5 6) (List Int64)))
   (live-objects known-leak 1))
 
 (case "a List-returning closure alongside a plain export — the plain"
@@ -2657,7 +2657,7 @@
               (def (inc (: x Int64)) (+ x 1))
               (export mk) (export inc)))
   (call   mk (: 10 Int64))
-  (output (: (map (= 1 10) (= 2 20)) (Map Int64 Int64)))
+  (output (: #map((= 1 10) (= 2 20)) (Map Int64 Int64)))
   (live-objects known-leak 1))
 
 (case "a Map-returning closure alongside a parameterized plain export — the plain"
@@ -2683,7 +2683,7 @@
               (def (mkb) (fn ((: b Bool)) #list((if b 1 0))))
               (export mki) (export mkb)))
   (call   mki (: 5 Int64))
-  (output (: (list 5 6) (List Int64)))
+  (output (: #list(5 6) (List Int64)))
   (live-objects known-leak 1))
 
 (case "distinct-sig collection result — the Bool→List closure"
@@ -2693,7 +2693,7 @@
               (def (mkb) (fn ((: b Bool)) #list((if b 1 0))))
               (export mki) (export mkb)))
   (call   mkb (: true Bool))
-  (output (: (list 1) (List Int64)))
+  (output (: #list(1) (List Int64)))
   (live-objects known-leak 1))
 
 (case "distinct-sig: a collection + a compound + a byte-rope + a scalar group all coexist — the collection"
@@ -2707,7 +2707,7 @@
               (def (inc) (fn ((: y Int64)) (+ y 1)))
               (export lst) (export pr) (export byt) (export inc)))
   (call   lst (: 7 Int64))
-  (output (: (list 7 8) (List Int64)))
+  (output (: #list(7 8) (List Int64)))
   (live-objects known-leak 1))
 
 (case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound"
@@ -2760,7 +2760,7 @@
               (def (app (: g (-> Int64 Int64)) (: x Int64)) #list(x (g x)))
               (export mk) (export app)))
   (call   app (: 5 Int64))
-  (output (: (list 5 6) (List Int64))))
+  (output (: #list(5 6) (List Int64))))
 
 (case "round-trip: a consumer returns a Set built from the closure result"
   (doc    "`mk` doubles; `app : (own<t>, Int64) -> (Set Int64)` = `(Set.of (list x (g x) x))`. `app(handle,
@@ -2778,7 +2778,7 @@
               (def (app (: g (-> Int64 Int64)) (: x Int64)) #map((= 0 x) (= 1 (g x))))
               (export mk) (export app)))
   (call   app (: 5 Int64))
-  (output (: (map (= 0 5) (= 1 105)) (Map Int64 Int64))))
+  (output (: #map((= 0 5) (= 1 105)) (Map Int64 Int64))))
 
 (case "round-trip: a scalar consumer + a List consumer of the same closure — the list"
   (doc    "One closure signature, TWO consumers: `asnum` returns the value, `aslist` returns `(list x (g x))`.
@@ -2789,7 +2789,7 @@
               (def (aslist (: g (-> Int64 Int64)) (: x Int64)) #list(x (g x)))
               (export mk) (export asnum) (export aslist)))
   (call   aslist (: 8 Int64))
-  (output (: (list 8 9) (List Int64))))
+  (output (: #list(8 9) (List Int64))))
 
 (case "round-trip: a scalar consumer + a List consumer of the same closure — the scalar"
   (doc    "The SAME two-consumer program, driving the SCALAR consumer: `asnum(handle, 8)` → 9 (by value, NOT
@@ -2820,7 +2820,7 @@
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 5 Int64))
-  (output (: (list 5 6) (List Int64))))
+  (output (: #list(5 6) (List Int64))))
 
 (case "distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the scalar"
   (doc    "The SAME two-resource-type program, driving the SCALAR consumer of the OTHER signature: `appb :
@@ -2844,7 +2844,7 @@
               (def (appb (: h (-> Bool Int64)) (: y Bool)) #map((= 0 (h y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 40 Int64))
-  (output (: (list 40 41) (List Int64))))
+  (output (: #list(40 41) (List Int64))))
 
 (case "distinct-sig round-trip: TWO collection consumers of different sigs — the Map"
   (doc    "The SAME program's OTHER consumer: `appb(mkb-handle, true)` → `(: (map (0 7)) (Map Int64 Int64))`.
@@ -2855,7 +2855,7 @@
               (def (appb (: h (-> Bool Int64)) (: y Bool)) #map((= 0 (h y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: true Bool))
-  (output (: (map (= 0 7)) (Map Int64 Int64))))
+  (output (: #map((= 0 7)) (Map Int64 Int64))))
 
 (case "distinct-sig round-trip: a List consumer + a compound consumer of another sig — the list"
   (doc    "A COLLECTION consumer (`appa` → List, value-encode) AND a COMPOUND consumer (`appb` → tuple, static
@@ -2867,7 +2867,7 @@
               (def (appb (: h (-> Bool Int64)) (: y Bool)) #tuple(y (h y)))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 3 Int64))
-  (output (: (list 3 4) (List Int64))))
+  (output (: #list(3 4) (List Int64))))
 
 (case "distinct-sig round-trip: a List consumer + a compound consumer of another sig — the compound"
   (doc    "The SAME program's OTHER consumer: `appb(mkb-handle, false)` → `(: (tuple false 8) (Tuple Bool
@@ -3280,7 +3280,7 @@
               (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) #list((. q 0) n)))
               (export mk-a) (export mk-b)))
   (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
-  (output (: (list 100 10 3) (List Int64)))
+  (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 1))
 
 (case "DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple LIST group (tuple then suffix scalar)"
@@ -3291,7 +3291,7 @@
               (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) #list((. q 0) n)))
               (export mk-a) (export mk-b)))
   (call   mk-b (: 100 Int64) (: (tuple 7 true) (Tuple Int64 Bool)))
-  (output (: (list 7 100) (List Int64)))
+  (output (: #list(7 100) (List Int64)))
   (live-objects known-leak 1))
 
 ; A fixed-shape compound ARGUMENT now composes with a BYTE-ROPE (`Bytes`/`String`) result: the bytes-result
@@ -3359,7 +3359,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))))
               (export mk)))
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
-  (output (: (list 10 3) (List Int64)))
+  (output (: #list(10 3) (List Int64)))
   (live-objects known-leak 1))
 
 (case "a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary"
@@ -3371,7 +3371,7 @@
                          ((. Map insert) ((. Map insert) #map() (. p 0) 100) (. p 1) 200)))
               (export mk)))
   (call   mk (: (tuple 1 2) (Tuple Int64 Int64)))
-  (output (: (map (= 1 100) (= 2 200)) (Map Int64 Int64)))
+  (output (: #map((= 1 100) (= 2 200)) (Map Int64 Int64)))
   (live-objects known-leak 1))
 
 (case "a fixed-shape Tuple ARG with a STRING RESULT crosses the direct-call boundary"
@@ -3409,7 +3409,7 @@
               (def (mk-rev) (fn ((: p (Tuple Int64 Int64))) #list((. p 1) (. p 0))))
               (export mk-fwd) (export mk-rev)))
   (call   mk-rev (: (tuple 10 3) (Tuple Int64 Int64)))
-  (output (: (list 3 10) (List Int64)))
+  (output (: #list(3 10) (List Int64)))
   (live-objects known-leak 1))
 
 (case "MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`"
@@ -3438,7 +3438,7 @@
               (def (twice (: n Int64)) (* n 2))
               (export mk) (export twice)))
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
-  (output (: (list 10 3) (List Int64)))
+  (output (: #list(10 3) (List Int64)))
   (live-objects known-leak 1))
 
 (case "MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure"
@@ -3482,7 +3482,7 @@
               (def (two) 2)
               (export mk) (export two)))
   (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
-  (output (: (list 100 10 3) (List Int64)))
+  (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 1))
 
 (case "MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALONGSIDE a plain export"
@@ -3512,7 +3512,7 @@
               (def (mk-b) (fn ((: p (Tuple Int64 Bool))) #list((. p 0))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: (tuple 10 3) (Tuple Int64 Int64)))
-  (output (: (list 10 3) (List Int64)))
+  (output (: #list(10 3) (List Int64)))
   (live-objects known-leak 1))
 
 (case "DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair"
@@ -3524,7 +3524,7 @@
               (def (mk-b) (fn ((: p (Tuple Int64 Bool))) #list((. p 0))))
               (export mk-a) (export mk-b)))
   (call   mk-b (: (tuple 7 true) (Tuple Int64 Bool)))
-  (output (: (list 7) (List Int64)))
+  (output (: #list(7) (List Int64)))
   (live-objects known-leak 1))
 
 ; A fixed-shape scalar tuple ARGUMENT can now sit AMONG scalar args (single-export, scalar result): the tuple
@@ -3575,7 +3575,7 @@
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
               (export mk)))
   (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
-  (output (: (list 100 10 3) (List Int64)))
+  (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 1))
 
 (case "a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary"
@@ -3607,7 +3607,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: n Int64)) #list((. p 0) (. p 1) n)))
               (export mk)))
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
-  (output (: (list 10 3 100) (List Int64)))
+  (output (: #list(10 3 100) (List Int64)))
   (live-objects known-leak 1))
 
 ; A RECORD closure argument crosses the direct-call boundary just like a tuple: it erases to a component
@@ -3658,7 +3658,7 @@
   (input  (do (def (mk) (fn ((: n Int64) (: r (Record (: x Int64) (: y Int64)))) #list(n (. r x) (. r y))))
               (export mk)))
   (call   mk (: 100 Int64) (: (record (= x 10) (= y 3)) (Record (: x Int64) (: y Int64))))
-  (output (: (list 100 10 3) (List Int64)))
+  (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 1))
 
 (case "a RECORD closure ARG on the MULTI-EXPORT path"
@@ -3794,7 +3794,7 @@
                          #list(n (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (export mk)))
   (call   mk (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
-  (output (: (list 1000 100 10 3) (List Int64)))
+  (output (: #list(1000 100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
 ; A NESTED compound ARG composes with EVERY result shape (single-export): the list-result cores rebuild the
@@ -3810,7 +3810,7 @@
                          #list((. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (export mk)))
   (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
-  (output (: (list 100 10 3) (List Int64)))
+  (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
 (case "a NESTED Tuple ARG with a BYTE-ROPE result crosses the direct-call boundary"
@@ -3844,7 +3844,7 @@
               (export mk)))
   (call   mk (: (record (= n 100) (= inner (record (= x 10) (= y 3))))
                 (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
-  (output (: (list 100 10 3) (List Int64)))
+  (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
 ; The NESTED compound ARG extends to the MULTI-EXPORT path: N same-sig nested-tuple-arg closures share ONE
@@ -3888,7 +3888,7 @@
                            #list((. (. p 1) 1) (. (. p 1) 0) (. p 0))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
-  (output (: (list 100 10 3) (List Int64)))
+  (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
 ; The NESTED compound ARG extends to the MIXED shape too: a nested-tuple-arg closure exported ALONGSIDE a
@@ -3927,7 +3927,7 @@
               (def (two) 2)
               (export mk) (export two)))
   (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
-  (output (: (list 100 10 3) (List Int64)))
+  (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
 ; The NESTED-arg-AMONG-scalars shape extends to the MULTI-EXPORT + MIXED paths too (via the shared
@@ -3970,7 +3970,7 @@
               (def (two) 2)
               (export mk) (export two)))
   (call   mk (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
-  (output (: (list 1000 100 10 3) (List Int64)))
+  (output (: #list(1000 100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
 ; The NESTED compound ARG completes the export-shape matrix on the DISTINCT-SIGNATURE path: closures of
@@ -4016,7 +4016,7 @@
               (def (mk-b) (fn ((: q (Tuple Int64 (Tuple Int64 Bool)))) #list((. q 0))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
-  (output (: (list 100 10 3) (List Int64)))
+  (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
 ; The NESTED-arg-AMONG-scalars shape completes on the DISTINCT-SIG path too — the LAST nested-arg gap. Each
@@ -4061,7 +4061,7 @@
               (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 (Tuple Int64 Bool)))) #list(n (. q 0))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
-  (output (: (list 1000 100 10 3) (List Int64)))
+  (output (: #list(1000 100 10 3) (List Int64)))
   (live-objects known-leak 3))
 
 ; A WIDER fixed-shape tuple (3+ fields) and DEEPER scalar interleaving (2 prefix + 1 suffix) also cross — the
@@ -4160,7 +4160,7 @@
               (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list((. p 0) (. p 1) n)))
               (export mk-a) (export mk-b)))
   (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
-  (output (: (list 100 10 3) (List Int64)))
+  (output (: #list(100 10 3) (List Int64)))
   (live-objects known-leak 1))
 
 (case "MULTI-EXPORT: driving the second among-scalars LIST closure (tuple then suffix scalar)"
@@ -4171,7 +4171,7 @@
               (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list((. p 0) (. p 1) n)))
               (export mk-a) (export mk-b)))
   (call   mk-b (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
-  (output (: (list 10 3 100) (List Int64)))
+  (output (: #list(10 3 100) (List Int64)))
   (live-objects known-leak 1))
 
 (case "MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result"
@@ -4288,7 +4288,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. q 1))))
               (export mk)))
   (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
-  (output (: (list 5 10) (List Int64)))
+  (output (: #list(5 10) (List Int64)))
   (live-objects known-leak 1))
 
 (case "TWO Tuple args with a fixed-shape COMPOUND result"
@@ -4322,7 +4322,7 @@
               (export mk)))
   (call   mk (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64))
              (: (tuple 100 200) (Tuple Int64 Int64)))
-  (output (: (list 1 4 100) (List Int64)))
+  (output (: #list(1 4 100) (List Int64)))
   (live-objects known-leak 1))
 
 (case "a scalar BETWEEN two Tuple args with a LIST result"
@@ -4334,7 +4334,7 @@
                 #list((. p 0) n (. q 1))))
               (export mk)))
   (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: 10 Int64) (: (tuple 1 20) (Tuple Int64 Int64)))
-  (output (: (list 5 10 20) (List Int64)))
+  (output (: #list(5 10 20) (List Int64)))
   (live-objects known-leak 1))
 
 (case "a CAPTURING closure taking TWO Tuple args with a LIST result"
@@ -4346,7 +4346,7 @@
                 #list((. p 0) (. q 1) k)))
               (export mk)))
   (call   mk (: 100 Int64) (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
-  (output (: (list 5 10 100) (List Int64)))
+  (output (: #list(5 10 100) (List Int64)))
   (live-objects known-leak 1))
 
 ; N-COMPOUND-ARGS × MULTI-EXPORT + MIXED: the ≥2-fixed-shape-compound-arg path (SCALAR result) now composes
@@ -4468,7 +4468,7 @@
               (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. q 1) (. p 0))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
-  (output (: (list 5 10) (List Int64)))
+  (output (: #list(5 10) (List Int64)))
   (live-objects known-leak 1))
 
 (case "MULTI-EXPORT: driving the SECOND two-Tuple-arg LIST closure"
@@ -4479,7 +4479,7 @@
               (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. q 1) (. p 0))))
               (export mk-a) (export mk-b)))
   (call   mk-b (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
-  (output (: (list 10 5) (List Int64)))
+  (output (: #list(10 5) (List Int64)))
   (live-objects known-leak 1))
 
 (case "MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result"
@@ -4517,7 +4517,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64))
              (: (tuple 100 200) (Tuple Int64 Int64)))
-  (output (: (list 1 4 100) (List Int64)))
+  (output (: #list(1 4 100) (List Int64)))
   (live-objects known-leak 1))
 
 (case "MIXED: a two-Tuple-arg closure with a LIST result ALONGSIDE a plain export"
@@ -4529,7 +4529,7 @@
               (def (twice (: n Int64)) (* n 2))
               (export mk) (export twice)))
   (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
-  (output (: (list 5 10) (List Int64)))
+  (output (: #list(5 10) (List Int64)))
   (live-objects known-leak 1))
 
 (case "MIXED: driving the PLAIN export alongside a two-Tuple-arg LIST closure"
@@ -4594,7 +4594,7 @@
               (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
               (export mk-i) (export mk-b)))
   (call   mk-i (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
-  (output (: (list 5 10) (List Int64)))
+  (output (: #list(5 10) (List Int64)))
   (live-objects known-leak 1))
 
 (case "DISTINCT-SIG: capturing two-Tuple-arg closures of different signatures"
@@ -5176,7 +5176,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) #tuple(#list(n (+ n 1)) n)))
               (export mk)))
   (call   mk (: 5 Int64))
-  (output (: (tuple (list 5 6) 5) (Tuple (List Int64) Int64)))
+  (output (: #tuple(#list(5 6) 5) (Tuple (List Int64) Int64)))
   (live-objects known-leak 1))
 
 (case "round-trip: a consumer returns an Option built from the closure result"
@@ -5218,7 +5218,7 @@
               (def (app (: g (-> Int64 Int64)) (: x Int64)) #tuple(#list(x (g x)) x))
               (export mk) (export app)))
   (call   app (: 5 Int64))
-  (output (: (tuple (list 5 6) 5) (Tuple (List Int64) Int64))))
+  (output (: #tuple(#list(5 6) 5) (Tuple (List Int64) Int64))))
 
 ; COMPOSED round-trip shapes — the argument surface (every machine type, incl. higher-order) and the result
 ; surface (every value-encodable type: scalar, byte-rope, fixed compound, collection, sum, and
@@ -5234,7 +5234,7 @@
               (def (app (: g (-> Int64 Int64)) (: x Int64)) #map((= 0 #list(x (g x))) (= 1 #list(x))))
               (export mk) (export app)))
   (call   app (: 5 Int64))
-  (output (: (map (= 0 (list 5 6)) (= 1 (list 5))) (Map Int64 (List Int64)))))
+  (output (: #map((= 0 #list(5 6)) (= 1 #list(5))) (Map Int64 (List Int64)))))
 
 (case "round-trip: a consumer returns an Option of a tuple"
   (doc    "A SUM whose payload is a fixed-shape COMPOUND: `app` returns `(Some (tuple x (g x)))`.
@@ -5244,7 +5244,7 @@
               (def (app (: g (-> Int64 Int64)) (: x Int64)) (Some #tuple(x (g x))))
               (export mk) (export app)))
   (call   app (: 5 Int64))
-  (output (: (Some (tuple 5 6)) (Option (Tuple Int64 Int64)))))
+  (output (: (Some #tuple(5 6)) (Option (Tuple Int64 Int64)))))
 
 (case "round-trip: a consumer returns a list of tuples from repeated closure application"
   (doc    "A `List (Tuple Int64 Int64)` result — a collection whose ELEMENT is a compound. `app` applies `g`
@@ -5255,7 +5255,7 @@
                 #list(#tuple(x (g x)) #tuple((+ x 1) (g (+ x 1)))))
               (export mk) (export app)))
   (call   app (: 3 Int64))
-  (output (: (list (tuple 3 6) (tuple 4 8)) (List (Tuple Int64 Int64)))))
+  (output (: #list(#tuple(3 6) #tuple(4 8)) (List (Tuple Int64 Int64)))))
 
 (case "round-trip: a HIGHER-ORDER closure arg composed with a SUM result"
   (doc    "The argument and result widenings compose: `app : (own<t>, Int64) -> (Option Int64)` applies a
@@ -5292,7 +5292,7 @@
               (def (appb (: h (-> Bool Int64)) (: y Bool)) #list((h y) (h y)))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: true Bool))
-  (output (: (list 1 1) (List Int64))))
+  (output (: #list(1 1) (List Int64))))
 
 ; FINAL COMPOSITION WITNESSES — the closure surface composes across all its axes at once. These exercise
 ; combinations not covered by the per-feature cases: a higher-order (closure-typed) argument on the
@@ -5368,7 +5368,7 @@
               (def (app (: g (-> Int64 Int64)) (: x Int64)) (Some #list(x (g x))))
               (export mk) (export app)))
   (call   app (: 5 Int64))
-  (output (: (Some (list 5 6)) (Option (List Int64)))))
+  (output (: (Some #list(5 6)) (Option (List Int64)))))
 
 ; The UNIT closure boundary: a closure ARGUMENT or RESULT of type `Unit` has no machine slot
 ; (`valtype_of(Unit) = None` — Unit occupies no wasm value, so a lifted lambda taking/returning it cannot be
@@ -5783,7 +5783,7 @@
              (def (h (: n Int64)) (let ((xs (bld n))) (fn ((: q Int64)) xs))) (export h)))
   (call h (: 3 Int64) (: 5 Int64))
   (drop)
-  (output (: (list 1 2 3) (List Int64)))
+  (output (: #list(1 2 3) (List Int64)))
   (live-objects 0))
 
 (case "hcz3 dropping a closure whose body RETURNED its captured MAP reclaims cleanly"

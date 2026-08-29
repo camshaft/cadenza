@@ -2606,7 +2606,7 @@
            list branches MUST be accepted. Pins that the branch-shape check does not treat list length as
            a shape mismatch — a compiler reusing the tuple-arity check on lists wrongly rejects this.")
   (input  (if true #list(1 2) #list(3 4 5)))
-  (output (: (list 1 2) (List Int64))))
+  (output (: #list(1 2) (List Int64))))
 
 (case "a RUNTIME if-chain selects among four different-length heap lists"
   (doc    "The runtime/depth upgrade of the const two-branch case above: a 3-deep nested `if` chain over a

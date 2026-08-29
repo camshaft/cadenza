@@ -8925,7 +8925,7 @@
 (case "crr1 an export returns a three-element list (reachable return = shell plus node, two cells)"
   (input (do (def (main (: n Int64)) #list(n (+ n 1) (* n 2))) (export main)))
   (call main (: 5 Int64))
-  (output (: (list 5 6 10) (List Int64)))
+  (output (: #list(5 6 10) (List Int64)))
   (live-objects 2))
 
 (case "crr2 an export returns a pair tuple (one reachable cell)"
@@ -8963,31 +8963,31 @@
 (case "nrr1 an export returns a list of two tuples (four reachable cells, compositional)"
   (input (do (def (main (: n Int64)) #list(#tuple(n 1) #tuple((+ n 1) 2))) (export main)))
   (call main (: 5 Int64))
-  (output (: (list (tuple 5 1) (tuple 6 2)) (List (Tuple Int64 Int64))))
+  (output (: #list(#tuple(5 1) #tuple(6 2)) (List (Tuple Int64 Int64))))
   (live-objects 4))
 
 (case "nrr2 an export returns a Some-wrapped list (three reachable cells)"
   (input (do (def (main (: n Int64)) (if (> n 0) (Option.Some #list(n (+ n 1))) Option.None)) (export main)))
   (call main (: 5 Int64))
-  (output (: (Some (list 5 6)) (Option (List Int64))))
+  (output (: (Some #list(5 6)) (Option (List Int64))))
   (live-objects 3))
 
 (case "nrr3 an export returns a record with a list field (three reachable cells)"
   (input (do (def (main (: n Int64)) #record((= k n) (= xs #list(n (+ n 1))))) (export main)))
   (call main (: 5 Int64))
-  (output (: (record (= k 5) (= xs (list 5 6))) (record (= k Int64) (= xs (List Int64)))))
+  (output (: #record((= k 5) (= xs #list(5 6))) (record (k Int64) (xs (List Int64)))))
   (live-objects 3))
 
 (case "nrr4 an export returns a list of lists (six reachable cells)"
   (input (do (def (main (: n Int64)) #list(#list(n) #list(n (+ n 1)))) (export main)))
   (call main (: 5 Int64))
-  (output (: (list (list 5) (list 5 6)) (List (List Int64))))
+  (output (: #list(#list(5) #list(5 6)) (List (List Int64))))
   (live-objects 6))
 
 (case "nrr5 an export returns a tuple carrying a runtime String (two reachable cells)"
   (input (do (def (main (: n Int64)) #tuple(n (if (> n 0) (String.concat "ab" "c") "z"))) (export main)))
   (call main (: 5 Int64))
-  (output (: (tuple 5 "abc") (Tuple Int64 String)))
+  (output (: #tuple(5 "abc") (Tuple Int64 String)))
   (live-objects 2))
 ; The O(n) shell-ACCUMULATION known gap (more severe than the O(1) borrowed-param twin above): a
 ; self-recursive `f` returns an OWNED sum `(Mk list)`, and every returning frame `(match (f …) ((Mk t)
@@ -9065,21 +9065,21 @@
   (input (do (def (main (: n Int64))
     (let ((ys #list(n (+ n 1)))) #list(ys ys))) (export main)))
   (call main (: 5 Int64))
-  (output (: (list (list 5 6) (list 5 6)) (List (List Int64))))
+  (output (: #list(#list(5 6) #list(5 6)) (List (List Int64))))
   (live-objects 4))
 
 (case "shr2 a let-bound inner list referenced twice in a returned tuple stays one shared object (three cells)"
   (input (do (def (main (: n Int64))
     (let ((ys #list(n (+ n 1)))) #tuple(ys ys))) (export main)))
   (call main (: 5 Int64))
-  (output (: (tuple (list 5 6) (list 5 6)) (Tuple (List Int64) (List Int64))))
+  (output (: #tuple(#list(5 6) #list(5 6)) (Tuple (List Int64) (List Int64))))
   (live-objects 3))
 
 (case "shr3 two separately-built identical inner lists are distinct objects (six cells, the unshared control)"
   (input (do (def (main (: n Int64))
     #list(#list(n (+ n 1)) #list(n (+ n 1)))) (export main)))
   (call main (: 5 Int64))
-  (output (: (list (list 5 6) (list 5 6)) (List (List Int64))))
+  (output (: #list(#list(5 6) #list(5 6)) (List (List Int64))))
   (live-objects 6))
 ; SIMPLEST instance of the compound-shell reclaim gap (the before/after witness for the future
 ; broadening): a SINGLE non-recursive match over an OWNED compound-payload sum whose payload child is
@@ -9149,7 +9149,7 @@
 (case "trm2 an export returns a one-entry Map (one reachable cell)"
   (input (do (def (main (: n Int64)) (Map.insert Map.empty n (+ n 1))) (export main)))
   (call main (: 5 Int64))
-  (output (: (map (= 5 6)) (Map Int64 Int64)))
+  (output (: #map((= 5 6)) (Map Int64 Int64)))
   (live-objects 1))
 
 (case "trm3 an export returns a BigInt built from the scalar param (one reachable cell)"
@@ -9276,7 +9276,7 @@
       (let ((x (mk2 n))) #tuple(x x)))
     (export main)))
   (call main (: 5 Int64))
-  (output (: (tuple (list 5 6) (list 5 6)) (Tuple (List Int64) (List Int64))))
+  (output (: #tuple(#list(5 6) #list(5 6)) (Tuple (List Int64) (List Int64))))
   (live-objects 3))
 
 (case "idc2 a NULLARY def-call's allocated list bound once and referenced twice stays one shared object"
@@ -9286,7 +9286,7 @@
       (let ((x (mk0))) #tuple(x x)))
     (export main)))
   (call main (: 5 Int64))
-  (output (: (tuple (list 7 8) (list 7 8)) (Tuple (List Int64) (List Int64))))
+  (output (: #tuple(#list(7 8) #list(7 8)) (Tuple (List Int64) (List Int64))))
   ; WIT static encoding: the collection-return assembler now hoists the shared constant list build-once
   ; (census-excluded immortal), so only the outer tuple is a mortal per-eval allocation: 3→1.
   (live-objects 1))

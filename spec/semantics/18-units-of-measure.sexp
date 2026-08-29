@@ -249,7 +249,7 @@
            by the direct cases — this pins that the note-path descent NESTS (a scale-path machinery that
            handled only a top-level collection element would render the tuple-nested Qty raw at 5.0).")
   (input  #list(#tuple(1 (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))))
-  (output (: (list (tuple 1 (Qty.of 5000.0 (Unit.base #"meter"))))
+  (output (: #list(#tuple(1 (Qty.of 5000.0 (Unit.base #"meter"))))
              (List (Tuple Int64 (Qty Float64 (Unit.base #"meter")))))))
 
 (case "a quantity in an OPTION inside a MAP value renders scaled (nested composition)"
@@ -259,7 +259,7 @@
            tuple-in-list case above, pins both wrapper KINDS (positional compound + sum payload) nesting
            inside both collection positions that carry per-element notes.")
   (input  (Map.insert Map.empty 1 (Some (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))))
-  (output (: (map (= 1 (Some (Qty.of 5000.0 (Unit.base #"meter")))))
+  (output (: #map((= 1 (Some (Qty.of 5000.0 (Unit.base #"meter")))))
              (Map Int64 (Option (Qty Float64 (Unit.base #"meter")))))))
 
 (case "a family quantity displays scaled exactly to its reference (Rational)"
@@ -700,7 +700,7 @@
            respects each element's inner type. Number and unit AGREE in every element.")
   (input  #tuple((Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))
                  (Qty.of (Rational.of 5 1) (Unit.of #"mile"))))
-  (output (: (tuple (Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 201168/25 (Unit.base #"meter")))
+  (output (: #tuple((Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 201168/25 (Unit.base #"meter")))
              (Tuple (Qty Float64 (Unit.base #"meter")) (Qty Rational (Unit.base #"meter"))))))
 
 (case "an OPTION payload quantity renders scaled to its reference in the value form"
@@ -722,7 +722,7 @@
            tuple's direct elements — every Qty leaf, however deep, is normalized to its reference.")
   (input  #tuple(#tuple((Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))
                  #tuple((Qty.of 2.0 (Unit.base #"meter")))))
-  (output (: (tuple (tuple (Qty.of 5000.0 (Unit.base #"meter"))) (tuple (Qty.of 2.0 (Unit.base #"meter"))))
+  (output (: #tuple(#tuple((Qty.of 5000.0 (Unit.base #"meter"))) #tuple((Qty.of 2.0 (Unit.base #"meter"))))
              (Tuple (Tuple (Qty Float64 (Unit.base #"meter"))) (Tuple (Qty Float64 (Unit.base #"meter")))))))
 
 (case "a MIXED-shape compound scales its quantity leaf beside a non-quantity element"
@@ -734,7 +734,7 @@
            an Option nested inside a tuple to reach the Qty, and does not touch a sibling non-quantity element
            (no spurious scaling of the Int).")
   (input  #tuple((Some (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))) 7))
-  (output (: (tuple (Some (Qty.of 5000.0 (Unit.base #"meter"))) 7)
+  (output (: #tuple((Some (Qty.of 5000.0 (Unit.base #"meter"))) 7)
              (Tuple (Option (Qty Float64 (Unit.base #"meter"))) Int64))))
 
 (case "a velocity multiplied by a time recovers the distance dimension"
@@ -3007,7 +3007,7 @@
            it does into tuple / sum-payload / record holes. Pins that a Map VALUE quantity is display-scaled
            in the whole-collection value form, not only when decoded via `Map.lookup` + `Qty.value`.")
   (input  (Map.insert (Map.empty) 1 (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))))
-  (output (: (map (= 1 (Qty.of 5000.0 (Unit.base #"meter"))))
+  (output (: #map((= 1 (Qty.of 5000.0 (Unit.base #"meter"))))
              (Map Int64 (Qty Float64 (Unit.base #"meter"))))))
 
 (case "a whole LIST of quantities renders every element scaled to reference in the value form"
@@ -3019,7 +3019,7 @@
            whole-Map-value render above — both exercise a quantity inside a heap collection's element slot.")
   (input  #list((Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))
                 (Qty.of 2.0 (Unit.prefix kilo (Unit.base #"meter")))))
-  (output (: (list (Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 2000.0 (Unit.base #"meter")))
+  (output (: #list((Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 2000.0 (Unit.base #"meter")))
              (List (Qty Float64 (Unit.base #"meter"))))))
 
 ; --- A NOMINAL newtype over a quantity as a (compound) key: strip_nominal ∘ peel-Ty::Qty -----------
@@ -3235,7 +3235,7 @@
                                 (Qty.of 2.0 (Unit.prefix kilo (Unit.base #"meter")))
                                 (Qty.of 3.0 (Unit.prefix kilo (Unit.base #"meter")))))
             (export main)))
-  (output (: (tuple (Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 2000.0 (Unit.base #"meter"))
+  (output (: #tuple((Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 2000.0 (Unit.base #"meter"))
                     (Qty.of 3000.0 (Unit.base #"meter"))) V3q)))
 
 (case "a USER-DEFINED multi-variant sum payload quantity renders scaled to its reference"

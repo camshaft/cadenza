@@ -4078,7 +4078,7 @@
                   (match (String.at r 40) ((Some _c) 1) ((None _u) 0)))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: (tuple 40 "a" "b" "a" "b" 1 0) (Tuple Int64 String String String String Int64 Int64)))
+  (output (: #tuple(40 "a" "b" "a" "b" 1 0) (Tuple Int64 String String String String Int64 Int64)))
   (live-objects known-leak 11))
 
 ; The deep-rope case above folds a FIXED chunk ("ab") a fixed number of times; this folds String.concat over

@@ -468,13 +468,13 @@
            diverging to the shortest form. Converged by v-runtime (all three KIND_FLOAT encode paths emit the
            full expansion for whole floats).")
   (input  (do (def (main) #tuple(3.4028235e38 1.0)) (export main)))
-  (output (: (tuple 340282349999999991754788743781432688640.0 1.0) (Tuple Float64 Float64))))
+  (output (: #tuple(340282349999999991754788743781432688640.0 1.0) (Tuple Float64 Float64))))
 
 (case "a large-magnitude float renders its full expansion as a LIST element"
   (doc    "The list-element face of the compound float render — same KIND_FLOAT heap path as the tuple case;
            a large-magnitude Float64 in a list literal renders its full exact expansion, matching rust.")
   (input  (do (def (main) #list(3.4028235e38)) (export main)))
-  (output (: (list 340282349999999991754788743781432688640.0) (List Float64))))
+  (output (: #list(340282349999999991754788743781432688640.0) (List Float64))))
 
 (case "a large-magnitude float renders its full expansion as an OPTION (sum) payload"
   (doc    "The sum-payload face of the compound float render — a boxed KIND_FLOAT inside Option.Some renders
@@ -500,5 +500,5 @@
            position the float crosses the boundary in. Both backends.")
   (input  (do (def (main (: x Float64)) #tuple(x 1)) (export main)))
   (call   main (: 3.4028235e38 Float64))
-  (output (: (tuple 340282349999999991754788743781432688640.0 1) (Tuple Float64 Int64)))
+  (output (: #tuple(340282349999999991754788743781432688640.0 1) (Tuple Float64 Int64)))
   (live-objects known-leak 2))
