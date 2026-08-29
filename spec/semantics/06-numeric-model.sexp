@@ -1229,6 +1229,44 @@
   (call   main (: 2.5 Float32) (: 0 Int64)) (output (: 2.0 Float32))
   (call   main (: 2.5 Float32) (: 7 Int64)) (output (: 2.5 Float32)))
 
+; The COMPOUND-PAYLOAD face of the sibling-width family (1198/1186 are the scalar twins). When both arms
+; build the SAME constructor, `lower` HOISTS/SINKS that constructor out and puts each differing payload
+; position under its own `if`/`match` — `(match n (0 (Some 2.0)) (_ (Some v0)))` → `(Some (match n (0 2.0)
+; (_ v0)))`. The sunk/hoisted inner node used to be typed from the FIRST arm alone (`type_of(field_vals[0])`
+; / `type_of(then_)`), so a deferred-float literal payload (`2.0`) STAYED deferred (→ the Float64 default)
+; when its SIBLING payload was a concrete `Float32` (`v0`), and the payload select pushed `f64.const 2.0`
+; beside the `f32` v0 → "select operands have different types", an INVALID module — the compound analogue of
+; the scalar join gap above, one layer under a constructor. Both the match SINK (sink_ctor_through_match_arms)
+; and the if HOIST (synth_if_hoisted) now JOIN all arm field types (Ty::join adopts the sibling's fixed f32),
+; so the inner node types to Float32 and both arms ground to f32. A two-CONCRETE-width payload mix is still a
+; CDZ0201 fault caught before lowering (the scalar `(if b v1:Float64 v0:Float32 …)` twin). Both faces (v-rb).
+(case "a deferred-float Some-payload match arm takes its width from a sibling Float32 payload (constructor sink)"
+  (doc    "Compound-payload face of the sibling-width match family (1198): `(match n (0 (Some 2.0)) (_ (Some
+           v0)))` with `v0 : Float32`, no annotation. `lower` sinks the common `Some` out — `(Some (match n (0
+           2.0) (_ v0)))` — and used to type the sunk inner match from field_vals[0] (the deferred `2.0` →
+           Float64), so the payload select was `f64.const 2.0`/`f32`(v0): an INVALID module. The sink now JOINs
+           all arm field types (Ty::join adopts the sibling f32). n=0 → (Some 2.0) at f32; else → (Some v0).")
+  (input  (do (def (main (: v0 Float32) (: n Int64)) (match n (0 (Some 2.0)) (_ (Some v0)))) (export main)))
+  (call   main (: 2.5 Float32) (: 0 Int64)) (output (: (Some 2.0) (Option Float32)))
+  (call   main (: 2.5 Float32) (: 7 Int64)) (output (: (Some 2.5) (Option Float32)))
+  ; The const-arm `(Some 2.0)` crosses the host boundary as an owned compound; the Some node + its boxed
+  ; payload are not reclaimed on the boundary return (the documented compound-crossing reclaim gap, same
+  ; class as the runtime-BigInt-in-Option cases 3099/3109). Orthogonal to the float-WIDTH fix under test.
+  (live-objects known-leak 2))
+
+(case "a deferred-float Some-payload if branch takes its width from a sibling Float32 payload (constructor hoist)"
+  (doc    "The IF twin of the constructor-sink compound case above (and of scalar 1186): `(if b (Some 2.0) (Some
+           v0))` with `v0 : Float32`, no annotation. `hoist_common_ctor` pulls the common `Some` out — `(Some (if
+           b 2.0 v0))` — and `synth_if_hoisted` used to type the hoisted inner if from the `then` branch alone
+           (deferred `2.0` → Float64), the same f64/f32 payload-select mismatch (INVALID module). It now JOINs
+           both branch types. b=true → (Some 2.0) at f32; b=false → (Some v0).")
+  (input  (do (def (main (: v0 Float32) (: b Bool)) (if b (Some 2.0) (Some v0))) (export main)))
+  (call   main (: 2.5 Float32) (: true Bool))  (output (: (Some 2.0) (Option Float32)))
+  (call   main (: 2.5 Float32) (: false Bool)) (output (: (Some 2.5) (Option Float32)))
+  ; Same compound-crossing reclaim gap as the sink case above (orthogonal to the float-WIDTH fix): the
+  ; const-branch `(Some 2.0)` crosses the boundary as an owned compound whose Some+payload are not reclaimed.
+  (live-objects known-leak 2))
+
 ; The RECURSIVE face of the Float32 match-arm family. When the match is the body of a SELF-recursive
 ; function, the Rust backend compiles the function to a `loop` and each non-recursive tail arm `break`s its
 ; value out; the recursive arm `continue`s. The loop's break leaves used to be grounded ONLY from the group's

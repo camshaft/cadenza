@@ -1946,6 +1946,8 @@ pass	a default-integer pragma naming an unbound type is rejected as unbound, lik
 pass	a deferred resume-thunk STORED IN A SUM and match-extracted through a helper before apply folds
 pass	a deferred resume-thunk filed by a non-recursive helper then popped folds
 pass	a deferred resume-thunk stored in a MULTI-PAYLOAD pqueue entry and tuple-match-extracted folds
+pass	a deferred-float Some-payload if branch takes its width from a sibling Float32 payload (constructor hoist)
+pass	a deferred-float Some-payload match arm takes its width from a sibling Float32 payload (constructor sink)
 pass	a definition named like a variant shadows the bare-variant constructor
 pass	a delegated capability is not itself an export field
 pass	a delegated effect performed in a closure passed to a HOF is reached and fires
