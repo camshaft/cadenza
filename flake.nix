@@ -2210,6 +2210,12 @@
             export CDZ_STORE="''${CDZ_STORE:-${componentStore}}"
             export CDZ_RUN_BIN="''${CDZ_RUN_BIN:-${cdzRun}/bin/cdz-run}"
             export CDZ_CALC_BIN="''${CDZ_CALC_BIN:-${cdzCalc}/bin/cdz-calc}"
+            # CDZ_RUST_RLIB_DIR (v-cdz-crate-split #5689): `cdz run-rust` links the emitted rust driver against
+            # the prebuilt cdz-rt/cdz-num/cadenza-ast rlibs. The nix cdz bin ships NO rlibs beside the exe (so
+            # the exe-relative fallback found nothing → E0433, killing cdz-smith's rust oracle + breaker's rust
+            # differential). Point it at `rustRlibs` (the same prebuilt rlib dir the corpus-rust exec grader
+            # uses via --cdz-rt-dir). Caller override honored via :- (a cargo build sets its own / leaves unset).
+            export CDZ_RUST_RLIB_DIR="''${CDZ_RUST_RLIB_DIR:-${rustRlibs}}"
             exec "${seedCompiler}/bin/cdz" "$@"
           '';
         };
