@@ -275,14 +275,32 @@ pub fn emit_fragment(
     let do_head = b.name("do");
     let mut root_children = vec![do_head];
 
+    // Populate `emitted` with EVERY user `(type …)` this backend can emit — REGARDLESS of `include_type_decls`.
+    // In the two-stage shred the CLOSURE fragment (`include_type_decls`) carries the decl NODES and the per-test
+    // fragments do NOT (each per-test program SPLICES against the closure, which already declares the types). But
+    // a per-test def that CONSTRUCTS or MATCHES a user sum/nominal VALUE still needs the decl marked emitted so
+    // its ctor-referencing surface is allowed — the SPLICED program has the decl (from the closure), so it round-
+    // trips. Without the mark, a per-test fragment declined every sum value/match "…`(type …)` declaration is not
+    // emitted" (v-test-shred: the 3 LARGEST compiler-ml two-stage decline classes, all `emitted`-empty). So MARK
+    // for all; PUSH the node only when this fragment OWNS the decls (`include_type_decls`). A decl this backend
+    // CANNOT emit (open/empty/unrenderable payload) stays OUT of `emitted` in BOTH fragments (the closure omits it
+    // too), so a value over it still declines — consistent with the whole-program `emit`.
     let mut emitted: std::collections::HashSet<StructId> = std::collections::HashSet::new();
-    if include_type_decls {
-        for i in 0..db.type_decls.len() {
-            let decl = db.type_decls[i].clone();
-            if db.is_user_node(decl.occ)
-                && let Some(node) = emit_type_decl(db, &mut b, &decl)
-            {
+    for i in 0..db.type_decls.len() {
+        let decl = db.type_decls[i].clone();
+        if !db.is_user_node(decl.occ) {
+            continue;
+        }
+        if include_type_decls {
+            if let Some(node) = emit_type_decl(db, &mut b, &decl) {
                 root_children.push(node);
+                emitted.insert(decl.occ);
+            }
+        } else {
+            // Mark-only: reuse the exact emittability test via a THROWAWAY builder (the decl node comes from
+            // the closure fragment at splice time, so it must NOT be pushed here — that would double-declare it).
+            let mut scratch = Builder::new();
+            if emit_type_decl(db, &mut scratch, &decl).is_some() {
                 emitted.insert(decl.occ);
             }
         }
