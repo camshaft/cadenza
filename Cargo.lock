@@ -3495,6 +3495,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask-save-baseline"
+version = "0.0.0"
+dependencies = [
+ "xtask-support",
+]
+
+[[package]]
 name = "xtask-support"
 version = "0.0.0"
 dependencies = [

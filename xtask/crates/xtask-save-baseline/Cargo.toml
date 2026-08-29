@@ -1,0 +1,25 @@
+# xtask-save-baseline — the `gate --save` baseline regen as a THIN standalone leaf (v-xtask-decompose:
+# seq-202 gate-command delete). The heavy part (grading every corpus case) moves to nix: v-cdz-delegate
+# adds a `cdz-run --emit-verdict` CLASSIFY mode (run the grade → map Grade→Verdict → emit `tag<TAB>desc`,
+# always exit 0), v-nix wires a `.#corpus-verdicts` derivation that harvests every case's line (CA-cached),
+# and `apps.save-baseline` builds that + runs THIS leaf. This leaf just reads the harvested verdict lines
+# and writes the `.gate-baseline*` file via `xtask_support::serialize_baseline` — no corpus re-run, no
+# pipeline. Replaces the in-process `gate --save` so `Cmd::Gate` can be deleted.
+#
+# LEAF: deps `xtask-support` only (for `Verdict` + `serialize_baseline` — the authoritative baseline
+# vocab/format owned by v-corpus-harness). No xtask dep.
+[package]
+name = "xtask-save-baseline"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-save-baseline"
+path = "src/main.rs"
+
+[dependencies]
+# The baseline-text algebra: `Verdict` (pass/todo/fail) + `serialize_baseline` (sorted, hash-headered,
+# tab-separated `tag<TAB>description`, round-trips via `Verdict::parse`). The single source of truth for
+# the baseline vocabulary + format (v-corpus-harness owns it).
+xtask-support = { path = "../xtask-support" }
