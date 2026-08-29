@@ -45,7 +45,7 @@ use crate::{
     ReducerKind, Str,
 };
 use cadenza_ast::ast::Struct;
-use cadenza_ast::ast::{Arenas, Builder, Leaf, StructId};
+use cadenza_ast::ast::{Arenas, Builder, CompoundCtor, Leaf, StructId};
 use cadenza_ast::codec;
 use std::ops::Bound;
 use std::sync::Arc;
@@ -941,9 +941,8 @@ fn bool_value(b: &mut Builder, v: bool) -> StructId {
 }
 
 fn list_items(arenas: &Arenas, id: StructId) -> Option<&[StructId]> {
-    arenas
-        .as_ctor_form(id, "list")
-        .or_else(|| arenas.as_form(id, "list"))
+    // All three list spellings incl. the M2 native ctor-leaf head (rcdzc-compiled log values).
+    arenas.compound_form_of(id, CompoundCtor::List)
 }
 
 fn field(arenas: &Arenas, record: StructId, name: &str) -> Option<StructId> {
