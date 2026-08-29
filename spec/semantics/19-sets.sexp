@@ -606,7 +606,9 @@
   (call   main (: 4 Int64)) (output (: 8 Int64))
   (call   main (: 7 Int64)) (output (: 105 Int64))
   (call   main (: 1 Int64)) (output (: 100 Int64))
-  (live-objects known-leak 2))
+  ; per-call (B2): the seen-set orbit accumulator scales with iteration length then plateaus (was coarse
+  ; whole-case known-leak 2, matched only call 0). true vector: 2/1/1/0. (v-memory-safety re-baseline, coord v-corpus-harness)
+  (live-objects known-leak 2 1 1 0))
 
 (case "graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list"
   (doc    "The worklist algorithm — the compiler's own reachability shape: a `(Map Int64 (List Int64))`
@@ -646,7 +648,9 @@
   (call   main (: 1 Int64)) (output (: 410 Int64))
   (call   main (: 5 Int64)) (output (: 211 Int64))
   (call   main (: 4 Int64)) (output (: 104 Int64))
-  (live-objects known-leak 15))
+  ; per-call (B2): the worklist/visited-set accumulator scales with the traversal (was coarse whole-case 15,
+  ; matched only call 0). true vector: 15/9/4. (v-memory-safety re-baseline, coord v-corpus-harness)
+  (live-objects known-leak 15 9 4))
 
 (case "BIPARTITE check two-colors components and rejects the odd cycle"
   (doc    "The 2-coloring member of the graph family (reachability above, topo-sort below, HAPPY
@@ -707,7 +711,9 @@
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 0 Int64))
   (call main (: 3 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 35))
+  ; per-call (B2): the two-coloring visited/queue accumulator varies per component (was coarse whole-case 35,
+  ; matched only call 0). true vector: 35/20/34. (v-memory-safety re-baseline, coord v-corpus-harness)
+  (live-objects known-leak 35 20 34))
 
 (case "dropping a set derived by insert must not free members shared with the survivor"
   (doc    "The SET member of the generation-sharing reclaim family (map/list members in 05-compound,
@@ -809,7 +815,9 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 123541 Int64))
   (call   main (: 2 Int64)) (output (: 150 Int64))
-  (live-objects known-leak 83))
+  ; per-call (B2): the in-degree/ready-set accumulator differs per graph (was coarse whole-case 83, matched
+  ; only call 0). true vector: 83/24. (v-memory-safety re-baseline, coord v-corpus-harness)
+  (live-objects known-leak 83 24))
 
 ; --- The algebraic laws the three operations satisfy: the empty set as identity/annihilator, and ----
 ; --- the union laws (commutative, idempotent). These pin the operations' DEFINING identities, which
@@ -2039,7 +2047,9 @@
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 6))
+  ; RECLAIM WIN: was known-leak 6; the runtime-list Set.of construction now reclaims fully (measured 0 on
+  ; 05WfA5uY, runtime args defeat fold). (v-memory-safety re-baseline, coord v-corpus-harness)
+  (live-objects 0))
 
 ; Building runtime sets at TWO different element types in ONE program. Each runtime-`Set.of` site gets its
 ; OWN synthesized fold def (`__set_of_rt$0`, `__set_of_rt$1`, …), so every fold is MONOMORPHIC — instantiated
@@ -2060,7 +2070,9 @@
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
   (output (: 22 Int64))
-  (live-objects known-leak 9))
+  ; RECLAIM WIN: was known-leak 9; the two per-site monomorphic runtime Set.of folds now reclaim fully
+  ; (measured 0 on 05WfA5uY, runtime args defeat fold). (v-memory-safety re-baseline, coord v-corpus-harness)
+  (live-objects 0))
 
 ; The N-site generalization of the per-site monomorphic fold: THREE runtime-`Set.of` sites at THREE distinct
 ; element types in one program — a `Set Int64`, a `Set Bool`, AND a `Set String`. Each site gets its own
@@ -2872,7 +2884,9 @@
   (output (: 42 Int64))
   (call   main (: 0 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 3))
+  ; per-call (B2): coarse whole-case known-leak 3 matched only call 0; call 1 reclaims one more. true vector: 3/2.
+  ; (v-memory-safety re-baseline, coord v-corpus-harness)
+  (live-objects known-leak 3 2))
 
 (case "a float-field RECORD as a SET element dedups by content including the float leaf"
   (doc    "The float-leaf record as a champ SET element (closed with the slice-canonicalization work —
