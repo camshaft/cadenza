@@ -1264,31 +1264,17 @@
             ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues cases)}
             echo "ok: test-shred ${proj} — ${toString (builtins.length (builtins.attrNames cases))} @tests via shred→per-test exec (decliners skip)" > "$out"
           '';
-        # DRIFT-GUARD — committed `tests-shred-index.txt` == fresh `cdz test --list` (sorted `name<TAB>
-        # is_property`). Reds ONLY on a source @test add/remove (STABLE vs #4031 shreddability — never
-        # couples to v-rust-backend's decline set). Mirrors `guideManifestDriftAssert`.
-        mkTestShredIndexDrift = { proj, dir }:
-          pkgs.runCommand "test-shred-index-drift-${proj}" { nativeBuildInputs = [ seedCompiler pkgs.jq ]; } ''
-            set -euo pipefail
-            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
-            cdz test --list ${pkgs.lib.fileset.toSource { root = ./.; fileset = dir; }}/implementation/${proj} \
-              | jq -r '.tests[] | "\(.file | split("/") | last | sub("\\.[^.]*$";""))\t\(.name)\t\(.is_property)"' | sort > fresh.txt
-            if diff -u ${./implementation + "/${proj}/tests-shred-index.txt"} fresh.txt; then
-              echo "ok: committed tests-shred-index.txt == fresh cdz test --list (${proj})" > "$out"
-            else
-              echo "DRIFT: implementation/${proj}/tests-shred-index.txt != fresh 'cdz test --list ${proj}' — regenerate the committed index"
-              exit 1
-            fi
-          '';
+        # (The committed-index DRIFT-GUARD was removed: it jq-parsed `cdz test --list` as JSON, which #5360
+        # flipped to cadenza-ast-binary → the guard reds. And it guarded the committed-index approach the
+        # operator directed us OFF of — the committed tests-shred-index.txt is transitional, being replaced by
+        # v-nix's compiler-informed dyn-drv/IFD discovery [holds the index removal until that wiring builds
+        # e2e]. So the guard is both broken by #5360 AND obsolete; dropped now to un-red the additive check.)
         # v1 SUITES: small-closure suites only (compiler-ml stays coarse via cad-tests until grouping + X5b).
         # START with iterators (e2e-validated); cad/choreography follow (choreography needs unique per-@test
         # target filenames for its ~3 cross-file same-name @tests before its flat layout is collision-free).
         testShredSuites = { iterators = ./implementation/iterators; };
         testShredFileAggs = pkgs.lib.mapAttrs'
           (proj: dir: pkgs.lib.nameValuePair "test-shred-${proj}" (mkTestShredSuiteAgg { inherit proj dir; }))
-          testShredSuites;
-        testShredIndexDriftAsserts = pkgs.lib.mapAttrs'
-          (proj: dir: pkgs.lib.nameValuePair "test-shred-index-drift-${proj}" (mkTestShredIndexDrift { inherit proj dir; }))
           testShredSuites;
 
         # ── rcdzc→WASM: the Cadenza COMPILER as a wasm artifact (agent-harness v0.2, operator 2026-08-03) ─
@@ -4691,7 +4677,7 @@
             guide-shred-check = guideShredCheck;
             guide-examples-shredded = guideExamplesShredded;
             guide-manifest-drift-assert = guideManifestDriftAssert;
-          } // guideFileAggs // testShredFileAggs // testShredIndexDriftAsserts // {
+          } // guideFileAggs // testShredFileAggs // {
             # Full-CI-in-nix increment 6a: the GHA `roundtrip` job — every corpus program round-trips
             # through the syntax surfaces. Corpus-only (reads spec/semantics, no runtime store) → narrow
             # `seedRoundtripSrc` (no compiler-ml, #2007). Invoked via `cargo run --locked` (not the bare
