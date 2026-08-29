@@ -15544,6 +15544,36 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     }
 
     #[test]
+    fn nix_gate_argv_pins_the_load_and_hygiene_critical_flags() {
+        // nix_gate_argv is the SINGLE source of truth for the authoritative local-gate `nix build`
+        // (run_gate_local + run_gate_local_bounded), so a silent drop of a flag here regresses the whole
+        // fleet. Pin the invariants so a refactor/merge can't quietly remove one:
+        let argv = nix_gate_argv(".#checks.aarch64-linux.local-gate");
+        // Shape: it BUILDS the given target.
+        assert_eq!(argv[0], "build");
+        assert_eq!(argv[1], ".#checks.aarch64-linux.local-gate");
+        // --no-link/--print-out-paths: no gcroot + emit the out-paths the drain/CLI consume.
+        assert!(argv.iter().any(|a| a == "--no-link"));
+        assert!(argv.iter().any(|a| a == "--print-out-paths"));
+        // --keep-going (#5304 gate-hygiene): a RED gate must build ALL constituents so one run names the
+        // FULL failing set (feeds parse_failing_subchecks) — never abort at the first failure.
+        assert!(
+            argv.iter().any(|a| a == "--keep-going"),
+            "gate-local must pass --keep-going so one red run surfaces every failing sub-check"
+        );
+        // --max-jobs <NIX_GATE_MAX_JOBS>: the derivation-parallelism cap that keeps one gate from melting
+        // the box (load-85 saturation). The flag and its value MUST stay ADJACENT (nix pairs them).
+        let mj = argv.iter().position(|a| a == "--max-jobs").expect(
+            "gate-local must cap --max-jobs (derivation-parallelism cap; load-melt protection)",
+        );
+        assert_eq!(
+            argv.get(mj + 1).map(String::as_str),
+            Some(NIX_GATE_MAX_JOBS),
+            "--max-jobs must be immediately followed by NIX_GATE_MAX_JOBS"
+        );
+    }
+
+    #[test]
     fn gate_local_hold_advisory_flags_nix_transient_vs_real_failure() {
         // A nix daemon/remote-builder transient (the #4562 family) → advise RE-RUN, not a regression.
         let transient = "error: cannot open connection to remote store 'daemon': \
