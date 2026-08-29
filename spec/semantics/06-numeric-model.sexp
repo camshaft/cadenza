@@ -13097,3 +13097,16 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 70 Int64))
   (call main (: -3 Int64)) (trap "unreachable"))
+
+(case "unp1 native #-form patterns over UNTYPED scrutinees compile and infer — the #5429 M3 Phase-2 fence"
+  (doc "Both helper params are UNANNOTATED — the native #tuple and #map patterns must drive inference of
+        the scrutinee types (pre-#5429 this rejected, an M3 Phase-2 blocker). f sums the inferred tuple
+        slots; g key-selects from the inferred map. n=7 → 10·11 + 7 = 117; n=-2 → 10·2 + (-2) = 18.
+        Dual-path verified, hop byte-idempotent.")
+  (input (do
+    (def (f p) (match p (#tuple(a b) (+ a b))))
+    (def (g m) (match m (#map((= 1 v)) v) (_ -1)))
+    (def (main (: n Int64)) (+ (* 10 (f #tuple(n 4))) (g #map((= 1 n)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 117 Int64))
+  (call main (: -2 Int64)) (output (: 18 Int64)))
