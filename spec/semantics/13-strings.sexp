@@ -163,7 +163,11 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 1190 Int64))
   (call   main (: 0 Int64)) (output (: -910 Int64))
-  (live-objects known-leak 15 13))
+  ; The recursive `(match (String.at s i) ((Some c) …))` scan's Some shell is now reclaimed per iteration
+  ; (v-core-opt owned-single-view MatchSum shell reclaim), so the per-scalar leak (was 15/13) collapses to a
+  ; tiny residual (1/1) — the arm only BORROWS `c` (value-eq vs "("/")"), never consumes it, so the back-edge
+  ; shell drop is sound. Measured on the debug-counters runtime.
+  (live-objects known-leak 1 1))
 
 (case "MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave"
   (doc    "The depth counter above suffices for ONE bracket type; with three, the counter is provably
@@ -802,7 +806,10 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 3001 Int64))
   (call   main (: 0 Int64)) (output (: 2001 Int64))
-  (live-objects known-leak 35))
+  ; The recursive `(match (String.at s i) ((Some c) …))` scan's Some shell is now reclaimed per iteration
+  ; (v-core-opt owned-single-view MatchSum shell reclaim; the arm only borrows `c` via `(= c " ")`, never
+  ; consumes it) → was 35, now 1. Measured on the debug-counters runtime.
+  (live-objects known-leak 1))
 
 (case "a ROMAN NUMERAL renderer walks a value-symbol table greedily with subtractive pairs"
   (doc    "The table-driven greedy renderer: a (value, symbol) assoc list — INCLUDING the subtractive
@@ -2628,7 +2635,9 @@
             (export main)))
   (call   main (: 1 Int64))  (output (: 1 Int64))
   (call   main (: -1 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 3))
+  ; The non-recursive `(match (String.at …) ((Some c) …))` Some shell is now reclaimed (v-core-opt
+  ; owned-single-view MatchSum shell reclaim; the arm only borrows `c` via value-eq) → was 3, now 1.
+  (live-objects known-leak 1))
 
 (case "String.at reads a multibyte scalar whole at its position in a runtime two-chunk rope"
   (doc    "The same two-chunk shape read AT the multibyte scalar: index 1 of `\"aé\" ++ \"cd\"` is \"é\"
@@ -2647,7 +2656,9 @@
             (export main)))
   (call   main (: 1 Int64))  (output (: 1 Int64))
   (call   main (: -1 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 3))
+  ; The non-recursive `(match (String.at …) ((Some c) …))` Some shell is now reclaimed (v-core-opt
+  ; owned-single-view MatchSum shell reclaim; the arm only borrows `c` via value-eq) → was 3, now 1.
+  (live-objects known-leak 1))
 
 (case "a runtime string returned across the run boundary renders as its quoted text"
   (doc    "A string BUILT at run time and returned as `main`'s value crosses the boundary as its proper
