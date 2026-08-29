@@ -1551,8 +1551,18 @@ fn emit_expr_viewed(
             }
             Ok(b.list(children))
         }
+        // `Bytes.len` and `String.byte-len` share `Core::BytesLen` (a String is a flat UTF-8 byte leaf, so
+        // its byte length reads that leaf's length), and the RESULT is `Int64` either way — so unlike
+        // `BytesConcat` (disambiguated by result type) this must disambiguate by the OPERAND type: a
+        // `Ty::String` operand re-emits `(. String byte-len)`, else `(. Bytes len)`. Emitting `Bytes.len`
+        // over a String operand mis-types on recompile (CDZ0203 String-vs-Bytes) — the recompilability
+        // break breaker found (a runtime, non-const-foldable `String.byte-len`).
         Core::BytesLen { operand } => {
-            let head = member_access(b, "Bytes", "len");
+            let (module, member) = match crate::infer::type_of(db, operand) {
+                Ty::String => ("String", "byte-len"),
+                _ => ("Bytes", "len"),
+            };
+            let head = member_access(b, module, member);
             let x = emit_expr(db, b, operand, None, env, emitted)?;
             Ok(b.list(vec![head, x]))
         }
