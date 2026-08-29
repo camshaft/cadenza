@@ -66,10 +66,12 @@ def foldConst? (op : String) (args : Array SymExpr) : Option Value :=
     -- constants is SOUND with no width/trap tracking (unlike integer arith, which is left deferred). Both
     -- operands must be floats — `asF64?` is `none` for an int, so int arith/comparison is NOT folded here
     -- (int `<` etc. are the `.int`-pattern arms above; int `+ - * /` stay symbolic pending trap-conditions).
-    | "+",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.f64 (x + y)) | _, _ => none)
-    | "-",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.f64 (x - y)) | _, _ => none)
-    | "*",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.f64 (x * y)) | _, _ => none)
-    | "/",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.f64 (x / y)) | _, _ => none)
+    -- REUSE the concrete evaluator's float op (evalFloatOp) — do NOT re-implement float arithmetic, so the
+    -- symbolic fold uses byte-identical IEEE semantics to `evalNode`. Fold only when it yields a value.
+    | "+",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => (match evalFloatOp op x y with | .value v => some v | _ => none) | _, _ => none)
+    | "-",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => (match evalFloatOp op x y with | .value v => some v | _ => none) | _, _ => none)
+    | "*",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => (match evalFloatOp op x y with | .value v => some v | _ => none) | _, _ => none)
+    | "/",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => (match evalFloatOp op x y with | .value v => some v | _ => none) | _, _ => none)
     | "<",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x < y)) | _, _ => none)
     | ">",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x > y)) | _, _ => none)
     | "<=", #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≤ y)) | _, _ => none)
