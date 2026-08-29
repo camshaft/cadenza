@@ -6041,16 +6041,30 @@ fn lease_nix_fanout_budget(nproc: usize, lease_max: usize) -> usize {
     (nproc / (2 * (lease_max + 1))).max(1)
 }
 
-/// Build the `NIX_CONFIG` value for a leased build: APPEND `max-jobs`/`cores` caps to any inherited
-/// `NIX_CONFIG` (never clobber — the fleet relies on inherited lines like `experimental-features =
-/// ca-derivations`; nix takes the LAST value when a key repeats, so our trailing caps win). Newline-
-/// separated `key = value` lines, matching nix.conf syntax.
+/// Build the `NIX_CONFIG` value for a leased build: APPEND `max-jobs`/`cores` caps + `eval-cache = false`
+/// to any inherited `NIX_CONFIG` (never clobber — the fleet relies on inherited lines like
+/// `experimental-features = ca-derivations`; nix takes the LAST value when a key repeats, so our trailing
+/// lines win). Newline-separated `key = value` lines, matching nix.conf syntax.
+///
+/// `eval-cache = false` (v-nix stale-nix co-design 2026-08-29, the standalone-corpus half of #5725): the
+/// scoped standalone verification `cargo xtask fleet with-lease -- nix build .#checks.<arch>.corpus-<file>`
+/// is a PRIMARY agent workflow (v-nix's corpus drift-guard, v-corpus-harness's stale 68-drop) that does
+/// NOT flow through `nix_gate_argv`, so #5725's gate-path flag didn't cover it. `/etc/nix/nix.conf` runs
+/// lazy-trees + eval-cache, which UNDER-invalidate the per-user eval-cache on a DIRTY tree → a stale
+/// derivation graph is served. Injecting `eval-cache = false` via the leased `NIX_CONFIG` forces a fresh
+/// eval for EVERY leased nix build (corpus/gate/fuzzer via `with-lease`) — robust (agents can't forget it)
+/// and scoped to the leased heavy-verification path (eval-cache speed is untouched for all other nix use).
+/// A non-nix wrapped command simply ignores `NIX_CONFIG`, so this is inert there. v-nix's broader
+/// system-level option (`eval-cache = false` in nix.custom.conf, covering even non-leased routes) remains
+/// the operator's call and is complementary — this wrapper injection is a harmless no-op if that lands.
 fn lease_nix_config(existing: Option<&str>, budget: usize) -> String {
     let mut cfg = existing.unwrap_or("").to_string();
     if !cfg.is_empty() && !cfg.ends_with('\n') {
         cfg.push('\n');
     }
-    cfg.push_str(&format!("max-jobs = {budget}\ncores = {budget}\n"));
+    cfg.push_str(&format!(
+        "max-jobs = {budget}\ncores = {budget}\neval-cache = false\n"
+    ));
     cfg
 }
 
@@ -20846,21 +20860,29 @@ branch refs/heads/fleet/trunk-tools
     }
 
     #[test]
-    fn lease_nix_config_appends_caps_without_clobbering_inherited() {
-        // No inherited config → just our caps.
-        assert_eq!(lease_nix_config(None, 8), "max-jobs = 8\ncores = 8\n");
-        // Inherited config is PRESERVED (e.g. experimental-features) and our caps appended AFTER it, so
-        // nix's last-value-wins gives our max-jobs/cores while keeping the inherited line.
+    fn lease_nix_config_appends_caps_and_eval_cache_false_without_clobbering_inherited() {
+        // No inherited config → our caps + eval-cache=false (the stale-nix fix for the leased standalone
+        // corpus route, which doesn't flow through nix_gate_argv).
+        assert_eq!(
+            lease_nix_config(None, 8),
+            "max-jobs = 8\ncores = 8\neval-cache = false\n"
+        );
+        // Inherited config is PRESERVED (e.g. experimental-features) and our lines appended AFTER it, so
+        // nix's last-value-wins gives our max-jobs/cores/eval-cache while keeping the inherited line.
         let got = lease_nix_config(Some("experimental-features = ca-derivations"), 4);
         assert_eq!(
             got,
-            "experimental-features = ca-derivations\nmax-jobs = 4\ncores = 4\n"
+            "experimental-features = ca-derivations\nmax-jobs = 4\ncores = 4\neval-cache = false\n"
         );
         assert!(got.contains("experimental-features = ca-derivations"));
+        assert!(
+            got.contains("eval-cache = false"),
+            "a leased build must disable the eval-cache (dirty-tree stale-derivation fix)"
+        );
         // A trailing newline on the inherited value is not doubled.
         assert_eq!(
             lease_nix_config(Some("cores = 99\n"), 2),
-            "cores = 99\nmax-jobs = 2\ncores = 2\n"
+            "cores = 99\nmax-jobs = 2\ncores = 2\neval-cache = false\n"
         );
     }
 
