@@ -23943,3 +23943,27 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 100200 Int64)))
+
+; ── fixed-arity record-field / map-entry FIX-quality (migrated from rcdzc a_wrong_arity_record_or_map_entry_offers_a_delete_the_surplus_fix) ──
+; A record field and a map entry are fixed-arity (key value) pairs. A SURPLUS element routes through the
+; shared fixed_arity_reject with a DELETE-the-surplus fix; TOO FEW keeps the coded reject with NO fix
+; (nothing to delete). All CDZ0201. Fix-quality graded via C1.
+(case "a surplus record field element carries a delete-the-surplus fix"
+  (input (do (def (main) (record (x 1 2))) (export main)))
+  (error CDZ0201 (message "record field must be (= key value)") (fix (kind delete))))
+
+(case "a surplus map entry (name-alias form) carries a delete-the-surplus fix"
+  (input (do (def (main) (map (1 2 3))) (export main)))
+  (error CDZ0201 (message "a map entry is a (key value) pair") (fix (kind delete))))
+
+(case "a surplus map entry (primitive form) carries a delete-the-surplus fix"
+  (input (do (def (main) ("map" (1 2 3))) (export main)))
+  (error CDZ0201 (message "a map entry is a (key value) pair") (fix (kind delete))))
+
+(case "a too-few record field element carries NO delete fix"
+  (input (do (def (main) (record (x))) (export main)))
+  (error CDZ0201 (message "record field must be (= key value)") (no-fix)))
+
+(case "a too-few map entry carries NO delete fix"
+  (input (do (def (main) (map (1))) (export main)))
+  (error CDZ0201 (message "a map entry is a (key value) pair") (no-fix)))
