@@ -3782,7 +3782,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 64))
+  (live-objects known-leak 64 14))
 
 (case "an eval splice consumes a value extracted from a CHAMP map at run time"
   (doc    "The splice pins feed literals and locals; this operand comes OUT of a Map — `(Map.lookup m k)`
