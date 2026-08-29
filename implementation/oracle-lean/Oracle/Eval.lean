@@ -931,6 +931,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         else if h == "list".toUTF8 then evalSeqCtor m env fuel children Value.list true
         else if h == "record".toUTF8 then evalRecord m env fuel children
         else if h == "map".toUTF8 then evalMapLiteral m env fuel children
+        else if h == "set".toUTF8 then evalSetLiteral m env fuel children
         else if h == ".".toUTF8 then evalProject m env fuel children
         else if h == "match".toUTF8 then evalMatch m env ty fuel children
         else match String.fromUTF8? h with
@@ -1725,6 +1726,17 @@ partial def evalRecord (m : Module) (env : Env) (fuel : Nat) (children : Array N
   match go (children.extract 1 children.size).toList #[] with
   | .ok fields => .value (.record (fields.qsort (fun a b => cmpBytes a.1 b.1 == .lt)))
   | .error e => .unsupported e
+
+/-- `(set e…)` — a native SET literal (`#set(…)`): evaluate the elements STRICTLY (a set is heap-
+materialized — ruling A/#5150 forces element args, deeply via `evalSeqCtor`), then canonicalize (sort +
+dedupe) into a `Value.set`. A trapping element traps at construction; an unorderable element (compound/
+poison) → skip. Same `Value.set` the checker's `expectedValue?` `"set"` branch and `evalSetOf` produce. -/
+partial def evalSetLiteral (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  match evalSeqCtor m env fuel children Value.list true with
+  | .value (.list es) => match canonSet es with
+                         | some s => .value (.set s)
+                         | none => .unsupported "eval: set element is unorderable (compound/poison)"
+  | other => other
 
 /-- `(map (k1 v1) (k2 v2)…)` — a map LITERAL: evaluate each `(k v)` entry to a key/value pair, then
 canonicalize with `canonMap` (sort by key, dedupe; an unorderable key → skip). Mirrors the `(map (k v)…)`
