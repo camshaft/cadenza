@@ -24270,7 +24270,7 @@ mod tests {
     /// dropped once, balances (base survives as the new concat node's child; the single drop reclaims it).
     /// A valid consume + single-drop reclaim.
     ///
-    /// ⚠️ SCOPE CORRECTION (was mis-framed as an if-join-shared co-verify): this does NOT model the
+    /// WARNING: SCOPE CORRECTION (was mis-framed as an if-join-shared co-verify): this does NOT model the
     /// if-join-shared "concat-child-of-keep" shape, which is the UNSAFE one. `bytes-concat` does NOT refit
     /// the base in place — it ALLOCATES a NEW node with base as a CHILD — so unlike vec-push/set-insert/
     /// map-insert (which SUBSUME the base in place, making the base IS-the-result identity that lets the
