@@ -8911,57 +8911,14 @@ mod match_engine {
     // message substrings (all 3 PASS). The no-false-positive controls (a well-formed def/type/effect is not
     // flagged) are covered vacuously by the corpus at large — every case carries well-formed declarations.)
 
-    /// A MALFORMED top-level `@`-annotation — one that wraps no well-formed definition — must name the
-    /// annotation SHAPE, not resolve as the misleading "unbound name `@` at the top level". `@` is the
-    /// general-purpose annotation head `(@ <name> (def …))`; `strip_annotations` rewrites every well-formed
-    /// def-wrapping annotation IN PLACE to BE its inner def (even an UNKNOWN name — a transparent
-    /// forward-compat marker), so any SURVIVING top-level `(@ …)` wrapped no def to unwrap. Left alone it
-    /// resolved as "unbound name `@`" (`@` is a recognized head, not a name) plus a phantom unbound-name
-    /// for any def it hid. `collect_faults` now rejects each CDZ0201 naming the `(@ <name> (def …))` shape.
-    #[test]
-    fn a_malformed_top_level_annotation_names_the_annotation_shape_not_an_unbound_at() {
-        use crate::testkit::parse;
-        for src in [
-            "(module m (@ test) (def (main) 0) (export main))", // name-only, no target def
-            "(module m (@) (def (main) 0) (export main))",      // empty annotation
-            "(module m (@ test 5) (def (main) 0) (export main))", // non-form target
-            "(module m (@ test (foo 1)) (def (main) 0) (export main))", // non-def list target
-            "(module m (@ test (def)) (export c))",             // malformed inner def
-        ] {
-            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.message.contains("annotation wraps no definition"))
-                .unwrap_or_else(|| panic!("a malformed `(@ …)` must be rejected: {src}"));
-            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-            assert!(
-                d.message.contains("`(@ <name> (def …))`"),
-                "the message names the annotation shape: {}",
-                d.message
-            );
-            // The misleading resolve-phase "unbound name `@`" must NOT reach the surface.
-            assert!(
-                !crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                    .iter()
-                    .any(|d| d.message.contains("unbound name `@`")),
-                "the misleading `unbound name @` is superseded: {src}"
-            );
-        }
-        // NO false positive: a well-formed annotation (known name, unknown name, or call-style tag, plus a
-        // stacked pair) is unwrapped to its inner def and never flagged.
-        for ok in [
-            "(module m (@ test (def (c) 3)) (export c))",
-            "(module m (@ (tag \"slow\") (def (c) 3)) (export c))",
-            "(module m (@ nonsuch (def (c) 3)) (export c))",
-            "(module m (@ (tag \"slow\") (@ test (def (c) 3))) (export c))",
-        ] {
-            assert!(
-                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                    .iter()
-                    .any(|d| d.message.contains("annotation wraps no definition")),
-                "a well-formed annotation is not flagged: {ok}"
-            );
-        }
-    }
+    // (a_malformed_top_level_annotation_names_the_annotation_shape_not_an_unbound_at migrated to corpus
+    // 09-functions, next to "an unrecognized annotation leaves its wrapped definition in effect": the five
+    // malformed top-level `(@ …)` shapes (name-only, empty, non-form target, non-def list target, malformed
+    // inner def) each → CDZ0201 (message "annotation wraps no definition")(message "`(@ <name> (def …))`").
+    // --case grades the code + both message substrings (all 5 PASS; the malformed-inner-def case uses the
+    // main-valid form so the annotation CDZ0201 is the sole fault, not an unbound-export CDZ0101). The NOT-
+    // "unbound name `@`" negative is the corpus-inexpressible remainder, covered by the positive shape message;
+    // the no-false-positive controls are covered by the transparent-unknown-annotation case above.)
 
     /// A NESTED `(@ …)` annotation — one in EXPRESSION position (a `do`-block, an argument), NOT wrapping a
     /// top-level def — must report ONE clean CDZ0201 "cannot appear here", not a CASCADE of unbound-name
