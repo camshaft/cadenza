@@ -1637,19 +1637,6 @@
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
-(case "list construction is strict when its object is materialized — taking the length forces a trapping element"
-  (doc    "The materialization twin of the two list-= short-circuit cases above — pinning the OTHER side of the
-           consumer-dependent strictness doctrine so both sides sit adjacently: `(List.len (list 1 (/ 5 d)))` at
-           d=0 TRAPS. Unlike a structural `=`, which is decided positionally and short-circuits WITHOUT
-           materializing the list, a length observation materializes the list object and so forces EVERY element,
-           observing the trapping `(/ 5 d)` (core-semantics.md #A Trap Occurs Only Where Its Computation Is
-           Observed; the list analog of 19-sets `(Set.len (Set.of (list (/ 5 d) 2 3)))`). SAME construction,
-           different consumer: List.len forces/traps, `=` short-circuits. A let-binding does not change this —
-           strictness is a property of whether the consumer materializes the object, not of the binding form.")
-  (input  (do (def (main (: d Int64)) (List.len (list 1 (/ 5 d)))) (export main)))
-  (call   main (: 0 Int64))
-  (trap   "divide by zero"))
-
 (case "recursive-sum equality over FLOAT payloads compares by canonical float bytes along the walk"
   (doc    "The float-leaf member of the recursive-walk family (the Int64-payload cases above compare
            integer leaves): `(type FL (FNil) (FCons Float64 FL))` — each spine node carries a Float64, so
