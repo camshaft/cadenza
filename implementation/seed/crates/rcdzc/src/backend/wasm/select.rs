@@ -2166,7 +2166,7 @@ fn collect_consuming_payload_sites_expr(
             collect_consuming_payload_sites_expr(db, else_, scrut, consuming, out);
         }
         Core::Seq { stmts, tail } => {
-            for s in &stmts {
+            for s in stmts.iter() {
                 collect_consuming_payload_sites_expr(db, *s, scrut, false, out);
             }
             collect_consuming_payload_sites_expr(db, tail, scrut, consuming, out);
@@ -5811,7 +5811,7 @@ fn collect_used_ops_into_seen(
             }
         }
         Core::Seq { stmts, tail } => {
-            for s in stmts {
+            for &s in stmts.iter() {
                 // (A) CASE2 heap-arg: a marked HEAP-typed strict-force stmt is rc-reclaimed at emit with
                 // `OP_DROP` (a fresh owned producer result) — import `drop` so that call resolves (emit/
                 // import agreement, mirroring the Seq emit's condition exactly).
@@ -17666,7 +17666,7 @@ fn emit(
         //= spec/capabilities/core-semantics.md#a-sequencing-block-evaluates-its-forms-in-order
         //# A sequencing block MUST evaluate to the value of its last form.
         Core::Seq { stmts, tail } => {
-            for s in &stmts {
+            for s in stmts.iter() {
                 if !crate::lower::subtree_reaches_host_call(db, *s) {
                     // (A) STRICT heap-collection construction (#5194 CASE2): a strict-construction arg
                     // computation `lower_let` decomposed out of a DEAD list/set/map ctor is marked in

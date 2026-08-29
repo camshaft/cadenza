@@ -1295,7 +1295,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             collect_host_imports(db, body, out);
         }
         Core::Seq { stmts, tail } => {
-            for s in stmts {
+            for &s in stmts.iter() {
                 collect_host_imports(db, s, out);
             }
             collect_host_imports(db, tail, out);

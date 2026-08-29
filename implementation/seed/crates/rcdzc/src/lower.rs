@@ -245,7 +245,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             synth_core(
                 db,
                 Core::Seq {
-                    stmts: non_def_stmts,
+                    stmts: non_def_stmts.into(),
                     tail,
                 },
                 seq_ty,
@@ -4826,7 +4826,14 @@ fn wrap_body_with_strict_arg_eval(
         db.strict_force_eval.insert(s);
     }
     let ty = crate::infer::type_of(db, body);
-    synth_core(db, Core::Seq { stmts, tail: body }, ty)
+    synth_core(
+        db,
+        Core::Seq {
+            stmts: stmts.into(),
+            tail: body,
+        },
+        ty,
+    )
 }
 
 fn lower_let(

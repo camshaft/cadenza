@@ -4394,7 +4394,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // the order the program made them (the sequencing invariant the wasm backend also holds).
         Core::Seq { stmts, tail } => {
             let mut body = String::new();
-            for &s in &stmts {
+            for &s in stmts.iter() {
                 // DROP a non-final statement that reaches NO host call. `lower` only produces a `Seq`
                 // (rather than folding to `tail`) because SOME statement reaches a side effect the backend
                 // must emit (a host call). A statement whose value is DISCARDED and which reaches no host

@@ -1673,7 +1673,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             collect_host_arg_strings(db, body, out);
         }
         Core::Seq { stmts, tail } => {
-            for s in stmts {
+            for &s in stmts.iter() {
                 collect_host_arg_strings(db, s, out);
             }
             collect_host_arg_strings(db, tail, out);
