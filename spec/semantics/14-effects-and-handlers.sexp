@@ -9279,7 +9279,7 @@
             (def (main)
               (handle Bail #tuple(0 0) ((bail (n) s #tuple(n n)))
                 (Bail.bail 7))) (export main)))
-  (output (: (tuple 7 7) (Tuple Int64 Int64))))
+  (output (: #tuple(7 7) (Tuple Int64 Int64))))
 
 (case "an abortive arm yields a heap LIST built in the arm as the handle's value"
   (doc    "The heap-collection abort (the tuple abort above is a fixed-shape compound; this arm BUILDS an
@@ -10226,7 +10226,7 @@
         #list((St.next) (St.next))))
     (export main)))
   (call main (: 5 Int64))
-  (output (: (list 5 6) (List Int64)))
+  (output (: #list(5 6) (List Int64)))
   (live-objects 2))
 
 (case "hwp1 a UInt8-width list entry param read inside a handle body composes with the fold"

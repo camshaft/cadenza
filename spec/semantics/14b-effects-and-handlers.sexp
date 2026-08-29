@@ -1088,7 +1088,7 @@
               (handle Diag #list() ((emit (code) s (resume unit (List.push s code))) (collect (u) s (resume s s))) (do (Diag.emit 201)
                     (Diag.emit 210)
                     (Diag.collect)))) (export main)))
-  (output (: (list 201 210) (List Int64)))
+  (output (: #list(201 210) (List Int64)))
   (live-objects known-leak 2))
 
 (case "a handler threads a SET as its state — the seen-set idiom, deduping across performs"
@@ -2128,7 +2128,7 @@
             (def (pair-of) #tuple((label) (label)))
             (def (main)
               (handle Fresh 0 ((next (u) s (resume s (+ s 1)))) (pair-of))) (export main)))
-  (output (: (tuple 0 1) (Tuple Int64 Int64))))
+  (output (: #tuple(0 1) (Tuple Int64 Int64))))
 
 ; --- A recursive function drives an effect (the state-machine idiom) --------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges composed

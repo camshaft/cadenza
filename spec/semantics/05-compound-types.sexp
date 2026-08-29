@@ -20475,7 +20475,7 @@
             (def (main) (f 2))
             (export main)))
   (call   main)
-  (output (: (record (= ct "wasm") (= pl b"\x01\x02\x03")) (record (= ct String) (= pl Bytes)))))
+  (output (: #record((= ct "wasm") (= pl b"\x01\x02\x03")) (record (ct String) (pl Bytes)))))
 
 ;; -- Perceus dup-site boundary faces: record-field alias + cross-fn param + closure capture across a persistent update (breaker batch 373, from the 2026-07-17 banked candidate) --
 (case "pd1 a list shared into a RECORD field survives an update through the original binding"

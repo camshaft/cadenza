@@ -631,7 +631,7 @@
            element. Pins the escape path works once the element type is known, mirroring the annotated-None
            control.")
   (input  (do (def (main) (: #list() (List Int64))) (export main)))
-  (output (: (list) (List Int64))))
+  (output (: #list() (List Int64))))
 
 (case "a consumed empty list type-checks without annotation (ambiguity is escape-only)"
   (doc    "`(List.len (list))` consumes an empty list to a scalar `Int64` (0): the result that escapes is a

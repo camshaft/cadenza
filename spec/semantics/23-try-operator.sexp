@@ -183,7 +183,7 @@
            record/sum) payload flows through the success fold intact, its type preserved
            (`(Option (Tuple Int64 Int64))`).")
   (input  (do (def (main) (let ((x (try (Some #tuple(1 2))))) (Some x))) (export main)))
-  (output (: (Some (tuple 1 2)) (Option (Tuple Int64 Int64)))))
+  (output (: (Some #tuple(1 2)) (Option (Tuple Int64 Int64)))))
 
 (case "a `?` result is usable mid-body, not only in tail position"
   (doc    "`(let ((x (try (Some 10)))) (Some (+ x 5)))` — the unwrapped `x` = 10 feeds an arithmetic op
@@ -206,7 +206,7 @@
             (def (wrap v) (let ((x (try (Some v)))) (Some x)))
             (def (main) (: #tuple((wrap 7) (wrap true)) (Tuple (Option Int64) (Option Bool))))
             (export main)))
-  (output (: (tuple (Some 7) (Some true)) (Tuple (Option Int64) (Option Bool)))))
+  (output (: #tuple((Some 7) (Some true)) (Tuple (Option Int64) (Option Bool)))))
 
 (case "a constant success `?` folds INLINE in a subexpression with no let-binding"
   (doc    "`(Some (+ (try (Some 3)) 10))` — the `?` sits DIRECTLY in an argument subexpression, never bound

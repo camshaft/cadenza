@@ -17,7 +17,7 @@
   (input  (do
             (def (main) #list((: 127 Int32) 32767))
             (export main)))
-  (call   main) (output (: (list 127 32767) (List Int32))))
+  (call   main) (output (: #list(127 32767) (List Int32))))
 
 ;; ── conditional aborts under HEAP-state outers + closure crossings + do-def/relay (breaker ab/cc/dd/cn) ──
 ;; ab = a branch-conditional abort (Bail INNER, heap-state handler OUTER — the folding direction;

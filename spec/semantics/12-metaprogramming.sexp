@@ -9,7 +9,7 @@
            AST sum type value representing <expr>'s structure, without evaluating <expr>.
            (quote (+ 1 2)) produces an AST value, not 3.")
   (input  (quote (+ 1 2)))
-  (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2))) Ast)))
+  (output (: (Ast.List #list((Ast.Name "+") (Ast.Int 1) (Ast.Int 2))) Ast)))
 
 (case "each literal kind quotes to its own single Ast leaf that escapes and renders"
   (doc    "The leaf-level companion of the compound case above: quoting a BARE name/string/boolean/float
@@ -24,7 +24,7 @@
            elsewhere). A compiler that folded a quote or mis-tagged a leaf variant would render a wrong
            node here.")
   (input  #tuple((quote foo) (quote "hi") (quote true) (quote 2.5)))
-  (output (: (tuple (Ast.Name "foo") (Ast.Str "hi") (Ast.Bool true) (Ast.Float 2.5))
+  (output (: #tuple((Ast.Name "foo") (Ast.Str "hi") (Ast.Bool true) (Ast.Float 2.5))
              (Tuple Ast Ast Ast Ast))))
 
 ; --- A plain quote does not evaluate a nested unquote --------------------------------------------
@@ -108,10 +108,10 @@
            bare 7. A compiler that mis-counted the double unquote would leave the name unspliced or collapse
            the deferred wrapper.")
   (input  (let ((x 7)) `(a `(b ,,x))))
-  (output (: (Ast.List (list (Ast.Name "a")
-                             (Ast.List (list (Ast.Name "quasiquote")
-                                             (Ast.List (list (Ast.Name "b")
-                                                             (Ast.List (list (Ast.Name "unquote") (Ast.Int 7)))))))))
+  (output (: (Ast.List #list((Ast.Name "a")
+                             (Ast.List #list((Ast.Name "quasiquote")
+                                             (Ast.List #list((Ast.Name "b")
+                                                             (Ast.List #list((Ast.Name "unquote") (Ast.Int 7)))))))))
              Ast)))
 
 (case "eval is optional for macros and interactive use"
@@ -912,14 +912,14 @@
            into the AST being constructed. `(+ ,x 10) with x=2 produces AST for (+ 2 10), not (+ x 10).
            This is construction, not eval — ,x evaluates the variable x, not an AST.")
   (input  (let ((x 2)) `(+ ,x 10)))
-  (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 2) (Ast.Int 10))) Ast)))
+  (output (: (Ast.List #list((Ast.Name "+") (Ast.Int 2) (Ast.Int 10))) Ast)))
 
 (case "unquote in quasiquote evaluates normally and embeds"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            ,<expr> evaluates <expr> normally (not as AST) and embeds the result.
            `(+ ,(+ 1 1) 10) evaluates (+ 1 1) to 2, constructs AST with that value.")
   (input  `(+ ,(+ 1 1) 10))
-  (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 2) (Ast.Int 10))) Ast)))
+  (output (: (Ast.List #list((Ast.Name "+") (Ast.Int 2) (Ast.Int 10))) Ast)))
 
 ; --- An active unquote lifts its operand by the operand's VALUE KIND ------------------------------
 ; metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation: an active `,<expr>` evaluates
@@ -2271,7 +2271,7 @@
            ,@<list-expr> evaluates <list-expr> to a list and splices its elements into the parent,
            not nested. `(+ ,@args) with args=(list 1 2 3) produces AST for (+ 1 2 3), not (+ (1 2 3)).")
   (input  (let ((args #list(1 2 3))) `(+ ,@args)))
-  (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2) (Ast.Int 3))) Ast)))
+  (output (: (Ast.List #list((Ast.Name "+") (Ast.Int 1) (Ast.Int 2) (Ast.Int 3))) Ast)))
 
 (case "splice flattens where unquote nests"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
@@ -2296,21 +2296,21 @@
            reifies to `(Ast.List (Ast.Name f) (Ast.Float 1.5) (Ast.Float 2.5))`. Pins the type-directed
            splice-lift over Float64 — this declined before the lift dispatched by element kind.")
   (input  (let ((xs #list(1.5 2.5))) `(f ,@xs)))
-  (output (: (Ast.List (list (Ast.Name "f") (Ast.Float 1.5) (Ast.Float 2.5))) Ast)))
+  (output (: (Ast.List #list((Ast.Name "f") (Ast.Float 1.5) (Ast.Float 2.5))) Ast)))
 
 (case "unquote-splicing lifts a boolean list to Ast.Bool leaves"
   (doc    "The boolean companion: `,@` of a constant `(List Bool)` lifts each element to an `Ast.Bool`
            node, so `(f ,@xs)` with xs=(list true false) reifies to `(Ast.List (Ast.Name f)
            (Ast.Bool true) (Ast.Bool false))`. Pins the Bool arm of the type-directed splice-lift.")
   (input  (let ((xs #list(true false))) `(f ,@xs)))
-  (output (: (Ast.List (list (Ast.Name "f") (Ast.Bool true) (Ast.Bool false))) Ast)))
+  (output (: (Ast.List #list((Ast.Name "f") (Ast.Bool true) (Ast.Bool false))) Ast)))
 
 (case "unquote-splicing lifts a string list to Ast.Str leaves"
   (doc    "The string companion: `,@` of a constant `(List String)` lifts each element to an `Ast.Str`
            node (a string LITERAL leaf, distinct from a Name), so `(f ,@xs)` with xs=(list \"a\" \"bb\")
            reifies to `(Ast.List (Ast.Name f) (Ast.Str \"a\") (Ast.Str \"bb\"))`. Pins the Str arm.")
   (input  (let ((xs #list("a" "bb"))) `(f ,@xs)))
-  (output (: (Ast.List (list (Ast.Name "f") (Ast.Str "a") (Ast.Str "bb"))) Ast)))
+  (output (: (Ast.List #list((Ast.Name "f") (Ast.Str "a") (Ast.Str "bb"))) Ast)))
 
 (case "unquote-splicing a list of Ast values splices by identity"
   (doc    "An element already of type `Ast` needs no wrapping — it splices AS-IS (identity), the same
@@ -2319,7 +2319,7 @@
            `(Ast.List (Ast.Name f) (Ast.Int 7) (Ast.Int 8))` — the fragments appear unchanged, not
            re-wrapped in another leaf. Pins the `(List Ast)` identity arm of the splice-lift.")
   (input  (let ((xs #list((Ast.Int 7) (Ast.Int 8)))) `(f ,@xs)))
-  (output (: (Ast.List (list (Ast.Name "f") (Ast.Int 7) (Ast.Int 8))) Ast)))
+  (output (: (Ast.List #list((Ast.Name "f") (Ast.Int 7) (Ast.Int 8))) Ast)))
 
 (case "the element list of an Ast.List escapes as a (List Ast) value and renders its structure"
   (doc    "Reaching into a compound and handing back its element LIST yields a `(List Ast)` value that
@@ -2334,7 +2334,7 @@
            `(List Ast)`); a match returning an `Ast`/`(List Ast)` value MUST cover Int/Float/Bool/Str/Name
            or it is CDZ0210 non-exhaustive.")
   (input  (match (quote (+ 1 2)) ((Ast.List elems) elems) (_ #list())))
-  (output (: (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)) (List Ast))))
+  (output (: #list((Ast.Name "+") (Ast.Int 1) (Ast.Int 2)) (List Ast))))
 
 (case "unquote-splicing a list with a RUNTIME Ast element splices it by identity at runtime"
   (doc    "The identity splice arm works at RUNTIME, not only for constants: a fixed-length list whose
@@ -2393,9 +2393,9 @@
            quasiquote nests, so ``(+ ,,x) evaluates the inner , to produce `(+ ,<x-value>).
            With x=2, ``(+ ,,x) constructs an AST representing `(+ ,2).")
   (input  (let ((x 2)) ``(+ ,,x)))
-  (output (: (Ast.List (list (Ast.Name "quasiquote")
-                             (Ast.List (list (Ast.Name "+")
-                                           (Ast.List (list (Ast.Name "unquote") (Ast.Int 2)))))))
+  (output (: (Ast.List #list((Ast.Name "quasiquote")
+                             (Ast.List #list((Ast.Name "+")
+                                           (Ast.List #list((Ast.Name "unquote") (Ast.Int 2)))))))
              Ast)))
 
 (case "nested quasiquote embeds a FLOAT via the inner unquote"
@@ -2404,9 +2404,9 @@
            node inside the inert `unquote` structure. Pins that the active-unquote float lift composes with
            quasiquote NESTING (depth tracking) — the inner `,` fires at depth 1 as it does for an integer.")
   (input  (let ((x 2.5)) ``(+ ,,x)))
-  (output (: (Ast.List (list (Ast.Name "quasiquote")
-                             (Ast.List (list (Ast.Name "+")
-                                           (Ast.List (list (Ast.Name "unquote") (Ast.Float 2.5)))))))
+  (output (: (Ast.List #list((Ast.Name "quasiquote")
+                             (Ast.List #list((Ast.Name "+")
+                                           (Ast.List #list((Ast.Name "unquote") (Ast.Float 2.5)))))))
              Ast)))
 
 (case "unquote outside quasiquote is a syntax error"
@@ -2465,7 +2465,7 @@
            to bytes (compiler-pipeline.md #The Compiler Operates On AST Values). Note: dotted names
            like i64.const expand to member access; hyphenated names avoid this.")
   (input  (let ((n 42)) `(op-const ,n)))
-  (output (: (Ast.List (list (Ast.Name "op-const") (Ast.Int 42))) Ast)))
+  (output (: (Ast.List #list((Ast.Name "op-const") (Ast.Int 42))) Ast)))
 
 (case "Ast.decode converts bytes to an AST sum type value"
   (doc    "Witnesses compiler-pipeline.md #The Compiler Operates On AST Values: the compiler receives
