@@ -110,9 +110,8 @@ enum Cmd {
         /// wasm emit is not byte-deterministic run-to-run, so the observable outcome is the real invariant.
         /// A level that changes the outcome is a candidate miscompile (hard fail). Honors `--target`:
         /// `wasm` (default) sweeps the wasm pipeline, `rust`/`rust-async` the rustc pipeline (each level
-        /// threaded through as `--opt-level`); `--target cadenza-ml` is rejected (the self-hosted compiler
-        /// has no opt-level tier surface). Ignores `--save`/`--check` (no baseline — a same-run cross-level
-        /// diff).
+        /// threaded through as `--opt-level`). Ignores `--save`/`--check` (no baseline — a same-run
+        /// cross-level diff).
         #[arg(long, conflicts_with_all = ["save", "check"])]
         opt_sweep: bool,
         /// Run only shard `I` of `N` (1-based), format `I/N`: partition the corpus files deterministically
@@ -1246,12 +1245,6 @@ enum GateTarget {
     /// and a minimal executor, and drive the export under `block_on` — so the SAME corpus expectations
     /// grade the async form (its answers must match, gas threading and all).
     RustAsync,
-    /// The self-hosted Cadenza-in-Cadenza (ML) compiler, invoked via `cdz run-ml` (source in, one-line
-    /// verdict out). Its front-end supports only a small subset today, so most programs DECLINE — this
-    /// target is graded DIFFERENTIALLY against the Wasm (rcdzc) oracle, NOT the corpus directly (see the
-    /// `ml-conformance` reported step): a decline is coverage-not-yet, an agreeing value is progress, a
-    /// disagreeing value is the only real failure. It never drives the baseline gate.
-    CadenzaMl,
 }
 
 /// The `--target` value clap parses for the `gate` command (its own enum so clap validates the
@@ -1421,148 +1414,6 @@ fn run_program(
             host_responses,
             host_calls,
         ),
-        // The ML compiler has no package/host path today — a multi-file or host-delegating case is
-        // simply not-yet-supported there, which is a decline (coverage-not-yet), never a disagreement.
-        GateTarget::CadenzaMl
-            if !modules.is_empty() || !host_responses.is_empty() || !host_calls.is_empty() =>
-        {
-            Ran::Declined {
-                code: None,
-                message: String::new(),
-            }
-        }
-        GateTarget::CadenzaMl => run_program_ml(tools, program, call),
-    }
-}
-
-/// Drive one program through the self-hosted ML compiler via `cdz run-ml` — source on stdin, one line
-/// of verdict on stdout: `value <sexpr>` | `declined` | `error <msg>` (exit 0 always; a non-zero exit
-/// is a harness read failure). Maps that verdict to [`Ran`]: `value` → `Ran::Value` (no host calls —
-/// the ML path has no host boundary), `declined` → a codeless `Ran::Declined` (not-yet-supported, so it
-/// grades as `todo`/coverage-not-yet, never a disagreement), `error <msg>` → `Ran::Trap` (the program
-/// reached the compiler and was rejected with a message — distinct from a clean decline). The ML
-/// front-end is subset-only today, so most programs decline; this target is graded differentially
-/// against the Wasm oracle by the `ml-conformance` step, not against the corpus directly. `call` is
-/// currently ignored (the ML subset is nullary); a parameterized case declines above via the subset.
-fn run_program_ml(tools: &Tools, program: &str, _call: Option<&Call>) -> Ran {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    // `tools.rcdzc` is the unified `cdz` binary; `run-ml` reads the program SOURCE from stdin.
-    let mut child = match Command::new(&tools.rcdzc)
-        .arg("run-ml")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => return Ran::BadArtifact(format!("cdz run-ml spawn failed: {e}")),
-    };
-    if let Some(mut stdin) = child.stdin.take()
-        && let Err(e) = stdin.write_all(program.as_bytes())
-    {
-        return Ran::BadArtifact(format!("cdz run-ml: writing program to stdin failed: {e}"));
-    }
-    let out = match wait_with_timeout(child, run_timeout()) {
-        Ok(Some(o)) => o,
-        // A run-ml HANG (a compile-hang bug in the ML front-end) — killed at the deadline. Per the
-        // run-ml contract this is a harness-read failure (BadArtifact), NOT a differential disagreement:
-        // the differential treats it as coverage-not-yet, never a false miscompile flag against the oracle.
-        Ok(None) => return Ran::BadArtifact("cdz run-ml timeout (hang)".to_string()),
-        Err(e) => return Ran::BadArtifact(format!("cdz run-ml wait failed: {e}")),
-    };
-    // A non-zero exit is the ONE reserved harness-read-failure path (per the run-ml contract) — a
-    // broken feed, not a verdict.
-    if !out.status.success() {
-        return Ran::BadArtifact(format!(
-            "cdz run-ml exited non-zero: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    // The verdict is the LAST non-empty stdout line (the contract is one line, but be robust to a
-    // trailing newline / an incidental leading line).
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let verdict = stdout
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    if verdict == "declined" {
-        Ran::Declined {
-            code: None,
-            message: String::new(),
-        }
-    } else if let Some(v) = verdict.strip_prefix("value ") {
-        Ran::Value(v.trim().to_string(), Vec::new(), Vec::new())
-    } else if let Some(msg) = verdict.strip_prefix("error ") {
-        Ran::Trap(msg.trim().to_string())
-    } else {
-        Ran::BadArtifact(format!("cdz run-ml: unrecognized verdict line {verdict:?}"))
-    }
-}
-
-/// Drive one program through the self-hosted ML compiler's WASM-EMIT backend via `cdz run-emitted` —
-/// source on stdin, one verdict line on stdout. This is the W4 emit≡interpret probe's emit side: unlike
-/// `run_program_ml` (which INTERPRETS the lowered Core via eval-db), `run-emitted` runs the EMITTED wasm
-/// module (emit-src-bytes → a core `wasmtime::Module`, invoke nullary `main`). Same verdict contract as
-/// `run-ml`: `value <n>` → `Ran::Value`; `declined` (out-of-emit-subset OR a runtime trap — div0/mod0/
-/// MIN÷-1, per the agreed trap==declined ruling) → codeless `Ran::Declined`; `error <msg>` → `Ran::Trap`;
-/// a NON-zero exit is the reserved harness-read-failure path (`Ran::BadArtifact` → NotYet, never a diff).
-fn run_program_emitted(tools: &Tools, program: &str) -> Ran {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let mut child = match Command::new(&tools.rcdzc)
-        .arg("run-emitted")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => return Ran::BadArtifact(format!("cdz run-emitted spawn failed: {e}")),
-    };
-    if let Some(mut stdin) = child.stdin.take()
-        && let Err(e) = stdin.write_all(program.as_bytes())
-    {
-        return Ran::BadArtifact(format!(
-            "cdz run-emitted: writing program to stdin failed: {e}"
-        ));
-    }
-    let out = match wait_with_timeout(child, run_timeout()) {
-        Ok(Some(o)) => o,
-        // A run-emitted hang (a compile-hang in the emit pipeline) — harness-read failure, not a diff.
-        Ok(None) => return Ran::BadArtifact("cdz run-emitted timeout (hang)".to_string()),
-        Err(e) => return Ran::BadArtifact(format!("cdz run-emitted wait failed: {e}")),
-    };
-    if !out.status.success() {
-        return Ran::BadArtifact(format!(
-            "cdz run-emitted exited non-zero: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let verdict = stdout
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    if verdict == "declined" {
-        Ran::Declined {
-            code: None,
-            message: String::new(),
-        }
-    } else if let Some(v) = verdict.strip_prefix("value ") {
-        Ran::Value(v.trim().to_string(), Vec::new(), Vec::new())
-    } else if let Some(msg) = verdict.strip_prefix("error ") {
-        Ran::Trap(msg.trim().to_string())
-    } else {
-        Ran::BadArtifact(format!(
-            "cdz run-emitted: unrecognized verdict line {verdict:?}"
-        ))
     }
 }
 
@@ -3875,7 +3726,6 @@ fn corpus_check_attr(target: GateTarget, stem: Option<&str>) -> Option<String> {
         // rust-async gained a cached per-case nix check (#4728: `corpus-rust-async[-<stem>]`, graded vs
         // `.gate-baseline-rust-async`), so it delegates like wasm/rust instead of running in-process.
         GateTarget::RustAsync => "corpus-rust-async",
-        _ => return None, // CadenzaMl grades DIFFERENTIALLY vs the wasm oracle — no cached corpus check
     };
     match stem {
         None => Some(prefix.to_string()),
@@ -3888,13 +3738,11 @@ fn corpus_check_attr(target: GateTarget, stem: Option<&str>) -> Option<String> {
 
 /// Why an interactive `gate` fell to the UNCACHED in-process path (for the fleet-load advisory). Pure so
 /// the arm selection is unit-testable; the caller has already excluded the `--save`/`--check`/`--shard`
-/// pipeline flows. Order matters: `--case` and rust-async are structural (no cached check exists), the
-/// explicit `CDZ_GATE_INPROCESS` opt-out is next, and everything else is an unavailable/unmapped cache.
-fn gate_inprocess_reason(has_case: bool, target: GateTarget, inprocess_env: bool) -> &'static str {
+/// pipeline flows. Order matters: `--case` is structural (no cached check exists), the explicit
+/// `CDZ_GATE_INPROCESS` opt-out is next, and everything else is an unavailable/unmapped cache.
+fn gate_inprocess_reason(has_case: bool, inprocess_env: bool) -> &'static str {
     if has_case {
         "--case runs in-process (single-case debug)"
-    } else if matches!(target, GateTarget::CadenzaMl) {
-        "--target cadenza-ml grades differentially vs the wasm oracle (no cached corpus check)"
     } else if inprocess_env {
         "CDZ_GATE_INPROCESS=1 forces the in-process gate"
     } else {
@@ -3909,7 +3757,7 @@ fn gate_inprocess_reason(has_case: bool, target: GateTarget, inprocess_env: bool
 /// identical emit. The nix exec reproduces `xtask gate --check` (baseline regression + the exec_exit rule),
 /// so this is regression-GATED by construction. Returns `Some(exit_code)` when it delegated, or `None` to
 /// fall through to the in-process path (an unrecognized `--files` entry, or nix unavailable). wasm/rust/
-/// rust-async all have a cached check now; `--save`/`--shard`/`--case`/CadenzaMl stay in-process (caller).
+/// rust-async all have a cached check now; `--save`/`--shard`/`--case` stay in-process (caller).
 fn gate_via_nix_cache(paths: &Paths, files: &[PathBuf], target: GateTarget) -> Option<i32> {
     let sys = nix_current_system();
     // Map the requested files → check attrs. Empty ⇒ the whole-corpus aggregate.
@@ -3987,7 +3835,7 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     // OPERATOR (2026-08-26 "cut over to the faster/cached wasm builds"): the whole-corpus + `--files`
     // verify path runs through the CACHED per-case nix corpus so it does NOT recompile every case each run
     // (#3363). `--case` (single-case debug), `--save` (baseline regen — needs in-process verdicts),
-    // `--shard` (case-sharded nightly), and CadenzaMl (differential, no cached check) stay in-process below.
+    // and `--shard` (case-sharded nightly) stay in-process below.
     // Escape hatch: `CDZ_GATE_INPROCESS=1`. Regression-gated by construction (the nix exec runs `--baseline`).
     // `--check` stays IN-PROCESS: it also does VANISHED detection (a baseline case with no run), which the
     // per-case `corpus` build doesn't — so pr-sync's authoritative `gate --check` keeps its full
@@ -4017,7 +3865,6 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     if !opts.save && !opts.check && opts.shard.is_none() {
         let reason = gate_inprocess_reason(
             opts.case.is_some(),
-            opts.target,
             std::env::var_os("CDZ_GATE_INPROCESS").is_some(),
         );
         eprintln!(
@@ -4188,15 +4035,7 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
     // The sweep honors `--target wasm` (default), `--target rust`, and `--target rust-async` — each drives
     // its own compile+run path with the opt level threaded through (`run_program_wasm` /
     // `run_program_rust`), so the level-equivalence guard covers BOTH backends (the v-core-opt charter's
-    // both-backend correctness bar). The `cadenza-ml` target has no `--opt-level` surface (the self-hosted
-    // compiler runs one pipeline), so a level sweep is meaningless there — reject it with a clear error.
-    if matches!(opts.target, GateTarget::CadenzaMl) {
-        eprintln!(
-            "error: --opt-sweep supports the wasm / rust / rust-async targets (got --target cadenza-ml). \
-             The self-hosted ML compiler has no --opt-level tier surface to sweep."
-        );
-        std::process::exit(2);
-    }
+    // both-backend correctness bar).
     let tools = build_tools(paths, profile);
     let files = if opts.files.is_empty() {
         default_corpus_files(&paths.repo)
@@ -4363,11 +4202,6 @@ fn sweep_one_case(
                 &[],
                 &[],
             ),
-            // Rejected up front in `gate_opt_sweep`; unreachable here.
-            GateTarget::CadenzaMl => Ran::Declined {
-                code: None,
-                message: String::new(),
-            },
         }
     };
     let mut diffs = Vec::new();
@@ -5110,11 +4944,6 @@ fn baseline_path(paths: &Paths, target: GateTarget) -> PathBuf {
         GateTarget::Wasm => ".gate-baseline".to_string(),
         GateTarget::Rust => ".gate-baseline-rust".to_string(),
         GateTarget::RustAsync => ".gate-baseline-rust-async".to_string(),
-        // CadenzaMl is graded DIFFERENTIALLY against the Wasm oracle (the `ml-conformance` reported
-        // step), never against a saved baseline — it has no baseline file and this is never reached.
-        GateTarget::CadenzaMl => {
-            unreachable!("cadenza-ml is differential-only; it has no gate baseline")
-        }
     };
     paths.repo.join("spec/semantics").join(name)
 }
@@ -6003,617 +5832,7 @@ fn check(paths: &Paths, profile: &str) {
         bytelen_scalar_walk_warn_lint(paths)
     });
 
-    // The two REPORT-ONLY conformance sweeps below (cadenza-ml + emit≡interpret) each shell `cdz
-    // run-ml`/`run-emitted` PLUS the wasm oracle once per corpus case (~3s/case over thousands of
-    // cases), bounded only by the 45-min compiler-ml suite deadline — so back-to-back they can add up
-    // to ~90min AFTER the gate verdict is already fully decided (they never red the gate). In pr-sync's
-    // merge-queue gate that's pure dead-weight: the batch's green/red is settled the instant
-    // `baseline-titles-agree` passes above, but the detached check's exit marker isn't written until
-    // these two finish — so the queue (and trunk) freeze for up to ~90min on already-green work, which
-    // is exactly the gate-batch ">1h trailing-native-step" stall pr-sync self-diagnosed. `CDZ_GATE_ONLY`
-    // (set ONLY by the gate-batch merge-queue call sites in fleet.rs) skips these two report-only passes
-    // so the merge gate returns the moment its verdict is known. Every vertical `cargo xtask check` and
-    // CI run leaves the var UNSET and still gets the full differential-miscompile reports — byte-identical.
-    let gate_only = std::env::var_os("CDZ_GATE_ONLY").is_some();
-    if gate_only {
-        println!(
-            "\ncheck: CDZ_GATE_ONLY set (merge-queue gate) — skipping the two REPORT-ONLY full-corpus \
-             conformance sweeps (cadenza-ml + emit≡interpret) that trail the already-decided verdict."
-        );
-        // ENFORCING cadenza-ml differential (operator-approved; v-fleet-tooling ruling (b)). We DO run the
-        // differential in the merge gate, but SCOPED to `covered_corpus_files` — the integer/bool subset the
-        // ML front-end actually compiles — so the cost is proportional to genuine coverage, not the not-yet
-        // frontier. This is the ONE conformance check that reds the merge gate: a `disagree > 0` on a COVERED
-        // case is a differential miscompile between the ML compiler and the rcdzc/wasm oracle, and MUST block
-        // landing ("if the implementations disagree the gate is red"). `agree`/`coverage-not-yet` are
-        // non-fatal. The FULL-corpus report still runs (unchanged) in every local `check`/CI (the `else`
-        // branch), which is where new-coverage disagreements surface and `covered_corpus_files` gets extended.
-        //
-        // `timed_out` is NON-FATAL by design: gate LIVENESS must never hinge on host load — a wall-clock
-        // budget hit reports the completed cases (incomplete → not-yet) and does NOT red, with the full CI
-        // run as the backstop for anything a timed-out gate skipped. On the small covered subset today a
-        // timeout should be ~never. `compute_ml_conformance` self-bounds via its own deadline → the
-        // `timed_out` field, so `step_native` (not `step_timed`) is the right harness here.
-        log.step_native("cadenza-ml-conformance-covered-subset", || {
-            let files = covered_corpus_files(paths);
-            let r = compute_ml_conformance(paths, profile, &files);
-            let total = r.agree + r.disagree + r.not_yet;
-            println!(
-                "  cadenza-ml (covered subset, ENFORCING): {} agree / {} disagree / {total} total ({} coverage-not-yet)",
-                r.agree, r.disagree, r.not_yet
-            );
-            if r.timed_out {
-                eprintln!(
-                    "  ⚠ covered-subset differential hit its wall-clock budget — reported what completed; \
-                     the rest counted coverage-not-yet. NON-FATAL (gate liveness must not depend on host \
-                     load; the full CI run is the backstop)."
-                );
-            }
-            // The pass/red DECISION is a pure function of the tally (unit-tested below) — a `disagree > 0`
-            // yields `Err` which `step_native` turns into a RED gate; everything else is `Ok`.
-            enforcing_conformance_verdict(&r)
-        });
-    } else {
-        // cadenza-ml conformance — REPORTED, never a baseline gate. Drive each shared-corpus program
-        // through BOTH the ML compiler (`cdz run-ml`) and the rcdzc/wasm ORACLE, and diff the verdicts:
-        // an ML decline is coverage-not-yet (the front-end is subset-only), an ML value that MATCHES the
-        // oracle is progress, and an ML value that DISAGREES with the oracle is a differential miscompile.
-        // Report-only for now (a D>0 loud-warns but does not red the fleet, since the ML front-end is under
-        // active development); promote to blocking once it's trusted. Green against today's declines-all
-        // stub (0 agree / 0 disagree). This is the differential form the operator directed (C + diff).
-        report_ml_conformance(paths, profile);
-
-        // W4 EMIT≡INTERPRET conformance — REPORTED, never a baseline gate (yet). For each corpus case, run the
-        // self-hosted WASM-EMIT backend (`cdz run-emitted`) AND the tree-walking interpreter (`cdz run-ml`) and
-        // diff the verdicts: the emitted module MUST compute what the interpreter does. A divergence is an emit
-        // miscompile; both-declined is coverage-not-yet. Report-only while the emit backend is the young integer
-        // subset; promote to blocking-on-disagreement once stable-green (same trajectory as cadenza-ml).
-        report_emit_conformance(paths, profile);
-    }
-
     println!("\ncheck: all green ✓  (full log: {})", log.path.display());
-}
-
-/// The classification totals of a cadenza-ml differential run — returned so a caller can ENFORCE (red the
-/// gate on `disagree > 0`) or merely REPORT. `disagreements` carries the per-case detail lines; `timed_out`
-/// is true when the wall-clock budget stopped the run early (the incomplete cases counted as `not_yet`).
-struct MlConformance {
-    agree: usize,
-    disagree: usize,
-    not_yet: usize,
-    disagreements: Vec<String>,
-    timed_out: bool,
-}
-
-/// The corpus files whose programs the ML front-end actually COVERS today — the integer/bool subset the
-/// self-hosted compiler compiles (literals, binding + control flow, the numeric model, and the type-system
-/// error cases). This is the set the ENFORCING merge-gate differential runs (cost proportional to genuine
-/// coverage; v-fleet-tooling ruling (b)); the FULL `default_corpus_files` report over the whole corpus stays
-/// in local `check`/CI, where new-coverage disagreements surface and this list gets extended as the front-end
-/// grows. Keep in sync with the front-end's real subset — adding a feature (e.g. compound types) adds its
-/// corpus file here once the ML compiler agrees on it.
-fn covered_corpus_files(paths: &Paths) -> Vec<PathBuf> {
-    let covered = [
-        "01-literals",
-        "02-binding-and-control",
-        "06-numeric-model",
-        "07-type-system",
-    ];
-    default_corpus_files(&paths.repo)
-        .into_iter()
-        .filter(|p| {
-            p.file_stem()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| covered.contains(&s))
-        })
-        .collect()
-}
-
-/// KNOWN pre-existing cadenza-ml ↔ oracle disagreements the enforcing merge gate TOLERATES (concierge
-/// ruling (b), 2026-08-01). Each is a real WIP ML reject-path gap the differential surfaced when the switch
-/// first flipped enforcing: the ML front-end runs the program to a value where the oracle correctly REJECTS.
-/// They are NOT regressions, so blocking the whole fleet on fixing them first (option (a)) would be
-/// self-inflicted; instead we enforce on every NEW divergence NOW and burn these down.
-///
-/// This is a BASELINE, not a mute: each entry is labeled `(case title, expected oracle CDZ code)`, so it's a
-/// visible burn-down list — and it's TIGHT. An entry only excuses a disagreement whose case title matches AND
-/// whose oracle verdict is exactly `reject <that code>` (see [`disagreement_is_known`]). So if a gap's shape
-/// changes at all — the ML side starts declining (it drops out of `disagree` entirely), or the oracle's code
-/// changes, or the SAME title regresses a DIFFERENT way — the entry stops matching and the gate reds on it as
-/// a genuine new divergence. v-compiler-ml removes an entry as it wires each missing decline; when the list
-/// is empty the differential is fully strict with zero exceptions. DO NOT add an entry to silence a NEW
-/// disagreement — that defeats the gate. Entries are only ever REMOVED (as fixes land), never added, except
-/// this one-time seed of the 5 the operator signed off on.
-const KNOWN_ML_DIFFS: &[(&str, &str)] = &[
-    // EMPTY = the differential is FULLY STRICT: ANY cadenza-ml ↔ oracle disagreement on a covered case
-    // reds the merge gate, no exceptions (the operator's "if the implementations disagree the gate is
-    // red"). The original 5 seeded WIP reject-path gaps have all been fixed by v-compiler-ml and burned
-    // down (each verified to now DECLINE before removal — a fixed gap left allowlisted would silently
-    // tolerate a future REGRESSION of that exact case):
-    //  · CDZ0201 "a conditional with too many operands" — fixed 8dca2509d (batch #114).
-    //  · CDZ0101 "an unbound name in an uncalled sibling definition" — fixed 1d1dd22e2.
-    //  · CDZ0210 "a literal in a let binder is refutable" — fixed fa92fdc0e.
-    //  · CDZ0302 "a non-admitted float width in a type-declaration payload" — fixed e9c6d1723.
-    //  · CDZ0302 "an ill-formed integer width in a type-declaration payload" — fixed e9c6d1723.
-    //
-    // TO ADD AN ENTRY (only for a genuinely NEW, tracked WIP gap the fleet has agreed to tolerate while
-    // it's fixed — NOT to silence a surprise): `("<exact case title>", "<oracle CDZ code>")`, then
-    // REMOVE it the moment its fix lands + is verified to decline. It's expected this list re-grows
-    // transiently as new reject-path pins (e.g. breaker's) race their fixes; the empty state is the goal.
-];
-
-/// Does a disagreement message match a KNOWN_ML_DIFFS allowlist entry? The message shape is
-/// `"{title}: ml=… oracle=…"` (see `compute_ml_conformance`), and a rejecting oracle summarizes as
-/// `reject {code}` (see `ran_summary`). An entry `(title, code)` matches iff the message starts with
-/// `"{title}: "` AND its oracle side is exactly `reject {code}`. Requiring BOTH keeps the allowlist tight:
-/// the same title diverging a NEW way (a different oracle code, or a trap/value) is NOT excused.
-fn disagreement_is_known(msg: &str) -> bool {
-    KNOWN_ML_DIFFS.iter().any(|(title, code)| {
-        msg.starts_with(&format!("{title}: ")) && msg.ends_with(&format!("oracle=reject {code}"))
-    })
-}
-
-/// The ENFORCING merge-gate verdict for the covered-subset differential (v-fleet-tooling ruling; concierge
-/// (b) allowlist). Pure function of the tally so it's unit-tested without running the gate. Partitions the
-/// disagreements into KNOWN (allowlisted, [`disagreement_is_known`]) and NOVEL: RED (`Err`) iff there is any
-/// NOVEL disagreement; the known ones are reported as a burn-down list but never red. `agree`,
-/// `coverage-not-yet`, AND `timed_out` are all non-fatal — the rule is "if the implementations DISAGREE the
-/// gate is red", scoped to divergences that AREN'T the known pre-existing WIP gaps, and gate liveness must
-/// never hinge on a wall-clock budget hit (the full CI run backstops a timed-out gate).
-fn enforcing_conformance_verdict(r: &MlConformance) -> Result<(), String> {
-    let (known, novel): (Vec<&String>, Vec<&String>) = r
-        .disagreements
-        .iter()
-        .partition(|d| disagreement_is_known(d));
-
-    // The known-diff burn-down list: always REPORTED (so its shrinking is visible), never reds.
-    if !known.is_empty() {
-        eprintln!(
-            "  ℹ {} known pre-existing ML reject-path gap(s) tolerated (KNOWN_ML_DIFFS burn-down — \
-             v-compiler-ml removes each as it lands the fix; NOT reds):",
-            known.len()
-        );
-        for d in &known {
-            eprintln!("    · {d}");
-        }
-    }
-
-    if novel.is_empty() {
-        return Ok(());
-    }
-    // RED the merge gate: name every NOVEL disagreeing case so it's immediately actionable.
-    let detail = novel
-        .iter()
-        .map(|d| format!("    • {d}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    Err(format!(
-        "cadenza-ml DIFFERENTIAL MISCOMPILE on {} NEW covered case(s) — the ML compiler's verdict differs \
-         from the rcdzc/wasm oracle, and this divergence is NOT in the KNOWN_ML_DIFFS burn-down set. The \
-         merge gate is RED (operator: \"if the implementations disagree the gate is red\"). If this is a \
-         genuine, intended new front-end gap, it must be FIXED — do not add it to the allowlist. New \
-         disagreements:\n{detail}",
-        novel.len()
-    ))
-}
-
-/// Report cadenza-ml conformance DIFFERENTIALLY against the rcdzc/wasm oracle over the FULL corpus (never
-/// fails `check` — the report form). Thin wrapper over [`compute_ml_conformance`]: compute + print
-/// `cadenza-ml: X agree / D disagree / N total` and (on `D>0`) the loud per-case warning. Byte-identical to
-/// the pre-refactor behavior. The ENFORCING merge-gate variant (v-fleet-tooling wires it) instead calls
-/// `compute_ml_conformance(paths, profile, &covered_corpus_files(paths))` and reds on `disagree > 0` via
-/// [`enforcing_conformance_verdict`].
-fn report_ml_conformance(paths: &Paths, profile: &str) {
-    let files = default_corpus_files(&paths.repo);
-    let r = compute_ml_conformance(paths, profile, &files);
-    let total = r.agree + r.disagree + r.not_yet;
-    println!(
-        "cadenza-ml: {} agree / {} disagree / {total} total ({} coverage-not-yet)",
-        r.agree, r.disagree, r.not_yet
-    );
-    if r.timed_out {
-        eprintln!(
-            "  ⚠ cadenza-ml conformance hit its wall-clock budget — reported the cases that completed; \
-             the rest counted as coverage-not-yet. Report-only, so this does NOT red the gate (it bounds \
-             a slow report step so it can't stall the whole check)."
-        );
-    }
-    if r.disagree > 0 {
-        eprintln!(
-            "  ⚠ cadenza-ml DIFFERENTIAL DISAGREEMENT(S) — the ML compiler's verdict differs from the \
-             rcdzc oracle (a differential miscompile to investigate; report-only here, ENFORCED on the \
-             covered subset in the merge gate):"
-        );
-        for d in &r.disagreements {
-            eprintln!("    • {d}");
-        }
-    }
-}
-
-/// The compute core of the cadenza-ml differential: run each corpus case in `files` through the ML compiler
-/// (`cdz run-ml`) and the Wasm/rcdzc oracle, classify (agree / disagree / coverage-not-yet), and RETURN the
-/// totals + disagreement detail — no printing, no gate side-effect. Callers choose to report (full corpus,
-/// non-fatal) or enforce (covered subset, red on `disagree > 0`). Parallel per-case, wall-clock bounded.
-fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> MlConformance {
-    let tools = build_tools(paths, profile);
-    // The oracle (Wasm) resolves the value-heap runtime from the content-addressed store; the ML path
-    // needs no store. Default store location, same as the gate.
-    let store = Some(paths.repo.join("target/cadenza-store"));
-    let records: Vec<CorpusRecord> = files
-        .iter()
-        .flat_map(|file| read_corpus(&tools.corpus, file))
-        .collect();
-
-    // Classify each case IN PARALLEL — this step shells `cdz run-ml` once per corpus case (and the
-    // Wasm oracle again for a non-declining case), so a serial loop over ~3700 cases made `cargo xtask
-    // check` minutes slower. A work-stealing thread pool (same shape as `roundtrip_all_parallel`) keeps
-    // the per-case classification independent (each only READS `tools`/`store` + spawns its own
-    // subprocesses) and cuts wall-clock to ~one case-chain per core. Each slot is `Agree` / `Disagree`
-    // (with the report line) / `NotYet`.
-    enum MlOutcome {
-        Agree,
-        Disagree(String),
-        NotYet,
-    }
-    let n = records.len();
-    let slots: Vec<std::sync::Mutex<Option<MlOutcome>>> =
-        (0..n).map(|_| std::sync::Mutex::new(None)).collect();
-    let cursor = std::sync::atomic::AtomicUsize::new(0);
-    let workers = std::thread::available_parallelism()
-        .map(|w| w.get())
-        .unwrap_or(1)
-        .max(1);
-    // WALL-CLOCK BUDGET (fleet-safety): this step is REPORT-ONLY (never reds the gate), but each in-subset
-    // case shells `cdz run-ml` (~3s — it builds the whole compiler-ml driver per case), so the aggregate
-    // over the in-subset corpus can run many minutes. It was called UNBOUNDED (no `step_timed` wrap), so a
-    // slow run could stall the entire `cargo xtask check` until pr-sync's OUTER wall-clock killed the run
-    // MID-STEP — flat-lining the merge queue and leaving a log that ends mid-stream in run-ml stderr noise
-    // (the "256 parse errors" from not-yet-supported cases, which are coverage-not-yet, NOT a gate failure;
-    // v-compiler-ml 2026-07-19). A report-only step must NEVER be able to stall the gate: cap the total
-    // wall-clock, and if exceeded stop pulling new cases + report what completed (the rest count as
-    // coverage-not-yet, which is what a not-yet-run case IS). Deadline = the suite budget, ample for the
-    // real in-subset set today while bounding a pathological blow-up.
-    let deadline = std::time::Instant::now() + suite_timeout_for("implementation/compiler-ml");
-    let timed_out = std::sync::atomic::AtomicBool::new(false);
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            let (cursor, slots, records, tools, store, timed_out) =
-                (&cursor, &slots, &records, &tools, &store, &timed_out);
-            scope.spawn(move || {
-                loop {
-                    if std::time::Instant::now() >= deadline {
-                        timed_out.store(true, std::sync::atomic::Ordering::Relaxed);
-                        break;
-                    }
-                    let i = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if i >= records.len() {
-                        break;
-                    }
-                    let rec = &records[i];
-                    // Compare the FIRST trial only (the ML subset is nullary; a `(call …)` case declines
-                    // in run_program_ml's subset guard, so the first trial represents ML support today).
-                    let call = rec.trials.first().and_then(|t| t.call.as_ref());
-                    let ml = run_program(
-                        tools,
-                        store,
-                        &rec.program,
-                        &rec.modules,
-                        &rec.peers,
-                        call,
-                        &rec.host_responses,
-                        &rec.host_calls,
-                        rec.wit_world.as_deref(),
-                        rec.component_name.as_deref(),
-                        // ML differential is a pure value comparison against the wasm oracle — no heap check.
-                        LiveObjectsCheck::Off,
-                        GateTarget::CadenzaMl,
-                    );
-                    let outcome = match &ml {
-                        // Not-yet-supported: the ML front-end declined — coverage-not-yet, never a diff.
-                        Ran::Declined { .. } => MlOutcome::NotYet,
-                        // An ML-side harness read-failure (hang / bad feed) — not comparable, never a diff.
-                        // Mirrors the emit path's interp-side BadArtifact filter (Copilot PR#559 twin check).
-                        Ran::BadArtifact(_) => MlOutcome::NotYet,
-                        // ML produced a value (or error) — compare to the oracle.
-                        _ => {
-                            let oracle = run_program(
-                                tools,
-                                store,
-                                &rec.program,
-                                &rec.modules,
-                                &rec.peers,
-                                call,
-                                &rec.host_responses,
-                                &rec.host_calls,
-                                rec.wit_world.as_deref(),
-                                rec.component_name.as_deref(),
-                                // The wasm oracle for the ML differential is a value comparison — no heap check.
-                                LiveObjectsCheck::Off,
-                                GateTarget::Wasm,
-                            );
-                            // An oracle-side harness failure is likewise not comparable — not a disagreement.
-                            if matches!(oracle, Ran::BadArtifact(_)) {
-                                MlOutcome::NotYet
-                            } else if ml_agrees_with_oracle(&ml, &oracle) {
-                                MlOutcome::Agree
-                            } else {
-                                MlOutcome::Disagree(format!(
-                                    "{}: ml={} oracle={}",
-                                    rec.description,
-                                    ran_summary(&ml),
-                                    ran_summary(&oracle)
-                                ))
-                            }
-                        }
-                    };
-                    *slots[i].lock().unwrap() = Some(outcome);
-                }
-            });
-        }
-    });
-    let (mut agree, mut disagree, mut not_yet) = (0usize, 0usize, 0usize);
-    let mut disagreements: Vec<String> = Vec::new();
-    for slot in &slots {
-        match slot.lock().unwrap().take() {
-            Some(MlOutcome::Agree) => agree += 1,
-            Some(MlOutcome::Disagree(msg)) => {
-                disagree += 1;
-                disagreements.push(msg);
-            }
-            // NotYet, or an unfilled slot — a worker cut this case off at the wall-clock deadline, so it
-            // never ran (EXPECTED on timeout; `timed_out` is set). An un-run case IS coverage-not-yet.
-            _ => not_yet += 1,
-        }
-    }
-    // RETURN the classification — the caller reports (full corpus, non-fatal) or enforces (covered subset,
-    // red on disagree > 0). No printing / gate side-effect here.
-    MlConformance {
-        agree,
-        disagree,
-        not_yet,
-        disagreements,
-        timed_out: timed_out.load(std::sync::atomic::Ordering::Relaxed),
-    }
-}
-
-/// Report the W4 EMIT≡INTERPRET conformance (never fails `check`). For each corpus case, drive it through
-/// BOTH self-hosted paths — `cdz run-emitted` (the WASM-EMIT backend: emit the module + run it via
-/// wasmtime) and `cdz run-ml` (the tree-walking INTERPRETER) — and diff the verdicts. The emitted wasm MUST
-/// compute what the interpreter computes; a divergence is an emit miscompile. Both DECLINED (out of the
-/// emit/interpret subset) is coverage-not-yet, never a diff. Prints `emit-conformance: X agree / D disagree
-/// / N total`; a `D>0` loud-warns naming the cases. REPORT-ONLY for now (the emit backend is the young
-/// integer subset); promote to blocking-on-D>0 once stable-green. Mirrors `report_ml_conformance`'s
-/// parallel per-case scaffold, but compares two CLI VERDICTS (emit vs interpret), not a grader backend.
-fn report_emit_conformance(paths: &Paths, profile: &str) {
-    let tools = build_tools(paths, profile);
-    let files = default_corpus_files(&paths.repo);
-    let records: Vec<CorpusRecord> = files
-        .iter()
-        .flat_map(|file| read_corpus(&tools.corpus, file))
-        .collect();
-
-    enum EmitOutcome {
-        Agree,
-        Disagree(String),
-        NotYet,
-    }
-    let n = records.len();
-    let slots: Vec<std::sync::Mutex<Option<EmitOutcome>>> =
-        (0..n).map(|_| std::sync::Mutex::new(None)).collect();
-    let cursor = std::sync::atomic::AtomicUsize::new(0);
-    let workers = std::thread::available_parallelism()
-        .map(|w| w.get())
-        .unwrap_or(1)
-        .max(1);
-    // WALL-CLOCK BUDGET — same fleet-safety bound as report_ml_conformance: this report-only step shells
-    // TWO CLIs per in-subset case (run-ml + run-emitted), so it's even slower; it must never be able to
-    // stall the whole `check` when called unbounded. Cap the total; on exceed, stop pulling cases + report
-    // what completed (the rest = coverage-not-yet). Never reds the gate.
-    let deadline = std::time::Instant::now() + suite_timeout_for("implementation/compiler-ml");
-    let timed_out = std::sync::atomic::AtomicBool::new(false);
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            let (cursor, slots, records, tools, timed_out) =
-                (&cursor, &slots, &records, &tools, &timed_out);
-            scope.spawn(move || {
-                loop {
-                    if std::time::Instant::now() >= deadline {
-                        timed_out.store(true, std::sync::atomic::Ordering::Relaxed);
-                        break;
-                    }
-                    let i = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if i >= records.len() {
-                        break;
-                    }
-                    let rec = &records[i];
-                    // Both self-hosted paths read the raw corpus s-expr program from stdin (no call/args —
-                    // the emit/interpret subset is nullary-main). Run the INTERPRETER first as the oracle.
-                    let interp = run_program_ml(tools, &rec.program, None);
-                    let outcome = match &interp {
-                        // Interpreter declined = out-of-subset; the emit path declines too — coverage-not-yet.
-                        Ran::Declined { .. } => EmitOutcome::NotYet,
-                        // A harness read-failure (a hang / bad feed) on the interpreter — not a diff.
-                        Ran::BadArtifact(_) => EmitOutcome::NotYet,
-                        // Interpreter produced a value/trap — the emitted module MUST match it.
-                        _ => {
-                            let emit = run_program_emitted(tools, &rec.program);
-                            if emit_agrees_with_interp(&emit, &interp) {
-                                EmitOutcome::Agree
-                            } else {
-                                EmitOutcome::Disagree(format!(
-                                    "{}: emit={} interp={}",
-                                    rec.description,
-                                    ran_summary(&emit),
-                                    ran_summary(&interp)
-                                ))
-                            }
-                        }
-                    };
-                    *slots[i].lock().unwrap() = Some(outcome);
-                }
-            });
-        }
-    });
-    let (mut agree, mut disagree, mut not_yet) = (0usize, 0usize, 0usize);
-    let mut disagreements: Vec<String> = Vec::new();
-    for slot in &slots {
-        match slot.lock().unwrap().take() {
-            Some(EmitOutcome::Agree) => agree += 1,
-            Some(EmitOutcome::Disagree(msg)) => {
-                disagree += 1;
-                disagreements.push(msg);
-            }
-            _ => not_yet += 1,
-        }
-    }
-    let total = agree + disagree + not_yet;
-    println!(
-        "emit-conformance: {agree} agree / {disagree} disagree / {total} total ({not_yet} coverage-not-yet)"
-    );
-    if timed_out.load(std::sync::atomic::Ordering::Relaxed) {
-        eprintln!(
-            "  ⚠ emit-conformance hit its wall-clock budget — reported the cases that completed; the rest \
-             counted as coverage-not-yet. Report-only, so this does NOT red the gate (it bounds a slow \
-             report step so it can't stall the whole check)."
-        );
-    }
-    if disagree > 0 {
-        eprintln!(
-            "  ⚠ emit-conformance DIFFERENTIAL DISAGREEMENT(S) — the EMITTED wasm module's result differs \
-             from the INTERPRETER's for the same program (an emit-backend miscompile; report-only, not yet \
-             blocking):"
-        );
-        for d in &disagreements {
-            eprintln!("    • {d}");
-        }
-    }
-    report_must_compute_floor(&tools);
-}
-
-/// The MUST-COMPUTE FLOOR (breaker-suggested): a fixed list of programs KNOWN to be in the emit/interpret
-/// subset, each with its expected value. Unlike the corpus differential (which grades a both-legs decline as
-/// coverage-not-yet and stays green while the subset SHRINKS), the floor grades a program FLOOR-REGRESSED if
-/// EITHER leg (run-ml / run-emitted) fails to compute the pinned value — so a silent subset shrink (e.g. the
-/// depth-3-arith regression: `(+ (* (- 7 10) 3) (/ 100 7))` computed 5, then both legs began declining
-/// together, invisible to the agree/disagree/not-yet report) prints a loud FLOOR-REGRESSED line instead of
-/// green silence. Report-only (like the rest of the emit conformance report); the list grows as W-slices land
-/// (each adds its canonical program). Each entry is `(source, expected-value)`.
-fn report_must_compute_floor(tools: &Tools) {
-    // Programs that MUST compute their pinned value on BOTH legs — a GREEN baseline so a future silent
-    // subset-shrink flips this loud. One each of arith / let / if+comparison / negative — the canonical
-    // in-subset shapes. (The breaker's byte-verified depth-3 tree `(+ (* (- 7 10) 3) (/ 100 7))` → 5 is
-    // NOT seeded yet: it currently REGRESSES via the scale-emergent depth-3-nesting decline filed to
-    // v-inference — seeding a known-open regression would make the floor perpetually red + train readers
-    // to ignore it. ADD IT HERE once v-inference's depth-3 fix lands, so the floor re-locks that shape.)
-    const FLOOR: &[(&str, &str)] = &[
-        ("(+ (* 2 3) (/ 100 7))", "20"), // depth-2 mixed arith (all four ops in one tree)
-        ("(let ((x 21)) (+ x x))", "42"), // let-binding, bound var used twice
-        ("(if (< 3 5) 7 9)", "7"),       // if + comparison
-        ("(- 0 9)", "-9"),               // a negative result (unary-minus desugar)
-    ];
-    let mut regressed: Vec<String> = Vec::new();
-    for (src, want) in FLOOR {
-        let ml = run_program_ml(tools, src, None);
-        let emit = run_program_emitted(tools, src);
-        let ml_val = match &ml {
-            Ran::Value(v, _, _) => Some(v.trim().to_string()),
-            _ => None,
-        };
-        let emit_val = match &emit {
-            Ran::Value(v, _, _) => Some(v.trim().to_string()),
-            _ => None,
-        };
-        // FLOOR-REGRESSED if either leg didn't produce the expected value.
-        let ml_ok = ml_val.as_deref() == Some(*want);
-        let emit_ok = emit_val.as_deref() == Some(*want);
-        if !ml_ok || !emit_ok {
-            regressed.push(format!(
-                "{src:?} must compute {want} — run-ml={} run-emitted={}",
-                ran_summary(&ml),
-                ran_summary(&emit)
-            ));
-        }
-    }
-    let n = FLOOR.len();
-    let ok = n - regressed.len();
-    println!("emit-floor: {ok}/{n} must-compute programs hold");
-    if !regressed.is_empty() {
-        eprintln!(
-            "  ⚠ emit-floor FLOOR-REGRESSED — a program KNOWN in-subset no longer computes its pinned value \
-             on both legs (a subset SHRINK the agree/disagree report hides when both legs decline together; \
-             report-only, not yet blocking):"
-        );
-        for r in &regressed {
-            eprintln!("    • {r}");
-        }
-    }
-}
-
-/// Whether the EMITTED-wasm outcome AGREES with the INTERPRETER's on the same program (the W4 contract).
-/// A shared VALUE must match; a shared trap agrees; an emitted DECLINE agrees with an interpreter trap OR
-/// decline (both are the "no value" verdict — the corpus grades div0/mod0 as declines, and run-emitted maps
-/// a runtime trap to `declined` per the trap==declined ruling, so emit-declined vs interp-trap is agreement).
-/// A value-vs-non-value (either direction) is a DISAGREEMENT. (An interpreter decline is filtered by the
-/// caller before this — coverage-not-yet, never compared.)
-fn emit_agrees_with_interp(emit: &Ran, interp: &Ran) -> bool {
-    match (emit, interp) {
-        // An emit-side harness FAILURE (spawn-fail / timeout-hang / unrecognized verdict) is never an
-        // agreement — it is emit-pipeline breakage, not a matching outcome. This arm MUST precede the
-        // `(_, Ran::Trap(_)) => true` catch-all below, which would otherwise silently count a BadArtifact
-        // emit against a trapping interp as GREEN, masking a broken emit pipeline (Copilot PR#559). The
-        // caller filters interp-side BadArtifact to NotYet before comparing, but NOT the emit side.
-        (Ran::BadArtifact(_), _) => false,
-        (Ran::Value(a, _, _), Ran::Value(b, _, _)) => emit_values_match(a, b),
-        // interp produced a value but emit did not (declined/trapped/harness) — a miscompile.
-        (_, Ran::Value(_, _, _)) => false,
-        // interp trapped: emit agrees if it also trapped OR declined (trap==declined) — but NOT if it
-        // produced a value.
-        (Ran::Value(_, _, _), Ran::Trap(_)) => false,
-        (_, Ran::Trap(_)) => true,
-        // interp neither value nor trap (shouldn't reach here — decline/harness filtered by caller).
-        _ => true,
-    }
-}
-
-/// Whether the emitted-wasm value string equals the interpreter's, MODULO the Bool render. Core encodes
-/// Bool as the Int 0/1, and the emitted module returns that raw i64 (`run-emitted` renders `1`/`0`), but
-/// `cdz run-ml` TAGS a Bool-typed result and renders it `true`/`false` (via run-src-typed's isBool flag).
-/// So `1`≡`true` and `0`≡`false` are AGREEMENTS (same value, different surface) — without this every
-/// nullary Bool-returning corpus case (e.g. `(< 1 2)`) would be a spurious disagreement. Any other pair is
-/// an exact string match (integers compare verbatim).
-fn emit_values_match(emit: &str, interp: &str) -> bool {
-    let e = emit.trim();
-    let i = interp.trim();
-    e == i
-        || (e == "1" && i == "true")
-        || (e == "0" && i == "false")
-        // symmetric, in case the render sides ever swap
-        || (e == "true" && i == "1")
-        || (e == "false" && i == "0")
-}
-
-/// Whether the ML compiler's outcome AGREES with the rcdzc oracle on the same program. A shared VALUE
-/// must match; a shared trap agrees (both aborted); a coded reject agrees if the oracle also rejected.
-/// A value-vs-non-value, or ML-ran-where-oracle-declined (and vice-versa), is a DISAGREEMENT. (An ML
-/// decline is filtered out by the caller before this — it's coverage-not-yet, never compared.)
-fn ml_agrees_with_oracle(ml: &Ran, oracle: &Ran) -> bool {
-    match (ml, oracle) {
-        (Ran::Value(a, _, _), Ran::Value(b, _, _)) => a == b,
-        (Ran::Trap(_), Ran::Trap(_)) => true,
-        // The oracle declined but ML produced a value/trap — a disagreement (ML ran where rcdzc didn't).
-        _ => false,
-    }
-}
-
-/// A one-line summary of a `Ran` for the disagreement report.
-fn ran_summary(r: &Ran) -> String {
-    match r {
-        Ran::Value(v, _, _) => format!("value {v}"),
-        Ran::Declined { code: Some(c), .. } => format!("reject {c}"),
-        Ran::Declined { code: None, .. } => "declined".to_string(),
-        Ran::Trap(m) => format!("trap {m}"),
-        Ran::BadArtifact(m) => format!("bad-artifact {m}"),
-    }
 }
 
 /// The case DESCRIPTIONS in a gate-baseline file, in file order — the `verdict\tdescription` lines,
@@ -8028,174 +7247,6 @@ mod trap_grading_tests {
         assert_eq!(first_error_diag(b""), (None, String::new()));
     }
 
-    // ── ENFORCING cadenza-ml conformance verdict (v-fleet-tooling ruling (b)) ─────────────────────────
-    // The gate_only-path differential reds the MERGE gate iff a COVERED case disagrees with the oracle.
-    // These lock the operator's rule ("if the implementations disagree the gate is red") + the liveness
-    // carve-outs (agree/not-yet/timed_out never red) as a pure decision, so we verify the RED behavior
-    // without running the whole (expensive) gate against an injected miscompile.
-
-    // A tally whose disagreements are all NOVEL (not in KNOWN_ML_DIFFS) — the `case-{i}` titles never
-    // appear in the allowlist, so each reds the gate.
-    fn tally(agree: usize, disagree: usize, not_yet: usize, timed_out: bool) -> MlConformance {
-        MlConformance {
-            agree,
-            disagree,
-            not_yet,
-            disagreements: (0..disagree)
-                .map(|i| format!("case-{i}: ml=1 oracle=2"))
-                .collect(),
-            timed_out,
-        }
-    }
-
-    // A tally built from explicit disagreement MESSAGES (to exercise the allowlist matcher). `agree`/
-    // `not_yet` are 0 here; `disagree` is derived from the message count.
-    fn tally_msgs(msgs: &[&str]) -> MlConformance {
-        MlConformance {
-            agree: 0,
-            disagree: msgs.len(),
-            not_yet: 0,
-            disagreements: msgs.iter().map(|s| s.to_string()).collect(),
-            timed_out: false,
-        }
-    }
-
-    // Reconstruct the exact disagreement message shape `compute_ml_conformance` emits for an allowlisted
-    // gap: `"{title}: ml={mlval} oracle=reject {code}"`. Keeps the allowlist tests coupled to the real
-    // message format (title prefix + `oracle=reject <code>` suffix) that `disagreement_is_known` matches.
-    fn known_msg(title: &str, ml_summary: &str, code: &str) -> String {
-        format!("{title}: ml={ml_summary} oracle=reject {code}")
-    }
-
-    #[test]
-    fn enforcing_verdict_reds_on_any_novel_covered_disagreement() {
-        // The core invariant: a NOVEL (non-allowlisted) disagreement → Err → step_native reds the gate.
-        let v = enforcing_conformance_verdict(&tally(5, 1, 3, false));
-        let msg = v.expect_err("a novel covered disagreement MUST red the gate");
-        assert!(
-            msg.contains("DIFFERENTIAL MISCOMPILE"),
-            "names the failure: {msg}"
-        );
-        assert!(msg.contains("gate is RED"), "states the gate reds: {msg}");
-        assert!(
-            msg.contains("case-0: ml=1 oracle=2"),
-            "names the disagreeing case: {msg}"
-        );
-        // Multiple novel disagreements: count is surfaced and every case is listed.
-        let many = enforcing_conformance_verdict(&tally(0, 3, 0, false)).unwrap_err();
-        assert!(
-            many.contains("on 3 NEW covered case(s)"),
-            "reports the novel count: {many}"
-        );
-        assert_eq!(
-            many.matches("    • ").count(),
-            3,
-            "lists every novel disagreeing case"
-        );
-    }
-
-    #[test]
-    fn enforcing_verdict_tolerates_the_known_diffs_but_reds_on_novel_alongside_them() {
-        // Every current KNOWN_ML_DIFFS entry, reconstructed in the real message shape, is TOLERATED
-        // (green). Iterates the const so it stays correct as entries burn down.
-        let known: Vec<String> = KNOWN_ML_DIFFS
-            .iter()
-            .map(|(title, code)| known_msg(title, "value 42", code))
-            .collect();
-        let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
-        assert!(
-            enforcing_conformance_verdict(&tally_msgs(&known_refs)).is_ok(),
-            "all-known disagreements are tolerated (burn-down list, not a red)"
-        );
-
-        // A NOVEL disagreement mixed IN with the known ones still reds — the allowlist subtracts, it
-        // doesn't blanket-pass a dirty run.
-        let mut mixed = known_refs.clone();
-        let novel = "some brand-new covered case: ml=value 9 oracle=reject CDZ0999";
-        mixed.push(novel);
-        let err = enforcing_conformance_verdict(&tally_msgs(&mixed))
-            .expect_err("a novel diff alongside known ones must still red");
-        assert!(
-            err.contains("on 1 NEW covered case(s)"),
-            "counts only the novel: {err}"
-        );
-        assert!(err.contains(novel), "names the novel case: {err}");
-        assert!(
-            !err.contains("uncalled sibling"),
-            "does NOT list a known diff as a red cause: {err}"
-        );
-    }
-
-    #[test]
-    fn known_diff_match_is_tight_title_and_code_both_required() {
-        // Drive the tightness check off a LIVE entry when one exists — `.first()`, NOT `[0]`, because
-        // `KNOWN_ML_DIFFS` is deliberately burning down to EMPTY and indexing `[0]` would PANIC at the
-        // desired end-state (empty = fully strict). When empty there's no allowlisted case to probe the
-        // "is a real entry matched, tightly" assertions against, so skip them (the always-valid negatives
-        // below still run). This tests the REAL `disagreement_is_known` against a REAL entry.
-        if let Some((title, code)) = KNOWN_ML_DIFFS.first().copied() {
-            // Exact title + exact oracle code → known.
-            assert!(disagreement_is_known(&known_msg(title, "value 42", code)));
-            // Same title, DIFFERENT oracle code → NOT known (a new way to diverge must red).
-            assert!(
-                !disagreement_is_known(&known_msg(title, "value 42", "CDZ9999")),
-                "same title, different oracle code must not be excused"
-            );
-            // Same title, oracle TRAPPED instead of rejecting → NOT known (suffix differs).
-            assert!(
-                !disagreement_is_known(&format!("{title}: ml=value 42 oracle=trap boom")),
-                "same title, non-reject oracle verdict must not be excused"
-            );
-            // Guard against a substring false-match: a title that merely CONTAINS an allowlisted title as
-            // a suffix-of-prefix must not slip through (the matcher anchors on `"{title}: "`).
-            assert!(!disagreement_is_known(&format!(
-                "x {title}: ml=value 42 oracle=reject {code}"
-            )));
-        }
-        // ALWAYS valid regardless of allowlist contents (holds even when fully burned down to empty): a
-        // title that is not in the list is never known.
-        assert!(!disagreement_is_known(
-            "a totally unrelated case: ml=value 1 oracle=reject CDZ0101"
-        ));
-    }
-
-    #[test]
-    fn enforcing_verdict_passes_when_no_disagreement() {
-        // All-agree, all-not-yet, and mixed-but-zero-disagree ALL pass (green merge gate).
-        assert!(
-            enforcing_conformance_verdict(&tally(10, 0, 0, false)).is_ok(),
-            "all agree → pass"
-        );
-        assert!(
-            enforcing_conformance_verdict(&tally(0, 0, 7, false)).is_ok(),
-            "all coverage-not-yet → pass"
-        );
-        assert!(
-            enforcing_conformance_verdict(&tally(4, 0, 2, false)).is_ok(),
-            "agree + not-yet, no disagree → pass"
-        );
-        assert!(
-            enforcing_conformance_verdict(&tally(0, 0, 0, false)).is_ok(),
-            "empty subset → pass (vacuous)"
-        );
-    }
-
-    #[test]
-    fn enforcing_verdict_timed_out_is_non_fatal_without_disagreement() {
-        // Gate LIVENESS carve-out: a wall-clock budget hit must NOT red the gate on its own — only a real
-        // disagreement does. (The full CI run backstops anything a timed-out gate skipped.)
-        assert!(
-            enforcing_conformance_verdict(&tally(3, 0, 5, true)).is_ok(),
-            "timed_out with no disagreement is NON-FATAL"
-        );
-        // But a disagreement that DID complete still reds even if the run later timed out — a real
-        // miscompile is not excused by a budget hit.
-        assert!(
-            enforcing_conformance_verdict(&tally(3, 1, 5, true)).is_err(),
-            "a completed disagreement reds even when timed_out"
-        );
-    }
-
     #[test]
     fn needs_clause_lint_flags_only_leading_needs_clauses() {
         // A retired `(needs …)` clause is caught wherever it opens a line (leading whitespace ok),
@@ -8602,17 +7653,14 @@ mod trap_grading_tests {
     #[test]
     fn gate_inprocess_advisory_reason_and_cached_attr_mapping() {
         // Reason arms, in precedence order (caller has already excluded --save/--check/--shard).
-        assert!(gate_inprocess_reason(true, GateTarget::Wasm, false).contains("--case"));
-        assert!(gate_inprocess_reason(false, GateTarget::CadenzaMl, false).contains("cadenza-ml"));
-        assert!(
-            gate_inprocess_reason(false, GateTarget::Wasm, true).contains("CDZ_GATE_INPROCESS")
-        );
-        assert!(gate_inprocess_reason(false, GateTarget::Wasm, false).contains("unavailable"));
+        assert!(gate_inprocess_reason(true, false).contains("--case"));
+        assert!(gate_inprocess_reason(false, true).contains("CDZ_GATE_INPROCESS"));
+        assert!(gate_inprocess_reason(false, false).contains("unavailable"));
         // --case wins even when the env is also set (structural reason first).
-        assert!(gate_inprocess_reason(true, GateTarget::Wasm, true).contains("--case"));
+        assert!(gate_inprocess_reason(true, true).contains("--case"));
 
         // The cached-attr hint: NN-feature files map to a per-file check for all 3 corpus targets;
-        // CadenzaMl (differential) / non-NN files do not.
+        // non-NN files do not.
         assert_eq!(
             corpus_check_attr(GateTarget::Wasm, Some("13-strings")).as_deref(),
             Some("corpus-13-strings")
@@ -8624,10 +7672,6 @@ mod trap_grading_tests {
         assert_eq!(
             corpus_check_attr(GateTarget::RustAsync, Some("14c-effects-and-handlers")).as_deref(),
             Some("corpus-rust-async-14c-effects-and-handlers")
-        );
-        assert_eq!(
-            corpus_check_attr(GateTarget::CadenzaMl, Some("13-strings")),
-            None
         );
         // A non-`NN-feature` stem (e.g. a scratch file) has no cached check → in-process is the only path.
         assert_eq!(
@@ -8667,82 +7711,6 @@ mod trap_grading_tests {
             "note: the remote branch is ahead; a clippy warning about remote_data follows"
         ));
         assert!(!fast_gate_output_is_remote_transient(""));
-    }
-
-    #[test]
-    fn ml_agrees_with_oracle_only_on_matching_value_or_shared_trap() {
-        // Same value → agree; different value → disagree (the differential miscompile).
-        assert!(ml_agrees_with_oracle(
-            &Ran::Value("42".into(), vec![], vec![]),
-            &Ran::Value("42".into(), vec![], vec![])
-        ));
-        assert!(!ml_agrees_with_oracle(
-            &Ran::Value("42".into(), vec![], vec![]),
-            &Ran::Value("43".into(), vec![], vec![])
-        ));
-        // Both trapped → agree (both aborted).
-        assert!(ml_agrees_with_oracle(
-            &Ran::Trap("overflow".into()),
-            &Ran::Trap("divide by zero".into())
-        ));
-        // ML ran to a value where the oracle DECLINED (or trapped) → disagree (ML ran where rcdzc
-        // didn't — a real differential, the case the diff exists to catch).
-        assert!(!ml_agrees_with_oracle(
-            &Ran::Value("1".into(), vec![], vec![]),
-            &Ran::Declined {
-                code: None,
-                message: String::new()
-            }
-        ));
-        assert!(!ml_agrees_with_oracle(
-            &Ran::Value("1".into(), vec![], vec![]),
-            &Ran::Trap("overflow".into())
-        ));
-    }
-
-    #[test]
-    fn emit_values_match_normalizes_bool_render_both_directions() {
-        // The W4 differential compares `run-emitted` (raw i64 `1`/`0` for a Core Bool) against `run-ml`
-        // (`true`/`false` via run-src-typed's isBool tag). This normalization is what keeps every nullary
-        // Bool-returning corpus case (e.g. `(< 1 2)`, `(<= 5 5)`, `(!= 3 3)`) from being a SPURIOUS
-        // disagreement. Pin it directly (it was only exercised transitively via emit_agrees_with_interp).
-        // 1 ≡ true, 0 ≡ false, in BOTH render directions (symmetry guards a future render-side swap).
-        assert!(emit_values_match("1", "true"));
-        assert!(emit_values_match("0", "false"));
-        assert!(emit_values_match("true", "1"));
-        assert!(emit_values_match("false", "0"));
-        // Exact integer matches compare verbatim (a real value equality, not a bool coincidence).
-        assert!(emit_values_match("42", "42"));
-        assert!(emit_values_match("-5", "-5"));
-        // Whitespace around a verdict token is trimmed before comparison.
-        assert!(emit_values_match("  120 ", "120"));
-        // NON-matches must stay non-matches: a different integer, and a value-vs-wrong-bool pairing that
-        // must NOT be laundered by the bool normalization (1≡true but 1≢false, 2≢true).
-        assert!(!emit_values_match("42", "43"));
-        assert!(!emit_values_match("1", "false"));
-        assert!(!emit_values_match("0", "true"));
-        assert!(!emit_values_match("2", "true"));
-    }
-
-    #[test]
-    fn emit_side_bad_artifact_never_counts_as_agreement() {
-        // Copilot PR#559: the `(_, Ran::Trap(_)) => true` catch-all would count an emit-side harness
-        // FAILURE (spawn-fail / hang / unrecognized verdict) against a trapping interp as GREEN — masking
-        // a broken emit pipeline. The explicit BadArtifact arm must fire FIRST.
-        assert!(!emit_agrees_with_interp(
-            &Ran::BadArtifact("run-emitted timeout (hang)".into()),
-            &Ran::Trap("overflow".into())
-        ));
-        // …and against a value interp too (already false via `(_, Value) => false`, pinned for safety).
-        assert!(!emit_agrees_with_interp(
-            &Ran::BadArtifact("spawn failed".into()),
-            &Ran::Value("42".into(), vec![], vec![])
-        ));
-        // A genuine shared trap still agrees (emit trapped where interp trapped) — the fix is surgical.
-        assert!(emit_agrees_with_interp(
-            &Ran::Trap("divide by zero".into()),
-            &Ran::Trap("overflow".into())
-        ));
     }
 
     #[test]
