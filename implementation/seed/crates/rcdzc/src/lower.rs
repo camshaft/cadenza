@@ -17087,14 +17087,25 @@ fn template_value_ast_flagged(
             // A record is a positional heap array in canonical (sorted) field order — the same order the
             // BTreeMap iterates, so the `arr-get` index is the field's position in that order.
             for (i, (name, t)) in fields.iter().enumerate() {
+                // `(= name value)` ascription form (record-type Phase B full-symmetry migration —
+                // literals, patterns, AND value-output all spell `(= name value)`; operator-ruled
+                // 2026-08-09). Mirrors the runtime `value_encode` + rust `cdz_render` record renders.
+                //
+                // Intern the FieldPair leaf FIRST (before the key/value), NOT via `b.field_pair` (which
+                // interns it last). The value-form template is `codec::encode`d, which CANONICALIZES under
+                // std — and canonical leaf-pool order is TRAVERSAL order (head-first: `= `, then key, then
+                // value). Building the entry head-first keeps the arena already-canonical, so `encode`'s
+                // canonicalization is a no-op and the hole offsets (`resolve_leaf_offsets`, computed on this
+                // arena's pool) match the encoded bytes. Building it with `b.field_pair` interned the `=`
+                // leaf AFTER the key/value → non-canonical order → canon reordered the pool → an Int hole's
+                // offset landed one byte early (on the leaf's LEN byte), corrupting the filled bytes so they
+                // failed to decode (`template_fills_a_runtime_record`; the #5158 canon-in-tests residue).
+                let fp_head = b.atom_leaf(crate::ast::Leaf::FieldPair);
                 let fname = b.name(&*name.name);
                 path.push(i as u32);
                 let fval = template_value_ast_flagged(b, t, path, out, via_sum_payload)?;
                 path.pop();
-                // `(= name value)` ascription form (record-type Phase B full-symmetry migration —
-                // literals, patterns, AND value-output all spell `(= name value)`; operator-ruled
-                // 2026-08-09). Mirrors the runtime `value_encode` + rust `cdz_render` record renders.
-                children.push(b.field_pair(fname, fval));
+                children.push(b.list(vec![fp_head, fname, fval]));
             }
             Some(b.list(children))
         }
