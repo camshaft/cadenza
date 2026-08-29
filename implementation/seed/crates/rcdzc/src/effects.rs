@@ -2090,6 +2090,32 @@ fn bind_once_performing_factory(db: &mut Db, body: StructId) -> StructId {
     fresh
 }
 
+/// Mark every node id in `root`'s subtree as lying within a HANDLER-ARM-TAIL / `#st`-threaded region — call
+/// on the form `reduce_handle` produced (the reduced/threaded handle). Recorded in `db.handler_region_nodes`
+/// for CASE2's strict-heap-ctor decompose in `lower_let` to consult via [`node_in_handler_region`]: a dead
+/// list/set/map ctor whose `let` is in such a region must NOT be `Core::Seq`-decomposed, because the handler
+/// tail / `#st`-drop / per-dispatch-reclaim lowering recognizes sequencing via `do` FORMS and NOT `Core::Seq`,
+/// so the wrapper perturbs it (olc1/cst1/sga1). Whole-subtree marking is intentionally over-broad but SAFE:
+/// it only causes the (rare) pure-trap dead ctor inside a reduced handler to skip strict-eval — a known-gap,
+/// never a miscompile. The set-insert doubles as the visited-guard (idempotent; terminates on a shared node).
+pub fn mark_handler_region(db: &mut Db, root: StructId) {
+    if !db.handler_region_nodes.insert(root) {
+        return;
+    }
+    if let Struct::List(children) = db.ast.get(root).clone() {
+        for c in children {
+            mark_handler_region(db, c);
+        }
+    }
+}
+
+/// Whether `id` lies within a handler-arm-tail / `#st`-threaded region marked by [`mark_handler_region`].
+/// CASE2's `lower_let` strict-heap-ctor decompose calls this on the dead-ctor's enclosing `let`-form id and
+/// SKIPS the decompose + `Core::Seq` wrap when true (conformance-neutral skip; see [`mark_handler_region`]).
+pub fn node_in_handler_region(db: &Db, id: StructId) -> bool {
+    db.handler_region_nodes.contains(&id)
+}
+
 /// are the resolved handle's children.
 pub fn reduce_handle(
     db: &mut Db,

@@ -1912,6 +1912,16 @@ pub struct Db {
     /// to consult. Only UPGRADES a threadable callee to multi-value — a non-threadable one is left as-is.
     pub(crate) force_multivalue: std::collections::HashSet<(StructId, String)>,
 
+    /// Node ids that lie within a HANDLER-ARM-TAIL / `#st`-threaded region that `reduce_handle` produced
+    /// (populated by [`crate::effects::mark_handler_region`] on the reduced form). Consulted by CASE2's
+    /// strict-heap-ctor decompose in `lower_let` ([`crate::effects::node_in_handler_region`]): a dead
+    /// list/set/map ctor whose enclosing `let` sits in such a region must NOT be decomposed + `Core::Seq`-
+    /// wrapped, because the handler tail/`#st`-drop/per-dispatch-reclaim lowering recognizes sequencing via
+    /// `do` FORMS and NOT `Core::Seq`, so the wrapper perturbs it (olc1/cst1/sga1 per-dispatch leaks). The
+    /// skip is conformance-neutral: a pure-trap-possible dead ctor inside a handler arm is rare (an effectful
+    /// arg is already force-kept), so the strict-eval it would add is a rare known-gap, not a broad loss.
+    pub(crate) handler_region_nodes: std::collections::HashSet<StructId>,
+
     /// Members of a MUTUALLY-RECURSIVE SCC being group-specialized in MULTI-VALUE mode together (the
     /// group-aware recursive-perform fold). Keyed `(member-body-occ, handler-context-key)` like
     /// `force_multivalue`. When `specialize_recursive` finds the entry callee's SCC has a mutual partner
@@ -2905,6 +2915,7 @@ impl Db {
             multivalue_specs: std::collections::HashSet::new(),
             effect_spec_captures: std::collections::HashMap::new(),
             force_multivalue: std::collections::HashSet::new(),
+            handler_region_nodes: std::collections::HashSet::new(),
             group_multivalue_bodies: std::collections::HashSet::new(),
             mutual_scc: crate::fxhash::FxHashMap::default(),
             subtree_performs_cache: crate::fxhash::FxHashMap::default(),
