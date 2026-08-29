@@ -101,8 +101,23 @@ pub fn coalesce_locals(
     let mut colors_by_ty: Vec<(ValType, Vec<Color>)> = Vec::new();
     let mut new_declared: Vec<ValType> = Vec::new();
 
+    // Assign new slots in this order: (0) DEBUG-NAMED + mentioned slots FIRST, so a `let`-binding /
+    // match-binder that a DWARF DIE points at keeps a STABLE, LOW slot (right above the params) — its
+    // debug location stays predictable and doesn't get bumped above a transient scratch temp; then
+    // (1) free scratch (coalesced among themselves, numbered above the pinned block); then (2) any
+    // debug-named-but-unmentioned slot last (rare). Within each tier, ascending first-mention (the
+    // linear-scan coloring needs free slots in first-mention order). Pinned assignment is independent
+    // of the free coalescing, so this changes only slot NUMBERING, never the coalesced COUNT.
     let mut order: Vec<u32> = (nparams..total).collect();
-    order.sort_by_key(|&s| first[s as usize].unwrap_or(usize::MAX));
+    order.sort_by_key(|&s| {
+        let mentioned = first[s as usize].is_some();
+        let tier = match (pinned.contains(&s), mentioned) {
+            (true, true) => 0u8, // debug-named + used → lowest, stable slots
+            (false, _) => 1,     // free scratch
+            (true, false) => 2,  // debug-named but unused → last
+        };
+        (tier, first[s as usize].unwrap_or(usize::MAX))
+    });
 
     for old in order {
         let ty = declared[(old - nparams) as usize];
