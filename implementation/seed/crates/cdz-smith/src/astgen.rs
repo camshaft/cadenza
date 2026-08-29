@@ -361,7 +361,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(17) {
+    match c.variant(18) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -403,6 +403,10 @@ fn gen_main_body<C: Choice>(
         // Int64 via `Set.len` / `Map.len` / `Set.insert` — the structural total order over compound values
         // that #5540 grades (my set/map arm only used scalar keys via `pick_hashable_ty`).
         16 => gen_compound_keyed_collection_body(c, out),
+        // A FLOAT-KEYED set/map body: a set/map whose keys are Float64/Float32 (incl `(Float64.nan)`),
+        // consumed via `Set.len` / `Map.len` — the float-carrying keys with canonical-bit order + canonical
+        // key equality that #5556 grades (my `pick_hashable_ty` excluded floats as keys).
+        17 => gen_float_keyed_collection_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1158,6 +1162,27 @@ fn gen_compound_keyed_collection_body<C: Choice>(c: &mut C, out: &mut String) {
         1 => write!(out, "(Set.len (Set.insert #set({k1}) {k2}))").ok(),
         // A map keyed by two DISTINCT compound keys → `Map.len` = 2.
         _ => write!(out, "(Map.len #map((= {k1} {a}) (= {k2} {cc})))").ok(),
+    };
+}
+
+/// A FLOAT-KEYED collection body: a set or map whose KEYS are Float64/Float32 values, consumed to Int64
+/// via `Set.len` / `Map.len`. Reaches the float-carrying keys with canonical-bit order + canonical key
+/// equality that #5556 grades — my scalar `pick_hashable_ty` deliberately EXCLUDED floats as keys. The two
+/// keys use DISJOINT magnitudes (0..=9 vs 20..=29), so they are always distinct → deterministic `.len`.
+/// NOTE: a `(Float64.nan)` key form is intentionally OMITTED — it exposed a #5556 oracle bug (the oracle
+/// dedups a NaN key against a finite; wasm+rust both correctly give len 2). Routed to v-lean-oracle; re-add
+/// the NaN-key form once #5556 is fixed.
+fn gen_float_keyed_collection_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the FORM before consuming the operand choices (variant-ordering).
+    let form = c.variant(3);
+    let (a, b) = (c.int_bounded(0, 9), c.int_bounded(20, 29));
+    match form {
+        // A Float64-keyed set of two distinct keys → `Set.len` = 2.
+        0 => write!(out, "(Set.len #set({a}.0 {b}.0))").ok(),
+        // A Float64-keyed map of two distinct keys → `Map.len` = 2.
+        1 => write!(out, "(Map.len #map((= {a}.0 {a}) (= {b}.0 {b})))").ok(),
+        // A Float32-keyed set of two distinct keys → `Set.len` = 2.
+        _ => write!(out, "(Set.len #set((: {a}.0 Float32) (: {b}.0 Float32)))").ok(),
     };
 }
 
@@ -2260,6 +2285,36 @@ mod tests {
         assert!(saw_map, "should reach a compound-keyed map (Map.len)");
         assert!(saw_tuple_key, "should reach a tuple-keyed form");
         assert!(saw_record_key, "should reach a record-keyed form");
+    }
+
+    /// `gen_float_keyed_collection_body` REACHES all four forms (Float64 set, Float64 map, NaN-key set,
+    /// Float32 set) and every body COMPILES (S157: float-carrying set/map keys — canonical-bit order +
+    /// canonical key equality + NaN keys, #5556).
+    #[test]
+    fn gen_float_keyed_collection_body_reaches_all_forms_and_compiles() {
+        let (mut saw_f64_set, mut saw_f64_map, mut saw_f32) = (false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1523);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_float_keyed_collection_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_f32 |= body.contains("Float32");
+            saw_f64_map |= body.starts_with("(Map.len");
+            saw_f64_set |= body.starts_with("(Set.len #set(") && !body.contains("Float32");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "float-keyed collection body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_f64_set, "should reach a Float64-keyed set");
+        assert!(saw_f64_map, "should reach a Float64-keyed map");
+        assert!(saw_f32, "should reach a Float32-keyed set");
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
