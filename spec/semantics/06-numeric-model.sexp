@@ -12781,3 +12781,31 @@
   (call main (: 300 Int64)) (output (: 300 Int32))
   (call main (: -4 Int64)) (output (: -4 Int32))
   (call main (: 3000000000 Int64)) (trap "unreachable"))
+
+(case "cdzw51 a beyond-i64 BigInt constant re-emits re-compilably through the cadenza hop"
+  (doc "Fence for the routed-and-fixed BigInt const-emit bug (hop emitted a non-re-compilable BigInt.of
+        form): the const fold produces a 21-digit value from within-i64 factors
+        and the hop must emit it re-compilably, byte-idempotently, agreeing with the direct path. (The
+        DIRECT 20-digit literal spelling is not ML-round-trippable — a separate ML-surface gap, routed.)")
+  (input (do (def (main) (* 10000000000N 10000000000N)) (export main)))
+  (call main)
+  (output (: 100000000000000000000 BigInt))
+  (live-objects 1))
+
+(case "cdzw52 a nullary user-sum VALUE re-emits WITH its type declaration through the cadenza hop"
+  (doc "Fence for the routed-and-fixed user-sum decl-emit bug (the hop emitted the value without its
+        (type …) decl → non-re-compilable): a bare (Green) return must carry the Color declaration
+        through the hop and stay byte-idempotent.")
+  (input (do (type Color (Red) (Green) (Blue)) (def (main) (Green)) (export main)))
+  (call main)
+  (output (: (Green unit) Color)))
+
+(case "cdzw53 a SINGLE-VARIANT sum keeps its NOMINAL type through the cadenza hop"
+  (doc "Fence for the routed-and-fixed single-variant-sum erasure bug (the hop rendered the bare payload,
+        losing the nominal type — a dual-path render divergence): (W n) must render (: n Wrap) on BOTH
+        paths.")
+  (input (do (type Wrap (W Int64)) (def (main (: n Int64)) (W n)) (export main)))
+  (call main (: 7 Int64))
+  (output (: 7 Wrap))
+  (call main (: -3 Int64))
+  (output (: -3 Wrap)))
