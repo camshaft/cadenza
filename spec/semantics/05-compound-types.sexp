@@ -24089,3 +24089,22 @@
     (export main)))
   (call main (: 7 Int64)) (output (: -1 Int64))
   (call main (: -2 Int64)) (output (: -1 Int64)))
+
+(case "csg1 a binding SHARED into a sum ctor survives a payload-dropping fold and a later re-read — the CSG over-drop guard"
+  (doc "The reduced CAD witness (breaker, from v-core-opt's held accumulator fix): base is shared into
+        (Diff base tool), the fold's Diff arm drops the tool and recurses into the SHARED child, and
+        base is RE-READ after the fold — an accumulator-drop that treats the match-consumed payload as
+        dead frees the shared base and the second read compares garbage (the held fix: silent 0 here,
+        double-free traps in CAD). n/2 = n/2 must be TRUE on both calls. Corpus-visible stand-in for
+        the CAD CSG class (the coverage hole that blinded the corpus gate).")
+  (input (do
+    (type (S a) (Leaf a) (Diff (S a) (S a)))
+    (def (bb (: s (S Rational))) (match s ((Leaf r) r) ((Diff l _t) (bb l))))
+    (def (main (: n Int64))
+      (do (def base (Leaf (Rational.of n 2)))
+          (def d (Diff base (Leaf (Rational.of 1 2))))
+          (if (= (bb d) (bb base)) 1 0)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 1 Int64))
+  (call main (: -3 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 8))
