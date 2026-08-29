@@ -57,7 +57,7 @@ export default function BinaryMatching() {
         arm, and the following <C>u16</C> is read as <C>n</C>:
       </P>
       <Runnable
-        source={`(match (Bytes.of (list 1 1 2))
+        source={`(match (Bytes.of #list(1 1 2))
   ((bin (u8 1) (u16 n)) (Some n))
   (_                    (None unit)))`}
       />
@@ -68,7 +68,7 @@ export default function BinaryMatching() {
         matched header being <C>true</C>:
       </P>
       <Runnable
-        source={`(match (Bytes.of (list 137 80 78 71 1 2))
+        source={`(match (Bytes.of #list(137 80 78 71 1 2))
   ((bin (u32 0x89504E47) (bytes rest)) true)
   (_                                   false))`}
       />
@@ -81,7 +81,7 @@ export default function BinaryMatching() {
         stand-in number:
       </P>
       <Runnable
-        source={`(match (Bytes.of (list 1 2 3))
+        source={`(match (Bytes.of #list(1 2 3))
   ((bin (u16 n)) (Some n))
   (_             (None unit)))`}
       />
@@ -91,7 +91,7 @@ export default function BinaryMatching() {
         result is <C>{`(Some 258)`}</C>:
       </P>
       <Runnable
-        source={`(match (Bytes.of (list 1 2 3))
+        source={`(match (Bytes.of #list(1 2 3))
   ((bin (u16 n) (bytes rest)) (Some n))
   (_                          (None unit)))`}
       />
@@ -108,7 +108,7 @@ export default function BinaryMatching() {
         <C>n</C> bytes to <C>body</C>, and let a final <C>rest</C> take what's left:
       </P>
       <Runnable
-        source={`(match (Bytes.of (list 2 10 20 99))
+        source={`(match (Bytes.of #list(2 10 20 99))
   ((bin (u8 n) (bytes body n) (bytes rest)) (Some (Bytes.len body)))
   (_                                        (None unit)))`}
       />
@@ -119,8 +119,8 @@ export default function BinaryMatching() {
       </P>
       <Runnable
         source={`(Bytes.len
-  (bin (u16 (UInt16.of (Bytes.len (Bytes.of (list 10 20 30)))))
-       (bytes (Bytes.of (list 10 20 30)))))`}
+  (bin (u16 (UInt16.of (Bytes.len (Bytes.of #list(10 20 30)))))
+       (bytes (Bytes.of #list(10 20 30)))))`}
       />
       <P>
         A two-byte length prefix plus a three-byte payload is five bytes. The length is computed and
@@ -137,7 +137,7 @@ export default function BinaryMatching() {
         the low <C>0b00101 = 5</C>:
       </P>
       <Runnable
-        source={`(match (Bytes.of (list (UInt8.wrap 165)))
+        source={`(match (Bytes.of #list((UInt8.wrap 165)))
   ((bin (bits a 3) (bits b 5)) (Some (+ (* 100 a) b)))
   (_                           (None unit)))`}
       />
@@ -200,7 +200,7 @@ export default function BinaryMatching() {
         starter={`(match (Bytes.of (list 3 10 20 30 99))
   ((bin (u8 n) (bytes body ?) (bytes rest)) (Bytes.len body))
   (_                                        0))`}
-        solution={`(match (Bytes.of (list 3 10 20 30 99))
+        solution={`(match (Bytes.of #list(3 10 20 30 99))
   ((bin (u8 n) (bytes body n) (bytes rest)) (Bytes.len body))
   (_                                        0))`}
         expected="3"

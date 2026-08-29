@@ -50,7 +50,7 @@ export default function Errors() {
       </P>
       <Runnable
         source={`(def (main)
-  (match (List.at (list 10 20 30) 1)
+  (match (List.at #list(10 20 30) 1)
     ((Some x) x)
     ((None _) 0)))`}
       />
@@ -67,7 +67,7 @@ export default function Errors() {
         so the one place you turn absence into a crash is spelled out, right where it happens. Index 1 is
         present, so this just hands back <C>20</C>:
       </P>
-      <Runnable source={`(Option.expect (List.at (list 10 20 30) 1) "index out of range")`} />
+      <Runnable source={`(Option.expect (List.at #list(10 20 30) 1) "index out of range")`} />
       <P>
         But ask for index <C>9</C>, off the end, and there's no value to unwrap. <C>expect</C> makes
         good on its name and halts, with the message you supplied:

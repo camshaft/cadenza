@@ -41,13 +41,13 @@ export default function PlatformState() {
         source={`(type Event (Deposit Int64) (Withdraw Int64))
 (def (replay log acc)
   (match log
-    ((list) acc)
-    ((list e .. rest)
+    (#list() acc)
+    (#list(e .. rest)
       (match e
         ((Deposit n) (replay rest (+ acc n)))
         ((Withdraw n) (replay rest (- acc n)))))))
 (def (main)
-  (replay (list (Deposit 100) (Withdraw 30) (Deposit 5)) 0))`}
+  (replay #list((Deposit 100) (Withdraw 30) (Deposit 5)) 0))`}
       />
       <P>
         The balance is <C>75</C>, computed straight from the history, since the log <em>is</em> the state

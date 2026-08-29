@@ -34,15 +34,15 @@ export default function Iterators() {
 (def (next it)
   (match it
     ((Iter.Range r)
-      (match r ((tuple lo hi)
+      (match r (#tuple(lo hi)
         (if (< lo hi)
-          (Some (tuple lo (Iter.Range (tuple (+ lo 1) hi))))
+          (Some #tuple(lo (Iter.Range #tuple((+ lo 1) hi))))
           (None unit)))))))
 (def (sum-it it)
   (match (next it)
     ((None _) 0)
-    ((Some p) (match p ((tuple v rest) (+ v (sum-it rest)))))))
-(def (main) (sum-it (Iter.Range (tuple 1 5))))`}
+    ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
+(def (main) (sum-it (Iter.Range #tuple(1 5))))`}
       />
       <P>
         <C>next</C> is an ordinary recursive function over a plain sum, with no hidden mutable cursor.
@@ -64,21 +64,21 @@ export default function Iterators() {
 (def (next it)
   (match it
     ((Iter.Range r)
-      (match r ((tuple lo hi)
-        (if (< lo hi) (Some (tuple lo (Iter.Range (tuple (+ lo 1) hi)))) (None unit)))))
+      (match r (#tuple(lo hi)
+        (if (< lo hi) (Some #tuple(lo (Iter.Range #tuple((+ lo 1) hi)))) (None unit)))))
     ((Iter.Take nf)
-      (match nf ((tuple n src)
+      (match nf (#tuple(n src)
         (if (<= n 0) (None unit)
           (match (next src)
             ((None _) (None unit))
-            ((Some p) (match p ((tuple v rest)
-              (Some (tuple v (Iter.Take (tuple (- n 1) rest))))))))))))))
+            ((Some p) (match p (#tuple(v rest)
+              (Some #tuple(v (Iter.Take #tuple((- n 1) rest))))))))))))))
 (def (sum-it it)
   (match (next it)
     ((None _) 0)
-    ((Some p) (match p ((tuple v rest) (+ v (sum-it rest)))))))
+    ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
 (def (main)
-  (sum-it (Iter.Take (tuple 3 (Iter.Range (tuple 0 1000000))))))`}
+  (sum-it (Iter.Take #tuple(3 (Iter.Range #tuple(0 1000000))))))`}
       />
       <P>
         The <C>Take</C> stops asking after three, so <C>Range</C> is only ever stepped three times.
@@ -100,27 +100,27 @@ export default function Iterators() {
 (def (next it)
   (match it
     ((Iter.Range r)
-      (match r ((tuple lo hi)
-        (if (< lo hi) (Some (tuple lo (Iter.Range (tuple (+ lo 1) hi)))) (None unit)))))
+      (match r (#tuple(lo hi)
+        (if (< lo hi) (Some #tuple(lo (Iter.Range #tuple((+ lo 1) hi)))) (None unit)))))
     ((Iter.Take nf)
-      (match nf ((tuple n src)
+      (match nf (#tuple(n src)
         (if (<= n 0) (None unit)
           (match (next src)
             ((None _) (None unit))
-            ((Some p) (match p ((tuple v rest)
-              (Some (tuple v (Iter.Take (tuple (- n 1) rest))))))))))))
+            ((Some p) (match p (#tuple(v rest)
+              (Some #tuple(v (Iter.Take #tuple((- n 1) rest))))))))))))
     ((Iter.Double src)
       (match (next src)
         ((None _) (None unit))
-        ((Some p) (match p ((tuple v rest)
-          (Some (tuple (* 2 v) (Iter.Double rest))))))))))
+        ((Some p) (match p (#tuple(v rest)
+          (Some #tuple((* 2 v) (Iter.Double rest))))))))))
 (def (sum-it it)
   (match (next it)
     ((None _) 0)
-    ((Some p) (match p ((tuple v rest) (+ v (sum-it rest)))))))
+    ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
 (def (main)
   (sum-it
-    (Iter.Double (Iter.Take (tuple 3 (Iter.Range (tuple 0 1000000)))))))`}
+    (Iter.Double (Iter.Take #tuple(3 (Iter.Range #tuple(0 1000000)))))))`}
       />
       <P>
         Each layer only asks its inner iterator for the next element and transforms it, so the whole
@@ -174,13 +174,13 @@ export default function Iterators() {
 (def (next it)
   (match it
     ((Iter.Range r)
-      (match r ((tuple lo hi)
-        (if (< lo hi) (Some (tuple lo (Iter.Range (tuple (+ lo 1) hi)))) (None unit)))))))
+      (match r (#tuple(lo hi)
+        (if (< lo hi) (Some #tuple(lo (Iter.Range #tuple((+ lo 1) hi)))) (None unit)))))))
 (def (sum-it it)
   (match (next it)
     ((None _) 0)
-    ((Some p) (match p ((tuple v rest) (+ v (sum-it rest)))))))
-(def (main) (sum-it (Iter.Range (tuple 2 5))))`}
+    ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
+(def (main) (sum-it (Iter.Range #tuple(2 5))))`}
         expected="9"
         hint={
           <>
@@ -224,20 +224,20 @@ export default function Iterators() {
 (def (next it)
   (match it
     ((Iter.Range r)
-      (match r ((tuple lo hi)
-        (if (< lo hi) (Some (tuple lo (Iter.Range (tuple (+ lo 1) hi)))) (None unit)))))
+      (match r (#tuple(lo hi)
+        (if (< lo hi) (Some #tuple(lo (Iter.Range #tuple((+ lo 1) hi)))) (None unit)))))
     ((Iter.Take nf)
-      (match nf ((tuple n src)
+      (match nf (#tuple(n src)
         (if (<= n 0) (None unit)
           (match (next src)
             ((None _) (None unit))
-            ((Some p) (match p ((tuple v rest)
-              (Some (tuple v (Iter.Take (tuple (- n 1) rest))))))))))))))
+            ((Some p) (match p (#tuple(v rest)
+              (Some #tuple(v (Iter.Take #tuple((- n 1) rest))))))))))))))
 (def (sum-it it)
   (match (next it)
     ((None _) 0)
-    ((Some p) (match p ((tuple v rest) (+ v (sum-it rest)))))))
-(def (main) (sum-it (Iter.Take (tuple 4 (Iter.Range (tuple 0 1000000))))))`}
+    ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
+(def (main) (sum-it (Iter.Take #tuple(4 (Iter.Range #tuple(0 1000000))))))`}
         expected="6"
         hint={
           <>

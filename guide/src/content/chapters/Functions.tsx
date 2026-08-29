@@ -108,10 +108,10 @@ export default function Functions() {
       <Runnable
         source={`(def (map-sum f acc xs)
   (match xs
-    ((list) acc)
-    ((list h .. t) (map-sum f (+ acc (f h)) t))))
+    (#list() acc)
+    (#list(h .. t) (map-sum f (+ acc (f h)) t))))
 (def (main)
-  (map-sum (fn (x) (+ x 1)) 0 (list 5 7 30)))`}
+  (map-sum (fn (x) (+ x 1)) 0 #list(5 7 30)))`}
       />
       <P>
         Each element is incremented and the results summed: <C>6 + 8 + 31 = 45</C>. You write the lambda
@@ -126,10 +126,10 @@ export default function Functions() {
       <Runnable
         source={`(def (fold-list f acc xs)
   (match xs
-    ((list) acc)
-    ((list h .. t) (fold-list f (f h acc) t))))
+    (#list() acc)
+    (#list(h .. t) (fold-list f (f h acc) t))))
 (def (main)
-  (fold-list (fn (x a) (+ a x)) 0 (list 5 7 30)))`}
+  (fold-list (fn (x a) (+ a x)) 0 #list(5 7 30)))`}
       />
       <P>
         No annotation on the closure's <C>x</C> or <C>a</C>, none on <C>fold-list</C>'s <C>f</C>, yet

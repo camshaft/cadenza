@@ -119,7 +119,7 @@ export default function Metaprogramming() {
       </P>
       <Runnable
         source={`(= (quote (+ 1 2))
-   (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2))))`}
+   (Ast.List #list((Ast.Name "+") (Ast.Int 1) (Ast.Int 2))))`}
       />
       <P>
         Constructing by hand is what you reach for when the pieces come from <em>values</em> rather than
@@ -152,7 +152,7 @@ export default function Metaprogramming() {
       <Runnable
         source={`(def (double x) (* 2 x))
 (def (main)
-  (eval (Ast.List (list (Ast.Name "double") (Ast.Int 21)))))`}
+  (eval (Ast.List #list((Ast.Name "double") (Ast.Int 21)))))`}
       />
       <P>
         A quoted <em>value</em> literal evals back to itself. Unlike a quoted name (which <C>eval</C>{" "}
@@ -249,7 +249,7 @@ export default function Metaprogramming() {
       <Runnable
         source={`(def (main)
   (let ((x (* 3 7)))
-    (eval (Ast.List (list (Ast.Name "+") (Ast.Int x) (Ast.Int 4))))))`}
+    (eval (Ast.List #list((Ast.Name "+") (Ast.Int x) (Ast.Int 4))))))`}
       />
       <P>
         The <C>(Ast.Int x)</C> lifts the runtime value <C>x</C> into a leaf of the tree. This is
@@ -270,7 +270,7 @@ export default function Metaprogramming() {
       </P>
       <Runnable
         source={`(def (main)
-  (match (quasiquote (f (unquote-splicing (list 1.5 2.5))))
+  (match (quasiquote (f (unquote-splicing #list(1.5 2.5))))
     ((Ast.List es) (List.len es))
     (_ 0)))`}
       />
@@ -291,7 +291,7 @@ export default function Metaprogramming() {
       <Runnable
         source={`(def (main)
   (match (quote (+ 1 2))
-    ((Ast.List (list (Ast.Name op) .. rest))
+    ((Ast.List #list((Ast.Name op) .. rest))
       (= op "+"))
     (_ false)))`}
       />
@@ -390,7 +390,7 @@ export default function Metaprogramming() {
   (eval (Ast.List (list (Ast.Name "triple") ?))))`}
         solution={`(def (triple x) (* 3 x))
 (def (main)
-  (eval (Ast.List (list (Ast.Name "triple") (Ast.Int 14)))))`}
+  (eval (Ast.List #list((Ast.Name "triple") (Ast.Int 14)))))`}
         expected="42"
         hint={
           <>
@@ -413,7 +413,7 @@ export default function Metaprogramming() {
         starter={`(match (quasiquote (g (unquote-splicing (list 10 20 ?))))
   ((Ast.List es) (List.len es))
   (_             0))`}
-        solution={`(match (quasiquote (g (unquote-splicing (list 10 20 30))))
+        solution={`(match (quasiquote (g (unquote-splicing #list(10 20 30))))
   ((Ast.List es) (List.len es))
   (_             0))`}
         expected="4"
