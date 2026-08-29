@@ -114,6 +114,11 @@ partial def normalize : SymExpr → SymExpr
 /-- A symbolic environment: each program parameter name bound to its symbolic variable. -/
 abbrev SymEnv := List (ByteArray × SymExpr)
 
+/-- Call-inlining depth bound. A non-recursive call chain inlines within this; a recursive function
+exhausts it → `cannotProve` (sound — proving a recursive function's equivalence needs induction, which the
+symbolic evaluator does not do). 64 comfortably covers realistic non-recursive helper nesting. -/
+def symDefaultFuel : Nat := 64
+
 mutual
 /-- Symbolically evaluate the node `i` under `senv` (params → symbolic vars). Covers the ANALYZABLE SCALAR
 FRAGMENT: a bound parameter → its var; a scalar literal → `const`; `(if c t e)` → `ite`; a `(: e T)`
@@ -124,7 +129,7 @@ etc. is a future increment); an arithmetic/comparison/boolean operator → `app`
 value is unmodelable it sinks the whole `let`, since an eager/discarded binding's trap can't be ruled out).
 Everything else — match/sum, collections, calls, recursion — is the incompleteness boundary → `cannotProve`
 (honest; degrade to the sampled differential there). Sound: never invents a value for an unmodeled construct. -/
-partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
+partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOutcome :=
   match m.nodes[i]? with
   | some (Node.atom lid) =>
     match m.leaves[lid]? with
@@ -144,7 +149,7 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
       if h == "if".toUTF8 then
         match children[1]?, children[2]?, children[3]? with
         | some cId, some tId, some eId =>
-          match symEval m senv cId, symEval m senv tId, symEval m senv eId with
+          match symEval m senv fuel cId, symEval m senv fuel tId, symEval m senv fuel eId with
           | .sym c, .sym t, .sym e => .sym (.ite c t e)
           | .cannotProve r, _, _ => .cannotProve r
           | _, .cannotProve r, _ => .cannotProve r
@@ -152,26 +157,26 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
         | _, _, _ => .cannotProve "symeval: malformed if"
       else if h == ":".toUTF8 then
         match children[1]? with
-        | some vId => symEval m senv vId
+        | some vId => symEval m senv fuel vId
         | none => .cannotProve "symeval: malformed ascription"
       else if h == "let".toUTF8 then
         match children[1]?, children[2]? with
         | some bindingsId, some bodyId =>
           match m.nodes[bindingsId]? with
-          | some (Node.list pairs) => symLet m senv pairs.toList bodyId
+          | some (Node.list pairs) => symLet m senv fuel pairs.toList bodyId
           | _ => .cannotProve "symeval: let bindings not a list"
         | _, _ => .cannotProve "symeval: malformed let"
       else if h == "tuple".toUTF8 then
         -- a tuple value (lazy elements). Build `.tuple` of the element SymExprs; an unmodelable element
         -- sinks the whole tuple (conservative — the value can't be fully compared).
-        let outs := (children.extract 1 children.size).map (fun c => symEval m senv c)
+        let outs := (children.extract 1 children.size).map (fun c => symEval m senv fuel c)
         match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
         | some r => .cannotProve r
         | none => .sym (.tuple (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
       else if h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then
         -- a built-in unary Option/Result constructor (lazy payload).
         match children[1]? with
-        | some aId => (match symEval m senv aId with | .sym e => .sym (.ctor h #[e]) | .cannotProve r => .cannotProve r)
+        | some aId => (match symEval m senv fuel aId with | .sym e => .sym (.ctor h #[e]) | .cannotProve r => .cannotProve r)
         | none => .cannotProve "symeval: constructor missing payload"
       else if h == "None".toUTF8 then .sym (.ctor "None".toUTF8 #[])
       else if h == "record".toUTF8 then
@@ -182,7 +187,7 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
           | none => none
           | some arr =>
             match recordField? m j with
-            | some (k, vId) => (match symEval m senv vId with | .sym e => some (arr.push (k, e)) | .cannotProve _ => none)
+            | some (k, vId) => (match symEval m senv fuel vId with | .sym e => some (arr.push (k, e)) | .cannotProve _ => none)
             | none => none) (some #[])
         match acc with
         | some arr => .sym (.record (arr.qsort (fun a b => cmpBytes a.1 b.1 == .lt)))
@@ -194,7 +199,7 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
         | some tId, some iId =>
           match (m.nodes[iId]?).bind (fun n => match n with | .atom lid => m.leaves[lid]? | _ => none) with
           | some (Leaf.name fld) =>
-            (match symEval m senv tId with
+            (match symEval m senv fuel tId with
              | .sym (.record fs) => (match fs.find? (fun kv => kv.1 == fld) with
                                      | some (_, e) => .sym e
                                      | none => .cannotProve "symeval: record field not found")
@@ -204,7 +209,7 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
             (match Value.ofLeaf l with
              | some (.int n) =>
                if n < 0 then .cannotProve "symeval: negative tuple index"
-               else (match symEval m senv tId with
+               else (match symEval m senv fuel tId with
                      | .sym (.tuple es) => (match es[n.toNat]? with
                                             | some e => .sym e
                                             | none => .cannotProve "symeval: tuple index out of range")
@@ -216,11 +221,38 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
       else match String.fromUTF8? h with
         | some hs =>
           if arithOps.contains hs || cmpOps.contains hs || hs == "=" || hs == "and" || hs == "or" || hs == "not" then
-            let outs := (children.extract 1 children.size).map (fun c => symEval m senv c)
+            let outs := (children.extract 1 children.size).map (fun c => symEval m senv fuel c)
             match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
             | some r => .cannotProve r
             | none => .sym (.app hs (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
-          else .cannotProve s!"symeval: operator/construct '{hs}' not yet modeled (boundary)"
+          else
+            -- a call `(f arg…)` to a top-level def `f` (not shadowed by a local): INLINE it — bind each
+            -- param to its arg's SymExpr (evaluated in the CALLER env), then symEval the callee body in a
+            -- FRESH env of just those params (a top-level def sees only its params + globals), fuel-1. Fuel
+            -- bounds recursion: a recursive `f` exhausts it → cannotProve (proving a recursive function's
+            -- equivalence needs induction, not modeled). A partial application (arity mismatch) → boundary.
+            if (senv.find? (fun p => p.1 == h)).isSome then
+              .cannotProve "symeval: head is a local binding (not a top-level call)"
+            else match namedParamsBody? m h with
+              | some (specs, bodyId) =>
+                if fuel == 0 then .cannotProve "symeval: call-inline fuel exhausted (recursion?)"
+                else if specs.size != children.size - 1 then
+                  .cannotProve "symeval: call arity mismatch (partial application?)"
+                else
+                  let callEnv := (specs.zip (children.extract 1 children.size)).foldl
+                    (fun (acc : Option SymEnv) p =>
+                      match acc with
+                      | none => none
+                      | some env =>
+                        match paramSpec? m p.1 with
+                        | some (pnm, _) => (match symEval m senv fuel p.2 with
+                                            | .sym e => some ((pnm, e) :: env)
+                                            | .cannotProve _ => none)
+                        | none => none) (some ([] : SymEnv))
+                  match callEnv with
+                  | some ce => symEval m ce (fuel - 1) bodyId
+                  | none => .cannotProve "symeval: a call argument is unmodelable or a param spec is malformed"
+              | none => .cannotProve s!"symeval: operator/construct '{hs}' not modeled (boundary)"
         | none => .cannotProve "symeval: non-UTF8 head"
     | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -230,9 +262,9 @@ sequentially (each `v` symEval'd in the env extended with the EARLIER bindings �
 the body. A binding whose value is unmodelable (`cannotProve`) sinks the whole `let` — SOUND-conservative:
 that binding could be an eager/discarded one (a strict list/set/map ctor, or a `?`) whose trap we cannot
 rule out, so we must not silently drop it and claim a value. -/
-partial def symLet (m : Module) (senv : SymEnv) (ps : List Nat) (bodyId : Nat) : SymOutcome :=
+partial def symLet (m : Module) (senv : SymEnv) (fuel : Nat) (ps : List Nat) (bodyId : Nat) : SymOutcome :=
   match ps with
-  | [] => symEval m senv bodyId
+  | [] => symEval m senv fuel bodyId
   | pid :: rest =>
     match m.nodes[pid]? with
     | some (Node.list pc) =>
@@ -240,8 +272,8 @@ partial def symLet (m : Module) (senv : SymEnv) (ps : List Nat) (bodyId : Nat) :
       | some nId, some vId =>
         match nameOf? m nId with
         | some nm =>
-          match symEval m senv vId with
-          | .sym e => symLet m ((nm, e) :: senv) rest bodyId
+          match symEval m senv fuel vId with
+          | .sym e => symLet m ((nm, e) :: senv) fuel rest bodyId
           | .cannotProve r => .cannotProve r
         | none => .cannotProve "symeval: let binding missing name"
       | _, _ => .cannotProve "symeval: malformed let binding"
@@ -275,7 +307,7 @@ def symEvalExport (m : Module) (exportName : ByteArray) : SymOutcome :=
   | some (specs, bodyId) =>
     let senv : SymEnv := (specs.toList.zip (List.range specs.size)).filterMap (fun (specId, idx) =>
       (Eval.paramSpec? m specId).map (fun (nm, _) => (nm, SymExpr.var idx)))
-    if senv.length == specs.size then symEval m senv bodyId
+    if senv.length == specs.size then symEval m senv symDefaultFuel bodyId
     else .cannotProve "symeval: a parameter spec is malformed"
   | none => .cannotProve "symeval: program has no (def (<export> …) BODY)"
 
@@ -348,7 +380,7 @@ private def _letExpr : Module :=
   { leaves := #[Leaf.name "let".toUTF8, Leaf.name "x".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[5])],
     nodes := #[.atom 1, .atom 2, .list #[0, 1], .list #[2], .atom 1, .atom 0, .list #[5, 3, 4]],
     root := 6 }
-#guard symEval _letExpr [] 6 == SymOutcome.sym (.const (.int 5))
+#guard symEval _letExpr [] symDefaultFuel 6 == SymOutcome.sym (.const (.int 5))
 
 -- tuples + positional projection: `(. (tuple 7 8) 1)`.
 -- leaves 0:tuple 1:(7) 2:(8) 3:. 4:(1); nodes 0-2 atoms, 3:(tuple 7 8), 4:.atom `.`, 5:.atom idx, 6:(. (tuple 7 8) 1).
@@ -359,9 +391,9 @@ private def _projExpr : Module :=
     nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[4, 3, 5]],
     root := 6 }
 -- constructing `(tuple 7 8)` → `.tuple [const 7, const 8]` (node 3).
-#guard symEval _projExpr [] 3 == SymOutcome.sym (.tuple #[.const (.int 7), .const (.int 8)])
+#guard symEval _projExpr [] symDefaultFuel 3 == SymOutcome.sym (.tuple #[.const (.int 7), .const (.int 8)])
 -- projecting element 1 of `(tuple 7 8)` → `const 8`.
-#guard symEval _projExpr [] 6 == SymOutcome.sym (.const (.int 8))
+#guard symEval _projExpr [] symDefaultFuel 6 == SymOutcome.sym (.const (.int 8))
 
 -- records + field projection: `(. (record (a 1) (b 2)) b)`. leaves 0:record 1:a 2:(1) 3:b 4:(2) 5:.
 -- nodes: 2:(a 1), 5:(b 2), 7:(record …), 10:(. (record …) b) [field leaf 3 reused].
@@ -372,17 +404,28 @@ private def _recExpr : Module :=
                .atom 0, .list #[6, 2, 5], .atom 5, .atom 3, .list #[8, 7, 9]],
     root := 10 }
 -- constructing `(record (a 1) (b 2))` → fields sorted by key `[(a,1),(b,2)]` (node 7).
-#guard symEval _recExpr [] 7 == SymOutcome.sym (.record #[("a".toUTF8, .const (.int 1)), ("b".toUTF8, .const (.int 2))])
+#guard symEval _recExpr [] symDefaultFuel 7 == SymOutcome.sym (.record #[("a".toUTF8, .const (.int 1)), ("b".toUTF8, .const (.int 2))])
 -- projecting field `b` → `const 2`.
-#guard symEval _recExpr [] 10 == SymOutcome.sym (.const (.int 2))
+#guard symEval _recExpr [] symDefaultFuel 10 == SymOutcome.sym (.const (.int 2))
 
 -- built-in Option/Result construction: `(Some 5)` → `.ctor "Some" [const 5]`; bare `None` → `.ctor "None" []`.
 private def _someExpr : Module :=
   { leaves := #[Leaf.name "Some".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[5])],
     nodes := #[.atom 0, .atom 1, .list #[0, 1]], root := 2 }
-#guard symEval _someExpr [] 2 == SymOutcome.sym (.ctor "Some".toUTF8 #[.const (.int 5)])
+#guard symEval _someExpr [] symDefaultFuel 2 == SymOutcome.sym (.ctor "Some".toUTF8 #[.const (.int 5)])
 private def _noneExpr : Module :=
   { leaves := #[Leaf.name "None".toUTF8], nodes := #[.atom 0], root := 0 }
-#guard symEval _noneExpr [] 0 == SymOutcome.sym (.ctor "None".toUTF8 #[])
+#guard symEval _noneExpr [] symDefaultFuel 0 == SymOutcome.sym (.ctor "None".toUTF8 #[])
+
+-- non-recursive CALL inlining: `(do (def (id x) x) (def (main) (id 42)) (export main))`. main's body
+-- `(id 42)` inlines the top-level `id` (bind x→const 42, eval body `x`) → const 42.
+private def _callProg : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "def".toUTF8, Leaf.name "id".toUTF8, Leaf.name "x".toUTF8,
+                Leaf.name "main".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[42]), Leaf.name "export".toUTF8],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[1, 2], .atom 3, .list #[0, 3, 4],
+               .atom 1, .atom 4, .list #[7], .atom 2, .atom 5, .list #[9, 10], .list #[6, 8, 11],
+               .atom 6, .atom 4, .list #[13, 14], .atom 0, .list #[16, 5, 12, 15]],
+    root := 17 }
+#guard symEvalMain _callProg == SymOutcome.sym (.const (.int 42))
 
 end Oracle
