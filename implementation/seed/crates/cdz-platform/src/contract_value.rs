@@ -74,24 +74,30 @@ pub fn ascribe(b: &mut Builder, value: StructId, ty: &str) -> StructId {
     b.list(vec![colon, value, ty])
 }
 
-/// A record value `(record (= <field> <value>)…)` — the NAME-headed record constructor, then one
-/// `(= <name> <value>)` field per entry, emitted in **name-sorted** order. The compiler's `Value.decode`
-/// reads a record's fields **canonically ordered** (that is what `Value.encode` produces), so a value a
-/// Cadenza guest decodes must present its fields sorted — declaration order does not decode. Our own readers
-/// ([`record_field`]) read by name and are order-independent, so the sort is transparent to them.
+/// A record value — the **M2 NATIVE** record constructor: a `Leaf::Ctor(CompoundCtor::Record)` head
+/// (recognized by leaf-KIND, `KIND_RECORD_CTOR`, not head text) followed by one native `field_pair`
+/// `(= <name> <value>)` (a `Leaf::FieldPair` marker, not a `Name("=")`) per entry, emitted in
+/// **name-sorted** order. The compiler's `Value.decode` reads a record's fields **canonically ordered**
+/// (that is what `Value.encode` produces), so a value a Cadenza guest decodes must present its fields
+/// sorted — declaration order does not decode. Our own readers ([`record_field`]) read by name and are
+/// order-independent, so the sort is transparent to them.
+///
+/// NATIVE, not the legacy name-headed `(record (= f v)…)` list: the guest runtime's `decode_value` Record
+/// arm REQUIRES a native `Ctor(Record)` struct head and returns `None` on a name/string head — so a
+/// name-headed record silently fails every guest `Value.decode` (the §9 checker-close: the check `Envelope`
+/// this helper builds would not decode). Mirrors the native emit `cdz-contract` and rcdzc already use.
 #[must_use]
 pub fn record(b: &mut Builder, fields: Vec<(&str, StructId)>) -> StructId {
-    let head = b.name("record");
     let mut fields = fields;
     fields.sort_by_key(|&(name, _)| name);
-    let mut children = Vec::with_capacity(1 + fields.len());
-    children.push(head);
-    for (name, value) in fields {
-        let eq = b.name("=");
-        let name = b.name(name);
-        children.push(b.list(vec![eq, name, value]));
-    }
-    b.list(children)
+    let pairs: Vec<StructId> = fields
+        .into_iter()
+        .map(|(name, value)| {
+            let key = b.name(name);
+            b.field_pair(key, value)
+        })
+        .collect();
+    b.compound(CompoundCtor::Record, &pairs)
 }
 
 /// A `Bytes` leaf carrying `bytes` — how every hash and opaque payload crosses in a contract value.
@@ -229,7 +235,7 @@ mod tests {
         read_bytes, read_hash, read_uint, record, record_field, uint_leaf, unit,
     };
     use crate::{Hash, HashTag};
-    use cadenza_ast::ast::{Builder, Leaf, Radix};
+    use cadenza_ast::ast::{Builder, CompoundCtor, Leaf, Radix};
 
     // Build a value with `build`, finish the arena, and hand back `(arenas, root)` to read from.
     fn built(build: impl FnOnce(&mut Builder) -> super::StructId) -> cadenza_ast::ast::Arenas {
@@ -362,15 +368,19 @@ mod tests {
                 vec![("zebra", zebra), ("alpha", alpha), ("mango", mango)],
             )
         });
-        // The raw record fields, in the physical order they were emitted (after the `record` head).
+        // The raw record fields, in the physical order they were emitted (after the native `Ctor(Record)`
+        // head). Read the NATIVE M2 form: a `compound_form_of(Record)` head + `field_pair` entries — the
+        // same readers `cdz-contract` and the guest `decode_value` use, not the legacy name-head `(record …)`.
         let fields = arenas
-            .as_form(arenas.root, "record")
-            .expect("a record value");
+            .compound_form_of(arenas.root, CompoundCtor::Record)
+            .expect("a native record value");
         let names: Vec<&str> = fields
             .iter()
             .map(|&f| {
-                let kv = arenas.as_form(f, "=").expect("a `(= name value)` field");
-                arenas.as_name(kv[0]).expect("a field name")
+                let (key, _value) = arenas
+                    .field_pair_parts(f)
+                    .expect("a native `(= name value)` field pair");
+                arenas.as_name(key).expect("a field name")
             })
             .collect();
         assert_eq!(

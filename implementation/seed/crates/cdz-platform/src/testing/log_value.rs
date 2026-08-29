@@ -927,10 +927,12 @@ fn str_leaf(b: &mut Builder, text: &str) -> StructId {
 }
 
 fn list_value(b: &mut Builder, items: Vec<StructId>) -> StructId {
-    // The NAME-headed `(list …)` — the canonical Cadenza list form a guest `Value.decode`s (a string-headed
-    // `("list" …)` is a surface literal the value decoder rejects).
-    let head = b.name("list");
-    b.list(std::iter::once(head).chain(items).collect())
+    // The M2 NATIVE list — a `Leaf::Ctor(CompoundCtor::List)` head (recognized by leaf-KIND, not head text),
+    // then the elements. The guest runtime's `decode_value` REQUIRES the native ctor-leaf head and returns
+    // None on a name-headed `(list …)` or string-headed `("list" …)`, so the observation log (a
+    // `List(LogRecord)`) must be a native list or the checker's `Value.decode(log)` fails. Mirrors
+    // `contract_value::record`'s native record emit; `list_items` already dual-reads all three forms.
+    b.compound(CompoundCtor::List, &items)
 }
 
 /// A boolean as the canonical Cadenza `Bool` value — a `Leaf::Bool` atom (the codec's payloadless
