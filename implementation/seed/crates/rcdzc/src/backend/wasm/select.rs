@@ -1845,6 +1845,66 @@ fn binding_escapes_dup_aware(
     }
 }
 
+/// Whether `binder` reaches `arm`'s RESULT exclusively as a MOVE-OUT (the arm's result IS the binder) or as
+/// the IN-PLACE-REUSED BASE of a persistent builder (`List.push`/`prepend`/`update`, `Map.insert`/`remove`,
+/// `Set.insert`/`remove`) — the shapes where the builder REUSES the base's storage IN PLACE at rc==1, so the
+/// base's slot BECOMES the result (`keep`). This is the SOUNDNESS FENCE on the if-join-shared-child dup-skip
+/// (v-memory-safety co-verify, the 980 ROPE UAF): the cross-arm dup may be skipped ONLY when EVERY consuming
+/// arm reuses the binder in place, because then the binder's post-if scope drop IS exactly `keep`'s reclaim
+/// (one balanced drop). For a FRESH-ALLOCATING consume — `String.concat`→`bytes-concat`, `List.concat`, a
+/// tuple/list/map/set/sum/record ctor, a call — the binder becomes a distinct CHILD cell of `keep`, so its
+/// own scope drop DOUBLE-FREES the cell `keep` still references (the 980 rope mode-2 `unreachable` trap; #5352
+/// wrongly reached it). Conservative: any shape not PROVEN reuse-base/move-out returns `false` (keep the dup
+/// → at worst the pre-#5352 benign known-leak, never a double-free). The builder arms also verify the binder
+/// does NOT ALSO escape through a CHILD operand (elem/key/val), which would make it simultaneously a child.
+fn escapes_as_reuse_base_or_moveout(db: &mut Db, arm: StructId, binder: StructId) -> bool {
+    match core_of(db, arm) {
+        // MOVE-OUT: the arm's result IS the binder (it flows out unchanged as the join value).
+        Core::LocalRef { binder: b } | Core::Param { binder: b } => b == binder,
+        // IN-PLACE-REUSE builders: the binder must be the reused BASE (recurse — a nested builder chain on
+        // the binder still reuses its slot) AND must NOT also escape through the CHILD operand (elem/key/val),
+        // else it is simultaneously a fresh-alloc child → hazard → keep the dup.
+        Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
+            escapes_as_reuse_base_or_moveout(db, list, binder)
+                && !binding_escapes(db, elem, binder, false)
+        }
+        Core::ListUpdate { list, elem, .. } => {
+            escapes_as_reuse_base_or_moveout(db, list, binder)
+                && !binding_escapes(db, elem, binder, false)
+        }
+        Core::MapInsert { map, key, val, .. } => {
+            escapes_as_reuse_base_or_moveout(db, map, binder)
+                && !binding_escapes(db, key, binder, false)
+                && !binding_escapes(db, val, binder, false)
+        }
+        Core::MapRemove { map, key, .. } => {
+            escapes_as_reuse_base_or_moveout(db, map, binder)
+                && !binding_escapes(db, key, binder, false)
+        }
+        Core::SetInsert { set, elem, .. } | Core::SetRemove { set, elem, .. } => {
+            escapes_as_reuse_base_or_moveout(db, set, binder)
+                && !binding_escapes(db, elem, binder, false)
+        }
+        // Let/Seq/Block/Break: the binder must reach the TAIL as reuse-base/move-out AND must NOT escape into
+        // any bound value / earlier statement (that would consume it into a SIDE node — a child hazard).
+        Core::Let { bindings, body } => {
+            escapes_as_reuse_base_or_moveout(db, body, binder)
+                && !bindings
+                    .iter()
+                    .any(|(_, v)| binding_escapes(db, *v, binder, false))
+        }
+        Core::Seq { stmts, tail } => {
+            escapes_as_reuse_base_or_moveout(db, tail, binder)
+                && !stmts.iter().any(|&s| binding_escapes(db, s, binder, false))
+        }
+        Core::Block { body, .. } => escapes_as_reuse_base_or_moveout(db, body, binder),
+        Core::Break { value } => escapes_as_reuse_base_or_moveout(db, value, binder),
+        // Everything else (concat, ctors, calls, if/match joins, borrowing reads, …) is NOT a proven in-place
+        // reuse of the binder → conservative `false` (keep the dup).
+        _ => false,
+    }
+}
+
 /// Whether `binder` escapes through a sum-match CONTINUATION — a leaf's body, or a nested switch's arms
 /// (each recursed). The `Payload`/`Elem` path steps are heap reads that carry no binding, so only the arm
 /// continuations matter (mirrors the `MatchSum` arm walk in `binding_escapes`).
@@ -3604,28 +3664,29 @@ fn mark_binder_dups_inner(
             let else_alias = aliases_as_result(db, else_, &mut occ);
             let mut occ2 = HashMap::new();
             let then_alias = aliases_as_result(db, then_, &mut occ2);
-            // IF-JOIN-SHARED-CHILD family fix (v-mem-directed): when the binder is the result of BOTH arms
-            // (then_alias: moved out as the then-result; else_alias: consumed-into the else-result by a sunk
-            // builder) AND is FULLY SUBSUMED by the if-result (`!live_after`: its ONLY post-if reach is
-            // through `keep`) — then the cross-arm dup is SPURIOUS: the two arms are MUTUALLY EXCLUSIVE, so
-            // the binder (rc1, fully-subsumed) is used on exactly ONE arm at runtime and need NOT survive
-            // across them. Skipping that dup lets the else-arm builder FBIP-CONSUME the rc1 binder in place
+            // IF-JOIN-SHARED-CHILD family fix (v-mem-directed, NARROWED after the 980 ROPE UAF co-verify):
+            // when the binder reaches BOTH arms' results as a MOVE-OUT or an IN-PLACE-REUSED builder BASE
+            // (`escapes_as_reuse_base_or_moveout`) AND is FULLY SUBSUMED by the if-result (`!live_after`: its
+            // ONLY post-if reach is through `keep`), the cross-arm dup is SPURIOUS: the two arms are MUTUALLY
+            // EXCLUSIVE, so the binder (rc1, fully-subsumed) is used on exactly ONE arm at runtime and need
+            // NOT survive across them. Skipping the dup lets the arm's builder REUSE the rc1 binder IN PLACE
             // (the binder's slot BECOMES `keep`), so the binder's own post-if scope drop is exactly `keep`'s
-            // reclaim — balanced, no leak, no double-free. (Dropping the dup was the family's mode-2
-            // over-retain: 712/MAP/LIST/ROPE mode-2 leak = the dup's extra ref left the shared interior
-            // over-retained. The separate scope drop is KEPT — it reclaims the FBIP-reused `keep`; only the
-            // DUP is removed.) `!live_after` is the fence: any other post-if use means the binder is NOT
-            // fully subsumed → keep the dup. ESCAPE detection uses `binding_escapes(arm, .., false)` (binder
-            // flows CONSUMING into the arm's result), NOT `then_alias`/`else_alias`: a builder-consumed
-            // binder (`else = (List.push base …)`) escapes CONSUMING (push's list-operand is consuming), so
-            // `aliases_as_result` reads it as escaping BOTH ways → `else_alias=false`, yet it DOES flow into
-            // the else-result. The condition is "binder escapes-consuming into the result on BOTH arms".
-            let then_consumed = binder_occurs(db, then_, binder, &mut HashMap::new())
-                && binding_escapes(db, then_, binder, false);
-            let else_consumed = binder_occurs(db, else_, binder, &mut HashMap::new())
-                && binding_escapes(db, else_, binder, false);
-            let escapes_into_if_result =
-                !consuming && !live_after && then_consumed && else_consumed;
+            // reclaim — one balanced drop, no leak, no double-free. (Dropping the dup was the family's mode-2
+            // over-retain: 712/MAP-insert/LIST mode-2 leak = the dup's extra ref left the shared interior
+            // over-retained. The scope drop is KEPT — it reclaims the reused `keep`; only the DUP is removed.)
+            //
+            // CRITICAL FENCE (`escapes_as_reuse_base_or_moveout`, NOT a bare consuming-escape): the load-
+            // bearing premise is that the builder REUSES the base's storage in place so the base slot BECOMES
+            // `keep`. That holds for `List.push`/`prepend`/`update`, `Map.insert`/`remove`, `Set.insert`/
+            // `remove` — but is FALSE for `String.concat`→`bytes-concat` / `List.concat` / any ctor, which
+            // ALLOCATE a fresh node holding the binder as a CHILD. There the binder is a distinct cell `keep`
+            // references, so skipping the dup + keeping its scope drop DOUBLE-FREES it (the 980 rope mode-2
+            // `unreachable` UAF the earlier bare `binding_escapes(.., false)` gate wrongly reached — it fires
+            // for a concat child too). `!live_after` alone is not enough; the escape MODE must be reuse-in-
+            // place. Conservative: a shape not proven reuse-base/move-out keeps the dup (benign known-leak).
+            let then_reuse = escapes_as_reuse_base_or_moveout(db, then_, binder);
+            let else_reuse = escapes_as_reuse_base_or_moveout(db, else_, binder);
+            let escapes_into_if_result = !consuming && !live_after && then_reuse && else_reuse;
             // SKIP the spurious cross-arm dup when the binder escapes-into-the-if-result (fully subsumed):
             // do NOT propagate the sibling alias into the arm's `live_after` (that propagation is what marks
             // the cross-arm consume a dup_site).
