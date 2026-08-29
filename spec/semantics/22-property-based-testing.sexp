@@ -432,10 +432,18 @@
            `(= (sum [a b c]) (sum [c a b]))` = true. This is `sum(S) = sum(π(S))` checked on inputs the
            generator produced, exactly §Permutation Invariance Is A Property's `the generator exercises`.
            The list-reordering is done at the CALL site (the elements are scalars); the fold reduces each
-           ordering to a scalar the seed's runtime `=` compares.")
+           ordering to a scalar the seed's runtime `=` compares. The fold uses `Int64.wrapping-add` — the
+           NAMED wrapping opt-in — because the drawn values are full-range LCG outputs whose partial sums
+           can exceed Int64: the ORDINARY `+` TRAPS on overflow (numeric-model.md #Overflow, operator ruling
+           2026-08-29 — trap on any overflow unless the caller explicitly asks for wrapping), and a trapping
+           fold is NOT permutation-invariant (at seed 42, b+c overflows in the `[a b c]` order but a+b does
+           not in `[c a b]`, so one ordering would trap and the other would not). Wrapping addition is
+           associative and commutative modulo 2^64, so `sum(S) = sum(π(S))` holds unconditionally — the
+           property the case witnesses. This is the explicit-wrapping companion of the LCG's own
+           `wrapping-add`/`wrapping-mul`.")
   (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
               (def (sum (: xs (List Int64)))
-                (match xs ((list) 0) ((list h .. t) (+ h (sum t)))))
+                (match xs ((list) 0) ((list h .. t) (Int64.wrapping-add h (sum t)))))
               (def (main (: seed Int64))
                 (let ((a (next seed)))
                   (let ((b (next a)))
