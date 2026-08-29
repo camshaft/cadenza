@@ -1293,6 +1293,13 @@ fn param_apply_extra_handled(
     if let Some(cached) = memo.get(&(callee_body, arity, depth)) {
         return cached.clone();
     }
+    // Test-only compile-cost counter: a memo MISS = one full body re-analysis. Pins the seq-203 #5755 memo
+    // (a future un-memoization flips this from POLYNOMIAL back to 2^N — see the regression guard). Surfaced
+    // via `CompileOutput::param_apply_extra_handled_calls`.
+    #[cfg(test)]
+    {
+        db.param_apply_extra_handled_calls += 1;
+    }
     let Some(params) = crate::eval::lambda_params_of(db, head) else {
         return Vec::new();
     };

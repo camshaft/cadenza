@@ -308,6 +308,15 @@ pub struct CompileOutput {
     /// un-memoization flips it back to quadratic. `0` outside `rcdzc`'s lowering path. Always-present (same
     /// cross-crate-`#[cfg(test)]` reason as `cse_partition_core_eq_calls` above) — 8 harmless bytes.
     pub value_range_uncached_calls: u64,
+    /// A DIAGNOSTIC METRIC: the `rcdzc` Db's `param_apply_extra_handled_calls` count from this compile — how
+    /// many times `effects::param_apply_extra_handled` ran its BODY (a call that MISSED its
+    /// `(callee_body, arity, depth)` memo). That fn's transitive follow re-enters itself per sub-callee AND
+    /// `walk(head)` re-descends the same body, so without the memo it is 2^N over a nested applied-lambda
+    /// chain (the seq-203 compile-hang, #5755); the memo makes body-runs ~O(nodes). Surfaced here (the `Db`
+    /// is dropped before returning) for the regression-guard test to assert a LINEAR bound — a future
+    /// un-memoization flips it back to exponential. `0` outside `rcdzc`'s lowering path. Always-present (same
+    /// cross-crate-`#[cfg(test)]` reason as the metrics above) — 8 harmless bytes.
+    pub param_apply_extra_handled_calls: u64,
 }
 
 impl CompileOutput {
