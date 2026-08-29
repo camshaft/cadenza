@@ -1613,27 +1613,30 @@
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
-(case "list equality short-circuits at the first differing element — a later trapping element is not forced"
-  (doc    "The list twin of the tuple short-circuit case above: `(= (list 1 (/ 5 d)) (list 9 9))` compares
-           element 0 first (1 vs 9) — they DIFFER, so the result is decided FALSE without element 1, whose
-           `(/ 5 d)` at d=0 is a divide-by-zero. A list IS strict in its elements when its object is
-           MATERIALIZED — its length/size/membership taken, or it flows to the result (see core-semantics.md
-           #A Trap Occurs Only Where Its Computation Is Observed, and 19-sets `(Set.len (Set.of (list (/ 5 d)
-           2 3)))` which TRAPS at d=0) — but a structural `=` is decided positionally and short-circuits at the
-           first difference, never materializing this list, so the trapping element is UNOBSERVED and its trap
-           does NOT occur. At d=0 the comparison is false, NOT a trap. Distinguishes list-= (positional,
-           short-circuiting, like the tuple case) from a length/membership observation (which forces the build).")
-  (input  (do (def (main (: d Int64)) (= (list 1 (/ 5 d)) (list 9 9))) (export main)))
-  (call   main (: 0 Int64))
-  (output (: false Bool)))
-
-(case "list equality forces through an equal-prefix element to the deciding element, whose trap occurs"
-  (doc    "The anchor to the list short-circuit case: `(= (list 9 (/ 5 d)) (list 9 9))` — element 0 is EQUAL
-           (9 = 9), so the comparison must continue to element 1 to decide, forcing `(/ 5 d)`; at d=0 that is a
-           divide-by-zero, so the comparison TRAPS. Pins that list short-circuit stops at the first DIFFERENCE
-           only — an equal prefix is forced through, and the first not-yet-decided element IS observed — the
-           list twin of the tuple equal-prefix case above.")
+(case "list construction strictly evaluates its element arguments — a trapping argument traps in an = operand"
+  (doc    "Operator ruling — strict list construction: evaluating a `(list …)` expression evaluates every element
+           ARGUMENT, so a trapping argument traps whenever the constructor is reached, independent of the consumer
+           and of any comparison short-circuit. `(= (list 9 (/ 5 d)) (list 9 9))` at d=0 constructs the left operand,
+           evaluating `(/ 5 d)` BEFORE `=` runs, so it TRAPS on divide-by-zero — the trap is a property of
+           constructing the list operand, not of the comparison reaching element 1 (core-semantics.md #A Trap Occurs
+           Only Where Its Computation Is Observed — a heap-collection constructor is strict in its element
+           arguments; the optimizer may elide the heap object but must preserve argument evaluation). The same
+           holds for `(= (list 1 (/ 5 d)) (list 9 9))` @d=0: a trapping argument in a constructed list operand
+           traps even past the first difference — the outcome does not depend on the comparison. A structural `=`
+           may still short-circuit WHICH already-evaluated values it inspects, but that does not defer a constructed
+           operand's argument evaluation. Contrast a tuple (`(= (tuple 1 (/ 5 d)) (tuple 9 9))` @d=0 → false, above):
+           tuple/record construction is lazy in an unprojected element, a heap-collection constructor is not.")
   (input  (do (def (main (: d Int64)) (= (list 9 (/ 5 d)) (list 9 9))) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "list construction strictly evaluates its element arguments — a trapping argument traps under List.len"
+  (doc    "The consumer-independent companion: `(List.len (list 1 (/ 5 d)))` at d=0 TRAPS because constructing the
+           list evaluates its element arguments — `(/ 5 d)` — even though only the length is taken and the heap
+           object may be elided (operator ruling — strict list construction; core-semantics.md #A Trap Occurs Only
+           Where Its Computation Is Observed). The list analog of 19-sets `(Set.len (Set.of (list (/ 5 d) 2 3)))`:
+           same construction, ANY consumer — the trapping argument traps.")
+  (input  (do (def (main (: d Int64)) (List.len (list 1 (/ 5 d)))) (export main)))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
