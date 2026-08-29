@@ -958,6 +958,77 @@
   (input  (do (def (f (: c Bool)) (: (+ (if c 40000 2) 5) Int16)) (export f)))
   (error  CDZ0302))
 
+; ── `cdz check` agrees with EMIT on a runtime-if/match branch literal + a narrow parameter width: a
+; RUNTIME `if`/`match` (runtime condition/scrutinee) with an out-of-range branch literal under a narrow-width
+; annotation, or a bare out-of-range literal reaching a narrow PARAMETER (directly OR transitively through a
+; call chain), is CDZ0302 at check — matching emit (check formerly bailed on a runtime `if`/`match`, which
+; folds to neither Resolved::Int nor Core::ConstInt, so an out-of-range branch literal slipped it). The
+; descent walks BOTH live branches / every arm, recursively. Migrated from rcdzc
+; cdz_check_rejects_an_oversize_literal_in_a_runtime_if_branch_under_a_narrow_annotation.
+(case "a runtime-if branch literal overflowing a narrow annotation is rejected at check"
+  (input  (do (def (f (: c Bool)) (: (if c 10000 0) UInt8)) (export f)))
+  (error  CDZ0302))
+
+(case "a runtime-if branch literal reaching a narrow parameter is rejected at check"
+  (input  (do (def (g (: x UInt8)) x) (def (f (: c Bool)) (g (if c 10000 0))) (export f)))
+  (error  CDZ0302))
+
+(case "a NESTED runtime-if branch literal overflowing a narrow annotation is rejected (recursive descent)"
+  (input  (do (def (f (: c Bool) (: d Bool)) (: (if c (if d 10000 0) 0) UInt8)) (export f)))
+  (error  CDZ0302))
+
+(case "a negative branch literal in an unsigned annotation via a runtime if is rejected at check"
+  (input  (do (def (f (: c Bool)) (: (if c -1 0) UInt8)) (export f)))
+  (error  CDZ0302))
+
+(case "a runtime-match arm literal overflowing a narrow annotation is rejected at check"
+  (input  (do (def (f (: n Int64)) (: (match n (0 10000) (_ 0)) UInt8)) (export f)))
+  (error  CDZ0302))
+
+(case "a runtime-match arm literal reaching a narrow parameter is rejected at check"
+  (input  (do (def (g (: x UInt8)) x) (def (f (: n Int64)) (g (match n (0 10000) (_ 0)))) (export f)))
+  (error  CDZ0302))
+
+(case "a direct bare literal overflowing a narrow parameter width is rejected at check"
+  (input  (do (def (f (: x UInt8)) x) (def (main) (f 300)) (export main)))
+  (error  CDZ0302))
+
+(case "a bare literal overflowing a narrow parameter TRANSITIVELY through a call chain is rejected at check"
+  (doc    "`f` is UNANNOTATED and passes its arg to `g : UInt8`, so `g`'s param width is the SOLE narrowing
+           source, threaded back through `f`'s inferred param to the literal at `main → f` — genuinely
+           exercises the transitive threading (an explicit `(: x UInt8)` on `f` would narrow directly).")
+  (input  (do (def (g (: y UInt8)) y) (def (f x) (g x)) (def (main) (f 300)) (export main)))
+  (error  CDZ0302))
+
+; NO OVER-REJECTION: a fitting branch literal, a constant-condition if (folds to its taken branch), a fitting
+; narrow-parameter argument, and a fitting match arm all pass check clean AND run.
+(case "a fitting runtime-if branch literal under a narrow annotation runs (no over-rejection)"
+  (input  (do (def (f (: c Bool)) (: (if c 100 0) UInt8)) (export f)))
+  (call   f (: true Bool)) (output (: 100 UInt8)))
+
+(case "a constant-condition if folds to its fitting branch under a narrow annotation and runs"
+  (input  (do (def (f) (: (if true 100 0) UInt8)) (export f)))
+  (call   f) (output (: 100 UInt8)))
+
+(case "a fitting bare literal to a narrow parameter runs (no over-rejection)"
+  (input  (do (def (f (: x UInt8)) x) (def (main) (f 200)) (export main)))
+  (call   main) (output (: 200 UInt8)))
+
+(case "a fitting runtime-match arm literal under a narrow annotation runs (no over-rejection)"
+  (input  (do (def (f (: n Int64)) (: (match n (0 100) (_ 0)) UInt8)) (export f)))
+  (call   f (: 0 Int64)) (output (: 100 UInt8)))
+
+(case "a large branch literal with NO narrow context stays Int64 and runs (the check fires only under narrowing)"
+  (doc    "The check range-checks a branch literal ONLY against a NARROW annotation/param; with no narrowing
+           the `if` stays Int64, so `10000` fits and the def compiles + runs — the reject is scoped to a
+           genuine narrowing, not every large literal.")
+  (input  (do (def (f (: c Bool)) (if c 10000 0)) (export f)))
+  (call   f (: true Bool)) (output (: 10000 Int64)))
+
+(case "a large match-arm literal with NO narrow context stays Int64 and runs"
+  (input  (do (def (f (: n Int64)) (match n (0 10000) (_ 0))) (export f)))
+  (call   f (: 0 Int64)) (output (: 10000 Int64)))
+
 (case "a literal MAP VALUE that overflows the annotated value width is rejected"
   (doc    "`(: (map (1 999)) (Map Int64 Int8))` — the map type's declared value `Int8` grounds the entry's
            value literal `999`, which overflows Int8 → CDZ0302. The width fit-check must descend into a map's
