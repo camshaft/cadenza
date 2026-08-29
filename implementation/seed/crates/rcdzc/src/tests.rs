@@ -9716,6 +9716,46 @@ mod match_engine {
     }
 
     #[test]
+    fn a_native_compound_match_arm_compiles_under_polymorphic_instantiation_like_the_alias() {
+        // M3 native-recognition parity (v-guide-infra #51311): a native `#list`/`#tuple`/`#record` MATCH-ARM
+        // pattern in a GENERIC def, instantiated at >= 2 distinct element types (so the def monomorphizes more
+        // than once), must compile exactly like the `(list …)`/`(tuple …)`/`(record …)` alias. The historical
+        // bug: the recognizer resolved the native ctor-LEAF head per-instantiation and re-read it as a VALUE on
+        // the 2nd monomorphization → CDZ0201 "a compound-constructor head leaf is not a value", while the alias
+        // (whose head resolves cleanly) compiled. Fixed upstream by exempting a recognized compound pattern from
+        // the head-poison probe (compound_form_of, #5429) + native `#list` scrutinee type-shaping (#5436); this
+        // pins the polymorphic facet so it can't regress. Native ≡ alias, both compile:
+        for (label, src) in [
+            (
+                "native #list poly len (Int + String elems)",
+                "(module m (def (len xs) (match xs (#list() 0) (#list(h .. t) (+ 1 (len t))))) (def (main) (+ (len #list(1 2 3)) (len #list(\"a\" \"b\")))) (export main))",
+            ),
+            (
+                "name-alias (list …) poly len (control)",
+                "(module m (def (len xs) (match xs ((list) 0) ((list h .. t) (+ 1 (len t))))) (def (main) (+ (len (list 1 2 3)) (len (list \"a\" \"b\")))) (export main))",
+            ),
+            (
+                "native #tuple poly fst (Int,Int + Bool,Bool)",
+                "(module m (def (fst p) (match p (#tuple(a b) a))) (def (main) (if (fst #tuple(true false)) (fst #tuple(1 2)) 0)) (export main))",
+            ),
+            (
+                "name-alias (tuple …) poly fst (control)",
+                "(module m (def (fst p) (match p ((tuple a b) a))) (def (main) (if (fst (tuple true false)) (fst (tuple 1 2)) 0)) (export main))",
+            ),
+            (
+                "native #record poly getk (Int + Bool)",
+                "(module m (def (getk r) (match r (#record((= k kv) (= v _vv)) kv))) (def (main) (if (getk #record((= k true) (= v false))) (getk #record((= k 1) (= v 2))) 0)) (export main))",
+            ),
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "{label}: a native compound match-arm must compile under polymorphic instantiation like the alias, got {:?}",
+                reject_code(src)
+            );
+        }
+    }
+
+    #[test]
     fn a_native_structural_pattern_over_a_wrong_kind_scrutinee_is_cdz0203() {
         // SOUNDNESS guard (05-compound-types "a tuple pattern over a non-tuple scrutinee is a type error",
         // and its list/map siblings): the match scrutinee-KIND check (lower_match) reads a pattern's
