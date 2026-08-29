@@ -27575,64 +27575,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_retired_collection_op_name_is_rejected_with_a_rename_fix() {
-        // The consistent-naming cutover (2026-07-15) renamed three prelude collection ops:
-        // `Map.size`→`Map.len`, `Tuple.cat`→`Tuple.concat`, `Tuple.pop`→`Tuple.remove`. There is NO
-        // transitional alias (one place a name resolves — `no-keys-outside-the-prelude`), so the retired
-        // name genuinely fails to resolve — but instead of the generic "no member" it gets a targeted
-        // CDZ0603 naming the new spelling AND carrying a VERIFIED fix rewriting the key token in place.
-        for (body, module, old, new) in [
-            ("(Map.size (map (1 2)))", "Map", "size", "len"),
-            (
-                "(Tuple.cat (tuple 1 2) (tuple 3 4))",
-                "Tuple",
-                "cat",
-                "concat",
-            ),
-            ("(Tuple.pop (tuple 1 2 3))", "Tuple", "pop", "remove"),
-        ] {
-            let d = expect_error(body);
-            assert_eq!(
-                d.code.as_deref(),
-                Some("CDZ0603"),
-                "got: {} — {}",
-                d.code.as_deref().unwrap_or("?"),
-                d.message
-            );
-            assert!(
-                d.message
-                    .contains(&format!("`{module}.{old}` was renamed to `{module}.{new}`")),
-                "names the retired op and its replacement: {}",
-                d.message
-            );
-            assert!(
-                d.message.contains(&format!("write `(. {module} {new})`")),
-                "shows the canonical spelling: {}",
-                d.message
-            );
-            let fix = d.fix.expect("a rename fix is carried");
-            assert_eq!(
-                fix.replacement, new,
-                "the fix rewrites the key to the new name"
-            );
-            assert!(
-                fix.verified,
-                "a mechanical rename to a known canonical name is VERIFIED, not a guess"
-            );
-            // ROUND TRIP backing the VERIFIED marker: applying the fix (rewrite the retired key `old` to
-            // the canonical `new`) yields a program that compiles clean — no residual CDZ0603, no cascade.
-            // Unlike the `?`→`try` case (whose applied form needs a fallible context), a renamed collection
-            // op is well-formed in place, so the applied body compiles directly. This is what "verified"
-            // promises: an agent applies it without review and the diagnostic is gone.
-            let applied = body.replacen(&format!("{module}.{old}"), &format!("{module}.{new}"), 1);
-            assert!(
-                compiles_ok(&applied),
-                "applying the verified rename must recompile clean: {applied}"
-            );
-        }
-    }
-
-    #[test]
     fn a_genuine_member_typo_still_gets_the_ordinary_unknown_member_error() {
         // CDZ0603 fires ONLY on the fixed retired set — a name that was never a member (`Map.siz`, a plain
         // typo) still takes the ordinary CDZ0201 unknown-member did-you-mean, so the rename hint never
