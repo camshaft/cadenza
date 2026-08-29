@@ -59,7 +59,7 @@
            so `Blake3.of` of it lowers to the runtime `hash-blake3` heap op, returning a fresh 32-byte Bytes.
            Pins the runtime lowering executes and yields the 32-byte width.")
   (input  (do
-            (def (run (: k Int64)) (Bytes.len (Blake3.of (Bytes.of (list (UInt8.wrap k) (UInt8.wrap k) (UInt8.wrap k))))))
+            (def (run (: k Int64)) (Bytes.len (Blake3.of (Bytes.of #list((UInt8.wrap k) (UInt8.wrap k) (UInt8.wrap k))))))
             (export run)))
   (call   run 5)
   (output (: 32 Int64)))
@@ -71,7 +71,7 @@
            `Bytes.eq` is true — compile==runtime, witnessed end-to-end. (This is also the P4 dispatch shape:
            `Bytes.eq` of a runtime digest against a compile-time id constant.)")
   (input  (do
-            (def (run (: k Int64)) (= (Blake3.of (Bytes.of (list (UInt8.wrap k)))) (Blake3.of b"\x05")))
+            (def (run (: k Int64)) (= (Blake3.of (Bytes.of #list((UInt8.wrap k)))) (Blake3.of b"\x05")))
             (export run)))
   (call   run 5)
   (output (: true Bool)))
@@ -201,11 +201,11 @@
   (input  (do
             (def (mymap (const (: xs (List Int64))) (const (: f (-> Int64 Ast))))
               (match xs
-                ((list) (: (list) (List Ast)))
-                ((list h .. t) (List.prepend (mymap t f) (f h)))))
+                (#list() (: #list() (List Ast)))
+                (#list(h .. t) (List.prepend (mymap t f) (f h)))))
             (def (run)
-              (= (Ast.encode (Ast.List (mymap (list 1 2 3) (fn ((: x Int64)) (Ast.Int (BigInt.of x))))))
-                 (Ast.encode (Ast.List (list (Ast.Int (BigInt.of 1)) (Ast.Int (BigInt.of 2)) (Ast.Int (BigInt.of 3)))))))
+              (= (Ast.encode (Ast.List (mymap #list(1 2 3) (fn ((: x Int64)) (Ast.Int (BigInt.of x))))))
+                 (Ast.encode (Ast.List #list((Ast.Int (BigInt.of 1)) (Ast.Int (BigInt.of 2)) (Ast.Int (BigInt.of 3)))))))
             (export run)))
   (output (: true Bool)))
 
@@ -292,8 +292,8 @@
               (match a ((Ast.List xs) (leaves-list xs)) (_ 1)))
             (def (leaves-list (const (: xs (List Ast))))
               (match xs
-                ((list) 0)
-                ((list h .. t) (+ (leaves h) (leaves-list t)))))
+                (#list() 0)
+                (#list(h .. t) (+ (leaves h) (leaves-list t)))))
             (def (run)
               (= (Ast.encode (Ast.Int (BigInt.of (leaves (quote (f 1 2))))))
                  (Ast.encode (Ast.Int (BigInt.of 3)))))
@@ -313,7 +313,7 @@
            previously declined. The `(const …)` block forces the fold (a `(Tuple …)` shape is not activated
            by the bare gate).")
   (input  (do
-            (def (main) (const (match (tuple 3 5) ((tuple a b) (+ a b)))))
+            (def (main) (const (match #tuple(3 5) (#tuple(a b) (+ a b)))))
             (export main)))
   (output (: 8 Int64)))
 
@@ -323,8 +323,8 @@
            tuple construction, and the recursion all compose in one const-fold under the force-eval block.")
   (input  (do
             (def (f (const (: t (Tuple Int64 Int64))))
-              (match t ((tuple a b) (if (= a 0) b (f (tuple (- a 1) (+ b 1)))))))
-            (def (main) (const (f (tuple 3 0))))
+              (match t (#tuple(a b) (if (= a 0) b (f #tuple((- a 1) (+ b 1)))))))
+            (def (main) (const (f #tuple(3 0))))
             (export main)))
   (output (: 3 Int64)))
 
@@ -357,7 +357,7 @@
            (which demands a compile-time constant) against the encoding of the literal 7.")
   (input  (do
             (def (main)
-              (= (Ast.encode (Ast.Int (BigInt.of (. (record (= x 7) (= y 9)) x))))
+              (= (Ast.encode (Ast.Int (BigInt.of (. #record((= x 7) (= y 9)) x))))
                  (Ast.encode (Ast.Int (BigInt.of 7)))))
             (export main)))
   (output (: true Bool)))
@@ -370,7 +370,7 @@
            param's record type is recovered by inference from the `(. r x)` projection (no annotation needed).")
   (input  (do
             (def (get-x r) (. r x))
-            (def (main) (const (get-x (record (= x 42) (= y 7)))))
+            (def (main) (const (get-x #record((= x 42) (= y 7)))))
             (export main)))
   (output (: 42 Int64)))
 
@@ -380,7 +380,7 @@
            field in the CURRENT env (the bound `n`), not just a param-free literal — the value-interpreter twin
            of how a `(tuple …)` built from const params already folded.")
   (input  (do
-            (def (mk (const (: n Int64))) (record (= x n) (= y (* n 2))))
+            (def (mk (const (: n Int64))) #record((= x n) (= y (* n 2))))
             (def (sum-r r) (+ (. r x) (. r y)))
             (def (main) (const (sum-r (mk 10))))
             (export main)))
@@ -554,7 +554,7 @@
            `RecordNew` arm), so the whole recursion did.")
   (input  (do
             (def (walk (const (: n Int64)))
-              (if (= n 0) (record (= v 0)) (record (= v (+ 1 (. (walk (- n 1)) v))))))
+              (if (= n 0) #record((= v 0)) #record((= v (+ 1 (. (walk (- n 1)) v))))))
             (def (main) (const (. (walk 4) v)))
             (export main)))
   (output (: 4 Int64)))
@@ -566,10 +566,10 @@
            block.")
   (input  (do
             (def (bcat (const (: n Int64)))
-              (if (= n 0) (Bytes.of (list)) (Bytes.concat (Bytes.of (list 65)) (bcat (- n 1)))))
+              (if (= n 0) (Bytes.of #list()) (Bytes.concat (Bytes.of #list(65)) (bcat (- n 1)))))
             (def (main)
               (= (Ast.encode (Ast.Bytes (const (bcat 3))))
-                 (Ast.encode (Ast.Bytes (Bytes.of (list 65 65 65))))))
+                 (Ast.encode (Ast.Bytes (Bytes.of #list(65 65 65))))))
             (export main)))
   (output (: true Bool)))
 
@@ -754,7 +754,7 @@
            42, the `extra` sibling never materialized. Before, the nullary call declined in the value-
            interpreter and the record built whole.")
   (input  (do
-            (def (descriptor) (record (= id 42) (= extra (quote (a b c)))))
+            (def (descriptor) #record((= id 42) (= extra (quote (a b c)))))
             (def (main) (const (. (descriptor) id)))
             (export main)))
   (output (: 42 Int64)))
@@ -767,7 +767,7 @@
            the whole record built and the component failed to instantiate.")
   (input  (do
             (def (descriptor)
-              (record (= id (Blake3.of (Ast.encode (quote (contract c Int64 Int64)))))
+              #record((= id (Blake3.of (Ast.encode (quote (contract c Int64 Int64)))))
                       (= input (quote Int64))
                       (= output (quote Int64))))
             (def (main)
@@ -785,7 +785,7 @@
   (input  (do
             (def (leaves (const (: a Ast)))
               (match a ((Ast.List xs) (List.len xs)) (_ 1)))
-            (def (descriptor) (record (= id (leaves (quote (f 1 2)))) (= extra (quote z))))
+            (def (descriptor) #record((= id (leaves (quote (f 1 2)))) (= extra (quote z))))
             (def (main) (const (. (descriptor) id)))
             (export main)))
   (output (: 3 Int64)))
@@ -806,7 +806,7 @@
            operand of the runtime `RationalBinOp` had no ownership class and DECLINED.")
   (input  (do (pragma default-fraction Rational)
               (def (width) 4)
-              (def (rect) (record (= w (width)) (= h 3)))
+              (def (rect) #record((= w (width)) (= h 3)))
               (def (main) (* (. (rect) w) (. (rect) h)))
               (export main)))
   (output (: 12/1 Rational)))
@@ -826,8 +826,8 @@
            folds; before, the gate excluded `(Tuple …)` so the `const`-param fn reached the emitter.")
   (input  (do
             (def (f (const (: t (Tuple Int64 Int64))))
-              (match t ((tuple a b) (if (= a 0) b (f (tuple (- a 1) (+ b 1)))))))
-            (def (main) (f (tuple 3 0)))
+              (match t (#tuple(a b) (if (= a 0) b (f #tuple((- a 1) (+ b 1)))))))
+            (def (main) (f #tuple(3 0)))
             (export main)))
   (output (: 3 Int64)))
 
@@ -836,8 +836,8 @@
            surfaces its message as CDZ0304 — symmetric with the Int64/Char/Float const-param shapes.")
   (input  (do
             (def (f (const (: t (Tuple Int64 Int64))))
-              (match t ((tuple a b) (if (= a 0) (trap "tuple base reached") (f (tuple (- a 1) (+ b 1)))))))
-            (def (main) (f (tuple 2 0)))
+              (match t (#tuple(a b) (if (= a 0) (trap "tuple base reached") (f #tuple((- a 1) (+ b 1)))))))
+            (def (main) (f #tuple(2 0)))
             (export main)))
   (error  CDZ0304 (message "tuple base reached")))
 
@@ -856,9 +856,9 @@
            record materialized (its `Ast` fields have no runtime form) and the component failed to instantiate.")
   (input  (do
             (def (descriptor)
-              (record (= id (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
+              #record((= id (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
                       (= name "cdz-platform.temp-celsius")
-                      (= input (quote Int64)) (= output (quote Int64)) (= types (quote (list)))))
+                      (= input (quote Int64)) (= output (quote Int64)) (= types (quote #list()))))
             (def (main) (= (. (descriptor) name) "cdz-platform.temp-celsius"))
             (export main)))
   (output (: true Bool)))
@@ -869,9 +869,9 @@
            operator's structured whole-record descriptor form folds + eliminates for the id, same as the name.")
   (input  (do
             (def (descriptor)
-              (record (= id (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
+              #record((= id (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
                       (= name "cdz-platform.temp-celsius")
-                      (= input (quote Int64)) (= output (quote Int64)) (= types (quote (list)))))
+                      (= input (quote Int64)) (= output (quote Int64)) (= types (quote #list()))))
             (def (main) (= (. (descriptor) id) (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64))))))
             (export main)))
   (output (: true Bool)))
@@ -921,25 +921,25 @@
 (case "a const Map keyed on a TUPLE folds a lookup by structural key equality"
   (doc "`Map.lookup` over `{(1,2)↦10, (3,4)↦20}` at key `(3,4)` folds to `Some 20` — `cval_eq` compares the
         tuple keys element-wise, matching the second entry. Pins compound-tuple-key const Map folding.")
-  (input (const (match (Map.lookup (Map.insert (Map.insert Map.empty (tuple 1 2) 10) (tuple 3 4) 20) (tuple 3 4)) ((Option.Some v) v) ((Option.None) 0))))
+  (input (const (match (Map.lookup (Map.insert (Map.insert Map.empty #tuple(1 2) 10) #tuple(3 4) 20) #tuple(3 4)) ((Option.Some v) v) ((Option.None) 0))))
   (output (: 20 Int64)))
 
 (case "a const Map lookup of an absent TUPLE key folds to None"
   (doc "At key `(9,9)`, absent from `{(1,2)↦10}`, the lookup folds to `None` (absent arm → -1) — `cval_eq`
         DECIDES the tuple keys unequal element-wise. The negative companion of the found case above.")
-  (input (const (match (Map.lookup (Map.insert Map.empty (tuple 1 2) 10) (tuple 9 9)) ((Option.Some v) v) ((Option.None) -1))))
+  (input (const (match (Map.lookup (Map.insert Map.empty #tuple(1 2) 10) #tuple(9 9)) ((Option.Some v) v) ((Option.None) -1))))
   (output (: -1 Int64)))
 
 (case "a const Set of TUPLES dedups by structural equality"
   (doc "`Set.of (list (1,2) (1,2) (3,4))` folds to a 2-member set — `cval_eq` finds the two `(1,2)` tuples
         equal element-wise and dedups them, leaving `{(1,2),(3,4)}`; `Set.len` reads 2.")
-  (input (const (Set.len #set((tuple 1 2) (tuple 1 2) (tuple 3 4)))))
+  (input (const (Set.len #set(#tuple(1 2) #tuple(1 2) #tuple(3 4)))))
   (output (: 2 Int64)))
 
 (case "a const Set of RECORDS dedups by structural field equality"
   (doc "`Set.of (list (record (a 1)) (record (a 1)) (record (a 2)))` folds to 2 — `cval_eq` compares records
         field-wise, deduping the two `{a:1}` records. Pins the record arm of structural const-Set dedup.")
-  (input (const (Set.len #set((record (= a 1)) (record (= a 1)) (record (= a 2))))))
+  (input (const (Set.len #set(#record((= a 1)) #record((= a 1)) #record((= a 2))))))
   (output (: 2 Int64)))
 
 (case "a const Map keyed on a SUM variant folds a lookup by structural key equality"
@@ -973,7 +973,7 @@
            the key-sorted order.")
   (input  (do (def (main)
                 (const (match (List.at (Map.to-list (Map.insert (Map.insert (Map.insert (map) 3 30) 1 10) 2 20)) 0)
-                         ((Option.Some (tuple k v)) (+ (* 100 k) v))
+                         ((Option.Some #tuple(k v)) (+ (* 100 k) v))
                          ((Option.None) -1))))
               (export main)))
   (output (: 110 Int64)))
@@ -983,7 +983,7 @@
            `(tuple 5 50)`, `(+ k v)` = 55.")
   (input  (do (def (main)
                 (const (match (List.at (Map.to-list (Map.insert (Map.insert (map) 5 50) 2 20)) 1)
-                         ((Option.Some (tuple k v)) (+ k v))
+                         ((Option.Some #tuple(k v)) (+ k v))
                          ((Option.None) -1))))
               (export main)))
   (output (: 55 Int64)))
@@ -993,7 +993,7 @@
            `(tuple \"ab\" 1)` — value 1. Pins the String-key canonical order for the Map fold.")
   (input  (do (def (main)
                 (const (match (List.at (Map.to-list (Map.insert (Map.insert (map) "bb" 2) "ab" 1)) 0)
-                         ((Option.Some (tuple k v)) v)
+                         ((Option.Some #tuple(k v)) v)
                          ((Option.None) -1))))
               (export main)))
   (output (: 1 Int64)))
@@ -1004,8 +1004,8 @@
            `(k v)` tuples as the COMPILE-TIME fold — both key-sorted. Pins that `const_key_order` (compile) and
            `value_cmp_shaped` (runtime) agree for Map keys, catching any drift between the two impls.")
   (input  (do (def (run (: n Int64))
-                (= (tuple 1 (Map.to-list (Map.insert (Map.insert (map) n 10) (+ n 1) 20)))
-                   (tuple 1 (const (Map.to-list (Map.insert (Map.insert (map) 3 10) 4 20))))))
+                (= #tuple(1 (Map.to-list (Map.insert (Map.insert (map) n 10) (+ n 1) 20)))
+                   #tuple(1 (const (Map.to-list (Map.insert (Map.insert (map) 3 10) 4 20))))))
               (export run)))
   (call   run 3)
   (output (: true Bool)))
@@ -1022,19 +1022,19 @@
   (doc    "`(Set.of (list 3 1 2 3))` folds to the 3-member set `{1,2,3}`; `Set.to-list` materializes them in
            canonical value order `(1 2 3)` — insertion order and the duplicate `3` are both erased. Pins that
            the const fold's element ORDER is the canonical numeric-ascending order.")
-  (input  (const (= (Set.to-list #set(3 1 2 3)) (list 1 2 3))))
+  (input  (const (= (Set.to-list #set(3 1 2 3)) #list(1 2 3))))
   (output (: true Bool)))
 
 (case "a const Set.to-list orders negative ints numerically, not by encoding"
   (doc    "Negatives sort by NUMERIC value (`-3 < 0 < 2 < 5`), not a two's-complement byte order — the canonical
            value order is numeric. `(Set.to-list (Set.of (list 5 -3 0 -3 2)))` folds to `(-3 0 2 5)`.")
-  (input  (const (= (Set.to-list #set(5 -3 0 -3 2)) (list -3 0 2 5))))
+  (input  (const (= (Set.to-list #set(5 -3 0 -3 2)) #list(-3 0 2 5))))
   (output (: true Bool)))
 
 (case "a const Set.to-list orders strings lexicographically"
   (doc    "String elements sort lexicographically (the canonical String value order). `(Set.to-list (Set.of
            (list \"banana\" \"apple\" \"cherry\")))` folds to `(\"apple\" \"banana\" \"cherry\")`.")
-  (input  (const (= (Set.to-list #set("banana" "apple" "cherry")) (list "apple" "banana" "cherry"))))
+  (input  (const (= (Set.to-list #set("banana" "apple" "cherry")) #list("apple" "banana" "cherry"))))
   (output (: true Bool)))
 
 (case "a const Set.to-list order byte-matches the RUNTIME set-to-list op (cross-check)"
@@ -1060,9 +1060,9 @@
            the head is `(1,10)` (not `(1,99)`): `(+ (* 100 k) v)` = 110. Dedups a repeated tuple. Pins the
            element-wise recursive tuple order matching the runtime (19-sets).")
   (input  (do (def (main)
-                (const (+ (* 1000 (List.len (Set.to-list #set((tuple 3 30) (tuple 1 99) (tuple 1 10) (tuple 1 10)))))
-                          (match (List.at (Set.to-list #set((tuple 3 30) (tuple 1 99) (tuple 1 10))) 0)
-                            ((Option.Some (tuple k v)) (+ (* 100 k) v))
+                (const (+ (* 1000 (List.len (Set.to-list #set(#tuple(3 30) #tuple(1 99) #tuple(1 10) #tuple(1 10)))))
+                          (match (List.at (Set.to-list #set(#tuple(3 30) #tuple(1 99) #tuple(1 10))) 0)
+                            ((Option.Some #tuple(k v)) (+ (* 100 k) v))
                             ((Option.None) -1)))))
               (export main)))
   (output (: 3110 Int64)))
@@ -1072,8 +1072,8 @@
            n)`) equals the COMPILE-TIME fold of `{(1,10),(2,20),(3,30)}` — both lexicographically ordered.
            Pins that `const_key_order`'s recursive Tuple arm agrees with the runtime tuple order.")
   (input  (do (def (run (: n Int64))
-                (= (Set.to-list (Set.insert #set((tuple 1 10) (tuple 3 30)) (tuple 2 n)))
-                   (const (Set.to-list #set((tuple 1 10) (tuple 2 20) (tuple 3 30))))))
+                (= (Set.to-list (Set.insert #set(#tuple(1 10) #tuple(3 30)) #tuple(2 n)))
+                   (const (Set.to-list #set(#tuple(1 10) #tuple(2 20) #tuple(3 30))))))
               (export run)))
   (call   run 20)
   (output (: true Bool)))
@@ -1124,8 +1124,8 @@
            pick). Reads the head's `lo` (9) and confirms len 2 (the repeat deduped): `2*1000 + 9`. Pins record
            field-wise order in the name-canonical order matching the runtime, discriminated against source order.")
   (input  (do (def (main)
-                (const (+ (* 1000 (List.len (Set.to-list #set((record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2)) (record (= lo 9) (= hi 1))))))
-                          (match (List.at (Set.to-list #set((record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2)))) 0)
+                (const (+ (* 1000 (List.len (Set.to-list #set(#record((= lo 9) (= hi 1)) #record((= lo 0) (= hi 2)) #record((= lo 9) (= hi 1))))))
+                          (match (List.at (Set.to-list #set(#record((= lo 9) (= hi 1)) #record((= lo 0) (= hi 2)))) 0)
                             ((Option.Some r) (. r lo))
                             ((Option.None) -1)))))
               (export main)))
@@ -1138,8 +1138,8 @@
            `const_key_order`'s Record arm agrees with the runtime `value_cmp_shaped` Record order (descriptor field
            order == name-canonical == the compiler's `BTreeMap<Symbol>` iteration order).")
   (input  (do (def (run (: n Int64))
-                (= (Set.to-list (Set.insert #set((record (= lo 9) (= hi 1))) (record (= lo 0) (= hi n))))
-                   (const (Set.to-list #set((record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2)))))))
+                (= (Set.to-list (Set.insert #set(#record((= lo 9) (= hi 1))) #record((= lo 0) (= hi n))))
+                   (const (Set.to-list #set(#record((= lo 9) (= hi 1)) #record((= lo 0) (= hi 2)))))))
               (export run)))
   (call   run 2)
   (output (: true Bool)))
@@ -1159,7 +1159,7 @@
            Less/Equal/Greater sum) via `const_key_order`, else it rejects — so this pins the compound compare fold.
            Matches the folded Ordering to an Int (Less → 1).")
   (input  (do (def (main)
-                (const (match (Ordering.of (tuple 1 2) (tuple 1 3))
+                (const (match (Ordering.of #tuple(1 2) #tuple(1 3))
                          ((Ordering.Less _)    1)
                          ((Ordering.Equal _)   2)
                          ((Ordering.Greater _) 3))))
@@ -1173,7 +1173,7 @@
            decide → Greater). The const demand forces the fold via `const_key_order`'s Record arm; Less → 1 (a wrong
            field order would yield Greater → 3).")
   (input  (do (def (main)
-                (const (match (Ordering.of (record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2)))
+                (const (match (Ordering.of #record((= lo 9) (= hi 1)) #record((= lo 0) (= hi 2)))
                          ((Ordering.Less _)    1)
                          ((Ordering.Equal _)   2)
                          ((Ordering.Greater _) 3))))
@@ -1200,8 +1200,8 @@
   (input  (do (def (rank (: o Ordering))
                 (match o ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
               (def (run (: n Int64))
-                (= (rank (Ordering.of (tuple 1 n) (tuple 1 3)))
-                   (const (rank (Ordering.of (tuple 1 2) (tuple 1 3))))))
+                (= (rank (Ordering.of #tuple(1 n) #tuple(1 3)))
+                   (const (rank (Ordering.of #tuple(1 2) #tuple(1 3))))))
               (export run)))
   (call   run 2)
   (output (: true Bool)))
@@ -1235,7 +1235,7 @@
            Char was blessed into the walk like Bytes/PR#1120 (compiler-only: the runtime `value_cmp_shaped`
            already orders a Char-in-compound as its codepoint `Shape::Int`).")
   (input  (do (def (main)
-                (match (Ordering.of (tuple 1 #\a) (tuple 1 #\b))
+                (match (Ordering.of #tuple(1 #\a) #tuple(1 #\b))
                   ((Ordering.Less _)    1)
                   ((Ordering.Equal _)   2)
                   ((Ordering.Greater _) 3)))
@@ -1254,7 +1254,7 @@
   (doc    "`(< (tuple 1 2) (tuple 1 3))`: tuples order element-wise — position 0 equal, position 1 decides 2 < 3 →
            true. The `(const ...)` demand forces the compile-time Bool via `const_key_order`, else it rejects, so this
            pins the compound ordering fold (the boolean-operator twin of the `Ordering.of` tuple case above).")
-  (input  (do (def (main) (const (if (< (tuple 1 2) (tuple 1 3)) 1 0))) (export main)))
+  (input  (do (def (main) (const (if (< #tuple(1 2) #tuple(1 3)) 1 0))) (export main)))
   (output (: 1 Int64)))
 
 (case "a const (>=) of two constant RECORDS folds in canonical (name-lexicographic) field order"
@@ -1263,7 +1263,7 @@
            `hi 1` < `hi 2` → the record is LESS, so `>=` is false → 0, IGNORING that `lo 9` > `lo 0` (a source/decl
            order would make `>=` true → 1). Pins record field-wise ordering in the boolean operator.")
   (input  (do (def (main)
-                (const (if (>= (record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2))) 1 0)))
+                (const (if (>= #record((= lo 9) (= hi 1)) #record((= lo 0) (= hi 2))) 1 0)))
               (export main)))
   (output (: 0 Int64)))
 
@@ -1279,8 +1279,8 @@
            `(tuple 2 (Option.Some 1))` vs `(tuple 2 (Option.Some 9))` (position 0 equal, then Some 1 < Some 9 → Less);
            both must fold to agree → true. Pins that the two compound folds surface the SAME order (cannot diverge).")
   (input  (do (def (main)
-                (const (= (< (tuple 2 (Option.Some 1)) (tuple 2 (Option.Some 9)))
-                          (match (Ordering.of (tuple 2 (Option.Some 1)) (tuple 2 (Option.Some 9)))
+                (const (= (< #tuple(2 (Option.Some 1)) #tuple(2 (Option.Some 9)))
+                          (match (Ordering.of #tuple(2 (Option.Some 1)) #tuple(2 (Option.Some 9)))
                             ((Ordering.Less _) true) ((Ordering.Equal _) false) ((Ordering.Greater _) false)))))
               (export main)))
   (output (: true Bool)))
@@ -1308,21 +1308,21 @@
   (doc    "`(< (list 1 2) (list 1 3))`: element 0 equal (1=1), element 1 decides 2 < 3 → true. The `(const ...)`
            demand forces the compile-time Bool via `const_key_order`'s List arm, else it rejects. The const face of
            03-equality:568 (which runs the runtime walk on inlined-const lists → same answer, now folded).")
-  (input  (do (def (main) (const (if (< (list 1 2) (list 1 3)) 1 0))) (export main)))
+  (input  (do (def (main) (const (if (< #list(1 2) #list(1 3)) 1 0))) (export main)))
   (output (: 1 Int64)))
 
 (case "a const list PREFIX orders less than its extension (shorter-is-less tiebreak) under the const demand"
   (doc    "The prefix/length tiebreak: `[1]` is a proper prefix of `[1,2]`, so `(< (list 1) (list 1 2))` → true (a
            shorter list on a common prefix is less — UNLIKE a fixed-arity tuple, where a length mismatch is a
            different type). Pins the List arm's `len().cmp()` fallthrough. The const face of 03-equality:580.")
-  (input  (do (def (main) (const (if (< (list 1) (list 1 2)) 1 0))) (export main)))
+  (input  (do (def (main) (const (if (< #list(1) #list(1 2)) 1 0))) (export main)))
   (output (: 1 Int64)))
 
 (case "a const (Ordering.of) of two constant LISTS folds to an Ordering (longer-with-greater-tail)"
   (doc    "`Ordering.of (list 3) (list 1)`: element 0 decides 3 > 1 → Greater (the length never matters once an
            element differs). Folds via `const_key_order`'s List arm under the const demand → Greater → 3.")
   (input  (do (def (main)
-                (const (match (Ordering.of (list 3) (list 1))
+                (const (match (Ordering.of #list(3) #list(1))
                          ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3))))
               (export main)))
   (output (: 3 Int64)))
@@ -1332,7 +1332,7 @@
            field 0 equal (0=0), field 1 is a List deciding `[1,2] < [1,3]` → true. Pins that `const_key_order`
            recurses tuple → list, and `is_orderable_compound` blesses a `(Tuple Int64 (List Int64))`.")
   (input  (do (def (main)
-                (const (if (< (tuple 0 (list 1 2)) (tuple 0 (list 1 3))) 1 0)))
+                (const (if (< #tuple(0 #list(1 2)) #tuple(0 #list(1 3))) 1 0)))
               (export main)))
   (output (: 1 Int64)))
 
@@ -1342,7 +1342,7 @@
            [1,3])` = true, and the const `(< [1,2] [1,3])` = true → equal. Pins the List arm matches the runtime
            `value_cmp_shaped` order.")
   (input  (do (def (run (: n Int64))
-                (= (< (list 1 n) (list 1 3)) (const (< (list 1 2) (list 1 3)))))
+                (= (< #list(1 n) #list(1 3)) (const (< #list(1 2) #list(1 3)))))
               (export run)))
   (call   run 2)
   (output (: true Bool)))
@@ -1353,7 +1353,7 @@
            for it, so an orderability check on that side ALONE mis-declined it as a float/set/map no-total-order case.
            `comparison_compound_ty` prefers the sibling's resolved `(List Int64)`, so the fold fires: `[]` is a proper
            prefix of `[1]`, so `[] < [1]` → true, folded under the `(const ...)` demand. No ascription needed.")
-  (input  (do (def (main) (const (if (< (list) (list 1)) 1 0))) (export main)))
+  (input  (do (def (main) (const (if (< #list() #list(1)) 1 0))) (export main)))
   (output (: 1 Int64)))
 
 (case "cll3 a const (Ordering.of) of a bare empty vs populated list folds to Less (prefix), sibling-resolved"
@@ -1361,7 +1361,7 @@
            (shorter-is-less). The bare empty list's element type resolves from the sibling `(List Int64)` via
            `comparison_compound_ty`, so the fold fires under the const demand → Less → 1.")
   (input  (do (def (main)
-                (const (match (Ordering.of (list) (list 5))
+                (const (match (Ordering.of #list() #list(5))
                          ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3))))
               (export main)))
   (output (: 1 Int64)))
@@ -1376,8 +1376,8 @@
            the last is 128 (0x80 is 128 unsigned, NOT signed −128). Pins Bytes const-fold + the unsigned order
            matching 19-sets' runtime pin; also dedups (the len is 3 distinct).")
   (input  (do (def (main)
-                (const (+ (* 1000 (List.len (Set.to-list #set((Bytes.of (list 128)) (Bytes.of (list 5)) (Bytes.of (list 127))))))
-                          (match (List.at (Set.to-list #set((Bytes.of (list 128)) (Bytes.of (list 5)) (Bytes.of (list 127)))) 2)
+                (const (+ (* 1000 (List.len (Set.to-list #set((Bytes.of #list(128)) (Bytes.of #list(5)) (Bytes.of #list(127))))))
+                          (match (List.at (Set.to-list #set((Bytes.of #list(128)) (Bytes.of #list(5)) (Bytes.of #list(127)))) 2)
                             ((Option.Some h) (match (Bytes.at h 0) ((Option.Some v) v) ((Option.None) -1)))
                             ((Option.None) -2)))))
               (export main)))
@@ -1388,8 +1388,8 @@
            COMPILE-TIME fold of the same set — both order the single-byte Bytes {5, 9} identically. Pins that
            `const_key_order`'s Bytes arm (Rust [u8] cmp) agrees with the runtime's unsigned-byte order.")
   (input  (do (def (run (: n Int64))
-                (= (Set.to-list (Set.insert #set((Bytes.of (list 5))) (Bytes.of (list (UInt8.wrap n)))))
-                   (const (Set.to-list #set((Bytes.of (list 5)) (Bytes.of (list 9)))))))
+                (= (Set.to-list (Set.insert #set((Bytes.of #list(5))) (Bytes.of #list((UInt8.wrap n)))))
+                   (const (Set.to-list #set((Bytes.of #list(5)) (Bytes.of #list(9)))))))
               (export run)))
   (call   run 9)
   (output (: true Bool)))
@@ -1428,7 +1428,7 @@
   (input  (do
             (def (acc (const (: n Int64)))
               (if (= n 0) #set() (Set.insert (acc (- n 1)) n)))
-            (def (main) (const (= (Set.to-list (acc 3)) (list 1 2 3))))
+            (def (main) (const (= (Set.to-list (acc 3)) #list(1 2 3))))
             (export main)))
   (output (: true Bool)))
 
@@ -1539,7 +1539,7 @@
   (input  (do
             (def (grow (const (: s (Set Int64))) (const (: k Int64)))
               (if (= k 0) s
-                  (grow (Set.insert s (match (Ordering.of (tuple k 0) (tuple 2 0))
+                  (grow (Set.insert s (match (Ordering.of #tuple(k 0) #tuple(2 0))
                                         ((Ordering.Less _)    100)
                                         ((Ordering.Equal _)   200)
                                         ((Ordering.Greater _) 300))) (- k 1))))
@@ -1620,10 +1620,10 @@
     (effect E (op tick (-> Int64)))
     (def (main)
       (const
-        (handle E (tuple 1 10)
+        (handle E #tuple(1 10)
           ((tick () s
              (match s
-               ((tuple a b) (resume (+ a b) (tuple (+ a 1) (* b 2)))))))
+               (#tuple(a b) (resume (+ a b) #tuple((+ a 1) (* b 2)))))))
           (+ (E.tick) (E.tick)))))
     (export main)))
   (output (: 33 Int64)))
@@ -1633,10 +1633,10 @@
     (effect E (op tick (-> Int64)))
     (def (main)
       (const
-        (handle E (record (= a 1) (= b 10))
+        (handle E #record((= a 1) (= b 10))
           ((tick () s
              (resume (+ (. s a) (. s b))
-                     (record (= a (+ (. s a) 1)) (= b (* (. s b) 2))))))
+                     #record((= a (+ (. s a) 1)) (= b (* (. s b) 2))))))
           (+ (E.tick) (E.tick)))))
     (export main)))
   (output (: 33 Int64)))
@@ -1663,8 +1663,8 @@
 (case "cn02c the tuple twin — bare-call taken trap stays a runtime trap (by-design)"
   (input (do
     (def (f (const (: t (Tuple Int64 Int64))))
-      (match t ((tuple a b) (if (= a b) (trap "cn02c fields met") a))))
-    (def (main) (f (tuple 3 3)))
+      (match t (#tuple(a b) (if (= a b) (trap "cn02c fields met") a))))
+    (def (main) (f #tuple(3 3)))
     (export main)))
   (trap "unreachable"))
 
@@ -1697,14 +1697,14 @@
   (doc    "The nested case (#3621: the op reads list elements via vec-get): `(Ast.List (list (Ast.Name \"f\")
            (Ast.Int (BigInt.of n))))` at runtime renders `(f 2)` — parens, space-separated, each element
            recursively, identical to `print_ast_value`.")
-  (input  (do (def (run (: n Int64)) (Ast.print (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of n)))))) (export run)))
+  (input  (do (def (run (: n Int64)) (Ast.print (Ast.List #list((Ast.Name "f") (Ast.Int (BigInt.of n)))))) (export run)))
   (call   run 2)
   (output (: "(f 2)" String))
   (live-objects known-leak 1))
 
 (case "runtime Ast.print renders a doubly-nested Ast.List"
   (doc    "A list-of-list — `((f 2))` — pins the recursive vec-get walk to depth 2.")
-  (input  (do (def (run (: n Int64)) (Ast.print (Ast.List (list (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of n)))))))) (export run)))
+  (input  (do (def (run (: n Int64)) (Ast.print (Ast.List #list((Ast.List #list((Ast.Name "f") (Ast.Int (BigInt.of n)))))))) (export run)))
   (call   run 2)
   (output (: "((f 2))" String))
   (live-objects known-leak 1))
@@ -1745,7 +1745,7 @@
   (doc    "The nested case: `(Ast.List (list (Ast.Name \"f\") (Ast.Int (BigInt.of n))))` at runtime serializes
            via the op's recursive walk (vec-get over the list, each element encoded by variant) into a 25-byte
            canonical document — pinning the recursive encode path end-to-end through the heap op.")
-  (input  (do (def (run (: n Int64)) (Bytes.len (Ast.encode (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of n))))))) (export run)))
+  (input  (do (def (run (: n Int64)) (Bytes.len (Ast.encode (Ast.List #list((Ast.Name "f") (Ast.Int (BigInt.of n))))))) (export run)))
   (call   run 2) (output (: 25 Int64)))
 
 ; --- Primitive 2: const execution — a (const …) HANDLE with growing collection state folds (cm02) --------
@@ -1763,7 +1763,7 @@
            const-evaluates it.")
   (input  (do
             (effect E (op tick (-> Unit Int64)))
-            (def (main) (const (handle E (list 7) ((tick (u) s (resume (List.len s) (List.prepend s 0)))) (+ (* 10 (E.tick)) (E.tick)))))
+            (def (main) (const (handle E #list(7) ((tick (u) s (resume (List.len s) (List.prepend s 0)))) (+ (* 10 (E.tick)) (E.tick)))))
             (export main)))
   (output (: 12 Int64)))
 
@@ -1782,7 +1782,7 @@
   (input  (do
             (effect E (op tick (-> Int64)))
             (def (main)
-              (const (handle E (list 7)
+              (const (handle E #list(7)
                 ((tick () s (resume (List.len s) (List.prepend s 0))))
                 (+ (* 10 (E.tick)) (E.tick)))))
             (export main)))
@@ -1865,16 +1865,16 @@
   (input  (do
             (def (f (const (: t (Tuple Int64 Int64))))
               (match t
-                ((tuple a b) (if (= a b) (trap "dc02 tuple fields met") (f (tuple (- a 1) b))))))
-            (def (main) (f (tuple 3 1)))
+                (#tuple(a b) (if (= a b) (trap "dc02 tuple fields met") (f #tuple((- a 1) b))))))
+            (def (main) (f #tuple(3 1)))
             (export main)))
   (error  CDZ0304 (message "dc02 tuple fields met")))
 
 (case "dc03 record const-param countdown trap surfaces CDZ0304"
   (input  (do
             (def (f (const (: r (Record (: n Int64)))))
-              (if (= (. r n) 0) (trap "dc03 record field reached zero") (f (record (= n (- (. r n) 1))))))
-            (def (main) (f (record (= n 2))))
+              (if (= (. r n) 0) (trap "dc03 record field reached zero") (f #record((= n (- (. r n) 1))))))
+            (def (main) (f #record((= n 2))))
             (export main)))
   (error  CDZ0304 (message "dc03 record field reached zero")))
 
@@ -1911,7 +1911,7 @@
 (case "s2b INLINE record projection in the recursive argument trap surfaces CDZ0304"
   (input  (do
             (def (f (const (: n Int64)))
-              (if (= n 0) (trap "s2b inline record zero") (f (. (record (= lo (- n 1)) (= hi 9)) lo))))
+              (if (= n 0) (trap "s2b inline record zero") (f (. #record((= lo (- n 1)) (= hi 9)) lo))))
             (def (main) (f 3))
             (export main)))
   (error  CDZ0304 (message "s2b inline record zero")))
@@ -1919,14 +1919,14 @@
 (case "s2c INLINE tuple destructure in the recursive body trap surfaces CDZ0304"
   (input  (do
             (def (f (const (: n Int64)))
-              (if (= n 0) (trap "s2c inline tuple zero") (match (tuple (- n 1) 9) ((tuple a b) (f a)))))
+              (if (= n 0) (trap "s2c inline tuple zero") (match #tuple((- n 1) 9) (#tuple(a b) (f a)))))
             (def (main) (f 3))
             (export main)))
   (error  CDZ0304 (message "s2c inline tuple zero")))
 
 (case "s2d record-returning const helper projected in the recursive argument trap surfaces CDZ0304"
   (input  (do
-            (def (mk (const (: n Int64))) (record (= lo n) (= hi (* n 2))))
+            (def (mk (const (: n Int64))) #record((= lo n) (= hi (* n 2))))
             (def (f (const (: n Int64)))
               (if (= n 0) (trap "s2d projected to zero") (f (. (mk (- n 1)) lo))))
             (def (main) (f 3))
@@ -2087,8 +2087,8 @@
               (match a ((Ast.List xs) (leaves-list xs)) (_ 1)))
             (def (leaves-list (const (: xs (List Ast))))
               (match xs
-                ((list) 0)
-                ((list h .. t) (+ (leaves h) (leaves-list t)))))
+                (#list() 0)
+                (#list(h .. t) (+ (leaves h) (leaves-list t)))))
             (def (main)
               (const (if (= (leaves (quote (f 1 2))) 3)
                   (trap "cgf01 folded three")
@@ -2115,13 +2115,13 @@
   (input  (do
             (def (count (const (: stack (List Ast))))
               (match stack
-                ((list) 0)
-                ((list h .. t)
+                (#list() 0)
+                (#list(h .. t)
                   (match h
                     ((Ast.List es) (count (List.concat es t)))
                     (_ (+ 1 (count t)))))))
             (def (main)
-              (const (if (= (count (list (quote (f 1 2)))) 3)
+              (const (if (= (count #list((quote (f 1 2)))) 3)
                   (trap "cgf05 folded three")
                   (trap "cgf05 WRONG"))))
             (export main)))
@@ -2131,13 +2131,13 @@
   (input  (do
             (def (leaves-list (const (: xs (List Ast))))
               (match xs
-                ((list) 0)
-                ((list h .. t)
+                (#list() 0)
+                (#list(h .. t)
                   (match h
                     ((Ast.List es) (+ (leaves-list es) (leaves-list t)))
                     (_ (+ 1 (leaves-list t)))))))
             (def (forms-of (const (: mm Ast)))
-              (match mm ((Ast.List fs) fs) (_ (: (list) (List Ast)))))
+              (match mm ((Ast.List fs) fs) (_ (: #list() (List Ast)))))
             (def (main)
               (const (if (> (leaves-list (forms-of Ast.module)) 0)
                   (trap "cgf04t folded positive")
@@ -2155,11 +2155,11 @@
             (def (head-name (const (: form Ast))) (name-of (child form 0)))
             (def (keep-f (const (: xs (List Ast))))
               (match xs
-                ((list) (: (list) (List Ast)))
-                ((list h .. t)
+                (#list() (: #list() (List Ast)))
+                (#list(h .. t)
                   (if (= (head-name h) "f") (List.prepend (keep-f t) h) (keep-f t)))))
             (def (main)
-              (const (if (= (List.len (keep-f (list (quote (f 1)) (quote (g 2))))) 1)
+              (const (if (= (List.len (keep-f #list((quote (f 1)) (quote (g 2))))) 1)
                   (trap "cgf06 folded one")
                   (trap "cgf06 WRONG"))))
             (export main)))
@@ -2181,7 +2181,7 @@
   (input (do
     (def (main)
       (const (match (List.at (Map.to-list (Map.insert (map) 7 70)) 0)
-               ((Option.Some (tuple k v)) (+ k v))
+               ((Option.Some #tuple(k v)) (+ k v))
                ((Option.None) -1))))
     (export main)))
   (output (: 77 Int64)))
@@ -2197,13 +2197,13 @@
         orderability. A tuple carrying a FLOAT is genuinely non-orderable (`const_key_order` declines a float),
         so the per-element pre-check keeps the runtime op → the const demand REJECTS. (A tuple of orderable
         scalars now folds — see the tuple-order cases above; this pins the LONE-non-orderable soundness face.)")
-  (input (do (def (main) (const (List.len (Set.to-list #set((tuple 1.5 2)))))) (export main)))
+  (input (do (def (main) (const (List.len (Set.to-list #set(#tuple(1.5 2)))))) (export main)))
   (error CDZ0201 (message "compile-time constant")))
 
 (case "lnr2 a const Map.to-list with a LONE non-orderable KEY still declines"
   (doc "The Map-key twin: a lone tuple KEY carrying a FLOAT is non-orderable, so the per-element pre-check
         keeps the runtime op and the const demand REJECTS.")
-  (input (do (def (main) (const (List.len (Map.to-list (Map.insert (map) (tuple 1.5 2) 10))))) (export main)))
+  (input (do (def (main) (const (List.len (Map.to-list (Map.insert (map) #tuple(1.5 2) 10))))) (export main)))
   (error CDZ0201 (message "compile-time constant")))
 
 (case "lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0"
@@ -2246,7 +2246,7 @@
 (case "bk1 two runtime Blake3 digests of the same bytes bare-compare equal"
   (input (do
     (def (main (: n Int64))
-      (if (= (Blake3.of (Bytes.of (list (UInt8.wrap n) 2))) (Blake3.of (Bytes.of (list (UInt8.wrap n) 2)))) 1 0))
+      (if (= (Blake3.of (Bytes.of #list((UInt8.wrap n) 2))) (Blake3.of (Bytes.of #list((UInt8.wrap n) 2)))) 1 0))
     (export main)))
   (call main (: 5 Int64))
   (output (: 1 Int64))
@@ -2255,7 +2255,7 @@
 (case "bk2 one-byte-different inputs bare-compare unequal digests"
   (input (do
     (def (main (: n Int64))
-      (if (= (Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list (UInt8.wrap (+ n 1)))))) 1 0))
+      (if (= (Blake3.of (Bytes.of #list((UInt8.wrap n)))) (Blake3.of (Bytes.of #list((UInt8.wrap (+ n 1)))))) 1 0))
     (export main)))
   (call main (: 5 Int64))
   (output (: 0 Int64))
@@ -2264,7 +2264,7 @@
 (case "bk3 runtime digests dedup as set members by content"
   (input (do
     (def (main (: n Int64))
-      (Set.len #set((Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list 9))))))
+      (Set.len #set((Blake3.of (Bytes.of #list((UInt8.wrap n)))) (Blake3.of (Bytes.of #list((UInt8.wrap n)))) (Blake3.of (Bytes.of #list(9))))))
     (export main)))
   (call main (: 5 Int64))
   (output (: 2 Int64))
@@ -2273,7 +2273,7 @@
 (case "bk4 a Map keyed by a runtime digest is findable by a fresh recompute"
   (input (do
     (def (main (: n Int64))
-      (match (Map.lookup (Map.insert (map) (Blake3.of (Bytes.of (list (UInt8.wrap n)))) 42) (Blake3.of (Bytes.of (list (UInt8.wrap n)))))
+      (match (Map.lookup (Map.insert (map) (Blake3.of (Bytes.of #list((UInt8.wrap n)))) 42) (Blake3.of (Bytes.of #list((UInt8.wrap n)))))
         ((Option.Some v) v)
         ((Option.None) -1)))
     (export main)))
@@ -2411,7 +2411,7 @@
   (input (do
     (def (main)
       (const (match (List.at (Map.to-list (Map.insert (Map.insert (map) #\c 3) #\a 1)) 0)
-               ((Option.Some (tuple k v)) (if (= k #\a) v -2))
+               ((Option.Some #tuple(k v)) (if (= k #\a) v -2))
                ((Option.None) -1))))
     (export main)))
   (output (: 1 Int64)))
@@ -2438,7 +2438,7 @@
            construction) rather than fold to the constant 2 and DROP the trap.")
   (input (do
     (def (main (: d Int64))
-      (List.len (list (Rational.of 1 2) (Rational.of 3 d))))
+      (List.len #list((Rational.of 1 2) (Rational.of 3 d))))
     (export main)))
   (call main (: 0 Int64))
   (trap "unreachable")
@@ -2449,7 +2449,7 @@
   (doc    "The trap-free twin of the guard above: every element of `(list 1 2 3)` is a provably
            trap-free literal, so List.len folds to the constant arity 3 — the trap-preservation guard
            did not over-decline on constant lists.")
-  (input (do (def (main) (List.len (list 1 2 3))) (export main)))
+  (input (do (def (main) (List.len #list(1 2 3))) (export main)))
   (output (: 3 Int64)))
 
 ; -- select-ification trap parity (behavioral half migrated from rcdzc a_possibly_trapping_if_arm_is_not_select_ified,

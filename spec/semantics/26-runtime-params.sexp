@@ -427,7 +427,7 @@
         (def (main)
           (host (Param)
             (do
-              (def b (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4 5))))
+              (def b (Bytes.concat (Bytes.of #list(1 2)) (Bytes.of #list(3 4 5))))
               (match (Bytes.slice b (Param.cut) 2)
                 ((Some w) (+ (* 10 (match (Bytes.at w 0) ((Some v) v) ((None _u) -1)))
                              (match (Bytes.at w 1) ((Some v) v) ((None _u) -1))))
@@ -448,7 +448,7 @@
         (def (main)
           (host (Param)
             (do
-              (def b (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4 5))))
+              (def b (Bytes.concat (Bytes.of #list(1 2)) (Bytes.of #list(3 4 5))))
               (match (Bytes.slice b (Param.cut) 2)
                 ((Some w) (+ (* 10 (match (Bytes.at w 0) ((Some v) v) ((None _u) -1)))
                              (match (Bytes.at w 1) ((Some v) v) ((None _u) -1))))
@@ -469,7 +469,7 @@
         (def (main)
           (host (Param)
             (do
-              (def b (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4 5))))
+              (def b (Bytes.concat (Bytes.of #list(1 2)) (Bytes.of #list(3 4 5))))
               (match (Bytes.slice b (Param.cut) 2)
                 ((Some w) (+ (* 10 (match (Bytes.at w 0) ((Some v) v) ((None _u) -1)))
                              (match (Bytes.at w 1) ((Some v) v) ((None _u) -1))))
@@ -538,7 +538,7 @@
               (host (Param)
                 (do
                   (def n (Param.size))
-                  (def xs (fill n (list)))
+                  (def xs (fill n #list()))
                   (+ (* 10 (List.len xs))
                      (match (List.at xs 0) ((Some v) v) ((None _u) -1))))))
             (export main)))

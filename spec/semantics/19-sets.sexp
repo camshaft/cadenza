@@ -84,10 +84,10 @@
            = 210. Pins compound-element dedup + order-sensitive compound membership.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (let ((s #set((tuple a 1) (tuple b 2) (tuple a 1))))
+              (let ((s #set(#tuple(a 1) #tuple(b 2) #tuple(a 1))))
                 (+ (* 100 (Set.len s))
-                   (+ (* 10 (if (Set.contains s (tuple a 1)) 1 0))
-                      (if (Set.contains s (tuple 1 a)) 1 0)))))
+                   (+ (* 10 (if (Set.contains s #tuple(a 1)) 1 0))
+                      (if (Set.contains s #tuple(1 a)) 1 0)))))
             (export main)))
   (call main (: 5 Int64) (: 5 Int64)) (output (: 210 Int64))
   (call main (: 5 Int64) (: 7 Int64)) (output (: 210 Int64)))
@@ -100,7 +100,7 @@
            tuple case.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (Set.len #set((list a b) (list b a) (list a b))))
+              (Set.len #set(#list(a b) #list(b a) #list(a b))))
             (export main)))
   (call main (: 3 Int64) (: 8 Int64)) (output (: 2 Int64))
   (call main (: 5 Int64) (: 5 Int64)) (output (: 1 Int64)))
@@ -118,10 +118,10 @@
            independence a tuple element cannot witness.")
   (input  (do
             (def (main (: k Int64))
-              (let ((s #set((record (= x 1) (= y 2)) (record (= x 3) (= y k)) (record (= x 1) (= y 2)))))
+              (let ((s #set(#record((= x 1) (= y 2)) #record((= x 3) (= y k)) #record((= x 1) (= y 2)))))
                 (+ (* 100 (Set.len s))
-                   (+ (* 10 (if (Set.contains s (record (= x 1) (= y 2))) 1 0))
-                      (if (Set.contains s (record (= y 2) (= x 1))) 1 0)))))
+                   (+ (* 10 (if (Set.contains s #record((= x 1) (= y 2))) 1 0))
+                      (if (Set.contains s #record((= y 2) (= x 1))) 1 0)))))
             (export main)))
   (call main (: 4 Int64)) (output (: 211 Int64)))
 
@@ -338,9 +338,9 @@
            STRUCTURAL equality to `(Set.of (list (tuple 3 4)))` — a set-value `=` walking the CHAMP compound
            elements — so a WRONG surviving tuple (e.g. keeping (1,2) or (5,6)) would fail, not merely a
            wrong count as a `Set.len`-only check would miss.")
-  (input  (= (Set.intersection #set((tuple 1 2) (tuple 3 4))
-                               #set((tuple 3 4) (tuple 5 6)))
-             #set((tuple 3 4))))
+  (input  (= (Set.intersection #set(#tuple(1 2) #tuple(3 4))
+                               #set(#tuple(3 4) #tuple(5 6)))
+             #set(#tuple(3 4))))
   (output (: true Bool)))
 
 (case "the difference of sets of TUPLES removes elements by their whole-tuple content"
@@ -351,9 +351,9 @@
            to `(Set.of (list (tuple 3 4)))` — the set-value `=` compares the whole surviving element, so a
            difference that removed the wrong tuple (leaving (1,2)) would fail, which a `Set.len`-only check
            of the count would not catch.")
-  (input  (= (Set.difference #set((tuple 1 2) (tuple 3 4))
-                             #set((tuple 1 2)))
-             #set((tuple 3 4))))
+  (input  (= (Set.difference #set(#tuple(1 2) #tuple(3 4))
+                             #set(#tuple(1 2)))
+             #set(#tuple(3 4))))
   (output (: true Bool)))
 
 (case "two sets of TUPLES built in different orders compare equal through the compound elements"
@@ -364,8 +364,8 @@
   (input (do
         (def (main (: v Int64))
           (do
-            (def s1 #set((tuple 1 2) (tuple 3 v)))
-            (def s2 #set((tuple 3 4) (tuple 1 2)))
+            (def s1 #set(#tuple(1 2) #tuple(3 v)))
+            (def s2 #set(#tuple(3 4) #tuple(1 2)))
             (if (= s1 s2) 1 0)))
         (export main)))
   (call main (: 4 Int64)) (output (: 1 Int64))
@@ -443,12 +443,12 @@
            410.")
   (input  (do
             (def (main (: a Int64))
-              (let ((s1 #set((tuple 1 2) (tuple 3 a)))
-                    (s2 #set((tuple 3 4) (tuple 5 6))))
+              (let ((s1 #set(#tuple(1 2) #tuple(3 a)))
+                    (s2 #set(#tuple(3 4) #tuple(5 6))))
                 (let ((u (Set.union s1 s2)))
                   (+ (* 100 (Set.len u))
-                     (+ (* 10 (if (Set.contains u (tuple 3 a)) 1 0))
-                        (if (Set.contains u (tuple 4 3)) 1 0))))))
+                     (+ (* 10 (if (Set.contains u #tuple(3 a)) 1 0))
+                        (if (Set.contains u #tuple(4 3)) 1 0))))))
             (export main)))
   (call   main (: 4 Int64)) (output (: 310 Int64))
   (call   main (: 9 Int64)) (output (: 410 Int64)))
@@ -463,8 +463,8 @@
            one of the encoded digits. All three ops in one shape, both regimes.")
   (input  (do
             (def (main (: x Float64))
-              (let ((a #set((tuple x 1) (tuple 2.5 2)))
-                    (b #set((tuple 0.5 1) (tuple 9.5 9))))
+              (let ((a #set(#tuple(x 1) #tuple(2.5 2)))
+                    (b #set(#tuple(0.5 1) #tuple(9.5 9))))
                 (+ (* 100 (Set.len (Set.union a b)))
                    (+ (* 10 (Set.len (Set.intersection a b)))
                       (Set.len (Set.difference a b))))))
@@ -528,12 +528,12 @@
   (input  (do
             (def (toggle (: xs (List Int64)) (: s (Set Int64)))
               (match xs
-                ((list) s)
-                ((list h .. t)
+                (#list() s)
+                (#list(h .. t)
                   (toggle t (if (Set.contains s h) (Set.remove s h) (Set.insert s h))))))
             (def (main (: n Int64))
               (do
-                (def s (toggle (list n 1 2 n 1 3 n) #set()))
+                (def s (toggle #list(n 1 2 n 1 3 n) #set()))
                 (+ (* 100 (Set.len s))
                    (+ (* 10 (if (Set.contains s 1) 1 0))
                       (if (Set.contains s n) 1 0)))))
@@ -557,15 +557,15 @@
   (input  (do
             (def (walk (: xs (List Int64)) (: target Int64) (: seen (Set Int64)) (: i Int64))
               (match xs
-                ((list) -1)
-                ((list h .. t)
+                (#list() -1)
+                (#list(h .. t)
                   (if (Set.contains seen (- target h))
                       i
                       (walk t target (Set.insert seen h) (+ i 1))))))
             (def (two-sum (: xs (List Int64)) (: target Int64))
               (walk xs target #set() 0))
             (def (main (: target Int64))
-              (two-sum (list 2 7 11 15 3) target))
+              (two-sum #list(2 7 11 15 3) target))
             (export main)))
   (call   main (: 9 Int64)) (output (: 1 Int64))
   (call   main (: 18 Int64)) (output (: 2 Int64))
@@ -594,13 +594,13 @@
               (if (= n 0) acc (sq-digits (/ n 10) (+ acc (* (% n 10) (% n 10))))))
             (def (walk (: n Int64) (: seen (Set Int64)) (: steps Int64))
               (if (= n 1)
-                  (tuple 1 steps)
+                  #tuple(1 steps)
                   (if (Set.contains seen n)
-                      (tuple 0 steps)
+                      #tuple(0 steps)
                       (walk (sq-digits n 0) (Set.insert seen n) (+ steps 1)))))
             (def (main (: n Int64))
               (match (walk n #set() 0)
-                ((tuple h steps) (+ (* h 100) steps))))
+                (#tuple(h steps) (+ (* h 100) steps))))
             (export main)))
   (call   main (: 19 Int64)) (output (: 104 Int64))
   (call   main (: 4 Int64)) (output (: 8 Int64))
@@ -622,27 +622,27 @@
            start=4 → the sink alone (104). Encoding: len·100 + element sum via Set.to-list.")
   (input  (do
             (def (nbrs (: g (Map Int64 (List Int64))) (: n Int64))
-              (match (Map.lookup g n) ((Some xs) xs) ((None _u) (list))))
+              (match (Map.lookup g n) ((Some xs) xs) ((None _u) #list())))
             (def (push-all (: xs (List Int64)) (: work (List Int64)))
               (match xs
-                ((list) work)
-                ((list h .. t) (push-all t (List.push work h)))))
+                (#list() work)
+                (#list(h .. t) (push-all t (List.push work h)))))
             (def (drain (: g (Map Int64 (List Int64))) (: work (List Int64)) (: seen (Set Int64)))
               (match work
-                ((list) seen)
-                ((list h .. t)
+                (#list() seen)
+                (#list(h .. t)
                   (if (Set.contains seen h)
                       (drain g t seen)
                       (drain g (push-all (nbrs g h) t) (Set.insert seen h))))))
             (def (sum-set (: xs (List Int64)) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (sum-set t (+ acc h)))))
+                (#list() acc)
+                (#list(h .. t) (sum-set t (+ acc h)))))
             (def (main (: start Int64))
               (do
                 (def g (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert Map.empty
-                          1 (list 2 3)) 2 (list 4)) 3 (list 4)) 4 (list)) 5 (list 6)) 6 (list 5)))
-                (def seen (drain g (list start) #set()))
+                          1 #list(2 3)) 2 #list(4)) 3 #list(4)) 4 #list()) 5 #list(6)) 6 #list(5)))
+                (def seen (drain g #list(start) #set()))
                 (+ (* (Set.len seen) 100) (sum-set (Set.to-list seen) 0))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 410 Int64))
@@ -666,46 +666,46 @@
            DISCONNECTED edges 1→2, 3→4 → each component colors independently (1).")
   (input  (do
             (def (nbrs (: g (Map Int64 (List Int64))) (: n Int64))
-              (match (Map.lookup g n) ((Some xs) xs) ((None _u) (list))))
+              (match (Map.lookup g n) ((Some xs) xs) ((None _u) #list())))
             (def (col-of (: colors (Map Int64 Int64)) (: n Int64))
               (match (Map.lookup colors n) ((Some c) (Some c)) ((None _u) (None unit))))
             (def (visit-nbrs (: es (List Int64)) (: uc Int64) (: colors (Map Int64 Int64)) (: work (List Int64)))
               (match es
-                ((list) (tuple true colors work))
-                ((list v .. t)
+                (#list() #tuple(true colors work))
+                (#list(v .. t)
                   (match (col-of colors v)
                     ((None _u) (visit-nbrs t uc (Map.insert colors v (- 1 uc)) (List.push work v)))
                     ((Some vc) (if (= vc uc)
-                                   (tuple false colors work)
+                                   #tuple(false colors work)
                                    (visit-nbrs t uc colors work)))))))
             (def (drain (: g (Map Int64 (List Int64))) (: work (List Int64)) (: colors (Map Int64 Int64)))
               (match work
-                ((list) (tuple true colors))
-                ((list u .. t)
+                (#list() #tuple(true colors))
+                (#list(u .. t)
                   (match (col-of colors u)
                     ((None _u) (trap "unreachable: worklist node is uncolored"))
                     ((Some uc)
                       (match (visit-nbrs (nbrs g u) uc colors t)
-                        ((tuple ok colors2 work2)
-                          (if ok (drain g work2 colors2) (tuple false colors2)))))))))
+                        (#tuple(ok colors2 work2)
+                          (if ok (drain g work2 colors2) #tuple(false colors2)))))))))
             (def (all-nodes (: ns (List Int64)) (: g (Map Int64 (List Int64))) (: colors (Map Int64 Int64)))
               (match ns
-                ((list) 1)
-                ((list s .. t)
+                (#list() 1)
+                (#list(s .. t)
                   (match (col-of colors s)
                     ((None _u)
-                      (match (drain g (list s) (Map.insert colors s 0))
-                        ((tuple ok colors2)
+                      (match (drain g #list(s) (Map.insert colors s 0))
+                        (#tuple(ok colors2)
                           (if ok (all-nodes t g colors2) 0))))
                     ((Some _c) (all-nodes t g colors))))))
             (def (main (: mode Int64))
               (do
                 (def g (if (= mode 1)
-                           (Map.insert (Map.insert (Map.insert (Map.insert Map.empty 1 (list 2)) 2 (list 3)) 3 (list 4)) 4 (list 1))
+                           (Map.insert (Map.insert (Map.insert (Map.insert Map.empty 1 #list(2)) 2 #list(3)) 3 #list(4)) 4 #list(1))
                            (if (= mode 2)
-                               (Map.insert (Map.insert (Map.insert Map.empty 1 (list 2)) 2 (list 3)) 3 (list 1))
-                               (Map.insert (Map.insert Map.empty 1 (list 2)) 3 (list 4)))))
-                (def ns (if (= mode 3) (list 1 2 3 4) (if (= mode 1) (list 1 2 3 4) (list 1 2 3))))
+                               (Map.insert (Map.insert (Map.insert Map.empty 1 #list(2)) 2 #list(3)) 3 #list(1))
+                               (Map.insert (Map.insert Map.empty 1 #list(2)) 3 #list(4)))))
+                (def ns (if (= mode 3) #list(1 2 3 4) (if (= mode 1) #list(1 2 3 4) #list(1 2 3))))
                 (all-nodes ns g Map.empty)))
             (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
@@ -751,33 +751,33 @@
            (edge into the cycle fails) → 150; the acyclic face orders 1,2,3,5,4 with fwd 1 → 123541.")
   (input  (do
             (def (nbrs (: g (Map Int64 (List Int64))) (: n Int64))
-              (match (Map.lookup g n) ((Some xs) xs) ((None _u) (list))))
+              (match (Map.lookup g n) ((Some xs) xs) ((None _u) #list())))
             (def (bump (: m (Map Int64 Int64)) (: k Int64) (: d Int64))
               (match (Map.lookup m k)
                 ((Some v) (Map.insert m k (+ v d)))
                 ((None _u) (Map.insert m k d))))
             (def (fold-edges (: es (List Int64)) (: mm (Map Int64 Int64)))
               (match es
-                ((list) mm)
-                ((list e .. et) (fold-edges et (bump mm e 1)))))
+                (#list() mm)
+                (#list(e .. et) (fold-edges et (bump mm e 1)))))
             (def (indeg-of (: g (Map Int64 (List Int64))) (: ns (List Int64)) (: m (Map Int64 Int64)))
               (match ns
-                ((list) m)
-                ((list h .. t) (indeg-of g t (fold-edges (nbrs g h) m)))))
+                (#list() m)
+                (#list(h .. t) (indeg-of g t (fold-edges (nbrs g h) m)))))
             (def (get0 (: m (Map Int64 Int64)) (: k Int64))
               (match (Map.lookup m k) ((Some v) v) ((None _u) 0)))
             (def (min-ready (: ns (List Int64)) (: indeg (Map Int64 Int64)) (: done (Set Int64)) (: best Int64))
               (match ns
-                ((list) best)
-                ((list h .. t)
+                (#list() best)
+                (#list(h .. t)
                   (min-ready t indeg done
                     (if (if (Set.contains done h) false (= (get0 indeg h) 0))
                         (if (< best 0) h (if (< h best) h best))
                         best)))))
             (def (dec-nbrs (: es (List Int64)) (: indeg (Map Int64 Int64)))
               (match es
-                ((list) indeg)
-                ((list e .. t) (dec-nbrs t (bump indeg e -1)))))
+                (#list() indeg)
+                (#list(e .. t) (dec-nbrs t (bump indeg e -1)))))
             (def (drain (: g (Map Int64 (List Int64))) (: ns (List Int64)) (: indeg (Map Int64 Int64)) (: done (Set Int64)) (: acc (List Int64)))
               (do
                 (def pick (min-ready ns indeg done -1))
@@ -786,31 +786,31 @@
                     (drain g ns (dec-nbrs (nbrs g pick) indeg) (Set.insert done pick) (List.push acc pick)))))
             (def (pos-of (: xs (List Int64)) (: v Int64) (: i Int64))
               (match xs
-                ((list) -1)
-                ((list h .. t) (if (= h v) i (pos-of t v (+ i 1))))))
+                (#list() -1)
+                (#list(h .. t) (if (= h v) i (pos-of t v (+ i 1))))))
             (def (all-fwd (: es (List Int64)) (: order (List Int64)) (: hpos Int64))
               (match es
-                ((list) 1)
-                ((list e .. et)
+                (#list() 1)
+                (#list(e .. et)
                   (if (< hpos (pos-of order e 0)) (all-fwd et order hpos) 0))))
             (def (edges-fwd (: g (Map Int64 (List Int64))) (: order (List Int64)) (: ns (List Int64)))
               (match ns
-                ((list) 1)
-                ((list h .. t)
+                (#list() 1)
+                (#list(h .. t)
                   (if (= (all-fwd (nbrs g h) order (pos-of order h 0)) 1)
                       (edges-fwd g order t)
                       0))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: extra Int64))
               (do
-                (def ns (list 1 2 3 4 5))
+                (def ns #list(1 2 3 4 5))
                 (def g0 (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert Map.empty
-                           1 (list 3)) 2 (list 3)) 3 (list 4)) 4 (list)) 5 (list 4)))
-                (def g (if (> extra 0) (Map.insert g0 4 (list extra)) g0))
-                (def order (drain g ns (indeg-of g ns Map.empty) #set() (list)))
+                           1 #list(3)) 2 #list(3)) 3 #list(4)) 4 #list()) 5 #list(4)))
+                (def g (if (> extra 0) (Map.insert g0 4 #list(extra)) g0))
+                (def order (drain g ns (indeg-of g ns Map.empty) #set() #list()))
                 (+ (* (chk order 0) 10) (edges-fwd g order ns))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 123541 Int64))
@@ -963,7 +963,7 @@
             (def (main (: z Int64))
               (let ((a (fill 0 40 #set()))
                     (b (fill 20 60 #set())))
-                (tuple
+                #tuple(
                   (Set.len (Set.union a b))
                   (Set.len (Set.intersection a b))
                   (Set.len (Set.difference a b))
@@ -1595,8 +1595,8 @@
               (if (= i 0) acc (build (- i 1) (Set.insert acc (* i 13)))))
             (def (inc (: xs (List Int64)) (: prev Int64) (: cnt Int64))
               (match xs
-                ((list) cnt)
-                ((list h .. t) (if (> h prev) (inc t h (+ cnt 1)) -100000))))
+                (#list() cnt)
+                (#list(h .. t) (if (> h prev) (inc t h (+ cnt 1)) -100000))))
             (def (main (: n Int64))
               (inc (Set.to-list (build n #set())) -1 0))
             (export main)))
@@ -1641,7 +1641,7 @@
             ; RUNTIME-IFIED (coord v-corpus-harness): thread the arg `n` into the first components so the
             ; #set is built at RUNTIME (not const-folded), exercising the compound-element Set.to-list
             ; reclaim. At n=0 the tuples are (3,1)/(1,2)/(2,0) — order + answer unchanged (index-0 (1,2), first 1).
-            (def (main (: n Int64)) (match (List.at (Set.to-list #set((tuple (+ 3 n) 1) (tuple (+ 1 n) 2) (tuple (+ 2 n) 0))) 0)
+            (def (main (: n Int64)) (match (List.at (Set.to-list #set(#tuple((+ 3 n) 1) #tuple((+ 1 n) 2) #tuple((+ 2 n) 0))) 0)
                           ((Some t) (. t 0))
                           ((None u) -1))) (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64))
@@ -1666,9 +1666,9 @@
               ; RUNTIME-IFIED (coord v-corpus-harness): thread `k` into the first components so the #set is
               ; built at RUNTIME (not const-folded). At k=0 the tuples are (1,[98])/(1,[97])/(2,[0]) — the
               ; first-component tie + Bytes tie-break + answer 197 all unchanged.
-              (match (List.at (Set.to-list #set((tuple (+ 1 k) (Bytes.of (list 98)))
-                                                         (tuple (+ 1 k) (Bytes.of (list 97)))
-                                                         (tuple (+ 2 k) (Bytes.of (list 0))))) 0)
+              (match (List.at (Set.to-list #set(#tuple((+ 1 k) (Bytes.of #list(98)))
+                                                         #tuple((+ 1 k) (Bytes.of #list(97)))
+                                                         #tuple((+ 2 k) (Bytes.of #list(0))))) 0)
                 ((Some t) (match (Bytes.at (. t 1) 0) ((Some v) (+ (* 100 (. t 0)) v)) ((None u) -1)))
                 ((None u) -1)))
             (export main)))
@@ -1687,7 +1687,7 @@
            `value_cmp_shaped` sort, over a runtime `a` so nothing folds. Expected: 1.")
   (input  (do
             (def (main (: a Int64))
-              (match (List.at (Set.to-list #set((record (= x 3) (= y a)) (record (= x 1) (= y 2)) (record (= x 2) (= y 0)))) 0)
+              (match (List.at (Set.to-list #set(#record((= x 3) (= y a)) #record((= x 1) (= y 2)) #record((= x 2) (= y 0)))) 0)
                 ((Some r) (. r x))
                 ((None u) -1)))
             (export main)))
@@ -1734,7 +1734,7 @@
             (def (main (: x Float64))
               (let ((sorted (Set.to-list #set((Missing) (Temp x) (Temp 1.5)))))
                 (match sorted
-                  ((list a b c) (+ (rank a) (+ (* 10 (rank b)) (* 100 (rank c)))))
+                  (#list(a b c) (+ (rank a) (+ (* 10 (rank b)) (* 100 (rank c)))))
                   (_ -1))))
             (export main)))
   (call   main (: 2.5 Float64)) (output (: 921 Int64)))
@@ -1767,7 +1767,7 @@
            matching rust's `__CdzF64` wrapper, so both backends enumerate the same order.")
   (input  (do
             (def (main (: x Float64))
-              (tuple
+              #tuple(
                 (List.len (Set.to-list #set(x 2.5 1.5)))
                 (match (List.at (Set.to-list #set(x 0.5 2.5)) 0)
                   ((Some f) (if (= f 0.5) 1 0))
@@ -1884,16 +1884,16 @@
            bare relational op), uniform across backends (wasm bytes-len/get walk == rust `Vec<u8>` Ord). Encodes
            first-byte (100s) and last-byte (units) → 100*5 + 128 = 628.")
   (input  (do
-            (def (b1 (: n Int64)) (Bytes.of (list (UInt8.wrap n))))
+            (def (b1 (: n Int64)) (Bytes.of #list((UInt8.wrap n))))
             (def (lastbyte (: xs (List Bytes)) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (lastbyte t (match (Bytes.at h 0) ((Some v) v) ((None u) -1))))))
+                (#list() acc)
+                (#list(h .. t) (lastbyte t (match (Bytes.at h 0) ((Some v) v) ((None u) -1))))))
             (def (main (: z Int64))
               (let ((xs (Set.to-list #set((b1 128) (b1 5) (b1 127)))))
                 (+ (* 100 (match xs
-                            ((list h .. t) (match (Bytes.at h 0) ((Some v) v) ((None u) -1)))
-                            ((list) -2)))
+                            (#list(h .. t) (match (Bytes.at h 0) ((Some v) v) ((None u) -1)))
+                            (#list() -2)))
                    (lastbyte xs -9))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 628 Int64))
@@ -1908,17 +1908,17 @@
            for Set elements (same `value_cmp_shaped` Bytes arm). Encodes first-key-byte (100s) + last-key-byte
            (units) → 100*5 + 128 = 628.")
   (input  (do
-            (def (b1 (: n Int64)) (Bytes.of (list (UInt8.wrap n))))
+            (def (b1 (: n Int64)) (Bytes.of #list((UInt8.wrap n))))
             (def (lastkey (: xs (List (Tuple Bytes Int64))) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (match h ((tuple k _v) (lastkey t (match (Bytes.at k 0) ((Some v) v) ((None u) -1))))))))
+                (#list() acc)
+                (#list(h .. t) (match h (#tuple(k _v) (lastkey t (match (Bytes.at k 0) ((Some v) v) ((None u) -1))))))))
             (def (main (: z Int64))
               (let ((m (Map.insert (Map.insert (Map.insert Map.empty (b1 128) 900) (b1 5) 100) (b1 127) 700)))
                 (let ((ps (Map.to-list m)))
                   (+ (* 100 (match ps
-                              ((list h .. t) (match h ((tuple k _v) (match (Bytes.at k 0) ((Some v) v) ((None u) -1)))))
-                              ((list) -2)))
+                              (#list(h .. t) (match h (#tuple(k _v) (match (Bytes.at k 0) ((Some v) v) ((None u) -1)))))
+                              (#list() -2)))
                      (lastkey ps -9)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 628 Int64))
@@ -2039,7 +2039,7 @@
            A fold that mis-hashed a tuple element or dropped one would flip a component. MUST be 21.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (let ((s #set((tuple a 1) (tuple b 2) (tuple a 1))))
+              (let ((s #set(#tuple(a 1) #tuple(b 2) #tuple(a 1))))
                 (let ((r (Set.of (Set.to-list s))))
                   (+ (* 10 (Set.len r)) (if (= r s) 1 0)))))
             (export main)))
@@ -2055,7 +2055,7 @@
            4. MUST be 2.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (Set.len (Set.of (List.concat (list a b) (list b a)))))
+              (Set.len (Set.of (List.concat #list(a b) #list(b a)))))
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
   (output (: 2 Int64))
@@ -2078,8 +2078,8 @@
            → 2 + 10·2 = 22. A single-element-type program is byte-identical to the earlier one-def synthesis.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (+ (Set.len (Set.of (List.concat (list a b) (list a))))
-                 (* 10 (Set.len (Set.of (List.concat (list (> a b)) (list (< a b))))))))
+              (+ (Set.len (Set.of (List.concat #list(a b) #list(a))))
+                 (* 10 (Set.len (Set.of (List.concat #list((> a b)) #list((< a b))))))))
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
   (output (: 22 Int64))
@@ -2305,7 +2305,7 @@
            the tuple-threaded ord-wrapper, d0d18e257).")
   (input  (do
             (def (main (: x Float64))
-              (match (Map.lookup (Map.insert Map.empty (tuple (+ x 1.25) 3) 42) (tuple 2.5 3))
+              (match (Map.lookup (Map.insert Map.empty #tuple((+ x 1.25) 3) 42) #tuple(2.5 3))
                 ((Some v) v) ((None _) -1)))
             (export main)))
   (call   main (: 1.25 Float64))
@@ -2318,7 +2318,7 @@
            over-matching on the shared Int element or the tuple shape alone).")
   (input  (do
             (def (main (: x Float64))
-              (match (Map.lookup (Map.insert Map.empty (tuple (+ x 1.25) 3) 42) (tuple 9.5 3))
+              (match (Map.lookup (Map.insert Map.empty #tuple((+ x 1.25) 3) 42) #tuple(9.5 3))
                 ((Some v) v) ((None _) -1)))
             (export main)))
   (call   main (: 1.25 Float64))
@@ -2331,7 +2331,7 @@
            set-dedup cases.")
   (input  (do
             (def (main (: x Float64))
-              (Set.len (Set.insert (Set.insert #set() (tuple (+ x 1.25) 3)) (tuple 2.5 3))))
+              (Set.len (Set.insert (Set.insert #set() #tuple((+ x 1.25) 3)) #tuple(2.5 3))))
             (export main)))
   (call   main (: 1.25 Float64))
   (output (: 1 Int64)))
@@ -2343,7 +2343,7 @@
            reaches an f32 NaN leaf at its own width, the tuple companion of the bare-f32-NaN dedup case.")
   (input  (do
             (def (main (: x Float32))
-              (Set.len (Set.insert (Set.insert #set() (tuple (/ x x) 3)) (tuple Float32.nan 3))))
+              (Set.len (Set.insert (Set.insert #set() #tuple((/ x x) 3)) #tuple(Float32.nan 3))))
             (export main)))
   (call   main (: 0.0 Float32))
   (output (: 1 Int64)))
@@ -2362,7 +2362,7 @@
            record-threaded ord-wrapper, 94ea8c58b), the record twin of the tuple-float-key case.")
   (input  (do
             (def (main (: x Float64))
-              (match (Map.lookup (Map.insert Map.empty (record (= f (+ x 1.25)) (= n 3)) 42) (record (= f 2.5) (= n 3)))
+              (match (Map.lookup (Map.insert Map.empty #record((= f (+ x 1.25)) (= n 3)) 42) #record((= f 2.5) (= n 3)))
                 ((Some v) v) ((None _) -1)))
             (export main)))
   (call   main (: 1.25 Float64))
@@ -2375,7 +2375,7 @@
            the shared Int field or the record shape.")
   (input  (do
             (def (main (: x Float64))
-              (match (Map.lookup (Map.insert Map.empty (record (= f (+ x 1.25)) (= n 3)) 42) (record (= f 9.5) (= n 3)))
+              (match (Map.lookup (Map.insert Map.empty #record((= f (+ x 1.25)) (= n 3)) 42) #record((= f 9.5) (= n 3)))
                 ((Some v) v) ((None _) -1)))
             (export main)))
   (call   main (: 1.25 Float64))
@@ -2388,7 +2388,7 @@
            tuple-float set-dedup case.")
   (input  (do
             (def (main (: x Float64))
-              (Set.len (Set.insert (Set.insert #set() (record (= f (+ x 1.25)) (= n 3))) (record (= f 2.5) (= n 3)))))
+              (Set.len (Set.insert (Set.insert #set() #record((= f (+ x 1.25)) (= n 3))) #record((= f 2.5) (= n 3)))))
             (export main)))
   (call   main (: 1.25 Float64))
   (output (: 1 Int64)))
@@ -2408,7 +2408,7 @@
            nested-threaded ord-wrapper, f8e5b1c0d), deeper than the one-level tuple-float-key case.")
   (input  (do
             (def (main (: x Float64))
-              (match (Map.lookup (Map.insert Map.empty (tuple (tuple (+ x 1.25) 3) 9) 42) (tuple (tuple 2.5 3) 9))
+              (match (Map.lookup (Map.insert Map.empty #tuple(#tuple((+ x 1.25) 3) 9) 42) #tuple(#tuple(2.5 3) 9))
                 ((Some v) v) ((None _) -1)))
             (export main)))
   (call   main (: 1.25 Float64))
@@ -2421,7 +2421,7 @@
            not over-matching on the shared Int elements or the compound shape.")
   (input  (do
             (def (main (: x Float64))
-              (match (Map.lookup (Map.insert Map.empty (tuple (tuple (+ x 1.25) 3) 9) 42) (tuple (tuple 9.5 3) 9))
+              (match (Map.lookup (Map.insert Map.empty #tuple(#tuple((+ x 1.25) 3) 9) 42) #tuple(#tuple(9.5 3) 9))
                 ((Some v) v) ((None _) -1)))
             (export main)))
   (call   main (: 1.25 Float64))
@@ -2435,7 +2435,7 @@
            over tuple, f8e5b1c0d). Pins the record-of-tuple-float nested key.")
   (input  (do
             (def (main (: x Float64))
-              (match (Map.lookup (Map.insert Map.empty (record (= p (tuple (+ x 1.25) 3)) (= n 9)) 42) (record (= p (tuple 2.5 3)) (= n 9)))
+              (match (Map.lookup (Map.insert Map.empty #record((= p #tuple((+ x 1.25) 3)) (= n 9)) 42) #record((= p #tuple(2.5 3)) (= n 9)))
                 ((Some v) v) ((None _) -1)))
             (export main)))
   (call   main (: 1.25 Float64))
@@ -2448,7 +2448,7 @@
            layers to the float leaf.")
   (input  (do
             (def (main (: x Float64))
-              (Set.len (Set.insert (Set.insert #set() (tuple (tuple (+ x 1.25) 3) 9)) (tuple (tuple 2.5 3) 9))))
+              (Set.len (Set.insert (Set.insert #set() #tuple(#tuple((+ x 1.25) 3) 9)) #tuple(#tuple(2.5 3) 9))))
             (export main)))
   (call   main (: 1.25 Float64))
   (output (: 1 Int64)))
@@ -2737,8 +2737,8 @@
 (case "value-eq CONTROL: a runtime slice compares equal to a flat Bytes of the same content"
   (input (do
            (def (main (: a Int64))
-             (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
-               ((Some s) (if (= s (Bytes.of (list 20 30))) 1 0))
+             (match (Bytes.slice (Bytes.of #list(9 20 30 8)) a 2)
+               ((Some s) (if (= s (Bytes.of #list(20 30))) 1 0))
                ((None u) -1)))
            (export main)))
   (call main (: 1 Int64))
@@ -2748,8 +2748,8 @@
 (case "a runtime slice PROBING a Map keyed by flat Bytes must hit by content"
   (input (do
            (def (main (: a Int64))
-             (let ((m (Map.insert Map.empty (Bytes.of (list 20 30)) 42)))
-               (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+             (let ((m (Map.insert Map.empty (Bytes.of #list(20 30)) 42)))
+               (match (Bytes.slice (Bytes.of #list(9 20 30 8)) a 2)
                  ((Some s) (match (Map.lookup m s) ((Some v) v) ((None u) -1)))
                  ((None u) -2))))
            (export main)))
@@ -2762,9 +2762,9 @@
 (case "a runtime slice STORED as a Map key must be found by a flat Bytes probe"
   (input (do
            (def (main (: a Int64))
-             (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+             (match (Bytes.slice (Bytes.of #list(9 20 30 8)) a 2)
                ((Some s)
-                 (match (Map.lookup (Map.insert Map.empty s 42) (Bytes.of (list 20 30)))
+                 (match (Map.lookup (Map.insert Map.empty s 42) (Bytes.of #list(20 30)))
                    ((Some v) v) ((None u) -1)))
                ((None u) -2)))
            (export main)))
@@ -2775,8 +2775,8 @@
 (case "a runtime slice probes a Set of flat Bytes by content"
   (input (do
            (def (main (: a Int64))
-             (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
-               ((Some s) (if (Set.contains #set((Bytes.of (list 20 30))) s) 1 0))
+             (match (Bytes.slice (Bytes.of #list(9 20 30 8)) a 2)
+               ((Some s) (if (Set.contains #set((Bytes.of #list(20 30))) s) 1 0))
                ((None u) -2)))
            (export main)))
   (call main (: 1 Int64))
@@ -2786,8 +2786,8 @@
 (case "CONTROL: a CONST-start slice as a Map-lookup key hits on wasm"
   (input (do
            (def (main (: a Int64))
-             (let ((m (Map.insert Map.empty (Bytes.of (list 20 30)) 42)))
-               (match (Bytes.slice (Bytes.of (list 9 20 30 8)) 1 2)
+             (let ((m (Map.insert Map.empty (Bytes.of #list(20 30)) 42)))
+               (match (Bytes.slice (Bytes.of #list(9 20 30 8)) 1 2)
                  ((Some s) (match (Map.lookup m s) ((Some v) v) ((None u) -1)))
                  ((None u) -2))))
            (export main)))
@@ -2807,8 +2807,8 @@
            canonicalization — insert-path pins can't witness Set.of's distinct construction route.")
   (input  (do
             (def (main (: a Int64))
-              (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
-                ((Some s) (Set.len #set(s (Bytes.of (list 20 30)))))
+              (match (Bytes.slice (Bytes.of #list(9 20 30 8)) a 2)
+                ((Some s) (Set.len #set(s (Bytes.of #list(20 30)))))
                 ((None u) -1)))
             (export main)))
   (call   main (: 1 Int64))
@@ -2825,10 +2825,10 @@
            and answer 3 at a=1.")
   (input  (do
             (def (main (: a Int64))
-              (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+              (match (Bytes.slice (Bytes.of #list(9 20 30 8)) a 2)
                 ((Some s)
                   (Set.len (Set.union #set(s)
-                                      #set((Bytes.of (list 20 30)) (Bytes.of (list 1 2))))))
+                                      #set((Bytes.of #list(20 30)) (Bytes.of #list(1 2))))))
                 ((None u) -1)))
             (export main)))
   (call   main (: 1 Int64))
@@ -2845,12 +2845,12 @@
            operand role; the canonicalization must hold on whichever side the view sits.")
   (input  (do
             (def (main (: a Int64) (: which Int64))
-              (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+              (match (Bytes.slice (Bytes.of #list(9 20 30 8)) a 2)
                 ((Some s)
                   (if (= which 0)
-                    (Set.len (Set.intersection #set(s (Bytes.of (list 1 2)))
-                                               #set((Bytes.of (list 20 30)))))
-                    (Set.len (Set.difference #set((Bytes.of (list 20 30)) (Bytes.of (list 1 2)))
+                    (Set.len (Set.intersection #set(s (Bytes.of #list(1 2)))
+                                               #set((Bytes.of #list(20 30)))))
+                    (Set.len (Set.difference #set((Bytes.of #list(20 30)) (Bytes.of #list(1 2)))
                                              #set(s)))))
                 ((None u) -1)))
             (export main)))
@@ -2870,8 +2870,8 @@
            hashed the raw view node would miss the hit and leave a phantom entry.")
   (input  (do
             (def (main (: a Int64))
-              (let ((m (Map.insert Map.empty (Bytes.of (list 20 30)) 42)))
-                (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+              (let ((m (Map.insert Map.empty (Bytes.of #list(20 30)) 42)))
+                (match (Bytes.slice (Bytes.of #list(9 20 30 8)) a 2)
                   ((Some s) (Map.len (Map.remove m s)))
                   ((None u) -1))))
             (export main)))
@@ -2887,11 +2887,11 @@
            entry-point sweep for view keys: lookup, contains, Set.of, remove, take all canonicalize.")
   (input  (do
             (def (main (: a Int64))
-              (let ((m (Map.insert Map.empty (Bytes.of (list 20 30)) 42)))
-                (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+              (let ((m (Map.insert Map.empty (Bytes.of #list(20 30)) 42)))
+                (match (Bytes.slice (Bytes.of #list(9 20 30 8)) a 2)
                   ((Some s) (match (Map.take m s)
-                              ((tuple (Some v) rest) (+ v (Map.len rest)))
-                              ((tuple (None u) rest) (- 0 (Map.len rest)))))
+                              (#tuple((Some v) rest) (+ v (Map.len rest)))
+                              (#tuple((None u) rest) (- 0 (Map.len rest)))))
                   ((None u) -99))))
             (export main)))
   (call   main (: 1 Int64))
@@ -2909,7 +2909,7 @@
            bytes exactly as the map-KEY twin (pinned above) does.")
   (input  (do
             (def (main (: x Float64))
-              (Set.len #set((record (= f x) (= n 1)) (record (= f 2.5) (= n 1)))))
+              (Set.len #set(#record((= f x) (= n 1)) #record((= f 2.5) (= n 1)))))
             (export main)))
   (call   main (: 0.5 Float64))
   (output (: 2 Int64))
@@ -2922,7 +2922,7 @@
            distinct (len 2 via insert-insert); x=2.5 collapses (len 1).")
   (input  (do
             (def (main (: x Float64))
-              (Set.len (Set.insert (Set.insert #set() (tuple (tuple x 1) 2)) (tuple (tuple 2.5 1) 2))))
+              (Set.len (Set.insert (Set.insert #set() #tuple(#tuple(x 1) 2)) #tuple(#tuple(2.5 1) 2))))
             (export main)))
   (call   main (: 0.5 Float64))
   (output (: 2 Int64))
@@ -3142,8 +3142,8 @@
   (input  (do
         (def (main (: mode Int64))
           (do
-            (def a (tuple (Option.expect (String.slice "xkeyz" 1 4) "in") 1))
-            (def b (tuple (String.concat "ke" (if (> mode 0) "y" "x")) 2))
+            (def a #tuple((Option.expect (String.slice "xkeyz" 1 4) "in") 1))
+            (def b #tuple((String.concat "ke" (if (> mode 0) "y" "x")) 2))
             (def xs (Set.to-list #set(a b)))
             (match (List.at xs 0)
               ((Some t) (. t 1))
@@ -3187,7 +3187,7 @@
 (case "Set.to-list over float-leaf tuple elements declines — a float-containing compound offers no total order (§319, 03:626 companion)"
   (input  (do
         (def (main)
-          (List.len (Set.to-list #set((tuple 1.5 1) (tuple 2.5 2) (tuple -1.0 3)))))
+          (List.len (Set.to-list #set(#tuple(1.5 1) #tuple(2.5 2) #tuple(-1.0 3)))))
         (export main)))
   (declines))
 
@@ -3221,10 +3221,10 @@
   (input  (do
         (def (main (: x Float64))
           (do
-            (def s #set((tuple 1.5 1) (tuple (/ x x) 2)))
+            (def s #set(#tuple(1.5 1) #tuple((/ x x) 2)))
             (+ (* 100 (Set.len s))
-               (+ (* 10 (if (Set.contains s (tuple Float64.nan 2)) 1 0))
-                  (Set.len (Set.remove s (tuple 1.5 1)))))))
+               (+ (* 10 (if (Set.contains s #tuple(Float64.nan 2)) 1 0))
+                  (Set.len (Set.remove s #tuple(1.5 1)))))))
         (export main)))
   (call   main (: 0.0 Float64)) (output (: 211 Int64)))
 
@@ -3290,7 +3290,7 @@
   (input  (do
         (def (main (: y Float32))
           (do
-            (def s #set((tuple (/ y y) (: 1.5 Float64)) (tuple Float32.nan (: 1.5 Float64))))
+            (def s #set(#tuple((/ y y) (: 1.5 Float64)) #tuple(Float32.nan (: 1.5 Float64))))
             (Set.len s)))
         (export main)))
   (call   main (: 0.0 Float32)) (output (: 1 Int64))
@@ -3439,11 +3439,11 @@
            nested-eq that bottomed out comparing only the shared second child would wrongly fuse the two.")
   (input  (do
             (def (main (: z Int64))
-              (let ((s #set((tuple (+ 150512886 z) z) (tuple (+ 59555794 z) z))))
+              (let ((s #set(#tuple((+ 150512886 z) z) #tuple((+ 59555794 z) z))))
                 (+ (* 1000 (Set.len s))
-                   (+ (* 100 (if (Set.contains s (tuple (+ 150512886 z) z)) 1 0))
-                      (+ (* 10 (if (Set.contains s (tuple (+ 59555794 z) z)) 1 0))
-                         (if (Set.contains s (tuple (+ 150512887 z) z)) 1 0))))))
+                   (+ (* 100 (if (Set.contains s #tuple((+ 150512886 z) z)) 1 0))
+                      (+ (* 10 (if (Set.contains s #tuple((+ 59555794 z) z)) 1 0))
+                         (if (Set.contains s #tuple((+ 150512887 z) z)) 1 0))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 2110 Int64)))
 
@@ -3576,7 +3576,7 @@
   (input  (do
             (def (main (: z Int64))
               (match (Set.to-list #set((+ z 536870920) (+ z 100) (- 0 (+ z 536870915))))
-                ((list a b c) (+ (* 100 (if (< a b) 1 0))
+                (#list(a b c) (+ (* 100 (if (< a b) 1 0))
                                  (+ (* 10 (if (< b c) 1 0))
                                     (if (= a (- 0 (+ z 536870915))) 1 0))))
                 (_other -1)))
@@ -3610,8 +3610,8 @@
            set's canonical content; a row hash that stopped at the set's slot handle splits the hit.")
   (input  (do
             (def (main (: n Int64))
-              (match (Map.lookup (Map.insert Map.empty (record (= s #set(1 2)) (= id 7)) 42)
-                                 (record (= s #set(n 1)) (= id 7)))
+              (match (Map.lookup (Map.insert Map.empty #record((= s #set(1 2)) (= id 7)) 42)
+                                 #record((= s #set(n 1)) (= id 7)))
                 ((Some v) v) ((None _u) -1)))
             (export main)))
   (call   main (: 2 Int64)) (output (: 42 Int64))
@@ -3824,7 +3824,7 @@
 (case "sto2 insertion-order INSENSITIVITY — {3,1,2} vs {2,3,1} to-list equality via tuple walk"
   (input (do
     (def (main (: n Int64))
-      (if (= (tuple 1 (Set.to-list #set(3 1 2 n))) (tuple 1 (Set.to-list #set(n 2 3 1)))) 1 0))
+      (if (= #tuple(1 (Set.to-list #set(3 1 2 n))) #tuple(1 (Set.to-list #set(n 2 3 1)))) 1 0))
     (export main)))
   (call main (: 7 Int64))
   (output (: 1 Int64)))
@@ -4161,8 +4161,8 @@
 
 (case "tlf1 Set.to-list of TUPLE elements orders identically const and runtime"
   (input (do (def (main (: n Int64))
-    (let ((cs (Set.to-list #set((tuple 2 1) (tuple 1 9) (tuple 1 2))))
-          (rs (Set.to-list #set((tuple (+ n (- 0 3)) 1) (tuple (- n 4) 9) (tuple (- n 4) 2)))))
+    (let ((cs (Set.to-list #set(#tuple(2 1) #tuple(1 9) #tuple(1 2))))
+          (rs (Set.to-list #set(#tuple((+ n (- 0 3)) 1) #tuple((- n 4) 9) #tuple((- n 4) 2)))))
       (if (= cs rs) 1 0)))
     (export main)))
   (call main (: 5 Int64))

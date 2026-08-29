@@ -15,7 +15,7 @@
 
 (case "dw1 a list literal mixing an Int32-annotated element with a wider-inferred literal unifies to (List Int32) — every element renders at the unified element width, uniform across backends (fuzzer cdz-smith differential: rust once emitted a heterogeneous vec![i32,i64])"
   (input  (do
-            (def (main) (list (: 127 Int32) 32767))
+            (def (main) #list((: 127 Int32) 32767))
             (export main)))
   (call   main) (output (: (list 127 32767) (List Int32))))
 
@@ -213,8 +213,8 @@
             (def (main (: n Int64))
               (handle St n
                 ((next () s (resume s (+ s 1))))
-                (match (tuple (fn ((: x Int64)) (* x n)) 7)
-                  ((tuple f c) (+ (f (St.next)) (+ c (f (St.next))))))))
+                (match #tuple((fn ((: x Int64)) (* x n)) 7)
+                  (#tuple(f c) (+ (f (St.next)) (+ c (f (St.next))))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 62 Int64))
   (call   main (: 2 Int64)) (output (: 17 Int64)))
@@ -425,10 +425,10 @@
             (effect St (op snap (-> (Tuple Int64 Int64))))
             (def (main (: n Int64))
               (handle St n
-                ((snap () s (resume (tuple s (* s 10)) (+ s 1))))
+                ((snap () s (resume #tuple(s (* s 10)) (+ s 1))))
                 (match (St.snap)
-                  ((tuple a b) (match (St.snap)
-                                 ((tuple c d) (+ (* 1000 a) (+ (* 100 b) (+ (* 10 c) d)))))))))
+                  (#tuple(a b) (match (St.snap)
+                                 (#tuple(c d) (+ (* 1000 a) (+ (* 100 b) (+ (* 10 c) d)))))))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 4060 Int64))
   (call   main (: 0 Int64)) (output (: 20 Int64)))
@@ -526,8 +526,8 @@
                 ((a () s (resume s (+ s 1))))
                 (match (handle B 50
                          ((b () t (resume t (* t 2))))
-                         (tuple (B.b) (+ (A.a) (B.b))))
-                  ((tuple x y) (+ (* 100 x) (+ (* 10 y) (A.a)))))))
+                         #tuple((B.b) (+ (A.a) (B.b))))
+                  (#tuple(x y) (+ (* 100 x) (+ (* 10 y) (A.a)))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 6056 Int64))
   (call   main (: 0 Int64)) (output (: 6001 Int64)))
@@ -812,7 +812,7 @@
   (input  (do
             (effect St (op next (-> Int64)))
             (def (main (: n Int64))
-              (let ((r (record (= a (handle St n
+              (let ((r #record((= a (handle St n
                                     ((next () s (resume s (+ s 1))))
                                     (+ (St.next) (St.next))))
                                (= b 7))))
@@ -827,7 +827,7 @@
             (def (el (: xs (List Int64)) (: i Int64))
               (match (List.at xs i) ((Some v) v) ((None) 0)))
             (def (main (: n Int64))
-              (let ((xs (list 3
+              (let ((xs #list(3
                               (handle St n
                                 ((next () s (resume s (* s 2))))
                                 (+ (St.next) (St.next)))
@@ -1057,7 +1057,7 @@
               (handle St n
                 ((next () s (resume s (+ s 1))))
                 (let ((k (St.next)))
-                  (let ((xs (list (St.next) (St.next) (St.next))))
+                  (let ((xs #list((St.next) (St.next) (St.next))))
                     (sum-scaled xs 0 k)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 105 Int64))
@@ -1074,7 +1074,7 @@
             (def (main (: n Int64))
               (handle St n
                 ((next () s (resume s (+ s 1))))
-                (visit (list 3 5 7) 0)))
+                (visit #list(3 5 7) 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 94 Int64))
   (call   main (: 0 Int64)) (output (: 19 Int64))
@@ -1084,7 +1084,7 @@
   (input  (do
             (effect L (op push2 (-> Int64)))
             (def (main (: n Int64))
-              (handle L (list n)
+              (handle L #list(n)
                 ((push2 () s (resume (List.len s) (List.push (List.push s (List.len s)) (* (List.len s) 10)))))
                 (do
                   (L.push2)
@@ -1103,7 +1103,7 @@
             (def (main (: n Int64))
               (handle St n
                 ((weigh (v) s (resume (if (> v s) (* v 100) v) (+ s 1))))
-                (walk (list 2 9 4) 0)))
+                (walk #list(2 9 4) 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 906 Int64))
   (call   main (: 1 Int64)) (output (: 1500 Int64))
@@ -1122,7 +1122,7 @@
             (def (main (: n Int64))
               (handle St n
                 ((mix (a b) s (resume (+ (* a b) s) (+ s 1))))
-                (zipwalk (list 1 2 3) (list 10 20 30) 0)))
+                (zipwalk #list(1 2 3) #list(10 20 30) 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 158 Int64))
   (call   main (: 0 Int64)) (output (: 143 Int64))
@@ -1175,7 +1175,7 @@
             (effect Db (op put (-> Int64 Int64)) (op total (-> Int64)))
             (def (sum-snd (: xs (List (Tuple Int64 Int64))) (: i Int64))
               (match (List.at xs i)
-                ((Some p) (match p ((tuple k v) (+ v (sum-snd xs (+ i 1))))))
+                ((Some p) (match p (#tuple(k v) (+ v (sum-snd xs (+ i 1))))))
                 ((None) 0)))
             (def (main (: n Int64))
               (handle Db (map (= 1 100))
@@ -1313,10 +1313,10 @@
             (def (main (: n Int64))
               (handle E n
                 ((deep (p) s (match p
-                               ((tuple inner c) (match inner
-                                                  ((tuple a b) (resume (+ (* 100 a) (+ (* 10 b) (+ c s)))
+                               (#tuple(inner c) (match inner
+                                                  (#tuple(a b) (resume (+ (* 100 a) (+ (* 10 b) (+ c s)))
                                                                        (+ s 1))))))))
-                (+ (E.deep (tuple (tuple 1 2) 3)) (E.deep (tuple (tuple 4 5) 6)))))
+                (+ (E.deep #tuple(#tuple(1 2) 3)) (E.deep #tuple(#tuple(4 5) 6)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 590 Int64))
   (call   main (: 0 Int64)) (output (: 580 Int64)))
@@ -1326,13 +1326,13 @@
             (effect E (op snap (-> (Tuple Int64 (Tuple Int64 Int64)))))
             (def (main (: n Int64))
               (handle E n
-                ((snap () s (resume (tuple s (tuple (* s 10) (+ s 1))) (+ s 2))))
+                ((snap () s (resume #tuple(s #tuple((* s 10) (+ s 1))) (+ s 2))))
                 (match (E.snap)
-                  ((tuple a inner)
+                  (#tuple(a inner)
                    (let ((b (. inner 0)))
                      (let ((c (. inner 1)))
                        (match (E.snap)
-                         ((tuple d inner2)
+                         (#tuple(d inner2)
                           (+ a (+ b (+ c (+ d (+ (. inner2 0) (. inner2 1))))))))))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 146 Int64))
@@ -1344,9 +1344,9 @@
             (def (main (: n Int64))
               (handle E n
                 ((rot (p) s (match p
-                              ((tuple a b c) (resume (tuple b c (+ a s)) (+ s 1))))))
-                (match (E.rot (E.rot (tuple n 2 3)))
-                  ((tuple x y z) (+ (* 100 x) (+ (* 10 y) z))))))
+                              (#tuple(a b c) (resume #tuple(b c (+ a s)) (+ s 1))))))
+                (match (E.rot (E.rot #tuple(n 2 3)))
+                  (#tuple(x y z) (+ (* 100 x) (+ (* 10 y) z))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 408 Int64))
   (call   main (: 0 Int64)) (output (: 303 Int64)))
@@ -1355,10 +1355,10 @@
   (input  (do
             (effect E (op log (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle E (tuple "go" n)
+              (handle E #tuple("go" n)
                 ((log (v) s (match s
-                              ((tuple w k) (resume (+ (String.byte-len w) k)
-                                                   (tuple (String.concat w "!") (+ k v)))))))
+                              (#tuple(w k) (resume (+ (String.byte-len w) k)
+                                                   #tuple((String.concat w "!") (+ k v)))))))
                 (+ (E.log 100) (+ (* 10 (E.log 0)) (* 100 (E.log 5))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 11987 Int64))
@@ -1368,13 +1368,13 @@
   (input  (do
             (effect E (op tick (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple (tuple n 100) 0)
+              (handle E #tuple(#tuple(n 100) 0)
                 ((tick () s (match s
-                              ((tuple pr c) (match pr
-                                              ((tuple x y) (resume (+ x c)
+                              (#tuple(pr c) (match pr
+                                              (#tuple(x y) (resume (+ x c)
                                                                    (if (= (% c 2) 0)
-                                                                       (tuple (tuple y x) (+ c 1))
-                                                                       (tuple (tuple x y) (+ c 1))))))))))
+                                                                       #tuple(#tuple(y x) (+ c 1))
+                                                                       #tuple(#tuple(x y) (+ c 1))))))))))
                 (+ (E.tick) (+ (* 10 (E.tick)) (+ (* 100 (E.tick)) (* 1000 (E.tick)))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 19215 Int64))
@@ -1431,11 +1431,11 @@
   (input  (do
             (effect E (op f (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n 0)
+              (handle E #tuple(n 0)
                 ((f (v) s (match s
-                            ((tuple base count)
+                            (#tuple(base count)
                              (let ((score (+ (* v v) base)))
-                               (resume (+ score count) (tuple score (+ count 1))))))))
+                               (resume (+ score count) #tuple(score (+ count 1))))))))
                 (+ (E.f 2) (+ (E.f 3) (E.f 1)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 49 Int64))
@@ -1546,7 +1546,7 @@
             (def (main (: n Int64))
               (handle P n
                 ((pick () s (resume s (+ s 1))))
-                (let ((r (record (= x 10) (= y 20))))
+                (let ((r #record((= x 10) (= y 20))))
                   (let ((r2 (Record.with r #"x" (P.pick))))
                     (let ((r3 (Record.with r2 #"y" (P.pick))))
                       (+ (* 100 (. r3 x)) (. r3 y)))))))
@@ -1671,10 +1671,10 @@
             (def (main (: n Int64))
               (handle O (None)
                 ((step (v) s (match s
-                               ((None) (resume 0 (Some (tuple v 1))))
+                               ((None) (resume 0 (Some #tuple(v 1))))
                                ((Some p) (match p
-                                           ((tuple tot cnt) (resume (+ tot cnt)
-                                                                    (Some (tuple (+ tot v) (+ cnt 1))))))))))
+                                           (#tuple(tot cnt) (resume (+ tot cnt)
+                                                                    (Some #tuple((+ tot v) (+ cnt 1))))))))))
                 (+ (O.step n) (+ (* 10 (O.step 3)) (* 100 (O.step 7))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1060 Int64))
@@ -1884,7 +1884,7 @@
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (+ s 1))))
-                (let ((xs (list (E.next) (E.next) (E.next))))
+                (let ((xs #list((E.next) (E.next) (E.next))))
                   (match (List.at xs 0)
                     ((Some a) (match (List.at xs 1)
                       ((Some b) (match (List.at xs 2)
@@ -1902,7 +1902,7 @@
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (+ s 1))))
-                (let ((r (record (= a (E.next)) (= b (E.next)))))
+                (let ((r #record((= a (E.next)) (= b (E.next)))))
                   (+ (* 10 (. r a)) (. r b)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 56 Int64))
@@ -1914,8 +1914,8 @@
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (+ s 1))))
-                (match (tuple (E.next) (E.next) (E.next))
-                  ((tuple a b c) (+ (* 100 a) (+ (* 10 b) c))))))
+                (match #tuple((E.next) (E.next) (E.next))
+                  (#tuple(a b c) (+ (* 100 a) (+ (* 10 b) c))))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 234 Int64))
   (call   main (: 0 Int64)) (output (: 12 Int64)))
@@ -2895,7 +2895,7 @@
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (+ s 2))))
-                (let ((xs (list 10 20 30 40 50)))
+                (let ((xs #list(10 20 30 40 50)))
                   (let ((i1 (% (E.next) 5)))
                     (let ((i2 (% (E.next) 5)))
                       (let ((ys (List.update xs i1 7)))
@@ -2913,7 +2913,7 @@
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (+ s 3))))
-                (let ((xs (List.push (List.push (List.push (list) (E.next)) (E.next)) (E.next))))
+                (let ((xs (List.push (List.push (List.push #list() (E.next)) (E.next)) (E.next))))
                   (let ((i (% (E.next) 3)))
                     (match (List.at xs i)
                       ((Some v) (+ 100 (+ (* 10 v) i)))
@@ -2934,7 +2934,7 @@
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (+ s 1))))
-                (let ((xs (build 4 (list))))
+                (let ((xs (build 4 #list())))
                   (match (List.at xs 0)
                     ((Some h) (match (List.at xs 3)
                       ((Some t) (+ (* 100 h) (+ (* 10 t) (List.len xs))))
@@ -3133,7 +3133,7 @@
               (handle E n
                 ((next () s (resume s (+ s 3)))
                  (span () s (resume (- s 0) s)))
-                (let ((r0 (record (= x 1) (= y 2))))
+                (let ((r0 #record((= x 1) (= y 2))))
                   (let ((r1 (Record.with r0 #"x" (E.next))))
                     (let ((r2 (Record.with r1 #"y" (E.next))))
                       (+ (* 100 (. r2 x)) (+ (* 10 (. r2 y)) (- (E.span) n))))))))
@@ -3150,7 +3150,7 @@
                 ((next () s (resume s (+ s 3)))
                  (span () s (resume s s)))
                 (let ((d (E.next)))
-                  (let ((r0 (record (= x 1) (= y 2))))
+                  (let ((r0 #record((= x 1) (= y 2))))
                     (let ((r (if (= (% d 2) 0)
                                  (Record.with r0 #"x" d)
                                  (Record.with r0 #"y" d))))
@@ -3166,7 +3166,7 @@
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (+ s 4))))
-                (let ((r0 (record (= x 1) (= y 2))))
+                (let ((r0 #record((= x 1) (= y 2))))
                   (let ((r1 (Record.with r0 #"x" (+ (* 10 (. r0 x)) (E.next)))))
                     (let ((r2 (Record.with r1 #"y" (+ (. r1 x) (+ (. r1 y) (E.next))))))
                       (+ (* 100 (. r2 x)) (. r2 y)))))))
@@ -3268,7 +3268,7 @@
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (+ s 7))))
-                (let ((b (Bytes.of (list (UInt8.wrap (+ (% (E.next) 200) 56)) (UInt8.wrap (+ (% (E.next) 200) 56)) (UInt8.wrap (+ (% (E.next) 200) 56))))))
+                (let ((b (Bytes.of #list((UInt8.wrap (+ (% (E.next) 200) 56)) (UInt8.wrap (+ (% (E.next) 200) 56)) (UInt8.wrap (+ (% (E.next) 200) 56))))))
                   (let ((i (% (E.next) 3)))
                     (match (Bytes.at b i)
                       ((Some v) (+ (* 100 v) (+ (* 10 (Bytes.len b)) i)))
@@ -3646,12 +3646,12 @@
             (effect E (op pair (-> (Tuple Int64 Int64))) (op probe (-> Int64)))
             (def (main (: n Int64))
               (handle E n
-                ((pair () s (resume (tuple s (* 2 s)) (+ s 3)))
+                ((pair () s (resume #tuple(s (* 2 s)) (+ s 3)))
                  (probe () s (resume s s)))
                 (+ (* 10 (match (E.pair)
-                           ((guard (tuple a b) (< a b)) (+ 100 b))
-                           ((guard (tuple a b) (= a b)) 200)
-                           ((tuple a b) (+ 300 b))))
+                           ((guard #tuple(a b) (< a b)) (+ 100 b))
+                           ((guard #tuple(a b) (= a b)) 200)
+                           (#tuple(a b) (+ 300 b))))
                    (- (E.probe) n))))
             (export main)))
   (call   main (: 4 Int64)) (output (: 1083 Int64))
@@ -3676,7 +3676,7 @@
             (effect E (op make (-> Box)) (op probe (-> Int64)))
             (def (main (: n Int64))
               (handle E n
-                ((make () s (resume (Box.Wrap (record (= x s) (= y (+ s 2)))) (+ s 4)))
+                ((make () s (resume (Box.Wrap #record((= x s) (= y (+ s 2)))) (+ s 4)))
                  (probe () s (resume s s)))
                 (match (E.make)
                   ((Box.Wrap r) (+ (* 100 (. r x)) (+ (* 10 (. r y)) (- (E.probe) n)))))))
@@ -3693,7 +3693,7 @@
               (match b ((Box.Wrap r) r)))
             (def (main (: n Int64))
               (handle E n
-                ((make () s (resume (Box.Wrap (record (= x s) (= y (+ s 2)))) (+ s 4)))
+                ((make () s (resume (Box.Wrap #record((= x s) (= y (+ s 2)))) (+ s 4)))
                  (keep (b) s (resume b s))
                  (next () s (resume s (+ s 4)))
                  (probe () s (resume s s)))
@@ -3714,8 +3714,8 @@
             (def (main (: n Int64))
               (handle E n
                 ((make () s (resume (if (= (% s 2) 0)
-                                        (Shape.Pt (record (= x s) (= y (+ s 1))))
-                                        (Shape.Ln (record (= a s) (= b (* 2 s)) (= len (* 3 s)))))
+                                        (Shape.Pt #record((= x s) (= y (+ s 1))))
+                                        (Shape.Ln #record((= a s) (= b (* 2 s)) (= len (* 3 s)))))
                                     (+ s 5)))
                  (probe () s (resume s s)))
                 (+ (* 10 (match (E.make)
@@ -3737,8 +3737,8 @@
             (def (unwrap (: b Box)) (match b ((Box.Wrap r) r)))
             (def (main (: n Int64))
               (handle E n
-                ((make () s (resume (Big.Node (record (= tag (+ s 4))
-                                               (= inner (Box.Wrap (record (= x s) (= y (+ s 2)))))))
+                ((make () s (resume (Big.Node #record((= tag (+ s 4))
+                                               (= inner (Box.Wrap #record((= x s) (= y (+ s 2)))))))
                                     (+ s 6)))
                  (probe () s (resume s s)))
                 (let ((outer (unnode (E.make))))
@@ -3760,7 +3760,7 @@
             (def (main (: n Int64))
               (handle E n
                 ((probe () s (resume s s)))
-                (match (Big.Node (record (= tag n) (= inner (Box.Wrap (record (= x 1) (= y 2))))))
+                (match (Big.Node #record((= tag n) (= inner (Box.Wrap #record((= x 1) (= y 2))))))
                   ((Big.Node outer)
                     (match (. outer inner)
                       ((Box.Wrap r) (+ (* 100 (. outer tag)) (+ (* 10 (. r x)) (. r y)))))))))
@@ -3782,8 +3782,8 @@
   (input  (do
             (effect E (op snap (-> (Record (: a Int64) (: b Int64)))))
             (def (main (: n Int64))
-              (handle E (record (= a n) (= b 100))
-                ((snap () s (resume s (record (= a (+ (. s a) 1)) (= b (* (. s b) 2))))))
+              (handle E #record((= a n) (= b 100))
+                ((snap () s (resume s #record((= a (+ (. s a) 1)) (= b (* (. s b) 2))))))
                 (let ((r1 (E.snap)))
                   (let ((r2 (E.snap)))
                     (+ (+ (. r1 a) (. r1 b))
@@ -3797,10 +3797,10 @@
   (input  (do
             (effect E (op snap (-> (Record (: a Int64) (: b Int64)))))
             (def (main (: n Int64))
-              (handle E (record (= a n) (= b 100))
+              (handle E #record((= a n) (= b 100))
                 ((snap () s (resume s (if (= (% (+ (. s a) (. s b)) 2) 0)
-                                          (record (= a (+ (. s a) 7)) (= b (. s b)))
-                                          (record (= a (. s a)) (= b (+ (. s b) 7)))))))
+                                          #record((= a (+ (. s a) 7)) (= b (. s b)))
+                                          #record((= a (. s a)) (= b (+ (. s b) 7)))))))
                 (let ((r1 (E.snap)))
                   (let ((r2 (E.snap)))
                     (let ((r3 (E.snap)))
@@ -3816,17 +3816,17 @@
   (input  (do
             (effect E (op snap (-> (Record (: ctr Int64) (: pair (Tuple Int64 Int64))))))
             (def (main (: n Int64))
-              (handle E (record (= ctr n) (= pair (tuple 1 2)))
+              (handle E #record((= ctr n) (= pair #tuple(1 2)))
                 ((snap () s (resume s (match (. s pair)
-                                        ((tuple lo hi) (record (= ctr (+ (. s ctr) 1))
-                                                               (= pair (tuple hi (+ lo hi)))))))))
+                                        (#tuple(lo hi) #record((= ctr (+ (. s ctr) 1))
+                                                               (= pair #tuple(hi (+ lo hi)))))))))
                 (let ((r1 (E.snap)))
                   (let ((r2 (E.snap)))
                     (let ((r3 (E.snap)))
                       (match (. r1 pair)
-                        ((tuple a1 b1) (match (. r2 pair)
-                          ((tuple a2 b2) (match (. r3 pair)
-                            ((tuple a3 b3)
+                        (#tuple(a1 b1) (match (. r2 pair)
+                          (#tuple(a2 b2) (match (. r3 pair)
+                            (#tuple(a3 b3)
                               (+ (* 100 (+ (. r1 ctr) (+ a1 b1)))
                                  (+ (* 10 (+ (. r2 ctr) (+ a2 b2)))
                                     (+ (. r3 ctr) (+ a3 b3)))))))))))))))
@@ -3851,11 +3851,11 @@
   (input  (do
             (effect E (op next (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n false)
+              (handle E #tuple(n false)
                 ((next () s (match s
-                              ((tuple v flip)
+                              (#tuple(v flip)
                                 (resume (if flip (- 0 v) v)
-                                        (tuple (+ v 2) (not flip)))))))
+                                        #tuple((+ v 2) (not flip)))))))
                 (+ (* 100 (E.next)) (+ (* 10 (E.next)) (E.next)))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 257 Int64))
@@ -3866,11 +3866,11 @@
   (input  (do
             (effect E (op swap (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n (+ n 1) 0)
+              (handle E #tuple(n (+ n 1) 0)
                 ((swap () s (match s
-                              ((tuple a b k)
+                              (#tuple(a b k)
                                 (resume (+ (* 100 a) (+ (* 10 b) k))
-                                        (tuple b a (+ k 1)))))))
+                                        #tuple(b a (+ k 1)))))))
                 (+ (E.swap) (+ (E.swap) (E.swap)))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 783 Int64))
@@ -4015,13 +4015,13 @@
   (input  (do
             (effect E (op pair (-> (Tuple Float64 Float64))))
             (def (main (: u Float64))
-              (handle E (tuple 0.5 1.0)
+              (handle E #tuple(0.5 1.0)
                 ((pair () s (match s
-                              ((tuple a b) (resume s (tuple (+ a 1.5) (* b 2.0)))))))
+                              (#tuple(a b) (resume s #tuple((+ a 1.5) (* b 2.0)))))))
                 (match (E.pair)
-                  ((tuple a1 b1)
+                  (#tuple(a1 b1)
                     (match (E.pair)
-                      ((tuple a2 b2) (+ (* 100.0 a1) (+ (* 10.0 b1) (+ a2 b2)))))))))
+                      (#tuple(a2 b2) (+ (* 100.0 a1) (+ (* 10.0 b1) (+ a2 b2)))))))))
             (export main)))
   (call   main (: 0.0 Float64)) (output (: 64.0 Float64)))
 
@@ -4061,12 +4061,12 @@
   (input  (do
             (effect E (op feed (-> Int64 Int64)) (op lo (-> Int64)) (op hi (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple 1000 -1000)
+              (handle E #tuple(1000 -1000)
                 ((feed (x) s (match s
-                               ((tuple l h) (resume x (tuple (if (< x l) x l)
+                               (#tuple(l h) (resume x #tuple((if (< x l) x l)
                                                              (if (> x h) x h))))))
-                 (lo () s (match s ((tuple l h) (resume l s))))
-                 (hi () s (match s ((tuple l h) (resume h s)))))
+                 (lo () s (match s (#tuple(l h) (resume l s))))
+                 (hi () s (match s (#tuple(l h) (resume h s)))))
                 (do (E.feed n)
                     (E.feed 7)
                     (E.feed (- 0 n))
@@ -4080,11 +4080,11 @@
   (input  (do
             (effect E (op clamp (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle E (tuple 0 10)
+              (handle E #tuple(0 10)
                 ((clamp (x) s (match s
-                                ((tuple l h)
+                                (#tuple(l h)
                                   (resume (if (< x l) l (if (> x h) h x))
-                                          (tuple (+ l 1) (- h 1)))))))
+                                          #tuple((+ l 1) (- h 1)))))))
                 (let ((a (E.clamp n)))
                   (let ((b (E.clamp 5)))
                     (let ((c (E.clamp (+ n 3))))
@@ -4132,10 +4132,10 @@
   (input  (do
             (effect E (op step (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n 18)
+              (handle E #tuple(n 18)
                 ((step () s (match s
-                              ((tuple a b)
-                                (resume a (if (= b 0) (tuple a b) (tuple b (% a b))))))))
+                              (#tuple(a b)
+                                (resume a (if (= b 0) #tuple(a b) #tuple(b (% a b))))))))
                 (let ((d1 (E.step)))
                   (let ((d2 (E.step)))
                     (let ((d3 (E.step)))
@@ -4271,11 +4271,11 @@
   (input  (do
             (effect E (op grow (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple "" n)
+              (handle E #tuple("" n)
                 ((grow () s (match s
-                              ((tuple acc k)
+                              (#tuple(acc k)
                                 (resume (String.byte-len acc)
-                                        (tuple (String.concat acc (if (= (% k 2) 0) "ab" "xyz"))
+                                        #tuple((String.concat acc (if (= (% k 2) 0) "ab" "xyz"))
                                                (+ k 1)))))))
                 (do (E.grow) (E.grow) (E.grow)
                     (+ (* 10 (E.grow)) 3))))
@@ -4292,7 +4292,7 @@
                 ((Some v) (sum-list xs (+ i 1) (+ acc v)))
                 ((None) acc)))
             (def (main (: n Int64))
-              (handle E (list)
+              (handle E #list()
                 ((push (x) s (resume (List.len s) (List.push s x)))
                  (total () s (resume (sum-list s 0 0) s)))
                 (let ((a (E.push n)))
@@ -4310,13 +4310,13 @@
   (input  (do
             (effect E (op at (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle E (tuple (list 10 20 30 40) n)
+              (handle E #tuple(#list(10 20 30 40) n)
                 ((at (u) s (match s
-                             ((tuple xs k)
+                             (#tuple(xs k)
                                (resume (match (List.at xs (% k 6))
                                          ((Some v) v)
                                          ((None) -1))
-                                       (tuple xs (+ k 2)))))))
+                                       #tuple(xs (+ k 2)))))))
                 (+ (* 100 (E.at 0)) (E.at 0))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 2040 Int64))
@@ -4445,7 +4445,7 @@
                 ((next () s (resume s (+ s 1)))
                  (probe () s (resume s s)))
                 (let ((d (E.next)))
-                  (let ((r (record (= a d) (= b (record (= x (* 2 d)) (= y (+ d 5)))))))
+                  (let ((r #record((= a d) (= b #record((= x (* 2 d)) (= y (+ d 5)))))))
                     (+ (* 100 (. r a))
                        (+ (* 10 (. (. r b) x))
                           (+ (. (. r b) y)
@@ -4525,7 +4525,7 @@
                  (probe () s (resume s s)))
                 (let ((a (E.next)))
                   (let ((b (E.next)))
-                    (+ (if (= (record (= x a) (= y (+ a 1))) (record (= x a) (= y b))) 100 200)
+                    (+ (if (= #record((= x a) (= y (+ a 1))) #record((= x a) (= y b))) 100 200)
                        (- (E.probe) n))))))
             (export main)))
   (call   main (: 4 Int64)) (output (: 204 Int64))
@@ -4992,11 +4992,11 @@
   (input  (do
             (effect E (op feed (-> Int64 Int64)) (op avg (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple 0 0)
+              (handle E #tuple(0 0)
                 ((feed (x) s (match s
-                               ((tuple tot cnt) (resume x (tuple (+ tot x) (+ cnt 1))))))
+                               (#tuple(tot cnt) (resume x #tuple((+ tot x) (+ cnt 1))))))
                  (avg () s (match s
-                             ((tuple tot cnt) (resume (+ (* 10 (/ tot cnt)) cnt) s)))))
+                             (#tuple(tot cnt) (resume (+ (* 10 (/ tot cnt)) cnt) s)))))
                 (do (E.feed n) (E.feed (+ n 6)) (E.feed 3)
                     (E.avg))))
             (export main)))
@@ -5041,11 +5041,11 @@
   (input  (do
             (effect E (op put (-> Int64 Int64)) (op get (-> Int64)) (op writes (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple 0 0)
+              (handle E #tuple(0 0)
                 ((put (x) s (match s
-                              ((tuple last ctr) (resume last (tuple x (+ ctr 1))))))
-                 (get () s (match s ((tuple last ctr) (resume last s))))
-                 (writes () s (match s ((tuple last ctr) (resume ctr s)))))
+                              (#tuple(last ctr) (resume last #tuple(x (+ ctr 1))))))
+                 (get () s (match s (#tuple(last ctr) (resume last s))))
+                 (writes () s (match s (#tuple(last ctr) (resume ctr s)))))
                 (let ((r1 (E.put (* 10 n))))
                   (let ((r2 (E.put 7)))
                     (+ r1 (+ r2 (+ (* 100 (E.get)) (* 1000 (E.writes)))))))))
@@ -5183,11 +5183,11 @@
                       (op mixb (-> Int64 Int64)))
             (def (main (: n Int64))
               (handle E n
-                ((split () s (resume (tuple s (* 2 s)) (+ s 1)))
+                ((split () s (resume #tuple(s (* 2 s)) (+ s 1)))
                  (mixa (a) s (resume (+ a s) (+ s 2)))
                  (mixb (b) s (resume (* b s) s)))
                 (match (E.split)
-                  ((tuple a b) (+ (E.mixa a) (E.mixb b))))))
+                  (#tuple(a b) (+ (E.mixa a) (E.mixb b))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 91 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64))
@@ -5218,17 +5218,17 @@
             (def (get2 (: m (Map Int64 (Tuple Int64 Int64))) (: k Int64))
               (match (Map.lookup m k)
                 ((Some p) p)
-                ((None) (tuple -1 -1))))
+                ((None) #tuple(-1 -1))))
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (+ s 2))))
                 (let ((k (+ (% (E.next) 3) 1)))
                   (let ((v1 (E.next)))
-                    (let ((m (Map.insert (Map.insert (Map.insert (Map.insert (map) 1 (tuple 10 20)) 2 (tuple 30 40)) 3 (tuple 50 60)) k (tuple v1 (* 2 v1)))))
+                    (let ((m (Map.insert (Map.insert (Map.insert (Map.insert (map) 1 #tuple(10 20)) 2 #tuple(30 40)) 3 #tuple(50 60)) k #tuple(v1 (* 2 v1)))))
                       (match (get2 m k)
-                        ((tuple a b)
+                        (#tuple(a b)
                           (match (get2 m (if (= k 1) 2 1))
-                            ((tuple c d) (+ a (+ b (+ c d))))))))))))
+                            (#tuple(c d) (+ a (+ b (+ c d))))))))))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 42 Int64))
   (call   main (: 0 Int64)) (output (: 76 Int64))
@@ -5255,13 +5255,13 @@
   (input  (do
             (effect E (op next (-> Int64)) (op probe (-> Int64)))
             (def (pair2)
-              (tuple (E.next) (E.next)))
+              #tuple((E.next) (E.next)))
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (+ s 3)))
                  (probe () s (resume s s)))
                 (match (pair2)
-                  ((tuple a b) (+ (* 100 a) (+ (* 10 b) (- (E.probe) n)))))))
+                  (#tuple(a b) (+ (* 100 a) (+ (* 10 b) (- (E.probe) n)))))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 256 Int64))
   (call   main (: 0 Int64)) (output (: 36 Int64))
@@ -5271,13 +5271,13 @@
   (input  (do
             (effect E (op sum (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n (tuple 100 7000))
+              (handle E #tuple(n #tuple(100 7000))
                 ((sum () s (match s
-                             ((tuple a inner)
+                             (#tuple(a inner)
                                (match inner
-                                 ((tuple b c)
+                                 (#tuple(b c)
                                    (resume (+ a (+ b c))
-                                           (tuple (+ a 1) (tuple (+ b 10) (+ c 700))))))))))
+                                           #tuple((+ a 1) #tuple((+ b 10) (+ c 700))))))))))
                 (+ (E.sum) (* 10 (E.sum)))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 85243 Int64))
@@ -5361,7 +5361,7 @@
             (def (odds (: n Int64) (: acc (List Int64)))
               (if (= n 0) acc (evens (- n 1) acc)))
             (def (main (: k Int64))
-              (List.len (evens k (list))))
+              (List.len (evens k #list())))
             (export main)))
   (call   main (: 6 Int64)) (output (: 3 Int64)))
 
@@ -5415,10 +5415,10 @@
   (input  (do
             (effect E (op geta (-> Int64)) (op getb (-> Int64)) (op spin (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n 100)
-                ((geta () s (match s ((tuple a b) (resume a s))))
-                 (getb () s (match s ((tuple a b) (resume b s))))
-                 (spin () s (match s ((tuple a b) (resume (+ a b) (tuple (+ a b) a))))))
+              (handle E #tuple(n 100)
+                ((geta () s (match s (#tuple(a b) (resume a s))))
+                 (getb () s (match s (#tuple(a b) (resume b s))))
+                 (spin () s (match s (#tuple(a b) (resume (+ a b) #tuple((+ a b) a))))))
                 (let ((r1 (E.geta)))
                   (let ((r2 (E.getb)))
                     (do (E.spin)
@@ -5432,9 +5432,9 @@
   (input  (do
             (effect E (op tick (-> Int64)) (op rd (-> Int64)) (op cur (-> Int64)))
             (def (main (: n Int64))
-              (handle E (record (= cnt n) (= tot 0))
+              (handle E #record((= cnt n) (= tot 0))
                 ((tick () st (resume (. st cnt)
-                                     (record (= cnt (+ (. st cnt) 1))
+                                     #record((= cnt (+ (. st cnt) 1))
                                              (= tot (+ (. st tot) (* 10 (. st cnt)))))))
                  (rd () st (resume (. st tot) st))
                  (cur () st (resume (. st cnt) st)))
@@ -5477,7 +5477,7 @@
             (effect io (op sink (-> Bytes Int64)))
             (def (main (: k Int64))
               (host (io)
-                (io.sink (Bytes.of (list)))))
+                (io.sink (Bytes.of #list()))))
             (export main)))
   (host-responses (respond io.sink (: 42 Int64)))
   (host-calls (call io.sink))
@@ -5488,18 +5488,18 @@
   (input  (do
             (effect E (op rec (-> Int64)) (op qry (-> Int64 Int64 Int64)) (op cnt (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n (: Map.empty (Map (Tuple Int64 Int64) Int64)))
+              (handle E #tuple(n (: Map.empty (Map (Tuple Int64 Int64) Int64)))
                 ((rec () st (match st
-                              ((tuple s m)
-                               (resume s (tuple (+ s 2)
-                                                (Map.insert m (tuple s (+ s 1)) (* 10 s)))))))
+                              (#tuple(s m)
+                               (resume s #tuple((+ s 2)
+                                                (Map.insert m #tuple(s (+ s 1)) (* 10 s)))))))
                  (qry (a b) st (match st
-                                 ((tuple s m)
-                                  (resume (match (Map.lookup m (tuple a b))
+                                 (#tuple(s m)
+                                  (resume (match (Map.lookup m #tuple(a b))
                                             ((Some v) v)
                                             ((None) -1))
                                           st))))
-                 (cnt () st (match st ((tuple s m) (resume s st)))))
+                 (cnt () st (match st (#tuple(s m) (resume s st)))))
                 (do (E.rec) (+ (E.qry n (+ n 1)) (E.cnt)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 57 Int64)))
@@ -5667,17 +5667,17 @@
               (match (St.get id)
                 (((. Option Some) v) v)
                 (((. Option None) u) (cache id (compute id)))))
-            (def (cache (: id Int64) (: v Int64)) (match (St.put (tuple id v)) (_ v)))
+            (def (cache (: id Int64) (: v Int64)) (match (St.put #tuple(id v)) (_ v)))
             (def (compute (: id Int64))
               (match (St.kids id)
                 (((. Option Some) childId)
                   (let ((a (demand childId)))
-                    (match (St.put (tuple id a)) (_ (demand childId)))))
+                    (match (St.put #tuple(id a)) (_ (demand childId)))))
                 (((. Option None) u) id)))
             (def (run (: root Int64))
               (handle St root
                 ((get (id) s (resume (. Option None) s))
-                 (put (pair) s (match pair ((tuple x y) (resume unit s))))
+                 (put (pair) s (match pair (#tuple(x y) (resume unit s))))
                  (kids (id) s (resume (if (<= id 0) (. Option None) (Some (- id 1))) s)))
                 (demand root)))
             (export run)))
@@ -5725,11 +5725,11 @@
   (input  (do
             (effect E (op draw (-> Float64)) (op count (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple (+ 1.0 (Float64.of-int n)) 0)
+              (handle E #tuple((+ 1.0 (Float64.of-int n)) 0)
                 ((draw () st (match st
-                               ((tuple s c)
-                                (resume s (tuple (if (< s 10.0) (* s 2.0) (* s 0.5)) (+ c 1))))))
-                 (count () st (match st ((tuple s c) (resume c st)))))
+                               (#tuple(s c)
+                                (resume s #tuple((if (< s 10.0) (* s 2.0) (* s 0.5)) (+ c 1))))))
+                 (count () st (match st (#tuple(s c) (resume c st)))))
                 (+ (E.draw) (+ (E.draw) (+ (E.draw) (Float64.of-int (E.count)))))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 24.0 Float64))
@@ -5860,18 +5860,18 @@
                       (op qry (-> Int64 Int64 Int64))
                       (op cnt (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n Map.empty)
+              (handle E #tuple(n Map.empty)
                 ((rec () st (match st
-                              ((tuple s m)
-                               (resume s (tuple (+ s 2)
-                                                (Map.insert m (tuple s (+ s 1)) (* 10 s)))))))
+                              (#tuple(s m)
+                               (resume s #tuple((+ s 2)
+                                                (Map.insert m #tuple(s (+ s 1)) (* 10 s)))))))
                  (qry (a b) st (match st
-                                 ((tuple s m)
-                                  (resume (match (Map.lookup m (tuple a b))
+                                 (#tuple(s m)
+                                  (resume (match (Map.lookup m #tuple(a b))
                                             ((Some v) v)
                                             ((None) -1))
                                           st))))
-                 (cnt () st (match st ((tuple s m) (resume s st)))))
+                 (cnt () st (match st (#tuple(s m) (resume s st)))))
                 (do (E.rec) (E.rec)
                     (+ (E.qry n (+ n 1))
                        (+ (* 1000 (E.qry (+ n 9) (+ n 10)))
@@ -5885,18 +5885,18 @@
   (input  (do
             (effect E (op rec (-> Int64)) (op qry (-> Int64 Int64 Int64)) (op cnt (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n Map.empty)
+              (handle E #tuple(n Map.empty)
                 ((rec () st (match st
-                              ((tuple s m)
-                               (resume s (tuple (+ s 2)
-                                                (Map.insert m (tuple s (+ s 1)) (* 10 s)))))))
+                              (#tuple(s m)
+                               (resume s #tuple((+ s 2)
+                                                (Map.insert m #tuple(s (+ s 1)) (* 10 s)))))))
                  (qry (a b) st (match st
-                                 ((tuple s m)
-                                  (resume (match (Map.lookup m (tuple a b))
+                                 (#tuple(s m)
+                                  (resume (match (Map.lookup m #tuple(a b))
                                             ((Some v) v)
                                             ((None) -1))
                                           st))))
-                 (cnt () st (match st ((tuple s m) (resume s st)))))
+                 (cnt () st (match st (#tuple(s m) (resume s st)))))
                 (do (E.rec) (+ (E.qry n (+ n 1)) (E.cnt)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 57 Int64)))
@@ -5905,18 +5905,18 @@
   (input  (do
             (effect E (op rec (-> Int64)) (op qry (-> Int64 Int64)) (op cnt (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n Map.empty)
+              (handle E #tuple(n Map.empty)
                 ((rec () st (match st
-                              ((tuple s m)
-                               (resume s (tuple (+ s 2)
-                                                (Map.insert m s (tuple s (* 10 s))))))))
+                              (#tuple(s m)
+                               (resume s #tuple((+ s 2)
+                                                (Map.insert m s #tuple(s (* 10 s))))))))
                  (qry (k) st (match st
-                               ((tuple s m)
+                               (#tuple(s m)
                                 (resume (match (Map.lookup m k)
-                                          ((Some p) (match p ((tuple a b) (+ a b))))
+                                          ((Some p) (match p (#tuple(a b) (+ a b))))
                                           ((None) -1))
                                         st))))
-                 (cnt () st (match st ((tuple s m) (resume s st)))))
+                 (cnt () st (match st (#tuple(s m) (resume s st)))))
                 (do (E.rec) (+ (E.qry n) (E.cnt)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 62 Int64))
@@ -5929,15 +5929,15 @@
                       (op has (-> Int64 Int64 Int64))
                       (op cnt (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n #set())
+              (handle E #tuple(n #set())
                 ((add () st (match st
-                              ((tuple s ss)
-                               (resume s (tuple (+ s 2)
-                                                (Set.insert ss (tuple s (+ s 1))))))))
+                              (#tuple(s ss)
+                               (resume s #tuple((+ s 2)
+                                                (Set.insert ss #tuple(s (+ s 1))))))))
                  (has (a b) st (match st
-                                 ((tuple s ss)
-                                  (resume (if (Set.contains ss (tuple a b)) 1 0) st))))
-                 (cnt () st (match st ((tuple s ss) (resume s st)))))
+                                 (#tuple(s ss)
+                                  (resume (if (Set.contains ss #tuple(a b)) 1 0) st))))
+                 (cnt () st (match st (#tuple(s ss) (resume s st)))))
                 (do (E.add) (E.add)
                     (+ (E.has n (+ n 1))
                        (+ (* 1000 (E.has (+ n 9) (+ n 10)))
@@ -5953,18 +5953,18 @@
                       (op rd (-> Int64))
                       (op cnt (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n (list))
+              (handle E #tuple(n #list())
                 ((push () st (match st
-                               ((tuple s xs)
-                                (resume s (tuple (+ s 2)
-                                                 (List.push xs (tuple s (* 2 s))))))))
+                               (#tuple(s xs)
+                                (resume s #tuple((+ s 2)
+                                                 (List.push xs #tuple(s (* 2 s))))))))
                  (rd () st (match st
-                             ((tuple s xs)
+                             (#tuple(s xs)
                               (resume (match (List.at xs 0)
-                                        ((Some p) (match p ((tuple a b) (+ a b))))
+                                        ((Some p) (match p (#tuple(a b) (+ a b))))
                                         ((None) -1))
                                       st))))
-                 (cnt () st (match st ((tuple s xs) (resume s st)))))
+                 (cnt () st (match st (#tuple(s xs) (resume s st)))))
                 (do (E.push) (E.push) (+ (E.rd) (E.cnt)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 24 Int64))
@@ -6050,14 +6050,14 @@
             (effect M (op step (-> Cmd Int64)))
             (def (decide (: s Mode) (: k Int64))
               (match s
-                ((Mode.Idle) (tuple k (Mode.Run k)))
-                ((Mode.Run j) (tuple (+ j k) (Mode.Run (+ j k))))))
+                ((Mode.Idle) #tuple(k (Mode.Run k)))
+                ((Mode.Run j) #tuple((+ j k) (Mode.Run (+ j k))))))
             (def (main (: n Int64))
               (handle M (Mode.Idle)
                 ((step (c) s
                   (match c
                     ((Cmd.Go k) (match (decide s k)
-                                  ((tuple v s2) (resume v s2)))))))
+                                  (#tuple(v s2) (resume v s2)))))))
                 (+ (M.step (Cmd.Go (+ 10 n)))
                    (M.step (Cmd.Go 7)))))
             (export main)))
@@ -6191,8 +6191,8 @@
                   (match s
                     ((Mode.Idle) (resume (* (. c k) (. c w)) (Mode.Run (* (. c k) (. c w)))))
                     ((Mode.Run j) (resume (+ j (* (. c k) (. c w))) (Mode.Run j))))))
-                (+ (M.step (record (= k (+ 10 n)) (= w 2)))
-                   (M.step (record (= k 3) (= w 4))))))
+                (+ (M.step #record((= k (+ 10 n)) (= w 2)))
+                   (M.step #record((= k 3) (= w 4))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 72 Int64))
   (call   main (: 0 Int64)) (output (: 52 Int64)))
@@ -6207,8 +6207,8 @@
                   (match s
                     ((Mode.Idle) (resume (* (. (. c m) k) (. c w)) (Mode.Run (* (. (. c m) k) (. c w)))))
                     ((Mode.Run j) (resume (+ j (* (. (. c m) k) (. c w))) (Mode.Run j))))))
-                (+ (M.step (record (= m (record (= k (+ 10 n)))) (= w 2)))
-                   (M.step (record (= m (record (= k 3))) (= w 4))))))
+                (+ (M.step #record((= m #record((= k (+ 10 n)))) (= w 2)))
+                   (M.step #record((= m #record((= k 3))) (= w 4))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 72 Int64))
   (call   main (: 0 Int64)) (output (: 52 Int64)))
@@ -6279,9 +6279,9 @@
               (handle E n
                 ((rate (p) s
                   (match p
-                    ((guard (tuple a b) (> (+ a b) s)) (resume (+ (* 10 a) b) (+ s (+ a b))))
-                    ((tuple _a _b) (resume 0 s)))))
-                (+ (* 100 (E.rate (tuple 3 4))) (E.rate (tuple 1 2)))))
+                    ((guard #tuple(a b) (> (+ a b) s)) (resume (+ (* 10 a) b) (+ s (+ a b))))
+                    (#tuple(_a _b) (resume 0 s)))))
+                (+ (* 100 (E.rate #tuple(3 4))) (E.rate #tuple(1 2)))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 3400 Int64))
   (call   main (: 8 Int64)) (output (: 0 Int64))
@@ -6383,12 +6383,12 @@
   (input  (do
             (effect E (op sel (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n 10 100)
+              (handle E #tuple(n 10 100)
                 ((sel (i) st (match st
-                               ((tuple a b c)
-                                (if (= i 0) (resume a (tuple (+ a 1) b c))
-                                    (if (= i 1) (resume b (tuple a (+ b 1) c))
-                                        (resume c (tuple a b (+ c 1)))))))))
+                               (#tuple(a b c)
+                                (if (= i 0) (resume a #tuple((+ a 1) b c))
+                                    (if (= i 1) (resume b #tuple(a (+ b 1) c))
+                                        (resume c #tuple(a b (+ c 1)))))))))
                 (+ (E.sel 0) (+ (E.sel 2) (+ (E.sel 1) (E.sel 0))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 121 Int64))
@@ -6398,14 +6398,14 @@
   (input  (do
             (effect E (op step (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n 10 100)
+              (handle E #tuple(n 10 100)
                 ((step () st (match st
-                               ((tuple a b c)
+                               (#tuple(a b c)
                                 (let ((m (% a 3)))
                                   (let ((i (if (< m 0) (- 0 m) m)))
-                                    (if (= i 0) (resume a (tuple (+ a 1) b c))
-                                        (if (= i 1) (resume b (tuple a (+ b 1) c))
-                                            (resume c (tuple a b (+ c 1)))))))))))
+                                    (if (= i 0) (resume a #tuple((+ a 1) b c))
+                                        (if (= i 1) (resume b #tuple(a (+ b 1) c))
+                                            (resume c #tuple(a b (+ c 1)))))))))))
                 (+ (E.step) (E.step))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 201 Int64))
@@ -6417,13 +6417,13 @@
   (input  (do
             (effect E (op sel (-> Int64 Int64 Int64)) (op rd0 (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n 10 100)
+              (handle E #tuple(n 10 100)
                 ((sel (i d) st (match st
-                                 ((tuple a b c)
-                                  (if (= i 0) (resume a (tuple (+ a d) b c))
-                                      (if (= i 1) (resume b (tuple a (+ b d) c))
-                                          (resume c (tuple a b (+ c d))))))))
-                 (rd0 () st (match st ((tuple a b c) (resume a st)))))
+                                 (#tuple(a b c)
+                                  (if (= i 0) (resume a #tuple((+ a d) b c))
+                                      (if (= i 1) (resume b #tuple(a (+ b d) c))
+                                          (resume c #tuple(a b (+ c d))))))))
+                 (rd0 () st (match st (#tuple(a b c) (resume a st)))))
                 (+ (E.sel 0 3) (+ (E.sel 2 7) (E.rd0)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 113 Int64))
@@ -6433,9 +6433,9 @@
   (input  (do
             (effect E (op pop (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n 10 100)
+              (handle E #tuple(n 10 100)
                 ((pop () st (match st
-                              ((tuple a b c) (resume a (tuple b c a))))))
+                              (#tuple(a b c) (resume a #tuple(b c a))))))
                 (+ (E.pop)
                    (+ (* 2 (E.pop))
                       (+ (* 3 (E.pop))
@@ -6449,12 +6449,12 @@
   (input  (do
             (effect E (op pop (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n 10 100)
+              (handle E #tuple(n 10 100)
                 ((pop () st (match st
-                              ((tuple a b c)
+                              (#tuple(a b c)
                                (resume a (if (= (% a 2) 0)
-                                             (tuple b c a)
-                                             (tuple c a b)))))))
+                                             #tuple(b c a)
+                                             #tuple(c a b)))))))
                 (+ (E.pop) (+ (* 2 (E.pop)) (* 3 (E.pop))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 220 Int64))
@@ -6477,13 +6477,13 @@
   (input  (do
             (effect L (op try (-> String Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (if (= (% n 2) 0) "ab" "cd") 1 0)
+              (handle L #tuple((if (= (% n 2) 0) "ab" "cd") 1 0)
                 ((try (a) st (match st
-                               ((tuple key locked fails)
+                               (#tuple(key locked fails)
                                 (if (= locked 1)
                                     (if (= a key)
-                                        (resume 1 (tuple key 0 fails))
-                                        (resume 0 (tuple key 1 (+ fails 1))))
+                                        (resume 1 #tuple(key 0 fails))
+                                        (resume 0 #tuple(key 1 (+ fails 1))))
                                     (resume 2 st))))))
                 (let ((r1 (L.try "cd")))
                   (let ((r2 (L.try "ab")))
@@ -6500,14 +6500,14 @@
   (input  (do
             (effect L (op try (-> String Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (list "aa" "bb" "cc")
+              (handle L #tuple(#list("aa" "bb" "cc")
                                (let ((m (% n 3))) (if (< m 0) (- 0 m) m)))
                 ((try (a) st (match st
-                               ((tuple keys ki)
+                               (#tuple(keys ki)
                                 (match (List.at keys ki)
                                   ((Some key)
                                    (if (= a key)
-                                       (resume 1 (tuple keys (% (+ ki 1) 3)))
+                                       (resume 1 #tuple(keys (% (+ ki 1) 3)))
                                        (resume 0 st)))
                                   ((None) (resume -1 st)))))))
                 (+ (* 1000 (L.try "aa"))
@@ -6524,14 +6524,14 @@
   (input  (do
             (effect L (op try (-> String Int64)))
             (def (main (: n Int64))
-              (handle L (tuple 0 0)
+              (handle L #tuple(0 0)
                 ((try (a) st (match st
-                               ((tuple fails dead)
+                               (#tuple(fails dead)
                                 (if (= dead 1)
                                     (resume 9 st)
                                     (if (= a "ab")
                                         (resume 1 st)
-                                        (resume 0 (tuple (+ fails 1)
+                                        (resume 0 #tuple((+ fails 1)
                                                          (if (>= (+ fails 1) 2) 1 0)))))))))
                 (if (> n 0)
                     (+ (* 100 (L.try "xx")) (+ (* 10 (L.try "xx")) (L.try "ab")))
@@ -6545,12 +6545,12 @@
   (input  (do
             (effect E (op put (-> Int64)) (op size (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n "ab")
+              (handle E #tuple(n "ab")
                 ((put () st (match st
-                              ((tuple s r)
-                               (resume s (tuple (+ s 1)
+                              (#tuple(s r)
+                               (resume s #tuple((+ s 1)
                                                 (String.concat r (if (= (% s 3) 0) "x" "yz")))))))
-                 (size () st (match st ((tuple s r) (resume (String.byte-len r) st)))))
+                 (size () st (match st (#tuple(s r) (resume (String.byte-len r) st)))))
                 (do (E.put) (E.put) (+ (E.size) (E.size)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64))
@@ -6560,14 +6560,14 @@
   (input  (do
             (effect E (op put (-> Int64)) (op size (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n (Bytes.of (list (UInt8.wrap 9))))
+              (handle E #tuple(n (Bytes.of #list((UInt8.wrap 9))))
                 ((put () st (match st
-                              ((tuple s b)
-                               (resume s (tuple (+ s 1)
+                              (#tuple(s b)
+                               (resume s #tuple((+ s 1)
                                                 (Bytes.concat b (if (= (% s 3) 0)
-                                                                    (Bytes.of (list (UInt8.wrap 1)))
-                                                                    (Bytes.of (list (UInt8.wrap 2) (UInt8.wrap 3))))))))))
-                 (size () st (match st ((tuple s b) (resume (Bytes.len b) st)))))
+                                                                    (Bytes.of #list((UInt8.wrap 1)))
+                                                                    (Bytes.of #list((UInt8.wrap 2) (UInt8.wrap 3))))))))))
+                 (size () st (match st (#tuple(s b) (resume (Bytes.len b) st)))))
                 (do (E.put) (E.put) (+ (E.size) (E.size)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 8 Int64))
@@ -6596,13 +6596,13 @@
                 ((None) acc)))
             (def (sum2 (: xs (List Int64))) (sum-at xs 0 0))
             (def (main (: n Int64))
-              (handle E (list)
+              (handle E #list()
                 ((feed (v) win
                   (let ((grown (List.push win v)))
                     (let ((kept (if (> (List.len grown) 2)
                                     (match (List.at grown 1)
                                       ((Some a) (match (List.at grown 2)
-                                                  ((Some b) (list a b))
+                                                  ((Some b) #list(a b))
                                                   ((None) grown)))
                                       ((None) grown))
                                     grown)))
@@ -6626,21 +6626,21 @@
                   (match (List.at xs (- (List.len xs) cap))
                     ((Some h)
                      (match (List.at xs (- (List.len xs) 1))
-                       ((Some t) (if (= cap 2) (list h t)
+                       ((Some t) (if (= cap 2) #list(h t)
                                      (match (List.at xs (- (List.len xs) 2))
-                                       ((Some m) (list h m t))
+                                       ((Some m) #list(h m t))
                                        ((None) xs))))
                        ((None) xs)))
                     ((None) xs))
                   xs))
             (def (main (: n Int64))
-              (handle E (tuple (list) 2)
+              (handle E #tuple(#list() 2)
                 ((feed (v) st (match st
-                                ((tuple win cap)
+                                (#tuple(win cap)
                                  (let ((kept (drop-to (List.push win v) cap)))
-                                   (resume (max-at kept 0 -1000000) (tuple kept cap))))))
+                                   (resume (max-at kept 0 -1000000) #tuple(kept cap))))))
                  (grow () st (match st
-                               ((tuple win cap) (resume cap (tuple win 3))))))
+                               (#tuple(win cap) (resume cap #tuple(win 3))))))
                 (let ((r1 (E.feed n)))
                   (let ((r2 (E.feed 7)))
                     (do (E.grow)
@@ -6665,13 +6665,13 @@
                   (match (List.at xs (- (List.len xs) 3))
                     ((Some a) (match (List.at xs (- (List.len xs) 2))
                                 ((Some b) (match (List.at xs (- (List.len xs) 1))
-                                            ((Some c) (list a b c))
+                                            ((Some c) #list(a b c))
                                             ((None) xs)))
                                 ((None) xs)))
                     ((None) xs))
                   xs))
             (def (main (: n Int64))
-              (handle E (list)
+              (handle E #list()
                 ((feed (v) win
                   (let ((kept (tail3 (List.push win v))))
                     (resume (/ (sum-at kept 0 0) (List.len kept)) kept))))
@@ -6694,7 +6694,7 @@
                   (match (List.at xs (- (List.len xs) 3))
                     ((Some a) (match (List.at xs (- (List.len xs) 2))
                                 ((Some b) (match (List.at xs (- (List.len xs) 1))
-                                            ((Some c) (list a b c))
+                                            ((Some c) #list(a b c))
                                             ((None) xs)))
                                 ((None) xs)))
                     ((None) xs))
@@ -6704,7 +6704,7 @@
                 ((Some v) (distinct-at xs (+ i 1) (Set.insert seen v)))
                 ((None) (Set.len seen))))
             (def (main (: n Int64))
-              (handle E (list)
+              (handle E #list()
                 ((feed (v) win
                   (let ((kept (tail3 (List.push win v))))
                     (resume (distinct-at kept 0 #set()) kept))))
@@ -6724,12 +6724,12 @@
             (effect E (op put (-> Int64)) (op size (-> Int64)))
             (effect B (op g (-> Unit Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n "ab")
+              (handle E #tuple(n "ab")
                 ((put () st (match st
-                              ((tuple s r)
-                               (resume s (tuple (+ s 1)
+                              (#tuple(s r)
+                               (resume s #tuple((+ s 1)
                                                 (String.concat r (if (= (% s 3) 0) "x" "yz")))))))
-                 (size () st (match st ((tuple s r) (resume (String.byte-len r) st)))))
+                 (size () st (match st (#tuple(s r) (resume (String.byte-len r) st)))))
                 (do (E.put) (E.put)
                     (+ (handle B (E.size)
                          ((g (u) t (resume t (+ t 10))))
@@ -6744,13 +6744,13 @@
   (input  (do
             (effect E (op put (-> Int64)) (op size (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n "ab" "cd")
+              (handle E #tuple(n "ab" "cd")
                 ((put () st (match st
-                              ((tuple s a b)
-                               (resume s (tuple (+ s 1) a
+                              (#tuple(s a b)
+                               (resume s #tuple((+ s 1) a
                                                 (String.concat b (if (= (% s 3) 0) "x" "yz")))))))
                  (size () st (match st
-                               ((tuple s a b)
+                               (#tuple(s a b)
                                 (resume (+ (* 100 (String.byte-len a)) (String.byte-len b)) st)))))
                 (do (E.put) (E.put) (+ (E.size) (E.size)))))
             (export main)))
@@ -7112,12 +7112,12 @@
             (effect E (op puta (-> Int64 Int64)) (op putb (-> Int64 Int64))
                       (op swap (-> Int64)) (op reada (-> Int64)) (op readb (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple (None) (None))
-                ((puta (v) st (match st ((tuple a b) (resume 0 (tuple (Some v) b)))))
-                 (putb (v) st (match st ((tuple a b) (resume 0 (tuple a (Some v))))))
-                 (swap () st (match st ((tuple a b) (resume 1 (tuple b a)))))
-                 (reada () st (match st ((tuple a b) (resume (match a ((Some x) x) ((None) -1)) st))))
-                 (readb () st (match st ((tuple a b) (resume (match b ((Some x) x) ((None) -1)) st)))))
+              (handle E #tuple((None) (None))
+                ((puta (v) st (match st (#tuple(a b) (resume 0 #tuple((Some v) b)))))
+                 (putb (v) st (match st (#tuple(a b) (resume 0 #tuple(a (Some v))))))
+                 (swap () st (match st (#tuple(a b) (resume 1 #tuple(b a)))))
+                 (reada () st (match st (#tuple(a b) (resume (match a ((Some x) x) ((None) -1)) st))))
+                 (readb () st (match st (#tuple(a b) (resume (match b ((Some x) x) ((None) -1)) st)))))
                 (do (E.puta n) (E.putb 7) (E.swap)
                     (+ (* 10 (E.reada)) (E.readb)))))
             (export main)))
@@ -7132,10 +7132,10 @@
               (handle E (None)
                 ((mark (v) st (match st
                                 ((Some p) (match p
-                                            ((tuple a c) (resume (+ a v) (Some (tuple (+ a v) (+ c 1)))))))
-                                ((None) (resume 0 (Some (tuple v 1))))))
+                                            (#tuple(a c) (resume (+ a v) (Some #tuple((+ a v) (+ c 1)))))))
+                                ((None) (resume 0 (Some #tuple(v 1))))))
                  (report () st (match st
-                                 ((Some p) (match p ((tuple a c) (resume (+ (* 1000 c) a) st))))
+                                 ((Some p) (match p (#tuple(a c) (resume (+ (* 1000 c) a) st))))
                                  ((None) (resume -1 st)))))
                 (+ (E.mark n)
                    (+ (* 10 (E.mark 4))
@@ -7277,7 +7277,7 @@
                 ((None) acc)))
             (def (unwrap-sum (: b (Container (List Int64))))
               (match b ((Full xs) (sum-at xs 0 0))))
-            (def (main (: k Int64)) (unwrap-sum (Full (list k 7 1))))
+            (def (main (: k Int64)) (unwrap-sum (Full #list(k 7 1))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 13 Int64))
   (call   main (: -9 Int64)) (output (: -1 Int64))
@@ -7351,14 +7351,14 @@
   (input  (do
             (effect E (op go (-> Int64)) (op stop (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple (Symbol.of "idle") n)
+              (handle E #tuple((Symbol.of "idle") n)
                 ((go () st (match st
-                             ((tuple m acc)
+                             (#tuple(m acc)
                               (if (= m (Symbol.of "idle"))
-                                  (resume 1 (tuple (Symbol.of "run") acc))
-                                  (resume (+ acc 10) (tuple m (+ acc 10)))))))
+                                  (resume 1 #tuple((Symbol.of "run") acc))
+                                  (resume (+ acc 10) #tuple(m (+ acc 10)))))))
                  (stop () st (match st
-                               ((tuple m acc) (resume acc (tuple (Symbol.of "idle") acc))))))
+                               (#tuple(m acc) (resume acc #tuple((Symbol.of "idle") acc))))))
                 (+ (E.go)
                    (+ (* 10 (E.go))
                       (+ (* 100 (E.stop))
@@ -7407,13 +7407,13 @@
   (input  (do
             (effect E (op bumpa (-> Int64)) (op bumpb (-> Int64)) (op snap (-> (Tuple Int64 Int64))))
             (def (main (: n Int64))
-              (handle E (tuple n 10)
-                ((bumpa () st (match st ((tuple a b) (resume a (tuple (+ a 1) b)))))
-                 (bumpb () st (match st ((tuple a b) (resume b (tuple a (+ b 5))))))
+              (handle E #tuple(n 10)
+                ((bumpa () st (match st (#tuple(a b) (resume a #tuple((+ a 1) b)))))
+                 (bumpb () st (match st (#tuple(a b) (resume b #tuple(a (+ b 5))))))
                  (snap () st (resume st st)))
                 (do (E.bumpa) (E.bumpa) (E.bumpb)
                     (match (E.snap)
-                      ((tuple a b) (+ (* 100 a) b))))))
+                      (#tuple(a b) (+ (* 100 a) b))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 715 Int64))
   (call   main (: 0 Int64)) (output (: 215 Int64))
@@ -7423,18 +7423,18 @@
   (input  (do
             (effect E (op bumpa (-> Int64)) (op bumpb (-> Int64)) (op snap (-> (Tuple Int64 Int64))))
             (def (main (: n Int64))
-              (handle E (tuple n 10)
-                ((bumpa () st (match st ((tuple a b) (resume a (tuple (+ a 1) b)))))
-                 (bumpb () st (match st ((tuple a b) (resume b (tuple a (+ b 5))))))
+              (handle E #tuple(n 10)
+                ((bumpa () st (match st (#tuple(a b) (resume a #tuple((+ a 1) b)))))
+                 (bumpb () st (match st (#tuple(a b) (resume b #tuple(a (+ b 5))))))
                  (snap () st (resume st st)))
                 (do (E.bumpa)
                     (let ((s1 (E.snap)))
                       (do (E.bumpb) (E.bumpa)
                           (let ((s2 (E.snap)))
                             (match s1
-                              ((tuple a1 b1)
+                              (#tuple(a1 b1)
                                (match s2
-                                 ((tuple a2 b2)
+                                 (#tuple(a2 b2)
                                   (+ (+ a1 b1) (* 10 (+ a2 b2)))))))))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 236 Int64))
@@ -7445,11 +7445,11 @@
   (input  (do
             (effect E (op bumpa (-> Int64)) (op bumpb (-> Int64)) (op snap (-> (Tuple Int64 Int64))))
             (def (mix (: p (Tuple Int64 Int64)))
-              (match p ((tuple a b) (+ (* 2 a) b))))
+              (match p (#tuple(a b) (+ (* 2 a) b))))
             (def (main (: n Int64))
-              (handle E (tuple n 10)
-                ((bumpa () st (match st ((tuple a b) (resume a (tuple (+ a 1) b)))))
-                 (bumpb () st (match st ((tuple a b) (resume b (tuple a (+ b 5))))))
+              (handle E #tuple(n 10)
+                ((bumpa () st (match st (#tuple(a b) (resume a #tuple((+ a 1) b)))))
+                 (bumpb () st (match st (#tuple(a b) (resume b #tuple(a (+ b 5))))))
                  (snap () st (resume st st)))
                 (do (E.bumpa) (E.bumpb) (mix (E.snap)))))
             (export main)))
@@ -7465,7 +7465,7 @@
                 ((Some v) (sum-at xs (+ i 1) (+ acc v)))
                 ((None) acc)))
             (def (main (: n Int64))
-              (handle E (list n)
+              (handle E #list(n)
                 ((push (v) xs (resume v (List.push xs v)))
                  (snap () xs (resume xs xs))
                  (len () xs (resume (List.len xs) xs)))
@@ -7537,7 +7537,7 @@
               (handle E (if (< n 0) (- 0 n) n)
                 ((step () s
                   (resume (if (= (% s 2) 0)
-                              (BRes.Ok (Bytes.of (list (UInt8.wrap s))))
+                              (BRes.Ok (Bytes.of #list((UInt8.wrap s))))
                               (BRes.Err))
                           (+ s 1))))
                 (match (E.step)
@@ -7557,9 +7557,9 @@
               (handle E 0
                 ((xf (b) s
                   (match (Bytes.at b 0)
-                    ((Some v) (resume (Bytes.of (list (UInt8.wrap (+ (Int64.of v) 5)))) s))
+                    ((Some v) (resume (Bytes.of #list((UInt8.wrap (+ (Int64.of v) 5)))) s))
                     ((None) (resume b s)))))
-                (match (Bytes.at (E.xf (Bytes.of (list (UInt8.wrap (if (< n 0) (- 0 n) n))))) 0)
+                (match (Bytes.at (E.xf (Bytes.of #list((UInt8.wrap (if (< n 0) (- 0 n) n))))) 0)
                   ((Some v) (Int64.of v))
                   ((None) -9))))
             (export main)))
@@ -7574,11 +7574,11 @@
             (def (main (: n Int64))
               (handle E 0
                 ((rev (b) s
-                  (resume (Bytes.of (list (UInt8.wrap (byte-at b 2))
+                  (resume (Bytes.of #list((UInt8.wrap (byte-at b 2))
                                           (UInt8.wrap (byte-at b 1))
                                           (UInt8.wrap (byte-at b 0))))
                           s)))
-                (let ((r (E.rev (Bytes.of (list (UInt8.wrap (if (< n 0) (- 0 n) n))
+                (let ((r (E.rev (Bytes.of #list((UInt8.wrap (if (< n 0) (- 0 n) n))
                                                 (UInt8.wrap 20)
                                                 (UInt8.wrap 30))))))
                   (+ (* 10000 (byte-at r 0))
@@ -7595,7 +7595,7 @@
               (match (Bytes.at b i) ((Some v) (Int64.of v)) ((None) 0)))
             (def (main (: n Int64))
               (handle E 0
-                ((mk (v) s (resume (Bytes.of (list (UInt8.wrap v))) s)))
+                ((mk (v) s (resume (Bytes.of #list((UInt8.wrap v))) s)))
                 (let ((j (Bytes.concat (E.mk (if (< n 0) (- 0 n) n)) (E.mk 42))))
                   (+ (* 1000 (Bytes.len j))
                      (+ (* 10 (byte-at j 0))
@@ -7687,8 +7687,8 @@
             (def (main (: n Int64))
               (handle St n
                 ((get () s (resume s (+ s 1))))
-                (+ (get-x (record (= x (St.get))))
-                   (* 100 (get-x (record (= a 9) (= x (St.get)) (= z 8)))))))
+                (+ (get-x #record((= x (St.get))))
+                   (* 100 (get-x #record((= a 9) (= x (St.get)) (= z 8)))))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 403 Int64))
   (call   main (: 0 Int64)) (output (: 100 Int64)))
@@ -7699,7 +7699,7 @@
             (def (get-x r) (. r x))
             (def (main (: n Int64))
               (handle Mk n
-                ((pack (a) s (resume (record (= x (* 10 a)) (= t s)) (+ s 1))))
+                ((pack (a) s (resume #record((= x (* 10 a)) (= t s)) (+ s 1))))
                 (let ((r1 (Mk.pack 2))
                       (r2 (Mk.pack 3)))
                   (+ (get-x r1)
@@ -7714,9 +7714,9 @@
             (effect St (op bump (-> Int64 Int64)))
             (def (get-x r) (. r x))
             (def (main (: n Int64))
-              (handle St (record (= x n) (= hits 0))
+              (handle St #record((= x n) (= hits 0))
                 ((bump (a) s (resume (+ (get-x s) a)
-                                     (record (= x (+ (get-x s) a)) (= hits (+ (. s hits) 1))))))
+                                     #record((= x (+ (get-x s) a)) (= hits (+ (. s hits) 1))))))
                 (let ((b1 (St.bump 10)))
                   (let ((b2 (St.bump 100)))
                     (+ b1 (* 1000 b2))))))
@@ -7800,8 +7800,8 @@
             (def (at-or (: b Bytes) (: i Int64))
               (match (Bytes.at b i) ((Some v) v) ((None u) -1)))
             (def (main (: n Int64))
-              (handle Acc (Bytes.of (list))
-                ((push (v) s (resume (Bytes.len s) (Bytes.concat s (Bytes.of (list (UInt8.wrap (+ 60 v)))))))
+              (handle Acc (Bytes.of #list())
+                ((push (v) s (resume (Bytes.len s) (Bytes.concat s (Bytes.of #list((UInt8.wrap (+ 60 v)))))))
                  (dump () s (resume s s)))
                 (match (walk n)
                   (_ (let ((b (Acc.dump)))
@@ -7819,9 +7819,9 @@
             (def (at-or (: b Bytes) (: i Int64))
               (match (Bytes.at b i) ((Some v) v) ((None u) -1)))
             (def (main (: n Int64))
-              (handle Acc (Bytes.of (list (UInt8.wrap 5) (UInt8.wrap 6)))
+              (handle Acc (Bytes.of #list((UInt8.wrap 5) (UInt8.wrap 6)))
                 ((push (v) s
-                  (let ((grown (Bytes.concat s (Bytes.of (list (UInt8.wrap v))))))
+                  (let ((grown (Bytes.concat s (Bytes.of #list((UInt8.wrap v))))))
                     (match (Bytes.slice grown 1 (- (Bytes.len grown) 1))
                       ((Some w) (resume w grown))
                       ((None u) (resume grown grown))))))
@@ -8030,7 +8030,7 @@
             (def (main (: n Int64))
               (handle Q n
                 ((probe (v) s
-                  (resume (= (list v (+ v 1)) (list s (+ s 1))) (+ s 1))))
+                  (resume (= #list(v (+ v 1)) #list(s (+ s 1))) (+ s 1))))
                 (+ (if (Q.probe n) 1 0)
                    (+ (* 10 (if (Q.probe n) 1 0))
                       (* 100 (if (Q.probe (+ n 2)) 1 0))))))
@@ -8053,8 +8053,8 @@
                 ((Some xs) (match (List.at xs j) ((Some v) v) ((None _u) -1)))
                 ((None _u) -2)))
             (def (main (: n Int64))
-              (handle Rows (list)
-                ((add (v) s (resume (List.len s) (List.push s (list v (* v 10) (* v 100)))))
+              (handle Rows #list()
+                ((add (v) s (resume (List.len s) (List.push s #list(v (* v 10) (* v 100)))))
                  (pick (i j) s (resume (row-at s i j) s)))
                 (let ((a (Rows.add n)))
                   (let ((b (Rows.add (+ n 1))))
@@ -8213,11 +8213,11 @@
             (def (main (: n Int64))
               (handle S 0
                 ((swap2 (p) s
-                  (match p ((tuple a b) (resume (tuple (+ b s) a) (+ s 1))))))
-                (match (S.swap2 (tuple n 20))
-                  ((tuple x y)
-                    (match (S.swap2 (tuple x y))
-                      ((tuple u v) (+ (* 1000 u) v)))))))
+                  (match p (#tuple(a b) (resume #tuple((+ b s) a) (+ s 1))))))
+                (match (S.swap2 #tuple(n 20))
+                  (#tuple(x y)
+                    (match (S.swap2 #tuple(x y))
+                      (#tuple(u v) (+ (* 1000 u) v)))))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 4020 Int64))
   (call   main (: 0 Int64)) (output (: 1020 Int64)))
@@ -8225,9 +8225,9 @@
 (case "nl2 the nested-record binder in LIST-ELEMENT pattern position — the head record's field binds, the rest carries full records"
   (input  (do
             (def (main (: n Int64))
-              (let ((xs (list (record (= x n) (= y 2)) (record (= x 7) (= y 8)))))
+              (let ((xs #list(#record((= x n) (= y 2)) #record((= x 7) (= y 8)))))
                 (match xs
-                  ((list (record (= x a)) .. rest)
+                  (#list(#record((= x a)) .. rest)
                     (+ (* 1000 a)
                        (+ (* 10 (List.len rest))
                           (match (List.at rest 0)
@@ -8292,8 +8292,8 @@
             (def (walk (: k Int64))
               (if (< k 1) 0 (let ((_d (S.add k))) (walk (- k 1)))))
             (def (main (: n Int64))
-              (handle S (Bytes.of (list))
-                ((add (v) s (resume 0 (Bytes.concat s (Bytes.of (list (UInt8.wrap (+ 60 v)))))))
+              (handle S (Bytes.of #list())
+                ((add (v) s (resume 0 (Bytes.concat s (Bytes.of #list((UInt8.wrap (+ 60 v)))))))
                  (flat (i) s
                   (let ((c (Bytes.compact s)))
                     (resume (+ (* 100 (Bytes.len c))
@@ -8347,12 +8347,12 @@
   (input  (do
             (effect S (op bit (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (tuple 3 1)
+              (handle S #tuple(3 1)
                 ((bit (b) st
                   (match st
-                    ((tuple base acc)
+                    (#tuple(base acc)
                       (resume acc
-                              (tuple (% (* base base) 1000)
+                              #tuple((% (* base base) 1000)
                                      (if (= b 1) (% (* acc base) 1000) acc)))))))
                 (let ((_a (S.bit 1)))
                   (let ((_b (S.bit 0)))
@@ -8411,9 +8411,9 @@
   (input  (do
             (effect S (op next (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple 0 1)
+              (handle S #tuple(0 1)
                 ((next () st
-                  (match st ((tuple a b) (resume a (tuple b (+ a b)))))))
+                  (match st (#tuple(a b) (resume a #tuple(b (+ a b)))))))
                 (let ((f1 (S.next)))
                   (let ((_f2 (S.next)))
                     (let ((_f3 (S.next)))
@@ -8429,12 +8429,12 @@
   (input  (do
             (effect S (op feed (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (tuple 0 0 0)
+              (handle S #tuple(0 0 0)
                 ((feed (v) st
                   (match st
-                    ((tuple last run best)
+                    (#tuple(last run best)
                       (let ((nrun (if (= v last) (+ run 1) 1)))
-                        (resume nrun (tuple v nrun (if (> nrun best) nrun best))))))))
+                        (resume nrun #tuple(v nrun (if (> nrun best) nrun best))))))))
                 (let ((_a (S.feed 5)))
                   (let ((_b (S.feed 5)))
                     (let ((_c (S.feed n)))
@@ -8491,7 +8491,7 @@
             (def (append-at (: m (Map Int64 (List Int64))) (: k Int64) (: v Int64))
               (match (Map.lookup m k)
                 ((Some xs) (Map.insert m k (List.push xs v)))
-                ((None u) (Map.insert m k (list v)))))
+                ((None u) (Map.insert m k #list(v)))))
             (def (bucket-len (: m (Map Int64 (List Int64))) (: k Int64))
               (match (Map.lookup m k) ((Some xs) (List.len xs)) ((None u) 0)))
             (def (bucket-sum (: m (Map Int64 (List Int64))) (: k Int64))
@@ -8563,12 +8563,12 @@
   (input  (do
             (effect S (op put (-> Int64 Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (record (= m Map.empty) (= cnt 0))
+              (handle S #record((= m Map.empty) (= cnt 0))
                 ((put (k v) st
                   (let ((m2 (Map.insert (. st m) k v)))
                     (let ((c2 (+ (. st cnt) 1)))
                       (resume (+ (* 10 (match (Map.lookup m2 k) ((Some x) x) ((None u) 0))) c2)
-                              (record (= m m2) (= cnt c2)))))))
+                              #record((= m m2) (= cnt c2)))))))
                 (let ((a (S.put (+ n 1) n)))
                   (let ((b (S.put (* 2 n) (+ n 5))))
                     (+ (* 100 a) b)))))
@@ -8667,10 +8667,10 @@
   (input  (do
             (effect S (op geta (-> Int64)) (op getb (-> Int64)) (op swap (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple n 100)
-                ((geta () st (match st ((tuple a b) (resume a st))))
-                 (getb () st (match st ((tuple a b) (resume b st))))
-                 (swap () st (match st ((tuple a b) (resume (+ a b) (tuple b a))))))
+              (handle S #tuple(n 100)
+                ((geta () st (match st (#tuple(a b) (resume a st))))
+                 (getb () st (match st (#tuple(a b) (resume b st))))
+                 (swap () st (match st (#tuple(a b) (resume (+ a b) #tuple(b a))))))
                 (let ((a1 (S.geta)))
                   (let ((_s (S.swap)))
                     (let ((a2 (S.geta)))
@@ -8699,12 +8699,12 @@
   (input  (do
             (effect S (op mix (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (tuple 0 0 0)
+              (handle S #tuple(0 0 0)
                 ((mix (v) st
                   (match st
-                    ((tuple ao oo xo)
+                    (#tuple(ao oo xo)
                       (resume (+ ao (+ oo xo))
-                              (tuple (& (if (= ao 0) v ao) v) (| oo v) (^ xo v)))))))
+                              #tuple((& (if (= ao 0) v ao) v) (| oo v) (^ xo v)))))))
                 (let ((_a (S.mix 12)))
                   (let ((_b (S.mix 10)))
                     (let ((_c (S.mix n)))
@@ -8717,13 +8717,13 @@
   (input  (do
             (effect S (op push (-> Int64 Int64)) (op mn (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple (list) 9999)
+              (handle S #tuple(#list() 9999)
                 ((push (v) st
                   (match st
-                    ((tuple stk mn)
+                    (#tuple(stk mn)
                       (resume (List.len stk)
-                              (tuple (List.push stk v) (if (< v mn) v mn))))))
-                 (mn () st (match st ((tuple _stk m) (resume m st)))))
+                              #tuple((List.push stk v) (if (< v mn) v mn))))))
+                 (mn () st (match st (#tuple(_stk m) (resume m st)))))
                 (let ((_a (S.push 5)))
                   (let ((_b (S.push n)))
                     (let ((m1 (S.mn)))
@@ -8738,16 +8738,16 @@
   (input  (do
             (effect S (op vote (-> Int64 Int64)) (op lead (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple 0 0)
+              (handle S #tuple(0 0)
                 ((vote (c) st
                   (match st
-                    ((tuple leader votes)
+                    (#tuple(leader votes)
                       (if (= c leader)
-                          (resume votes (tuple leader (+ votes 1)))
+                          (resume votes #tuple(leader (+ votes 1)))
                           (if (< votes 1)
-                              (resume 0 (tuple c 1))
-                              (resume votes (tuple leader (- votes 1))))))))
-                 (lead () st (match st ((tuple l _v) (resume l st)))))
+                              (resume 0 #tuple(c 1))
+                              (resume votes #tuple(leader (- votes 1))))))))
+                 (lead () st (match st (#tuple(l _v) (resume l st)))))
                 (let ((_a (S.vote 7)))
                   (let ((_b (S.vote 7)))
                     (let ((_c (S.vote n)))
@@ -8872,7 +8872,7 @@
                 ((Ok xs) (+ (* 10 (List.len xs)) (match (List.at xs 0) ((Some h) h) ((None u) 0))))
                 ((Err e) (* e -1))))
             (def (main (: n Int64))
-              (handle S (list)
+              (handle S #list()
                 ((snap () xs
                   (resume (if (= (List.len xs) 0)
                               (: (Err 7) (Result (List Int64) Int64))
@@ -8898,7 +8898,7 @@
                 ((push (v) st
                   (let ((xs2 (match st
                                ((Some xs) (List.push xs v))
-                               ((None u) (list v)))))
+                               ((None u) #list(v)))))
                     (resume (List.len xs2) (Some xs2))))
                  (take () st
                   (resume (match st
@@ -8923,18 +8923,18 @@
               (op putm (-> Int64 Int64 Int64))
               (op cross (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple (: (list) (List Int64)) Map.empty)
+              (handle S #tuple((: #list() (List Int64)) Map.empty)
                 ((pushl (v) st
                   (match st
-                    ((tuple xs m) (let ((xs2 (List.push xs v)))
-                      (resume (List.len xs2) (tuple xs2 m))))))
+                    (#tuple(xs m) (let ((xs2 (List.push xs v)))
+                      (resume (List.len xs2) #tuple(xs2 m))))))
                  (putm (k v) st
                   (match st
-                    ((tuple xs m) (let ((m2 (Map.insert m k v)))
-                      (resume (Map.len m2) (tuple xs m2))))))
+                    (#tuple(xs m) (let ((m2 (Map.insert m k v)))
+                      (resume (Map.len m2) #tuple(xs m2))))))
                  (cross () st
                   (match st
-                    ((tuple xs m)
+                    (#tuple(xs m)
                       (resume (+ (* 10 (match (List.at xs 0)
                                          ((Some h) (match (Map.lookup m h) ((Some x) x) ((None u) 0)))
                                          ((None u) -1)))
@@ -8957,10 +8957,10 @@
               (handle S (: Map.empty (Map Int64 (Tuple Int64 Int64)))
                 ((obs (k v) m
                   (let ((pair (match (Map.lookup m k)
-                                ((Some p) (match p ((tuple c s) (tuple (+ c 1) (+ s v)))))
-                                ((None u) (tuple 1 v)))))
+                                ((Some p) (match p (#tuple(c s) #tuple((+ c 1) (+ s v)))))
+                                ((None u) #tuple(1 v)))))
                     (match pair
-                      ((tuple c2 s2)
+                      (#tuple(c2 s2)
                         (resume (+ (* 100 c2) s2) (Map.insert m k pair)))))))
                 (let ((a (S.obs n 4)))
                   (let ((b (S.obs n n)))
@@ -9060,21 +9060,21 @@
               (op push (-> Int64 Int64))
               (op pop (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple (: (list) (List Int64)) 0)
+              (handle S #tuple((: #list() (List Int64)) 0)
                 ((push (v) st
                   (match st
-                    ((tuple buf top)
+                    (#tuple(buf top)
                       (let ((buf2 (if (< top (List.len buf))
                                       (List.update buf top v)
                                       (List.push buf v))))
-                        (resume (+ top 1) (tuple buf2 (+ top 1)))))))
+                        (resume (+ top 1) #tuple(buf2 (+ top 1)))))))
                  (pop () st
                   (match st
-                    ((tuple buf top)
+                    (#tuple(buf top)
                       (if (= top 0)
                           (resume -1 st)
                           (resume (match (List.at buf (- top 1)) ((Some x) x) ((None u) -99))
-                                  (tuple buf (- top 1))))))))
+                                  #tuple(buf (- top 1))))))))
                 (let ((a (S.push n)))
                   (let ((b (S.push (+ n 1))))
                     (let ((c (S.pop)))
@@ -9099,9 +9099,9 @@
                 ((batch (xs) s
                   (let ((s2 (+ s (sum-l xs 0 0))))
                     (resume s2 s2))))
-                (let ((a (S.batch (list 1 2 3))))
-                  (let ((b (S.batch (list a (+ a 1)))))
-                    (let ((c (S.batch (list))))
+                (let ((a (S.batch #list(1 2 3))))
+                  (let ((b (S.batch #list(a (+ a 1)))))
+                    (let ((c (S.batch #list())))
                       (+ (* 100000 a) (+ (* 100 b) c)))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 601919 Int64))
@@ -9112,13 +9112,13 @@
   (input  (do
             (effect S (op feed (-> Float64 Float64)))
             (def (main (: n Int64))
-              (handle S (tuple 0.0 0.0)
+              (handle S #tuple(0.0 0.0)
                 ((feed (v) st
                   (match st
-                    ((tuple sm comp)
+                    (#tuple(sm comp)
                       (let ((y (- v comp)))
                         (let ((t (+ sm y)))
-                          (resume t (tuple t (- (- t sm) y)))))))))
+                          (resume t #tuple(t (- (- t sm) y)))))))))
                 (let ((big 9007199254740992.0))
                   (let ((_a (S.feed big)))
                     (let ((_b (S.feed (Float64.of-int n))))
@@ -9157,12 +9157,12 @@
             (def (fold-tag (: xs (List (Tuple Int64 Int64))) (: t Int64) (: i Int64) (: acc Int64))
               (match (List.at xs i)
                 ((Some e) (match e
-                            ((tuple tt v) (fold-tag xs t (+ i 1) (if (= tt t) (+ acc v) acc)))))
+                            (#tuple(tt v) (fold-tag xs t (+ i 1) (if (= tt t) (+ acc v) acc)))))
                 ((None u) acc)))
             (def (main (: n Int64))
-              (handle S (: (list) (List (Tuple Int64 Int64)))
+              (handle S (: #list() (List (Tuple Int64 Int64)))
                 ((log (t v) led
-                  (let ((led2 (List.push led (tuple t v))))
+                  (let ((led2 (List.push led #tuple(t v))))
                     (resume (List.len led2) led2)))
                  (replay (t) led (resume (fold-tag led t 0 0) led)))
                 (let ((a (S.log 1 n)))
@@ -9210,13 +9210,13 @@
                 ((feed (v) st
                   (let ((p2 (match st
                               ((Some p) (match p
-                                          ((tuple lo hi) (tuple (if (< v lo) v lo) (if (> v hi) v hi)))))
-                              ((None u) (tuple v v)))))
+                                          (#tuple(lo hi) #tuple((if (< v lo) v lo) (if (> v hi) v hi)))))
+                              ((None u) #tuple(v v)))))
                     (match p2
-                      ((tuple lo2 hi2) (resume (- hi2 lo2) (Some p2))))))
+                      (#tuple(lo2 hi2) (resume (- hi2 lo2) (Some p2))))))
                  (range () st
                   (resume (match st
-                            ((Some p) (match p ((tuple lo hi) (- hi lo))))
+                            ((Some p) (match p (#tuple(lo hi) (- hi lo))))
                             ((None u) 0))
                           st)))
                 (let ((a (S.range)))
@@ -9238,7 +9238,7 @@
             (def (best (: xs (List (Tuple Int64 Int64))) (: i Int64) (: bk Int64) (: bc Int64))
               (match (List.at xs i)
                 ((Some e) (match e
-                            ((tuple k c) (if (> c bc) (best xs (+ i 1) k c) (best xs (+ i 1) bk bc)))))
+                            (#tuple(k c) (if (> c bc) (best xs (+ i 1) k c) (best xs (+ i 1) bk bc)))))
                 ((None u) (+ (* 10 bk) bc))))
             (def (main (: n Int64))
               (handle S (: Map.empty (Map Int64 Int64))
@@ -9269,10 +9269,10 @@
             (def (slide (: xs (List Int64)) (: v Int64))
               (let ((g (List.push xs v)))
                 (match g
-                  ((list _h .. t) (if (> (List.len g) 3) t g))
+                  (#list(_h .. t) (if (> (List.len g) 3) t g))
                   (_ g))))
             (def (main (: n Int64))
-              (handle S (: (list) (List Int64))
+              (handle S (: #list() (List Int64))
                 ((feed (v) w
                   (resume (has w v 0) (slide w v))))
                 (let ((a (S.feed n)))
@@ -9317,7 +9317,7 @@
             (def (last (: xs (List Int64)))
               (match (List.at xs (- (List.len xs) 1)) ((Some v) v) ((None u) 0)))
             (def (main (: n Int64))
-              (handle S (list 0)
+              (handle S #list(0)
                 ((add (v) pre
                   (let ((t (+ (last pre) v)))
                     (resume t (List.push pre t))))
@@ -9347,7 +9347,7 @@
               (op walk (-> Int64)))
             (def (fold-keys (: xs (List (Tuple Int64 Int64))) (: i Int64) (: acc Int64))
               (match (List.at xs i)
-                ((Some e) (match e ((tuple k _v) (fold-keys xs (+ i 1) (+ (* 100 acc) k)))))
+                ((Some e) (match e (#tuple(k _v) (fold-keys xs (+ i 1) (+ (* 100 acc) k)))))
                 ((None u) acc)))
             (def (main (: n Int64))
               (handle S Map.empty
@@ -9373,12 +9373,12 @@
             (effect S (op move (-> Int64 Int64 Int64)))
             (def (iabs (: v Int64)) (if (< v 0) (- 0 v) v))
             (def (main (: n Int64))
-              (handle S (record (= pos (record (= x n) (= y 0))) (= steps 0))
+              (handle S #record((= pos #record((= x n) (= y 0))) (= steps 0))
                 ((move (dx dy) s
                   (let ((p2 (Record.with (Record.with (. s pos) #"x" (+ (. (. s pos) x) dx))
                                          #"y" (+ (. (. s pos) y) dy))))
                     (resume (+ (iabs (. p2 x)) (iabs (. p2 y)))
-                            (record (= pos p2) (= steps (+ (. s steps) 1)))))))
+                            #record((= pos p2) (= steps (+ (. s steps) 1)))))))
                 (let ((a (S.move 2 3)))
                   (let ((b (S.move -1 4)))
                     (let ((c (S.move 0 -7)))
@@ -9494,16 +9494,16 @@
               (op apply (-> Int64 Int64))
               (op undo (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple n 0)
+              (handle S #tuple(n 0)
                 ((apply (d) st
                   (match st
-                    ((tuple v _l) (resume (+ v d) (tuple (+ v d) d)))))
+                    (#tuple(v _l) (resume (+ v d) #tuple((+ v d) d)))))
                  (undo () st
                   (match st
-                    ((tuple v l)
+                    (#tuple(v l)
                       (if (= l 0)
                           (resume 0 st)
-                          (resume l (tuple (- v l) 0)))))))
+                          (resume l #tuple((- v l) 0)))))))
                 (let ((a (S.apply 5)))
                   (let ((b (S.apply -2)))
                     (let ((c (S.undo)))
@@ -9549,18 +9549,18 @@
               (op refill (-> Int64 Int64))
               (op total (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple 2 n)
+              (handle S #tuple(2 n)
                 ((spend (v) st
                   (match st
-                    ((tuple b t)
+                    (#tuple(b t)
                       (if (> b 0)
-                          (resume (- b 1) (tuple (- b 1) (+ t v)))
+                          (resume (- b 1) #tuple((- b 1) (+ t v)))
                           (resume (- 0 t) st)))))
                  (refill (k) st
                   (match st
-                    ((tuple b t) (resume (+ b k) (tuple (+ b k) t)))))
+                    (#tuple(b t) (resume (+ b k) #tuple((+ b k) t)))))
                  (total () st
-                  (match st ((tuple _b t) (resume t st)))))
+                  (match st (#tuple(_b t) (resume t st)))))
                 (let ((a (S.spend 5)))
                   (let ((b (S.spend 7)))
                     (let ((c (S.spend 9)))
@@ -9578,9 +9578,9 @@
   (input  (do
             (effect S (op add (-> Int64 Int64 Int64)))
             (def (main (: n Int64))
-              (handle S #set((tuple 0 0))
+              (handle S #set(#tuple(0 0))
                 ((add (a b) st
-                  (let ((s2 (Set.insert st (tuple a b))))
+                  (let ((s2 (Set.insert st #tuple(a b))))
                     (resume (Set.len s2) s2))))
                 (let ((a (S.add n 1)))
                   (let ((b (S.add n 1)))
@@ -9680,7 +9680,7 @@
             (def (main (: n Int64))
               (handle S (String.to-bytes "ab")
                 ((push (b) bs
-                  (let ((b2 (Bytes.concat bs (Bytes.of (list (UInt8.wrap b))))))
+                  (let ((b2 (Bytes.concat bs (Bytes.of #list((UInt8.wrap b))))))
                     (resume (Bytes.len b2) b2)))
                  (dec () bs
                   (resume (match (String.from-bytes bs)
@@ -9710,7 +9710,7 @@
                 ((Some f) (fold-run fs (+ i 1) (f x)))
                 ((None u) x)))
             (def (main (: n Int64))
-              (handle S (: (list) (List (-> Int64 Int64)))
+              (handle S (: #list() (List (-> Int64 Int64)))
                 ((addmul (k) fs
                   (let ((fs2 (List.push fs (fn ((: x Int64)) (* x k)))))
                     (resume (List.len fs2) fs2)))
@@ -9733,13 +9733,13 @@
   (input  (do
             (effect S (op step (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (tuple n 2)
+              (handle S #tuple(n 2)
                 ((step (v) st
                   (match st
-                    ((tuple a b)
+                    (#tuple(a b)
                       (let ((na (+ a v)))
                         (let ((nb (* b v)))
-                          (resume (+ (* 100 na) nb) (tuple nb na))))))))
+                          (resume (+ (* 100 na) nb) #tuple(nb na))))))))
                 (let ((r1 (S.step 2)))
                   (let ((r2 (S.step 3)))
                     (+ (* 100000 r1) r2)))))
@@ -9758,12 +9758,12 @@
             (def (sum-body (: b Bytes) (: i Int64) (: end Int64) (: acc Int64))
               (if (< i end) (sum-body b (+ i 1) end (+ acc (bat b i))) acc))
             (def (main (: n Int64))
-              (handle S (Bytes.of (list))
+              (handle S (Bytes.of #list())
                 ((frame2 (x y) bs
-                  (let ((b2 (Bytes.concat bs (Bytes.of (list (UInt8.wrap 2) (UInt8.wrap x) (UInt8.wrap y))))))
+                  (let ((b2 (Bytes.concat bs (Bytes.of #list((UInt8.wrap 2) (UInt8.wrap x) (UInt8.wrap y))))))
                     (resume (Bytes.len b2) b2)))
                  (frame1 (x) bs
-                  (let ((b2 (Bytes.concat bs (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap x))))))
+                  (let ((b2 (Bytes.concat bs (Bytes.of #list((UInt8.wrap 1) (UInt8.wrap x))))))
                     (resume (Bytes.len b2) b2)))
                  (popf () bs
                   (if (= (Bytes.len bs) 0)
@@ -9772,7 +9772,7 @@
                         (let ((body-sum (sum-body bs 1 (+ 1 ln) 0)))
                           (let ((rest (match (Bytes.slice bs (+ 1 ln) (- (Bytes.len bs) (+ 1 ln)))
                                         ((Some r) r)
-                                        ((None u) (Bytes.of (list))))))
+                                        ((None u) (Bytes.of #list())))))
                             (resume (+ (* 10 body-sum) ln) rest)))))))
                 (let ((a (S.frame2 n 4)))
                   (let ((b (S.frame1 9)))
@@ -9797,7 +9797,7 @@
                       (let ((t (+ (match (List.at w i) ((Some x) x) ((None u) 0)) c)))
                         (carry-add (List.update w i (% t 100)) (+ i 1) (/ t 100))))))
             (def (main (: n Int64))
-              (handle S (list n)
+              (handle S #list(n)
                 ((tick (k) w
                   (let ((w2 (carry-add w 0 k)))
                     (resume (+ (* 100 (List.len w2))
@@ -9821,11 +9821,11 @@
               (handle S Map.empty
                 ((put (k v) m
                   (match (Map.swap m k v)
-                    ((tuple prior m2)
+                    (#tuple(prior m2)
                       (resume (match prior ((Some p) p) ((None u) -1)) m2))))
                  (del (k) m
                   (match (Map.take m k)
-                    ((tuple taken m2)
+                    (#tuple(taken m2)
                       (resume (match taken ((Some t) t) ((None u) -1)) m2)))))
                 (let ((a (S.put n n)))
                   (let ((b (S.put n 8)))
@@ -9843,15 +9843,15 @@
               (op put (-> Bytes Int64))
               (op wlen (-> Int64)))
             (def (main (: n Int64))
-              (handle S (Bytes.of (list))
+              (handle S (Bytes.of #list())
                 ((put (bs) hw
                   (if (< hw bs)
                       (resume 1 bs)
                       (resume 0 hw)))
                  (wlen () hw (resume (Bytes.len hw) hw)))
-                (let ((a (S.put (Bytes.of (list (UInt8.wrap 122))))))
-                  (let ((b (S.put (Bytes.of (list (UInt8.wrap 195) (UInt8.wrap 169))))))
-                    (let ((c (S.put (Bytes.of (list (UInt8.wrap n) (UInt8.wrap 200))))))
+                (let ((a (S.put (Bytes.of #list((UInt8.wrap 122))))))
+                  (let ((b (S.put (Bytes.of #list((UInt8.wrap 195) (UInt8.wrap 169))))))
+                    (let ((c (S.put (Bytes.of #list((UInt8.wrap n) (UInt8.wrap 200))))))
                       (let ((d (S.wlen)))
                         (+ (* 10 (+ (* 10 (+ (* 10 a) b)) c)) d)))))))
             (export main)))
@@ -9949,7 +9949,7 @@
                 ((Some row) (grid-sum g (+ r 1) (+ acc (row-sum row 0 0))))
                 ((None u) acc)))
             (def (main (: n Int64))
-              (handle S (list (list 1 2) (list 3 4))
+              (handle S #list(#list(1 2) #list(3 4))
                 ((setc (r c v) g
                   (let ((g2 (match (List.at g r)
                               ((Some row) (List.update g r (List.update row c v)))
@@ -9977,17 +9977,17 @@
               (op feed (-> Int64 Int64))
               (op flip (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple 0 0 0)
+              (handle S #tuple(0 0 0)
                 ((feed (v) st
                   (match st
-                    ((tuple ev od f)
+                    (#tuple(ev od f)
                       (if (= (= (% v 2) 0) (= f 0))
-                          (resume (+ ev v) (tuple (+ ev v) od f))
-                          (resume (+ od v) (tuple ev (+ od v) f))))))
+                          (resume (+ ev v) #tuple((+ ev v) od f))
+                          (resume (+ od v) #tuple(ev (+ od v) f))))))
                  (flip () st
                   (match st
-                    ((tuple ev od f)
-                      (resume (+ (* 100 ev) od) (tuple ev od (- 1 f)))))))
+                    (#tuple(ev od f)
+                      (resume (+ (* 100 ev) od) #tuple(ev od (- 1 f)))))))
                 (let ((a (S.feed 4)))
                   (let ((b (S.feed n)))
                     (let ((c (S.flip)))
@@ -10002,12 +10002,12 @@
   (input  (do
             (effect S (op add (-> String Int64)))
             (def (main (: n Int64))
-              (handle S (tuple "" 0)
+              (handle S #tuple("" 0)
                 ((add (p) st
                   (match st
-                    ((tuple s cnt)
+                    (#tuple(s cnt)
                       (let ((s2 (String.concat (if (> cnt 0) (String.concat s ",") s) p)))
-                        (resume (String.byte-len s2) (tuple s2 (+ cnt 1))))))))
+                        (resume (String.byte-len s2) #tuple(s2 (+ cnt 1))))))))
                 (let ((a (S.add "ab")))
                   (let ((b (S.add (if (= n 0) "" "x"))))
                     (let ((c (S.add "cd")))
@@ -10025,9 +10025,9 @@
                 ((Some x) (prune xs cutoff (+ i 1) (if (> x cutoff) (List.push acc x) acc)))
                 ((None u) acc)))
             (def (main (: n Int64))
-              (handle S (: (list) (List Int64))
+              (handle S (: #list() (List Int64))
                 ((allow (t) w
-                  (let ((w2 (prune w (- t 10) 0 (: (list) (List Int64)))))
+                  (let ((w2 (prune w (- t 10) 0 (: #list() (List Int64)))))
                     (if (< (List.len w2) 2)
                         (resume 1 (List.push w2 t))
                         (resume 0 w2)))))
@@ -10056,9 +10056,9 @@
                                   (imax (at0 new (- j 1)) (at0 old j)))))
                     (build pat old (List.push new cell) (+ j 1) c))))
             (def (main (: n Int64))
-              (handle S (list 0 0 0 0)
+              (handle S #list(0 0 0 0)
                 ((feed (c) row
-                  (let ((row2 (build (list 1 2 3) row (list 0) 1 c)))
+                  (let ((row2 (build #list(1 2 3) row #list(0) 1 c)))
                     (resume (at0 row2 3) row2))))
                 (let ((a (S.feed 1)))
                   (let ((b (S.feed n)))
@@ -10098,16 +10098,16 @@
             (def (gcd (: a Int64) (: b Int64))
               (if (= b 0) a (gcd b (% a b))))
             (def (main (: n Int64))
-              (handle S (let ((g (gcd n 4))) (tuple (/ n g) (/ 4 g)))
+              (handle S (let ((g (gcd n 4))) #tuple((/ n g) (/ 4 g)))
                 ((addf (a b) st
                   (match st
-                    ((tuple num den)
+                    (#tuple(num den)
                       (let ((nn (+ (* num b) (* a den))))
                         (let ((nd (* den b)))
                           (let ((g (gcd nn nd)))
                             (let ((n2 (/ nn g)))
                               (let ((d2 (/ nd g)))
-                                (resume (+ (* 100 n2) d2) (tuple n2 d2)))))))))))
+                                (resume (+ (* 100 n2) d2) #tuple(n2 d2)))))))))))
                 (let ((a (S.addf 1 4)))
                   (let ((b (S.addf 1 2)))
                     (let ((c (S.addf 1 6)))
@@ -10151,23 +10151,23 @@
   (input  (do
             (effect S (op feed (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (: (list) (List (Tuple Int64 Int64)))
+              (handle S (: #list() (List (Tuple Int64 Int64)))
                 ((feed (v) enc
                   (let ((k (List.len enc)))
                     (let ((enc2 (if (= k 0)
-                                    (List.push enc (tuple v 1))
+                                    (List.push enc #tuple(v 1))
                                     (match (List.at enc (- k 1))
                                       ((Some p)
                                         (match p
-                                          ((tuple lv lc)
+                                          (#tuple(lv lc)
                                             (if (= lv v)
-                                                (List.update enc (- k 1) (tuple v (+ lc 1)))
-                                                (List.push enc (tuple v 1))))))
+                                                (List.update enc (- k 1) #tuple(v (+ lc 1)))
+                                                (List.push enc #tuple(v 1))))))
                                       ((None u) enc)))))
                       (let ((k2 (List.len enc2)))
                         (resume (+ (* 10 k2)
                                    (match (List.at enc2 (- k2 1))
-                                     ((Some p) (match p ((tuple _lv lc) lc)))
+                                     ((Some p) (match p (#tuple(_lv lc) lc)))
                                      ((None u) 0)))
                                 enc2))))))
                 (let ((a (S.feed n)))
@@ -10190,7 +10190,7 @@
             (def (find-min (: q (List (Tuple Int64 Int64))) (: i Int64) (: bi Int64) (: bp Int64))
               (match (List.at q i)
                 ((Some p) (match p
-                            ((tuple pri _v)
+                            (#tuple(pri _v)
                               (if (< pri bp)
                                   (find-min q (+ i 1) i pri)
                                   (find-min q (+ i 1) bi bp)))))
@@ -10200,18 +10200,18 @@
                 ((Some p) (drop-at q (+ i 1) k (if (= i k) acc (List.push acc p))))
                 ((None u) acc)))
             (def (main (: n Int64))
-              (handle S (: (list) (List (Tuple Int64 Int64)))
+              (handle S (: #list() (List (Tuple Int64 Int64)))
                 ((push (pri v) q
-                  (let ((q2 (List.push q (tuple pri v))))
+                  (let ((q2 (List.push q #tuple(pri v))))
                     (resume (List.len q2) q2)))
                  (popmin () q
                   (if (= (List.len q) 0)
                       (resume -1 q)
                       (let ((k (find-min q 0 0 1000000)))
                         (let ((val (match (List.at q k)
-                                     ((Some p) (match p ((tuple _pri v) v)))
+                                     ((Some p) (match p (#tuple(_pri v) v)))
                                      ((None u) -1))))
-                          (resume val (drop-at q 0 k (: (list) (List (Tuple Int64 Int64))))))))))
+                          (resume val (drop-at q 0 k (: #list() (List (Tuple Int64 Int64))))))))))
                 (let ((a (S.push 5 10)))
                   (let ((b (S.push n 20)))
                     (let ((c (S.push 7 30)))
@@ -10234,12 +10234,12 @@
             (def (hd (: xs (List Int64)))
               (match (List.at xs 0) ((Some v) v) ((None u) 999)))
             (def (tl (: xs (List Int64)))
-              (match xs ((list _h .. t) t) (_ xs)))
+              (match xs (#list(_h .. t) t) (_ xs)))
             (def (main (: n Int64))
-              (handle A (list 1 4 9)
+              (handle A #list(1 4 9)
                 ((head () xs (resume (hd xs) xs))
                  (pop () xs (resume (hd xs) (tl xs))))
-                (handle B (list n 5 8)
+                (handle B #list(n 5 8)
                   ((head () ys (resume (hd ys) ys))
                    (pop () ys (resume (hd ys) (tl ys))))
                   (let ((m1 (if (<= (A.head) (B.head)) (A.pop) (B.pop))))
@@ -10259,18 +10259,18 @@
               (op save (-> Int64))
               (op restore (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple n 0)
+              (handle S #tuple(n 0)
                 ((work (v) st
                   (match st
-                    ((tuple live sv)
+                    (#tuple(live sv)
                       (let ((l2 (+ (* live 2) v)))
-                        (resume l2 (tuple l2 sv))))))
+                        (resume l2 #tuple(l2 sv))))))
                  (save () st
                   (match st
-                    ((tuple live _sv) (resume live (tuple live live)))))
+                    (#tuple(live _sv) (resume live #tuple(live live)))))
                  (restore () st
                   (match st
-                    ((tuple _live sv) (resume sv (tuple sv sv))))))
+                    (#tuple(_live sv) (resume sv #tuple(sv sv))))))
                 (let ((a (S.work 1)))
                   (let ((b (S.save)))
                     (let ((c (S.work 5)))
@@ -10308,22 +10308,22 @@
               (op rm (-> Int64 Int64))
               (op chk (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (tuple Map.empty #set())
+              (handle S #tuple(Map.empty #set())
                 ((put (k v) st
                   (match st
-                    ((tuple m ks)
+                    (#tuple(m ks)
                       (let ((m2 (Map.insert m k v)))
                         (let ((ks2 (Set.insert ks k)))
-                          (resume (+ (* 10 (Map.len m2)) (Set.len ks2)) (tuple m2 ks2)))))))
+                          (resume (+ (* 10 (Map.len m2)) (Set.len ks2)) #tuple(m2 ks2)))))))
                  (rm (k) st
                   (match st
-                    ((tuple m ks)
+                    (#tuple(m ks)
                       (let ((m2 (Map.remove m k)))
                         (let ((ks2 (Set.remove ks k)))
-                          (resume (+ (* 10 (Map.len m2)) (Set.len ks2)) (tuple m2 ks2)))))))
+                          (resume (+ (* 10 (Map.len m2)) (Set.len ks2)) #tuple(m2 ks2)))))))
                  (chk (k) st
                   (match st
-                    ((tuple m ks)
+                    (#tuple(m ks)
                       (resume (+ (* 10 (match (Map.lookup m k) ((Some _v) 1) ((None _u) 0)))
                                  (if (Set.contains ks k) 1 0))
                               st)))))
@@ -10346,11 +10346,11 @@
             (def (bump-all (: src (List (Tuple Int64 Int64))) (: i Int64) (: v Int64) (: acc (Map Int64 Int64)))
               (match (List.at src i)
                 ((Some p) (match p
-                            ((tuple k old) (bump-all src (+ i 1) v (Map.insert acc k (+ old v))))))
+                            (#tuple(k old) (bump-all src (+ i 1) v (Map.insert acc k (+ old v))))))
                 ((None u) acc)))
             (def (sum-vals (: src (List (Tuple Int64 Int64))) (: i Int64) (: acc Int64))
               (match (List.at src i)
-                ((Some p) (match p ((tuple _k vv) (sum-vals src (+ i 1) (+ acc vv)))))
+                ((Some p) (match p (#tuple(_k vv) (sum-vals src (+ i 1) (+ acc vv)))))
                 ((None u) acc)))
             (def (main (: n Int64))
               (handle S (Map.insert (Map.insert Map.empty 1 0) 2 0)
@@ -10390,13 +10390,13 @@
                 ((Some v) (cat (List.push a v) b (+ i 1)))
                 ((None u) a)))
             (def (main (: n Int64))
-              (handle S (: (list) (List Int64))
+              (handle S (: #list() (List Int64))
                 ((enc (v) digs
-                  (let ((ds (if (= v 0) (list 0) (peel v (: (list) (List Int64))))))
+                  (let ((ds (if (= v 0) #list(0) (peel v (: #list() (List Int64))))))
                     (let ((d2 (cat digs ds 0)))
                       (resume (List.len d2) d2))))
                  (dec () digs
-                  (resume (fold7 digs 0 0) (: (list) (List Int64)))))
+                  (resume (fold7 digs 0 0) (: #list() (List Int64)))))
                 (let ((a (S.enc n)))
                   (let ((b (S.enc 3)))
                     (let ((c (S.dec)))
@@ -10415,20 +10415,20 @@
               (op commit (-> Int64))
               (op rollback (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple n 0)
+              (handle S #tuple(n 0)
                 ((hold (v) st
                   (match st
-                    ((tuple bal esc)
+                    (#tuple(bal esc)
                       (if (<= v bal)
-                          (resume (+ (* 10 (- bal v)) (+ esc v)) (tuple (- bal v) (+ esc v)))
+                          (resume (+ (* 10 (- bal v)) (+ esc v)) #tuple((- bal v) (+ esc v)))
                           (resume -1 st)))))
                  (commit () st
                   (match st
-                    ((tuple bal esc) (resume esc (tuple bal 0)))))
+                    (#tuple(bal esc) (resume esc #tuple(bal 0)))))
                  (rollback () st
                   (match st
-                    ((tuple bal esc)
-                      (resume (+ (* 10 (+ bal esc)) esc) (tuple (+ bal esc) 0))))))
+                    (#tuple(bal esc)
+                      (resume (+ (* 10 (+ bal esc)) esc) #tuple((+ bal esc) 0))))))
                 (let ((a (S.hold 4)))
                   (let ((b (S.hold 3)))
                     (let ((c (S.rollback)))
@@ -10444,20 +10444,20 @@
   (input  (do
             (effect S (op vote (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (tuple (Map.insert (Map.insert (Map.insert Map.empty 1 3) 2 n) 3 2)
-                               (tuple #set(0) 0))
+              (handle S #tuple((Map.insert (Map.insert (Map.insert Map.empty 1 3) 2 n) 3 2)
+                               #tuple(#set(0) 0))
                 ((vote (k) st
                   (match st
-                    ((tuple w inner)
+                    (#tuple(w inner)
                       (match inner
-                        ((tuple voted tally)
+                        (#tuple(voted tally)
                           (if (Set.contains voted k)
                               (resume (* tally 10) st)
                               (match (Map.lookup w k)
                                 ((Some wt)
                                   (let ((t2 (+ tally wt)))
                                     (resume (+ (* t2 10) (if (>= t2 6) 1 0))
-                                            (tuple w (tuple (Set.insert voted k) t2)))))
+                                            #tuple(w #tuple((Set.insert voted k) t2)))))
                                 ((None u) (resume -1 st))))))))))
                 (let ((a (S.vote 1)))
                   (let ((b (S.vote 1)))
@@ -10498,16 +10498,16 @@
               (op emit (-> Int64 Int64 Int64))
               (op flush (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple -100 0)
+              (handle S #tuple(-100 0)
                 ((emit (t v) st
                   (match st
-                    ((tuple last pending)
+                    (#tuple(last pending)
                       (if (>= (- t last) 10)
-                          (resume v (tuple t 0))
-                          (resume 0 (tuple last v))))))
+                          (resume v #tuple(t 0))
+                          (resume 0 #tuple(last v))))))
                  (flush () st
                   (match st
-                    ((tuple last pending) (resume pending (tuple last 0))))))
+                    (#tuple(last pending) (resume pending #tuple(last 0))))))
                 (let ((a (S.emit 0 7)))
                   (let ((b (S.emit n 8)))
                     (let ((c (S.emit 15 9)))
@@ -10528,16 +10528,16 @@
                 ((Some d) (sum-log ds (+ i 1) (+ acc d)))
                 ((None u) acc)))
             (def (main (: n Int64))
-              (handle S (tuple n (: (list) (List Int64)))
+              (handle S #tuple(n (: #list() (List Int64)))
                 ((apply (d) st
                   (match st
-                    ((tuple v log)
-                      (resume (+ v d) (tuple (+ v d) (List.push log d))))))
+                    (#tuple(v log)
+                      (resume (+ v d) #tuple((+ v d) (List.push log d))))))
                  (replay () st
                   (match st
-                    ((tuple v log)
+                    (#tuple(v log)
                       (let ((v2 (+ v (sum-log log 0 0))))
-                        (resume v2 (tuple v2 log)))))))
+                        (resume v2 #tuple(v2 log)))))))
                 (let ((a (S.apply 3)))
                   (let ((b (S.apply 4)))
                     (let ((c (S.replay)))
@@ -10607,32 +10607,32 @@
               (op prep (-> Int64 Int64))
               (op fin (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle A (tuple 10 0)
+              (handle A #tuple(10 0)
                 ((prep (v) st
                   (match st
-                    ((tuple bal _h)
+                    (#tuple(bal _h)
                       (if (<= v bal)
-                          (resume 1 (tuple (- bal v) v))
+                          (resume 1 #tuple((- bal v) v))
                           (resume 0 st)))))
                  (fin (ok) st
                   (match st
-                    ((tuple bal h)
+                    (#tuple(bal h)
                       (if (= ok 1)
-                          (resume bal (tuple bal 0))
-                          (resume (+ bal h) (tuple (+ bal h) 0)))))))
-                (handle B (tuple n 0)
+                          (resume bal #tuple(bal 0))
+                          (resume (+ bal h) #tuple((+ bal h) 0)))))))
+                (handle B #tuple(n 0)
                   ((prep (v) st
                     (match st
-                      ((tuple bal _h)
+                      (#tuple(bal _h)
                         (if (<= v bal)
-                            (resume 1 (tuple (- bal v) v))
+                            (resume 1 #tuple((- bal v) v))
                             (resume 0 st)))))
                    (fin (ok) st
                     (match st
-                      ((tuple bal h)
+                      (#tuple(bal h)
                         (if (= ok 1)
-                            (resume bal (tuple bal 0))
-                            (resume (+ bal h) (tuple (+ bal h) 0)))))))
+                            (resume bal #tuple(bal 0))
+                            (resume (+ bal h) #tuple((+ bal h) 0)))))))
                   (let ((pa (A.prep 4)))
                     (let ((pb (B.prep 6)))
                       (let ((ok (if (= (+ pa pb) 2) 1 0)))
@@ -10652,7 +10652,7 @@
             (def (decay (: src (List (Tuple Int64 Int64))) (: i Int64) (: acc (Map Int64 Int64)))
               (match (List.at src i)
                 ((Some p) (match p
-                            ((tuple k v)
+                            (#tuple(k v)
                               (decay src (+ i 1)
                                      (if (> (/ v 2) 0) (Map.insert acc k (/ v 2)) acc)))))
                 ((None u) acc)))
@@ -10679,15 +10679,15 @@
             (def (count-ovl (: ivs (List (Tuple Int64 Int64))) (: i Int64) (: lo Int64) (: hi Int64) (: acc Int64))
               (match (List.at ivs i)
                 ((Some p) (match p
-                            ((tuple a b)
+                            (#tuple(a b)
                               (count-ovl ivs (+ i 1) lo hi
                                          (if (and (<= lo b) (<= a hi)) (+ acc 1) acc)))))
                 ((None u) acc)))
             (def (main (: n Int64))
-              (handle S (: (list) (List (Tuple Int64 Int64)))
+              (handle S (: #list() (List (Tuple Int64 Int64)))
                 ((add (lo hi) ivs
                   (let ((c (count-ovl ivs 0 lo hi 0)))
-                    (resume c (List.push ivs (tuple lo hi))))))
+                    (resume c (List.push ivs #tuple(lo hi))))))
                 (let ((a (S.add 0 5)))
                   (let ((b (S.add n (+ n 3))))
                     (let ((c (S.add 4 10)))
@@ -10706,26 +10706,26 @@
               (op mulop (-> Int64)))
             (def (top2 (: st (List Int64)))
               (let ((k (List.len st)))
-                (tuple (match (List.at st (- k 2)) ((Some a) a) ((None u) 0))
+                #tuple((match (List.at st (- k 2)) ((Some a) a) ((None u) 0))
                        (match (List.at st (- k 1)) ((Some b) b) ((None u) 0)))))
             (def (drop2 (: st (List Int64)) (: i Int64) (: keep Int64) (: acc (List Int64)))
               (if (< i keep)
                   (drop2 st (+ i 1) keep (List.push acc (match (List.at st i) ((Some v) v) ((None u) 0))))
                   acc))
             (def (main (: n Int64))
-              (handle S (: (list) (List Int64))
+              (handle S (: #list() (List Int64))
                 ((push (v) st
                   (let ((s2 (List.push st v)))
                     (resume (List.len s2) s2)))
                  (addop () st
                   (match (top2 st)
-                    ((tuple a b)
-                      (let ((s2 (List.push (drop2 st 0 (- (List.len st) 2) (: (list) (List Int64))) (+ a b))))
+                    (#tuple(a b)
+                      (let ((s2 (List.push (drop2 st 0 (- (List.len st) 2) (: #list() (List Int64))) (+ a b))))
                         (resume (+ a b) s2)))))
                  (mulop () st
                   (match (top2 st)
-                    ((tuple a b)
-                      (let ((s2 (List.push (drop2 st 0 (- (List.len st) 2) (: (list) (List Int64))) (* a b))))
+                    (#tuple(a b)
+                      (let ((s2 (List.push (drop2 st 0 (- (List.len st) 2) (: #list() (List Int64))) (* a b))))
                         (resume (* a b) s2))))))
                 (let ((a (S.push n)))
                   (let ((b (S.push 3)))
@@ -10760,16 +10760,16 @@
   (input  (do
             (effect S (op feed (-> String Int64)))
             (def (main (: n Int64))
-              (handle S (tuple 0 0)
+              (handle S #tuple(0 0)
                 ((feed (c) st
                   (match st
-                    ((tuple depth bad)
+                    (#tuple(depth bad)
                       (if (= bad 1)
                           (resume -9 st)
                           (let ((d2 (+ depth (if (= c "(") 1 (if (= c ")") -1 0)))))
                             (if (< d2 0)
-                                (resume -9 (tuple d2 1))
-                                (resume d2 (tuple d2 0)))))))))
+                                (resume -9 #tuple(d2 1))
+                                (resume d2 #tuple(d2 0)))))))))
                 (let ((s1 (if (= n 0) "(" "(")))
                   (let ((s2 (if (= n 0) "(" ")")))
                     (let ((s3 (if (= n 0) ")" ")")))
@@ -10840,7 +10840,7 @@
                 ((Some v) (count-flags f (+ i 1) (+ acc v)))
                 ((None u) acc)))
             (def (main (: n Int64))
-              (handle S (list 1 1 1 1 1 1 1 1 1 1 1 1)
+              (handle S #list(1 1 1 1 1 1 1 1 1 1 1 1)
                 ((sieve (p) f
                   (let ((f2 (clear-multiples f (* 2 p) p)))
                     (resume (count-flags f2 0 0) f2)))
@@ -10860,20 +10860,20 @@
   (input  (do
             (effect S (op dec (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (tuple n 1)
+              (handle S #tuple(n 1)
                 ((dec (k) st
                   (match st
-                    ((tuple lo hi)
+                    (#tuple(lo hi)
                       (let ((nl (- lo k)))
                         (if (>= nl 0)
-                            (resume (+ (* hi 1000) nl) (tuple nl hi))
+                            (resume (+ (* hi 1000) nl) #tuple(nl hi))
                             (let ((nh (- hi 1)))
                               (if (< nh 0)
-                                  (resume 0 (tuple 0 0))
+                                  (resume 0 #tuple(0 0))
                                   (let ((l2 (+ nl 100)))
                                     (if (< l2 0)
-                                        (resume 0 (tuple 0 0))
-                                        (resume (+ (* nh 1000) l2) (tuple l2 nh))))))))))))
+                                        (resume 0 #tuple(0 0))
+                                        (resume (+ (* nh 1000) l2) #tuple(l2 nh))))))))))))
                 (let ((a (S.dec 5)))
                   (let ((b (S.dec 98)))
                     (let ((c (S.dec 50)))
@@ -10923,16 +10923,16 @@
                 ((Some v) (drive vals (+ i 1) (+ (* acc 100) (S.feed v))))
                 ((None u) acc)))
             (def (main (: n Int64))
-              (handle S (tuple -999 0 0 -1)
+              (handle S #tuple(-999 0 0 -1)
                 ((feed (v) st
                   (match st
-                    ((tuple prev run bl bv)
+                    (#tuple(prev run bl bv)
                       (let ((r2 (if (= v prev) (+ run 1) 1)))
                         (let ((bl2 (if (> r2 bl) r2 bl)))
                           (let ((bv2 (if (> r2 bl) v bv)))
                             (resume (+ (* bl2 10) (% bv2 10))
-                                    (tuple v r2 bl2 bv2)))))))))
-                (drive (list 4 4 n n n) 0 0)))
+                                    #tuple(v r2 bl2 bv2)))))))))
+                (drive #list(4 4 n n n) 0 0)))
             (export main)))
   (call   main (: 4 Int64)) (output (: 1424344454 Int64))
   (call   main (: 7 Int64)) (output (: 1424242437 Int64))
@@ -10942,14 +10942,14 @@
   (input  (do
             (effect S (op offer (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (tuple n -1 0)
+              (handle S #tuple(n -1 0)
                 ((offer (v) st
                   (match st
-                    ((tuple seed kept count)
+                    (#tuple(seed kept count)
                       (let ((c2 (+ count 1)))
                         (let ((s2 (% (+ (* seed 13) 7) 101)))
                           (let ((k2 (if (= (% s2 c2) 0) v kept)))
-                            (resume k2 (tuple s2 k2 c2)))))))))
+                            (resume k2 #tuple(s2 k2 c2)))))))))
                 (let ((a (S.offer 10)))
                   (let ((b (S.offer 20)))
                     (let ((c (S.offer 30)))
@@ -10968,13 +10968,13 @@
                 ((Some v) (drop-at xs (+ i 1) k (if (= i k) acc (List.push acc v))))
                 ((None u) acc)))
             (def (main (: n Int64))
-              (handle S (tuple (list 1 2 3 4 5) 0)
+              (handle S #tuple(#list(1 2 3 4 5) 0)
                 ((elim () st
                   (match st
-                    ((tuple ring pos)
+                    (#tuple(ring pos)
                       (let ((p2 (% (+ pos (- n 1)) (List.len ring))))
                         (let ((v (match (List.at ring p2) ((Some x) x) ((None u) -1))))
-                          (resume v (tuple (drop-at ring 0 p2 (: (list) (List Int64))) p2))))))))
+                          (resume v #tuple((drop-at ring 0 p2 (: #list() (List Int64))) p2))))))))
                 (let ((a (S.elim)))
                   (let ((b (S.elim)))
                     (let ((c (S.elim)))
@@ -11013,16 +11013,16 @@
               (op txn (-> Int64 Int64))
               (op endday (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple 100 0 0)
+              (handle S #tuple(100 0 0)
                 ((txn (v) st
                   (match st
-                    ((tuple bal buf day)
-                      (resume (+ (+ buf v) 50) (tuple bal (+ buf v) day)))))
+                    (#tuple(bal buf day)
+                      (resume (+ (+ buf v) 50) #tuple(bal (+ buf v) day)))))
                  (endday () st
                   (match st
-                    ((tuple bal buf day)
+                    (#tuple(bal buf day)
                       (resume (+ (* (+ day 1) 1000) (+ buf 100))
-                              (tuple (+ bal buf) 0 (+ day 1)))))))
+                              #tuple((+ bal buf) 0 (+ day 1)))))))
                 (let ((a (S.txn n)))
                   (let ((b (S.txn -30)))
                     (let ((c (S.endday)))
@@ -11038,13 +11038,13 @@
   (input  (do
             (effect S (op feed (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (tuple 0 (: Map.empty (Map (Tuple Int64 Int64) Int64)))
+              (handle S #tuple(0 (: Map.empty (Map (Tuple Int64 Int64) Int64)))
                 ((feed (v) st
                   (match st
-                    ((tuple prev m)
-                      (let ((k (tuple prev v)))
+                    (#tuple(prev m)
+                      (let ((k #tuple(prev v)))
                         (let ((c2 (+ (match (Map.lookup m k) ((Some c) c) ((None u) 0)) 1)))
-                          (resume c2 (tuple v (Map.insert m k c2)))))))))
+                          (resume c2 #tuple(v (Map.insert m k c2)))))))))
                 (let ((a (S.feed n)))
                   (let ((b (S.feed 2)))
                     (let ((c (S.feed n)))
@@ -11070,14 +11070,14 @@
                 ((Some v) (drop-eq xs (+ i 1) m (if (= v m) acc (List.push acc v))))
                 ((None u) acc)))
             (def (main (: n Int64))
-              (handle S (: (list) (List Int64))
+              (handle S (: #list() (List Int64))
                 ((feed (h) hs
                   (let ((vis (if (> h (maxl hs 0 -1)) 1 0)))
                     (let ((h2 (List.push hs h)))
                       (resume (+ (* vis 10) (List.len h2)) h2))))
                  (demolish () hs
                   (let ((m (maxl hs 0 -1)))
-                    (let ((h2 (drop-eq hs 0 m (: (list) (List Int64)))))
+                    (let ((h2 (drop-eq hs 0 m (: #list() (List Int64)))))
                       (resume (maxl h2 0 0) h2)))))
                 (let ((a (S.feed 3)))
                   (let ((b (S.feed n)))
@@ -11100,19 +11100,19 @@
                   (dropl xs (+ i 1) keep (List.push acc (match (List.at xs i) ((Some v) v) ((None u) 0))))
                   acc))
             (def (main (: n Int64))
-              (handle S (tuple (: (list) (List Int64)) 0)
+              (handle S #tuple((: #list() (List Int64)) 0)
                 ((feed (c) st
                   (match st
-                    ((tuple stack bad)
+                    (#tuple(stack bad)
                       (if (= bad 1)
                           (resume -9 st)
                           (if (< c 10)
                               (let ((s2 (List.push stack c)))
-                                (resume (List.len s2) (tuple s2 0)))
+                                (resume (List.len s2) #tuple(s2 0)))
                               (if (= (topv stack) (- c 10))
-                                  (let ((s2 (dropl stack 0 (- (List.len stack) 1) (: (list) (List Int64)))))
-                                    (resume (List.len s2) (tuple s2 0)))
-                                  (resume -9 (tuple stack 1)))))))))
+                                  (let ((s2 (dropl stack 0 (- (List.len stack) 1) (: #list() (List Int64)))))
+                                    (resume (List.len s2) #tuple(s2 0)))
+                                  (resume -9 #tuple(stack 1)))))))))
                 (let ((c3 (if (= n 0) 12 11)))
                   (let ((c4 (if (= n 0) 11 12)))
                     (let ((a (S.feed 1)))
@@ -11138,20 +11138,20 @@
                   (dropl xs (+ i 1) keep (List.push acc (match (List.at xs i) ((Some v) v) ((None u) 0))))
                   acc))
             (def (main (: n Int64))
-              (handle S (tuple n (: (list) (List Int64)))
+              (handle S #tuple(n (: #list() (List Int64)))
                 ((dotx (v) st
                   (match st
-                    ((tuple val undos
-                      ) (resume (+ val v) (tuple (+ val v) (List.push undos (- 0 v)))))))
+                    (#tuple(val undos
+                      ) (resume (+ val v) #tuple((+ val v) (List.push undos (- 0 v)))))))
                  (comp () st
                   (match st
-                    ((tuple val undos)
+                    (#tuple(val undos)
                       (if (= (List.len undos) 0)
                           (resume -99 st)
                           (let ((u (lastv undos)))
                             (resume (+ val u)
-                                    (tuple (+ val u)
-                                           (dropl undos 0 (- (List.len undos) 1) (: (list) (List Int64)))))))))))
+                                    #tuple((+ val u)
+                                           (dropl undos 0 (- (List.len undos) 1) (: #list() (List Int64)))))))))))
                 (let ((a (S.dotx 5)))
                   (let ((b (S.dotx 3)))
                     (let ((c (S.comp)))
@@ -11180,17 +11180,17 @@
                   acc
                   (rev xs (- i 1) (List.push acc (match (List.at xs i) ((Some v) v) ((None u) 0))))))
             (def (main (: n Int64))
-              (handle Q (tuple (: (list) (List Int64)) (: (list) (List Int64)))
+              (handle Q #tuple((: #list() (List Int64)) (: #list() (List Int64)))
                 ((enq (v) st
                   (match st
-                    ((tuple ins outs) (resume v (tuple (List.push ins v) outs)))))
+                    (#tuple(ins outs) (resume v #tuple((List.push ins v) outs)))))
                  (deq () st
                   (match st
-                    ((tuple ins outs)
+                    (#tuple(ins outs)
                       (if (= (List.len outs) 0)
-                          (let ((r (rev ins (- (List.len ins) 1) (: (list) (List Int64)))))
-                            (resume (lastv r) (tuple (: (list) (List Int64)) (dropl r 0 (- (List.len r) 1) (: (list) (List Int64))))))
-                          (resume (lastv outs) (tuple ins (dropl outs 0 (- (List.len outs) 1) (: (list) (List Int64))))))))))
+                          (let ((r (rev ins (- (List.len ins) 1) (: #list() (List Int64)))))
+                            (resume (lastv r) #tuple((: #list() (List Int64)) (dropl r 0 (- (List.len r) 1) (: #list() (List Int64))))))
+                          (resume (lastv outs) #tuple(ins (dropl outs 0 (- (List.len outs) 1) (: #list() (List Int64))))))))))
                 (let ((a (Q.enq (+ n 1))))
                   (let ((b (Q.enq (+ n 2))))
                     (let ((c (Q.deq)))
@@ -11207,22 +11207,22 @@
               (op refill (-> Int64 Int64))
               (op pens (-> Int64)))
             (def (main (: n Int64))
-              (handle B (tuple n (: 0 Int64))
+              (handle B #tuple(n (: 0 Int64))
                 ((spend (v) st
                   (match st
-                    ((tuple tk pen)
+                    (#tuple(tk pen)
                       (if (< tk v)
-                          (resume 0 (tuple tk (+ pen 1)))
-                          (resume v (tuple (- tk v) pen))))))
+                          (resume 0 #tuple(tk (+ pen 1)))
+                          (resume v #tuple((- tk v) pen))))))
                  (refill (v) st
                   (match st
-                    ((tuple tk pen)
+                    (#tuple(tk pen)
                       (if (< 10 (+ tk v))
-                          (resume 10 (tuple 10 pen))
-                          (resume (+ tk v) (tuple (+ tk v) pen))))))
+                          (resume 10 #tuple(10 pen))
+                          (resume (+ tk v) #tuple((+ tk v) pen))))))
                  (pens () st
                   (match st
-                    ((tuple tk pen) (resume pen st)))))
+                    (#tuple(tk pen) (resume pen st)))))
                 (let ((a (B.spend 4)))
                   (let ((b (B.spend 8)))
                     (let ((c (B.refill 5)))
@@ -11244,19 +11244,19 @@
               (op winner (-> Int64))
               (op price (-> Int64)))
             (def (main (: n Int64))
-              (handle A (tuple (: 0 Int64) (: 0 Int64) (: 0 Int64) (: 0 Int64))
+              (handle A #tuple((: 0 Int64) (: 0 Int64) (: 0 Int64) (: 0 Int64))
                 ((bid (v) st
                   (match st
-                    ((tuple hi sec w cnt)
+                    (#tuple(hi sec w cnt)
                       (if (< hi v)
-                          (resume (+ cnt 1) (tuple v hi (+ cnt 1) (+ cnt 1)))
+                          (resume (+ cnt 1) #tuple(v hi (+ cnt 1) (+ cnt 1)))
                           (if (< sec v)
-                              (resume w (tuple hi v w (+ cnt 1)))
-                              (resume w (tuple hi sec w (+ cnt 1))))))))
+                              (resume w #tuple(hi v w (+ cnt 1)))
+                              (resume w #tuple(hi sec w (+ cnt 1))))))))
                  (winner () st
-                  (match st ((tuple hi sec w cnt) (resume w st))))
+                  (match st (#tuple(hi sec w cnt) (resume w st))))
                  (price () st
-                  (match st ((tuple hi sec w cnt) (resume sec st)))))
+                  (match st (#tuple(hi sec w cnt) (resume sec st)))))
                 (let ((a (A.bid (+ n 5))))
                   (let ((b (A.bid 8)))
                     (let ((c (A.bid (+ n 12))))
@@ -11301,25 +11301,25 @@
               (op req (-> Int64 Int64))
               (op mode (-> Int64)))
             (def (main (: n Int64))
-              (handle C (tuple (: 0 Int64) (: 0 Int64) (: 0 Int64))
+              (handle C #tuple((: 0 Int64) (: 0 Int64) (: 0 Int64))
                 ((req (v) st
                   (match st
-                    ((tuple m fails cd)
+                    (#tuple(m fails cd)
                       (if (= m 1)
                           (if (= cd 1)
-                              (resume -1 (tuple 2 fails 0))
-                              (resume -1 (tuple 1 fails (- cd 1))))
+                              (resume -1 #tuple(2 fails 0))
+                              (resume -1 #tuple(1 fails (- cd 1))))
                           (if (= m 2)
                               (if (< v 0)
-                                  (resume 0 (tuple 1 fails 2))
-                                  (resume v (tuple 0 0 0)))
+                                  (resume 0 #tuple(1 fails 2))
+                                  (resume v #tuple(0 0 0)))
                               (if (< v 0)
                                   (if (< 0 fails)
-                                      (resume 0 (tuple 1 (+ fails 1) 2))
-                                      (resume 0 (tuple 0 (+ fails 1) 0)))
-                                  (resume v (tuple 0 fails 0))))))))
+                                      (resume 0 #tuple(1 (+ fails 1) 2))
+                                      (resume 0 #tuple(0 (+ fails 1) 0)))
+                                  (resume v #tuple(0 fails 0))))))))
                  (mode () st
-                  (match st ((tuple m fails cd) (resume m st)))))
+                  (match st (#tuple(m fails cd) (resume m st)))))
                 (let ((a (C.req (- n 6))))
                   (let ((b (C.req -3)))
                     (let ((c (C.req -2)))
@@ -11340,18 +11340,18 @@
               (op step (-> Int64))
               (op integ (-> Int64)))
             (def (main (: n Int64))
-              (handle P (tuple n (: 0 Int64))
+              (handle P #tuple(n (: 0 Int64))
                 ((step () st
                   (match st
-                    ((tuple pv ig)
-                      (match (tuple (- 20 pv) ig)
-                        ((tuple err ig2)
+                    (#tuple(pv ig)
+                      (match #tuple((- 20 pv) ig)
+                        (#tuple(err ig2)
                           (match (+ ig2 err)
                             (ig3
                               (match (+ pv (/ (+ (* 2 err) ig3) 4))
-                                (pv2 (resume pv2 (tuple pv2 ig3)))))))))))
+                                (pv2 (resume pv2 #tuple(pv2 ig3)))))))))))
                  (integ () st
-                  (match st ((tuple pv ig) (resume ig st)))))
+                  (match st (#tuple(pv ig) (resume ig st)))))
                 (let ((a (P.step)))
                   (let ((b (P.step)))
                     (let ((c (P.step)))
@@ -11371,19 +11371,19 @@
               (op settle (-> Int64))
               (op release (-> Int64)))
             (def (main (: n Int64))
-              (handle I (tuple (+ n 8) (: 0 Int64))
+              (handle I #tuple((+ n 8) (: 0 Int64))
                 ((hold (v) st
                   (match st
-                    ((tuple oh hd)
+                    (#tuple(oh hd)
                       (if (< (- oh hd) v)
                           (resume (- 0 (- oh hd)) st)
-                          (resume (+ hd v) (tuple oh (+ hd v)))))))
+                          (resume (+ hd v) #tuple(oh (+ hd v)))))))
                  (settle () st
                   (match st
-                    ((tuple oh hd) (resume (- oh hd) (tuple (- oh hd) 0)))))
+                    (#tuple(oh hd) (resume (- oh hd) #tuple((- oh hd) 0)))))
                  (release () st
                   (match st
-                    ((tuple oh hd) (resume oh (tuple oh 0))))))
+                    (#tuple(oh hd) (resume oh #tuple(oh 0))))))
                 (let ((a (I.hold 4)))
                   (let ((b (I.hold 9)))
                     (let ((c (I.settle)))
@@ -11432,11 +11432,11 @@
                           ((None u) best)))
                   best))
             (def (main (: n Int64))
-              (handle W (: (list) (List Int64))
+              (handle W (: #list() (List Int64))
                 ((push (v) st
                   (let ((grown (List.push st v)))
                     (if (< 3 (List.len grown))
-                        (let ((trimmed (dropf grown 1 (: (list) (List Int64)))))
+                        (let ((trimmed (dropf grown 1 (: #list() (List Int64)))))
                           (resume (maxs trimmed 0 -999) trimmed))
                         (resume (maxs grown 0 -999) grown)))))
                 (let ((a (W.push (+ n 2))))
@@ -11482,21 +11482,21 @@
               (op back (-> Int64 Int64))
               (op imb (-> Int64)))
             (def (main (: n Int64))
-              (handle X (tuple (+ n 5) (: 3 Int64))
+              (handle X #tuple((+ n 5) (: 3 Int64))
                 ((xfer (v) st
                   (match st
-                    ((tuple a b)
+                    (#tuple(a b)
                       (if (< a v)
-                          (resume a (tuple 0 (+ b a)))
-                          (resume v (tuple (- a v) (+ b v)))))))
+                          (resume a #tuple(0 (+ b a)))
+                          (resume v #tuple((- a v) (+ b v)))))))
                  (back (v) st
                   (match st
-                    ((tuple a b)
+                    (#tuple(a b)
                       (if (< b v)
-                          (resume b (tuple (+ a b) 0))
-                          (resume v (tuple (+ a v) (- b v)))))))
+                          (resume b #tuple((+ a b) 0))
+                          (resume v #tuple((+ a v) (- b v)))))))
                  (imb () st
-                  (match st ((tuple a b) (resume (- a b) st)))))
+                  (match st (#tuple(a b) (resume (- a b) st)))))
                 (let ((p (X.xfer 4)))
                   (let ((q (X.back 9)))
                     (let ((r (X.xfer 6)))
@@ -11577,18 +11577,18 @@
               (op quad (-> Int64)))
             (def (iabs (: v Int64)) (if (< v 0) (- 0 v) v))
             (def (main (: n Int64))
-              (handle P (tuple n (: 3 Int64))
+              (handle P #tuple(n (: 3 Int64))
                 ((rot () st
                   (match st
-                    ((tuple x y)
-                      (resume (+ (* y 10) (if (< (- 0 x) 0) -1 1)) (tuple y (- 0 x))))))
+                    (#tuple(x y)
+                      (resume (+ (* y 10) (if (< (- 0 x) 0) -1 1)) #tuple(y (- 0 x))))))
                  (mv (dx dy) st
                   (match st
-                    ((tuple x y)
-                      (resume (+ (iabs (+ x dx)) (iabs (+ y dy))) (tuple (+ x dx) (+ y dy))))))
+                    (#tuple(x y)
+                      (resume (+ (iabs (+ x dx)) (iabs (+ y dy))) #tuple((+ x dx) (+ y dy))))))
                  (quad () st
                   (match st
-                    ((tuple x y)
+                    (#tuple(x y)
                       (if (< x 0)
                           (if (< y 0) (resume 3 st) (resume 2 st))
                           (if (< y 0) (resume 4 st) (resume 1 st)))))))
@@ -11613,19 +11613,19 @@
               (op veto (-> Int64))
               (op tally (-> Int64)))
             (def (main (: n Int64))
-              (handle Q (tuple (: 0 Int64) (+ n 6))
+              (handle Q #tuple((: 0 Int64) (+ n 6))
                 ((vote (v) st
                   (match st
-                    ((tuple w thr)
+                    (#tuple(w thr)
                       (if (< (+ w v) thr)
-                          (resume 0 (tuple (+ w v) thr))
-                          (resume 1 (tuple (+ w v) thr))))))
+                          (resume 0 #tuple((+ w v) thr))
+                          (resume 1 #tuple((+ w v) thr))))))
                  (veto () st
                   (match st
-                    ((tuple w thr) (resume (+ thr 2) (tuple 0 (+ thr 2))))))
+                    (#tuple(w thr) (resume (+ thr 2) #tuple(0 (+ thr 2))))))
                  (tally () st
                   (match st
-                    ((tuple w thr)
+                    (#tuple(w thr)
                       (if (< w thr)
                           (resume (* w 10) st)
                           (resume (+ (* w 10) 1) st))))))
@@ -11661,22 +11661,22 @@
                   (tailof xs (+ i 1) (List.push acc (match (List.at xs i) ((Some v) v) ((None u) 0))))
                   acc))
             (def (main (: n Int64))
-              (handle C (tuple (: (list) (List Int64)) (: (map) (Map Int64 Int64)))
+              (handle C #tuple((: #list() (List Int64)) (: (map) (Map Int64 Int64)))
                 ((put (k v) st
                   (match st
-                    ((tuple rec m)
-                      (match (List.push (without rec k 0 (: (list) (List Int64))) k)
+                    (#tuple(rec m)
+                      (match (List.push (without rec k 0 (: #list() (List Int64))) k)
                         (rec2
                           (if (< 2 (List.len rec2))
                               (resume (headof rec2)
-                                      (tuple (tailof rec2 1 (: (list) (List Int64)))
+                                      #tuple((tailof rec2 1 (: #list() (List Int64)))
                                              (Map.remove (Map.insert m k v) (headof rec2))))
-                              (resume 0 (tuple rec2 (Map.insert m k v)))))))))
+                              (resume 0 #tuple(rec2 (Map.insert m k v)))))))))
                  (get (k) st
                   (match st
-                    ((tuple rec m)
+                    (#tuple(rec m)
                       (match (Map.lookup m k)
-                        ((Some v) (resume v (tuple (List.push (without rec k 0 (: (list) (List Int64))) k) m)))
+                        ((Some v) (resume v #tuple((List.push (without rec k 0 (: #list() (List Int64))) k) m)))
                         ((None) (resume -1 st)))))))
                 (let ((a (C.put (+ n 1) 5)))
                   (let ((b (C.put 1 6)))
@@ -11706,9 +11706,9 @@
                   (sums xs (+ i 1) (+ acc (getat xs i)))
                   acc))
             (def (main (: n Int64))
-              (handle P (: (list 1) (List Int64))
+              (handle P (: #list(1) (List Int64))
                 ((next () st
-                  (match (pairs st 0 (: (list 1) (List Int64)))
+                  (match (pairs st 0 (: #list(1) (List Int64)))
                     (r2 (resume (sums r2 0 0) r2))))
                  (coef (k) st
                   (if (< k (List.len st))
@@ -11734,14 +11734,14 @@
               (op feed (-> Int64 Int64))
               (op swapx (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle H (tuple (: 0 Int64) (+ (% n 4) 2))
+              (handle H #tuple((: 0 Int64) (+ (% n 4) 2))
                 ((feed (c) st
                   (match st
-                    ((tuple acc x)
-                      (resume (+ (* acc x) c) (tuple (+ (* acc x) c) x)))))
+                    (#tuple(acc x)
+                      (resume (+ (* acc x) c) #tuple((+ (* acc x) c) x)))))
                  (swapx (v) st
                   (match st
-                    ((tuple acc x) (resume x (tuple acc v))))))
+                    (#tuple(acc x) (resume x #tuple(acc v))))))
                 (let ((a (H.feed 3)))
                   (let ((b (H.feed 1)))
                     (let ((c (H.swapx 10)))
@@ -11766,18 +11766,18 @@
                       (% (+ cur step) 4)
                       (scan cur mask (+ step 1)))))
             (def (main (: n Int64))
-              (handle R (tuple (% n 4) (: 0 Int64))
+              (handle R #tuple((% n 4) (: 0 Int64))
                 ((turn () st
                   (match st
-                    ((tuple cur mask)
+                    (#tuple(cur mask)
                       (if (= (bits mask 0) 4)
                           (resume -1 st)
                           (match (scan cur mask 1)
-                            (nxt (resume nxt (tuple nxt mask))))))))
+                            (nxt (resume nxt #tuple(nxt mask))))))))
                  (skip (i) st
                   (match st
-                    ((tuple cur mask)
-                      (resume (bits (| mask (<< 1 i)) 0) (tuple cur (| mask (<< 1 i))))))))
+                    (#tuple(cur mask)
+                      (resume (bits (| mask (<< 1 i)) 0) #tuple(cur (| mask (<< 1 i))))))))
                 (let ((a (R.turn)))
                   (let ((b (R.skip 2)))
                     (let ((c (R.turn)))
@@ -11800,21 +11800,21 @@
               (op lap (-> Int64))
               (op bst (-> Int64)))
             (def (main (: n Int64))
-              (handle W (tuple (: 0 Int64) (: 0 Int64) (: -1 Int64))
+              (handle W #tuple((: 0 Int64) (: 0 Int64) (: -1 Int64))
                 ((tick () st
                   (match st
-                    ((tuple t last best)
-                      (resume (+ t (+ (% n 3) 2)) (tuple (+ t (+ (% n 3) 2)) last best)))))
+                    (#tuple(t last best)
+                      (resume (+ t (+ (% n 3) 2)) #tuple((+ t (+ (% n 3) 2)) last best)))))
                  (lap () st
                   (match st
-                    ((tuple t last best)
+                    (#tuple(t last best)
                       (if (< best 0)
-                          (resume (- t last) (tuple t t (- t last)))
+                          (resume (- t last) #tuple(t t (- t last)))
                           (if (< (- t last) best)
-                              (resume (- t last) (tuple t t (- t last)))
-                              (resume (- t last) (tuple t t best)))))))
+                              (resume (- t last) #tuple(t t (- t last)))
+                              (resume (- t last) #tuple(t t best)))))))
                  (bst () st
-                  (match st ((tuple t last best) (resume best st)))))
+                  (match st (#tuple(t last best) (resume best st)))))
                 (let ((a (W.tick)))
                   (let ((b (W.tick)))
                     (let ((c (W.lap)))
@@ -11837,18 +11837,18 @@
               (op feed (-> Int64 Int64))
               (op chk (-> Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (: 0 Int64) (: 0 Int64))
+              (handle L #tuple((: 0 Int64) (: 0 Int64))
                 ((feed (d) st
                   (match st
-                    ((tuple s pos)
+                    (#tuple(s pos)
                       (if (= (% pos 2) 1)
                           (if (< 9 (* d 2))
-                              (resume (+ s (- (* d 2) 9)) (tuple (+ s (- (* d 2) 9)) (+ pos 1)))
-                              (resume (+ s (* d 2)) (tuple (+ s (* d 2)) (+ pos 1))))
-                          (resume (+ s d) (tuple (+ s d) (+ pos 1)))))))
+                              (resume (+ s (- (* d 2) 9)) #tuple((+ s (- (* d 2) 9)) (+ pos 1)))
+                              (resume (+ s (* d 2)) #tuple((+ s (* d 2)) (+ pos 1))))
+                          (resume (+ s d) #tuple((+ s d) (+ pos 1)))))))
                  (chk () st
                   (match st
-                    ((tuple s pos)
+                    (#tuple(s pos)
                       (if (= (% s 10) 0)
                           (resume 1 st)
                           (resume (% s 10) st))))))
@@ -11868,16 +11868,16 @@
               (op fail (-> Int64))
               (op ok (-> Int64)))
             (def (main (: n Int64))
-              (handle B (tuple (: 1 Int64) (: 0 Int64))
+              (handle B #tuple((: 1 Int64) (: 0 Int64))
                 ((fail () st
                   (match st
-                    ((tuple delay total)
+                    (#tuple(delay total)
                       (if (< (+ n 6) (* delay 2))
-                          (resume (+ n 6) (tuple (+ n 6) (+ total delay)))
-                          (resume (* delay 2) (tuple (* delay 2) (+ total delay)))))))
+                          (resume (+ n 6) #tuple((+ n 6) (+ total delay)))
+                          (resume (* delay 2) #tuple((* delay 2) (+ total delay)))))))
                  (ok () st
                   (match st
-                    ((tuple delay total) (resume total (tuple 1 total))))))
+                    (#tuple(delay total) (resume total #tuple(1 total))))))
                 (let ((a (B.fail)))
                   (let ((b (B.fail)))
                     (let ((c (B.fail)))
@@ -11898,14 +11898,14 @@
               (op trade (-> Int64 Int64 Int64))
               (op vwap (-> Int64)))
             (def (main (: n Int64))
-              (handle V (tuple (: 0 Int64) (: 0 Int64))
+              (handle V #tuple((: 0 Int64) (: 0 Int64))
                 ((trade (p qty) st
                   (match st
-                    ((tuple pq q)
-                      (resume (+ pq (* p qty)) (tuple (+ pq (* p qty)) (+ q qty))))))
+                    (#tuple(pq q)
+                      (resume (+ pq (* p qty)) #tuple((+ pq (* p qty)) (+ q qty))))))
                  (vwap () st
                   (match st
-                    ((tuple pq q)
+                    (#tuple(pq q)
                       (if (= q 0)
                           (resume -1 st)
                           (resume (/ pq q) st))))))
@@ -11949,19 +11949,19 @@
               (op read2 (-> Int64 Int64))
               (op wtot (-> Int64)))
             (def (main (: n Int64))
-              (handle F (tuple (: 0 Int64) (: 0 Int64))
+              (handle F #tuple((: 0 Int64) (: 0 Int64))
                 ((read1 (v) st
                   (match st
-                    ((tuple est wsum)
+                    (#tuple(est wsum)
                       (resume (/ (+ (* est wsum) (* v 3)) (+ wsum 3))
-                              (tuple (/ (+ (* est wsum) (* v 3)) (+ wsum 3)) (+ wsum 3))))))
+                              #tuple((/ (+ (* est wsum) (* v 3)) (+ wsum 3)) (+ wsum 3))))))
                  (read2 (v) st
                   (match st
-                    ((tuple est wsum)
+                    (#tuple(est wsum)
                       (resume (/ (+ (* est wsum) (* v (+ (% n 4) 1))) (+ wsum (+ (% n 4) 1)))
-                              (tuple (/ (+ (* est wsum) (* v (+ (% n 4) 1))) (+ wsum (+ (% n 4) 1))) (+ wsum (+ (% n 4) 1)))))))
+                              #tuple((/ (+ (* est wsum) (* v (+ (% n 4) 1))) (+ wsum (+ (% n 4) 1))) (+ wsum (+ (% n 4) 1)))))))
                  (wtot () st
-                  (match st ((tuple est wsum) (resume wsum st)))))
+                  (match st (#tuple(est wsum) (resume wsum st)))))
                 (let ((a (F.read1 12)))
                   (let ((b (F.read2 20)))
                     (let ((c (F.read1 6)))
@@ -11978,14 +11978,14 @@
               (op step (-> Int64))
               (op peek (-> Int64)))
             (def (main (: n Int64))
-              (handle T (tuple (% n 3) (: 1 Int64) (: 1 Int64))
+              (handle T #tuple((% n 3) (: 1 Int64) (: 1 Int64))
                 ((step () st
                   (match st
-                    ((tuple a b c)
-                      (resume (+ a (+ b c)) (tuple b c (+ a (+ b c)))))))
+                    (#tuple(a b c)
+                      (resume (+ a (+ b c)) #tuple(b c (+ a (+ b c)))))))
                  (peek () st
                   (match st
-                    ((tuple a b c) (resume (+ a (+ b c)) st)))))
+                    (#tuple(a b c) (resume (+ a (+ b c)) st)))))
                 (let ((p (T.step)))
                   (let ((q (T.step)))
                     (let ((r (T.peek)))
@@ -12004,22 +12004,22 @@
               (op play (-> Int64 Int64))
               (op score (-> Int64)))
             (def (main (: n Int64))
-              (handle R (tuple (+ n 3) (: 0 Int64) (: 0 Int64))
+              (handle R #tuple((+ n 3) (: 0 Int64) (: 0 Int64))
                 ((play (mine) st
                   (match st
-                    ((tuple seed wins losses)
+                    (#tuple(seed wins losses)
                       (match (% (+ (* seed 5) 3) 16)
                         (s2
                           (match (% s2 3)
                             (o
                               (if (= mine o)
-                                  (resume 0 (tuple s2 wins losses))
+                                  (resume 0 #tuple(s2 wins losses))
                                   (if (= (% (+ (- mine o) 3) 3) 1)
-                                      (resume 1 (tuple s2 (+ wins 1) losses))
-                                      (resume -1 (tuple s2 wins (+ losses 1))))))))))))
+                                      (resume 1 #tuple(s2 (+ wins 1) losses))
+                                      (resume -1 #tuple(s2 wins (+ losses 1))))))))))))
                  (score () st
                   (match st
-                    ((tuple seed wins losses) (resume (+ (* wins 10) losses) st)))))
+                    (#tuple(seed wins losses) (resume (+ (* wins 10) losses) st)))))
                 (let ((a (R.play 0)))
                   (let ((b (R.play 1)))
                     (let ((c (R.play 2)))
@@ -12062,10 +12062,10 @@
               (op hop (-> Int64 Int64 Int64))
               (op cnt (-> Int64)))
             (def (main (: n Int64))
-              (handle W (tuple (% n 8) (: 3 Int64) (: 0 Int64))
+              (handle W #tuple((% n 8) (: 3 Int64) (: 0 Int64))
                 ((hop (dr dc) st
                   (match st
-                    ((tuple r c hops)
+                    (#tuple(r c hops)
                       (if (< (+ r dr) 0)
                           (resume -1 st)
                           (if (< 7 (+ r dr))
@@ -12075,9 +12075,9 @@
                                   (if (< 7 (+ c dc))
                                       (resume -1 st)
                                       (resume (+ (* (+ r dr) 8) (+ c dc))
-                                              (tuple (+ r dr) (+ c dc) (+ hops 1))))))))))
+                                              #tuple((+ r dr) (+ c dc) (+ hops 1))))))))))
                  (cnt () st
-                  (match st ((tuple r c hops) (resume hops st)))))
+                  (match st (#tuple(r c hops) (resume hops st)))))
                 (let ((a (W.hop -2 1)))
                   (let ((b (W.hop -1 -2)))
                     (let ((c (W.hop 2 -1)))
@@ -12096,19 +12096,19 @@
               (op coin (-> Int64))
               (op push (-> Int64)))
             (def (main (: n Int64))
-              (handle T (tuple (if (< 5 n) 1 0) (: 0 Int64) (: 0 Int64) (: 0 Int64))
+              (handle T #tuple((if (< 5 n) 1 0) (: 0 Int64) (: 0 Int64) (: 0 Int64))
                 ((coin () st
                   (match st
-                    ((tuple u waste bounce passed)
+                    (#tuple(u waste bounce passed)
                       (if (= u 1)
-                          (resume (- 0 (+ waste 1)) (tuple 1 (+ waste 1) bounce passed))
-                          (resume 1 (tuple 1 waste bounce passed))))))
+                          (resume (- 0 (+ waste 1)) #tuple(1 (+ waste 1) bounce passed))
+                          (resume 1 #tuple(1 waste bounce passed))))))
                  (push () st
                   (match st
-                    ((tuple u waste bounce passed)
+                    (#tuple(u waste bounce passed)
                       (if (= u 1)
-                          (resume (+ passed 1) (tuple 0 waste bounce (+ passed 1)))
-                          (resume (- 0 (+ bounce 1)) (tuple 0 waste (+ bounce 1) passed)))))))
+                          (resume (+ passed 1) #tuple(0 waste bounce (+ passed 1)))
+                          (resume (- 0 (+ bounce 1)) #tuple(0 waste (+ bounce 1) passed)))))))
                 (let ((a (T.push)))
                   (let ((b (T.coin)))
                     (let ((c (T.coin)))
@@ -12152,19 +12152,19 @@
               (op feed (-> Int64 Int64))
               (op bst (-> Int64)))
             (def (main (: n Int64))
-              (handle K (tuple (: 0 Int64) (: -99 Int64))
+              (handle K #tuple((: 0 Int64) (: -99 Int64))
                 ((feed (v) st
                   (match st
-                    ((tuple cur best)
+                    (#tuple(cur best)
                       (if (< (+ cur v) v)
                           (if (< best v)
-                              (resume v (tuple v v))
-                              (resume v (tuple v best)))
+                              (resume v #tuple(v v))
+                              (resume v #tuple(v best)))
                           (if (< best (+ cur v))
-                              (resume (+ cur v) (tuple (+ cur v) (+ cur v)))
-                              (resume (+ cur v) (tuple (+ cur v) best)))))))
+                              (resume (+ cur v) #tuple((+ cur v) (+ cur v)))
+                              (resume (+ cur v) #tuple((+ cur v) best)))))))
                  (bst () st
-                  (match st ((tuple cur best) (resume best st)))))
+                  (match st (#tuple(cur best) (resume best st)))))
                 (let ((a (K.feed 4)))
                   (let ((b (K.feed -6)))
                     (let ((c (K.feed (- n 5))))
@@ -12208,13 +12208,13 @@
   (input  (do
             (effect F (op step (-> Int64)))
             (def (main (: n Int64))
-              (handle F (tuple (+ 100 n) (: 37 Int64))
+              (handle F #tuple((+ 100 n) (: 37 Int64))
                 ((step () st
                   (match st
-                    ((tuple p q)
+                    (#tuple(p q)
                       (if (= q 0)
                           (resume -1 st)
-                          (resume (/ p q) (tuple q (- p (* (/ p q) q)))))))))
+                          (resume (/ p q) #tuple(q (- p (* (/ p q) q)))))))))
                 (let ((a (F.step)))
                   (let ((b (F.step)))
                     (let ((c (F.step)))
@@ -12233,23 +12233,23 @@
               (op lead (-> Int64)))
             (def (pts-of (: st (Tuple Int64 Int64 Int64)) (: i Int64))
               (match st
-                ((tuple x y z) (if (= i 0) x (if (= i 1) y z)))))
+                (#tuple(x y z) (if (= i 0) x (if (= i 1) y z)))))
             (def (bump (: st (Tuple Int64 Int64 Int64)) (: i Int64) (: by Int64))
               (match st
-                ((tuple x y z)
+                (#tuple(x y z)
                   (if (= i 0)
-                      (tuple (+ x by) y z)
+                      #tuple((+ x by) y z)
                       (if (= i 1)
-                          (tuple x (+ y by) z)
-                          (tuple x y (+ z by)))))))
+                          #tuple(x (+ y by) z)
+                          #tuple(x y (+ z by)))))))
             (def (main (: n Int64))
-              (handle B (tuple (: 0 Int64) (: 0 Int64) (: 0 Int64))
+              (handle B #tuple((: 0 Int64) (: 0 Int64) (: 0 Int64))
                 ((ballot (fst snd trd) st
                   (match (bump (bump st fst 2) snd 1)
                     (st2 (resume (pts-of st2 fst) st2))))
                  (lead () st
                   (match st
-                    ((tuple x y z)
+                    (#tuple(x y z)
                       (if (< x y)
                           (if (< y z) (resume 2 st) (resume 1 st))
                           (if (< x z) (resume 2 st) (resume 0 st)))))))
@@ -12272,21 +12272,21 @@
               (op accept (-> Int64 Int64))
               (op tally (-> Int64)))
             (def (main (: n Int64))
-              (handle A (tuple (+ 40 (* n 4)) (: 0 Int64))
+              (handle A #tuple((+ 40 (* n 4)) (: 0 Int64))
                 ((cool () st
                   (match st
-                    ((tuple temp k)
-                      (resume (/ (* temp 9) 10) (tuple (/ (* temp 9) 10) k)))))
+                    (#tuple(temp k)
+                      (resume (/ (* temp 9) 10) #tuple((/ (* temp 9) 10) k)))))
                  (accept (d) st
                   (match st
-                    ((tuple temp k)
+                    (#tuple(temp k)
                       (if (< d 1)
-                          (resume 1 (tuple temp (+ k 1)))
+                          (resume 1 #tuple(temp (+ k 1)))
                           (if (< d temp)
-                              (resume 1 (tuple temp (+ k 1)))
+                              (resume 1 #tuple(temp (+ k 1)))
                               (resume 0 st))))))
                  (tally () st
-                  (match st ((tuple temp k) (resume k st)))))
+                  (match st (#tuple(temp k) (resume k st)))))
                 (let ((a (A.accept 50)))
                   (let ((b (A.cool)))
                     (let ((c (A.accept 50)))
@@ -12360,20 +12360,20 @@
             (def (digit-at (: n Int64) (: i Int64))
               (if (= i 0) 3 (if (= i 1) (+ (% n 4) 1) 7)))
             (def (main (: n Int64))
-              (handle L (tuple (: 0 Int64) (: 0 Int64))
+              (handle L #tuple((: 0 Int64) (: 0 Int64))
                 ((press (d) st
                   (match st
-                    ((tuple cur opens)
+                    (#tuple(cur opens)
                       (if (= d (digit-at n cur))
-                          (resume (+ cur 1) (tuple (+ cur 1) opens))
+                          (resume (+ cur 1) #tuple((+ cur 1) opens))
                           (if (= d 3)
-                              (resume -1 (tuple 1 opens))
-                              (resume 0 (tuple 0 opens)))))))
+                              (resume -1 #tuple(1 opens))
+                              (resume 0 #tuple(0 opens)))))))
                  (opn () st
                   (match st
-                    ((tuple cur opens)
+                    (#tuple(cur opens)
                       (if (= cur 3)
-                          (resume (+ 101 opens) (tuple 0 (+ opens 1)))
+                          (resume (+ 101 opens) #tuple(0 (+ opens 1)))
                           (resume (- 0 cur) st))))))
                 (let ((a (L.press 3)))
                   (let ((b (L.press 3)))
@@ -12395,17 +12395,17 @@
               (op roll (-> Int64 Int64))
               (op total (-> Int64)))
             (def (main (: n Int64))
-              (handle B (tuple (: -1 Int64) (: -1 Int64) (: 0 Int64))
+              (handle B #tuple((: -1 Int64) (: -1 Int64) (: 0 Int64))
                 ((roll (p) st
                   (match st
-                    ((tuple p2 p1 score)
+                    (#tuple(p2 p1 score)
                       (if (< p2 0)
-                          (resume (+ score p) (tuple p1 p (+ score p)))
+                          (resume (+ score p) #tuple(p1 p (+ score p)))
                           (if (= (+ p2 p1) 10)
-                              (resume (+ score (* p 2)) (tuple p1 p (+ score (* p 2))))
-                              (resume (+ score p) (tuple p1 p (+ score p))))))))
+                              (resume (+ score (* p 2)) #tuple(p1 p (+ score (* p 2))))
+                              (resume (+ score p) #tuple(p1 p (+ score p))))))))
                  (total () st
-                  (match st ((tuple p2 p1 score) (resume score st)))))
+                  (match st (#tuple(p2 p1 score) (resume score st)))))
                 (let ((a (B.roll (+ (% n 6) 3))))
                   (let ((b (B.roll 3)))
                     (let ((c (B.roll 5)))
@@ -12423,17 +12423,17 @@
               (op feed (-> Int64 Int64))
               (op tot (-> Int64)))
             (def (main (: n Int64))
-              (handle R (tuple (: 0 Int64) (: 0 Int64))
+              (handle R #tuple((: 0 Int64) (: 0 Int64))
                 ((feed (v) st
                   (match st
-                    ((tuple total prev)
+                    (#tuple(total prev)
                       (if (< 0 prev)
                           (if (< prev v)
-                              (resume (+ total (- v (* 2 prev))) (tuple (+ total (- v (* 2 prev))) v))
-                              (resume (+ total v) (tuple (+ total v) v)))
-                          (resume (+ total v) (tuple (+ total v) v))))))
+                              (resume (+ total (- v (* 2 prev))) #tuple((+ total (- v (* 2 prev))) v))
+                              (resume (+ total v) #tuple((+ total v) v)))
+                          (resume (+ total v) #tuple((+ total v) v))))))
                  (tot () st
-                  (match st ((tuple total prev) (resume total st)))))
+                  (match st (#tuple(total prev) (resume total st)))))
                 (let ((a (R.feed 10)))
                   (let ((b (R.feed (if (= (% n 3) 1) 5 1))))
                     (let ((c (R.feed 10)))
@@ -12473,17 +12473,17 @@
               (op step (-> Int64))
               (op acc (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple (+ n 5) (: 7 Int64) (: 0 Int64))
+              (handle E #tuple((+ n 5) (: 7 Int64) (: 0 Int64))
                 ((step () st
                   (match st
-                    ((tuple mult mcand accv)
+                    (#tuple(mult mcand accv)
                       (if (= (% mult 2) 1)
                           (resume (+ 100 (% (+ accv mcand) 100))
-                                  (tuple (/ mult 2) (* mcand 2) (+ accv mcand)))
+                                  #tuple((/ mult 2) (* mcand 2) (+ accv mcand)))
                           (resume (% accv 100)
-                                  (tuple (/ mult 2) (* mcand 2) accv))))))
+                                  #tuple((/ mult 2) (* mcand 2) accv))))))
                  (acc () st
-                  (match st ((tuple mult mcand accv) (resume accv st)))))
+                  (match st (#tuple(mult mcand accv) (resume accv st)))))
                 (let ((a (E.step)))
                   (let ((b (E.step)))
                     (let ((c (E.step)))
@@ -12502,27 +12502,27 @@
               (op vote (-> Int64))
               (op bad (-> Int64)))
             (def (main (: n Int64))
-              (handle T (tuple (: 0 Int64) (: 0 Int64) (: 0 Int64) (: 0 Int64))
+              (handle T #tuple((: 0 Int64) (: 0 Int64) (: 0 Int64) (: 0 Int64))
                 ((set (i v) st
                   (match st
-                    ((tuple a b c k)
+                    (#tuple(a b c k)
                       (if (= i 0)
-                          (resume v (tuple v b c k))
+                          (resume v #tuple(v b c k))
                           (if (= i 1)
-                              (resume v (tuple a v c k))
-                              (resume v (tuple a b v k)))))))
+                              (resume v #tuple(a v c k))
+                              (resume v #tuple(a b v k)))))))
                  (vote () st
                   (match st
-                    ((tuple a b c k)
+                    (#tuple(a b c k)
                       (if (= a b)
                           (resume a st)
                           (if (= a c)
                               (resume a st)
                               (if (= b c)
                                   (resume b st)
-                                  (resume -1 (tuple a b c (+ k 1)))))))))
+                                  (resume -1 #tuple(a b c (+ k 1)))))))))
                  (bad () st
-                  (match st ((tuple a b c k) (resume k st)))))
+                  (match st (#tuple(a b c k) (resume k st)))))
                 (let ((p (T.set 0 (+ n 2))))
                   (let ((q (T.set 1 12)))
                     (let ((r (T.set 2 12)))
@@ -12544,15 +12544,15 @@
             (effect P
               (op tick (-> Int64)))
             (def (main (: n Int64))
-              (handle P (tuple (+ (% n 6) 1) (: 0 Int64))
+              (handle P #tuple((+ (% n 6) 1) (: 0 Int64))
                 ((tick () st
                   (match st
-                    ((tuple temp latent)
+                    (#tuple(temp latent)
                       (if (= temp 3)
                           (if (< 0 6)
-                              (resume (+ 50 (+ latent 2)) (tuple temp (+ latent 2)))
-                              (resume (+ temp 1) (tuple (+ temp 1) latent)))
-                          (resume (+ temp 1) (tuple (+ temp 1) latent))))))
+                              (resume (+ 50 (+ latent 2)) #tuple(temp (+ latent 2)))
+                              (resume (+ temp 1) #tuple((+ temp 1) latent)))
+                          (resume (+ temp 1) #tuple((+ temp 1) latent))))))
 )
                 (let ((a (P.tick)))
                   (let ((b (P.tick)))
@@ -12598,29 +12598,29 @@
               (op emptyj (-> Int64 Int64)))
             (def (capof (: i Int64)) (if (= i 0) 5 3))
             (def (main (: n Int64))
-              (handle J (tuple (: 0 Int64) (: 0 Int64))
+              (handle J #tuple((: 0 Int64) (: 0 Int64))
                 ((fill (i) st
                   (match st
-                    ((tuple a b)
+                    (#tuple(a b)
                       (if (= i 0)
-                          (resume (+ 50 b) (tuple 5 b))
-                          (resume (+ (* a 10) 3) (tuple a 3))))))
+                          (resume (+ 50 b) #tuple(5 b))
+                          (resume (+ (* a 10) 3) #tuple(a 3))))))
                  (pour (src dst) st
                   (match st
-                    ((tuple a b)
+                    (#tuple(a b)
                       (if (= src 0)
                           (if (< (- 3 b) a)
-                              (resume (+ (* (- a (- 3 b)) 10) 3) (tuple (- a (- 3 b)) 3))
-                              (resume (+ (* 0 10) (+ b a)) (tuple 0 (+ b a))))
+                              (resume (+ (* (- a (- 3 b)) 10) 3) #tuple((- a (- 3 b)) 3))
+                              (resume (+ (* 0 10) (+ b a)) #tuple(0 (+ b a))))
                           (if (< (- 5 a) b)
-                              (resume (+ 50 (- b (- 5 a))) (tuple 5 (- b (- 5 a))))
-                              (resume (+ (* (+ a b) 10) 0) (tuple (+ a b) 0)))))))
+                              (resume (+ 50 (- b (- 5 a))) #tuple(5 (- b (- 5 a))))
+                              (resume (+ (* (+ a b) 10) 0) #tuple((+ a b) 0)))))))
                  (emptyj (i) st
                   (match st
-                    ((tuple a b)
+                    (#tuple(a b)
                       (if (= i 0)
-                          (resume b (tuple 0 b))
-                          (resume (* a 10) (tuple a 0)))))))
+                          (resume b #tuple(0 b))
+                          (resume (* a 10) #tuple(a 0)))))))
                 (let ((p (J.fill (if (= (% n 3) 1) 1 0))))
                   (let ((q (J.pour (if (= (% n 3) 1) 1 0) (if (= (% n 3) 1) 0 1))))
                     (let ((r (J.fill (if (= (% n 3) 1) 1 0))))
@@ -12638,19 +12638,19 @@
   (input  (do
             (effect M (op take (-> Int64)))
             (def (main (: n Int64))
-              (handle M (tuple (: 0 Int64) (: 0 Int64))
+              (handle M #tuple((: 0 Int64) (: 0 Int64))
                 ((take () st
                   (match st
-                    ((tuple ai bi)
+                    (#tuple(ai bi)
                       (match (+ (* 3 ai) (+ (% n 4) 1))
                         (ah
                           (match (+ (* 4 bi) 1)
                             (bh
                               (if (= ah bh)
-                                  (resume (+ 50 ah) (tuple (+ ai 1) bi))
+                                  (resume (+ 50 ah) #tuple((+ ai 1) bi))
                                   (if (< ah bh)
-                                      (resume ah (tuple (+ ai 1) bi))
-                                      (resume bh (tuple ai (+ bi 1)))))))))))))
+                                      (resume ah #tuple((+ ai 1) bi))
+                                      (resume bh #tuple(ai (+ bi 1)))))))))))))
                 (let ((a (M.take)))
                   (let ((b (M.take)))
                     (let ((c (M.take)))
@@ -12670,21 +12670,21 @@
               (op exit (-> Int64 Int64))
               (op rev (-> Int64)))
             (def (main (: n Int64))
-              (handle P (tuple (: -1 Int64) (: 0 Int64))
+              (handle P #tuple((: -1 Int64) (: 0 Int64))
                 ((enter (t) st
                   (match st
-                    ((tuple entry total) (resume t (tuple t total)))))
+                    (#tuple(entry total) (resume t #tuple(t total)))))
                  (exit (t) st
                   (match st
-                    ((tuple entry total)
+                    (#tuple(entry total)
                       (if (< (- t entry) 1)
-                          (resume 0 (tuple -1 total))
+                          (resume 0 #tuple(-1 total))
                           (if (< 15 (+ (+ (% n 4) 2) (* 2 (- (- t entry) 1))))
-                              (resume 15 (tuple -1 (+ total 15)))
+                              (resume 15 #tuple(-1 (+ total 15)))
                               (resume (+ (+ (% n 4) 2) (* 2 (- (- t entry) 1)))
-                                      (tuple -1 (+ total (+ (+ (% n 4) 2) (* 2 (- (- t entry) 1)))))))))))
+                                      #tuple(-1 (+ total (+ (+ (% n 4) 2) (* 2 (- (- t entry) 1)))))))))))
                  (rev () st
-                  (match st ((tuple entry total) (resume total st)))))
+                  (match st (#tuple(entry total) (resume total st)))))
                 (let ((a (P.enter 2)))
                   (let ((b (P.exit 5)))
                     (let ((c (P.enter 6)))
@@ -12702,13 +12702,13 @@
   (input  (do
             (effect G (op take (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle G (tuple (+ n 11) (: 0 Int64))
+              (handle G #tuple((+ n 11) (: 0 Int64))
                 ((take (k) st
                   (match st
-                    ((tuple pile turn)
+                    (#tuple(pile turn)
                       (if (< pile (+ k 1))
-                          (resume (+ 100 turn) (tuple 0 (- 1 turn)))
-                          (resume (+ (* (- pile k) 10) turn) (tuple (- pile k) (- 1 turn))))))))
+                          (resume (+ 100 turn) #tuple(0 (- 1 turn)))
+                          (resume (+ (* (- pile k) 10) turn) #tuple((- pile k) (- 1 turn))))))))
                 (let ((a (G.take 3)))
                   (let ((b (G.take 4)))
                     (let ((c (G.take 2)))
@@ -12728,16 +12728,16 @@
               (op join (-> Int64))
               (op serve (-> Int64)))
             (def (main (: n Int64))
-              (handle Q (tuple (: 1 Int64) (+ (% n 4) 3))
+              (handle Q #tuple((: 1 Int64) (+ (% n 4) 3))
                 ((join () st
                   (match st
-                    ((tuple front back)
-                      (resume (- (+ back 1) front) (tuple front (+ back 1))))))
+                    (#tuple(front back)
+                      (resume (- (+ back 1) front) #tuple(front (+ back 1))))))
                  (serve () st
                   (match st
-                    ((tuple front back)
+                    (#tuple(front back)
                       (if (< front back)
-                          (resume front (tuple (+ front 1) back))
+                          (resume front #tuple((+ front 1) back))
                           (resume -1 st))))))
                 (let ((a (Q.serve)))
                   (let ((b (Q.join)))
@@ -12760,19 +12760,19 @@
             (def (speed (: g Int64))
               (if (= g 1) 2 (if (= g 2) 5 9)))
             (def (main (: n Int64))
-              (handle G (tuple (+ (% n 3) 1) (: 0 Int64))
+              (handle G #tuple((+ (% n 3) 1) (: 0 Int64))
                 ((shift (d) st
                   (match st
-                    ((tuple gear odo)
+                    (#tuple(gear odo)
                       (if (< (+ gear d) 1)
-                          (resume 1 (tuple 1 odo))
+                          (resume 1 #tuple(1 odo))
                           (if (< 3 (+ gear d))
-                              (resume 3 (tuple 3 odo))
-                              (resume (+ gear d) (tuple (+ gear d) odo)))))))
+                              (resume 3 #tuple(3 odo))
+                              (resume (+ gear d) #tuple((+ gear d) odo)))))))
                  (drive (t) st
                   (match st
-                    ((tuple gear odo)
-                      (resume (+ odo (* t (speed gear))) (tuple gear (+ odo (* t (speed gear)))))))))
+                    (#tuple(gear odo)
+                      (resume (+ odo (* t (speed gear))) #tuple(gear (+ odo (* t (speed gear)))))))))
                 (let ((a (G.drive 2)))
                   (let ((b (G.shift 1)))
                     (let ((c (G.drive 3)))
@@ -12791,20 +12791,20 @@
               (op step (-> Int64))
               (op whr (-> Int64)))
             (def (main (: n Int64))
-              (handle W (tuple (+ (% n 4) 1) (: 7 Int64))
+              (handle W #tuple((+ (% n 4) 1) (: 7 Int64))
                 ((step () st
                   (match st
-                    ((tuple pos seed)
+                    (#tuple(pos seed)
                       (match (% (+ (* seed 5) 3) 32)
                         (s2
                           (if (= (% (>> s2 1) 2) 1)
-                              (resume (+ pos 1) (tuple (+ pos 1) s2))
+                              (resume (+ pos 1) #tuple((+ pos 1) s2))
                               (if (< (- pos 1) 0)
-                                  (resume (+ pos 1) (tuple (+ pos 1) s2))
-                                  (resume (- pos 1) (tuple (- pos 1) s2)))))))))
+                                  (resume (+ pos 1) #tuple((+ pos 1) s2))
+                                  (resume (- pos 1) #tuple((- pos 1) s2)))))))))
                  (whr () st
                   (match st
-                    ((tuple pos seed) (resume (+ (* pos 10) (% seed 10)) st)))))
+                    (#tuple(pos seed) (resume (+ (* pos 10) (% seed 10)) st)))))
                 (let ((a (W.step)))
                   (let ((b (W.step)))
                     (let ((c (W.step)))
@@ -12864,18 +12864,18 @@
               (op tick (-> Int64))
               (op flip (-> Int64)))
             (def (main (: n Int64))
-              (handle H (tuple (+ 8 n) (+ 8 n))
+              (handle H #tuple((+ 8 n) (+ 8 n))
                 ((tick (
                   ) st
                   (match st
-                    ((tuple top total)
+                    (#tuple(top total)
                       (if (< top 3)
-                          (resume 0 (tuple 0 total))
-                          (resume (- top 3) (tuple (- top 3) total))))))
+                          (resume 0 #tuple(0 total))
+                          (resume (- top 3) #tuple((- top 3) total))))))
                  (flip () st
                   (match st
-                    ((tuple top total)
-                      (resume (- total top) (tuple (- total top) total))))))
+                    (#tuple(top total)
+                      (resume (- total top) #tuple((- total top) total))))))
                 (let ((a (H.tick)))
                   (let ((b (H.tick)))
                     (let ((c (H.flip)))
@@ -12898,13 +12898,13 @@
             (def (bits (: b Int64) (: acc Int64))
               (if (= b 0) acc (bits (>> b 1) (+ acc (& b 1)))))
             (def (main (: n Int64))
-              (handle H (tuple (+ n 5) (: 0 Int64))
+              (handle H #tuple((+ n 5) (: 0 Int64))
                 ((cmp (v) st
                   (match st
-                    ((tuple ref last) (resume (bits (^ v ref) 0) (tuple ref v)))))
+                    (#tuple(ref last) (resume (bits (^ v ref) 0) #tuple(ref v)))))
                  (lock () st
                   (match st
-                    ((tuple ref last) (resume ref (tuple (^ last ref) last))))))
+                    (#tuple(ref last) (resume ref #tuple((^ last ref) last))))))
                 (let ((a (H.cmp 7)))
                   (let ((b (H.cmp 12)))
                     (let ((c (H.lock)))
@@ -12922,18 +12922,18 @@
               (op place (-> Int64 Int64))
               (op loads (-> Int64)))
             (def (main (: n Int64))
-              (handle P (tuple (: 0 Int64) (: 0 Int64))
+              (handle P #tuple((: 0 Int64) (: 0 Int64))
                 ((place (w) st
                   (match st
-                    ((tuple b0 b1)
+                    (#tuple(b0 b1)
                       (if (< (+ b0 w) 11)
-                          (resume (- 10 (+ b0 w)) (tuple (+ b0 w) b1))
+                          (resume (- 10 (+ b0 w)) #tuple((+ b0 w) b1))
                           (if (< (+ b1 w) 11)
-                              (resume (+ 100 (- 10 (+ b1 w))) (tuple b0 (+ b1 w)))
+                              (resume (+ 100 (- 10 (+ b1 w))) #tuple(b0 (+ b1 w)))
                               (resume -1 st))))))
                  (loads () st
                   (match st
-                    ((tuple b0 b1) (resume (+ (* b0 10) b1) st)))))
+                    (#tuple(b0 b1) (resume (+ (* b0 10) b1) st)))))
                 (let ((a (P.place (+ (% n 4) 3))))
                   (let ((b (P.place 6)))
                     (let ((c (P.place 5)))
@@ -12952,16 +12952,16 @@
               (op tick (-> Int64))
               (op snooze (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle A (tuple (+ (% n 4) 3) (: 0 Int64))
+              (handle A #tuple((+ (% n 4) 3) (: 0 Int64))
                 ((tick () st
                   (match st
-                    ((tuple rem fires)
+                    (#tuple(rem fires)
                       (if (= (- rem 1) 0)
-                          (resume (- 0 (+ 11 fires)) (tuple (+ (% n 4) 3) (+ fires 1)))
-                          (resume (- rem 1) (tuple (- rem 1) fires))))))
+                          (resume (- 0 (+ 11 fires)) #tuple((+ (% n 4) 3) (+ fires 1)))
+                          (resume (- rem 1) #tuple((- rem 1) fires))))))
                  (snooze (k) st
                   (match st
-                    ((tuple rem fires) (resume (+ rem k) (tuple (+ rem k) fires))))))
+                    (#tuple(rem fires) (resume (+ rem k) #tuple((+ rem k) fires))))))
                 (let ((a (A.tick)))
                   (let ((b (A.tick)))
                     (let ((c (A.snooze 2)))
@@ -13066,19 +13066,19 @@
   (input  (do
             (effect K (op type (-> Int64 Int64)) (op fin (-> Int64)))
             (def (main (: n Int64))
-              (handle K (tuple (: 0 Int64) (: 0 Int64))
+              (handle K #tuple((: 0 Int64) (: 0 Int64))
                 ((type (x) st
                   (match st
-                    ((tuple col k)
+                    (#tuple(col k)
                       (let ((c2 (+ (if (= (% (+ k 1) 3) 0)
                                        (if (= (% n 3) 0) col (* (+ (/ col 4) 1) 4))
                                        col)
                                    x)))
                         (if (>= c2 8)
-                            (resume (- c2 8) (tuple (- c2 8) (+ k 1)))
-                            (resume c2 (tuple c2 (+ k 1))))))))
+                            (resume (- c2 8) #tuple((- c2 8) (+ k 1)))
+                            (resume c2 #tuple(c2 (+ k 1))))))))
                  (fin () st
-                  (match st ((tuple col k) (resume (+ (* col 10) k) st)))))
+                  (match st (#tuple(col k) (resume (+ (* col 10) k) st)))))
                 (let ((a (K.type (: 3 Int64))))
                   (let ((b (K.type (: 5 Int64))))
                     (let ((c (K.type (: 2 Int64))))
@@ -13095,17 +13095,17 @@
               (op hole (-> Int64 Int64 Int64))
               (op card (-> Int64)))
             (def (main (: n Int64))
-              (handle G (tuple (: 0 Int64) (: 0 Int64))
+              (handle G #tuple((: 0 Int64) (: 0 Int64))
                 ((hole (strokes par) st
                   (match st
-                    ((tuple total streak)
+                    (#tuple(total streak)
                       (if (< strokes par)
                           (resume (* (- strokes par) (+ streak 1))
-                                  (tuple (+ total (* (- strokes par) (+ streak 1))) (+ streak 1)))
+                                  #tuple((+ total (* (- strokes par) (+ streak 1))) (+ streak 1)))
                           (resume (- strokes par)
-                                  (tuple (+ total (- strokes par)) 0))))))
+                                  #tuple((+ total (- strokes par)) 0))))))
                  (card () st
-                  (match st ((tuple total streak) (resume total st)))))
+                  (match st (#tuple(total streak) (resume total st)))))
                 (let ((a (G.hole 4 4)))
                   (let ((b (G.hole 3 4)))
                     (let ((c (G.hole (+ (% n 3) 2) 4)))
@@ -13124,19 +13124,19 @@
               (op insert (-> Int64 Int64))
               (op buy (-> Int64)))
             (def (main (: n Int64))
-              (handle V (tuple (: 0 Int64) (% n 4))
+              (handle V #tuple((: 0 Int64) (% n 4))
                 ((insert (c) st
                   (match st
-                    ((tuple credit fl) (resume (+ credit c) (tuple (+ credit c) fl)))))
+                    (#tuple(credit fl) (resume (+ credit c) #tuple((+ credit c) fl)))))
                  (buy () st
                   (match st
-                    ((tuple credit fl)
+                    (#tuple(credit fl)
                       (if (< credit 7)
                           (resume (- credit 7) st)
                           (if (< fl (- credit 7))
                               (resume (- (- fl (- credit 7)) 50) st)
                               (resume (- credit 7)
-                                      (tuple 0 (+ fl (- 7 (- credit 7)))))))))))
+                                      #tuple(0 (+ fl (- 7 (- credit 7)))))))))))
                 (let ((a (V.insert 5)))
                   (let ((b (V.buy)))
                     (let ((c (V.insert 4)))
@@ -13156,19 +13156,19 @@
               (op next (-> Int64 Int64))
               (op rewind (-> Int64)))
             (def (main (: n Int64))
-              (handle P (tuple (: 0 Int64) (: 0 Int64))
+              (handle P #tuple((: 0 Int64) (: 0 Int64))
                 ((next (size) st
                   (match st
-                    ((tuple cursor pages)
+                    (#tuple(cursor pages)
                       (if (< cursor (+ 20 n))
                           (if (< (- (+ 20 n) cursor) size)
                               (resume (- (+ 20 n) cursor)
-                                      (tuple (+ 20 n) (+ pages 1)))
-                              (resume size (tuple (+ cursor size) (+ pages 1))))
+                                      #tuple((+ 20 n) (+ pages 1)))
+                              (resume size #tuple((+ cursor size) (+ pages 1))))
                           (resume -1 st)))))
                  (rewind () st
                   (match st
-                    ((tuple cursor pages) (resume pages (tuple 0 pages))))))
+                    (#tuple(cursor pages) (resume pages #tuple(0 pages))))))
                 (let ((a (P.next 8)))
                   (let ((b (P.next 8)))
                     (let ((c (P.next 8)))
@@ -13341,7 +13341,7 @@
               (op push (-> Int64 Int64))
               (op total (-> Int64)))
             (def (main (: n Int64))
-              (handle G (list)
+              (handle G #list()
                 ((push (x) st
                   (let ((v2 (+ x (+ (* (List.len st) 10) (% n 3)))))
                     (resume (+ (* v2 10) (% (List.len st) 10))
@@ -13518,7 +13518,7 @@
               (handle O (: 0 Int64)
                 ((note (v) acc
                   (resume (+ acc v) (+ acc v))))
-                (handle I (list)
+                (handle I #list()
                   ((step (x) col
                     (let ((c2 (+ (List.len col) (+ x (% n 3)))))
                       (let ((nv (O.note c2)))
@@ -13582,22 +13582,22 @@
               (op mist (-> Int64))
               (op read (-> Int64)))
             (def (main (: n Int64))
-              (handle G (tuple (+ (: 24 Int64) (* (% n 3) 4)) (: 5 Int64) (: 0 Int64))
+              (handle G #tuple((+ (: 24 Int64) (* (% n 3) 4)) (: 5 Int64) (: 0 Int64))
                 ((sun (d) st
                   (match st
-                    ((tuple t h v)
+                    (#tuple(t h v)
                       (if (if (> (+ t d) 30) (= v 0) false)
-                          (resume (+ (: 800 Int64) (% (+ t d) 100)) (tuple (+ t d) h (: 1 Int64)))
-                          (resume (+ (* (+ t d) 10) v) (tuple (+ t d) h v))))))
+                          (resume (+ (: 800 Int64) (% (+ t d) 100)) #tuple((+ t d) h (: 1 Int64)))
+                          (resume (+ (* (+ t d) 10) v) #tuple((+ t d) h v))))))
                  (mist () st
                   (match st
-                    ((tuple t h v)
+                    (#tuple(t h v)
                       (if (= v 1)
-                          (resume (+ (* (+ h 2) 10) 9) (tuple t (+ h 2) v))
-                          (resume (* (+ h 3) 10) (tuple t (+ h 3) v))))))
+                          (resume (+ (* (+ h 2) 10) 9) #tuple(t (+ h 2) v))
+                          (resume (* (+ h 3) 10) #tuple(t (+ h 3) v))))))
                  (read () st
                   (match st
-                    ((tuple t h v)
+                    (#tuple(t h v)
                       (resume (+ (* t 100) (+ (* h 10) v)) st)))))
                 (let ((a (G.sun (: 4 Int64))))
                   (let ((b (G.mist)))
@@ -13617,22 +13617,22 @@
               (op pitch (-> Int64 Int64))
               (op read (-> Int64)))
             (def (main (: n Int64))
-              (handle F (tuple (: 60 Int64) (+ (: 2 Int64) (* (% n 3) 3)) (: 0 Int64))
+              (handle F #tuple((: 60 Int64) (+ (: 2 Int64) (* (% n 3) 3)) (: 0 Int64))
                 ((day () st
                   (match st
-                    ((tuple g y r)
+                    (#tuple(g y r)
                       (if (< (if (< y (- g 10)) y (- g 10)) 3)
                           (resume (+ (: 700 Int64) (- g (if (< y (- g 10)) y (- g 10))))
-                                  (tuple (- g (if (< y (- g 10)) y (- g 10))) (+ y 4) (+ r 1)))
+                                  #tuple((- g (if (< y (- g 10)) y (- g 10))) (+ y 4) (+ r 1)))
                           (resume (+ (* (- g (if (< y (- g 10)) y (- g 10))) 10) (% y 10))
-                                  (tuple (- g (if (< y (- g 10)) y (- g 10))) y r))))))
+                                  #tuple((- g (if (< y (- g 10)) y (- g 10))) y r))))))
                  (pitch (v) st
                   (match st
-                    ((tuple g y r)
-                      (resume (* (+ y v) 10) (tuple g (+ y v) r)))))
+                    (#tuple(g y r)
+                      (resume (* (+ y v) 10) #tuple(g (+ y v) r)))))
                  (read () st
                   (match st
-                    ((tuple g y r)
+                    (#tuple(g y r)
                       (resume (+ (* g 100) (+ (* y 10) r)) st)))))
                 (let ((a (F.day)))
                   (let ((b (F.day)))
@@ -13654,24 +13654,24 @@
             (def (dist (: a Int64) (: b Int64))
               (if (> a b) (- a b) (- b a)))
             (def (main (: n Int64))
-              (handle T (tuple (+ (: 10 Int64) (* (% n 3) 20)) (: 0 Int64) (: 0 Int64))
+              (handle T #tuple((+ (: 10 Int64) (* (% n 3) 20)) (: 0 Int64) (: 0 Int64))
                 ((track (t2) st
                   (match st
-                    ((tuple az tg lk)
+                    (#tuple(az tg lk)
                       (if (<= (dist az t2) 5)
-                          (resume (+ (: 100 Int64) (dist az t2)) (tuple az t2 (: 1 Int64)))
-                          (resume (+ (: 900 Int64) (% (dist az t2) 100)) (tuple az t2 (: 0 Int64)))))))
+                          (resume (+ (: 100 Int64) (dist az t2)) #tuple(az t2 (: 1 Int64)))
+                          (resume (+ (: 900 Int64) (% (dist az t2) 100)) #tuple(az t2 (: 0 Int64)))))))
                  (slew () st
                   (match st
-                    ((tuple az tg lk)
+                    (#tuple(az tg lk)
                       (if (> (- tg az) 7)
-                          (resume (* (+ az 7) 10) (tuple (+ az 7) tg lk))
+                          (resume (* (+ az 7) 10) #tuple((+ az 7) tg lk))
                           (if (< (- tg az) -7)
-                              (resume (* (- az 7) 10) (tuple (- az 7) tg lk))
-                              (resume (+ (* tg 10) 1) (tuple tg tg lk)))))))
+                              (resume (* (- az 7) 10) #tuple((- az 7) tg lk))
+                              (resume (+ (* tg 10) 1) #tuple(tg tg lk)))))))
                  (read () st
                   (match st
-                    ((tuple az tg lk)
+                    (#tuple(az tg lk)
                       (resume (+ (* az 100) (+ (* lk 10) (if (= az tg) 1 0))) st)))))
                 (let ((a (T.track (: 27 Int64))))
                   (let ((b (T.slew)))
@@ -13693,7 +13693,7 @@
               (handle O (: 0 Int64)
                 ((note (v) acc
                   (resume (+ acc v) (+ acc v))))
-                (handle I (list)
+                (handle I #list()
                   ((step (x) col
                     (let ((c2 (+ (List.len col) (+ x (% n 3)))))
                       (if (> c2 5)
@@ -13717,20 +13717,20 @@
             (def (sgn (: d Int64))
               (if (> d 0) 1 (if (< d 0) (: -1 Int64) 0)))
             (def (main (: n Int64))
-              (handle Q (tuple (+ (: 8 Int64) (* (% n 3) 2)) (: 0 Int64) (: 0 Int64))
+              (handle Q #tuple((+ (: 8 Int64) (* (% n 3) 2)) (: 0 Int64) (: 0 Int64))
                 ((sense (mag) st
                   (match st
-                    ((tuple base peak ev)
+                    (#tuple(base peak ev)
                       (if (> (- mag base) 4)
                           (resume (+ (: 700 Int64) (+ (* (- mag base) 10) (+ ev 1)))
-                                  (tuple (+ base 1)
+                                  #tuple((+ base 1)
                                          (if (> (- mag base) peak) (- mag base) peak)
                                          (+ ev 1)))
                           (resume (* (+ (- mag base) 5) 10)
-                                  (tuple (+ base (sgn (- mag base))) peak ev))))))
+                                  #tuple((+ base (sgn (- mag base))) peak ev))))))
                  (read () st
                   (match st
-                    ((tuple base peak ev)
+                    (#tuple(base peak ev)
                       (resume (+ (* peak 100) (+ (* base 10) ev)) st)))))
                 (let ((a (Q.sense (: 15 Int64))))
                   (let ((b (Q.sense (: 12 Int64))))
@@ -13748,18 +13748,18 @@
               (op enc (-> Int64 Int64))
               (op read (-> Int64)))
             (def (main (: n Int64))
-              (handle C (tuple (+ (: 3 Int64) (* (% n 3) 7)) (: 0 Int64) (: 0 Int64))
+              (handle C #tuple((+ (: 3 Int64) (* (% n 3) 7)) (: 0 Int64) (: 0 Int64))
                 ((enc (c) st
                   (match st
-                    ((tuple off k sl)
+                    (#tuple(off k sl)
                       (if (= (% (+ k 1) 3) 0)
                           (resume (+ (* (% (+ c off) 26) 10) 9)
-                                  (tuple (+ off 1) (+ k 1) (+ sl 1)))
+                                  #tuple((+ off 1) (+ k 1) (+ sl 1)))
                           (resume (+ (* (% (+ c off) 26) 10) (% (+ k 1) 3))
-                                  (tuple off (+ k 1) sl))))))
+                                  #tuple(off (+ k 1) sl))))))
                  (read () st
                   (match st
-                    ((tuple off k sl)
+                    (#tuple(off k sl)
                       (resume (+ (* off 100) (+ (* k 10) sl)) st)))))
                 (let ((a (C.enc (: 7 Int64))))
                   (let ((b (C.enc (: 20 Int64))))
@@ -13778,20 +13778,20 @@
               (op pay (-> Int64 Int64))
               (op read (-> Int64)))
             (def (main (: n Int64))
-              (handle P (tuple (* (% n 3) 3) (: 0 Int64) (: 0 Int64))
+              (handle P #tuple((* (% n 3) 3) (: 0 Int64) (: 0 Int64))
                 ((pay (amt) st
                   (match st
-                    ((tuple till ex dl)
+                    (#tuple(till ex dl)
                       (if (= amt 5)
-                          (resume (+ (: 100 Int64) (+ ex 1)) (tuple (+ till 5) (+ ex 1) dl))
+                          (resume (+ (: 100 Int64) (+ ex 1)) #tuple((+ till 5) (+ ex 1) dl))
                           (if (> amt 5)
                               (if (>= till (- amt 5))
-                                  (resume (+ (* (- amt 5) 10) 1) (tuple (+ till 5) ex dl))
-                                  (resume (+ (: 900 Int64) (+ dl 1)) (tuple till ex (+ dl 1))))
+                                  (resume (+ (* (- amt 5) 10) 1) #tuple((+ till 5) ex dl))
+                                  (resume (+ (: 900 Int64) (+ dl 1)) #tuple(till ex (+ dl 1))))
                               (resume (+ (: 400 Int64) amt) st))))))
                  (read () st
                   (match st
-                    ((tuple till ex dl)
+                    (#tuple(till ex dl)
                       (resume (+ (* till 100) (+ (* ex 10) dl)) st)))))
                 (let ((a (P.pay (: 7 Int64))))
                   (let ((b (P.pay (: 5 Int64))))
@@ -13811,16 +13811,16 @@
               (op inflow (-> Int64 Int64))
               (op gate (-> Int64)))
             (def (main (: n Int64))
-              (handle R (tuple (: 0 Int64) (+ (% n 4) 4))
+              (handle R #tuple((: 0 Int64) (+ (% n 4) 4))
                 ((inflow (v) st
                   (match st
-                    ((tuple level thresh) (resume (+ level v) (tuple (+ level v) thresh)))))
+                    (#tuple(level thresh) (resume (+ level v) #tuple((+ level v) thresh)))))
                  (gate () st
                   (match st
-                    ((tuple level thresh)
+                    (#tuple(level thresh)
                       (if (< thresh level)
                           (resume (/ level 2)
-                                  (tuple (- level (/ level 2)) (+ thresh 1)))
+                                  #tuple((- level (/ level 2)) (+ thresh 1)))
                           (resume 0 st))))))
                 (let ((a (R.inflow 5)))
                   (let ((b (R.gate)))
@@ -13841,21 +13841,21 @@
               (op beat (-> Int64))
               (op poll (-> Int64)))
             (def (main (: n Int64))
-              (handle D (tuple (: 0 Int64) (: 0 Int64) (: 0 Int64))
+              (handle D #tuple((: 0 Int64) (: 0 Int64) (: 0 Int64))
                 ((beat () st
                   (match st
-                    ((tuple misses uptime latched)
+                    (#tuple(misses uptime latched)
                       (if (= latched 1)
                           (resume -9 st)
-                          (resume (+ uptime 1) (tuple 0 (+ uptime 1) 0))))))
+                          (resume (+ uptime 1) #tuple(0 (+ uptime 1) 0))))))
                  (poll () st
                   (match st
-                    ((tuple misses uptime latched)
+                    (#tuple(misses uptime latched)
                       (if (= latched 1)
                           (resume -9 st)
                           (if (< (+ misses 1) (+ (% n 3) 2))
-                              (resume (+ misses 1) (tuple (+ misses 1) uptime 0))
-                              (resume -9 (tuple (+ misses 1) uptime 1))))))))
+                              (resume (+ misses 1) #tuple((+ misses 1) uptime 0))
+                              (resume -9 #tuple((+ misses 1) uptime 1))))))))
                 (let ((a (D.beat)))
                   (let ((b (D.poll)))
                     (let ((c (D.poll)))
@@ -13877,20 +13877,20 @@
               (op bill (-> Int64))
               (op total (-> Int64)))
             (def (main (: n Int64))
-              (handle B (tuple n (: 0 Int64))
+              (handle B #tuple(n (: 0 Int64))
                 ((use (u) st
                   (match st
-                    ((tuple usage bills) (resume (+ usage u) (tuple (+ usage u) bills)))))
+                    (#tuple(usage bills) (resume (+ usage u) #tuple((+ usage u) bills)))))
                  (bill () st
                   (match st
-                    ((tuple usage bills)
+                    (#tuple(usage bills)
                       (if (< usage 10)
-                          (resume 5 (tuple 0 (+ bills 5)))
+                          (resume 5 #tuple(0 (+ bills 5)))
                           (if (< usage 25)
-                              (resume 12 (tuple 0 (+ bills 12)))
-                              (resume 20 (tuple 0 (+ bills 20))))))))
+                              (resume 12 #tuple(0 (+ bills 12)))
+                              (resume 20 #tuple(0 (+ bills 20))))))))
                  (total () st
-                  (match st ((tuple usage bills) (resume bills st)))))
+                  (match st (#tuple(usage bills) (resume bills st)))))
                 (let ((a (B.use 8)))
                   (let ((b (B.bill)))
                     (let ((c (B.use 20)))
@@ -13911,16 +13911,16 @@
               (op shuffle (-> Int64))
               (op where (-> Int64)))
             (def (main (: n Int64))
-              (handle S (tuple (+ (% n 7) 1) (: 0 Int64))
+              (handle S #tuple((+ (% n 7) 1) (: 0 Int64))
                 ((shuffle () st
                   (match st
-                    ((tuple pos count)
+                    (#tuple(pos count)
                       (if (= pos 7)
-                          (resume 7 (tuple 7 (+ count 1)))
-                          (resume (% (* 2 pos) 7) (tuple (% (* 2 pos) 7) (+ count 1)))))))
+                          (resume 7 #tuple(7 (+ count 1)))
+                          (resume (% (* 2 pos) 7) #tuple((% (* 2 pos) 7) (+ count 1)))))))
                  (where () st
                   (match st
-                    ((tuple pos count) (resume (+ (* pos 10) count) st)))))
+                    (#tuple(pos count) (resume (+ (* pos 10) count) st)))))
                 (let ((a (S.shuffle)))
                   (let ((b (S.shuffle)))
                     (let ((c (S.where)))
@@ -13942,29 +13942,29 @@
             (def (spread-of (: bb Int64) (: ba Int64))
               (if (= bb 0) -1 (if (= ba 0) -1 (- ba bb))))
             (def (main (: n Int64))
-              (handle O (tuple (: 0 Int64) (: 0 Int64))
+              (handle O #tuple((: 0 Int64) (: 0 Int64))
                 ((bid (p) st
                   (match st
-                    ((tuple bb ba)
+                    (#tuple(bb ba)
                       (if (< bb p)
                           (if (= ba 0)
-                              (resume (spread-of p ba) (tuple p ba))
+                              (resume (spread-of p ba) #tuple(p ba))
                               (if (< p ba)
-                                  (resume (spread-of p ba) (tuple p ba))
-                                  (resume 0 (tuple 0 0))))
-                          (resume (spread-of bb ba) (tuple bb ba))))))
+                                  (resume (spread-of p ba) #tuple(p ba))
+                                  (resume 0 #tuple(0 0))))
+                          (resume (spread-of bb ba) #tuple(bb ba))))))
                  (ask (p) st
                   (match st
-                    ((tuple bb ba)
+                    (#tuple(bb ba)
                       (if (= ba 0)
                           (if (< bb p)
-                              (resume (spread-of bb p) (tuple bb p))
-                              (resume 0 (tuple 0 0)))
+                              (resume (spread-of bb p) #tuple(bb p))
+                              (resume 0 #tuple(0 0)))
                           (if (< p ba)
                               (if (< bb p)
-                                  (resume (spread-of bb p) (tuple bb p))
-                                  (resume 0 (tuple 0 0)))
-                              (resume (spread-of bb ba) (tuple bb ba))))))))
+                                  (resume (spread-of bb p) #tuple(bb p))
+                                  (resume 0 #tuple(0 0)))
+                              (resume (spread-of bb ba) #tuple(bb ba))))))))
                 (let ((a (O.bid (+ (% n 4) 5))))
                   (let ((b (O.ask 12)))
                     (let ((c (O.bid 9)))
@@ -13983,23 +13983,23 @@
               (op pull (-> Int64 Int64 Int64))
               (op where (-> Int64)))
             (def (main (: n Int64))
-              (handle T (tuple (- (% n 4) 2) (: 0 Int64))
+              (handle T #tuple((- (% n 4) 2) (: 0 Int64))
                 ((pull (side s) st
                   (match st
-                    ((tuple pos won)
+                    (#tuple(pos won)
                       (if (< 0 won)
                           (resume 100 st)
                           (if (< won 0)
                               (resume -100 st)
                               (if (= side 1)
                                   (if (< 9 (+ pos s))
-                                      (resume 100 (tuple (+ pos s) 1))
-                                      (resume (+ pos s) (tuple (+ pos s) 0)))
+                                      (resume 100 #tuple((+ pos s) 1))
+                                      (resume (+ pos s) #tuple((+ pos s) 0)))
                                   (if (< (- pos s) -9)
-                                      (resume -100 (tuple (- pos s) -1))
-                                      (resume (- pos s) (tuple (- pos s) 0)))))))))
+                                      (resume -100 #tuple((- pos s) -1))
+                                      (resume (- pos s) #tuple((- pos s) 0)))))))))
                  (where () st
-                  (match st ((tuple pos won) (resume pos st)))))
+                  (match st (#tuple(pos won) (resume pos st)))))
                 (let ((a (T.pull 1 4)))
                   (let ((b (T.pull -1 7)))
                     (let ((c (T.pull -1 6)))
@@ -14019,19 +14019,19 @@
               (op write (-> Int64 Int64))
               (op sync (-> Int64)))
             (def (main (: n Int64))
-              (handle W (tuple (: 0 Int64) (: 0 Int64))
+              (handle W #tuple((: 0 Int64) (: 0 Int64))
                 ((write (v) st
                   (match st
-                    ((tuple bsum bn)
+                    (#tuple(bsum bn)
                       (if (= (+ bn 1) 3)
-                          (resume (+ 100 (+ bsum v)) (tuple 0 0))
-                          (resume (+ bn 1) (tuple (+ bsum v) (+ bn 1)))))))
+                          (resume (+ 100 (+ bsum v)) #tuple(0 0))
+                          (resume (+ bn 1) #tuple((+ bsum v) (+ bn 1)))))))
                  (sync () st
                   (match st
-                    ((tuple bsum bn)
+                    (#tuple(bsum bn)
                       (if (= bn 0)
                           (resume -1 st)
-                          (resume bsum (tuple 0 0)))))))
+                          (resume bsum #tuple(0 0)))))))
                 (let ((a (W.write (+ (% n 4) 2))))
                   (let ((b (W.write 4)))
                     (let ((c (W.sync)))
@@ -14078,21 +14078,21 @@
               (op alight (-> Int64 Int64))
               (op trips (-> Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (: 0 Int64) (: 0 Int64))
+              (handle L #tuple((: 0 Int64) (: 0 Int64))
                 ((board (w) st
                   (match st
-                    ((tuple load refused)
+                    (#tuple(load refused)
                       (if (< (+ 100 (* n 5)) (+ load w))
-                          (resume (- (+ 100 (* n 5)) (+ load w)) (tuple load (+ refused 1)))
-                          (resume (+ load w) (tuple (+ load w) refused))))))
+                          (resume (- (+ 100 (* n 5)) (+ load w)) #tuple(load (+ refused 1)))
+                          (resume (+ load w) #tuple((+ load w) refused))))))
                  (alight (w) st
                   (match st
-                    ((tuple load refused)
+                    (#tuple(load refused)
                       (if (< load w)
-                          (resume 0 (tuple 0 refused))
-                          (resume (- load w) (tuple (- load w) refused))))))
+                          (resume 0 #tuple(0 refused))
+                          (resume (- load w) #tuple((- load w) refused))))))
                  (trips () st
-                  (match st ((tuple load refused) (resume refused st)))))
+                  (match st (#tuple(load refused) (resume refused st)))))
                 (let ((a (L.board 60)))
                   (let ((b (L.board 50)))
                     (let ((c (L.board 45)))
@@ -14136,19 +14136,19 @@
               (op move (-> Int64))
               (op count (-> Int64)))
             (def (main (: n Int64))
-              (handle H (tuple (: 0 Int64) (: 0 Int64))
+              (handle H #tuple((: 0 Int64) (: 0 Int64))
                 ((move () st
                   (match st
-                    ((tuple peg moves)
+                    (#tuple(peg moves)
                       (if (= (% (+ moves 1) 2) 1)
                           (if (= (% n 3) 1)
                               (resume (+ (* (% (+ peg 1) 3) 10) 1)
-                                      (tuple (% (+ peg 1) 3) (+ moves 1)))
+                                      #tuple((% (+ peg 1) 3) (+ moves 1)))
                               (resume (+ (* (% (+ peg 2) 3) 10) 1)
-                                      (tuple (% (+ peg 2) 3) (+ moves 1))))
-                          (resume (* peg 10) (tuple peg (+ moves 1)))))))
+                                      #tuple((% (+ peg 2) 3) (+ moves 1))))
+                          (resume (* peg 10) #tuple(peg (+ moves 1)))))))
                  (count () st
-                  (match st ((tuple peg moves) (resume moves st)))))
+                  (match st (#tuple(peg moves) (resume moves st)))))
                 (let ((a (H.move)))
                   (let ((b (H.move)))
                     (let ((c (H.move)))
@@ -14169,18 +14169,18 @@
               (op move (-> Int64))
               (op total (-> Int64)))
             (def (main (: n Int64))
-              (handle G (tuple (+ 20 n) (: 0 Int64) (: 0 Int64))
+              (handle G #tuple((+ 20 n) (: 0 Int64) (: 0 Int64))
                 ((pan () st
                   (match st
-                    ((tuple y wear total)
-                      (resume y (tuple (- (- y (/ y 3)) 1) wear (+ total y))))))
+                    (#tuple(y wear total)
+                      (resume y #tuple((- (- y (/ y 3)) 1) wear (+ total y))))))
                  (move () st
                   (match st
-                    ((tuple y wear total)
+                    (#tuple(y wear total)
                       (resume (- (+ 20 n) (+ wear 2))
-                              (tuple (- (+ 20 n) (+ wear 2)) (+ wear 2) total)))))
+                              #tuple((- (+ 20 n) (+ wear 2)) (+ wear 2) total)))))
                  (total () st
-                  (match st ((tuple y wear total) (resume total st)))))
+                  (match st (#tuple(y wear total) (resume total st)))))
                 (let ((a (G.pan)))
                   (let ((b (G.pan)))
                     (let ((c (G.pan)))
@@ -14207,17 +14207,17 @@
                       (ddist (/ a 10) (/ b 10) (- k 1) acc)
                       (ddist (/ a 10) (/ b 10) (- k 1) (+ acc 1)))))
             (def (main (: n Int64))
-              (handle W (tuple (if (= (% n 3) 1) 345 375) (: 3 Int64))
+              (handle W #tuple((if (= (% n 3) 1) 345 375) (: 3 Int64))
                 ((feed (w) st
                   (match st
-                    ((tuple target best)
+                    (#tuple(target best)
                       (match (ddist w target 3 0)
                         (d
                           (if (< d best)
-                              (resume d (tuple target d))
-                              (resume d (tuple target best))))))))
+                              (resume d #tuple(target d))
+                              (resume d #tuple(target best))))))))
                  (closest () st
-                  (match st ((tuple target best) (resume best st)))))
+                  (match st (#tuple(target best) (resume best st)))))
                 (let ((a (W.feed 345)))
                   (let ((b (W.feed 325)))
                     (let ((c (W.feed 375)))
@@ -14237,16 +14237,16 @@
             (def (dur (: z Int64))
               (if (= z 0) 5 (if (= z 1) 8 3)))
             (def (main (: n Int64))
-              (handle S (tuple (+ 10 n) (: 0 Int64))
+              (handle S #tuple((+ 10 n) (: 0 Int64))
                 ((water (z) st
                   (match st
-                    ((tuple tank short)
+                    (#tuple(tank short)
                       (if (< tank (dur z))
-                          (resume tank (tuple 0 (+ short (- (dur z) tank))))
-                          (resume (dur z) (tuple (- tank (dur z)) short))))))
+                          (resume tank #tuple(0 (+ short (- (dur z) tank))))
+                          (resume (dur z) #tuple((- tank (dur z)) short))))))
                  (refill () st
                   (match st
-                    ((tuple tank short) (resume short (tuple (+ 10 n) short))))))
+                    (#tuple(tank short) (resume short #tuple((+ 10 n) short))))))
                 (let ((a (S.water 0)))
                   (let ((b (S.water 1)))
                     (let ((c (S.water 2)))
@@ -14266,22 +14266,22 @@
               (op second (-> Int64))
               (op withdraw (-> Int64)))
             (def (main (: n Int64))
-              (handle V (tuple (: 0 Int64) (: 0 Int64))
+              (handle V #tuple((: 0 Int64) (: 0 Int64))
                 ((second () st
                   (match st
-                    ((tuple count closed)
+                    (#tuple(count closed)
                       (if (= closed 1)
                           (resume -100 st)
                           (if (< (+ count 1) (+ (% n 3) 2))
-                              (resume (+ count 1) (tuple (+ count 1) 0))
-                              (resume (+ 100 (+ count 1)) (tuple (+ count 1) 1)))))))
+                              (resume (+ count 1) #tuple((+ count 1) 0))
+                              (resume (+ 100 (+ count 1)) #tuple((+ count 1) 1)))))))
                  (withdraw () st
                   (match st
-                    ((tuple count closed)
+                    (#tuple(count closed)
                       (if (= closed 1)
                           (resume -100 st)
                           (if (< 0 count)
-                              (resume (- count 1) (tuple (- count 1) 0))
+                              (resume (- count 1) #tuple((- count 1) 0))
                               (resume 0 st)))))))
                 (let ((a (V.second)))
                   (let ((b (V.withdraw)))
@@ -14302,23 +14302,23 @@
               (op tick (-> Int64))
               (op demand (-> Int64)))
             (def (main (: n Int64))
-              (handle T (tuple (: 0 Int64) (: 3 Int64))
+              (handle T #tuple((: 0 Int64) (: 3 Int64))
                 ((tick () st
                   (match st
-                    ((tuple color rem)
+                    (#tuple(color rem)
                       (if (= (- rem 1) 0)
                           (if (= color 0)
-                              (resume 11 (tuple 1 1))
+                              (resume 11 #tuple(1 1))
                               (if (= color 1)
-                                  (resume (+ 20 (+ (% n 3) 2)) (tuple 2 (+ (% n 3) 2)))
-                                  (resume 3 (tuple 0 3))))
-                          (resume (+ (* color 10) (- rem 1)) (tuple color (- rem 1)))))))
+                                  (resume (+ 20 (+ (% n 3) 2)) #tuple(2 (+ (% n 3) 2)))
+                                  (resume 3 #tuple(0 3))))
+                          (resume (+ (* color 10) (- rem 1)) #tuple(color (- rem 1)))))))
                  (demand () st
                   (match st
-                    ((tuple color rem)
+                    (#tuple(color rem)
                       (if (= color 2)
                           (if (< 1 rem)
-                              (resume (+ 100 rem) (tuple 2 1))
+                              (resume (+ 100 rem) #tuple(2 1))
                               (resume (+ 20 rem) st))
                           (resume (+ (* color 10) rem) st))))))
                 (let ((a (T.tick)))
@@ -14341,16 +14341,16 @@
               (op tick (-> Int64))
               (op accent (-> Int64)))
             (def (main (: n Int64))
-              (handle M (tuple (: 0 Int64) (: 0 Int64))
+              (handle M #tuple((: 0 Int64) (: 0 Int64))
                 ((tick () st
                   (match st
-                    ((tuple beat bars)
+                    (#tuple(beat bars)
                       (if (< (+ (% n 3) 3) (+ beat 1))
-                          (resume 1 (tuple 1 (+ bars 1)))
-                          (resume (+ beat 1) (tuple (+ beat 1) bars))))))
+                          (resume 1 #tuple(1 (+ bars 1)))
+                          (resume (+ beat 1) #tuple((+ beat 1) bars))))))
                  (accent () st
                   (match st
-                    ((tuple beat bars)
+                    (#tuple(beat bars)
                       (if (= beat 1)
                           (resume (+ 100 bars) st)
                           (resume (- (+ (% n 3) 4) beat) st))))))
@@ -14374,18 +14374,18 @@
               (op warm (-> Int64 Int64))
               (op ext (-> Int64)))
             (def (main (: n Int64))
-              (handle W (tuple (- n 5) (: 0 Int64))
+              (handle W #tuple((- n 5) (: 0 Int64))
                 ((gust (v) st
                   (match st
-                    ((tuple temp extremes)
+                    (#tuple(temp extremes)
                       (if (< (- temp (* v 2)) -30)
-                          (resume -30 (tuple temp (+ extremes 1)))
+                          (resume -30 #tuple(temp (+ extremes 1)))
                           (resume (- temp (* v 2)) st)))))
                  (warm (d) st
                   (match st
-                    ((tuple temp extremes) (resume (+ temp d) (tuple (+ temp d) extremes)))))
+                    (#tuple(temp extremes) (resume (+ temp d) #tuple((+ temp d) extremes)))))
                  (ext () st
-                  (match st ((tuple temp extremes) (resume extremes st)))))
+                  (match st (#tuple(temp extremes) (resume extremes st)))))
                 (let ((a (W.gust 4)))
                   (let ((b (W.warm 6)))
                     (let ((c (W.gust 10)))
@@ -14407,17 +14407,17 @@
               (op pour (-> Int64 Int64))
               (op levels (-> Int64)))
             (def (main (: n Int64))
-              (handle T (tuple (: 40 Int64) (* n 2))
+              (handle T #tuple((: 40 Int64) (* n 2))
                 ((siphon () st
                   (match st
-                    ((tuple a b)
+                    (#tuple(a b)
                       (resume (/ (- a b) 4)
-                              (tuple (- a (/ (- a b) 4)) (+ b (/ (- a b) 4)))))))
+                              #tuple((- a (/ (- a b) 4)) (+ b (/ (- a b) 4)))))))
                  (pour (v) st
                   (match st
-                    ((tuple a b) (resume (+ a v) (tuple (+ a v) b)))))
+                    (#tuple(a b) (resume (+ a v) #tuple((+ a v) b)))))
                  (levels () st
-                  (match st ((tuple a b) (resume (- a b) st)))))
+                  (match st (#tuple(a b) (resume (- a b) st)))))
                 (let ((p (T.siphon)))
                   (let ((q (T.siphon)))
                     (let ((r (T.pour 12)))
@@ -14461,22 +14461,22 @@
             (def (ratio (: g Int64))
               (if (= g 0) 20 (if (= g 1) 27 (if (= g 2) 34 41))))
             (def (main (: n Int64))
-              (handle B (tuple (% n 4) (: 0 Int64))
+              (handle B #tuple((% n 4) (: 0 Int64))
                 ((shift (d) st
                   (match st
-                    ((tuple g dist)
+                    (#tuple(g dist)
                       (if (< (+ g d) 0)
-                          (resume 2 (tuple 0 dist))
+                          (resume 2 #tuple(0 dist))
                           (if (< 3 (+ g d))
-                              (resume 4 (tuple 3 dist))
-                              (resume (/ (ratio (+ g d)) 10) (tuple (+ g d) dist)))))))
+                              (resume 4 #tuple(3 dist))
+                              (resume (/ (ratio (+ g d)) 10) #tuple((+ g d) dist)))))))
                  (pedal (rpm) st
                   (match st
-                    ((tuple g dist)
+                    (#tuple(g dist)
                       (resume (/ (* rpm (ratio g)) 100)
-                              (tuple g (+ dist (/ (* rpm (ratio g)) 100)))))))
+                              #tuple(g (+ dist (/ (* rpm (ratio g)) 100)))))))
                  (odo () st
-                  (match st ((tuple g dist) (resume dist st)))))
+                  (match st (#tuple(g dist) (resume dist st)))))
                 (let ((a (B.pedal 60)))
                   (let ((b (B.shift 1)))
                     (let ((c (B.pedal 60)))
@@ -14499,18 +14499,18 @@
             (def (dec1 (: v Int64)) (if (< 0 v) (- v 1) 0))
             (def (exp1 (: v Int64)) (if (= v 0) 1 0))
             (def (main (: n Int64))
-              (handle P (tuple (: 0 Int64) (: 0 Int64))
+              (handle P #tuple((: 0 Int64) (: 0 Int64))
                 ((feed (i c) st
                   (match st
-                    ((tuple m0 m1)
+                    (#tuple(m0 m1)
                       (if (= i 0)
-                          (resume (+ m0 (* c (+ (% n 3) 2))) (tuple (+ m0 (* c (+ (% n 3) 2))) m1))
-                          (resume (+ m1 (* c (+ (% n 3) 2))) (tuple m0 (+ m1 (* c (+ (% n 3) 2)))))))))
+                          (resume (+ m0 (* c (+ (% n 3) 2))) #tuple((+ m0 (* c (+ (% n 3) 2))) m1))
+                          (resume (+ m1 (* c (+ (% n 3) 2))) #tuple(m0 (+ m1 (* c (+ (% n 3) 2)))))))))
                  (tick () st
                   (match st
-                    ((tuple m0 m1)
+                    (#tuple(m0 m1)
                       (resume (+ (exp1 (dec1 m0)) (exp1 (dec1 m1)))
-                              (tuple (dec1 m0) (dec1 m1)))))))
+                              #tuple((dec1 m0) (dec1 m1)))))))
                 (let ((a (P.feed 0 2)))
                   (let ((b (P.feed 1 1)))
                     (let ((c (P.tick)))
@@ -14551,13 +14551,13 @@
   (input  (do
             (effect P (op swing (-> Int64)))
             (def (main (: n Int64))
-              (handle P (tuple (+ n 4) (: 0 Int64))
+              (handle P #tuple((+ n 4) (: 0 Int64))
                 ((swing () st
                   (match st
-                    ((tuple active phase)
+                    (#tuple(active phase)
                       (if (= active 0)
                           (resume -1 st)
-                          (resume (- active 1) (tuple (- active 1) (- 1 phase))))))))
+                          (resume (- active 1) #tuple((- active 1) (- 1 phase))))))))
                 (let ((a (P.swing)))
                   (let ((b (P.swing)))
                     (let ((c (P.swing)))
@@ -14606,16 +14606,16 @@
               (op jump (-> Int64))
               (op rest (-> Int64)))
             (def (main (: n Int64))
-              (handle J (tuple (: 0 Int64) (+ (% n 4) 3))
+              (handle J #tuple((: 0 Int64) (+ (% n 4) 3))
                 ((jump () st
                   (match st
-                    ((tuple pos stride)
+                    (#tuple(pos stride)
                       (if (< 1 stride)
-                          (resume (+ pos stride) (tuple (+ pos stride) (- stride 1)))
-                          (resume (+ pos 1) (tuple (+ pos 1) 1))))))
+                          (resume (+ pos stride) #tuple((+ pos stride) (- stride 1)))
+                          (resume (+ pos 1) #tuple((+ pos 1) 1))))))
                  (rest () st
                   (match st
-                    ((tuple pos stride) (resume pos (tuple pos (+ (% n 4) 3)))))))
+                    (#tuple(pos stride) (resume pos #tuple(pos (+ (% n 4) 3)))))))
                 (let ((a (J.jump)))
                   (let ((b (J.jump)))
                     (let ((c (J.jump)))
@@ -14636,21 +14636,21 @@
               (op equalize (-> Int64))
               (op exit (-> Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (: 0 Int64) (: 0 Int64))
+              (handle L #tuple((: 0 Int64) (: 0 Int64))
                 ((enter () st
                   (match st
-                    ((tuple lock trips) (resume (- (+ n 6) lock) st))))
+                    (#tuple(lock trips) (resume (- (+ n 6) lock) st))))
                  (equalize () st
                   (match st
-                    ((tuple lock trips)
+                    (#tuple(lock trips)
                       (if (< (+ lock 2) (+ n 6))
-                          (resume (+ lock 2) (tuple (+ lock 2) trips))
-                          (resume (+ n 6) (tuple (+ n 6) trips))))))
+                          (resume (+ lock 2) #tuple((+ lock 2) trips))
+                          (resume (+ n 6) #tuple((+ n 6) trips))))))
                  (exit () st
                   (match st
-                    ((tuple lock trips)
+                    (#tuple(lock trips)
                       (if (= lock (+ n 6))
-                          (resume (+ 101 trips) (tuple lock (+ trips 1)))
+                          (resume (+ 101 trips) #tuple(lock (+ trips 1)))
                           (resume (- lock (+ n 6)) st))))))
                 (let ((a (L.enter)))
                   (let ((b (L.equalize)))
@@ -14675,17 +14675,17 @@
                  (+ (if (= (% step 8) 4) 2 0)
                     (if (= (% step hd) 0) 4 0))))
             (def (main (: n Int64))
-              (handle D (tuple (: 0 Int64) (: 0 Int64))
+              (handle D #tuple((: 0 Int64) (: 0 Int64))
                 ((hit () st
                   (match st
-                    ((tuple step hits)
+                    (#tuple(step hits)
                       (match (maskof step (+ (% n 3) 1))
                         (m
                           (if (< 0 m)
-                              (resume m (tuple (% (+ step 1) 16) (+ hits 1)))
-                              (resume 0 (tuple (% (+ step 1) 16) hits))))))))
+                              (resume m #tuple((% (+ step 1) 16) (+ hits 1)))
+                              (resume 0 #tuple((% (+ step 1) 16) hits))))))))
                  (cnt () st
-                  (match st ((tuple step hits) (resume hits st)))))
+                  (match st (#tuple(step hits) (resume hits st)))))
                 (let ((a (D.hit)))
                   (let ((b (D.hit)))
                     (let ((c (D.hit)))
@@ -14704,18 +14704,18 @@
               (op day (-> Int64))
               (op prune (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle G (tuple (: 0 Int64) (+ (% n 4) 2))
+              (handle G #tuple((: 0 Int64) (+ (% n 4) 2))
                 ((day () st
                   (match st
-                    ((tuple height rate)
-                      (resume (+ height rate) (tuple (+ height rate) rate)))))
+                    (#tuple(height rate)
+                      (resume (+ height rate) #tuple((+ height rate) rate)))))
                  (prune (h) st
                   (match st
-                    ((tuple height rate)
+                    (#tuple(height rate)
                       (if (< h height)
                           (if (< 1 rate)
-                              (resume (- height h) (tuple h (- rate 1)))
-                              (resume (- height h) (tuple h 1)))
+                              (resume (- height h) #tuple(h (- rate 1)))
+                              (resume (- height h) #tuple(h 1)))
                           (resume 0 st))))))
                 (let ((a (G.day)))
                   (let ((b (G.day)))
@@ -14738,15 +14738,15 @@
             (def (totpop (: temp Int64) (: base Int64))
               (if (< temp base) 0 (+ (/ (- temp base) 3) 1)))
             (def (main (: n Int64))
-              (handle P (tuple (: 0 Int64) (: 0 Int64))
+              (handle P #tuple((: 0 Int64) (: 0 Int64))
                 ((heat () st
                   (match st
-                    ((tuple temp popped)
+                    (#tuple(temp popped)
                       (match (totpop (+ temp 5) (+ 18 n))
                         (tot
-                          (resume (- tot popped) (tuple (+ temp 5) tot)))))))
+                          (resume (- tot popped) #tuple((+ temp 5) tot)))))))
                  (bowl () st
-                  (match st ((tuple temp popped) (resume popped st)))))
+                  (match st (#tuple(temp popped) (resume popped st)))))
                 (let ((a (P.heat)))
                   (let ((b (P.heat)))
                     (let ((c (P.heat)))
@@ -14767,26 +14767,26 @@
               (op blow (-> Int64))
               (op read (-> Int64)))
             (def (main (: n Int64))
-              (handle G (tuple (+ (: 3 Int64) (* (% n 3) 6)) (: 9 Int64) (: 0 Int64))
+              (handle G #tuple((+ (: 3 Int64) (* (% n 3) 6)) (: 9 Int64) (: 0 Int64))
                 ((heat (g) st
                   (match st
-                    ((tuple gather wall cr)
-                      (resume (+ (* (+ gather g) 10) (% g 10)) (tuple (+ gather g) wall cr)))))
+                    (#tuple(gather wall cr)
+                      (resume (+ (* (+ gather g) 10) (% g 10)) #tuple((+ gather g) wall cr)))))
                  (blow () st
                   (match st
-                    ((tuple gather wall cr)
+                    (#tuple(gather wall cr)
                       (if (< (/ gather 3) 1)
                           (if (< (- wall 1) 2)
-                              (resume (+ (: 900 Int64) (+ cr 1)) (tuple gather wall (+ cr 1)))
+                              (resume (+ (: 900 Int64) (+ cr 1)) #tuple(gather wall (+ cr 1)))
                               (resume (+ (: 10 Int64) (% (- wall 1) 10))
-                                      (tuple (/ gather 2) (- wall 1) cr)))
+                                      #tuple((/ gather 2) (- wall 1) cr)))
                           (if (< (- wall (/ gather 3)) 2)
-                              (resume (+ (: 900 Int64) (+ cr 1)) (tuple gather wall (+ cr 1)))
+                              (resume (+ (: 900 Int64) (+ cr 1)) #tuple(gather wall (+ cr 1)))
                               (resume (+ (* (/ gather 3) 10) (% (- wall (/ gather 3)) 10))
-                                      (tuple (/ gather 2) (- wall (/ gather 3)) cr)))))))
+                                      #tuple((/ gather 2) (- wall (/ gather 3)) cr)))))))
                  (read () st
                   (match st
-                    ((tuple gather wall cr)
+                    (#tuple(gather wall cr)
                       (resume (+ (* wall 100) (+ (* gather 10) cr)) st)))))
                 (let ((a (G.blow)))
                   (let ((b (G.heat (: 4 Int64))))
@@ -14806,23 +14806,23 @@
               (op justify (-> Int64))
               (op read (-> Int64)))
             (def (main (: n Int64))
-              (handle T (tuple (* (% n 3) 5) (: 0 Int64) (: 0 Int64))
+              (handle T #tuple((* (% n 3) 5) (: 0 Int64) (: 0 Int64))
                 ((set (w) st
                   (match st
-                    ((tuple lw lines rs)
+                    (#tuple(lw lines rs)
                       (if (<= (+ lw (+ w 1)) 12)
                           (resume (+ (* (+ lw (+ w 1)) 10) (% w 10))
-                                  (tuple (+ lw (+ w 1)) lines rs))
+                                  #tuple((+ lw (+ w 1)) lines rs))
                           (resume (+ (: 700 Int64) (+ (* (+ lines 1) 10) (% w 10)))
-                                  (tuple w (+ lines 1) rs))))))
+                                  #tuple(w (+ lines 1) rs))))))
                  (justify () st
                   (match st
-                    ((tuple lw lines rs)
+                    (#tuple(lw lines rs)
                       (resume (+ (* (- 12 lw) 10) (% (+ rs (- 12 lw)) 10))
-                              (tuple (: 12 Int64) lines (+ rs (- 12 lw)))))))
+                              #tuple((: 12 Int64) lines (+ rs (- 12 lw)))))))
                  (read () st
                   (match st
-                    ((tuple lw lines rs)
+                    (#tuple(lw lines rs)
                       (resume (+ (* lines 100) (+ (* lw 10) rs)) st)))))
                 (let ((a (T.set (: 4 Int64))))
                   (let ((b (T.set (: 6 Int64))))
@@ -14842,24 +14842,24 @@
               (op press (-> Int64))
               (op read (-> Int64)))
             (def (main (: n Int64))
-              (handle C (tuple (+ (: 2 Int64) (* (% n 3) 5)) (: 0 Int64) (: 0 Int64))
+              (handle C #tuple((+ (: 2 Int64) (* (% n 3) 5)) (: 0 Int64) (: 0 Int64))
                 ((load (k) st
                   (match st
-                    ((tuple hop juice pom)
-                      (resume (+ (* (+ hop k) 10) (% k 10)) (tuple (+ hop k) juice pom)))))
+                    (#tuple(hop juice pom)
+                      (resume (+ (* (+ hop k) 10) (% k 10)) #tuple((+ hop k) juice pom)))))
                  (press () st
                   (match st
-                    ((tuple hop juice pom)
+                    (#tuple(hop juice pom)
                       (if (= (/ (* hop 2) 3) 0)
                           (resume (+ (: 900 Int64) (% pom 10)) st)
                           (resume (+ (* (/ (* hop 2) 3) 10)
                                      (% (+ pom (- hop (/ (* hop 2) 3))) 10))
-                                  (tuple (: 0 Int64)
+                                  #tuple((: 0 Int64)
                                          (+ juice (/ (* hop 2) 3))
                                          (+ pom (- hop (/ (* hop 2) 3)))))))))
                  (read () st
                   (match st
-                    ((tuple hop juice pom)
+                    (#tuple(hop juice pom)
                       (resume (+ (* juice 100) (+ (* hop 10) pom)) st)))))
                 (let ((a (C.press)))
                   (let ((b (C.load (: 4 Int64))))
@@ -14881,28 +14881,28 @@
               (op brake (-> Int64))
               (op read (-> Int64)))
             (def (main (: n Int64))
-              (handle Z (tuple (+ (: 2 Int64) (* (% n 3) 2)) (: 0 Int64) (: 0 Int64))
+              (handle Z #tuple((+ (: 2 Int64) (* (% n 3) 2)) (: 0 Int64) (: 0 Int64))
                 ((glide (t) st
                   (match st
-                    ((tuple speed pos sc)
+                    (#tuple(speed pos sc)
                       (if (> (+ speed 2) 9)
                           (resume (+ (* (% (+ pos (* speed t)) 100) 10) 9)
-                                  (tuple (: 9 Int64) (+ pos (* speed t)) sc))
+                                  #tuple((: 9 Int64) (+ pos (* speed t)) sc))
                           (resume (+ (* (% (+ pos (* speed t)) 100) 10) (% (+ speed 2) 10))
-                                  (tuple (+ speed 2) (+ pos (* speed t)) sc))))))
+                                  #tuple((+ speed 2) (+ pos (* speed t)) sc))))))
                  (brake () st
                   (match st
-                    ((tuple speed pos sc)
+                    (#tuple(speed pos sc)
                       (if (>= pos 10)
                           (if (< (- speed 4) 1)
-                              (resume (: 11 Int64) (tuple (: 1 Int64) pos sc))
-                              (resume (+ (* (- speed 4) 10) 1) (tuple (- speed 4) pos sc)))
+                              (resume (: 11 Int64) #tuple((: 1 Int64) pos sc))
+                              (resume (+ (* (- speed 4) 10) 1) #tuple((- speed 4) pos sc)))
                           (if (< (- speed 1) 1)
-                              (resume (+ (: 900 Int64) (+ sc 1)) (tuple (: 1 Int64) pos (+ sc 1)))
-                              (resume (+ (: 900 Int64) (+ sc 1)) (tuple (- speed 1) pos (+ sc 1))))))))
+                              (resume (+ (: 900 Int64) (+ sc 1)) #tuple((: 1 Int64) pos (+ sc 1)))
+                              (resume (+ (: 900 Int64) (+ sc 1)) #tuple((- speed 1) pos (+ sc 1))))))))
                  (read () st
                   (match st
-                    ((tuple speed pos sc)
+                    (#tuple(speed pos sc)
                       (resume (+ (* pos 100) (+ (* speed 10) sc)) st)))))
                 (let ((a (Z.glide (: 2 Int64))))
                   (let ((b (Z.brake)))
@@ -14921,30 +14921,30 @@
               (op churn (-> Int64))
               (op read (-> Int64)))
             (def (main (: n Int64))
-              (handle B (tuple (+ (: 3 Int64) (* (% n 3) 6)) (: 0 Int64) (: 0 Int64))
+              (handle B #tuple((+ (: 3 Int64) (* (% n 3) 6)) (: 0 Int64) (: 0 Int64))
                 ((pour (k) st
                   (match st
-                    ((tuple cream butter sp)
+                    (#tuple(cream butter sp)
                       (if (> (+ cream k) 10)
                           (resume (+ (: 800 Int64)
                                      (+ (* (- (+ cream k) 10) 10)
                                         (% (+ sp (- (+ cream k) 10)) 10)))
-                                  (tuple (: 10 Int64) butter (+ sp (- (+ cream k) 10))))
+                                  #tuple((: 10 Int64) butter (+ sp (- (+ cream k) 10))))
                           (resume (+ (* (+ cream k) 10) (% k 10))
-                                  (tuple (+ cream k) butter sp))))))
+                                  #tuple((+ cream k) butter sp))))))
                  (churn () st
                   (match st
-                    ((tuple cream butter sp)
+                    (#tuple(cream butter sp)
                       (if (= cream 0)
                           (resume (: 900 Int64) st)
                           (if (< (/ cream 4) 1)
                               (resume (+ (: 10 Int64) (% (- cream 1) 10))
-                                      (tuple (- cream 1) (+ butter 1) sp))
+                                      #tuple((- cream 1) (+ butter 1) sp))
                               (resume (+ (* (/ cream 4) 10) (% (- cream (/ cream 4)) 10))
-                                      (tuple (- cream (/ cream 4)) (+ butter (/ cream 4)) sp)))))))
+                                      #tuple((- cream (/ cream 4)) (+ butter (/ cream 4)) sp)))))))
                  (read () st
                   (match st
-                    ((tuple cream butter sp)
+                    (#tuple(cream butter sp)
                       (resume (+ (* butter 100) (+ (* cream 10) sp)) st)))))
                 (let ((a (B.churn)))
                   (let ((b (B.pour (: 4 Int64))))
@@ -14962,19 +14962,19 @@
               (op move (-> Int64))
               (op span (-> Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (% n 3) (: 1 Int64) (: 0 Int64))
+              (handle L #tuple((% n 3) (: 1 Int64) (: 0 Int64))
                 ((move () st
                   (match st
-                    ((tuple pos dir trips)
+                    (#tuple(pos dir trips)
                       (let ((np (+ pos dir)))
                         (if (if (= np 4) true (= np 0))
                             (resume (+ (* np 100) (+ (* (/ (+ dir 1) 2) 10) (% (+ trips 1) 10)))
-                                    (tuple np (- 0 dir) (+ trips 1)))
+                                    #tuple(np (- 0 dir) (+ trips 1)))
                             (resume (+ (* np 100) (+ (* (/ (+ dir 1) 2) 10) (% trips 10)))
-                                    (tuple np dir trips)))))))
+                                    #tuple(np dir trips)))))))
                  (span () st
                   (match st
-                    ((tuple pos dir trips)
+                    (#tuple(pos dir trips)
                       (resume (+ (* pos 10) trips) st)))))
                 (let ((a (L.move)))
                   (let ((b (L.move)))
@@ -14996,22 +14996,22 @@
               (op pulse (-> Int64))
               (op align (-> Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (= (% n 3) 1) false (: 0 Int64))
+              (handle L #tuple((= (% n 3) 1) false (: 0 Int64))
                 ((pulse () st
                   (match st
-                    ((tuple p q cnt)
+                    (#tuple(p q cnt)
                       (resume (+ (* (+ (+ (if q (: 4 Int64) (: 0 Int64))
                                           (if (not p) (: 2 Int64) (: 0 Int64)))
                                        (if (= q (not p)) (: 1 Int64) (: 0 Int64)))
                                     10)
                                  (% (+ cnt 1) 10))
-                              (tuple q (not p) (+ cnt 1))))))
+                              #tuple(q (not p) (+ cnt 1))))))
                  (align () st
                   (match st
-                    ((tuple p q cnt)
+                    (#tuple(p q cnt)
                       (if (= p q)
                           (resume (+ (: 30 Int64) (% cnt 10)) st)
-                          (resume (+ (: 70 Int64) (% cnt 10)) (tuple q p cnt)))))))
+                          (resume (+ (: 70 Int64) (% cnt 10)) #tuple(q p cnt)))))))
                 (let ((a (L.pulse)))
                   (let ((b (L.pulse)))
                     (let ((c (L.align)))
@@ -15030,21 +15030,21 @@
               (op weigh (-> Int64 Int64 Int64))
               (op level (-> Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (: 0 Int64) (: 0 Int64))
+              (handle L #tuple((: 0 Int64) (: 0 Int64))
                 ((weigh (a b) st
                   (match st
-                    ((tuple tilt lw)
+                    (#tuple(tilt lw)
                       (if (> a b)
                           (resume (+ (: 100 Int64) (+ (* (- a b) 10) (% (+ lw 1) 10)))
-                                  (tuple (+ tilt (- a b)) (+ lw 1)))
+                                  #tuple((+ tilt (- a b)) (+ lw 1)))
                           (if (< a b)
                               (resume (+ (: 200 Int64) (+ (* (- b a) 10) (% lw 10)))
-                                      (tuple (- tilt (- b a)) lw))
+                                      #tuple((- tilt (- b a)) lw))
                               (resume (+ (: 300 Int64) (% lw 10))
-                                      (tuple tilt lw)))))))
+                                      #tuple(tilt lw)))))))
                  (level () st
                   (match st
-                    ((tuple tilt lw)
+                    (#tuple(tilt lw)
                       (if (< tilt 0)
                           (resume (+ (: 500 Int64) (+ (* (- 0 tilt) 10) (% lw 10))) st)
                           (resume (+ (: 400 Int64) (+ (* tilt 10) (% lw 10))) st))))))
@@ -15067,18 +15067,18 @@
               (op chord (-> Int64 Int64 Int64 Int64))
               (op swell (-> Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (% n 3) (: 0 Int64))
+              (handle L #tuple((% n 3) (: 0 Int64))
                 ((chord (a b c) st
                   (match st
-                    ((tuple sel played)
+                    (#tuple(sel played)
                       (let ((v (if (= sel 0) a (if (= sel 1) b c))))
                         (resume (+ (* (+ sel 1) 100) (+ (* v 10) (% (+ played v) 10)))
-                                (tuple (% (+ sel 2) 3) (+ played v)))))))
+                                #tuple((% (+ sel 2) 3) (+ played v)))))))
                  (swell () st
                   (match st
-                    ((tuple sel played)
+                    (#tuple(sel played)
                       (resume (+ (* (% (+ sel played) 3) 10) (% played 10))
-                              (tuple (% (+ sel played) 3) played))))))
+                              #tuple((% (+ sel played) 3) played))))))
                 (let ((a (L.chord 4 7 2)))
                   (let ((b (L.chord 5 1 8)))
                     (let ((c (L.swell)))
@@ -15098,20 +15098,20 @@
               (op sweep (-> Int64))
               (op log (-> Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (% n 3) (: 0 Int64))
+              (handle L #tuple((% n 3) (: 0 Int64))
                 ((sweep () st
                   (match st
-                    ((tuple ang flash)
+                    (#tuple(ang flash)
                       (resume (let ((turn (+ (* ang 3) 1)))
                                 (let ((beam (% turn 8)))
                                   (+ (* beam 100)
                                      (+ (* (% turn 10) 10)
                                         (% (if (>= beam 4) (+ flash 1) flash) 10)))))
-                              (tuple (+ ang (+ (* ang 3) 1))
+                              #tuple((+ ang (+ (* ang 3) 1))
                                      (if (>= (% (+ (* ang 3) 1) 8) 4) (+ flash 1) flash))))))
                  (log () st
                   (match st
-                    ((tuple ang flash)
+                    (#tuple(ang flash)
                       (resume (+ (* (% ang 10) 10) flash) st)))))
                 (let ((a (L.sweep)))
                   (let ((b (L.sweep)))
@@ -15131,11 +15131,11 @@
             (def (main (: n Int64))
               (handle F (handle B (% n 3)
                           ((step () s (resume (+ s 1) (* s 2))))
-                          (tuple (B.step) (B.step)))
+                          #tuple((B.step) (B.step)))
                 ((draw () st
                   (match st
-                    ((tuple x y)
-                      (resume (+ (* x 10) y) (tuple y (+ x y)))))))
+                    (#tuple(x y)
+                      (resume (+ (* x 10) y) #tuple(y (+ x y)))))))
                 (let ((a (F.draw)))
                   (let ((b (F.draw)))
                     (let ((c (F.draw)))
@@ -15151,19 +15151,19 @@
               (op boat (-> Int64))
               (op log (-> Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (% n 3) (: 2 Int64) (: 0 Int64))
+              (handle L #tuple((% n 3) (: 2 Int64) (: 0 Int64))
                 ((boat () st
                   (match st
-                    ((tuple tide gate cross)
+                    (#tuple(tide gate cross)
                       (let ((low (< (% tide 4) gate)))
                         (resume (+ (* (if low (: 2 Int64) (: 7 Int64)) 100)
                                    (+ (* (% tide 10) 10) (% cross 10)))
                                 (if low
-                                    (tuple (+ tide 1) gate (+ cross 1))
-                                    (tuple (+ tide 3) gate cross)))))))
+                                    #tuple((+ tide 1) gate (+ cross 1))
+                                    #tuple((+ tide 3) gate cross)))))))
                  (log () st
                   (match st
-                    ((tuple tide gate cross)
+                    (#tuple(tide gate cross)
                       (resume (+ (* tide 10) cross) st)))))
                 (let ((a (L.boat)))
                   (let ((b (L.boat)))
@@ -15185,25 +15185,25 @@
               (op narrow (-> Int64 Int64))
               (op span (-> Int64)))
             (def (main (: n Int64))
-              (handle L (match (tuple (% n 3) (: 0 Int64))
-                          ((tuple r z)
-                            (if (= r 0) (tuple (: 2 Int64) (: 9 Int64) z)
-                                (if (= r 1) (tuple (: 4 Int64) (: 6 Int64) z)
-                                    (tuple (: 1 Int64) (: 12 Int64) z)))))
+              (handle L (match #tuple((% n 3) (: 0 Int64))
+                          (#tuple(r z)
+                            (if (= r 0) #tuple((: 2 Int64) (: 9 Int64) z)
+                                (if (= r 1) #tuple((: 4 Int64) (: 6 Int64) z)
+                                    #tuple((: 1 Int64) (: 12 Int64) z)))))
                 ((narrow (g) st
                   (match st
-                    ((tuple lo hi probes)
+                    (#tuple(lo hi probes)
                       (if (>= lo hi)
                           (resume (+ (: 300 Int64) (+ (* (% lo 10) 10) (% probes 10))) st)
                           (let ((mid (/ (+ lo hi) 2)))
                             (if (<= g mid)
                                 (resume (+ (: 100 Int64) (+ (* (% mid 10) 10) (% (+ probes 1) 10)))
-                                        (tuple lo mid (+ probes 1)))
+                                        #tuple(lo mid (+ probes 1)))
                                 (resume (+ (: 200 Int64) (+ (* (% mid 10) 10) (% (+ probes 1) 10)))
-                                        (tuple (+ mid 1) hi (+ probes 1)))))))))
+                                        #tuple((+ mid 1) hi (+ probes 1)))))))))
                  (span () st
                   (match st
-                    ((tuple lo hi probes)
+                    (#tuple(lo hi probes)
                       (resume (+ (* (- hi lo) 10) (% probes 10)) st)))))
                 (let ((a (L.narrow 5)))
                   (let ((b (L.narrow 3)))
@@ -15223,15 +15223,15 @@
               (op stamp (-> Int64 Int64))
               (op audit (-> Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (: 0 Int64) (: 0 Int64))
+              (handle L #tuple((: 0 Int64) (: 0 Int64))
                 ((stamp (w) st
                   (match st
-                    ((tuple total stamps)
+                    (#tuple(total stamps)
                       (resume (+ (* w 10) (% (+ stamps 1) 10))
-                              (tuple (+ total w) (+ stamps 1))))))
+                              #tuple((+ total w) (+ stamps 1))))))
                  (audit () st
                   (match st
-                    ((tuple total stamps)
+                    (#tuple(total stamps)
                       (resume (% total 100) st)))))
                 (let ((a (L.stamp (+ (% n 3) 2))))
                   (let ((b (L.stamp (let ((h (/ a 10))) (+ (* h 2) 1)))))
@@ -15252,18 +15252,18 @@
               (op cold (-> Bool))
               (op tally (-> Int64)))
             (def (main (: n Int64))
-              (handle L (tuple (% n 3) (: 0 Int64))
+              (handle L #tuple((% n 3) (: 0 Int64))
                 ((hot () st
                   (match st
-                    ((tuple t calls)
-                      (resume (>= t 2) (tuple (+ t 1) (+ calls 1))))))
+                    (#tuple(t calls)
+                      (resume (>= t 2) #tuple((+ t 1) (+ calls 1))))))
                  (cold () st
                   (match st
-                    ((tuple t calls)
-                      (resume (= (% t 2) 0) (tuple (+ t 2) (+ calls 1))))))
+                    (#tuple(t calls)
+                      (resume (= (% t 2) 0) #tuple((+ t 2) (+ calls 1))))))
                  (tally () st
                   (match st
-                    ((tuple t calls)
+                    (#tuple(t calls)
                       (resume (+ (* t 10) calls) st)))))
                 (let ((a (if (and (L.hot) (L.cold)) (: 1 Int64) (: 2 Int64))))
                   (let ((p (L.tally)))
@@ -15494,11 +15494,11 @@
   (input  (do
             (effect E (op tick (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple (% n 3) (: 0 Int64))
+              (handle E #tuple((% n 3) (: 0 Int64))
                 ((tick () st
                   (match st
-                    ((tuple v k)
-                      (+ (resume v (tuple (+ v 2) (+ k 1)))
+                    (#tuple(v k)
+                      (+ (resume v #tuple((+ v 2) (+ k 1)))
                          (* 1000 (+ (* v 10) k)))))))
                 (let ((a (E.tick)))
                   (let ((b (E.tick)))
@@ -15700,8 +15700,8 @@
             (def (main (: n Int64))
               (handle E (% n 3)
                 ((tick () s
-                  (match (tuple (resume s (+ s 3)) (+ s 1))
-                    ((tuple r w) (+ (* r 2) w)))))
+                  (match #tuple((resume s (+ s 3)) (+ s 1))
+                    (#tuple(r w) (+ (* r 2) w)))))
                 (let ((a (E.tick)))
                   (let ((b (E.tick)))
                     (+ a (* 10 b))))))
@@ -15821,11 +15821,11 @@
   (input  (do
             (effect E (op tick (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple (% n 3) (: 0 Int64))
+              (handle E #tuple((% n 3) (: 0 Int64))
                 ((tick () st
                   (match st
-                    ((tuple v k)
-                      (+ (resume v (tuple (+ v 3) (+ k 1)))
+                    (#tuple(v k)
+                      (+ (resume v #tuple((+ v 3) (+ k 1)))
                          (* 100 (* v k)))))))
                 (let ((a (E.tick)))
                   (let ((b (E.tick)))
@@ -16169,11 +16169,11 @@
   (input  (do
             (effect E (op tick (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle E (tuple (% n 3) (: 0 Int64))
+              (handle E #tuple((% n 3) (: 0 Int64))
                 ((tick (v) st
                   (match st
-                    ((tuple base k)
-                      (+ (resume (+ base v) (tuple (+ base v) (+ k 1)))
+                    (#tuple(base k)
+                      (+ (resume (+ base v) #tuple((+ base v) (+ k 1)))
                          (* 1000 (* v (+ k 1))))))))
                 (let ((a (E.tick 3)))
                   (let ((b (E.tick 5)))
@@ -16316,8 +16316,8 @@
                 ((tick () s
                   (+ (resume (* s 10) (+ s 1))
                      (* 100 (List.len (if (> s 0)
-                                          (List.push (List.push (list) s) s)
-                                          (List.push (list) s)))))))
+                                          (List.push (List.push #list() s) s)
+                                          (List.push #list() s)))))))
                 (+ (E.tick) (* 10 (E.tick)))))
             (export main)))
   (call   main (: 10 Int64)) (output (: 610 Int64))
@@ -16327,7 +16327,7 @@
   (input  (do
             (effect E (op tick (-> Int64)))
             (def (main (: n Int64))
-              (handle E (list (% n 3))
+              (handle E #list((% n 3))
                 ((tick () xs
                   (resume (match (List.at xs 0)
                             ((Some h) (+ (* h 10) (List.len xs)))
@@ -16342,7 +16342,7 @@
   (input  (do
             (effect E (op tick (-> Int64)))
             (def (main (: n Int64))
-              (handle E (list (% n 3))
+              (handle E #list((% n 3))
                 ((tick () xs
                   (do (resume (List.len xs) (List.push xs 9))
                       (resume (+ (match (List.at xs 0)
@@ -16391,7 +16391,7 @@
   (input  (do
             (effect E (op grow (-> Int64)))
             (def (main (: n Int64))
-              (handle E (list (% n 3))
+              (handle E #list((% n 3))
                 ((grow () xs
                   (do (resume (List.len xs) (List.push xs 9))
                       (resume (List.len xs) (List.push xs 5))
@@ -16457,11 +16457,11 @@
   (input  (do
             (effect E (op tick (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple (% n 3) (: 1 Int64))
+              (handle E #tuple((% n 3) (: 1 Int64))
                 ((tick () st
                   (match st
-                    ((tuple a b)
-                      (+ (resume (+ (* a 10) b) (tuple b (+ a b)))
+                    (#tuple(a b)
+                      (+ (resume (+ (* a 10) b) #tuple(b (+ a b)))
                          (* 1000 a))))))
                 (+ (E.tick) (* 100 (E.tick)))))
             (export main)))
@@ -16751,9 +16751,9 @@
   (effect E (op split (-> (Tuple Int64 Int64))))
   (def (main (: n Int64))
     (handle E (% n 3)
-      ((split () s (resume (tuple (+ s 5) (* s 10)) (+ s 1))))
-      (let ((p (match (E.split) ((tuple a b) (+ a b)))))
-        (match (E.split) ((tuple c d) (+ (* 1000 p) (+ c d)))))))
+      ((split () s (resume #tuple((+ s 5) (* s 10)) (+ s 1))))
+      (let ((p (match (E.split) (#tuple(a b) (+ a b)))))
+        (match (E.split) (#tuple(c d) (+ (* 1000 p) (+ c d)))))))
   (export main)))
   (call   main (: 10 Int64)) (output (: 16027 Int64))
   (call   main (: 0 Int64)) (output (: 5016 Int64)))
@@ -17006,8 +17006,8 @@
   (effect E (op tick (-> (Tuple Int64 Int64 Int64))))
   (def (main (: n Int64))
     (handle E (% n 3)
-      ((tick () s (resume (tuple s (* s 2) (+ s 100)) (+ s 1))))
-      (match (E.tick) ((tuple a b c) (+ (* 1000 c) (+ (* 10 b) a))))))
+      ((tick () s (resume #tuple(s (* s 2) (+ s 100)) (+ s 1))))
+      (match (E.tick) (#tuple(a b c) (+ (* 1000 c) (+ (* 10 b) a))))))
   (export main)))
   (call   main (: 10 Int64)) (output (: 101021 Int64))
   (call   main (: 0 Int64)) (output (: 100000 Int64)))
@@ -17029,7 +17029,7 @@
   (input (do
   (effect E (op push (-> Int64 Int64)) (op head (-> Int64)))
   (def (main (: n Int64))
-    (handle E (list (% n 3))
+    (handle E #list((% n 3))
       ((push (v) l (resume (List.len (List.prepend l v)) (List.prepend l v)))
        (head () l (resume (match (List.at l (: 0 Int64)) ((Some x) x) ((None) (: -1 Int64))) l)))
       (+ (* 1000 (E.push (: 7 Int64)))
@@ -17083,8 +17083,8 @@
   (input (do
   (effect E (op tick (-> Int64)))
   (def (main (: n Int64))
-    (handle E (tuple (% n 3) (: 5 Int64))
-      ((tick () s (match s ((tuple a b) (resume (+ (* a 10) b) (tuple b a))))))
+    (handle E #tuple((% n 3) (: 5 Int64))
+      ((tick () s (match s (#tuple(a b) (resume (+ (* a 10) b) #tuple(b a))))))
       (+ (* 1000 (E.tick)) (E.tick))))
   (export main)))
   (call   main (: 10 Int64)) (output (: 15051 Int64))
@@ -17291,10 +17291,10 @@
   (input (do
   (effect E (op adda (-> Int64)) (op addb (-> Int64)) (op rd (-> Int64)))
   (def (main (: n Int64))
-    (handle E (tuple (% n 3) (: 0 Int64))
-      ((adda () s (match s ((tuple a b) (resume a (tuple (+ a 1) b)))))
-       (addb () s (match s ((tuple a b) (resume b (tuple a (+ b 10))))))
-       (rd () s (match s ((tuple a b) (resume (+ (* a 100) b) s)))))
+    (handle E #tuple((% n 3) (: 0 Int64))
+      ((adda () s (match s (#tuple(a b) (resume a #tuple((+ a 1) b)))))
+       (addb () s (match s (#tuple(a b) (resume b #tuple(a (+ b 10))))))
+       (rd () s (match s (#tuple(a b) (resume (+ (* a 100) b) s)))))
       (+ (* 10000 (E.adda)) (+ (* 1000 (E.addb)) (+ (* 100 (E.adda)) (+ (* 10 (E.addb)) (E.rd)))))))
   (export main)))
   (call   main (: 10 Int64)) (output (: 10620 Int64))
@@ -17501,7 +17501,7 @@
   (input (do
   (effect E (op tick (-> Unit Int64)))
   (def (main)
-    (const (handle E (list 7)
+    (const (handle E #list(7)
       ((tick (u) s (resume (List.len s) (List.prepend s 0))))
       (+ (* 10 (E.tick)) (E.tick)))))
   (export main)))
@@ -17711,10 +17711,10 @@
   (input (do
   (effect E (op tick (-> Int64)))
   (def (main (: n Int64))
-    (handle E (tuple (% n 3) (: 10 Int64) (: 100 Int64))
-      ((tick () s (match s ((tuple a b c)
+    (handle E #tuple((% n 3) (: 10 Int64) (: 100 Int64))
+      ((tick () s (match s (#tuple(a b c)
                     (resume (+ (+ (* a 1) (* b 2)) (* c 3))
-                            (tuple (+ a 1) (+ b 10) (+ c 100)))))))
+                            #tuple((+ a 1) (+ b 10) (+ c 100)))))))
       (+ (* 1000 (E.tick)) (+ (* 100 (E.tick)) (E.tick)))))
   (export main)))
   (call   main (: 10 Int64)) (output (: 386163 Int64))
@@ -17833,7 +17833,7 @@
     (effect Y (op chunk (-> Bytes)))
     (def (main (: n Int64))
       (handle Y n
-        ((chunk () s (resume (Bytes.concat b"\x01" (Bytes.of (list (UInt8.wrap s)))) (+ s 1))))
+        ((chunk () s (resume (Bytes.concat b"\x01" (Bytes.of #list((UInt8.wrap s)))) (+ s 1))))
         (+ (Bytes.len (Y.chunk)) (* 10 (Bytes.len (Y.chunk))))))
     (export main)))
   (call main (: 5 Int64))
@@ -18413,8 +18413,8 @@
     (def (main (: n Int64))
       (handle E 0
         ((put (o) st
-          (resume (match o ((Option.Some (list a b)) (+ a b)) (_ -1)) st)))
-        (E.put (if (> n 0) (Option.Some (list n (+ n 1))) Option.None))))
+          (resume (match o ((Option.Some #list(a b)) (+ a b)) (_ -1)) st)))
+        (E.put (if (> n 0) (Option.Some #list(n (+ n 1))) Option.None))))
     (export main)))
   (call main (: 5 Int64))
   (output (: 11 Int64))
@@ -18433,7 +18433,7 @@
   (input (do
     (effect St (op get (-> Unit Int64)))
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+      (let ((xs (if (> n 0) #list(#list(n) #list(n (+ n 1))) #list(#list(9)))))
         (handle St 0
           ((get (u) s
             (resume (match (List.at xs 1) ((Option.Some inner) (List.len inner)) ((Option.None) -1)) s)))
@@ -18448,7 +18448,7 @@
     (effect St (op get (-> Unit Int64)))
     (def (once) (St.get))
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+      (let ((xs (if (> n 0) #list(#list(n) #list(n (+ n 1))) #list(#list(9)))))
         (handle St 0
           ((get (u) s
             (resume (match (List.at xs 1) ((Option.Some inner) (List.len inner)) ((Option.None) -1)) s)))
@@ -18464,7 +18464,7 @@
     (def (loop2 (: k Int64))
       (if (= k 0) 0 (+ (St.get) (loop2 (- k 1)))))
     (def (main (: n Int64))
-      (let ((ys (if (> n 0) (list n (+ n 1) 9) (list 1))))
+      (let ((ys (if (> n 0) #list(n (+ n 1) 9) #list(1))))
         (handle St 0
           ((get (u) s (resume (List.len ys) s)))
           (loop2 n))))
@@ -18542,7 +18542,7 @@
     (def (loop2 (: k Int64))
       (if (= k 0) 0 (+ (St.get) (loop2 (- k 1)))))
     (def (main (: n Int64))
-      (let ((ys (if (> n 0) (list n (+ n 1) 9) (list 1))) (m (* n 3)))
+      (let ((ys (if (> n 0) #list(n (+ n 1) 9) #list(1))) (m (* n 3)))
         (handle St 0
           ((get (u) s (resume (+ (List.len ys) m) s)))
           (loop2 n))))
@@ -18584,7 +18584,7 @@
   (input (do
 (effect E (op tick (-> Int64)))
 (def (main (: n Int64))
-  (handle E (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)
+  (handle E #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)
     ((tick () s (resume (match (List.at s (% n 33)) ((Some v) v) ((None) (: -1 Int64))) s)))
     (+ (* 100 (E.tick)) (+ (* 10 (E.tick)) (E.tick)))))
 (export main)))
@@ -18598,7 +18598,7 @@
 (def (main (: n Int64))
   (handle F (: 0 Int64)
     ((put (xs) s (resume (+ (match (List.at xs (% n 33)) ((Some v) v) ((None) (: -1 Int64))) s) (+ s 1))))
-    (+ (* 100 (F.put (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (+ (* 10 (F.put (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (F.put (list 9))))))
+    (+ (* 100 (F.put #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (+ (* 10 (F.put #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (F.put #list(9))))))
 (export main)))
   (call main (: 1 Int64))
   (output (: 231 Int64))
@@ -18608,9 +18608,9 @@
   (input (do
 (effect G (op step (-> Int64)))
 (def (main (: n Int64))
-  (handle G (tuple (: 0 Int64) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))
+  (handle G #tuple((: 0 Int64) #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))
     ((step () s (resume (+ (. s 0) (match (List.at (. s 1) (% n 33)) ((Some v) v) ((None) (: -1 Int64))))
-                        (tuple (+ (. s 0) 1) (. s 1)))))
+                        #tuple((+ (. s 0) 1) (. s 1)))))
     (+ (* 100 (G.step)) (+ (* 10 (G.step)) (G.step)))))
 (export main)))
   (call main (: 1 Int64))
@@ -18731,7 +18731,7 @@
 (def (evn (: k Int64) (: acc Int64)) (if (= k 0) acc (odd (- k 1) (+ acc (S.push k)))))
 (def (odd (: k Int64) (: acc Int64)) (if (= k 0) acc (evn (- k 1) (+ acc (* 10 (S.push k))))))
 (def (main (: n Int64))
-  (handle S (list)
+  (handle S #list()
     ((push (x) s (resume (List.len s) (List.push s x))))
     (evn n 0)))
 (export main)))

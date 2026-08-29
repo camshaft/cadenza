@@ -463,8 +463,8 @@
            completes the heap-leaf-kind matrix with the Symbol leaf).")
   (input  (do
             (def (main (: n Int64))
-              (let ((m (Map.insert Map.empty (tuple (Symbol.of "k") n) 42)))
-                (match (Map.lookup m (tuple (Symbol.of "k") 5)) ((Some v) v) ((None u) -1))))
+              (let ((m (Map.insert Map.empty #tuple((Symbol.of "k") n) 42)))
+                (match (Map.lookup m #tuple((Symbol.of "k") 5)) ((Some v) v) ((None u) -1))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 42 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64)))
@@ -497,9 +497,9 @@
   (input  (do
             (def (main (: n Int64))
               (do
-                (def st #set((tuple #"a" 1) (tuple (Symbol.of "a") 1) (tuple #"b" 1)))
+                (def st #set(#tuple(#"a" 1) #tuple((Symbol.of "a") 1) #tuple(#"b" 1)))
                 (+ (* (Set.len st) 10)
-                   (if (Set.contains st (tuple #"a" n)) 1 0))))
+                   (if (Set.contains st #tuple(#"a" n)) 1 0))))
             (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 9 Int64)) (output (: 20 Int64)))
@@ -524,8 +524,8 @@
   (input  (do
             (def (fold-lens (: xs (List Symbol)) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (fold-lens t (+ (* acc 10) (String.byte-len (Symbol.to-string h)))))))
+                (#list() acc)
+                (#list(h .. t) (fold-lens t (+ (* acc 10) (String.byte-len (Symbol.to-string h)))))))
             (def (main (: mode Int64))
               (do
                 (def s (if (= mode 1) "b" "zzzz"))
@@ -706,8 +706,8 @@
            keys its expected type on the PATTERN kind too, the positional twin of the sum-payload nested
            cases.")
   (input  (do
-            (def (f (: p (Tuple Symbol Int64))) (match p ((tuple "add" n) n) ((tuple _ n) 0)))
-            (def (main) (f (tuple (Symbol.of "add") 5))) (export main)))
+            (def (f (: p (Tuple Symbol Int64))) (match p (#tuple("add" n) n) (#tuple(_ n) 0)))
+            (def (main) (f #tuple((Symbol.of "add") 5))) (export main)))
   (error  CDZ0201))
 
 (case "a same-kind symbol-literal tuple sub-pattern still dispatches (tuple control)"
@@ -715,8 +715,8 @@
            `f (tuple #\"add\" 5)` binds n=5 → 5. Pins the tuple-element boundary check rejects only the
            crossing case, the same-kind companion of the tuple reject above.")
   (input  (do
-            (def (f (: p (Tuple Symbol Int64))) (match p ((tuple #"add" n) n) ((tuple _ n) 0)))
-            (def (main) (f (tuple (Symbol.of "add") 5))) (export main)))
+            (def (f (: p (Tuple Symbol Int64))) (match p (#tuple(#"add" n) n) (#tuple(_ n) 0)))
+            (def (main) (f #tuple((Symbol.of "add") 5))) (export main)))
   (output (: 5 Int64)))
 
 ; ============================================================================================
@@ -959,9 +959,9 @@
            different scalar sibling `(+ n 1)` (→0), and differs from one with a different Symbol `(Symbol.of
            \"b\")` (→0, content comparison). Weighted so the checksum is 1 iff all three hold; n=7.")
   (input (do (def (main (: n Int64))
-    (+ (if (= (tuple (Symbol.of "a") n) (tuple (Symbol.of "a") n)) 1 0)
-       (+ (* 10 (if (= (tuple (Symbol.of "a") n) (tuple (Symbol.of "a") (+ n 1))) 1 0))
-          (* 100 (if (= (tuple (Symbol.of "a") n) (tuple (Symbol.of "b") n)) 1 0)))))
+    (+ (if (= #tuple((Symbol.of "a") n) #tuple((Symbol.of "a") n)) 1 0)
+       (+ (* 10 (if (= #tuple((Symbol.of "a") n) #tuple((Symbol.of "a") (+ n 1))) 1 0))
+          (* 100 (if (= #tuple((Symbol.of "a") n) #tuple((Symbol.of "b") n)) 1 0)))))
     (export main)))
   (call main (: 7 Int64))
   (output (: 1 Int64)))

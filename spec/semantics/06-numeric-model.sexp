@@ -414,7 +414,7 @@
            constructions to compute 2 from the spine. So the call traps at d=0 and computes 2 at d=2. Pins
            that the len fold respects is_trap_free (a runtime Rational.of is not trap-free), the len analogue
            of the arith-fold trap-preservation discipline.")
-  (input  (do (def (main (: d Int64)) (List.len (list (Rational.of 1 2) (Rational.of 3 d)))) (export main)))
+  (input  (do (def (main (: d Int64)) (List.len #list((Rational.of 1 2) (Rational.of 3 d)))) (export main)))
   (call   main (: 2 Int64)) (output (: 2 Int64))
   (call   main (: 0 Int64)) (trap "unreachable"))
 
@@ -423,7 +423,7 @@
            constructions, so the constant-arity len fold still fires → 3. Pins that the trap-preservation
            guard (above) did NOT over-decline pure-data lists — the fold still computes when every element is
            provably trap-free.")
-  (input  (do (def (main) (List.len (list 1 2 3))) (export main)))
+  (input  (do (def (main) (List.len #list(1 2 3))) (export main)))
   (output (: 3 Int64)))
 
 ; --- List.at const-index fold must preserve a DROPPED sibling's trap (strict-construction, ruling A) ----
@@ -439,7 +439,7 @@
            divide. Strict construction (ruling A): reaching the list ctor evaluates ALL element args, so the
            dropped sibling must still be forced. At d=2 → Some 1 (=1); at d=0 the sibling's ÷0 traps. Pins that
            the const-index fold gates on is_trap_free of the dropped elements (declines → runtime build).")
-  (input  (do (def (main (: d Int64)) (match (List.at (list 1 (/ 5 d)) 0) ((Some x) x) (_ -1))) (export main)))
+  (input  (do (def (main (: d Int64)) (match (List.at #list(1 (/ 5 d)) 0) ((Some x) x) (_ -1))) (export main)))
   (call   main (: 2 Int64)) (output (: 1 Int64))
   (call   main (: 0 Int64)) (trap "divide by zero"))
 
@@ -447,7 +447,7 @@
   (doc    "The trap-free twin: `(List.at (list 10 20 30) 1)` has only pure-data elements, so the const-index
            fold still fires → Some 20 (=20), no runtime list build. Pins that the strict-construction guard did
            NOT over-decline pure-data lists.")
-  (input  (do (def (main) (match (List.at (list 10 20 30) 1) ((Some x) x) (_ -1))) (export main)))
+  (input  (do (def (main) (match (List.at #list(10 20 30) 1) ((Some x) x) (_ -1))) (export main)))
   (output (: 20 Int64)))
 
 ; --- self-identity fold must preserve a TRAPPING lazy binding's trap (trap-preservation) ----------------
@@ -638,8 +638,8 @@
   (input  (do
             (def (main (: n Int64))
               (let ((r (Rational.of n 2)))
-                (let ((xs (list (Rational.truncate r) (Rational.floor r) (Rational.ceil r) (Rational.round r))))
-                  (tuple
+                (let ((xs #list((Rational.truncate r) (Rational.floor r) (Rational.ceil r) (Rational.round r))))
+                  #tuple(
                     (match (List.at xs 0) ((Some v) v) ((None) -99))
                     (match (List.at xs 1) ((Some v) v) ((None) -99))
                     (match (List.at xs 2) ((Some v) v) ((None) -99))
@@ -886,7 +886,7 @@
            The width fit-check must descend into a RECORD field's declared type; before the descent reached
            records, this escaped the check entirely and silently truncated (999 → -25 as Int8 on wasm; rust
            E0308 — a backend-divergent miscompile). Pins that the descent reaches record fields.")
-  (input  (: (record (= x 999)) (Record (: x Int8))))
+  (input  (: #record((= x 999)) (Record (: x Int8))))
   (error  CDZ0302))
 
 (case "a FITTING narrow record-field literal grounds to the field width and computes (emit twin of the reject)"
@@ -897,7 +897,7 @@
            grounding a narrow record-field literal to the declared slot width in the rust Core::Record emit
            (the record twin of the branch/match-arm grounding). Pins that a fitting narrow record-field
            literal is emittable + computes on all backends — the working counterpart the overflow case rejects.")
-  (input  (do (def (get (: r (Record (: x Int8)))) (. r x)) (def (main) (get (record (= x 100)))) (export main)))
+  (input  (do (def (get (: r (Record (: x Int8)))) (. r x)) (def (main) (get #record((= x 100)))) (export main)))
   (output (: 100 Int8)))
 
 (case "a literal MAP VALUE that overflows the annotated value width is rejected"
@@ -997,7 +997,7 @@
            sibling-unification settles the element type. This escaped the check: wasm wrapped `300`→`44` into
            a `(List UInt8)` and ran, while rust emitted a u8 initializer rustc rejected (E0308) — a
            cross-backend differential (fuzzer-found). Pins the check reaches a sibling-inferred list element.")
-  (input  (do (def (main) (list (: 1 UInt8) 300)) (export main)))
+  (input  (do (def (main) #list((: 1 UInt8) 300)) (export main)))
   (error  CDZ0302))
 
 (case "an un-annotated negative list element in an unsigned sibling-inferred list is CDZ0302"
@@ -1006,7 +1006,7 @@
            CDZ0302, as a direct `(: -41 UInt64)` is. Before the fix the bare `-41` skipped the range check and
            wasm stored a wrapped negative in a `(List UInt64)`; rust rejected it (E0308). Pins the negative
            companion of the over-max case, the sign face of the same sibling-inferred width check.")
-  (input  (do (def (main) (list (: 1 UInt64) -41)) (export main)))
+  (input  (do (def (main) #list((: 1 UInt64) -41)) (export main)))
   (error  CDZ0302))
 
 (case "a sibling-inferred out-of-range list element is CDZ0302 regardless of element order"
@@ -1014,7 +1014,7 @@
            un-annotated `-41` still takes UInt64 and still rejects CDZ0302. Pins that the sibling-inferred
            width check does not depend on the annotated element appearing first (the element-type JOIN picks
            up the fixed width from any position), closing the ordering gap on the two cases above.")
-  (input  (do (def (main) (list -41 (: 1 UInt64))) (export main)))
+  (input  (do (def (main) #list(-41 (: 1 UInt64))) (export main)))
   (error  CDZ0302))
 
 ; The sibling-inferred width check also reaches a bare `(list …)` DESCENDED THROUGH a collection builder —
@@ -1098,7 +1098,7 @@
   (doc    "The float twin of the record-field arm: `(: (record (x 1.0e300)) (Record (: x Float32)))` — the
            field's Float32 grounds the literal, which overflows binary32 → CDZ0302. Pins that the record
            descent covers float widths as the Option/Result payload arms do.")
-  (input  (: (record (= x 1.0e300)) (Record (: x Float32))))
+  (input  (: #record((= x 1.0e300)) (Record (: x Float32))))
   (error  CDZ0302))
 
 (case "a fitting Float32 record field passed through a typed parameter computes"
@@ -1110,7 +1110,7 @@
            bare literal's f64 width instead of the DECLARED field type would mismatch the projection.")
   (input  (do
             (def (get (: r (Record (: x Float32)))) (. r x))
-            (def (main) (get (record (= x 1.5))))
+            (def (main) (get #record((= x 1.5))))
             (export main)))
   (call   main) (output (: 1.5 Float32)))
 
@@ -1496,7 +1496,7 @@
            because each tuple's Float32 element demotes to 0x3E99999A; a fold comparing the un-demoted f64
            payloads element-wise would answer 0. Pins that the per-leaf demotion the scalar faces above
            establish also fires under a compound structural equality.")
-  (input  (do (def (main) (if (= (tuple (: 0.30000001192092896 Float32)) (tuple (: 0.3 Float32))) 1 0)) (export main)))
+  (input  (do (def (main) (if (= #tuple((: 0.30000001192092896 Float32)) #tuple((: 0.3 Float32))) 1 0)) (export main)))
   (call   main) (output (: 1 Int64)))
 (case "a genuinely-unequal Float32 constant equality const-folds false (adv-61 over-fire control)"
   (doc    "The negative control for the demoting fold: two Float32 literals that demote to DIFFERENT binary32
@@ -1567,9 +1567,9 @@
         (def (main (: mode Int64))
           (do
             (def a (if (= mode 1) -0.0 0.0))
-            (def t (tuple a 1.0))
+            (def t #tuple(a 1.0))
             (match t
-              ((tuple z _one)
+              (#tuple(z _one)
                 (+ (* (if (= z -0.0) 1 0) 10)
                    (if (= (* z -3.0) 0.0) 1 0))))))
         (export main)))
@@ -1783,7 +1783,7 @@
            wrongly reject a large slot-1 too; a descent grounding none would let the truncation through).")
   (input  (do
             (def (main (: c Bool))
-              (: (. (if c (tuple 10000 1) (tuple 5 2)) 0) UInt8))
+              (: (. (if c #tuple(10000 1) #tuple(5 2)) 0) UInt8))
             (export main)))
   (error  CDZ0302))
 
@@ -1795,7 +1795,7 @@
            every element of the projected compound.")
   (input  (do
             (def (main (: c Bool))
-              (: (. (if c (tuple 5 10000) (tuple 7 2)) 0) UInt8))
+              (: (. (if c #tuple(5 10000) #tuple(7 2)) 0) UInt8))
             (export main)))
   (call   main (: true Bool)) (output (: 5 UInt8))
   (call   main (: false Bool)) (output (: 7 UInt8)))
@@ -2396,7 +2396,7 @@
             (def (main (: v Int64))
               (let ((big (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807))))
                 (let ((up (+ big (BigInt.of 1))))
-                  (tuple
+                  #tuple(
                     (if (= (- up (BigInt.of 1)) big) 1 0)
                     (if (= (- up big) (BigInt.of 1)) 1 0)
                     (if (= (+ big big) (* big (BigInt.of 2))) 1 0)
@@ -2473,7 +2473,7 @@
               (let ((n (+ (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807)) (BigInt.of 12345)))
                     (d (BigInt.of 1000000007)))
                 (let ((q (/ n d)) (r (% n d)))
-                  (tuple
+                  #tuple(
                     (if (= (+ (* q d) r) n) 1 0)
                     (if (< r d) 1 0)
                     (if (>= r (BigInt.of 0)) 1 0)
@@ -2524,11 +2524,11 @@
   (input (do
         (def (sum-fracs (: xs (List Int64)) (: acc Rational))
           (match xs
-            ((list) acc)
-            ((list d .. t) (sum-fracs t (+ acc (Rational.of 1 d))))))
+            (#list() acc)
+            (#list(d .. t) (sum-fracs t (+ acc (Rational.of 1 d))))))
         (def (main (: mode Int64))
           (do
-            (def dens (if (= mode 1) (list 2 3 6) (list 2 4 6 12)))
+            (def dens (if (= mode 1) #list(2 3 6) #list(2 4 6 12)))
             (def s (sum-fracs dens (Rational.of 0 1)))
             (if (= s (Rational.of 1 1)) 1 0)))
         (export main)))
@@ -2721,19 +2721,19 @@
               (if (= b 0) a (gcd b (% a b))))
             (def (fadd (: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
               (match p
-                ((tuple a b)
+                (#tuple(a b)
                   (match q
-                    ((tuple c d)
+                    (#tuple(c d)
                       (do
                         (def num (+ (* a d) (* c b)))
                         (def den (* b d))
                         (def g (gcd num den))
-                        (tuple (/ num g) (/ den g))))))))
+                        #tuple((/ num g) (/ den g))))))))
             (def (main (: a Int64))
               (do
-                (def r (fadd (tuple a 6) (tuple 1 4)))
+                (def r (fadd #tuple(a 6) #tuple(1 4)))
                 (match r
-                  ((tuple num den)
+                  (#tuple(num den)
                     (+ (* (+ (* num 100) den) 10)
                        (if (= (+ (Rational.of a 6) (Rational.of 1 4)) (Rational.of num den)) 1 0))))))
             (export main)))
@@ -2784,17 +2784,17 @@
   (input  (do
             (def (sum-l (: xs (List Int64)) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (sum-l t (+ acc h)))))
+                (#list() acc)
+                (#list(h .. t) (sum-l t (+ acc h)))))
             (def (xor-l (: xs (List Int64)) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (xor-l t (^ acc h)))))
+                (#list() acc)
+                (#list(h .. t) (xor-l t (^ acc h)))))
             (def (xor-range (: i Int64) (: n Int64) (: acc Int64))
               (if (> i n) acc (xor-range (+ i 1) n (^ acc i))))
             (def (main (: mode Int64))
               (do
-                (def xs (if (= mode 1) (list 0 1 3 4) (if (= mode 2) (list 1 2 3 4) (list 0 1 2 3))))
+                (def xs (if (= mode 1) #list(0 1 3 4) (if (= mode 2) #list(1 2 3 4) #list(0 1 2 3))))
                 (def n 4)
                 (def by-sum (- (/ (* n (+ n 1)) 2) (sum-l xs 0)))
                 (def by-xor (xor-l xs (xor-range 0 n 0)))
@@ -2847,17 +2847,17 @@
   (input  (do
             (def (horner (: cs (List Int64)) (: x Int64) (: acc Int64))
               (match cs
-                ((list) acc)
-                ((list h .. t) (horner t x (+ (* acc x) h)))))
+                (#list() acc)
+                (#list(h .. t) (horner t x (+ (* acc x) h)))))
             (def (pw (: x Int64) (: k Int64))
               (if (= k 0) 1 (* x (pw x (- k 1)))))
             (def (psum (: cs (List Int64)) (: x Int64) (: i Int64) (: n Int64) (: acc Int64))
               (match cs
-                ((list) acc)
-                ((list h .. t) (psum t x (+ i 1) n (+ acc (* h (pw x (- n i))))))))
+                (#list() acc)
+                (#list(h .. t) (psum t x (+ i 1) n (+ acc (* h (pw x (- n i))))))))
             (def (main (: x Int64))
               (do
-                (def cs (list 2 -3 0 5))
+                (def cs #list(2 -3 0 5))
                 (def h (horner cs x 0))
                 (def s (psum cs x 1 4 0))
                 (+ (* h 10) (if (= h s) 1 0))))
@@ -2881,19 +2881,19 @@
   (input  (do
             (def (to-digits (: n Int64) (: acc (List Int64)))
               (if (< n 10)
-                  (List.concat (list n) acc)
-                  (to-digits (/ n 10) (List.concat (list (% n 10)) acc))))
+                  (List.concat #list(n) acc)
+                  (to-digits (/ n 10) (List.concat #list((% n 10)) acc))))
             (def (from-digits (: ds (List Int64)) (: acc Int64))
               (match ds
-                ((list) acc)
-                ((list h .. t) (from-digits t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (from-digits t (+ (* acc 10) h)))))
             (def (sum (: ds (List Int64)) (: acc Int64))
               (match ds
-                ((list) acc)
-                ((list h .. t) (sum t (+ acc h)))))
+                (#list() acc)
+                (#list(h .. t) (sum t (+ acc h)))))
             (def (main (: n Int64))
               (do
-                (def ds (to-digits n (list)))
+                (def ds (to-digits n #list()))
                 (+ (* ((. List len) ds) 10000)
                    (+ (* (sum ds 0) 100)
                       (if (= (from-digits ds 0) n) 1 0)))))
@@ -2917,16 +2917,16 @@
   (input  (do
             (def (tobase (: n Int64) (: b Int64))
               (if (< n b)
-                  (list n)
+                  #list(n)
                   (List.push (tobase (/ n b) b) (% n b))))
             (def (fromb (: ds (List Int64)) (: b Int64) (: acc Int64))
               (match ds
-                ((list) acc)
-                ((list h .. t) (fromb t b (+ (* acc b) h)))))
+                (#list() acc)
+                (#list(h .. t) (fromb t b (+ (* acc b) h)))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 100) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 100) h)))))
             (def (main (: b Int64))
               (do
                 (def ds (tobase 100 b))
@@ -3034,13 +3034,13 @@
               (if (= n 0) acc (dsum (/ n 10) (+ acc (% n 10)))))
             (def (droot (: n Int64) (: steps Int64))
               (if (< n 10)
-                  (tuple n steps)
+                  #tuple(n steps)
                   (droot (dsum n 0) (+ steps 1))))
             (def (cong (: n Int64))
               (if (= n 0) 0 (do (def m (% n 9)) (if (= m 0) 9 m))))
             (def (main (: n Int64))
               (match (droot n 0)
-                ((tuple r steps)
+                (#tuple(r steps)
                   (+ (* r 100)
                      (+ (* steps 10)
                         (if (= r (cong n)) 1 0))))))
@@ -3135,8 +3135,8 @@
   (input  (do
             (def (divisible-by-any (: ps (List Int64)) (: k Int64))
               (match ps
-                ((list) 0)
-                ((list p .. t)
+                (#list() 0)
+                (#list(p .. t)
                   (if (> (* p p) k)
                       0
                       (if (= (% k p) 0) 1 (divisible-by-any t k))))))
@@ -3147,11 +3147,11 @@
                     (if (= (divisible-by-any ps k) 0) (List.push ps k) ps))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 100) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 100) h)))))
             (def (main (: n Int64))
               (do
-                (def ps (build 2 n (list)))
+                (def ps (build 2 n #list()))
                 (+ (* (chk ps 0) 10) ((. List len) ps))))
             (export main)))
   (call   main (: 20 Int64)) (output (: 2030507111317198 Int64))
@@ -3226,7 +3226,7 @@
            two-sided boundary is inclusive: `127` is not one-too-big (a `< 127` check would reject it) and
            `−128` is not one-too-small (a `> −128` check would reject it). The signed companion of the UInt8
            maximum case, covering BOTH edges of the two's-complement range.")
-  (input  (tuple (Int8.of (BigInt.of 127)) (Int8.of (BigInt.of -128))))
+  (input  #tuple((Int8.of (BigInt.of 127)) (Int8.of (BigInt.of -128))))
   (output (: #tuple(127 -128) (Tuple Int8 Int8))))
 
 (case "a BigInt operation does not silently promote a fixed-width operand"
@@ -3368,7 +3368,7 @@
             (def (main (: z Int64))
               (let ((big (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807))))
                 (let ((n (- (BigInt.of 0) (+ big (BigInt.of 12345)))) (d (BigInt.of 1000000007)))
-                  (tuple
+                  #tuple(
                     (if (= (+ (* (/ n d) d) (% n d)) n) 1 0)
                     (if (< (% n d) (BigInt.of 1)) 1 0)
                     (if (> (% n d) (- (BigInt.of 0) d)) 1 0)
@@ -3995,7 +3995,7 @@
            fail the second component.")
   (input  (do
             (def (main (: a Float64) (: b Float64))
-              (tuple (> (/ a b) 1.0e300) (< (/ (- 0.0 a) b) -1.0e300)))
+              #tuple((> (/ a b) 1.0e300) (< (/ (- 0.0 a) b) -1.0e300)))
             (export main)))
   (call   main (: 1.0 Float64) (: 0.0 Float64)) (output (: (tuple true true) (Tuple Bool Bool)))
   (live-objects known-leak 1))
@@ -4053,7 +4053,7 @@
             (def (run (: c Int64))
               (let ((x (if (> c 0) 1.0 2.0)))
                 (let ((posinf (/ x 0.0)))
-                  (tuple
+                  #tuple(
                     (if (= (- posinf posinf) Float64.nan) 1 0)
                     (if (= (* posinf 0.0) Float64.nan) 1 0)
                     (if (= posinf posinf) 1 0)))))
@@ -4072,7 +4072,7 @@
   (input  (do
             (def (run (: x Float32))
               (let ((posinf (/ x (: 0.0 Float32))))
-                (tuple
+                #tuple(
                   (if (= (+ x Float32.nan) Float32.nan) 1 0)
                   (if (= posinf posinf) 1 0)
                   (if (= (- posinf posinf) Float32.nan) 1 0))))
@@ -4402,7 +4402,7 @@
            -width gap, and one nesting level deeper than the bare `(Float 16)` reject above. The front-end
            descends the compound annotation and rejects CDZ0302 at the nested float width, exactly as if it
            were written bare. Set-membership {32,64} is checked wherever a float width appears.")
-  (input  (: (list 1.0) (List (Float 8))))
+  (input  (: #list(1.0) (List (Float 8))))
   (error  CDZ0302))
 
 (case "a non-admitted float width in a parameter annotation is rejected"
@@ -4574,7 +4574,7 @@
            `main` = `(tuple (* x -1) (* -1 x))`, x=5 -> (-5 -5), x=0 -> (0 0). At x = Int64.min the negation
            overflows (magnitude +2^63 unrepresentable), so it traps exactly like `(- 0 x)` — not a wrapping
            Int64.min.")
-  (input  (do (def (main (: x Int64)) (tuple (* x -1) (* -1 x))) (export main)))
+  (input  (do (def (main (: x Int64)) #tuple((* x -1) (* -1 x))) (export main)))
   (call   main (: 5 Int64)) (output (: (tuple -5 -5) (Tuple Int64 Int64)))
   (call   main (: 0 Int64)) (output (: (tuple 0 0) (Tuple Int64 Int64)))
   (call   main (: -9223372036854775808 Int64)) (trap "overflow")
@@ -4818,7 +4818,7 @@
            unsigned 128/255. Pins that the CONST-fold path sign-extends identically to the runtime narrow
            wrap pinned above; a masked-unsigned fold would observe 128/255. Wrapped in `Int64.of` to widen
            the narrowed Int8 back to an observable Int64.")
-  (input  (do (def (main) (tuple (Int64.of (Int8.wrap 128)) (Int64.of (Int8.wrap 255)))) (export main)))
+  (input  (do (def (main) #tuple((Int64.of (Int8.wrap 128)) (Int64.of (Int8.wrap 255)))) (export main)))
   (call   main) (output (: #tuple(-128 -1) (Tuple Int64 Int64))))
 
 (case "the Int64.max and Int64.min CONSTANTS compare equal to their boundary values at runtime"
@@ -4830,7 +4830,7 @@
            checks are written in.")
   (input  (do
             (def (main (: n Int64))
-              (tuple (if (= n Int64.max) 1 0) (if (= n Int64.min) 2 0)))
+              #tuple((if (= n Int64.max) 1 0) (if (= n Int64.min) 2 0)))
             (export main)))
   (call   main (: 9223372036854775807 Int64)) (output (: (tuple 1 0) (Tuple Int64 Int64)))
   (call   main (: -9223372036854775808 Int64)) (output (: (tuple 0 2) (Tuple Int64 Int64)))
@@ -4890,7 +4890,7 @@
            quadrants no other case reaches.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (tuple (/ a b) (% a b)))
+              #tuple((/ a b) (% a b)))
             (export main)))
   (call   main (: 7 Int64) (: 2 Int64)) (output (: (tuple 3 1) (Tuple Int64 Int64)))
   (call   main (: -7 Int64) (: 2 Int64)) (output (: (tuple -3 -1) (Tuple Int64 Int64)))
@@ -5089,7 +5089,7 @@
            in-range non-fold, both backends.")
   (input  (do
             (def (main (: x Int64))
-              (tuple (if (= (& x 7) 100) 1 0)
+              #tuple((if (= (& x 7) 100) 1 0)
                      (if (< (& x 7) 100) 1 0)
                      (if (>= (& x 7) 8) 1 0)
                      (if (= (& x 7) 5) 1 0)))
@@ -5144,7 +5144,7 @@
            (idempotent). Packed into `(tuple (- x x) (^ x x) (& x x) (| x x))`: x = 7 → (0, 0, 7, 7),
            x = Int64.min → (0, 0, min, min) (the boundary survives the keeping identities). Pins the
            value of each self-operand fold on both backends.")
-  (input  (do (def (main (: x Int64)) (tuple (- x x) (^ x x) (& x x) (| x x))) (export main)))
+  (input  (do (def (main (: x Int64)) #tuple((- x x) (^ x x) (& x x) (| x x))) (export main)))
   (call   main (: 7 Int64))
   (output (: (tuple 0 0 7 7) (Tuple Int64 Int64 Int64 Int64)))
   (call   main (: -9223372036854775808 Int64))
@@ -5205,7 +5205,7 @@
            at v = -25 → (-5, -1) (negatives collapse identically: -25%100=-25, -25%10=-5; -25%12=-1,
            -1%4=-1). Pins the nested-modulo collapse (N | M) on a runtime operand across signs, both
            backends.")
-  (input  (do (def (main (: v Int64)) (tuple (% (% v 100) 10) (% (% v 12) 4))) (export main)))
+  (input  (do (def (main (: v Int64)) #tuple((% (% v 100) 10) (% (% v 12) 4))) (export main)))
   (call   main (: 1234 Int64))
   (output (: (tuple 4 2) (Tuple Int64 Int64)))
   (call   main (: -25 Int64))
@@ -5877,7 +5877,7 @@
            `(tuple (& x (^ x -1)) (| x (^ x -1)))` at x = 42 → (0, -1), and at x = Int64.min → (0, -1) (the
            laws are value-fixed regardless of x). Pins both complement laws on a signed runtime operand,
            both backends.")
-  (input  (do (def (main (: x Int64)) (tuple (& x (^ x -1)) (| x (^ x -1)))) (export main)))
+  (input  (do (def (main (: x Int64)) #tuple((& x (^ x -1)) (| x (^ x -1)))) (export main)))
   (call   main (: 42 Int64))
   (output (: (tuple 0 -1) (Tuple Int64 Int64)))
   (call   main (: -9223372036854775808 Int64))
@@ -5893,7 +5893,7 @@
            `(tuple (& x (^ x 255)) (| x (^ x 255)))` at x = 200 → (0, 255). Pins that the `&`-complement
            folds at unsigned width while the `|`-complement yields the width all-ones (the signed-only
            guard on the `-1` fold), both backends.")
-  (input  (do (def (main (: x UInt8)) (tuple (& x (^ x 255)) (| x (^ x 255)))) (export main)))
+  (input  (do (def (main (: x UInt8)) #tuple((& x (^ x 255)) (| x (^ x 255)))) (export main)))
   (call   main (: 200 UInt8))
   (output (: (tuple 0 255) (Tuple UInt8 UInt8)))
   (live-objects known-leak 1))
@@ -5919,7 +5919,7 @@
            twice: with x = -7 both are -7 (a right shift by 0 does not touch the sign bit either). Pins
            the shift-count-zero identities preserve a runtime operand, including a negative one, on both
            backends.")
-  (input  (do (def (main (: x Int64)) (tuple (<< x 0) (>> x 0))) (export main)))
+  (input  (do (def (main (: x Int64)) #tuple((<< x 0) (>> x 0))) (export main)))
   (call   main (: -7 Int64))
   (output (: (tuple -7 -7) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
@@ -5966,7 +5966,7 @@
            (1152921504606846976, fits), y = 8 → 8·2^60 = 2^63 overflows Int64 → TRAPS, exactly as the
            single `<< 60` would. Pins the nested-shift combine for both directions and the preserved
            left-shift overflow trap, both backends.")
-  (input  (do (def (main (: x Int64)) (tuple (<< (<< x 2) 3) (>> (>> x 2) 1))) (export main)))
+  (input  (do (def (main (: x Int64)) #tuple((<< (<< x 2) 3) (>> (>> x 2) 1))) (export main)))
   (call   main (: 1 Int64))
   (output (: (tuple 32 0) (Tuple Int64 Int64)))
   (call   main (: -256 Int64))
@@ -6039,7 +6039,7 @@
            is the 3-bit-bound companion → 0. Packed as `(tuple (>> (& x 15) 4) (>> (& x 7) 3))`, x = 255 →
            (0, 0). Pins the logical-shift-drops-all-significant-bits fold (`unsigned_value_bits` bound ≤ k)
            on a runtime unsigned operand, both backends.")
-  (input  (do (def (main (: x UInt8)) (tuple (>> (& x 15) 4) (>> (& x 7) 3))) (export main)))
+  (input  (do (def (main (: x UInt8)) #tuple((>> (& x 15) 4) (>> (& x 7) 3))) (export main)))
   (call   main (: 255 UInt8))
   (output (: (tuple 0 0) (Tuple UInt8 UInt8)))
   ; Both shifts fold to 0 → the returned tuple is constant → build-once immortal (WIT static encoding),
@@ -6071,7 +6071,7 @@
            `x * 1 = 1 * x = x - 0 = x` on a genuinely runtime operand, on both backends. The `x + 0`
            companion above covers addition; this covers the multiplicative-one and right-zero-subtract
            keepers `arith_identity` also applies.")
-  (input  (do (def (main (: x Int64)) (tuple (* x 1) (* 1 x) (- x 0))) (export main)))
+  (input  (do (def (main (: x Int64)) #tuple((* x 1) (* 1 x) (- x 0))) (export main)))
   (call   main (: -9223372036854775808 Int64))
   (output (: (tuple -9223372036854775808 -9223372036854775808 -9223372036854775808)
              (Tuple Int64 Int64 Int64)))
@@ -6687,7 +6687,7 @@
            to a bare operand read (or the constant 0), and the VALUE is unchanged. `main` = `(tuple
            (Int64.wrapping-add a 0) (Int64.wrapping-mul a 1) (Int64.wrapping-mul a 0))`: a=7 -> (7 7 0),
            a=-3 -> (-3 -3 0).")
-  (input  (do (def (main (: a Int64)) (tuple (Int64.wrapping-add a 0) (Int64.wrapping-mul a 1) (Int64.wrapping-mul a 0))) (export main)))
+  (input  (do (def (main (: a Int64)) #tuple((Int64.wrapping-add a 0) (Int64.wrapping-mul a 1) (Int64.wrapping-mul a 0))) (export main)))
   (call   main (: 7 Int64)) (output (: (tuple 7 7 0) (Tuple Int64 Int64 Int64)))
   (call   main (: -3 Int64)) (output (: (tuple -3 -3 0) (Tuple Int64 Int64 Int64)))
   (live-objects known-leak 1))
@@ -7457,7 +7457,7 @@
            (x=12, y=10) → (12, 12); at (x=-9223372036854775808, y=-7) → (min, min) (the boundary operand is
            returned unchanged, not re-derived). Pins both absorption laws on genuinely runtime operands,
            both backends.")
-  (input  (do (def (main (: x Int64) (: y Int64)) (tuple (& x (| x y)) (| x (& x y)))) (export main)))
+  (input  (do (def (main (: x Int64) (: y Int64)) #tuple((& x (| x y)) (| x (& x y)))) (export main)))
   (call   main (: 12 Int64) (: 10 Int64))
   (output (: (tuple 12 12) (Tuple Int64 Int64)))
   (call   main (: -9223372036854775808 Int64) (: -7 Int64))
@@ -7482,7 +7482,7 @@
            (`y OP y == y`). Both operands survive so no trap guard is needed. `(tuple (| (| x y) y)
            (& (& x y) y))` at (x=1, y=8) → (9, 0) — `1|8|8` = 9, `1&8&8` = 0. Pins the runtime-operand
            idempotent collapse for both `|` and `&`, both backends.")
-  (input  (do (def (main (: x Int64) (: y Int64)) (tuple (| (| x y) y) (& (& x y) y))) (export main)))
+  (input  (do (def (main (: x Int64) (: y Int64)) #tuple((| (| x y) y) (& (& x y) y))) (export main)))
   (call   main (: 1 Int64) (: 8 Int64))
   (output (: (tuple 9 0) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
@@ -8310,7 +8310,7 @@
            the bare `(Int -8)` case closes, one nesting level deeper. The front-end descends the compound
            annotation and rejects CDZ0302 at the nested width, exactly as if it were written bare. Companion
            to the bare negative-width and the parameter-position cases above.")
-  (input  (: (list 1) (List (Int -8))))
+  (input  (: #list(1) (List (Int -8))))
   (error  CDZ0302))
 
 (case "an ill-formed integer width in a type-declaration payload is rejected"
@@ -8382,7 +8382,7 @@
            to the top-level runtime-width cases above, one nesting level deeper.")
   (input  (do
             (def (f (: n Int64) (: xs (List (Int n)))) (List.len xs))
-            (def (main) (f 8 (list))) (export main)))
+            (def (main) (f 8 #list())) (export main)))
   (error  CDZ0302))
 
 (case "a runtime FLOAT width nested in a compound annotation is rejected"
@@ -8392,7 +8392,7 @@
            ctor too, not only integer.")
   (input  (do
             (def (f (: n Int64) (: xs (List (Float n)))) (List.len xs))
-            (def (main) (f 32 (list))) (export main)))
+            (def (main) (f 32 #list())) (export main)))
   (error  CDZ0302))
 
 ; --- Negation `(- 0 a)` overflows only at the type's MIN -------------------------------------------
@@ -8585,8 +8585,8 @@
                 (fill (- i 1) (Map.insert m (* (BigInt.of 9223372036854775807) (BigInt.of (+ i 2))) i))))
             (def (inc (: ps (List (Tuple BigInt Int64))) (: prev BigInt) (: cnt Int64))
               (match ps
-                ((list) cnt)
-                ((list h .. t) (match h ((tuple k _v) (if (< prev k) (inc t k (+ cnt 1)) -100000))))))
+                (#list() cnt)
+                (#list(h .. t) (match h (#tuple(k _v) (if (< prev k) (inc t k (+ cnt 1)) -100000))))))
             (def (main (: n Int64))
               (inc (Map.to-list (fill n Map.empty)) (BigInt.of 0) 0))
             (export main)))
@@ -8880,8 +8880,8 @@
            runtime path would hash differently and false-miss the n=2 call.")
   (input  (do
             (def (main (: n Int64))
-              (let ((m (Map.insert Map.empty (tuple (Rational.of n 6) 1) 42)))
-                (match (Map.lookup m (tuple (Rational.of 1 3) 1)) ((Some v) v) ((None u) -1))))
+              (let ((m (Map.insert Map.empty #tuple((Rational.of n 6) 1) 42)))
+                (match (Map.lookup m #tuple((Rational.of 1 3) 1)) ((Some v) v) ((None u) -1))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 42 Int64))
   (call   main (: 5 Int64)) (output (: -1 Int64)))
@@ -8895,8 +8895,8 @@
            compare would miss the differently-built equal key at n=9).")
   (input  (do
             (def (main (: n Int64))
-              (let ((m (Map.insert Map.empty (tuple (+ (BigInt.of n) (BigInt.of 1)) 5) 42)))
-                (match (Map.lookup m (tuple (BigInt.of 10) 5)) ((Some v) v) ((None u) -1))))
+              (let ((m (Map.insert Map.empty #tuple((+ (BigInt.of n) (BigInt.of 1)) 5) 42)))
+                (match (Map.lookup m #tuple((BigInt.of 10) 5)) ((Some v) v) ((None u) -1))))
             (export main)))
   (call   main (: 9 Int64)) (output (: 42 Int64))
   (call   main (: 3 Int64)) (output (: -1 Int64)))
@@ -9900,7 +9900,7 @@
   (input  (do
         (def (main (: x UInt8))
           (do
-            (def b (Bytes.of (list x 0 0 0 0 0 0 1)))
+            (def b (Bytes.of #list(x 0 0 0 0 0 0 1)))
             (match b
               ((bin (u64 n)) (Int64.of (% n 1000)))
               (_ -1))))
@@ -9916,7 +9916,7 @@
 (case "a top-bit u64 binding widens to BigInt unsigned"
   (input  (do
         (def (main (: x UInt8))
-          (match (Bytes.of (list x 0 0 0 0 0 0 9))
+          (match (Bytes.of #list(x 0 0 0 0 0 0 9))
             ((bin (u64 n)) (Int64.of (% (BigInt.of n) (BigInt.of 1000))))
             (_ -2)))
         (export main)))
@@ -9934,10 +9934,10 @@
   (input  (do
         (def (main (: mode Int64))
           (if (= mode 1)
-              (match (Bytes.of (list 128 0 0 0 0 0 0 9))
+              (match (Bytes.of #list(128 0 0 0 0 0 0 9))
                 ((bin (u64 m)) (if (> m (: 5 UInt64)) 1 0))
                 (_ -2))
-              (match (Bytes.of (list (UInt8.wrap (* mode 64)) 0 0 0 0 0 0 9))
+              (match (Bytes.of #list((UInt8.wrap (* mode 64)) 0 0 0 0 0 0 9))
                 ((bin (u64 m)) (if (> m (: 5 UInt64)) 1 0))
                 (_ -2))))
         (export main)))
@@ -10006,7 +10006,7 @@
                 ((Option.None _u) (Rational.of-int 0))))
             (def (main (: k Int64))
               (do
-                (def r (cf (list 1 k 2) 0))
+                (def r (cf #list(1 k 2) 0))
                 (+ (* 100 (Int64.of (Rational.numerator r)))
                    (Int64.of (Rational.denominator r)))))
             (export main)))
@@ -10773,15 +10773,15 @@
 
 (case "olf3 List ordering agrees const and runtime, inlined and let-bound"
   (input (do (def (main (: n Int64))
-    (let ((a (if (> n 0) (list 1 2) (list 9))) (b (if (> n 0) (list 1 3) (list 0))))
-      (+ (if (= (< (list 1 2) (list 1 3)) (< a b)) 1 0)
-         (* 10 (if (< (: (list) (List Int64)) (list 1)) 1 0)))))
+    (let ((a (if (> n 0) #list(1 2) #list(9))) (b (if (> n 0) #list(1 3) #list(0))))
+      (+ (if (= (< #list(1 2) #list(1 3)) (< a b)) 1 0)
+         (* 10 (if (< (: #list() (List Int64)) #list(1)) 1 0)))))
     (export main)))
   (call main (: 5 Int64))
   (output (: 11 Int64)))
 
 (case "olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check"
-  (input (do (def (main (: n Int64)) (if (< (list) (list 1)) 1 0)) (export main)))
+  (input (do (def (main (: n Int64)) (if (< #list() #list(1)) 1 0)) (export main)))
   (call main (: 5 Int64))
   (output (: 1 Int64)))
 
@@ -10841,7 +10841,7 @@
 ; sibling resolves; the reject may be right (ambiguous element) but the reason text is not.)
 
 (case "olf5 a NESTED bare empty list orders against its populated sibling (the unify-then-check recursion)"
-  (input (do (def (main (: n Int64)) (if (< (list (list)) (list (list 1))) 1 0)) (export main)))
+  (input (do (def (main (: n Int64)) (if (< #list(#list()) #list(#list(1))) 1 0)) (export main)))
   (call main (: 5 Int64))
   (output (: 1 Int64)))
 ; -- tautology-fold trap preservation (fully migrated from rcdzc
@@ -11802,8 +11802,8 @@
             (def (remdiv  (: x Int64) (: d Int64)) (if (< (% (: (& x 255) Int64) d) 300) 1 0))
             (def (wadd    (: x Int64)) ((. Int64 wrapping-add) x ((. Int64 wrapping-mul) x x)))
             (def (wann    (: x Int64)) (* 0 ((. Int64 wrapping-mul) x x)))
-            (def (proj)    (let ((p (tuple 42 7))) (. p 0)))
-            (def (projann) (let ((p (tuple 42 7))) (* 0 (. p 0))))
+            (def (proj)    (let ((p #tuple(42 7))) (. p 0)))
+            (def (projann) (let ((p #tuple(42 7))) (* 0 (. p 0))))
             (export shrtaut) (export remtaut) (export shrnon) (export lsh)
             (export remdiv) (export wadd) (export wann) (export proj) (export projann)))
   (call shrtaut (: 12345 UInt64)) (output (: 111 Int64))
@@ -12093,7 +12093,7 @@
         sexp→cadenza→wasm vs direct). Additive over cdzw1-10 (scalars/params/ops/control/let/calls/Match — no
         compounds). `(live-objects 4)` = the reachable return compound (record + tuple + list nodes). A
         regression mis-nesting, mis-ordering the record fields, or dropping a field would change the value.")
-  (input (do (def (main (: n Int64)) (record (= pair (tuple n (+ n 1))) (= xs (list n (* n 2))))) (export main)))
+  (input (do (def (main (: n Int64)) #record((= pair #tuple(n (+ n 1))) (= xs #list(n (* n 2))))) (export main)))
   (call main (: 3 Int64))
   (output (: #record((= pair #tuple(3 4)) (= xs #list(3 6))) (record (pair (Tuple Int64 Int64)) (xs (List Int64)))))
   (live-objects 4))
@@ -12172,7 +12172,7 @@
         with element binders at slots 0/1/2 plus the RestFrom(3) rest — the historically-flagged
         leading-rest soundness edge. n=7 over (list 7 2 3 7 8) → 700 + 20 + 3 + len(7 8)=2 → 725.
         Dual-path verified; fully scalarized.")
-  (input (do (def (f (: xs (List Int64))) (match xs ((list a b c .. r) (+ (* a 100) (+ (* b 10) (+ c (List.len r))))) (_ -1))) (def (main (: n Int64)) (f (list n 2 3 7 8))) (export main)))
+  (input (do (def (f (: xs (List Int64))) (match xs (#list(a b c .. r) (+ (* a 100) (+ (* b 10) (+ c (List.len r))))) (_ -1))) (def (main (: n Int64)) (f #list(n 2 3 7 8))) (export main)))
   (call main (: 7 Int64))
   (output (: 725 Int64))
   (call main (: 1 Int64))
@@ -12182,7 +12182,7 @@
   (doc "M4b recursion: `sum` destructures `(list h .. t)` and recurses on the rest until the `(list)`
         arm — the hop must re-emit the length-dispatch match INSIDE a recursive def, composing M4b with
         B3 calls. n=7 → 7+2+3+4 = 16. Dual-path verified; heap balances to 0 (the rest views reclaim).")
-  (input (do (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list h .. t) (+ h (sum t))))) (def (main (: n Int64)) (sum (list n 2 3 4))) (export main)))
+  (input (do (def (sum (: xs (List Int64))) (match xs (#list() 0) (#list(h .. t) (+ h (sum t))))) (def (main (: n Int64)) (sum #list(n 2 3 4))) (export main)))
   (call main (: 7 Int64))
   (output (: 16 Int64))
   (live-objects 0))
@@ -12205,7 +12205,7 @@
         evaluate the length of the RestFrom binder in the COND position on both the guard-true and
         guard-false paths. n=7: f(7 1 2 3) rest-len 3 → 107; f(7 9) rest-len 1 → falls to the plain arm
         → 7; total 114. Dual-path verified; fully scalarized.")
-  (input (do (def (f (: xs (List Int64))) (match xs ((guard (list h .. t) (> (List.len t) 2)) (+ 100 h)) ((list h .. t) h) (_ -1))) (def (main (: n Int64)) (+ (f (list n 1 2 3)) (f (list n 9)))) (export main)))
+  (input (do (def (f (: xs (List Int64))) (match xs ((guard #list(h .. t) (> (List.len t) 2)) (+ 100 h)) (#list(h .. t) h) (_ -1))) (def (main (: n Int64)) (+ (f #list(n 1 2 3)) (f #list(n 9)))) (export main)))
   (call main (: 7 Int64))
   (output (: 114 Int64))
   (call main (: 2 Int64))
@@ -12216,7 +12216,7 @@
         separates them — a false guard must fall to the second arm and bind ITS binders (a re-emit that
         merged or reordered the twin arms would take the wrong body). n=7: f(7 3) guard 7>5 → 70;
         f(2 7) guard 2>5 false → falls through → 2+7=9; total 79. Dual-path verified; heap balances.")
-  (input (do (def (f (: xs (List Int64))) (match xs ((guard (list a b) (> a 5)) (* a 10)) ((list a b) (+ a b)) (_ -1))) (def (main (: n Int64)) (+ (f (list n 3)) (f (list 2 n)))) (export main)))
+  (input (do (def (f (: xs (List Int64))) (match xs ((guard #list(a b) (> a 5)) (* a 10)) (#list(a b) (+ a b)) (_ -1))) (def (main (: n Int64)) (+ (f #list(n 3)) (f #list(2 n)))) (export main)))
   (call main (: 7 Int64))
   (output (: 79 Int64))
   (call main (: 2 Int64))
@@ -12283,7 +12283,7 @@
         `Option Int64` from the list's element type (solved by the sibling `(Some …)` elements). A
         threading that missed element positions declined here (the tick-446/474 cell). `(live-objects 4)`
         = the reachable returned list + its Some cells.")
-  (input (do (def (main (: n Int64)) (list (Some n) (None) (Some (+ n 2)))) (export main)))
+  (input (do (def (main (: n Int64)) #list((Some n) (None) (Some (+ n 2)))) (export main)))
   (call main (: 9 Int64))
   (output (: #list((Some 9) (None unit) (Some 11)) (List (Option Int64))))
   (live-objects 4))
@@ -12293,7 +12293,7 @@
         components DIFFER, so the compound compare short-circuits and the runtime-zero division is NEVER
         forced, on the direct path and through the hop alike. A re-emitted compare that pre-forced or
         re-ordered operands would trap here. n=5 makes the divisor zero; answer stays 222 (not-equal arm).")
-  (input (do (def (main (: n Int64)) (if (= (tuple 1 (/ 8 (- n 5))) (tuple 2 0)) 111 222)) (export main)))
+  (input (do (def (main (: n Int64)) (if (= #tuple(1 (/ 8 (- n 5))) #tuple(2 0)) 111 222)) (export main)))
   (call main (: 5 Int64))
   (output (: 222 Int64))
   (call main (: 3 Int64))
@@ -12304,7 +12304,7 @@
         component — at n=5 the runtime-zero division traps divide-by-zero identically on both paths; at
         other args it compares and answers 222. Pins the exact trap/no-trap boundary of compound-compare
         short-circuit through the hop.")
-  (input (do (def (main (: n Int64)) (if (= (tuple 2 (/ 8 (- n 5))) (tuple 2 0)) 111 222)) (export main)))
+  (input (do (def (main (: n Int64)) (if (= #tuple(2 (/ 8 (- n 5))) #tuple(2 0)) 111 222)) (export main)))
   (call main (: 3 Int64))
   (output (: 222 Int64))
   (call main (: 5 Int64))
@@ -12342,7 +12342,7 @@
 (case "cdzw32 the cadenza backend round-trips a generic newtype with a COMPOUND payload matched back"
   (doc "The compound-payload face: `(Mk (tuple n (+ n 1)))` over the generic Box, matched back with the
         payload binder and projected — the erased-construct classifier + M4a + Proj compose. n=7 → 7.")
-  (input (do (type (Box a) (Mk a)) (def (main (: n Int64)) (let ((b (Mk (tuple n (+ n 1))))) (match b ((Mk t) (. t 0))))) (export main)))
+  (input (do (type (Box a) (Mk a)) (def (main (: n Int64)) (let ((b (Mk #tuple(n (+ n 1))))) (match b ((Mk t) (. t 0))))) (export main)))
   (call main (: 7 Int64))
   (output (: 7 Int64)))
 
@@ -12350,7 +12350,7 @@
   (doc "The compound-inner construct face (was an ambiguous-site decline before the generic-decl era):
         `(Mk (list n (+ n 1)))` over `(type LW (Mk (List Int64)))` returned whole — decl + construct
         re-emit with the heap payload. `(live-objects 2)` = the reachable returned value.")
-  (input (do (type LW (Mk (List Int64))) (def (main (: n Int64)) (Mk (list n (+ n 1)))) (export main)))
+  (input (do (type LW (Mk (List Int64))) (def (main (: n Int64)) (Mk #list(n (+ n 1)))) (export main)))
   (call main (: 4 Int64))
   (output (: #list(4 5) LW))
   (live-objects 2))
@@ -12467,7 +12467,7 @@
         element 1 is selected and the trapping tuple is DROPPED — on both the #5205 const-index fold path
         and the runtime-index path (verified twins). At d=5, element 1 → 20+30 = 50.")
   (input (do
-    (def (main (: d Int64)) (match (List.at (list (tuple (/ 5 d) 1) (tuple 20 30)) 1) ((Some (tuple a b)) (+ a b)) ((None _u) -1)))
+    (def (main (: d Int64)) (match (List.at #list(#tuple((/ 5 d) 1) #tuple(20 30)) 1) ((Some #tuple(a b)) (+ a b)) ((None _u) -1)))
     (export main)))
   (call main (: 5 Int64)) (output (: 50 Int64))
   (call main (: 0 Int64)) (trap "divide by zero"))
@@ -12477,7 +12477,7 @@
         arg and an out-of-range index. Construction evaluates the args first, so the ÷0 fires and the
         result is a TRAP, not the (None) miss; at d=5 the same probe is the plain OOB miss → None.")
   (input (do
-    (def (main (: d Int64)) (List.at (list (/ 5 d)) 5))
+    (def (main (: d Int64)) (List.at #list((/ 5 d)) 5))
     (export main)))
   (call main (: 5 Int64)) (output (: (None unit) (Option Int64)))
   (call main (: 0 Int64)) (trap "divide by zero")
@@ -12500,7 +12500,7 @@
         `(tuple …)` pattern exactly, and re-emit at its fold fixpoint through the hop. n=7 → 723.
         (Was parked on the ML pattern-position roundtrip gap; unblocked by #5257.)")
   (input (do
-    (def (main (: n Int64)) (match (tuple (tuple n 2) 3) (#tuple(#tuple(a b) c) (+ (* a 100) (+ (* b 10) c)))))
+    (def (main (: n Int64)) (match #tuple(#tuple(n 2) 3) (#tuple(#tuple(a b) c) (+ (* a 100) (+ (* b 10) c)))))
     (export main)))
   (call main (: 7 Int64)) (output (: 723 Int64))
   (call main (: 4 Int64)) (output (: 423 Int64)))
@@ -12512,8 +12512,8 @@
         g = classic pattern on native value (a*10+b). n=7: 705 + 74 = 779.")
   (input (do
     (def (f (: xs (List Int64))) (match xs (#list(h t) (+ (* h 100) t)) (_ -1)))
-    (def (g (: n Int64)) (match #tuple(n 4) ((tuple a b) (+ (* a 10) b))))
-    (def (main (: n Int64)) (+ (f (list n 5)) (g n)))
+    (def (g (: n Int64)) (match #tuple(n 4) (#tuple(a b) (+ (* a 10) b))))
+    (def (main (: n Int64)) (+ (f #list(n 5)) (g n)))
     (export main)))
   (call main (: 7 Int64)) (output (: 779 Int64))
   (call main (: 2 Int64)) (output (: 229 Int64)))
@@ -12524,7 +12524,7 @@
         as it sees classic top-level binders (cdzw20). n=7 → guard true → 100; n=2 → falls to the plain
         arm → 2+2=4.")
   (input (do
-    (def (main (: n Int64)) (match (tuple n 2) ((guard #tuple(a b) (> a 5)) 100) (#tuple(a b) (+ a b))))
+    (def (main (: n Int64)) (match #tuple(n 2) ((guard #tuple(a b) (> a 5)) 100) (#tuple(a b) (+ a b))))
     (export main)))
   (call main (: 7 Int64)) (output (: 100 Int64))
   (call main (: 2 Int64)) (output (: 4 Int64)))

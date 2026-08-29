@@ -47,14 +47,14 @@
   (doc    "`(bin (u16 258))` encodes 258 (0x0102) as two bytes, most-significant first — big-endian is
            the default byte order, so the result is `(Bytes.of (list 1 2))`. Pins the default-endianness
            construction the wasm/network-order idiom depends on.")
-  (input  (= (bin (u16 258)) (Bytes.of (list 1 2))))
+  (input  (= (bin (u16 258)) (Bytes.of #list(1 2))))
   (output (: true Bool)))
 
 (case "the le modifier encodes a u16 little-endian"
   (doc    "`(bin (u16 258 le))` selects little-endian with the `le` modifier, so 0x0102 is emitted
            least-significant byte first: `(Bytes.of (list 2 1))`. Pins that byte order is explicit and
            the modifier reverses the default, never an implicit host-endianness choice.")
-  (input  (= (bin (u16 258 le)) (Bytes.of (list 2 1))))
+  (input  (= (bin (u16 258 le)) (Bytes.of #list(2 1))))
   (output (: true Bool)))
 
 (case "a u32 segment encodes four big-endian bytes"
@@ -62,21 +62,21 @@
            `(Bytes.of (list 137 80 78 71))` — the fixed-width, whole-byte encoding a magic-number header
            is built from. Written as a hex literal (01-literals.sexp), the value reads as its bytes at a
            glance. Pins u32 width and byte order together.")
-  (input  (= (bin (u32 0x89504E47)) (Bytes.of (list 137 80 78 71))))
+  (input  (= (bin (u32 0x89504E47)) (Bytes.of #list(137 80 78 71))))
   (output (: true Bool)))
 
 (case "a signed i8 segment encodes as two's complement"
   (doc    "`(bin (i8 -1))` encodes -1 in a signed 8-bit segment as the two's-complement byte 255. Pins
            that a SIGNED segment admits a negative value (unlike an unsigned segment, which traps on one —
            see below), encoding it in two's complement.")
-  (input  (= (bin (i8 -1)) (Bytes.of (list 255))))
+  (input  (= (bin (i8 -1)) (Bytes.of #list(255))))
   (output (: true Bool)))
 
 (case "a u64 segment encodes eight big-endian bytes"
   (doc    "`(bin (u64 258))` encodes 258 as eight big-endian bytes — six leading zeros then 0x0102 —
            `(Bytes.of (list 0 0 0 0 0 0 1 2))`. Pins the widest fixed-width segment and that its width is
            eight bytes regardless of how small the value is, the companion of the u16 and u32 cases.")
-  (input  (= (bin (u64 258)) (Bytes.of (list 0 0 0 0 0 0 1 2))))
+  (input  (= (bin (u64 258)) (Bytes.of #list(0 0 0 0 0 0 1 2))))
   (output (: true Bool)))
 
 (case "a multi-segment bin concatenates mixed-width signed and unsigned segments in order"
@@ -87,7 +87,7 @@
            signedness are applied per-segment and the results concatenated in source order (a builder that
            mis-ordered the segments, dropped a width, or sign-mishandled the i8 would differ), the
            integration of the single-segment u8/u16/i8 cases above into one bin.")
-  (input  (= (bin (u8 1) (u16 258) (i8 -1)) (Bytes.of (list 1 1 2 255))))
+  (input  (= (bin (u8 1) (u16 258) (i8 -1)) (Bytes.of #list(1 1 2 255))))
   (output (: true Bool)))
 
 (case "bit-field segments pack sub-byte values into one byte"
@@ -96,7 +96,7 @@
            three widths sum to 8, so the `bin` closes exactly one byte. The expected byte is written as a
            binary literal `0b1010_0101` so the packed bit-fields are legible. Pins sub-byte bit-field
            packing and the most-significant-field-first order.")
-  (input  (= (bin (bits 1 1) (bits 2 3) (bits 5 4)) (Bytes.of (list 0b1010_0101))))
+  (input  (= (bin (bits 1 1) (bits 2 3) (bits 5 4)) (Bytes.of #list(0b1010_0101))))
   (output (: true Bool)))
 
 (case "a bit-field wider than a byte packs across the byte boundary big-endian"
@@ -107,7 +107,7 @@
            `(Bytes.of (list 16 0))` (the leading nibble 1 is the high 4 bits of byte 0 = 0x10). Pins that
            bit-field packing crosses byte boundaries most-significant-bit-first, not only sub-byte fields
            that close a single byte.")
-  (input  (= (bin (bits 258 16)) (Bytes.of (list 1 2))))
+  (input  (= (bin (bits 258 16)) (Bytes.of #list(1 2))))
   (output (: true Bool)))
 
 (case "a 16-bit bit-field packs a two-nibble-distinct value across the byte boundary big-endian"
@@ -116,7 +116,7 @@
            18 52))` (0x12 = 18, 0x34 = 52). Distinct from the 258 = 0x0102 case above, whose high byte is
            1; here both bytes differ, pinning that the split is a genuine most-significant-first byte
            division of the field value, not a low-byte-only write.")
-  (input  (= (bin (bits 4660 16)) (Bytes.of (list 18 52))))
+  (input  (= (bin (bits 4660 16)) (Bytes.of #list(18 52))))
   (output (: true Bool)))
 
 (case "a byte-closing bit-field composes with a following byte-aligned integer segment"
@@ -125,7 +125,7 @@
            8-bit field 255 as one byte, then the u8 1 as the next = `(Bytes.of (list 255 1))`. Pins that a
            byte-aligned bit-field and an integer segment coexist in one construction (the sub-byte and
            fixed-width segment kinds interleave once the bit-field run is byte-aligned).")
-  (input  (= (bin (bits 255 8) (u8 1)) (Bytes.of (list 255 1))))
+  (input  (= (bin (bits 255 8) (u8 1)) (Bytes.of #list(255 1))))
   (output (: true Bool)))
 
 (case "a bit-field value that needs more bits than its width does not fit its segment"
@@ -145,14 +145,14 @@
            payload too long to frame in 16 bits is a real error, not a silent truncation); the length 3 fits.
            Pins that a computed value narrowed to the segment width feeds a size segment and an unsized
            `(bytes …)` splices a whole Bytes value.")
-  (input  (= (bin (u16 (UInt16.of (Bytes.len (Bytes.of (list 10 20 30))))) (bytes (Bytes.of (list 10 20 30))))
-             (Bytes.of (list 0 3 10 20 30))))
+  (input  (= (bin (u16 (UInt16.of (Bytes.len (Bytes.of #list(10 20 30))))) (bytes (Bytes.of #list(10 20 30))))
+             (Bytes.of #list(0 3 10 20 30))))
   (output (: true Bool)))
 
 (case "an empty binary form is the empty byte sequence"
   (doc    "`(bin)` with no segments is the zero-length Bytes value, equal to `(Bytes.of (list))`. Pins the
            degenerate construction — the identity a fold over segments starts from.")
-  (input  (= (bin) (Bytes.of (list))))
+  (input  (= (bin) (Bytes.of #list())))
   (output (: true Bool)))
 
 (case "the length of a fixed-width construction is the sum of its segment widths"
@@ -189,7 +189,7 @@
            interprets its two's-complement bits as a signed integer, the inverse of the `(i8 -1)`
            construction that emitted 255. Pins that signedness governs matching too: the same byte reads
            back as -1 under `i8` and as 255 under `u8` (next case).")
-  (input  (match (Bytes.of (list 255))
+  (input  (match (Bytes.of #list(255))
             ((bin (i8 n)) n)
             (_ 0)))
   (output (: -1 Int64)))
@@ -199,7 +199,7 @@
            255. The one byte reads back as -1 under `i8` and 255 under `u8`, so signedness is a property of
            the segment, not the bytes. Pins that the two readings of one byte differ precisely by the
            segment's sign, mirroring the construction-side split between `(i8 -1)` and `(u8 -1)`.")
-  (input  (match (Bytes.of (list 255))
+  (input  (match (Bytes.of #list(255))
             ((bin (u8 n)) n)
             (_ 0)))
   (output (: 255 Int64)))
@@ -211,7 +211,7 @@
            is where a naive reinterpretation that masks the sign bit and negates the remaining magnitude
            would wrongly give 0 or -0; the correct reading is the two's-complement -128. Pins the
            sign-bit-only extreme of the signed segment read.")
-  (input  (match (Bytes.of (list 128))
+  (input  (match (Bytes.of #list(128))
             ((bin (i8 n)) n)
             (_ 0)))
   (output (: -128 Int64)))
@@ -222,7 +222,7 @@
            boundary (as the 0xFF pair does at the all-ones byte). Pins that the two readings of 0x80 split
            by segment sign, so signedness is a property of the segment across the whole byte range, not
            just the all-ones case.")
-  (input  (match (Bytes.of (list 128))
+  (input  (match (Bytes.of #list(128))
             ((bin (u8 n)) n)
             (_ 0)))
   (output (: 128 Int64)))
@@ -232,7 +232,7 @@
            two's complement as the byte 0x80 = 128, so it equals `(Bytes.of (list 128))`. With the read
            case above this pins the round-trip at the signed minimum — `-128` emits 0x80, and 0x80 read as
            `i8` is `-128` — the extreme companion of the `(i8 -1)` ⇆ 255 round-trip.")
-  (input  (= (bin (i8 -128)) (Bytes.of (list 128))))
+  (input  (= (bin (i8 -128)) (Bytes.of #list(128))))
   (output (: true Bool)))
 
 ; The round-trip cases above use mid-range values (258) and the i8 extremes (-1, -128). These pin the
@@ -271,7 +271,7 @@
            whose sum a + b + c is 7. Pins that `bits` segments read in the same most-significant-first order
            they pack in — the inverse of the bit-field construction case — and that a bits-only pattern must
            still close a whole byte to be well-formed.")
-  (input  (match (Bytes.of (list 0b1010_0101))
+  (input  (match (Bytes.of #list(0b1010_0101))
             ((bin (bits a 1) (bits b 2) (bits c 5)) (+ (+ a b) c))
             (_ 0)))
   (output (: 7 Int64)))
@@ -281,7 +281,7 @@
            high 3 bits into a and the low 5 into b most-significant-first: a = 0b101 = 5, b = 0b00101 = 5.
            The composite `100*a + b` = 505 witnesses BOTH fields (a different field split than the 1/2/5
            case above, so a decoder that hardcoded field widths would miss it).")
-  (input  (match (Bytes.of (list 165))
+  (input  (match (Bytes.of #list(165))
             ((bin (bits a 3) (bits b 5)) (+ (* 100 a) b))
             (_ -1)))
   (output (: 505 Int64)))
@@ -291,7 +291,7 @@
            big-endian integer then split by field width. Over `(Bytes.of (list 171 205))` = 0xABCD, a is
            the high nibble 0xA = 10 and b the low 12 bits 0xBCD = 3021; composite `10000*a + b` = 103021.
            Pins that bit-field PATTERN decoding crosses a byte boundary the same way construction packs it.")
-  (input  (match (Bytes.of (list 171 205))
+  (input  (match (Bytes.of #list(171 205))
             ((bin (bits a 4) (bits b 12)) (+ (* 10000 a) b))
             (_ -1)))
   (output (: 103021 Int64)))
@@ -301,7 +301,7 @@
            whose top bit is 1. Over `(Bytes.of (list 1))` = 0b0000_0001 the top bit is 0, so the arm does
            NOT fire and the match takes the catch-all → -1. The const-scrutinee companion of the runtime
            top-bit-tag dispatch; pins that a literal bit-field probe is a genuine gate, not always-true.")
-  (input  (match (Bytes.of (list 1))
+  (input  (match (Bytes.of #list(1))
             ((bin (bits 1 1) (bits x 7)) x)
             (_ -1)))
   (output (: -1 Int64)))
@@ -311,7 +311,7 @@
            advanced byte offset: `(bin (bits a 3) (bits b 5) (u8 c))` over `(Bytes.of (list 165 42))` reads
            a = 5, b = 5 from byte 0 and c = 42 from byte 1; composite `100*a + b + c` = 547. Pins that a
            fixed-width segment composes with a preceding bit-field run in PATTERN position.")
-  (input  (match (Bytes.of (list 165 42))
+  (input  (match (Bytes.of #list(165 42))
             ((bin (bits a 3) (bits b 5) (u8 c)) (+ (+ (* 100 a) b) c))
             (_ -1)))
   (output (: 547 Int64)))
@@ -321,7 +321,7 @@
            `(Bytes.of (list 2 65 66))` the 8-bit field reads n = 2, then binds 2 payload bytes → its
            length is 2. The bit-field size read rides the same non-negative length floor a fixed-int size
            does; the truncated companion below overruns and falls through.")
-  (input  (match (Bytes.of (list 2 65 66))
+  (input  (match (Bytes.of #list(2 65 66))
             ((bin (bits n 8) (bytes payload n)) (Bytes.len payload))
             (_ -1)))
   (output (: 2 Int64)))
@@ -331,7 +331,7 @@
            n = 2 but only one byte follows the prefix, so the dependent segment overruns and the arm does
            not match → catch-all -1. Pins that a bit-field-named size is bounds-checked like a fixed-int
            size, never a backward or out-of-range read.")
-  (input  (match (Bytes.of (list 2 65))
+  (input  (match (Bytes.of #list(2 65))
             ((bin (bits n 8) (bytes payload n)) (Bytes.len payload))
             (_ -1)))
   (output (: -1 Int64)))
@@ -350,7 +350,7 @@
            the following big-endian u16 as n = 258. Against a leading tag of 1 the arm matches and yields
            258; a fixed literal and a binder compose in one pattern. Pins tag-then-field dispatch, the shape
            a tagged binary record takes.")
-  (input  (match (Bytes.of (list 1 1 2))
+  (input  (match (Bytes.of #list(1 1 2))
             ((bin (u8 1) (u16 n)) n)
             (_ 0)))
   (output (: 258 Int64)))
@@ -361,7 +361,7 @@
            `bin` pattern matches the ENTIRE byte sequence — leftover bytes are a non-match, which is why a
            trailing `(bytes rest)` segment is needed to accept a variable-length remainder (the next case).
            This is the whole-scrutinee accounting a length-framing loop relies on.")
-  (input  (match (Bytes.of (list 1 2 3))
+  (input  (match (Bytes.of #list(1 2 3))
             ((bin (u16 n)) n)
             (_ 0)))
   (output (: 0 Int64)))
@@ -371,7 +371,7 @@
            three-byte scrutinee lets the u16 read the first two bytes (n = 258) and `rest` absorb the third,
            so the arm matches and yields n = 258. Pins that a trailing unsized `(bytes …)` is exactly what
            relaxes the whole-scrutinee rule to accept a variable-length tail.")
-  (input  (match (Bytes.of (list 1 2 3))
+  (input  (match (Bytes.of #list(1 2 3))
             ((bin (u16 n) (bytes rest)) n)
             (_ 0)))
   (output (: 258 Int64)))
@@ -381,7 +381,7 @@
            left over — so the arm fires and yields \"empty\". The inverse of the `(bin)` construction case,
            and the base case a recursive framing parser bottoms out on. Pins that `(bin)` in pattern
            position matches exactly the empty sequence.")
-  (input  (match (Bytes.of (list))
+  (input  (match (Bytes.of #list())
             ((bin) "empty")
             (_ "nonempty")))
   (output (: "empty" String)))
@@ -391,7 +391,7 @@
            pattern `(bin)` does not consume, so the arm does not match and control falls to the catch-all.
            Pins that `(bin)` matches ONLY the empty sequence — the whole-consumption rule applied to the
            zero-segment pattern.")
-  (input  (match (Bytes.of (list 0))
+  (input  (match (Bytes.of #list(0))
             ((bin) "empty")
             (_ "nonempty")))
   (output (: "nonempty" String)))
@@ -402,8 +402,8 @@
            `(list 10 20)`, leaving `rest` = `(list 99)`. The crown jewel: a segment's size is a value
            bound earlier in the same pattern, all value-level. This case checks `body`; the next checks
            `rest`.")
-  (input  (match (Bytes.of (list 2 10 20 99))
-            ((bin (u8 n) (bytes body n) (bytes rest)) (= body (Bytes.of (list 10 20))))
+  (input  (match (Bytes.of #list(2 10 20 99))
+            ((bin (u8 n) (bytes body n) (bytes rest)) (= body (Bytes.of #list(10 20))))
             (_ false)))
   (output (: true Bool)))
 
@@ -411,8 +411,8 @@
   (doc    "The companion of the dependent-size case: the same match returns `rest`, the bytes after the
            n-byte body — `(list 99)`. Pins that a final unsized `(bytes rest)` captures everything left,
            the remainder a framing loop iterates on.")
-  (input  (match (Bytes.of (list 2 10 20 99))
-            ((bin (u8 n) (bytes body n) (bytes rest)) (= rest (Bytes.of (list 99))))
+  (input  (match (Bytes.of #list(2 10 20 99))
+            ((bin (u8 n) (bytes body n) (bytes rest)) (= rest (Bytes.of #list(99))))
             (_ false)))
   (output (: true Bool)))
 
@@ -424,7 +424,7 @@
            earlier integer segment, the length-prefixed-string idiom (a UTF-8 field is decoded, validated, and
            bound in one pattern). Ill-formed UTF-8 in those bytes would be a non-match (falls to the catch-all),
            never a trap — decoding-bytes-to-a-string is total.")
-  (input  (match (Bytes.of (list 2 104 105))
+  (input  (match (Bytes.of #list(2 104 105))
             ((bin (u8 n) (utf8 s n)) s)
             (_ "miss")))
   (output (: "hi" String)))
@@ -438,7 +438,7 @@
            size is accepted — earlier it silently fell through to the catch-all (a miscompile: the size
            resolver looked up an earlier-segment binder BY NAME and a literal returned nothing → non-match),
            fixed 2026-07-21 (ruling (a)) so `bin_decode_dependent_size` accepts a constant-literal size.")
-  (input  (match (Bytes.of (list 104 105))
+  (input  (match (Bytes.of #list(104 105))
             ((bin (utf8 s 2)) s)
             (_ "miss")))
   (output (: "hi" String)))
@@ -451,7 +451,7 @@
            lead byte) — the utf8 segment does not match, so the `_` arm yields \"bad\". Pins that the strict
            `str::from_utf8` validation in the decode (which the constant-literal-size path now reaches, ruling
            (a)) treats ill-formed bytes as a non-match, the soundness guard that pairs with the const-size fix.")
-  (input  (match (Bytes.of (list 255 255))
+  (input  (match (Bytes.of #list(255 255))
             ((bin (utf8 s 2)) s)
             (_ "bad")))
   (output (: "bad" String)))
@@ -464,7 +464,7 @@
            32. Pins that a constant-literal `bytes` size (a) matches and (b) composes with a following
            segment at the now-static offset — the same ruling-(a) fix as the utf8 case, and the bytes
            analogue that a fixed-size segment need not be the final one.")
-  (input  (match (Bytes.of (list 10 20 30))
+  (input  (match (Bytes.of #list(10 20 30))
             ((bin (bytes b 2) (u8 last)) (+ (Bytes.len b) last))
             (_ -1)))
   (output (: 32 Int64)))
@@ -474,7 +474,7 @@
            four bytes equal the magic number (137 80 78 71) — a literal segment matches by equality, the
            direct analogue of a literal value pattern, and the hex literal names the magic number
            legibly. Pins magic-number dispatch on a binary header.")
-  (input  (match (Bytes.of (list 137 80 78 71 1 2))
+  (input  (match (Bytes.of #list(137 80 78 71 1 2))
             ((bin (u32 0x89504E47) (bytes rest)) "match")
             (_ "other")))
   (output (: "match" String)))
@@ -484,7 +484,7 @@
            two bytes for its u16, so it cannot match and control falls to the catch-all, yielding 0.
            Pins that too-short input is a non-match (the arm simply does not fire), not a trap — the same
            total-or-trap discipline the corpus pins for a `bytes` segment that overruns.")
-  (input  (match (Bytes.of (list 5))
+  (input  (match (Bytes.of #list(5))
             ((bin (u16 n) (bytes rest)) n)
             (_ 0)))
   (output (: 0 Int64)))
@@ -494,7 +494,7 @@
            only two bytes remain, so `(bytes body 9)` cannot bind nine bytes and the arm falls to the
            catch-all. Pins that a dependent size larger than the remainder is a non-match, not a trap or
            a short read.")
-  (input  (match (Bytes.of (list 9 1 2))
+  (input  (match (Bytes.of #list(9 1 2))
             ((bin (u8 n) (bytes body n)) (Bytes.len body))
             (_ -1)))
   (output (: -1 Int64)))
@@ -505,8 +505,8 @@
            `(list 42)`. This case checks `body` is empty. Pins that a zero dependent size is a valid
            non-match-free read (an empty field), not an overrun or a special case — the degenerate framing a
            loop hits on a zero-length record.")
-  (input  (match (Bytes.of (list 0 42))
-            ((bin (u8 n) (bytes body n) (bytes rest)) (= body (Bytes.of (list))))
+  (input  (match (Bytes.of #list(0 42))
+            ((bin (u8 n) (bytes body n) (bytes rest)) (= body (Bytes.of #list())))
             (_ false)))
   (output (: true Bool)))
 
@@ -517,8 +517,8 @@
            in `rest`. This case checks `y`. Pins that several dependent sizes chain in one pattern, each
            reading a count bound just before it — the sequential length-prefixed framing a single `bin`
            expresses without a loop.")
-  (input  (match (Bytes.of (list 1 2 2 10 20 99))
-            ((bin (u8 a) (bytes x a) (u8 b) (bytes y b) (bytes rest)) (= y (Bytes.of (list 10 20))))
+  (input  (match (Bytes.of #list(1 2 2 10 20 99))
+            ((bin (u8 a) (bytes x a) (u8 b) (bytes y b) (bytes rest)) (= y (Bytes.of #list(10 20))))
             (_ false)))
   (output (: true Bool)))
 
@@ -533,8 +533,8 @@
            n = 3, and exactly 3 bytes remain, so `body` binds all of `(list 10 20 30)` and the pattern
            consumes the whole scrutinee → matches. Pins that size == remaining is a MATCH (not an overrun) —
            the boundary a strict `remaining > n` check would wrongly reject; it must be `remaining >= n`.")
-  (input  (match (Bytes.of (list 3 10 20 30))
-            ((bin (u8 n) (bytes body n)) (= body (Bytes.of (list 10 20 30))))
+  (input  (match (Bytes.of #list(3 10 20 30))
+            ((bin (u8 n) (bytes body n)) (= body (Bytes.of #list(10 20 30))))
             (_ false)))
   (output (: true Bool)))
 
@@ -543,7 +543,7 @@
            only 3 bytes remain — one short — so `(bytes body 4)` overruns and the arm does NOT match, falling
            to the wildcard → false. The strict complement of the exact-fit case: size = remaining + 1 is the
            first overrun. Pins the bounds check is exact at the one-byte margin.")
-  (input  (match (Bytes.of (list 4 10 20 30))
+  (input  (match (Bytes.of #list(4 10 20 30))
             ((bin (u8 n) (bytes body n)) true)
             (_ false)))
   (output (: false Bool)))
@@ -556,7 +556,7 @@
            (i8 n) (bytes body n))` → false. Pins a negative dependent size is rejected at the bounds check,
            the signed companion of the overrun case — a naive unsigned cast of the count would read 255
            bytes (overrun) or a wrap could pass a huge count to a slice.")
-  (input  (match (Bytes.of (list 255 10 20))
+  (input  (match (Bytes.of #list(255 10 20))
             ((bin (i8 n) (bytes body n)) true)
             (_ false)))
   (output (: false Bool)))
@@ -570,7 +570,7 @@
            disagree traps \"binary value does not fit segment\" at that point. Pins that a SIZED `(bytes b
            n)` build is length-checked against n — the whole-value analogue of the u8 out-of-range check,
            and the construction-side counterpart of a matching `(bytes body n)` overrun being a non-match.")
-  (input  (bin (bytes (Bytes.of (list 1 2 3)) 2)))
+  (input  (bin (bytes (Bytes.of #list(1 2 3)) 2)))
   (error  CDZ0304))
 
 ; --- A bin pattern applies only to a Bytes scrutinee -----------------------------------------
@@ -602,7 +602,7 @@
   (doc    "`(match (list 1 2) ((bin (u8 x)) x) (_ 0))` — a `(List Int64)` is not Bytes (a list of integers
            is not a byte sequence; `Bytes.of` is the explicit bridge), rejected CDZ0203. Pins that the
            scrutinee-type check covers a compound collection, not only a scalar.")
-  (input  (do (def (main) (match (list 1 2) ((bin (u8 x)) x) (_ 0))) (export main)))
+  (input  (do (def (main) (match #list(1 2) ((bin (u8 x)) x) (_ 0))) (export main)))
   (error  CDZ0203))
 
 (case "a bin pattern over a runtime non-Bytes scrutinee is a type error"
@@ -624,8 +624,8 @@
            literal tag 7 dispatches, the length n = 3 sizes the dependent `body`, which recovers the
            original payload. Pins the canonical tag-length-value shape in one expression, showing the
            literal, fixed-width, and dependent-size segments compose into a real record grammar.")
-  (input  (match (bin (u8 7) (u16 3) (bytes (Bytes.of (list 100 101 102))))
-            ((bin (u8 7) (u16 n) (bytes body n)) (= body (Bytes.of (list 100 101 102))))
+  (input  (match (bin (u8 7) (u16 3) (bytes (Bytes.of #list(100 101 102))))
+            ((bin (u8 7) (u16 n) (bytes body n)) (= body (Bytes.of #list(100 101 102))))
             (_ false)))
   (output (: true Bool)))
 
@@ -635,8 +635,8 @@
            `(bin (u32 0x89504E47) (u32 len) (bytes body len))`: the literal magic segment gates the parse
            and the u32 length sizes the chunk body. Pins that a magic-number guard and a dependent-size
            chunk chain in one pattern — the shape a chunked container format (PNG, RIFF) is read with.")
-  (input  (match (bin (u32 0x89504E47) (u32 2) (bytes (Bytes.of (list 65 66))))
-            ((bin (u32 0x89504E47) (u32 len) (bytes body len)) (= body (Bytes.of (list 65 66))))
+  (input  (match (bin (u32 0x89504E47) (u32 2) (bytes (Bytes.of #list(65 66))))
+            ((bin (u32 0x89504E47) (u32 len) (bytes body len)) (= body (Bytes.of #list(65 66))))
             (_ false)))
   (output (: true Bool)))
 
@@ -646,7 +646,7 @@
            `(bin (u16 n) (bytes body))`, and the rebuilt bytes equal the original frame. Pins that
            construction and matching are genuinely inverse — parse-then-serialize is the identity on a
            well-formed frame — not merely that each direction works in isolation.")
-  (input  (let ((frame (Bytes.of (list 0 3 10 20 30))))
+  (input  (let ((frame (Bytes.of #list(0 3 10 20 30))))
             (match frame
               ((bin (u16 n) (bytes body n)) (= (bin (u16 n) (bytes body)) frame))
               (_ false))))
@@ -658,7 +658,7 @@
            `(bin (bits ver 4) (bits flags 4) (u16 n) (bytes body n))`, then rebuilt and compared to the
            original. Pins that sub-byte bit-fields participate in a full round-trip alongside byte-aligned
            segments — the mixed bit-and-byte header a wire protocol actually uses.")
-  (input  (let ((msg (bin (bits 1 4) (bits 2 4) (u16 2) (bytes (Bytes.of (list 9 9))))))
+  (input  (let ((msg (bin (bits 1 4) (bits 2 4) (u16 2) (bytes (Bytes.of #list(9 9))))))
             (match msg
               ((bin (bits ver 4) (bits flags 4) (u16 n) (bytes body n))
                (= (bin (bits ver 4) (bits flags 4) (u16 n) (bytes body)) msg))
@@ -675,7 +675,7 @@
            pattern does not cover the scrutinee's type and is rejected CDZ0210, exactly as a sum match
            missing a variant is. Pins that binary matching reuses the exhaustiveness rule rather than a
            special case. A generation that does not yet cover the rule declines (todo), not miscompiles.")
-  (input  (match (Bytes.of (list 1 2))
+  (input  (match (Bytes.of #list(1 2))
             ((bin (u16 n)) n)))
   (error  CDZ0210))
 
@@ -696,7 +696,7 @@
            bytes segment consumes all remaining bytes, so anything after it can never be reached, an
            ill-formed binary form rejected CDZ0220. Pins that an unsized `bytes` is legal only as the
            final segment (a sized `(bytes a n)` may appear anywhere).")
-  (input  (bin (bytes (Bytes.of (list 1 2))) (u8 1)))
+  (input  (bin (bytes (Bytes.of #list(1 2))) (u8 1)))
   (error  CDZ0220))
 
 (case "a bit-field width that is not a compile-time constant is ill-formed"
@@ -913,7 +913,7 @@
            was not recognized as an owned heap producer, so `=` DECLINED (an aliasing-can't-prove reject,
            not a miscompile) though a runtime `Bytes.of` of the same content compared fine. Pins the runtime
            bin result compares by content.")
-  (input  (do (def (main (: v Int64)) (= (bin (u8 (UInt8.wrap v))) (Bytes.of (list 5)))) (export main)))
+  (input  (do (def (main (: v Int64)) (= (bin (u8 (UInt8.wrap v))) (Bytes.of #list(5)))) (export main)))
   (call   main (: 5 Int64))
   (output (: true Bool)))
 
@@ -921,7 +921,7 @@
   (doc    "The discriminator: the same `(= (bin (u8 (UInt8.wrap v))) (Bytes.of (list 5)))` with v=9 builds
            the byte 0x09 ≠ 0x05 → false. Pins the runtime bin `=` is a genuine content compare, not a
            blanket true — the companion of the equal case.")
-  (input  (do (def (main (: v Int64)) (= (bin (u8 (UInt8.wrap v))) (Bytes.of (list 5)))) (export main)))
+  (input  (do (def (main (: v Int64)) (= (bin (u8 (UInt8.wrap v))) (Bytes.of #list(5)))) (export main)))
   (call   main (: 9 Int64))
   (output (: false Bool)))
 
@@ -931,7 +931,7 @@
            unannotated case. Pins the gap was never type inference failing to see it as Bytes (the annotation
            confirms Bytes) — the `=` lowering simply had to recognize the runtime bin result as an owned
            Bytes producer, which it now does.")
-  (input  (do (def (main (: v Int64)) (= (: (bin (u8 (UInt8.wrap v))) Bytes) (Bytes.of (list 5)))) (export main)))
+  (input  (do (def (main (: v Int64)) (= (: (bin (u8 (UInt8.wrap v))) Bytes) (Bytes.of #list(5)))) (export main)))
   (call   main (: 5 Int64))
   (output (: true Bool)))
 
@@ -939,7 +939,7 @@
   (doc    "The control that always worked: `(= (Bytes.of (list (UInt8.wrap v))) (Bytes.of (list 5)))` with
            v=5 → true. Runtime `Bytes.of` `=` is fine; pins the runtime bin case joins it (the gap was
            specific to the runtime `bin` construction result, not runtime Bytes equality in general).")
-  (input  (do (def (main (: v Int64)) (= (Bytes.of (list (UInt8.wrap v))) (Bytes.of (list 5)))) (export main)))
+  (input  (do (def (main (: v Int64)) (= (Bytes.of #list((UInt8.wrap v))) (Bytes.of #list(5)))) (export main)))
   (call   main (: 5 Int64))
   (output (: true Bool)))
 
@@ -985,7 +985,7 @@
            `(> n 5)` folds TRUE → arm 1 (100). Pins that a guarded bin arm's guard is EVALUATED (not ignored)
            on the const path and that a TRUE fold selects the arm — the const analogue of the runtime
            fall-through case, exercising the const-path guard fold rather than the runtime `pred AND guard`.")
-  (input  (match (Bytes.of (list 7))
+  (input  (match (Bytes.of #list(7))
             ((guard (bin (u8 n)) (> n 5)) 100)
             ((guard (bin (u8 n)) (> n 0)) 200)
             (_ 300)))
@@ -997,7 +997,7 @@
            folds TRUE → 200. Pins that a FALSE guard fold on the const path advances to the next arm (not a
            trap, not a wrong-arm selection) — the const twin of the runtime fall-through, closing the
            const-path guard fold's false branch.")
-  (input  (match (Bytes.of (list 3))
+  (input  (match (Bytes.of #list(3))
             ((guard (bin (u8 n)) (> n 5)) 100)
             ((guard (bin (u8 n)) (> n 0)) 200)
             (_ 300)))
@@ -1036,7 +1036,7 @@
            observed-trap rule (a demanded trapping computation fires; only a DISCARDED one is elided).")
   (input  (do
             (def (main (: k UInt8))
-              (match (Bytes.of (list (UInt8.wrap 5) (UInt8.wrap (+ 9 k))))
+              (match (Bytes.of #list((UInt8.wrap 5) (UInt8.wrap (+ 9 k))))
                 ((guard (bin (u8 5) (u8 n)) (> n (/ 12 (- n 9)))) n)
                 ((bin (u8 5) (u8 m)) (* 100 m))
                 (_ -1)))
@@ -1054,7 +1054,7 @@
            unguarded arm 3, 100·15 = 1500, must NOT be reached).")
   (input  (do
             (def (main (: k UInt8))
-              (match (Bytes.of (list (UInt8.wrap 5) (UInt8.wrap k) (UInt8.wrap (+ k 1))))
+              (match (Bytes.of #list((UInt8.wrap 5) (UInt8.wrap k) (UInt8.wrap (+ k 1))))
                 ((guard (bin (u8 5) (u8 n) (u8 p)) (> n 50)) (+ n p))
                 ((guard (bin (u8 5) (u8 a) (u8 b)) (> b a)) (* 10 (+ a b)))
                 ((bin (u8 5) (u8 x) (u8 y)) (* 100 (+ x y)))
@@ -1095,7 +1095,7 @@
            read in the arm body), not only discard it — the materialized scrutinee flows to the binder, the
            real fallback shape a parser uses to keep the unrecognized bytes.")
   (input  (do (def (main (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
+                (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
                   ((bin (u8 1) (u8 x) (u8 y)) (+ x y))
                   (whole (Bytes.len whole))))
               (export main)))
@@ -1113,7 +1113,7 @@
            `Bytes.slice` result (a fresh Bytes handle from the O(1) slice op), not only over a top-level
            scrutinee — the shape a framed-buffer parser takes when it decodes a windowed region.")
   (input  (do (def (main (: h Int64))
-                (match (Bytes.slice (Bytes.of (list (UInt8.wrap 99) (UInt8.wrap h) (UInt8.wrap 7))) 1 2)
+                (match (Bytes.slice (Bytes.of #list((UInt8.wrap 99) (UInt8.wrap h) (UInt8.wrap 7))) 1 2)
                   ((Some sub) (match sub ((bin (u8 a) (u8 b)) (+ a b)) (_ -1)))
                   ((None) -2)))
               (export main)))
@@ -1131,7 +1131,7 @@
            bin-dispatch composition of the runtime-start re-basing pin in 10-bytes.")
   (input  (do
             (def (main (: a Int64))
-              (match (Bytes.slice (Bytes.of (list 9 1 42 7)) a 2)
+              (match (Bytes.slice (Bytes.of #list(9 1 42 7)) a 2)
                 ((Some s) (match s
                             ((bin (u8 1) (u8 v)) v)
                             (_ -1)))
@@ -1151,7 +1151,7 @@
            ran to the parent buffer's end would measure 5 and over-read past the window.")
   (input  (do
             (def (main (: a Int64))
-              (match (Bytes.slice (Bytes.of (list 1 2 3 4 5 6)) a 3)
+              (match (Bytes.slice (Bytes.of #list(1 2 3 4 5 6)) a 3)
                 ((Some s) (match s
                             ((bin (u8 1) (bytes rest)) (Bytes.len rest))
                             (_ -1)))
@@ -1174,7 +1174,7 @@
            would decode a different window or spuriously match at a=0.")
   (input  (do
             (def (main (: a Int64))
-              (match (Bytes.slice (Bytes.of (list 9 2 55 66 7)) a 3)
+              (match (Bytes.slice (Bytes.of #list(9 2 55 66 7)) a 3)
                 ((Some s) (match s
                             ((bin (u8 n) (bytes body n)) (Bytes.len body))
                             (_ -1)))
@@ -1196,7 +1196,7 @@
            `BinSizedRead` slice flows into the inner match's materialized scrutinee) — the layered-frame parser
            idiom, decode a container then decode its contents.")
   (input  (do (def (main (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap 2) (UInt8.wrap h) (UInt8.wrap 7)))
+                (match (Bytes.of #list((UInt8.wrap 2) (UInt8.wrap h) (UInt8.wrap 7)))
                   ((bin (u8 n) (bytes body n))
                    (match body
                      ((bin (u8 x) (u8 y)) (+ (* x 10) y))
@@ -1234,10 +1234,10 @@
             (def (main (: mode Int64))
               (do
                 (def s (if (= mode 1)
-                           (Bytes.of (list 1 10 2 20 30 1 40))
+                           (Bytes.of #list(1 10 2 20 30 1 40))
                            (if (= mode 2)
-                               (Bytes.of (list 3 5 6 7))
-                               (Bytes.of (list)))))
+                               (Bytes.of #list(3 5 6 7))
+                               (Bytes.of #list()))))
                 (drain s 1 0)))
             (export main)))
   (call main (: 1 Int64)) (output (: 230 Int64))
@@ -1262,10 +1262,10 @@
                 (_ (bin))))
             (def (main (: mode Int64))
               (do
-                (def out (reframe (Bytes.of (list 2 20 30))))
+                (def out (reframe (Bytes.of #list(2 20 30))))
                 (def expected (if (= mode 1)
-                                  (Bytes.of (list 3 255 20 30))
-                                  (Bytes.of (list 3 255 20 31))))
+                                  (Bytes.of #list(3 255 20 30))
+                                  (Bytes.of #list(3 255 20 31))))
                 (+ (* (Bytes.len out) 10) (if (= out expected) 1 0))))
             (export main)))
   (call main (: 1 Int64)) (output (: 41 Int64))
@@ -1330,7 +1330,7 @@
            5. Pins the length-prefixed-frame builder — a fixed header composed with a runtime-length body,
            the construction companion of the dependent-size MATCH.")
   (input  (do (def (frame (: b Bytes)) (Bytes.len (bin (u16 3) (bytes b))))
-              (def (mk (: n Int64)) (Bytes.of (list (UInt8.wrap n) 20 30)))
+              (def (mk (: n Int64)) (Bytes.of #list((UInt8.wrap n) 20 30)))
               (def (main (: n Int64)) (frame (mk n)))
               (export main)))
   (call   main (: 7 Int64))
@@ -1347,7 +1347,7 @@
             (def (build (: i Int64) (: n Int64) (: acc Bytes))
               (if (>= i n) acc (build (+ i 1) n (Bytes.concat acc (bin (u8 (UInt8.wrap i)))))))
             (def (main (: n Int64))
-              (let ((body (build 0 n (Bytes.of (list)))))
+              (let ((body (build 0 n (Bytes.of #list()))))
                 (match (bin (u8 (UInt8.wrap n)) (bytes body))
                   ((bin (u8 len) (bytes rest)) (+ (* 100 len) (Bytes.len rest)))
                   (_ -1))))
@@ -1363,7 +1363,7 @@
            `rest` is those three bytes and `Bytes.len rest = 3`. Pins the header-plus-rest parser shape —
            a tag followed by an opaque remainder — over a runtime value.")
   (input  (do (def (main (: n UInt8))
-                (let ((payload (Bytes.of (list 1 2 3))))
+                (let ((payload (Bytes.of #list(1 2 3))))
                   (match (bin (u8 n) (bytes payload))
                     ((bin (u8 t) (bytes rest)) (Bytes.len rest))
                     (_ -9))))
@@ -1377,7 +1377,7 @@
            an empty Bytes, so `Bytes.len rest = 0`. Pins that a rest segment absorbs zero remaining bytes
            without trapping (the degenerate case of the header-plus-rest parser).")
   (input  (do (def (main (: n UInt8))
-                (let ((payload (Bytes.of (list))))
+                (let ((payload (Bytes.of #list())))
                   (match (bin (u8 n) (bytes payload))
                     ((bin (u8 t) (bytes rest)) (Bytes.len rest))
                     (_ -9))))
@@ -1397,7 +1397,7 @@
            out — a full decode→construct→destructure round-trip, projected to a scalar so both backends agree.")
   (input  (do (type Pair (P Int64 Int64))
               (def (main (: h Int64))
-                (match (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7)))
+                (match (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 7)))
                          ((bin (u8 a) (u8 b)) (Some (P a b)))
                          (_ (None)))
                   ((Some (P a2 b2)) (+ (* a2 256) b2))
@@ -1418,7 +1418,7 @@
            read a size, then that many bytes — the wasm companion of the constant dependent-size cases
            above (was declined on wasm, computed on rust; now lowered via a sized bytes-slice).")
   (input  (do (def (main (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
+                (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
                   ((bin (u8 n) (bytes payload n)) (Bytes.len payload))
                   (_ -1)))
               (export main)))
@@ -1438,7 +1438,7 @@
            (the u16 decode at offset 0 feeds the slice at the static offset 2) — the u16-framed-message shape,
            the runtime companion of the constant u16-length cases.")
   (input  (do (def (main (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap 0) (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
+                (match (Bytes.of #list((UInt8.wrap 0) (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
                   ((bin (u16 n) (bytes body n)) (Bytes.len body))
                   (_ -1)))
               (export main)))
@@ -1458,7 +1458,7 @@
            above, but with the magic gate and the size read both evaluated at run time), the tag-length-value
            parser shape.")
   (input  (do (def (main (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap 137) (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
+                (match (Bytes.of #list((UInt8.wrap 137) (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
                   ((bin (u8 137) (u8 n) (bytes body n)) (Bytes.len body))
                   (_ -1)))
               (export main)))
@@ -1481,7 +1481,7 @@
            2026-07-18, corpus-bugfix — the literal-segment probes were short-circuited but the dependent-size
            read was not).")
   (input  (do (def (main (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h)))
+                (match (Bytes.of #list((UInt8.wrap h)))
                   ((bin (u8 a) (u8 n) (bytes payload n)) (+ a (Bytes.len payload)))
                   (_ -1)))
               (export main)))
@@ -1498,7 +1498,7 @@
            byte 0xFF → n = -1 → falls through. Pins the runtime negative-size guard mirrors the const path's
            `filter(|v| *v >= 0)` (reviewer finding 2026-07-18).")
   (input  (do (def (main (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 20)))
+                (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 20)))
                   ((bin (i8 n) (bytes payload n)) (Bytes.len payload))
                   (_ -1)))
               (export main)))
@@ -1519,7 +1519,7 @@
            so the gate scores this TODO — it is a well-formed form (distinct from the permanent CDZ0220
            non-final UNSIZED `(bytes b)`), pinned here so the §4a dynamic-offset lowering flips it to PASS.")
   (input  (do (def (main (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9)))
+                (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9)))
                   ((bin (u8 n) (bytes body n) (bytes rest)) (+ (Bytes.len body) (Bytes.len rest)))
                   (_ -1)))
               (export main)))
@@ -1533,7 +1533,7 @@
            binds an empty body and the following segment reads at the SAME dynamic offset (`total + 0`) — the
            runtime companion of the constant zero-size case, exercising the `off_plus`-is-zero dynamic path.")
   (input  (do (def (main (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9)))
+                (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9)))
                   ((bin (u8 n) (bytes body n) (bytes rest)) (+ (Bytes.len body) (Bytes.len rest)))
                   (_ -1)))
               (export main)))
@@ -1548,7 +1548,7 @@
            the dynamic-offset payload/rest reads: a size larger than the remainder is a non-match, never a
            trap or an out-of-bounds read (the runtime companion of the const-path overrun case above).")
   (input  (do (def (main (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9)))
+                (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9)))
                   ((bin (u8 n) (bytes body n) (bytes rest)) (+ (Bytes.len body) (Bytes.len rest)))
                   (_ -1)))
               (export main)))
@@ -1564,7 +1564,7 @@
            + 1`, i.e. exact 4) is ANDed before the probe so the read stays in bounds. A frame whose tag byte
            is not 99 would fall through to -1.")
   (input  (do (def (main (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 99)))
+                (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 99)))
                   ((bin (u8 n) (bytes body n) (u8 99)) (Bytes.len body))
                   (_ -1)))
               (export main)))
@@ -1619,8 +1619,8 @@
             (_ -1)))
         (def (main (: mode Int64))
           (parse (if (= mode 1)
-                     (Bytes.of (list 16 2 5 6))
-                     (if (= mode 2) (Bytes.of (list 39)) (Bytes.of (list 153))))))
+                     (Bytes.of #list(16 2 5 6))
+                     (if (= mode 2) (Bytes.of #list(39)) (Bytes.of #list(153))))))
         (export main)))
   (call main (: 1 Int64)) (output (: 11 Int64))
   (call main (: 2 Int64)) (output (: 70 Int64))
@@ -1642,7 +1642,7 @@
           (bin (u8 (UInt8.wrap (Bytes.len body))) (bytes body)))
         (def (main (: mode Int64))
           (do
-            (def body (if (= mode 1) (Bytes.of (list 5 6 7)) (Bytes.of (list))))
+            (def body (if (= mode 1) (Bytes.of #list(5 6 7)) (Bytes.of #list())))
             (match (frame body)
               ((bin (u8 n) (bytes got n) (bytes rest))
                 (if (= (Bytes.len rest) 0)
@@ -1704,7 +1704,7 @@
            100*5+5 = 505. Pins runtime bit-field DECODING — the match companion of the runtime bit-field
            construction cases above (was declined on wasm; now lowered via a run-read + shift/mask).")
   (input  (do (def (run (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h)))
+                (match (Bytes.of #list((UInt8.wrap h)))
                   ((bin (bits a 3) (bits b 5)) (+ (* 100 a) b))
                   (_ -1)))
               (export run)))
@@ -1719,7 +1719,7 @@
            advances the static offset of a trailing byte-aligned segment (a bitfield header + a byte
            payload — a common wire shape); earlier a segment after ANY bit-field declined outright.")
   (input  (do (def (run (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 42)))
+                (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 42)))
                   ((bin (bits a 3) (bits b 5) (u8 c)) (+ (+ (* 100 a) b) c))
                   (_ -1)))
               (export run)))
@@ -1736,7 +1736,7 @@
            fixed-int size). Pins that a bit-field is a valid dependent-size source; earlier only a fixed-int
            size segment was accepted.")
   (input  (do (def (run (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 65) (UInt8.wrap 66)))
+                (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 65) (UInt8.wrap 66)))
                   ((bin (bits n 8) (bytes payload n)) (Bytes.len payload))
                   (_ -1)))
               (export run)))
@@ -1751,7 +1751,7 @@
            (0b0000_0001) → top bit 0 → falls through to -1. This case checks the MATCH; the next the miss.
            Pins sub-byte tag dispatch — a bitfield-tagged binary format's discriminator.")
   (input  (do (def (run (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h)))
+                (match (Bytes.of #list((UInt8.wrap h)))
                   ((bin (bits 1 1) (bits x 7)) x)
                   (_ -1)))
               (export run)))
@@ -1764,7 +1764,7 @@
            → -1. Pins that a literal bit-field probe is a genuine equality gate (a non-matching tag is a
            non-match, not a bind), the sub-byte analogue of a literal int-segment tag miss.")
   (input  (do (def (run (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h)))
+                (match (Bytes.of #list((UInt8.wrap h)))
                   ((bin (bits 1 1) (bits x 7)) x)
                   (_ -1)))
               (export run)))
@@ -1834,7 +1834,7 @@
                 (match b
                   ((bin (u8 n) (bytes body n) (bytes rest)) (bin (u8 n) (bytes body)))
                   (_ (bin))))
-              (def (main (: k Int64)) (Bytes.len (reframe (Bytes.of (list 2 10 20 99)))))
+              (def (main (: k Int64)) (Bytes.len (reframe (Bytes.of #list(2 10 20 99)))))
               (export main)))
   (call   main (: 0 Int64))
   (output (: 3 Int64)))
@@ -1889,7 +1889,7 @@
   (input  (do
         (def (main (: k Int64))
           (do
-            (def b (Bytes.concat (Bytes.of (list 1 18)) (Bytes.of (list 52 5))))
+            (def b (Bytes.concat (Bytes.of #list(1 18)) (Bytes.of #list(52 5))))
             (def w (Option.expect (Bytes.slice b k 2) "in"))
             (match w
               ((bin (u16 x)) x)
@@ -1920,7 +1920,7 @@
             ((None _u) acc)))
         (def (main (: x UInt8))
           (do
-            (def b (Bytes.concat (Bytes.concat (Bytes.of (list 2 10)) (Bytes.of (list 20 1 30 3))) (Bytes.of (list 40 41 x))))
+            (def b (Bytes.concat (Bytes.concat (Bytes.of #list(2 10)) (Bytes.of #list(20 1 30 3))) (Bytes.of #list(40 41 x))))
             (frames b 0 0)))
         (export main)))
   (call   main (: 42 UInt8)) (output (: 3183 Int64))
@@ -1936,7 +1936,7 @@
   (input  (do
         (def (main (: k Int64))
           (do
-            (def b (Bytes.of (list 0 1 18 52 86)))
+            (def b (Bytes.of #list(0 1 18 52 86)))
             (def w (Option.expect (Bytes.slice b k 2) "in"))
             (match w ((bin (u16 x)) x) (_ -1))))
         (export main)))
@@ -1954,7 +1954,7 @@
   (input  (do
         (def (main (: x UInt8))
           (do
-            (def b (Bytes.of (list x 0 0 1)))
+            (def b (Bytes.of #list(x 0 0 1)))
             (match b
               ((bin (u32 n)) (Int64.of (% n 1000)))
               (_ -1))))
@@ -1976,7 +1976,7 @@
   (input  (do
         (def (main (: x UInt8))
           (do
-            (def b (Bytes.of (list 104 x)))
+            (def b (Bytes.of #list(104 x)))
             (match b
               ((bin (utf8 s 2)) (String.scalar-len s))
               (_ -1))))
@@ -1997,7 +1997,7 @@
   (input  (do
         (def (main (: x UInt8))
           (do
-            (def b (Bytes.of (list 1 104 x)))
+            (def b (Bytes.of #list(1 104 x)))
             (match b
               ((bin (u8 tag) (utf8 s 2)) (+ (* 10 tag) (String.scalar-len s)))
               (_ -1))))
@@ -2019,7 +2019,7 @@
   (input  (do
         (def (main (: x UInt8))
           (do
-            (def b (Bytes.of (list 2 104 x)))
+            (def b (Bytes.of #list(2 104 x)))
             (match b
               ((bin (u8 n) (utf8 s n)) (String.scalar-len s))
               (_ -1))))
@@ -2040,7 +2040,7 @@
   (input  (do
         (def (main (: x UInt8))
           (do
-            (def b (Bytes.of (list 2 104 x 7)))
+            (def b (Bytes.of #list(2 104 x 7)))
             (match b
               ((bin (u8 n) (utf8 s n) (u8 7)) (String.scalar-len s))
               (_ -1))))
@@ -2062,7 +2062,7 @@
   (input  (do
         (def (main (: x UInt8))
           (do
-            (def b (Bytes.of (list x 104)))
+            (def b (Bytes.of #list(x 104)))
             (match b
               ((bin (u8 n) (utf8 s n)) (String.scalar-len s))
               (_ -1))))
@@ -2082,7 +2082,7 @@
   (input  (do
         (def (main (: k Int64))
           (do
-            (def b (Bytes.of (list 0 1 2 3 4 254 255)))
+            (def b (Bytes.of #list(0 1 2 3 4 254 255)))
             (if (< k 5)
                 (match (Option.expect (Bytes.slice b k 4) "in")
                   ((bin (u32 n le)) (Int64.of n))
@@ -2126,7 +2126,7 @@
   (input  (do
         (def (main (: x UInt8))
           (do
-            (def b (Bytes.of (list x 2 18 52 9)))
+            (def b (Bytes.of #list(x 2 18 52 9)))
             (match b
               ((bin (u8 tag) (u8 n) (bytes body n) (bytes rest))
                 (match body
@@ -2145,7 +2145,7 @@
            le then dropped the sign reads +...809 % 1000 = 809 or +9 at x=128.")
   (input  (do
         (def (main (: x UInt8))
-          (match (Bytes.of (list 9 0 0 0 0 0 0 x))
+          (match (Bytes.of #list(9 0 0 0 0 0 0 x))
             ((bin (i64 n le)) (% n 1000))
             (_ -2)))
         (export main)))
@@ -2161,10 +2161,10 @@
            arm flips the const digit to 0.")
   (input  (do
         (def (main (: x UInt8))
-          (+ (* 10 (match (Bytes.of (list 128 0 0 0 0 0 0 9))
+          (+ (* 10 (match (Bytes.of #list(128 0 0 0 0 0 0 9))
                      ((bin (i64 n)) (if (< n 0) 1 0))
                      (_ -2)))
-             (match (Bytes.of (list x 0 0 0 0 0 0 9))
+             (match (Bytes.of #list(x 0 0 0 0 0 0 9))
                ((bin (i64 n)) (if (< n 0) 1 0))
                (_ -2))))
         (export main)))
@@ -2180,13 +2180,13 @@
            pinned separately; this is the CONST-fold face.")
   (input  (do
         (def (main (: x UInt8))
-          (+ (* 100 (match (Bytes.of (list 128 0 0 1))
+          (+ (* 100 (match (Bytes.of #list(128 0 0 1))
                       ((bin (u32 m)) (if (> m (: 5 UInt32)) 1 0))
                       (_ -2)))
-             (+ (* 10 (match (Bytes.of (list 128 0 0 1))
+             (+ (* 10 (match (Bytes.of #list(128 0 0 1))
                         ((bin (u32 m)) (Int64.of (% (% m (: 1000 UInt32)) 10)))
                         (_ -2)))
-                (match (Bytes.of (list 128 1))
+                (match (Bytes.of #list(128 1))
                   ((bin (u16 m)) (if (> m (: 5 UInt16)) 1 0))
                   (_ -2)))))
         (export main)))
@@ -2200,7 +2200,7 @@
            the dividend-signed -799 or reject a bogus overflow). Composite `1000*(>5) + (m % 1000)` = 1817.")
   (input  (do
         (def (main)
-          (match (Bytes.of (list 128 0 0 0 0 0 0 9))
+          (match (Bytes.of #list(128 0 0 0 0 0 0 9))
             ((bin (u64 m)) (+ (* 1000 (if (> m (: 5 UInt64)) 1 0)) (Int64.of (% m (: 1000 UInt64)))))
             (_ -2)))
         (export main)))
@@ -2213,9 +2213,9 @@
            to 817 + 817 = 1634 (a signed re-materialization would flip a sign or reject).")
   (input  (do
         (def (main)
-          (+ (match (Bytes.of (list 128 0 0 0 0 0 0 9))
+          (+ (match (Bytes.of #list(128 0 0 0 0 0 0 9))
                ((bin (u64 m)) (Int64.of (% m (: 1000 UInt64)))) (_ -2))
-             (match (Bytes.of (list 128 0 0 0 0 0 0 9))
+             (match (Bytes.of #list(128 0 0 0 0 0 0 9))
                ((bin (u64 m)) (Int64.of (% m (: 1000 UInt64)))) (_ -2))))
         (export main)))
   (output (: 1634 Int64)))
@@ -2231,7 +2231,7 @@
   (input  (do
         (def (main (: x UInt8))
           (do
-            (def src (Bytes.of (list x 0 0 0 0 0 0 9)))
+            (def src (Bytes.of #list(x 0 0 0 0 0 0 9)))
             (match src
               ((bin (u64 n))
                 (match (bin (u64 n))
@@ -2254,7 +2254,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def b (Bytes.concat (Bytes.of (list 1 18)) (Bytes.of (list 52 5))))
+                (def b (Bytes.concat (Bytes.of #list(1 18)) (Bytes.of #list(52 5))))
                 (def w (Option.expect (Bytes.slice b k 2) "in"))
                 (match w
                   ((bin (u16 x le)) x)
@@ -2270,7 +2270,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def b (Bytes.concat (Bytes.of (list 1 255)) (Bytes.of (list 254 5))))
+                (def b (Bytes.concat (Bytes.of #list(1 255)) (Bytes.of #list(254 5))))
                 (def w (Option.expect (Bytes.slice b k 2) "in"))
                 (match w
                   ((bin (i16 x)) x)
@@ -2286,7 +2286,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def b (Bytes.concat (Bytes.of (list 0 255 2 3 4 5 6 7)) (Bytes.of (list 8 9))))
+                (def b (Bytes.concat (Bytes.of #list(0 255 2 3 4 5 6 7)) (Bytes.of #list(8 9))))
                 (def w (Option.expect (Bytes.slice b k 8) "in"))
                 (match w
                   ((bin (u64 x)) (BigInt.of x))
@@ -2301,7 +2301,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def b (Bytes.concat (Bytes.of (list 165 18)) (Bytes.of (list 52 5))))
+                (def b (Bytes.concat (Bytes.of #list(165 18)) (Bytes.of #list(52 5))))
                 (def w (Option.expect (Bytes.slice b k 2) "in"))
                 (match w
                   ((bin (bits a 4) (bits b2 12)) (+ (* a 10000) b2))
@@ -2321,7 +2321,7 @@
                 ((None _u) acc)))
             (def (main (: k Int64))
               (do
-                (def b (Bytes.concat (Bytes.of (list 9 3 10)) (Bytes.of (list 20 30 7 8))))
+                (def b (Bytes.concat (Bytes.of #list(9 3 10)) (Bytes.of #list(20 30 7 8))))
                 (def w (Option.expect (Bytes.slice b k (- 7 k)) "in"))
                 (match w
                   ((bin (u8 n) (bytes body n) (bytes rest)) (+ (* 1000 (bsum body 0 0)) (bsum rest 0 0)))
@@ -2372,7 +2372,7 @@
                     (_ (- 0 acc))))
                 ((None _u) acc)))
             (def (main (: k UInt8))
-              (walk (Bytes.of (list (UInt8.wrap 1) k (UInt8.wrap 1)
+              (walk (Bytes.of #list((UInt8.wrap 1) k (UInt8.wrap 1)
                                     (UInt8.wrap 1) (UInt8.wrap 2) (UInt8.wrap 0)
                                     (UInt8.wrap 0) (UInt8.wrap 0) (UInt8.wrap 0))) 0 0))
             (export main)))
@@ -2396,7 +2396,7 @@
         (def (main (: x UInt8))
           (handle Emit 0
             ((ev (v) s (resume (* v (+ s 1)) (+ s 1))))
-            (match (Bytes.of (list 2 x 20 99))
+            (match (Bytes.of #list(2 x 20 99))
               ((bin (u8 n) (bytes body n) (bytes _rest)) (walk body 0 0))
               (_ -1))))
         (export main)))
@@ -2412,7 +2412,7 @@
            b = low 13 of 0b1011011001011010 = 5722 → 505722. A per-byte decoder (or one that read the
            run little-endian) misreads b.")
   (input  (do (def (run (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 90)))
+                (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 90)))
                   ((bin (bits a 3) (bits b 13)) (+ (* 100000 a) b))
                   (_other -1)))
               (export run)))
@@ -2426,7 +2426,7 @@
            d=3 → 25351883. Any off-by-one in the running bit cursor (or a mask clipped at a byte edge)
            shifts every later field.")
   (input  (do (def (run (: h Int64))
-                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 53) (UInt8.wrap 227)))
+                (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 53) (UInt8.wrap 227)))
                   ((bin (bits a 5) (bits b 7) (bits c 9) (bits d 3))
                     (+ (* 1000000 a) (+ (* 10000 b) (+ (* 10 c) d))))
                   (_other -1)))
@@ -2443,7 +2443,7 @@
   (input  (do
             (def (loop (: j Int64) (: n Int64) (: h Int64) (: tot Int64))
               (if (< j n)
-                (loop (+ j 1) n h (+ tot (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
+                (loop (+ j 1) n h (+ tot (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
                                           ((bin (u8 k) (bytes payload k)) (Bytes.len payload))
                                           (_ -1))))
                 tot))
@@ -2461,7 +2461,7 @@
   (input  (do
             (def (loop (: j Int64) (: n Int64) (: h Int64) (: tot Int64))
               (if (< j n)
-                (loop (+ j 1) n h (+ tot (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9)))
+                (loop (+ j 1) n h (+ tot (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9)))
                                           ((bin (u8 k) (bytes body k) (bytes rest)) (+ (Bytes.len body) (Bytes.len rest)))
                                           (_ -1))))
                 tot))
@@ -2477,7 +2477,7 @@
   (input (do
     (def (main (: x UInt8))
       (do
-        (def b (Bytes.of (list 2 104 x 7)))
+        (def b (Bytes.of #list(2 104 x 7)))
         (match b
           ((bin (u8 n) (utf8 s n) (u8 7)) (String.scalar-len s))
           (_ -1))))
@@ -2490,7 +2490,7 @@
   (input (do
     (def (main (: x UInt8))
       (do
-        (def b (Bytes.of (list 2 104 x)))
+        (def b (Bytes.of #list(2 104 x)))
         (match b
           ((bin (u8 n) (utf8 s n)) (String.scalar-len s))
           (_ -1))))
@@ -2503,7 +2503,7 @@
   (input (do
     (def (main (: x UInt8))
       (do
-        (def b (Bytes.of (list 2 104 x 7)))
+        (def b (Bytes.of #list(2 104 x 7)))
         (match b
           ((bin (u8 n) (bytes body n) (u8 7)) (Bytes.len body))
           (_ -1))))
@@ -2515,17 +2515,17 @@
 ; (migration from rcdzc bin-match cdz-run tests, 2026-08-27): exercises the runtime BinRestRead / BinSizedRead emit.
 
 (case "a runtime bin-match binds a final rest bytes segment (tail length)"
-  (input (do (def (main (: n UInt8)) (let ((payload (Bytes.of (list 1 2 3))))
+  (input (do (def (main (: n UInt8)) (let ((payload (Bytes.of #list(1 2 3))))
     (match (bin (u8 n) (bytes payload)) ((bin (u8 t) (bytes rest)) (Bytes.len rest)) (_ -9)))) (export main)))
   (call main (: 5 UInt8)) (output (: 3 Int64)))
 
 (case "a runtime bin-match final rest is empty when the scrutinee is exactly the header"
-  (input (do (def (main (: n UInt8)) (let ((payload (Bytes.of (list))))
+  (input (do (def (main (: n UInt8)) (let ((payload (Bytes.of #list())))
     (match (bin (u8 n) (bytes payload)) ((bin (u8 t) (bytes rest)) (Bytes.len rest)) (_ -9)))) (export main)))
   (call main (: 7 UInt8)) (output (: 0 Int64)))
 
 (case "a runtime bin-match final rest after a 2-byte header binds the tail"
-  (input (do (def (main (: n UInt16)) (let ((payload (Bytes.of (list 9 8 7 6 5))))
+  (input (do (def (main (: n UInt16)) (let ((payload (Bytes.of #list(9 8 7 6 5))))
     (match (bin (u16 n) (bytes payload)) ((bin (u16 t) (bytes rest)) (Bytes.len rest)) (_ -9)))) (export main)))
   (call main (: 300 UInt16)) (output (: 5 Int64)))
 
@@ -2534,7 +2534,7 @@
   (call main (: 5 UInt8)) (output (: -9 Int64)))
 
 (case "a runtime bin-match binds a dependent-size bytes segment named by an earlier binder"
-  (input (do (def (main (: h Int64)) (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
+  (input (do (def (main (: h Int64)) (match (Bytes.of #list((UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
     ((bin (u8 n) (bytes payload n)) (Bytes.len payload)) (_ -1))) (export main)))
   (call main (: 2 Int64)) (output (: 2 Int64))
   (call main (: 1 Int64)) (output (: -1 Int64)))
@@ -2581,7 +2581,7 @@
            x=128 -> n = 2^63 + 1, (% n 1000) = 809 unsigned (a signed rem_s would give -807). x=64 ->
            n = 2^62 + 1 -> 905, the top-bit-clear control where signed and unsigned agree.")
   (input (do (def (main (: x UInt8))
-               (do (def b (Bytes.of (list x 0 0 0 0 0 0 1)))
+               (do (def b (Bytes.of #list(x 0 0 0 0 0 0 1)))
                    (match b ((bin (u64 n)) (Int64.of (% n 1000))) (_ -1)))) (export main)))
   (call main (: 128 UInt8)) (output (: 809 Int64))
   (call main (: 64 UInt8))  (output (: 905 Int64)))
@@ -2595,9 +2595,9 @@
 
 (case "bmr1 bin segments read exactly across the seams of a 50-concat rope and reclaim"
   (input (do
-(def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 7))) (- k 1))))
+(def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of #list(7))) (- k 1))))
 (def (main (: n Int64))
-  (let ((r (grow (Bytes.of (list 1 2)) 50)))
+  (let ((r (grow (Bytes.of #list(1 2)) 50)))
     (match r
       ((bin (u16 head) (u8 first7) (bytes rest)) (+ (* 100 head) (+ first7 (Bytes.len rest))))
       (_ -1))))
@@ -2608,12 +2608,12 @@
 
 (case "bmr2 fifty bin matches over a deep rope leak zero per-match (the rest binding reclaims where slicing leaks)"
   (input (do
-(def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 7))) (- k 1))))
+(def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of #list(7))) (- k 1))))
 (def (frames (: r Bytes) (: k Int64))
   (if (= k 0) 0
       (+ (match r ((bin (u16 head) (bytes rest)) (+ head (Bytes.len rest))) (_ -1))
          (frames r (- k 1)))))
-(def (main (: n Int64)) (frames (grow (Bytes.of (list 1 2)) 50) n))
+(def (main (: n Int64)) (frames (grow (Bytes.of #list(1 2)) 50) n))
 (export main)))
   (call main (: 50 Int64))
   (output (: 15400 Int64))
@@ -2654,7 +2654,7 @@
 
 (case "ubr1 a dependent-size utf8 segment decodes across a rope seam (prefix in the base, string spanning the concat)"
   (input (do
-(def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 104 105))) (- k 1))))
+(def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of #list(104 105))) (- k 1))))
 (def (main (: n Int64))
   (let ((r (grow (bin (u8 (UInt8.wrap (* n 2)))) 50)))
     (match r
@@ -2667,7 +2667,7 @@
 
 (case "ubr2 fifty dependent-size utf8 decodes over a deep rope leak linearly (~2 per decode)"
   (input (do
-(def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 104 105))) (- k 1))))
+(def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of #list(104 105))) (- k 1))))
 (def (frames (: r Bytes) (: k Int64))
   (if (= k 0) 0
       (+ (match r ((bin (u8 len) (utf8 s len) (bytes rest)) (String.byte-len s)) (_ -1))

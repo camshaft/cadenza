@@ -10,7 +10,7 @@
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field. The dotted
            display `p.x` is sugar for the canonical member-access form (. p x); a reader
            expands one to the other (options/code-shape/), so both denote the same tree.")
-  (input  (let ((p (record (= x 1) (= y 2)))) p.x))
+  (input  (let ((p #record((= x 1) (= y 2)))) p.x))
   (output (: 1 Int64)))
 
 (case "a record scrutinee is bound whole by a match binder"
@@ -21,7 +21,7 @@
            (x 3) (y 4)) (r (+ (. r x) (. r y))))` binds `r` to the record and projects its fields → 7.
            Pins that a record scrutinee matches (binding the whole value) like a tuple/sum scrutinee does,
            the degenerate single-binder case.")
-  (input  (match (record (= x 3) (= y 4))
+  (input  (match #record((= x 3) (= y 4))
             (r (+ (. r x) (. r y)))))
   (output (: 7 Int64)))
 
@@ -32,7 +32,7 @@
            that a sum stored in a record field is recovered by projection and matched exactly as a bare
            sum is — the composition of member access with sum matching.")
   (input  (do
-            (def (f o) (let ((r (record (= tag o)))) (match (. r tag) ((Some x) x) ((None _) -1))))
+            (def (f o) (let ((r #record((= tag o)))) (match (. r tag) ((Some x) x) ((None _) -1))))
             (def (main) (f (Some 7))) (export main)))
   (output (: 7 Int64)))
 
@@ -46,7 +46,7 @@
   (input  (do
             (type Status (Active Int64) (Idle))
             (def (main (: n Int64))
-              (let ((r (record (= id 7) (= st (if (> n 0) (Active n) (Idle))))))
+              (let ((r #record((= id 7) (= st (if (> n 0) (Active n) (Idle))))))
                 (match (. r st)
                   ((Active v) v)
                   ((Idle u) -1))))
@@ -68,7 +68,7 @@
            into the field-key or projection-key positions (which would corrupt `(record (x 5))` into
            `(record (7 5))` and reject the valid program CDZ0201) — a key names a field, it does not read
            a variable.")
-  (input  (do (def (f (: x Int64)) (. (record (= x 5)) x)) (def (main) (f 7)) (export main)))
+  (input  (do (def (f (: x Int64)) (. #record((= x 5)) x)) (def (main) (f 7)) (export main)))
   (output (: 5 Int64)))
 
 (case "a multi-field record with one param-named key survives the call"
@@ -76,7 +76,7 @@
            key `x` coincides with the parameter but is a label, so the WHOLE record literal stays well
            formed under the call. Pins that key immunity is per-key across the whole record, not just the
            projected field. `(f 7)` gives 2.")
-  (input  (do (def (f (: x Int64)) (. (record (= x 1) (= y 2)) y)) (def (main) (f 7)) (export main)))
+  (input  (do (def (f (: x Int64)) (. #record((= x 1) (= y 2)) y)) (def (main) (f 7)) (export main)))
   (output (: 2 Int64)))
 
 (case "a record field VALUE still reads the parameter it names after the call"
@@ -86,7 +86,7 @@
            value `x` (an ordinary expression) is β-substituted as usual, so a fix that over-immunized the
            whole field pair (dropping the value substitution too) would wrongly yield the un-substituted
            parameter here.")
-  (input  (do (def (f (: x Int64)) (. (record (= y x)) y)) (def (main) (f 7)) (export main)))
+  (input  (do (def (f (: x Int64)) (. #record((= y x)) y)) (def (main) (f 7)) (export main)))
   (output (: 7 Int64)))
 
 ; --- A record's field names are a SET: each name appears at most once --------------------
@@ -102,14 +102,14 @@
            (reject-don't-miscompile). Carries a DELETE fix on the redundant second `(= a 2)` entry (the
            first already binds the name) — heuristic (unverified: removing vs renaming is the author's call).
            Fix-quality migrated from rcdzc a_duplicate_record_field_carries_a_delete_the_duplicate_fix.")
-  (input      (record (= a 1) (= a 2)))
+  (input      #record((= a 1) (= a 2)))
   (error      CDZ0201 (message "more than once") (fix (kind delete) (unverified))))
 
 (case "a record with a non-adjacent duplicate field name is a type error"
   (doc    "The duplicate need not be adjacent: `(record (a 1) (b 2) (a 3))` still names `a` twice, so
            it is ill-typed (CDZ0201). Pins that the fixed-field-set check is over the whole field list,
            not only consecutive names.")
-  (input      (record (= a 1) (= b 2) (= a 3)))
+  (input      #record((= a 1) (= b 2) (= a 3)))
   (error      CDZ0201))
 
 ; The same fixed-field-set rule governs a record TYPE, not only a record VALUE. `(Record (: x Int64) (: x ; Bool))` — the capital-`R` TYPE form (distinct from the lowercase `record` value alias) — names field
@@ -125,7 +125,7 @@
            ill-formed and rejected (CDZ0201), the type-form twin of the value-form `(record (a 1) (a 2))`
            reject. Not silently deduplicated to `(Record (: x Bool))` by a last-wins insert. Here the type is
            written in an annotation's type position.")
-  (input      (: (record (= x 1)) (Record (: x Int64) (: x Bool))))
+  (input      (: #record((= x 1)) (Record (: x Int64) (: x Bool))))
   (error      CDZ0201))
 
 (case "a duplicate field in a variant's record-type payload is a type error"
@@ -171,7 +171,7 @@
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field: the canonical
            form is (. <record> <key>); `p.y` is its display sugar. This case writes the
            canonical form directly to pin that the tree carries (. …), not a dotted atom.")
-  (input  (let ((p (record (= x 1) (= y 2)))) (. p y)))
+  (input  (let ((p #record((= x 1) (= y 2)))) (. p y)))
   (output (: 2 Int64)))
 
 (case "a boolean record field is projected as the program result"
@@ -180,7 +180,7 @@
            the run boundary as the program's result. A field's type is whatever the field holds, not
            uniformly Int64 (an Int64 field already works; this pins a Bool field does too — the
            companion of the boolean tuple-element case).")
-  (input   (. (record (= flag true)) flag))
+  (input   (. #record((= flag true)) flag))
   (output  (: true Bool)))
 
 (case "member access on a non-record is a type error"
@@ -201,7 +201,7 @@
   (doc    "A tuple is not a record — it has positional elements, not named fields (accessed by
            `(. x N)`, not `.field`). So `(. (tuple 1 2) f)` is member access on a non-record: a type
            error the compiler rejects (CDZ0201).")
-  (input     (. (tuple 1 2) f))
+  (input     (. #tuple(1 2) f))
   (error     CDZ0201))
 
 (case "member access on a string is a type error"
@@ -236,7 +236,7 @@
            not contain (type-system.md #A Record Is Restricted To A Named Set Of Its Fields;
            core-semantics.md #Member Access Projects A Record Field). Rejected before lowering, not
            deferred to a runtime trap. A valid field (`(. (record (x 1)) x)` = 1) is unaffected.")
-  (input     (. (record (= x 1)) z))
+  (input     (. #record((= x 1)) z))
   (error     CDZ0212))
 
 (case "an absent field with no close match lists the record's available fields"
@@ -247,7 +247,7 @@
            acts on (no need to read the type to learn what exists), not noise. The (message ..) pins the
            closest-matches list; a far miss carries no baseless fix. Multi-field companion of the single-
            field absent-`z` case above — this one exercises the PLURAL field listing.")
-  (input  (do (def (main) (. (record (= width 10) (= height 20)) zzzzzz)) (export main)))
+  (input  (do (def (main) (. #record((= width 10) (= height 20)) zzzzzz)) (export main)))
   (error  CDZ0212 (message "closest matches:")))
 
 (case "member access of an absent field on a function-returned record is a type error"
@@ -260,7 +260,7 @@
            callee, resolves to no `(record …)` and imposes nothing — it is not false-rejected (declining or
            taking the runtime path instead).")
   (input  (do
-            (def (mk) (record (= x 1)))
+            (def (mk) #record((= x 1)))
             (def (main) (. (mk) z)) (export main)))
   (error  CDZ0212))
 
@@ -281,7 +281,7 @@
            `(. (record (a 1)) 0)` applies a positional accessor to a non-tuple — a type error
            (CDZ0201), the mirror of `(. (tuple 1 2) f)` (member access on a tuple) above. Pins that
            `(. x N)` requires a tuple, rejecting a record operand.")
-  (input     (. (record (= a 1)) 0))
+  (input     (. #record((= a 1)) 0))
   (error     CDZ0201))
 
 ; The index of a positional tuple access must be WITHIN the operand tuple's static arity, not only a
@@ -307,7 +307,7 @@
            (a non-tuple operand) is rejected rather than trapped. A compile-time-knowable ill-typing
            must not be deferred to a runtime trap. A generation that does not yet range-check the index
            declines rather than emitting the trapping access.")
-  (input     (. (tuple 10 20 30) 3))
+  (input     (. #tuple(10 20 30) 3))
   (error     CDZ0201))
 
 ; The static-arity range check must reach a tuple whose arity is known through a FUNCTION RETURN, not only
@@ -337,7 +337,7 @@
            arity is known from the callee's return.) A generation that does not yet range-check a fn-return
            tuple's access declines rather than emitting the trapping access.")
   (input     (do
-               (def (mk) (tuple 1 2))
+               (def (mk) #tuple(1 2))
                (def (main) (. (mk) 2)) (export main)))
   (error     CDZ0201))
 
@@ -356,14 +356,14 @@
            pattern matches a List value, and an Int64 is not a List, so it is rejected (CDZ0203, naming the
            scrutinee's kind). The match-position analogue of `(. 5 0)` (positional access on a non-tuple);
            pins the list pattern's scrutinee-kind check on a scalar.")
-  (input  (do (def (main) (match 5 ((list x .. r) x) (_ 0))) (export main)))
+  (input  (do (def (main) (match 5 (#list(x .. r) x) (_ 0))) (export main)))
   (error  CDZ0203))
 
 (case "a list pattern over a map scrutinee is a type error"
   (doc    "`(match m ((list x .. r) x) (_ 0))` over a `Map` — a Map is not a List (distinct collection
            kinds), so the list pattern is rejected (CDZ0203, 'this scrutinee is (Map Int64 Int64)'). Pins
            that the scrutinee-kind check distinguishes two COLLECTION kinds, not only collection-vs-scalar.")
-  (input  (do (def (main) (match (Map.insert Map.empty 1 2) ((list x .. r) x) (_ 0))) (export main)))
+  (input  (do (def (main) (match (Map.insert Map.empty 1 2) (#list(x .. r) x) (_ 0))) (export main)))
   (error  CDZ0203))
 
 (case "a map pattern over a non-map scrutinee is a type error"
@@ -402,7 +402,7 @@
   (doc    "`(match 5 ((tuple a b) a) (_ 0))` — a `(tuple …)` pattern matches a Tuple value, and the Int64
            `5` is not a Tuple, rejected CDZ0203. The pattern-position companion of `(. 5 0)` (positional
            ACCESS on a non-tuple); pins the tuple pattern head's scrutinee-kind check.")
-  (input  (do (def (main) (match 5 ((tuple a b) a) (_ 0))) (export main)))
+  (input  (do (def (main) (match 5 (#tuple(a b) a) (_ 0))) (export main)))
   (error  CDZ0203))
 
 (case "a tuple pattern over a map scrutinee is a type error"
@@ -410,7 +410,7 @@
            scrutinee is (Map Int64 Int64)'). With the list-over-map case, pins that a structural pattern
            head is checked against the scrutinee's kind across every collection/compound kind, not just
            against a scalar.")
-  (input  (do (def (main) (match (Map.insert Map.empty 1 2) ((tuple a b) a) (_ 0))) (export main)))
+  (input  (do (def (main) (match (Map.insert Map.empty 1 2) (#tuple(a b) a) (_ 0))) (export main)))
   (error  CDZ0203))
 
 ; A built-in MEMBER OPERATION applied to the WRONG ARGUMENT TYPE names the type the operation expects (as
@@ -449,7 +449,7 @@
            extra operand. Pins the built-in over-application arity diagnostic (names the operation's arity +
            the count given), distinct from the wrong-argument-TYPE message. The program's outcome is the
            rejection.")
-  (input  (do (def (main) (List.len (list 1) 2)) (export main)))
+  (input  (do (def (main) (List.len #list(1) 2)) (export main)))
   (error  CDZ0203))
 
 (case "a two-argument built-in applied to three arguments names its arity"
@@ -457,7 +457,7 @@
            CDZ0203 '`List.concat` takes 2 arguments, but 3 were given' + a 'remove this element' fix. The
            multi-argument companion of the `List.len` over-arity case; pins that the arity count is reported
            correctly for an operation that takes more than one argument.")
-  (input  (do (def (main) (List.concat (list 1) (list 2) (list 3))) (export main)))
+  (input  (do (def (main) (List.concat #list(1) #list(2) #list(3))) (export main)))
   (error  CDZ0203))
 
 ; Projecting a tuple that arrives as a FUNCTION PARAMETER (a runtime tuple whose shape is not the
@@ -486,7 +486,7 @@
            parameter tuple's shape declines rather than emitting an invalid component.")
   (input     (do
                (def (fst t) (. t 0))
-               (def (main)  (fst (tuple 7 8))) (export main)))
+               (def (main)  (fst #tuple(7 8))) (export main)))
   (output    (: 7 Int64)))
 
 ; ── Projecting a compound BUILT AT THE PROJECTION SITE from RUNTIME elements folds to the element ─────
@@ -504,7 +504,7 @@
            occurrence, building no heap tuple. `(f 7 9)` projecting index 0 → 7, index 1 → 9 (checked via a
            tuple of both projections). Pins that the projection-of-just-built-compound fold threads the
            RUNTIME element value (not a constant), on both backends.")
-  (input  (do (def (main (: a Int64) (: b Int64)) (tuple (. (tuple a b) 0) (. (tuple a b) 1))) (export main)))
+  (input  (do (def (main (: a Int64) (: b Int64)) #tuple((. #tuple(a b) 0) (. #tuple(a b) 1))) (export main)))
   (call   main (: 7 Int64) (: 9 Int64))
   (output (: (tuple 7 9) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
@@ -514,7 +514,7 @@
            `(+ x 1)` directly — the record is built at the access site, so the projection reduces to the
            field's occurrence (no heap record). `(main 5)` → 6. Pins the field-of-just-built-record fold
            threads the runtime field value, both backends.")
-  (input  (do (def (main (: x Int64)) (. (record (= a x) (= b (+ x 1))) b)) (export main)))
+  (input  (do (def (main (: x Int64)) (. #record((= a x) (= b (+ x 1))) b)) (export main)))
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
 
@@ -527,8 +527,8 @@
            a_composed_call_over_a_record_with_a_checked_arith_field_runs.")
   (input  (do
             (def (f (: r (Record (: a Int64) (: b Int64))))
-              (record (= a (+ (. r a) 1)) (= b (. r b))))
-            (def (main (: seed Int64)) (. (f (f (record (= a seed) (= b 5)))) a))
+              #record((= a (+ (. r a) 1)) (= b (. r b))))
+            (def (main (: seed Int64)) (. (f (f #record((= a seed) (= b 5)))) a))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 2 Int64)))
@@ -540,8 +540,8 @@
            a_composed_call_over_a_record_with_a_checked_arith_field_runs (three-field arm).")
   (input  (do
             (def (f (: r (Record (: a Int64) (: b Int64) (: c Int64))))
-              (record (= a (+ (. r a) 1)) (= b (. r b)) (= c (* (. r c) 3))))
-            (def (main (: seed Int64)) (. (f (f (record (= a seed) (= b 5) (= c 2)))) c))
+              #record((= a (+ (. r a) 1)) (= b (. r b)) (= c (* (. r c) 3))))
+            (def (main (: seed Int64)) (. (f (f #record((= a seed) (= b 5) (= c 2)))) c))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 18 Int64)))
@@ -553,7 +553,7 @@
            per-digit): (. (tuple 10 20 30) 0) + (. (tuple 10 20 30) 2) + (. (tuple 0 1 2 3 4 5 6 7 8 9 99) 10)
            = 10 + 30 + 99 = 139. Relocated from rcdzc a_constant_tuple_projection_folds_to_its_element +
            positional_projection_is_member_access_with_an_integer_key.")
-  (input  (do (def (main) (+ (. (tuple 10 20 30) 0) (+ (. (tuple 10 20 30) 2) (. (tuple 0 1 2 3 4 5 6 7 8 9 99) 10)))) (export main)))
+  (input  (do (def (main) (+ (. #tuple(10 20 30) 0) (+ (. #tuple(10 20 30) 2) (. #tuple(0 1 2 3 4 5 6 7 8 9 99) 10)))) (export main)))
   (call   main)
   (output (: 139 Int64)))
 
@@ -561,7 +561,7 @@
   (doc    "A projection of a projection over compile-time-visible nested tuples folds through both levels to a
            scalar: (. (. (tuple (tuple 1 2) (tuple 3 4)) 1) 0) projects the second inner tuple, then its first
            element = 3. Relocated from rcdzc a_nested_tuple_projection_folds.")
-  (input  (do (def (main) (. (. (tuple (tuple 1 2) (tuple 3 4)) 1) 0)) (export main)))
+  (input  (do (def (main) (. (. #tuple(#tuple(1 2) #tuple(3 4)) 1) 0)) (export main)))
   (call   main)
   (output (: 3 Int64)))
 
@@ -571,7 +571,7 @@
            so the sibling's trap does not occur. `(f 7 0)` → 7, not a trap. The runtime-element,
            built-at-site companion of the un-projected-tuple-element shielding (§an un-projected tuple
            element is not evaluated): here the tuple is built from runtime operands at the projection.")
-  (input  (do (def (main (: a Int64) (: z Int64)) (. (tuple a (/ 1 z)) 0)) (export main)))
+  (input  (do (def (main (: a Int64) (: z Int64)) (. #tuple(a (/ 1 z)) 0)) (export main)))
   (call   main (: 7 Int64) (: 0 Int64))
   (output (: 7 Int64)))
 
@@ -585,7 +585,7 @@
            Its Fields) — rejected before lowering, not deferred to a runtime trap. The `let`-bound record
            `p` resolves to a compile-time `(record (x 1))`, so the field set is statically known at the
            access site.")
-  (input  (let ((p (record (= x 1)))) (. p z)))
+  (input  (let ((p #record((= x 1)))) (. p z)))
   (error  CDZ0212))
 
 (case "member access on a record chosen by a conditional projects the field"
@@ -596,7 +596,7 @@
            access must project the field, not trap. The record is a genuine record however it was
            produced; member access does not require the record to be a compile-time literal.")
   (input  (do
-            (def (f n) (. (if (= n 0) (record (= a 1)) (record (= a 2))) a))
+            (def (f n) (. (if (= n 0) #record((= a 1)) #record((= a 2))) a))
             (def (main) (f 0)) (export main)))
   (output (: 1 Int64)))
 
@@ -605,7 +605,7 @@
            selected, so the field `a` projects to 2. Confirms the projection follows the runtime
            branch selection, not a fixed branch.")
   (input  (do
-            (def (f n) (. (if (= n 0) (record (= a 1)) (record (= a 2))) a))
+            (def (f n) (. (if (= n 0) #record((= a 1)) #record((= a 2))) a))
             (def (main) (f 9)) (export main)))
   (output (: 2 Int64)))
 
@@ -616,7 +616,7 @@
            1 — the access must project it, not trap. Same requirement as the record case: a positional
            access works on a tuple however it was produced.")
   (input  (do
-            (def (f n) (. (if (= n 0) (tuple 1 9) (tuple 2 9)) 0))
+            (def (f n) (. (if (= n 0) #tuple(1 9) #tuple(2 9)) 0))
             (def (main) (f 0)) (export main)))
   (output (: 1 Int64)))
 
@@ -642,7 +642,7 @@
            `let` binding slot before its initializer emits.")
   (input  (do
             (def (main (: p Int64))
-              (let ((r (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2)))))
+              (let ((r (if (= p 0) #tuple((+ p 5) (+ p 2)) #tuple(99 (+ p 2)))))
                 (+ (. r 0) (. r 1))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
@@ -657,7 +657,7 @@
            binding slot). p=1 → else branch `(record (x 99) (y 3))` → 99+3 = 102.")
   (input  (do
             (def (main (: p Int64))
-              (let ((r (if (= p 0) (record (= x (+ p 5)) (= y (+ p 2))) (record (= x 99) (= y (+ p 2))))))
+              (let ((r (if (= p 0) #record((= x (+ p 5)) (= y (+ p 2))) #record((= x 99) (= y (+ p 2))))))
                 (+ (. r x) (. r y))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
@@ -665,8 +665,8 @@
 
 (case "a SumExpect result beside an i64 arith element in a tuple gets a disjoint scratch slot"
   (doc    "The SumExpect face of the tuple scratch-slot clash above: `(tuple (Option.expect (List.at xs 0) …) (+ i 1))` — the `Option.expect` emits its extracted-payload handle into a scratch slot ABOVE the running high-water, and the i64 arith element `(+ i 1)` takes the next per-element scratch base. If the two shared a slot the i32 handle and the i64 value would collide and wasm would reject the module (`expected i32, found i64`). Projecting element 0 reads the expect result: `go (list 7 8) 0` → 7. Complements the let-if-tuple/record scratch cases above with the SumExpect-in-tuple site.")
-  (input  (do (def (go (: xs (List Int64)) (: i Int64)) (. (tuple (Option.expect (List.at xs 0) "x") (+ i 1)) 0))
-              (def (main) (go (list 7 8) 0)) (export main)))
+  (input  (do (def (go (: xs (List Int64)) (: i Int64)) (. #tuple((Option.expect (List.at xs 0) "x") (+ i 1)) 0))
+              (def (main) (go #list(7 8) 0)) (export main)))
   (call   main) (output (: 7 Int64)))
 
 ; --- Field access on a RUNTIME record (returned from a call / selected by a conditional) -----------
@@ -688,7 +688,7 @@
            tuple result — earlier this was spuriously rejected CDZ0201 because the operand did not
            reduce to a compile-time record even though its TYPE was one.")
   (input  (do
-            (def (mk n) (record (= x n) (= y 2)))
+            (def (mk n) #record((= x n) (= y 2)))
             (def (main (: v Int64)) (. (mk v) x))
             (export main)))
   (call   main (: 41 Int64))
@@ -700,7 +700,7 @@
            independent of the runtime argument. Confirms the field-name→sorted-index mapping reads the
            right slot, not only field 0.")
   (input  (do
-            (def (mk n) (record (= x n) (= y 2)))
+            (def (mk n) #record((= x n) (= y 2)))
             (def (main (: v Int64)) (. (mk v) y))
             (export main)))
   (call   main (: 41 Int64))
@@ -713,7 +713,7 @@
            Pins that the runtime field read indexes by the field's SORTED position, not the source
            write order — the `BTreeMap` order the record builder and every `arr-get` share.")
   (input  (do
-            (def (mk n) (record (= z 9) (= a n)))
+            (def (mk n) #record((= z 9) (= a n)))
             (def (main (: v Int64)) (. (mk v) a))
             (export main)))
   (call   main (: 1 Int64))
@@ -726,7 +726,7 @@
            runtime-branched tuple projected in the caller: a field read on a conditionally-selected
            record still resolves to an `arr-get` at the field's sorted index.")
   (input  (do
-            (def (pick b) (if b (record (= x 1) (= y 2)) (record (= x 3) (= y 4))))
+            (def (pick b) (if b #record((= x 1) (= y 2)) #record((= x 3) (= y 4))))
             (def (main (: b Bool)) (. (pick b) y))
             (export main)))
   (call   main (: true Bool))
@@ -742,7 +742,7 @@
            would be reading slot 0 = `b` had the write order leaked). Pins that member-read-into-if-of-records
            keeps the per-branch sorted-index resolution the sorted-order case above requires.")
   (input  (do
-            (def (main (: b Bool)) (. (if b (record (= a 1) (= b 2)) (record (= b 4) (= a 3))) a))
+            (def (main (: b Bool)) (. (if b #record((= a 1) (= b 2)) #record((= b 4) (= a 3))) a))
             (export main)))
   (call   main (: false Bool))
   (output (: 3 Int64)))
@@ -757,7 +757,7 @@
            projection-into-if rewrite keeps the untaken branch's trap shielded (core-semantics.md §A Trap
            Occurs Only Where Its Computation Is Observed).")
   (input  (do
-            (def (main (: b Bool) (: x Int64)) (. (if b (tuple 5 6) (tuple (/ 1 x) 8)) 0))
+            (def (main (: b Bool) (: x Int64)) (. (if b #tuple(5 6) #tuple((/ 1 x) 8)) 0))
             (export main)))
   (call   main (: true Bool) (: 0 Int64))
   (output (: 5 Int64)))
@@ -769,7 +769,7 @@
            is in the untaken branch. Confirms the projection-into-if rewrite evaluates precisely the taken
            branch's projected element — not too little (the shielded case) and not too much.")
   (input  (do
-            (def (main (: b Bool) (: x Int64)) (. (if b (tuple (/ 1 x) 6) (tuple 3 4)) 0))
+            (def (main (: b Bool) (: x Int64)) (. (if b #tuple((/ 1 x) 6) #tuple(3 4)) 0))
             (export main)))
   (call   main (: true Bool) (: 0 Int64))
   (trap   "division by zero"))
@@ -792,7 +792,7 @@
            typed as the i32 handle it is.")
   (input  (do
             (def (main (: p Int64))
-              (let ((r (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2)))))
+              (let ((r (if (= p 0) #tuple((+ p 5) (+ p 2)) #tuple(99 (+ p 2)))))
                 (+ (. r 0) (. r 1))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
@@ -806,7 +806,7 @@
            across the record kind.")
   (input  (do
             (def (main (: p Int64))
-              (let ((r (if (= p 0) (record (= x (+ p 5)) (= y (+ p 2))) (record (= x 99) (= y (+ p 2))))))
+              (let ((r (if (= p 0) #record((= x (+ p 5)) (= y (+ p 2))) #record((= x 99) (= y (+ p 2))))))
                 (+ (. r x) (. r y))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
@@ -819,7 +819,7 @@
            return before the double projection (the caller has no `if` of its own) — the shape a decode
            helper returning a (value, cursor) pair takes.")
   (input  (do
-            (def (mk (: p Int64)) (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2))))
+            (def (mk (: p Int64)) (if (= p 0) #tuple((+ p 5) (+ p 2)) #tuple(99 (+ p 2))))
             (def (main (: p Int64)) (let ((r (mk p))) (+ (. r 0) (. r 1))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
@@ -848,7 +848,7 @@
             (def (read-varu (: b Bytes) (: p Int64) (: a Int64) (: s Int64))
               (let ((byte (Option.expect (Bytes.at b p) "v")))
                 (let ((a2 (+ a (<< (& byte 127) s))))
-                  (if (= (& byte 128) 0) (tuple a2 (+ p 1)) (read-varu b (+ p 1) a2 (+ s 7))))))
+                  (if (= (& byte 128) 0) #tuple(a2 (+ p 1)) (read-varu b (+ p 1) a2 (+ s 7))))))
             (def (read-mag (: b Bytes) (: p Int64) (: len Int64) (: acc Int64))
               (if (= len 0) acc (read-mag b (+ p 1) (- len 1) (+ (* acc 256) (Option.expect (Bytes.at b p) "m")))))
             (def (read-leaf (: b Bytes) (: pos Int64)) ((. Ast Int) (read-mag b (+ pos 1) (. (read-varu b (+ pos 1) 0 0) 0) 0)))
@@ -856,7 +856,7 @@
             (def (read-leaves (: b Bytes) (: pos Int64) (: count Int64) (: acc (List Ast)))
               (if (= count 0) acc (read-leaves b (leaf-end b pos) (- count 1) (List.push acc (read-leaf b pos)))))
             (def (nc (: n Ast)) (match n (((. Ast Int) _) 1) (((. Ast List) _) 9)))
-            (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 (list)) 0) "at")))
+            (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 #list()) 0) "at")))
             (export main)))
   (output (: 1 Int64))
   (live-objects known-leak 2))
@@ -890,7 +890,7 @@
   (input  (do
             (def (loop (: xs (List Int64)) (: i Int64) (: n Int64))
               (if (= n 0) (Option.expect (List.at xs i) "v") (loop xs i (- n 1))))
-            (def (main (: i Int64)) (loop (list 10 20 30) i 0))
+            (def (main (: i Int64)) (loop #list(10 20 30) i 0))
             (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64))
   (call   main (: 2 Int64)) (output (: 30 Int64))
@@ -905,7 +905,7 @@
   (input  (do
             (def (rd (: xs (List Int64)))
               (+ (Option.expect (List.at xs 0) "a") (Option.expect (List.at xs 2) "b")))
-            (def (main) (rd (list 10 20 30)))
+            (def (main) (rd #list(10 20 30)))
             (export main)))
   (output (: 40 Int64)))
 
@@ -952,8 +952,8 @@
             (type W (Atom Int64) (Zero))
             (def (one (: b Bytes) (: pos Int64))
               (if (= (Option.expect (Bytes.at b pos) "t") 5)
-                (tuple ((. W Atom) (Option.expect (Bytes.at b pos) "v")) (+ pos 1))
-                (tuple ((. W Atom) (Option.expect (Bytes.at b pos) "v")) (+ pos 1))))
+                #tuple(((. W Atom) (Option.expect (Bytes.at b pos) "v")) (+ pos 1))
+                #tuple(((. W Atom) (Option.expect (Bytes.at b pos) "v")) (+ pos 1))))
             (def (loop (: b Bytes) (: n Int64) (: pos Int64) (: last W))
               (if (= n 0) last (let ((r (one b pos))) (loop b (- n 1) (. r 1) (. r 0)))))
             (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0)))
@@ -968,8 +968,8 @@
             (type W (Atom Int64) (Zero))
             (def (one (: b Bytes) (: pos Int64))
               (if (= (Option.expect (Bytes.at b pos) "t") 5)
-                (tuple ((. W Atom) (Option.expect (Bytes.at b pos) "v")) (+ pos 1))
-                (tuple ((. W Atom) 99) (+ pos 1))))
+                #tuple(((. W Atom) (Option.expect (Bytes.at b pos) "v")) (+ pos 1))
+                #tuple(((. W Atom) 99) (+ pos 1))))
             (def (loop (: b Bytes) (: n Int64) (: pos Int64) (: last W))
               (if (= n 0) last (let ((r (one b pos))) (loop b (- n 1) (. r 1) (. r 0)))))
             (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0)))
@@ -988,7 +988,7 @@
            the per-branch field resolution AND the untaken-branch trap shielding of the single-step fold.")
   (input  (do
             (def (main (: b Bool) (: z Int64))
-              (. (. (if b (record (= a (record (= x 1)))) (record (= a (record (= x (/ 1 z)))))) a) x))
+              (. (. (if b #record((= a #record((= x 1)))) #record((= a #record((= x (/ 1 z)))))) a) x))
             (export main)))
   (call   main (: true Bool) (: 0 Int64))
   (output (: 1 Int64)))
@@ -1009,7 +1009,7 @@
            element (`arr-get` + `get-int`), the index half of a decoder threading `(node, index)`.")
   (input  (do
             (type Node (NLit Int64) (NAdd (Tuple Node Node)))
-            (def (mk) (tuple (NLit 5) 9))
+            (def (mk) #tuple((NLit 5) 9))
             (def (main) (let ((l (mk))) (. l 1))) (export main)))
   (output (: 9 Int64)))
 
@@ -1021,8 +1021,8 @@
            threads through `let`).")
   (input  (do
             (type Node (NLit Int64) (NAdd (Tuple Node Node)))
-            (def (mk) (tuple (NLit 5) 9))
-            (def (ev e) (match e ((Node.NLit v) v) ((Node.NAdd (tuple a b)) (+ (ev a) (ev b)))))
+            (def (mk) #tuple((NLit 5) 9))
+            (def (ev e) (match e ((Node.NLit v) v) ((Node.NAdd #tuple(a b)) (+ (ev a) (ev b)))))
             (def (main) (let ((l (mk))) (ev (. l 0)))) (export main)))
   (output (: 5 Int64))
   (live-objects 0))
@@ -1039,7 +1039,7 @@
            projection must recover the operand's shape at the projection site — earlier this emitted an
            invalid component (a decline-don't-miscompile violation), now fixed.")
   (input  (do
-            (def (dec i) (tuple (* i 10) (+ i 1)))
+            (def (dec i) #tuple((* i 10) (+ i 1)))
             (def (main) (. (dec 4) 0)) (export main)))
   (output (: 40 Int64)))
 
@@ -1053,7 +1053,7 @@
            the runtime constructor learned to decline on the scalar path and defer to the runtime pass:
            decline-don't-miscompile, then compile.)")
   (input  (do
-            (def (dec n) (tuple (* n 10) 9))
+            (def (dec n) #tuple((* n 10) 9))
             (def (main) (. (dec 4) 0)) (export main)))
   (output (: 40 Int64)))
 
@@ -1070,7 +1070,7 @@
            element with no fold. `(dec 4)` → 40, `(dec 7)` → 70. Pins direct fn-return projection on a
            runtime-CONTENT tuple, the reader shape distinct from the folded const-arg companion.")
   (input  (do
-            (def (dec (: n Int64)) (tuple (* n 10) (+ n 1)))
+            (def (dec (: n Int64)) #tuple((* n 10) (+ n 1)))
             (def (main (: n Int64)) (. (dec n) 0)) (export main)))
   (call   main (: 4 Int64))
   (output (: 40 Int64))
@@ -1083,7 +1083,7 @@
            two direct projections of the same fn-return runtime tuple each recover the shape independently
            and read the right element — the `let`-free companion of the `let`-bound both-elements case.")
   (input  (do
-            (def (dec (: n Int64)) (tuple (* n 10) (+ n 1)))
+            (def (dec (: n Int64)) #tuple((* n 10) (+ n 1)))
             (def (main (: n Int64)) (+ (. (dec n) 0) (. (dec n) 1))) (export main)))
   (call   main (: 4 Int64))
   (output (: 45 Int64)))
@@ -1093,7 +1093,7 @@
            fn-return tuple. With n = 4 the tuple is (40, 5), element 1 = 5. Pins that the shape-at-site
            recovery addresses a non-zero position correctly on the direct path, not only position 0.")
   (input  (do
-            (def (dec (: n Int64)) (tuple (* n 10) (+ n 1)))
+            (def (dec (: n Int64)) #tuple((* n 10) (+ n 1)))
             (def (main (: n Int64)) (. (dec n) 1)) (export main)))
   (call   main (: 4 Int64))
   (output (: 5 Int64)))
@@ -1116,7 +1116,7 @@
            tuple so element 0 is 1; `b` = false returns the second so element 0 is 3 — confirming the
            projection follows the runtime branch the callee selected, across the call.")
   (input  (do
-            (def (pick b) (if b (tuple 1 2) (tuple 3 4)))
+            (def (pick b) (if b #tuple(1 2) #tuple(3 4)))
             (def (main (: b Bool)) (. (pick b) 0))
             (export main)))
   (call   main (: true Bool))
@@ -1130,7 +1130,7 @@
            cases above: the substitution works straight-line, so both must; pins that the callee's
            parameter reaches the constructed tuple whether or not a branch intervenes.")
   (input  (do
-            (def (mk a b) (tuple a b))
+            (def (mk a b) #tuple(a b))
             (def (main (: x Int64)) (. (mk x 2) 0))
             (export main)))
   (call   main (: 41 Int64))
@@ -1153,15 +1153,15 @@
   (input  (do
             (type Node (NInt Int64) (NPrim (Tuple String Node Node)))
             (type Core (KConst Int64) (KAdd (Tuple Core Core)))
-            (def (bad) (Bytes.len (Bytes.of (list 256))))
+            (def (bad) (Bytes.len (Bytes.of #list(256))))
             (def (resolve node)
               (match node
                 ((Node.NInt n) (Core.KConst n))
-                ((Node.NPrim (tuple h a b))
-                  (if (= h "+") (Core.KAdd (tuple (resolve a) (resolve b)))
+                ((Node.NPrim #tuple(h a b))
+                  (if (= h "+") (Core.KAdd #tuple((resolve a) (resolve b)))
                                 (if false (Core.KConst (bad)) (Core.KConst 0))))))
             (def (kind-of c) (match c ((Core.KConst n) 0) (_ 1)))
-            (def (main) (kind-of (resolve (Node.NPrim (tuple "+" (Node.NInt 20) (Node.NInt 22)))))) (export main)))
+            (def (main) (kind-of (resolve (Node.NPrim #tuple("+" (Node.NInt 20) (Node.NInt 22)))))) (export main)))
   (output (: 1 Int64))
   (live-objects 0))
 
@@ -1169,7 +1169,7 @@
   (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural (2nd
            sentence) at the value level: two structural records of the same shape and contents are
            well-typed to compare, and the compiler evaluates the comparison to true.")
-  (input  (= (record (= x 1) (= y 2)) (record (= x 1) (= y 2))))
+  (input  (= #record((= x 1) (= y 2)) #record((= x 1) (= y 2))))
   (output (: true Bool)))
 
 (case "runtime structural equality over a payload-carrying sum agrees on both backends"
@@ -1198,7 +1198,7 @@
            with the generic + recursive + Box + derive-bound interaction, the hardest sum-equality shape.")
   (input  (do
             (type T (Leaf a) (Node (Tuple T T)))
-            (def (mk (: k Int64)) (T.Node (tuple (T.Leaf k) (T.Leaf 2))))
+            (def (mk (: k Int64)) (T.Node #tuple((T.Leaf k) (T.Leaf 2))))
             (def (f (: k Int64)) (if (= (mk k) (mk 5)) 1 0))
             (export f)))
   (call   f (: 5 Int64))
@@ -1222,7 +1222,7 @@
            a set is unordered) — true regardless of the written order. Pins that record `=` compares
            field SETS, not positional field lists, mirroring the map order-independence case. MUST be
            true.")
-  (input  (= (record (= a 1) (= b 2)) (record (= b 2) (= a 1))))
+  (input  (= #record((= a 1) (= b 2)) #record((= b 2) (= a 1))))
   (output (: true Bool)))
 
 (case "a RECORD used as a map key hashes and matches by its field SET, independent of written order"
@@ -1233,7 +1233,7 @@
            and matches by its canonical field-set form, not the written field order — a key path that
            hashed the written order would false-miss the reordered lookup. The record companion of the
            bare-Rational and compound map-key cases.")
-  (input  (do (def (main) (match (Map.lookup (Map.insert (Map.empty) (record (= x 1) (= y 2)) 42) (record (= y 2) (= x 1))) ((Some v) v) ((None u) -1))) (export main)))
+  (input  (do (def (main) (match (Map.lookup (Map.insert (Map.empty) #record((= x 1) (= y 2)) 42) #record((= y 2) (= x 1))) ((Some v) v) ((None u) -1))) (export main)))
   (output (: 42 Int64)))
 
 (case "a record map key with a Rational field matches by the field's normalized form"
@@ -1244,7 +1244,7 @@
            leaf, and find the same slot -> 42. A key path that canonicalized a bare or tuple-nested Rational
            but NOT one nested in a record would false-miss. The record companion of the compound (tuple)
            Rational-leaf map-key case in 03-equality.")
-  (input  (do (def (main) (Option.expect (Map.lookup (Map.insert (Map.empty) (record (= r (Rational.of 1 2))) 42) (record (= r (Rational.of 2 4)))) "found")) (export main)))
+  (input  (do (def (main) (Option.expect (Map.lookup (Map.insert (Map.empty) #record((= r (Rational.of 1 2))) 42) #record((= r (Rational.of 2 4)))) "found")) (export main)))
   (output (: 42 Int64)))
 
 (case "projecting a field is independent of the order fields are written"
@@ -1252,7 +1252,7 @@
            projects `a` = 1 even though `a` is written second. Pins that projection resolves the field
            name against the record's set, not by the order of construction — the projection companion of
            the order-independent equality case.")
-  (input  (. (record (= b 2) (= a 1)) a))
+  (input  (. #record((= b 2) (= a 1)) a))
   (output (: 1 Int64)))
 
 ; --- Member access chains: projecting a field of a projected record ----------------------
@@ -1267,7 +1267,7 @@
            `outer`, then `inner` from it, yielding 7. Pins that member access composes — the operand of
            a `.` may itself be a `.` projection, exactly as it may be a conditional-selected or
            function-returned record (witnessed elsewhere).")
-  (input  (. (. (record (= outer (record (= inner 7)))) outer) inner))
+  (input  (. (. #record((= outer #record((= inner 7)))) outer) inner))
   (output (: 7 Int64)))
 
 (case "a THREE-deep member-access chain reads a RUNTIME leaf through nested records"
@@ -1279,7 +1279,7 @@
            runtime leaf keeps every level's projection LIVE — the config-tree read idiom.")
   (input  (do
             (def (main (: n Int64))
-              (. (. (. (record (= a (record (= b (record (= c n)))))) a) b) c))
+              (. (. (. #record((= a #record((= b #record((= c n)))))) a) b) c))
             (export main)))
   (call   main (: 42 Int64)) (output (: 42 Int64)))
 
@@ -1294,7 +1294,7 @@
            carry the payload's record shape to `r`. A binder that dropped the shape would leave `r`
            shapeless and the projection would have no slot to index.")
   (input  (do
-            (def (mk n) (Some (record (= a n) (= b (+ n 1)))))
+            (def (mk n) (Some #record((= a n) (= b (+ n 1)))))
             (def (main)
               (match (mk 41)
                 ((Some r) (. r b))
@@ -1316,7 +1316,7 @@
            leave the value slotless — historically this compiled to a VALID component that TRAPPED at
            run (a decline leaked past the emit retry into a runtime trap), which this case pins against.")
   (input  (do
-            (def (mk n) (Some (record (= a n) (= b (+ n 1)))))
+            (def (mk n) (Some #record((= a n) (= b (+ n 1)))))
             (def (main) (. (Option.expect (mk 41) "x") b)) (export main)))
   (output (: 42 Int64)))
 
@@ -1330,7 +1330,7 @@
            has no slot to index. Pins that Result.expect — not only Option.expect — threads a compound
            payload's shape to a downstream field access, across the two-variant Result sum.")
   (input  (do
-            (def (mk n) (Ok (record (= a n) (= b (+ n 1)))))
+            (def (mk n) (Ok #record((= a n) (= b (+ n 1)))))
             (def (main) (. (Result.expect (mk 41) "x") b)) (export main)))
   (output (: 42 Int64)))
 
@@ -1414,7 +1414,7 @@
            compound carrying a runtime element (reject-don't-miscompile). The constant control below is
            the same value known at compile time.")
   (input  (do
-            (def (f n) (tuple n 1))
+            (def (f n) #tuple(n 1))
             (def (main) (f 3)) (export main)))
   (output (: #tuple(3 1) (Tuple Int64 Int64))))
 
@@ -1423,7 +1423,7 @@
            through the resource-with-display output ABI. The runtime-element tuple must reach the same
            result; the difference is only whether an element is known at compile time.")
   (input  (do
-            (def (main) (tuple 3 1)) (export main)))
+            (def (main) #tuple(3 1)) (export main)))
   (output (: #tuple(3 1) (Tuple Int64 Int64))))
 
 (case "a constant mixed-leaf tuple (Int64 beside Bool) is returned as a program result"
@@ -1433,7 +1433,7 @@
            resource-with-display run boundary. Pins that a mixed-leaf constant compound crosses and
            decodes to its exact value form (companion to the homogeneous `(tuple 3 1)` control above).")
   (input  (do
-            (def (main) (tuple 0 true)) (export main)))
+            (def (main) #tuple(0 true)) (export main)))
   (output (: #tuple(0 true) (Tuple Int64 Bool))))
 
 (case "a constant nested tuple is returned as a program result"
@@ -1442,7 +1442,7 @@
            the static type to render `(: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))`.
            Pins that a nested constant compound crosses the run boundary and decodes at full depth.")
   (input  (do
-            (def (main) (tuple 2 (tuple 2 2))) (export main)))
+            (def (main) #tuple(2 #tuple(2 2))) (export main)))
   (output (: #tuple(2 #tuple(2 2)) (Tuple Int64 (Tuple Int64 Int64)))))
 
 (case "a constant record is returned as a program result"
@@ -1451,7 +1451,7 @@
            with NAMES the runtime does not hold (the compiler-emitted renderer bakes them from the
            static type). The constant control companion to the runtime-field record result below.")
   (input  (do
-            (def (main) (record (= a 3) (= b 1))) (export main)))
+            (def (main) #record((= a 3) (= b 1))) (export main)))
   (output (: #record((= a 3) (= b 1)) (Record (: a Int64) (: b Int64)))))
 
 ; A compound result crosses as a resource-with-display (`cadenza:run/run`'s make/encode), NOT a bare
@@ -1473,7 +1473,7 @@
 (case "a tuple compound export under a non-main name crosses to the host"
   (doc    "`(def (pair) (tuple 1 2))` exported as `pair`, driven by `(call pair)` → `(tuple 1 2)`. A tuple
            result crosses the escape under a named export, same as the String case.")
-  (input  (do (def (pair) (tuple 1 2)) (export pair)))
+  (input  (do (def (pair) #tuple(1 2)) (export pair)))
   (call   pair)
   (output (: #tuple(1 2) (Tuple Int64 Int64))))
 
@@ -1481,7 +1481,7 @@
   (doc    "`(def (nums) (list 1 2 3))` exported as `nums`, driven by `(call nums)` → `(list 1 2 3)`. A
            list result crosses the escape under a named export. Confirms the named-escape dispatch is
            agnostic to the compound's shape (String/tuple/list all route the same way).")
-  (input  (do (def (nums) (list 1 2 3)) (export nums)))
+  (input  (do (def (nums) #list(1 2 3)) (export nums)))
   (call   nums)
   (output (: #list(1 2 3) (List Int64))))
 
@@ -1499,7 +1499,7 @@
            that the runtime-tuple construction handles all-computed elements, not only a single runtime
            element beside a literal (the `(tuple n 1)` case above).")
   (input  (do
-            (def (f a b) (tuple (+ a 1) (* b 2)))
+            (def (f a b) #tuple((+ a 1) (* b 2)))
             (def (main) (f 3 4)) (export main)))
   (output (: #tuple(4 8) (Tuple Int64 Int64))))
 
@@ -1508,7 +1508,7 @@
            of arity > 2 lays out and returns all its elements — a construction that hard-coded a pair
            would drop the third.")
   (input  (do
-            (def (f n) (tuple n (+ n 1) (+ n 2)))
+            (def (f n) #tuple(n (+ n 1) (+ n 2)))
             (def (main) (f 10)) (export main)))
   (output (: #tuple(10 11 12) (Tuple Int64 Int64 Int64))))
 
@@ -1518,7 +1518,7 @@
            beside an Int64 and render both across the run boundary (the runtime companion of the
            constant boolean-tuple-element case). Pins that a runtime compound is not uniformly Int64.")
   (input  (do
-            (def (f n) (tuple n (= n 0)))
+            (def (f n) #tuple(n (= n 0)))
             (def (main) (f 0)) (export main)))
   (output (: #tuple(0 true) (Tuple Int64 Bool))))
 
@@ -1528,7 +1528,7 @@
            compound construction nests: an inner heap value is built and referenced by the outer, and
            the whole structure renders across the run boundary.")
   (input  (do
-            (def (f n) (tuple n (tuple n n)))
+            (def (f n) #tuple(n #tuple(n n)))
             (def (main) (f 2)) (export main)))
   (output (: #tuple(2 #tuple(2 2)) (Tuple Int64 (Tuple Int64 Int64)))))
 
@@ -1538,7 +1538,7 @@
            a layout or offset error would return the wrong element (5) or a garbage value. Companion of
            the constant tuple-access cases, on the runtime construction path.")
   (input  (do
-            (def (f n) (. (tuple n (+ n 1)) 1))
+            (def (f n) (. #tuple(n (+ n 1)) 1))
             (def (main) (f 5)) (export main)))
   (output (: 6 Int64)))
 
@@ -1555,14 +1555,14 @@
            to its UInt8 (i32) slot before the `+`, so the op's operands share the narrow slot — not a
            mismatched i64/i32 the component would reject. A single projection (already witnessed above)
            does not exercise two heap reads feeding one op.")
-  (input  (do (def (main (: a UInt8) (: b UInt8)) (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export main)))
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (let ((t #tuple(a b))) (+ (. t 0) (. t 1)))) (export main)))
   (call   main (: 100 UInt8) (: 50 UInt8))
   (output (: 150 UInt8)))
 
 (case "two narrow tuple elements are projected and compared"
   (doc    "The comparison face: `(> (. t 0) (. t 1))` with `a,b : UInt8`, 100 > 50 = true. Every binary op
            over two narrow heap projections — not only `+` — needs each element narrowed to its slot.")
-  (input  (do (def (main (: a UInt8) (: b UInt8)) (let ((t (tuple a b))) (> (. t 0) (. t 1)))) (export main)))
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (let ((t #tuple(a b))) (> (. t 0) (. t 1)))) (export main)))
   (call   main (: 100 UInt8) (: 50 UInt8))
   (output (: true Bool)))
 
@@ -1570,7 +1570,7 @@
   (doc    "`(+ (. t 0) (. t 1))` with `a,b : Int8`, a = -5, b = 3 → -2. A signed narrow element is
            sign-extended i32→i64 into the heap cell and its low bits narrowed back, so a negative value
            survives the round-trip (a zero-extend would read -5 as 251 and give the wrong sum).")
-  (input  (do (def (main (: a Int8) (: b Int8)) (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export main)))
+  (input  (do (def (main (: a Int8) (: b Int8)) (let ((t #tuple(a b))) (+ (. t 0) (. t 1)))) (export main)))
   (call   main (: -5 Int8) (: 3 Int8))
   (output (: -2 Int8)))
 
@@ -1579,7 +1579,7 @@
            = 150. A record is the same positional heap array as a tuple, so a narrow field crosses the
            heap boundary with the same i32↔i64 slot conversion — the fix is on the heap box/unbox edge,
            not tuple- or record-specific.")
-  (input  (do (def (main (: a UInt8) (: b UInt8)) (let ((r (record (= x a) (= y b)))) (+ (. r x) (. r y)))) (export main)))
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (let ((r #record((= x a) (= y b)))) (+ (. r x) (. r y)))) (export main)))
   (call   main (: 100 UInt8) (: 50 UInt8))
   (output (: 150 UInt8)))
 
@@ -1592,7 +1592,7 @@
            (component-abi.md §A Compound Result Is Rendered By Compiler-Emitted Code). Pins the genuine
            heap-alloc → escape → walk round-trip: a fold-only path would never touch the runtime.")
   (input  (do
-            (def (f n) (if (= n 0) (tuple n 7) (f (- n 1))))
+            (def (f n) (if (= n 0) #tuple(n 7) (f (- n 1))))
             (def (main) (f 3)) (export main)))
   (output (: (tuple 0 7) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
@@ -1605,7 +1605,7 @@
            (component-abi.md §The Runtime Does Not Name Or Render Values). Recursive → not folded → a
            genuine heap value that crosses the host boundary as a resource whose `encode()` walks it.")
   (input  (do
-            (def (f n) (if (= n 0) (record (= a n) (= b 7)) (f (- n 1))))
+            (def (f n) (if (= n 0) #record((= a n) (= b 7)) (f (- n 1))))
             (def (main) (f 3)) (export main)))
   (output (: (record (= a 0) (= b 7)) (Record (: a Int64) (: b Int64))))
   (live-objects known-leak 1))
@@ -1618,7 +1618,7 @@
            (component-abi.md §A Compound Result Is Rendered By Compiler-Emitted Code). Pins that a
            runtime compound NESTS: a heap value referencing another heap value crosses the boundary.")
   (input  (do
-            (def (f n) (if (= n 0) (tuple n (tuple n n)) (f (- n 1))))
+            (def (f n) (if (= n 0) #tuple(n #tuple(n n)) (f (- n 1))))
             (def (main) (f 2)) (export main)))
   (output (: (tuple 0 (tuple 0 0)) (Tuple Int64 (Tuple Int64 Int64))))
   (live-objects known-leak 2))
@@ -1629,7 +1629,7 @@
            that the type-directed renderer recurses through a HETEROGENEOUS nesting (record → tuple),
            dispatching each sub-shape to its own head; the field holds the inner tuple's handle.")
   (input  (do
-            (def (f n) (if (= n 0) (record (= x n) (= y (tuple n 1))) (f (- n 1))))
+            (def (f n) (if (= n 0) #record((= x n) (= y #tuple(n 1))) (f (- n 1))))
             (def (main) (f 2)) (export main)))
   (output (: (record (= x 0) (= y (tuple 0 1))) (Record (: x Int64) (: y (Tuple Int64 Int64)))))
   (live-objects known-leak 2))
@@ -1666,8 +1666,8 @@
            arms are pinned by the two cases below.")
   (input  (do
             (type ILst (INil) (ICons Int64 ILst))
-            (def (h xs) (match xs ((INil) (list)) ((ICons v t) (List.push (h t) (+ v 1)))))
-            (def (main) (match (h (ICons 5 (INil))) ((list x) x) (_ 0)))
+            (def (h xs) (match xs ((INil) #list()) ((ICons v t) (List.push (h t) (+ v 1)))))
+            (def (main) (match (h (ICons 5 (INil))) (#list(x) x) (_ 0)))
             (export main)))
   (output (: 6 Int64))
   (live-objects 0))
@@ -1685,8 +1685,8 @@
            Companion to the `ListPush`/`ListUpdate` disjoint-slot pins.")
   (input  (do
             (type ILst (INil) (ICons Int64 ILst))
-            (def (g xs) (match xs ((INil) (list)) ((ICons v t) (List.concat (list (+ v 1)) (g t)))))
-            (def (main) (match (g (ICons 5 (INil))) ((list x) x) (_ 0)))
+            (def (g xs) (match xs ((INil) #list()) ((ICons v t) (List.concat #list((+ v 1)) (g t)))))
+            (def (main) (match (g (ICons 5 (INil))) (#list(x) x) (_ 0)))
             (export main)))
   (output (: 6 Int64))
   (live-objects 0))
@@ -1702,8 +1702,8 @@
            Companion to the `ListPush`/`ListConcat` disjoint-slot pins.")
   (input  (do
             (type ILst (INil) (ICons Int64 ILst))
-            (def (u xs) (match xs ((INil) (list 0)) ((ICons v t) (List.update (u t) 0 (+ v 1)))))
-            (def (main) (match (u (ICons 5 (INil))) ((list x) x) (_ 99)))
+            (def (u xs) (match xs ((INil) #list(0)) ((ICons v t) (List.update (u t) 0 (+ v 1)))))
+            (def (main) (match (u (ICons 5 (INil))) (#list(x) x) (_ 99)))
             (export main)))
   (output (: 6 Int64))
   (live-objects 0))
@@ -1726,13 +1726,13 @@
             (type Note (Note Int64 Int64))
             (def (remap (: xs (List Note)) (: c Int64) (: out (List Note)))
               (match xs
-                ((list h .. t)
+                (#list(h .. t)
                  (match h ((Note p v)
                    (let ((w (+ v c)))
                      (remap t c (List.push out (Note p w)))))))
                 (_ out)))
             (def (main)
-              (List.len (remap (List.push (List.push (list) (Note 1 10)) (Note 2 20)) 1 (list))))
+              (List.len (remap (List.push (List.push #list() (Note 1 10)) (Note 2 20)) 1 #list())))
             (export main)))
   (output (: 2 Int64))
   (live-objects 0))
@@ -1750,7 +1750,7 @@
            projection would collapse). `sum over i∈{0,1,2} of Map.len({i:i}) = 1+1+1 = 3`. Companion to the
            SumPayload retain-child pin above; both faces of the `func[27]` slot-width collision fix.")
   (input  (do
-            (def (mk (: n Int64)) (let ((x (+ n 1))) (record (= a (Map.insert (Map.empty) x x)) (= b x))))
+            (def (mk (: n Int64)) (let ((x (+ n 1))) #record((= a (Map.insert (Map.empty) x x)) (= b x))))
             (def (loop (: i Int64) (: acc Int64))
               (if (< i 3) (loop (+ i 1) (+ acc (Map.len (. (mk i) a)))) acc))
             (def (main) (loop 0 0))
@@ -1774,7 +1774,7 @@
            the compiler-emitted renderer bakes them from the static type). Companion of the runtime
            tuple result, distinguished only by its static type / rendering.")
   (input  (do
-            (def (f n) (record (= a n) (= b 1)))
+            (def (f n) #record((= a n) (= b 1)))
             (def (main) (f 3)) (export main)))
   (output (: #record((= a 3) (= b 1)) (Record (: a Int64) (: b Int64)))))
 
@@ -1784,7 +1784,7 @@
            and the emitted renderer AGREE on the sorted field order, so a field value lands under its
            correct name; a slot/name misalignment would render `(record (a 2) (b 1))`.")
   (input  (do
-            (def (f n) (record (= b n) (= a 1)))
+            (def (f n) #record((= b n) (= a 1)))
             (def (main) (f 2)) (export main)))
   (output (: #record((= a 1) (= b 2)) (Record (: a Int64) (: b Int64)))))
 
@@ -1794,7 +1794,7 @@
            distinct from a tuple's `(tuple …)` though the underlying heap array is identical (the
            distinction is the static type the renderer walks).")
   (input  (do
-            (def (f n) (list n 2 3))
+            (def (f n) #list(n 2 3))
             (def (main) (f 1)) (export main)))
   (output (: #list(1 2 3) (List Int64))))
 
@@ -1809,7 +1809,7 @@
            component boundary representation.")
   (input  (do
             (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out i)) out))
-            (def (main) (build 0 3 (list))) (export main)))
+            (def (main) (build 0 3 #list())) (export main)))
   (output (: #list(0 1 2) (List Int64)))
   (live-objects known-leak 2))
 
@@ -1821,7 +1821,7 @@
            true). Pins that the parametric frame carries a Bool element type, distinct from the Int64 twin.")
   (input  (do
             (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out (> i 0))) out))
-            (def (main) (build 0 2 (list))) (export main)))
+            (def (main) (build 0 2 #list())) (export main)))
   (output (: #list(false true) (List Bool)))
   (live-objects known-leak 2))
 
@@ -1844,7 +1844,7 @@
            a persistent push leaves a shared operand unchanged.")
   (input  (do
             (def (main)
-              (let ((xs (List.push (list) 7)))
+              (let ((xs (List.push #list() 7)))
                 (+ (List.len (List.push xs 9)) (List.len xs))))
             (export main)))
   (output (: 3 Int64)))
@@ -1864,9 +1864,9 @@
            the length-read persistence cases above. Expected: 20.")
   (input  (do
             (def (sum (: l (List Int64)))
-              (match l ((list) 0) ((list h .. t) (+ h (sum t)))))
+              (match l (#list() 0) (#list(h .. t) (+ h (sum t)))))
             (def (main (: n Int64))
-              (let ((xs (list 1 2 3 n)))
+              (let ((xs #list(1 2 3 n)))
                 (+ (sum xs) (sum xs))))
             (export main)))
   (call   main (: 4 Int64)) (output (: 20 Int64))
@@ -1882,8 +1882,8 @@
             (def (build (: n Int64) (: acc (List Int64)))
               (if (= n 0) acc (build (- n 1) (List.push acc n))))
             (def (main (: n Int64))
-              (let ((xs (build n (list))))
-                (let ((r (record (= a xs) (= b xs))))
+              (let ((xs (build n #list())))
+                (let ((r #record((= a xs) (= b xs))))
                   (+ (* 10 (List.len (. r a))) (List.len (. r b))))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 33 Int64)))
@@ -1906,7 +1906,7 @@
               (if (< i n)
                   (+ (match (List.at xs i) ((Some x) x) ((None _) 0)) (sum-at xs (+ i 1) n))
                   0))
-            (def (main (: n Int64)) (let ((xs (build 0 n (list)))) (sum-at xs 0 (List.len xs))))
+            (def (main (: n Int64)) (let ((xs (build 0 n #list()))) (sum-at xs 0 (List.len xs))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64))
   (call   main (: 5 Int64)) (output (: 10 Int64))
@@ -1922,9 +1922,9 @@
             (def (build (: n Int64) (: acc (List Int64)))
               (if (= n 0) acc (build (- n 1) (List.push acc n))))
             (def (main (: n Int64))
-              (let ((inner (build n (list))))
-                (let ((t1 (tuple inner 1))
-                      (t2 (tuple 2 inner)))
+              (let ((inner (build n #list())))
+                (let ((t1 #tuple(inner 1))
+                      (t2 #tuple(2 inner)))
                   (+ (* 100 (List.len (. t1 0)))
                      (+ (* 10 (List.len (. t2 1)))
                         (List.len inner))))))
@@ -1944,7 +1944,7 @@
            is sound (unlike Set.len/Map.size, which dedup can shrink).")
   (input  (do
             (def (main)
-              (let ((xs (list 1 2 3)))
+              (let ((xs #list(1 2 3)))
                 (+ (List.len xs) (List.len xs))))
             (export main)))
   (output (: 6 Int64)))
@@ -1961,7 +1961,7 @@
            erase the binding (a list used elsewhere is still built).")
   (input  (do
             (def (main)
-              (let ((xs (list 10 20 30)))
+              (let ((xs #list(10 20 30)))
                 (+ (Option.expect (List.at xs 0) "e") (Option.expect (List.at xs 2) "e"))))
             (export main)))
   (output (: 40 Int64)))
@@ -1974,7 +1974,7 @@
            (the complement of push, which corrupts the length view).")
   (input  (do
             (def (main)
-              (let ((xs (List.push (List.push (list) 7) 8)))
+              (let ((xs (List.push (List.push #list() 7) 8)))
                 (+ (Option.expect (List.at (List.update xs 0 99) 0) "v")
                    (Option.expect (List.at xs 0) "v"))))
             (export main)))
@@ -1987,8 +1987,8 @@
            in EITHER position. Pins persistence of a concatenated shared operand.")
   (input  (do
             (def (main)
-              (let ((xs (List.push (List.push (list) 5) 7)))
-                (+ (List.len (List.concat xs (list 9))) (Option.expect (List.at xs 0) "v"))))
+              (let ((xs (List.push (List.push #list() 5) 7)))
+                (+ (List.len (List.concat xs #list(9))) (Option.expect (List.at xs 0) "v"))))
             (export main)))
   (output (: 8 Int64)))
 
@@ -2031,7 +2031,7 @@
             (def (consume-left (: p Pair))
               (match p ((Mk a _b) (List.push a 99))))
             (def (main (: k Int64))
-              (let ((xs (list k)))
+              (let ((xs #list(k)))
                 (let ((p (Mk xs xs)))
                   (let ((grown (consume-left p)))
                     (+ (List.len grown)
@@ -2057,10 +2057,10 @@
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (Tuple (List Int64) Int64)))
               (if (< i n)
-                (build (+ i 1) n (tuple (List.push (. acc 0) i) (+ (. acc 1) 1)))
+                (build (+ i 1) n #tuple((List.push (. acc 0) i) (+ (. acc 1) 1)))
                 acc))
             (def (main (: n Int64))
-              (let ((t (build 0 n (tuple (list) 0))))
+              (let ((t (build 0 n #tuple(#list() 0))))
                 (+ (List.len (List.push (. t 0) 99)) (List.len (. t 0)))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 7 Int64))
@@ -2083,10 +2083,10 @@
             (def (build (: i Int64) (: n Int64) (: acc (Tuple (Tuple (List Int64) Int64) Int64)))
               (if (< i n)
                 (build (+ i 1) n
-                  (tuple (tuple (List.push (. (. acc 0) 0) i) (. (. acc 0) 1)) (+ (. acc 1) 1)))
+                  #tuple(#tuple((List.push (. (. acc 0) 0) i) (. (. acc 0) 1)) (+ (. acc 1) 1)))
                 acc))
             (def (main (: n Int64))
-              (let ((t (build 0 n (tuple (tuple (list) 0) 0))))
+              (let ((t (build 0 n #tuple(#tuple(#list() 0) 0))))
                 (+ (List.len (List.push (. (. t 0) 0) 99)) (List.len (. (. t 0) 0)))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 7 Int64))
@@ -2114,7 +2114,7 @@
            `(1 (list 1)) (2 (list 2))`. Pins that a nested type node in the Map frame's VALUE position (a
            recursive `Framed` frame) survives the boundary — the map analogue of the nested list-of-lists.")
   (input  (do
-            (def (build m n) (if (< n 1) m (build (Map.insert m n (list n)) (- n 1))))
+            (def (build m n) (if (< n 1) m (build (Map.insert m n #list(n)) (- n 1))))
             (def (main) (build Map.empty 2)) (export main)))
   (output (: #map((= 1 #list(1)) (= 2 #list(2))) (Map Int64 (List Int64))))
   (live-objects known-leak 5))
@@ -2233,7 +2233,7 @@
            insert and probe, breaks it. The Bytes-element companion of the Int64 large-set + small-Bytes-set
            cases. Empty-set seed is `(Set.of (list))` (no `Set.empty`).")
   (input  (do
-            (def (bk (: i Int64)) (Bytes.of (list (UInt8.wrap (/ i 256)) (UInt8.wrap (% i 256)))))
+            (def (bk (: i Int64)) (Bytes.of #list((UInt8.wrap (/ i 256)) (UInt8.wrap (% i 256)))))
             (def (build (: i Int64) (: n Int64) (: s (Set Bytes)))
               (if (< i n) (build (+ i 1) n (Set.insert s (bk i))) s))
             (def (present (: i Int64) (: n Int64) (: s (Set Bytes)) (: acc Int64))
@@ -2242,7 +2242,7 @@
                 acc))
             (def (absent (: j Int64) (: hi Int64) (: s (Set Bytes)) (: acc Int64))
               (if (< j hi)
-                (absent (+ j 1) hi s (+ acc (if (Set.contains s (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap (% j 256))))) 1000 0)))
+                (absent (+ j 1) hi s (+ acc (if (Set.contains s (Bytes.of #list((UInt8.wrap 1) (UInt8.wrap (% j 256))))) 1000 0)))
                 acc))
             (def (main (: n Int64))
               (let ((s (build 0 n #set())))
@@ -2308,7 +2308,7 @@
               (let ((m (fill 0 50 Map.empty)))
                 (let ((emptied (drain 0 50 m)))
                   (let ((regrown (fill 0 50 emptied)))
-                    (tuple (get m 0) (get m 25) (get m 49) (Map.len m)
+                    #tuple((get m 0) (get m 25) (get m 49) (Map.len m)
                            (get m 50) (Map.len emptied) (get regrown 37) (Map.len regrown))))))
             (export main)))
   (call   main (: 0 Int64))
@@ -2424,7 +2424,7 @@
               (if (< i 0) acc
                 (readsum (- i 1) xs (+ acc (match (List.at xs i) ((Some v) v) ((None u) -1000000))))))
             (def (main (: n Int64))
-              (readsum (- n 1) (build 0 n (list)) 0))
+              (readsum (- n 1) (build 0 n #list()) 0))
             (export main)))
   (call   main (: 1100 Int64)) (output (: 604450 Int64))
   (live-objects known-leak 39))
@@ -2438,7 +2438,7 @@
            100+20+5 = 125; the heap fully balances. Breaker fence w4 (ticks 471/480).")
   (input  (do
             (def (main (: n Int64))
-              (let ((t (list n n)))
+              (let ((t #list(n n)))
                 (let ((x (List.prepend t 1)))
                   (let ((y (List.prepend t 2)))
                     (+ (* (match (List.at x 0) ((Some v) v) ((None u) -9)) 100)
@@ -2457,8 +2457,8 @@
            n=7: base=(9 9), after prepends (8 7 9 9) → 800+70+2 = 872. Breaker fence w3 (ticks 471/480).")
   (input  (do
             (def (main (: n Int64))
-              (let ((base (List.prepend (List.prepend (list 9 9) n) (+ n 1))))
-                (match base ((list a b .. r) (+ (* a 100) (+ (* b 10) (List.len r)))) (_ -1))))
+              (let ((base (List.prepend (List.prepend #list(9 9) n) (+ n 1))))
+                (match base (#list(a b .. r) (+ (* a 100) (+ (* b 10) (List.len r)))) (_ -1))))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 872 Int64)))
@@ -2473,9 +2473,9 @@
         the concat CONSUMING the projection. `known-leak 9` = the narrow fix's accepted residual
         (leak-beats-UAF).")
   (input (do
-    (def turn (list (record (= kind "k") (= val "a")) (record (= kind "k2") (= val "b"))))
+    (def turn #list(#record((= kind "k") (= val "a")) #record((= kind "k2") (= val "b"))))
     (def (run (: xs (List (Record (: kind String) (: val String)))) (: acc String))
-      (match xs ((list) acc) ((list e .. rest) (run rest (String.concat acc (. e val))))))
+      (match xs (#list() acc) (#list(e .. rest) (run rest (String.concat acc (. e val))))))
     (def (main) (run turn ""))
     (export main)))
   (call main)
@@ -2488,9 +2488,9 @@
         stays narrow and the sound path never regresses. `known-leak 7` = the same accepted residual class
         minus the sibling string cells.")
   (input (do
-    (def turn (list (record (= kind 1) (= val "a")) (record (= kind 2) (= val "b"))))
+    (def turn #list(#record((= kind 1) (= val "a")) #record((= kind 2) (= val "b"))))
     (def (run (: xs (List (Record (: kind Int64) (: val String)))) (: acc String))
-      (match xs ((list) acc) ((list e .. rest) (run rest (String.concat acc (. e val))))))
+      (match xs (#list() acc) (#list(e .. rest) (run rest (String.concat acc (. e val))))))
     (def (main) (run turn ""))
     (export main)))
   (call main)
@@ -2505,9 +2505,9 @@
         pattern-desugar ever routes through the arg-position projection path this flips 1→9 (leak) or
         traps (UAF); it is also the target profile for the ksd1 residual's SITE-B tightening.")
   (input (do
-    (def turn (list (record (= kind "k") (= val "a")) (record (= kind "k2") (= val "b"))))
+    (def turn #list(#record((= kind "k") (= val "a")) #record((= kind "k2") (= val "b"))))
     (def (run (: xs (List (Record (: kind String) (: val String)))) (: acc String))
-      (match xs ((list) acc) ((list (record (= kind _k) (= val v)) .. rest) (run rest (String.concat acc v)))))
+      (match xs (#list() acc) (#list(#record((= kind _k) (= val v)) .. rest) (run rest (String.concat acc v)))))
     (def (main) (run turn ""))
     (export main)))
   (call main)
@@ -2520,9 +2520,9 @@
         preservation dup, no residual) — proves the clean pattern path is compound-kind-general, not a
         record-pattern special case.")
   (input (do
-    (def turn (list (tuple 1 "a") (tuple 2 "b")))
+    (def turn #list(#tuple(1 "a") #tuple(2 "b")))
     (def (run (: xs (List (Tuple Int64 String))) (: acc String))
-      (match xs ((list) acc) ((list (tuple _k v) .. rest) (run rest (String.concat acc v)))))
+      (match xs (#list() acc) (#list(#tuple(_k v) .. rest) (run rest (String.concat acc v)))))
     (def (main) (run turn ""))
     (export main)))
   (call main)
@@ -2535,9 +2535,9 @@
         depth-2) must still keep the preservation dup. Same accepted residual class as ksd1
         (leak-beats-UAF); if a future narrowing keys on exact depth-2 shape this case traps instead.")
   (input (do
-    (def turn (list (record (= inner (record (= val "a")))) (record (= inner (record (= val "b"))))))
+    (def turn #list(#record((= inner #record((= val "a")))) #record((= inner #record((= val "b"))))))
     (def (run (: xs (List (Record (: inner (Record (: val String)))))) (: acc String))
-      (match xs ((list) acc) ((list e .. rest) (run rest (String.concat acc (. (. e inner) val))))))
+      (match xs (#list() acc) (#list(e .. rest) (run rest (String.concat acc (. (. e inner) val))))))
     (def (main) (run turn ""))
     (export main)))
   (call main)
@@ -2551,8 +2551,8 @@
         its fold fixpoint. Fully scalar content (the tuple scalarizes; no heap), so no live clause.")
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (Some (tuple n (+ n 1))) (None))
-        ((Some m) (match m ((tuple a c) (+ (* a 10) c))))
+      (match (if (> n 0) (Some #tuple(n (+ n 1))) (None))
+        ((Some m) (match m (#tuple(a c) (+ (* a 10) c))))
         ((None u) -1)))
     (export main)))
   (call main (: 7 Int64)) (output (: 78 Int64))
@@ -2567,8 +2567,8 @@
         case the direct regression fence; values also pin dual-path agreement.")
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (Some (record (= x n) (= y 3))) (None))
-        ((Some r) (match r ((record (= x a) (= y b)) (+ (* a 100) b))))
+      (match (if (> n 0) (Some #record((= x n) (= y 3))) (None))
+        ((Some r) (match r (#record((= x a) (= y b)) (+ (* a 100) b))))
         ((None u) -1)))
     (export main)))
   (call main (: 7 Int64)) (output (: 703 Int64))
@@ -2595,7 +2595,7 @@
               (match (List.at xs i) ((Some v) v) ((None u) -9)))
             (def (main (: n Int64))
               (do
-                (def orig (build 0 n (list)))
+                (def orig (build 0 n #list()))
                 (def upd (List.update (List.update (List.update orig 40 (+ 40 1000000)) 1050 (+ 1050 1000000)) 1099 (+ 1099 1000000)))
                 (- (+ (+ (get upd 40) (get upd 1050)) (get upd 1099))
                    (+ (+ (get orig 40) (get orig 1050)) (get orig 1099)))))
@@ -2618,7 +2618,7 @@
               (if (= i 0) xs (churn (- i 1) (List.update xs 20 777))))
             (def (main (: n Int64))
               (do
-                (def base (build n (list)))
+                (def base (build n #list()))
                 (def restored (List.update (churn 30 base) 20 (match (List.at base 20) ((Some v) v) ((None _u) -1))))
                 (+ (* 10 (if (= restored base) 1 0))
                    (if (= (List.len restored) n) 1 0))))
@@ -2638,7 +2638,7 @@
               (if (= i 0) acc (build (- i 1) (List.push acc i))))
             (def (main (: n Int64))
               (do
-                (def base (build n (list)))
+                (def base (build n #list()))
                 (def restored (List.update (List.update base 35 999) 35 (match (List.at base 35) ((Some v) v) ((None _u) -1))))
                 (match (Map.lookup (Map.insert Map.empty base 42) restored)
                   ((Some v) v) ((None _u) -1))))
@@ -2669,7 +2669,7 @@
               (if (< i 0) acc
                 (readsum (- i 1) xs (+ acc (match (List.at xs i) ((Some v) v) ((None u) -1000000))))))
             (def (main (: n Int64))
-              (readsum (- n 1) (build 0 n (list)) 0))
+              (readsum (- n 1) (build 0 n #list()) 0))
             (export main)))
   (call   main (: 1100 Int64)) (output (: 604450 Int64))
   (live-objects known-leak 39))
@@ -2696,7 +2696,7 @@
               (if (< i 0) acc
                 (readsum (- i 1) xs (+ acc (match (List.at xs i) ((Some v) v) ((None u) -1000000))))))
             (def (main (: n Int64))
-              (readsum (- n 1) (build 0 n (list)) 0))
+              (readsum (- n 1) (build 0 n #list()) 0))
             (export main)))
   (call   main (: 10 Int64)) (output (: 45 Int64))
   (live-objects known-leak 2))
@@ -2718,7 +2718,7 @@
             (def (build (: i Int64) (: n Int64) (: out (List Int64)))
               (if (< i n) (build (+ i 1) n (List.prepend out i)) out))
             (def (main (: n Int64))
-              (List.len (build 0 n (list))))
+              (List.len (build 0 n #list())))
             (export main)))
   (call   main (: 1100 Int64)) (output (: 1100 Int64))
   (live-objects 0))
@@ -2749,8 +2749,8 @@
             (def (at (: xs (List Int64)) (: i Int64))
               (match (List.at xs i) ((Some v) v) ((None u) -1000000)))
             (def (main (: n Int64))
-              (let ((left (build 0 0 600 (list)))
-                    (right (build 0 600 1200 (list))))
+              (let ((left (build 0 0 600 #list()))
+                    (right (build 0 600 1200 #list())))
                 (let ((cat (List.concat left right)))
                   (+ (* 1000 (if (= (List.len cat) 1200) 1 0))
                      (+ (at cat 0)
@@ -2778,8 +2778,8 @@
             (def (at (: xs (List Int64)) (: i Int64))
               (match (List.at xs i) ((Some v) v) ((None u) -1000000)))
             (def (main (: n Int64))
-              (let ((left (build 0 0 37 (list)))
-                    (right (build 0 37 1237 (list))))
+              (let ((left (build 0 0 37 #list()))
+                    (right (build 0 37 1237 #list())))
                 (let ((cat (List.concat left right)))
                   (+ (* 1000 (if (= (List.len cat) 1237) 1 0))
                      (+ (at cat 0)
@@ -3005,10 +3005,10 @@
             (def (main (: mode Int64))
               (do
                 (def m (build 1 3 Map.empty))
-                (def fs (list (fn ((: k Int64)) (get m k))
+                (def fs #list((fn ((: k Int64)) (get m k))
                               (fn ((: k Int64)) (* (get m k) 2))))
                 (def g (match fs
-                         ((list f0 f1)
+                         (#list(f0 f1)
                            (if (= mode 1) f0 f1))
                          (_ (fn ((: _k Int64)) -1))))
                 (def a (g 2))
@@ -3099,11 +3099,11 @@
               (if (> i n) acc (build (+ i 1) n (List.push acc i))))
             (def (sum-list (: xs (List Int64)) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (sum-list t (+ acc h)))))
+                (#list() acc)
+                (#list(h .. t) (sum-list t (+ acc h)))))
             (def (main (: mode Int64))
               (do
-                (def l1 (build 1 4 (list)))
+                (def l1 (build 1 4 #list()))
                 (def l2 (List.push l1 50))
                 (def keep (if (= mode 1) l1 l2))
                 (+ (* (sum-list keep 0) 10) (List.len keep))))
@@ -3207,7 +3207,7 @@
   (input  (do
             (def (main (: k Int64) (: v Int64))
               (let ((m (Map.insert Map.empty 1 10)))
-                (match (Map.swap m k v) ((tuple _ _)
+                (match (Map.swap m k v) (#tuple(_ _)
                   (match (Map.lookup m 1) ((Some x) x) ((None) -1))))))
             (export main)))
   (call   main (: 1 Int64) (: 99 Int64)) (output (: 10 Int64)))
@@ -3229,7 +3229,7 @@
               (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
             (def (loop (: j Int64) (: m Int64) (: base (List Int64)) (: tot Int64))
               (if (< j m) (loop (+ j 1) m base (+ tot (List.len (List.push base 99)))) tot))
-            (def (main (: m Int64)) (loop 0 m (mb 0 2 (list)) 0))
+            (def (main (: m Int64)) (loop 0 m (mb 0 2 #list()) 0))
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 6 Int64))
@@ -3255,7 +3255,7 @@
               (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
             (def (loop (: j Int64) (: m Int64) (: pr (Tuple (List Int64) Int64)) (: tot Int64))
               (if (< j m) (loop (+ j 1) m pr (+ tot (List.len (List.push (. pr 0) 99)))) tot))
-            (def (main (: m Int64)) (loop 0 m (tuple (mb 0 2 (list)) 0) 0))
+            (def (main (: m Int64)) (loop 0 m #tuple((mb 0 2 #list()) 0) 0))
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 6 Int64))
@@ -3276,7 +3276,7 @@
               (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
             (def (loop (: i Int64) (: xs (List Int64)) (: acc Int64))
               (if (< i (List.len xs)) (loop (+ i 1) xs (+ acc (Option.expect (List.at xs i) "v"))) acc))
-            (def (main (: n Int64)) (loop 0 (mb 0 n (list)) 0))
+            (def (main (: n Int64)) (loop 0 (mb 0 n #list()) 0))
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64))
   (call   main (: 4 Int64)) (output (: 6 Int64))
@@ -3302,7 +3302,7 @@
               (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
             (def (loop (: j Int64) (: m Int64) (: bx Box) (: tot Int64))
               (if (< j m) (loop (+ j 1) m bx (+ tot (List.len (List.push (match bx ((B xs) xs)) 99)))) tot))
-            (def (main (: m Int64)) (loop 0 m (B (mb 0 2 (list))) 0))
+            (def (main (: m Int64)) (loop 0 m (B (mb 0 2 #list())) 0))
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 6 Int64))
@@ -3330,7 +3330,7 @@
   (input  (do
             (type Box (Wrap (List Int64)))
             (def (main (: n Int64))
-              (match (Wrap (list n (+ n 1) (+ n 2)))
+              (match (Wrap #list(n (+ n 1) (+ n 2)))
                 ((Wrap xs) (+ (* 100 (List.len xs)) (Option.expect (List.at xs 2) "in bounds")))))
             (export main)))
   (call   main (: 5 Int64))
@@ -3350,7 +3350,7 @@
            AFTER the if. `xs` must survive to the after-use on BOTH paths — the branch-join dup/drop must
            balance so the value is dropped exactly once, not freed inside the taken branch. b=true → 3 + 3 =
            6. Pins that a consume in one arm does not free a binding still live past the join.")
-  (input  (do (def (main (: b Bool)) (let ((xs (list 1 2 3))) (let ((n (if b (List.len xs) 0))) (+ n (List.len xs))))) (export main)))
+  (input  (do (def (main (: b Bool)) (let ((xs #list(1 2 3))) (let ((n (if b (List.len xs) 0))) (+ n (List.len xs))))) (export main)))
   (call   main (: true Bool))
   (output (: 6 Int64)))
 
@@ -3359,7 +3359,7 @@
            → 0 + 3 = 3. Pins that the NOT-taken branch's balance does not over-drop `xs` (nor leak it) — the
            value survives to the after-use whether or not the consuming arm ran. The b=false companion of
            the case above; together they pin the join is balanced on both paths.")
-  (input  (do (def (main (: b Bool)) (let ((xs (list 1 2 3))) (let ((n (if b (List.len xs) 0))) (+ n (List.len xs))))) (export main)))
+  (input  (do (def (main (: b Bool)) (let ((xs #list(1 2 3))) (let ((n (if b (List.len xs) 0))) (+ n (List.len xs))))) (export main)))
   (call   main (: false Bool))
   (output (: 3 Int64)))
 
@@ -3369,7 +3369,7 @@
            `Some`. b=true → `List.len xs` (3) + `List.len ys` (the escaped copy, 3) = 6. The escaping branch
            must dup `xs` (so both the escaped copy and the after-use are live); a move-without-dup would free
            it under the after-use. Pins the branch-join balance holds when one arm ESCAPES the value.")
-  (input  (do (def (main (: b Bool)) (let ((xs (list 1 2 3))) (let ((opt (if b (Some xs) (None unit)))) (+ (List.len xs) (match opt ((Some ys) (List.len ys)) ((None _) 0)))))) (export main)))
+  (input  (do (def (main (: b Bool)) (let ((xs #list(1 2 3))) (let ((opt (if b (Some xs) (None unit)))) (+ (List.len xs) (match opt ((Some ys) (List.len ys)) ((None _) 0)))))) (export main)))
   (call   main (: true Bool))
   (output (: 6 Int64)))
 
@@ -3378,7 +3378,7 @@
            the `None` arm contributes 0 → 3. Pins the None branch neither leaks `xs` (which it did not
            escape) nor over-drops it before the after-use — the escape-branch dup does not leave the
            non-escape path unbalanced. The b=false companion of the conditional-escape case.")
-  (input  (do (def (main (: b Bool)) (let ((xs (list 1 2 3))) (let ((opt (if b (Some xs) (None unit)))) (+ (List.len xs) (match opt ((Some ys) (List.len ys)) ((None _) 0)))))) (export main)))
+  (input  (do (def (main (: b Bool)) (let ((xs #list(1 2 3))) (let ((opt (if b (Some xs) (None unit)))) (+ (List.len xs) (match opt ((Some ys) (List.len ys)) ((None _) 0)))))) (export main)))
   (call   main (: false Bool))
   (output (: 3 Int64)))
 
@@ -3398,7 +3398,7 @@
               (if (= n 0) acc
                   (go s (- n 1) (+ acc (List.len (List.push (Option.expect s "v") 9))))))
             (def (main (: d Int64))
-              (go (Option.Some (List.push (List.push (list) d) 8)) 4 0))
+              (go (Option.Some (List.push (List.push #list() d) 8)) 4 0))
             (export main)))
   (call   main (: 7 Int64)) (output (: 12 Int64))
   (live-objects known-leak 3))
@@ -3418,7 +3418,7 @@
               (if (= n 0) acc
                   (go s (- n 1) (+ acc (List.len (List.push (Option.expect (Option.expect s "v") "w") 9))))))
             (def (main (: d Int64))
-              (go (Option.Some (Option.Some (List.push (List.push (list) d) 8))) 4 0))
+              (go (Option.Some (Option.Some (List.push (List.push #list() d) 8))) 4 0))
             (export main)))
   (call   main (: 7 Int64)) (output (: 12 Int64))
   (live-objects known-leak 4))
@@ -3449,7 +3449,7 @@
   (input  (do
             (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast)))
             (def (head-e (: elems (List Ast)))
-              (match elems ((list ((. Ast Name) n) .. _) (Some n)) (_ (None unit))))
+              (match elems (#list(((. Ast Name) n) .. _) (Some n)) (_ (None unit))))
             (def (fc (: node Ast))
               (match node
                 (((. Ast Name) _) 1)
@@ -3457,7 +3457,7 @@
                   (+ (match (head-e elems) ((Some _) 100) ((None _) 0)) (fl elems)))
                 (_ 0)))
             (def (fl (: elems (List Ast)))
-              (match elems ((list) 0) ((list h .. r) (+ (fc h) (fl r)))))
+              (match elems (#list() 0) (#list(h .. r) (+ (fc h) (fl r)))))
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
@@ -3489,7 +3489,7 @@
             (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast)))
             (def (head-of (: node Ast))
               (match node
-                (((. Ast List) (list ((. Ast Name) n) .. _)) (Some n))
+                (((. Ast List) #list(((. Ast Name) n) .. _)) (Some n))
                 (_ (None unit))))
             (def (fc (: node Ast))
               (match node
@@ -3498,7 +3498,7 @@
                   (+ (match (head-of node) ((Some _) 100) ((None _) 0)) (fl elems)))
                 (_ 0)))
             (def (fl (: elems (List Ast)))
-              (match elems ((list) 0) ((list h .. r) (+ (fc h) (fl r)))))
+              (match elems (#list() 0) (#list(h .. r) (+ (fc h) (fl r)))))
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
@@ -3525,7 +3525,7 @@
                       (+ acc (match a
                                ((ALit x) x)
                                ((ANode elems) (List.len (List.push elems (ALit 9)))))))))
-            (def (main) (go (ANode (mb 0 2 (list))) 4 0))
+            (def (main) (go (ANode (mb 0 2 #list())) 4 0))
             (export main)))
   (output (: 12 Int64))
   (live-objects known-leak 5))
@@ -3542,7 +3542,7 @@
            heads on every backend, exactly as a non-Ast-named sum (Tree) would. The type being named Ast does
            not force qualification; only a real variant-name collision does. Pins the sum_needs_qualified_heads
            predicate's BARE arm + cross-backend parity (was rust-qualified / wasm-bare before the fix).")
-  (input  (do (type Ast (Lit Int64) (Node (List Ast))) (def (main) (Node (list (Lit 5) (Lit 6)))) (export main)))
+  (input  (do (type Ast (Lit Int64) (Node (List Ast))) (def (main) (Node #list((Lit 5) (Lit 6)))) (export main)))
   (output (: (Node #list((Lit 5) (Lit 6))) Ast)))
 
 (case "a user sum named Ast renders BARE with RUNTIME payloads through one compiled body"
@@ -3554,7 +3554,7 @@
   (input  (do
             (type Ast (Lit Int64) (Node (List Ast)))
             (def (main (: n Int64))
-              (Node (list (Lit n) (Lit (+ n 1)))))
+              (Node #list((Lit n) (Lit (+ n 1)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: (Node #list((Lit 5) (Lit 6))) Ast))
   (live-objects known-leak 5))
@@ -3975,7 +3975,7 @@
                                          (_ (- 0 5))))
                             (_ (- 0 6))))
                 (_ (- 0 1))))
-            (def (main) (paren-num (list (T.LP) (T.Num 7) (T.RP)) 0))
+            (def (main) (paren-num #list((T.LP) (T.Num 7) (T.RP)) 0))
             (export main)))
   (output (: 1007 Int64)))
 
@@ -3994,8 +3994,8 @@
            `build 3` = `[(Pt (tuple 3 9))]` → the arm binds a=3 b=9 → 12; `build 0` = `[(Nil)]` → the
            `_` fallthrough → 0.")
   (input  (module m (type P (Pt (Tuple Int64 Int64)) (Nil))
-            (def (build (: k Int64)) (if (< k 1) (list (Nil)) (list (Pt (tuple k 9)))))
-            (def (f (: xs (List P))) (match xs ((list (Pt (tuple a b))) (+ a b)) (_ 0)))
+            (def (build (: k Int64)) (if (< k 1) #list((Nil)) #list((Pt #tuple(k 9)))))
+            (def (f (: xs (List P))) (match xs (#list((Pt #tuple(a b))) (+ a b)) (_ 0)))
             (def (main (: k Int64)) (f (build k)))))
   (call   main (: 3 Int64)) (output (: 12 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64))
@@ -4012,8 +4012,8 @@
            type through the frame is not lost at the boundary.")
   (input  (do
             (def (build i n out)
-              (if (< i n) (build (+ i 1) n (List.push out (list i))) out))
-            (def (main) (build 0 3 (list))) (export main)))
+              (if (< i n) (build (+ i 1) n (List.push out #list(i))) out))
+            (def (main) (build 0 3 #list())) (export main)))
   (output (: #list(#list(0) #list(1) #list(2)) (List (List Int64))))
   (live-objects known-leak 8))
 
@@ -4028,7 +4028,7 @@
            genuine list, not a flattened or borrowed-wrong handle — both backends via the `(call)` form.")
   (input  (do
             (def (main (: i Int64) (: j Int64))
-              (let ((xss (list (list 10 11) (list 20 21 22) (list 30))))
+              (let ((xss #list(#list(10 11) #list(20 21 22) #list(30))))
                 (match (List.at xss i)
                   ((Some inner) (match (List.at inner j) ((Some v) v) ((None _u) -1)))
                   ((None _u) -2))))
@@ -4047,7 +4047,7 @@
            SAME `List` type as a literal — its representation (an RRB persistent tree join) is
            unobservable (#A List's Representation Is Unspecified And Unobservable), so it renders as one
            flat `(list …)`. The self-hosting compiler assembles output in linear time with this op.")
-  (input  (do (def (main) (List.concat (list 1 2) (list 3 4))) (export main)))
+  (input  (do (def (main) (List.concat #list(1 2) #list(3 4))) (export main)))
   (output (: #list(1 2 3 4) (List Int64))))
 
 (case "the length of a concatenation is the sum of the two lengths"
@@ -4055,7 +4055,7 @@
            of the second list to the first, so the result length is the sum. Reads through the joined
            trie via `vec-len` exactly as a push-built list (collections-and-text.md §A List's
            Representation Is Unspecified And Unobservable).")
-  (input  (do (def (main) (List.len (List.concat (list 1 2 3) (list 4 5)))) (export main)))
+  (input  (do (def (main) (List.len (List.concat #list(1 2 3) #list(4 5)))) (export main)))
   (output (: 5 Int64)))
 
 ; ── `List.len` of a list built AT THE CALL SITE folds to the constant ARITY even for RUNTIME elements ─
@@ -4074,7 +4074,7 @@
            not). No heap list is built; the runtime `vec-len` never runs. `(f 1 2)` = 3. Pins that the
            length fold reads the CONSTRUCTOR SHAPE, not the elements — distinct from the constant-element
            `(list 1 2 3)` case and the runtime-`if`-selected list (which must reach vec-len).")
-  (input  (do (def (main (: a Int64) (: b Int64)) (List.len (list a b a))) (export main)))
+  (input  (do (def (main (: a Int64) (: b Int64)) (List.len #list(a b a))) (export main)))
   (call   main (: 1 Int64) (: 2 Int64))
   (output (: 3 Int64)))
 
@@ -4083,7 +4083,7 @@
            2-element list built at the site has statically-known total arity 3, independent of the runtime
            element `a`. `(f 7)` = 3, building no heap list. The concat companion of the arity fold: the
            length is the sum of the two constructors' arities, a compile-time constant.")
-  (input  (do (def (main (: a Int64)) (List.len (List.concat (list a) (list a a)))) (export main)))
+  (input  (do (def (main (: a Int64)) (List.len (List.concat #list(a) #list(a a)))) (export main)))
   (call   main (: 7 Int64))
   (output (: 3 Int64)))
 
@@ -4102,7 +4102,7 @@
            folds to a constant); this drives the emitted `if`-join over a list handle + the runtime
            `vec-len`, which together must produce VALID wasm (a list is a heap i32 handle, and List.len's
            i32 length extends to the Int64 i64 result). Expected: 3.")
-  (input  (do (def (main (: b Int64)) (List.len (if (> b 0) (list 1 2 3) (list 4 5)))) (export main)))
+  (input  (do (def (main (: b Int64)) (List.len (if (> b 0) #list(1 2 3) #list(4 5)))) (export main)))
   (call   main (: 5 Int64))
   (output (: 3 Int64)))
 
@@ -4110,7 +4110,7 @@
   (doc    "The else path of the same program: with b = -1 the `if` selects `(list 4 5)` and `List.len`
            reads 2. Pins that BOTH branches of the if-produced list are valid heap handles measured
            correctly, not only the then branch. Expected: 2.")
-  (input  (do (def (main (: b Int64)) (List.len (if (> b 0) (list 1 2 3) (list 4 5)))) (export main)))
+  (input  (do (def (main (: b Int64)) (List.len (if (> b 0) #list(1 2 3) #list(4 5)))) (export main)))
   (call   main (: -1 Int64))
   (output (: 2 Int64)))
 
@@ -4119,7 +4119,7 @@
            binds the if-produced list handle to `l` (a kept heap binding) and measures it — 3 for b = 5.
            Pins that the branch-joined list handle survives a `let` binding and `List.len` on the bound
            reference emits valid wasm, the shape a self-hosted reader takes threading a chosen list.")
-  (input  (do (def (main (: b Int64)) (let ((l (if (> b 0) (list 1 2 3) (list 4 5)))) (List.len l))) (export main)))
+  (input  (do (def (main (: b Int64)) (let ((l (if (> b 0) #list(1 2 3) #list(4 5)))) (List.len l))) (export main)))
   (call   main (: 5 Int64))
   (output (: 3 Int64)))
 
@@ -4153,7 +4153,7 @@
            2-byte → 2. The `if` unifies two `Bytes` branches into one heap handle that `Bytes.len` reads;
            pins the join emits valid wasm for a BYTES handle (the bytes analogue of the runtime-if list/map,
            both backends now that rust has Bytes).")
-  (input  (do (def (main (: b Int64)) (Bytes.len (if (> b 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 4 5))))) (export main)))
+  (input  (do (def (main (: b Int64)) (Bytes.len (if (> b 0) (Bytes.of #list(1 2 3)) (Bytes.of #list(4 5))))) (export main)))
   (call   main (: 5 Int64)) (output (: 3 Int64))
   (call   main (: -5 Int64)) (output (: 2 Int64)))
 
@@ -4193,14 +4193,14 @@
            by the same total ordering as a literal.")
   (input  (do
             (def (main)
-              (Option.expect (List.at (List.concat (list 10 20 30) (list 40 50)) 3) "in bounds")) (export main)))
+              (Option.expect (List.at (List.concat #list(10 20 30) #list(40 50)) 3) "in bounds")) (export main)))
   (output (: 40 Int64)))
 
 (case "concatenating with the empty list on the right is identity"
   (doc    "`(List.len (List.concat (list 7 8 9) (list)))` = 3 — concatenating with the empty list yields
            a list equal to the other operand (collections-and-text.md §A List Is Grown By Functional
            Construction: the empty-operand identity). The empty right operand contributes no elements.")
-  (input  (do (def (main) (List.len (List.concat (list 7 8 9) (list)))) (export main)))
+  (input  (do (def (main) (List.len (List.concat #list(7 8 9) #list()))) (export main)))
   (output (: 3 Int64)))
 
 (case "concatenating with the empty list on the right yields the operand by value"
@@ -4208,7 +4208,7 @@
            `(List.concat (list 7 8 9) (list))` EQUALS `(list 7 8 9)` — same elements in the same order, not
            merely the same length (collections-and-text.md §A List Is Grown By Functional Construction).
            Pins that the empty right operand is the identity element-for-element.")
-  (input  (= (List.concat (list 7 8 9) (list)) (list 7 8 9)))
+  (input  (= (List.concat #list(7 8 9) #list()) #list(7 8 9)))
   (output (: true Bool)))
 
 (case "concatenating with the empty list on the left is the identity"
@@ -4216,14 +4216,14 @@
            identity on the left as well as the right, so a concat with an empty operand on either side is
            a no-op on value. The companion the right-identity case does not cover (concat is not assumed
            symmetric until pinned), matching the empty-on-both-sides bytes/string cases.")
-  (input  (= (List.concat (list) (list 7 8 9)) (list 7 8 9)))
+  (input  (= (List.concat #list() #list(7 8 9)) #list(7 8 9)))
   (output (: true Bool)))
 
 (case "concatenating two empty lists is the empty list"
   (doc    "The degenerate boundary: `(List.concat (list) (list))` joins nothing to nothing, yielding the
            empty list. Pins that concat handles the zero+zero case (not underflowing or producing a novel
            form), the list companion of the empty+empty bytes/string/tuple cases.")
-  (input  (= (List.concat (list) (list)) (list)))
+  (input  (= (List.concat #list() #list()) #list()))
   (output (: true Bool)))
 
 (case "list concatenation is associative by content"
@@ -4232,8 +4232,8 @@
            both are {1,2,3,4,5,6}. Pins the associativity law (matching the bytes concat-associative case),
            so a builder that regroups its concatenations — e.g. a self-hosted emitter joining code
            fragments — produces the same list whichever way the tree is nested.")
-  (input  (= (List.concat (List.concat (list 1 2) (list 3 4)) (list 5 6))
-             (List.concat (list 1 2) (List.concat (list 3 4) (list 5 6)))))
+  (input  (= (List.concat (List.concat #list(1 2) #list(3 4)) #list(5 6))
+             (List.concat #list(1 2) (List.concat #list(3 4) #list(5 6)))))
   (output (: true Bool)))
 
 ; The associativity law above says concat depends only on elements-in-order, not grouping. This SMALL-LIST
@@ -4259,8 +4259,8 @@
            fixed by the element-wise value-canonicalize walk). Kept at n=3 so it passes without overclaiming.")
   (input  (do
             (def (main (: a Int64) (: b Int64) (: c Int64))
-              (let ((concat-key (List.concat (list a) (List.concat (list b) (list c))))
-                    (push-key (List.push (List.push (List.push (list) a) b) c)))
+              (let ((concat-key (List.concat #list(a) (List.concat #list(b) #list(c))))
+                    (push-key (List.push (List.push (List.push #list() a) b) c)))
                 (match (Map.lookup (Map.insert Map.empty concat-key 100) push-key)
                   ((Some v) v)
                   ((None) (- 0 1)))))
@@ -4282,8 +4282,8 @@
               (if (< i n) (build (+ i 1) n (List.push out i)) out))
             (def (main (: n Int64))
               (let ((half (/ n 2))
-                    (concat-key (List.concat (build 0 half (list)) (build half n (list))))
-                    (push-key (build 0 n (list))))
+                    (concat-key (List.concat (build 0 half #list()) (build half n #list())))
+                    (push-key (build 0 n #list())))
                 (match (Map.lookup (Map.insert Map.empty concat-key 42) push-key)
                   ((Some v) v)
                   ((None) (- 0 1)))))
@@ -4306,8 +4306,8 @@
               (if (< i n) (build (+ i 1) n (List.push out i)) out))
             (def (main (: n Int64))
               (let ((half (/ n 2))
-                    (concat-elem (List.concat (build 0 half (list)) (build half n (list))))
-                    (push-elem (build 0 n (list))))
+                    (concat-elem (List.concat (build 0 half #list()) (build half n #list())))
+                    (push-elem (build 0 n #list())))
                 (if (Set.contains (Set.insert #set() concat-elem) push-elem) 42 (- 0 1))))
             (export main)))
   (call main (: 40 Int64)) (output (: 42 Int64)))
@@ -4325,8 +4325,8 @@
               (if (< i n) (build (+ i 1) n (List.push out i)) out))
             (def (main (: n Int64))
               (let ((half (/ n 2))
-                    (concat-elem (List.concat (build 0 half (list)) (build half n (list))))
-                    (other (build 1 (+ n 1) (list))))
+                    (concat-elem (List.concat (build 0 half #list()) (build half n #list())))
+                    (other (build 1 (+ n 1) #list())))
                 (if (Set.contains (Set.insert #set() concat-elem) other) 42 (- 0 1))))
             (export main)))
   (call   main (: 40 Int64)) (output (: -1 Int64)))
@@ -4347,8 +4347,8 @@
               (if (< i n) (build (+ i 1) n (List.push out i)) out))
             (def (main (: n Int64))
               (let ((half (/ n 2))
-                    (concat-list (List.concat (build 0 half (list)) (build half n (list))))
-                    (push-list (build 0 n (list))))
+                    (concat-list (List.concat (build 0 half #list()) (build half n #list())))
+                    (push-list (build 0 n #list())))
                 (if (= concat-list push-list) 1 0)))
             (export main)))
   (call main (: 40 Int64)) (output (: 1 Int64)))
@@ -4361,7 +4361,7 @@
            element at a time (O(n²)).")
   (input  (do
             (def (cat a b) (List.concat a b))
-            (def (main) (List.len (cat (list 1 2 3) (list 4 5 6 7)))) (export main)))
+            (def (main) (List.len (cat #list(1 2 3) #list(4 5 6 7)))) (export main)))
   (output (: 7 Int64)))
 
 ; The concatenations above run over CONSTANT lists (even the helper case passes literals), so the whole
@@ -4375,7 +4375,7 @@
            the second operand carries a runtime element, so `vec-concat` runs at run time. The length is
            2 + 3 = 5 regardless of `x`. Pins the runtime concat's combined length (the `code-cat` emit
            idiom), distinct from the constant fold.")
-  (input  (do (def (main (: x Int64)) (List.len (List.concat (list 1 2) (list x x x)))) (export main)))
+  (input  (do (def (main (: x Int64)) (List.len (List.concat #list(1 2) #list(x x x)))) (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
   (call   main (: -1 Int64)) (output (: 5 Int64)))
 
@@ -4386,8 +4386,8 @@
            runtime concat preserves element ORDER across the seam — the second list's elements follow the
            first's, not interleaved or shifted.")
   (input  (do (def (main (: x Int64))
-                (+ (match (List.at (List.concat (list 10 20) (list x 40)) 0) ((Some v) v) (None -1))
-                   (match (List.at (List.concat (list 10 20) (list x 40)) 2) ((Some v) v) (None -1)))) (export main)))
+                (+ (match (List.at (List.concat #list(10 20) #list(x 40)) 0) ((Some v) v) (None -1))
+                   (match (List.at (List.concat #list(10 20) #list(x 40)) 2) ((Some v) v) (None -1)))) (export main)))
   (call   main (: 99 Int64)) (output (: 109 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64)))
 
@@ -4400,7 +4400,7 @@
            Homogeneity Violation Is A Malformed Collection). A generation that skipped this would render
            the result at one operand's element type, mistyping the other's elements — a wrong value, not
            merely a missing rejection.")
-  (input  (do (def (main) (List.len (List.concat (list 1 2) (list true)))) (export main)))
+  (input  (do (def (main) (List.len (List.concat #list(1 2) #list(true)))) (export main)))
   (error CDZ0201))
 
 (case "a retired collection-op name is rejected with a rename fix-it (CDZ0603)"
@@ -4422,7 +4422,7 @@
            targeted CDZ0603 naming `Tuple.concat` + a VERIFIED fix-it, not the generic 'no member'. Pins
            CDZ0603 for the Tuple.cat leg specifically — the corpus previously pinned only Map.size, so a
            future change could have broken the diagnostic for Tuple without any graded case catching it.")
-  (input  (do (def (main) (. (Tuple.cat (tuple 1 2) (tuple 3 4)) 0)) (export main)))
+  (input  (do (def (main) (. (Tuple.cat #tuple(1 2) #tuple(3 4)) 0)) (export main)))
   (error CDZ0603))
 
 (case "the retired Tuple.pop name is rejected with the Tuple.remove rename fix-it (CDZ0603)"
@@ -4431,7 +4431,7 @@
            The retired `pop` no longer resolves and gets CDZ0603 naming `Tuple.remove` + a VERIFIED fix-it.
            Completes the graded-corpus coverage of CDZ0603 across all three retired names (Map.size /
            Tuple.cat / Tuple.pop), so a regression on any one leg is caught by the shared gate.")
-  (input  (do (def (main) (. (Tuple.pop (tuple 1 2 3)) 0)) (export main)))
+  (input  (do (def (main) (. (Tuple.pop #tuple(1 2 3)) 0)) (export main)))
   (error CDZ0603))
 
 (case "an unknown member name is rejected with a did-you-mean (CDZ0201)"
@@ -4444,7 +4444,7 @@
            nearest real members, not a bare 'unbound'. The program's outcome is the rejection. The (message
            ..) pins the did-you-mean lead — the diagnostic offers the nearest real members, not a dead-end
            'unbound' — so a wording degrade that drops the suggestion list flips this case.")
-  (input  (do (def (main) (List.length (list 1 2))) (export main)))
+  (input  (do (def (main) (List.length #list(1 2))) (export main)))
   (error CDZ0201 (message "closest matches:")))
 
 (case "an unknown module operation too far for a confident typo lists the module's operations"
@@ -4464,7 +4464,7 @@
            recurses through a heterogeneous nesting (record → tuple), dispatching each sub-shape to
            its own renderer.")
   (input  (do
-            (def (f n) (record (= x n) (= y (tuple n 1))))
+            (def (f n) #record((= x n) (= y #tuple(n 1))))
             (def (main) (f 5)) (export main)))
   (output (: #record((= x 5) (= y #tuple(5 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))))
 
@@ -4626,11 +4626,11 @@
   (input  (do
             (type Ty (TInt) (TBool) (TArrow Ty Ty))
             (def (unify (: a Ty) (: b Ty))
-              (match (tuple a b)
-                ((tuple (Ty.TInt) (Ty.TInt))               1)
-                ((tuple (Ty.TBool) (Ty.TBool))             1)
-                ((tuple (Ty.TArrow a1 a2) (Ty.TArrow b1 b2)) (unify a2 b2))
-                ((tuple _ _)                               0)))
+              (match #tuple(a b)
+                (#tuple((Ty.TInt) (Ty.TInt))               1)
+                (#tuple((Ty.TBool) (Ty.TBool))             1)
+                (#tuple((Ty.TArrow a1 a2) (Ty.TArrow b1 b2)) (unify a2 b2))
+                (#tuple(_ _)                               0)))
             (def (main) (unify (Ty.TArrow (Ty.TInt) (Ty.TBool)) (Ty.TArrow (Ty.TInt) (Ty.TInt))))
             (export main)))
   (output (: 0 Int64))
@@ -5017,7 +5017,7 @@
            payload into the tuple renderer, dispatching each sub-shape, and that construction nests a
            heap tuple inside a heap sum.")
   (input  (do
-            (def (f n) (Some (tuple n 1)))
+            (def (f n) (Some #tuple(n 1)))
             (def (main) (f 7)) (export main)))
   (output (: (Some #tuple(7 1)) (Option (Tuple Int64 Int64)))))
 
@@ -5052,7 +5052,7 @@
   (input  (do
             (def (unwrap o d) (match o ((Some x) x) ((None _) d)))
             (def (at b i)     (unwrap (Bytes.at b i) -1))
-            (def (main)       (at (Bytes.of (list 10 20 30)) 1)) (export main)))
+            (def (main)       (at (Bytes.of #list(10 20 30)) 1)) (export main)))
   (output (: 20 Int64)))
 
 ; The payload type of a fallible `List.at` result must flow through `Option.expect` into ARITHMETIC, just
@@ -5081,7 +5081,7 @@
            element type through `Option.expect` into arithmetic declines rather than miscompiling.")
   (input  (do
             (def (f xs) (+ (Option.expect (List.at xs 1) "in bounds") 10))
-            (def (main) (f (list 10 20 30))) (export main)))
+            (def (main) (f #list(10 20 30))) (export main)))
   (output (: 30 Int64)))
 
 ; The arm-unification that recovers a payload kind across branches must reach a NESTED-Option arm against
@@ -5129,9 +5129,9 @@
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (sm xs) (match xs
-                           ((IntList.Cons (tuple h t)) (+ h (sm t)))
+                           ((IntList.Cons #tuple(h t)) (+ h (sm t)))
                            ((IntList.Nil _)            0)))
-            (def (build n) (IntList.Cons (tuple n (IntList.Cons (tuple 8 (IntList.Cons (tuple 2 (IntList.Nil ()))))))))
+            (def (build n) (IntList.Cons #tuple(n (IntList.Cons #tuple(8 (IntList.Cons #tuple(2 (IntList.Nil ()))))))))
             (def (main) (sm (build 5))) (export main)))
   (output (: 15 Int64))
   (live-objects 0))
@@ -5151,9 +5151,9 @@
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (count n) (if (< n 1)
                                (IntList.Nil ())
-                               (IntList.Cons (tuple n (count (- n 1))))))
+                               (IntList.Cons #tuple(n (count (- n 1))))))
             (def (sm xs) (match xs
-                           ((IntList.Cons (tuple h t)) (+ h (sm t)))
+                           ((IntList.Cons #tuple(h t)) (+ h (sm t)))
                            ((IntList.Nil _)            0)))
             (def (main) (sm (count 5))) (export main)))
   (output (: 15 Int64))
@@ -5172,9 +5172,9 @@
             (def (sum-tree (: t Tree))
               (match t
                 ((Tree.Leaf v) v)
-                ((Tree.Node (tuple l r)) (+ (sum-tree l) (sum-tree r)))))
+                ((Tree.Node #tuple(l r)) (+ (sum-tree l) (sum-tree r)))))
             (def (build (: n Int64))
-              (Tree.Node (tuple (Tree.Node (tuple (Tree.Leaf n) (Tree.Leaf 10))) (Tree.Leaf 100))))
+              (Tree.Node #tuple((Tree.Node #tuple((Tree.Leaf n) (Tree.Leaf 10))) (Tree.Leaf 100))))
             (def (main (: x Int64)) (sum-tree (build x)))
             (export main)))
   (call   main (: 5 Int64))
@@ -5253,7 +5253,7 @@
                                   ((Mk o) (match o
                                             ((Some p) (+ (. p 0) (sm (. p 1))))
                                             ((None) 0)))))
-            (def (main) (sm (Mk (Some (tuple 10 (Mk (Some (tuple 20 (Mk (Some (tuple 30 (Mk (None)))))))))))))
+            (def (main) (sm (Mk (Some #tuple(10 (Mk (Some #tuple(20 (Mk (Some #tuple(30 (Mk (None)))))))))))))
             (export main)))
   (output (: 60 Int64))
   (live-objects 0))
@@ -5282,7 +5282,7 @@
            UN-stripped nominal so its OWN name tags the value (`Lst`, not the inner `Option`); the recursion
            point (the nested `Mk None`) is tagged `Lst` too. `(type Lst (Mk (Option (Tuple Int64 Lst))))`,
            `(Mk (Some (tuple 7 (Mk None))))` renders `(: (Some (tuple 7 (: (None unit) Lst))) Lst)`.")
-  (input  (do (type Lst (Mk (Option (Tuple Int64 Lst)))) (def (main) (Mk (Some (tuple 7 (Mk None))))) (export main)))
+  (input  (do (type Lst (Mk (Option (Tuple Int64 Lst)))) (def (main) (Mk (Some #tuple(7 (Mk None))))) (export main)))
   (output (: (Some #tuple(7 (: (None unit) Lst))) Lst))
   (live-objects 0))
 
@@ -5302,7 +5302,7 @@
                                   ((Mk o) (match o
                                             ((Some p) (+ (. p 0) (sm (. p 1))))
                                             ((None u) 0)))))
-            (def (main) (sm (Mk (Some (tuple 10 (Mk (Some (tuple 20 (Mk (Some (tuple 30 (Mk (None unit)))))))))))))
+            (def (main) (sm (Mk (Some #tuple(10 (Mk (Some #tuple(20 (Mk (Some #tuple(30 (Mk (None unit)))))))))))))
             (export main)))
   (output (: 60 Int64))
   (live-objects 0))
@@ -5310,7 +5310,7 @@
 (case "a folded recursive-newtype ANNOTATION unifies with the unfolded value type"
   (doc    "The annotation-ascription face of the recursive-newtype fold/unfold unify (the traversal at 4983 hits it at the recursive-CALL site; this hits it at an explicit `(: value Lst)` ascription). The annotation `(: (Mk (Some (tuple 42 (Mk None)))) Lst)` gives a FOLDED type where `Lst` at the recursion point collapses to a `Ty::Sum{Lst}` μ back-edge, while the value's own type is `Ty::Nominal{Lst}` there — because `Ty::Nominal` is compared by decl+args (NOT inner), the two unify and the ascription type-checks (was 'annotation type Lst does not match value type Lst' pre-fix). Match out the `Mk`, then the head `(. t 0)` = 42.")
   (input (do (type Lst (Mk (Option (Tuple Int64 Lst))))
-             (def (main) (match (: (Mk (Some (tuple 42 (Mk None)))) Lst) ((Mk o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main)))
+             (def (main) (match (: (Mk (Some #tuple(42 (Mk None)))) Lst) ((Mk o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main)))
   (call main) (output (: 42 Int64)))
 
 (case "passing one newtype where a different newtype is expected names both nominal types"
@@ -5346,8 +5346,8 @@
             (def (recompute funcs out)
               (match funcs
                 ((FL.FNil _)            out)
-                ((FL.FCons (tuple h t)) (recompute t (List.push out h)))))
-            (def (main) (List.len (recompute (FL.FCons (tuple 5 (FL.FCons (tuple 6 (FL.FNil ()))))) (list)))) (export main)))
+                ((FL.FCons #tuple(h t)) (recompute t (List.push out h)))))
+            (def (main) (List.len (recompute (FL.FCons #tuple(5 (FL.FCons #tuple(6 (FL.FNil ()))))) #list()))) (export main)))
   (output (: 2 Int64))
   (live-objects 0))
 
@@ -5367,7 +5367,7 @@
   (input  (do
             (def (loop xs passes)
               (if (< passes 1) xs (loop (List.push xs 9) (- passes 1))))
-            (def (main) (List.len (loop (list 1 2 3) 2))) (export main)))
+            (def (main) (List.len (loop #list(1 2 3) 2))) (export main)))
   (output (: 5 Int64)))
 
 (case "a fixpoint that re-seeds a fresh list each round via a helper returns a list"
@@ -5392,10 +5392,10 @@
             (def (recompute funcs out)
               (match funcs
                 ((FL.FNil _)            out)
-                ((FL.FCons (tuple h t)) (recompute t (List.push out 7)))))
+                ((FL.FCons #tuple(h t)) (recompute t (List.push out 7)))))
             (def (iterate funcs ktab passes)
-              (if (< passes 1) ktab (iterate funcs (recompute funcs (list)) (- passes 1))))
-            (def (main) (List.len (iterate (FL.FCons (tuple 1 (FL.FNil ()))) (list) 2))) (export main)))
+              (if (< passes 1) ktab (iterate funcs (recompute funcs #list()) (- passes 1))))
+            (def (main) (List.len (iterate (FL.FCons #tuple(1 (FL.FNil ()))) #list() 2))) (export main)))
   (output (: 1 Int64))
   (live-objects known-leak 2))
 
@@ -5411,9 +5411,9 @@
            time; the recursive-fold-over-a-runtime-parameter form (below) additionally needs a
            materialized list tail for the rest binder.")
   (input  (do (def (main)
-            (+ (match (list) ((list) 1) ((list a .. r) 2))
-               (+ (match (list 7 8) ((list a b) (+ a b)) (_ 0))
-                  (match (list 10 20 30) ((list) 0) ((list x .. rest) x))))) (export main)))
+            (+ (match #list() (#list() 1) (#list(a .. r) 2))
+               (+ (match #list(7 8) (#list(a b) (+ a b)) (_ 0))
+                  (match #list(10 20 30) (#list() 0) (#list(x .. rest) x))))) (export main)))
   (output (: 26 Int64)))
 
 (case "the built-in list is folded by an element-with-rest pattern"
@@ -5436,9 +5436,9 @@
            primitive\").")
   (input  (do
             (def (sum xs) (match xs
-                            ((list)           0)
-                            ((list x .. rest) (+ x (sum rest)))))
-            (def (main) (sum (list 10 20 30))) (export main)))
+                            (#list()           0)
+                            (#list(x .. rest) (+ x (sum rest)))))
+            (def (main) (sum #list(10 20 30))) (export main)))
   (output (: 60 Int64))
   (live-objects 0))
 
@@ -5453,8 +5453,8 @@
            2*(1+2+3+4+5) = 30.")
   (input  (do
             (def (go (: xs (List Int64)) (: acc Int64))
-              (match xs ((list) acc) ((list h .. rest) (go rest (+ acc (* h 2))))))
-            (def (main) (go (list 1 2 3 4 5) 0)) (export main)))
+              (match xs (#list() acc) (#list(h .. rest) (go rest (+ acc (* h 2))))))
+            (def (main) (go #list(1 2 3 4 5) 0)) (export main)))
   (output (: 30 Int64))
   (live-objects 0))
 
@@ -5465,7 +5465,7 @@
            binds `a`/`r` but its body does NOT read them (it is the constant 1), so the branchless select
            is safe (no speculative element read). Called via a runtime-selected `[]` → 0. Pins the list
            analogue of the scalar/sum two-arm select.")
-  (input  (do (def (f (: xs (List Int64))) (match xs ((list) 0) ((list a .. r) 1))) (def (main (: n Int64)) (f (if (< n 0) (list) (list n)))) (export main)))
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list() 0) (#list(a .. r) 1))) (def (main (: n Int64)) (f (if (< n 0) #list() #list(n)))) (export main)))
   (call   main (: -1 Int64))
   (output (: 0 Int64)))
 
@@ -5475,7 +5475,7 @@
            an EMPTY list. The compiler keeps the length `if`. Called with a runtime-selected non-empty list
            `[42]` → a = 42, and the empty path → -1 (pinned by the companion). Confirms the element-read arm
            is evaluated only when the list is non-empty.")
-  (input  (do (def (f (: xs (List Int64))) (match xs ((list) -1) ((list a .. r) a))) (def (main (: n Int64)) (f (if (< n 0) (list) (list n)))) (export main)))
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list() -1) (#list(a .. r) a))) (def (main (: n Int64)) (f (if (< n 0) #list() #list(n)))) (export main)))
   (call   main (: 42 Int64))
   (output (: 42 Int64)))
 
@@ -5493,9 +5493,9 @@
            list `(list (tuple 1 10) (tuple 2 20))` binds `k`=1, `v`=10 → 11.")
   (input  (do
             (def (first-key xs) (match xs
-                                  ((list (tuple k v) .. rest) (+ k v))
+                                  (#list(#tuple(k v) .. rest) (+ k v))
                                   (_                          -1)))
-            (def (main) (first-key (list (tuple 1 10) (tuple 2 20)))) (export main)))
+            (def (main) (first-key #list(#tuple(1 10) #tuple(2 20)))) (export main)))
   (output (: 11 Int64)))
 
 (case "a nested tuple list element is bound over a runtime list and folded across the rest"
@@ -5510,12 +5510,12 @@
            pairs. build pushes (1,·)(2,·)(3,·); the fold yields 1 + 2 + 3 = 6.")
   (input  (do
             (def (build i n out) (if (< i n)
-                                     (build (+ i 1) n ((. List push) out (tuple i 99)))
+                                     (build (+ i 1) n ((. List push) out #tuple(i 99)))
                                      out))
             (def (sum-firsts xs) (match xs
-                                   ((list)                    0)
-                                   ((list (tuple a _) .. rest) (+ a (sum-firsts rest)))))
-            (def (main) (sum-firsts (build 1 4 (list)))) (export main)))
+                                   (#list()                    0)
+                                   (#list(#tuple(a _) .. rest) (+ a (sum-firsts rest)))))
+            (def (main) (sum-firsts (build 1 4 #list()))) (export main)))
   (output (: 6 Int64))
   (live-objects 0))
 
@@ -5538,10 +5538,10 @@
            `[(0,99),(1,99),(2,99)]`, whose head's first component is 0.")
   (input  (do
             (def (build i n out)
-              (if (< i n) (build (+ i 1) n ((. List push) out (tuple i 99))) out))
+              (if (< i n) (build (+ i 1) n ((. List push) out #tuple(i 99))) out))
             (def (head-first xs)
-              (match xs ((list) 0) ((list (tuple a _) .. rest) a)))
-            (def (main) (head-first (build 0 3 (list))))
+              (match xs (#list() 0) (#list(#tuple(a _) .. rest) a)))
+            (def (main) (head-first (build 0 3 #list())))
             (export main)))
   (output (: 0 Int64)))
 
@@ -5563,8 +5563,8 @@
            from the irrefutable tuple element above.")
   (input  (do
             (type A (I Int64) (N String))
-            (def (f (: xs (List A))) (match xs ((list (A.I x) b c) x) (_ -1)))
-            (def (main) (f (list (A.I 5) (A.N "y") (A.I 9)))) (export main)))
+            (def (f (: xs (List A))) (match xs (#list((A.I x) b c) x) (_ -1)))
+            (def (main) (f #list((A.I 5) (A.N "y") (A.I 9)))) (export main)))
   (output (: 5 Int64)))
 
 (case "a list arm's constructor element at a non-head position"
@@ -5574,14 +5574,14 @@
            the other positions.")
   (input  (do
             (type A (I Int64) (N String))
-            (def (f (: xs (List A))) (match xs ((list a (A.I x) c) x) (_ -1)))
-            (def (main) (f (list (A.N "h") (A.I 7) (A.I 9)))) (export main)))
+            (def (f (: xs (List A))) (match xs (#list(a (A.I x) c) x) (_ -1)))
+            (def (main) (f #list((A.N "h") (A.I 7) (A.I 9)))) (export main)))
   (output (: 7 Int64)))
 
 (case "a tuple of two rest-lists binds each leading head (two rest markers in one arm are linear)"
   (doc    "A tuple scrutinee whose two elements are each a `(list h .. rest)` — `((tuple (list a .. r1) (list b .. r2)) (+ a b))` — is a WELL-FORMED arm: the `..` is a syntactic rest MARKER (the binder is the name AFTER it), so two `..` across sibling sub-patterns are NOT a duplicate binding (a linearity walker that read `..` as a bare name would falsely fault CDZ0102). Each leading binder reads element 0 of its rest-list: `(tuple [1,2] [3,4])` → a=1, b=3 → 4. (A reused rest BINDER `r` across the two sublists IS non-linear — CDZ0102 — but that is the compile-time linearity face, unit-pinned in rcdzc.)")
-  (input  (do (def (f (: p (Tuple (List Int64) (List Int64)))) (match p ((tuple (list a .. r1) (list b .. r2)) (+ a b)) (_ 0)))
-              (def (main) (f (tuple (list 1 2) (list 3 4)))) (export main)))
+  (input  (do (def (f (: p (Tuple (List Int64) (List Int64)))) (match p (#tuple(#list(a .. r1) #list(b .. r2)) (+ a b)) (_ 0)))
+              (def (main) (f #tuple(#list(1 2) #list(3 4)))) (export main)))
   (call   main) (output (: 4 Int64)))
 
 (case "a list arm's constructor element that does not match the tag falls through"
@@ -5592,8 +5592,8 @@
            so an arm that names the wrong tag is skipped rather than mis-binding.")
   (input  (do
             (type A (I Int64) (N String))
-            (def (f (: xs (List A))) (match xs ((list (A.I x) b c) x) (_ -1)))
-            (def (main) (f (list (A.N "h") (A.I 7) (A.I 9)))) (export main)))
+            (def (f (: xs (List A))) (match xs (#list((A.I x) b c) x) (_ -1)))
+            (def (main) (f #list((A.N "h") (A.I 7) (A.I 9)))) (export main)))
   (output (: -1 Int64)))
 
 (case "a list-arm constructor element over a runtime-built list"
@@ -5605,9 +5605,9 @@
            pass walks.")
   (input  (do
             (type A (I Int64) (N String))
-            (def (f (: xs (List A))) (match xs ((list (A.I x) .. rest) x) (_ -1)))
+            (def (f (: xs (List A))) (match xs (#list((A.I x) .. rest) x) (_ -1)))
             (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (A.I (* i 10)))) out))
-            (def (main) (f (build 1 3 (list)))) (export main)))
+            (def (main) (f (build 1 3 #list()))) (export main)))
   (output (: 10 Int64)))
 
 (case "a list arm with two constructor elements binds both payloads"
@@ -5619,8 +5619,8 @@
            destructure a compiler pass wants.")
   (input  (do
             (type A (I Int64) (N Int64))
-            (def (f (: xs (List A))) (match xs ((list (A.I x) (A.N y) .. r) (+ x y)) (_ -1)))
-            (def (main) (f (list (A.I 1) (A.N 2)))) (export main)))
+            (def (f (: xs (List A))) (match xs (#list((A.I x) (A.N y) .. r) (+ x y)) (_ -1)))
+            (def (main) (f #list((A.I 1) (A.N 2)))) (export main)))
   (output (: 3 Int64)))
 
 (case "a two-constructor-element list arm falls through when the second tag differs"
@@ -5630,8 +5630,8 @@
            element in a multi-element arm is genuinely tested, not just the first.")
   (input  (do
             (type A (I Int64) (N Int64))
-            (def (f (: xs (List A))) (match xs ((list (A.I x) (A.N y) .. r) (+ x y)) (_ -1)))
-            (def (main) (f (list (A.I 1) (A.I 2)))) (export main)))
+            (def (f (: xs (List A))) (match xs (#list((A.I x) (A.N y) .. r) (+ x y)) (_ -1)))
+            (def (main) (f #list((A.I 1) (A.I 2)))) (export main)))
   (output (: -1 Int64)))
 
 ; A SINGLE-variant (newtype) constructor element with a LITERAL payload also refines a list arm. A newtype
@@ -5650,8 +5650,8 @@
            element-value refinement'; a bare-binder payload `(Wrap x)` was already irrefutable. The
            list-element analog of the single-variant sum-match literal-payload arm.")
   (input  (do (type W (Wrap Int64))
-              (def (f (: xs (List W))) (match xs ((list (Wrap 0) .. r) 1) (_ 0)))
-              (def (main) (f (list (Wrap 0) (Wrap 9)))) (export main)))
+              (def (f (: xs (List W))) (match xs (#list((Wrap 0) .. r) 1) (_ 0)))
+              (def (main) (f #list((Wrap 0) (Wrap 9)))) (export main)))
   (output (: 1 Int64)))
 
 (case "a single-variant newtype list element falls through on a non-matching payload"
@@ -5659,8 +5659,8 @@
            5 ≠ 0 — does NOT match and falls to the wildcard → 0. Pins the single-variant literal element is a
            genuine payload-value test, not an irrefutable binder that always matches on length.")
   (input  (do (type W (Wrap Int64))
-              (def (f (: xs (List W))) (match xs ((list (Wrap 0) .. r) 1) (_ 0)))
-              (def (main) (f (list (Wrap 5)))) (export main)))
+              (def (f (: xs (List W))) (match xs (#list((Wrap 0) .. r) 1) (_ 0)))
+              (def (main) (f #list((Wrap 5)))) (export main)))
   (output (: 0 Int64)))
 
 (case "a single-variant newtype list element with a binder payload stays irrefutable"
@@ -5669,8 +5669,8 @@
            7))` → 7. Pins that only a REFUTABLE (literal) payload triggers the value-refinement desugar; a
            binder payload keeps the pre-existing irrefutable-element path.")
   (input  (do (type W (Wrap Int64))
-              (def (f (: xs (List W))) (match xs ((list (Wrap x) .. r) x) (_ -1)))
-              (def (main) (f (list (Wrap 7)))) (export main)))
+              (def (f (: xs (List W))) (match xs (#list((Wrap x) .. r) x) (_ -1)))
+              (def (main) (f #list((Wrap 7)))) (export main)))
   (output (: 7 Int64)))
 
 (case "an unwrap-transform-rewrap helper round-trips a newtype at runtime"
@@ -5786,7 +5786,7 @@
   (input  (do
             (type Xs (Xs (List Int64)))
             (def (main (: a Int64))
-              (if (= (Xs (list 1 a 3)) (Xs (list 1 2 3))) 1 0))
+              (if (= (Xs #list(1 a 3)) (Xs #list(1 2 3))) 1 0))
             (export main)))
   (call   main (: 2 Int64))  (output (: 1 Int64))
   (call   main (: 4 Int64))  (output (: 0 Int64)))
@@ -5844,7 +5844,7 @@
            record-payload face of the newtype erasure.")
   (input  (do
             (type UserId (Mk (Record (: x Int64) (: y Int64))))
-            (def (main) (let ((u (UserId.Mk (record (= x 1) (= y 2))))) (. u x)))
+            (def (main) (let ((u (UserId.Mk #record((= x 1) (= y 2))))) (. u x)))
             (export main)))
   (output (: 1 Int64)))
 
@@ -5856,7 +5856,7 @@
            projection.")
   (input  (do
             (type UserId (Mk (Record (: x Int64) (: y Int64))))
-            (def (main (: k Int64)) (let ((u (UserId.Mk (record (= x 5) (= y k))))) (. u y)))
+            (def (main (: k Int64)) (let ((u (UserId.Mk #record((= x 5) (= y k))))) (. u y)))
             (export main)))
   (call   main (: 9 Int64)) (output (: 9 Int64)))
 
@@ -5875,7 +5875,7 @@
            cell before boxing; without the widen the boxed cell was malformed and the read-back emitted an
            invalid component. Pins a narrow newtype survives the box/unbox round-trip through a tuple.")
   (input  (do (type W (Wrap UInt8))
-              (def (f (: n UInt8)) (match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1)))
+              (def (f (: n UInt8)) (match #tuple((W.Wrap n) 5) (#tuple((W.Wrap 0) y) y) (_ -1)))
               (def (main (: n UInt8)) (f n)) (export main)))
   (call   main (: 0 UInt8))
   (output (: 5 Int64))
@@ -5885,7 +5885,7 @@
   (doc    "The miss: n=9 ≠ 0, so `(tuple (W.Wrap 0) y)` does not match → -1. Pins the boxed narrow newtype's
            payload is compared by value (a genuine i32-width test on the widened cell), not a blanket match.")
   (input  (do (type W (Wrap UInt8))
-              (def (f (: n UInt8)) (match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1)))
+              (def (f (: n UInt8)) (match #tuple((W.Wrap n) 5) (#tuple((W.Wrap 0) y) y) (_ -1)))
               (def (main (: n UInt8)) (f n)) (export main)))
   (call   main (: 9 UInt8))
   (output (: -1 Int64))
@@ -5894,7 +5894,7 @@
 (case "a signed narrow-width newtype boxed as a tuple element matches by its literal payload"
   (doc    "The SIGNED narrow-width (Int32) companion of the UInt8 tuple-box case above: `(match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1))` with `W = (Wrap Int32)`. The box-widen (`is_narrow_int` + `strip_nominal`) is width-general — a signed narrow newtype must i32→i64 extend before `box-int` just as the unsigned one does; without the widen the boxed cell is malformed and the read-back emits an INVALID component. Pairs the tuple-box position (covered for UInt8 above) with the signed narrow width (covered bare below): n=0 → 5 (hit), n=9 ≠ 0 → -1 (miss), combined `10*5 + (-1)` = 49.")
   (input  (do (type W (Wrap Int32))
-              (def (f (: n Int32)) (match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1)))
+              (def (f (: n Int32)) (match #tuple((W.Wrap n) 5) (#tuple((W.Wrap 0) y) y) (_ -1)))
               (def (main) (+ (* 10 (f 0)) (f 9))) (export main)))
   (call   main)
   (output (: 49 Int64))
@@ -5907,7 +5907,7 @@
            position the breaker's reproducer first hit (an invalid component before the widen saw through
            the newtype).")
   (input  (do (type W (Wrap UInt8))
-              (def (f (: n UInt8)) (match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0)))
+              (def (f (: n UInt8)) (match #list((W.Wrap n)) (#list((W.Wrap 0) .. r) 100) (_ 0)))
               (def (main (: n UInt8)) (f n)) (export main)))
   (call   main (: 0 UInt8))
   (output (: 100 Int64)))
@@ -5938,7 +5938,7 @@
            i32→i64; a single-level strip would leave `Ty::Nominal(Inner, Int u8)` and skip the widen →
            invalid component. Pins the strip is repeated, not one-shot.")
   (input  (do (type Inner (I UInt8)) (type Outer (O Inner))
-              (def (main (: n UInt8)) (match (list (Outer.O (Inner.I n))) ((list (Outer.O (Inner.I 0)) .. r) 100) (_ 0))) (export main)))
+              (def (main (: n UInt8)) (match #list((Outer.O (Inner.I n))) (#list((Outer.O (Inner.I 0)) .. r) 100) (_ 0))) (export main)))
   (call   main (: 0 UInt8))
   (output (: 100 Int64)))
 
@@ -5964,14 +5964,14 @@
 (case "a literal narrow-newtype element in a constructed list grounds its ConstInt to the inner width"
   (doc    "The LITERAL-CONSTRUCTION (ConstInt) companion of the narrow-newtype box-widen cases above. A narrow newtype LITERAL `(W.Wrap 5)` with `W = (Wrap UInt8)` in an ACTUALLY-CONSTRUCTED list must ground its ConstInt slot to the `strip_nominal`-ed inner width (u8 → i32) so it AGREES with the box-widen's i32→i64 extend. Before, `int_ty_of` matched `Ty::Int` without `strip_nominal` → the literal fell to the i64 default (`ConstI64`) while the widen (correctly) fired (`i64.extend_i32_u` expecting an i32) → the two DISAGREED → an INVALID component (`expected i32, found i64`). The param-payload box cases (`(W.Wrap n)`) read from an i32 slot and never hit `ConstInt`, so this literal-construction gap slipped through. A live-after scrutinee (`List.len xs` in the arm) forces the build (no const-fold). Head is `(W.Wrap 5)` → arm hits → `List.len` = 2.")
   (input  (do (type W (Wrap UInt8))
-              (def (main) (let ((xs (list (W.Wrap 5) (W.Wrap 7)))) (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0)))) (export main)))
+              (def (main) (let ((xs #list((W.Wrap 5) (W.Wrap 7)))) (match xs (#list((W.Wrap 5) .. r) (List.len xs)) (_ 0)))) (export main)))
   (call   main)
   (output (: 2 Int64)))
 
 (case "a literal SIGNED narrow-newtype element in a constructed list grounds its ConstInt to the inner width"
   (doc    "The signed-width (Int32) companion of the literal-construction case above: the same live-after constructed `(list (W.Wrap 5) (W.Wrap 7))` with `W = (Wrap Int32)`. A signed narrow-newtype LITERAL must also ground its `ConstInt` to the i32 slot (the extend is sign-aware) so the value-literal grounding and the box-widen agree; a literal that fell to `ConstI64` would disagree with the fired widen → invalid component. Head `(W.Wrap 5)` → arm hits → `List.len` = 2.")
   (input  (do (type W (Wrap Int32))
-              (def (main) (let ((xs (list (W.Wrap 5) (W.Wrap 7)))) (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0)))) (export main)))
+              (def (main) (let ((xs #list((W.Wrap 5) (W.Wrap 7)))) (match xs (#list((W.Wrap 5) .. r) (List.len xs)) (_ 0)))) (export main)))
   (call   main)
   (output (: 2 Int64)))
 
@@ -5988,10 +5988,10 @@
               (match a ((Meters x) (match b ((Meters y) (Meters (+ x y)))))))
             (def (total (: xs (List Meters)) (: acc Meters))
               (match xs
-                ((list) acc)
-                ((list h .. t) (total t (add-m acc h)))))
+                (#list() acc)
+                (#list(h .. t) (total t (add-m acc h)))))
             (def (main (: n Int64))
-              (match (total (list (Meters n) (Meters 2) (Meters 30)) (Meters 0))
+              (match (total #list((Meters n) (Meters 2) (Meters 30)) (Meters 0))
                 ((Meters v) v)))
             (export main)))
   (call   main (: 10 Int64))
@@ -6005,7 +6005,7 @@
            the correct widened value), not only the store — a store-only widen would read back garbage. The
            binder companion of the literal-payload cases above.")
   (input  (do (type W (Wrap UInt8))
-              (def (main (: n UInt8)) (match (list (W.Wrap n) (W.Wrap n)) ((list (W.Wrap a) (W.Wrap b) .. r) (+ (Int64.of a) (Int64.of b))) (_ 0))) (export main)))
+              (def (main (: n UInt8)) (match #list((W.Wrap n) (W.Wrap n)) (#list((W.Wrap a) (W.Wrap b) .. r) (+ (Int64.of a) (Int64.of b))) (_ 0))) (export main)))
   (call   main (: 100 UInt8))
   (output (: 200 Int64)))
 
@@ -6027,8 +6027,8 @@
            literal-payload companion of the parameter-payload narrow-newtype-box cases above → 2.")
   (input  (do (type W (Wrap UInt8))
               (def (main)
-                (let ((xs (list (W.Wrap 5) (W.Wrap 7))))
-                  (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0))))
+                (let ((xs #list((W.Wrap 5) (W.Wrap 7))))
+                  (match xs (#list((W.Wrap 5) .. r) (List.len xs)) (_ 0))))
               (export main)))
   (output (: 2 Int64))
   (live-objects 0))
@@ -6049,9 +6049,9 @@
   (input  (do
             (def (f (: xs (List (Map Int64 Int64))))
               (match xs
-                ((list (map (1 a)) .. rest) a)
+                (#list((map (1 a)) .. rest) a)
                 (_ (- 0 1))))
-            (def (main) (f (list (map (= 1 77)))))
+            (def (main) (f #list((map (= 1 77)))))
             (export main)))
   (output (: 77 Int64)))
 
@@ -6063,9 +6063,9 @@
   (input  (do
             (def (f (: xs (List (Map Int64 Int64))))
               (match xs
-                ((list (map (9 a)) .. rest) a)
+                (#list((map (9 a)) .. rest) a)
                 (_ (- 0 1))))
-            (def (main) (f (list (map (= 1 77)))))
+            (def (main) (f #list((map (= 1 77)))))
             (export main)))
   (output (: -1 Int64)))
 
@@ -6077,9 +6077,9 @@
   (input  (do
             (def (f (: xs (List (Map Int64 Int64))))
               (match xs
-                ((list (map (1 a) (2 b)) .. rest) (+ a b))
+                (#list((map (1 a) (2 b)) .. rest) (+ a b))
                 (_ (- 0 1))))
-            (def (main) (f (list (map (= 1 100) (= 2 5)))))
+            (def (main) (f #list((map (= 1 100) (= 2 5)))))
             (export main)))
   (output (: 105 Int64)))
 
@@ -6096,10 +6096,10 @@
   (input  (do
             (def (classify (: xs (List Int64)))
               (match xs
-                ((list 0 a .. rest) a)
-                ((list _ a .. rest) (* a 10))
+                (#list(0 a .. rest) a)
+                (#list(_ a .. rest) (* a 10))
                 (_                  -1)))
-            (def (main) (classify (list 0 5 9))) (export main)))
+            (def (main) (classify #list(0 5 9))) (export main)))
   (output (: 5 Int64)))
 
 (case "two literal list elements in one arm conjoin — both must match"
@@ -6108,8 +6108,8 @@
            `(= elem <lit>)` test AND-ed into the arm's guard, so BOTH must hold. `[0,1,7]` → both match → 7;
            `[0,2,7]` → the second literal (1) fails → fall through to the catch-all → -1. Extends the
            single-literal-head case above to a multi-literal conjunction.")
-  (input  (do (def (f (: xs (List Int64))) (match xs ((list 0 1 a .. r) a) (_ -1)))
-              (def (main (: b Int64)) (f (list 0 b 7)))
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list(0 1 a .. r) a) (_ -1)))
+              (def (main (: b Int64)) (f #list(0 b 7)))
               (export main)))
   (call   main (: 1 Int64))
   (output (: 7 Int64))
@@ -6122,8 +6122,8 @@
            The literal's synthesized `(= head 0)` test and the author guard are both AND-ed into the arm's
            condition. `[0,5]` → head 0 ✓ and 5 > 3 ✓ → a=5 → 5; `[0,2]` → head 0 ✓ but 2 > 3 ✗ → fall through
            → -1. Pins that the refutable-literal desugar composes with an explicit guard on one arm.")
-  (input  (do (def (f (: xs (List Int64))) (match xs ((guard (list 0 a .. r) (> a 3)) a) (_ -1)))
-              (def (main (: v Int64)) (f (list 0 v)))
+  (input  (do (def (f (: xs (List Int64))) (match xs ((guard #list(0 a .. r) (> a 3)) a) (_ -1)))
+              (def (main (: v Int64)) (f #list(0 v)))
               (export main)))
   (call   main (: 5 Int64))
   (output (: 5 Int64))
@@ -6137,8 +6137,8 @@
            different head falls to the wildcard → 0. Pins that a Char literal (a scalar-literal kind) is a
            valid list element exactly as an Int/Bool/String literal is — the list-element face of char-literal
            match support.")
-  (input  (do (def (f (: xs (List Char))) (match xs ((list #\a .. r) 1) (_ 0)))
-              (def (main) (f (list #\a #\b))) (export main)))
+  (input  (do (def (f (: xs (List Char))) (match xs (#list(#\a .. r) 1) (_ 0)))
+              (def (main) (f #list(#\a #\b))) (export main)))
   (output (: 1 Int64)))
 
 (case "a symbol literal list element dispatches a runtime list by its content"
@@ -6147,16 +6147,16 @@
            matches only a list whose head is the symbol `#\"go\"` → 1; any other head falls to the wildcard →
            0. Pins that a Symbol literal is a valid list element, the list-element face of symbol-literal
            match support — the head-dispatch idiom over a list of interned names.")
-  (input  (do (def (f (: xs (List Symbol))) (match xs ((list #"go" .. r) 1) (_ 0)))
-              (def (main) (f (list (Symbol.of "go")))) (export main)))
+  (input  (do (def (f (: xs (List Symbol))) (match xs (#list(#"go" .. r) 1) (_ 0)))
+              (def (main) (f #list((Symbol.of "go")))) (export main)))
   (output (: 1 Int64)))
 
 (case "a char literal list element falls through on a non-matching head"
   (doc    "The refutability: the same `((list #\\a .. r) 1)` arm against `(list #\\z #\\b)` — head `#\\z` ≠
            `#\\a` — does NOT match and falls to the wildcard → 0. Pins the char-literal element is a genuine
            value test, not a blanket match on length.")
-  (input  (do (def (f (: xs (List Char))) (match xs ((list #\a .. r) 1) (_ 0)))
-              (def (main) (f (list #\z #\b))) (export main)))
+  (input  (do (def (f (: xs (List Char))) (match xs (#list(#\a .. r) 1) (_ 0)))
+              (def (main) (f #list(#\z #\b))) (export main)))
   (output (: 0 Int64)))
 
 (case "a constructor list element dispatches a runtime list by its discriminant"
@@ -6174,10 +6174,10 @@
             (type Op (Add Int64) (Neg Int64))
             (def (classify (: xs (List Op)))
               (match xs
-                ((list (Op.Add n) .. r) n)
-                ((list (Op.Neg n) .. r) (* n -1))
+                (#list((Op.Add n) .. r) n)
+                (#list((Op.Neg n) .. r) (* n -1))
                 (_                      -99)))
-            (def (main) (classify (list (Op.Neg 5) (Op.Add 1)))) (export main)))
+            (def (main) (classify #list((Op.Neg 5) (Op.Add 1)))) (export main)))
   (output (: -5 Int64)))
 
 (case "two same-variant ctor list elements refining the payload by literal fall through, not trap"
@@ -6193,10 +6193,10 @@
             (type Op (Add Int64) (Neg Int64))
             (def (f (: xs (List Op)))
               (match xs
-                ((list (Op.Add 0) .. r) 100)
-                ((list (Op.Add n) .. r) n)
+                (#list((Op.Add 0) .. r) 100)
+                (#list((Op.Add n) .. r) n)
                 (_                      -1)))
-            (def (main) (f (list (Op.Add 5)))) (export main)))
+            (def (main) (f #list((Op.Add 5)))) (export main)))
   (output (: 5 Int64)))
 
 (case "two literal-payload arms of the same ctor variant each fire on their own literal"
@@ -6210,10 +6210,10 @@
             (type Op (Add Int64) (Neg Int64))
             (def (f (: xs (List Op)))
               (match xs
-                ((list (Op.Add 0) .. r) 100)
-                ((list (Op.Add 5) .. r) 200)
+                (#list((Op.Add 0) .. r) 100)
+                (#list((Op.Add 5) .. r) 200)
                 (_                      -1)))
-            (def (main (: k Int64)) (f (list (Op.Add k)))) (export main)))
+            (def (main (: k Int64)) (f #list((Op.Add k)))) (export main)))
   (call   main (: 0 Int64))
   (output (: 100 Int64))
   (call   main (: 5 Int64))
@@ -6233,9 +6233,9 @@
             (type Op (Add Int64) (Neg Int64))
             (def (f (: xs (List Op)))
               (match xs
-                ((guard (list (Op.Add n) .. r) (> n 3)) n)
+                ((guard #list((Op.Add n) .. r) (> n 3)) n)
                 (_                                      -1)))
-            (def (main) (f (list (Op.Add 5)))) (export main)))
+            (def (main) (f #list((Op.Add 5)))) (export main)))
   (output (: 5 Int64)))
 
 (case "a guard on a MULTI-payload ctor list element reads both payload binders"
@@ -6248,9 +6248,9 @@
             (type Op (Bin Int64 Int64) (Nil Int64))
             (def (f (: xs (List Op)))
               (match xs
-                ((guard (list (Op.Bin a b) .. r) (> (+ a b) 10)) (+ a b))
+                ((guard #list((Op.Bin a b) .. r) (> (+ a b) 10)) (+ a b))
                 (_                                               -1)))
-            (def (main (: x Int64) (: y Int64)) (f (list (Op.Bin x y)))) (export main)))
+            (def (main (: x Int64) (: y Int64)) (f #list((Op.Bin x y)))) (export main)))
   (call   main (: 7 Int64) (: 8 Int64))
   (output (: 15 Int64))
   (call   main (: 2 Int64) (: 3 Int64))
@@ -6266,9 +6266,9 @@
   (input  (do
             (def (f (: t (Tuple Int64 Int64)))
               (match t
-                ((guard (tuple a b) (> (+ a b) 5)) (+ a b))
+                ((guard #tuple(a b) (> (+ a b) 5)) (+ a b))
                 (_                                 -1)))
-            (def (main (: k Int64)) (f (tuple k 4))) (export main)))
+            (def (main (: k Int64)) (f #tuple(k 4))) (export main)))
   (call   main (: 3 Int64)) (output (: 7 Int64))
   (call   main (: 1 Int64)) (output (: -1 Int64)))
 
@@ -6277,9 +6277,9 @@
   (input  (do
             (def (f (: t (Tuple (Option Int64) Int64)))
               (match t
-                ((guard (tuple (Some n) m) (> (+ n m) 5)) (+ n m))
+                ((guard #tuple((Some n) m) (> (+ n m) 5)) (+ n m))
                 (_                                        -1)))
-            (def (main) (f (tuple (Some 3) 4))) (export main)))
+            (def (main) (f #tuple((Some 3) 4))) (export main)))
   (call   main) (output (: 7 Int64)))
 
 (case "a guard on a nested-list-in-list element reads the inner list's binder"
@@ -6294,9 +6294,9 @@
   (input  (do
             (def (f (: xs (List (List Int64))))
               (match xs
-                ((guard (list (list a .. r1) .. r2) (> a 3)) a)
+                ((guard #list(#list(a .. r1) .. r2) (> a 3)) a)
                 (_                                           -1)))
-            (def (mk (: k Int64)) (list (list k)))
+            (def (mk (: k Int64)) #list(#list(k)))
             (def (main) (f (mk 5))) (export main)))
   (output (: 5 Int64)))
 
@@ -6309,11 +6309,11 @@
            → 2; `C.Blue` would fall to the catch-all.")
   (input  (do
             (type C Red Green Blue)
-            (def (mk (: n Int64)) (if (< n 1) (list C.Red) (if (< n 2) (list C.Green) (list C.Blue))))
+            (def (mk (: n Int64)) (if (< n 1) #list(C.Red) (if (< n 2) #list(C.Green) #list(C.Blue))))
             (def (f (: xs (List C)))
               (match xs
-                ((list C.Red .. r) 1)
-                ((list C.Green .. r) 2)
+                (#list(C.Red .. r) 1)
+                (#list(C.Green .. r) 2)
                 (_                   0)))
             (def (main) (f (mk 1))) (export main)))
   (output (: 2 Int64)))
@@ -6330,9 +6330,9 @@
   (input  (do
             (def (first-len (: xss (List (List Int64))))
               (match xss
-                ((list (list .. inner) .. outer) ((. List len) inner))
+                (#list(#list(.. inner) .. outer) ((. List len) inner))
                 (_                               -1)))
-            (def (main) (first-len (list (list 1 2 3) (list 4 5)))) (export main)))
+            (def (main) (first-len #list(#list(1 2 3) #list(4 5)))) (export main)))
   (output (: 3 Int64)))
 
 (case "a bool-lead-saturating list match is exhaustive without a wildcard and routes by first-match"
@@ -6346,9 +6346,9 @@
            which subsumes the exhaustiveness compile-check) from rcdzc
            `saturating_bool_list_first_elements_are_exhaustive_without_a_wildcard`.")
   (input  (do
-            (def (mk (: n Int64)) (if (< n 1) (list) (if (< n 2) (list true false) (list false true))))
+            (def (mk (: n Int64)) (if (< n 1) #list() (if (< n 2) #list(true false) #list(false true))))
             (def (f (: xs (List Bool)))
-              (match xs ((list) 0) ((list true .. r) 1) ((list false .. r) 2)))
+              (match xs (#list() 0) (#list(true .. r) 1) (#list(false .. r) 2)))
             (def (main (: n Int64)) (f (mk n))) (export main)))
   (call   main (: 0 Int64))
   (output (: 0 Int64))
@@ -6367,9 +6367,9 @@
            its payload → 7; `[(None), …]` → the (now unconditional) None arm → 99. Relocated (RUN half) from
            rcdzc `saturating_ctor_list_first_elements_are_exhaustive_without_a_wildcard`.")
   (input  (do
-            (def (mk (: n Int64)) (if (< n 1) (list) (if (< n 2) (list (Some 7) (None)) (list (None) (Some 7)))))
+            (def (mk (: n Int64)) (if (< n 1) #list() (if (< n 2) #list((Some 7) (None)) #list((None) (Some 7)))))
             (def (f (: xs (List (Option Int64))))
-              (match xs ((list) 0) ((list (Some x) .. r) x) ((list (None) .. r) 99)))
+              (match xs (#list() 0) (#list((Some x) .. r) x) (#list((None) .. r) 99)))
             (def (main (: n Int64)) (f (mk n))) (export main)))
   (call   main (: 0 Int64))
   (output (: 0 Int64))
@@ -6390,9 +6390,9 @@
   (input  (do
             (def (head-of-first (: xss (List (List Int64))))
               (match xss
-                ((list (list a .. r1) .. r2) a)
+                (#list(#list(a .. r1) .. r2) a)
                 (_                           -1)))
-            (def (main) (head-of-first (list (list 7 9) (list 8)))) (export main)))
+            (def (main) (head-of-first #list(#list(7 9) #list(8)))) (export main)))
   (output (: 7 Int64)))
 
 (case "a nested-list-rest arm reads BOTH the inner rest and the outer rest binders"
@@ -6406,9 +6406,9 @@
   (input  (do
             (def (f (: xss (List (List Int64))))
               (match xss
-                ((list (list a .. r1) .. r2) (+ a (+ (List.len r1) (List.len r2))))
+                (#list(#list(a .. r1) .. r2) (+ a (+ (List.len r1) (List.len r2))))
                 (_ -1)))
-            (def (main) (f (list (list 7 8 8) (list 9) (list 1)))) (export main)))
+            (def (main) (f #list(#list(7 8 8) #list(9) #list(1)))) (export main)))
   (output (: 11 Int64)))
 
 (case "a list match arm may carry a guard on its element binders"
@@ -6423,10 +6423,10 @@
            guard `(> -5 0)` fails, the second `(< -5 0)` holds → 2. This is the list twin of the guarded
            scalar/sum arms the corpus covers elsewhere.")
   (input  (do
-            (def (one v) ((. List push) (list) v))
+            (def (one v) ((. List push) #list() v))
             (def (classify (: xs (List Int64))) (match xs
-                                                  ((guard (list x .. rest) (> x 0)) 1)
-                                                  ((guard (list x .. rest) (< x 0)) 2)
+                                                  ((guard #list(x .. rest) (> x 0)) 1)
+                                                  ((guard #list(x .. rest) (< x 0)) 2)
                                                   (_                                0)))
             (def (main) (classify (one -5))) (export main)))
   (output (: 2 Int64)))
@@ -6444,9 +6444,9 @@
   (input  (do
             (def (f (: xs (List Int64)))
               (match xs
-                ((guard (list x .. rest) (> x 0)) x)
+                ((guard #list(x .. rest) (> x 0)) x)
                 (_ 0)))
-            (def (main) (f (list 7)))
+            (def (main) (f #list(7)))
             (export main)))
   (output (: 7 Int64)))
 
@@ -6459,9 +6459,9 @@
   (input  (do
             (def (f (: xs (List Int64)))
               (match xs
-                ((guard (list x .. rest) (> x 100)) x)
+                ((guard #list(x .. rest) (> x 100)) x)
                 (_ 0)))
-            (def (main) (f (list 7)))
+            (def (main) (f #list(7)))
             (export main)))
   (output (: 0 Int64)))
 
@@ -6474,8 +6474,8 @@
            0. Pins that the guarded-list composition (length dispatch + leading-element bind + guard gate +
            fall-through) works over a genuinely-runtime list scrutinee, not only a const-folded one.")
   (input  (do (def (main (: h Int64))
-                (match (List.push (list) h)
-                  ((guard (list a .. _rest) (> a 5)) a)
+                (match (List.push #list() h)
+                  ((guard #list(a .. _rest) (> a 5)) a)
                   (_ 0)))
               (export main)))
   (call   main (: 9 Int64))
@@ -6494,10 +6494,10 @@
            three cases above; this is the uncovered two-arm sign-classification observation).")
   (input  (do (def (sign (: xs (List Int64)))
                 (match xs
-                  ((guard (list x .. r) (> x 0)) 1)
-                  ((guard (list x .. r) (< x 0)) 2)
+                  ((guard #list(x .. r) (> x 0)) 1)
+                  ((guard #list(x .. r) (< x 0)) 2)
                   (_ 0)))
-              (def (main (: h Int64)) (sign (List.push (list) h)))
+              (def (main (: h Int64)) (sign (List.push #list() h)))
               (export main)))
   (call   main (: 7 Int64))
   (output (: 1 Int64))
@@ -6524,8 +6524,8 @@
   (input  (do
             (def (f (: xs (List Int64)))
               (let ((lim 5))
-                (match xs ((guard (list 0 x .. r) (> x lim)) x) (_ -1))))
-            (def (main) (f (list 0 7 2)))
+                (match xs ((guard #list(0 x .. r) (> x lim)) x) (_ -1))))
+            (def (main) (f #list(0 7 2)))
             (export main)))
   (output (: 7 Int64)))
 
@@ -6543,10 +6543,10 @@
            statements) uses.")
   (input  (do
             (type Node (Lit Int64) (Call (List Node)))
-            (def (build (: k Int64)) (if (< k 1) (Lit 7) (Call (list (Lit k) (build (- k 1))))))
+            (def (build (: k Int64)) (if (< k 1) (Lit 7) (Call #list((Lit k) (build (- k 1))))))
             (def (top (: n Node)) (match n
                                     ((Lit v)                 v)
-                                    ((Call (list _ .. rest)) 99)
+                                    ((Call #list(_ .. rest)) 99)
                                     (_                       0)))
             (def (main) (top (build 2))) (export main)))
   (output (: 99 Int64))
@@ -6561,10 +6561,10 @@
            dispatch to `== n` fixed-arity dispatch WITH a nested element pattern binding a fixed child.")
   (input  (do
             (type Node (Lit Int64) (Call (List Node)))
-            (def (build (: k Int64)) (if (< k 2) (Call (list (Lit 5))) (Call (list (Lit 3) (Lit 4)))))
+            (def (build (: k Int64)) (if (< k 2) (Call #list((Lit 5))) (Call #list((Lit 3) (Lit 4)))))
             (def (top (: n Node)) (match n
-                                    ((Call (list (Lit w))) w)
-                                    ((Call (list a b))     2)
+                                    ((Call #list((Lit w))) w)
+                                    ((Call #list(a b))     2)
                                     (_                     0)))
             (def (main (: k Int64)) (top (build k)))
             (export main)))
@@ -6588,11 +6588,11 @@
             (type Expr (Lit Int64) (Add (Tuple Expr Expr)) (Mul (Tuple Expr Expr)))
             (def (ev e) (match e
                           ((Expr.Lit n)           n)
-                          ((Expr.Add (tuple a b)) (+ (ev a) (ev b)))
-                          ((Expr.Mul (tuple a b)) (* (ev a) (ev b)))))
+                          ((Expr.Add #tuple(a b)) (+ (ev a) (ev b)))
+                          ((Expr.Mul #tuple(a b)) (* (ev a) (ev b)))))
             (def (build k) (if (< k 1)
                                (Expr.Lit 2)
-                               (Expr.Add (tuple (Expr.Lit k) (build (- k 1))))))
+                               (Expr.Add #tuple((Expr.Lit k) (build (- k 1))))))
             (def (main) (ev (build 4))) (export main)))
   (output (: 12 Int64))
   (live-objects known-leak 12))
@@ -6609,8 +6609,8 @@
            Leaf 9)` is `Leaf 7`, whose leaf value is 7.")
   (input  (do
             (type T (Leaf Int64) (Pair (Tuple T T)))
-            (def (left x) (match x ((T.Leaf n) (T.Leaf n)) ((T.Pair (tuple a b)) a)))
-            (def (main) (match (left (T.Pair (tuple (T.Leaf 7) (T.Leaf 9))))
+            (def (left x) (match x ((T.Leaf n) (T.Leaf n)) ((T.Pair #tuple(a b)) a)))
+            (def (main) (match (left (T.Pair #tuple((T.Leaf 7) (T.Leaf 9))))
                           ((T.Leaf n) n)
                           ((T.Pair p) 0))) (export main)))
   (output (: 7 Int64)))
@@ -6630,12 +6630,12 @@
             (type Expr (Lit Int64) (Bin (Tuple Int64 (Tuple Expr Expr))))
             (def (ev e) (match e
                           ((Expr.Lit n)                    n)
-                          ((Expr.Bin (tuple op (tuple a b)))
+                          ((Expr.Bin #tuple(op #tuple(a b)))
                              (if (= op 0) (+ (ev a) (ev b)) (- (ev a) (ev b))))))
-            (def (main) (ev (Expr.Bin (tuple 0
-                                        (tuple (Expr.Lit 20)
-                                               (Expr.Bin (tuple 1
-                                                 (tuple (Expr.Lit 22) (Expr.Lit 8))))))))) (export main)))
+            (def (main) (ev (Expr.Bin #tuple(0
+                                        #tuple((Expr.Lit 20)
+                                               (Expr.Bin #tuple(1
+                                                 #tuple((Expr.Lit 22) (Expr.Lit 8))))))))) (export main)))
   (output (: 34 Int64))
   (live-objects 0))
 
@@ -6659,7 +6659,7 @@
                                   ((Some (E.Lit n)) n)
                                   ((Some (E.Neg n)) (- 0 n))
                                   ((None _)         0)))
-            (def (main) (first-lit (list (E.Lit 5)))) (export main)))
+            (def (main) (first-lit #list((E.Lit 5)))) (export main)))
   (output (: 5 Int64)))
 
 ; --- A literal-PAYLOAD refinement arm on a SINGLE-VARIANT (newtype) sum --------------------------------
@@ -6926,18 +6926,18 @@
             (type Core (KConst Int64) (KAdd (Tuple Core Core)) (KSub (Tuple Core Core)) (KMul (Tuple Core Core)))
             (def (resolve n) (match n
                                ((Node.NInt v) (Core.KConst v))
-                               ((Node.NPrim (tuple h a b))
-                                  (if (= h "+") (Core.KAdd (tuple (resolve a) (resolve b)))
-                                  (if (= h "-") (Core.KSub (tuple (resolve a) (resolve b)))
-                                                (Core.KMul (tuple (resolve a) (resolve b))))))))
+                               ((Node.NPrim #tuple(h a b))
+                                  (if (= h "+") (Core.KAdd #tuple((resolve a) (resolve b)))
+                                  (if (= h "-") (Core.KSub #tuple((resolve a) (resolve b)))
+                                                (Core.KMul #tuple((resolve a) (resolve b))))))))
             (def (eval c) (match c
                             ((Core.KConst v) v)
-                            ((Core.KAdd (tuple a b)) (+ (eval a) (eval b)))
-                            ((Core.KSub (tuple a b)) (- (eval a) (eval b)))
-                            ((Core.KMul (tuple a b)) (* (eval a) (eval b)))))
-            (def (main) (eval (resolve (Node.NPrim (tuple "+"
+                            ((Core.KAdd #tuple(a b)) (+ (eval a) (eval b)))
+                            ((Core.KSub #tuple(a b)) (- (eval a) (eval b)))
+                            ((Core.KMul #tuple(a b)) (* (eval a) (eval b)))))
+            (def (main) (eval (resolve (Node.NPrim #tuple("+"
                                           (Node.NInt 20)
-                                          (Node.NPrim (tuple "*" (Node.NInt 2) (Node.NInt 11)))))))) (export main)))
+                                          (Node.NPrim #tuple("*" (Node.NInt 2) (Node.NInt 11)))))))) (export main)))
   (output (: 42 Int64))
   (live-objects known-leak 7))
 
@@ -6956,27 +6956,27 @@
             (type BST (Empty) (Node (Tuple BST Int64 BST)))
             (def (insert (: t BST) (: v Int64))
               (match t
-                ((Empty _u) (Node (tuple (Empty) v (Empty))))
+                ((Empty _u) (Node #tuple((Empty) v (Empty))))
                 ((Node p)
                   (match p
-                    ((tuple l k r)
+                    (#tuple(l k r)
                       (if (< v k)
-                          (Node (tuple (insert l v) k r))
+                          (Node #tuple((insert l v) k r))
                           (if (> v k)
-                              (Node (tuple l k (insert r v)))
+                              (Node #tuple(l k (insert r v)))
                               t)))))))
             (def (build (: xs (List Int64)) (: t BST))
               (match xs
-                ((list) t)
-                ((list h .. rest) (build rest (insert t h)))))
+                (#list() t)
+                (#list(h .. rest) (build rest (insert t h)))))
             (def (inorder (: t BST) (: acc Int64))
               (match t
                 ((Empty _u) acc)
                 ((Node p)
                   (match p
-                    ((tuple l k r) (inorder r (+ (* (inorder l acc) 10) k)))))))
+                    (#tuple(l k r) (inorder r (+ (* (inorder l acc) 10) k)))))))
             (def (main (: n Int64))
-              (inorder (build (list 5 n 8 1 n 9) (Empty)) 0))
+              (inorder (build #list(5 n 8 1 n 9) (Empty)) 0))
             (export main)))
   (call   main (: 3 Int64)) (output (: 13589 Int64))
   (call   main (: 5 Int64)) (output (: 1589 Int64))
@@ -6999,41 +6999,41 @@
             (type BST (Empty) (Node (Tuple BST Int64 BST)))
             (def (insert (: t BST) (: v Int64))
               (match t
-                ((Empty _u) (Node (tuple (Empty) v (Empty))))
+                ((Empty _u) (Node #tuple((Empty) v (Empty))))
                 ((Node p)
                   (match p
-                    ((tuple l k r)
+                    (#tuple(l k r)
                       (if (< v k)
-                          (Node (tuple (insert l v) k r))
+                          (Node #tuple((insert l v) k r))
                           (if (> v k)
-                              (Node (tuple l k (insert r v)))
-                              (Node (tuple l k r)))))))))
+                              (Node #tuple(l k (insert r v)))
+                              (Node #tuple(l k r)))))))))
             (def (build (: xs (List Int64)) (: t BST))
               (match xs
-                ((list) t)
-                ((list h .. rest) (build rest (insert t h)))))
+                (#list() t)
+                (#list(h .. rest) (build rest (insert t h)))))
             (def (max2 (: a Int64) (: b Int64)) (if (> a b) a b))
             (def (height (: t BST))
               (match t
                 ((Empty _u) 0)
                 ((Node p)
                   (match p
-                    ((tuple l _k r) (+ 1 (max2 (height l) (height r))))))))
+                    (#tuple(l _k r) (+ 1 (max2 (height l) (height r))))))))
             (def (abs2 (: x Int64)) (if (< x 0) (- 0 x) x))
             (def (balanced (: t BST))
               (match t
                 ((Empty _u) true)
                 ((Node p)
                   (match p
-                    ((tuple l _k r)
+                    (#tuple(l _k r)
                       (if (> (abs2 (- (height l) (height r))) 1)
                           false
                           (if (balanced l) (balanced r) false)))))))
             (def (main (: mode Int64))
               (do
                 (def xs (if (= mode 1)
-                            (list 4 2 6 1 3 5 7)
-                            (if (= mode 2) (list 1 2 3 4 5) (list 5 3 8))))
+                            #list(4 2 6 1 3 5 7)
+                            (if (= mode 2) #list(1 2 3 4 5) #list(5 3 8))))
                 (def t (build xs (Empty)))
                 (+ (* (height t) 10) (if (balanced t) 1 0))))
             (export main)))
@@ -7057,41 +7057,41 @@
             (type BST (Empty) (Node (Tuple BST Int64 BST)))
             (def (insert (: t BST) (: v Int64))
               (match t
-                ((Empty _u) (Node (tuple (Empty) v (Empty))))
+                ((Empty _u) (Node #tuple((Empty) v (Empty))))
                 ((Node p)
                   (match p
-                    ((tuple l k r)
+                    (#tuple(l k r)
                       (if (< v k)
-                          (Node (tuple (insert l v) k r))
+                          (Node #tuple((insert l v) k r))
                           (if (> v k)
-                              (Node (tuple l k (insert r v)))
-                              (Node (tuple l k r)))))))))
+                              (Node #tuple(l k (insert r v)))
+                              (Node #tuple(l k r)))))))))
             (def (build (: xs (List Int64)) (: t BST))
               (match xs
-                ((list) t)
-                ((list h .. rest) (build rest (insert t h)))))
+                (#list() t)
+                (#list(h .. rest) (build rest (insert t h)))))
             (def (del-min (: t BST))
               (match t
-                ((Empty _u) (tuple -1 (Empty)))
+                ((Empty _u) #tuple(-1 (Empty)))
                 ((Node p)
                   (match p
-                    ((tuple l k r)
+                    (#tuple(l k r)
                       (match l
-                        ((Empty _u) (tuple k r))
+                        ((Empty _u) #tuple(k r))
                         ((Node _q)
                           (match (del-min l)
-                            ((tuple m l2) (tuple m (Node (tuple l2 k r))))))))))))
+                            (#tuple(m l2) #tuple(m (Node #tuple(l2 k r))))))))))))
             (def (inorder (: t BST) (: acc Int64))
               (match t
                 ((Empty _u) acc)
                 ((Node p)
                   (match p
-                    ((tuple l k r) (inorder r (+ (* (inorder l acc) 10) k)))))))
+                    (#tuple(l k r) (inorder r (+ (* (inorder l acc) 10) k)))))))
             (def (main (: mode Int64))
               (do
-                (def t (build (if (= mode 1) (list 5 3 8 1 9) (if (= mode 2) (list 2 5 7) (list 4))) (Empty)))
+                (def t (build (if (= mode 1) #list(5 3 8 1 9) (if (= mode 2) #list(2 5 7) #list(4))) (Empty)))
                 (match (del-min t)
-                  ((tuple m t2) (+ (* m 100000) (inorder t2 0))))))
+                  (#tuple(m t2) (+ (* m 100000) (inorder t2 0))))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 103589 Int64))
   (call   main (: 2 Int64)) (output (: 200057 Int64))
@@ -7112,7 +7112,7 @@
            matching\" folds; here the payload is a genuine runtime value so it lives on the value heap.")
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
-            (def (f n) (IntList.Cons (tuple n (IntList.Nil ()))))
+            (def (f n) (IntList.Cons #tuple(n (IntList.Nil ()))))
             (def (main) (f 5)) (export main)))
   (output (: (Cons #tuple(5 (Nil unit))) IntList)))
 
@@ -7132,10 +7132,10 @@
             (def (sm (: t (Tree Int64)))
               (match t
                 ((Tree.Leaf n) n)
-                ((Tree.Branch (tuple l r)) (+ (sm l) (sm r)))))
+                ((Tree.Branch #tuple(l r)) (+ (sm l) (sm r)))))
             (def (main)
-              (sm (Tree.Branch (tuple (Tree.Leaf 3)
-                                      (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5)))))))
+              (sm (Tree.Branch #tuple((Tree.Leaf 3)
+                                      (Tree.Branch #tuple((Tree.Leaf 4) (Tree.Leaf 5)))))))
             (export main)))
   (output (: 12 Int64))
   (live-objects 0))
@@ -7155,10 +7155,10 @@
             (def (sm t)
               (match t
                 ((Tree.Leaf n) n)
-                ((Tree.Branch (tuple l r)) (+ (sm l) (sm r)))))
+                ((Tree.Branch #tuple(l r)) (+ (sm l) (sm r)))))
             (def (main)
-              (sm (Tree.Branch (tuple (Tree.Leaf 3)
-                                      (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5)))))))
+              (sm (Tree.Branch #tuple((Tree.Leaf 3)
+                                      (Tree.Branch #tuple((Tree.Leaf 4) (Tree.Leaf 5)))))))
             (export main)))
   (output (: 12 Int64))
   (live-objects 0))
@@ -7206,7 +7206,7 @@
               (match t
                 ((Rose.RLeaf n) n)
                 ((Rose.RNode xs) (List.len xs))))
-            (def (main) (sz (Rose.RNode (list (Rose.RLeaf 1) (Rose.RLeaf 2) (Rose.RLeaf 3)))))
+            (def (main) (sz (Rose.RNode #list((Rose.RLeaf 1) (Rose.RLeaf 2) (Rose.RLeaf 3)))))
             (export main)))
   (output (: 3 Int64)))
 
@@ -7226,8 +7226,8 @@
             (def (cnt t)
               (match t
                 ((Tree.Leaf _) 1)
-                ((Tree.Node (tuple l r)) (+ (cnt l) (cnt r)))))
-            (def (main) (cnt (Tree.Node (tuple (Tree.Leaf 3) (Tree.Leaf 4)))))
+                ((Tree.Node #tuple(l r)) (+ (cnt l) (cnt r)))))
+            (def (main) (cnt (Tree.Node #tuple((Tree.Leaf 3) (Tree.Leaf 4)))))
             (export main)))
   (output (: 2 Int64))
   (live-objects 0))
@@ -7249,7 +7249,7 @@
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (count n) (if (< n 1)
                                (IntList.Nil ())
-                               (IntList.Cons (tuple n (count (- n 1))))))
+                               (IntList.Cons #tuple(n (count (- n 1))))))
             (def (main) (count 3)) (export main)))
   (output (: (Cons #tuple(3 (Cons #tuple(2 (Cons #tuple(1 (Nil unit))))))) IntList))
   (live-objects known-leak 6))
@@ -7265,7 +7265,7 @@
   (input  (do
             (type StrList (Cons (Tuple String StrList)) Nil)
             (def (build (: n Int64)) (if (< n 1) (StrList.Nil ())
-                                        (StrList.Cons (tuple "x" (build (- n 1))))))
+                                        (StrList.Cons #tuple("x" (build (- n 1))))))
             (def (main) (build 2)) (export main)))
   (output (: (Cons #tuple("x" (Cons #tuple("x" (Nil unit))))) StrList))
   (live-objects known-leak 6))
@@ -7276,7 +7276,7 @@
   (input  (do
             (type FloatList (Cons (Tuple Float64 FloatList)) Nil)
             (def (build (: n Int64)) (if (< n 1) (FloatList.Nil ())
-                                        (FloatList.Cons (tuple 1.5 (build (- n 1))))))
+                                        (FloatList.Cons #tuple(1.5 (build (- n 1))))))
             (def (main) (build 2)) (export main)))
   (output (: (Cons #tuple(1.5 (Cons #tuple(1.5 (Nil unit))))) FloatList))
   (live-objects known-leak 6))
@@ -7287,7 +7287,7 @@
   (input  (do
             (type F32List (Cons (Tuple Float32 F32List)) Nil)
             (def (build (: n Int64)) (if (< n 1) (F32List.Nil ())
-                                        (F32List.Cons (tuple (: 1.5 Float32) (build (- n 1))))))
+                                        (F32List.Cons #tuple((: 1.5 Float32) (build (- n 1))))))
             (def (main) (build 2)) (export main)))
   (output (: (Cons #tuple(1.5 (Cons #tuple(1.5 (Nil unit))))) F32List))
   (live-objects known-leak 6))
@@ -7320,7 +7320,7 @@
             (type Tree (Leaf Int64) (Node (Tuple Tree Tree)))
             (def (build n) (if (< n 1)
                                (Tree.Leaf n)
-                               (Tree.Node (tuple (build (- n 1)) (build (- n 1))))))
+                               (Tree.Node #tuple((build (- n 1)) (build (- n 1))))))
             (def (main) (build 2)) (export main)))
   (output (: (Node #tuple((Node #tuple((Leaf 0) (Leaf 0))) (Node #tuple((Leaf 0) (Leaf 0))))) Tree))
   (live-objects known-leak 10))
@@ -7336,8 +7336,8 @@
   (input  (do
             (type T (Leaf Int64) (Node (Tuple T T)))
             (def (build (: d Int64) (: v Int64))
-              (if (= d 0) (T.Leaf v) (T.Node (tuple (build (- d 1) v) (build (- d 1) v)))))
-            (def (sm (: t T)) (match t ((T.Leaf n) n) ((T.Node (tuple l r)) (+ (sm l) (sm r)))))
+              (if (= d 0) (T.Leaf v) (T.Node #tuple((build (- d 1) v) (build (- d 1) v)))))
+            (def (sm (: t T)) (match t ((T.Leaf n) n) ((T.Node #tuple(l r)) (+ (sm l) (sm r)))))
             (def (main (: d Int64)) (sm (build d 1)))
             (export main)))
   (call   main (: 8 Int64))
@@ -7541,10 +7541,10 @@
            the arm (a dispatch reading only the first tag would conflate the middle quadrants).")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (match (tuple (if (> a 0) (Some a) (None)) (if (> b 0) (Some b) (None)))
-                ((tuple (Some x) (Some y)) (+ x y))
-                ((tuple (Some x) (None u)) x)
-                ((tuple (None u) (Some y)) y)
+              (match #tuple((if (> a 0) (Some a) (None)) (if (> b 0) (Some b) (None)))
+                (#tuple((Some x) (Some y)) (+ x y))
+                (#tuple((Some x) (None u)) x)
+                (#tuple((None u) (Some y)) y)
                 (_ 0)))
             (export main)))
   (call   main (: 3 Int64) (: 4 Int64)) (output (: 7 Int64))
@@ -7564,10 +7564,10 @@
   (input  (do
             (type P (P Int64 Int64))
             (def (main (: a Int64) (: b Int64))
-              (match (tuple (P a 1) (P b 2))
-                ((tuple (P 0 x) (P 0 y)) (+ (* 100 x) y))
-                ((tuple (P 0 x) (P _ y)) (+ 1000 y))
-                ((tuple (P _ x) (P 0 y)) (+ 2000 x))
+              (match #tuple((P a 1) (P b 2))
+                (#tuple((P 0 x) (P 0 y)) (+ (* 100 x) y))
+                (#tuple((P 0 x) (P _ y)) (+ 1000 y))
+                (#tuple((P _ x) (P 0 y)) (+ 2000 x))
                 (_ -1)))
             (export main)))
   (call   main (: 0 Int64) (: 0 Int64))
@@ -7699,7 +7699,7 @@
            result a compiler threads when it decodes a node list.")
   (input  (do
             (type N (L Int64) (P Int64))
-            (def (main) (match (List.at (List.push (list) (N.L 7)) 0)
+            (def (main) (match (List.at (List.push #list() (N.L 7)) 0)
                           ((Some (N.L v)) v)
                           ((Some (N.P v)) (+ v 100))
                           ((None _)       -1))) (export main)))
@@ -7881,9 +7881,9 @@
             (type Outer (Wrap (Tuple Inner Int64)))
             (def (f o)
               (match o
-                ((Outer.Wrap (tuple (Inner.A v) k)) (+ v k))
-                ((Outer.Wrap (tuple (Inner.B v) k)) (- v k))))
-            (def (main) (f (Outer.Wrap (tuple (Inner.A 20) 22)))) (export main)))
+                ((Outer.Wrap #tuple((Inner.A v) k)) (+ v k))
+                ((Outer.Wrap #tuple((Inner.B v) k)) (- v k))))
+            (def (main) (f (Outer.Wrap #tuple((Inner.A 20) 22)))) (export main)))
   (output (: 42 Int64)))
 
 (case "a tuple of bools is exhaustive when every combination is covered"
@@ -7897,9 +7897,9 @@
   (input  (do
             (def (f (: t (Tuple Bool Bool)))
               (match t
-                ((tuple true b) 1)
-                ((tuple false b) 2)))
-            (def (main) (f (tuple false true))) (export main)))
+                (#tuple(true b) 1)
+                (#tuple(false b) 2)))
+            (def (main) (f #tuple(false true))) (export main)))
   (output (: 2 Int64)))
 
 (case "a tuple of two bools enumerated as all four explicit combinations is exhaustive and dispatches"
@@ -7907,11 +7907,11 @@
   (input  (do
             (def (f (: t (Tuple Bool Bool)))
               (match t
-                ((tuple true true)   1)
-                ((tuple true false)  2)
-                ((tuple false true)  3)
-                ((tuple false false) 4)))
-            (def (main (: x Bool) (: y Bool)) (f (tuple x y))) (export main)))
+                (#tuple(true true)   1)
+                (#tuple(true false)  2)
+                (#tuple(false true)  3)
+                (#tuple(false false) 4)))
+            (def (main (: x Bool) (: y Bool)) (f #tuple(x y))) (export main)))
   (call   main (: true Bool)  (: true Bool))  (output (: 1 Int64))
   (call   main (: true Bool)  (: false Bool)) (output (: 2 Int64))
   (call   main (: false Bool) (: true Bool))  (output (: 3 Int64))
@@ -7922,10 +7922,10 @@
   (input  (do
             (def (f (: t (Tuple Bool Bool)))
               (match t
-                ((tuple true true)  1)
-                ((tuple true false) 2)
-                ((tuple false true) 3)))
-            (def (main) (f (tuple true true))) (export main)))
+                (#tuple(true true)  1)
+                (#tuple(true false) 2)
+                (#tuple(false true) 3)))
+            (def (main) (f #tuple(true true))) (export main)))
   (error  CDZ0210))
 
 (case "a tuple of a bool and a sum is exhaustive when every bool×variant combination is covered"
@@ -7941,11 +7941,11 @@
             (type C (R) (G))
             (def (f (: t (Tuple Bool C)))
               (match t
-                ((tuple true (R))  1)
-                ((tuple true (G))  2)
-                ((tuple false (R)) 3)
-                ((tuple false (G)) 4)))
-            (def (main) (f (tuple false (G)))) (export main)))
+                (#tuple(true (R))  1)
+                (#tuple(true (G))  2)
+                (#tuple(false (R)) 3)
+                (#tuple(false (G)) 4)))
+            (def (main) (f #tuple(false (G)))) (export main)))
   (output (: 4 Int64)))
 
 (case "a tuple of two sums is exhaustive when every variant×variant combination is covered"
@@ -7961,11 +7961,11 @@
             (type B (X) (Y))
             (def (f (: t (Tuple A B)))
               (match t
-                ((tuple (P) (X)) 1)
-                ((tuple (P) (Y)) 2)
-                ((tuple (Q) (X)) 3)
-                ((tuple (Q) (Y)) 4)))
-            (def (main) (f (tuple (Q) (X)))) (export main)))
+                (#tuple((P) (X)) 1)
+                (#tuple((P) (Y)) 2)
+                (#tuple((Q) (X)) 3)
+                (#tuple((Q) (Y)) 4)))
+            (def (main) (f #tuple((Q) (X)))) (export main)))
   (output (: 3 Int64)))
 
 (case "a list of bools is exhaustive when the empty and both first-element values are covered"
@@ -7980,12 +7980,12 @@
            selects the `false`-lead arm → 2.")
   (input  (do
             (def (mk (: n Int64))
-              (if (< n 1) (list) (if (< n 2) (list true false) (list false true))))
+              (if (< n 1) #list() (if (< n 2) #list(true false) #list(false true))))
             (def (f (: xs (List Bool)))
               (match xs
-                ((list) 0)
-                ((list true .. r) 1)
-                ((list false .. r) 2)))
+                (#list() 0)
+                (#list(true .. r) 1)
+                (#list(false .. r) 2)))
             (def (main) (f (mk 2))) (export main)))
   (output (: 2 Int64)))
 
@@ -8000,10 +8000,10 @@
   (input  (do
             (def (f (: xs (List Int64)))
               (match xs
-                ((list)           0)
-                ((list a)         a)
-                ((list a b .. r)  (+ a b))))
-            (def (main) (f (list 3 4 5))) (export main)))
+                (#list()           0)
+                (#list(a)         a)
+                (#list(a b .. r)  (+ a b))))
+            (def (main) (f #list(3 4 5))) (export main)))
   (output (: 7 Int64)))
 
 (case "a list of a sum is exhaustive when the empty and every variant's first-element arm are covered"
@@ -8020,13 +8020,13 @@
            (Some 7)]`, whose first element selects the `None` arm → 99.")
   (input  (do
             (def (mk (: n Int64))
-              (if (< n 1) (list)
-                (if (< n 2) (list (Some 7) (None)) (list (None) (Some 7)))))
+              (if (< n 1) #list()
+                (if (< n 2) #list((Some 7) (None)) #list((None) (Some 7)))))
             (def (f (: xs (List (Option Int64))))
               (match xs
-                ((list) 0)
-                ((list (Some x) .. r) x)
-                ((list (None) .. r) 99)))
+                (#list() 0)
+                (#list((Some x) .. r) x)
+                (#list((None) .. r) 99)))
             (def (main) (f (mk 2))) (export main)))
   (output (: 99 Int64)))
 
@@ -8042,13 +8042,13 @@
   (input  (do
             (type C R G B)
             (def (mk (: n Int64))
-              (if (< n 1) (list C.R) (if (< n 2) (list C.G) (list C.B))))
+              (if (< n 1) #list(C.R) (if (< n 2) #list(C.G) #list(C.B))))
             (def (f (: xs (List C)))
               (match xs
-                ((list) 0)
-                ((list C.R .. r) 1)
-                ((list C.G .. r) 2)
-                ((list C.B .. r) 3)))
+                (#list() 0)
+                (#list(C.R .. r) 1)
+                (#list(C.G .. r) 2)
+                (#list(C.B .. r) 3)))
             (def (main (: n Int64)) (f (mk n))) (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64)) (output (: 2 Int64))
@@ -8065,12 +8065,12 @@
            vector), not `arr-get` — `mk 1` builds `(Some (list 7))`, whose non-empty arm binds `x = 7`.")
   (input  (do
             (def (mk (: n Int64))
-              (if (< n 1) (Some (list))
-                (if (< n 2) (Some (list 7)) (None))))
+              (if (< n 1) (Some #list())
+                (if (< n 2) (Some #list(7)) (None))))
             (def (f (: o (Option (List Int64))))
               (match o
-                ((Some (list)) 100)
-                ((Some (list x .. r)) x)
+                ((Some #list()) 100)
+                ((Some #list(x .. r)) x)
                 ((None) -1)))
             (def (main (: n Int64)) (f (mk n))) (export main)))
   (call   main (: 1 Int64))
@@ -8086,12 +8086,12 @@
   (input  (do
             (type Box (Bx (List Int64)))
             (def (mk (: n Int64))
-              (if (< n 1) (Bx (list))
-                (if (< n 2) (Bx (list 7)) (Bx (list 8 9)))))
+              (if (< n 1) (Bx #list())
+                (if (< n 2) (Bx #list(7)) (Bx #list(8 9)))))
             (def (f (: b Box))
               (match b
-                ((Bx (list)) 100)
-                ((Bx (list x .. r)) x)))
+                ((Bx #list()) 100)
+                ((Bx #list(x .. r)) x)))
             (def (main (: n Int64)) (f (mk n))) (export main)))
   (call   main (: 2 Int64))
   (output (: 8 Int64))
@@ -8105,12 +8105,12 @@
            the empty+rest+None split whose non-empty arm the exhaustiveness case pins.")
   (input  (do
             (def (mk (: n Int64))
-              (if (< n 1) (Some (list))
-                (if (< n 2) (Some (list 7)) (None))))
+              (if (< n 1) (Some #list())
+                (if (< n 2) (Some #list(7)) (None))))
             (def (f (: o (Option (List Int64))))
               (match o
-                ((Some (list)) 100)
-                ((Some (list x .. r)) x)
+                ((Some #list()) 100)
+                ((Some #list(x .. r)) x)
                 ((None) -1)))
             (def (main (: n Int64)) (f (mk n))) (export main)))
   (call   main (: 0 Int64)) (output (: 100 Int64))
@@ -8125,7 +8125,7 @@
            `ListLen`-refinement precision that makes empty+rest total does NOT over-accept: a genuine
            missing length still rejects.")
   (input  (do
-            (def (f (: o (Option (List Int64)))) (match o ((Some (list)) 0) ((None) -1)))
+            (def (f (: o (Option (List Int64)))) (match o ((Some #list()) 0) ((None) -1)))
             (def (main) (f (None))) (export main)))
   (error  CDZ0210))
 
@@ -8135,7 +8135,7 @@
            CDZ0210. With the missing-rest case above, pins that BOTH halves of the empty+rest split are
            required for totality: neither the empty arm nor the rest arm alone covers `Some`.")
   (input  (do
-            (def (f (: o (Option (List Int64)))) (match o ((Some (list x .. r)) x) ((None) -1)))
+            (def (f (: o (Option (List Int64)))) (match o ((Some #list(x .. r)) x) ((None) -1)))
             (def (main) (f (None))) (export main)))
   (error  CDZ0210))
 
@@ -8152,9 +8152,9 @@
             (type Outer (Wrap (Tuple Inner Int64)))
             (def (f o)
               (match o
-                ((Outer.Wrap (tuple i k))
+                ((Outer.Wrap #tuple(i k))
                    (match i ((Inner.A v) (+ v k)) ((Inner.B v) (- v k))))))
-            (def (main) (f (Outer.Wrap (tuple (Inner.A 20) 22)))) (export main)))
+            (def (main) (f (Outer.Wrap #tuple((Inner.A 20) 22)))) (export main)))
   (output (: 42 Int64)))
 
 ; --- A MULTI-PAYLOAD variant destructures positionally (sugar for a single tuple payload) -----------
@@ -8308,7 +8308,7 @@
 (case "a single-field variant whose one payload is a Tuple binds the whole payload with one sub-pattern"
   (doc    "The positive companion of the too-few reject above: the arity check keys on the DECLARED field count (1 for `(Pt (Tuple Int64 Int64))`, a genuinely single-field variant), NOT the payload's tuple shape — so `(R.Pt a)` binds the WHOLE tuple payload as `a` with ONE sub-pattern and does NOT fault as under-binding (a check keyed on the `Ty::Tuple` shape would wrongly reject it). `(R.Pt (tuple 3 4))` matched `((R.Pt a) (. a 0))` reads element 0 → 3.")
   (input  (do (type R (Pt (Tuple Int64 Int64)))
-              (def (main) (match (R.Pt (tuple 3 4)) ((R.Pt a) (. a 0)))) (export main)))
+              (def (main) (match (R.Pt #tuple(3 4)) ((R.Pt a) (. a 0)))) (export main)))
   (call   main) (output (: 3 Int64)))
 
 ; --- A multi-payload constructor applied in CURRIED / PARTIAL form ---
@@ -8405,7 +8405,7 @@
            spine and flattened (was invalid wasm — a malformed sum applied as a closure).")
   (input  (do
             (type T (Mk Int64 Int64))
-            (def (main) (match ((. (tuple (T.Mk 10) 0) 0) 5) ((T.Mk a b) (+ a b))))
+            (def (main) (match ((. #tuple((T.Mk 10) 0) 0) 5) ((T.Mk a b) (+ a b))))
             (export main)))
   (call   main)
   (output (: 15 Int64)))
@@ -8417,7 +8417,7 @@
            form with a runtime completing argument.")
   (input  (do
             (type T (Mk Int64 Int64))
-            (def (main (: x Int64)) (let ((p (tuple (T.Mk 10) 0))) (match ((. p 0) x) ((T.Mk a b) (+ a b)))))
+            (def (main (: x Int64)) (let ((p #tuple((T.Mk 10) 0))) (match ((. p 0) x) ((T.Mk a b) (+ a b)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 15 Int64))
   (call   main (: 2 Int64)) (output (: 12 Int64)))
@@ -8429,7 +8429,7 @@
            into the visible record to the ctor spine.")
   (input  (do
             (type T (Mk Int64 Int64))
-            (def (main) (let ((r (record (= f (T.Mk 7)) (= g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b)))))
+            (def (main) (let ((r #record((= f (T.Mk 7)) (= g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b)))))
             (export main)))
   (call   main)
   (output (: 10 Int64)))
@@ -8456,7 +8456,7 @@
            invalid wasm (`func N: expected i32, found i64`).")
   (input  (do
             (type T (Mk Int64 Int64))
-            (def (mk (: n Int64)) (if (< n 0) (tuple (T.Mk 0) 0) (tuple (T.Mk 10) n)))
+            (def (mk (: n Int64)) (if (< n 0) #tuple((T.Mk 0) 0) #tuple((T.Mk 10) n)))
             (def (main) (let ((p (mk 1))) (match ((. p 0) 5) ((T.Mk a b) (+ a b)))))
             (export main)))
   (call   main)
@@ -8470,7 +8470,7 @@
            remaining payloads (a 2-param lambda here), not just one.")
   (input  (do
             (type Tri (Mk Int64 Int64 Int64))
-            (def (mk (: n Int64)) (if (< n 0) (tuple (Tri.Mk 0) 0) (tuple (Tri.Mk 1) n)))
+            (def (mk (: n Int64)) (if (< n 0) #tuple((Tri.Mk 0) 0) #tuple((Tri.Mk 1) n)))
             (def (main) (let ((p (mk 1))) (match (((. p 0) 2) 3) ((Tri.Mk a b c) (+ a (+ b c))))))
             (export main)))
   (call   main)
@@ -8511,7 +8511,7 @@
             (def (is-var tm) (match tm ((Term.Var _) 1) ((Term.Neg _) 0)))
             (def (unbox bx) (match bx ((Box.B t) t)))
             (def (main)
-              (let ((p (unbox (Box.B (tuple (list) (Term.Var 7))))))
+              (let ((p (unbox (Box.B #tuple(#list() (Term.Var 7))))))
                 (is-var (. p 1)))) (export main)))
   (output (: 1 Int64)))
 
@@ -8529,8 +8529,8 @@
             (type Box (B (Tuple (List Int64) Term)))
             (def (is-var tm) (match tm ((Term.Var _) 1) ((Term.Neg _) 0)))
             (def (main)
-              (match (Box.B (tuple (list) (Term.Var 7)))
-                ((Box.B (tuple _ c)) (is-var c)))) (export main)))
+              (match (Box.B #tuple(#list() (Term.Var 7)))
+                ((Box.B #tuple(_ c)) (is-var c)))) (export main)))
   (output (: 1 Int64)))
 
 ; The same payload-through-a-return gap on the BUILT-IN `Option` takes a WORSE form than on a declared
@@ -8555,8 +8555,8 @@
            cannot yet thread a built-in sum payload's shape through a function return MUST decline (scored
            todo), never emit a component that traps on a valued program.")
   (input  (do
-            (def (get o) (match o ((Some p) p) (None (tuple 0 0))))
-            (def (main) (. (get (Some (tuple 7 8))) 0)) (export main)))
+            (def (get o) (match o ((Some p) p) (None #tuple(0 0))))
+            (def (main) (. (get (Some #tuple(7 8))) 0)) (export main)))
   (output (: 7 Int64)))
 
 (case "a built-in Option tuple payload consumed INLINE in the Some arm projects"
@@ -8566,7 +8566,7 @@
            7. Pins that the payload's shape IS available where it is bound; the gap is threading it through
            a bare function RETURN, exactly as for the declared-sum `Box` pair above.")
   (input  (do
-            (def (main) (match (Some (tuple 7 8)) ((Some p) (. p 0)) (None 0))) (export main)))
+            (def (main) (match (Some #tuple(7 8)) ((Some p) (. p 0)) (None 0))) (export main)))
   (output (: 7 Int64)))
 
 ; Projecting the RESULT of a call to a function that TAKES and RETURNS a tuple parameter must compute or
@@ -8594,8 +8594,8 @@
            A generation that cannot yet thread a tuple parameter's shape through the return declines rather
            than emitting a component that traps.")
   (input  (do
-            (def (go n t) (if (= n 0) t (go (- n 1) (tuple (+ (. t 0) n) (. t 1)))))
-            (def (main) (. (go 3 (tuple 0 0)) 0)) (export main)))
+            (def (go n t) (if (= n 0) t (go (- n 1) #tuple((+ (. t 0) n) (. t 1)))))
+            (def (main) (. (go 3 #tuple(0 0)) 0)) (export main)))
   (output (: 6 Int64))
   (live-objects known-leak 2))
 
@@ -8614,9 +8614,9 @@
   (input  (do
             (def (lookup xs i k)
               (match (List.at xs i)
-                ((Some (tuple key val)) (if (= key k) val (lookup xs (+ i 1) k)))
+                ((Some #tuple(key val)) (if (= key k) val (lookup xs (+ i 1) k)))
                 ((None _)               -1)))
-            (def (main) (lookup (list (tuple 1 100) (tuple 2 200)) 0 2)) (export main)))
+            (def (main) (lookup #list(#tuple(1 100) #tuple(2 200)) 0 2)) (export main)))
   (output (: 200 Int64))
   (live-objects known-leak 2))
 
@@ -8633,7 +8633,7 @@
                 ((Some v) (if (= v k) i (find xs k (+ i 1))))
                 ((None u) -1)))
             (def (main (: k Int64))
-              (find (list 10 20 30) k 0))
+              (find #list(10 20 30) k 0))
             (export main)))
   (call   main (: 30 Int64)) (output (: 2 Int64))
   (call   main (: 99 Int64)) (output (: -1 Int64))
@@ -8642,7 +8642,7 @@
 (case "lists are equal by elements in order"
   (doc    "Witnesses collections-and-text.md #A List Is An Ordered Homogeneous Sequence (equality).
            Needs the primitive collections the seed realizes to build an AST (list/map/record).")
-  (input  (= (list 1 2 3) (list 1 2 3)))
+  (input  (= #list(1 2 3) #list(1 2 3)))
   (output (: true Bool)))
 
 ; Two lists of the SAME element type but DIFFERENT LENGTH are the SAME TYPE — a list's length is NOT
@@ -8665,7 +8665,7 @@
            type (different-arity tuples are rejected as different shapes). Pins that list equality does not
            treat length as a shape mismatch — a compiler reusing the tuple-arity incompatibility check on
            lists wrongly rejects this well-typed total comparison as 'different shapes'.")
-  (input  (= (list 1 2) (list 1 2 3)))
+  (input  (= #list(1 2) #list(1 2 3)))
   (output (: false Bool)))
 
 ; The list-equality cases above compare SCALAR-element lists, and both operands are CONSTANT (const-folded
@@ -8689,8 +8689,8 @@
            not just scalar leaves. A runtime list-eq that only compared scalar elements (or declined on a
            tuple element) would miscompute or reject this well-typed total comparison.")
   (input  (do (def (main (: x Int64))
-                (let ((a (list (tuple 1 2) (tuple 3 x)))
-                      (b (list (tuple 1 2) (tuple 3 4))))
+                (let ((a #list(#tuple(1 2) #tuple(3 x)))
+                      (b #list(#tuple(1 2) #tuple(3 4))))
                   (if (= a b) 1 0)))
               (export main)))
   (call   main (: 4 Int64))
@@ -8706,9 +8706,9 @@
            descends into a List-typed tuple component and honors ORDER. A compiler that reordered or treated
            a list component as a bag would wrongly return 1 for the second face.")
   (input  (do (def (main (: x Int64))
-                (tuple
-                  (if (= (tuple 0 (list 1 x)) (tuple 0 (list 1 2))) 1 0)
-                  (if (= (tuple 0 (list 1 2)) (tuple 0 (list 2 1))) 1 0)))
+                #tuple(
+                  (if (= #tuple(0 #list(1 x)) #tuple(0 #list(1 2))) 1 0)
+                  (if (= #tuple(0 #list(1 2)) #tuple(0 #list(2 1))) 1 0)))
               (export main)))
   (call   main (: 2 Int64))
   (output (: (tuple 1 0) (Tuple Int64 Int64)))
@@ -8729,7 +8729,7 @@
            itself is ill-formed, regardless of HOW its element types differ; CDZ0203 is reserved for a
            two-types-must-AGREE unification conflict (an `if`'s branches, an annotation, a cross-shape
            comparison), NOT a collection's internal heterogeneity.")
-  (input     (list 1 true))
+  (input     #list(1 true))
   (error     CDZ0201))
 
 (case "a list mixing integer and float elements is a type error"
@@ -8738,7 +8738,7 @@
            element types and is not homogeneous — the compiler rejects it (CDZ0201). Pins that
            homogeneity holds across the numeric types too, not only across obviously unrelated kinds
            like Int64 and Bool.")
-  (input     (list 1 2.5))
+  (input     #list(1 2.5))
   (error     CDZ0201))
 
 ; Homogeneity is a property of the LIST VALUE, so it must hold under `List.push` too, not only for a
@@ -8766,7 +8766,7 @@
            back as booleans (`(List.push (list 10 20) false)` → `(list true true false)`) — a wrong value,
            not merely a missing rejection. A generation that does not yet check the pushed element's type
            declines rather than building the mistyped list.")
-  (input     (List.push (list 1 2) true))
+  (input     (List.push #list(1 2) true))
   (error     CDZ0201))
 
 ; `List.update` is the other functional-construction operator (#A List Is Grown By Functional
@@ -8788,7 +8788,7 @@
            integers 20 and 30 as booleans — a wrong value. Pins that both functional-construction
            operators enforce the element-type rule the literal does. A generation that does not yet check
            the replacement element's type declines rather than building the mistyped list.")
-  (input     (List.update (list 1 2 3) 1 true))
+  (input     (List.update #list(1 2 3) 1 true))
   (error     CDZ0201))
 
 ; Homogeneity is by element TYPE, and two compound values of the same KIND but different SHAPE are
@@ -8803,7 +8803,7 @@
            types (type-system.md #Structural Values Are Comparable Only When Their Shapes Match). A
            list of them is not homogeneous → CDZ0201, exactly as comparing them `(= (record (a 1))
            (record (b 2)))` is rejected.")
-  (input     (list (record (= a 1)) (record (= b 2))))
+  (input     #list(#record((= a 1)) #record((= b 2))))
   (error     CDZ0201))
 
 (case "a list of tuples with different arities is a type error"
@@ -8811,7 +8811,7 @@
            list of them is not homogeneous → CDZ0201 (comparing them is likewise rejected as different
            shapes). Pins that the list-element homogeneity check compares tuple ARITY, not just that
            both elements are tuples.")
-  (input     (list (tuple 1 2) (tuple 1 2 3)))
+  (input     #list(#tuple(1 2) #tuple(1 2 3)))
   (error     CDZ0201))
 
 ; The two cases above reject a list whose RECORD/TUPLE elements differ in shape, because a record's
@@ -8832,7 +8832,7 @@
            list-homogeneity manifestation of the different-keyset map-comparison bug (shapes_incompatible
            shares one arm for Record and Map). MUST be true. Contrast the record/tuple cases above, which
            ARE non-homogeneous because field set / arity IS the type.")
-  (input     (= (list (map (= "a" 1)) (map (= "b" 2))) (list (map (= "a" 1)) (map (= "b" 2)))))
+  (input     (= #list((map (= "a" 1)) (map (= "b" 2))) #list((map (= "a" 1)) (map (= "b" 2)))))
   (output    (: true Bool)))
 
 ; --- Nested collections at RUN TIME: a collection op's result feeds another collection op --------------
@@ -8851,7 +8851,7 @@
            is itself a collection round-trips through `Map.lookup` as a usable list handle — the lookup's
            `Option (List Int64)` payload is a real list the outer `List.at` reads, not an opaque cell.")
   (input  (do (def (main (: k Int64) (: i Int64))
-                (match (Map.lookup (Map.insert (Map.insert Map.empty 1 (list 10 20 30)) 2 (list 40 50)) k)
+                (match (Map.lookup (Map.insert (Map.insert Map.empty 1 #list(10 20 30)) 2 #list(40 50)) k)
                   ((Some xs) (match (List.at xs i) ((Some v) v) (None -1)))
                   (None -2))) (export main)))
   (call   main (: 1 Int64) (: 2 Int64)) (output (: 30 Int64))
@@ -8866,7 +8866,7 @@
            k=1 → 3, k=2 → 2. Pins that the looked-up list carries its own length (the map value is a genuine
            list handle, not a placeholder), the len companion of the index case.")
   (input  (do (def (main (: k Int64))
-                (match (Map.lookup (Map.insert (Map.insert Map.empty 1 (list 10 20 30)) 2 (list 40 50)) k)
+                (match (Map.lookup (Map.insert (Map.insert Map.empty 1 #list(10 20 30)) 2 #list(40 50)) k)
                   ((Some xs) (List.len xs))
                   (None -1))) (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
@@ -8884,7 +8884,7 @@
             (def (append-at (: m (Map Int64 (List Int64))) (: k Int64) (: v Int64))
               (match (Map.lookup m k)
                 ((Some xs) (Map.insert m k (List.push xs v)))
-                ((None u) (Map.insert m k (list v)))))
+                ((None u) (Map.insert m k #list(v)))))
             (def (main (: k Int64))
               (let ((m (append-at (append-at (append-at Map.empty k 1) k 2) 9 7)))
                 (+ (* 10 (match (Map.lookup m k) ((Some xs) (List.len xs)) ((None u) -1)))
@@ -8919,15 +8919,15 @@
                          (if (>= i x) (at0 old (- i x)) 0))))))
             (def (fold-elems (: xs (List Int64)) (: t Int64) (: dp (List Int64)))
               (match xs
-                ((list) dp)
-                ((list x .. rest) (fold-elems rest t (next-row dp x 0 t (list))))))
+                (#list() dp)
+                (#list(x .. rest) (fold-elems rest t (next-row dp x 0 t #list())))))
             (def (count-subsets (: xs (List Int64)) (: t Int64))
-              (at0 (fold-elems xs t (zeros-one 0 t (list))) t))
+              (at0 (fold-elems xs t (zeros-one 0 t #list())) t))
             (def (main (: mode Int64))
-              (if (= mode 1) (count-subsets (list 2 3 5 6 8 10) 10)
-              (if (= mode 2) (count-subsets (list 1 1 1) 2)
-              (if (= mode 3) (count-subsets (list 5) 5)
-                             (count-subsets (list 2 4) 7)))))
+              (if (= mode 1) (count-subsets #list(2 3 5 6 8 10) 10)
+              (if (= mode 2) (count-subsets #list(1 1 1) 2)
+              (if (= mode 3) (count-subsets #list(5) 5)
+                             (count-subsets #list(2 4) 7)))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64))
@@ -8957,7 +8957,7 @@
                   c
                   (grow (List.push c (conv c 0 m 0)) (+ m 1) n)))
             (def (catalan (: n Int64))
-              (at0 (grow (list 1) 1 n) n))
+              (at0 (grow #list(1) 1 n) n))
             (def (min2 (: a Int64) (: b Int64)) (if (< a b) a b))
             (def (nck-go (: n Int64) (: k Int64) (: i Int64) (: r Int64))
               (if (>= i k)
@@ -8993,14 +8993,14 @@
               (if (> i n) acc (range1 (+ i 1) n (List.push acc i))))
             (def (fold-rest (: xs (List Int64)) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t) (fold-rest t (List.push acc h)))))
+                (#list() acc)
+                (#list(h .. t) (fold-rest t (List.push acc h)))))
             (def (remove-at (: xs (List Int64)) (: i Int64) (: j Int64) (: acc (List Int64)))
               (match xs
-                ((list) (tuple -1 acc))
-                ((list h .. t)
+                (#list() #tuple(-1 acc))
+                (#list(h .. t)
                   (if (= j i)
-                      (tuple h (fold-rest t acc))
+                      #tuple(h (fold-rest t acc))
                       (remove-at t i (+ j 1) (List.push acc h))))))
             (def (build (: pool (List Int64)) (: i Int64) (: k Int64) (: acc (List Int64)))
               (if (= i 0)
@@ -9008,14 +9008,14 @@
                   (do
                     (def f (fact (- i 1)))
                     (def idx (/ k f))
-                    (match (remove-at pool idx 0 (list))
-                      ((tuple v rest) (build rest (- i 1) (% k f) (List.push acc v)))))))
+                    (match (remove-at pool idx 0 #list())
+                      (#tuple(v rest) (build rest (- i 1) (% k f) (List.push acc v)))))))
             (def (kth-perm (: n Int64) (: k Int64))
-              (build (range1 1 n (list)) n (- k 1) (list)))
+              (build (range1 1 n #list()) n (- k 1) #list()))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: n Int64) (: k Int64))
               (chk (kth-perm n k) 0))
             (export main)))
@@ -9047,8 +9047,8 @@
                 ((Some av) (match b ((None _u) a) ((Some bv) (if (< av bv) a b))))))
             (def (try-coins (: cs (List Int64)) (: dp (List (Option Int64))) (: i Int64) (: best (Option Int64)))
               (match cs
-                ((list) best)
-                ((list c .. t)
+                (#list() best)
+                (#list(c .. t)
                   (try-coins t dp i
                     (if (<= c i)
                         (omin best (match (at0 dp (- i c))
@@ -9061,15 +9061,15 @@
                   (build cs (+ i 1) t (List.push dp (try-coins cs dp i (None unit))))))
             (def (coins (: cs (List Int64)) (: t Int64))
               (do
-                (def dp (build cs 1 t (list (Some 0))))
+                (def dp (build cs 1 t #list((Some 0))))
                 (match (at0 dp t)
                   ((None _u) -1)
                   ((Some r)  r))))
             (def (main (: mode Int64))
-              (if (= mode 1) (coins (list 25 10 1) 30)
-              (if (= mode 2) (coins (list 1 5 10 25) 63)
-              (if (= mode 3) (coins (list 5 10) 3)
-                             (coins (list 1 5 10 25) 0)))))
+              (if (= mode 1) (coins #list(25 10 1) 30)
+              (if (= mode 2) (coins #list(1 5 10 25) 63)
+              (if (= mode 3) (coins #list(5 10) 3)
+                             (coins #list(1 5 10 25) 0)))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 6 Int64))
@@ -9105,17 +9105,17 @@
                     (List.push dp (best-pred xs dp 0 i (at0 xs i) 1)))))
             (def (max-l (: xs (List Int64)) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (max-l t (max2 acc h)))))
+                (#list() acc)
+                (#list(h .. t) (max-l t (max2 acc h)))))
             (def (lis (: xs (List Int64)))
               (do
                 (def n ((. List len) xs))
-                (if (= n 0) 0 (max-l (build xs 0 n (list)) 0))))
+                (if (= n 0) 0 (max-l (build xs 0 n #list()) 0))))
             (def (main (: mode Int64))
-              (if (= mode 1) (lis (list 10 9 2 5 3 7 101 18))
-              (if (= mode 2) (lis (list 1 2 3))
-              (if (= mode 3) (lis (list 5 4 3))
-                             (lis (list 7 7 7))))))
+              (if (= mode 1) (lis #list(10 9 2 5 3 7 101 18))
+              (if (= mode 2) (lis #list(1 2 3))
+              (if (= mode 3) (lis #list(5 4 3))
+                             (lis #list(7 7 7))))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 4 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64))
@@ -9151,17 +9151,17 @@
                     (row-go b (+ j 1) lb x prev (List.push cur cell)))))
             (def (rows (: a (List Int64)) (: b (List Int64)) (: lb Int64) (: prev (List Int64)))
               (match a
-                ((list) prev)
-                ((list x .. t) (rows t b lb (row-go b 1 lb x prev (list 0))))))
+                (#list() prev)
+                (#list(x .. t) (rows t b lb (row-go b 1 lb x prev #list(0))))))
             (def (lcs (: a (List Int64)) (: b (List Int64)))
               (do
                 (def lb ((. List len) b))
-                (at0 (rows a b lb (zeros 0 lb (list))) lb)))
+                (at0 (rows a b lb (zeros 0 lb #list())) lb)))
             (def (main (: mode Int64))
-              (if (= mode 1) (lcs (list 1 3 4 1 2) (list 3 4 1 2 1 3))
-              (if (= mode 2) (lcs (list 1 2 3) (list 1 2 3))
-              (if (= mode 3) (lcs (list 1 2) (list 3 4))
-                             (lcs (list) (list 1 2))))))
+              (if (= mode 1) (lcs #list(1 3 4 1 2) #list(3 4 1 2 1 3))
+              (if (= mode 2) (lcs #list(1 2 3) #list(1 2 3))
+              (if (= mode 3) (lcs #list(1 2) #list(3 4))
+                             (lcs #list() #list(1 2))))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 4 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64))
@@ -9181,14 +9181,14 @@
             (def (compute (: k Int64)) (* k k))
             (def (run (: keys (List Int64)) (: cache (Map Int64 Int64)) (: hits Int64) (: total Int64))
               (match keys
-                ((list) (+ (* 100 hits) total))
-                ((list k .. rest)
+                (#list() (+ (* 100 hits) total))
+                (#list(k .. rest)
                   (match (Map.lookup cache k)
                     ((Some v) (run rest cache (+ hits 1) (+ total v)))
                     ((None u) (let ((v (compute k)))
                                 (run rest (Map.insert cache k v) hits (+ total v))))))))
             (def (main (: a Int64))
-              (run (list a 3 a 3 5) Map.empty 0 0))
+              (run #list(a 3 a 3 5) Map.empty 0 0))
             (export main)))
   (call   main (: 3 Int64))
   (output (: 361 Int64))
@@ -9246,7 +9246,7 @@
            corrupt the original (orig-len 2 → 2011); a lost re-insert would drop grown to len 1. MUST be 2111.")
   (input  (do
             (def (main (: k Int64) (: a Int64) (: b Int64))
-              (let ((m (Map.insert Map.empty k (list a))))
+              (let ((m (Map.insert Map.empty k #list(a))))
                 (let ((grown (match (Map.lookup m k)
                                ((Some xs) (Map.insert m k (List.push xs b)))
                                ((None _u) m))))
@@ -9270,7 +9270,7 @@
            round-trips through `List.at` as a usable map handle — collections nest both ways (a map of lists
            above, a list of maps here), each inner handle usable by the outer op at run time.")
   (input  (do (def (main (: i Int64) (: k Int64))
-                (match (List.at (list (Map.insert Map.empty 1 100) (Map.insert Map.empty 2 200)) i)
+                (match (List.at #list((Map.insert Map.empty 1 100) (Map.insert Map.empty 2 200)) i)
                   ((Some m) (match (Map.lookup m k) ((Some v) v) (None -1)))
                   (None -2))) (export main)))
   (call   main (: 0 Int64) (: 1 Int64)) (output (: 100 Int64))
@@ -9289,8 +9289,8 @@
            heap collection.")
   (input  (do
             (def (main (: k Int64))
-              (let ((m (Map.insert (Map.insert Map.empty 1 (list 10)) 2 (list 20 21))))
-                (let ((m2 (Map.insert m 1 (list 10 11 12))))
+              (let ((m (Map.insert (Map.insert Map.empty 1 #list(10)) 2 #list(20 21))))
+                (let ((m2 (Map.insert m 1 #list(10 11 12))))
                   (+ (* 10 (match (Map.lookup m2 k) ((Some xs) (List.len xs)) ((None u) -1)))
                      (match (Map.lookup m k) ((Some xs) (List.len xs)) ((None u) -1))))))
             (export main)))
@@ -9307,7 +9307,7 @@
            companion of the list-of-maps and list-of-records cases (collections nest as list elements of
            every kind).")
   (input  (do (def (main (: i Int64) (: e Int64))
-                (match (List.at (list #set(1 2) #set(3)) i)
+                (match (List.at #list(#set(1 2) #set(3)) i)
                   ((Some s) (if (Set.contains s e) 1 0))
                   (None -1))) (export main)))
   (call   main (: 0 Int64) (: 1 Int64)) (output (: 1 Int64))
@@ -9323,7 +9323,7 @@
            handle whose field projects — the symbol-table-as-a-VECTOR idiom (a list of entry records indexed
            by position), the record companion of the list-of-maps case above.")
   (input  (do (def (main (: i Int64))
-                (match (List.at (list (record (= v 10) (= tag 1)) (record (= v 20) (= tag 2))) i)
+                (match (List.at #list(#record((= v 10) (= tag 1)) #record((= v 20) (= tag 2))) i)
                   ((Some r) (. r v))
                   (None -1))) (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64))
@@ -9344,9 +9344,9 @@
                 ((Some r) (count-adults xs (+ i 1) (if (>= (. r age) 18) (+ acc 1) acc)))
                 ((None u) acc)))
             (def (main (: cutoff-age Int64))
-              (count-adults (list (record (= name 1) (= age 30))
-                                  (record (= name 2) (= age 15))
-                                  (record (= name 3) (= age cutoff-age))) 0 0))
+              (count-adults #list(#record((= name 1) (= age 30))
+                                  #record((= name 2) (= age 15))
+                                  #record((= name 3) (= age cutoff-age))) 0 0))
             (export main)))
   (call   main (: 20 Int64)) (output (: 2 Int64))
   (call   main (: 10 Int64)) (output (: 1 Int64))
@@ -9462,7 +9462,7 @@
               (if (= i 0) acc (build (- i 1) (List.push acc i))))
             (def (main (: n Int64))
               (do
-                (def xs (build n (list)))
+                (def xs (build n #list()))
                 (def m (Map.insert (Map.insert Map.empty 1 xs) 2 xs))
                 (def m2 (match (Map.lookup m 1)
                           ((Some l1) (Map.insert m 1 (List.update l1 5 777)))
@@ -9507,12 +9507,12 @@
            component would collide the 7 keys sharing it and misroute the descent).")
   (input  (do
             (def (fill (: i Int64) (: m (Map (Tuple Int64 Int64) Int64)))
-              (if (= i 0) m (fill (- i 1) (Map.insert m (tuple (% i 7) (/ i 7)) i))))
+              (if (= i 0) m (fill (- i 1) (Map.insert m #tuple((% i 7) (/ i 7)) i))))
             (def (main (: n Int64))
               (do
                 (def m (fill n Map.empty))
                 (+ (* 10 (Map.len m))
-                   (match (Map.lookup m (tuple 3 3)) ((Some v) v) ((None _u) -1)))))
+                   (match (Map.lookup m #tuple(3 3)) ((Some v) v) ((None _u) -1)))))
             (export main)))
   (call   main (: 40 Int64)) (output (: 424 Int64)))
 
@@ -9524,7 +9524,7 @@
            trie's growth would misread one.")
   (input  (do
             (def (fill (: i Int64) (: m (Map Int64 (List Int64))))
-              (if (= i 0) m (fill (- i 1) (Map.insert m i (list i (* i 2) (* i 3))))))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i #list(i (* i 2) (* i 3))))))
             (def (main (: n Int64))
               (do
                 (def m (fill n Map.empty))
@@ -9545,11 +9545,11 @@
            (a leak keeps dead payloads, a double-free corrupts a live one).")
   (input  (do
             (def (fill (: i Int64) (: m (Map Int64 (List Int64))))
-              (if (= i 0) m (fill (- i 1) (Map.insert m i (list i (* i 2))))))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i #list(i (* i 2))))))
             (def (main (: n Int64))
               (do
                 (def m (fill n Map.empty))
-                (def m2 (Map.insert m 25 (list 999)))
+                (def m2 (Map.insert m 25 #list(999)))
                 (+ (* 100 (match (Map.lookup m2 25) ((Some xs) (List.len xs)) ((None _u) -1)))
                    (+ (* 10 (match (Map.lookup m2 24) ((Some xs) (List.len xs)) ((None _u) -1)))
                       (match (Map.lookup m 25) ((Some xs) (List.len xs)) ((None _u) -1))))))
@@ -9568,8 +9568,8 @@
   (input  (do
             (def (main (: k Int64) (: i Int64))
               (let ((m (Map.insert (Map.insert Map.empty
-                          1 (list (tuple 10 11) (tuple 12 13)))
-                          2 (list (tuple 20 21)))))
+                          1 #list(#tuple(10 11) #tuple(12 13)))
+                          2 #list(#tuple(20 21)))))
                 (match (Map.lookup m k)
                   ((Some xs)
                     (match (List.at xs i)
@@ -9594,8 +9594,8 @@
   (input  (do
             (def (main (: k Int64))
               (let ((m (Map.insert Map.empty 1
-                         (list (tuple 10 (record (= v 100) (= w 200)))
-                               (tuple 20 (record (= v 300) (= w 400)))))))
+                         #list(#tuple(10 #record((= v 100) (= w 200)))
+                               #tuple(20 #record((= v 300) (= w 400)))))))
                 (match (Map.lookup m k)
                   ((Some xs) (match (List.at xs 1)
                     ((Some t) (. (. t 1) v))
@@ -9612,7 +9612,7 @@
            with `x`=9 they differ. Pins that a Set nested inside a tuple compares by its order-independent
            set value on the runtime path (a regression witness for the runtime-element set-equality fold in
            a NESTED position — the tuple's structural equality recurses into the set's `value-eq` walk).")
-  (input  (do (def (main (: x Int64)) (= (tuple 0 #set(1 x)) (tuple 0 #set(1 2)))) (export main)))
+  (input  (do (def (main (: x Int64)) (= #tuple(0 #set(1 x)) #tuple(0 #set(1 2)))) (export main)))
   (call   main (: 2 Int64)) (output (: true Bool))
   (call   main (: 9 Int64)) (output (: false Bool)))
 
@@ -9627,11 +9627,11 @@
            (or compared by rope-physical bytes) would misorder or fail to dedup. The compound companion of the
            bare-Bytes Set.to-list order case.")
   (input  (do
-            (def (b (: n Int64)) (Bytes.of (list (UInt8.wrap n))))
+            (def (b (: n Int64)) (Bytes.of #list((UInt8.wrap n))))
             (def (main (: z Int64))
-              (match (Set.to-list #set((tuple 1 (b 2)) (tuple 1 (b 1)) (tuple 1 (b 2))))
-                ((list h .. t) (match h ((tuple _i by) (match (Bytes.at by 0) ((Some v) v) ((None u) -1)))))
-                ((list) -2)))
+              (match (Set.to-list #set(#tuple(1 (b 2)) #tuple(1 (b 1)) #tuple(1 (b 2))))
+                (#list(h .. t) (match h (#tuple(_i by) (match (Bytes.at by 0) ((Some v) v) ((None u) -1)))))
+                (#list() -2)))
             (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (live-objects known-leak 4))
@@ -9644,10 +9644,10 @@
            into the compound key would miss a present key or spuriously hit. The compound-key companion of the
            bare Bytes Map-key lookup case.")
   (input  (do
-            (def (b (: n Int64)) (Bytes.of (list (UInt8.wrap n))))
+            (def (b (: n Int64)) (Bytes.of #list((UInt8.wrap n))))
             (def (main (: k Int64))
-              (let ((m (Map.insert (Map.insert Map.empty (tuple (b 7) 1) 700) (tuple (b 9) 1) 900)))
-                (match (Map.lookup m (tuple (b k) 1)) ((Some v) v) ((None u) -1))))
+              (let ((m (Map.insert (Map.insert Map.empty #tuple((b 7) 1) 700) #tuple((b 9) 1) 900)))
+                (match (Map.lookup m #tuple((b k) 1)) ((Some v) v) ((None u) -1))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 700 Int64))
   (call   main (: 9 Int64)) (output (: 900 Int64))
@@ -9676,7 +9676,7 @@
   (doc    "Witnesses collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping: a
            well-typed list access whose index is in range yields the element wrapped in Some — an
            Option, not a bare value — so absence and presence share one total return type.")
-  (input  (List.at (list 1 2 3) 1))
+  (input  (List.at #list(1 2 3) 1))
   (output (: (Some 2) (Option Int64))))
 
 (case "indexing a list out of bounds yields None"
@@ -9684,7 +9684,7 @@
            well-typed list access whose index is out of range yields None rather than trapping or
            reading an unspecified value. A program that requires the element unwraps this Option with
            `expect` (core-semantics.md #Requiring The Value Of An Optional Traps On Absence).")
-  (input  (List.at (list 1 2 3) 5))
+  (input  (List.at #list(1 2 3) 5))
   (output (: (None unit) (Option Int64))))
 
 ; A NEGATIVE index is out of bounds exactly as an over-large one is — no element sits at position -1.
@@ -9699,7 +9699,7 @@
            yield None (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping), NOT
            wrap the negative index to a large unsigned offset and read an unspecified element. The
            negative-index companion of the out-of-bounds `5` case above; both yield None.")
-  (input  (List.at (list 1 2 3) -1))
+  (input  (List.at #list(1 2 3) -1))
   (output (: (None unit) (Option Int64))))
 
 (case "indexing an empty list yields None"
@@ -9710,7 +9710,7 @@
            value's type (an unannotated escape of a value with a free type variable is rejected — see 07
            \"an escaped value with an unresolved payload type is rejected\"); the None still renders `(None
            unit)`.")
-  (input  (: (List.at (list) 0) (Option Int64)))
+  (input  (: (List.at #list() 0) (Option Int64)))
   (output (: (None unit) (Option Int64))))
 
 (case "indexing a list bound from a sum payload yields the element"
@@ -9726,8 +9726,8 @@
            self-hosted compiler's IR nodes carry.")
   (input  (do
             (type K (KK (Tuple Int64 (List Int64))))
-            (def (f c) (match c ((K.KK (tuple fi xs)) (match (List.at xs 0) ((Some x) x) ((None _) -1)))))
-            (def (main) (f (K.KK (tuple 7 (list 10 20 30))))) (export main)))
+            (def (f c) (match c ((K.KK #tuple(fi xs)) (match (List.at xs 0) ((Some x) x) ((None _) -1)))))
+            (def (main) (f (K.KK #tuple(7 #list(10 20 30))))) (export main)))
   (output (: 10 Int64)))
 
 (case "a multi-argument call node is evaluated by iterating its payload arg list"
@@ -9750,8 +9750,8 @@
                                        0))
             (def (ev c) (match c
                           ((Core.KConst v) v)
-                          ((Core.KCall (tuple fi xs)) (sum-args xs 0 (List.len xs)))))
-            (def (main) (ev (Core.KCall (tuple 9 (list (Core.KConst 10) (Core.KConst 20) (Core.KConst 12)))))) (export main)))
+                          ((Core.KCall #tuple(fi xs)) (sum-args xs 0 (List.len xs)))))
+            (def (main) (ev (Core.KCall #tuple(9 #list((Core.KConst 10) (Core.KConst 20) (Core.KConst 12)))))) (export main)))
   (output (: 42 Int64))
   (live-objects known-leak 3))
 
@@ -9969,14 +9969,14 @@
            so a map associating them as values is not value-homogeneous — CDZ0201 (collections-and-text.md
            #A Map Associates Keys With Values: values of ONE type). Mirrors the list-of-diff-field-records
            case.")
-  (input      (= (map (= "a" (record (= x 1))) (= "b" (record (= y 2)))) (map (= "a" (record (= x 1))) (= "b" (record (= y 2))))))
+  (input      (= (map (= "a" #record((= x 1))) (= "b" #record((= y 2)))) (map (= "a" #record((= x 1))) (= "b" #record((= y 2))))))
   (error      CDZ0201))
 
 (case "a map with tuple values of different arities is a type error"
   (doc    "`(tuple 1 2)` and `(tuple 1 2 3)` are different tuple types (different lengths), so a map
            with them as values is not value-homogeneous — CDZ0201. Pins that the map-value homogeneity
            check compares tuple ARITY, mirroring the list case.")
-  (input      (= (map (= "a" (tuple 1 2)) (= "b" (tuple 1 2 3))) (map (= "a" (tuple 1 2)) (= "b" (tuple 1 2 3)))))
+  (input      (= (map (= "a" #tuple(1 2)) (= "b" #tuple(1 2 3))) (map (= "a" #tuple(1 2)) (= "b" #tuple(1 2 3)))))
   (error      CDZ0201))
 
 (case "a map with a duplicate key is a type error"
@@ -10022,7 +10022,7 @@
            collections-and-text.md #A Map Associates Keys With Values). Comparing values of two
            different types is a type error the compiler rejects (CDZ0201), even though they carry the
            same keys mapped to the same values.")
-  (input      (= (map (= "a" 1) (= "b" 2)) (record (= a 1) (= b 2))))
+  (input      (= (map (= "a" 1) (= "b" 2)) #record((= a 1) (= b 2))))
   (error      CDZ0201))
 
 (case "comparing an empty map to an empty record is a type error"
@@ -10030,7 +10030,7 @@
            An empty map and an empty record are different types (type-system.md #Structural Values Are
            Comparable Only When Their Shapes Match), so the comparison is a type error the compiler
            rejects (CDZ0201).")
-  (input      (= (map) (record)))
+  (input      (= (map) #record()))
   (error      CDZ0201))
 
 ; --- Two maps with different KEY SETS are comparable: the result is false, not a type error ---
@@ -10096,7 +10096,7 @@
   (doc    "type-system.md #Structural Values Are Comparable Only When Their Shapes Match: two tuples
            are comparable only when their lengths are identical. A 2-tuple and a 3-tuple have
            different shapes, so the comparison is a type error the compiler rejects (CDZ0203).")
-  (input      (= (tuple 1 2) (tuple 1 2 3)))
+  (input      (= #tuple(1 2) #tuple(1 2 3)))
   (error      CDZ0203))
 
 ; The shape-match requirement is RECURSIVE: it applies to every corresponding pair of sub-values, not
@@ -10108,14 +10108,14 @@
   (doc    "The outer tuples are both 2-tuples (matching shape), but their first elements are a 2-tuple
            and a 3-tuple — mismatched shapes. Shape compatibility is recursive, so this comparison is
            a type error (CDZ0203), the same as the top-level `(= (tuple 1 2) (tuple 1 2 3))` above.")
-  (input      (= (tuple (tuple 1 2) 9) (tuple (tuple 1 2 3) 9)))
+  (input      (= #tuple(#tuple(1 2) 9) #tuple(#tuple(1 2 3) 9)))
   (error      CDZ0203))
 
 (case "a nested element kind mismatch in equality is a type error"
   (doc    "The outer tuples match shape, but one's first element is a tuple and the other's is a scalar
            — different types at that position. Recursive shape matching makes this a type error
            (CDZ0203), like the top-level `(= (tuple 1 2) 5)`.")
-  (input      (= (tuple (tuple 1 2) 9) (tuple 5 9)))
+  (input      (= #tuple(#tuple(1 2) 9) #tuple(5 9)))
   (error      CDZ0203))
 
 (case "comparing records with different field-name sets is a type error"
@@ -10123,7 +10123,7 @@
            are comparable only when their sets of field names are identical. `(record (a 1))` and
            `(record (b 1))` have disjoint field names — different shapes — so the comparison is a type
            error (CDZ0203).")
-  (input      (= (record (= a 1)) (record (= b 1))))
+  (input      (= #record((= a 1)) #record((= b 1))))
   (error      CDZ0203))
 
 (case "comparing records whose field sets differ in size is a type error"
@@ -10132,7 +10132,7 @@
            shapes. The comparison is a type error the compiler rejects (CDZ0203). (Contrast `(record
            (a 1))` vs `(record (a 2))` — same shape, different value — which is an ordinary false, not
            a type error.)")
-  (input      (= (record (= a 1)) (record (= a 1) (= b 2))))
+  (input      (= #record((= a 1)) #record((= a 1) (= b 2))))
   (error      CDZ0203))
 
 (case "comparing sums with disjoint variant sets is a type error"
@@ -10437,15 +10437,15 @@
            the mutual `pe<->pf` edge stays correct, and a String-carrying Err propagates through the mutual
            recursion — the parse-checked spine of a self-hosted front end.")
   (input  (do
-            (def (toks) (list 0 3 4))
+            (def (toks) #list(0 3 4))
             (def (pf (: i Int64))
               (match (List.at (toks) i)
-                ((Some t) (if (= t 0) (pe (+ i 1)) (Ok (tuple t (+ i 1)))))
+                ((Some t) (if (= t 0) (pe (+ i 1)) (Ok #tuple(t (+ i 1)))))
                 ((None _) (Err "eof"))))
             (def (pe (: i Int64))
               (match (pf i)
                 ((Ok a)
-                  (match (pf (. a 1)) ((Ok b) (Ok (tuple (+ (. a 0) (. b 0)) (. b 1)))) ((Err _) (Ok a))))
+                  (match (pf (. a 1)) ((Ok b) (Ok #tuple((+ (. a 0) (. b 0)) (. b 1)))) ((Err _) (Ok a))))
                 ((Err e) (Err e))))
             (def (run (: start Int64))
               (match (pe start) ((Ok r) (. r 0)) ((Err e) (- 0 (String.byte-len e)))))
@@ -10537,8 +10537,8 @@
            the constant 7 with no runtime heap sum or tuple.")
   (input  (do
             (type Pair (Both (Tuple Int64 Int64)) Neither)
-            (def (main) (match (Pair.Both (tuple 3 4))
-                          ((Pair.Both (tuple a b)) (+ a b))
+            (def (main) (match (Pair.Both #tuple(3 4))
+                          ((Pair.Both #tuple(a b)) (+ a b))
                           (Pair.Neither 0)))
             (export main)))
   (output (: 7 Int64)))
@@ -10647,7 +10647,7 @@
            that the first shape-equal arm wins and the second is dead.")
   (input  (do
             (def (pick (: b Bool) (: n Int64))
-              (match (tuple b n) ((tuple true a) a) ((tuple true c) (+ c 100)) (_ 0)))
+              (match #tuple(b n) (#tuple(true a) a) (#tuple(true c) (+ c 100)) (_ 0)))
             (def (main) (pick true 5)) (export main)))
   (call   main)
   (output (: 5 Int64)))
@@ -10674,7 +10674,7 @@
            cover, not just a bare `_`/binder — so a specific arm placed AFTER it is dead.")
   (input  (do
             (def (f (: a Int64) (: b Int64))
-              (match (tuple a b) ((tuple x y) (+ x y)) ((tuple 3 4) 100) (_ 0)))
+              (match #tuple(a b) (#tuple(x y) (+ x y)) (#tuple(3 4) 100) (_ 0)))
             (def (main) (f 3 4)) (export main)))
   (call   main)
   (output (: 7 Int64)))
@@ -10688,8 +10688,8 @@
            refining arm of the same variant — the ctor companion of the wildcard-tuple case.")
   (input  (do
             (def (f (: o (Option (Tuple Int64 Int64))))
-              (match o ((Some (tuple a b)) (+ a b)) ((Some (tuple 3 4)) 100) (None 0)))
-            (def (main) (f (Some (tuple 3 4)))) (export main)))
+              (match o ((Some #tuple(a b)) (+ a b)) ((Some #tuple(3 4)) 100) (None 0)))
+            (def (main) (f (Some #tuple(3 4)))) (export main)))
   (call   main)
   (output (: 7 Int64)))
 
@@ -10811,7 +10811,7 @@
            yet check a tuple-typed payload declines rather than constructing the mistyped value.")
   (input     (do
                (type T (Pair (Tuple Int64 Int64)))
-               (def (main) (T.Pair (tuple 1 2 3))) (export main)))
+               (def (main) (T.Pair #tuple(1 2 3))) (export main)))
   (error     CDZ0201))
 
 (case "a variant carrying a RECORD payload constructs and matches"
@@ -10826,7 +10826,7 @@
   (input  (do
             (type P (Pt (Record (: x Int64) (: y Int64))) O)
             (def (sum r) (+ (. r x) (. r y)))
-            (def (main) (match (P.Pt (record (= x 3) (= y 4))) ((P.Pt r) (sum r)) (P.O 0)))
+            (def (main) (match (P.Pt #record((= x 3) (= y 4))) ((P.Pt r) (sum r)) (P.O 0)))
             (export main)))
   (output (: 7 Int64)))
 
@@ -10852,7 +10852,7 @@
   (input  (do
             (type T (Foo Int64) (List (List T)))
             (def (sz (: n T)) (match n ((T.Foo _) 1) ((T.List es) (+ 9 (List.len es)))))
-            (def (main) (sz (T.List (list (T.Foo 1) (T.Foo 2)))))
+            (def (main) (sz (T.List #list((T.Foo 1) (T.Foo 2)))))
             (export main)))
   (output (: 11 Int64)))
 
@@ -10892,7 +10892,7 @@
            parameters).")
   (input  (do
             (type P (Pt (Record (: x Int64) (: y Int64))) O)
-            (def (main) (P.Pt (record (= x 1) (= y 2)))) (export main)))
+            (def (main) (P.Pt #record((= x 1) (= y 2)))) (export main)))
   (output (: (Pt #record((= x 1) (= y 2))) P)))
 
 ; --- A user variant renders its BARE name, uniformly with built-in sums -----------------------------
@@ -10952,7 +10952,7 @@
            payload is byte-identical to its underlying structural value at every shape.")
   (input  (do
             (type Pt (Mk (Tuple Int64 Int64)))
-            (def (mk (: b Int64)) (Pt.Mk (tuple b b)))
+            (def (mk (: b Int64)) (Pt.Mk #tuple(b b)))
             (def (main) (mk 5))
             (export main)))
   (call   main)
@@ -10992,7 +10992,7 @@
            form (a zero-element tuple) rather than collapsing an empty tuple to unit.")
   (input  (do
             (type V (A (Tuple)) (B))
-            (def (mk (: b Int64)) (if (> b 0) (V.A (tuple)) (V.B)))
+            (def (mk (: b Int64)) (if (> b 0) (V.A #tuple()) (V.B)))
             (def (main) (mk 5))
             (export main)))
   (call   main)
@@ -11011,7 +11011,7 @@
            TYPES (see the case above, 6938), so a `(Tuple)`-typed value renders `(tuple)` — no
            collapse-to-unit and no `Ty::Tuple([])→Unit` in infer. `15-rows:814` bare-root `(tuple)` and this
            heap element are the same rule: type-directed `(tuple)`.")
-  (input  (do (def (main) (let ((v0 (tuple 21.04))) (tuple v0 (tuple (tuple v0 (tuple)))))) (export main)))
+  (input  (do (def (main) (let ((v0 #tuple(21.04))) #tuple(v0 #tuple(#tuple(v0 #tuple()))))) (export main)))
   (call   main)
   (output (: #tuple(#tuple(21.04) #tuple(#tuple(#tuple(21.04) #tuple()))) (Tuple (Tuple Float64) (Tuple (Tuple (Tuple Float64) Tuple)))))
   (live-objects known-leak 5))
@@ -11043,14 +11043,14 @@
   (doc    "`(tuple 5 unit 7)` stores a Unit in slot 1 (the inline-unit sentinel) between two Int64s, then
            projects slot 2 = 7. Pins that a Unit tuple element keeps the positional layout intact (slot 2
            is still the third element); a Unit that pushed nothing would have shifted the arr-set indices.")
-  (input (do (def (main) (. (tuple 5 unit 7) 2)) (export main)))
+  (input (do (def (main) (. #tuple(5 unit 7) 2)) (export main)))
   (output (: 7 Int64)))
 
 (case "a Unit record field beside an Int64 field, the Int64 read"
   (doc    "A record `(record (a 5) (u unit))` with a Unit-typed field; projecting the `a` field yields 5.
            A record IS a positional heap array at run time, so its Unit field takes the sentinel-slot
            treatment tuples do.")
-  (input (do (def (main) (. (record (= a 5) (= u unit)) a)) (export main)))
+  (input (do (def (main) (. #record((= a 5) (= u unit)) a)) (export main)))
   (output (: 5 Int64)))
 
 (case "a Unit projected out of a multi-payload sum and bound to a name"
@@ -11070,7 +11070,7 @@
            derail the owned-temporary drop path (it is not a live-compound child, so it skips the retain).
            Result is the enclosing `let` body, 11.")
   (input (do
-    (def (mk) (tuple 5 unit))
+    (def (mk) #tuple(5 unit))
     (def (main) (let ((u (. (mk) 1))) 11))
     (export main)))
   (output (: 11 Int64)))
@@ -11085,7 +11085,7 @@
            SumExpect/SumPayload Unit-dup-site fix (the code fix is on trunk; this pins it at the corpus).")
   (input (do
     (def (mk (: n Int64)) (if (< n 0) (None ()) (if (= n 0) (Some ()) (mk (- n 1)))))
-    (def (loop (: o (Option Unit)) (: k Int64)) (if (= k 0) (tuple (Option.expect o "u") o) (loop o (- k 1))))
+    (def (loop (: o (Option Unit)) (: k Int64)) (if (= k 0) #tuple((Option.expect o "u") o) (loop o (- k 1))))
     (def (main) (match (. (loop (mk 1) 2) 1) ((Some _) 5) ((None) 0)))
     (export main)))
   (output (: 5 Int64))
@@ -11098,7 +11098,7 @@
            dup'ed. The Some arm → 6.")
   (input (do
     (def (mk (: n Int64)) (if (< n 0) (None ()) (if (= n 0) (Some ()) (mk (- n 1)))))
-    (def (loop (: o (Option Unit)) (: k Int64)) (if (= k 0) (match o ((Some u) (tuple u o)) ((None) (tuple () o))) (loop o (- k 1))))
+    (def (loop (: o (Option Unit)) (: k Int64)) (if (= k 0) (match o ((Some u) #tuple(u o)) ((None) #tuple(() o))) (loop o (- k 1))))
     (def (main) (match (. (loop (mk 1) 2) 1) ((Some _) 6) ((None) 0)))
     (export main)))
   (output (: 6 Int64))
@@ -11123,7 +11123,7 @@
            construction (CDZ0201).")
   (input  (do
             (type Box (B (Tuple a Int64)) N)
-            (def (main) (match (Box.B (tuple 7 8)) ((Box.B (tuple x y)) (+ x y)) (Box.N 0)))
+            (def (main) (match (Box.B #tuple(7 8)) ((Box.B #tuple(x y)) (+ x y)) (Box.N 0)))
             (export main)))
   (output (: 15 Int64)))
 
@@ -11135,7 +11135,7 @@
            NAME `val` stays a label), the record sibling of the tuple-payload case above.")
   (input  (do
             (type Box (B (Record (: val a))) N)
-            (def (main) (match (Box.B (record (= val 7))) ((Box.B r) (. r val)) (Box.N 0)))
+            (def (main) (match (Box.B #record((= val 7))) ((Box.B r) (. r val)) (Box.N 0)))
             (export main)))
   (output (: 7 Int64)))
 
@@ -11183,9 +11183,9 @@
   (input  (do
             (type W (Mk a (Tuple a a) (Option a)) (E))
             (def (f w) (match w
-                         ((W.Mk x (tuple y z) o) (+ x (+ y (+ z (match o ((Some n) n) ((None) 0))))))
+                         ((W.Mk x #tuple(y z) o) (+ x (+ y (+ z (match o ((Some n) n) ((None) 0))))))
                          ((W.E) 0)))
-            (def (main) (f (W.Mk 1 (tuple 2 3) (Some 4))))
+            (def (main) (f (W.Mk 1 #tuple(2 3) (Some 4))))
             (export main)))
   (output (: 10 Int64)))
 
@@ -11333,13 +11333,13 @@
   (input  (do
             (def (zip-sum (: xs (List Int64)) (: ys (List Int64)) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list xh .. xt)
+                (#list() acc)
+                (#list(xh .. xt)
                   (match ys
-                    ((list) acc)
-                    ((list yh .. yt) (zip-sum xt yt (+ acc (* xh yh))))))))
+                    (#list() acc)
+                    (#list(yh .. yt) (zip-sum xt yt (+ acc (* xh yh))))))))
             (def (main (: n Int64))
-              (zip-sum (list 1 2 3 n) (list 10 20 30) 0))
+              (zip-sum #list(1 2 3 n) #list(10 20 30) 0))
             (export main)))
   (call   main (: 999 Int64))
   (output (: 140 Int64))
@@ -11357,28 +11357,28 @@
   (input  (do
             (def (rle (: xs (List Int64)) (: cur Int64) (: cnt Int64) (: acc (List (Tuple Int64 Int64))))
               (match xs
-                ((list) (if (= cnt 0) acc (List.push acc (tuple cur cnt))))
-                ((list h .. t)
+                (#list() (if (= cnt 0) acc (List.push acc #tuple(cur cnt))))
+                (#list(h .. t)
                   (if (= cnt 0)
                       (rle t h 1 acc)
                       (if (= h cur)
                           (rle t cur (+ cnt 1) acc)
-                          (rle t h 1 (List.push acc (tuple cur cnt))))))))
+                          (rle t h 1 (List.push acc #tuple(cur cnt))))))))
             (def (repeat (: v Int64) (: c Int64) (: acc (List Int64)))
               (if (= c 0) acc (repeat v (- c 1) (List.push acc v))))
             (def (decode (: rs (List (Tuple Int64 Int64))) (: acc (List Int64)))
               (match rs
-                ((list) acc)
-                ((list (tuple v c) .. t) (decode t (repeat v c acc)))))
+                (#list() acc)
+                (#list(#tuple(v c) .. t) (decode t (repeat v c acc)))))
             (def (checksum (: rs (List (Tuple Int64 Int64))) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list (tuple v c) .. t) (checksum t (+ (* acc 100) (+ (* v 10) c))))))
+                (#list() acc)
+                (#list(#tuple(v c) .. t) (checksum t (+ (* acc 100) (+ (* v 10) c))))))
             (def (main (: n Int64))
               (do
-                (def xs (list 5 5 n 2 2 7 n n))
-                (def rs (rle xs 0 0 (list)))
-                (+ (* 10 (checksum rs 0)) (if (= (decode rs (list)) xs) 1 0))))
+                (def xs #list(5 5 n 2 2 7 n n))
+                (def rs (rle xs 0 0 #list()))
+                (+ (* 10 (checksum rs 0)) (if (= (decode rs #list()) xs) 1 0))))
             (export main)))
   (call   main (: 5 Int64))
   (output (: 532271521 Int64))
@@ -11397,25 +11397,25 @@
   (input  (do
             (def (app (: rs (List Int64)) (: acc (List Int64)))
               (match rs
-                ((list) acc)
-                ((list h .. t) (app t (List.push acc h)))))
+                (#list() acc)
+                (#list(h .. t) (app t (List.push acc h)))))
             (def (merge (: xs (List Int64)) (: ys (List Int64)) (: acc (List Int64)))
               (match xs
-                ((list) (app ys acc))
-                ((list xh .. xt)
+                (#list() (app ys acc))
+                (#list(xh .. xt)
                   (match ys
-                    ((list) (app xs acc))
-                    ((list yh .. yt)
+                    (#list() (app xs acc))
+                    (#list(yh .. yt)
                       (if (<= xh yh)
                           (merge xt ys (List.push acc xh))
                           (merge xs yt (List.push acc yh))))))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: n Int64))
-              (+ (* (chk (merge (list 1 3 n 9) (list 2 3 8) (list)) 0) 1000)
-                 (chk (merge (list) (list 2 n 8) (list)) 0)))
+              (+ (* (chk (merge #list(1 3 n 9) #list(2 3 8) #list()) 0) 1000)
+                 (chk (merge #list() #list(2 n 8) #list()) 0)))
             (export main)))
   (call   main (: 5 Int64))
   (output (: 1233589258 Int64))
@@ -11434,23 +11434,23 @@
   (input  (do
             (def (weave (: a (List Int64)) (: b (List Int64)) (: acc (List Int64)))
               (match a
-                ((list)
+                (#list()
                   (match b
-                    ((list) acc)
-                    ((list bh .. bt) (weave (list) bt (List.push acc bh)))))
-                ((list ah .. at)
+                    (#list() acc)
+                    (#list(bh .. bt) (weave #list() bt (List.push acc bh)))))
+                (#list(ah .. at)
                   (match b
-                    ((list) (weave at (list) (List.push acc ah)))
-                    ((list bh .. bt) (weave at bt (List.push (List.push acc ah) bh)))))))
+                    (#list() (weave at #list() (List.push acc ah)))
+                    (#list(bh .. bt) (weave at bt (List.push (List.push acc ah) bh)))))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: mode Int64))
               (do
-                (def a (if (= mode 1) (list 1 3 5) (if (= mode 2) (list 1 3 5 7 9) (list))))
-                (def b (if (= mode 1) (list 2 4 6) (list 2 4)))
-                (chk (weave a b (list)) 0)))
+                (def a (if (= mode 1) #list(1 3 5) (if (= mode 2) #list(1 3 5 7 9) #list())))
+                (def b (if (= mode 1) #list(2 4 6) #list(2 4)))
+                (chk (weave a b #list()) 0)))
             (export main)))
   (call   main (: 1 Int64)) (output (: 123456 Int64))
   (call   main (: 2 Int64)) (output (: 1234579 Int64))
@@ -11469,19 +11469,19 @@
   (input  (do
             (def (swap2 (: xs (List Int64)) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list solo) (List.push acc solo))
-                ((list a b .. t) (swap2 t (List.push (List.push acc b) a)))))
+                (#list() acc)
+                (#list(solo) (List.push acc solo))
+                (#list(a b .. t) (swap2 t (List.push (List.push acc b) a)))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: mode Int64))
               (do
-                (def xs (if (= mode 1) (list 1 2 3 4) (if (= mode 2) (list 1 2 3 4 5) (list 7))))
-                (def r (swap2 xs (list)))
+                (def xs (if (= mode 1) #list(1 2 3 4) (if (= mode 2) #list(1 2 3 4 5) #list(7))))
+                (def r (swap2 xs #list()))
                 (+ (* (chk r 0) 10)
-                   (if (= (swap2 r (list)) xs) 1 0))))
+                   (if (= (swap2 r #list()) xs) 1 0))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 21431 Int64))
   (call   main (: 2 Int64)) (output (: 214351 Int64))
@@ -11502,8 +11502,8 @@
   (input  (do
             (def (go (: cur Int64) (: rest (List Int64)) (: i Int64) (: acc (List Int64)))
               (match rest
-                ((list) (List.push acc cur))
-                ((list nxt .. t)
+                (#list() (List.push acc cur))
+                (#list(nxt .. t)
                   (do
                     (def wrong (if (= (% i 2) 0) (> cur nxt) (< cur nxt)))
                     (if wrong
@@ -11511,23 +11511,23 @@
                         (go nxt t (+ i 1) (List.push acc cur)))))))
             (def (wave (: xs (List Int64)))
               (match xs
-                ((list) xs)
-                ((list h .. t) (go h t 0 (list)))))
+                (#list() xs)
+                (#list(h .. t) (go h t 0 #list()))))
             (def (is-wave (: xs (List Int64)) (: i Int64))
               (match xs
-                ((list) 1)
-                ((list _solo) 1)
-                ((list a b .. t)
+                (#list() 1)
+                (#list(_solo) 1)
+                (#list(a b .. t)
                   (if (if (= (% i 2) 0) (<= a b) (>= a b))
-                      (is-wave (List.concat (list b) t) (+ i 1))
+                      (is-wave (List.concat #list(b) t) (+ i 1))
                       0))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: mode Int64))
               (do
-                (def xs (if (= mode 1) (list 3 1 4 1 5) (if (= mode 2) (list 5 4 3 2 1) (list 1 2))))
+                (def xs (if (= mode 1) #list(3 1 4 1 5) (if (= mode 2) #list(5 4 3 2 1) #list(1 2))))
                 (def w (wave xs))
                 (+ (* (chk w 0) 10) (is-wave w 0))))
             (export main)))
@@ -11550,38 +11550,38 @@
   (input  (do
             (def (split-alt (: xs (List Int64)) (: ev (List Int64)) (: od (List Int64)) (: i Int64))
               (match xs
-                ((list) (tuple ev od))
-                ((list h .. t)
+                (#list() #tuple(ev od))
+                (#list(h .. t)
                   (if (= (% i 2) 0)
                       (split-alt t (List.push ev h) od (+ i 1))
                       (split-alt t ev (List.push od h) (+ i 1))))))
             (def (app (: rs (List Int64)) (: acc (List Int64)))
               (match rs
-                ((list) acc)
-                ((list h .. t) (app t (List.push acc h)))))
+                (#list() acc)
+                (#list(h .. t) (app t (List.push acc h)))))
             (def (merge (: a (List Int64)) (: b (List Int64)) (: acc (List Int64)))
               (match a
-                ((list) (app b acc))
-                ((list ah .. at)
+                (#list() (app b acc))
+                (#list(ah .. at)
                   (match b
-                    ((list) (app a acc))
-                    ((list bh .. bt)
+                    (#list() (app a acc))
+                    (#list(bh .. bt)
                       (if (<= ah bh)
                           (merge at b (List.push acc ah))
                           (merge a bt (List.push acc bh))))))))
             (def (msort (: xs (List Int64)))
               (match xs
-                ((list) xs)
-                ((list _single)  xs)
+                (#list() xs)
+                (#list(_single)  xs)
                 (_
-                  (match (split-alt xs (list) (list) 0)
-                    ((tuple ev od) (merge (msort ev) (msort od) (list)))))))
+                  (match (split-alt xs #list() #list() 0)
+                    (#tuple(ev od) (merge (msort ev) (msort od) #list()))))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: n Int64))
-              (chk (msort (list 5 2 n 7 1 n)) 0))
+              (chk (msort #list(5 2 n 7 1 n)) 0))
             (export main)))
   (call   main (: 4 Int64)) (output (: 124457 Int64))
   (call   main (: 0 Int64)) (output (: 1257 Int64))
@@ -11600,17 +11600,17 @@
   (input  (do
             (def (count-after (: h Int64) (: rest (List Int64)) (: acc Int64))
               (match rest
-                ((list) acc)
-                ((list x .. t) (count-after h t (if (> h x) (+ acc 1) acc)))))
+                (#list() acc)
+                (#list(x .. t) (count-after h t (if (> h x) (+ acc 1) acc)))))
             (def (inversions (: xs (List Int64)) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (inversions t (+ acc (count-after h t 0))))))
+                (#list() acc)
+                (#list(h .. t) (inversions t (+ acc (count-after h t 0))))))
             (def (main (: mode Int64))
               (do
-                (def xs (if (= mode 1) (list 2 4 1 3 5)
-                        (if (= mode 2) (list 1 2 3 4 5)
-                        (if (= mode 3) (list 5 4 3 2 1) (list 7 7 7)))))
+                (def xs (if (= mode 1) #list(2 4 1 3 5)
+                        (if (= mode 2) #list(1 2 3 4 5)
+                        (if (= mode 3) #list(5 4 3 2 1) #list(7 7 7)))))
                 (inversions xs 0)))
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
@@ -11632,27 +11632,27 @@
   (input  (do
             (def (ins-desc (: xs (List Int64)) (: v Int64))
               (match xs
-                ((list) (list v))
-                ((list h .. t)
+                (#list() #list(v))
+                (#list(h .. t)
                   (if (>= h v)
-                      (List.concat (list h) (ins-desc t v))
-                      (List.concat (list v) xs)))))
+                      (List.concat #list(h) (ins-desc t v))
+                      (List.concat #list(v) xs)))))
             (def (take-k (: xs (List Int64)) (: k Int64) (: acc (List Int64)))
               (if (= k 0)
                   acc
                   (match xs
-                    ((list) acc)
-                    ((list h .. t) (take-k t (- k 1) (List.push acc h))))))
+                    (#list() acc)
+                    (#list(h .. t) (take-k t (- k 1) (List.push acc h))))))
             (def (top-k (: xs (List Int64)) (: k Int64) (: best (List Int64)))
               (match xs
-                ((list) best)
-                ((list h .. t) (top-k t k (take-k (ins-desc best h) k (list))))))
+                (#list() best)
+                (#list(h .. t) (top-k t k (take-k (ins-desc best h) k #list())))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: k Int64))
-              (chk (top-k (list 5 2 8 1 9 3 7) k (list)) 0))
+              (chk (top-k #list(5 2 8 1 9 3 7) k #list()) 0))
             (export main)))
   (call   main (: 3 Int64)) (output (: 987 Int64))
   (call   main (: 1 Int64)) (output (: 9 Int64))
@@ -11672,18 +11672,18 @@
   (input  (do
             (def (ins (: q (List (Tuple Int64 Int64))) (: p Int64) (: seq Int64))
               (match q
-                ((list) (list (tuple p seq)))
-                ((list (tuple hp hs) .. t)
+                (#list() #list(#tuple(p seq)))
+                (#list(#tuple(hp hs) .. t)
                   (if (< p hp)
-                      (List.concat (list (tuple p seq)) q)
-                      (List.concat (list (tuple hp hs)) (ins t p seq))))))
+                      (List.concat #list(#tuple(p seq)) q)
+                      (List.concat #list(#tuple(hp hs)) (ins t p seq))))))
             (def (drain (: q (List (Tuple Int64 Int64))) (: acc Int64))
               (match q
-                ((list) acc)
-                ((list (tuple _p s) .. t) (drain t (+ (* acc 10) s)))))
+                (#list() acc)
+                (#list(#tuple(_p s) .. t) (drain t (+ (* acc 10) s)))))
             (def (main (: n Int64))
               (do
-                (def q0 (ins (ins (ins (ins (list) 5 1) n 2) 5 3) 1 4))
+                (def q0 (ins (ins (ins (ins #list() 5 1) n 2) 5 3) 1 4))
                 (drain q0 0)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 4213 Int64))
@@ -11706,30 +11706,30 @@
   (input  (do
             (def (rev (: xs (List Int64)) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t) (rev t (List.concat (list h) acc)))))
+                (#list() acc)
+                (#list(h .. t) (rev t (List.concat #list(h) acc)))))
             (def (enq (: f (List Int64)) (: b (List Int64)) (: v Int64))
-              (tuple f (List.concat (list v) b)))
+              #tuple(f (List.concat #list(v) b)))
             (def (deq (: f (List Int64)) (: b (List Int64)))
               (match f
-                ((list h .. t) (tuple h t b))
-                ((list)
-                  (match (rev b (list))
-                    ((list h .. t) (tuple h t (list)))
-                    ((list) (tuple -1 (list) (list)))))))
+                (#list(h .. t) #tuple(h t b))
+                (#list()
+                  (match (rev b #list())
+                    (#list(h .. t) #tuple(h t #list()))
+                    (#list() #tuple(-1 #list() #list()))))))
             (def (main (: n Int64))
               (do
-                (def q1 (enq (list) (list) 1))
-                (def q2 (match q1 ((tuple f b) (enq f b n))))
-                (def d1 (match q2 ((tuple f b) (deq f b))))
-                (def d2 (match d1 ((tuple _v f b) (deq f b))))
-                (def q3 (match d2 ((tuple _v f b) (enq f b 7))))
-                (def d3 (match q3 ((tuple f b) (deq f b))))
-                (def d4 (match d3 ((tuple _v f b) (deq f b))))
-                (match d1 ((tuple v1 _f1 _b1)
-                  (match d2 ((tuple v2 _f2 _b2)
-                    (match d3 ((tuple v3 _f3 _b3)
-                      (match d4 ((tuple v4 _f4 _b4)
+                (def q1 (enq #list() #list() 1))
+                (def q2 (match q1 (#tuple(f b) (enq f b n))))
+                (def d1 (match q2 (#tuple(f b) (deq f b))))
+                (def d2 (match d1 (#tuple(_v f b) (deq f b))))
+                (def q3 (match d2 (#tuple(_v f b) (enq f b 7))))
+                (def d3 (match q3 (#tuple(f b) (deq f b))))
+                (def d4 (match d3 (#tuple(_v f b) (deq f b))))
+                (match d1 (#tuple(v1 _f1 _b1)
+                  (match d2 (#tuple(v2 _f2 _b2)
+                    (match d3 (#tuple(v3 _f3 _b3)
+                      (match d4 (#tuple(v4 _f4 _b4)
                         (+ (* v1 1000) (+ (* v2 100) (+ (* v3 10) v4)))))))))))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 1269 Int64))
@@ -11753,18 +11753,18 @@
               (if (= n 0) acc (build (+ lo 1) (- n 1) (List.push acc lo))))
             (def (sum-list (: xs (List Int64)) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (sum-list t (+ acc h)))))
+                (#list() acc)
+                (#list(h .. t) (sum-list t (+ acc h)))))
             (def (main (: mode Int64))
               (do
-                (def out (build 1 (if (= mode 1) 6 (if (= mode 2) 1 0)) (list)))
-                (def s (build 7 (if (= mode 1) 2 (if (= mode 2) 3 2)) (list)))
+                (def out (build 1 (if (= mode 1) 6 (if (= mode 2) 1 0)) #list()))
+                (def s (build 7 (if (= mode 1) 2 (if (= mode 2) 3 2)) #list()))
                 (match s
-                  ((list h .. _t)
+                  (#list(h .. _t)
                     (do
                       (def pick (if (< (List.len out) (List.len s)) out s))
                       (+ (* (sum-list pick 0) 100) (+ (* (List.len out) 10) h))))
-                  ((list) -1))))
+                  (#list() -1))))
             (export main)))
   (call main (: 1 Int64)) (output (: 1567 Int64))
   (call main (: 2 Int64)) (output (: 117 Int64))
@@ -11810,18 +11810,18 @@
   (input  (do
             (def (flatten (: xss (List (List Int64))) (: acc (List Int64)))
               (match xss
-                ((list) acc)
-                ((list h .. t) (flatten t (List.concat acc h)))))
+                (#list() acc)
+                (#list(h .. t) (flatten t (List.concat acc h)))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: n Int64))
               (do
-                (def flat (flatten (list (list 1 2) (list) (list n 4) (list 5)) (list)))
+                (def flat (flatten #list(#list(1 2) #list() #list(n 4) #list(5)) #list()))
                 (+ (* (chk flat 0) 100)
                    (+ (* ((. List len) flat) 10)
-                      (if (= flat (list 1 2 n 4 5)) 1 0)))))
+                      (if (= flat #list(1 2 n 4 5)) 1 0)))))
             (export main)))
   (call   main (: 3 Int64))
   (output (: 1234551 Int64))
@@ -11841,41 +11841,41 @@
   (input  (do
             (def (heads (: rows (List (List Int64))) (: acc (List Int64)))
               (match rows
-                ((list) acc)
-                ((list r .. rest)
+                (#list() acc)
+                (#list(r .. rest)
                   (match r
-                    ((list) acc)
-                    ((list h .. _t) (heads rest (List.push acc h)))))))
+                    (#list() acc)
+                    (#list(h .. _t) (heads rest (List.push acc h)))))))
             (def (tails (: rows (List (List Int64))) (: acc (List (List Int64))))
               (match rows
-                ((list) acc)
-                ((list r .. rest)
+                (#list() acc)
+                (#list(r .. rest)
                   (match r
-                    ((list) acc)
-                    ((list _h .. t) (tails rest (List.push acc t)))))))
+                    (#list() acc)
+                    (#list(_h .. t) (tails rest (List.push acc t)))))))
             (def (transpose (: rows (List (List Int64))) (: acc (List (List Int64))))
               (match rows
-                ((list) acc)
-                ((list r .. _rest)
+                (#list() acc)
+                (#list(r .. _rest)
                   (match r
-                    ((list) acc)
-                    ((list _h .. _t)
-                      (transpose (tails rows (list)) (List.push acc (heads rows (list)))))))))
+                    (#list() acc)
+                    (#list(_h .. _t)
+                      (transpose (tails rows #list()) (List.push acc (heads rows #list()))))))))
             (def (chk2 (: xss (List (List Int64))) (: acc Int64))
               (match xss
-                ((list) acc)
-                ((list r .. rest)
+                (#list() acc)
+                (#list(r .. rest)
                   (chk2 rest
                     (match r
-                      ((list) acc)
-                      ((list a .. t1)
+                      (#list() acc)
+                      (#list(a .. t1)
                         (match t1
-                          ((list) (+ (* acc 10) a))
-                          ((list b .. _t2) (+ (* (+ (* acc 10) a) 10) b)))))))))
+                          (#list() (+ (* acc 10) a))
+                          (#list(b .. _t2) (+ (* (+ (* acc 10) a) 10) b)))))))))
             (def (main (: n Int64))
               (do
-                (def m (list (list 1 2 3) (list 4 n 6)))
-                (def tm (transpose m (list)))
+                (def m #list(#list(1 2 3) #list(4 n 6)))
+                (def tm (transpose m #list()))
                 (+ (* (chk2 tm 0) 10) ((. List len) tm))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1425363 Int64))
@@ -11896,45 +11896,45 @@
   (input  (do
             (def (heads (: rows (List (List Int64))) (: acc (List Int64)))
               (match rows
-                ((list) acc)
-                ((list r .. rest)
+                (#list() acc)
+                (#list(r .. rest)
                   (match r
-                    ((list) acc)
-                    ((list h .. _t) (heads rest (List.push acc h)))))))
+                    (#list() acc)
+                    (#list(h .. _t) (heads rest (List.push acc h)))))))
             (def (tails (: rows (List (List Int64))) (: acc (List (List Int64))))
               (match rows
-                ((list) acc)
-                ((list r .. rest)
+                (#list() acc)
+                (#list(r .. rest)
                   (match r
-                    ((list) acc)
-                    ((list _h .. t) (tails rest (List.push acc t)))))))
+                    (#list() acc)
+                    (#list(_h .. t) (tails rest (List.push acc t)))))))
             (def (transpose (: rows (List (List Int64))) (: acc (List (List Int64))))
               (match rows
-                ((list) acc)
-                ((list r .. _rest)
+                (#list() acc)
+                (#list(r .. _rest)
                   (match r
-                    ((list) acc)
-                    ((list _h .. _t)
-                      (transpose (tails rows (list)) (List.push acc (heads rows (list)))))))))
+                    (#list() acc)
+                    (#list(_h .. _t)
+                      (transpose (tails rows #list()) (List.push acc (heads rows #list()))))))))
             (def (rev-rows (: rows (List (List Int64))) (: acc (List (List Int64))))
               (match rows
-                ((list) acc)
-                ((list r .. t) (rev-rows t (List.concat (list r) acc)))))
+                (#list() acc)
+                (#list(r .. t) (rev-rows t (List.concat #list(r) acc)))))
             (def (rot90 (: m (List (List Int64))))
-              (transpose (rev-rows m (list)) (list)))
+              (transpose (rev-rows m #list()) #list()))
             (def (rot4 (: m (List (List Int64))))
               (rot90 (rot90 (rot90 (rot90 m)))))
             (def (chk1 (: xs (List Int64)) (: a Int64))
               (match xs
-                ((list) a)
-                ((list h .. t) (chk1 t (+ (* a 10) h)))))
+                (#list() a)
+                (#list(h .. t) (chk1 t (+ (* a 10) h)))))
             (def (chk2 (: xss (List (List Int64))) (: acc Int64))
               (match xss
-                ((list) acc)
-                ((list r .. rest) (chk2 rest (chk1 r acc)))))
+                (#list() acc)
+                (#list(r .. rest) (chk2 rest (chk1 r acc)))))
             (def (main (: n Int64))
               (do
-                (def m (list (list 1 2 n) (list 4 5 6)))
+                (def m #list(#list(1 2 n) #list(4 5 6)))
                 (def r (rot90 m))
                 (+ (* (chk2 r 0) 10)
                    (if (= (rot4 m) m) 1 0))))
@@ -11958,33 +11958,33 @@
               (if (= k 0)
                   acc
                   (match xs
-                    ((list) acc)
-                    ((list h .. t) (take-n t (- k 1) (List.push acc h))))))
+                    (#list() acc)
+                    (#list(h .. t) (take-n t (- k 1) (List.push acc h))))))
             (def (drop-n (: xs (List Int64)) (: k Int64))
               (if (= k 0)
                   xs
                   (match xs
-                    ((list) xs)
-                    ((list _h .. t) (drop-n t (- k 1))))))
+                    (#list() xs)
+                    (#list(_h .. t) (drop-n t (- k 1))))))
             (def (chunk (: xs (List Int64)) (: k Int64) (: acc (List (List Int64))))
               (match xs
-                ((list) acc)
-                (_ (chunk (drop-n xs k) k (List.push acc (take-n xs k (list)))))))
+                (#list() acc)
+                (_ (chunk (drop-n xs k) k (List.push acc (take-n xs k #list()))))))
             (def (flatten (: xss (List (List Int64))) (: acc (List Int64)))
               (match xss
-                ((list) acc)
-                ((list h .. t) (flatten t (List.concat acc h)))))
+                (#list() acc)
+                (#list(h .. t) (flatten t (List.concat acc h)))))
             (def (last-len (: xss (List (List Int64))) (: cur Int64))
               (match xss
-                ((list) cur)
-                ((list h .. t) (last-len t ((. List len) h)))))
+                (#list() cur)
+                (#list(h .. t) (last-len t ((. List len) h)))))
             (def (main (: k Int64))
               (do
-                (def xs (list 1 2 3 4 5 6 7))
-                (def cs (chunk xs k (list)))
+                (def xs #list(1 2 3 4 5 6 7))
+                (def cs (chunk xs k #list()))
                 (+ (* ((. List len) cs) 1000)
                    (+ (* (last-len cs 0) 100)
-                      (if (= (flatten cs (list)) xs) 1 0)))))
+                      (if (= (flatten cs #list()) xs) 1 0)))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 4101 Int64))
   (call   main (: 3 Int64)) (output (: 3101 Int64))
@@ -12017,7 +12017,7 @@
                                 (bsearch xs target lo (- mid 1)))))
                       ((None _u) -99)))))
             (def (main (: t Int64))
-              (bsearch (list 10 20 30 40 50 60 70) t 0 6))
+              (bsearch #list(10 20 30 40 50 60 70) t 0 6))
             (export main)))
   (call   main (: 60 Int64)) (output (: 5 Int64))
   (call   main (: 10 Int64)) (output (: 0 Int64))
@@ -12041,23 +12041,23 @@
   (input  (do
             (def (split-z (: xs (List Int64)) (: nz (List Int64)) (: zc Int64))
               (match xs
-                ((list) (tuple nz zc))
-                ((list h .. t)
+                (#list() #tuple(nz zc))
+                (#list(h .. t)
                   (if (= h 0)
                       (split-z t nz (+ zc 1))
                       (split-z t (List.push nz h) zc)))))
             (def (pad-zeros (: xs (List Int64)) (: k Int64))
               (if (= k 0) xs (pad-zeros (List.push xs 0) (- k 1))))
             (def (movez (: xs (List Int64)))
-              (match (split-z xs (list) 0)
-                ((tuple nz zc) (pad-zeros nz zc))))
+              (match (split-z xs #list() 0)
+                (#tuple(nz zc) (pad-zeros nz zc))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 100) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 100) h)))))
             (def (main (: mode Int64))
               (do
-                (def xs (if (= mode 1) (list 0 1 0 3 12) (if (= mode 2) (list 0 0 0) (list 1 2 3))))
+                (def xs (if (= mode 1) #list(0 1 0 3 12) (if (= mode 2) #list(0 0 0) #list(1 2 3))))
                 (def r (movez xs))
                 (+ (* (chk r 0) 10) ((. List len) r))))
             (export main)))
@@ -12080,18 +12080,18 @@
   (input  (do
             (def (partition (: xs (List Int64)) (: lows (List Int64)) (: highs (List Int64)))
               (match xs
-                ((list) (tuple lows highs))
-                ((list h .. t)
+                (#list() #tuple(lows highs))
+                (#list(h .. t)
                   (if (< h 5)
                       (partition t (List.push lows h) highs)
                       (partition t lows (List.push highs h))))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: n Int64))
               (do
-                (def parts (partition (list 4 n 7 1 8 2) (list) (list)))
+                (def parts (partition #list(4 n 7 1 8 2) #list() #list()))
                 (+ (* (chk (. parts 0) 0) 1000) (chk (. parts 1) 0))))
             (export main)))
   (call   main (: 6 Int64)) (output (: 412678 Int64))
@@ -12112,26 +12112,26 @@
             (def (max2 (: a Int64) (: b Int64)) (if (> a b) a b))
             (def (go (: ivs (List (Tuple Int64 Int64))) (: cs Int64) (: ce Int64) (: acc (List (Tuple Int64 Int64))))
               (match ivs
-                ((list) (List.push acc (tuple cs ce)))
-                ((list (tuple s e) .. t)
+                (#list() (List.push acc #tuple(cs ce)))
+                (#list(#tuple(s e) .. t)
                   (if (<= s ce)
                       (go t cs (max2 ce e) acc)
-                      (go t s e (List.push acc (tuple cs ce)))))))
+                      (go t s e (List.push acc #tuple(cs ce)))))))
             (def (merge-iv (: ivs (List (Tuple Int64 Int64))))
               (match ivs
-                ((list) ivs)
-                ((list (tuple s e) .. t) (go t s e (list)))))
+                (#list() ivs)
+                (#list(#tuple(s e) .. t) (go t s e #list()))))
             (def (chk (: rs (List (Tuple Int64 Int64))) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list (tuple s e) .. t) (chk t (+ (* acc 10000) (+ (* s 100) e))))))
+                (#list() acc)
+                (#list(#tuple(s e) .. t) (chk t (+ (* acc 10000) (+ (* s 100) e))))))
             (def (main (: mode Int64))
               (do
                 (def ivs (if (= mode 1)
-                             (list (tuple 1 3) (tuple 2 6) (tuple 8 10) (tuple 15 18))
+                             #list(#tuple(1 3) #tuple(2 6) #tuple(8 10) #tuple(15 18))
                              (if (= mode 2)
-                                 (list (tuple 1 4) (tuple 4 5))
-                                 (list (tuple 1 10) (tuple 2 3) (tuple 4 5)))))
+                                 #list(#tuple(1 4) #tuple(4 5))
+                                 #list(#tuple(1 10) #tuple(2 3) #tuple(4 5)))))
                 (def r (merge-iv ivs))
                 (+ (* (chk r 0) 10) ((. List len) r))))
             (export main)))
@@ -12154,17 +12154,17 @@
   (input  (do
             (def (part (: xs (List Int64)) (: p Int64) (: lo (List Int64)) (: hi (List Int64)))
               (match xs
-                ((list) (tuple lo hi))
-                ((list h .. t)
+                (#list() #tuple(lo hi))
+                (#list(h .. t)
                   (if (< h p)
                       (part t p (List.push lo h) hi)
                       (part t p lo (List.push hi h))))))
             (def (sel (: xs (List Int64)) (: k Int64))
               (match xs
-                ((list) -1)
-                ((list p .. t)
-                  (match (part t p (list) (list))
-                    ((tuple lo hi)
+                (#list() -1)
+                (#list(p .. t)
+                  (match (part t p #list() #list())
+                    (#tuple(lo hi)
                       (do
                         (def nl ((. List len) lo))
                         (if (< k nl)
@@ -12173,7 +12173,7 @@
                                 p
                                 (sel hi (- k (+ nl 1)))))))))))
             (def (main (: k Int64))
-              (sel (list 5 2 8 1 9 3) k))
+              (sel #list(5 2 8 1 9 3) k))
             (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64))
@@ -12195,8 +12195,8 @@
   (input  (do
             (def (split3 (: xs (List Int64)) (: p Int64) (: lo (List Int64)) (: eq (List Int64)) (: hi (List Int64)))
               (match xs
-                ((list) (tuple lo eq hi))
-                ((list h .. t)
+                (#list() #tuple(lo eq hi))
+                (#list(h .. t)
                   (if (< h p)
                       (split3 t p (List.push lo h) eq hi)
                       (if (= h p)
@@ -12204,13 +12204,13 @@
                           (split3 t p lo eq (List.push hi h)))))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: p Int64))
               (do
-                (def xs (list 5 2 7 5 1 8 5 3))
-                (match (split3 xs p (list) (list) (list))
-                  ((tuple lo eq hi)
+                (def xs #list(5 2 7 5 1 8 5 3))
+                (match (split3 xs p #list() #list() #list())
+                  (#tuple(lo eq hi)
                     (+ (* (chk lo 0) 100000)
                        (+ (* ((. List len) eq) 10000)
                           (chk hi 0)))))))
@@ -12233,18 +12233,18 @@
   (input  (do
             (def (scan (: xs (List Int64)) (: run Int64) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t)
+                (#list() acc)
+                (#list(h .. t)
                   (do
                     (def nxt (+ run h))
                     (scan t nxt (List.push acc nxt))))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 100) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 100) h)))))
             (def (main (: n Int64))
               (do
-                (def sums (scan (list 3 n 4 1) 0 (list)))
+                (def sums (scan #list(3 n 4 1) 0 #list()))
                 (+ (* (chk sums 0) 10)
                    (match (List.at sums 3)
                      ((Some v) (if (= v (+ (+ 3 n) 5)) 1 0))
@@ -12267,22 +12267,22 @@
   (input  (do
             (def (sum-l (: xs (List Int64)) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (sum-l t (+ acc h)))))
+                (#list() acc)
+                (#list(h .. t) (sum-l t (+ acc h)))))
             (def (go (: xs (List Int64)) (: i Int64) (: left Int64) (: total Int64))
               (match xs
-                ((list) -1)
-                ((list h .. t)
+                (#list() -1)
+                (#list(h .. t)
                   (if (= left (- (- total left) h))
                       i
                       (go t (+ i 1) (+ left h) total)))))
             (def (equi (: xs (List Int64)))
               (go xs 0 0 (sum-l xs 0)))
             (def (main (: mode Int64))
-              (if (= mode 1) (equi (list -7 1 5 2 -4 3 0))
-              (if (= mode 2) (equi (list 1 2 3))
-              (if (= mode 3) (equi (list 0))
-                             (equi (list 2 -2 4))))))
+              (if (= mode 1) (equi #list(-7 1 5 2 -4 3 0))
+              (if (= mode 2) (equi #list(1 2 3))
+              (if (= mode 3) (equi #list(0))
+                             (equi #list(2 -2 4))))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: -1 Int64))
@@ -12303,22 +12303,22 @@
   (input  (do
             (def (build (: xs (List Int64)) (: run Int64) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t) (build t (+ run h) (List.push acc (+ run h))))))
+                (#list() acc)
+                (#list(h .. t) (build t (+ run h) (List.push acc (+ run h))))))
             (def (at0 (: xs (List Int64)) (: i Int64))
               (Option.expect (List.at xs i) "in-bounds"))
             (def (rq (: pre (List Int64)) (: i Int64) (: j Int64))
               (- (at0 pre j) (if (= i 0) 0 (at0 pre (- i 1)))))
             (def (direct (: xs (List Int64)) (: i Int64) (: j Int64) (: k Int64) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t)
+                (#list() acc)
+                (#list(h .. t)
                   (direct t i j (+ k 1)
                     (if (if (>= k i) (<= k j) false) (+ acc h) acc)))))
             (def (main (: i Int64) (: j Int64))
               (do
-                (def xs (list 3 1 4 1 5 9 2 6))
-                (def pre (build xs 0 (list)))
+                (def xs #list(3 1 4 1 5 9 2 6))
+                (def pre (build xs 0 #list()))
                 (def fast (rq pre i j))
                 (def slow (direct xs i j 0 0))
                 (+ (* fast 10) (if (= fast slow) 1 0))))
@@ -12342,27 +12342,27 @@
   (input  (do
             (def (prefixes (: xs (List Int64)) (: p Int64) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t) (prefixes t (* p h) (List.push acc p)))))
+                (#list() acc)
+                (#list(h .. t) (prefixes t (* p h) (List.push acc p)))))
             (def (rev (: xs (List Int64)) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t) (rev t (List.concat (list h) acc)))))
+                (#list() acc)
+                (#list(h .. t) (rev t (List.concat #list(h) acc)))))
             (def (suffix-mul (: xs (List Int64)) (: pre-rev (List Int64)) (: s Int64) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t)
+                (#list() acc)
+                (#list(h .. t)
                   (match pre-rev
-                    ((list ph .. pt) (suffix-mul t pt (* s h) (List.concat (list (* ph s)) acc)))
-                    ((list) acc)))))
+                    (#list(ph .. pt) (suffix-mul t pt (* s h) (List.concat #list((* ph s)) acc)))
+                    (#list() acc)))))
             (def (eps (: xs (List Int64)))
-              (suffix-mul (rev xs (list)) (rev (prefixes xs 1 (list)) (list)) 1 (list)))
+              (suffix-mul (rev xs #list()) (rev (prefixes xs 1 #list()) #list()) 1 #list()))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 1000) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 1000) h)))))
             (def (main (: n Int64))
-              (chk (eps (list 2 n 4 5)) 0))
+              (chk (eps #list(2 n 4 5)) 0))
             (export main)))
   (call   main (: 3 Int64)) (output (: 60040030024 Int64))
   (call   main (: 0 Int64)) (output (: 40000000 Int64))
@@ -12383,23 +12383,23 @@
   (input  (do
             (def (pairs (: xs (List Int64)) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list _last) acc)
-                ((list a b .. t) (pairs (List.concat (list b) t) (List.push acc (+ a b))))))
+                (#list() acc)
+                (#list(_last) acc)
+                (#list(a b .. t) (pairs (List.concat #list(b) t) (List.push acc (+ a b))))))
             (def (next-row (: row (List Int64)))
-              (List.push (List.concat (list 1) (pairs row (list))) 1))
+              (List.push (List.concat #list(1) (pairs row #list())) 1))
             (def (grow (: k Int64) (: row (List Int64)))
               (if (= k 0) row (grow (- k 1) (next-row row))))
             (def (row-n (: n Int64))
-              (grow n (list 1)))
+              (grow n #list(1)))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 100) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 100) h)))))
             (def (sum (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (sum t (+ acc h)))))
+                (#list() acc)
+                (#list(h .. t) (sum t (+ acc h)))))
             (def (pw2 (: k Int64)) (if (= k 0) 1 (* 2 (pw2 (- k 1)))))
             (def (main (: n Int64))
               (do
@@ -12431,17 +12431,17 @@
               (nck-go n (min2 k (- n k)) 0 1))
             (def (pairs (: xs (List Int64)) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list _last) acc)
-                ((list a b .. t) (pairs (List.concat (list b) t) (List.push acc (+ a b))))))
+                (#list() acc)
+                (#list(_last) acc)
+                (#list(a b .. t) (pairs (List.concat #list(b) t) (List.push acc (+ a b))))))
             (def (row-n (: rk Int64) (: row (List Int64)))
               (if (= rk 0)
                   row
-                  (row-n (- rk 1) (List.push (List.concat (list 1) (pairs row (list))) 1))))
+                  (row-n (- rk 1) (List.push (List.concat #list(1) (pairs row #list())) 1))))
             (def (main (: n Int64) (: k Int64))
               (do
                 (def fast (nck n k))
-                (def slow (Option.expect (List.at (row-n n (list 1)) k) "k in row"))
+                (def slow (Option.expect (List.at (row-n n #list(1)) k) "k in row"))
                 (+ (* fast 10) (if (= fast slow) 1 0))))
             (export main)))
   (call   main (: 10 Int64) (: 3 Int64)) (output (: 1201 Int64))
@@ -12472,12 +12472,12 @@
                     (List.push acc (max3 (at xs i) (at xs (+ i 1)) (at xs (+ i 2)))))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: n Int64))
               (do
-                (def xs (list 3 1 n 5 2))
-                (chk (windows xs 0 2 (list)) 0)))
+                (def xs #list(3 1 n 5 2))
+                (chk (windows xs 0 2 #list()) 0)))
             (export main)))
   (call   main (: 4 Int64)) (output (: 455 Int64))
   (call   main (: 9 Int64)) (output (: 999 Int64))
@@ -12498,18 +12498,18 @@
   (input  (do
             (def (go (: prev Int64) (: cur Int64) (: rest (List Int64)) (: cnt Int64) (: sum Int64))
               (match rest
-                ((list) (tuple cnt sum))
-                ((list nxt .. t)
+                (#list() #tuple(cnt sum))
+                (#list(nxt .. t)
                   (if (if (> cur prev) (> cur nxt) false)
                       (go cur nxt t (+ cnt 1) (+ sum cur))
                       (go cur nxt t cnt sum)))))
             (def (peaks (: xs (List Int64)))
               (match xs
-                ((list a b .. t) (go a b t 0 0))
-                (_ (tuple 0 0))))
+                (#list(a b .. t) (go a b t 0 0))
+                (_ #tuple(0 0))))
             (def (main (: n Int64))
-              (match (peaks (list 1 5 2 n 3 8 4))
-                ((tuple c s) (+ (* c 100) s))))
+              (match (peaks #list(1 5 2 n 3 8 4))
+                (#tuple(c s) (+ (* c 100) s))))
             (export main)))
   (call   main (: 9 Int64)) (output (: 322 Int64))
   (call   main (: 0 Int64)) (output (: 213 Int64))
@@ -12534,22 +12534,22 @@
                   (if (> a c) a (if (> b c) c b))))
             (def (go (: prev Int64) (: cur Int64) (: rest (List Int64)) (: acc (List Int64)))
               (match rest
-                ((list) (List.push acc cur))
-                ((list nxt .. t) (go cur nxt t (List.push acc (med3 prev cur nxt))))))
+                (#list() (List.push acc cur))
+                (#list(nxt .. t) (go cur nxt t (List.push acc (med3 prev cur nxt))))))
             (def (medfilter (: xs (List Int64)))
               (match xs
-                ((list a b .. t)
+                (#list(a b .. t)
                   (match t
-                    ((list) xs)
-                    (_ (go a b t (list a)))))
+                    (#list() xs)
+                    (_ (go a b t #list(a)))))
                 (_ xs)))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: mode Int64))
               (do
-                (def xs (if (= mode 1) (list 1 9 2 8 3) (if (= mode 2) (list 5 5 5) (list 1 2 3 4))))
+                (def xs (if (= mode 1) #list(1 9 2 8 3) (if (= mode 2) #list(5 5 5) #list(1 2 3 4))))
                 (chk (medfilter xs) 0)))
             (export main)))
   (call   main (: 1 Int64)) (output (: 12833 Int64))
@@ -12572,17 +12572,17 @@
             (def (max2 (: a Int64) (: b Int64)) (if (> a b) a b))
             (def (go (: xs (List Int64)) (: cur Int64) (: best Int64))
               (match xs
-                ((list) best)
-                ((list h .. t)
+                (#list() best)
+                (#list(h .. t)
                   (do
                     (def nc (max2 h (+ cur h)))
                     (go t nc (max2 best nc))))))
             (def (kadane (: xs (List Int64)))
               (match xs
-                ((list) 0)
-                ((list h .. t) (go t h h))))
+                (#list() 0)
+                (#list(h .. t) (go t h h))))
             (def (main (: n Int64))
-              (kadane (list 2 -1 n -4 3 3)))
+              (kadane #list(2 -1 n -4 3 3)))
             (export main)))
   (call   main (: 4 Int64)) (output (: 7 Int64))
   (call   main (: -10 Int64)) (output (: 6 Int64))
@@ -12633,8 +12633,8 @@
   (input  (do
             (def (vote (: xs (List Int64)) (: cand Int64) (: cnt Int64))
               (match xs
-                ((list) cand)
-                ((list h .. t)
+                (#list() cand)
+                (#list(h .. t)
                   (if (= cnt 0)
                       (vote t h 1)
                       (if (= h cand)
@@ -12642,11 +12642,11 @@
                           (vote t cand (- cnt 1)))))))
             (def (count-of (: xs (List Int64)) (: v Int64) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (count-of t v (if (= h v) (+ acc 1) acc)))))
+                (#list() acc)
+                (#list(h .. t) (count-of t v (if (= h v) (+ acc 1) acc)))))
             (def (main (: n Int64))
               (do
-                (def xs (list n 3 n 7 5 3 n))
+                (def xs #list(n 3 n 7 5 3 n))
                 (def cand (vote xs 0 0))
                 (+ (* cand 10)
                    (if (> (* (count-of xs cand 0) 2) ((. List len) xs)) 1 0))))
@@ -12670,22 +12670,22 @@
   (input  (do
             (def (go (: xs (List Int64)) (: mn Int64) (: best Int64))
               (match xs
-                ((list) (tuple best mn))
-                ((list h .. t)
+                (#list() #tuple(best mn))
+                (#list(h .. t)
                   (go t
                       (if (< h mn) h mn)
                       (if (> (- h mn) best) (- h mn) best)))))
             (def (profit (: xs (List Int64)))
               (match xs
-                ((list) (tuple 0 0))
-                ((list h .. t) (go t h 0))))
+                (#list() #tuple(0 0))
+                (#list(h .. t) (go t h 0))))
             (def (main (: mode Int64))
               (do
-                (def xs (if (= mode 1) (list 7 3 9 8 2 5)
-                        (if (= mode 2) (list 7 3 1 8 2 5)
-                        (if (= mode 3) (list 7 3 0 8 2 5) (list 9 7 5 3)))))
+                (def xs (if (= mode 1) #list(7 3 9 8 2 5)
+                        (if (= mode 2) #list(7 3 1 8 2 5)
+                        (if (= mode 3) #list(7 3 0 8 2 5) #list(9 7 5 3)))))
                 (match (profit xs)
-                  ((tuple b m) (+ (* b 10) m)))))
+                  (#tuple(b m) (+ (* b 10) m)))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 62 Int64))
   (call   main (: 2 Int64)) (output (: 71 Int64))
@@ -12708,20 +12708,20 @@
   (input  (do
             (def (take-while (: xs (List Int64)) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t) (if (< h 5) (take-while t (List.push acc h)) acc))))
+                (#list() acc)
+                (#list(h .. t) (if (< h 5) (take-while t (List.push acc h)) acc))))
             (def (drop-while (: xs (List Int64)))
               (match xs
-                ((list) xs)
-                ((list h .. t) (if (< h 5) (drop-while t) xs))))
+                (#list() xs)
+                (#list(h .. t) (if (< h 5) (drop-while t) xs))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: n Int64))
               (do
-                (def xs (list 1 3 n 2 4))
-                (def pre (take-while xs (list)))
+                (def xs #list(1 3 n 2 4))
+                (def pre (take-while xs #list()))
                 (def post (drop-while xs))
                 (+ (* (chk pre 0) 100000)
                    (+ (* (chk post 0) 10)
@@ -12747,14 +12747,14 @@
               (if (= k 0)
                   acc
                   (match xs
-                    ((list) acc)
-                    ((list h .. t) (take-n t (- k 1) (List.push acc h))))))
+                    (#list() acc)
+                    (#list(h .. t) (take-n t (- k 1) (List.push acc h))))))
             (def (drop-n (: xs (List Int64)) (: k Int64))
               (if (= k 0)
                   xs
                   (match xs
-                    ((list) xs)
-                    ((list _h .. t) (drop-n t (- k 1))))))
+                    (#list() xs)
+                    (#list(_h .. t) (drop-n t (- k 1))))))
             (def (rot (: xs (List Int64)) (: k Int64))
               (do
                 (def len ((. List len) xs))
@@ -12762,14 +12762,14 @@
                     xs
                     (do
                       (def kk (% k len))
-                      (List.concat (drop-n xs kk) (take-n xs kk (list)))))))
+                      (List.concat (drop-n xs kk) (take-n xs kk #list()))))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: k Int64))
               (do
-                (def xs (list 1 2 3 4 5))
+                (def xs #list(1 2 3 4 5))
                 (def r (rot xs k))
                 (+ (* (chk r 0) 10)
                    (if (= (rot r (- ((. List len) xs) (% k ((. List len) xs)))) xs) 1 0))))
@@ -12794,18 +12794,18 @@
   (input  (do
             (def (dedup (: xs (List Int64)) (: seen (Set Int64)) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t)
+                (#list() acc)
+                (#list(h .. t)
                   (if (Set.contains seen h)
                       (dedup t seen acc)
                       (dedup t (Set.insert seen h) (List.push acc h))))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: n Int64))
               (do
-                (def out (dedup (list 3 n 3 1 n 2 1) #set() (list)))
+                (def out (dedup #list(3 n 3 1 n 2 1) #set() #list()))
                 (+ (* (chk out 0) 10) ((. List len) out))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 35124 Int64))
@@ -12826,20 +12826,20 @@
   (input  (do
             (def (go (: xs (List Int64)) (: prev Int64) (: have Bool) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t)
+                (#list() acc)
+                (#list(h .. t)
                   (if (if have (= h prev) false)
                       (go t prev true acc)
                       (go t h true (List.push acc h))))))
             (def (dedupc (: xs (List Int64)))
-              (go xs 0 false (list)))
+              (go xs 0 false #list()))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: n Int64))
               (do
-                (def out (dedupc (list 1 1 n 2 2 n n 3)))
+                (def out (dedupc #list(1 1 n 2 2 n n 3)))
                 (+ (* (chk out 0) 10) ((. List len) out))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 1233 Int64))
@@ -12860,8 +12860,8 @@
   (input  (do
             (def (go (: xs (List Int64)) (: prev Int64) (: cur Int64) (: best Int64) (: bval Int64))
               (match xs
-                ((list) (tuple best bval))
-                ((list h .. t)
+                (#list() #tuple(best bval))
+                (#list(h .. t)
                   (do
                     (def nc (if (= h prev) (+ cur 1) 1))
                     (if (> nc best)
@@ -12869,11 +12869,11 @@
                         (go t h nc best bval))))))
             (def (longest (: xs (List Int64)))
               (match xs
-                ((list) (tuple 0 0))
-                ((list h .. t) (go t h 1 1 h))))
+                (#list() #tuple(0 0))
+                (#list(h .. t) (go t h 1 1 h))))
             (def (main (: n Int64))
-              (match (longest (list 1 2 2 n 7 7 7 1))
-                ((tuple b v) (+ (* b 10) v))))
+              (match (longest #list(1 2 2 n 7 7 7 1))
+                (#tuple(b v) (+ (* b 10) v))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 32 Int64))
   (call   main (: 7 Int64)) (output (: 47 Int64))
@@ -12894,26 +12894,26 @@
   (input  (do
             (def (unzip (: ps (List (Tuple Int64 Int64))) (: ks (List Int64)) (: vs (List Int64)))
               (match ps
-                ((list) (tuple ks vs))
-                ((list (tuple k v) .. t) (unzip t (List.push ks k) (List.push vs v)))))
+                (#list() #tuple(ks vs))
+                (#list(#tuple(k v) .. t) (unzip t (List.push ks k) (List.push vs v)))))
             (def (rezip (: ks (List Int64)) (: vs (List Int64)) (: acc (List (Tuple Int64 Int64))))
               (match ks
-                ((list) acc)
-                ((list kh .. kt)
+                (#list() acc)
+                (#list(kh .. kt)
                   (match vs
-                    ((list) acc)
-                    ((list vh .. vt) (rezip kt vt (List.push acc (tuple kh vh))))))))
+                    (#list() acc)
+                    (#list(vh .. vt) (rezip kt vt (List.push acc #tuple(kh vh))))))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: n Int64))
               (do
-                (def ps (list (tuple 1 n) (tuple 2 7) (tuple 3 8)))
-                (def kv (unzip ps (list) (list)))
+                (def ps #list(#tuple(1 n) #tuple(2 7) #tuple(3 8)))
+                (def kv (unzip ps #list() #list()))
                 (+ (* (chk (. kv 0) 0) 10000)
                    (+ (* (chk (. kv 1) 0) 10)
-                      (if (= (rezip (. kv 0) (. kv 1) (list)) ps) 1 0)))))
+                      (if (= (rezip (. kv 0) (. kv 1) #list()) ps) 1 0)))))
             (export main)))
   (call   main (: 6 Int64)) (output (: 1236781 Int64))
   (call   main (: 0 Int64)) (output (: 1230781 Int64))
@@ -12932,18 +12932,18 @@
            left group) → -4908996, so a sign-mangled field placement can't hide.")
   (input  (do
             (def (step (: st (Record (: mn Int64) (: mx Int64) (: sm Int64) (: ct Int64))) (: h Int64))
-              (record
+              #record(
                 (= mn (if (= (. st ct) 0) h (if (< h (. st mn)) h (. st mn))))
                 (= mx (if (= (. st ct) 0) h (if (> h (. st mx)) h (. st mx))))
                 (= sm (+ (. st sm) h))
                 (= ct (+ (. st ct) 1))))
             (def (walk (: xs (List Int64)) (: st (Record (: mn Int64) (: mx Int64) (: sm Int64) (: ct Int64))))
               (match xs
-                ((list) st)
-                ((list h .. t) (walk t (step st h)))))
+                (#list() st)
+                (#list(h .. t) (walk t (step st h)))))
             (def (main (: n Int64))
               (do
-                (def st (walk (list 4 n 9 2) (record (= mn 0) (= mx 0) (= sm 0) (= ct 0))))
+                (def st (walk #list(4 n 9 2) #record((= mn 0) (= mx 0) (= sm 0) (= ct 0))))
                 (+ (* (+ (* (. st mn) 100) (. st mx)) 10000)
                    (+ (* (. st sm) 100) (. st ct)))))
             (export main)))
@@ -12968,10 +12968,10 @@
                 ((Reset) 0)))
             (def (run (: evs (List Ev)) (: acc Int64))
               (match evs
-                ((list) acc)
-                ((list h .. t) (run t (apply-ev acc h)))))
+                (#list() acc)
+                (#list(h .. t) (run t (apply-ev acc h)))))
             (def (main (: n Int64))
-              (run (list (Add 10) (Sub 3) (Add n) (Reset) (Add 42)) 0))
+              (run #list((Add 10) (Sub 3) (Add n) (Reset) (Add 42)) 0))
             (export main)))
   (call   main (: 100 Int64))
   (output (: 42 Int64))
@@ -12993,35 +12993,35 @@
             (type Op (Push Int64) (OpAdd) (OpMul) (Dup) (Swap))
             (def (exec (: prog (List Op)) (: stack (List Int64)))
               (match prog
-                ((list) stack)
-                ((list op .. rest)
+                (#list() stack)
+                (#list(op .. rest)
                   (exec rest
                     (match op
-                      ((Push v) (List.concat (list v) stack))
+                      ((Push v) (List.concat #list(v) stack))
                       ((OpAdd _u)
                         (match stack
-                          ((list a b .. t) (List.concat (list (+ a b)) t))
+                          (#list(a b .. t) (List.concat #list((+ a b)) t))
                           (_ stack)))
                       ((OpMul _u)
                         (match stack
-                          ((list a b .. t) (List.concat (list (* a b)) t))
+                          (#list(a b .. t) (List.concat #list((* a b)) t))
                           (_ stack)))
                       ((Dup _u)
                         (match stack
-                          ((list a .. _t) (List.concat (list a) stack))
+                          (#list(a .. _t) (List.concat #list(a) stack))
                           (_ stack)))
                       ((Swap _u)
                         (match stack
-                          ((list a b .. t) (List.concat (list b a) t))
+                          (#list(a b .. t) (List.concat #list(b a) t))
                           (_ stack))))))))
             (def (chk (: rs (List Int64)) (: acc Int64))
               (match rs
-                ((list) acc)
-                ((list h .. t) (chk t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (chk t (+ (* acc 10) h)))))
             (def (main (: n Int64))
               (do
-                (def prog (list (Push 2) (Push n) (Dup) (OpMul) (OpAdd) (Push 4) (Swap)))
-                (chk (exec prog (list)) 0)))
+                (def prog #list((Push 2) (Push n) (Dup) (OpMul) (OpAdd) (Push 4) (Swap)))
+                (chk (exec prog #list()) 0)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 114 Int64))
   (call   main (: 0 Int64)) (output (: 24 Int64))
@@ -13045,10 +13045,10 @@
                 ((Done v) (Done v))))
             (def (drive (: s St) (: inputs (List Int64)))
               (match inputs
-                ((list) s)
-                ((list h .. t) (drive (step s h) t))))
+                (#list() s)
+                (#list(h .. t) (drive (step s h) t))))
             (def (main (: n Int64))
-              (match (drive (Idle) (list n 20 0 99))
+              (match (drive (Idle) #list(n 20 0 99))
                 ((Done v) v)
                 ((Running acc) (- 0 acc))
                 ((Idle) -999)))
@@ -13096,7 +13096,7 @@
            enum element is not mis-stored as a raw handle nor aliased to the zero variant).")
   (input  (do
             (type Color Red Green Blue)
-            (def (mk (: b Bool)) (tuple (if b Color.Red Color.Blue) 99))
+            (def (mk (: b Bool)) #tuple((if b Color.Red Color.Blue) 99))
             (def (main (: b Bool)) (match (. (mk b) 0) ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
             (export main)))
   (call   main (: true Bool))
@@ -13117,7 +13117,7 @@
            sum payload.")
   (input  (do
             (type Col (Red) (Grn) (Blu))
-            (def (main) (match (Some (tuple (Blu) 5))
+            (def (main) (match (Some #tuple((Blu) 5))
                           ((Some t) (match (. t 0) ((Red) 1) ((Grn) 2) ((Blu) 3)))
                           ((None u) 0)))
             (export main)))
@@ -13289,7 +13289,7 @@
            build its output bytes).")
   (input  (do
             (type Expr (Lit Int64) (Neg Int64))
-            (def (emit e) (match e ((Expr.Lit n) (Bytes.of (list 66))) ((Expr.Neg n) (Bytes.of (list 124)))))
+            (def (emit e) (match e ((Expr.Lit n) (Bytes.of #list(66))) ((Expr.Neg n) (Bytes.of #list(124)))))
             (def (main)   (emit (Expr.Lit 5))) (export main)))
   (output (: b"B" Bytes)))
 
@@ -13303,8 +13303,8 @@
   (input  (do
             (type Expr (Lit Int64) (Neg Expr))
             (def (lower e) (match e
-                             ((Expr.Lit n) (Bytes.of (list 66)))
-                             ((Expr.Neg x) (Bytes.concat (lower x) (Bytes.of (list 124))))))
+                             ((Expr.Lit n) (Bytes.of #list(66)))
+                             ((Expr.Neg x) (Bytes.concat (lower x) (Bytes.of #list(124))))))
             (def (main)    (lower (Expr.Neg (Expr.Lit 5)))) (export main)))
   (output (: b"B|" Bytes))
   (live-objects known-leak 3))
@@ -13322,9 +13322,9 @@
             (type Expr (Lit Int64) (Neg Expr) (Block Stmt))
             (type Stmt (Ret Expr) (Seq (Tuple Stmt Stmt)))
             (def (ev  (: e Expr)) (match e ((Expr.Lit n) n) ((Expr.Neg x) (- 0 (ev x))) ((Expr.Block s) (run s))))
-            (def (run (: s Stmt)) (match s ((Stmt.Ret e) (ev e)) ((Stmt.Seq (tuple a b)) (+ (run a) (run b)))))
+            (def (run (: s Stmt)) (match s ((Stmt.Ret e) (ev e)) ((Stmt.Seq #tuple(a b)) (+ (run a) (run b)))))
             (def (main (: k Int64))
-              (ev (Expr.Block (Stmt.Seq (tuple (Stmt.Ret (Expr.Lit k)) (Stmt.Ret (Expr.Neg (Expr.Lit 3))))))))
+              (ev (Expr.Block (Stmt.Seq #tuple((Stmt.Ret (Expr.Lit k)) (Stmt.Ret (Expr.Neg (Expr.Lit 3))))))))
             (export main)))
   (call   main (: 10 Int64))
   (output (: 7 Int64))
@@ -13344,7 +13344,7 @@
               (match t
                 ((Tree.Leaf n)  n)
                 ((Tree.Br rec)  (+ (. rec w) (+ (sum (. rec l)) (sum (. rec r)))))))
-            (def (main (: k Int64)) (sum (Tree.Br (record (= l (Tree.Leaf k)) (= r (Tree.Leaf 2)) (= w 1)))))
+            (def (main (: k Int64)) (sum (Tree.Br #record((= l (Tree.Leaf k)) (= r (Tree.Leaf 2)) (= w 1)))))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 10 Int64))
@@ -13361,9 +13361,9 @@
   (input  (do
             (type Tree (Leaf Int64) (Node (Tuple Tree Tree)))
             (type Box (W a) (E))
-            (def (sz (: t Tree)) (match t ((Tree.Leaf n) 1) ((Tree.Node (tuple l r)) (+ (sz l) (sz r)))))
+            (def (sz (: t Tree)) (match t ((Tree.Leaf n) 1) ((Tree.Node #tuple(l r)) (+ (sz l) (sz r)))))
             (def (unwrap (: b (Box Tree))) (match b ((Box.W t) (sz t)) ((Box.E) 0)))
-            (def (main (: k Int64)) (unwrap (Box.W (Tree.Node (tuple (Tree.Leaf k) (Tree.Leaf 2))))))
+            (def (main (: k Int64)) (unwrap (Box.W (Tree.Node #tuple((Tree.Leaf k) (Tree.Leaf 2))))))
             (export main)))
   (call   main (: 5 Int64))
   (output (: 2 Int64))
@@ -13432,8 +13432,8 @@
   (input  (do
             (type GTree (GLeaf a) (GNode (Tuple (GTree a) (GTree a))))
             (def (leftmost (: t (GTree Int64)))
-              (match t ((GTree.GLeaf x) x) ((GTree.GNode (tuple l r)) (leftmost l))))
-            (def (main (: k Int64)) (leftmost (GTree.GNode (tuple (GTree.GLeaf k) (GTree.GLeaf 9)))))
+              (match t ((GTree.GLeaf x) x) ((GTree.GNode #tuple(l r)) (leftmost l))))
+            (def (main (: k Int64)) (leftmost (GTree.GNode #tuple((GTree.GLeaf k) (GTree.GLeaf 9)))))
             (export main)))
   (call   main (: 5 Int64))
   (output (: 5 Int64))
@@ -13599,7 +13599,7 @@
            (=1) plus the scalar `(. r n)` field. `k=5` → 6. Together with the two sum-payload pins this
            covers BOTH the record-field and sum-payload live-Map-handle boxing sites the func27 fix touched.")
   (input  (do
-            (def (build (: k Int64)) (record (= m (Map.insert (Map.empty) k k)) (= n k)))
+            (def (build (: k Int64)) #record((= m (Map.insert (Map.empty) k k)) (= n k)))
             (def (main (: k Int64)) (let ((r (build k))) (+ (Map.len (. r m)) (. r n))))
             (export main)))
   (call   main (: 5 Int64))
@@ -13683,7 +13683,7 @@
   (input  (do
             (type W (Mk Int64) (N))
             (def (main (: k Int64))
-              (let ((pair (tuple W.Mk 5)))
+              (let ((pair #tuple(W.Mk 5)))
                 (match ((. pair 0) (. pair 1)) ((W.Mk n) n) ((W.N) -1))))
             (export main)))
   (call   main (: 0 Int64))
@@ -13714,7 +13714,7 @@
   (input  (do
             (type W (Mk Int64) (N))
             (def (main (: k Int64))
-              (let ((pair (tuple W.N k)))
+              (let ((pair #tuple(W.N k)))
                 (match (. pair 0) ((W.Mk n) n) ((W.N) (. pair 1)))))
             (export main)))
   (call   main (: 5 Int64))
@@ -14087,7 +14087,7 @@
            positionally accessed. A 2-tuple (pair): (tuple 1 true) produces a value of type
            (Tuple Int64 Bool). Tuples are how multi-field constructors pass 'multiple arguments'
            to a single-arity function/constructor.")
-  (input  (tuple 1 true))
+  (input  #tuple(1 true))
   (output (: #tuple(1 true) (Tuple Int64 Bool))))
 
 (case "tuple elements are accessed by index"
@@ -14095,7 +14095,7 @@
            the first element, (. t 1) the second, etc. Access is bounds-checked against the
            tuple's statically-known arity — an out-of-bounds index is a type error the compiler
            rejects.")
-  (input  (let ((t (tuple 1 "hello" true)))
+  (input  (let ((t #tuple(1 "hello" true)))
             (. t 1)))
   (output (: "hello" String)))
 
@@ -14105,16 +14105,16 @@
            Bool across the run boundary — a tuple element's type is whatever that position holds, not
            uniformly Int64. (Element 0, an Int64, already works; this pins that a Bool element does
            too.)")
-  (input  (. (tuple 42 true) 1))
+  (input  (. #tuple(42 true) 1))
   (output (: true Bool)))
 
 (case "tuples are deconstructed by pattern matching"
   (doc    "Witnesses core-semantics.md: tuple patterns bind positional elements. The pattern
            (tuple a b) binds a and b to the first and second elements respectively. This is how
            you 'multi-argument pattern match' with single-arity constructors — the payload is a tuple.")
-  (input  (let ((pair (tuple 3 7)))
+  (input  (let ((pair #tuple(3 7)))
             (match pair
-              ((tuple a b) (+ a b)))))
+              (#tuple(a b) (+ a b)))))
   (output (: 10 Int64)))
 
 (case "a tuple of two sums is matched with nested constructor patterns"
@@ -14128,8 +14128,8 @@
            with.")
   (input  (do
             (type E (Lit Int64) (Add (Tuple E E)))
-            (def (f a b) (match (tuple a b)
-                           ((tuple (E.Lit x) (E.Lit y)) (+ x y))
+            (def (f a b) (match #tuple(a b)
+                           (#tuple((E.Lit x) (E.Lit y)) (+ x y))
                            (_ -1)))
             (def (main) (f (E.Lit 3) (E.Lit 4))) (export main)))
   (output (: 7 Int64)))
@@ -14140,12 +14140,12 @@
             (type E (Lit Int64) (Add (Tuple E E)))
             (def (fold e) (match e
                             ((E.Lit n) (E.Lit n))
-                            ((E.Add (tuple a b))
-                              (match (tuple (fold a) (fold b))
-                                ((tuple (E.Lit x) (E.Lit y)) (E.Lit (+ x y)))
-                                ((tuple fa fb) (E.Add (tuple fa fb)))))))
-            (def (ev e) (match e ((E.Lit n) n) ((E.Add (tuple a b)) (+ (ev a) (ev b)))))
-            (def (main) (ev (fold (E.Add (tuple (E.Lit 3) (E.Add (tuple (E.Lit 4) (E.Lit 5))))))))
+                            ((E.Add #tuple(a b))
+                              (match #tuple((fold a) (fold b))
+                                (#tuple((E.Lit x) (E.Lit y)) (E.Lit (+ x y)))
+                                (#tuple(fa fb) (E.Add #tuple(fa fb)))))))
+            (def (ev e) (match e ((E.Lit n) n) ((E.Add #tuple(a b)) (+ (ev a) (ev b)))))
+            (def (main) (ev (fold (E.Add #tuple((E.Lit 3) (E.Add #tuple((E.Lit 4) (E.Lit 5))))))))
             (export main)))
   (call   main) (output (: 12 Int64)) (live-objects known-leak 7))
 
@@ -14295,8 +14295,8 @@
            bound tuple scrutinee declined this (the elements had no compile-time source and no match-arm
            binding); it now indexes the scrutinee value.")
   (input  (do
-            (def (g (: k Int64)) (if (> k 0) (tuple k 0) (tuple 0 k)))
-            (def (f (: k Int64)) (match (g k) ((tuple a b) (+ a b))))
+            (def (g (: k Int64)) (if (> k 0) #tuple(k 0) #tuple(0 k)))
+            (def (f (: k Int64)) (match (g k) (#tuple(a b) (+ a b))))
             (def (main (: k Int64)) (f k))
             (export main)))
   (call   main (: 5 Int64))
@@ -14317,7 +14317,7 @@
            Pattern Are Scoped To Its Branch), rather than shadowing (which would yield 2) or imposing an
            equality constraint (which would fall through to 0). Pins linearity: a repeated binder is an
            error, not a silent shadow or a hidden equality test.")
-  (input  (match (tuple 1 2) ((tuple x x) x) (_ 0)))
+  (input  (match #tuple(1 2) (#tuple(x x) x) (_ 0)))
   (error  CDZ0102))
 
 ; Linearity holds ACROSS sub-patterns, not only within one flat pattern. core-semantics.md #Patterns
@@ -14337,7 +14337,7 @@
            pattern). Pins that the linearity check descends into sub-patterns, not only the immediate
            binders of one pattern node — a check that scans only a flat pattern's binders would accept this
            and silently shadow the outer `x` (yielding 2). The seed's check catches the nested repeat too.")
-  (input  (match (tuple 1 (tuple 2 3)) ((tuple x (tuple x y)) x) (_ 0)))
+  (input  (match #tuple(1 #tuple(2 3)) (#tuple(x #tuple(x y)) x) (_ 0)))
   (error  CDZ0102))
 
 ; A function's PARAMETER LIST is a binder position too, linear like a pattern (core-semantics.md
@@ -14364,9 +14364,9 @@
            Pattern matching deconstructs recursively. This is critical: the AST is a recursive sum type.")
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
-            (let ((xs (IntList.Cons (tuple 1 (IntList.Cons (tuple 2 (IntList.Nil ())))))))
+            (let ((xs (IntList.Cons #tuple(1 (IntList.Cons #tuple(2 (IntList.Nil ())))))))
               (match xs
-                ((IntList.Cons (tuple head _)) head)
+                ((IntList.Cons #tuple(head _)) head)
                 ((IntList.Nil _)               0)))))
   (output (: 1 Int64)))
 
@@ -14381,7 +14381,7 @@
   (input    (do
               (type Point  (Mk (Record (: x Int64) (: y Int64))))
               (type Vector (Mk (Record (: x Int64) (: y Int64))))
-              (= (Point.Mk (record (= x 0) (= y 0))) (Vector.Mk (record (= x 0) (= y 0))))))
+              (= (Point.Mk #record((= x 0) (= y 0))) (Vector.Mk #record((= x 0) (= y 0))))))
   (error    CDZ0202))
 
 ; --- The other half of the nominal boundary: nominal vs the untagged shape ----------------
@@ -14401,7 +14401,7 @@
            underlying value).")
   (input    (do
               (type Point (Mk (Record (: x Int64) (: y Int64))))
-              (= (Point.Mk (record (= x 0) (= y 0))) (record (= x 0) (= y 0)))))
+              (= (Point.Mk #record((= x 0) (= y 0))) #record((= x 0) (= y 0)))))
   (error    CDZ0202))
 
 (case "a plain record compared to a nominal record of the same shape is a type error"
@@ -14410,7 +14410,7 @@
            is checked on either side of the comparison, not only the left.")
   (input    (do
               (type Point (Mk (Record (: x Int64) (: y Int64))))
-              (= (record (= x 0) (= y 0)) (Point.Mk (record (= x 0) (= y 0))))))
+              (= #record((= x 0) (= y 0)) (Point.Mk #record((= x 0) (= y 0))))))
   (error    CDZ0202))
 
 ; --- The nominal boundary holds for user-declared SUM types too, not only nominal records -----------
@@ -14466,7 +14466,7 @@
            list lives on the value heap, and the whole grown value renders `(list …)` — the same form a
            list literal renders, because growth changes only the representation, not the type.")
   (input  (do
-            (def (mk n) (List.push (List.push (List.push (list) n) 8) 9))
+            (def (mk n) (List.push (List.push (List.push #list() n) 8) 9))
             (def (main)  (mk 7)) (export main)))
   (output (: #list(7 8 9) (List Int64))))
 
@@ -14475,7 +14475,7 @@
            `Bytes.len`. `(List.len (List.push (List.push (list) n) 8))` = 2 for any `n`. Pins that the
            length operation reads a list however it was built (grown here, not a literal).")
   (input  (do
-            (def (sz n) (List.len (List.push (List.push (list) n) 8)))
+            (def (sz n) (List.len (List.push (List.push #list() n) 8)))
             (def (main)  (sz 7)) (export main)))
   (output (: 2 Int64)))
 
@@ -14484,7 +14484,7 @@
            leaving the operand list unchanged. Updating index 0 of a two-element list to a runtime `n`
            yields `(list 99 2)` for `n=99`. The replace-at-index is defined for the in-bounds index 0.")
   (input  (do
-            (def (put n) (List.update (List.push (List.push (list) 1) 2) 0 n))
+            (def (put n) (List.update (List.push (List.push #list() 1) 2) 0 n))
             (def (main)  (put 99)) (export main)))
   (output (: #list(99 2) (List Int64))))
 
@@ -14495,7 +14495,7 @@
            the operand unchanged. Prepending a runtime `n` onto `(list 8 9)` yields `(list 7 8 9)` for
            `n=7` — the same grown `(list …)` form, front-inserted rather than appended.")
   (input  (do
-            (def (front n) (List.prepend (List.push (List.push (list) 8) 9) n))
+            (def (front n) (List.prepend (List.push (List.push #list() 8) 9) n))
             (def (main)  (front 7)) (export main)))
   (output (: #list(7 8 9) (List Int64))))
 
@@ -14504,7 +14504,7 @@
            differs (front, not tail). `(List.len (List.prepend (List.push (list) 8) n))` = 2 for any `n`,
            reading the grown list however it was built. The length companion of the front-insertion case.")
   (input  (do
-            (def (sz n) (List.len (List.prepend (List.push (list) 8) n)))
+            (def (sz n) (List.len (List.prepend (List.push #list() 8) n)))
             (def (main)  (sz 7)) (export main)))
   (output (: 2 Int64)))
 
@@ -14514,7 +14514,7 @@
            companion of the front-insertion case, pinning that prepend handles the zero-length operand (no
            element to shift).")
   (input  (do
-            (def (main) (Option.expect (List.at (List.prepend (list) 5) 0) "in range"))
+            (def (main) (Option.expect (List.at (List.prepend #list() 5) 0) "in range"))
             (export main)))
   (output (: 5 Int64)))
 
@@ -14524,7 +14524,7 @@
            or drop — it inserts at the front and shifts the rest right, the ordering companion of the
            front-insertion case (which reads index 0).")
   (input  (do
-            (def (main) (Option.expect (List.at (List.prepend (list 2 3) 1) 1) "in range"))
+            (def (main) (Option.expect (List.at (List.prepend #list(2 3) 1) 1) "in range"))
             (export main)))
   (output (: 2 Int64)))
 
@@ -14536,7 +14536,7 @@
            front-insertion twin of the List.push persistence case (`a list consumed by List.push in one operand
            is unchanged for a later read`).")
   (input  (do
-            (def (main) (let ((xs (list 2 3))) (+ (* 100 (List.len (List.prepend xs 1))) (List.len xs))))
+            (def (main) (let ((xs #list(2 3))) (+ (* 100 (List.len (List.prepend xs 1))) (List.len xs))))
             (export main)))
   (output (: 302 Int64)))
 
@@ -14558,7 +14558,7 @@
             (def (build (: i Int64) (: n Int64) (: out (List Int64)))
               (if (< i n) (build (+ i 1) n (List.push out i)) out))
             (def (main (: n Int64))
-              (let ((xs (build 0 n (list))))
+              (let ((xs (build 0 n #list())))
                 (+ (* 100 (List.len (List.prepend xs 99))) (List.len xs))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 605 Int64))
@@ -14577,8 +14577,8 @@
             (def (build (: i Int64) (: n Int64) (: out (List Int64)))
               (if (< i n) (build (+ i 1) n (List.push out (- n i))) out))
             (def (main (: seed Int64))
-              (let ((xs (List.prepend (build 0 32 (list)) seed)))
-                (tuple (List.len xs)
+              (let ((xs (List.prepend (build 0 32 #list()) seed)))
+                #tuple((List.len xs)
                        (Option.expect (List.at xs 0) "index 0 in range")
                        (Option.expect (List.at xs 32) "index 32 in range"))))
             (export main)))
@@ -14601,7 +14601,7 @@
            Is Defined's reject-don't-miscompile discipline applied to a constant no-value operation — the
            same code a provable constant overflow gets), rather than emitting a component that traps at
            run time. The runtime bounds behavior is pinned by the parameter case below.")
-  (input  (do (def (main) (List.len (List.update (list 1 2 3) 5 99))) (export main)))
+  (input  (do (def (main) (List.len (List.update #list(1 2 3) 5 99))) (export main)))
   (error  CDZ0304))
 
 (case "a constant list update at an index that wraps below the length is also rejected"
@@ -14612,7 +14612,7 @@
            build (CDZ0304) on the FULL index, so the wrap hazard cannot arise on the constant path at all.
            The companion of the real-OOB constant case above; the runtime wrap-guard is exercised by the
            parameter case below, where the index is not a constant.")
-  (input  (do (def (main) (List.len (List.update (list 1 2 3) 4294967296 99))) (export main)))
+  (input  (do (def (main) (List.len (List.update #list(1 2 3) 4294967296 99))) (export main)))
   (error  CDZ0304))
 
 (case "a runtime out-of-bounds list update traps rather than aliasing a valid slot"
@@ -14624,7 +14624,7 @@
            regardless of how its low bits wrap. The trap surfaces as the runtime's `unreachable` (the
            runtime is `panic = abort`, so a runtime-originated trap carries no spec reason string), which
            this grades as the terminal condition — the point is that it TRAPS rather than returning 3.")
-  (input  (do (def (main (: i Int64)) (List.len (List.update (list 1 2 3) i 99))) (export main)))
+  (input  (do (def (main (: i Int64)) (List.len (List.update #list(1 2 3) i 99))) (export main)))
   (call   main 4294967296)
   (trap   "unreachable"))
 
@@ -14636,7 +14636,7 @@
            past the last slot and return length 3 instead of trapping). Distinct from the far-OOB 2^32 case:
            this catches the +1-past-the-end edge specifically. The trap surfaces as the runtime's
            `unreachable` (panic=abort, no reason string), on both backends.")
-  (input  (do (def (main (: i Int64)) (match (List.at (List.update (list 10 20 30) i 99) 2) ((Some v) v) (None -1))) (export main)))
+  (input  (do (def (main (: i Int64)) (match (List.at (List.update #list(10 20 30) i 99) 2) ((Some v) v) (None -1))) (export main)))
   (call   main (: 2 Int64)) (output (: 99 Int64))
   (call   main (: 3 Int64)) (trap "unreachable"))
 
@@ -14660,9 +14660,9 @@
               (if (< i n) (build (+ i 1) n (List.push out i)) out))
             (def (at (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None _u) -1)))
             (def (main (: n Int64))
-              (let ((xs (build 0 40 (list))))
+              (let ((xs (build 0 40 #list())))
                 (let ((ys (List.update xs 35 999)))
-                  (tuple (at ys 35) (at ys 3) (at ys 38) (List.len ys) (at xs 35)))))
+                  #tuple((at ys 35) (at ys 3) (at ys 38) (List.len ys) (at xs 35)))))
             (export main)))
   (call   main (: 0 Int64))
   (output (: (tuple 999 3 38 40 35) (Tuple Int64 Int64 Int64 Int64 Int64)))
@@ -14688,8 +14688,8 @@
               (match (List.at xs i) ((Some v) (sum xs (+ i 1) (+ acc v))) ((None _u) acc)))
             (def (at (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None _u) -1)))
             (def (main (: n Int64))
-              (let ((xs (build 0 100 (list))))
-                (tuple (List.len xs) (sum xs 0 0) (at xs 0) (at xs 63) (at xs 99) (at xs 100))))
+              (let ((xs (build 0 100 #list())))
+                #tuple((List.len xs) (sum xs 0 0) (at xs 0) (at xs 63) (at xs 99) (at xs 100))))
             (export main)))
   (call   main (: 0 Int64))
   (output (: (tuple 100 4950 0 63 99 -1) (Tuple Int64 Int64 Int64 Int64 Int64 Int64)))
@@ -14712,8 +14712,8 @@
               (if (< i n) (build (+ i 1) n (List.push xs i)) xs))
             (def (at (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None _u) -1)))
             (def (main (: n Int64))
-              (let ((xs (build 0 1100 (list))))
-                (tuple (List.len xs) (at xs 5) (at xs 1050) (at xs 1099) (at xs 1100))))
+              (let ((xs (build 0 1100 #list())))
+                #tuple((List.len xs) (at xs 5) (at xs 1050) (at xs 1099) (at xs 1100))))
             (export main)))
   (call   main (: 0 Int64))
   (output (: (tuple 1100 5 1050 1099 -1) (Tuple Int64 Int64 Int64 Int64 Int64)))
@@ -14733,9 +14733,9 @@
               (if (< i n) (build (+ i 1) n (List.push xs i)) xs))
             (def (at (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None _u) -1)))
             (def (main (: n Int64))
-              (let ((xs (build 0 1100 (list))))
+              (let ((xs (build 0 1100 #list())))
                 (let ((ys (List.update xs 1050 999)))
-                  (tuple (at ys 1050) (at ys 5) (at ys 1099) (List.len ys) (at xs 1050)))))
+                  #tuple((at ys 1050) (at ys 5) (at ys 1099) (List.len ys) (at xs 1050)))))
             (export main)))
   (call   main (: 0 Int64))
   (output (: (tuple 999 5 1099 1100 1050) (Tuple Int64 Int64 Int64 Int64 Int64)))
@@ -14754,7 +14754,7 @@
                 ((Some v) (maxf xs (+ i 1) (if (> v best) v best)))
                 ((None u) best)))
             (def (main (: k Int64))
-              (maxf (list 3 k 7 1) 0 -9999))
+              (maxf #list(3 k 7 1) 0 -9999))
             (export main)))
   (call   main (: 50 Int64)) (output (: 50 Int64))
   (call   main (: 0 Int64)) (output (: 7 Int64))
@@ -14772,7 +14772,7 @@
   (doc    "`(List.at (list 10 20 30) i)` with `i` a boundary parameter reads element `i` on the value heap
            (the index is not a constant, so nothing folds). In bounds it is `(Some element)`, unwrapped by
            the match: `i`=0 → 10, `i`=2 → 30. Pins the runtime positional read against the constant folds.")
-  (input  (do (def (main (: i Int64)) (match (List.at (list 10 20 30) i) ((Some v) v) (None -1))) (export main)))
+  (input  (do (def (main (: i Int64)) (match (List.at #list(10 20 30) i) ((Some v) v) (None -1))) (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64))
   (call   main (: 2 Int64)) (output (: 30 Int64)))
 
@@ -14783,7 +14783,7 @@
            index past the end totally yields the absent optional, the read analogue of a total `Map.lookup`
            miss. Contrast `List.update`, whose out-of-bounds index TRAPS (the update is defined only in
            bounds) — the read is total where the update is partial.")
-  (input  (do (def (main (: i Int64)) (match (List.at (list 10 20 30) i) ((Some v) v) (None -1))) (export main)))
+  (input  (do (def (main (: i Int64)) (match (List.at #list(10 20 30) i) ((Some v) v) (None -1))) (export main)))
   (call   main (: 3 Int64)) (output (: -1 Int64))
   (call   main (: 99 Int64)) (output (: -1 Int64)))
 
@@ -14804,10 +14804,10 @@
            distinct.")
   (input  (do
             (def (main (: x Int64))
-              (let ((xs (list (Some (* (BigInt.of 1000000) (BigInt.of 1000000)))
+              (let ((xs #list((Some (* (BigInt.of 1000000) (BigInt.of 1000000)))
                               (None)
                               (Some (BigInt.of (+ x 7))))))
-                (tuple
+                #tuple(
                   (match (List.at xs 0) ((Some (Some b)) (Int64.of (/ b (BigInt.of 1000000)))) (_ -1))
                   (match (List.at xs 1) ((Some (None)) 1) (_ 0))
                   (match (List.at xs 2) ((Some (Some b)) (Int64.of b)) (_ -1))
@@ -14826,7 +14826,7 @@
            None too — never a spurious in-bounds hit or a trap. The read companion of the Bytes.slice
            negative-length signedness pin (10-bytes: a start+len computed in unsigned space must not appear
            to fit). In-bounds controls (0 → 10, 2 → 30) confirm the signed compare still admits valid indices.")
-  (input  (do (def (main (: i Int64)) (match (List.at (list 10 20 30) i) ((Some v) v) (None -1))) (export main)))
+  (input  (do (def (main (: i Int64)) (match (List.at #list(10 20 30) i) ((Some v) v) (None -1))) (export main)))
   (call   main (: -1 Int64)) (output (: -1 Int64))
   (call   main (: -9223372036854775808 Int64)) (output (: -1 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64))
@@ -14838,7 +14838,7 @@
            and the read run on the value heap. `i`=3 → 30 (in bounds), `i`=7 → absent (→ -1). Pins that
            `List.at`'s bounds check reads the ACTUAL runtime length, not a compile-time-assumed one.")
   (input  (do (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out (* i 10))) out))
-              (def (main (: i Int64)) (match (List.at (build 0 5 (list)) i) ((Some v) v) (None -1))) (export main)))
+              (def (main (: i Int64)) (match (List.at (build 0 5 #list()) i) ((Some v) v) (None -1))) (export main)))
   (call   main (: 3 Int64)) (output (: 30 Int64))
   (call   main (: 7 Int64)) (output (: -1 Int64)))
 
@@ -14846,7 +14846,7 @@
   (doc    "`(List.at (List.update (list 10 20 30) i 99) i)` updates element `i` to 99, then reads element `i`
            back — it is 99 for every in-bounds `i` (1 → 99, 2 → 99). Pins the replace-at-index on the runtime
            path: the write lands at exactly the runtime index, observed by reading the same index back.")
-  (input  (do (def (main (: i Int64)) (match (List.at (List.update (list 10 20 30) i 99) i) ((Some v) v) (None -1))) (export main)))
+  (input  (do (def (main (: i Int64)) (match (List.at (List.update #list(10 20 30) i 99) i) ((Some v) v) (None -1))) (export main)))
   (call   main (: 1 Int64)) (output (: 99 Int64))
   (call   main (: 2 Int64)) (output (: 99 Int64)))
 
@@ -14855,7 +14855,7 @@
            ONLY element `i` — reading element 0 back yields 10 regardless of `i` (1 or 2), so the update did
            not disturb a slot it was not addressed to. Pins that a runtime-index update is a single-slot
            replace, not a whole-list rewrite.")
-  (input  (do (def (main (: i Int64)) (match (List.at (List.update (list 10 20 30) i 99) 0) ((Some v) v) (None -1))) (export main)))
+  (input  (do (def (main (: i Int64)) (match (List.at (List.update #list(10 20 30) i 99) 0) ((Some v) v) (None -1))) (export main)))
   (call   main (: 1 Int64)) (output (: 10 Int64))
   (call   main (: 2 Int64)) (output (: 10 Int64)))
 
@@ -14870,7 +14870,7 @@
            the representation carrying it (a persistent tree) is an unobservable implementation detail.")
   (input  (do
             (def (build v i n) (if (< i n) (build (List.push v i) (+ i 1) n) v))
-            (def (main)         (List.len (build (list) 0 5))) (export main)))
+            (def (main)         (List.len (build #list() 0 5))) (export main)))
   (output (: 5 Int64)))
 
 (case "a recursive list accumulator grown by push and returned in the base arm stays a list"
@@ -14891,7 +14891,7 @@
            compiler cannot construct a multi-argument call's arg list until this infers a list return.")
   (input  (do
             (def (build n acc) (if (< n 1) acc (build (- n 1) (List.push acc n))))
-            (def (main)        (List.len (build 3 (list)))) (export main)))
+            (def (main)        (List.len (build 3 #list()))) (export main)))
   (output (: 3 Int64)))
 
 (case "a list built by a recursive push-loop is then iterated by index"
@@ -14911,7 +14911,7 @@
             (def (sum-at xs i n) (if (< i n)
                                      (+ (match (List.at xs i) ((Some x) x) ((None _) 0)) (sum-at xs (+ i 1) n))
                                      0))
-            (def (main) (let ((xs (build 0 3 (list)))) (sum-at xs 0 (List.len xs)))) (export main)))
+            (def (main) (let ((xs (build 0 3 #list()))) (sum-at xs 0 (List.len xs)))) (export main)))
   (output (: 3 Int64))
   (live-objects known-leak 2))
 
@@ -14928,7 +14928,7 @@
             (def (scan xs k) (match (List.at xs k) ((None _) 0) ((Some h) (+ h (scan xs (+ k 1))))))
             (def (use e n) (scan (List.push e n) 0))
             (def (both e) (+ (* 10 (use e 1)) (use e 2)))
-            (def (main) (both (list))) (export main)))
+            (def (main) (both #list())) (export main)))
   (output (: 12 Int64))
   (live-objects 0))
 
@@ -14954,7 +14954,7 @@
            sharp case: left-to-right evaluation runs the consume FIRST.)")
   (input  (do
             (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out i)) out))
-            (def (main) (let ((e (build 0 2 (list)))) (+ (List.len (List.push e 9)) (List.len e))))
+            (def (main) (let ((e (build 0 2 #list()))) (+ (List.len (List.push e 9)) (List.len e))))
             (export main)))
   (output (: 5 Int64)))
 
@@ -14970,7 +14970,7 @@
   (input  (do
             (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out i)) out))
             (def (f n xs) (if (= n 0) (List.len xs) (+ (List.len (List.push xs 9)) (f 0 xs))))
-            (def (main) (f 1 (build 0 2 (list))))
+            (def (main) (f 1 (build 0 2 #list())))
             (export main)))
   (output (: 5 Int64))
   (live-objects known-leak 2))
@@ -15033,18 +15033,18 @@
             (type Instr (IConst Int64) IAdd)
             (type Code CNil (CCons (Tuple Instr Code)))
             (type Core (KConst Int64) (KAdd (Tuple Core Core)))
-            (def (one i)        (Code.CCons (tuple i (Code.CNil ()))))
+            (def (one i)        (Code.CCons #tuple(i (Code.CNil ()))))
             (def (code-cat xs ys)
               (match xs
                 ((Code.CNil _)              ys)
-                ((Code.CCons (tuple h t))   (Code.CCons (tuple h (code-cat t ys))))))
+                ((Code.CCons #tuple(h t))   (Code.CCons #tuple(h (code-cat t ys))))))
             (def (len c)
-              (match c ((Code.CNil _) 0) ((Code.CCons (tuple h t)) (+ 1 (len t)))))
+              (match c ((Code.CNil _) 0) ((Code.CCons #tuple(h t)) (+ 1 (len t)))))
             (def (lower node)
               (match node
                 ((Core.KConst n)         (one (Instr.IConst n)))
-                ((Core.KAdd (tuple a b)) (code-cat (lower a) (code-cat (lower b) (one (Instr.IAdd ())))))))
-            (def (main) (len (lower (Core.KAdd (tuple (Core.KConst 20) (Core.KConst 22)))))) (export main)))
+                ((Core.KAdd #tuple(a b)) (code-cat (lower a) (code-cat (lower b) (one (Instr.IAdd ())))))))
+            (def (main) (len (lower (Core.KAdd #tuple((Core.KConst 20) (Core.KConst 22)))))) (export main)))
   (output (: 3 Int64))
   (live-objects known-leak 10))
 
@@ -15163,7 +15163,7 @@
             (def (main)
               (let ((m (Map.insert (Map.insert Map.empty 1 10) 2 20)))
                 (let ((m2 (Map.remove m 1)))
-                  (tuple (match (Map.lookup m 1) ((Some v) v) ((None _u) -1))
+                  #tuple((match (Map.lookup m 1) ((Some v) v) ((None _u) -1))
                          (match (Map.lookup m2 1) ((Some v) v) ((None _u) -1))
                          (Map.len m)
                          (Map.len m2)))))
@@ -15224,9 +15224,9 @@
           (do
             (def m (Map.insert Map.empty 1 10))
             (match (Map.swap m k 99)
-              ((tuple prior m2)
+              (#tuple(prior m2)
                 (match (Map.take m2 k)
-                  ((tuple taken m3)
+                  (#tuple(taken m3)
                     (+ (* (unwrap prior) 1000)
                        (+ (* (unwrap taken) 10) (Map.len m3)))))))))
         (export main)))
@@ -15267,8 +15267,8 @@
             (def (main (: k Int64))
               (let ((m (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 3 30)))
                 (match (Map.take m k)
-                  ((tuple (Some v) rest) (+ v (Map.len rest)))
-                  ((tuple (None u) rest) (- 0 (Map.len rest))))))
+                  (#tuple((Some v) rest) (+ v (Map.len rest)))
+                  (#tuple((None u) rest) (- 0 (Map.len rest))))))
             (export main)))
   (call   main (: 2 Int64))
   (output (: 22 Int64))
@@ -15286,8 +15286,8 @@
             (def (main (: k Int64))
               (let ((m (Map.insert (Map.insert Map.empty 1 10) 2 20)))
                 (match (Map.swap m k 99)
-                  ((tuple (Some old) m2) (+ old (match (Map.lookup m2 k) ((Some nv) nv) ((None u) -1))))
-                  ((tuple (None u) m2) (- 0 (Map.len m2))))))
+                  (#tuple((Some old) m2) (+ old (match (Map.lookup m2 k) ((Some nv) nv) ((None u) -1))))
+                  (#tuple((None u) m2) (- 0 (Map.len m2))))))
             (export main)))
   (call   main (: 2 Int64))
   (output (: 119 Int64))
@@ -15418,17 +15418,17 @@
            100). Pins that a compound key canonicalizes on swap/take, not only on insert/lookup/remove.")
   (input  (do
             (def (main (: a Int64))
-              (let ((m (Map.insert Map.empty (tuple a 1) 10)))
-                (tuple
-                  (match (Map.swap m (tuple a 1) 20)
-                    ((tuple p m2) (+ (* 10 (match p ((Some v) v) ((None) -1)))
-                                     (match (Map.lookup m2 (tuple a 1)) ((Some v) v) ((None) -1)))))
-                  (match (Map.swap m (tuple a 2) 99)
-                    ((tuple p m2) (+ (* 10 (match p ((Some v) v) ((None) -1)))
-                                     (match (Map.lookup m2 (tuple a 2)) ((Some v) v) ((None) -1)))))
-                  (match (Map.take m (tuple a 1))
-                    ((tuple p m2) (+ (* 10 (match p ((Some v) v) ((None) -1)))
-                                     (match (Map.lookup m2 (tuple a 1)) ((Some v) v) ((None) 0))))))))
+              (let ((m (Map.insert Map.empty #tuple(a 1) 10)))
+                #tuple(
+                  (match (Map.swap m #tuple(a 1) 20)
+                    (#tuple(p m2) (+ (* 10 (match p ((Some v) v) ((None) -1)))
+                                     (match (Map.lookup m2 #tuple(a 1)) ((Some v) v) ((None) -1)))))
+                  (match (Map.swap m #tuple(a 2) 99)
+                    (#tuple(p m2) (+ (* 10 (match p ((Some v) v) ((None) -1)))
+                                     (match (Map.lookup m2 #tuple(a 2)) ((Some v) v) ((None) -1)))))
+                  (match (Map.take m #tuple(a 1))
+                    (#tuple(p m2) (+ (* 10 (match p ((Some v) v) ((None) -1)))
+                                     (match (Map.lookup m2 #tuple(a 1)) ((Some v) v) ((None) 0))))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: (tuple 120 89 100) (Tuple Int64 Int64 Int64)))
   (live-objects known-leak 1))
@@ -15445,9 +15445,9 @@
            canonical-byte path. Both backends.")
   (input  (do
             (def (main (: x Float64))
-              (let ((m (Map.insert (Map.insert Map.empty (tuple 1 x) 10) (tuple 1 2.5) 20)))
+              (let ((m (Map.insert (Map.insert Map.empty #tuple(1 x) 10) #tuple(1 2.5) 20)))
                 (+ (* 10 (Map.len m))
-                   (match (Map.lookup m (tuple 1 x)) ((Some v) v) ((None u) -1)))))
+                   (match (Map.lookup m #tuple(1 x)) ((Some v) v) ((None u) -1)))))
             (export main)))
   (call   main (: 0.5 Float64)) (output (: 30 Int64))
   (call   main (: 2.5 Float64)) (output (: 30 Int64)))
@@ -15461,7 +15461,7 @@
            and the two calls would be indistinguishable. Both backends.")
   (input  (do
             (def (main (: x Float64))
-              (Map.len (Map.insert (Map.insert Map.empty (tuple 1 x) 10) (tuple 1 0.0) 20)))
+              (Map.len (Map.insert (Map.insert Map.empty #tuple(1 x) 10) #tuple(1 0.0) 20)))
             (export main)))
   (call   main (: -0.0 Float64)) (output (: 2 Int64))
   (call   main (: 0.0 Float64))  (output (: 1 Int64)))
@@ -15476,9 +15476,9 @@
            canonical-byte edge at the narrow width.")
   (input  (do
             (def (main (: x Float32))
-              (let ((m (Map.insert (Map.insert Map.empty (tuple 1 x) 10) (tuple 1 (Float32.of 2.5)) 20)))
+              (let ((m (Map.insert (Map.insert Map.empty #tuple(1 x) 10) #tuple(1 (Float32.of 2.5)) 20)))
                 (+ (* 10 (Map.len m))
-                   (match (Map.lookup m (tuple 1 x)) ((Some v) v) ((None u) -1)))))
+                   (match (Map.lookup m #tuple(1 x)) ((Some v) v) ((None u) -1)))))
             (export main)))
   (call   main (: 0.5 Float32)) (output (: 30 Int64))
   (call   main (: 2.5 Float32)) (output (: 30 Int64)))
@@ -15490,7 +15490,7 @@
            width against a zero-normalizing or f64-coercing key path that would collapse the pair.")
   (input  (do
             (def (main (: x Float32))
-              (Map.len (Map.insert (Map.insert Map.empty (tuple 1 x) 10) (tuple 1 (Float32.of 0.0)) 20)))
+              (Map.len (Map.insert (Map.insert Map.empty #tuple(1 x) 10) #tuple(1 (Float32.of 0.0)) 20)))
             (export main)))
   (call   main (: -0.0 Float32)) (output (: 2 Int64))
   (call   main (: 0.0 Float32))  (output (: 1 Int64)))
@@ -15505,9 +15505,9 @@
            sorted positions), the record arm of the tuple-key wrapper fix.")
   (input  (do
             (def (main (: x Float64))
-              (let ((m (Map.insert (Map.insert Map.empty (record (= f x) (= n 1)) 10) (record (= f 2.5) (= n 1)) 20)))
+              (let ((m (Map.insert (Map.insert Map.empty #record((= f x) (= n 1)) 10) #record((= f 2.5) (= n 1)) 20)))
                 (+ (* 10 (Map.len m))
-                   (match (Map.lookup m (record (= f x) (= n 1))) ((Some v) v) ((None u) -1)))))
+                   (match (Map.lookup m #record((= f x) (= n 1))) ((Some v) v) ((None u) -1)))))
             (export main)))
   (call   main (: 0.5 Float64)) (output (: 30 Int64))
   (call   main (: 2.5 Float64)) (output (: 30 Int64)))
@@ -15518,7 +15518,7 @@
            edge — the canonical-byte discipline survives the record's sorted-field erasure.")
   (input  (do
             (def (main (: x Float64))
-              (Map.len (Map.insert (Map.insert Map.empty (record (= f x) (= n 1)) 10) (record (= f 0.0) (= n 1)) 20)))
+              (Map.len (Map.insert (Map.insert Map.empty #record((= f x) (= n 1)) 10) #record((= f 0.0) (= n 1)) 20)))
             (export main)))
   (call   main (: -0.0 Float64)) (output (: 2 Int64))
   (call   main (: 0.0 Float64)) (output (: 1 Int64)))
@@ -15531,12 +15531,12 @@
            would collide the 6-7 keys sharing each x residue and misroute the descent.")
   (input  (do
             (def (fill (: i Int64) (: m (Map (Record (: x Int64) (: y Int64)) Int64)))
-              (if (= i 0) m (fill (- i 1) (Map.insert m (record (= x (% i 6)) (= y (/ i 6))) i))))
+              (if (= i 0) m (fill (- i 1) (Map.insert m #record((= x (% i 6)) (= y (/ i 6))) i))))
             (def (main (: n Int64))
               (do
                 (def m (fill n Map.empty))
                 (+ (* 10 (Map.len m))
-                   (match (Map.lookup m (record (= x 4) (= y 5))) ((Some v) v) ((None _u) -1)))))
+                   (match (Map.lookup m #record((= x 4) (= y 5))) ((Some v) v) ((None _u) -1)))))
             (export main)))
   (call   main (: 40 Int64)) (output (: 434 Int64)))
 
@@ -15548,15 +15548,15 @@
            canonical form.")
   (input  (do
             (def (grow (: i Int64) (: n Int64) (: m (Map (Record (: x Int64) (: y Int64)) Int64)))
-              (if (= i n) m (grow (+ i 1) n (Map.insert m (record (= x (+ i 100)) (= y i)) i))))
+              (if (= i n) m (grow (+ i 1) n (Map.insert m #record((= x (+ i 100)) (= y i)) i))))
             (def (shrink (: i Int64) (: n Int64) (: m (Map (Record (: x Int64) (: y Int64)) Int64)))
-              (if (= i n) m (shrink (+ i 1) n (Map.remove m (record (= x (+ i 100)) (= y i))))))
+              (if (= i n) m (shrink (+ i 1) n (Map.remove m #record((= x (+ i 100)) (= y i))))))
             (def (main (: n Int64))
               (do
-                (def direct (Map.insert Map.empty (record (= x 7) (= y 8)) 50))
+                (def direct (Map.insert Map.empty #record((= x 7) (= y 8)) 50))
                 (def churned (shrink 1 n (grow 1 n direct)))
                 (+ (* 10 (if (= churned direct) 1 0))
-                   (match (Map.lookup churned (record (= x 7) (= y 8))) ((Some v) (if (= v 50) 1 0)) ((None _u) -1)))))
+                   (match (Map.lookup churned #record((= x 7) (= y 8))) ((Some v) (if (= v 50) 1 0)) ((None _u) -1)))))
             (export main)))
   (call   main (: 30 Int64)) (output (: 11 Int64)))
 
@@ -15568,9 +15568,9 @@
            `x = 2.5` (len 1, lookup 20 → 30).")
   (input  (do
             (def (main (: x Float64))
-              (let ((m (Map.insert (Map.insert Map.empty (tuple 1 (tuple x 2)) 10) (tuple 1 (tuple 2.5 2)) 20)))
+              (let ((m (Map.insert (Map.insert Map.empty #tuple(1 #tuple(x 2)) 10) #tuple(1 #tuple(2.5 2)) 20)))
                 (+ (* 10 (Map.len m))
-                   (match (Map.lookup m (tuple 1 (tuple x 2))) ((Some v) v) ((None u) -1)))))
+                   (match (Map.lookup m #tuple(1 #tuple(x 2))) ((Some v) v) ((None u) -1)))))
             (export main)))
   (call   main (: 0.5 Float64)) (output (: 30 Int64))
   (call   main (: 2.5 Float64)) (output (: 30 Int64)))
@@ -15582,7 +15582,7 @@
            above, pins both nesting orders of the depth-2 float-key discipline.")
   (input  (do
             (def (main (: x Float64))
-              (Map.len (Map.insert (Map.insert Map.empty (record (= p (tuple x 1)) (= n 7)) 10) (record (= p (tuple 0.5 1)) (= n 7)) 20)))
+              (Map.len (Map.insert (Map.insert Map.empty #record((= p #tuple(x 1)) (= n 7)) 10) #record((= p #tuple(0.5 1)) (= n 7)) 20)))
             (export main)))
   (call   main (: -0.5 Float64)) (output (: 2 Int64))
   (call   main (: 0.5 Float64)) (output (: 1 Int64)))
@@ -15596,8 +15596,8 @@
            (the fresh Set-dedup pin covers the f32 insert path).")
   (input  (do
             (def (main (: x Float64))
-              (let ((m (Map.insert Map.empty (tuple (/ x x) 3) 42)))
-                (match (Map.lookup m (tuple Float64.nan 3)) ((Some v) v) ((None u) -1))))
+              (let ((m (Map.insert Map.empty #tuple((/ x x) 3) 42)))
+                (match (Map.lookup m #tuple(Float64.nan 3)) ((Some v) v) ((None u) -1))))
             (export main)))
   (call   main (: 0.0 Float64)) (output (: 42 Int64)))
 
@@ -15609,8 +15609,8 @@
            -0.0 = 0.0) would wrongly hit on the first call.")
   (input  (do
             (def (main (: x Float64))
-              (let ((m (Map.insert Map.empty (tuple x 3) 42)))
-                (match (Map.lookup m (tuple 0.0 3)) ((Some v) v) ((None u) -1))))
+              (let ((m (Map.insert Map.empty #tuple(x 3) 42)))
+                (match (Map.lookup m #tuple(0.0 3)) ((Some v) v) ((None u) -1))))
             (export main)))
   (call   main (: -0.0 Float64)) (output (: -1 Int64))
   (call   main (: 0.0 Float64)) (output (: 42 Int64)))
@@ -15864,10 +15864,10 @@
            1200.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (let ((m0 (Map.insert Map.empty (tuple a b) 100))
-                    (m1 (Map.insert m0 (tuple a b) 200)))
+              (let ((m0 (Map.insert Map.empty #tuple(a b) 100))
+                    (m1 (Map.insert m0 #tuple(a b) 200)))
                 (+ (* 1000 (Map.len m1))
-                   (match (Map.lookup m1 (tuple a b))
+                   (match (Map.lookup m1 #tuple(a b))
                      ((Some v) v)
                      ((None _u) -1)))))
             (export main)))
@@ -15894,7 +15894,7 @@
                     ((None _u) acc))
                   acc))
             (def (main (: a Int64) (: b Int64))
-              (let ((m (mfold (list (tuple a 10) (tuple b 20) (tuple a 30)) 0 Map.empty)))
+              (let ((m (mfold #list(#tuple(a 10) #tuple(b 20) #tuple(a 30)) 0 Map.empty)))
                 (+ (* 100 (Map.len m))
                    (match (Map.lookup m a) ((Some v) v) ((None _u) -1)))))
             (export main)))
@@ -15977,9 +15977,9 @@
   (input  (do
             (def (f (: t (Tuple (Map Int64 Int64) Int64)))
               (match t
-                ((tuple (map (1 a)) k) (+ a k))
+                (#tuple((map (1 a)) k) (+ a k))
                 (_ (- 0 1))))
-            (def (main) (f (tuple (map (= 1 100)) 5)))
+            (def (main) (f #tuple((map (= 1 100)) 5)))
             (export main)))
   (output (: 105 Int64)))
 
@@ -15991,9 +15991,9 @@
   (input  (do
             (def (f (: t (Tuple (Map Int64 Int64) Int64)))
               (match t
-                ((tuple (map (7 a)) k) (+ a k))
+                (#tuple((map (7 a)) k) (+ a k))
                 (_ (- 0 1))))
-            (def (main) (f (tuple (map (= 1 100)) 5)))
+            (def (main) (f #tuple((map (= 1 100)) 5)))
             (export main)))
   (output (: -1 Int64)))
 
@@ -16024,8 +16024,8 @@
            7. A refutable value (a multi-variant constructor) instead needs value-discriminant dispatch.")
   (input  (do
             (def (main)
-              (match (Map.insert (Map.empty) "a" (tuple 3 4))
-                ((map ("a" (tuple x y)) .. rest) (+ x y))
+              (match (Map.insert (Map.empty) "a" #tuple(3 4))
+                ((map ("a" #tuple(x y)) .. rest) (+ x y))
                 (_                               -1)))
             (export main)))
   (output (: 7 Int64)))
@@ -16039,10 +16039,10 @@
            for the runtime scrutinee (the constant case folds).")
   (input  (do
             (def (pick (: b Bool))
-              (if b (Map.insert (Map.empty) "a" (tuple 3 4)) (Map.empty)))
+              (if b (Map.insert (Map.empty) "a" #tuple(3 4)) (Map.empty)))
             (def (look (: m (Map String (Tuple Int64 Int64))))
               (match m
-                ((map ("a" (tuple x y)) .. rest) (+ x y))
+                ((map ("a" #tuple(x y)) .. rest) (+ x y))
                 (_                               -1)))
             (def (main) (look (pick true))) (export main)))
   (output (: 7 Int64)))
@@ -16084,8 +16084,8 @@
            a_map_value_sub_pattern_may_be_an_irrefutable_compound_with_binders.")
   (input  (do
             (def (main)
-              (match (Map.insert (Map.empty) "a" (tuple (tuple 1 2) 3))
-                ((map ("a" (tuple (tuple x y) z)) .. rest) x)
+              (match (Map.insert (Map.empty) "a" #tuple(#tuple(1 2) 3))
+                ((map ("a" #tuple(#tuple(x y) z)) .. rest) x)
                 (_                                        -1)))
             (export main)))
   (output (: 1 Int64)))
@@ -16197,7 +16197,7 @@
            not evaluate it, and its trap does not occur: the program yields 42. This is the compound
            analogue of a conditional's unselected branch (core-semantics.md §A Trap Occurs Only Where
            Its Computation Is Observed). The anchor case below pins that projecting element 1 DOES trap.")
-  (input  (do (def (main (: x Int64)) (. (tuple 42 (/ 100 x)) 0)) (export main)))
+  (input  (do (def (main (: x Int64)) (. #tuple(42 (/ 100 x)) 0)) (export main)))
   (call   main (: 0 Int64))
   (output (: 42 Int64)))
 
@@ -16206,7 +16206,7 @@
            field `b` is a division by zero that is never read, so it is unobserved and its trap does not
            occur — the program yields 42. Pins the elision is not tuple-specific: any un-observed element
            of a constructed value need not be evaluated.")
-  (input  (do (def (main (: x Int64)) (. (record (= a 42) (= b (/ 100 x))) a)) (export main)))
+  (input  (do (def (main (: x Int64)) (. #record((= a 42) (= b (/ 100 x))) a)) (export main)))
   (call   main (: 0 Int64))
   (output (: 42 Int64)))
 
@@ -16215,7 +16215,7 @@
            100 x)) 0) (. (tuple x (/ 100 x)) 1))` with x = 0 projects element 1 (`/ 100 0`), whose value
            flows into the sum — observed — so it traps. Contrast the elision case above where element 1
            is never projected. Confirms the elision is specifically about an UN-observed element.")
-  (input  (do (def (main (: x Int64)) (+ (. (tuple x (/ 100 x)) 0) (. (tuple x (/ 100 x)) 1))) (export main)))
+  (input  (do (def (main (: x Int64)) (+ (. #tuple(x (/ 100 x)) 0) (. #tuple(x (/ 100 x)) 1))) (export main)))
   (call   main (: 0 Int64))
   (trap   "division by zero"))
 
@@ -16238,7 +16238,7 @@
            resource whose `make` forwards the argument, so the host builds the list from its input:
            `main(7) = (list 7 14)`. Previously a heap value escaped only from a NULLARY export; `make`
            now forwards scalar params, so a computed-from-input collection crosses.")
-  (input  (do (def (main (: a Int64)) (list a (* a 2))) (export main)))
+  (input  (do (def (main (: a Int64)) #list(a (* a 2))) (export main)))
   (call   main (: 7 Int64))
   (output (: #list(7 14) (List Int64)))
   (live-objects known-leak 2))
@@ -16246,7 +16246,7 @@
 (case "a parameterized export returns a tuple computed from its argument"
   (doc    "The tuple companion: `main(100) = (tuple 100 101 102)`, a fixed-shape compound built from the
            argument crossing via the param-forwarding resource escape.")
-  (input  (do (def (main (: a Int64)) (tuple a (+ a 1) (+ a 2))) (export main)))
+  (input  (do (def (main (: a Int64)) #tuple(a (+ a 1) (+ a 2))) (export main)))
   (call   main (: 100 Int64))
   (output (: (tuple 100 101 102) (Tuple Int64 Int64 Int64)))
   (live-objects known-leak 1))
@@ -16272,7 +16272,7 @@
            builds the record from its input — `main(5) = (record (lo 5) (hi 15))`, rendered in canonical
            (sorted) field order `(record (hi 15) (lo 5))`. Two calls pin that both fields track the
            argument, not a constant.")
-  (input  (do (def (main (: a Int64)) (record (= lo a) (= hi (+ a 10)))) (export main)))
+  (input  (do (def (main (: a Int64)) #record((= lo a) (= hi (+ a 10)))) (export main)))
   (call   main (: 5 Int64)) (output (: (record (= hi 15) (= lo 5)) (Record (: hi Int64) (: lo Int64))))
   (call   main (: 0 Int64)) (output (: (record (= hi 10) (= lo 0)) (Record (: hi Int64) (: lo Int64))))
   (live-objects known-leak 1))
@@ -16296,7 +16296,7 @@
            runs the component, so an unforwarded parameter — which traps `expected 1 argument, got 0`, or
            bakes a constant — would pass that test yet fail here). The two distinct results are what a
            constant-baking or arg-dropping escape cannot produce.")
-  (input  (do (def (main (: n Int64)) (tuple n (+ n 1))) (export main)))
+  (input  (do (def (main (: n Int64)) #tuple(n (+ n 1))) (export main)))
   (call   main (: 5 Int64)) (output (: (tuple 5 6) (Tuple Int64 Int64)))
   (call   main (: 40 Int64)) (output (: (tuple 40 41) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
@@ -16314,7 +16314,7 @@
            of a runtime-selected collection crosses the resource-escape boundary as the canonical empty
            value form, alongside the populated branch — the degenerate boundary the non-empty
            parameterized-return cases above cannot witness.")
-  (input  (do (def (main (: n Int64)) (if (> n 0) (list n) (list))) (export main)))
+  (input  (do (def (main (: n Int64)) (if (> n 0) #list(n) #list())) (export main)))
   (call   main (: 0 Int64)) (output (: #list() (List Int64)))
   (call   main (: 5 Int64)) (output (: #list(5) (List Int64)))
   (live-objects 0))
@@ -16352,7 +16352,7 @@
            n=5 → `(list (tuple 5 50) (tuple 6 60))`, n=0 → `(list (tuple 0 0) (tuple 1 10))`. Pins that the
            resource escape renders a NESTED element type (a tuple inside a list) from a runtime argument,
            the key-value-list shape a compiler emits (distinct from the flat parameterized-list return).")
-  (input  (do (def (main (: n Int64)) (list (tuple n (* n 10)) (tuple (+ n 1) (* (+ n 1) 10)))) (export main)))
+  (input  (do (def (main (: n Int64)) #list(#tuple(n (* n 10)) #tuple((+ n 1) (* (+ n 1) 10)))) (export main)))
   (call   main (: 5 Int64)) (output (: #list(#tuple(5 50) #tuple(6 60)) (List (Tuple Int64 Int64))))
   (call   main (: 0 Int64)) (output (: #list(#tuple(0 0) #tuple(1 10)) (List (Tuple Int64 Int64))))
   (live-objects known-leak 4))
@@ -16362,7 +16362,7 @@
            whose inner lists differ in length — n=5 → `(list (list 5) (list 5 5))`. Pins that a doubly-nested
            collection (a list of lists, each a genuine sub-vector) crosses the resource-escape boundary from
            a runtime argument, the operand-lists shape a code emitter builds.")
-  (input  (do (def (main (: n Int64)) (list (list n) (list n n))) (export main)))
+  (input  (do (def (main (: n Int64)) #list(#list(n) #list(n n))) (export main)))
   (call   main (: 5 Int64)) (output (: #list(#list(5) #list(5 5)) (List (List Int64))))
   (call   main (: 0 Int64)) (output (: #list(#list(0) #list(0 0)) (List (List Int64))))
   (live-objects known-leak 6))
@@ -16374,8 +16374,8 @@
            literal spine) and consumed to a scalar composes — the accumulate-a-key-value-list idiom, the
            nested-element companion of the runtime-length list builder.")
   (input  (do
-            (def (build (: i Int64) (: n Int64) (: out (List (Tuple Int64 Int64)))) (if (< i n) (build (+ i 1) n (List.push out (tuple i (* i 2)))) out))
-            (def (main (: n Int64)) (List.len (build 0 n (list)))) (export main)))
+            (def (build (: i Int64) (: n Int64) (: out (List (Tuple Int64 Int64)))) (if (< i n) (build (+ i 1) n (List.push out #tuple(i (* i 2)))) out))
+            (def (main (: n Int64)) (List.len (build 0 n #list()))) (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64)))
 
@@ -16384,7 +16384,7 @@
            native `tuple<…>` the canonical ABI flattens into scalar leaves, which `make` rebuilds into the
            cell before running the body — so `main((tuple 7 9)) = (list 7 9)`. Closes the compound-PARAM
            side of the heap-return boundary (a scalar param already worked); the value is a runtime List.")
-  (input  (do (def (main (: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))) (export main)))
+  (input  (do (def (main (: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))) (export main)))
   (call   main (: (tuple 7 9) (Tuple Int64 Int64)))
   (output (: #list(7 9) (List Int64)))
   (live-objects known-leak 3))
@@ -16400,7 +16400,7 @@
 (case "a record-parameter export returns a tuple computed from its fields"
   (doc    "A RECORD parameter crosses as a `tuple<…>` in canonical sorted-key order; `main((record (x 3)
            (y 8))) = (tuple 8 3)` swaps the fields. Proves the record-param + tuple-result compound path.")
-  (input  (do (def (main (: p (Record (: x Int64) (: y Int64)))) (tuple (. p y) (. p x))) (export main)))
+  (input  (do (def (main (: p (Record (: x Int64) (: y Int64)))) #tuple((. p y) (. p x))) (export main)))
   (call   main (: (record (= x 3) (= y 8)) (Record (: x Int64) (: y Int64))))
   (output (: (tuple 8 3) (Tuple Int64 Int64)))
   (live-objects known-leak 2))
@@ -16409,7 +16409,7 @@
   (doc    "`make` forwards a MIX of parameter shapes: a scalar leaf AND a fixed-shape tuple (crossing as a
            native `tuple<…>` the ABI flattens, rebuilt in-guest) compose in one export. `main(5, (tuple 7
            9)) = (list 5 7 9)` draws from both — the scalar directly, the tuple's fields rebuilt.")
-  (input  (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) (list a (. p 0) (. p 1))) (export main)))
+  (input  (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) #list(a (. p 0) (. p 1))) (export main)))
   (call   main (: 5 Int64) (: (tuple 7 9) (Tuple Int64 Int64)))
   (output (: #list(5 7 9) (List Int64)))
   (live-objects known-leak 3))
@@ -16418,7 +16418,7 @@
   (doc    "Parameter ORDER is preserved across the mix: a tuple param FOLLOWED by a scalar. `main((tuple
            20 30), 40) = (list 20 30 40)` — the leaf cursor threads the tuple's flattened fields then the
            trailing scalar.")
-  (input  (do (def (main (: p (Tuple Int64 Int64)) (: a Int64)) (list (. p 0) (. p 1) a)) (export main)))
+  (input  (do (def (main (: p (Tuple Int64 Int64)) (: a Int64)) #list((. p 0) (. p 1) a)) (export main)))
   (call   main (: (tuple 20 30) (Tuple Int64 Int64)) (: 40 Int64))
   (output (: #list(20 30 40) (List Int64)))
   (live-objects known-leak 3))
@@ -16427,7 +16427,7 @@
   (doc    "MULTIPLE compound params compose: two tuples each cross as their own native `tuple<…>` (the
            envelope mints one type per compound), each rebuilt from its own run of flattened leaves.
            `main((tuple 1 2), (tuple 3 4)) = (list 1 2 3 4)`.")
-  (input  (do (def (main (: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. p 1) (. q 0) (. q 1))) (export main)))
+  (input  (do (def (main (: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. p 1) (. q 0) (. q 1))) (export main)))
   (call   main (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64)))
   (output (: #list(1 2 3 4) (List Int64)))
   (live-objects known-leak 4))
@@ -16445,7 +16445,7 @@
            a native nested `tuple<tuple<…>, …>` the canonical ABI flattens depth-first into scalar leaves,
            which `make` rebuilds into the nested cell (recursive `FieldRebuild`). `main((tuple (tuple 1 2)
            3)) = (list 1 2 3)`.")
-  (input  (do (def (main (: p (Tuple (Tuple Int64 Int64) Int64))) (list (. (. p 0) 0) (. (. p 0) 1) (. p 1))) (export main)))
+  (input  (do (def (main (: p (Tuple (Tuple Int64 Int64) Int64))) #list((. (. p 0) 0) (. (. p 0) 1) (. p 1))) (export main)))
   (call   main (: (tuple (tuple 1 2) 3) (Tuple (Tuple Int64 Int64) Int64)))
   (output (: #list(1 2 3) (List Int64)))
   (live-objects known-leak 4))
@@ -16453,7 +16453,7 @@
 (case "an export with a record-with-a-tuple-field parameter returns a list from its leaves"
   (doc    "A record whose field is a tuple is likewise a nested fixed-shape compound; its fields cross in
            canonical sorted-key order. `main((record (pt (tuple 10 20)) (n 30))) = (list 10 20 30)`.")
-  (input  (do (def (main (: p (Record (: pt (Tuple Int64 Int64)) (: n Int64)))) (list (. (. p pt) 0) (. (. p pt) 1) (. p n))) (export main)))
+  (input  (do (def (main (: p (Record (: pt (Tuple Int64 Int64)) (: n Int64)))) #list((. (. p pt) 0) (. (. p pt) 1) (. p n))) (export main)))
   (call   main (: (record (= pt (tuple 10 20)) (= n 30)) (Record (: pt (Tuple Int64 Int64)) (: n Int64))))
   (output (: #list(10 20 30) (List Int64)))
   (live-objects known-leak 4))
@@ -16461,7 +16461,7 @@
 (case "an export mixing a scalar and a nested-tuple parameter returns a list from both"
   (doc    "A nested compound composes with a scalar param: `main(9, (tuple (tuple 5 6) 7)) = (list 9 5 7)`
            — the scalar leaf, then the nested tuple's depth-first leaves, rebuilt.")
-  (input  (do (def (main (: a Int64) (: p (Tuple (Tuple Int64 Int64) Int64))) (list a (. (. p 0) 0) (. p 1))) (export main)))
+  (input  (do (def (main (: a Int64) (: p (Tuple (Tuple Int64 Int64) Int64))) #list(a (. (. p 0) 0) (. p 1))) (export main)))
   (call   main (: 9 Int64) (: (tuple (tuple 5 6) 7) (Tuple (Tuple Int64 Int64) Int64)))
   (output (: #list(9 5 7) (List Int64)))
   (live-objects known-leak 4))
@@ -16480,8 +16480,8 @@
            discipline tuples/lists already use). Expected: 2.")
   (input  (do
             (def (f (: r (Record (: a Int64) (: b Int64))))
-              (record (= a (+ (. r a) 1)) (= b (. r b))))
-            (def (main) (. (f (f (record (= a 0) (= b 5)))) a))
+              #record((= a (+ (. r a) 1)) (= b (. r b))))
+            (def (main) (. (f (f #record((= a 0) (= b 5)))) a))
             (export main)))
   (output (: 2 Int64)))
 
@@ -16499,9 +16499,9 @@
   (input  (do
             (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast)))
             (def (head-of (: node Ast))
-              (match node ((Ast.List (list (Ast.Name n) .. rest)) 100) (_ 0)))
+              (match node ((Ast.List #list((Ast.Name n) .. rest)) 100) (_ 0)))
             (def (idast (: k Int64) (: node Ast)) (if (<= k 0) node (idast (- k 1) node)))
-            (def (main) (head-of (idast 3 (Ast.List (list (Ast.Name "a") (Ast.Int 5))))))
+            (def (main) (head-of (idast 3 (Ast.List #list((Ast.Name "a") (Ast.Int 5))))))
             (export main)))
   (output (: 100 Int64))
   (live-objects 0))
@@ -16524,10 +16524,10 @@
             (type T (I Int64) (L (List T)) (S String))
             (def (head-kind (: t T))
               (match t
-                ((T.L (list (T.S _) .. _)) 7)
+                ((T.L #list((T.S _) .. _)) 7)
                 (_ 0)))
             (def (main (: d Int64))
-              (head-kind (T.L (List.push (list) (T.S "x")))))
+              (head-kind (T.L (List.push #list() (T.S "x")))))
             (export main)))
   (call   main (: 1 Int64))
   (output (: 7 Int64)))
@@ -16543,12 +16543,12 @@
             (type T (I Int64) (S String) (L (List T)))
             (def (probe (: t T))
               (match t
-                ((T.L (list (T.L (list (T.S _) .. _)) .. _)) 110)
-                ((T.L (list (T.S _) .. _)) 10)
+                ((T.L #list((T.L #list((T.S _) .. _)) .. _)) 110)
+                ((T.L #list((T.S _) .. _)) 10)
                 (_ 0)))
             (def (main (: d Int64))
-              (+ (probe (T.L (List.push (list) (T.L (List.push (list) (T.S "x"))))))
-                 (probe (T.L (List.push (list) (T.S "y"))))))
+              (+ (probe (T.L (List.push #list() (T.L (List.push #list() (T.S "x"))))))
+                 (probe (T.L (List.push #list() (T.S "y"))))))
             (export main)))
   (call   main (: 1 Int64))
   (output (: 120 Int64)))
@@ -16562,7 +16562,7 @@
   (input  (do
             (type T (I Int64) (F Int64) (S String) (P (Tuple String Int64)))
             (def (main (: d Int64))
-              (match (T.P (tuple "ab" 5))
+              (match (T.P #tuple("ab" 5))
                 ((T.P p) (+ (String.byte-len (. p 0)) (. p 1)))
                 (_ 0)))
             (export main)))
@@ -16580,11 +16580,11 @@
             (type T (I Int64) (F Float64) (S String) (L (List T)))
             (def (kind (: t T))
               (match t
-                ((T.L (list (T.S _) .. _)) 1)
+                ((T.L #list((T.S _) .. _)) 1)
                 ((T.S s) (String.byte-len s))
                 (_ 0)))
             (def (main (: d Int64))
-              (+ (kind (T.L (List.push (list) (T.S "x"))))
+              (+ (kind (T.L (List.push #list() (T.S "x"))))
                  (kind (T.S "ab"))))
             (export main)))
   (call   main (: 1 Int64))
@@ -16603,7 +16603,7 @@
            pin for the shared indexed read.")
   (input  (do
             (def (main (: i Int64) (: j Int64))
-              (let ((xs (List.push (List.push (list) 7) 8)))
+              (let ((xs (List.push (List.push #list() 7) 8)))
                 (+ (Option.expect (List.at xs i) "a") (Option.expect (List.at xs j) "b"))))
             (export main)))
   (call   main (: 0 Int64) (: 1 Int64))
@@ -16617,7 +16617,7 @@
            binding-identity pin.")
   (input  (do
             (def (main (: d Int64))
-              (let ((xs (List.push (list) d)))
+              (let ((xs (List.push #list() d)))
                 (+ (Option.expect (List.at xs 0) "a")
                    (let ((xs (List.push xs 9)))
                      (Option.expect (List.at xs 1) "b")))))
@@ -16633,7 +16633,7 @@
            value-identity pin, composing the persistence guarantee with the read sharing.")
   (input  (do
             (def (main (: d Int64))
-              (let ((xs (List.push (list) d)))
+              (let ((xs (List.push #list() d)))
                 (+ (Option.expect (List.at xs 0) "a")
                    (Option.expect (List.at (List.update xs 0 99) 0) "b"))))
             (export main)))
@@ -16649,7 +16649,7 @@
            sharing, the indexed-read analogue of the LICM zero-iteration pin.")
   (input  (do
             (def (main (: k Int64))
-              (let ((xs (List.push (List.push (list) 7) 8)))
+              (let ((xs (List.push (List.push #list() 7) 8)))
                 (+ (if (> k 1) (Option.expect (List.at xs k) "big") 0)
                    (Option.expect (List.at xs 0) "zero"))))
             (export main)))
@@ -16754,7 +16754,7 @@
             (def (f (: xs (List Int64)))
               (+ (+ (Option.expect (List.at xs 2) "v") (Option.expect (List.at xs 2) "v"))
                  (List.len xs)))
-            (def (main (: n Int64)) (f (build n (list))))
+            (def (main (: n Int64)) (f (build n #list())))
             (export main)))
   (call   main (: 4 Int64))
   (output (: 9 Int64)))
@@ -16815,7 +16815,7 @@
   (input  (do
             (type T (List Int64) (Other Int64))
             (def (main (: d Int64))
-              (+ (List.len (list 1 2))
+              (+ (List.len #list(1 2))
                  (match (List 5) ((List n) n) (_ -1))))
             (export main)))
   (call   main (: 0 Int64))
@@ -16870,7 +16870,7 @@
            self-`List.concat` (both operands the same shared binding) dups correctly rather than
            consuming the shared value once and reading freed memory for the second operand.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (list) (List.push (mk (- n 1)) n)))
+            (def (mk (: n Int64)) (if (= n 0) #list() (List.push (mk (- n 1)) n)))
             (def (main (: n Int64)) (let ((xs (mk n))) (List.len (List.concat xs xs))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 10 Int64))
@@ -16895,7 +16895,7 @@
               (if (= n 0) acc (build (- n 1) (List.push acc n))))
             (def (sum (: l (List Int64)) (: i Int64) (: a Int64))
               (if (= i (List.len l)) a (sum l (+ i 1) (+ a (Option.expect (List.at l i) "oob")))))
-            (def (main (: n Int64)) (sum (build n (list)) 0 0))
+            (def (main (: n Int64)) (sum (build n #list()) 0 0))
             (export main)))
   (call   main (: 10 Int64)) (output (: 55 Int64))
   (call   main (: 32 Int64)) (output (: 528 Int64))
@@ -16915,11 +16915,11 @@
            intact at indices ≥ 32 on both backends.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: out (List (Tuple Int64 Int64))))
-              (if (< i n) (build (+ i 1) n (List.push out (tuple i (* i 10)))) out))
+              (if (< i n) (build (+ i 1) n (List.push out #tuple(i (* i 10)))) out))
             (def (main (: idx Int64))
-              (let ((xs (build 0 40 (list))))
+              (let ((xs (build 0 40 #list())))
                 (match (List.at xs idx)
-                  ((Some p) (match p ((tuple a b) (+ (* 1000 a) b))))
+                  ((Some p) (match p (#tuple(a b) (+ (* 1000 a) b))))
                   ((None _u) -1))))
             (export main)))
   (call   main (: 31 Int64)) (output (: 31310 Int64))
@@ -16942,7 +16942,7 @@
            FBIP-mutates it → 4).")
   (input  (do
             (def (main (: d Int64))
-              (let ((t (tuple (tuple (tuple (List.push (list) d) 1) 2) 3)))
+              (let ((t #tuple(#tuple(#tuple((List.push #list() d) 1) 2) 3)))
                 (+ (List.len (List.push (. (. (. t 0) 0) 0) 9))
                    (List.len (. (. (. t 0) 0) 0)))))
             (export main)))
@@ -16956,7 +16956,7 @@
            projections) stops at the record and misses the dup.")
   (input  (do
             (def (main (: d Int64))
-              (let ((t (tuple (record (= f (List.push (list) d))) 5)))
+              (let ((t #tuple(#record((= f (List.push #list() d))) 5)))
                 (+ (List.len (List.push (. (. t 0) f) 9))
                    (List.len (. (. t 0) f)))))
             (export main)))
@@ -16969,7 +16969,7 @@
            2 + 1 = 3. With the record-in-tuple case this pins both orders of the kind crossing.")
   (input  (do
             (def (main (: d Int64))
-              (let ((r (record (= a (tuple (List.push (list) d) 9)))))
+              (let ((r #record((= a #tuple((List.push #list() d) 9)))))
                 (+ (List.len (List.push (. (. r a) 0) 9))
                    (List.len (. (. r a) 0)))))
             (export main)))
@@ -16984,7 +16984,7 @@
            would corrupt the sibling read).")
   (input  (do
             (def (main (: d Int64))
-              (let ((t (tuple (tuple (List.push (list) d) 1) 2)))
+              (let ((t #tuple(#tuple((List.push #list() d) 1) 2)))
                 (+ (+ (List.len (List.push (. (. t 0) 0) 9))
                       (. (. t 0) 1))
                    (List.len (. (. t 0) 0)))))
@@ -17002,7 +17002,7 @@
               (+ (List.len (List.push (. (. t 0) 0) 9))
                  (List.len (. (. t 0) 0))))
             (def (main (: d Int64))
-              (f (tuple (tuple (List.push (list) d) 1) 2)))
+              (f #tuple(#tuple((List.push #list() d) 1) 2)))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 3 Int64)))
@@ -17107,7 +17107,7 @@
   (input  (do
             (def (main)
               (match (List.at (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 5 50) 2 20) 8 80)) 0)
-                ((Some p) (match p ((tuple k v) k)))
+                ((Some p) (match p (#tuple(k v) k)))
                 ((None u) -1)))
             (export main)))
   (output (: 2 Int64)))
@@ -17123,9 +17123,9 @@
             (def (main)
               (let ((m (Map.insert (Map.insert (Map.insert Map.empty 3 30) 1 10) 2 20)))
                 (let ((ps (Map.to-list m)))
-                  (+ (+ (* 100 (match (List.at ps 0) ((Some p) (match p ((tuple k v) v))) ((None u) -1)))
-                        (* 10 (match (List.at ps 1) ((Some p) (match p ((tuple k v) v))) ((None u) -1))))
-                     (match (List.at ps 2) ((Some p) (match p ((tuple k v) v))) ((None u) -1))))))
+                  (+ (+ (* 100 (match (List.at ps 0) ((Some p) (match p (#tuple(k v) v))) ((None u) -1)))
+                        (* 10 (match (List.at ps 1) ((Some p) (match p (#tuple(k v) v))) ((None u) -1))))
+                     (match (List.at ps 2) ((Some p) (match p (#tuple(k v) v))) ((None u) -1))))))
             (export main)))
   (output (: 1230 Int64)))
 
@@ -17140,9 +17140,9 @@
             (def (main)
               (let ((m (Map.insert (Map.insert (Map.insert Map.empty 2 20) 3 30) 1 10)))
                 (let ((ps (Map.to-list m)))
-                  (+ (+ (* 100 (match (List.at ps 0) ((Some p) (match p ((tuple k v) v))) ((None u) -1)))
-                        (* 10 (match (List.at ps 1) ((Some p) (match p ((tuple k v) v))) ((None u) -1))))
-                     (match (List.at ps 2) ((Some p) (match p ((tuple k v) v))) ((None u) -1))))))
+                  (+ (+ (* 100 (match (List.at ps 0) ((Some p) (match p (#tuple(k v) v))) ((None u) -1)))
+                        (* 10 (match (List.at ps 1) ((Some p) (match p (#tuple(k v) v))) ((None u) -1))))
+                     (match (List.at ps 2) ((Some p) (match p (#tuple(k v) v))) ((None u) -1))))))
             (export main)))
   (output (: 1230 Int64)))
 
@@ -17158,8 +17158,8 @@
               (if (= i 0) m (fill (- i 1) (Map.insert m (* i 7) i))))
             (def (sorted (: ps (List (Tuple Int64 Int64))) (: prev Int64) (: cnt Int64))
               (match ps
-                ((list) cnt)
-                ((list h .. t) (match h ((tuple k _v) (if (> k prev) (sorted t k (+ cnt 1)) -100000))))))
+                (#list() cnt)
+                (#list(h .. t) (match h (#tuple(k _v) (if (> k prev) (sorted t k (+ cnt 1)) -100000))))))
             (def (main (: n Int64))
               (sorted (Map.to-list (fill n Map.empty)) -1 0))
             (export main)))
@@ -17179,14 +17179,14 @@
               (if (= i 0) m (fill (- i 1) (Map.insert m (* (- i 50) 7) i))))
             (def (inc (: ps (List (Tuple Int64 Int64))) (: prev Int64) (: cnt Int64))
               (match ps
-                ((list) cnt)
-                ((list h .. t) (match h ((tuple k _v) (if (> k prev) (inc t k (+ cnt 1)) -100000))))))
+                (#list() cnt)
+                (#list(h .. t) (match h (#tuple(k _v) (if (> k prev) (inc t k (+ cnt 1)) -100000))))))
             (def (main (: n Int64))
               (do
                 (def m (fill n Map.empty))
                 (+ (* 10 (inc (Map.to-list m) -100000 0))
                    (match (List.at (Map.to-list m) 0)
-                     ((Some p) (match p ((tuple k _v) (if (= k -343) 1 0))))
+                     ((Some p) (match p (#tuple(k _v) (if (= k -343) 1 0))))
                      ((None _u) -1)))))
             (export main)))
   (call   main (: 100 Int64)) (output (: 1001 Int64))
@@ -17225,8 +17225,8 @@
               (if (= i 0) m (fill (- i 1) (Map.insert m (* i 3) (* i 5)))))
             (def (rebuild (: ps (List (Tuple Int64 Int64))) (: m (Map Int64 Int64)))
               (match ps
-                ((list) m)
-                ((list h .. t) (match h ((tuple k v) (rebuild t (Map.insert m k v)))))))
+                (#list() m)
+                (#list(h .. t) (match h (#tuple(k v) (rebuild t (Map.insert m k v)))))))
             (def (main (: n Int64))
               (do
                 (def src (fill n Map.empty))
@@ -17247,8 +17247,8 @@
               (if (= i 0) m (fill (- i 1) (Map.insert m i (* i 2)))))
             (def (keep-even (: ps (List (Tuple Int64 Int64))) (: m (Map Int64 Int64)))
               (match ps
-                ((list) m)
-                ((list h .. t) (match h ((tuple k v)
+                (#list() m)
+                (#list(h .. t) (match h (#tuple(k v)
                   (keep-even t (if (= (% k 2) 0) (Map.insert m k v) m)))))))
             (def (main (: n Int64))
               (do
@@ -17274,8 +17274,8 @@
               (if (= i 0) m (fill-even (- i 1) (if (= (% i 2) 0) (Map.insert m i (* i 2)) m))))
             (def (keep-even (: ps (List (Tuple Int64 Int64))) (: m (Map Int64 Int64)))
               (match ps
-                ((list) m)
-                ((list h .. t) (match h ((tuple k v)
+                (#list() m)
+                (#list(h .. t) (match h (#tuple(k v)
                   (keep-even t (if (= (% k 2) 0) (Map.insert m k v) m)))))))
             (def (main (: n Int64))
               (do
@@ -17313,7 +17313,7 @@
               (if (< n 1) m (ins (- n 1) (Map.insert m n (* n 10)))))
             (def (main (: n Int64))
               (match (List.at (Map.to-list (ins n Map.empty)) 0)
-                ((Some p) (match p ((tuple k v) (+ k v))))
+                ((Some p) (match p (#tuple(k v) (+ k v))))
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 4 Int64)) (output (: 11 Int64))
@@ -17335,7 +17335,7 @@
             (def (main (: n Int64))
               (let ((m (Map.insert (Map.insert (Map.insert Map.empty (rep "z" n) 1) (rep "a" n) 2) (rep "m" n) 3)))
                 (match (List.at (Map.to-list m) 0)
-                  ((Some p) (match p ((tuple k v) v)))
+                  ((Some p) (match p (#tuple(k v) v)))
                   ((None u) -1))))
             (export main)))
   (call   main (: 2 Int64))
@@ -17352,7 +17352,7 @@
             (def (main (: n Int64))
               (let ((m (Map.insert (Map.insert (Map.insert Map.empty (rep "z" n) 1) (rep "a" n) 2) (rep "m" n) 3)))
                 (match (List.at (Map.to-list m) 2)
-                  ((Some p) (match p ((tuple k v) v)))
+                  ((Some p) (match p (#tuple(k v) v)))
                   ((None u) -1))))
             (export main)))
   (call   main (: 2 Int64))
@@ -17395,8 +17395,8 @@
   (input  (do
             (def (xform (: ps (List (Tuple Int64 Int64))) (: m (Map Int64 Int64)))
               (match ps
-                ((list) m)
-                ((list h .. t) (match h ((tuple k v) (xform t (Map.insert m k (* v 10))))))))
+                (#list() m)
+                (#list(h .. t) (match h (#tuple(k v) (xform t (Map.insert m k (* v 10))))))))
             (def (main (: n Int64))
               (let ((src (Map.insert (Map.insert Map.empty 1 n) 2 5)))
                 (let ((dst (xform (Map.to-list src) Map.empty)))
@@ -17420,8 +17420,8 @@
   (input  (do
             (def (merge-into (: entries (List (Tuple Int64 Int64))) (: m (Map Int64 Int64)))
               (match entries
-                ((list) m)
-                ((list (tuple k v) .. t)
+                (#list() m)
+                (#list(#tuple(k v) .. t)
                   (merge-into t
                     (match (Map.lookup m k)
                       ((Some old) (Map.insert m k (+ old v)))
@@ -17456,8 +17456,8 @@
   (input  (do
             (def (invert (: entries (List (Tuple Int64 Int64))) (: m (Map Int64 Int64)))
               (match entries
-                ((list) m)
-                ((list (tuple k v) .. t) (invert t (Map.insert m v k)))))
+                (#list() m)
+                (#list(#tuple(k v) .. t) (invert t (Map.insert m v k)))))
             (def (get (: m (Map Int64 Int64)) (: k Int64))
               (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
             (def (main (: n Int64))
@@ -17481,8 +17481,8 @@
   (input  (do
             (def (keep (: ps (List (Tuple Int64 Int64))) (: cut Int64) (: m (Map Int64 Int64)))
               (match ps
-                ((list) m)
-                ((list h .. t) (match h ((tuple k v)
+                (#list() m)
+                (#list(h .. t) (match h (#tuple(k v)
                   (keep t cut (if (> v cut) (Map.insert m k v) m)))))))
             (def (main (: cut Int64))
               (let ((src (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 3 30)))
@@ -17525,9 +17525,9 @@
            order pin. Expected: 10.")
   (input  (do
             (def (main (: a Int64))
-              (let ((m (Map.insert (Map.insert (Map.insert Map.empty (tuple 3 a) 30) (tuple 1 2) 10) (tuple 2 0) 20)))
+              (let ((m (Map.insert (Map.insert (Map.insert Map.empty #tuple(3 a) 30) #tuple(1 2) 10) #tuple(2 0) 20)))
                 (match (List.at (Map.to-list m) 0)
-                  ((Some p) (match p ((tuple k v) v)))
+                  ((Some p) (match p (#tuple(k v) v)))
                   ((None u) -1))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 10 Int64))
@@ -17540,9 +17540,9 @@
            would pass index 0 and fail here. Expected: 20.")
   (input  (do
             (def (main (: a Int64))
-              (let ((m (Map.insert (Map.insert (Map.insert Map.empty (tuple 3 a) 30) (tuple 1 2) 10) (tuple 2 0) 20)))
+              (let ((m (Map.insert (Map.insert (Map.insert Map.empty #tuple(3 a) 30) #tuple(1 2) 10) #tuple(2 0) 20)))
                 (match (List.at (Map.to-list m) 1)
-                  ((Some p) (match p ((tuple k v) v)))
+                  ((Some p) (match p (#tuple(k v) v)))
                   ((None u) -1))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 20 Int64))
@@ -17602,7 +17602,7 @@
   (input  (do
             (def (f (: a Int64) (: b Int64)) (+ (* a 10) b))
             (def (main (: d Int64))
-              (let ((xs (List.push (list) d)))
+              (let ((xs (List.push #list() d)))
                 (f (List.len xs) (List.len (List.push xs 9)))))
             (export main)))
   (call   main (: 7 Int64))
@@ -17615,7 +17615,7 @@
   (input  (do
             (def (f (: a Int64) (: b Int64)) (+ (* a 10) b))
             (def (main (: d Int64))
-              (let ((xs (List.push (list) d)))
+              (let ((xs (List.push #list() d)))
                 (f (List.len (List.push xs 9)) (List.len xs))))
             (export main)))
   (call   main (: 7 Int64))
@@ -17629,9 +17629,9 @@
            ctor half in both directions).")
   (input  (do
             (def (main (: d Int64))
-              (let ((xs (List.push (list) d)))
-                (let ((t1 (tuple (List.len (List.push xs 9)) (List.len xs)))
-                      (t2 (tuple (List.len xs) (List.len (List.push xs 9)))))
+              (let ((xs (List.push #list() d)))
+                (let ((t1 #tuple((List.len (List.push xs 9)) (List.len xs)))
+                      (t2 #tuple((List.len xs) (List.len (List.push xs 9)))))
                   (+ (* 1000 (. t1 0)) (+ (* 100 (. t1 1)) (+ (* 10 (. t2 0)) (. t2 1)))))))
             (export main)))
   (call   main (: 7 Int64))
@@ -17646,7 +17646,7 @@
   (input  (do
             (def (f (: a Int64) (: b Int64)) (+ (* a 10) b))
             (def (main (: d Int64))
-              (let ((xs (List.push (list) d)))
+              (let ((xs (List.push #list() d)))
                 (f (List.len (List.push xs 8)) (List.len (List.push xs 9)))))
             (export main)))
   (call   main (: 7 Int64))
@@ -17666,11 +17666,11 @@
             (type Op (Add Int64) (Mul Int64) (Neg Unit))
             (def (f (: xs (List Op)))
               (match xs
-                ((guard (list (Op.Add a) (Op.Mul b) .. r) (> a b)) (+ a b))
+                ((guard #list((Op.Add a) (Op.Mul b) .. r) (> a b)) (+ a b))
                 (_ -1)))
             (def (main (: v Int64))
-              (+ (f (List.push (List.push (list) (Op.Add 5)) (Op.Mul 2)))
-                 (f (List.push (List.push (list) (Op.Add 1)) (Op.Mul v)))))
+              (+ (f (List.push (List.push #list() (Op.Add 5)) (Op.Mul 2)))
+                 (f (List.push (List.push #list() (Op.Add 1)) (Op.Mul v)))))
             (export main)))
   (call   main (: 9 Int64))
   (output (: 6 Int64)))
@@ -17683,10 +17683,10 @@
             (type Op (Add Int64) (Mul Int64) (Neg Unit))
             (def (f (: xs (List Op)) (: k Int64))
               (match xs
-                ((guard (list (Op.Add n) .. r) (> n k)) n)
+                ((guard #list((Op.Add n) .. r) (> n k)) n)
                 (_ -1)))
             (def (main (: v Int64))
-              (+ (f (List.push (list) (Op.Add 5)) 3) (f (List.push (list) (Op.Add v)) 3)))
+              (+ (f (List.push #list() (Op.Add 5)) 3) (f (List.push #list() (Op.Add v)) 3)))
             (export main)))
   (call   main (: 2 Int64))
   (output (: 4 Int64)))
@@ -17701,11 +17701,11 @@
             (type Op (Add Int64) (Mul Int64) (Neg Unit))
             (def (f (: xs (List Op)))
               (match xs
-                ((guard (list (Op.Add n) .. r) (> n 9)) (+ 100 n))
-                ((list (Op.Add n) .. r) n)
+                ((guard #list((Op.Add n) .. r) (> n 9)) (+ 100 n))
+                (#list((Op.Add n) .. r) n)
                 (_ -1)))
             (def (main (: v Int64))
-              (+ (f (List.push (list) (Op.Add 15))) (f (List.push (list) (Op.Add v)))))
+              (+ (f (List.push #list() (Op.Add 15))) (f (List.push #list() (Op.Add v)))))
             (export main)))
   (call   main (: 5 Int64))
   (output (: 120 Int64)))
@@ -17719,10 +17719,10 @@
             (type Op (Add Int64) (Mul Int64) (Neg Unit))
             (def (f (: xs (List Op)))
               (match xs
-                ((guard (list (Op.Add n) .. r) (> n (List.len r))) n)
+                ((guard #list((Op.Add n) .. r) (> n (List.len r))) n)
                 (_ -1)))
             (def (main (: v Int64))
-              (+ (f (List.push (list) (Op.Add 2))) (f (List.push (list) (Op.Add v)))))
+              (+ (f (List.push #list() (Op.Add 2))) (f (List.push #list() (Op.Add v)))))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
@@ -17737,12 +17737,12 @@
             (type Op (Add Int64) (Mul Int64) (Neg Unit))
             (def (f (: xs (List Op)))
               (match xs
-                ((list (Op.Add 0) .. r) 100)
-                ((list (Op.Add 1) .. r) 200)
-                ((list (Op.Add n) .. r) n)
+                (#list((Op.Add 0) .. r) 100)
+                (#list((Op.Add 1) .. r) 200)
+                (#list((Op.Add n) .. r) n)
                 (_ -1)))
             (def (main (: v Int64))
-              (+ (f (List.push (list) (Op.Add 1))) (f (List.push (list) (Op.Add v)))))
+              (+ (f (List.push #list() (Op.Add 1))) (f (List.push #list() (Op.Add v)))))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 207 Int64))
@@ -17756,12 +17756,12 @@
             (type Op (Add Int64) (Mul Int64) (Neg Unit))
             (def (f (: xs (List Op)))
               (match xs
-                ((list _ (Op.Add 0) .. r) 100)
-                ((list _ (Op.Add n) .. r) n)
+                (#list(_ (Op.Add 0) .. r) 100)
+                (#list(_ (Op.Add n) .. r) n)
                 (_ -1)))
             (def (main (: v Int64))
-              (+ (f (List.push (List.push (list) (Op.Neg unit)) (Op.Add 0)))
-                 (f (List.push (List.push (list) (Op.Neg unit)) (Op.Add v)))))
+              (+ (f (List.push (List.push #list() (Op.Neg unit)) (Op.Add 0)))
+                 (f (List.push (List.push #list() (Op.Neg unit)) (Op.Add v)))))
             (export main)))
   (call   main (: 9 Int64))
   (output (: 109 Int64))
@@ -17775,11 +17775,11 @@
             (type Op (Add Int64) (Mul Int64) (Neg Unit))
             (def (f (: xs (List Op)))
               (match xs
-                ((list (Op.Add 0) (Op.Add 0) .. r) 1)
-                ((list (Op.Add 0) (Op.Add n) .. r) n)
+                (#list((Op.Add 0) (Op.Add 0) .. r) 1)
+                (#list((Op.Add 0) (Op.Add n) .. r) n)
                 (_ -1)))
             (def (main (: v Int64))
-              (f (List.push (List.push (list) (Op.Add 0)) (Op.Add v))))
+              (f (List.push (List.push #list() (Op.Add 0)) (Op.Add v))))
             (export main)))
   (call   main (: 4 Int64))
   (output (: 4 Int64))
@@ -17794,11 +17794,11 @@
             (type T (Tag String) (Other Unit))
             (def (f (: xs (List T)))
               (match xs
-                ((list (T.Tag "a") .. r) 1)
-                ((list (T.Tag s) .. r) (String.byte-len s))
+                (#list((T.Tag "a") .. r) 1)
+                (#list((T.Tag s) .. r) (String.byte-len s))
                 (_ -1)))
             (def (main (: d Int64))
-              (+ (f (List.push (list) (T.Tag "a"))) (f (List.push (list) (T.Tag "bc")))))
+              (+ (f (List.push #list() (T.Tag "a"))) (f (List.push #list() (T.Tag "bc")))))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 3 Int64)))
@@ -17817,10 +17817,10 @@
   (input  (do
             (def (f (: t (Tuple (Tuple Int64 Int64) Int64)))
               (match t
-                ((guard (tuple (tuple a b) c) (> a c)) (+ (+ a b) c))
+                ((guard #tuple(#tuple(a b) c) (> a c)) (+ (+ a b) c))
                 (_ -1)))
             (def (main (: v Int64))
-              (f (tuple (tuple 5 1) 2)))
+              (f #tuple(#tuple(5 1) 2)))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 8 Int64)))
@@ -17832,10 +17832,10 @@
   (input  (do
             (def (f (: t (Tuple Int64 Int64)) (: k Int64))
               (match t
-                ((guard (tuple a _) (> a k)) a)
+                ((guard #tuple(a _) (> a k)) a)
                 (_ -1)))
             (def (main (: v Int64))
-              (+ (f (tuple 5 9) 3) (f (tuple v 9) 3)))
+              (+ (f #tuple(5 9) 3) (f #tuple(v 9) 3)))
             (export main)))
   (call   main (: 2 Int64))
   (output (: 4 Int64))
@@ -17849,10 +17849,10 @@
   (input  (do
             (def (f (: t (Tuple Int64 Int64)))
               (match t
-                ((guard (tuple a b) (> a 9)) (+ 100 a))
-                ((tuple a b) (+ a b))))
+                ((guard #tuple(a b) (> a 9)) (+ 100 a))
+                (#tuple(a b) (+ a b))))
             (def (main (: v Int64))
-              (+ (f (tuple 15 1)) (f (tuple v 1))))
+              (+ (f #tuple(15 1)) (f #tuple(v 1))))
             (export main)))
   (call   main (: 5 Int64))
   (output (: 121 Int64))
@@ -17867,10 +17867,10 @@
             (type Op (Add Int64) (Neg Unit))
             (def (f (: t (Tuple Op Int64)))
               (match t
-                ((guard (tuple (Op.Add n) b) (> n b)) (+ (* n 10) b))
+                ((guard #tuple((Op.Add n) b) (> n b)) (+ (* n 10) b))
                 (_ -1)))
             (def (main (: v Int64))
-              (f (tuple (Op.Add 5) 2)))
+              (f #tuple((Op.Add 5) 2)))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 52 Int64)))
@@ -17889,8 +17889,8 @@
   (input  (do
             (type T (A Int64) (B Int64))
             (def (main (: x Int64) (: y Int64) (: z Int64))
-              (match (tuple (T.A x) (T.A y) (T.A z))
-                ((tuple (T.A a) (T.A b) (T.A c)) (+ (+ (* a 100) (* b 10)) c))
+              (match #tuple((T.A x) (T.A y) (T.A z))
+                (#tuple((T.A a) (T.A b) (T.A c)) (+ (+ (* a 100) (* b 10)) c))
                 (_ -1)))
             (export main)))
   (call   main (: 1 Int64) (: 2 Int64) (: 3 Int64))
@@ -17904,8 +17904,8 @@
   (input  (do
             (type T (A Int64) (B Int64))
             (def (main (: x Int64) (: y Int64))
-              (match (tuple (tuple (T.A x) 0) (T.A y))
-                ((tuple (tuple (T.A a) _) (T.A b)) (+ (* a 10) b))
+              (match #tuple(#tuple((T.A x) 0) (T.A y))
+                (#tuple(#tuple((T.A a) _) (T.A b)) (+ (* a 10) b))
                 (_ -1)))
             (export main)))
   (call   main (: 3 Int64) (: 7 Int64))
@@ -17919,8 +17919,8 @@
   (input  (do
             (type T (A Int64) (B Int64))
             (def (main (: x Int64) (: y Int64))
-              (match (tuple (T.A x) (T.A y))
-                ((guard (tuple (T.A a) (T.A b)) (> a b)) (- a b))
+              (match #tuple((T.A x) (T.A y))
+                ((guard #tuple((T.A a) (T.A b)) (> a b)) (- a b))
                 (_ -1)))
             (export main)))
   (call   main (: 5 Int64) (: 2 Int64))
@@ -17937,15 +17937,15 @@
   (input  (do
             (type Ty (TInt Unit) (TBool Unit) (TArrow (Tuple Ty Ty)))
             (def (unify (: x Ty) (: y Ty))
-              (match (tuple x y)
-                ((tuple (Ty.TInt _) (Ty.TInt _)) 1)
-                ((tuple (Ty.TBool _) (Ty.TBool _)) 1)
-                ((tuple (Ty.TArrow p) (Ty.TArrow q))
+              (match #tuple(x y)
+                (#tuple((Ty.TInt _) (Ty.TInt _)) 1)
+                (#tuple((Ty.TBool _) (Ty.TBool _)) 1)
+                (#tuple((Ty.TArrow p) (Ty.TArrow q))
                   (if (= (unify (. p 0) (. q 0)) 1) (unify (. p 1) (. q 1)) 0))
                 (_ 0)))
             (def (main (: d Int64))
-              (unify (Ty.TArrow (tuple (Ty.TInt unit) (Ty.TBool unit)))
-                     (Ty.TArrow (tuple (Ty.TInt unit) (Ty.TInt unit)))))
+              (unify (Ty.TArrow #tuple((Ty.TInt unit) (Ty.TBool unit)))
+                     (Ty.TArrow #tuple((Ty.TInt unit) (Ty.TInt unit)))))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 0 Int64))
@@ -17966,7 +17966,7 @@
            scan was exponential here).")
   (input  (do
             (def (main (: d Int64))
-              (let ((xs (List.push (list) d)))
+              (let ((xs (List.push #list() d)))
                 (+ (List.len (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push xs 1) 2) 3) 4) 5) 6) 7) 8) 9) 10) 11) 12) 13) 14) 15) 16) 17) 18) 19) 20))
                    (List.len xs))))
             (export main)))
@@ -17980,8 +17980,8 @@
            a retain on `ys`).")
   (input  (do
             (def (main (: d Int64))
-              (let ((xs (List.push (list) d))
-                    (ys (List.push (List.push (list) 1) 2)))
+              (let ((xs (List.push #list() d))
+                    (ys (List.push (List.push #list() 1) 2)))
                 (+ (+ (List.len (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push xs 1) 2) 3) 4) 5) 6) 7) 8) 9) 10))
                       (List.len xs))
                    (List.len ys))))
@@ -18003,7 +18003,7 @@
            that skipped this would let a mistyped list-pattern head compile-error only at the emit stage,
            hiding it from the fast diagnostics path.")
   (input  (do (def (go (: rest (List Int64)))
-                (match rest ((Zorp x) (go (list x))) (_ 0)))
+                (match rest ((Zorp x) (go #list(x))) (_ 0)))
               (export go)))
   (error CDZ0101))
 
@@ -18021,18 +18021,18 @@
               (Take (Tuple Int64 Iter)))
             (def (next (: it Iter))
               (match it
-                ((Range r) (match r ((tuple lo hi)
-                  (if (< lo hi) (Some (tuple lo (Range (tuple (+ lo 1) hi)))) (None unit)))))
-                ((Take nf) (match nf ((tuple n src)
+                ((Range r) (match r (#tuple(lo hi)
+                  (if (< lo hi) (Some #tuple(lo (Range #tuple((+ lo 1) hi)))) (None unit)))))
+                ((Take nf) (match nf (#tuple(n src)
                   (if (<= n 0) (None unit)
                     (match (next src)
                       ((None _u) (None unit))
-                      ((Some p) (match p ((tuple v rest) (Some (tuple v (Take (tuple (- n 1) rest))))))))))))))
+                      ((Some p) (match p (#tuple(v rest) (Some #tuple(v (Take #tuple((- n 1) rest))))))))))))))
             (def (sum-it (: it Iter))
               (match (next it)
                 ((None _u) 0)
-                ((Some p) (match p ((tuple v rest) (+ v (sum-it rest)))))))
-            (def (main) (sum-it (Take (tuple 3 (Range (tuple 0 1000000))))))
+                ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
+            (def (main) (sum-it (Take #tuple(3 (Range #tuple(0 1000000))))))
             (export main)))
   (output (: 3 Int64))
   (live-objects known-leak 24))
@@ -18078,8 +18078,8 @@
            fold). Earlier the record-match arm was a not-yet-implemented decline (CDZ0201) and a field
            reference leaked a misleading 'unbound name' — this case now pins the working destructure.")
   (input  (do (def (f (: r (Record (: x Int64) (: y Int64))))
-                (match r ((record (= x a) (= y b)) (+ a b))))
-              (def (main) (f (record (= x 3) (= y 4))))
+                (match r (#record((= x a) (= y b)) (+ a b))))
+              (def (main) (f #record((= x 3) (= y 4))))
               (export main)))
   (output (: 7 Int64)))
 
@@ -18090,8 +18090,8 @@
            field `z` regardless of written order → `100*c + b` = 100*10 + 20 = 1020. The match twin of the
            record BINDING pattern's field-order independence — a flexibility a positional tuple pattern lacks.")
   (input  (do (def (f (: r (Record (: a Int64) (: z Int64))))
-                (match r ((record (= z b) (= a c)) (+ (* 100 c) b))))
-              (def (main) (f (record (= a 10) (= z 20))))
+                (match r (#record((= z b) (= a c)) (+ (* 100 c) b))))
+              (def (main) (f #record((= a 10) (= z 20))))
               (export main)))
   (output (: 1020 Int64)))
 
@@ -18113,8 +18113,8 @@
            Expected (n=5): 50.")
   (input  (do
             (def (probe (: n Int64))
-              (match (record (= id n) (= tags (list n (+ n 1))) (= name "x"))
-                ((record (= id k)) (* k 10))))
+              (match #record((= id n) (= tags #list(n (+ n 1))) (= name "x"))
+                (#record((= id k)) (* k 10))))
             (def (main (: n Int64)) (probe n))
             (export main)))
   (call   main (: 5 Int64)) (output (: 50 Int64)))
@@ -18125,8 +18125,8 @@
            record arm is taken → 3. (An UNGUARDED record arm; a GUARDED record arm is a later increment —
            it currently declines cleanly rather than lowering, pending the guard×record leaf gating.)")
   (input  (do (def (f (: r (Record (: x Int64))))
-                (match r ((record (= x a)) a) (_ 99)))
-              (def (main) (f (record (= x 3))))
+                (match r (#record((= x a)) a) (_ 99)))
+              (def (main) (f #record((= x 3))))
               (export main)))
   (output (: 3 Int64)))
 
@@ -18138,7 +18138,7 @@
            99 that `main` passes. Pins that a record field binder resolves as a fresh binder scoped to its
            arm, exactly as a variant-payload binder does — the record face of the shadow-in-a-called-def
            fix.")
-  (input  (do (def (f (: a Int64)) (match (record (= x 10)) ((record (= x a)) a)))
+  (input  (do (def (f (: a Int64)) (match #record((= x 10)) (#record((= x a)) a)))
               (def (main) (f 99))
               (export main)))
   (output (: 10 Int64)))
@@ -18151,8 +18151,8 @@
            match arm supports a refutable field probe (not only bare-binder fields), the record analogue of
            `(tuple 3 b)` / `(Some 0)`. Two `(call …)` values drive the runtime scrutinee through `f`.")
   (input  (do (def (f (: r (Record (: x Int64) (: y Int64))))
-                (match r ((record (= x 3) (= y b)) b) (_ -1)))
-              (def (main (: k Int64)) (f (record (= x k) (= y 4))))
+                (match r (#record((= x 3) (= y b)) b) (_ -1)))
+              (def (main (: k Int64)) (f #record((= x k) (= y 4))))
               (export main)))
   (call   main (: 3 Int64))
   (output (: 4 Int64))
@@ -18174,8 +18174,8 @@
            never exercise the projection). x=5 → guard holds → 5+6 = 11; x=-5 → guard fails → -1; x=0 →
            guard `(> 0 0)` fails → -1.")
   (input  (do (def (f (: r (Record (: x Int64) (: y Int64))))
-                (match r ((guard (record (= x a) (= y b)) (> a 0)) (+ a b)) (_ -1)))
-              (def (main (: k Int64)) (f (record (= x k) (= y (+ k 1)))))
+                (match r ((guard #record((= x a) (= y b)) (> a 0)) (+ a b)) (_ -1)))
+              (def (main (: k Int64)) (f #record((= x k) (= y (+ k 1)))))
               (export main)))
   (call   main (: 5 Int64))
   (output (: 11 Int64))
@@ -18191,7 +18191,7 @@
            binder). `(match (record (x 5)) ((record) 0) (_ 1))` → 0 (the `(record)` arm is taken, the `_`
            unreached). Pins that a zero-field record pattern is the trivial always-match, not a shape
            mismatch against a non-empty record.")
-  (input  (do (def (main) (match (record (= x 5)) ((record) 0) (_ 1))) (export main)))
+  (input  (do (def (main) (match #record((= x 5)) (#record() 0) (_ 1))) (export main)))
   (output (: 0 Int64)))
 
 (case "a record pattern destructures a ROW-OP derived record (with-chain result)"
@@ -18205,10 +18205,10 @@
   (input  (do
             (def (main (: n Int64))
               (do
-                (def base (record (= a n) (= b 2) (= c 3)))
+                (def base #record((= a n) (= b 2) (= c 3)))
                 (def derived (Record.with (Record.with base #"a" 10) #"c" 30))
                 (match derived
-                  ((record (= a x) (= c z)) (+ (* 100 x) z)))))
+                  (#record((= a x) (= c z)) (+ (* 100 x) z)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1030 Int64)))
 
@@ -18220,7 +18220,7 @@
            99 × 500 = 49500, and after the run the live-cell count is 0 (a leak would grow it; an over-drop
            would trap/UAF).")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (= x 1) (= y 2)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) #record((= x 1) (= y 2)) (mk (- n 1))))
             (def (loop (: j Int64) (: n Int64) (: tot Int64))
               (if (< j n) (loop (+ j 1) n (+ tot (. (Record.with (mk 0) #"x" 99) x))) tot))
             (def (main (: v Int64)) (loop 0 v 0))
@@ -18236,7 +18236,7 @@
            record can't const-fold). Pins that Record.with preserves sibling values through the
            fresh-from-projections rebuild — the `with` face of the project/without kept-field reads.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (= pos (record (= x 1) (= y 2))) (= vel 5)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) #record((= pos #record((= x 1) (= y 2))) (= vel 5)) (mk (- n 1))))
             (def (setx (: o (Record (: pos (Record (: x Int64) (: y Int64))) (: vel Int64))))
               (Record.with (. o pos) #"x" 99))
             (def (main (: v Int64)) (. (setx (mk v)) y))
@@ -18249,7 +18249,7 @@
            looped 500× -> 500. The owned-temporary source (borrowed by the projections) and the fresh
            projected result must both be reclaimed after the scalar read — live-objects 0.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) #record((= a 1) (= b 2) (= c 3)) (mk (- n 1))))
             (def (loop (: j Int64) (: n Int64) (: tot Int64))
               (if (< j n) (loop (+ j 1) n (+ tot (. (Record.project (mk 0) (a c)) a))) tot))
             (def (main (: v Int64)) (loop 0 v 0))
@@ -18261,7 +18261,7 @@
   (doc    "`(Record.without (mk 0) (b))` drops field b of a runtime source; reading `.a` (1), looped 500× ->
            500. Source + fresh result both reclaimed — live-objects 0.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) #record((= a 1) (= b 2) (= c 3)) (mk (- n 1))))
             (def (loop (: j Int64) (: n Int64) (: tot Int64))
               (if (< j n) (loop (+ j 1) n (+ tot (. (Record.without (mk 0) (b)) a))) tot))
             (def (main (: v Int64)) (loop 0 v 0))
@@ -18274,7 +18274,7 @@
            500× -> 500. The owned source, the fresh rest-record, and the tuple result must all be reclaimed
            after the scalar read — live-objects 0. Exercises the (value, rest) tuple-result shape.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) #record((= a 1) (= b 2) (= c 3)) (mk (- n 1))))
             (def (loop (: j Int64) (: n Int64) (: tot Int64))
               (if (< j n) (loop (+ j 1) n (+ tot (. (Record.pop (mk 0) a) 0))) tot))
             (def (main (: v Int64)) (loop 0 v 0))
@@ -18289,8 +18289,8 @@
            owned-temporary source records (each borrowed by its projections) and the fresh union result must
            all be reclaimed — live-objects 0. Exercises the two-source shape.")
   (input  (do
-            (def (mkA (: n Int64)) (if (= n 0) (record (= a 1) (= b 2)) (mkA (- n 1))))
-            (def (mkB (: n Int64)) (if (= n 0) (record (= c 3) (= d 4)) (mkB (- n 1))))
+            (def (mkA (: n Int64)) (if (= n 0) #record((= a 1) (= b 2)) (mkA (- n 1))))
+            (def (mkB (: n Int64)) (if (= n 0) #record((= c 3) (= d 4)) (mkB (- n 1))))
             (def (loop (: j Int64) (: n Int64) (: tot Int64))
               (if (< j n) (loop (+ j 1) n (+ tot (. (Record.merge (mkA j) (mkB j)) c))) tot))
             (def (main (: v Int64)) (loop 0 v 0))
@@ -18309,9 +18309,9 @@
   (input  (do
             (def (main (: n Int64))
               (do
-                (def m (Map.insert Map.empty 1 (record (= xs (list n 2)) (= tag "t"))))
+                (def m (Map.insert Map.empty 1 #record((= xs #list(n 2)) (= tag "t"))))
                 (match (Map.lookup m 1)
-                  ((Some r) (match r ((record (= xs ys)) (List.len ys))))
+                  ((Some r) (match r (#record((= xs ys)) (List.len ys))))
                   ((None _u) -1))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 2 Int64))
@@ -18330,8 +18330,8 @@
            the remaining not-yet-wired case (a separate coded decline). The nested-in-compound twin of the
            top-level record-match.")
   (input  (do (def (f (: t (Tuple (Record (: x Int64)) Int64)))
-                (match t ((tuple (record (= x a)) c) (+ a c))))
-              (def (main) (f (tuple (record (= x 5)) 10)))
+                (match t (#tuple(#record((= x a)) c) (+ a c))))
+              (def (main) (f #tuple(#record((= x 5)) 10)))
               (export main)))
   (call   main) (output (: 15 Int64)))
 
@@ -18378,7 +18378,7 @@
            a parameterized body reading the surplus binder, and that NO unbound-name cascade accompanies it.
            Sibling of the top-level map-rest case; the body reads `c` (the surplus after the rest binder `b`).")
   (input  (do (def (f (: xs (List Int64)))
-                (match xs ((list a .. b c) c) (_ 0)))
+                (match xs (#list(a .. b c) c) (_ 0)))
               (export f)))
   (error CDZ0201))
 
@@ -18399,7 +18399,7 @@
               (if (= n 0) acc
                   (go pr (- n 1) (+ acc (List.len (List.push (. pr 0) 9))))))
             (def (main (: d Int64))
-              (go (tuple (List.push (List.push (list) d) 8) 0) 4 0))
+              (go #tuple((List.push (List.push #list() d) 8) 0) 4 0))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 12 Int64))
@@ -18414,7 +18414,7 @@
               (if (= n 0) acc
                   (go r (- n 1) (+ acc (List.len (List.push (. r f) 9))))))
             (def (main (: d Int64))
-              (go (record (= f (List.push (List.push (list) d) 8))) 4 0))
+              (go #record((= f (List.push (List.push #list() d) 8))) 4 0))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 12 Int64))
@@ -18431,7 +18431,7 @@
               (if (= n 0) acc
                   (go s (- n 1) (+ acc (List.len (List.push (Option.expect s "v") 9))))))
             (def (main (: d Int64))
-              (go (Option.Some (List.push (List.push (list) d) 8)) 4 0))
+              (go (Option.Some (List.push (List.push #list() d) 8)) 4 0))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 12 Int64))
@@ -18446,7 +18446,7 @@
               (if (= n 0) acc
                   (go pr (- n 1) (+ acc (+ (List.len (List.push (. pr 0) 9)) (List.len (. pr 0)))))))
             (def (main (: d Int64))
-              (go (tuple (List.push (List.push (list) d) 8) 0) 4 0))
+              (go #tuple((List.push (List.push #list() d) 8) 0) 4 0))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 20 Int64))
@@ -18650,8 +18650,8 @@
            element) instead of the value-encode descriptor path. This is the operator's 'show DATA + RESULT
            together' pattern — a runtime-built list plus a computed scalar. `build 3` recurses pushing
            1,2,3 → the list, paired with 30.")
-  (input  (do (def (build (: n Int64)) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n)))
-              (def (main) (tuple (build 3) 30))
+  (input  (do (def (build (: n Int64)) (if (= n 0) (: #list() (List Int64)) ((. List push) (build (- n 1)) n)))
+              (def (main) #tuple((build 3) 30))
               (export main)))
   (output (: #tuple(#list(1 2 3) 30) (Tuple (List Int64) Int64)))
   (live-objects known-leak 3))
@@ -18663,8 +18663,8 @@
            `data` field beside a scalar `n`. Renders `(record (= data (list 1 2)) (= n 2))` under `(record
            (data (List Int64)) (n Int64))` — the record analogue of the tuple case, same descriptor-routing
            fix for a variable-length nested element.")
-  (input  (do (def (build (: n Int64)) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n)))
-              (def (main) (record (= data (build 2)) (= n 2)))
+  (input  (do (def (build (: n Int64)) (if (= n 0) (: #list() (List Int64)) ((. List push) (build (- n 1)) n)))
+              (def (main) #record((= data (build 2)) (= n 2)))
               (export main)))
   (output (: #record((= data #list(1 2)) (= n 2)) (record (data (List Int64)) (n Int64))))
   (live-objects known-leak 3))
@@ -18680,7 +18680,7 @@
                 (if (< i n)
                     (build (+ i 1) n ((. List push) out (if (> i 0) (: ((. Option Some) i) (Option Int64)) (: (. Option None) (Option Int64)))))
                     out))
-              (def (main) (build 0 2 (: (list) (List (Option Int64))))) (export main)))
+              (def (main) (build 0 2 (: #list() (List (Option Int64))))) (export main)))
   (output (: #list((None unit) (Some 1)) (List (Option Int64))))
   (live-objects known-leak 3))
 
@@ -18692,8 +18692,8 @@
            annotated so the element record type is fully determined. Renders `(list (record (= op \"x\")
            (= seq 0)) (record (= op \"x\") (= seq 1)))` under `(List (record (op String) (seq Int64)))`.")
   (input  (do (def (build i n out)
-                (if (< i n) (build (+ i 1) n (List.push out (record (= op "x") (= seq i)))) out))
-              (def (main) (build 0 2 (: (list) (List (Record (: op String) (: seq Int64)))))) (export main)))
+                (if (< i n) (build (+ i 1) n (List.push out #record((= op "x") (= seq i)))) out))
+              (def (main) (build 0 2 (: #list() (List (Record (: op String) (: seq Int64)))))) (export main)))
   (output (: #list(#record((= op "x") (= seq 0)) #record((= op "x") (= seq 1)))
              (List (record (op String) (seq Int64)))))
   (live-objects known-leak 6))
@@ -18710,7 +18710,7 @@
            defeats const-fold so this takes the value-encode WALKER, not the const path.")
   (input  (do (type P (A Bytes) (B (Record (: x String))))
               (def (build i) (if (< i 1) (build (+ i 1))
-                (record (= pl (: ((. Option Some) (: ((. P B) (record (= x "hi"))) P)) (Option P)))
+                #record((= pl (: ((. Option Some) (: ((. P B) #record((= x "hi"))) P)) (Option P)))
                         (= corr (: (. Option None) (Option Bytes))))))
               (def (main) (build 0)) (export main)))
   (output (: #record((= corr (None unit)) (= pl (Some (B #record((= x "hi"))))))
@@ -18736,19 +18736,19 @@
            emit reshape (memoize + branch to the shared fall-through block) cannot silently return the wrong
            arm via a wrong br-depth.")
   (input  (do (def (main (: a Int64) (: b Int64) (: c Int64))
-                (match (tuple a b c)
-                                     ((tuple 0 0 c) 0)
-                                     ((tuple 1 1 c) 1)
-                                     ((tuple 2 2 c) 2)
-                                     ((tuple 3 3 c) 3)
-                                     ((tuple 4 4 c) 4)
-                                     ((tuple 5 5 c) 5)
-                                     ((tuple 6 6 c) 6)
-                                     ((tuple 7 7 c) 7)
-                                     ((tuple 8 8 c) 8)
-                                     ((tuple 9 9 c) 9)
-                                     ((tuple 10 10 c) 10)
-                                     ((tuple 11 11 c) 11)
+                (match #tuple(a b c)
+                                     (#tuple(0 0 c) 0)
+                                     (#tuple(1 1 c) 1)
+                                     (#tuple(2 2 c) 2)
+                                     (#tuple(3 3 c) 3)
+                                     (#tuple(4 4 c) 4)
+                                     (#tuple(5 5 c) 5)
+                                     (#tuple(6 6 c) 6)
+                                     (#tuple(7 7 c) 7)
+                                     (#tuple(8 8 c) 8)
+                                     (#tuple(9 9 c) 9)
+                                     (#tuple(10 10 c) 10)
+                                     (#tuple(11 11 c) 11)
                                      (_ -1)))
               (export main)))
   (call   main (: 7 Int64) (: 7 Int64) (: 0 Int64))
@@ -18769,20 +18769,20 @@
            S2 shared-continuation emit dedup cannot silently mis-nest a branch and return the wrong arm.")
   (input  (do (def (f (: t (Tuple Int64 Int64 Int64)))
                 (match t
-                                     ((tuple 0 0 a) 0)
-                                     ((tuple 1 1 a) 1)
-                                     ((tuple 2 2 a) 2)
-                                     ((tuple 3 3 a) 3)
-                                     ((tuple 4 4 a) 4)
-                                     ((tuple 5 5 a) 5)
-                                     ((tuple 6 6 a) 6)
-                                     ((tuple 7 7 a) 7)
-                                     ((tuple 8 8 a) 8)
-                                     ((tuple 9 9 a) 9)
-                                     ((tuple 10 10 a) 10)
-                                     ((tuple 11 11 a) 11)
+                                     (#tuple(0 0 a) 0)
+                                     (#tuple(1 1 a) 1)
+                                     (#tuple(2 2 a) 2)
+                                     (#tuple(3 3 a) 3)
+                                     (#tuple(4 4 a) 4)
+                                     (#tuple(5 5 a) 5)
+                                     (#tuple(6 6 a) 6)
+                                     (#tuple(7 7 a) 7)
+                                     (#tuple(8 8 a) 8)
+                                     (#tuple(9 9 a) 9)
+                                     (#tuple(10 10 a) 10)
+                                     (#tuple(11 11 a) 11)
                                      (_ -1)))
-              (def (main) (f (tuple 5 5 9)))
+              (def (main) (f #tuple(5 5 9)))
               (export main)))
   (call   main)
   (output (: 5 Int64)))
@@ -18831,7 +18831,7 @@
   (input  (do
             (type DbBox (DbBox (Record (: a Int64) (: b Int64))))
             (def (unwrap (: x DbBox)) (match x ((DbBox r) (. r a))))
-            (def (main) (unwrap (DbBox (record (= a 1) (= b 2)))))
+            (def (main) (unwrap (DbBox #record((= a 1) (= b 2)))))
             (export main)))
   (output (: 1 Int64)))
 
@@ -18856,9 +18856,9 @@
                 ((Root) -1)
                 ((Scope r parent) (if (= (. r tag) t) (. r v) (find-v parent t)))))
             (def (main (: t Int64))
-              (let ((e (Scope (record (= v 30) (= tag 3))
-                       (Scope (record (= v 20) (= tag 2))
-                       (Scope (record (= v 10) (= tag 1)) (Root))))))
+              (let ((e (Scope #record((= v 30) (= tag 3))
+                       (Scope #record((= v 20) (= tag 2))
+                       (Scope #record((= v 10) (= tag 1)) (Root))))))
                 (+ (* 10 (depth e)) (find-v e t))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 50 Int64))
@@ -18897,7 +18897,7 @@
               (if (< i n) (build (+ i 1) n (List.push xs i)) xs))
             (def (at (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None u) -1)))
             (def (main (: n Int64))
-              (let ((xs (build 0 n (list))))
+              (let ((xs (build 0 n #list())))
                 (+ (* 10000 (at xs 0)) (+ (* 100 (at xs 2500)) (at xs 4999)))))
             (export main)))
   (call   main (: 5000 Int64))
@@ -18914,7 +18914,7 @@
               (if (< i n) (build (+ i 1) n (List.push xs i)) xs))
             (def (at (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None u) -1)))
             (def (main (: n Int64))
-              (let ((xs (build 0 n (list))))
+              (let ((xs (build 0 n #list())))
                 (let ((ys (List.update (List.update xs 0 111) 1999 222)))
                   (+ (* 10000 (at ys 0)) (+ (* 10 (at ys 1999)) (at xs 0))))))
             (export main)))
@@ -18937,7 +18937,7 @@
                 ((Some v) (total xs (+ i 1) (+ acc v)))
                 ((None u) acc)))
             (def (main (: n Int64))
-              (total (mark 0 n (build 0 n (list))) 0 0))
+              (total (mark 0 n (build 0 n #list())) 0 0))
             (export main)))
   (call   main (: 1000 Int64))
   (output (: 990 Int64))
@@ -19025,7 +19025,7 @@
            prepend pins are single-op).")
   (input  (do
             (def (main (: a Int64))
-              (let ((xs (List.push (List.prepend (List.push (list 5) 6) a) 7)))
+              (let ((xs (List.push (List.prepend (List.push #list(5) 6) a) 7)))
                 (+ (* 100 (match (List.at xs 0) ((Some v) v) ((None u) -1)))
                    (match (List.at xs 3) ((Some v) v) ((None u) -1)))))
             (export main)))
@@ -19042,10 +19042,10 @@
               (if (< i 1) acc (build (- i 1) (List.prepend acc i))))
             (def (sum-weighted (: xs (List Int64)) (: acc Int64))
               (match xs
-                ((list) acc)
-                ((list h .. t) (sum-weighted t (+ (* acc 10) h)))))
+                (#list() acc)
+                (#list(h .. t) (sum-weighted t (+ (* acc 10) h)))))
             (def (main (: n Int64))
-              (sum-weighted (build n (list)) 0))
+              (sum-weighted (build n #list()) 0))
             (export main)))
   (call   main (: 4 Int64))
   (output (: 1234 Int64))
@@ -19068,19 +19068,19 @@
   (input  (do
             (def (rev (: xs (List Int64)) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t) (rev t (List.concat (list h) acc)))))
+                (#list() acc)
+                (#list(h .. t) (rev t (List.concat #list(h) acc)))))
             (def (pick (: f (List Int64)) (: b (List Int64)) (: n Int64))
               (match f
-                ((list h .. t) (tuple h t b))
-                ((list)
+                (#list(h .. t) #tuple(h t b))
+                (#list()
                   (if (> n 0)
-                      (match (rev b (list))
-                        ((list h .. t) (tuple h t (list)))
-                        ((list) (tuple -1 (list) (list))))
-                      (tuple -2 (list) b)))))
+                      (match (rev b #list())
+                        (#list(h .. t) #tuple(h t #list()))
+                        (#list() #tuple(-1 #list() #list())))
+                      #tuple(-2 #list() b)))))
             (def (main (: n Int64))
-              (match (pick (list) (list n 2) n) ((tuple v f2 _b2) (+ v ((. List len) f2)))))
+              (match (pick #list() #list(n 2) n) (#tuple(v f2 _b2) (+ v ((. List len) f2)))))
             (export main)))
   (call main (: 5 Int64)) (output (: 3 Int64))
   (call main (: -5 Int64)) (output (: -2 Int64))
@@ -19095,18 +19095,18 @@
   (input  (do
             (def (rev (: xs (List Int64)) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t) (rev t (List.concat (list h) acc)))))
+                (#list() acc)
+                (#list(h .. t) (rev t (List.concat #list(h) acc)))))
             (def (deq (: f (List Int64)) (: b (List Int64)))
               (match f
-                ((list h .. t) (List.concat (list h) t))
-                ((list)
-                  (match (rev b (list))
-                    ((list h .. t) (List.concat (list h) t))
-                    ((list) (list -1))))))
+                (#list(h .. t) (List.concat #list(h) t))
+                (#list()
+                  (match (rev b #list())
+                    (#list(h .. t) (List.concat #list(h) t))
+                    (#list() #list(-1))))))
             (def (main (: n Int64))
               (do
-                (def out (deq (list) (list n 2)))
+                (def out (deq #list() #list(n 2)))
                 (+ (* (Option.expect (List.at out 0) "h") 10) ((. List len) out))))
             (export main)))
   (call main (: 5 Int64)) (output (: 22 Int64))
@@ -19127,17 +19127,17 @@
   (input  (do
             (def (rev (: xs (List Int64)) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t) (rev t (List.concat (list h) acc)))))
+                (#list() acc)
+                (#list(h .. t) (rev t (List.concat #list(h) acc)))))
             (def (deq (: f (List Int64)) (: b (List Int64)))
               (match f
-                ((list h .. t) (tuple h t b))
-                ((list)
-                  (match (rev b (list))
-                    ((list h .. t) (tuple h t (list)))
-                    ((list) (tuple -1 (list) (list)))))))
+                (#list(h .. t) #tuple(h t b))
+                (#list()
+                  (match (rev b #list())
+                    (#list(h .. t) #tuple(h t #list()))
+                    (#list() #tuple(-1 #list() #list()))))))
             (def (main (: n Int64))
-              (match (deq (list) (list n 2)) ((tuple v f2 _b2) (+ v ((. List len) f2)))))
+              (match (deq #list() #list(n 2)) (#tuple(v f2 _b2) (+ v ((. List len) f2)))))
             (export main)))
   (call main (: 5 Int64)) (output (: 3 Int64))
   (live-objects known-leak 6))
@@ -19151,17 +19151,17 @@
   (input  (do
             (def (rev (: xs (List Int64)) (: acc (List Int64)))
               (match xs
-                ((list) acc)
-                ((list h .. t) (rev t (List.concat (list h) acc)))))
+                (#list() acc)
+                (#list(h .. t) (rev t (List.concat #list(h) acc)))))
             (def (deq (: f (List Int64)) (: b (List Int64)))
               (match f
-                ((list _h .. t) (tuple t b))
-                ((list)
-                  (match (rev b (list))
-                    ((list _h .. t) (tuple t (list)))
-                    ((list) (tuple (list) (list)))))))
+                (#list(_h .. t) #tuple(t b))
+                (#list()
+                  (match (rev b #list())
+                    (#list(_h .. t) #tuple(t #list()))
+                    (#list() #tuple(#list() #list()))))))
             (def (main (: n Int64))
-              (match (deq (list) (list n 2)) ((tuple f2 b2) (+ (* ((. List len) f2) 10) ((. List len) b2)))))
+              (match (deq #list() #list(n 2)) (#tuple(f2 b2) (+ (* ((. List len) f2) 10) ((. List len) b2)))))
             (export main)))
   (call main (: 5 Int64)) (output (: 10 Int64))
   (live-objects known-leak 6))
@@ -19222,7 +19222,7 @@
           (if (= i 33) acc (build (+ i 1) (List.push acc i))))
         (def (main (: k Int64))
           (do
-            (def xs (build 0 (list)))
+            (def xs (build 0 #list()))
             (def ys (List.update xs k 999))
             (def (at (: zs (List Int64)) (: i Int64)) (Option.expect (List.at zs i) "in"))
             (+ (* 10000 (at ys k))
@@ -19247,8 +19247,8 @@
           (if (= i n) acc (bfrom (+ i 1) n (List.push acc i))))
         (def (main (: k Int64))
           (do
-            (def a (build 0 5 (list)))
-            (def b (bfrom 5 40 (list)))
+            (def a (build 0 5 #list()))
+            (def b (bfrom 5 40 #list()))
             (def xs (List.concat a b))
             (def ys (List.update xs k 999))
             (def (at (: zs (List Int64)) (: i Int64)) (Option.expect (List.at zs i) "in"))
@@ -19323,8 +19323,8 @@
   (input  (do
         (def (main (: n Int64))
           (do
-            (def k1 (record (= s #set(1 2 3))))
-            (def k2 (record (= s (Set.insert (Set.insert #set(n) 2) 1))))
+            (def k1 #record((= s #set(1 2 3))))
+            (def k2 #record((= s (Set.insert (Set.insert #set(n) 2) 1))))
             (match (Map.lookup (Map.insert Map.empty k1 42) k2)
               ((Some v) v)
               ((None _u) -1))))
@@ -19378,7 +19378,7 @@
   (input  (do
             (def (main (: i Int64) (: j Int64))
               (do
-                (def xs (List.concat (list 10 20) (list 30 40)))
+                (def xs (List.concat #list(10 20) #list(30 40)))
                 (+ (* 100 (match (List.at xs i) ((Option.Some v) v) ((Option.None _u) -1)))
                    (match (List.at xs j) ((Option.Some v) v) ((Option.None _u) -1)))))
             (export main)))
@@ -19390,7 +19390,7 @@
   (input  (do
             (def (main (: i Int64) (: j Int64))
               (do
-                (def xs (List.concat (list 10 20) (list 30 40)))
+                (def xs (List.concat #list(10 20) #list(30 40)))
                 (+ (* 100 (match (List.at xs i) ((Option.Some v) v) ((Option.None _u) -1)))
                    (match (List.at xs j) ((Option.Some v) v) ((Option.None _u) -1)))))
             (export main)))
@@ -19419,11 +19419,11 @@
   (input  (do
             (def (rebuild (: es (List (Tuple Int64 Int64))) (: i Int64) (: acc (Map Int64 Int64)))
               (match (List.at es i)
-                ((Option.Some (tuple k v)) (rebuild es (+ i 1) (Map.insert acc k v)))
+                ((Option.Some #tuple(k v)) (rebuild es (+ i 1) (Map.insert acc k v)))
                 ((Option.None _u) acc)))
             (def (main (: k Int64))
               (do
-                (def m (rebuild (list (tuple 1 10) (tuple k 20) (tuple 1 99)) 0 Map.empty))
+                (def m (rebuild #list(#tuple(1 10) #tuple(k 20) #tuple(1 99)) 0 Map.empty))
                 (+ (* 100 (Map.len m))
                    (match (Map.lookup m 1) ((Option.Some v) v) ((Option.None _u) -1)))))
             (export main)))
@@ -19436,12 +19436,12 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def a (List.push (List.push (list) 1) k))
-                (def b (List.concat (list 1) (list k)))
-                (def c (List.concat (list k) (list 1)))
+                (def a (List.push (List.push #list() 1) k))
+                (def b (List.concat #list(1) #list(k)))
+                (def c (List.concat #list(k) #list(1)))
                 (+ (* 100 (if (= a b) 1 0))
                    (+ (* 10 (if (= a c) 1 0))
-                      (if (= (list 1 2) (list 1 2)) 1 0)))))
+                      (if (= #list(1 2) #list(1 2)) 1 0)))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 101 Int64))
   (call   main (: 1 Int64)) (output (: 111 Int64)))
@@ -19483,12 +19483,12 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def r (record (= f01 "a") (= f02 2) (= f03 (list 1 2)) (= f04 4) (= f05 (String.concat "b" "c")) (= f06 6) (= f07 7) (= f08 8) (= f09 9) (= f10 k) (= f11 11) (= f12 12) (= f13 13) (= f14 14) (= f15 15) (= f16 (tuple 1 2))))
+                (def r #record((= f01 "a") (= f02 2) (= f03 #list(1 2)) (= f04 4) (= f05 (String.concat "b" "c")) (= f06 6) (= f07 7) (= f08 8) (= f09 9) (= f10 k) (= f11 11) (= f12 12) (= f13 13) (= f14 14) (= f15 15) (= f16 #tuple(1 2))))
                 (def r2 (Record.without r (f08)))
                 (+ (* 1000 (. r2 f10))
                    (+ (* 100 (String.byte-len (. r2 f05)))
                       (+ (* 10 (List.len (. r2 f03)))
-                         (match (. r2 f16) ((tuple a b) (+ a b))))))))
+                         (match (. r2 f16) (#tuple(a b) (+ a b))))))))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 7223 Int64))
@@ -19564,7 +19564,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def cfg (Map.insert (Map.insert Map.empty "timeout" (record (= v 30) (= unit-s "s"))) "retries" (record (= v k) (= unit-s ""))))
+                (def cfg (Map.insert (Map.insert Map.empty "timeout" #record((= v 30) (= unit-s "s"))) "retries" #record((= v k) (= unit-s ""))))
                 (match (Map.lookup cfg "retries")
                   ((Option.Some r) (+ (* 10 (. r v)) (String.byte-len (. r unit-s))))
                   ((Option.None _u) -1))))
@@ -19604,10 +19604,10 @@
             (type Status (Active) (Idle) (Banned Int64))
             (def (main (: k Int64))
               (do
-                (def m (Map.insert (Map.insert Map.empty (tuple (Status.Active unit) 1) 10) (tuple (Status.Banned 403) 1) 20))
-                (+ (* 100 (match (Map.lookup m (tuple (Status.Active unit) 1)) ((Option.Some v) v) ((Option.None _u) -1)))
-                   (+ (* 10 (match (Map.lookup m (tuple (Status.Banned (+ 400 (* k 3))) 1)) ((Option.Some v) (/ v 2)) ((Option.None _u) -1)))
-                      (match (Map.lookup m (tuple (Status.Idle unit) 1)) ((Option.Some v) v) ((Option.None _u) -1))))))
+                (def m (Map.insert (Map.insert Map.empty #tuple((Status.Active unit) 1) 10) #tuple((Status.Banned 403) 1) 20))
+                (+ (* 100 (match (Map.lookup m #tuple((Status.Active unit) 1)) ((Option.Some v) v) ((Option.None _u) -1)))
+                   (+ (* 10 (match (Map.lookup m #tuple((Status.Banned (+ 400 (* k 3))) 1)) ((Option.Some v) (/ v 2)) ((Option.None _u) -1)))
+                      (match (Map.lookup m #tuple((Status.Idle unit) 1)) ((Option.Some v) v) ((Option.None _u) -1))))))
             (export main)))
   (call   main (: 1 Int64))
   (output (: 1099 Int64)))
@@ -19648,7 +19648,7 @@
                       (def key (% v 3))
                       (match (Map.lookup acc key)
                         ((Option.Some bucket) (Map.insert acc key (List.push bucket v)))
-                        ((Option.None _u) (Map.insert acc key (list v)))))))
+                        ((Option.None _u) (Map.insert acc key #list(v)))))))
                 ((Option.None _u) acc)))
             (def (sum-list (: xs (List Int64)) (: i Int64) (: acc Int64))
               (match (List.at xs i)
@@ -19656,10 +19656,10 @@
                 ((Option.None _u) acc)))
             (def (reduce-groups (: es (List (Tuple Int64 (List Int64)))) (: i Int64) (: acc Int64))
               (match (List.at es i)
-                ((Option.Some (tuple key bucket)) (reduce-groups es (+ i 1) (+ (* acc 100) (+ (* key 10) (sum-list bucket 0 0)))))
+                ((Option.Some #tuple(key bucket)) (reduce-groups es (+ i 1) (+ (* acc 100) (+ (* key 10) (sum-list bucket 0 0)))))
                 ((Option.None _u) acc)))
             (def (main (: k Int64))
-              (reduce-groups (Map.to-list (group (list 1 2 3 4 5 (* k 6)) 0 Map.empty)) 0 0))
+              (reduce-groups (Map.to-list (group #list(1 2 3 4 5 (* k 6)) 0 Map.empty)) 0 0))
             (export main)))
   (call   main (: 1 Int64))
   (output (: 91527 Int64))
@@ -19680,7 +19680,7 @@
                 ((Option.Some v) (digits xs (+ i 1) (+ (* acc 10) v)))
                 ((Option.None _u) acc)))
             (def (main (: k Int64))
-              (digits (dedup-keep-first (list 3 1 3 k 1 2) 0 #set() (list)) 0 0))
+              (digits (dedup-keep-first #list(3 1 3 k 1 2) 0 #set() #list()) 0 0))
             (export main)))
   (call   main (: 4 Int64)) (output (: 3142 Int64))
   (call   main (: 3 Int64)) (output (: 312 Int64))
@@ -19695,19 +19695,19 @@
   (input  (do
             (def (fib-memo (: n Int64) (: memo (Map Int64 Int64)))
               (match (Map.lookup memo n)
-                ((Option.Some v) (tuple v memo))
+                ((Option.Some v) #tuple(v memo))
                 ((Option.None _u)
-                  (if (< n 2) (tuple n (Map.insert memo n n))
+                  (if (< n 2) #tuple(n (Map.insert memo n n))
                       (match (fib-memo (- n 1) memo)
-                        ((tuple a m1)
+                        (#tuple(a m1)
                           (match (fib-memo (- n 2) m1)
-                            ((tuple b m2)
+                            (#tuple(b m2)
                               (do
                                 (def r (+ a b))
-                                (tuple r (Map.insert m2 n r)))))))))))
+                                #tuple(r (Map.insert m2 n r)))))))))))
             (def (main (: n Int64))
               (match (fib-memo n Map.empty)
-                ((tuple v memo) (+ (* 100 v) (Map.len memo)))))
+                (#tuple(v memo) (+ (* 100 v) (Map.len memo)))))
             (export main)))
   (call   main (: 20 Int64))
   (output (: 676521 Int64))
@@ -19721,13 +19721,13 @@
               (match e
                 ((Expr.Lit n) n)
                 ((Expr.Var name) (Option.expect (Map.lookup env name) "unbound"))
-                ((Expr.Add (tuple a b)) (+ (eval-e a env) (eval-e b env)))
-                ((Expr.Let (tuple name rhs body)) (eval-e body (Map.insert env name (eval-e rhs env))))))
+                ((Expr.Add #tuple(a b)) (+ (eval-e a env) (eval-e b env)))
+                ((Expr.Let #tuple(name rhs body)) (eval-e body (Map.insert env name (eval-e rhs env))))))
             (def (main (: k Int64))
               (eval-e
-                (Expr.Let (tuple "x" (Expr.Lit k)
-                  (Expr.Add (tuple
-                    (Expr.Let (tuple "x" (Expr.Add (tuple (Expr.Var "x") (Expr.Lit 1)))
+                (Expr.Let #tuple("x" (Expr.Lit k)
+                  (Expr.Add #tuple(
+                    (Expr.Let #tuple("x" (Expr.Add #tuple((Expr.Var "x") (Expr.Lit 1)))
                       (Expr.Var "x")))
                     (Expr.Var "x")))))
                 Map.empty))
@@ -19752,16 +19752,16 @@
                         (def len (List.len stack))
                         (def b (Option.expect (List.at stack (- len 1)) "b"))
                         (def a (Option.expect (List.at stack (- len 2)) "a"))
-                        (rpn ts (+ i 1) (List.push (take-n stack (- len 2) 0 (list)) (+ a b)))))
+                        (rpn ts (+ i 1) (List.push (take-n stack (- len 2) 0 #list()) (+ a b)))))
                     ((Tok.Times)
                       (do
                         (def len (List.len stack))
                         (def b (Option.expect (List.at stack (- len 1)) "b"))
                         (def a (Option.expect (List.at stack (- len 2)) "a"))
-                        (rpn ts (+ i 1) (List.push (take-n stack (- len 2) 0 (list)) (* a b)))))))
+                        (rpn ts (+ i 1) (List.push (take-n stack (- len 2) 0 #list()) (* a b)))))))
                 ((Option.None _u) stack)))
             (def (main (: k Int64))
-              (match (List.at (rpn (list (Tok.Num 2) (Tok.Num k) (Tok.Plus) (Tok.Num 4) (Tok.Times)) 0 (list)) 0)
+              (match (List.at (rpn #list((Tok.Num 2) (Tok.Num k) (Tok.Plus) (Tok.Num 4) (Tok.Times)) 0 #list()) 0)
                 ((Option.Some v) v)
                 ((Option.None _u) -1)))
             (export main)))
@@ -19777,9 +19777,9 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def inv (Map.insert Map.empty 1 (record (= name "widget") (= qty k))))
+                (def inv (Map.insert Map.empty 1 #record((= name "widget") (= qty k))))
                 (def r (Option.expect (Map.lookup inv 1) "slot"))
-                (def fresh (record (= name (. r name)) (= qty (+ (. r qty) 5))))
+                (def fresh #record((= name (. r name)) (= qty (+ (. r qty) 5))))
                 (+ (* 10 (. fresh qty)) (String.byte-len (. fresh name)))))
             (export main)))
   (call   main (: 3 Int64))
@@ -19808,19 +19808,19 @@
                 ((Option.Some v)
                   (if (= v cur)
                       (encode xs (+ i 1) cur (+ run 1) out)
-                      (encode xs (+ i 1) v 1 (List.push out (tuple cur run)))))
-                ((Option.None _u) (List.push out (tuple cur run)))))
+                      (encode xs (+ i 1) v 1 (List.push out #tuple(cur run)))))
+                ((Option.None _u) (List.push out #tuple(cur run)))))
             (def (decode (: ps (List (Tuple Int64 Int64))) (: i Int64) (: out (List Int64)))
               (match (List.at ps i)
-                ((Option.Some (tuple v n)) (decode ps (+ i 1) (rep v n out)))
+                ((Option.Some #tuple(v n)) (decode ps (+ i 1) (rep v n out)))
                 ((Option.None _u) out)))
             (def (main (: k Int64))
               (do
-                (def xs (list 7 7 k 3 3 3))
-                (def enc (encode xs 1 (Option.expect (List.at xs 0) "h") 1 (list)))
+                (def xs #list(7 7 k 3 3 3))
+                (def enc (encode xs 1 (Option.expect (List.at xs 0) "h") 1 #list()))
                 (+ (* 100 (List.len enc))
-                   (+ (* 10 (if (= (decode enc 0 (list)) xs) 1 0))
-                      (match (List.at enc 2) ((Option.Some (tuple _v n)) n) ((Option.None _u) -1))))))
+                   (+ (* 10 (if (= (decode enc 0 #list()) xs) 1 0))
+                      (match (List.at enc 2) ((Option.Some #tuple(_v n)) n) ((Option.None _u) -1))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 313 Int64))
   (call   main (: 7 Int64)) (output (: 209 Int64))
@@ -19839,10 +19839,10 @@
                 ((Option.None _u) out)))
             (def (main (: k Int64))
               (do
-                (def a (list (list 1 2) (list 3 k)))
-                (def b (list (list 5 6) (list 7 8)))
-                (def r00 (dot (Option.expect (List.at a 0) "r") (col b 0 0 (list)) 0 0))
-                (def r11 (dot (Option.expect (List.at a 1) "r") (col b 1 0 (list)) 0 0))
+                (def a #list(#list(1 2) #list(3 k)))
+                (def b #list(#list(5 6) #list(7 8)))
+                (def r00 (dot (Option.expect (List.at a 0) "r") (col b 0 0 #list()) 0 0))
+                (def r11 (dot (Option.expect (List.at a 1) "r") (col b 1 0 #list()) 0 0))
                 (+ (* 100 r00) r11)))
             (export main)))
   (call   main (: 4 Int64))
@@ -19924,9 +19924,9 @@
             (def (dm (: a Int64))
               (Map.remove (Map.remove (Map.insert (Map.insert Map.empty 1 a) 2 20) 1) 2))
             (def (main (: a Int64))
-              (+ (* 10 (if (= (tuple (sv a) (dm a))
-                             (tuple #set(a) Map.empty)) 1 0))
-                 (if (= (tuple (dm a)) (tuple Map.empty)) 1 0)))
+              (+ (* 10 (if (= #tuple((sv a) (dm a))
+                             #tuple(#set(a) Map.empty)) 1 0))
+                 (if (= #tuple((dm a)) #tuple(Map.empty)) 1 0)))
             (export main)))
   (call   main (: 4 Int64)) (output (: 11 Int64))
   (call   main (: 7 Int64)) (output (: 11 Int64)))
@@ -19971,15 +19971,15 @@
             (def (mk x) (if (> x 5) (Hi x) (Lo x)))
             (def (flip a) (match a ((Hi v) (Lo (* v 10))) ((Lo w) (Hi (* w 10)))))
             (def (main (: n Int64))
-              (let ((xs (list 3 4)))
+              (let ((xs #list(3 4)))
                 (match xs
-                  ((list c .. t)
+                  (#list(c .. t)
                     (match (mk n)
                       ((Hi h) (match (flip (Hi h))
                                 ((Lo l) (+ l c))
                                 ((Hi z) (- 0 z))))
                       ((Lo g) (+ g c))))
-                  ((list) -1))))
+                  (#list() -1))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 73 Int64))
   (call   main (: 2 Int64)) (output (: 5 Int64)))
@@ -20047,7 +20047,7 @@
             (def (build (: i Int64) (: n Int64) acc)
               (if (= i n) acc (build (+ i 1) n (List.push acc i))))
             (def (main)
-              (let ((xs (build 0 1100 (list))))
+              (let ((xs (build 0 1100 #list())))
                 (let ((ys (List.update xs 1050 -7)))
                   (+ (* 1000 (Option.expect (List.at ys 1050) "u"))
                      (+ (Option.expect (List.at xs 1050) "o")
@@ -20086,7 +20086,7 @@
               (if (= i n) acc (build (+ i 1) n (List.push acc i))))
             (def (main (: k Int64))
               (do
-                (def j (List.concat (build 0 40 (list)) (build 40 80 (list))))
+                (def j (List.concat (build 0 40 #list()) (build 40 80 #list())))
                 (def g (List.prepend j 999))
                 (def (at (: xs (List Int64)) (: i Int64)) (Option.expect (List.at xs i) "in"))
                 (+ (* 1000 (List.len g))
@@ -20126,7 +20126,7 @@
                 ((Some v) v)
                 (None -7)))
             (def (main (: n Int64))
-              (let ((xs (list 10 20 30))
+              (let ((xs #list(10 20 30))
                     (m (Map.insert (Map.insert (Map.empty) 1 100) 2 200)))
                 (+ (* 1000000 (opt-score (List.at xs n)))
                    (+ (* 1000 (opt-score (Map.lookup m n)))
@@ -20145,7 +20145,7 @@
 (case "lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged"
   (input  (do
             (def (main (: n Int64))
-              (let ((xs (list n (+ n 1))))
+              (let ((xs #list(n (+ n 1))))
                 (let ((doubled (List.concat xs xs)))
                   (let ((grown (List.push xs 99)))
                     (+ (* 100000 (List.len doubled))
@@ -20159,9 +20159,9 @@
 (case "as1 concat ASSOCIATIVITY — left-nested and right-nested three-way concats are structurally EQUAL and element-identical"
   (input  (do
             (def (main (: n Int64))
-              (let ((a (list n 2)))
-                (let ((b (list 3 4)))
-                  (let ((c (list 5 6)))
+              (let ((a #list(n 2)))
+                (let ((b #list(3 4)))
+                  (let ((c #list(5 6)))
                     (let ((lr (List.concat (List.concat a b) c)))
                       (let ((rl (List.concat a (List.concat b c))))
                         (+ (* 1000000 (if (= lr rl) 1 0))
@@ -20178,9 +20178,9 @@
             (def (at-or (: xs (List Int64)) (: i Int64))
               (match (List.at xs i) ((Some v) v) ((None _u) -1)))
             (def (grow (: k Int64) (: acc (List Int64)))
-              (if (< k 1) acc (grow (- k 1) (List.concat acc (list k)))))
+              (if (< k 1) acc (grow (- k 1) (List.concat acc #list(k)))))
             (def (main (: n Int64))
-              (let ((deep (grow 10 (list n))))
+              (let ((deep (grow 10 #list(n))))
                 (+ (* 100000 (List.len deep))
                    (+ (* 10000 (at-or deep 0))
                       (+ (* 100 (at-or deep 5)) (at-or deep 10))))))
@@ -20193,7 +20193,7 @@
             (def (at-or (: xs (List Int64)) (: i Int64))
               (match (List.at xs i) ((Some v) v) ((None _u) -1)))
             (def (main (: n Int64))
-              (let ((a (list n 20 30)))
+              (let ((a #list(n 20 30)))
                 (let ((b (List.update a 1 99)))
                   (let ((c (List.update b 2 88)))
                     (+ (* 1000000 (at-or c 0))
@@ -20230,7 +20230,7 @@
   (input  (do
             (type P (A Bytes) (B (Record (: x String))))
             (def (main (: n Int64))
-              (record (= payload (Some (P.B (record (= x "hi")))))
+              #record((= payload (Some (P.B #record((= x "hi")))))
                       (= correlation (: (None unit) (Option Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
@@ -20243,8 +20243,8 @@
             (type P (A Bytes) (B (Record (: x String))))
             (type Q (C Int64) (D (Record (: y Int64))))
             (def (main (: n Int64))
-              (record (= first (Some (P.B (record (= x "hi")))))
-                      (= second (Some (Q.D (record (= y 7)))))))
+              #record((= first (Some (P.B #record((= x "hi")))))
+                      (= second (Some (Q.D #record((= y 7)))))))
             (export main)))
   (call   main (: 1 Int64))
   (output (: #record((= first (Some (B #record((= x "hi"))))) (= second (Some (D #record((= y 7)))))) (record (first (Option P)) (second (Option Q)))))
@@ -20255,7 +20255,7 @@
   (input  (do
             (type P (A Bytes) (B (Record (: x String))))
             (def (main (: n Int64))
-              (record (= apayload (Some (P.B (record (= x "hi")))))
+              #record((= apayload (Some (P.B #record((= x "hi")))))
                       (= zcorrelation (: (None unit) (Option Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
@@ -20266,7 +20266,7 @@
 (case "vse10 two RESULT fields at different type args each encode their own Err payload — the same generic decl at two instantiations shares no descriptor"
   (input  (do
             (def (main (: n Int64))
-              (record (= first (: (Ok 7) (Result Int64 String)))
+              #record((= first (: (Ok 7) (Result Int64 String)))
                       (= second (: (Err (String.to-bytes "no")) (Result Int64 Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
@@ -20276,8 +20276,8 @@
 (case "vse11 two LIST fields of different element types encode independently — the list control of the generic-instantiation family"
   (input  (do
             (def (main (: n Int64))
-              (record (= nums (list 1 2))
-                      (= tags (list "a" "b"))))
+              #record((= nums #list(1 2))
+                      (= tags #list("a" "b"))))
             (export main)))
   (call   main (: 1 Int64))
   (output (: #record((= nums #list(1 2)) (= tags #list("a" "b"))) (record (nums (List Int64)) (tags (List String)))))
@@ -20295,7 +20295,7 @@
            white-box value-heap-runtime-import assertion stays in rcdzc.")
   (input  (do
             (def (f (: n Int64))
-              (if (= n 0) (record (= ct "wasm") (= pl (Bytes.of (list 1 2 3)))) (f (- n 1))))
+              (if (= n 0) #record((= ct "wasm") (= pl (Bytes.of #list(1 2 3)))) (f (- n 1))))
             (def (main) (f 2))
             (export main)))
   (call   main)
@@ -20307,8 +20307,8 @@
     (def (rd (: xs (List Int64)))
       (match (List.at xs 0) ((Option.Some v) v) ((Option.None) -1)))
     (def (main (: n Int64))
-      (let ((xs (list n 2 3)))
-        (let ((r (record (= keep xs))))
+      (let ((xs #list(n 2 3)))
+        (let ((r #record((= keep xs))))
           (let ((ys (List.update xs 0 99)))
             (+ (rd (. r keep)) (* 100 (rd ys)))))))
     (export main)))
@@ -20321,7 +20321,7 @@
       (match (List.at xs 0) ((Option.Some v) v) ((Option.None) -1)))
     (def (bump (: xs (List Int64))) (rd (List.update xs 0 99)))
     (def (main (: n Int64))
-      (let ((xs (list n 2 3)))
+      (let ((xs #list(n 2 3)))
         (+ (bump xs) (* 100 (rd xs)))))
     (export main)))
   (call main (: 7 Int64))
@@ -20332,7 +20332,7 @@
     (def (rd (: xs (List Int64)))
       (match (List.at xs 0) ((Option.Some v) v) ((Option.None) -1)))
     (def (main (: n Int64))
-      (let ((xs (list n 2 3)))
+      (let ((xs #list(n 2 3)))
         (let ((g (fn (u) (rd xs))))
           (let ((first (g 0)))
             (let ((ys (List.update xs 0 99)))
@@ -20349,7 +20349,7 @@
     (def (setz (: xs (List Int64)) (: i Int64))
       (if (= i 3) xs (setz (List.update xs i 0) (+ i 1))))
     (def (main (: n Int64))
-      (let ((xs (list n 2 3)))
+      (let ((xs #list(n 2 3)))
         (let ((zs (setz xs 0)))
           (+ (* 100 (rd xs 0)) (+ (rd zs 0) (rd zs 2))))))
     (export main)))
@@ -20361,7 +20361,7 @@
     (def (rd (: xs (List Int64)) (: i Int64))
       (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
     (def (main (: n Int64))
-      (let ((xs (list n 2 3)))
+      (let ((xs #list(n 2 3)))
         (let ((a (List.update xs 0 100)))
           (let ((b (List.update xs 1 200)))
             (+ (rd a 1) (+ (rd b 0) (* 100 (rd xs 0))))))))
@@ -20374,7 +20374,7 @@
     (def (rd (: xs (List Int64)) (: i Int64))
       (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
     (def (main (: n Int64))
-      (let ((xs (list 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39)))
+      (let ((xs #list(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39)))
         (let ((ys (List.update xs 35 (* n 1000))))
           (+ (rd ys 35) (rd xs 35)))))
     (export main)))
@@ -20388,7 +20388,7 @@
     (def (rd (: xs (List Int64)) (: i Int64))
       (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
     (def (main (: n Int64))
-      (let ((xs (list n 2 3)))
+      (let ((xs #list(n 2 3)))
         (handle E 0
           ((tick () s (resume (rd (List.update xs 0 500) 0) s)))
           (+ (E.tick) (rd xs 0)))))
@@ -20419,7 +20419,7 @@
 (case "pd10 a shared BYTES operand survives a concat — both views keep their own len"
   (input (do
     (def (main (: n Int64))
-      (let ((b (Bytes.of (list (UInt8.wrap n) (UInt8.wrap 2) (UInt8.wrap 3)))))
+      (let ((b (Bytes.of #list((UInt8.wrap n) (UInt8.wrap 2) (UInt8.wrap 3)))))
         (let ((b2 (Bytes.concat b b"\x04")))
           (+ (Bytes.len b) (* 10 (Bytes.len b2))))))
     (export main)))
@@ -20442,7 +20442,7 @@
     (def (rd (: xs (List Int64)) (: i Int64))
       (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
     (def (main (: n Int64))
-      (let ((xs (list n 2 3)))
+      (let ((xs #list(n 2 3)))
         (let ((a (List.update xs 0 100)))
           (let ((b (List.update xs 1 200)))
             (+ (rd a 1) (+ (rd b 0) (* 100 (rd xs 0))))))))
@@ -20455,7 +20455,7 @@
     (def (rd (: xs (List Int64)))
       (match (List.at xs 0) ((Option.Some v) v) ((Option.None) -1)))
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list n 2 3) (list 9))))
+      (let ((xs (if (> n 0) #list(n 2 3) #list(9))))
         (let ((g (fn (u) (rd xs))))
           (let ((first (g 0)))
             (let ((ys (List.update xs 0 99)))
@@ -20470,7 +20470,7 @@
     (def (rd (: xs (List Int64)) (: i Int64))
       (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
     (def (main (: n Int64))
-      (let ((xs (list n 2 3)))
+      (let ((xs #list(n 2 3)))
         (handle E 0
           ((tick () s (resume (rd (List.update xs 0 500) 0) s)))
           (+ (E.tick) (rd xs 0)))))
@@ -20499,7 +20499,7 @@
             (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
               (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
             (def (pair-sum (: a Int64) (: b Int64))
-              (let ((t (tuple (build 0 a (list)) b))) (+ (List.len (. t 0)) (. t 1))))
+              (let ((t #tuple((build 0 a #list()) b))) (+ (List.len (. t 0)) (. t 1))))
             (export pair-sum)))
   (call   pair-sum (: 3 Int64) (: 22 Int64)) (output (: 25 Int64))
   (live-objects 0))
@@ -20512,7 +20512,7 @@
            use-after-free -- a double-freed twice-used binder would trap before returning 1.")
   (input  (do
             (type P (Mk (List Int64) (List Int64)))
-            (def (f (: n Int64)) (if (= n 0) (Mk (list 0) (list 0))
+            (def (f (: n Int64)) (if (= n 0) (Mk #list(0) #list(0))
                 (match (f (+ n 1)) ((Mk a _) (Mk a a)))))
             (def (main (: n Int64)) (match (f n) ((Mk x _) (List.len x))))
             (export main)))
@@ -20528,7 +20528,7 @@
     (effect D (op d (-> Int64)))
     (effect E (op e (-> Int64)))
     (def (main (: n Int64))
-      (handle A (list n 2)
+      (handle A #list(n 2)
         ((a () s (resume (List.len s) (List.prepend s 9))))
         (handle B 2 ((b () s (resume (+ s (A.a)) (+ s 1))))
           (handle C 3 ((c () s (resume (+ s (B.b)) (+ s 1))))
@@ -20562,7 +20562,7 @@
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
             (def (mk-adder (: base (List Int64))) (fn ((: x Int64)) (List.len (List.push base x))))
-            (def (main (: n Int64)) (let ((xs (build 0 n (list))) (f (mk-adder xs))) (+ (f 9) (List.len xs))))
+            (def (main (: n Int64)) (let ((xs (build 0 n #list())) (f (mk-adder xs))) (+ (f 9) (List.len xs))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 11 Int64))
   (live-objects 0))
@@ -20573,7 +20573,7 @@
            main(3) = (3+1) + (3+1) = 8; net 0 live cells.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
-            (def (main (: n Int64)) (let ((xs (build 0 n (list)))) (+ (List.len (List.push xs 9)) (List.len (List.push xs 8)))))
+            (def (main (: n Int64)) (let ((xs (build 0 n #list()))) (+ (List.len (List.push xs 9)) (List.len (List.push xs 8)))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 8 Int64))
   (live-objects 0))
@@ -20584,7 +20584,7 @@
            decision must be right. main(3,true,true) = List.len([0..3]+[9]) = 4; net 0 live cells.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
-            (def (main (: n Int64) (: a Bool) (: b Bool)) (let ((xs (build 0 n (list)))) (if a (if b (List.len (List.push xs 9)) (List.len xs)) 0)))
+            (def (main (: n Int64) (: a Bool) (: b Bool)) (let ((xs (build 0 n #list()))) (if a (if b (List.len (List.push xs 9)) (List.len xs)) 0)))
             (export main)))
   (call   main (: 3 Int64) (: true Bool) (: true Bool)) (output (: 4 Int64))
   (live-objects 0))
@@ -20595,7 +20595,7 @@
            reclaimed after the borrowing len -- net 0 live cells.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
-            (def (f (: n Int64)) (List.len (List.concat (build 0 n (list)) (build 0 n (list)))))
+            (def (f (: n Int64)) (List.len (List.concat (build 0 n #list()) (build 0 n #list()))))
             (export f)))
   (call   f (: 3 Int64)) (output (: 6 Int64))
   (live-objects 0))
@@ -20605,7 +20605,7 @@
            the pushed result must be reclaimed after the borrowing len -- net 0 live cells.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
-            (def (f (: n Int64)) (List.len (List.push (build 0 n (list)) 99)))
+            (def (f (: n Int64)) (List.len (List.push (build 0 n #list()) 99)))
             (export f)))
   (call   f (: 3 Int64)) (output (: 4 Int64))
   (live-objects 0))
@@ -20616,7 +20616,7 @@
            accumulates via `(List.push acc i)` as its tail; `List.len (build 0 500)` = 500 with no leak.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
-            (def (main) (List.len (build 0 500 (list))))
+            (def (main) (List.len (build 0 500 #list())))
             (export main)))
   (output (: 500 Int64))
   (live-objects 0))
@@ -20626,7 +20626,7 @@
            read (the owner reclaims once at the end), else double-free. Value 4 + 4 = 8; net 0 live cells.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
-            (def (f (: n Int64)) (let ((xs (List.push (build 0 n (list)) 99))) (+ (List.len xs) (List.len xs))))
+            (def (f (: n Int64)) (let ((xs (List.push (build 0 n #list()) 99))) (+ (List.len xs) (List.len xs))))
             (export f)))
   (call   f (: 3 Int64)) (output (: 8 Int64))
   (live-objects 0))
@@ -20638,7 +20638,7 @@
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
             (def (drive (: j Int64) (: m Int64) (: tot Int64))
-              (if (< j m) (drive (+ j 1) m (+ tot (List.len (List.push (build 0 3 (list)) 99)))) tot))
+              (if (< j m) (drive (+ j 1) m (+ tot (List.len (List.push (build 0 3 #list()) 99)))) tot))
             (def (main) (drive 0 20000 0))
             (export main)))
   (output (: 80000 Int64))
@@ -20649,7 +20649,7 @@
            the updated result must be reclaimed after the borrowing len -- net 0 live cells.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
-            (def (f (: n Int64)) (List.len (List.update (build 0 n (list)) 0 99)))
+            (def (f (: n Int64)) (List.len (List.update (build 0 n #list()) 0 99)))
             (export f)))
   (call   f (: 5 Int64)) (output (: 5 Int64))
   (live-objects 0))
@@ -20661,7 +20661,7 @@
            n=3; a missed/double drop anywhere leaves a live cell -- net 0.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
-            (def (f (: n Int64)) (List.len (List.concat (List.push (build 0 n (list)) 99) (List.push (build 0 n (list)) 88))))
+            (def (f (: n Int64)) (List.len (List.concat (List.push (build 0 n #list()) 99) (List.push (build 0 n #list()) 88))))
             (export f)))
   (call   f (: 3 Int64)) (output (: 8 Int64))
   (live-objects 0))
@@ -20675,7 +20675,7 @@
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
             (def (mk-adder (: base (List Int64))) (fn (x) (List.len (List.push base x))))
-            (def (main (: n Int64)) (let ((xs (build 0 n (list))) (f (mk-adder xs))) (+ (f 9) (List.len xs))))
+            (def (main (: n Int64)) (let ((xs (build 0 n #list())) (f (mk-adder xs))) (+ (f 9) (List.len xs))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 11 Int64))
   (live-objects 0))
@@ -20686,7 +20686,7 @@
            the owned Some shell after the payload read; a leaked shell would scale to ~N live -- net 0.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
-            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (Option.expect (List.at (build 0 3 (list)) 1) "v"))) tot))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (Option.expect (List.at (build 0 3 #list()) 1) "v"))) tot))
             (def (f (: n Int64)) (loop 0 n 0))
             (export f)))
   (call   f (: 500 Int64)) (output (: 500 Int64))
@@ -20710,7 +20710,7 @@
            all-scalar-payload shell after the match; a leaked shell scales to ~N -- net 0.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
-            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (match (List.at (build 0 3 (list)) 1) ((Option.Some v) v) ((Option.None _) 7)))) tot))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (match (List.at (build 0 3 #list()) 1) ((Option.Some v) v) ((Option.None _) 7)))) tot))
             (def (f (: n Int64)) (loop 0 n 0))
             (export f)))
   (call   f (: 500 Int64)) (output (: 500 Int64))
@@ -20722,7 +20722,7 @@
            match -- net 0.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
-            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (match (List.at (build 0 3 (list)) 99) ((Option.Some v) v) ((Option.None _) 7)))) tot))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (match (List.at (build 0 3 #list()) 99) ((Option.Some v) v) ((Option.None _) 7)))) tot))
             (def (f (: n Int64)) (loop 0 n 0))
             (export f)))
   (call   f (: 500 Int64)) (output (: 3500 Int64))
@@ -20748,7 +20748,7 @@
   (input  (do
             (type Box (Mk (List Int64)))
             (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
-            (def (probe (: n Int64)) (match (Mk (build 0 n (list))) ((Mk xs) (List.len xs))))
+            (def (probe (: n Int64)) (match (Mk (build 0 n #list())) ((Mk xs) (List.len xs))))
             (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (probe 3))) tot))
             (def (main) (loop 0 4 0))
             (export main)))
@@ -20763,7 +20763,7 @@
   (input  (do
             (type Box (Mk (List Int64)) (Nil))
             (def (bl (: i Int64) (: n Int64) (: a (List Int64))) (if (< i n) (bl (+ i 1) n (List.push a i)) a))
-            (def (probe (: z Int64)) (match (Mk (bl 0 3 (list))) ((Mk xs) (if (< xs (list 9)) 1 0)) ((Nil) 0)))
+            (def (probe (: z Int64)) (match (Mk (bl 0 3 #list())) ((Mk xs) (if (< xs #list(9)) 1 0)) ((Nil) 0)))
             (def (loop (: j Int64) (: n Int64) (: acc Int64)) (if (< j n) (loop (+ j 1) n (+ acc (probe 0))) acc))
             (def (main (: z Int64)) (loop 0 4 0))
             (export main)))
@@ -20774,39 +20774,39 @@
   (doc    "`(g 10)` inlines `(let ((t (tuple (+ n 1) (+ n 2)))) (. t 0))`; t's init substitutes n=10 and
            `(. t 0)` reads element 0 = n+1 = 11 (the atom-copy fix on a heap-compound let-local under a
            live param). Folds to the scalar 11.")
-  (input  (do (def (g (: n Int64)) (let ((t (tuple (+ n 1) (+ n 2)))) (. t 0))) (def (main) (g 10)) (export main)))
+  (input  (do (def (g (: n Int64)) (let ((t #tuple((+ n 1) (+ n 2)))) (. t 0))) (def (main) (g 10)) (export main)))
   (call   main) (output (: 11 Int64)))
 
 (case "a record binding pattern in a let destructures by field"
   (doc    "`(record (x a) (y b))` in let position destructures a record value by field, binding a/b to the
            x/y fields (each a projection of the bound value). (+ a b) = 3 + 4 = 7.")
-  (input  (do (def (main) (let (((record (= x a) (= y b)) (record (= x 3) (= y 4)))) (+ a b))) (export main)))
+  (input  (do (def (main) (let ((#record((= x a) (= y b)) #record((= x 3) (= y 4)))) (+ a b))) (export main)))
   (call   main) (output (: 7 Int64)))
 
 (case "a record binding pattern in a parameter destructures by field"
   (doc    "`(def (f (record (x a) (y b))) ...)` destructures its single record argument by field, arity 1
            (a destructuring parameter desugars to a let at load, sharing the binding-path). f (record (x 3)
            (y 4)) = 7.")
-  (input  (do (def (f (record (= x a) (= y b))) (+ a b)) (def (main) (f (record (= x 3) (= y 4)))) (export main)))
+  (input  (do (def (f #record((= x a) (= y b))) (+ a b)) (def (main) (f #record((= x 3) (= y 4)))) (export main)))
   (call   main) (output (: 7 Int64)))
 
 (case "a record binding pattern over a runtime record reads fields at run time"
   (doc    "The record value is built by a function `(mk 10)` (not a literal), so the field reads are a real
            heap projection at run time. `(let (((record (x a) (y b)) p)) (+ a b))` over (mk 10) = (record
            (x 10) (y 11)) -> 21.")
-  (input  (do (def (mk (: n Int64)) (record (= x n) (= y (+ n 1)))) (def (f (: p (Record (: x Int64) (: y Int64)))) (let (((record (= x a) (= y b)) p)) (+ a b))) (def (main) (f (mk 10))) (export main)))
+  (input  (do (def (mk (: n Int64)) #record((= x n) (= y (+ n 1)))) (def (f (: p (Record (: x Int64) (: y Int64)))) (let ((#record((= x a) (= y b)) p)) (+ a b))) (def (main) (f (mk 10))) (export main)))
   (call   main) (output (: 21 Int64)))
 
 (case "a record binding pattern admits a wildcard field value"
   (doc    "A record field's value sub-pattern may be a WILDCARD `_` (binds nothing). `(let (((record (x a)
            (y _)) (record (x 7) (y 4)))) a)` binds only a = 7, ignoring y.")
-  (input  (do (def (main) (let (((record (= x a) (= y _)) (record (= x 7) (= y 4)))) a)) (export main)))
+  (input  (do (def (main) (let ((#record((= x a) (= y _)) #record((= x 7) (= y 4)))) a)) (export main)))
   (call   main) (output (: 7 Int64)))
 
 (case "a record binding pattern's field binders feed a later binding in the same let"
   (doc    "The second let binding reads the field binders the first introduced (in-order let scope):
            `(let (((record (x a) (y b)) (record (x 3) (y 4))) (c (* a b))) c)` -> 3*4 = 12.")
-  (input  (do (def (main) (let (((record (= x a) (= y b)) (record (= x 3) (= y 4))) (c (* a b))) c)) (export main)))
+  (input  (do (def (main) (let ((#record((= x a) (= y b)) #record((= x 3) (= y 4))) (c (* a b))) c)) (export main)))
   (call   main) (output (: 12 Int64)))
 
 (case "a projection-only tuple over a runtime element folds to the sum of its elements"
@@ -20814,7 +20814,7 @@
            runtime import -- even with a runtime element. `(let ((t (tuple 10 a))) (+ (. t 0) (. t 1)))`
            folds to (+ 10 a); with-param 32 -> 42. (The no-runtime-import structural half stays a slim
            rcdzc unit test a_projection_only_tuple_folds_importing_no_runtime.)")
-  (input  (do (def (with-param (: a Int64)) (let ((t (tuple 10 a))) (+ (. t 0) (. t 1)))) (export with-param)))
+  (input  (do (def (with-param (: a Int64)) (let ((t #tuple(10 a))) (+ (. t 0) (. t 1)))) (export with-param)))
   (call   with-param (: 32 Int64)) (output (: 42 Int64)))
 
 ; -- breaker batch 410 (2026-08-26): owned-temporary list-match scrutinee RECLAIM witnesses
@@ -20826,8 +20826,8 @@
 (case "lm1 a branch-selected owned list scrutinee is reclaimed after the match"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (list n (+ n 1) (+ n 2)) (list 9))
-        ((list a _ c) (+ a c))
+      (match (if (> n 0) #list(n (+ n 1) (+ n 2)) #list(9))
+        (#list(a _ c) (+ a c))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -20836,10 +20836,10 @@
 
 (case "lm2 a helper-built branch-selected list scrutinee reclaims across the call"
   (input (do
-    (def (mk (: n Int64)) (if (> n 0) (list n (* n 2)) (list 0 0 0)))
+    (def (mk (: n Int64)) (if (> n 0) #list(n (* n 2)) #list(0 0 0)))
     (def (main (: n Int64))
       (match (mk n)
-        ((list a b) (- b a))
+        (#list(a b) (- b a))
         (_ -1)))
     (export main)))
   (call main (: 7 Int64))
@@ -20849,8 +20849,8 @@
 (case "lm3 a branch-selected list-of-tuples scrutinee reclaims shell and element shells (#3770)"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (list (tuple n 1) (tuple (+ n 1) 2)) (list (tuple 0 0)))
-        ((list (tuple a _) (tuple b _)) (+ a b))
+      (match (if (> n 0) #list(#tuple(n 1) #tuple((+ n 1) 2)) #list(#tuple(0 0)))
+        (#list(#tuple(a _) #tuple(b _)) (+ a b))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -20860,8 +20860,8 @@
 (case "lm5 a rest-binder match reclaims the branch-selected scrutinee and its tail (#3756)"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (list n (+ n 1) (+ n 2) (+ n 3)) (list 9))
-        ((list _ .. r) (List.len r))
+      (match (if (> n 0) #list(n (+ n 1) (+ n 2) (+ n 3)) #list(9))
+        (#list(_ .. r) (List.len r))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -20871,8 +20871,8 @@
 (case "lm6 a fall-through wildcard arm reclaims the unmatched branch-selected list"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (list n) (list n n))
-        ((list _ _) -1)
+      (match (if (> n 0) #list(n) #list(n n))
+        (#list(_ _) -1)
         (_ 9)))
     (export main)))
   (call main (: 5 Int64))
@@ -20884,17 +20884,17 @@
 ; (Tuple.remove over a runtime tuple, ce05, remains the lone decline in this family — filed.)
 
 (case "ce03 Record.merge of two RUNTIME-built records projects the merged field"
-  (input  (do (def (f (: n Int64)) (. (Record.merge (record (= a n)) (record (= b (* n 2)))) b)) (export f)))
+  (input  (do (def (f (: n Int64)) (. (Record.merge #record((= a n)) #record((= b (* n 2)))) b)) (export f)))
   (call   f 5)
   (output (: 10 Int64)))
 
 (case "ce04 Tuple.concat of RUNTIME tuples destructures to the joined fields"
-  (input  (do (def (f (: n Int64)) (match (Tuple.concat (tuple n 2) (tuple 3)) ((tuple a b c) (+ a (+ b c))))) (export f)))
+  (input  (do (def (f (: n Int64)) (match (Tuple.concat #tuple(n 2) #tuple(3)) (#tuple(a b c) (+ a (+ b c))))) (export f)))
   (call   f 5)
   (output (: 10 Int64)))
 
 (case "ce07 literal-tuple pattern matches a RUNTIME tuple"
-  (input  (do (def (f (: n Int64)) (match (tuple n 2) ((tuple 1 2) 100) (_ 0))) (export f)))
+  (input  (do (def (f (: n Int64)) (match #tuple(n 2) (#tuple(1 2) 100) (_ 0))) (export f)))
   (call   f 1)
   (output (: 100 Int64))
   (live-objects 0))
@@ -20920,7 +20920,7 @@
 (case "msr2 a branch-selected owned BYTES scrutinee dispatched by a literal arm reclaims"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (Bytes.of (list 1 2)) (Bytes.of (list 9)))
+      (match (if (> n 0) (Bytes.of #list(1 2)) (Bytes.of #list(9)))
         (b"\x01\x02" 1)
         (_ 0)))
     (export main)))
@@ -20931,7 +20931,7 @@
 (case "msr4 a runtime-BUILT Ast scrutinee matched and reduced to a scalar reclaims"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of n)))) (Ast.Name "g"))
+      (match (if (> n 0) (Ast.List #list((Ast.Name "f") (Ast.Int (BigInt.of n)))) (Ast.Name "g"))
         ((Ast.List xs) (List.len xs))
         (_ 0)))
     (export main)))
@@ -20942,8 +20942,8 @@
 (case "msr5 an owned TUPLE-with-heap-element scrutinee reclaims shell and element"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (tuple n (list n (+ n 1))) (tuple 0 (list 9)))
-        ((tuple a xs) (+ a (List.len xs)))))
+      (match (if (> n 0) #tuple(n #list(n (+ n 1))) #tuple(0 #list(9)))
+        (#tuple(a xs) (+ a (List.len xs)))))
     (export main)))
   (call main (: 5 Int64))
   (output (: 7 Int64))
@@ -20952,9 +20952,9 @@
 (case "msr6 a NESTED match — outer list arm rebinds inner records — reclaims both shells (#3778)"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (list (record (= v n)) (record (= v (* n 2)))) (list (record (= v 0))))
-        ((list r1 r2)
-          (match r1 ((record (= v a)) (match r2 ((record (= v b)) (+ a b))))))
+      (match (if (> n 0) #list(#record((= v n)) #record((= v (* n 2)))) #list(#record((= v 0))))
+        (#list(r1 r2)
+          (match r1 (#record((= v a)) (match r2 (#record((= v b)) (+ a b))))))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -20967,8 +20967,8 @@
 (case "lol1 a list-of-LISTS scrutinee matched and read via List.len reclaims (the #3778 bonus)"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (list (list n n) (list n n n)) (list (list 9)))
-        ((list a b) (+ (List.len a) (List.len b)))
+      (match (if (> n 0) #list(#list(n n) #list(n n n)) #list(#list(9)))
+        (#list(a b) (+ (List.len a) (List.len b)))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -20986,7 +20986,7 @@
   (input (do
     (def (main (: n Int64))
       (match n
-        ((guard k (> (List.len (if (> k 0) (list k k) (list 9))) 1)) 1)
+        ((guard k (> (List.len (if (> k 0) #list(k k) #list(9))) 1)) 1)
         (_ 0)))
     (export main)))
   (call main (: 5 Int64))
@@ -20997,7 +20997,7 @@
   (input (do
     (def (main (: n Int64))
       (match n
-        ((guard k (> (List.len (if (> k 0) (list k) (list 9 9))) 5)) 1)
+        ((guard k (> (List.len (if (> k 0) #list(k) #list(9 9))) 5)) 1)
         (_ 7)))
     (export main)))
   (call main (: 5 Int64))
@@ -21008,9 +21008,9 @@
   (input (do
     (def (main (: n Int64))
       (match (if (> n 0)
-                 (list (tuple 1 (record (= v n))) (tuple 2 (record (= v (* n 2)))))
-                 (list (tuple 0 (record (= v 0)))))
-        ((list (tuple _ (record (= v a))) (tuple _ (record (= v b)))) (+ a b))
+                 #list(#tuple(1 #record((= v n))) #tuple(2 #record((= v (* n 2)))))
+                 #list(#tuple(0 #record((= v 0)))))
+        (#list(#tuple(_ #record((= v a))) #tuple(_ #record((= v b)))) (+ a b))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21021,8 +21021,8 @@
   (input (do
     (type Box (Full (List Int64)) (Empty))
     (def (main (: n Int64))
-      (match (if (> n 0) (Box.Full (list n (+ n 1))) Box.Empty)
-        ((Box.Full (list a b)) (+ a b))
+      (match (if (> n 0) (Box.Full #list(n (+ n 1))) Box.Empty)
+        ((Box.Full #list(a b)) (+ a b))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21032,7 +21032,7 @@
 (case "dst6 CONTROL: Option payload bound WHOLE (not destructured) then consumed by List.len"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (Option.Some (list n (+ n 1))) Option.None)
+      (match (if (> n 0) (Option.Some #list(n (+ n 1))) Option.None)
         ((Option.Some xs) (List.len xs))
         (_ -1)))
     (export main)))
@@ -21048,7 +21048,7 @@
 
 (case "rlv0 a returned 2-element list keeps exactly its own 2 cells alive"
   (input (do
-    (def (main (: n Int64)) (if (> n 0) (list n (+ n 1)) (list 9)))
+    (def (main (: n Int64)) (if (> n 0) #list(n (+ n 1)) #list(9)))
     (export main)))
   (call main (: 5 Int64))
   (output (: #list(5 6) (List Int64)))
@@ -21057,8 +21057,8 @@
 (case "rlv1 a returned list plus a DISCARDED sibling temp — live count stays exactly the result"
   (input (do
     (def (main (: n Int64))
-      (let ((tmp (if (> n 0) (list n n n) (list 9))))
-        (if (> (List.len tmp) 1) (list n (+ n 1)) (list 0))))
+      (let ((tmp (if (> n 0) #list(n n n) #list(9))))
+        (if (> (List.len tmp) 1) #list(n (+ n 1)) #list(0))))
     (export main)))
   (call main (: 5 Int64))
   (output (: #list(5 6) (List Int64)))
@@ -21091,8 +21091,8 @@
 (case "d4 Option wrapping a bare list (2 levels) destructured to scalars"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (Option.Some (list n (+ n 1))) Option.None)
-        ((Option.Some (list a b)) (+ a b))
+      (match (if (> n 0) (Option.Some #list(n (+ n 1))) Option.None)
+        ((Option.Some #list(a b)) (+ a b))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21103,9 +21103,9 @@
   (input (do
     (def (main (: n Int64))
       (match (if (> n 0)
-                 (Option.Some (list (tuple 1 (record (= v n))) (tuple 2 (record (= v (* n 2))))))
+                 (Option.Some #list(#tuple(1 #record((= v n))) #tuple(2 #record((= v (* n 2))))))
                  Option.None)
-        ((Option.Some (list (tuple _ (record (= v a))) (tuple _ (record (= v b))))) (+ a b))
+        ((Option.Some #list(#tuple(_ #record((= v a))) #tuple(_ #record((= v b))))) (+ a b))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21115,8 +21115,8 @@
 (case "d3 Option wrapping a list of records (3 levels, no tuples) destructured to scalars"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (Option.Some (list (record (= v n)) (record (= v (* n 2))))) Option.None)
-        ((Option.Some (list (record (= v a)) (record (= v b)))) (+ a b))
+      (match (if (> n 0) (Option.Some #list(#record((= v n)) #record((= v (* n 2))))) Option.None)
+        ((Option.Some #list(#record((= v a)) #record((= v b)))) (+ a b))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21127,9 +21127,9 @@
   (input (do
     (def (main (: n Int64))
       (match (if (> n 0)
-                 (list (tuple 1 (record (= v n))) (tuple 2 (record (= v (* n 2)))))
-                 (list (tuple 0 (record (= v 0)))))
-        ((list (tuple _ (record (= v a))) (tuple _ (record (= v b)))) (+ a b))
+                 #list(#tuple(1 #record((= v n))) #tuple(2 #record((= v (* n 2)))))
+                 #list(#tuple(0 #record((= v 0)))))
+        (#list(#tuple(_ #record((= v a))) #tuple(_ #record((= v b)))) (+ a b))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21139,8 +21139,8 @@
 (case "drs1 Result Ok nested-payload destructure (the Option-leak sibling)"
   (input (do
     (def (main (: n Int64))
-      (match (: (if (> n 0) (Ok (list n (+ n 1))) (Err "nope")) (Result (List Int64) String))
-        ((Ok (list a b)) (+ a b))
+      (match (: (if (> n 0) (Ok #list(n (+ n 1))) (Err "nope")) (Result (List Int64) String))
+        ((Ok #list(a b)) (+ a b))
         ((Err _) -1)
         (_ -2)))
     (export main)))
@@ -21151,8 +21151,8 @@
 (case "drs2 Option-in-Option nested destructure to scalars"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (Option.Some (Option.Some (list n (+ n 1)))) Option.None)
-        ((Option.Some (Option.Some (list a b))) (+ a b))
+      (match (if (> n 0) (Option.Some (Option.Some #list(n (+ n 1)))) Option.None)
+        ((Option.Some (Option.Some #list(a b))) (+ a b))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21162,7 +21162,7 @@
 (case "d6 CONTROL: the Option payload bound WHOLE (not destructured) then consumed by List.len reclaims"
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (Option.Some (list n (+ n 1))) Option.None)
+      (match (if (> n 0) (Option.Some #list(n (+ n 1))) Option.None)
         ((Option.Some xs) (List.len xs))
         (_ -1)))
     (export main)))
@@ -21174,8 +21174,8 @@
   (input (do
     (type Box (Full (List Int64)) (Empty))
     (def (main (: n Int64))
-      (match (if (> n 0) (Box.Full (list n (+ n 1))) Box.Empty)
-        ((Box.Full (list a b)) (+ a b))
+      (match (if (> n 0) (Box.Full #list(n (+ n 1))) Box.Empty)
+        ((Box.Full #list(a b)) (+ a b))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21203,8 +21203,8 @@
   (input (do
     (type MyOpt (MySome (List Int64)) (MyNone))
     (def (main (: n Int64))
-      (match (if (> n 0) (MyOpt.MySome (list n (+ n 1))) MyOpt.MyNone)
-        ((MyOpt.MySome (list a b)) (+ a b))
+      (match (if (> n 0) (MyOpt.MySome #list(n (+ n 1))) MyOpt.MyNone)
+        ((MyOpt.MySome #list(a b)) (+ a b))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21214,8 +21214,8 @@
   (input (do
     (type (GBox a) (GFull a) (GEmpty unit))
     (def (main (: n Int64))
-      (match (if (> n 0) (GBox.GFull (list n (+ n 1))) (GBox.GEmpty unit))
-        ((GBox.GFull (list a b)) (+ a b))
+      (match (if (> n 0) (GBox.GFull #list(n (+ n 1))) (GBox.GEmpty unit))
+        ((GBox.GFull #list(a b)) (+ a b))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21254,8 +21254,8 @@
   (input (do
     (type (GBox a) (GFull a) (GEmpty unit))
     (def (main (: n Int64))
-      (match (if (> n 0) (GBox.GFull (tuple n (+ n 1))) (GBox.GEmpty unit))
-        ((GBox.GFull (tuple a b)) (+ a b))
+      (match (if (> n 0) (GBox.GFull #tuple(n (+ n 1))) (GBox.GEmpty unit))
+        ((GBox.GFull #tuple(a b)) (+ a b))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21266,8 +21266,8 @@
   (input (do
     (type (GBox a) (GFull a) (GEmpty unit))
     (def (main (: n Int64))
-      (match (if (> n 0) (GBox.GFull (record (= v n))) (GBox.GEmpty unit))
-        ((GBox.GFull (record (= v a))) (* a 3))
+      (match (if (> n 0) (GBox.GFull #record((= v n))) (GBox.GEmpty unit))
+        ((GBox.GFull #record((= v a))) (* a 3))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21278,7 +21278,7 @@
   (input (do
     (type (GPair a b) (Both a b) (GNil unit))
     (def (main (: n Int64))
-      (match (: (if (> n 0) (Both (list n (+ n 1)) 100) (GNil unit)) (GPair (List Int64) Int64))
+      (match (: (if (> n 0) (Both #list(n (+ n 1)) 100) (GNil unit)) (GPair (List Int64) Int64))
         ((Both p c) (+ (List.len p) c))
         (_ -1)))
     (export main)))
@@ -21297,8 +21297,8 @@
   (input (do
     (type MPair (MBoth (List Int64) Int64) (MNil unit))
     (def (main (: n Int64))
-      (match (if (> n 0) (MPair.MBoth (list n (+ n 1)) 100) (MPair.MNil unit))
-        ((MPair.MBoth (list a b) c) (+ (+ a b) c))
+      (match (if (> n 0) (MPair.MBoth #list(n (+ n 1)) 100) (MPair.MNil unit))
+        ((MPair.MBoth #list(a b) c) (+ (+ a b) c))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21308,8 +21308,8 @@
   (input (do
     (type (GPair a b) (Both a b) (GNil unit))
     (def (main (: n Int64))
-      (match (: (if (> n 0) (Both (tuple n (+ n 1)) 100) (GNil unit)) (GPair (Tuple Int64 Int64) Int64))
-        ((Both (tuple a b) c) (+ (+ a b) c))
+      (match (: (if (> n 0) (Both #tuple(n (+ n 1)) 100) (GNil unit)) (GPair (Tuple Int64 Int64) Int64))
+        ((Both #tuple(a b) c) (+ (+ a b) c))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21335,8 +21335,8 @@
   (input (do
     (type (GPair a b) (Both a b) (GNil unit))
     (def (main (: n Int64))
-      (match (: (if (> n 0) (Both (list n (+ n 1)) 100) (GNil unit)) (GPair (List Int64) Int64))
-        ((Both (list a b) c) (+ (+ a b) c))
+      (match (: (if (> n 0) (Both #list(n (+ n 1)) 100) (GNil unit)) (GPair (List Int64) Int64))
+        ((Both #list(a b) c) (+ (+ a b) c))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21359,9 +21359,9 @@
   (input (do
     (type (GPair a b) (Both a b) (GNil unit))
     (def (main (: n Int64))
-      (match (: (if (> n 0) (Both (record (= xs (list n (+ n 1)))) 100) (GNil unit))
+      (match (: (if (> n 0) (Both #record((= xs #list(n (+ n 1)))) 100) (GNil unit))
                 (GPair (Record (: xs (List Int64))) Int64))
-        ((Both (record (= xs ys)) c) (+ (List.len ys) c))
+        ((Both #record((= xs ys)) c) (+ (List.len ys) c))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21376,9 +21376,9 @@
   (input (do
     (type (GPair a b) (Both a b) (GNil unit))
     (def (main (: n Int64))
-      (match (: (if (> n 0) (Both (tuple (list n (+ n 1)) 7) 100) (GNil unit))
+      (match (: (if (> n 0) (Both #tuple(#list(n (+ n 1)) 7) 100) (GNil unit))
                 (GPair (Tuple (List Int64) Int64) Int64))
-        ((Both (tuple ys k) c) (+ (+ (List.len ys) k) c))
+        ((Both #tuple(ys k) c) (+ (+ (List.len ys) k) c))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21397,7 +21397,7 @@
 (case "lar1 a List.at-extracted INNER LIST bound by Some and only borrowed leaks the inner vec"
   (input (do
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+      (let ((xs (if (> n 0) #list(#list(n) #list(n (+ n 1))) #list(#list(9)))))
         (match (List.at xs 1)
           ((Option.Some inner) (List.len inner))
           ((Option.None) -1))))
@@ -21409,7 +21409,7 @@
 (case "lar2 a List.at-extracted SCALAR element reclaims fully (the flat-list control)"
   (input (do
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list n (+ n 1) (* n 3)) (list 9))))
+      (let ((xs (if (> n 0) #list(n (+ n 1) (* n 3)) #list(9))))
         (match (List.at xs 1)
           ((Option.Some v) v)
           ((Option.None) -1))))
@@ -21430,7 +21430,7 @@
 (case "mlr1 a Map.lookup-extracted INNER LIST bound by Some and only borrowed leaks the inner vec"
   (input (do
     (def (main (: n Int64))
-      (let ((m (Map.insert Map.empty n (list n (+ n 1)))))
+      (let ((m (Map.insert Map.empty n #list(n (+ n 1)))))
         (match (Map.lookup m n)
           ((Option.Some inner) (List.len inner))
           ((Option.None) -1))))
@@ -21442,9 +21442,9 @@
 (case "mlr2 a List.at-extracted INNER LIST consumed by a concat still leaks the extraction's retain"
   (input (do
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+      (let ((xs (if (> n 0) #list(#list(n) #list(n (+ n 1))) #list(#list(9)))))
         (match (List.at xs 1)
-          ((Option.Some inner) (List.len (List.concat inner (list 7))))
+          ((Option.Some inner) (List.len (List.concat inner #list(7))))
           ((Option.None) -1))))
     (export main)))
   (call main (: 5 Int64))
@@ -21454,7 +21454,7 @@
 (case "mlr3 a TUPLE projection of a list field borrowed by List.len reclaims fully (no Option shell, no retain)"
   (input (do
     (def (main (: n Int64))
-      (let ((p (if (> n 0) (tuple (list n (+ n 1)) 100) (tuple (list 9) 5))))
+      (let ((p (if (> n 0) #tuple(#list(n (+ n 1)) 100) #tuple(#list(9) 5))))
         (+ (List.len (. p 0)) (. p 1))))
     (export main)))
   (call main (: 5 Int64))
@@ -21468,8 +21468,8 @@
   (input (do
     (type (GPair a b) (Both a b) (GNil unit))
     (def (main (: n Int64))
-      (match (: (if (> n 0) (Both (list n) (list (+ n 1) 9)) (GNil unit)) (GPair (List Int64) (List Int64)))
-        ((Both (list a) (list b c)) (+ (+ a b) c))
+      (match (: (if (> n 0) (Both #list(n) #list((+ n 1) 9)) (GNil unit)) (GPair (List Int64) (List Int64)))
+        ((Both #list(a) #list(b c)) (+ (+ a b) c))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21486,8 +21486,8 @@
   (input (do
     (type (GPair a b) (Both a b) (GNil unit))
     (def (main (: n Int64))
-      (match (: (if (> n 0) (Both (list (tuple n (+ n 1))) 9) (GNil unit)) (GPair (List (Tuple Int64 Int64)) Int64))
-        ((Both (list (tuple a b)) c) (+ (+ a b) c))
+      (match (: (if (> n 0) (Both #list(#tuple(n (+ n 1))) 9) (GNil unit)) (GPair (List (Tuple Int64 Int64)) Int64))
+        ((Both #list(#tuple(a b)) c) (+ (+ a b) c))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21498,8 +21498,8 @@
   (input (do
     (type (GPair a b) (Both a b) (GNil unit))
     (def (main (: n Int64))
-      (match (: (if (> n 0) (Both (list (record (= v n))) 9) (GNil unit)) (GPair (List (Record (: v Int64))) Int64))
-        ((Both (list (record (= v a))) c) (+ a c))
+      (match (: (if (> n 0) (Both #list(#record((= v n))) 9) (GNil unit)) (GPair (List (Record (: v Int64))) Int64))
+        ((Both #list(#record((= v a))) c) (+ a c))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21510,8 +21510,8 @@
   (input (do
     (type (GPair a b) (Both a b) (GNil unit))
     (def (main (: n Int64))
-      (match (: (if (> n 0) (Both (list (list n (+ n 1))) 9) (GNil unit)) (GPair (List (List Int64)) Int64))
-        ((Both (list (list a b)) c) (+ (+ a b) c))
+      (match (: (if (> n 0) (Both #list(#list(n (+ n 1))) 9) (GNil unit)) (GPair (List (List Int64)) Int64))
+        ((Both #list(#list(a b)) c) (+ (+ a b) c))
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
@@ -21527,8 +21527,8 @@
   (input (do
     (type (GPair a b) (Both a b) (GNil unit))
     (def (main (: n Int64))
-      (match (: (if (> n 0) (Both (list n (+ n 1)) 100) (GNil unit)) (GPair (List Int64) Int64))
-        ((Both (list a b) c) (+ (+ a b) c))
+      (match (: (if (> n 0) (Both #list(n (+ n 1)) 100) (GNil unit)) (GPair (List Int64) Int64))
+        ((Both #list(a b) c) (+ (+ a b) c))
         (_ -1)))
     (export main)))
   (call main (: 0 Int64))
@@ -21545,7 +21545,7 @@
 (case "xop1 a let-bound extracted Option matched TWICE leaks twice — the unpaired dup is per-unwrap"
   (input (do
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9))))
+      (let ((xs (if (> n 0) #list(#list(n) #list(n (+ n 1))) #list(#list(9))))
             (o (List.at xs 1)))
         (+ (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))
            (* 10 (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))))))
@@ -21557,7 +21557,7 @@
 (case "xop2 a bounds-MISS extraction (None path) from a nested list still leaks one cell"
   (input (do
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+      (let ((xs (if (> n 0) #list(#list(n) #list(n (+ n 1))) #list(#list(9)))))
         (match (List.at xs 9)
           ((Option.Some inner) (List.len inner))
           ((Option.None) -1))))
@@ -21571,7 +21571,7 @@
     (def (unwrap (: o (Option (List Int64))))
       (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1)))
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+      (let ((xs (if (> n 0) #list(#list(n) #list(n (+ n 1))) #list(#list(9)))))
         (unwrap (List.at xs 1))))
     (export main)))
   (call main (: 5 Int64))
@@ -21590,7 +21590,7 @@
 (case "xop4 a FRESH compound-payload Option matched twice leaks its payload (one unwrap balances, the second does not)"
   (input (do
     (def (main (: n Int64))
-      (let ((o (if (> n 0) (Option.Some (list n (+ n 1))) Option.None)))
+      (let ((o (if (> n 0) (Option.Some #list(n (+ n 1))) Option.None)))
         (+ (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))
            (* 10 (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))))))
     (export main)))
@@ -21600,7 +21600,7 @@
 
 (case "xop5 a helper-BUILT compound-payload Option matched twice in the caller leaks the same payload"
   (input (do
-    (def (mk (: n Int64)) (if (> n 0) (Option.Some (list n (+ n 1))) Option.None))
+    (def (mk (: n Int64)) (if (> n 0) (Option.Some #list(n (+ n 1))) Option.None))
     (def (main (: n Int64))
       (let ((o (mk n)))
         (+ (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))
@@ -21619,7 +21619,7 @@
 (case "ruw1 a fresh Result Ok with a list payload matched twice leaks the payload like Option"
   (input (do
     (def (main (: n Int64))
-      (let ((o (: (if (> n 0) (Ok (list n (+ n 1))) (Err "no")) (Result (List Int64) String))))
+      (let ((o (: (if (> n 0) (Ok #list(n (+ n 1))) (Err "no")) (Result (List Int64) String))))
         (+ (match o ((Ok inner) (List.len inner)) ((Err _) -1))
            (* 10 (match o ((Ok inner) (List.len inner)) ((Err _) -1))))))
     (export main)))
@@ -21631,7 +21631,7 @@
   (input (do
     (type (GBox a) (GFull a) (GEmpty unit))
     (def (main (: n Int64))
-      (let ((o (: (if (> n 0) (GBox.GFull (list n (+ n 1))) (GBox.GEmpty unit)) (GBox (List Int64)))))
+      (let ((o (: (if (> n 0) (GBox.GFull #list(n (+ n 1))) (GBox.GEmpty unit)) (GBox (List Int64)))))
         (+ (match o ((GBox.GFull inner) (List.len inner)) (_ -1))
            (* 10 (match o ((GBox.GFull inner) (List.len inner)) (_ -1))))))
     (export main)))
@@ -21656,7 +21656,7 @@
            match would read freed memory in the second match → detector UAF trap or a value off 7.")
   (input  (do
             (type Box (Wrap (List Int64)) (Empty))
-            (def (mk (: n Int64)) (if (> n 0) (mk (- n 1)) (Wrap (list 1 2 3))))
+            (def (mk (: n Int64)) (if (> n 0) (mk (- n 1)) (Wrap #list(1 2 3))))
             (def (f (: w Box))
               (+ (match w ((Wrap xs) (List.len (List.push xs 9))) ((Empty) 0))
                  (match w ((Wrap ys) (List.len ys)) ((Empty) 0))))
@@ -21668,7 +21668,7 @@
 (case "ruw3 a fresh Option matched THREE times still reads three — the census counts objects not refs"
   (input (do
     (def (main (: n Int64))
-      (let ((o (if (> n 0) (Option.Some (list n (+ n 1))) Option.None)))
+      (let ((o (if (> n 0) (Option.Some #list(n (+ n 1))) Option.None)))
         (+ (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))
            (+ (* 10 (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1)))
               (* 100 (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1)))))))
@@ -21796,7 +21796,7 @@
 (case "rcw2 a hundred-field record projects its first and last fields"
   (input (do
     (def (main (: n Int64))
-      (let ((r (record (= f0 n) (= f1 1) (= f2 2) (= f3 3) (= f4 4) (= f5 5) (= f6 6) (= f7 7) (= f8 8) (= f9 9) (= f10 10) (= f11 11) (= f12 12) (= f13 13) (= f14 14) (= f15 15) (= f16 16) (= f17 17) (= f18 18) (= f19 19) (= f20 20) (= f21 21) (= f22 22) (= f23 23) (= f24 24) (= f25 25) (= f26 26) (= f27 27) (= f28 28) (= f29 29) (= f30 30) (= f31 31) (= f32 32) (= f33 33) (= f34 34) (= f35 35) (= f36 36) (= f37 37) (= f38 38) (= f39 39) (= f40 40) (= f41 41) (= f42 42) (= f43 43) (= f44 44) (= f45 45) (= f46 46) (= f47 47) (= f48 48) (= f49 49) (= f50 50) (= f51 51) (= f52 52) (= f53 53) (= f54 54) (= f55 55) (= f56 56) (= f57 57) (= f58 58) (= f59 59) (= f60 60) (= f61 61) (= f62 62) (= f63 63) (= f64 64) (= f65 65) (= f66 66) (= f67 67) (= f68 68) (= f69 69) (= f70 70) (= f71 71) (= f72 72) (= f73 73) (= f74 74) (= f75 75) (= f76 76) (= f77 77) (= f78 78) (= f79 79) (= f80 80) (= f81 81) (= f82 82) (= f83 83) (= f84 84) (= f85 85) (= f86 86) (= f87 87) (= f88 88) (= f89 89) (= f90 90) (= f91 91) (= f92 92) (= f93 93) (= f94 94) (= f95 95) (= f96 96) (= f97 97) (= f98 98) (= f99 99))))
+      (let ((r #record((= f0 n) (= f1 1) (= f2 2) (= f3 3) (= f4 4) (= f5 5) (= f6 6) (= f7 7) (= f8 8) (= f9 9) (= f10 10) (= f11 11) (= f12 12) (= f13 13) (= f14 14) (= f15 15) (= f16 16) (= f17 17) (= f18 18) (= f19 19) (= f20 20) (= f21 21) (= f22 22) (= f23 23) (= f24 24) (= f25 25) (= f26 26) (= f27 27) (= f28 28) (= f29 29) (= f30 30) (= f31 31) (= f32 32) (= f33 33) (= f34 34) (= f35 35) (= f36 36) (= f37 37) (= f38 38) (= f39 39) (= f40 40) (= f41 41) (= f42 42) (= f43 43) (= f44 44) (= f45 45) (= f46 46) (= f47 47) (= f48 48) (= f49 49) (= f50 50) (= f51 51) (= f52 52) (= f53 53) (= f54 54) (= f55 55) (= f56 56) (= f57 57) (= f58 58) (= f59 59) (= f60 60) (= f61 61) (= f62 62) (= f63 63) (= f64 64) (= f65 65) (= f66 66) (= f67 67) (= f68 68) (= f69 69) (= f70 70) (= f71 71) (= f72 72) (= f73 73) (= f74 74) (= f75 75) (= f76 76) (= f77 77) (= f78 78) (= f79 79) (= f80 80) (= f81 81) (= f82 82) (= f83 83) (= f84 84) (= f85 85) (= f86 86) (= f87 87) (= f88 88) (= f89 89) (= f90 90) (= f91 91) (= f92 92) (= f93 93) (= f94 94) (= f95 95) (= f96 96) (= f97 97) (= f98 98) (= f99 99))))
         (+ (. r f0) (. r f99))))
     (export main)))
   (call main (: 5 Int64))
@@ -21812,7 +21812,7 @@
            120.")
   (input (do
     (def (main (: n Int64))
-      (let ((r (record (= f0 n) (= f1 1) (= f2 2) (= f3 3) (= f4 4) (= f5 5) (= f6 6) (= f7 7) (= f8 8) (= f9 9) (= f10 10) (= f11 11) (= f12 12) (= f13 13) (= f14 14) (= f15 15))))
+      (let ((r #record((= f0 n) (= f1 1) (= f2 2) (= f3 3) (= f4 4) (= f5 5) (= f6 6) (= f7 7) (= f8 8) (= f9 9) (= f10 10) (= f11 11) (= f12 12) (= f13 13) (= f14 14) (= f15 15))))
         (+ (+ (+ (+ (. r f0) (. r f1)) (+ (. r f2) (. r f3))) (+ (+ (. r f4) (. r f5)) (+ (. r f6) (. r f7)))) (+ (+ (+ (. r f8) (. r f9)) (+ (. r f10) (. r f11))) (+ (+ (. r f12) (. r f13)) (+ (. r f14) (. r f15)))))))
     (export main)))
   (call main (: 0 Int64))
@@ -21821,7 +21821,7 @@
 (case "rcw3 a fifty-element tuple projects its first and last positions"
   (input (do
     (def (main (: n Int64))
-      (let ((t (tuple n 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48)))
+      (let ((t #tuple(n 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48)))
         (+ (. t 0) (. t 49))))
     (export main)))
   (call main (: 5 Int64))
@@ -21845,8 +21845,8 @@
 
 (case "csd1 two occurrences of one constant list literal — branch-selected use, length reads, and runtime equality across the pair"
   (input (do (def (main (: n Int64))
-    (let ((a (if (= n 1) (list 10 20 30) (list 9)))
-          (b (list 10 20 30)))
+    (let ((a (if (= n 1) #list(10 20 30) #list(9)))
+          (b #list(10 20 30)))
       (+ (* 100 (List.len a)) (+ (List.len b) (if (= a b) 1000 0)))))
     (export main)))
   (call main (: 1 Int64))
@@ -21857,7 +21857,7 @@
   (input (do
     (def (frames (: k Int64))
       (if (= k 0) 0
-          (let ((a (if (= (% k 2) 0) (list 10 20 30) (list 7 8))))
+          (let ((a (if (= (% k 2) 0) #list(10 20 30) #list(7 8))))
             (+ (List.len a) (frames (- k 1))))))
     (def (main (: n Int64)) (frames n))
     (export main)))
@@ -21872,7 +21872,7 @@
            and balance make's alloc. The escaped value decodes to (tuple 0 7) AND after the drop NO heap cell
            stays live. Without the drop the borrowed handle is retained (leaks 1); the (drop) is the release.")
   (input  (do
-            (def (f (: n Int64)) (if (= n 0) (tuple n 7) (f (- n 1))))
+            (def (f (: n Int64)) (if (= n 0) #tuple(n 7) (f (- n 1))))
             (def (main) (f 3)) (export main)))
   (call   main) (drop) (output (: (tuple 0 7) (Tuple Int64 Int64)))
   (live-objects 0))
@@ -21890,7 +21890,7 @@
   (input (do
     (def (sink (: l (List Int64))) (List.len l))
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+      (let ((xs (if (> n 0) #list(#list(n) #list(n (+ n 1))) #list(#list(9)))))
         (match (List.at xs 1)
           ((Option.Some inner) (sink inner))
           ((Option.None) -1))))
@@ -21902,7 +21902,7 @@
 (case "oqc2 an extraction-Some payload consumed by a CLOSURE application reclaims likewise"
   (input (do
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9))))
+      (let ((xs (if (> n 0) #list(#list(n) #list(n (+ n 1))) #list(#list(9))))
             (f (fn ((: l (List Int64))) (List.len l))))
         (match (List.at xs 1)
           ((Option.Some inner) (f inner))
@@ -21926,7 +21926,7 @@
     (def (suml (: ys (List Int64)) (: i Int64))
       (match (List.at ys i) ((Option.Some v) (+ v (suml ys (+ i 1)))) ((Option.None) 0)))
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+      (let ((xs (if (> n 0) #list(#list(n) #list(n (+ n 1))) #list(#list(9)))))
         (match (List.at xs 1)
           ((Option.Some inner) (suml inner 0))
           ((Option.None) -1))))
@@ -21939,7 +21939,7 @@
   (input (do
     (effect E (op put (-> (List Int64) Int64)))
     (def (main (: n Int64))
-      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+      (let ((xs (if (> n 0) #list(#list(n) #list(n (+ n 1))) #list(#list(9)))))
         (handle E 0
           ((put (l) st (resume (List.len l) st)))
           (match (List.at xs 1)
@@ -21964,7 +21964,7 @@
 (case "ruf1 a twice-unwrapped payload persistently updated through one binding reads original through the other (the two-sided balance fence)"
   (input (do
     (def (main (: n Int64))
-      (let ((o (if (> n 0) (Option.Some (list n (+ n 1))) Option.None)))
+      (let ((o (if (> n 0) (Option.Some #list(n (+ n 1))) Option.None)))
         (match o
           ((Option.Some in1)
             (match o
@@ -21988,7 +21988,7 @@
 (case "ruf2 the two-sided balance fence over a twice-unwrapped Result Ok payload"
   (input (do
     (def (main (: n Int64))
-      (let ((o (: (if (> n 0) (Ok (list n (+ n 1))) (Err "no")) (Result (List Int64) String))))
+      (let ((o (: (if (> n 0) (Ok #list(n (+ n 1))) (Err "no")) (Result (List Int64) String))))
         (match o
           ((Ok in1)
             (match o
@@ -22007,7 +22007,7 @@
   (input (do
     (type (GBox a) (GFull a) (GEmpty unit))
     (def (main (: n Int64))
-      (let ((o (: (if (> n 0) (GBox.GFull (list n (+ n 1))) (GBox.GEmpty unit)) (GBox (List Int64)))))
+      (let ((o (: (if (> n 0) (GBox.GFull #list(n (+ n 1))) (GBox.GEmpty unit)) (GBox (List Int64)))))
         (match o
           ((GBox.GFull in1)
             (match o
@@ -22036,8 +22036,8 @@
   (doc    "`(>= (List.len xs) 0)` is always true (a length is non-negative), so the if takes the then-branch
            regardless of the runtime-built list; `(< (List.len xs) 0)` is impossible → the else-branch.")
   (input (do (def (main (: n Int64))
-    (+ (if (>= (List.len (if (> n 0) (list 1 2 3) (list 4 5))) 0) 111 0)
-       (if (< (List.len (if (> n 0) (list 1 2 3) (list 4 5))) 0) 0 222)))
+    (+ (if (>= (List.len (if (> n 0) #list(1 2 3) #list(4 5))) 0) 111 0)
+       (if (< (List.len (if (> n 0) #list(1 2 3) #list(4 5))) 0) 0 222)))
     (export main)))
   (call main (: 5 Int64))  (output (: 333 Int64))
   (call main (: -1 Int64)) (output (: 333 Int64)))
@@ -22046,7 +22046,7 @@
   (doc    "`(match (List.len xs) (-1 999) (0 111) (_ 222))` — a length is non-negative so the -1 arm is
            dead; a runtime-built empty list hits the 0 arm (111), a one-element list the wildcard (222).")
   (input (do (def (main (: n Int64))
-    (match (List.len (if (> n 0) (list) (list 5))) (-1 999) (0 111) (_ 222)))
+    (match (List.len (if (> n 0) #list() #list(5))) (-1 999) (0 111) (_ 222)))
     (export main)))
   (call main (: 5 Int64))  (output (: 111 Int64))
   (call main (: -1 Int64)) (output (: 222 Int64)))
@@ -22098,7 +22098,7 @@
            high-bits guard traps it rather than aliasing slot 0.")
   (input (do
     (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
-    (def (main (: idx Int64)) (List.len (List.update (build 0 3 (list)) idx 99)))
+    (def (main (: idx Int64)) (List.len (List.update (build 0 3 #list()) idx 99)))
     (export main)))
   (call main (: 2 Int64))          (output (: 3 Int64))
   (call main (: 5 Int64))          (trap "unreachable")
@@ -22113,8 +22113,8 @@
            composed: sm(count 5) sums [5,4,3,2,1] = 15.")
   (input (do
     (type IntList (Cons (Tuple Int64 IntList)) Nil)
-    (def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) (IntList.Cons (tuple n (count (- n 1))))))
-    (def (sm (: xs IntList)) (match xs ((IntList.Cons (tuple h t)) (+ h (sm t))) ((IntList.Nil _) 0)))
+    (def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) (IntList.Cons #tuple(n (count (- n 1))))))
+    (def (sm (: xs IntList)) (match xs ((IntList.Cons #tuple(h t)) (+ h (sm t))) ((IntList.Nil _) 0)))
     (def (main) (sm (count 5)))
     (export main)))
   (call main)
@@ -22130,8 +22130,8 @@
 
 (case "ctd1 two occurrences of one constant tuple — branch-selected use, projections, and runtime equality across the pair"
   (input (do (def (main (: n Int64))
-    (let ((a (if (= n 1) (tuple 10 20 30) (tuple 9 9 9)))
-          (b (tuple 10 20 30)))
+    (let ((a (if (= n 1) #tuple(10 20 30) #tuple(9 9 9)))
+          (b #tuple(10 20 30)))
       (+ (* 100 (. a 0)) (+ (. b 2) (if (= a b) 1000 0)))))
     (export main)))
   (call main (: 1 Int64))
@@ -22142,7 +22142,7 @@
   (input (do
     (def (frames (: k Int64))
       (if (= k 0) 0
-          (let ((r (if (= (% k 2) 0) (record (= x 7) (= y 8)) (record (= x 1) (= y 2)))))
+          (let ((r (if (= (% k 2) 0) #record((= x 7) (= y 8)) #record((= x 1) (= y 2)))))
             (+ (. r x) (frames (- k 1))))))
     (def (main (: n Int64)) (frames n))
     (export main)))
@@ -22163,8 +22163,8 @@
   (input (do
     (def (frames (: k Int64))
       (if (= k 0) 0
-          (let ((c (if (> k 0) (list 5 6) (list 9)))
-                (u (List.update (if (> k 0) (list 5 6) (list 9)) 0 99)))
+          (let ((c (if (> k 0) #list(5 6) #list(9)))
+                (u (List.update (if (> k 0) #list(5 6) #list(9)) 0 99)))
             (+ (+ (match (List.at u 0) ((Option.Some v) v) ((Option.None) -1))
                   (match (List.at c 0) ((Option.Some w) w) ((Option.None) -1)))
                (frames (- k 1))))))
@@ -22176,8 +22176,8 @@
 
 (case "ifb2 a let-bound constant tuple referenced twice: the WHOLE `(tuple t t)` is a constant compound RETURN, so it hoists build-once (WIT static encoding) to a single census-excluded immortal — 0 mortal allocations"
   (input (do (def (main (: n Int64))
-    (let ((t (tuple 1 2)))
-      (tuple t t)))
+    (let ((t #tuple(1 2)))
+      #tuple(t t)))
     (export main)))
   (call main (: 5 Int64))
   (output (: (tuple (tuple 1 2) (tuple 1 2)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64))))
@@ -22193,18 +22193,18 @@
   (input (do
            (type W64 (Wrap64 (Record (: x Int64))))
            (type W8  (Wrap8 (Record (: x Int8))))
-           (def (vari   (: w W64)) (match w ((Wrap64 (record (= x a))) a)))
-           (def (vari8  (: w W8))  (match w ((Wrap8 (record (= x a))) a)))
-           (def (tup    (: t (Tuple (Record (: x Int64)) Int64))) (match t ((tuple (record (= x a)) c) (+ a c))))
-           (def (tup8   (: t (Tuple (Record (: x Int8)) Int64)))  (match t ((tuple (record (= x a)) c) a)))
-           (def (lst    (: xs (List (Record (: x Int64))))) (match xs ((list (record (= x a))) a) (_ 0)))
-           (def (byname (: t (Tuple (Record (: x Int64) (: y Int64)) Int64))) (match t ((tuple (record (= y b)) c) (+ b c))))
-           (def (mvari)   (vari (Wrap64 (record (= x 7)))))
-           (def (mvari8)  (vari8 (Wrap8 (record (= x 100)))))
-           (def (mtup)    (tup (tuple (record (= x 5)) 10)))
-           (def (mtup8)   (tup8 (tuple (record (= x 100)) 7)))
-           (def (mlst)    (lst (list (record (= x 42)))))
-           (def (mbyname) (byname (tuple (record (= x 10) (= y 20)) 5)))
+           (def (vari   (: w W64)) (match w ((Wrap64 #record((= x a))) a)))
+           (def (vari8  (: w W8))  (match w ((Wrap8 #record((= x a))) a)))
+           (def (tup    (: t (Tuple (Record (: x Int64)) Int64))) (match t (#tuple(#record((= x a)) c) (+ a c))))
+           (def (tup8   (: t (Tuple (Record (: x Int8)) Int64)))  (match t (#tuple(#record((= x a)) c) a)))
+           (def (lst    (: xs (List (Record (: x Int64))))) (match xs (#list(#record((= x a))) a) (_ 0)))
+           (def (byname (: t (Tuple (Record (: x Int64) (: y Int64)) Int64))) (match t (#tuple(#record((= y b)) c) (+ b c))))
+           (def (mvari)   (vari (Wrap64 #record((= x 7)))))
+           (def (mvari8)  (vari8 (Wrap8 #record((= x 100)))))
+           (def (mtup)    (tup #tuple(#record((= x 5)) 10)))
+           (def (mtup8)   (tup8 #tuple(#record((= x 100)) 7)))
+           (def (mlst)    (lst #list(#record((= x 42)))))
+           (def (mbyname) (byname #tuple(#record((= x 10) (= y 20)) 5)))
            (export mvari) (export mvari8) (export mtup) (export mtup8) (export mlst) (export mbyname)))
   (call mvari)   (output (: 7 Int64))
   (call mvari8)  (output (: 100 Int8))
@@ -22222,8 +22222,8 @@
 
 (case "ikc1 a Map keyed by a hoisted constant list is found by a runtime-built equal key"
   (input (do (def (main (: n Int64))
-    (let ((m (Map.insert Map.empty (list 1 2) 77))
-          (k (if (> n 0) (list 1 2) (list 9))))
+    (let ((m (Map.insert Map.empty #list(1 2) 77))
+          (k (if (> n 0) #list(1 2) #list(9))))
       (match (Map.lookup m k)
         ((Option.Some v) v)
         ((Option.None) -1))))
@@ -22236,7 +22236,7 @@
   (input (do
     (effect St (op get (-> Unit Int64)))
     (def (main (: n Int64))
-      (handle St (list 1 2)
+      (handle St #list(1 2)
         ((get (u) s (resume (List.len s) (List.push s 9))))
         (+ (St.get) (* 10 (St.get)))))
     (export main)))
@@ -22250,19 +22250,19 @@
 ; same-kind-different-shape compounds. (The homogeneous run `(List.len (list 1 2 3))`=3 is covered by the
 ; List.len cases; the outlier-anchor squiggle-position checks stay as rcdzc white-box tests.)
 (case "lhv1 a list mixing Int64 and Bool is a malformed collection (CDZ0201)"
-  (input (do (def (main) (list 1 true)) (export main)))
+  (input (do (def (main) #list(1 true)) (export main)))
   (error CDZ0201))
 
 (case "lhv2 a list mixing Int64 and Float64 is malformed — no silent numeric promotion (CDZ0201)"
-  (input (do (def (main) (list 1 2.5)) (export main)))
+  (input (do (def (main) #list(1 2.5)) (export main)))
   (error CDZ0201))
 
 (case "lhv3 a list of records with different field sets is malformed (CDZ0201)"
-  (input (do (def (main) (list (record (= a 1)) (record (= b 2)))) (export main)))
+  (input (do (def (main) #list(#record((= a 1)) #record((= b 2)))) (export main)))
   (error CDZ0201))
 
 (case "lhv4 a list of tuples of different arity is malformed (CDZ0201)"
-  (input (do (def (main) (list (tuple 1 2) (tuple 1 2 3))) (export main)))
+  (input (do (def (main) #list(#tuple(1 2) #tuple(1 2 3))) (export main)))
   (error CDZ0201))
 
 ; -- an in-range constant List.update keeps the length (migrated from rcdzc constant_list_push_concat_
@@ -22271,7 +22271,7 @@
 (case "clu1 an in-range constant List.update replaces a slot and keeps the length"
   (doc    "`(List.len (List.update (list 10 20 30) 1 99))` = 3 — an in-range update replaces one element
            and folds, the length unchanged.")
-  (input  (List.len (List.update (list 10 20 30) 1 99)))
+  (input  (List.len (List.update #list(10 20 30) 1 99)))
   (output (: 3 Int64)))
 
 ; -- MUTUALLY-recursive newtypes erase and construct/match end to end (behavioral migration from rcdzc
@@ -22284,7 +22284,7 @@
            (type A (Mk (Option B)))
            (type B (Wrap (Tuple Int64 A)))
            (def (main)
-             (match (Mk (Some (Wrap (tuple 7 (Mk None)))))
+             (match (Mk (Some (Wrap #tuple(7 (Mk None)))))
                ((Mk o) (match o ((Some w) (match w ((Wrap t) (. t 0)))) ((None _) 0)))))
            (export main)))
   (call main) (output (: 7 Int64)))
@@ -22294,12 +22294,12 @@
 (case "lae1 a list annotation with a conflicting element type is rejected (CDZ0203)"
   (doc    "`(: (list 1 2) (List Bool))` — the value is List Int64 but the annotation says List Bool; the
            element types conflict → CDZ0203.")
-  (input (do (def (main) (: (list 1 2) (List Bool))) (export main)))
+  (input (do (def (main) (: #list(1 2) (List Bool))) (export main)))
   (error CDZ0203))
 
 (case "lae2 a matching list annotation is transparent"
   (doc    "`(List.len (: (list 1 2) (List Int64)))` = 2 — a matching `(List Int64)` annotation folds away.")
-  (input  (List.len (: (list 1 2) (List Int64))))
+  (input  (List.len (: #list(1 2) (List Int64))))
   (output (: 2 Int64)))
 
 ; -- a list-element literal pattern of the wrong type is a type error (migrated from rcdzc
@@ -22309,17 +22309,17 @@
 (case "lep1 a String literal list-element pattern on an Int64 list is a type error (CDZ0201)"
   (doc    "`(match (list 1 2 3) ((list \"x\" .. r) 1) (_ 0))` writes a String where the list's Int64
            elements are required → CDZ0201 naming both element types.")
-  (input (do (def (main) (match (list 1 2 3) ((list "x" .. r) 1) (_ 0))) (export main)))
+  (input (do (def (main) (match #list(1 2 3) (#list("x" .. r) 1) (_ 0))) (export main)))
   (error CDZ0201 (message "list-element pattern is String")))
 
 (case "lep2 an Int literal list-element pattern on a String list is a type error (CDZ0201)"
-  (input (do (def (main) (match (list "a" "b") ((list 5 .. r) 1) (_ 0))) (export main)))
+  (input (do (def (main) (match #list("a" "b") (#list(5 .. r) 1) (_ 0))) (export main)))
   (error CDZ0201))
 
 (case "lep3 a well-typed list-element literal pattern dispatches by value"
   (doc    "`(match (list 1 2 3) ((list 1 .. _r) 10) (_ 0))` = 10 — an Int literal element on an Int list
            matches and dispatches.")
-  (input  (match (list 1 2 3) ((list 1 .. _r) 10) (_ 0)))
+  (input  (match #list(1 2 3) (#list(1 .. _r) 10) (_ 0)))
   (output (: 10 Int64)))
 ; ── breaker batch 517: the small-list build-once threshold EDGE (#4245 gates hoisting at <=32) ──
 ; The exact-fit 32-element literal HOISTS (verified: 3 static globals vs 1 in the 33 twin) and the
@@ -22331,8 +22331,8 @@
 
 (case "tle1 an exact-fit 32-element constant list hoists build-once — branch-selected use, length reads, and runtime equality across the pair"
   (input (do (def (main (: n Int64))
-  (let ((a (if (= n 1) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) (list 9)))
-        (b (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32)))
+  (let ((a (if (= n 1) #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) #list(9)))
+        (b #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32)))
     (+ (* 1000 (List.len a)) (+ (List.len b) (if (= a b) 100000 0)))))
 (export main)))
   (call main (: 1 Int64))
@@ -22341,8 +22341,8 @@
 
 (case "tle2 a 33-element constant list (one past the build-once gate) builds per-eval and reclaims to zero"
   (input (do (def (main (: n Int64))
-  (let ((a (if (= n 1) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list 9)))
-        (b (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)))
+  (let ((a (if (= n 1) #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) #list(9)))
+        (b #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)))
     (+ (* 1000 (List.len a)) (+ (List.len b) (if (= a b) 100000 0)))))
 (export main)))
   (call main (: 1 Int64))
@@ -22353,7 +22353,7 @@
   (input (do
 (def (frames (: k Int64))
   (if (= k 0) 0
-      (let ((a (if (= (% k 2) 0) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))))
+      (let ((a (if (= (% k 2) 0) #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))))
         (+ (List.len a) (frames (- k 1))))))
 (def (main (: n Int64)) (frames n))
 (export main)))
@@ -22365,8 +22365,8 @@
   (input (do
 (def (frames (: k Int64))
   (if (= k 0) 0
-      (let ((c (if (> k 0) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) (list 9)))
-            (u (List.update (if (> k 0) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) (list 9)) 0 999)))
+      (let ((c (if (> k 0) #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) #list(9)))
+            (u (List.update (if (> k 0) #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) #list(9)) 0 999)))
         (+ (+ (match (List.at c 0) ((Option.Some v) v) ((Option.None) -1))
               (match (List.at u 0) ((Option.Some w) w) ((Option.None) -1)))
            (frames (- k 1))))))
@@ -22387,8 +22387,8 @@
 
 (case "mhn1 a constant tuple holding a 33-element list child — double occurrence, projections, and runtime equality (mixed hoist declined today; value-fenced either way)"
   (input (do (def (main (: n Int64))
-  (let ((a (if (= n 1) (tuple 7 (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) (tuple 0 (list 9))))
-        (b (tuple 7 (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))))
+  (let ((a (if (= n 1) #tuple(7 #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) #tuple(0 #list(9))))
+        (b #tuple(7 #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))))
     (+ (* 1000 (. a 0)) (+ (List.len (. b 1)) (if (= a b) 100000 0)))))
 (export main)))
   (call main (: 1 Int64))
@@ -22399,8 +22399,8 @@
   (input (do
 (def (frames (: k Int64))
   (if (= k 0) 0
-      (let ((c (if (> k 0) (tuple 7 (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) (tuple 0 (list 9))))
-            (u (List.update (. (if (> k 0) (tuple 7 (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) (tuple 0 (list 9))) 1) 0 999)))
+      (let ((c (if (> k 0) #tuple(7 #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) #tuple(0 #list(9))))
+            (u (List.update (. (if (> k 0) #tuple(7 #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) #tuple(0 #list(9))) 1) 0 999)))
         (+ (+ (match (List.at (. c 1) 0) ((Option.Some v) v) ((Option.None) -1))
               (match (List.at u 0) ((Option.Some w) w) ((Option.None) -1)))
            (frames (- k 1))))))
@@ -22412,8 +22412,8 @@
 
 (case "mhn3 a small constant list holding a 33-element list child — the gate applies per NODE, and the mixed outer declines while remaining value-correct"
   (input (do (def (main (: n Int64))
-  (let ((a (if (= n 1) (list (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list 5)) (list (list 9))))
-        (b (list (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list 5))))
+  (let ((a (if (= n 1) #list(#list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) #list(5)) #list(#list(9))))
+        (b #list(#list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) #list(5))))
     (+ (* 1000 (List.len a))
        (+ (match (List.at b 0) ((Option.Some xs) (List.len xs)) ((Option.None) -1))
           (if (= a b) 100000 0)))))
@@ -22497,12 +22497,12 @@
   (input (do
 (def (zip-sum xs ys acc)
   (match xs
-    ((list) acc)
-    ((list xh .. xt)
+    (#list() acc)
+    (#list(xh .. xt)
       (match ys
-        ((list) acc)
-        ((list yh .. yt) (zip-sum xt yt (+ acc (+ xh yh))))))))
-(def (main (: n Int64)) (zip-sum (List.update (list 1 2 3) 0 n) (list 10 20) 0))
+        (#list() acc)
+        (#list(yh .. yt) (zip-sum xt yt (+ acc (+ xh yh))))))))
+(def (main (: n Int64)) (zip-sum (List.update #list(1 2 3) 0 n) #list(10 20) 0))
 (export main)))
   (call main (: 1 Int64))
   (output (: 33 Int64))
@@ -22512,12 +22512,12 @@
   (input (do
 (def (zip-sum xs ys acc)
   (match xs
-    ((list) acc)
-    ((list xh .. xt)
+    (#list() acc)
+    (#list(xh .. xt)
       (match ys
-        ((list) acc)
-        ((list yh .. yt) (zip-sum xt yt (+ acc (+ xh yh))))))))
-(def (main (: n Int64)) (zip-sum (List.update (list 1 2) 0 n) (list 10 20) 0))
+        (#list() acc)
+        (#list(yh .. yt) (zip-sum xt yt (+ acc (+ xh yh))))))))
+(def (main (: n Int64)) (zip-sum (List.update #list(1 2) 0 n) #list(10 20) 0))
 (export main)))
   (call main (: 1 Int64))
   (output (: 33 Int64))
@@ -22527,12 +22527,12 @@
   (input (do
 (def (zip-sum xs ys acc)
   (match xs
-    ((list) acc)
-    ((list xh .. xt)
+    (#list() acc)
+    (#list(xh .. xt)
       (match ys
-        ((list) acc)
-        ((list yh .. yt) (zip-sum xt yt (+ acc (+ xh yh))))))))
-(def (main (: n Int64)) (zip-sum (list) (list 10) 0))
+        (#list() acc)
+        (#list(yh .. yt) (zip-sum xt yt (+ acc (+ xh yh))))))))
+(def (main (: n Int64)) (zip-sum #list() #list(10) 0))
 (export main)))
   (call main (: 1 Int64))
   (output (: 0 Int64))
@@ -22542,14 +22542,14 @@
   (input (do
 (def (zip-sum xs ys acc)
   (match xs
-    ((list) acc)
-    ((list xh .. xt)
+    (#list() acc)
+    (#list(xh .. xt)
       (match ys
-        ((list) acc)
-        ((list yh .. yt) (zip-sum xt yt (+ acc (+ xh yh))))))))
+        (#list() acc)
+        (#list(yh .. yt) (zip-sum xt yt (+ acc (+ xh yh))))))))
 (def (main (: n Int64))
-  (let ((xs (List.update (list 1 2 3) 0 n)))
-    (+ (* 1000 (zip-sum xs (List.update (list 10 20) 0 10) 0))
+  (let ((xs (List.update #list(1 2 3) 0 n)))
+    (+ (* 1000 (zip-sum xs (List.update #list(10 20) 0 10) 0))
        (match (List.at xs 0) ((Option.Some v) v) ((Option.None) -1)))))
 (export main)))
   (call main (: 1 Int64))
@@ -22560,13 +22560,13 @@
   (input (do
 (def (zdrop xs ys)
   (match xs
-    ((list) (list))
-    ((list xh .. xt)
+    (#list() #list())
+    (#list(xh .. xt)
       (match ys
-        ((list) xt)
-        ((list yh .. yt) (zdrop xt yt))))))
+        (#list() xt)
+        (#list(yh .. yt) (zdrop xt yt))))))
 (def (main (: n Int64))
-  (let ((r (zdrop (List.update (list 1 2 3) 0 n) (List.update (list 10) 0 10))))
+  (let ((r (zdrop (List.update #list(1 2 3) 0 n) (List.update #list(10) 0 10))))
     (+ (* 10 (match (List.at r 0) ((Option.Some v) v) ((Option.None) -1))) (List.len r))))
 (export main)))
   (call main (: 1 Int64))
@@ -22588,11 +22588,11 @@
   (doc    "REGRESSION (miscompile): a sum `Ast` whose LAST variant `List` carries `(List Ast)`, matched by a nested list-element pattern `(Ast.List (list (Ast.Name n) .. rest))`. The disc-walk resolved the `Payload` step's type via VARIANT 0 (`Int`, payload `Int64` — NOT a list) and emitted `arr-get` on the RRB vec, reading a GARBAGE discriminant → the arm mis-dispatched and head-of SILENTLY returned 0 though the head IS a Name (`cdz check` clean). Fix records the ENTERED variant's payload type as the switch descends so `Payload` resolves to the real `List Ast` and `Elem(0)` reads with `vec-get`. Scrutinee is genuinely runtime (threaded through a recursive `idast`, never folds). Name head → 100; Int head falls through the wildcard → 0; combined `1000*100 + 0` = 100000 pins that dispatch reads the element disc, not always the first arm.")
   (input (do
 (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast)))
-(def (head-of (: node Ast)) (match node ((Ast.List (list (Ast.Name n) .. rest)) 100) (_ 0)))
+(def (head-of (: node Ast)) (match node ((Ast.List #list((Ast.Name n) .. rest)) 100) (_ 0)))
 (def (idast (: k Int64) (: node Ast)) (if (<= k 0) node (idast (- k 1) node)))
 (def (main)
-  (+ (* 1000 (head-of (idast 3 (Ast.List (list (Ast.Name "a") (Ast.Int 5))))))
-     (head-of (idast 3 (Ast.List (list (Ast.Int 9) (Ast.Int 5)))))))
+  (+ (* 1000 (head-of (idast 3 (Ast.List #list((Ast.Name "a") (Ast.Int 5))))))
+     (head-of (idast 3 (Ast.List #list((Ast.Int 9) (Ast.Int 5)))))))
 (export main)))
   (call main)
   (output (: 100000 Int64)))
@@ -22601,9 +22601,9 @@
   (doc    "The read-walk companion of the disc-walk fix above: bind `k` from `(Ast.List (list (Ast.Int k) .. rest))` on the same non-variant-0 list payload and read it — the read walk must ALSO resolve the `Payload` step to `List Ast` and pick `vec-get`, not `arr-get`. Runtime scrutinee via `idast` → 42.")
   (input (do
 (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast)))
-(def (first-int (: node Ast)) (match node ((Ast.List (list (Ast.Int k) .. rest)) k) (_ -1)))
+(def (first-int (: node Ast)) (match node ((Ast.List #list((Ast.Int k) .. rest)) k) (_ -1)))
 (def (idast (: j Int64) (: node Ast)) (if (<= j 0) node (idast (- j 1) node)))
-(def (main) (first-int (idast 3 (Ast.List (list (Ast.Int 42) (Ast.Int 5))))))
+(def (main) (first-int (idast 3 (Ast.List #list((Ast.Int 42) (Ast.Int 5))))))
 (export main)))
   (call main)
   (output (: 42 Int64)))
@@ -22646,8 +22646,8 @@
   (input (do
 (def (frames (: k Int64))
   (if (= k 0) 0
-      (let ((c (if (> k 0) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list 9)))
-            (u (List.update (if (> k 0) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list 9)) 0 999)))
+      (let ((c (if (> k 0) #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) #list(9)))
+            (u (List.update (if (> k 0) #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) #list(9)) 0 999)))
         (+ (+ (match (List.at c 0) ((Option.Some v) v) ((Option.None) -1))
               (match (List.at u 0) ((Option.Some w) w) ((Option.None) -1)))
            (frames (- k 1))))))
@@ -22666,18 +22666,18 @@
   (doc    "`(. (tuple (T.Mk 10) 0) 0)` projects the partial `(T.Mk 10)`; applying it to 5 completes
            `(T.Mk 10 5)`, matched to a+b = 15.")
   (input (do (type T (Mk Int64 Int64))
-    (def (main) (match ((. (tuple (T.Mk 10) 0) 0) 5) ((T.Mk a b) (+ a b)))) (export main)))
+    (def (main) (match ((. #tuple((T.Mk 10) 0) 0) 5) ((T.Mk a b) (+ a b)))) (export main)))
   (call main) (output (: 15 Int64)))
 
 (case "pcc2 a partial ctor in a let-bound tuple completes when projected and applied"
   (input (do (type T (Mk Int64 Int64))
-    (def (main) (let ((p (tuple (T.Mk 10) 0))) (match ((. p 0) 5) ((T.Mk a b) (+ a b))))) (export main)))
+    (def (main) (let ((p #tuple((T.Mk 10) 0))) (match ((. p 0) 5) ((T.Mk a b) (+ a b))))) (export main)))
   (call main) (output (: 15 Int64)))
 
 (case "pcc3 a partial ctor in a record field completes when projected and applied"
   (doc    "`(. r f)` projects the partial `(T.Mk 7)` from the record field; applied to 3 → `(T.Mk 7 3)` → 10.")
   (input (do (type T (Mk Int64 Int64))
-    (def (main) (let ((r (record (= f (T.Mk 7)) (= g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b))))) (export main)))
+    (def (main) (let ((r #record((= f (T.Mk 7)) (= g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b))))) (export main)))
   (call main) (output (: 10 Int64)))
 
 ; ── breaker batch 529: immortal-trie WALKER-interaction fences (post-#4330 deep-mark). An
@@ -22688,9 +22688,9 @@
 
 (case "itf1 an immortal 33-trie compares structurally equal to a runtime-BUILT equal list, and the runtime side reclaims"
   (input (do
-(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (main (: n Int64))
-  (if (= (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (bld (+ n 32))) 100000 1))
+  (if (= #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (bld (+ n 32))) 100000 1))
 (export main)))
   (call main (: 1 Int64))
   (output (: 100000 Int64))
@@ -22698,9 +22698,9 @@
 
 (case "itf2 an immortal 33-trie as a champ MAP key is hit by a runtime-built equal probe key, which reclaims"
   (input (do
-(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (main (: n Int64))
-  (match (Map.lookup (Map.insert (Map.empty) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) 42) (bld (+ n 32)))
+  (match (Map.lookup (Map.insert (Map.empty) #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) 42) (bld (+ n 32)))
     ((Some v) v) ((None u) -1)))
 (export main)))
   (call main (: 1 Int64))
@@ -22711,7 +22711,7 @@
   (input (do
 (def (frames (: k Int64))
   (if (= k 0) 0
-      (let ((r (List.concat (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list k))))
+      (let ((r (List.concat #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) #list(k))))
         (+ (match (List.at r (% k 34)) ((Option.Some v) v) ((Option.None) -1))
            (frames (- k 1))))))
 (def (main (: n Int64)) (frames n))
@@ -22845,7 +22845,7 @@
   (doc    "`build 0 3 (list)` = [0,1,2] at run time (so List.push sees a runtime handle, not a fold);
            push 9 then List.len = 4.")
   (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
-             (def (main) ((. List len) ((. List push) (build 0 3 (list)) 9))) (export main)))
+             (def (main) ((. List len) ((. List push) (build 0 3 #list()) 9))) (export main)))
   (call main) (output (: 4 Int64)))
 
 (case "lrx2 a shared list binding consumed then re-read is retained, not mutated"
@@ -22853,7 +22853,7 @@
            shared `e`, so the right read sees the original length 2: 3 + 2 = 5 (a broken retain would grow
            e in place and read 6).")
   (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
-             (def (main) (let ((e (build 0 2 (list)))) (+ ((. List len) ((. List push) e 9)) ((. List len) e)))) (export main)))
+             (def (main) (let ((e (build 0 2 #list()))) (+ ((. List len) ((. List push) e 9)) ((. List len) e)))) (export main)))
   (call main) (output (: 5 Int64)))
 
 (case "lrx3 a shared list param consumed then passed to a self-call sibling is retained"
@@ -22861,7 +22861,7 @@
            param shared with the self-recursive call so it sees the original list (broken retain → 6).")
   (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
              (def (f n xs) (if (= n 0) ((. List len) xs) (+ ((. List len) ((. List push) xs 9)) (f 0 xs))))
-             (def (main) (f 1 (build 0 2 (list)))) (export main)))
+             (def (main) (f 1 (build 0 2 #list()))) (export main)))
   (call main) (output (: 5 Int64))
   (live-objects known-leak 2))
 
@@ -22874,7 +22874,7 @@
   (doc    "`(List.len (build 0 3 (list)))` = 3 over a freshly-built owned temporary; vec-len borrows and
            returns 3, and the temporary is dropped after the borrow (live-objects 0 = reclaimed).")
   (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
-             (def (main) ((. List len) (build 0 3 (list)))) (export main)))
+             (def (main) ((. List len) (build 0 3 #list()))) (export main)))
   (call main) (output (: 3 Int64)) (live-objects 0))
 
 (case "llo2 a borrowed list read by List.len is not freed early (owner reclaims)"
@@ -22882,7 +22882,7 @@
            read twice, so List.len must NOT free it (that would double-free before the later use); value
            len(xs)=3 + len(push xs 9)=4 = 7.")
   (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
-             (def (main) (let ((xs (build 0 3 (list)))) (+ ((. List len) xs) ((. List len) ((. List push) xs 9))))) (export main)))
+             (def (main) (let ((xs (build 0 3 #list()))) (+ ((. List len) xs) ((. List len) ((. List push) xs 9))))) (export main)))
   (call main) (output (: 7 Int64)))
 
 ; -- List.at reclaims an owned temporary but keeps a borrowed one (migrated from rcdzc
@@ -22893,14 +22893,14 @@
   (doc    "`(Option.expect (List.at (build 0 3 (list)) 1) \"v\")` = 1 over an owned temporary; the read
            element is dup'd into Some and the temporary is dropped after the borrow (live-objects 0).")
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
-             (def (main) ((. Option expect) ((. List at) (build 0 3 (list)) 1) "v")) (export main)))
+             (def (main) ((. Option expect) ((. List at) (build 0 3 #list()) 1) "v")) (export main)))
   (call main) (output (: 1 Int64)) (live-objects 0))
 
 (case "lao2 a borrowed list read by List.at is not freed early (owner reclaims)"
   (doc    "`(let ((xs (build 0 3 (list)))) (+ (Option.expect (List.at xs 1) \"v\") (List.len xs)))` — xs is
            read by List.at AND List.len, so the at must not free it; value at(1)=1 + len=3 = 4.")
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
-             (def (main) (let ((xs (build 0 3 (list)))) (+ ((. Option expect) ((. List at) xs 1) "v") ((. List len) xs)))) (export main)))
+             (def (main) (let ((xs (build 0 3 #list()))) (+ ((. Option expect) ((. List at) xs 1) "v") ((. List len) xs)))) (export main)))
   (call main) (output (: 4 Int64)))
 
 ; -- sum/Option-payload Perceus retain (migrated from rcdzc compound reclaim/retain heap tests): a sum-match
@@ -22914,7 +22914,7 @@
   (doc    "`bx = (B [0,1])`; `(+ (List.len (List.push (match bx ((B xs) xs)) 99)) (List.len (match bx ((B ys) ys))))` — the left push consumes the payload borrowed from `bx` while `bx` is matched AGAIN on the right, so the push must retain (build a new list) not mutate the shared payload: 3 + 2 = 5 (a broken retain grows the shared payload in place → 6). Also pins `is_heap_type` counts a `Ty::Nominal` (a single-variant newtype erases to its heap inner, so `bx : Box` is a retain candidate).")
   (input (do (type Box (B (List Int64)))
              (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc))
-             (def (main) (let ((bx (B (mb 0 2 (list))))) (+ ((. List len) ((. List push) (match bx ((B xs) xs)) 99)) ((. List len) (match bx ((B ys) ys)))))) (export main)))
+             (def (main) (let ((bx (B (mb 0 2 #list())))) (+ ((. List len) ((. List push) (match bx ((B xs) xs)) 99)) ((. List len) (match bx ((B ys) ys)))))) (export main)))
   (call main) (output (: 5 Int64)))
 
 (case "spr2 a threaded sum's payload consumed per-iteration is retained (no drift)"
@@ -22922,7 +22922,7 @@
   (input (do (type Box (B (List Int64)))
              (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc))
              (def (loop j m bx tot) (if (< j m) (loop (+ j 1) m bx (+ tot ((. List len) ((. List push) (match bx ((B xs) xs)) 99)))) tot))
-             (def (main) (loop 0 4 (B (mb 0 2 (list))) 0)) (export main)))
+             (def (main) (loop 0 4 (B (mb 0 2 #list())) 0)) (export main)))
   (call main) (output (: 12 Int64))
   (live-objects known-leak 2))
 
@@ -22937,7 +22937,7 @@
   (doc    "`go` threads `s = (Some [7,8])` UNCHANGED to the self-call and each iteration consumes its payload via `(List.push (Option.expect s \"v\") 9)` → len 3 each of 4 iters = 12. A borrowed SumExpect payload FBIP-mutated at rc==1 would grow the shared list and drift (18 not 12).")
   (input (do (def (go (: s (Option (List Int64))) (: n Int64) (: acc Int64))
                (if (= n 0) acc (go s (- n 1) (+ acc ((. List len) ((. List push) ((. Option expect) s "v") 9))))))
-             (def (main) (go (Option.Some ((. List push) ((. List push) (list) 7) 8)) 4 0)) (export main)))
+             (def (main) (go (Option.Some ((. List push) ((. List push) #list() 7) 8)) 4 0)) (export main)))
   (call main) (output (: 12 Int64))
   (live-objects 0))
 
@@ -22945,7 +22945,7 @@
   (doc    "The chained face: `s = (Some (Some [7,8]))`, consumed via `(List.push (Option.expect (Option.expect s)) 9)` per iteration → 12. The retain root-walk must follow the OUTER expect's scrutinee (the INNER expect) back through SumExpect links to the threaded root `s`, else the inner list gets no retain and drifts (18 not 12).")
   (input (do (def (go (: s (Option (Option (List Int64)))) (: n Int64) (: acc Int64))
                (if (= n 0) acc (go s (- n 1) (+ acc ((. List len) ((. List push) ((. Option expect) ((. Option expect) s "v") "w") 9))))))
-             (def (main) (go (Option.Some (Option.Some ((. List push) ((. List push) (list) 7) 8))) 4 0)) (export main)))
+             (def (main) (go (Option.Some (Option.Some ((. List push) ((. List push) #list() 7) 8))) 4 0)) (export main)))
   (call main) (output (: 12 Int64))
   (live-objects 0))
 
@@ -22972,22 +22972,22 @@
 ; borrowed (let-bound) result read twice must not be freed early; a stress loop detects leak drift.
 (case "lcr1 List.len over an owned-temporary List.concat reclaims it (no leak)"
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
-             (def (main) ((. List len) ((. List concat) (build 0 3 (list)) (build 0 2 (list))))) (export main)))
+             (def (main) ((. List len) ((. List concat) (build 0 3 #list()) (build 0 2 #list())))) (export main)))
   (call main) (output (: 5 Int64)) (live-objects 0))
 
 (case "lcr2 List.len over an owned-temporary List.update reclaims it (no leak)"
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
-             (def (main) ((. List len) ((. List update) (build 0 5 (list)) 2 99))) (export main)))
+             (def (main) ((. List len) ((. List update) (build 0 5 #list()) 2 99))) (export main)))
   (call main) (output (: 5 Int64)) (live-objects 0))
 
 (case "lcr3 a borrowed List.concat result read twice is not freed early"
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
-             (def (main) (let ((xs ((. List concat) (build 0 3 (list)) (build 0 2 (list))))) (+ ((. List len) xs) ((. List len) xs)))) (export main)))
+             (def (main) (let ((xs ((. List concat) (build 0 3 #list()) (build 0 2 #list())))) (+ ((. List len) xs) ((. List len) xs)))) (export main)))
   (call main) (output (: 10 Int64)))
 
 (case "lcr4 20000 owned-temporary List.concat each reclaim (no leak drift)"
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
-             (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot ((. List len) ((. List concat) (build 0 3 (list)) (build 0 2 (list)))))) tot))
+             (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot ((. List len) ((. List concat) (build 0 3 #list()) (build 0 2 #list()))))) tot))
              (def (main) (drive 0 20000 0)) (export main)))
   (call main) (output (: 100000 Int64)) (live-objects 0))
 
@@ -23002,8 +23002,8 @@
   (doc    "`g o = List.len (match o ((Some v) (List.push (build 0 3) v)) ((None _) (List.concat (build 0 2) (build 0 2))))` — both arms yield a FRESH owned list, so the join is Owned and the match result is reclaimed after the borrowing `List.len`. Some(9) → len [0,1,2,9] = 4; None → len [0,1,0,1] = 4; sum = 8. A join misread as Borrowed would leak a list per call.")
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
              (def (g (: o (Option Int64))) ((. List len) (match o
-                 ((Some v) ((. List push) (build 0 3 (list)) v))
-                 ((None _) ((. List concat) (build 0 2 (list)) (build 0 2 (list)))))))
+                 ((Some v) ((. List push) (build 0 3 #list()) v))
+                 ((None _) ((. List concat) (build 0 2 #list()) (build 0 2 #list()))))))
              (def (main) (+ (g (Option.Some 9)) (g Option.None))) (export main)))
   (call main) (output (: 8 Int64))
   (live-objects 0))
@@ -23014,7 +23014,7 @@
              (def (g (: o (Option (List Int64)))) (match o
                  ((Some xs) (+ ((. List len) xs) ((. List len) xs)))
                  ((None _) -1)))
-             (def (main) (g (Option.Some (build 0 3 (list))))) (export main)))
+             (def (main) (g (Option.Some (build 0 3 #list())))) (export main)))
   (call main) (output (: 6 Int64))
   (live-objects 0))
 
@@ -23024,7 +23024,7 @@
              (def (g (: o (Option (List Int64)))) (match o
                  ((Some xs) (+ ((. List len) xs) ((. List len) xs)))
                  ((None _) -1)))
-             (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot (g (Option.Some (build 0 3 (list)))))) tot))
+             (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot (g (Option.Some (build 0 3 #list()))))) tot))
              (def (main) (drive 0 5000 0)) (export main)))
   (call main) (output (: 30000 Int64))
   (live-objects 0))
@@ -23037,7 +23037,7 @@
   (doc    "Both arms build a fresh 4-element list (push / concat), so the join is Owned and List.len drops
            it after the borrow: g(0)=4 + g(1)=4 = 8, live-objects 0 (reclaimed on both paths).")
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
-             (def (g (: b Int64)) ((. List len) (if (= b 0) ((. List push) (build 0 3 (list)) 9) ((. List concat) (build 0 2 (list)) (build 0 2 (list))))))
+             (def (g (: b Int64)) ((. List len) (if (= b 0) ((. List push) (build 0 3 #list()) 9) ((. List concat) (build 0 2 #list()) (build 0 2 #list())))))
              (def (main) (+ (g 0) (g 1))) (export main)))
   (call main) (output (: 8 Int64)) (live-objects 0))
 
@@ -23047,13 +23047,13 @@
            g(_,0)=len(xs)+len(xs)=3+3=6; g(_,1)=len(push xs)+len(xs)=4+3=7; total 13, no double-free.")
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
              (def (g (: xs (List Int64)) (: b Int64)) (+ ((. List len) (if (= b 0) xs ((. List push) xs 99))) ((. List len) xs)))
-             (def (main) (+ (g (build 0 3 (list)) 0) (g (build 0 3 (list)) 1))) (export main)))
+             (def (main) (+ (g (build 0 3 #list()) 0) (g (build 0 3 #list()) 1))) (export main)))
   (call main) (output (: 13 Int64)))
 
 (case "lif3 5000 borrowed-arm if paths do not double-free the param (no trap/drift)"
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
              (def (g (: xs (List Int64)) (: b Int64)) (+ ((. List len) (if (= b 0) xs ((. List push) xs 99))) ((. List len) xs)))
-             (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot (g (build 0 3 (list)) 0))) tot))
+             (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot (g (build 0 3 #list()) 0))) tot))
              (def (main) (drive 0 5000 0)) (export main)))
   (call main) (output (: 30000 Int64)) (live-objects 0))
 
@@ -23065,15 +23065,15 @@
   (doc    "`t = (build …) : (Tuple (List Int64) Int64)` with t.0 = [0,1,2]; `(+ (List.len (List.push (. t 0)
            99)) (List.len (. t 0)))` = 4 + 3 = 7 — the consuming projection dups the child so the push takes
            the persistent path and the re-projection reads the original length 3.")
-  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n (tuple ((. List push) (. acc 0) i) (+ (. acc 1) 1))) acc))
-             (def (main) (let ((t (build 0 3 (tuple (list) 0)))) (+ ((. List len) ((. List push) (. t 0) 99)) ((. List len) (. t 0))))) (export main)))
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n #tuple(((. List push) (. acc 0) i) (+ (. acc 1) 1))) acc))
+             (def (main) (let ((t (build 0 3 #tuple(#list() 0)))) (+ ((. List len) ((. List push) (. t 0) 99)) ((. List len) (. t 0))))) (export main)))
   (call main) (output (: 7 Int64)) (live-objects known-leak 10))
 
 (case "pjr2 a doubly-nested projected list consumed then re-read is retained (projection-depth face)"
   (doc    "The list lives two projections deep `(. (. t 0) 0)` in a (Tuple (Tuple (List Int64) Int64) Int64);
            the consuming Proj-of-Proj dups the innermost child so the push does not mutate it: 4 + 3 = 7.")
-  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n (tuple (tuple ((. List push) (. (. acc 0) 0) i) (. (. acc 0) 1)) (+ (. acc 1) 1))) acc))
-             (def (main) (let ((t (build 0 3 (tuple (tuple (list) 0) 0)))) (+ ((. List len) ((. List push) (. (. t 0) 0) 99)) ((. List len) (. (. t 0) 0))))) (export main)))
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n #tuple(#tuple(((. List push) (. (. acc 0) 0) i) (. (. acc 0) 1)) (+ (. acc 1) 1))) acc))
+             (def (main) (let ((t (build 0 3 #tuple(#tuple(#list() 0) 0)))) (+ ((. List len) ((. List push) (. (. t 0) 0) 99)) ((. List len) (. (. t 0) 0))))) (export main)))
   (call main) (output (: 7 Int64)) (live-objects known-leak 14))
 
 ; -- runtime List.at reads through vec-get, in-bounds and out-of-bounds (migrated from rcdzc
@@ -23083,13 +23083,13 @@
 (case "rla1 a runtime List.at in bounds reads the element (Some)"
   (doc    "`xs = [0,1,2]` built at run time; `(match (List.at xs 1) ((Some x) x) ((None _) -1))` = 1.")
   (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
-             (def (main) (let ((xs (build 0 3 (list)))) (match ((. List at) xs 1) ((Some x) x) ((None _) -1)))) (export main)))
+             (def (main) (let ((xs (build 0 3 #list()))) (match ((. List at) xs 1) ((Some x) x) ((None _) -1)))) (export main)))
   (call main) (output (: 1 Int64)))
 
 (case "rla2 a runtime List.at out of bounds takes the None arm"
   (doc    "`xs = [0,1,2]`; `(List.at xs 9)` is past the end → None (never traps) → the match yields -1.")
   (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
-             (def (main) (let ((xs (build 0 3 (list)))) (match ((. List at) xs 9) ((Some x) x) ((None _) -1)))) (export main)))
+             (def (main) (let ((xs (build 0 3 #list()))) (match ((. List at) xs 9) ((Some x) x) ((None _) -1)))) (export main)))
   (call main) (output (: -1 Int64)))
 
 ; ── breaker batch 540: the Class-B UAF boundary (nested same-scrutinee match — the 3 latent UAFs
@@ -23101,10 +23101,10 @@
 
 (case "cbm1 a SEQUENTIAL double match on the same runtime list scrutinee is clean (the nested form traps the UAF detector)"
   (input (do
-(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (f (: xs (List Int64)))
-  (+ (match xs ((list) 0) ((list h .. t) (* 100 h)))
-     (match xs ((list) -1) ((list h2 .. t2) (+ h2 (List.len t2))))))
+  (+ (match xs (#list() 0) (#list(h .. t) (* 100 h)))
+     (match xs (#list() -1) (#list(h2 .. t2) (+ h2 (List.len t2))))))
 (def (main (: n Int64)) (f (bld (+ n 2))))
 (export main)))
   (call main (: 1 Int64))
@@ -23113,7 +23113,7 @@
 
 (case "cbm2 a nested same-scrutinee match on an OPTION is clean (the list-scrutinee sibling traps)"
   (input (do
-(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (g (: o (Option (List Int64))))
   (match o
     ((Option.None) 0)
@@ -23129,11 +23129,11 @@
 
 (case "cbm3 a nested same-scrutinee match on a TUPLE plus a re-consume after is clean"
   (input (do
-(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (h (: p (Tuple Int64 (List Int64))))
-  (+ (match p ((tuple a q) (match p ((tuple b r) (+ (* 100 a) (+ b (List.len r)))))))
-     (match p ((tuple c s) (+ c (List.len s))))))
-(def (main (: n Int64)) (h (tuple n (bld (+ n 1)))))
+  (+ (match p (#tuple(a q) (match p (#tuple(b r) (+ (* 100 a) (+ b (List.len r)))))))
+     (match p (#tuple(c s) (+ c (List.len s))))))
+(def (main (: n Int64)) (h #tuple(n (bld (+ n 1)))))
 (export main)))
   (call main (: 1 Int64))
   (output (: 106 Int64))
@@ -23148,7 +23148,7 @@
            binds v=0. build pushes (N.L i) for the runtime index so the list is a genuine vec-push handle.")
   (input (do (type N (L Int64) (P Int64))
              (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (N.L i))) out))
-             (def (main) (match ((. List at) (build 0 1 (list)) 0) ((Some (N.L v)) v) ((Some (N.P v)) (+ v 100)) ((None _) -1))) (export main)))
+             (def (main) (match ((. List at) (build 0 1 #list()) 0) ((Some (N.L v)) v) ((Some (N.P v)) (+ v 100)) ((None _) -1))) (export main)))
   (call main) (output (: 0 Int64)))
 
 ; -- a single-use projected list consume needs no extra child dup (migrated from rcdzc
@@ -23157,8 +23157,8 @@
 (case "spj1 a single-use projected list consume stays on the FBIP fast path"
   (doc    "`t = (build …) : (Tuple (List Int64) Int64)` with t.0 = [0,1,2]; the single consuming
            `(List.len (List.push (. t 0) 99))` = 4 — no later use, so no extra child dup needed.")
-  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n (tuple ((. List push) (. acc 0) i) (+ (. acc 1) 1))) acc))
-             (def (main) (let ((t (build 0 3 (tuple (list) 0)))) ((. List len) ((. List push) (. t 0) 99)))) (export main)))
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n #tuple(((. List push) (. acc 0) i) (+ (. acc 1) 1))) acc))
+             (def (main) (let ((t (build 0 3 #tuple(#list() 0)))) ((. List len) ((. List push) (. t 0) 99)))) (export main)))
   (call main) (output (: 4 Int64)) (live-objects known-leak 7))
 
 ; ── List.at bounds over a RUNTIME-built list at a RUNTIME-COMPUTED index (the runtime bounds-check
@@ -23171,7 +23171,7 @@
            lands in bounds: k=1 → (& 1 3)=1 → element 1 → 1. The runtime read over a heap list with a
            runtime-computed index (NOT the compile-time fold of a constant list + constant index).")
   (input  (do (def (build (: i Int64) (: n Int64) (: out (List Int64))) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
-              (def (main (: k Int64)) (match ((. List at) (build 0 3 (list)) (& k 3)) ((Some x) x) (None -1)))
+              (def (main (: k Int64)) (match ((. List at) (build 0 3 #list()) (& k 3)) ((Some x) x) (None -1)))
               (export main)))
   (call   main (: 1 Int64))
   (output (: 1 Int64)))
@@ -23181,7 +23181,7 @@
            exceed the length. k=7 → (& 7 15)=7 ≥ len 3 → None → the match's -1. Pins that eliding the
            `index >= 0` half does not weaken the `index < len` half on the runtime path.")
   (input  (do (def (build (: i Int64) (: n Int64) (: out (List Int64))) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
-              (def (main (: k Int64)) (match ((. List at) (build 0 3 (list)) (& k 15)) ((Some x) x) (None -1)))
+              (def (main (: k Int64)) (match ((. List at) (build 0 3 #list()) (& k 15)) ((Some x) x) (None -1)))
               (export main)))
   (call   main (: 7 Int64))
   (output (: -1 Int64)))
@@ -23191,7 +23191,7 @@
            list yields None (NOT a wrap-to-large-unsigned read): k=-1 → None → -1. The runtime-path companion
            of the constant-list negative-index None case — here the list and index are both runtime values.")
   (input  (do (def (build (: i Int64) (: n Int64) (: out (List Int64))) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
-              (def (main (: k Int64)) (match ((. List at) (build 0 3 (list)) k) ((Some x) x) (None -1)))
+              (def (main (: k Int64)) (match ((. List at) (build 0 3 #list()) k) ((Some x) x) (None -1)))
               (export main)))
   (call   main (: -1 Int64))
   (output (: -1 Int64)))
@@ -23203,7 +23203,7 @@
 ; reclaims.
 
 (case "ba1 List.at swept across the bounds boundary of a runtime list answers Some in-bounds and None out (indices 0..4 over len 3)"
-  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (probe (: xs (List Int64)) (: k Int64))
   (if (> k 4) 0 (+ (match (List.at xs k) ((Option.Some v) v) ((Option.None) -1)) (probe xs (+ k 1)))))
 (def (main (: n Int64)) (probe (bld n) 0))
@@ -23213,7 +23213,7 @@
   (live-objects known-leak 2))
 
 (case "ba2 fifty provably-in-bounds List.at reads (index = k mod len) never miss (the elision's legitimate cell)"
-  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (frames (: xs (List Int64)) (: k Int64))
   (if (= k 0) 0 (+ (match (List.at xs (% k (List.len xs))) ((Option.Some v) v) ((Option.None) -99)) (frames xs (- k 1)))))
 (def (main (: n Int64)) (frames (bld n) 50))
@@ -23223,7 +23223,7 @@
   (live-objects known-leak 2))
 
 (case "ba3 the exact bounds edge: index len-1 answers the last element, index len answers None"
-  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (main (: n Int64))
   (let ((xs (bld n)))
     (+ (* 1000 (match (List.at xs (- (List.len xs) 1)) ((Option.Some v) v) ((Option.None) -1)))
@@ -23241,16 +23241,16 @@
            inner list (RestFrom(0) reads the whole inner list, safe even when empty), so it is irrefutable
            and its inner rest binder `r1` resolves. Over `(list (list))` the inner list is empty → List.len r1
            = 0, no trap.")
-  (input  (do (def (f (: xs (List (List Int64)))) (match xs ((list (list .. r1) .. r2) (List.len r1)) (_ -1)))
-              (def (main) (f (list (list)))) (export main)))
+  (input  (do (def (f (: xs (List (List Int64)))) (match xs (#list(#list(.. r1) .. r2) (List.len r1)) (_ -1)))
+              (def (main) (f #list(#list()))) (export main)))
   (output (: 0 Int64)))
 
 (case "a leading nested-list element binds the inner head on a non-empty inner list"
   (doc    "`(list (list a .. r1) .. r2)` is inner-length-REFUTABLE (misses the empty inner list); it desugars
            to a fresh binder + an inner-length guard `(>= (List.len _) 1)` + a body re-match binding `a`. Over
            `(list (list k 9) (list 8))` the first inner list is non-empty → binds its head `a` = k.")
-  (input  (do (def (first-head (: xss (List (List Int64)))) (match xss ((list (list a .. r1) .. r2) a) (_ -1)))
-              (def (main (: k Int64)) (first-head (list (list k 9) (list 8)))) (export main)))
+  (input  (do (def (first-head (: xss (List (List Int64)))) (match xss (#list(#list(a .. r1) .. r2) a) (_ -1)))
+              (def (main (: k Int64)) (first-head #list(#list(k 9) #list(8)))) (export main)))
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
 
@@ -23258,23 +23258,23 @@
   (doc    "The refutation face of the case above: over `(list (list) (list 8))` the FIRST inner list is empty,
            so the inner-length guard fails and the match FALLS THROUGH to the catch-all → -1 (NOT a trap — the
            whole point of the guard).")
-  (input  (do (def (first-head (: xss (List (List Int64)))) (match xss ((list (list a .. r1) .. r2) a) (_ -1)))
-              (def (main) (first-head (list (list) (list 8)))) (export main)))
+  (input  (do (def (first-head (: xss (List (List Int64)))) (match xss (#list(#list(a .. r1) .. r2) a) (_ -1)))
+              (def (main) (first-head #list(#list() #list(8)))) (export main)))
   (output (: -1 Int64)))
 
 (case "a fixed-arity nested-list element binds when the inner length matches exactly"
   (doc    "`(list (list a b) .. r2)` dispatches on the EXACT inner length (=2): over `(list (list x 4))` the
            length-2 inner list binds a,b → (+ a b) = x+4. With x=3 → 7.")
-  (input  (do (def (pair (: xss (List (List Int64)))) (match xss ((list (list a b) .. r2) (+ a b)) (_ -1)))
-              (def (main (: x Int64)) (pair (list (list x 4)))) (export main)))
+  (input  (do (def (pair (: xss (List (List Int64)))) (match xss (#list(#list(a b) .. r2) (+ a b)) (_ -1)))
+              (def (main (: x Int64)) (pair #list(#list(x 4)))) (export main)))
   (call   main (: 3 Int64))
   (output (: 7 Int64)))
 
 (case "a fixed-arity nested-list element falls through on a longer inner list"
   (doc    "The refutation face: `(list (list a b) .. r2)` requires the inner length be EXACTLY 2, so a length-3
            inner list `(list 1 2 3)` fails the exact-length guard and falls through to the catch-all → -1.")
-  (input  (do (def (pair (: xss (List (List Int64)))) (match xss ((list (list a b) .. r2) (+ a b)) (_ -1)))
-              (def (main) (pair (list (list 1 2 3)))) (export main)))
+  (input  (do (def (pair (: xss (List (List Int64)))) (match xss (#list(#list(a b) .. r2) (+ a b)) (_ -1)))
+              (def (main) (pair #list(#list(1 2 3)))) (export main)))
   (output (: -1 Int64)))
 
 ; ── map-pattern VALUE sub-patterns: a value sub-pattern MAY be a refutable LITERAL — `(map ("a" 0) …)`
@@ -23452,8 +23452,8 @@
 
 (case "ss1 a TAIL self-loop walk over a tuple-payload sum spine still leaks the full spine (the #4597 fix's boundary)"
   (input (do (type IntList (Cons (Tuple Int64 IntList)) Nil)
-(def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) (IntList.Cons (tuple n (count (- n 1))))))
-(def (smt (: xs IntList) (: acc Int64)) (match xs ((IntList.Cons (tuple h t)) (smt t (+ acc h))) ((IntList.Nil u) acc)))
+(def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) (IntList.Cons #tuple(n (count (- n 1))))))
+(def (smt (: xs IntList) (: acc Int64)) (match xs ((IntList.Cons #tuple(h t)) (smt t (+ acc h))) ((IntList.Nil u) acc)))
 (def (main (: n Int64)) (smt (count n) 0))
 (export main)))
   (call main (: 5 Int64))
@@ -23462,8 +23462,8 @@
 
 (case "ss2 the NON-tail walk over the same tuple-payload spine leaks identically (the tail/non-tail readings agree at this boundary)"
   (input (do (type IntList (Cons (Tuple Int64 IntList)) Nil)
-(def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) (IntList.Cons (tuple n (count (- n 1))))))
-(def (sm (: xs IntList)) (match xs ((IntList.Cons (tuple h t)) (+ h (sm t))) ((IntList.Nil u) 0)))
+(def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) (IntList.Cons #tuple(n (count (- n 1))))))
+(def (sm (: xs IntList)) (match xs ((IntList.Cons #tuple(h t)) (+ h (sm t))) ((IntList.Nil u) 0)))
 (def (main (: n Int64)) (sm (count n)))
 (export main)))
   (call main (: 5 Int64))
@@ -23472,8 +23472,8 @@
 
 (case "ss3 fifty framed tail walks over fresh tuple-payload spines leak LINEARLY (per-frame full-spine; flips with the tuple-payload increment)"
   (input (do (type IntList (Cons (Tuple Int64 IntList)) Nil)
-(def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) (IntList.Cons (tuple n (count (- n 1))))))
-(def (smt (: xs IntList) (: acc Int64)) (match xs ((IntList.Cons (tuple h t)) (smt t (+ acc h))) ((IntList.Nil u) acc)))
+(def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) (IntList.Cons #tuple(n (count (- n 1))))))
+(def (smt (: xs IntList) (: acc Int64)) (match xs ((IntList.Cons #tuple(h t)) (smt t (+ acc h))) ((IntList.Nil u) acc)))
 (def (frames (: k Int64)) (if (= k 0) 0 (+ (smt (count 5) 0) (frames (- k 1)))))
 (def (main (: n Int64)) (frames n))
 (export main)))
@@ -23499,8 +23499,8 @@
 (case "a map-pattern tuple value sub-pattern binds both elements over a runtime map"
   (doc    "`(map (\"a\" (tuple x y)) .. rest)` over a RUNTIME map `{\"a\": (k, 4)}` binds x=k, y=4 → (+ x y).
            With k=3 → 7.")
-  (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" (tuple k 4)) (Map.empty)))
-              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m ((map ("a" (tuple x y)) .. rest) (+ x y)) (_ -1)))
+  (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" #tuple(k 4)) (Map.empty)))
+              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m ((map ("a" #tuple(x y)) .. rest) (+ x y)) (_ -1)))
               (def (main (: k Int64)) (look (pick true k))) (export main)))
   (call   main (: 3 Int64))
   (output (: 7 Int64)))
@@ -23508,8 +23508,8 @@
 (case "a map-pattern tuple value sub-pattern falls through when the key is absent"
   (doc    "An ABSENT key falls through to the catch-all — the presence test fails before the value read. Here
            `pick false` → empty map, so the `\"a\"` arm's key is absent → -1.")
-  (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" (tuple k 4)) (Map.empty)))
-              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m ((map ("a" (tuple x y)) .. rest) (+ x y)) (_ -1)))
+  (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" #tuple(k 4)) (Map.empty)))
+              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m ((map ("a" #tuple(x y)) .. rest) (+ x y)) (_ -1)))
               (def (main (: k Int64)) (look (pick false k))) (export main)))
   (call   main (: 3 Int64))
   (output (: -1 Int64)))
@@ -23528,8 +23528,8 @@
 ; tri-target green — leak-free cases with rows in all three baselines).
 
 (case "ecb1 an empty-LIST if-branch joins with a built list (tri-target)"
-  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
-             (def (main (: n Int64)) (List.len (if (> n 3) (list) (bld n)))) (export main)))
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
+             (def (main (: n Int64)) (List.len (if (> n 3) #list() (bld n)))) (export main)))
   (call main (: 2 Int64))
   (output (: 2 Int64)))
 
@@ -23544,8 +23544,8 @@
   (output (: 1 Int64)))
 
 (case "ecb4 an empty-list MATCH arm joins with the bound rest (the map-rest sibling on lists)"
-  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
-             (def (main (: n Int64)) (List.len (match (bld n) ((list) (list)) ((list h .. t) t)))) (export main)))
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
+             (def (main (: n Int64)) (List.len (match (bld n) (#list() #list()) (#list(h .. t) t)))) (export main)))
   (call main (: 3 Int64))
   (output (: 2 Int64)))
 
@@ -23572,8 +23572,8 @@
 
 (case "sp1 a FLIPPED tuple-payload spine (rec-ref at Elem 0) leaks the full spine (position-matrix cell)"
   (input (do (type IL (Cons (Tuple IL Int64)) Nil)
-(def (count (: n Int64)) (if (< n 1) (IL.Nil ()) (IL.Cons (tuple (count (- n 1)) n))))
-(def (smt (: xs IL) (: acc Int64)) (match xs ((IL.Cons (tuple t h)) (smt t (+ acc h))) ((IL.Nil u) acc)))
+(def (count (: n Int64)) (if (< n 1) (IL.Nil ()) (IL.Cons #tuple((count (- n 1)) n))))
+(def (smt (: xs IL) (: acc Int64)) (match xs ((IL.Cons #tuple(t h)) (smt t (+ acc h))) ((IL.Nil u) acc)))
 (def (main (: n Int64)) (smt (count n) 0))
 (export main)))
   (call main (: 5 Int64))
@@ -23582,7 +23582,7 @@
 
 (case "sp2 a RECORD-payload spine leaks the full spine (position-matrix cell)"
   (input (do (type IL (Cons (Record (: h Int64) (: t IL))) Nil)
-(def (count (: n Int64)) (if (< n 1) (IL.Nil ()) (IL.Cons (record (= h n) (= t (count (- n 1)))))))
+(def (count (: n Int64)) (if (< n 1) (IL.Nil ()) (IL.Cons #record((= h n) (= t (count (- n 1)))))))
 (def (smt (: xs IL) (: acc Int64)) (match xs ((IL.Cons r) (smt (. r t) (+ acc (. r h)))) ((IL.Nil u) acc)))
 (def (main (: n Int64)) (smt (count n) 0))
 (export main)))
@@ -23592,8 +23592,8 @@
 
 (case "sp3 a THREE-tuple payload spine (rec-ref at Elem 2) leaks the full spine (position-matrix cell)"
   (input (do (type IL (Cons (Tuple Int64 Int64 IL)) Nil)
-(def (count (: n Int64)) (if (< n 1) (IL.Nil ()) (IL.Cons (tuple n (* n 10) (count (- n 1))))))
-(def (smt (: xs IL) (: acc Int64)) (match xs ((IL.Cons (tuple a b t)) (smt t (+ acc (+ a b)))) ((IL.Nil u) acc)))
+(def (count (: n Int64)) (if (< n 1) (IL.Nil ()) (IL.Cons #tuple(n (* n 10) (count (- n 1))))))
+(def (smt (: xs IL) (: acc Int64)) (match xs ((IL.Cons #tuple(a b t)) (smt t (+ acc (+ a b)))) ((IL.Nil u) acc)))
 (def (main (: n Int64)) (smt (count n) 0))
 (export main)))
   (call main (: 5 Int64))
@@ -23607,9 +23607,9 @@
            + Nil). Flips with the two-shell spine reclaim OR a future in-guest recursive-sum hoist,
            whichever lands first (the comment travels with whichever mechanism flips it).")
   (input (do (type IL (Cons (Tuple Int64 IL)) Nil)
-(def (smt (: xs IL) (: acc Int64)) (match xs ((IL.Cons (tuple h t)) (smt t (+ acc h))) ((IL.Nil u) acc)))
+(def (smt (: xs IL) (: acc Int64)) (match xs ((IL.Cons #tuple(h t)) (smt t (+ acc h))) ((IL.Nil u) acc)))
 (def (main (: n Int64))
-  (smt (if (> n 0) (IL.Cons (tuple 1 (IL.Cons (tuple 2 (IL.Cons (tuple 3 (IL.Nil ()))))))) (IL.Nil ())) n))
+  (smt (if (> n 0) (IL.Cons #tuple(1 (IL.Cons #tuple(2 (IL.Cons #tuple(3 (IL.Nil ()))))))) (IL.Nil ())) n))
 (export main)))
   (call main (: 1 Int64))
   (output (: 7 Int64))
@@ -23758,12 +23758,12 @@
       (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
     (def (f (: xs (List Int64)))
       (match xs
-        ((list) 0)
-        ((list a .. rest)
+        (#list() 0)
+        (#list(a .. rest)
           (match xs
-            ((list) 0)
-            ((list b .. rest2) (+ a (+ b (* 10 ((. List len) rest2)))))))))
-    (def (main (: n Int64)) (f (build 0 n (list))))
+            (#list() 0)
+            (#list(b .. rest2) (+ a (+ b (* 10 ((. List len) rest2)))))))))
+    (def (main (: n Int64)) (f (build 0 n #list())))
     (export main)))
   (call main (: 3 Int64)) (output (: 20 Int64)))
 
@@ -23774,14 +23774,14 @@
 ; throughout) as the positive faces of the fix.
 
 (case "cbw1 a nested same-scrutinee LIST match computes and fully reclaims (the #4685 fix witness)"
-  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (f (: xs (List Int64)))
   (match xs
-    ((list) 0)
-    ((list h .. t)
+    (#list() 0)
+    (#list(h .. t)
       (match xs
-        ((list) -1)
-        ((list h2 .. t2) (+ (* 100 h) (+ h2 (List.len t2))))))))
+        (#list() -1)
+        (#list(h2 .. t2) (+ (* 100 h) (+ h2 (List.len t2))))))))
 (def (main (: n Int64)) (f (bld (+ n 2))))
 (export main)))
   (call main (: 1 Int64))
@@ -23789,14 +23789,14 @@
   (live-objects 0))
 
 (case "cbw2 the nested re-match with no tail consume computes and reclaims"
-  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (f (: xs (List Int64)))
   (match xs
-    ((list) 0)
-    ((list h .. t)
+    (#list() 0)
+    (#list(h .. t)
       (match xs
-        ((list) -1)
-        ((list h2 .. t2) (+ (* 100 h) h2))))))
+        (#list() -1)
+        (#list(h2 .. t2) (+ (* 100 h) h2))))))
 (def (main (: n Int64)) (f (bld (+ n 2))))
 (export main)))
   (call main (: 1 Int64))
@@ -23804,13 +23804,13 @@
   (live-objects 0))
 
 (case "cbw3 the nested re-match through a WILDCARD inner arm computes and reclaims (the header-read-only face)"
-  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (f (: xs (List Int64)))
   (match xs
-    ((list) 0)
-    ((list h .. t)
+    (#list() 0)
+    (#list(h .. t)
       (match xs
-        ((list) -1)
+        (#list() -1)
         (_ (+ (* 100 h) (List.len t)))))))
 (def (main (: n Int64)) (f (bld (+ n 2))))
 (export main)))
@@ -23915,9 +23915,9 @@
            match runs on a RUNTIME list, not a const-folded literal. A regression that fell through on the
            exact-length case (→ -1) or mis-sized the rest would move the total off 300303.")
   (input  (do
-            (def (bld (: n Int64)) (if (> n 0) (List.push (bld (- n 1)) n) (list)))
+            (def (bld (: n Int64)) (if (> n 0) (List.push (bld (- n 1)) n) #list()))
             (def (probe (: lst (List Int64)))
-              (match lst ((list a b .. rest) (+ (* 100 (+ a b)) (List.len rest))) (_ -1)))
+              (match lst (#list(a b .. rest) (+ (* 100 (+ a b)) (List.len rest))) (_ -1)))
             (def (main) (+ (* 1000 (probe (bld 2))) (probe (bld 5))))
             (export main)))
   (output (: 300303 Int64)))
@@ -23933,7 +23933,7 @@
            that mutated the singleton in place would make len(empty)≠0 (→ off by ≥1000000) or alias a/b.
            release==debug (no UAF over the shared cell). Uniform across wasm/rust/rust-async.")
   (input  (do
-            (def (mk (: k Int64)) (if (> k 1000) (list 9) (list)))
+            (def (mk (: k Int64)) (if (> k 1000) #list(9) #list()))
             (def (main (: seed Int64))
               (let ((e1 (mk seed)) (e2 (mk seed)))
                 (let ((a (List.push e1 100)) (b (List.push e2 200)))
@@ -23949,7 +23949,7 @@
 ; shared fixed_arity_reject with a DELETE-the-surplus fix; TOO FEW keeps the coded reject with NO fix
 ; (nothing to delete). All CDZ0201. Fix-quality graded via C1.
 (case "a surplus record field element carries a delete-the-surplus fix"
-  (input (do (def (main) (record (x 1 2))) (export main)))
+  (input (do (def (main) #record((x 1 2))) (export main)))
   (error CDZ0201 (message "record field must be (= key value)") (fix (kind delete))))
 
 (case "a surplus map entry (name-alias form) carries a delete-the-surplus fix"
@@ -23961,7 +23961,7 @@
   (error CDZ0201 (message "a map entry is a (key value) pair") (fix (kind delete))))
 
 (case "a too-few record field element carries NO delete fix"
-  (input (do (def (main) (record (x))) (export main)))
+  (input (do (def (main) #record((x))) (export main)))
   (error CDZ0201 (message "record field must be (= key value)") (no-fix)))
 
 (case "a too-few map entry carries NO delete fix"

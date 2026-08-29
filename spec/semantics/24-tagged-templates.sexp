@@ -27,7 +27,7 @@
            surrounding match reads its length, 2. Pins binding-dispatch + one-tier eval + splice.")
   (input  (do
             (def (id chunks holes) (match chunks
-                                     ((list c) (Ast.Str c))
+                                     (#list(c) (Ast.Str c))
                                      (_        (Ast.Str ""))))
             (def (main) (match (tagged-template id (chunks "hi") (holes))
                           ((Ast.Str s) (String.byte-len s))
@@ -48,10 +48,10 @@
            Pins that holes reach the tag function and are spliced at the positions its parse reaches.")
   (input  (do
             (def (wrap chunks holes) (match holes
-                                       ((list h) (Ast.List (list (Ast.Name "f") h)))
-                                       (_        (Ast.List (list)))))
+                                       (#list(h) (Ast.List #list((Ast.Name "f") h)))
+                                       (_        (Ast.List #list()))))
             (def (main) (= (tagged-template wrap (chunks "" "") (holes (Ast.Int 7)))
-                           (Ast.List (list (Ast.Name "f") (Ast.Int 7)))))
+                           (Ast.List #list((Ast.Name "f") (Ast.Int 7)))))
             (export main)))
   (output (: true Bool)))
 
@@ -154,7 +154,7 @@
            code — a strictly stronger capability than a recursive tag returning a bare scalar.")
   (input  (do
             (def (build-list (: n Int64))
-              (if (= n 0) (list) (List.push (build-list (- n 1)) (Ast.Int (BigInt.of n)))))
+              (if (= n 0) #list() (List.push (build-list (- n 1)) (Ast.Int (BigInt.of n)))))
             (def (mk chunks holes) (Ast.List (build-list 3)))
             (def (main) (match (tagged-template mk (chunks "x") (holes))
                           ((Ast.List xs) (List.len xs))
@@ -181,7 +181,7 @@
               (match (Bytes.at bytes i)
                 ((Option.Some c) (count-b bytes (+ i 1) (if (= c 98) (+ acc 1) acc)))
                 ((Option.None _) acc)))
-            (def (first-chunk chunks) (match chunks ((list c) c) ((list c .. r) c) (_ "")))
+            (def (first-chunk chunks) (match chunks (#list(c) c) (#list(c .. r) c) (_ "")))
             (def (scan chunks holes) (Ast.Int (BigInt.of (count-b (String.to-bytes (first-chunk chunks)) 0 0))))
             (def (main) (match (tagged-template scan (chunks "abbcbb") (holes))
                           ((Ast.Int n) n)
@@ -226,7 +226,7 @@
            expands to `(Ast.Int 7)`, read here as 7. Pins that holes flow to the tag function (the
            companion of the earlier weave case, isolating a bare pass-through hole).")
   (input  (do
-            (def (first chunks holes) (match holes ((list h) h) (_ (Ast.Int 0))))
+            (def (first chunks holes) (match holes (#list(h) h) (_ (Ast.Int 0))))
             (def (main) (match (tagged-template first (chunks "" "") (holes (Ast.Int 7)))
                           ((Ast.Int n) n)
                           (_           0N)))
@@ -252,12 +252,12 @@
   (input  (do
             (def (weave chunks holes)
               (match holes
-                ((list a b) (match chunks
-                              ((list c0 c1 c2) (Ast.List (list (Ast.Name c1) a b)))
-                              (_               (Ast.List (list)))))
-                (_          (Ast.List (list)))))
+                (#list(a b) (match chunks
+                              (#list(c0 c1 c2) (Ast.List #list((Ast.Name c1) a b)))
+                              (_               (Ast.List #list()))))
+                (_          (Ast.List #list()))))
             (def (main) (match (tagged-template weave (chunks "p" "MID" "q") (holes (Ast.Int 10) (Ast.Int 20)))
-                          ((Ast.List (list (Ast.Name nm) (Ast.Int x) (Ast.Int y)))
+                          ((Ast.List #list((Ast.Name nm) (Ast.Int x) (Ast.Int y)))
                            (+ (BigInt.of (String.byte-len nm)) (+ x y)))
                           (_ 0N)))
             (export main)))
@@ -273,10 +273,10 @@
            different digit arrangement), strengthening the two-hole order pin.")
   (input  (do
             (def (pick chunks holes)
-              (match holes ((list a b c) (Ast.List (list c a b))) (_ (Ast.List (list)))))
+              (match holes (#list(a b c) (Ast.List #list(c a b))) (_ (Ast.List #list()))))
             (def (main)
               (match (tagged-template pick (chunks "" "" "" "") (holes (Ast.Int 1) (Ast.Int 2) (Ast.Int 3)))
-                ((Ast.List (list (Ast.Int x) (Ast.Int y) (Ast.Int z))) (+ (* x 100N) (+ (* y 10N) z)))
+                ((Ast.List #list((Ast.Int x) (Ast.Int y) (Ast.Int z))) (+ (* x 100N) (+ (* y 10N) z)))
                 (_ 0N)))
             (export main)))
   (output (: 312 BigInt))
@@ -296,7 +296,7 @@
            hole is an ordinary expression lowered to `Ast`, so a quote reaches the tag fn like a
            hand-written `Ast.*`).")
   (input  (do
-            (def (first chunks holes) (match holes ((list h) h) (_ (Ast.Int 0))))
+            (def (first chunks holes) (match holes (#list(h) h) (_ (Ast.Int 0))))
             (def (main) (match (tagged-template first (chunks "a" "b") (holes (quote (+ 1 2))))
                           ((Ast.List es) (List.len es))
                           (_             0)))
@@ -324,10 +324,10 @@
             (def (inner chunks holes) (Ast.Int 5))
             (def (outer chunks holes)
               (match holes
-                ((list h) (Ast.List (list (Ast.Name "+") h (Ast.Int 40))))
-                (_        (Ast.List (list)))))
+                (#list(h) (Ast.List #list((Ast.Name "+") h (Ast.Int 40))))
+                (_        (Ast.List #list()))))
             (def (main) (match (tagged-template outer (chunks "" "") (holes (tagged-template inner (chunks "x") (holes))))
-                          ((Ast.List (list (Ast.Name op) (Ast.Int a) (Ast.Int b)))
+                          ((Ast.List #list((Ast.Name op) (Ast.Int a) (Ast.Int b)))
                            (+ (BigInt.of (String.byte-len op)) (+ a b)))
                           (_ 0N)))
             (export main)))
@@ -380,10 +380,10 @@
            expander that passed truncated or padded lists would misreport a count.")
   (input  (do
             (def (count-meta chunks holes)
-              (Ast.List (list (Ast.Int (BigInt.of (List.len chunks))) (Ast.Int (BigInt.of (List.len holes))))))
+              (Ast.List #list((Ast.Int (BigInt.of (List.len chunks))) (Ast.Int (BigInt.of (List.len holes))))))
             (def (main (: n Int64))
               (match (tagged-template count-meta (chunks "a" "b" "c") (holes (Ast.Int (BigInt.of 1)) (Ast.Int (BigInt.of 2))))
-                ((Ast.List (list (Ast.Int c) (Ast.Int h)))
+                ((Ast.List #list((Ast.Int c) (Ast.Int h)))
                   (if (= c (BigInt.of 3)) (if (= h (BigInt.of 2)) (+ 42 n) -2) -1))
                 (_ -3)))
             (export main)))
@@ -423,7 +423,7 @@
            degrades gracefully from fold-to-constant to residual code.")
   (input  (do
             (def (keep chunks holes) (match holes
-                                       ((list h) h)
+                                       (#list(h) h)
                                        (_        (Ast.Int 0))))
             (def (main (: a Int64)) (match (tagged-template keep (chunks "" "") (holes (Ast.Int (BigInt.of a))))
                                       ((Ast.Int n) n)
@@ -445,11 +445,11 @@
            the spine would misalign the nested destructure).")
   (input  (do
             (def (wrap chunks holes) (match holes
-                                       ((list h) (Ast.List (list (Ast.Name "f") h)))
-                                       (_        (Ast.List (list)))))
+                                       (#list(h) (Ast.List #list((Ast.Name "f") h)))
+                                       (_        (Ast.List #list()))))
             (def (main (: a Int64))
               (match (tagged-template wrap (chunks "" "") (holes (Ast.Int (BigInt.of (* a 10)))))
-                ((Ast.List (list (Ast.Name g) (Ast.Int n))) (+ n (BigInt.of (String.byte-len g))))
+                ((Ast.List #list((Ast.Name g) (Ast.Int n))) (+ n (BigInt.of (String.byte-len g))))
                 (_ -1N)))
             (export main)))
   (call   main (: 4 Int64))
@@ -468,21 +468,21 @@
   (input  (do
             (def (op chunks holes)
               (match chunks
-                ((list c _t)
+                (#list(c _t)
                   (match holes
-                    ((list h0 h1)
-                      (Ast.List (list (Ast.Name (if (= c "add") "+" "*")) h0 h1)))
+                    (#list(h0 h1)
+                      (Ast.List #list((Ast.Name (if (= c "add") "+" "*")) h0 h1)))
                     (_ (Ast.Int 0))))
                 (_ (Ast.Int 0))))
             (def (main (: a Int64) (: which Int64))
               (do
                 (def r (if (= which 1)
                            (match (tagged-template op (chunks "add" "") (holes (Ast.Int (BigInt.of a)) (Ast.Int 3)))
-                             ((Ast.List (list (Ast.Name o) (Ast.Int x) (Ast.Int y)))
+                             ((Ast.List #list((Ast.Name o) (Ast.Int x) (Ast.Int y)))
                                (if (= o "+") (+ x y) (* x y)))
                              (_ -1N))
                            (match (tagged-template op (chunks "mul" "") (holes (Ast.Int (BigInt.of a)) (Ast.Int 3)))
-                             ((Ast.List (list (Ast.Name o) (Ast.Int x) (Ast.Int y)))
+                             ((Ast.List #list((Ast.Name o) (Ast.Int x) (Ast.Int y)))
                                (if (= o "+") (+ x y) (* x y)))
                              (_ -1N))))
                 r))
@@ -503,8 +503,8 @@
   (input  (do
         (def (sum-holes hs)
           (match hs
-            ((list) (Ast.Int 0))
-            ((list (Ast.Int n) .. t)
+            (#list() (Ast.Int 0))
+            (#list((Ast.Int n) .. t)
               (match (sum-holes t)
                 ((Ast.Int m) (Ast.Int (+ n m)))
                 (_ (Ast.Int -999))))
@@ -528,15 +528,15 @@
   (input  (do
         (def (tag chunks holes)
           (match holes
-            ((list h) (Ast.List (list (Ast.Name "+") h (Ast.Int 10))))
+            (#list(h) (Ast.List #list((Ast.Name "+") h (Ast.Int 10))))
             (_ (Ast.Int -1))))
         (def (main (: k Int64))
-          (match (tagged-template tag (chunks "" "") (holes (Ast.List (list (Ast.Name "*") (Ast.Int 3) (Ast.Int 4)))))
+          (match (tagged-template tag (chunks "" "") (holes (Ast.List #list((Ast.Name "*") (Ast.Int 3) (Ast.Int 4)))))
             ((Ast.List parts)
               (match parts
-                ((list (Ast.Name op) (Ast.List inner) (Ast.Int c))
+                (#list((Ast.Name op) (Ast.List inner) (Ast.Int c))
                   (match inner
-                    ((list (Ast.Name op2) (Ast.Int a) (Ast.Int b))
+                    (#list((Ast.Name op2) (Ast.Int a) (Ast.Int b))
                       (+ (* 100 (List.len inner)) (+ (Int64.of a) (+ (Int64.of b) (+ (Int64.of c) k)))))
                     (_ -4)))
                 (_ -2)))
@@ -559,7 +559,7 @@
           (match (tagged-template wrap (chunks "" "") (holes (Ast.Int 7)))
             ((Ast.List parts)
               (match parts
-                ((list (Ast.Name f) (Ast.Int n)) (+ (Int64.of n) k))
+                (#list((Ast.Name f) (Ast.Int n)) (+ (Int64.of n) k))
                 (_ -2)))
             (_ -3)))
         (export main)))
@@ -581,11 +581,11 @@
   (input  (do
             (def (twice chunks holes)
               (match holes
-                ((list h) (Ast.List (list (Ast.Name "+") h h)))
+                (#list(h) (Ast.List #list((Ast.Name "+") h h)))
                 (_ (Ast.Int 0))))
             (def (main (: a Int64))
               (match (tagged-template twice (chunks "x" "y") (holes (Ast.Int (BigInt.of a))))
-                ((Ast.List (list (Ast.Name o) (Ast.Int x) (Ast.Int y)))
+                ((Ast.List #list((Ast.Name o) (Ast.Int x) (Ast.Int y)))
                   (if (= o "+") (+ x y) -2N))
                 (_ -1N)))
             (export main)))
@@ -598,11 +598,11 @@
   (input  (do
             (def (swap chunks holes)
               (match holes
-                ((list h0 h1) (Ast.List (list h1 h0)))
+                (#list(h0 h1) (Ast.List #list(h1 h0)))
                 (_ (Ast.Int 0))))
             (def (main (: a Int64) (: b Int64))
               (match (tagged-template swap (chunks "x" "y" "z") (holes (Ast.Int (BigInt.of a)) (Ast.Int (BigInt.of b))))
-                ((Ast.List (list (Ast.Int x) (Ast.Int y)))
+                ((Ast.List #list((Ast.Int x) (Ast.Int y)))
                   (- (* (BigInt.of 100) x) y))
                 (_ -1N)))
             (export main)))
@@ -624,7 +624,7 @@
           (match (tagged-template wrap (chunks "" "") (holes (Ast.Int 7)))
             ((Ast.List parts)
               (match parts
-                ((list (Ast.Name f) (Ast.Int n)) (+ (Int64.of n) k))
+                (#list((Ast.Name f) (Ast.Int n)) (+ (Int64.of n) k))
                 (_ -2)))
             (_ -3)))
         (export main)))
@@ -648,7 +648,7 @@
 
 (case "ttc1 a hole built from the runtime entry param round-trips through the tag weave"
   (input (do
-    (def (weave chunks holes) (match holes ((list h) h) (_ (Ast.Int (BigInt.of 0)))))
+    (def (weave chunks holes) (match holes (#list(h) h) (_ (Ast.Int (BigInt.of 0)))))
     (def (main (: n Int64))
       (match (tagged-template weave (chunks "") (holes (Ast.Int (BigInt.of n))))
         ((Ast.Int b) (if (= b (BigInt.of n)) 7 -1))

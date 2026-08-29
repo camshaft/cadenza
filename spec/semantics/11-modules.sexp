@@ -531,7 +531,7 @@
            well-typed program (\"def without a signature\"); a value definition binding a record MUST bind
            here and project.")
   (input  (do
-            (def tbl (record (= a 7) (= b 8)))
+            (def tbl #record((= a 7) (= b 8)))
             (def (main) (. tbl b)) (export main)))
   (output (: 8 Int64)))
 
@@ -580,7 +580,7 @@
            binds a record (`(def op (doc \"opcode bytes\") (record …))`), projected by a sibling — the doc
            is stripped so `(. op sub)` reads the real record field, 2.")
   (input  (do
-            (def op (doc "opcode bytes") (record (= add 1) (= sub 2)))
+            (def op (doc "opcode bytes") #record((= add 1) (= sub 2)))
             (def (main) (. op sub)) (export main)))
   (output (: 2 Int64)))
 
@@ -1013,7 +1013,7 @@
             (module m
               (effect log (op emit (-> String Unit)))
               (def (main) (host (log) (log.emit "hi"))))
-            (= (. m (meta capabilities)) (list "log"))))
+            (= (. m (meta capabilities)) #list("log"))))
   (output (: true Bool)))
 
 (case "a delegated capability is not itself an export field"
@@ -1085,7 +1085,7 @@
               (def (capabilities) 7)
               (def (main) (host (log) (log.emit "hi"))))
             (if (= ((. m capabilities) unit) 7)
-                (= (. m (meta capabilities)) (list "log"))
+                (= (. m (meta capabilities)) #list("log"))
                 false)))
   (output (: true Bool)))
 
@@ -1302,8 +1302,8 @@
         (import "lib" (first))
         (def (main (: n Int64))
           (do
-            (def a (first (list n 6)))
-            (def s (first (list "ab" "c")))
+            (def a (first #list(n 6)))
+            (def s (first #list("ab" "c")))
             (+ (* a 10) (String.byte-len s))))
         (export main)))
   (module "lib"
@@ -1323,8 +1323,8 @@
   (input (do
         (import "lib" (get-x))
         (def (main (: n Int64))
-          (+ (* (get-x (record (= x 5) (= y 6) (= z n))) 10)
-             (get-x (record (= x 3)))))
+          (+ (* (get-x #record((= x 5) (= y 6) (= z n))) 10)
+             (get-x #record((= x 3)))))
         (export main)))
   (module "lib"
     (do
@@ -1400,7 +1400,7 @@
       (export sz)))
   (input  (do
             (import "lib" (T sz))
-            (def (main) (sz (T.List (list))))
+            (def (main) (sz (T.List #list())))
             (export main)))
   (output (: 9 Int64)))
 
@@ -1667,7 +1667,7 @@
       (export mk)))
   (input  (do
         (import "temp" (Temp mk))
-        (def (main (: k Int64)) (match (Map.lookup (Map.insert Map.empty (tuple (mk k) 1) 42) (tuple (mk k) 1)) ((Some v) v) ((None _u) -1)))
+        (def (main (: k Int64)) (match (Map.lookup (Map.insert Map.empty #tuple((mk k) 1) 42) #tuple((mk k) 1)) ((Some v) v) ((None _u) -1)))
         (export main)))
   (call   main (: 5 Int64)) (error CDZ0202))
 
@@ -1681,7 +1681,7 @@
     (do (type Temp (T Int64)) (def (mk (: c Int64)) (T (* c 10))) (export Temp) (export mk)))
   (input  (do
         (import "temp" (Temp mk))
-        (def (main (: k Int64)) (if (= (tuple (mk k) 1) (tuple (mk k) 1)) 1 0))
+        (def (main (: k Int64)) (if (= #tuple((mk k) 1) #tuple((mk k) 1)) 1 0))
         (export main)))
   (call   main (: 5 Int64)) (error CDZ0202))
 
@@ -1716,7 +1716,7 @@
   (input  (do
         (import "temp" (Temp mk))
         (def (main (: k Int64))
-          (match (Map.lookup (Map.insert Map.empty (tuple (tuple (mk k) 1) 2) 9) (tuple (tuple (mk k) 1) 2))
+          (match (Map.lookup (Map.insert Map.empty #tuple(#tuple((mk k) 1) 2) 9) #tuple(#tuple((mk k) 1) 2))
             ((Some v) v) ((None _u) -1)))
         (export main)))
   (call   main (: 5 Int64)) (error CDZ0202))

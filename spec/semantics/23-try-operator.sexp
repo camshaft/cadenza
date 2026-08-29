@@ -182,7 +182,7 @@
            2))`. Pins that the payload the `?` binds is not restricted to a scalar — a compound (tuple/
            record/sum) payload flows through the success fold intact, its type preserved
            (`(Option (Tuple Int64 Int64))`).")
-  (input  (do (def (main) (let ((x (try (Some (tuple 1 2))))) (Some x))) (export main)))
+  (input  (do (def (main) (let ((x (try (Some #tuple(1 2))))) (Some x))) (export main)))
   (output (: (Some (tuple 1 2)) (Option (Tuple Int64 Int64)))))
 
 (case "a `?` result is usable mid-body, not only in tail position"
@@ -204,7 +204,7 @@
            driver tie is a SEPARATE, parked v-inference concern — this is the plain two-type case).")
   (input  (do
             (def (wrap v) (let ((x (try (Some v)))) (Some x)))
-            (def (main) (: (tuple (wrap 7) (wrap true)) (Tuple (Option Int64) (Option Bool))))
+            (def (main) (: #tuple((wrap 7) (wrap true)) (Tuple (Option Int64) (Option Bool))))
             (export main)))
   (output (: (tuple (Some 7) (Some true)) (Tuple (Option Int64) (Option Bool)))))
 
@@ -512,8 +512,8 @@
            not just a scalar) unchanged through the abortive short-circuit — the error analogue of the
            compound-Ok-payload unwrap.")
   (input  (do
-            (def (f) (: (let ((y (try (Err (tuple 3 4))))) (Ok y)) (Result Int64 (Tuple Int64 Int64))))
-            (def (main) (match (f) ((Ok v) 0) ((Err (tuple a b)) (+ a b))))
+            (def (f) (: (let ((y (try (Err #tuple(3 4))))) (Ok y)) (Result Int64 (Tuple Int64 Int64))))
+            (def (main) (match (f) ((Ok v) 0) ((Err #tuple(a b)) (+ a b))))
             (export main)))
   (output (: 7 Int64)))
 
@@ -598,7 +598,7 @@
                   (let ((c (try (List.at xs 2))))
                     (Some (+ a (+ b c)))))))
             (def (main (: n Int64))
-              (match (get3 (list n 2 30))
+              (match (get3 #list(n 2 30))
                 ((Some v) v)
                 ((None u) -1)))
             (export main)))
@@ -617,7 +617,7 @@
                   (let ((c (try (List.at xs 2))))
                     (Some (+ a (+ b c)))))))
             (def (main (: n Int64))
-              (match (get3 (list n 2))
+              (match (get3 #list(n 2))
                 ((Some v) v)
                 ((None u) -1)))
             (export main)))
@@ -664,7 +664,7 @@
            re-wraps — fifty frames leave NO live cell (the unwrapped list is consumed by List.len, the
            re-wrap is a fresh scalar Result). The runtime-Err short-circuit face stays BRICK-3b-gated
            (operator-owned, v-try-operator) — this pins only the success-path heap reclaim.")
-  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (step (: k Int64)) (: (let ((xs (try (Ok (bld 3))))) (Ok (List.len xs))) (Result Int64 String)))
 (def (frames (: k Int64))
   (if (= k 0) 0

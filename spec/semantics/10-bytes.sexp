@@ -31,14 +31,14 @@
            OBSERVABLE form is the byte-string display `b\"…\"` (options/binary-syntax): a printable
            ASCII byte stands for itself and any other byte is a `\\xNN` escape, so bytes 1, 2, 3 —
            all non-printable — render `b\"\\x01\\x02\\x03\"`.")
-  (input  (Bytes.of (list 1 2 3)))
+  (input  (Bytes.of #list(1 2 3)))
   (output (: b"\x01\x02\x03" Bytes)))
 
 (case "byte sequences are equal by their bytes in order"
   (doc    "Witnesses Bytes structural equality: two byte sequences are equal exactly
            when they carry the same bytes in the same order (core-semantics.md
            #Equality Is Structural, at the Bytes value form).")
-  (input  (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 30))))
+  (input  (= (Bytes.of #list(10 20 30)) (Bytes.of #list(10 20 30))))
   (output (: true Bool)))
 
 (case "constant Bytes structural equality folds over unequal, length-differing, concat, and compact forms"
@@ -49,11 +49,11 @@
            T→16, summing to 31. Relocated from rcdzc
            constant_compound_equality_folds_and_a_runtime_one_emits_a_heap_walk (the Bytes arms).")
   (input  (do (def (main)
-                (+ (if (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 30))) 1 0)
-                (+ (if (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 99))) 0 2)
-                (+ (if (= (Bytes.of (list 1 2)) (Bytes.of (list 1 2 3))) 0 4)
-                (+ (if (= (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) (Bytes.of (list 1 2 3 4))) 8 0)
-                   (if (= (Bytes.compact (Bytes.of (list 1 2 3))) (Bytes.of (list 1 2 3))) 16 0))))))
+                (+ (if (= (Bytes.of #list(10 20 30)) (Bytes.of #list(10 20 30))) 1 0)
+                (+ (if (= (Bytes.of #list(10 20 30)) (Bytes.of #list(10 20 99))) 0 2)
+                (+ (if (= (Bytes.of #list(1 2)) (Bytes.of #list(1 2 3))) 0 4)
+                (+ (if (= (Bytes.concat (Bytes.of #list(1 2)) (Bytes.of #list(3 4))) (Bytes.of #list(1 2 3 4))) 8 0)
+                   (if (= (Bytes.compact (Bytes.of #list(1 2 3))) (Bytes.of #list(1 2 3))) 16 0))))))
               (export main)))
   (call   main)
   (output (: 31 Int64)))
@@ -61,20 +61,20 @@
 (case "the length of a byte sequence is its byte count"
   (doc    "Witnesses Bytes.len — the compiler needs a byte count to lay out a wasm
            section's size prefix.")
-  (input  (Bytes.len (Bytes.of (list 0 255 128))))
+  (input  (Bytes.len (Bytes.of #list(0 255 128))))
   (output (: 3 Int64)))
 
 (case "concatenating two byte sequences appends their bytes in order"
   (doc    "Witnesses Bytes.concat — the compiler assembles a wasm module by
            concatenating encoded sections.")
-  (input  (= (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4)))
-             (Bytes.of (list 1 2 3 4))))
+  (input  (= (Bytes.concat (Bytes.of #list(1 2)) (Bytes.of #list(3 4)))
+             (Bytes.of #list(1 2 3 4))))
   (output (: true Bool)))
 
 (case "indexing a byte sequence returns Some of the byte at that position"
   (doc    "Witnesses fallible Bytes indexing (collections-and-text.md #Indexing And Lookup Are Fallible,
            Not Trapping): an in-bounds index yields the byte as an Int64 in 0..=255 wrapped in Some.")
-  (input  (Bytes.at (Bytes.of (list 7 8 9)) 1))
+  (input  (Bytes.at (Bytes.of #list(7 8 9)) 1))
   (output (: (Some 8) (Option Int64))))
 
 (case "constructing a byte sequence with a value out of range is a type error"
@@ -84,7 +84,7 @@
            runtime trap — the ill-formed byte cannot even be constructed. To turn a wider integer into a
            byte, TRUNCATE deliberately with `(UInt8.wrap n)` (total, never traps); a bare `256` is not a
            truncation request, it is an ill-typed literal.")
-  (input  (Bytes.of (list 0 256)))
+  (input  (Bytes.of #list(0 256)))
   (error  CDZ0302))
 
 ; The out-of-range case above tests the HIGH end (256 > 255); a byte value is a UInt8, bounded on BOTH
@@ -97,14 +97,14 @@
            at COMPILE TIME (CDZ0302), the low-end companion of the `256` case. A byte is a UInt8; a UInt8
            literal is bounded on BOTH sides. NOT wrapped to 255 via a truncating `as u8`: to truncate a
            wider value into a byte you write `(UInt8.wrap -1)` = 255 explicitly.")
-  (input  (Bytes.of (list -1)))
+  (input  (Bytes.of #list(-1)))
   (error  CDZ0302))
 
 (case "indexing a byte sequence out of bounds yields None"
   (doc    "Witnesses fallible Bytes indexing on the absent side, mirroring List.at
            (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping): an out-of-bounds
            index yields None rather than trapping.")
-  (input  (Bytes.at (Bytes.of (list 7 8 9)) 5))
+  (input  (Bytes.at (Bytes.of #list(7 8 9)) 5))
   (output (: (None unit) (Option Int64))))
 
 (case "indexing a byte sequence with a negative index yields None"
@@ -112,7 +112,7 @@
            it MUST yield None (fallible Bytes indexing), NOT cast the negative index to a large unsigned
            offset and read an unspecified byte. The negative-index companion of the out-of-bounds `5`
            case above, mirroring the List.at negative-index case (05-compound-types).")
-  (input  (Bytes.at (Bytes.of (list 7 8 9)) -1))
+  (input  (Bytes.at (Bytes.of #list(7 8 9)) -1))
   (output (: (None unit) (Option Int64))))
 
 ; --- The empty byte sequence is an ordinary Bytes value ----------------------------------
@@ -126,7 +126,7 @@
   (doc    "`(Bytes.of (list))` is the zero-length byte sequence; its length is 0. Pins that Bytes.len
            handles the empty sequence (a length-prefix computation must yield 0, not underflow or read a
            phantom byte).")
-  (input  (Bytes.len (Bytes.of (list))))
+  (input  (Bytes.len (Bytes.of #list())))
   (output (: 0 Int64)))
 
 (case "two empty byte sequences are equal"
@@ -134,21 +134,21 @@
            same (empty) bytes in order, so they are structurally equal (core-semantics.md #Equality Is
            Structural, at the Bytes value form). Pins that Bytes equality treats the empty sequence as a
            genuine value equal to itself, not a special-cased nothing.")
-  (input  (= (Bytes.of (list)) (Bytes.of (list))))
+  (input  (= (Bytes.of #list()) (Bytes.of #list())))
   (output (: true Bool)))
 
 (case "concatenating an empty byte sequence on the right is the identity"
   (doc    "`(Bytes.concat b (Bytes.of (list)))` = b: appending zero bytes changes nothing. Pins the
            right identity of Bytes.concat — a concat that mishandles a zero-length operand (e.g. writes a
            stray length prefix) would break the compiler's section assembly.")
-  (input  (= (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list))) (Bytes.of (list 1 2))))
+  (input  (= (Bytes.concat (Bytes.of #list(1 2)) (Bytes.of #list())) (Bytes.of #list(1 2))))
   (output (: true Bool)))
 
 (case "concatenating an empty byte sequence on the left is the identity"
   (doc    "The left-identity companion: `(Bytes.concat (Bytes.of (list)) b)` = b. Pins that
            concatenation handles a zero-length LEFT operand too, not only a zero-length right operand —
            both sides of concat treat the empty sequence as the identity.")
-  (input  (= (Bytes.concat (Bytes.of (list)) (Bytes.of (list 3 4))) (Bytes.of (list 3 4))))
+  (input  (= (Bytes.concat (Bytes.of #list()) (Bytes.of #list(3 4))) (Bytes.of #list(3 4))))
   (output (: true Bool)))
 
 ; --- Concatenation is associative by content --------------------------------------------
@@ -164,8 +164,8 @@
            depends only on the bytes in order, not on grouping. Pins the associativity law a
            deferred-concatenation representation must preserve — re-grouping the concatenation tree is
            unobservable (memory-and-resource-model.md #Sharing Is Not Observable).")
-  (input  (= (Bytes.concat (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) (Bytes.of (list 5 6)))
-             (Bytes.concat (Bytes.of (list 1 2)) (Bytes.concat (Bytes.of (list 3 4)) (Bytes.of (list 5 6))))))
+  (input  (= (Bytes.concat (Bytes.concat (Bytes.of #list(1 2)) (Bytes.of #list(3 4))) (Bytes.of #list(5 6)))
+             (Bytes.concat (Bytes.of #list(1 2)) (Bytes.concat (Bytes.of #list(3 4)) (Bytes.of #list(5 6))))))
   (output (: true Bool)))
 
 ; --- A slice is a byte sequence, indistinguishable from a copy ---------------------------
@@ -187,15 +187,15 @@
            30))`. A slice is an ordinary Bytes value; a representation that shares the parent's storage
            to realize it MUST be indistinguishable from this copy (memory-and-resource-model.md #Sharing
            Is Not Observable). `expect` unwraps the in-bounds slice.")
-  (input  (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")
-             (Bytes.of (list 20 30))))
+  (input  (= (Option.expect (Bytes.slice (Bytes.of #list(10 20 30 40)) 1 2) "slice is in bounds")
+             (Bytes.of #list(20 30))))
   (output (: true Bool)))
 
 (case "the length of a slice is the slice's byte count"
   (doc    "`(Bytes.len (Option.expect (Bytes.slice b 1 2) …))` = 2: length reads the slice's OWN byte count, not
            the parent's. A view representation that stored a length must report the slice's length, never
            the backing sequence's — the sharing is not observable through length.")
-  (input  (Bytes.len (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")))
+  (input  (Bytes.len (Option.expect (Bytes.slice (Bytes.of #list(10 20 30 40)) 1 2) "slice is in bounds")))
   (output (: 2 Int64)))
 
 (case "indexing a slice is relative to the slice's start"
@@ -203,7 +203,7 @@
            the slice's start, not the parent's start. Pins that a view representation adds its offset —
            indexing is relative to the slice, so sharing the parent's storage is not observable through
            indexing.")
-  (input  (Bytes.at (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds") 0))
+  (input  (Bytes.at (Option.expect (Bytes.slice (Bytes.of #list(10 20 30 40)) 1 2) "slice is in bounds") 0))
   (output (: (Some 20) (Option Int64))))
 
 (case "a slice at a RUNTIME start re-bases indexing per call"
@@ -214,7 +214,7 @@
            of the slice start) would return 10 for both calls.")
   (input  (do
             (def (main (: a Int64))
-              (match (Bytes.slice (Bytes.of (list 10 20 30 40)) a 2)
+              (match (Bytes.slice (Bytes.of #list(10 20 30 40)) a 2)
                 ((Some s) (match (Bytes.at s 0) ((Some v) v) ((None u) -2)))
                 ((None u) -1)))
             (export main)))
@@ -231,7 +231,7 @@
            outer offset participating.")
   (input  (do
             (def (main (: a Int64))
-              (match (Bytes.slice (Bytes.of (list 1 2 3 4 5 6)) a 4)
+              (match (Bytes.slice (Bytes.of #list(1 2 3 4 5 6)) a 4)
                 ((Some outer)
                   (match (Bytes.slice outer 1 2)
                     ((Some inner) (match (Bytes.at inner 0) ((Some v) v) ((None u) -3)))
@@ -256,8 +256,8 @@
             (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
             (def (main (: s Int64))
               (do
-                (def rope (Bytes.concat (pick s (Bytes.of (list 10 20 30)) (Bytes.of (list 99)))
-                                        (pick s (Bytes.of (list 40 50 60 70)) (Bytes.of (list 99)))))
+                (def rope (Bytes.concat (pick s (Bytes.of #list(10 20 30)) (Bytes.of #list(99)))
+                                        (pick s (Bytes.of #list(40 50 60 70)) (Bytes.of #list(99)))))
                 (match (Bytes.slice rope 1 5)
                   ((Some outer)
                     (match (Bytes.slice outer 1 3)
@@ -283,13 +283,13 @@
             (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
             (def (main (: s Int64))
               (do
-                (def rope (Bytes.concat (pick s (Bytes.of (list 10 20 30)) (Bytes.of (list 99)))
-                                        (pick s (Bytes.of (list 40 50 60 70)) (Bytes.of (list 99)))))
+                (def rope (Bytes.concat (pick s (Bytes.of #list(10 20 30)) (Bytes.of #list(99)))
+                                        (pick s (Bytes.of #list(40 50 60 70)) (Bytes.of #list(99)))))
                 (def inner (match (Bytes.slice rope 1 5)
-                             ((Some outer) (match (Bytes.slice outer 1 3) ((Some i) i) ((None _u) (Bytes.of (list)))))
-                             ((None _u) (Bytes.of (list)))))
-                (+ (* 10 (if (= inner (Bytes.of (list 30 40 50))) 1 0))
-                   (match (Map.lookup (Map.insert Map.empty (Bytes.of (list 30 40 50)) 7) inner)
+                             ((Some outer) (match (Bytes.slice outer 1 3) ((Some i) i) ((None _u) (Bytes.of #list()))))
+                             ((None _u) (Bytes.of #list()))))
+                (+ (* 10 (if (= inner (Bytes.of #list(30 40 50))) 1 0))
+                   (match (Map.lookup (Map.insert Map.empty (Bytes.of #list(30 40 50)) 7) inner)
                      ((Some v) v) ((None _u) -1)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 17 Int64))
@@ -303,9 +303,9 @@
            byte) or shift the s2 window.")
   (input  (do
             (def (main (: a Int64))
-              (match (Bytes.slice (Bytes.of (list 1 2 3 4)) a 2)
+              (match (Bytes.slice (Bytes.of #list(1 2 3 4)) a 2)
                 ((Some s1)
-                  (match (Bytes.slice (Bytes.of (list 5 6 7 8)) 2 2)
+                  (match (Bytes.slice (Bytes.of #list(5 6 7 8)) 2 2)
                     ((Some s2)
                       (match (Bytes.at (Bytes.concat s1 s2) 2) ((Some v) v) ((None u) -3)))
                     ((None u) -2)))
@@ -322,7 +322,7 @@
   (input  (do
             (def (first-byte (: b Bytes)) (match (Bytes.at b 0) ((Some v) v) ((None u) -1)))
             (def (main (: a Int64))
-              (match (Bytes.slice (Bytes.of (list 10 20 30 40)) a 2)
+              (match (Bytes.slice (Bytes.of #list(10 20 30 40)) a 2)
                 ((Some s) (first-byte s))
                 ((None u) -2)))
             (export main)))
@@ -346,7 +346,7 @@
            respect.")
   (input  (do
             (def (main (: a Int64))
-              (let ((parent (Bytes.concat (Bytes.of (list 10 20)) (Bytes.of (list 30 40)))))
+              (let ((parent (Bytes.concat (Bytes.of #list(10 20)) (Bytes.of #list(30 40)))))
                 (match (Bytes.slice parent a 2)
                   ((Some s) (match (Bytes.at s 1) ((Some v) v) ((None u) -3)))
                   ((None u) -1))))
@@ -362,7 +362,7 @@
            (or double-freed on the second view's drop) would corrupt one read.")
   (input  (do
             (def (main (: a Int64))
-              (let ((parent (Bytes.of (list 1 2 3 4 5 6))))
+              (let ((parent (Bytes.of #list(1 2 3 4 5 6))))
                 (match (Bytes.slice parent a 2)
                   ((Some s1)
                     (match (Bytes.slice parent (+ a 2) 2)
@@ -391,7 +391,7 @@
            fully balances (0), unlike the both-open shape's residual 2.")
   (input  (do
             (def (main (: n Int64))
-              (let ((b (Bytes.of (list 10 20 30 40 50 60))))
+              (let ((b (Bytes.of #list(10 20 30 40 50 60))))
                 (match (Bytes.slice b 0 3)
                   ((Some v1)
                     (+ (match (Bytes.slice b 2 4)
@@ -414,7 +414,7 @@
            inner read 20; n=0: 20+10=30; n=3: 20+40=60; heap fully balances.")
   (input  (do
             (def (main (: n Int64))
-              (let ((b (Bytes.of (list 10 20 30 40 50 60))))
+              (let ((b (Bytes.of #list(10 20 30 40 50 60))))
                 (match (Bytes.slice b 0 4)
                   ((Some w)
                     (+ (match (Bytes.slice w 1 3)
@@ -439,7 +439,7 @@
            the heap fully balances.")
   (input  (do
             (def (main (: n Int64))
-              (let ((b (Bytes.of (list 10 20 30 40 50 60))))
+              (let ((b (Bytes.of #list(10 20 30 40 50 60))))
                 (match (Bytes.slice b 0 4)
                   ((Some w)
                     (+ (match (Bytes.at (Option.expect (Bytes.slice w 1 2) "m") 0)
@@ -465,7 +465,7 @@
                 (+ (match (Bytes.at (Option.expect (Bytes.slice b 1 2) "m") 0) ((Some v) v) ((None u) -4))
                    (go b (- i 1)))))
             (def (main (: n Int64))
-              (let ((p (Bytes.of (list 1 2 3))))
+              (let ((p (Bytes.of #list(1 2 3))))
                 (+ (go p n) (match (Bytes.at p 0) ((Some v) v) ((None u) -9)))))
             (export main)))
   (call   main (: 1000 Int64))
@@ -480,10 +480,10 @@
            scope exit (rather than at last-reference) would hand the caller a dangling view.")
   (input  (do
             (def (mk-slice (: a Int64))
-              (let ((parent (Bytes.of (list 10 20 30 40))))
+              (let ((parent (Bytes.of #list(10 20 30 40))))
                 (match (Bytes.slice parent a 2)
                   ((Some s) s)
-                  ((None u) (Bytes.of (list))))))
+                  ((None u) (Bytes.of #list())))))
             (def (main (: a Int64))
               (+ (* 100 (Bytes.len (mk-slice a)))
                  (match (Bytes.at (mk-slice a) 0) ((Some v) v) ((None u) -1))))
@@ -514,7 +514,7 @@
            view would drop this to 0 (or trip `assert_node_live`), so known-leak-1 still guards the count>1 view.")
   (input  (do
             (def (mk-slice (: a Int64))
-              (let ((parent (Bytes.of (list 10 20 30 40))))
+              (let ((parent (Bytes.of #list(10 20 30 40))))
                 (Option.expect (Bytes.slice parent a 2) "in bounds")))
             (def (main (: a Int64))
               (let ((v (mk-slice a)))
@@ -540,8 +540,8 @@
            the owned rope dropped after the borrowing at. Value 10; a leaked leaf would show live cells.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc Bytes))
-              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of (list 10)))) acc))
-            (def (main) (Option.expect (Bytes.at (build 0 3 (Bytes.of (list))) 1) "v"))
+              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of #list(10)))) acc))
+            (def (main) (Option.expect (Bytes.at (build 0 3 (Bytes.of #list())) 1) "v"))
             (export main)))
   (call   main) (output (: 10 Int64))
   (live-objects 0))
@@ -551,8 +551,8 @@
            `bs` twice — the at must not free it under the still-live binding (else double-free). 10 + 3 = 13.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc Bytes))
-              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of (list 10)))) acc))
-            (def (main) (let ((bs (build 0 3 (Bytes.of (list)))))
+              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of #list(10)))) acc))
+            (def (main) (let ((bs (build 0 3 (Bytes.of #list()))))
                           (+ (Option.expect (Bytes.at bs 1) "v") (Bytes.len bs))))
             (export main)))
   (call   main) (output (: 13 Int64))
@@ -563,9 +563,9 @@
            [20,30,10]; `(Bytes.at that 1)` = 30, the owned slice dropped after the borrow. Value 30.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc Bytes))
-              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of (list 10 20 30)))) acc))
+              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of #list(10 20 30)))) acc))
             (def (main) (Option.expect
-                          (Bytes.at (Option.expect (Bytes.slice (build 0 3 (Bytes.of (list))) 1 3) "s") 1) "v"))
+                          (Bytes.at (Option.expect (Bytes.slice (build 0 3 (Bytes.of #list())) 1 3) "s") 1) "v"))
             (export main)))
   (call   main) (output (: 30 Int64))
   (live-objects 0))
@@ -575,10 +575,10 @@
            slice leaf would OOM/drift; a double-free would trap. Sum = 150000.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc Bytes))
-              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of (list 10 20 30)))) acc))
+              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of #list(10 20 30)))) acc))
             (def (drive (: j Int64) (: m Int64) (: tot Int64))
               (if (< j m) (drive (+ j 1) m (+ tot (Option.expect
-                  (Bytes.at (Option.expect (Bytes.slice (build 0 3 (Bytes.of (list))) 1 3) "s") 1) "v"))) tot))
+                  (Bytes.at (Option.expect (Bytes.slice (build 0 3 (Bytes.of #list())) 1 3) "s") 1) "v"))) tot))
             (def (main) (drive 0 5000 0))
             (export main)))
   (call   main) (output (: 150000 Int64))
@@ -589,8 +589,8 @@
            fresh leaf; `(Bytes.at that 1)` = 20, the owned compact dropped after the borrow. Value 20.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc Bytes))
-              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of (list 10 20)))) acc))
-            (def (main) (Option.expect (Bytes.at (Bytes.compact (build 0 3 (Bytes.of (list)))) 1) "v"))
+              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of #list(10 20)))) acc))
+            (def (main) (Option.expect (Bytes.at (Bytes.compact (build 0 3 (Bytes.of #list()))) 1) "v"))
             (export main)))
   (call   main) (output (: 20 Int64))
   (live-objects 0))
@@ -612,10 +612,10 @@
            leaked leaf per call would OOM/drift. Sum = 100000.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc Bytes))
-              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of (list 10 20)))) acc))
+              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of #list(10 20)))) acc))
             (def (drive (: j Int64) (: m Int64) (: tot Int64))
               (if (< j m) (drive (+ j 1) m (+ tot (Option.expect
-                  (Bytes.at (Bytes.compact (build 0 3 (Bytes.of (list)))) 1) "v"))) tot))
+                  (Bytes.at (Bytes.compact (build 0 3 (Bytes.of #list()))) 1) "v"))) tot))
             (def (main) (drive 0 5000 0))
             (export main)))
   (call   main) (output (: 100000 Int64))
@@ -628,7 +628,7 @@
            the view must present its window as the decoder's whole input).")
   (input  (do
             (def (main (: a Int64))
-              (match (Bytes.slice (Bytes.of (list 120 97 98 121)) a 2)
+              (match (Bytes.slice (Bytes.of #list(120 97 98 121)) a 2)
                 ((Some s) (match (String.from-bytes s)
                             ((Some str) (String.byte-len str))
                             ((None u) -3)))
@@ -642,31 +642,31 @@
            = Some `(Bytes.of (list 2 3))` — reads the LOGICAL bytes in order, independent of how the
            sequence was assembled. Pins that a slice over a deferred-concatenation representation crosses
            leaf boundaries correctly, seeing bytes not physical layout (#Sharing Is Not Observable).")
-  (input  (= (Option.expect (Bytes.slice (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) 1 2)
+  (input  (= (Option.expect (Bytes.slice (Bytes.concat (Bytes.of #list(1 2)) (Bytes.of #list(3 4))) 1 2)
                      "slice is in bounds")
-             (Bytes.of (list 2 3))))
+             (Bytes.of #list(2 3))))
   (output (: true Bool)))
 
 (case "a zero-length slice is the empty byte sequence"
   (doc    "`(Bytes.slice b 2 0)` yields Some of the empty byte sequence — equal to `(Bytes.of (list))`.
            Pins the degenerate slice: taking zero bytes at an in-bounds start yields the identity of
            concatenation, present as Some, not None.")
-  (input  (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 0) "slice is in bounds")
-             (Bytes.of (list))))
+  (input  (= (Option.expect (Bytes.slice (Bytes.of #list(10 20 30 40)) 2 0) "slice is in bounds")
+             (Bytes.of #list())))
   (output (: true Bool)))
 
 (case "slicing past the end of a byte sequence yields None"
   (doc    "`(Bytes.slice b 2 3)` on a 4-byte sequence asks for 3 bytes starting at index 2 — running one
            byte past the end — so it MUST yield None rather than read beyond the sequence or return a
            short result (fallible, on the same footing as Bytes.at out-of-bounds).")
-  (input  (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 3))
+  (input  (Bytes.slice (Bytes.of #list(10 20 30 40)) 2 3))
   (output (: (None unit) (Option Bytes))))
 
 (case "slicing with a negative start yields None"
   (doc    "`(Bytes.slice b -1 2)` uses a start below 0 — no byte at position -1 — so it MUST yield None,
            NOT cast the negative start to a large unsigned offset. The negative-index companion of the
            past-the-end case, mirroring the Bytes.at negative-index None.")
-  (input  (Bytes.slice (Bytes.of (list 10 20 30 40)) -1 2))
+  (input  (Bytes.slice (Bytes.of #list(10 20 30 40)) -1 2))
   (output (: (None unit) (Option Bytes))))
 
 ; The slice bounds above are compile-time constants (the fold decides in/out of bounds statically). A
@@ -689,7 +689,7 @@
            decided at run time; the erased bounds arithmetic is a checked signed compare.")
   (input  (do
             (def (sl (: start Int64) (: len Int64))
-              (match (Bytes.slice (Bytes.of (list 10 20 30 40 50)) start len)
+              (match (Bytes.slice (Bytes.of #list(10 20 30 40 50)) start len)
                 ((Option.Some s) (Bytes.len s))
                 ((Option.None) -1)))
             (def (main (: start Int64) (: len Int64)) (sl start len))
@@ -725,10 +725,10 @@
   (input  (do
             (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
             (def (rope (: s Int64))
-              (Bytes.concat (pick s (Bytes.of (list 10 20)) (Bytes.of (list 99 99)))
-                            (pick s (Bytes.of (list 30 40)) (Bytes.of (list 99 99)))))
+              (Bytes.concat (pick s (Bytes.of #list(10 20)) (Bytes.of #list(99 99)))
+                            (pick s (Bytes.of #list(30 40)) (Bytes.of #list(99 99)))))
             (def (main (: s Int64))
-              (tuple
+              #tuple(
                 (match (Bytes.slice (rope s) 1 2) ((Option.Some x) (Bytes.len x))                 ((Option.None) -1))
                 (match (Bytes.slice (rope s) 1 2) ((Option.Some x) (Option.expect (Bytes.at x 0) "0")) ((Option.None) -1))
                 (match (Bytes.slice (rope s) 1 2) ((Option.Some x) (Option.expect (Bytes.at x 1) "1")) ((Option.None) -1))
@@ -751,15 +751,15 @@
            materializes the slice into independent storage, changing resource use but not the value.
            Pins that compact is value-preserving — equal by bytes in order to the un-compacted slice
            (memory-and-resource-model.md #Retained Storage Is What A Value's Representation Holds Live).")
-  (input  (= (Bytes.compact (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds"))
-             (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")))
+  (input  (= (Bytes.compact (Option.expect (Bytes.slice (Bytes.of #list(10 20 30 40)) 1 2) "slice is in bounds"))
+             (Option.expect (Bytes.slice (Bytes.of #list(10 20 30 40)) 1 2) "slice is in bounds")))
   (output (: true Bool)))
 
 (case "compacting is the identity on value for a whole byte sequence"
   (doc    "`(Bytes.compact b)` = `b`: compacting a sequence that already owns its storage changes
            nothing observable. Pins that compact is always value-preserving, whether or not the operand
            shares storage — it never alters the bytes, only (possibly) the storage backing them.")
-  (input  (= (Bytes.compact (Bytes.of (list 1 2 3))) (Bytes.of (list 1 2 3))))
+  (input  (= (Bytes.compact (Bytes.of #list(1 2 3))) (Bytes.of #list(1 2 3))))
   (output (: true Bool)))
 
 ; `Bytes.compact` returns the SAME handle it's given (it flattens the operand rope in place), so a
@@ -779,12 +779,12 @@
            true)=10) at BOTH n=2 and n=10; the two lengths exercise the small-rope and larger-rope paths.")
   (input  (do
             (def (build-rope (: n Int64) (: acc Bytes))
-              (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of (list (UInt8.wrap 65))))) acc))
+              (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of #list((UInt8.wrap 65))))) acc))
             (def (main (: n Int64))
-              (let ((rope (build-rope n (Bytes.of (list)))))
+              (let ((rope (build-rope n (Bytes.of #list()))))
                 (let ((flat (Bytes.compact rope)))
                   (+ (if (= rope flat) 1 0)
-                     (* 10 (if (< rope (Bytes.concat flat (Bytes.of (list (UInt8.wrap 66))))) 1 0))))))
+                     (* 10 (if (< rope (Bytes.concat flat (Bytes.of #list((UInt8.wrap 66))))) 1 0))))))
             (export main)))
   (call   main (: 10 Int64)) (output (: 11 Int64))
   (call   main (: 2 Int64)) (output (: 11 Int64)))
@@ -801,9 +801,9 @@
            borrow-then-len read.")
   (input (do
     (def (build-rope (: n Int64) (: acc Bytes))
-      (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of (list (UInt8.wrap 65))))) acc))
+      (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of #list((UInt8.wrap 65))))) acc))
     (def (main (: n Int64))
-      (let ((rope (build-rope n (Bytes.of (list)))))
+      (let ((rope (build-rope n (Bytes.of #list()))))
         (let ((flat (Bytes.compact rope)))
           (+ (if (= rope flat) 1 0) (* 100 (Bytes.len flat))))))
     (export main)))
@@ -815,12 +815,12 @@
            consuming concat of the alias, minus the rope-on-left compare that forced the freed re-walk.")
   (input (do
     (def (build-rope (: n Int64) (: acc Bytes))
-      (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of (list (UInt8.wrap 65))))) acc))
+      (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of #list((UInt8.wrap 65))))) acc))
     (def (main (: n Int64))
-      (let ((rope (build-rope n (Bytes.of (list)))))
+      (let ((rope (build-rope n (Bytes.of #list()))))
         (let ((flat (Bytes.compact rope)))
           (+ (if (= rope flat) 1 0)
-             (* 10 (Bytes.len (Bytes.concat flat (Bytes.of (list (UInt8.wrap 66))))))))))
+             (* 10 (Bytes.len (Bytes.concat flat (Bytes.of #list((UInt8.wrap 66))))))))))
     (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64)))
 (case "compacting then TWO order-compares (no equality) is safe (adv-66 perimeter)"
@@ -830,12 +830,12 @@
            consume-classification doesn't over-free a binding used across two independent compares.")
   (input (do
     (def (build-rope (: n Int64) (: acc Bytes))
-      (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of (list (UInt8.wrap 65))))) acc))
+      (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of #list((UInt8.wrap 65))))) acc))
     (def (main (: n Int64))
-      (let ((rope (build-rope n (Bytes.of (list)))))
+      (let ((rope (build-rope n (Bytes.of #list()))))
         (let ((flat (Bytes.compact rope)))
-          (+ (if (< rope (Bytes.concat flat (Bytes.of (list (UInt8.wrap 66))))) 1 0)
-             (* 10 (if (< flat (Bytes.concat rope (Bytes.of (list (UInt8.wrap 66))))) 1 0))))))
+          (+ (if (< rope (Bytes.concat flat (Bytes.of #list((UInt8.wrap 66))))) 1 0)
+             (* 10 (if (< flat (Bytes.concat rope (Bytes.of #list((UInt8.wrap 66))))) 1 0))))))
     (export main)))
   (call main (: 1 Int64)) (output (: 11 Int64)))
 
@@ -856,7 +856,7 @@
            ASCII `A B C`, so the byte-string display shows them literally. Pins that Bytes is a runtime
            value, not only a compile-time literal — the compiler's output type flowing at run time.")
   (input  (do
-            (def (mk n) (Bytes.of (list n 66 67)))
+            (def (mk n) (Bytes.of #list(n 66 67)))
             (def (main)  (mk 65)) (export main)))
   (output (: b"ABC" Bytes)))
 
@@ -869,7 +869,7 @@
            explicit total `wrap`, not a runtime range trap — there is no out-of-range byte to trap on,
            because a UInt8 is in range by construction. `Bytes.len` reads the result to a scalar (1).")
   (input  (do
-            (def (mk n) (Bytes.len (Bytes.of (list (UInt8.wrap n)))))
+            (def (mk n) (Bytes.len (Bytes.of #list((UInt8.wrap n)))))
             (def (main)  (mk 258)) (export main)))
   (output (: 1 Int64)))
 
@@ -878,7 +878,7 @@
            to a SCALAR count via the runtime's bytes-len, the fold-to-scalar half of the idiom (like a
            recursive list sum). `(Bytes.len (Bytes.of (list n 2 3)))` = 3 for any `n`.")
   (input  (do
-            (def (sz n) (Bytes.len (Bytes.of (list n 2 3))))
+            (def (sz n) (Bytes.len (Bytes.of #list(n 2 3))))
             (def (main)  (sz 9)) (export main)))
   (output (: 3 Int64)))
 
@@ -891,7 +891,7 @@
            for `a=7 b=8` — bytes 7 (BEL), 8 (backspace), 9 (tab) render as escapes (9 is the `\\t` special
            escape). Pins runtime concatenation — how a compiler joins the byte fragments of its output.")
   (input  (do
-            (def (join a b) (Bytes.concat (Bytes.of (list a)) (Bytes.of (list b 9))))
+            (def (join a b) (Bytes.concat (Bytes.of #list(a)) (Bytes.of #list(b 9))))
             (def (main)      (join 7 8)) (export main)))
   (output (: b"\x07\x08\t" Bytes)))
 
@@ -908,7 +908,7 @@
            this. MUST be 3.")
   (input  (do
             (def (main (: a UInt8) (: b UInt8))
-              (Bytes.len (Bytes.of (List.concat (list a b) (list a)))))
+              (Bytes.len (Bytes.of (List.concat #list(a b) #list(a)))))
             (export main)))
   (call   main (: 7 UInt8) (: 9 UInt8))
   (output (: 3 Int64))
@@ -923,8 +923,8 @@
            read and yields -1.)")
   (input  (do
             (def (main (: a UInt8) (: b UInt8))
-              (+ (* 100 (Bytes.len (Bytes.of (List.concat (list a b) (list a)))))
-                 (match (Bytes.at (Bytes.of (List.concat (list a b) (list a))) 1)
+              (+ (* 100 (Bytes.len (Bytes.of (List.concat #list(a b) #list(a)))))
+                 (match (Bytes.at (Bytes.of (List.concat #list(a b) #list(a))) 1)
                    ((Some v) v)
                    ((None _u) -1))))
             (export main)))
@@ -941,8 +941,8 @@
            a recursion whose depth is driven by the program being compiled.")
   (input  (do
             (def (rep n) (if (< n 1)
-                            (Bytes.of (list))
-                            (Bytes.concat (Bytes.of (list 88)) (rep (- n 1)))))
+                            (Bytes.of #list())
+                            (Bytes.concat (Bytes.of #list(88)) (rep (- n 1)))))
             (def (main)  (rep 4)) (export main)))
   (output (: b"XXXX" Bytes))
   (live-objects known-leak 1))
@@ -960,12 +960,12 @@
            it out of the const-fold, exercising the real heap rope + iterative flatten.")
   (input  (do
             (def (rep (: i Int64) (: n Int64) (: acc Bytes))
-              (if (< i n) (rep (+ i 1) n (Bytes.concat (Bytes.of (list (UInt8.wrap (% i 256)))) acc)) acc))
+              (if (< i n) (rep (+ i 1) n (Bytes.concat (Bytes.of #list((UInt8.wrap (% i 256)))) acc)) acc))
             (def (sum (: i Int64) (: b Bytes) (: acc Int64))
               (if (< i 0) acc
                 (sum (- i 1) b (+ acc (match (Bytes.at b i) ((Some v) v) ((None u) -1000000))))))
             (def (main (: n Int64))
-              (let ((r (rep 0 n (Bytes.of (list)))))
+              (let ((r (rep 0 n (Bytes.of #list()))))
                 (sum (- (Bytes.len r) 1) r 0)))
             (export main)))
   (call   main (: 2000 Int64)) (output (: 250008 Int64))
@@ -988,8 +988,8 @@
   (input  (do
             (def (uleb n)
               (if (< n 128)
-                  (Bytes.of (list (UInt8.wrap n)))
-                  (Bytes.concat (Bytes.of (list (UInt8.wrap (| (& n 127) 128)))) (uleb (>> n 7)))))
+                  (Bytes.of #list((UInt8.wrap n)))
+                  (Bytes.concat (Bytes.of #list((UInt8.wrap (| (& n 127) 128)))) (uleb (>> n 7)))))
             (def (main) (uleb 624485)) (export main)))
   (output (: b"\xe5\x8e&" Bytes))
   (live-objects known-leak 1))
@@ -1002,8 +1002,8 @@
   (input  (do
             (def (uleb n)
               (if (< n 128)
-                  (Bytes.of (list (UInt8.wrap n)))
-                  (Bytes.concat (Bytes.of (list (UInt8.wrap (| (& n 127) 128)))) (uleb (>> n 7)))))
+                  (Bytes.of #list((UInt8.wrap n)))
+                  (Bytes.concat (Bytes.of #list((UInt8.wrap (| (& n 127) 128)))) (uleb (>> n 7)))))
             (def (main) (uleb 100)) (export main)))
   (output (: b"d" Bytes))
   (live-objects known-leak 1))
@@ -1025,10 +1025,10 @@
             (type Expr (Lit Int64) (Neg Expr) (Add (Tuple Expr Expr)))
             (def (emit e)
               (match e
-                ((Expr.Lit n)           (Bytes.of (list 0x42)))
-                ((Expr.Neg x)           (Bytes.concat (emit x) (Bytes.of (list 0x7C))))
-                ((Expr.Add (tuple a b)) (Bytes.concat (emit a) (Bytes.concat (emit b) (Bytes.of (list 0x6A)))))))
-            (def (main) (emit (Expr.Add (tuple (Expr.Lit 1) (Expr.Neg (Expr.Lit 2)))))) (export main)))
+                ((Expr.Lit n)           (Bytes.of #list(0x42)))
+                ((Expr.Neg x)           (Bytes.concat (emit x) (Bytes.of #list(0x7C))))
+                ((Expr.Add #tuple(a b)) (Bytes.concat (emit a) (Bytes.concat (emit b) (Bytes.of #list(0x6A)))))))
+            (def (main) (emit (Expr.Add #tuple((Expr.Lit 1) (Expr.Neg (Expr.Lit 2)))))) (export main)))
   (output (: b"BB|j" Bytes))
   (live-objects known-leak 6))
 
@@ -1049,10 +1049,10 @@
             (type BL BNil (BCons (Tuple Bytes BL)))
             (def (build n) (if (< n 1)
                                (BL.BNil ())
-                               (BL.BCons (tuple (Bytes.of (list (UInt8.wrap (+ 64 n)))) (build (- n 1))))))
+                               (BL.BCons #tuple((Bytes.of #list((UInt8.wrap (+ 64 n)))) (build (- n 1))))))
             (def (cat-all xs) (match xs
-                                ((BL.BNil _)            (Bytes.of (list)))
-                                ((BL.BCons (tuple h t)) (Bytes.concat h (cat-all t)))))
+                                ((BL.BNil _)            (Bytes.of #list()))
+                                ((BL.BCons #tuple(h t)) (Bytes.concat h (cat-all t)))))
             (def (main) (cat-all (build 3))) (export main)))
   (output (: b"CBA" Bytes))
   (live-objects known-leak 11))
@@ -1074,11 +1074,11 @@
            string-rope content case (13-strings).")
   (input  (do
             (def (build (: n Int64) (: acc Bytes))
-              (if (= n 0) acc (build (- n 1) (Bytes.concat acc (Bytes.of (list 10 20))))))
+              (if (= n 0) acc (build (- n 1) (Bytes.concat acc (Bytes.of #list(10 20))))))
             (def (at (: b Bytes) (: i Int64)) (match (Bytes.at b i) ((Some v) v) ((None _u) -1)))
             (def (main (: n Int64))
-              (let ((r (build 20 (Bytes.of (list)))))
-                (tuple
+              (let ((r (build 20 (Bytes.of #list()))))
+                #tuple(
                   (Bytes.len r)
                   (at r 0) (at r 1) (at r 38) (at r 39)
                   (if (= r (Bytes.compact r)) 1 0)
@@ -1103,7 +1103,7 @@
            Bytes 20, 30 are non-printable, so the byte-string display escapes them. Pins the fallible
            slice on a runtime value — how a compiler reads a sub-range of its input bytes without copying.")
   (input  (do
-            (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
+            (def (sl b s n) (Bytes.slice (Bytes.of #list(b 20 30 40)) s n))
             (def (main)     (sl 10 1 2)) (export main)))
   (output (: (Some b"\x14\x1e") (Option Bytes))))
 
@@ -1113,7 +1113,7 @@
            returning a short result. The runtime companion of the const past-the-end case, pinning that
            the bound is checked on the value at run time.")
   (input  (do
-            (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
+            (def (sl b s n) (Bytes.slice (Bytes.of #list(b 20 30 40)) s n))
             (def (main)     (sl 10 2 3)) (export main)))
   (output (: (None unit) (Option Bytes))))
 
@@ -1123,7 +1123,7 @@
            companion of the const negative-start case: the check is on the signed value, so a runtime
            negative start is caught before it can wrap.")
   (input  (do
-            (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
+            (def (sl b s n) (Bytes.slice (Bytes.of #list(b 20 30 40)) s n))
             (def (main)     (sl 10 -1 2)) (export main)))
   (output (: (None unit) (Option Bytes))))
 
@@ -1146,7 +1146,7 @@
            predicate must be overflow-safe: a sum that would overflow is out of range. Expected None (-1).")
   (input  (do
             (def (main (: s Int64) (: l Int64))
-              (match (Bytes.slice (Bytes.of (list 10 20 30)) s l)
+              (match (Bytes.slice (Bytes.of #list(10 20 30)) s l)
                 ((Some b) (Bytes.len b))
                 ((None _) -1)))
             (export main)))
@@ -1162,7 +1162,7 @@
            soundness violation. Pins that an out-of-range start, however large, declines to None (-1).")
   (input  (do
             (def (main (: s Int64) (: l Int64))
-              (match (Bytes.slice (Bytes.of (list 10 20 30)) s l)
+              (match (Bytes.slice (Bytes.of #list(10 20 30)) s l)
                 ((Some b) (Bytes.len b))
                 ((None _) -1)))
             (export main)))
@@ -1180,7 +1180,7 @@
            (-1); the outer slice is in range so the -2 arm is not taken.")
   (input  (do
             (def (main (: ss Int64) (: sl Int64))
-              (match (Bytes.slice (Bytes.of (list 10 20 30 40 50)) 1 3)
+              (match (Bytes.slice (Bytes.of #list(10 20 30 40 50)) 1 3)
                 ((Some s1)
                   (match (Bytes.slice s1 ss sl)
                     ((Some s2) (Bytes.len s2))
@@ -1198,7 +1198,7 @@
            that compact is value-preserving on a runtime value — how a compiler keeps a small slice of a
            large input while letting the input be reclaimed. `(mk 1)` = `b\"\\x01\\x02\\x03\"`.")
   (input  (do
-            (def (mk n) (Bytes.compact (Bytes.of (list n 2 3))))
+            (def (mk n) (Bytes.compact (Bytes.of #list(n 2 3))))
             (def (main) (mk 1)) (export main)))
   (output (: b"\x01\x02\x03" Bytes)))
 
@@ -1215,10 +1215,10 @@
   (input  (do
             (def (pickb (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
             (def (main (: s Int64))
-              (let ((rope (Bytes.concat (pickb s (Bytes.of (list 10 20)) (Bytes.of (list 99 99)))
-                                        (pickb s (Bytes.of (list 30 40)) (Bytes.of (list 99 99))))))
+              (let ((rope (Bytes.concat (pickb s (Bytes.of #list(10 20)) (Bytes.of #list(99 99)))
+                                        (pickb s (Bytes.of #list(30 40)) (Bytes.of #list(99 99))))))
                 (let ((c (Bytes.compact rope)))
-                  (tuple (if (= c rope) 1 0)
+                  #tuple((if (= c rope) 1 0)
                          (Bytes.len c)
                          (match (Bytes.at c 2) ((Some x) x) ((None _u) -1))))))
             (export main)))
@@ -1251,7 +1251,7 @@
               (hex-go bs 0 (Bytes.len bs) ""))
             (def (main (: n UInt8))
               (do
-                (def bs (Bytes.of (list 0 15 n 171 255)))
+                (def bs (Bytes.of #list(0 15 n 171 255)))
                 (def s (hex bs))
                 (+ (* (String.byte-len s) 100)
                    (if (= s (String.concat "000f" (String.concat (if (= (Bytes.at bs 2) (Some 16)) "10" "3c") "abff"))) 1 0))))
@@ -1314,7 +1314,7 @@
            `Bytes.at` Option matches like any `Option<Int64>`.")
   (input  (do
             (def (at b i) (match (Bytes.at b i) ((Some x) x) (None -1)))
-            (def (main)   (at (Bytes.of (list 10 20 30)) 1)) (export main)))
+            (def (main)   (at (Bytes.of #list(10 20 30)) 1)) (export main)))
   (output (: 20 Int64)))
 
 (case "matching a runtime Bytes.at Option takes the None arm past the end"
@@ -1323,7 +1323,7 @@
            are reachable and unify — the terminating branch of the byte-walk.")
   (input  (do
             (def (at b i) (match (Bytes.at b i) ((Some x) x) (None -1)))
-            (def (main)   (at (Bytes.of (list 10 20 30)) 9)) (export main)))
+            (def (main)   (at (Bytes.of #list(10 20 30)) 9)) (export main)))
   (output (: -1 Int64)))
 
 (case "a runtime-index Bytes.at at a NEGATIVE index is None, not an unsigned wrap"
@@ -1336,7 +1336,7 @@
            runtime positive-past-end case — this pins the RUNTIME negative index, the byte analogue of the
            Bytes.slice negative-start signedness pin.")
   (input  (do
-            (def (main (: i Int64)) (match (Bytes.at (Bytes.of (list 10 20 30)) i) ((Some x) x) (None -1)))
+            (def (main (: i Int64)) (match (Bytes.at (Bytes.of #list(10 20 30)) i) ((Some x) x) (None -1)))
             (export main)))
   (call   main (: -1 Int64)) (output (: -1 Int64))
   (call   main (: -9223372036854775808 Int64)) (output (: -1 Int64))
@@ -1352,7 +1352,7 @@
            element must take the runtime read). A constant-element read (`(Bytes.at (Bytes.of (list 5))
            0)`) folds and was always fine; this pins the runtime-stored byte is widened on read.")
   (input  (do
-            (def (main (: n UInt8)) (match (Bytes.at (Bytes.of (list n)) 0) ((Some x) x) ((None _) -1)))
+            (def (main (: n UInt8)) (match (Bytes.at (Bytes.of #list(n)) 0) ((Some x) x) ((None _) -1)))
             (export main)))
   (call   main (: 5 UInt8))
   (output (: 5 Int64)))
@@ -1368,7 +1368,7 @@
               (match (Bytes.at b i)
                 ((Some x) (go b (+ i 1) (+ acc x)))
                 (None acc)))
-            (def (main) (go (Bytes.of (list 10 20 30)) 0 0)) (export main)))
+            (def (main) (go (Bytes.of #list(10 20 30)) 0 0)) (export main)))
   (output (: 60 Int64))
   (live-objects known-leak 4))
 
@@ -1386,7 +1386,7 @@
             (def (place k) (if (< k 1) 1 (* 256 (place (- k 1)))))
             (def (be (: b Bytes) i n)
               (if (< n 1) 0 (+ (* (byte-at b i) (place (- n 1))) (be b (+ i 1) (- n 1)))))
-            (def (main) (be (Bytes.of (list 1 2)) 0 2)) (export main)))
+            (def (main) (be (Bytes.of #list(1 2)) 0 2)) (export main)))
   (output (: 258 Int64))
   (live-objects 0))
 
@@ -1411,8 +1411,8 @@
                                  (+ (* (byte-at b i) (place (- n 1))) (be b (+ i 1) (- n 1)))))
             (def (place k)      (if (< k 1) 1 (* 256 (place (- k 1)))))
             (def (arg b i)      (if (< (info b i) 24) (info b i) (be b (+ i 1) 2)))
-            (def (main)         (tuple (major (Bytes.of (list 0x19 0x01 0x2C)) 0)
-                                       (arg   (Bytes.of (list 0x19 0x01 0x2C)) 0))) (export main)))
+            (def (main)         #tuple((major (Bytes.of #list(0x19 0x01 0x2C)) 0)
+                                       (arg   (Bytes.of #list(0x19 0x01 0x2C)) 0))) (export main)))
   (output (: (tuple 0 300) (Tuple Int64 Int64)))
   (live-objects known-leak 2))
 
@@ -1439,9 +1439,9 @@
               (if (= (cbor-major b i) 7)
                   (if (= (cbor-arg b i) 21) 1 0)
                   (cbor-arg b i))))
-            (def (main) (+ (dec (Bytes.of (list 0x29)) 0)
-                        (+ (dec (Bytes.of (list 0xF5)) 0)
-                           (dec (Bytes.of (list 0x0A)) 0)))) (export main)))
+            (def (main) (+ (dec (Bytes.of #list(0x29)) 0)
+                        (+ (dec (Bytes.of #list(0xF5)) 0)
+                           (dec (Bytes.of #list(0x0A)) 0)))) (export main)))
   (output (: 1 Int64)))
 
 (case "a CBOR simple value that is not a known boolean is classified as not-a-boolean"
@@ -1494,7 +1494,7 @@
                   (if (= (entry-byte b e j) (lit-byte lit j)) (neq-go b e lit (+ j 1) n) false)
                   true))
             (def (name-eq b e lit n) (if (= (entry-len b e) n) (neq-go b e lit 0 n) false))
-            (def (main) (if (name-eq (Bytes.of (list 0x62 0x2B 0x2B)) 0 b"+" 1) 1 0)) (export main)))
+            (def (main) (if (name-eq (Bytes.of #list(0x62 0x2B 0x2B)) 0 b"+" 1) 1 0)) (export main)))
   (output (: 0 Int64)))
 
 (case "a CBOR skip walks past a whole nested item to the next offset"
@@ -1524,7 +1524,7 @@
               (if (or (= (cbor-major b i) 3) (= (cbor-major b i) 2))
                   (+ (+ i (cbor-head-len b i)) (cbor-arg b i))
                   (+ i (cbor-head-len b i)))))
-            (def (main) (cbor-skip (Bytes.of (list 0x82 0x82 0x01 0x02 0x03)) 0)) (export main)))
+            (def (main) (cbor-skip (Bytes.of #list(0x82 0x82 0x01 0x02 0x03)) 0)) (export main)))
   (output (: 5 Int64))
   (live-objects 0))
 
@@ -1563,7 +1563,7 @@
                       (+ (ev b (child-off b i 1)) (ev b (child-off b i 2)))
                       (* (ev b (child-off b i 1)) (ev b (child-off b i 2))))
                   (cbor-arg b i)))
-            (def (main) (ev (Bytes.of (list 0x83 0x00 0x01 0x83 0x01 0x02 0x0B)) 0)) (export main)))
+            (def (main) (ev (Bytes.of #list(0x83 0x00 0x01 0x83 0x01 0x02 0x0B)) 0)) (export main)))
   (output (: 23 Int64))
   (live-objects 0))
 
@@ -1595,7 +1595,7 @@
             (def (elem b i k)    (skip-elems b (elem0 b i) k))
             (def (sum-elems b i k n) (if (< k n) (+ (cbor-arg b (elem b i k)) (sum-elems b i (+ k 1) n)) 0))
             (def (sum-array b i) (sum-elems b i 0 (cbor-arg b i)))
-            (def (main) (sum-array (Bytes.of (list 0x84 0x0A 0x14 0x18 0x1E 0x18 0x28)) 0)) (export main)))
+            (def (main) (sum-array (Bytes.of #list(0x84 0x0A 0x14 0x18 0x1E 0x18 0x28)) 0)) (export main)))
   (output (: 100 Int64))
   (live-objects 0))
 
@@ -1625,7 +1625,7 @@
               (if (= (cbor-major b i) 6)
                   (cbor-skip b (+ i (cbor-head-len b i)))
                   (+ i (cbor-head-len b i))))))
-            (def (main) (cbor-skip (Bytes.of (list 0xD8 0x27 0x01)) 0)) (export main)))
+            (def (main) (cbor-skip (Bytes.of #list(0xD8 0x27 0x01)) 0)) (export main)))
   (output (: 3 Int64))
   (live-objects 0))
 
@@ -1642,7 +1642,7 @@
            67))` (bytes 65 66 67 = ASCII `A B C`), so the literal and the explicit form are the same
            value (options/binary-syntax; the `#\"…\"`/`a.b` sugar pattern). Pins that the byte-string
            literal is reader sugar, not a distinct value form.")
-  (input  (= b"ABC" (Bytes.of (list 65 66 67))))
+  (input  (= b"ABC" (Bytes.of #list(65 66 67))))
   (output (: true Bool)))
 
 (case "a byte-string literal with escapes equals its explicit byte sequence"
@@ -1650,13 +1650,13 @@
            137 and `PNG` are the printable bytes 80 78 71, so the literal reads to the PNG magic
            prefix. Pins that `\\xNN` and printable-ASCII bytes read to the same values the explicit
            list names — the reader escape set is the inverse of the display escape set.")
-  (input  (= b"\x89PNG" (Bytes.of (list 137 80 78 71))))
+  (input  (= b"\x89PNG" (Bytes.of #list(137 80 78 71))))
   (output (: true Bool)))
 
 (case "an empty byte-string literal is the empty byte sequence"
   (doc    "`(= b\"\" (Bytes.of (list)))` is true: `b\"\"` reads to the zero-length byte sequence. Pins
            the degenerate literal, the byte-string spelling of `(Bytes.of (list))`.")
-  (input  (= b"" (Bytes.of (list))))
+  (input  (= b"" (Bytes.of #list())))
   (output (: true Bool)))
 
 (case "a byte sequence written as a literal renders back to the same literal"
@@ -1692,8 +1692,8 @@
   (input  (do (type W (Atom Int64) (Zero))
               (def (one (: b Bytes) (: pos Int64))
                 (if (= ((. Option expect) ((. Bytes at) b pos) "t") 5)
-                    (tuple ((. W Atom) ((. Option expect) ((. Bytes at) b pos) "v")) (+ pos 1))
-                    (tuple ((. W Atom) 99) (+ pos 1))))
+                    #tuple(((. W Atom) ((. Option expect) ((. Bytes at) b pos) "v")) (+ pos 1))
+                    #tuple(((. W Atom) 99) (+ pos 1))))
               (def (loop (: b Bytes) (: n Int64) (: pos Int64) (: last W))
                 (if (= n 0) last (let ((r (one b pos))) (loop b (- n 1) (. r 1) (. r 0)))))
               (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0)))
@@ -1717,9 +1717,9 @@
            nested-String map-key case (13-strings). Expected: 42.")
   (input  (do
             (def (rep (: b Bytes) (: n Int64))
-              (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+              (if (< n 1) b (rep (Bytes.concat b (Bytes.of #list(120))) (- n 1))))
             (def (main)
-              (match (Map.lookup (Map.insert Map.empty (tuple (rep (Bytes.of (list 104 105)) 3) 1) 42) (tuple (Bytes.of (list 104 105 120 120 120)) 1))
+              (match (Map.lookup (Map.insert Map.empty #tuple((rep (Bytes.of #list(104 105)) 3) 1) 42) #tuple((Bytes.of #list(104 105 120 120 120)) 1))
                 ((Some v) v)
                 ((None) (- 0 1))))
             (export main)))
@@ -1739,9 +1739,9 @@
            flat `Bytes.of [104,120]` — the nested Bytes leaf is compacted at the tuple construction, so the
            value-eq heap-walk sees identical bytes → true. Pins the NESTED-Bytes face of compound equality.")
   (input  (do
-            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
-            (def (eq (: a Bytes) (: c Bytes)) (= (tuple a 1) (tuple c 1)))
-            (def (main) (eq (rep (Bytes.of (list 104)) 1) (Bytes.of (list 104 120)))) (export main)))
+            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of #list(120))) (- n 1))))
+            (def (eq (: a Bytes) (: c Bytes)) (= #tuple(a 1) #tuple(c 1)))
+            (def (main) (eq (rep (Bytes.of #list(104)) 1) (Bytes.of #list(104 120)))) (export main)))
   (call   main)
   (output (: true Bool)))
 
@@ -1749,8 +1749,8 @@
   (doc    "The negative companion: distinct Bytes leaves in the tuple → false. Confirms the nested-Bytes
            compound walk is genuinely structural, not always-true.")
   (input  (do
-            (def (eq (: a Bytes) (: c Bytes)) (= (tuple a 1) (tuple c 1)))
-            (def (main) (eq (Bytes.of (list 104)) (Bytes.of (list 105)))) (export main)))
+            (def (eq (: a Bytes) (: c Bytes)) (= #tuple(a 1) #tuple(c 1)))
+            (def (main) (eq (Bytes.of #list(104)) (Bytes.of #list(105)))) (export main)))
   (call   main)
   (output (: false Bool)))
 
@@ -1761,8 +1761,8 @@
            hash identically to its flat twin, else it would never be found). `key_needs_compaction` now
            compacts a Bytes key.")
   (input  (do
-            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
-            (def (main) (Set.contains #set((Bytes.of (list 104 120))) (rep (Bytes.of (list 104)) 1))) (export main)))
+            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of #list(120))) (- n 1))))
+            (def (main) (Set.contains #set((Bytes.of #list(104 120))) (rep (Bytes.of #list(104)) 1))) (export main)))
   (call   main)
   (output (: true Bool)))
 
@@ -1772,8 +1772,8 @@
            to the flat key's slot → 42. Pins the Bytes map-KEY face (the direct-Bytes-key analogue of the
            nested-tuple-key case above).")
   (input  (do
-            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
-            (def (main) (Option.expect (Map.lookup (Map.insert Map.empty (Bytes.of (list 104 120)) 42) (rep (Bytes.of (list 104)) 1)) "found")) (export main)))
+            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of #list(120))) (- n 1))))
+            (def (main) (Option.expect (Map.lookup (Map.insert Map.empty (Bytes.of #list(104 120)) 42) (rep (Bytes.of #list(104)) 1)) "found")) (export main)))
   (call   main)
   (output (: 42 Int64)))
 
@@ -1793,10 +1793,10 @@
            missed it (a borrowed slice-view key hashed differently → wrong-value miss). `k = (rep [104] 1)` =
            the rope for `[104,120]`; lookup finds 42, and `k` survives for `Bytes.len` = 2 → 100*42 + 2 = 4202.")
   (input  (do
-            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of #list(120))) (- n 1))))
             (def (main)
-              (let ((k (rep (Bytes.of (list 104)) 1)))
-                (+ (* 100 (Option.expect (Map.lookup (Map.insert Map.empty (Bytes.of (list 104 120)) 42) k) "found"))
+              (let ((k (rep (Bytes.of #list(104)) 1)))
+                (+ (* 100 (Option.expect (Map.lookup (Map.insert Map.empty (Bytes.of #list(104 120)) 42) k) "found"))
                    (Bytes.len k))))
             (export main)))
   (call   main)
@@ -1809,9 +1809,9 @@
            admits a Bytes leaf through a sum variant's payload, not only a tuple position.")
   (input  (do
             (type B (Wrap Bytes))
-            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of #list(120))) (- n 1))))
             (def (eq (: a Bytes) (: c Bytes)) (= (B.Wrap a) (B.Wrap c)))
-            (def (main) (eq (rep (Bytes.of (list 104)) 1) (Bytes.of (list 104 120)))) (export main)))
+            (def (main) (eq (rep (Bytes.of #list(104)) 1) (Bytes.of #list(104 120)))) (export main)))
   (call   main)
   (output (: true Bool)))
 
@@ -1826,8 +1826,8 @@
            (a walk admitting only positional children misses the field map).")
   (input  (do
             (def (main (: a Int64))
-              (if (= (record (= f (Bytes.concat (Bytes.of (list (UInt8.wrap a))) (Bytes.of (list (UInt8.wrap 2))))) (= g 1))
-                     (record (= f (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap 2)))) (= g 1))) 1 0))
+              (if (= #record((= f (Bytes.concat (Bytes.of #list((UInt8.wrap a))) (Bytes.of #list((UInt8.wrap 2))))) (= g 1))
+                     #record((= f (Bytes.of #list((UInt8.wrap 1) (UInt8.wrap 2)))) (= g 1))) 1 0))
             (export main)))
   (call   main (: 1 Int64))
   (output (: 1 Int64)))
@@ -1840,8 +1840,8 @@
            the exact gap the String family had).")
   (input  (do
             (def (main (: a Int64))
-              (match (Map.lookup (Map.insert Map.empty (tuple (Bytes.concat (Bytes.of (list (UInt8.wrap a))) (Bytes.of (list (UInt8.wrap 2)))) 1) 42)
-                                 (tuple (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap 2))) 1))
+              (match (Map.lookup (Map.insert Map.empty #tuple((Bytes.concat (Bytes.of #list((UInt8.wrap a))) (Bytes.of #list((UInt8.wrap 2)))) 1) 42)
+                                 #tuple((Bytes.of #list((UInt8.wrap 1) (UInt8.wrap 2))) 1))
                 ((Some v) v)
                 ((None _) -1)))
             (export main)))
@@ -1855,8 +1855,8 @@
            admitted kind would skip the second leaf's canonicalization).")
   (input  (do
             (def (main (: a Int64))
-              (if (= (tuple 1.5 (Bytes.concat (Bytes.of (list (UInt8.wrap a))) (Bytes.of (list (UInt8.wrap 2)))))
-                     (tuple 1.5 (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap 2))))) 1 0))
+              (if (= #tuple(1.5 (Bytes.concat (Bytes.of #list((UInt8.wrap a))) (Bytes.of #list((UInt8.wrap 2)))))
+                     #tuple(1.5 (Bytes.of #list((UInt8.wrap 1) (UInt8.wrap 2))))) 1 0))
             (export main)))
   (call   main (: 1 Int64))
   (output (: 1 Int64)))
@@ -1870,9 +1870,9 @@
            pin — the two rope representations lower separately.")
   (input  (do
             (def (build (: n Int64) (: acc Bytes))
-              (if (< n 1) acc (build (- n 1) (Bytes.concat acc (Bytes.of (list 7 8))))))
+              (if (< n 1) acc (build (- n 1) (Bytes.concat acc (Bytes.of #list(7 8))))))
             (def (main (: n Int64))
-              (let ((b (Bytes.concat (Bytes.of (list 1)) (build n (Bytes.of (list))))))
+              (let ((b (Bytes.concat (Bytes.of #list(1)) (build n (Bytes.of #list())))))
                 (+ (* 10000 (Bytes.len b))
                    (+ (* 100 (match (Bytes.at b 0) ((Some v) v) ((None u) -1)))
                       (match (Bytes.at b (* n 2)) ((Some v) v) ((None u) -1))))))
@@ -1889,7 +1889,7 @@
            r=1 [10,20,30] → s1=60,s2=100·… → 25660; r=4 (12 bytes) → 52720; r=0 → 0.")
   (input  (do
             (def (build (: r Int64) (: acc Bytes))
-              (if (= r 0) acc (build (- r 1) (Bytes.concat acc (Bytes.of (list 10 20 30))))))
+              (if (= r 0) acc (build (- r 1) (Bytes.concat acc (Bytes.of #list(10 20 30))))))
             (def (go (: b Bytes) (: i Int64) (: n Int64) (: s1 Int64) (: s2 Int64))
               (if (>= i n)
                   (+ (* s2 256) s1)
@@ -1902,7 +1902,7 @@
             (def (fletcher (: b Bytes))
               (go b 0 (Bytes.len b) 0 0))
             (def (main (: r Int64))
-              (fletcher (build r (Bytes.of (list)))))
+              (fletcher (build r (Bytes.of #list()))))
             (export main)))
   (call main (: 1 Int64)) (output (: 25660 Int64))
   (call main (: 4 Int64)) (output (: 52720 Int64))
@@ -1929,7 +1929,7 @@
               (go b 0 (Bytes.len b) 0 0))
             (def (main (: st Int64) (: ln Int64))
               (do
-                (def rope (Bytes.concat (Bytes.of (list 10 20 30)) (Bytes.of (list 40 50 60))))
+                (def rope (Bytes.concat (Bytes.of #list(10 20 30)) (Bytes.of #list(40 50 60))))
                 (match (Bytes.slice rope st ln)
                   ((Some s) (fletcher s))
                   ((None _u) -1))))
@@ -1960,7 +1960,7 @@
               (go b 0 (Bytes.len b) 0 0))
             (def (main (: st Int64) (: ln Int64))
               (do
-                (def rope (Bytes.concat (Bytes.of (list 10 20 30)) (Bytes.of (list 40 50 60))))
+                (def rope (Bytes.concat (Bytes.of #list(10 20 30)) (Bytes.of #list(40 50 60))))
                 (match (Bytes.slice rope 1 4)
                   ((Some outer)
                     (match (Bytes.slice outer st ln)
@@ -1982,7 +1982,7 @@
   (input  (do
             (def (main (: st Int64) (: ln Int64))
               (do
-                (def b (Bytes.of (list 97 195 169)))
+                (def b (Bytes.of #list(97 195 169)))
                 (match (Bytes.slice b st ln)
                   ((Some s)
                     (match (String.from-bytes s)
@@ -2002,9 +2002,9 @@
            seam lands the window one byte off; a length computed per-leaf would drift.")
   (input  (do
             (def (build (: n Int64) (: acc Bytes))
-              (if (< n 1) acc (build (- n 1) (Bytes.concat acc (Bytes.of (list 7 8))))))
+              (if (< n 1) acc (build (- n 1) (Bytes.concat acc (Bytes.of #list(7 8))))))
             (def (main (: n Int64))
-              (match (Bytes.slice (build n (Bytes.of (list))) 99 102)
+              (match (Bytes.slice (build n (Bytes.of #list())) 99 102)
                 ((Some w) (+ (Bytes.len w)
                              (match (Bytes.at w 0) ((Some v) v) ((None u) -1))))
                 ((None u) -2)))
@@ -2019,9 +2019,9 @@
            that flattened only a prefix, mismeasures). byte-len 400.")
   (input  (do
             (def (build (: n Int64) (: acc Bytes))
-              (if (< n 1) acc (build (- n 1) (Bytes.concat acc (Bytes.of (list 97 98))))))
+              (if (< n 1) acc (build (- n 1) (Bytes.concat acc (Bytes.of #list(97 98))))))
             (def (main (: n Int64))
-              (match (String.from-bytes (build n (Bytes.of (list))))
+              (match (String.from-bytes (build n (Bytes.of #list())))
                 ((Some s) (String.byte-len s))
                 ((None u) -1)))
             (export main)))
@@ -2039,7 +2039,7 @@
   (input  (do
         (def (main (: k Int64))
           (do
-            (def b (Bytes.of (list 10 20 30 40 50 60)))
+            (def b (Bytes.of #list(10 20 30 40 50 60)))
             (def outer (Option.expect (Bytes.slice b 1 4) "in"))
             (match (Bytes.slice outer k 2)
               ((Some v) (+ (* 100 (match (Bytes.at v 0) ((Some x) x) ((None _u) -1)))
@@ -2062,7 +2062,7 @@
   (input  (do
         (def (main (: mode Int64))
           (do
-            (def b (Bytes.concat (Bytes.of (list 97 195)) (Bytes.of (list 169 240 159 152 128))))
+            (def b (Bytes.concat (Bytes.of #list(97 195)) (Bytes.of #list(169 240 159 152 128))))
             (def lo (if (= mode 3) 3 0))
             (def ln (if (= mode 1) 3 4))
             (match (Bytes.slice b lo ln)
@@ -2087,14 +2087,14 @@
   (input  (do
         (def (main (: x UInt8))
           (do
-            (def m (Map.insert Map.empty (Bytes.of (list 1 2 3)) 10))
-            (def k (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list x))))
+            (def m (Map.insert Map.empty (Bytes.of #list(1 2 3)) 10))
+            (def k (Bytes.concat (Bytes.of #list(1 2)) (Bytes.of #list(x))))
             (def r (Map.swap m k 20))
             (def prior (match (. r 0) ((Some v) (if (= v 10) 1 -9)) ((None _u) 0)))
             (def m2 (. r 1))
             (+ (* 1000 prior)
                (+ (* 100 (Map.len m2))
-                  (match (Map.lookup m2 (Bytes.of (list 1 2 3))) ((Some v) v) ((None _u) -1))))))
+                  (match (Map.lookup m2 (Bytes.of #list(1 2 3))) ((Some v) v) ((None _u) -1))))))
         (export main)))
   (call   main (: 3 UInt8)) (output (: 1120 Int64))
   (call   main (: 4 UInt8)) (output (: 210 Int64)))
@@ -2139,7 +2139,7 @@
               b
               (walk (d b i) (+ i 1))))
         (def (main (: mode Int64))
-          (Bytes.len (walk (Bytes.of (list 1 2 3 4 5)) 0)))
+          (Bytes.len (walk (Bytes.of #list(1 2 3 4 5)) 0)))
         (export main)))
   (call   main (: 0 Int64)) (output (: 2 Int64))
   (live-objects known-leak 4))
@@ -2154,10 +2154,10 @@
                   (match (Bytes.at b i)
                     ((Option.Some v) (brev b (- i 1) (Bytes.concat acc (bin (u8 (UInt8.wrap v))))))
                     ((Option.None _u) acc))))
-            (def (rev (: b Bytes)) (brev b (- (Bytes.len b) 1) (Bytes.of (list))))
+            (def (rev (: b Bytes)) (brev b (- (Bytes.len b) 1) (Bytes.of #list())))
             (def (main (: k Int64))
               (do
-                (def b (Bytes.concat (Bytes.of (list 1 (UInt8.wrap k))) (Bytes.of (list 3))))
+                (def b (Bytes.concat (Bytes.of #list(1 (UInt8.wrap k))) (Bytes.of #list(3))))
                 (def r (rev b))
                 (+ (* 100 (if (= (rev r) b) 1 0))
                    (+ (* 10 (Option.expect (Bytes.at r 0) "h"))
@@ -2179,8 +2179,8 @@
   (input  (do
         (def (main (: mode Int64))
           (do
-            (def view (Option.expect (Bytes.slice (Bytes.of (list 9 1 2 3 7)) 1 3) "in"))
-            (def rope (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list (UInt8.wrap mode)))))
+            (def view (Option.expect (Bytes.slice (Bytes.of #list(9 1 2 3 7)) 1 3) "in"))
+            (def rope (Bytes.concat (Bytes.of #list(1 2)) (Bytes.of #list((UInt8.wrap mode)))))
             (+ (* 10 (if (= view rope) 1 0))
                (if (= rope view) 1 0))))
         (export main)))
@@ -2192,10 +2192,10 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def rope (Bytes.concat (Bytes.of (list 10 (UInt8.wrap k))) (Bytes.of (list 30))))
+                (def rope (Bytes.concat (Bytes.of #list(10 (UInt8.wrap k))) (Bytes.of #list(30))))
                 (def m (Map.insert Map.empty rope 42))
                 (+ (* 100 (match (Map.lookup m (Bytes.compact rope)) ((Option.Some v) 1) ((Option.None _u) 0)))
-                   (+ (* 10 (match (Map.lookup m (Bytes.of (list 10 (UInt8.wrap k) 30))) ((Option.Some v) 1) ((Option.None _u) 0)))
+                   (+ (* 10 (match (Map.lookup m (Bytes.of #list(10 (UInt8.wrap k) 30))) ((Option.Some v) 1) ((Option.None _u) 0)))
                       (match (Map.lookup m (Option.expect (Bytes.slice (Bytes.compact rope) 0 2) "lo")) ((Option.Some v) 1) ((Option.None _u) 0))))))
             (export main)))
   (call   main (: 20 Int64))
@@ -2208,7 +2208,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def pkt (record (= hdr (Bytes.of (list 1 2))) (= body (Bytes.concat (Bytes.of (list 10 (UInt8.wrap k))) (Bytes.of (list 30))))))
+                (def pkt #record((= hdr (Bytes.of #list(1 2))) (= body (Bytes.concat (Bytes.of #list(10 (UInt8.wrap k))) (Bytes.of #list(30))))))
                 (def total (Bytes.concat (. pkt hdr) (. pkt body)))
                 (+ (* 100 (Bytes.len total))
                    (+ (* 10 (Option.expect (Bytes.at total 1) "b1"))
@@ -2226,9 +2226,9 @@
            directly-built [k,3,4] (tens digit, both k) but not the decoy [k,3,5] (ones digit) → 10.
            The Bytes companion of the cross-path string pin in 13-strings.")
   (input  (do
-            (def (via (: k Int64)) (Bytes.concat (Bytes.of (list (UInt8.wrap k))) (Bytes.of (list 3 4))))
-            (def (direct (: k Int64)) (Bytes.of (list (UInt8.wrap k) 3 4)))
-            (def (decoy (: k Int64)) (Bytes.of (list (UInt8.wrap k) 3 5)))
+            (def (via (: k Int64)) (Bytes.concat (Bytes.of #list((UInt8.wrap k))) (Bytes.of #list(3 4))))
+            (def (direct (: k Int64)) (Bytes.of #list((UInt8.wrap k) 3 4)))
+            (def (decoy (: k Int64)) (Bytes.of #list((UInt8.wrap k) 3 5)))
             (def (main (: k Int64))
               (+ (* 10 (if (= (via k) (direct k)) 1 0))
                  (if (= (via k) (decoy k)) 1 0)))
@@ -2243,10 +2243,10 @@
            directly-built twins → 11. A slice that re-based its window against the wrong leaf (or read
            through the seam without rebasing) flips a leg.")
   (input  (do
-            (def (rope (: k Int64)) (Bytes.concat (Bytes.of (list (UInt8.wrap k))) (Bytes.of (list 3 4 5))))
+            (def (rope (: k Int64)) (Bytes.concat (Bytes.of #list((UInt8.wrap k))) (Bytes.of #list(3 4 5))))
             (def (main (: k Int64))
-              (+ (* 10 (if (= (Option.expect (Bytes.slice (rope k) 1 2) "in bounds") (Bytes.of (list 3 4))) 1 0))
-                 (if (= (Option.expect (Bytes.slice (rope k) 0 1) "in bounds") (Bytes.of (list (UInt8.wrap k)))) 1 0)))
+              (+ (* 10 (if (= (Option.expect (Bytes.slice (rope k) 1 2) "in bounds") (Bytes.of #list(3 4))) 1 0))
+                 (if (= (Option.expect (Bytes.slice (rope k) 0 1) "in bounds") (Bytes.of #list((UInt8.wrap k)))) 1 0)))
             (export main)))
   (call   main (: 10 Int64)) (output (: 11 Int64)))
 
@@ -2265,10 +2265,10 @@
            (adv-54b's OOB shape).")
   (input  (do
             (def (build-rope (: n Int64) (: acc Bytes))
-              (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of (list (UInt8.wrap 65))))) acc))
+              (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of #list((UInt8.wrap 65))))) acc))
             (def (main (: n Int64))
-              (let ((rope (build-rope n (Bytes.of (list)))))
-                (let ((joined (Bytes.concat rope (Bytes.of (list (UInt8.wrap 66))))))
+              (let ((rope (build-rope n (Bytes.of #list()))))
+                (let ((joined (Bytes.concat rope (Bytes.of #list((UInt8.wrap 66))))))
                   (+ (Bytes.len joined)
                      (+ (* 100 (match (Bytes.at joined n) ((Some v) (Int64.of v)) ((None _u) -1)))
                         (* 100000 (if (< rope joined) 1 0)))))))
@@ -2284,9 +2284,9 @@
            face of the kept-binding rule (one un-kept generation frees a leaf the next read walks).")
   (input  (do
             (def (main (: k Int64))
-              (let ((a (Bytes.of (list (UInt8.wrap k)))))
-                (let ((ab (Bytes.concat a (Bytes.of (list (UInt8.wrap 66))))))
-                  (let ((abc (Bytes.concat ab (Bytes.of (list (UInt8.wrap 67))))))
+              (let ((a (Bytes.of #list((UInt8.wrap k)))))
+                (let ((ab (Bytes.concat a (Bytes.of #list((UInt8.wrap 66))))))
+                  (let ((abc (Bytes.concat ab (Bytes.of #list((UInt8.wrap 67))))))
                     (+ (Bytes.len a)
                        (+ (* 10 (Bytes.len ab))
                           (+ (* 100 (Bytes.len abc))
@@ -2310,7 +2310,7 @@
             (effect St (op next (-> Unit Int64)))
             (def (main (: n Int64))
               (do
-                (def table (Map.insert Map.empty 1 (Bytes.of (list 10 20 30 40 50 60 70 80))))
+                (def table (Map.insert Map.empty 1 (Bytes.of #list(10 20 30 40 50 60 70 80))))
                 (handle St n
                   ((next (u) s (resume s (+ s 1))))
                   (match (Map.lookup table 1)
@@ -2349,7 +2349,7 @@
                 (b"\x02B" 2)
                 (_ 0)))
             (def (main (: n Int64))
-              (classify (Bytes.of (list (UInt8.wrap n) (UInt8.wrap 66)))))
+              (classify (Bytes.of #list((UInt8.wrap n) (UInt8.wrap 66)))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64))
@@ -2368,7 +2368,7 @@
                 (b"\x01B" 2)
                 (_ 0)))
             (def (main (: n Int64))
-              (classify (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap 66))) n))
+              (classify (Bytes.of #list((UInt8.wrap 1) (UInt8.wrap 66))) n))
             (export main)))
   (call   main (: 20 Int64)) (output (: 1 Int64))
   (call   main (: 5 Int64)) (output (: 2 Int64)))
@@ -2388,7 +2388,7 @@
                 ((Some _) 3)
                 ((None) 0)))
             (def (main (: n Int64))
-              (classify (Some (Bytes.of (list (UInt8.wrap n) (UInt8.wrap 66))))))
+              (classify (Some (Bytes.of #list((UInt8.wrap n) (UInt8.wrap 66))))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64))
@@ -2417,7 +2417,7 @@
            carries, so a Bytes scrutinee admits only byte-string / wildcard arms.")
   (input  (do
             (def (classify (: b Bytes)) (match b ("AB" 1) (_ 0)))
-            (def (main (: k Int64)) (classify (Bytes.of (list (UInt8.wrap k) (UInt8.wrap 66)))))
+            (def (main (: k Int64)) (classify (Bytes.of #list((UInt8.wrap k) (UInt8.wrap 66)))))
             (export main)))
   (error  CDZ0201))
 
@@ -2427,7 +2427,7 @@
            rule a scalar/String match obeys (`core-semantics.md #Matching Is Exhaustive Or Rejected`).")
   (input  (do
             (def (classify (: b Bytes)) (match b (b"AB" 1) (b"CD" 2)))
-            (def (main (: k Int64)) (classify (Bytes.of (list (UInt8.wrap k) (UInt8.wrap 66)))))
+            (def (main (: k Int64)) (classify (Bytes.of #list((UInt8.wrap k) (UInt8.wrap 66)))))
             (export main)))
   (error  CDZ0210))
 
@@ -2437,7 +2437,7 @@
            edge of byte-string dispatch (an empty payload is a real value, not a degenerate no-op).")
   (input  (do
             (def (classify (: b Bytes)) (match b (b"" 1) (b"A" 2) (_ 0)))
-            (def (main (: k Int64)) (classify (if (= k 0) (Bytes.of (list)) (Bytes.of (list 65)))))
+            (def (main (: k Int64)) (classify (if (= k 0) (Bytes.of #list()) (Bytes.of #list(65)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64)) (output (: 2 Int64)))
@@ -2466,7 +2466,7 @@
 ; -- breaker batch 414 (2026-08-26): Bytes.of over a NON-literal (branch-selected) list lowers.
 
 (case "ce06 Bytes.of of a NON-literal (branch-selected) list lowers"
-  (input  (do (def (f (: k Int64)) (Bytes.len (Bytes.of (if (> k 0) (list (UInt8.wrap 65) (UInt8.wrap 66)) (list (UInt8.wrap 67)))))) (export f)))
+  (input  (do (def (f (: k Int64)) (Bytes.len (Bytes.of (if (> k 0) #list((UInt8.wrap 65) (UInt8.wrap 66)) #list((UInt8.wrap 67)))))) (export f)))
   (call   f 1)
   (output (: 2 Int64))
   (live-objects known-leak 2))
@@ -2528,7 +2528,7 @@
   (input  (do
             (def (main (: n Int64))
               (let ((a (if (= n 1) b"ABC" b"zz"))
-                    (b (Bytes.of (list 65 66 67))))
+                    (b (Bytes.of #list(65 66 67))))
                 (+ (* 100 (Bytes.len a)) (+ (Bytes.len b) (if (= a b) 1000 0)))))
             (export main)))
   (call   main (: 1 Int64))
@@ -2563,9 +2563,9 @@
            fully -> live-objects 0.")
   (input  (do
             (def (rep (: b Bytes) (: n Int64))
-              (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+              (if (< n 1) b (rep (Bytes.concat b (Bytes.of #list(120))) (- n 1))))
             (def (main)
-              (match (Map.lookup (Map.insert (Map.empty) (rep (Bytes.of (list 104)) 1) 42) (Bytes.of (list 104 120)))
+              (match (Map.lookup (Map.insert (Map.empty) (rep (Bytes.of #list(104)) 1) 42) (Bytes.of #list(104 120)))
                 ((Some v) v) ((None) (- 0 1))))
             (export main)))
   (call   main) (output (: 42 Int64)) (live-objects 0))
@@ -2626,31 +2626,31 @@
 
 (case "a runtime Bytes.at byte-sum reads each byte and terminates on the out-of-bounds None"
   (input (do (def (sum bs i) (match (Bytes.at bs i) ((Some b) (+ b (sum bs (+ i 1)))) ((None _) 0)))
-             (def (main) (sum (Bytes.of (list 10 20 30)) 0)) (export main)))
+             (def (main) (sum (Bytes.of #list(10 20 30)) 0)) (export main)))
   (call main) (output (: 60 Int64)))
 
 (case "a runtime-element Bytes.at read widens the byte to the Int64 Option payload"
-  (input (do (def (main (: n UInt8)) (match (Bytes.at (Bytes.of (list n)) 0) ((Some x) x) ((None _) -1))) (export main)))
+  (input (do (def (main (: n UInt8)) (match (Bytes.at (Bytes.of #list(n)) 0) ((Some x) x) ((None _) -1))) (export main)))
   (call main (: 5 UInt8)) (output (: 5 Int64)))
 
 (case "a runtime Bytes.concat length is the sum of operand lengths"
-  (input (do (def (mk n) (Bytes.of (list n 20 30))) (def (main) (Bytes.len (Bytes.concat (mk 10) (mk 40)))) (export main)))
+  (input (do (def (mk n) (Bytes.of #list(n 20 30))) (def (main) (Bytes.len (Bytes.concat (mk 10) (mk 40)))) (export main)))
   (call main) (output (: 6 Int64)))
 
 (case "a runtime Bytes.slice in bounds yields Some of the sub-length"
-  (input (do (def (mk n) (Bytes.of (list n 20 30 40))) (def (main) (match (Bytes.slice (mk 10) 1 2) ((Some s) (Bytes.len s)) ((None _) -1))) (export main)))
+  (input (do (def (mk n) (Bytes.of #list(n 20 30 40))) (def (main) (match (Bytes.slice (mk 10) 1 2) ((Some s) (Bytes.len s)) ((None _) -1))) (export main)))
   (call main) (output (: 2 Int64)))
 
 (case "a runtime Bytes.slice out of bounds is None"
-  (input (do (def (mk n) (Bytes.of (list n 20 30 40))) (def (main) (match (Bytes.slice (mk 10) 3 5) ((Some s) (Bytes.len s)) ((None _) -1))) (export main)))
+  (input (do (def (mk n) (Bytes.of #list(n 20 30 40))) (def (main) (match (Bytes.slice (mk 10) 3 5) ((Some s) (Bytes.len s)) ((None _) -1))) (export main)))
   (call main) (output (: -1 Int64)))
 
 (case "a runtime Bytes.compact preserves the content length"
-  (input (do (def (mk n) (Bytes.of (list n 20 30))) (def (main) (Bytes.len (Bytes.compact (mk 10)))) (export main)))
+  (input (do (def (mk n) (Bytes.of #list(n 20 30))) (def (main) (Bytes.len (Bytes.compact (mk 10)))) (export main)))
   (call main) (output (: 3 Int64)))
 
 (case "a runtime if-produced Bytes is length-measured with valid wasm"
-  (input (do (def (main (: b Int64)) (Bytes.len (if (> b 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 4 5))))) (export main)))
+  (input (do (def (main (: b Int64)) (Bytes.len (if (> b 0) (Bytes.of #list(1 2 3)) (Bytes.of #list(4 5))))) (export main)))
   (call main (: 5 Int64))  (output (: 3 Int64))
   (call main (: -1 Int64)) (output (: 2 Int64)))
 
@@ -2660,28 +2660,28 @@
 ; exercises the LENGTH reading (slice(1, 52) of a 53-byte rope = 52 bytes).
 
 (case "bdr1 a 50-concat deep Bytes rope's len walks the tree and the rope reclaims clean"
-  (input (do (def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 7))) (- k 1))))
-(def (main (: n Int64)) (Bytes.len (grow (if (> n 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 9))) 50)))
+  (input (do (def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of #list(7))) (- k 1))))
+(def (main (: n Int64)) (Bytes.len (grow (if (> n 0) (Bytes.of #list(1 2 3)) (Bytes.of #list(9))) 50)))
 (export main)))
   (call main (: 1 Int64))
   (output (: 53 Int64))
   (live-objects 0))
 
 (case "bdr2 a byte-scan with Bytes.at across every seam of a 50-concat rope counts exactly (scalar reads; fixed 1-cell residue)"
-  (input (do (def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 7))) (- k 1))))
+  (input (do (def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of #list(7))) (- k 1))))
 (def (cnt (: b Bytes) (: i Int64) (: acc Int64))
   (if (= i (Bytes.len b)) acc
       (cnt b (+ i 1) (if (= (match (Bytes.at b i) ((Some v) v) ((None u) 0)) 7) (+ acc 1) acc))))
-(def (main (: n Int64)) (cnt (grow (if (> n 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 9))) 50) 0 0))
+(def (main (: n Int64)) (cnt (grow (if (> n 0) (Bytes.of #list(1 2 3)) (Bytes.of #list(9))) 50) 0 0))
 (export main)))
   (call main (: 1 Int64))
   (output (: 50 Int64))
   (live-objects known-leak 1))
 
 (case "bdr3 a slice SPANNING the seams of a deep Bytes rope reads exact length and content (start+LENGTH contract)"
-  (input (do (def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 7))) (- k 1))))
+  (input (do (def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of #list(7))) (- k 1))))
 (def (main (: n Int64))
-  (let ((r (grow (if (> n 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 9))) 50)))
+  (let ((r (grow (if (> n 0) (Bytes.of #list(1 2 3)) (Bytes.of #list(9))) 50)))
     (match (Bytes.slice r 1 (- (Bytes.len r) 1))
       ((Some sl) (+ (* 100 (Bytes.len sl)) (match (Bytes.at sl 10) ((Some v) v) ((None u) -1))))
       ((None u2) -99))))

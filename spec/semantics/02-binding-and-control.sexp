@@ -66,12 +66,12 @@
   (input (do
         (def (sum-l (: l (List Int64)) (: acc Int64))
           (match l
-            ((list) acc)
-            ((list h .. t) (sum-l t (+ acc h)))))
+            (#list() acc)
+            (#list(h .. t) (sum-l t (+ acc h)))))
         (def (main (: n Int64))
           (do
-            (def xs (list 1 2 n))
-            (def o (Some (list 9 9)))
+            (def xs #list(1 2 n))
+            (def o (Some #list(9 9)))
             (def inner (match o
                          ((Some xs) (sum-l xs 0))
                          ((None _u) -1)))
@@ -89,12 +89,12 @@
   (input (do
         (def (sum-l (: l (List Int64)) (: acc Int64))
           (match l
-            ((list) acc)
-            ((list h .. t) (sum-l t (+ acc h)))))
+            (#list() acc)
+            (#list(h .. t) (sum-l t (+ acc h)))))
         (def (main (: n Int64))
           (do
-            (def xs (list 1 n))
-            (def inner (let ((xs (list 7))) (sum-l xs 0)))
+            (def xs #list(1 n))
+            (def inner (let ((xs #list(7))) (sum-l xs 0)))
             (+ (* inner 100) (sum-l xs 0))))
         (export main)))
   (call main (: 5 Int64)) (output (: 706 Int64))
@@ -108,13 +108,13 @@
   (input (do
         (def (sum-l (: l (List Int64)) (: acc Int64))
           (match l
-            ((list) acc)
-            ((list h .. t) (sum-l t (+ acc h)))))
+            (#list() acc)
+            (#list(h .. t) (sum-l t (+ acc h)))))
         (def (main (: n Int64))
           (do
-            (def xs (list 1 n))
+            (def xs #list(1 n))
             (def f (fn ((: _u Int64)) (sum-l xs 0)))
-            (def xs (list 7 8))
+            (def xs #list(7 8))
             (+ (* (f 0) 100) (sum-l xs 0))))
         (export main)))
   (call main (: 2 Int64)) (output (: 315 Int64))
@@ -128,13 +128,13 @@
   (input (do
         (def (sum-l (: l (List Int64)) (: acc Int64))
           (match l
-            ((list) acc)
-            ((list h .. t) (sum-l t (+ acc h)))))
+            (#list() acc)
+            (#list(h .. t) (sum-l t (+ acc h)))))
         (def (main (: n Int64))
           (do
-            (def xs (list 1 n))
+            (def xs #list(1 n))
             (def f (fn ((: _u Int64)) (sum-l xs 0)))
-            (def xs (list 7 8))
+            (def xs #list(7 8))
             (def g (fn ((: _u Int64)) (sum-l xs 0)))
             (+ (* (f 0) 100) (g 0))))
         (export main)))
@@ -708,12 +708,12 @@
            runtime `Core::ListLen` is required to exercise this facet. Both backends.")
   (input  (do
             (def (guarded (: i Int64))
-              (let ((xs (if (> i 100) (list 10 20) (list 10 20 30))))
+              (let ((xs (if (> i 100) #list(10 20) #list(10 20 30))))
                 (if (< i (List.len xs))
                     (match (List.at xs i) ((Some v) v) ((None _) -1))
                     -2)))
             (def (unguarded (: i Int64))
-              (let ((xs (if (> i 100) (list 10 20) (list 10 20 30))))
+              (let ((xs (if (> i 100) #list(10 20) #list(10 20 30))))
                 (match (List.at xs i) ((Some v) v) ((None _) -1))))
             (export guarded)
             (export unguarded)))
@@ -736,15 +736,15 @@
   (input (do
         (def (sum-l (: xs (List Int64)) (: acc Int64))
           (match xs
-            ((list) acc)
-            ((list h .. t) (sum-l t (+ acc h)))))
+            (#list() acc)
+            (#list(h .. t) (sum-l t (+ acc h)))))
         (def (f (: o (Option (List Int64))))
           (match o
             ((guard (Some xs) (> (List.len xs) 2)) (sum-l xs 0))
             ((Some xs) (- 0 (List.len xs)))
             ((None _u) 0)))
         (def (main (: mode Int64))
-          (f (if (= mode 1) (Some (list 5 6 7)) (if (= mode 2) (Some (list 5)) (None unit)))))
+          (f (if (= mode 1) (Some #list(5 6 7)) (if (= mode 2) (Some #list(5)) (None unit)))))
         (export main)))
   (call main (: 1 Int64)) (output (: 18 Int64))
   (call main (: 2 Int64)) (output (: -1 Int64))
@@ -768,7 +768,7 @@
             ((Some _xs) 0)
             ((None _u) -1)))
         (def (main (: n Int64))
-          (band (Some (build n (list)))))
+          (band (Some (build n #list()))))
         (export main)))
   (call main (: 5 Int64)) (output (: 3 Int64))
   (call main (: 3 Int64)) (output (: 2 Int64))
@@ -866,10 +866,10 @@
   (input (do
         (def (sum-l (: l (List Int64)) (: acc Int64))
           (match l
-            ((list) acc)
-            ((list h .. t) (sum-l t (+ acc h)))))
+            (#list() acc)
+            (#list(h .. t) (sum-l t (+ acc h)))))
         (def (main (: n Int64))
-          (let ((xs (match n (0 (list 1 2 3)) (_ (list 9))))
+          (let ((xs (match n (0 #list(1 2 3)) (_ #list(9))))
                 (s (sum-l xs 0)))
             (+ (* s 10) (List.len xs))))
         (export main)))
@@ -1345,7 +1345,7 @@
            chain of runtime-compound `let`s compiles at all (and to the right value) — the shape a
            compiler's threaded state / accumulator passes take. The observable is 12; the DEPTH is the
            compile-time-cost regression guard (this depth exhausted memory before the fix).")
-  (input  (let ((l1  (List.push (list) 1)))
+  (input  (let ((l1  (List.push #list() 1)))
           (let ((l2  (List.push l1 2)))
           (let ((l3  (List.push l2 3)))
           (let ((l4  (List.push l3 4)))
@@ -1382,12 +1382,12 @@
             (def (pos xs target k)
               (match xs
                 ((Env.ENil _) (None unit))
-                ((Env.ECons (tuple h t))
+                ((Env.ECons #tuple(h t))
                   (match (pos t target (+ k 1))
                     ((Some d)  (Some d))
                     ((None _u) (if (= h target) (Some k) (None unit)))))))
             (def (main)
-              (match (pos (Env.ECons (tuple 5 (Env.ECons (tuple 7 (Env.ECons (tuple 5 (Env.ENil ()))))))) 5 0)
+              (match (pos (Env.ECons #tuple(5 (Env.ECons #tuple(7 (Env.ECons #tuple(5 (Env.ENil ()))))))) 5 0)
                 ((Some p)  p)
                 ((None _u) (trap "unreachable")))) (export main)))
   (output (: 2 Int64))
@@ -1650,13 +1650,13 @@
            in a non-final position has no observable effect, so the block yields its last form (42). The
            earlier `do` cases only drop scalars; this pins that a COMPOUND intermediate is dropped the
            same way rather than blocking the block.")
-  (input  (do (record (= a 1)) 42))
+  (input  (do #record((= a 1)) 42))
   (output (: 42 Int64)))
 
 (case "a sequencing block discards a pure list intermediate"
   (doc    "Companion of the case above with a list intermediate: `(do (list 1 2 3) 7)` evaluates the
            list, discards it (no effect), and yields the last form 7.")
-  (input  (do (list 1 2 3) 7))
+  (input  (do #list(1 2 3) 7))
   (output (: 7 Int64)))
 
 ; --- A declaration in a sequencing block binds for the following forms -------------------
@@ -1952,8 +1952,8 @@
             (def (build (: i Int64) (: n Int64) (: out (List Int64)))
               (if (< i n) (build (+ i 1) n (List.push out i)) out))
             (def (sa (: xs (List Int64)) (: acc Int64))
-              (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x)))))
-            (def (main (: n Int64)) (sa (build 0 n (list)) 0))
+              (match xs (#list() acc) (#list(x .. rest) (sa rest (+ acc x)))))
+            (def (main (: n Int64)) (sa (build 0 n #list()) 0))
             (export main)))
   (call   main (: 100 Int64)) (output (: 4950 Int64))
   (call   main (: 100000 Int64)) (output (: 4999950000 Int64))
@@ -1973,8 +1973,8 @@
             (def (build (: i Int64) (: n Int64) (: out (List Int64)))
               (if (< i n) (build (+ i 1) n (List.push out i)) out))
             (def (sum (: xs (List Int64)))
-              (match xs ((list) 0) ((list x .. rest) (+ x (sum rest)))))
-            (def (main (: n Int64)) (sum (build 0 n (list))))
+              (match xs (#list() 0) (#list(x .. rest) (+ x (sum rest)))))
+            (def (main (: n Int64)) (sum (build 0 n #list())))
             (export main)))
   (call   main (: 100 Int64)) (output (: 4950 Int64))
   (call   main (: 100000 Int64)) (output (: 4999950000 Int64))
@@ -2489,7 +2489,7 @@
            an unevaluated branch cannot carry a deferred type error. This pins the compound-vs-scalar instance
            of the dead-branch check, which the scalar-vs-scalar cases above do not exercise (folding a compound
            branch away is where the check is easiest to skip).")
-  (input  (if false (record (= a 1)) 7))
+  (input  (if false #record((= a 1)) 7))
   (error  CDZ0203))
 
 ; The branch-type-agreement check must fire when the conditional is INSIDE A FUNCTION BODY with a
@@ -2552,7 +2552,7 @@
            compound/scalar branch-mismatch cases above. Pins that branch-type agreement is checked
            STRUCTURALLY, not only at coarse kind (both branches being 'a tuple' is not enough) — a compiler
            comparing only branch kinds accepts this and returns the two-tuple, an ill-typed program run.")
-  (input  (if true (tuple 1 2) (tuple 3 4 5)))
+  (input  (if true #tuple(1 2) #tuple(3 4 5)))
   (error  CDZ0203))
 
 (case "a conditional with two tuple branches of different element type is a type error"
@@ -2561,7 +2561,7 @@
            ill-typed (CDZ0203), the element-type companion of the arity case above. Pins that the structural
            branch-type comparison descends into a tuple's element types, not only its arity — the same
            depth the list-element homogeneity check already applies.")
-  (input  (if true (tuple 1 2) (tuple 1 true)))
+  (input  (if true #tuple(1 2) #tuple(1 true)))
   (error  CDZ0203))
 
 ; The structural branch-type check must NOT treat a list's LENGTH as part of its type — unlike a tuple's
@@ -2584,7 +2584,7 @@
            different-arity tuple branches are rejected), but a list's length is NOT, so different-length
            list branches MUST be accepted. Pins that the branch-shape check does not treat list length as
            a shape mismatch — a compiler reusing the tuple-arity check on lists wrongly rejects this.")
-  (input  (if true (list 1 2) (list 3 4 5)))
+  (input  (if true #list(1 2) #list(3 4 5)))
   (output (: (list 1 2) (List Int64))))
 
 (case "a RUNTIME if-chain selects among four different-length heap lists"
@@ -2597,10 +2597,10 @@
            len checks — but a branch-confusion in the nested selects would misroute the middle calls).")
   (input  (do
             (def (main (: n Int64))
-              (List.len (if (> n 10) (list 1 2 3)
-                        (if (> n 5) (list 1 2)
-                        (if (> n 0) (list 1)
-                        (list))))))
+              (List.len (if (> n 10) #list(1 2 3)
+                        (if (> n 5) #list(1 2)
+                        (if (> n 0) #list(1)
+                        #list())))))
             (export main)))
   (call   main (: 20 Int64)) (output (: 3 Int64))
   (call   main (: 7 Int64)) (output (: 2 Int64))
@@ -2632,7 +2632,7 @@
            resolution failure. The condition's type is what is wrong, not the spelling of a name.
            Pins that a compound condition is rejected as a type error with the constructor intact,
            the same misleading-diagnostic class as an out-of-range literal reported as unbound.")
-  (input  (if (tuple 1 2) 10 20))
+  (input  (if #tuple(1 2) 10 20))
   (error  CDZ0203))
 
 (case "a pattern binds a name scoped to its branch"
@@ -3247,8 +3247,8 @@
   (doc    "Witnesses core-semantics.md #Pattern Matching: patterns can nest — a constructor pattern
            inside another constructor pattern. (Some (tuple a b)) matches a Some whose payload is a
            tuple, binding both elements. The compiler uses this to deconstruct nested AST structures.")
-  (input  (match (Some (tuple 3 7))
-            ((Some (tuple a b)) (+ a b))
+  (input  (match (Some #tuple(3 7))
+            ((Some #tuple(a b)) (+ a b))
             ((None _)           0)))
   (output (: 10 Int64)))
 
@@ -3330,7 +3330,7 @@
            n=0 it matches and yields 100; the literal element is tested against the runtime value, not
            treated as a binder.")
   (input  (do
-            (def (f n) (match (tuple n 9) ((tuple 0 y) 100) ((tuple x y) x)))
+            (def (f n) (match #tuple(n 9) (#tuple(0 y) 100) (#tuple(x y) x)))
             (def (main) (f 0)) (export main)))
   (output (: 100 Int64)))
 
@@ -3349,14 +3349,14 @@
            statically incompatible, so the arm is ill-typed and the compiler MUST reject the match
            (CDZ0201). Pins that a tuple pattern's arity is checked against the scrutinee's, not
            silently failed.")
-  (input  (match (tuple 1 2) ((tuple a b c) a) (_ 0)))
+  (input  (match #tuple(1 2) (#tuple(a b c) a) (_ 0)))
   (error  CDZ0201))
 
 (case "a one-element tuple pattern against a two-tuple is a type error"
   (doc    "The other direction: `(tuple a)` is a one-element tuple pattern, which cannot match the
            two-tuple `(tuple 1 2)` — a static shape mismatch, CDZ0201. Pins that BOTH too-many and
            too-few pattern elements are a type error, not a runtime non-match.")
-  (input  (match (tuple 1 2) ((tuple a) a) (_ 0)))
+  (input  (match #tuple(1 2) (#tuple(a) a) (_ 0)))
   (error  CDZ0201))
 
 ; The tuple-pattern-arity rule applies RECURSIVELY, at every nesting depth, not only to the outermost
@@ -3381,7 +3381,7 @@
            silently fail and fall through to the wildcard yielding 0. Pins that a compiler checking only
            the OUTERMOST tuple pattern's arity does not let a nested wrong-arity pattern slip past as a
            runtime non-match.")
-  (input  (match (tuple 1 (tuple 2 3)) ((tuple a (tuple b c d)) 9) (_ 0)))
+  (input  (match #tuple(1 #tuple(2 3)) (#tuple(a #tuple(b c d)) 9) (_ 0)))
   (error  CDZ0201))
 
 ; The recursion covers a nested LITERAL pattern's type too, not only a nested tuple's arity. A literal
@@ -3400,7 +3400,7 @@
            Compose), so the nested literal type is checked against the corresponding scrutinee element, not
            only the outermost. Pins that a compiler checking only the top-level literal pattern's type does
            not let a nested wrong-type literal slip past as a runtime non-match falling to the wildcard.")
-  (input  (match (tuple 1 2) ((tuple true b) 9) (_ 0)))
+  (input  (match #tuple(1 2) (#tuple(true b) 9) (_ 0)))
   (error  CDZ0201))
 
 ; The recursion must also enter a tuple pattern nested UNDER A CONSTRUCTOR pattern, not only one at the
@@ -3420,7 +3420,7 @@
            pattern's binder MAY itself be a tuple pattern, matched to any depth). Pins that the recursive
            shape check enters a tuple pattern nested under a constructor pattern, not only one at the arm's
            root, so the ill-typed arm is rejected rather than silently failing to the wildcard yielding 0.")
-  (input  (match (Some (tuple 1 2)) ((Some (tuple a b c)) 9) (_ 0)))
+  (input  (match (Some #tuple(1 2)) ((Some #tuple(a b c)) 9) (_ 0)))
   (error  CDZ0201))
 
 ; A pattern's KIND must also match the scrutinee's kind, not only a tuple's arity: a tuple pattern
@@ -3436,14 +3436,14 @@
            deconstructs a tuple, so it can never match a sum — the arm's shape is statically
            incompatible with the scrutinee, a type error (CDZ0201). Pins the pattern-KIND check
            (tuple vs sum), the companion of the tuple-ARITY check above.")
-  (input  (match (Some 5) ((tuple a b) a) (_ 0)))
+  (input  (match (Some 5) (#tuple(a b) a) (_ 0)))
   (error  CDZ0201))
 
 (case "a tuple pattern against a Sign scrutinee is a type error"
   (doc    "The companion with a user-facing sum: `(Sign.Pos unit)` is a sum value, so a `(tuple a b)`
            pattern against it is a shape mismatch (CDZ0201). Pins that the tuple-pattern-vs-sum check
            holds for every sum, not only Option.")
-  (input  (match (Sign.Pos unit) ((tuple a b) a) (_ 0)))
+  (input  (match (Sign.Pos unit) (#tuple(a b) a) (_ 0)))
   (error  CDZ0201))
 
 (case "deeply nested pattern matching"
@@ -3451,10 +3451,10 @@
            Patterns nest arbitrarily deep.")
   (input  (do
             (type Expr (Lit Int64) (Add (Tuple Expr Expr)))
-            (let ((e (Expr.Add (tuple (Expr.Lit 1) (Expr.Lit 2)))))
+            (let ((e (Expr.Add #tuple((Expr.Lit 1) (Expr.Lit 2)))))
               (match e
                 ((Expr.Lit n) n)
-                ((Expr.Add (tuple (Expr.Lit a) (Expr.Lit b))) (+ a b))
+                ((Expr.Add #tuple((Expr.Lit a) (Expr.Lit b))) (+ a b))
                 ((Expr.Add _) 0)))))
   (output (: 3 Int64)))
 
@@ -3684,7 +3684,7 @@
            arm SHAPES, not just variant tags or literals. Wasm-graded (the run paths skip the (warns ..)
            check, not fail it). Companion of the rcdzc
            a_structurally_duplicate_tuple_or_nested_ctor_arm_is_redundant test.")
-  (input  (do (def (f (: t (Tuple Bool Int64))) (match t ((tuple true a) a) ((tuple true b) b) ((tuple false c) c))) (def (main) (f (tuple true 1))) (export main)))
+  (input  (do (def (f (: t (Tuple Bool Int64))) (match t (#tuple(true a) a) (#tuple(true b) b) (#tuple(false c) c))) (def (main) (f #tuple(true 1))) (export main)))
   (call   main)
   (output (: 1 Int64))
   (warns  CDZ0213 (message "this match arm is unreachable")))
@@ -3699,7 +3699,7 @@
            `unreachable` warning. Pins that irrefutability is detected through a PRODUCT pattern, not only a
            bare binder. Wasm-graded (the run paths skip the (warns ..) check, not fail it). Companion of the
            rcdzc an_all_wildcard_tuple_arm_is_a_catch_all_that_shadows_later_arms test.")
-  (input  (do (def (f (: t (Tuple Bool Int64))) (match t ((tuple _ _) 0) ((tuple true c) c))) (def (main) (f (tuple true 1))) (export main)))
+  (input  (do (def (f (: t (Tuple Bool Int64))) (match t (#tuple(_ _) 0) (#tuple(true c) c))) (def (main) (f #tuple(true 1))) (export main)))
   (call   main)
   (output (: 0 Int64))
   (warns  CDZ0213 (message "this match arm is unreachable")))
@@ -3714,7 +3714,7 @@
            Pins that the redundancy pass reasons about list-length coverage (exact and `≥ k` ray). Wasm-graded
            (the run paths skip the (warns ..) check, not fail it). Companion of the rcdzc
            a_duplicate_or_shadowed_list_length_arm_is_redundant test.")
-  (input  (do (def (f (: xs (List Int64))) (match xs ((list a) a) ((list b) 9) (_ 0))) (def (main) (f (list 1))) (export main)))
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list(a) a) (#list(b) 9) (_ 0))) (def (main) (f #list(1))) (export main)))
   (call   main)
   (output (: 1 Int64))
   (warns  CDZ0213 (message "this match arm is unreachable")))
@@ -3736,7 +3736,7 @@
            is written as a literal, a variable, an arithmetic expression, or a field projection.
            (Binding the field to a name first and matching that already works; matching the projection
            directly must behave identically.)")
-  (input  (let ((r (record (= n 5))))
+  (input  (let ((r #record((= n 5))))
             (match (. r n)
               (5 100)
               (_ 200))))
@@ -3746,7 +3746,7 @@
   (doc    "The tuple companion of the case above: the scrutinee `(. t 0)` projects element 0 (value
            5), which the literal arm 5 must match, yielding 100. A positional access is a scrutinee
            value like any other.")
-  (input  (let ((t (tuple 5 9)))
+  (input  (let ((t #tuple(5 9)))
             (match (. t 0)
               (5 100)
               (_ 200))))
@@ -3755,7 +3755,7 @@
 (case "a match on a record field selects a later literal arm"
   (doc    "Confirms the field-access scrutinee is matched against EACH literal arm, not just skipped to
            the wildcard: with r.n = 6, the 5 arm is passed over and the 6 arm selected, yielding 300.")
-  (input  (let ((r (record (= n 6))))
+  (input  (let ((r #record((= n 6))))
             (match (. r n)
               (5 100)
               (6 300)
@@ -3794,8 +3794,8 @@
            anything there without binding. `(Some (tuple _ b))` matches a Some whose payload is a pair,
            ignoring the first element and binding `b` to the second — here 2. Pins that the wildcard is
            positional inside a compound pattern, not only a top-level catch-all arm.")
-  (input  (match (Some (tuple 1 2))
-            ((Some (tuple _ b)) b)
+  (input  (match (Some #tuple(1 2))
+            ((Some #tuple(_ b)) b)
             ((None _)           0)))
   (output (: 2 Int64)))
 
@@ -4365,10 +4365,10 @@
   (input  (do
             (def (go n acc)
               (if (= n 0)
-                  (tuple acc 0)
-                  (match (pair n) ((tuple v k) (go (- n 1) (+ acc v))))))
-            (def (pair n) (tuple n n))
-            (def (main) (match (go 3 0) ((tuple a b) a))) (export main)))
+                  #tuple(acc 0)
+                  (match (pair n) (#tuple(v k) (go (- n 1) (+ acc v))))))
+            (def (pair n) #tuple(n n))
+            (def (main) (match (go 3 0) (#tuple(a b) a))) (export main)))
   (output (: 6 Int64))
   (live-objects 0))
 
@@ -4384,8 +4384,8 @@
            tail-recursive tuple return does not. This is the return-kind companion of the tail-recursive
            SCALAR accumulator inference (realized) — a tuple result must infer the same way a scalar does.")
   (input  (do
-            (def (go n) (if (< n 1) (tuple 0 0) (go (- n 1))))
-            (def (main) (match (go 3) ((tuple a b) (+ a b)))) (export main)))
+            (def (go n) (if (< n 1) #tuple(0 0) (go (- n 1))))
+            (def (main) (match (go 3) (#tuple(a b) (+ a b)))) (export main)))
   (output (: 0 Int64))
   (live-objects 0))
 
@@ -4406,14 +4406,14 @@
             (type Ast (AInt Int64) ALeaf (AList (List Ast)))
             (def (dn b i)
               (if (= i 0)
-                  (tuple (AInt (Option.expect (List.at b 0) "in range")) (+ i 1))
-                  (tuple (AList (dac b i (- i 1) (list))) (+ i 1))))
+                  #tuple((AInt (Option.expect (List.at b 0) "in range")) (+ i 1))
+                  #tuple((AList (dac b i (- i 1) #list())) (+ i 1))))
             (def (dac b i n acc)
               (if (< n 1)
                   acc
-                  (match (dn b i) ((tuple child nx) (dac b nx (- n 1) (List.push acc child))))))
-            (def (top b) (match (dn b 0) ((tuple ast pos) ast)))
-            (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1))) (export main)))
+                  (match (dn b i) (#tuple(child nx) (dac b nx (- n 1) (List.push acc child))))))
+            (def (top b) (match (dn b 0) (#tuple(ast pos) ast)))
+            (def (main) (match (top #list(42 7)) ((AInt n) n) (_ -1))) (export main)))
   (output (: 42 Int64))
   (live-objects known-leak 2))
 
@@ -4442,12 +4442,12 @@
            cursor-temp seam.")
   (input  (do
             (type Expr (Lit Int64) (Neg Expr))
-            (def (toks) (list 0 7 0 7))
+            (def (toks) #list(0 7 0 7))
             (def (pa (: i Int64))
               (let ((t (match (List.at (toks) i) ((Some x) x) ((None _) -1))))
                 (if (= t 0)
-                    (let ((inner (pb (+ i 1)))) (tuple (Expr.Neg (. inner 0)) (. inner 1)))
-                    (tuple (Expr.Lit t) (+ i 1)))))
+                    (let ((inner (pb (+ i 1)))) #tuple((Expr.Neg (. inner 0)) (. inner 1)))
+                    #tuple((Expr.Lit t) (+ i 1)))))
             (def (pb (: i Int64)) (pa i))
             (def (ev (: e Expr)) (match e ((Expr.Lit n) n) ((Expr.Neg x) (- 0 (ev x)))))
             (def (run)
@@ -4470,7 +4470,7 @@
            pair (core-semantics.md #A Binding Position Accepts An Irrefutable Pattern) — the same binding a
            `(match (tuple 3 4) ((tuple a b) (+ a b)))` arm makes, written at the binder. Pins that a tuple
            pattern in a `let` binder position destructures the value rather than requiring a bind-then-match.")
-  (input  (let (((tuple a b) (tuple 3 4))) (+ a b)))
+  (input  (let ((#tuple(a b) #tuple(3 4))) (+ a b)))
   (output (: 7 Int64)))
 
 (case "a tuple binding pattern nests to any depth"
@@ -4478,7 +4478,7 @@
            is itself a tuple pattern, bound recursively (core-semantics.md #A Binding Position Accepts An
            Irrefutable Pattern / #Patterns Compose: a binder position admits any pattern). Pins that a
            binding pattern composes to any depth, exactly as a match-arm pattern does.")
-  (input  (let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c))))
+  (input  (let ((#tuple(a #tuple(b c)) #tuple(1 #tuple(2 3)))) (+ a (+ b c))))
   (output (: 6 Int64)))
 
 (case "a let tuple pattern destructures a helper CALL's runtime tuple result"
@@ -4489,9 +4489,9 @@
            every quotient/remainder, min/max, or split-pair helper takes.")
   (input  (do
             (def (divmod (: a Int64) (: b Int64))
-              (tuple (/ a b) (% a b)))
+              #tuple((/ a b) (% a b)))
             (def (main (: a Int64) (: b Int64))
-              (let (((tuple q r) (divmod a b)))
+              (let ((#tuple(q r) (divmod a b)))
                 (+ (* 100 q) r)))
             (export main)))
   (call   main (: 47 Int64) (: 10 Int64)) (output (: 407 Int64)))
@@ -4504,9 +4504,9 @@
            nested pattern must open at run time — the matrix-row / interval-pair return shape.")
   (input  (do
             (def (make-pair (: n Int64))
-              (tuple (tuple n (+ n 1)) (tuple (* n 2) (* n 3))))
+              #tuple(#tuple(n (+ n 1)) #tuple((* n 2) (* n 3))))
             (def (main (: n Int64))
-              (let (((tuple (tuple a b) (tuple c d)) (make-pair n)))
+              (let ((#tuple(#tuple(a b) #tuple(c d)) (make-pair n)))
                 (+ (* 1000 a) (+ (* 100 b) (+ (* 10 c) d)))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 2346 Int64)))
@@ -4520,13 +4520,13 @@
            mixed-representation generic and effects-argument pins.")
   (input  (do
             (def (stats (: xs (List Int64)) (: i Int64) (: n Int64) (: sum Int64) (: txt String))
-              (if (>= i n) (tuple sum txt (List.len xs))
+              (if (>= i n) #tuple(sum txt (List.len xs))
                 (match (List.at xs i)
                   ((Some v) (stats xs (+ i 1) n (+ sum v) (String.concat txt "x")))
-                  ((None u) (tuple -1 txt -1)))))
+                  ((None u) #tuple(-1 txt -1)))))
             (def (main (: a Int64))
-              (match (stats (list a 2 3) 0 3 0 "")
-                ((tuple s t len) (+ (* 100 s) (+ (* 10 (String.byte-len t)) len)))))
+              (match (stats #list(a 2 3) 0 3 0 "")
+                (#tuple(s t len) (+ (* 100 s) (+ (* 10 (String.byte-len t)) len)))))
             (export main)))
   (call   main (: 1 Int64))
   (output (: 633 Int64))
@@ -4546,7 +4546,7 @@
            record analogue of the tuple destructure above, and the same binding a `(match r ((record (x a)
            (y b)) …))` arm would make. A record field is read by name, so this destructure reuses the
            ordinary member-access projection. `(+ a b)` = 7.")
-  (input  (let (((record (= x a) (= y b)) (record (= x 3) (= y 4)))) (+ a b)))
+  (input  (let ((#record((= x a) (= y b)) #record((= x 3) (= y 4)))) (+ a b)))
   (output (: 7 Int64)))
 
 (case "a record binding pattern binds fields by name, out of order and partial"
@@ -4555,7 +4555,7 @@
            still reads its own field — `c` = field `a` = 10, `b` = field `z` = 20 → 100*10+20 = 1020. This
            is the flexibility a tuple lacks (positional), and a partial pattern that names a subset of the
            fields is equally valid. Pins field-order-independence + partiality of a record binding pattern.")
-  (input  (let (((record (= z b) (= a c)) (record (= a 10) (= z 20)))) (+ (* 100 c) b)))
+  (input  (let ((#record((= z b) (= a c)) #record((= a 10) (= z 20)))) (+ (* 100 c) b)))
   (output (: 1020 Int64)))
 
 (case "a let record pattern destructures a helper CALL's runtime record result"
@@ -4566,9 +4566,9 @@
            by-NAME field binding must read the runtime heap record.")
   (input  (do
             (def (stats (: a Int64) (: b Int64))
-              (record (= lo (if (< a b) a b)) (= hi (if (< a b) b a))))
+              #record((= lo (if (< a b) a b)) (= hi (if (< a b) b a))))
             (def (main (: a Int64) (: b Int64))
-              (let (((record (= lo l) (= hi h)) (stats a b)))
+              (let ((#record((= lo l) (= hi h)) (stats a b)))
                 (+ (* 100 l) h)))
             (export main)))
   (call   main (: 7 Int64) (: 3 Int64)) (output (: 307 Int64))
@@ -4583,9 +4583,9 @@
            message with a discriminating field).")
   (input  (do
             (def (main (: n Int64))
-              (match (record (= tag n) (= v 10))
-                ((record (= tag 1) (= v x)) x)
-                ((record (= tag 2) (= v x)) (* x 10))
+              (match #record((= tag n) (= v 10))
+                (#record((= tag 1) (= v x)) x)
+                (#record((= tag 2) (= v x)) (* x 10))
                 (_ -1)))
             (export main)))
   (call   main (: 1 Int64)) (output (: 10 Int64))
@@ -4601,8 +4601,8 @@
            binding-path the let-binder cases above exercise. `(f (record (x 3) (y 4)))` = 7. The record twin
            of the list-rest / tuple param patterns; its ML surface `def f({ x = a, y = b })` round-trips now
            that v-syntax admits a record pattern in a parameter slot (the surface gap this case waited on).")
-  (input  (do (def (f (record (= x a) (= y b))) (+ a b))
-              (def (main) (f (record (= x 3) (= y 4))))
+  (input  (do (def (f #record((= x a) (= y b))) (+ a b))
+              (def (main) (f #record((= x 3) (= y 4))))
               (export main)))
   (output (: 7 Int64)))
 
@@ -4617,8 +4617,8 @@
            positions the spec names (v-inference lambda-param desugar).")
   (input  (do
             (def (main (: a Int64))
-              (let ((f (fn ((tuple x y)) (+ (* x 10) y))))
-                (f (tuple a 4))))
+              (let ((f (fn (#tuple(x y)) (+ (* x 10) y))))
+                (f #tuple(a 4))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 34 Int64)))
 
@@ -4627,7 +4627,7 @@
            have is a type mismatch (CDZ0203), not a silent miss. `(let (((record (nope a)) (record (x 3) (y
            4)))) a)` names `nope`, absent from `(Record (: x Int64) (: y Int64))`. Pins that a record binding
            pattern's fields must exist on the value — the record analogue of a tuple pattern's arity check.")
-  (input  (let (((record (= nope a)) (record (= x 3) (= y 4)))) a))
+  (input  (let ((#record((= nope a)) #record((= x 3) (= y 4)))) a))
   (error  CDZ0203))
 
 (case "a destructuring record let over a runtime value binds its fields"
@@ -4637,8 +4637,8 @@
            Pattern). Pins that a record destructure reads the bound value's fields at RUN TIME, not only
            when the record folds to a constant — the record companion of the runtime tuple/list destructures.")
   (input  (do
-            (def (mk n) (record (= x n) (= y (+ n 1))))
-            (def (f p) (let (((record (= x a) (= y b)) p)) (+ a b)))
+            (def (mk n) #record((= x n) (= y (+ n 1))))
+            (def (f p) (let ((#record((= x a) (= y b)) p)) (+ a b)))
             (def (main) (f (mk 10)))
             (export main)))
   (output (: 21 Int64)))
@@ -4649,7 +4649,7 @@
            Binding Position Accepts An Irrefutable Pattern: `_` is a trivial irrefutable sub-pattern). This
            is the field-level companion of the partial pattern (which OMITS a field) — here the field is
            named but its value discarded. Pins that a wildcard field value is irrefutable and binds nothing.")
-  (input  (let (((record (= x a) (= y _)) (record (= x 7) (= y 4)))) a))
+  (input  (let ((#record((= x a) (= y _)) #record((= x 7) (= y 4)))) a))
   (output (: 7 Int64)))
 
 (case "a later let binding sees an earlier record pattern's field binders"
@@ -4658,7 +4658,7 @@
            binding introduced (core-semantics.md #The Bindings Of One `let` Take Effect In Order). `a`*`b` =
            3*4 = 12. The record twin of the tuple case above — pins that record field binders are in scope
            for the bindings that follow.")
-  (input  (let (((record (= x a) (= y b)) (record (= x 3) (= y 4))) (c (* a b))) c))
+  (input  (let ((#record((= x a) (= y b)) #record((= x 3) (= y 4))) (c (* a b))) c))
   (output (: 12 Int64)))
 
 (case "a let binder may be a single-variant-sum pattern that destructures the payload"
@@ -4714,7 +4714,7 @@
            (core-semantics.md #The Bindings Of One `let` Take Effect In Order: each initializer observes the
            bindings written before it). Pins that a destructuring binder is in scope for the bindings that
            follow, the multi-binding-let idiom the decoder threads.")
-  (input  (let (((tuple a b) (tuple 3 4)) (c (+ a b))) c))
+  (input  (let ((#tuple(a b) #tuple(3 4)) (c (+ a b))) c))
   (output (: 7 Int64)))
 
 (case "a destructuring let over a runtime value binds its parts"
@@ -4722,7 +4722,7 @@
            literal tuple) at the binder, then `(f (tuple 10 20))` = 30 (core-semantics.md #A Binding
            Position Accepts An Irrefutable Pattern). Pins that the destructure reads the bound value at run
            time, not only when it folds to a constant.")
-  (input  (do (def (f p) (let (((tuple a b) p)) (+ a b))) (def (main) (f (tuple 10 20))) (export main)))
+  (input  (do (def (f p) (let ((#tuple(a b) p)) (+ a b))) (def (main) (f #tuple(10 20))) (export main)))
   (output (: 30 Int64)))
 
 ; A LIST binding pattern. A list pattern is irrefutable ONLY in the ZERO-LEADING rest form `(list .. rest)`
@@ -4743,9 +4743,9 @@
            `sum` over it folds `(list 7 8 9)` → 24. Pins that the zero-leading rest form earns the
            binding-position exemption (a leading-element rest does not — see the CDZ0210 case below).")
   (input  (do
-            (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest)))))
-            (def (all (: ys (List Int64))) (let (((list .. rest) ys)) (sum rest)))
-            (def (main) (all (list 7 8 9)))
+            (def (sum (: xs (List Int64))) (match xs (#list() 0) (#list(x .. rest) (+ x (sum rest)))))
+            (def (all (: ys (List Int64))) (let ((#list(.. rest) ys)) (sum rest)))
+            (def (main) (all #list(7 8 9)))
             (export main)))
   (output (: 24 Int64))
   (live-objects 0))
@@ -4759,7 +4759,7 @@
            `(head (list))` would TRAP at runtime reading element 0 of an empty list — a fault the type
            system must reject up front. A leading-element destructure of a possibly-empty list belongs in a
            `match`. Pins that ONLY the zero-leading rest form is irrefutable in a binding position.")
-  (input  (do (def (head (list x .. rest)) x) (def (main) (head (list 7 8 9))) (export main)))
+  (input  (do (def (head #list(x .. rest)) x) (def (main) (head #list(7 8 9))) (export main)))
   (error  CDZ0210))
 
 (case "a leading-element list rest pattern in a let binder is refutable and rejected"
@@ -4768,7 +4768,7 @@
            REFUTABLE pattern in a binding position → CDZ0210 (core-semantics.md §139/§147). The spec-correct
            idiom for a possibly-short list is a `match` with an empty/short arm, not a `let` destructure.
            Pins the leading-element rest boundary in the `let` position, mirroring the parameter case.")
-  (input  (do (def (main) (let (((list a b .. rest) (list 1 2 3 4))) a)) (export main)))
+  (input  (do (def (main) (let ((#list(a b .. rest) #list(1 2 3 4))) a)) (export main)))
   (error  CDZ0210))
 
 (case "a fixed-arity list binding pattern is refutable and rejected"
@@ -4778,7 +4778,7 @@
            Binding Position Accepts An Irrefutable Pattern). Only the rest form `(list p… .. rest)`, which
            matches any length ≥ the leading count, earns the binding-position exemption; a length-fixed
            destructure must be a `match`. Pins the list refutability boundary.")
-  (input  (do (def (main) (let (((list a b) (list 1 2))) (+ a b))) (export main)))
+  (input  (do (def (main) (let ((#list(a b) #list(1 2))) (+ a b))) (export main)))
   (error  CDZ0210))
 
 ; The refutable / ill-shaped / non-linear rejections. A binding position has no alternative arm, so its
@@ -4812,7 +4812,7 @@
            BINDING pattern. A literal is refutable, so a binding position rejects it (CDZ0210) exactly as the
            top-level `(let ((0 5)) 42)` does — the check recurses into tuple sub-patterns. A compiler that
            stopped at the top level ran it to 9, silently treating the literal element as a no-op.")
-  (input  (do (def (main) (let (((tuple 0 b) (tuple 0 9))) b)) (export main)))
+  (input  (do (def (main) (let ((#tuple(0 b) #tuple(0 9))) b)) (export main)))
   (error  CDZ0210))
 
 (case "a literal nested in a tuple def-parameter is refutable and rejected"
@@ -4821,7 +4821,7 @@
            `(f (tuple 9 5))` with a first element that does NOT equal 0 must not run to 5 (no compile
            rejection, no runtime trap) — the parameter's binding position enforces irrefutability like a
            `let` binder.")
-  (input  (do (def (f (tuple 0 b)) b) (def (main) (f (tuple 9 5))) (export main)))
+  (input  (do (def (f #tuple(0 b)) b) (def (main) (f #tuple(9 5))) (export main)))
   (error  CDZ0210))
 
 (case "a multi-variant constructor nested in a tuple let-binder is refutable and rejected"
@@ -4829,7 +4829,7 @@
            `(Some x)` in a tuple binding element. A multi-variant ctor is refutable (the `None` variant is
            uncovered) — the top-level `(let (((Some x) (Some 5))) x)` rejects CDZ0210, so the nested form
            does too. The recursion classifies each element with the same rule the top-level binder uses.")
-  (input  (do (def (main) (let (((tuple (Some x) b) (tuple (Some 5) 9))) x)) (export main)))
+  (input  (do (def (main) (let ((#tuple((Some x) b) #tuple((Some 5) 9))) x)) (export main)))
   (error  CDZ0210))
 
 (case "a deeply nested literal in a tuple let-binder is refutable and rejected"
@@ -4838,7 +4838,7 @@
            the deep literal is CDZ0210 exactly as a top-level one is. Pins that the recursion does not stop
            after one tuple level (contrast the irrefutable `(tuple a (tuple b c))` binder above, which
            composes to any depth and RUNS).")
-  (input  (do (def (main) (let (((tuple a (tuple 0 b)) (tuple 1 (tuple 0 3)))) (+ a b))) (export main)))
+  (input  (do (def (main) (let ((#tuple(a #tuple(0 b)) #tuple(1 #tuple(0 3)))) (+ a b))) (export main)))
   (error  CDZ0210))
 
 (case "a wrong-arity tuple binding pattern is a shape error"
@@ -4846,14 +4846,14 @@
            two-element value: a static shape mismatch (CDZ0201, core-semantics.md #A Binding Position
            Accepts An Irrefutable Pattern), the same code the wrong-arity tuple MATCH arm gets. Pins that a
            binding pattern's arity is checked against the bound value's type.")
-  (input  (let (((tuple a b c) (tuple 1 2))) a))
+  (input  (let ((#tuple(a b c) #tuple(1 2))) a))
   (error  CDZ0201))
 
 (case "a tuple binding pattern against a non-tuple value is a shape error"
   (doc    "`(let (((tuple a b) 5)) a)` — a tuple pattern cannot match a scalar `Int64` value: a kind
            mismatch (CDZ0201, core-semantics.md #A Binding Position Accepts An Irrefutable Pattern). Pins
            that a tuple binding pattern requires a tuple value.")
-  (input  (let (((tuple a b) 5)) a))
+  (input  (let ((#tuple(a b) 5)) a))
   (error  CDZ0201))
 
 (case "a non-linear tuple binding pattern is rejected"
@@ -4861,7 +4861,7 @@
            is the same CDZ0102 error a non-linear MATCH pattern gets (core-semantics.md #A Binding Position
            Accepts An Irrefutable Pattern / #Bindings Introduced By A Pattern Are Scoped To Its Branch).
            Pins that linearity is enforced in binding position, not only in a match arm.")
-  (input  (let (((tuple x x) (tuple 1 2))) x))
+  (input  (let ((#tuple(x x) #tuple(1 2))) x))
   (error  CDZ0102))
 
 ; A binding pattern MAY carry a type ANNOTATION `(: <pat> <Type>)` (type-system.md #Annotations Constrain,
@@ -4880,7 +4880,7 @@
   (doc    "`(let (((: (tuple a b) (Tuple Int64 Int64)) (tuple 3 4))) (+ a b))` — the annotation constrains
            the whole tuple before the pattern takes it apart, then `a`/`b` bind its elements (7). Pins that
            the annotation wraps a DESTRUCTURING binder, not only a bare name.")
-  (input  (let (((: (tuple a b) (Tuple Int64 Int64)) (tuple 3 4))) (+ a b)))
+  (input  (let (((: #tuple(a b) (Tuple Int64 Int64)) #tuple(3 4))) (+ a b)))
   (output (: 7 Int64)))
 
 (case "an annotated let binder that contradicts the value is rejected"
@@ -4897,7 +4897,7 @@
            contradiction the compiler MUST reject (CDZ0203). The destructuring companion of the scalar Bool/Int
            contradiction above (and the negative of the positive destructuring binder `(Tuple Int64 Int64)`): an
            annotation on a DESTRUCTURING binder is checked element-wise against the value, not only whole-shape.")
-  (input  (let (((: (tuple a b) (Tuple Int64 Bool)) (tuple 3 4))) a))
+  (input  (let (((: #tuple(a b) (Tuple Int64 Bool)) #tuple(3 4))) a))
   (error  CDZ0203))
 
 (case "an annotated let binder narrower than its literal value is rejected (int width)"
@@ -4938,8 +4938,8 @@
            …)` does. Calling `(f (tuple 3 4))` binds `a`=3, `b`=4 and yields 7. Pins the parameter face of
            the binding-pattern capability the `let` cases above witness.")
   (input  (do
-            (def (f (tuple a b)) (+ a b))
-            (def (main) (f (tuple 3 4))) (export main)))
+            (def (f #tuple(a b)) (+ a b))
+            (def (main) (f #tuple(3 4))) (export main)))
   (output (: 7 Int64)))
 
 ; The tuple-pattern-parameter cases here pass a CONSTANT tuple `(f (tuple 3 4))` from a nullary entry, so
@@ -4954,8 +4954,8 @@
            tuple at run time, binding `a`=x and `b`=x+1. x=5 → 5+6 = 11; x=100 → 201. Pins the runtime face
            of tuple-parameter destructuring, distinct from the constant `(f (tuple 3 4))` fold above.")
   (input  (do
-            (def (add (tuple a b)) (+ a b))
-            (def (main (: x Int64)) (add (tuple x (+ x 1)))) (export main)))
+            (def (add #tuple(a b)) (+ a b))
+            (def (main (: x Int64)) (add #tuple(x (+ x 1)))) (export main)))
   (call   main (: 5 Int64)) (output (: 11 Int64))
   (call   main (: 100 Int64)) (output (: 201 Int64)))
 
@@ -4965,8 +4965,8 @@
            5 + (6 + 7) = 18. Pins that a nested destructuring parameter reads a nested heap tuple at run
            time, its inner binders resolving down the extended access path.")
   (input  (do
-            (def (f (tuple a (tuple b c))) (+ a (+ b c)))
-            (def (main (: x Int64)) (f (tuple x (tuple (+ x 1) (+ x 2))))) (export main)))
+            (def (f #tuple(a #tuple(b c))) (+ a (+ b c)))
+            (def (main (: x Int64)) (f #tuple(x #tuple((+ x 1) (+ x 2))))) (export main)))
   (call   main (: 5 Int64)) (output (: 18 Int64)))
 
 (case "a tuple-pattern parameter over a tuple threaded from a helper call"
@@ -4976,8 +4976,8 @@
            prior call (the (node, cursor)-pair-threaded-through-a-pass shape), the return-boundary companion
            of the inline runtime destructure.")
   (input  (do
-            (def (mk (: x Int64)) (tuple x (- 0 x)))
-            (def (sum (tuple a b)) (+ a b))
+            (def (mk (: x Int64)) #tuple(x (- 0 x)))
+            (def (sum #tuple(a b)) (+ a b))
             (def (main (: x Int64)) (sum (mk x))) (export main)))
   (call   main (: 5 Int64)) (output (: 0 Int64))
   (call   main (: 40 Int64)) (output (: 0 Int64)))
@@ -4989,8 +4989,8 @@
            without disturbing each other's slots. `(f x (tuple 2 4))` at x=10 = 10 + (2+4) = 16. Pins that a
            plain binder and a destructuring binder coexist in one parameter list.")
   (input  (do
-            (def (f x (tuple a b)) (+ x (+ a b)))
-            (def (main (: x Int64)) (f x (tuple 2 4))) (export main)))
+            (def (f x #tuple(a b)) (+ x (+ a b)))
+            (def (main (: x Int64)) (f x #tuple(2 4))) (export main)))
   (call   main (: 10 Int64)) (output (: 16 Int64)))
 
 (case "an annotated tuple-pattern parameter binds its pattern's names"
@@ -5003,8 +5003,8 @@
            un-annotated and the annotated-plain-binder forms both work; only their combination broke, and
            the ML printer emits exactly this form.)")
   (input  (do
-            (def (f (: (tuple a b) (Tuple Int64 Int64))) (+ a b))
-            (def (main) (f (tuple 3 4))) (export main)))
+            (def (f (: #tuple(a b) (Tuple Int64 Int64))) (+ a b))
+            (def (main) (f #tuple(3 4))) (export main)))
   (output (: 7 Int64)))
 
 (case "an annotated tuple-pattern parameter still checks its annotation against the argument"
@@ -5014,8 +5014,8 @@
            exactly as an annotated `let` binder `(let (((: x Bool) 5)) x)` is rejected. Pins that peeling the
            annotation to reach the tuple pattern keeps the annotation live on the fresh binder.")
   (input  (do
-            (def (f (: (tuple a b) (Tuple Int64 Bool))) a)
-            (def (main) (f (tuple 3 4))) (export main)))
+            (def (f (: #tuple(a b) (Tuple Int64 Bool))) a)
+            (def (main) (f #tuple(3 4))) (export main)))
   (error  CDZ0203))
 
 ; --- Jump-table index integrity for HIGH-BIT scrutinees (adversarial guards) ----------------------
@@ -5149,7 +5149,7 @@
            (or trap-gated selects), never both-sides evaluation.")
   (input  (do
             (def (main (: d Int64))
-              (. (if (> d 0) (tuple (/ 100 d) 1) (tuple 7 2)) 0))
+              (. (if (> d 0) #tuple((/ 100 d) 1) #tuple(7 2)) 0))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
@@ -5160,7 +5160,7 @@
            divide-by-zero stays guarded. Completes the guard pin across all three hoisted shapes.")
   (input  (do
             (def (main (: d Int64))
-              (. (if (> d 0) (record (= a (/ 100 d))) (record (= a 5))) a))
+              (. (if (> d 0) #record((= a (/ 100 d))) #record((= a 5))) a))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 5 Int64)))
@@ -5173,14 +5173,14 @@
 (case "a projection-only runtime tuple folds to the sum of its elements"
   (doc    "`(let ((t (tuple a b))) (+ (. t 0) (. t 1)))` over runtime params: the tuple is only projected,
            never escaped, so it folds to `(+ a b)` — no heap. pair-sum(20, 22) = 42.")
-  (input  (do (def (pair-sum (: a Int64) (: b Int64)) (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum)))
+  (input  (do (def (pair-sum (: a Int64) (: b Int64)) (let ((t #tuple(a b))) (+ (. t 0) (. t 1)))) (export pair-sum)))
   (call   pair-sum (: 20 Int64) (: 22 Int64)) (output (: 42 Int64)))
 
 (case "a projection of an if-selected tuple selects the branch's element"
   (doc    "`(. (if p (tuple a b) (tuple b a)) 0)` pushes the projection into the branches, folding to `(if p
            a b)`: p=true selects the then-tuple's element 0 (a), p=false selects the else-tuple's element 0
            (b, the swapped position). pick(true,10,20)=10; pick(false,10,20)=20.")
-  (input  (do (def (pick (: p Bool) (: a Int64) (: b Int64)) (. (if p (tuple a b) (tuple b a)) 0)) (export pick)))
+  (input  (do (def (pick (: p Bool) (: a Int64) (: b Int64)) (. (if p #tuple(a b) #tuple(b a)) 0)) (export pick)))
   (call   pick (: true Bool) (: 10 Int64) (: 20 Int64)) (output (: 10 Int64))
   (call   pick (: false Bool) (: 10 Int64) (: 20 Int64)) (output (: 20 Int64)))
 
@@ -5188,7 +5188,7 @@
   (doc    "The record companion, with fields written OUT of sorted order to confirm the fold is by KEY not
            slot: `(. (if p (record (y b) (x a)) (record (y a) (x b))) x)` folds to `(if p a b)`.
            pick(true,10,20)=10; pick(false,10,20)=20.")
-  (input  (do (def (pick (: p Bool) (: a Int64) (: b Int64)) (. (if p (record (= y b) (= x a)) (record (= y a) (= x b))) x)) (export pick)))
+  (input  (do (def (pick (: p Bool) (: a Int64) (: b Int64)) (. (if p #record((= y b) (= x a)) #record((= y a) (= x b))) x)) (export pick)))
   (call   pick (: true Bool) (: 10 Int64) (: 20 Int64)) (output (: 10 Int64))
   (call   pick (: false Bool) (: 10 Int64) (: 20 Int64)) (output (: 20 Int64)))
 
@@ -5238,7 +5238,7 @@
            condition-integrity pin for the hoist.")
   (input  (do
             (def (main (: d Int64))
-              (. (if (> (/ 100 d) 0) (tuple 1 2) (tuple 3 4)) 0))
+              (. (if (> (/ 100 d) 0) #tuple(1 2) #tuple(3 4)) 0))
             (export main)))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
@@ -5256,8 +5256,8 @@
   (input  (do
             (def (main (: d Int64) (: e Int64))
               (if (< (+ 9223372036854775807 e) 5)
-                  (tuple (/ 10 d) 1)
-                  (tuple (/ 10 d) 2)))
+                  #tuple((/ 10 d) 1)
+                  #tuple((/ 10 d) 2)))
             (export main)))
   (call   main (: 0 Int64) (: 1 Int64))
   (trap   "integer overflow"))
@@ -5306,8 +5306,8 @@
   (input  (do
             (def (mk (: c1 Bool) (: c2 Bool) (: a Int64) (: b Int64) (: n Int64))
               (if (< n 0) (mk c1 c2 a b (+ n 1))
-                (if c1 (tuple (Option.Some a) 1)
-                  (if c2 (tuple (Option.Some b) 1) (tuple (Option.Some a) 1)))))
+                (if c1 #tuple((Option.Some a) 1)
+                  (if c2 #tuple((Option.Some b) 1) #tuple((Option.Some a) 1)))))
             (def (main (: c1 Bool) (: c2 Bool) (: a Int64) (: b Int64))
               (match (. (mk c1 c2 a b 0) 0)
                 ((Option.Some v) (+ v (. (mk c1 c2 a b 0) 1)))
@@ -5333,7 +5333,7 @@
            condition. The list-shape guard pin, completing the sum/tuple/record set above.")
   (input  (do
             (def (main (: d Int64))
-              (Option.expect (List.at (if (> d 0) (list (/ 100 d) 1) (list 7 2)) 0) "v"))
+              (Option.expect (List.at (if (> d 0) #list((/ 100 d) 1) #list(7 2)) 0) "v"))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
@@ -5344,7 +5344,7 @@
            per-element selections are guarded by exactly the condition.")
   (input  (do
             (def (main (: d Int64))
-              (Option.expect (List.at (if (= d 0) (list (/ 100 d) 1) (list 7 2)) 0) "v"))
+              (Option.expect (List.at (if (= d 0) #list((/ 100 d) 1) #list(7 2)) 0) "v"))
             (export main)))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
@@ -5357,7 +5357,7 @@
            The decline pin for the list hoist's same-length guard.")
   (input  (do
             (def (main (: d Int64))
-              (List.len (if (> d 0) (list 1 2 3) (list 9))))
+              (List.len (if (> d 0) #list(1 2 3) #list(9))))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64))
@@ -5371,7 +5371,7 @@
            genuinely selects (both branch directions verified) and the shared slot is not disturbed.")
   (input  (do
             (def (main (: d Int64) (: x Int64) (: y Int64))
-              (let ((t (if (> d 0) (list x 5) (list y 5))))
+              (let ((t (if (> d 0) #list(x 5) #list(y 5))))
                 (+ (Option.expect (List.at t 0) "v") (Option.expect (List.at t 1) "v"))))
             (export main)))
   (call   main (: 1 Int64) (: 3 Int64) (: 9 Int64))
@@ -5389,7 +5389,7 @@
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
             (def (main (: d Int64))
-              (String.byte-len (Option.expect (List.at (if (> d 0) (list (rep "a" d)) (list "bb")) 0) "v")))
+              (String.byte-len (Option.expect (List.at (if (> d 0) #list((rep "a" d)) #list("bb")) 0) "v")))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 2 Int64))
@@ -5405,8 +5405,8 @@
            consume-under-condition the same either way).")
   (input  (do
             (def (main (: d Int64))
-              (let ((xs (List.push (list) 7)))
-                (let ((t (if (> d 0) (list (List.len (List.push xs 9)) 0) (list 0 0))))
+              (let ((xs (List.push #list() 7)))
+                (let ((t (if (> d 0) #list((List.len (List.push xs 9)) 0) #list(0 0))))
                   (+ (Option.expect (List.at t 0) "v") (List.len xs)))))
             (export main)))
   (call   main (: 1 Int64))
@@ -5436,7 +5436,7 @@
             (effect Ctr (op tick (-> Unit Int64)))
             (def (main)
               (handle Ctr 0 ((tick (_) s (resume s (+ s 1))))
-                (let ((t (match (Ctr.tick unit) (0 (tuple 1 2)) (1 (tuple 3 4)) (_ (tuple 5 6)))))
+                (let ((t (match (Ctr.tick unit) (0 #tuple(1 2)) (1 #tuple(3 4)) (_ #tuple(5 6)))))
                   (+ (+ (* 100 (. t 0)) (* 10 (. t 1))) (Ctr.tick unit)))))
             (export main)))
   (call   main)
@@ -5498,7 +5498,7 @@
            including the default arm's participation in the per-position match.")
   (input  (do
             (def (main (: k Int64))
-              (let ((t (match k (0 (list 10 7)) (1 (list 20 7)) (_ (list 30 7)))))
+              (let ((t (match k (0 #list(10 7)) (1 #list(20 7)) (_ #list(30 7)))))
                 (+ (Option.expect (List.at t 0) "v") (Option.expect (List.at t 1) "v"))))
             (export main)))
   (call   main (: 1 Int64))
@@ -5512,7 +5512,7 @@
            k = 0 → {a:10, b:9} → 19. The record-shape (keyed alignment) pin for the multi-arm sink.")
   (input  (do
             (def (main (: k Int64))
-              (let ((r (match k (0 (record (= a 10) (= b 9))) (1 (record (= a 20) (= b 9))) (_ (record (= a 30) (= b 9))))))
+              (let ((r (match k (0 #record((= a 10) (= b 9))) (1 #record((= a 20) (= b 9))) (_ #record((= a 30) (= b 9))))))
                 (+ (. r a) (. r b))))
             (export main)))
   (call   main (: 2 Int64))
@@ -5529,7 +5529,7 @@
            preserves the consume-under-probe the retain analysis placed.")
   (input  (do
             (def (main (: k Int64))
-              (let ((xs (List.push (list) 7)))
+              (let ((xs (List.push #list() 7)))
                 (let ((o (match k (1 (Option.Some (List.len (List.push xs 9)))) (_ (Option.Some 0)))))
                   (+ (Option.expect o "v") (List.len xs)))))
             (export main)))
@@ -5545,7 +5545,7 @@
            exactly once): the split matches must probe a single bound evaluation, never re-run it.")
   (input  (do
             (def (main (: d Int64))
-              (. (match (/ 100 d) (0 (tuple 1 2)) (_ (tuple 3 4))) 0))
+              (. (match (/ 100 d) (0 #tuple(1 2)) (_ #tuple(3 4))) 0))
             (export main)))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
@@ -5601,7 +5601,7 @@
            default) and the shared slot is untouched.")
   (input  (do
             (def (main (: k Int64) (: x Int64) (: y Int64))
-              (let ((t (match k (0 (tuple x 5)) (1 (tuple y 5)) (_ (tuple 99 5)))))
+              (let ((t (match k (0 #tuple(x 5)) (1 #tuple(y 5)) (_ #tuple(99 5)))))
                 (+ (. t 0) (. t 1))))
             (export main)))
   (call   main (: 0 Int64) (: 3 Int64) (: 8 Int64))
@@ -5666,7 +5666,7 @@
            is also the demanded one (no dead-trap ambiguity).")
   (input  (do
             (def (main (: x Int64) (: d Int64))
-              (. (if (< x 5) (tuple (/ 10 d) (+ x 1)) (tuple 0 0)) 0))
+              (. (if (< x 5) #tuple((/ 10 d) (+ x 1)) #tuple(0 0)) 0))
             (export main)))
   (call   main (: 1 Int64) (: 0 Int64))
   (trap   "divide by zero"))
@@ -5680,7 +5680,7 @@
            dead-trap-on-discard spec question, deliberately not graded).")
   (input  (do
             (def (main (: x Int64) (: d Int64))
-              (. (if (< x 5) (tuple (/ 10 d) 1) (tuple (/ 10 d) 2)) 0))
+              (. (if (< x 5) #tuple((/ 10 d) 1) #tuple((/ 10 d) 2)) 0))
             (export main)))
   (call   main (: 1 Int64) (: 0 Int64))
   (trap   "divide by zero"))
@@ -5701,7 +5701,7 @@
            trap. Settles the undemanded-element dead-trap-on-discard question the demanded-element case
            above deferred; the discarded element's evaluation is not forced by tuple CONSTRUCTION, only by
            projection of THAT position. `d` is a runtime parameter so this is emitted code, both backends.")
-  (input  (do (def (main (: d Int64)) (. (tuple (/ 10 d) 1) 1)) (export main)))
+  (input  (do (def (main (: d Int64)) (. #tuple((/ 10 d) 1) 1)) (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
 
@@ -5744,7 +5744,7 @@
            decides for a DISCARDED element, a demanded one is unambiguous.")
   (input  (do
             (def (main (: d Int64))
-              (tuple (/ 10 d) 1))
+              #tuple((/ 10 d) 1))
             (export main)))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
@@ -5853,7 +5853,7 @@
            Graded on the wasm target (warnings ride the shared compile stage = target-independent; the rust/
            rust-async run paths cannot observe compile stderr, so the (warns ..) check is skipped there, not
            failed). The portable companion of the rcdzc dead-trap unit test.")
-  (input  (do (def (main) (. (tuple 42 (/ 100 0)) 0)) (export main)))
+  (input  (do (def (main) (. #tuple(42 (/ 100 0)) 0)) (export main)))
   (output (: 42 Int64))
   (warns  CDZ0305 (message "always traps but its value is never used")))
 
@@ -5870,7 +5870,7 @@
            dead-trap warning exactly as the ÷0 case above. Pins that the dead-trap diagnostic covers %0, not
            only ÷0. Wasm-graded (warnings ride the shared compile stage; the run paths skip the (warns ..)
            check, not fail it).")
-  (input  (do (def (main) (. (tuple 42 (% 100 0)) 0)) (export main)))
+  (input  (do (def (main) (. #tuple(42 (% 100 0)) 0)) (export main)))
   (output (: 42 Int64))
   (warns  CDZ0305 (message "always traps but its value is never used")))
 
@@ -5881,7 +5881,7 @@
            warning as the ÷0 and %0 cases do. Pins that the dead-trap diagnostic covers a provable overflow,
            not only the divide/modulo family — the trap-KIND axis of core-semantics.md §285. Wasm-graded (the
            run paths skip the (warns ..) check, not fail it).")
-  (input  (do (def (main) (. (tuple 42 (+ 9223372036854775807 1)) 0)) (export main)))
+  (input  (do (def (main) (. #tuple(42 (+ 9223372036854775807 1)) 0)) (export main)))
   (output (: 42 Int64))
   (warns  CDZ0305 (message "always traps but its value is never used")))
 
@@ -5893,7 +5893,7 @@
            cases do. Pins that the dead-trap diagnostic covers the zero-denominator rational construction —
            the fourth provable trap kind of core-semantics.md §285 — so the ruling is about observation, not
            the trap kind. Wasm-graded (the run paths skip the (warns ..) check, not fail it).")
-  (input  (do (def (main) (. (tuple 42 (Rational.of 1 0)) 0)) (export main)))
+  (input  (do (def (main) (. #tuple(42 (Rational.of 1 0)) 0)) (export main)))
   (output (: 42 Int64))
   (warns  CDZ0305 (message "always traps but its value is never used")))
 
@@ -6428,7 +6428,7 @@
            0)) 1 0))` = `(> a 0)` in both, so `b` is irrelevant: (5,-1) → (1,1), (-1,5) → (0,0).")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (tuple (if (or  (and (> a 0) (> b 0)) (> a 0)) 1 0)
+              #tuple((if (or  (and (> a 0) (> b 0)) (> a 0)) 1 0)
                      (if (and (or  (> a 0) (> b 0)) (> a 0)) 1 0)))
             (export main)))
   (call   main (: 5 Int64) (: -1 Int64)) (output (: (tuple 1 1) (Tuple Int64 Int64)))
@@ -6452,7 +6452,7 @@
            operands, both backends.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (tuple (if (and (> a 0) (or (> a 0) (> b 0))) 1 0)
+              #tuple((if (and (> a 0) (or (> a 0) (> b 0))) 1 0)
                      (if (or (> a 0) (and (> a 0) (> b 0))) 1 0)))
             (export main)))
   (call   main (: 5 Int64) (: -1 Int64))
@@ -6477,7 +6477,7 @@
            (or exhaustive, and disjoint) for both `<`/`>=` and `<=`/`>`, both backends.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (tuple (if (or  (< a b) (>= a b)) 1 0)
+              #tuple((if (or  (< a b) (>= a b)) 1 0)
                      (if (and (< a b) (>= a b)) 1 0)
                      (if (or  (<= a b) (> a b)) 1 0)
                      (if (and (<= a b) (> a b)) 1 0)))
@@ -6588,7 +6588,7 @@
            backends.")
   (input  (do
             (def (main (: a Int64) (: b Int64) (: c Int64))
-              (tuple (if (and (< a b) (and (>= a b) (> c 0))) 1 0)
+              #tuple((if (and (< a b) (and (>= a b) (> c 0))) 1 0)
                      (if (or  (< a b) (or  (>= a b) (> c 0))) 1 0)))
             (export main)))
   (call   main (: 3 Int64) (: 5 Int64) (: 9 Int64))
@@ -6630,7 +6630,7 @@
            `(tuple (if (and (= x 5) (= x 5)) 1 0) (if (and (>= x 5) (>= x 10)) 1 0))`.")
   (input  (do
             (def (main (: x Int64))
-              (tuple (if (and (= x 5) (= x 5)) 1 0)
+              #tuple((if (and (= x 5) (= x 5)) 1 0)
                      (if (and (>= x 5) (>= x 10)) 1 0)))
             (export main)))
   (call   main (: 5 Int64))  (output (: (tuple 1 0) (Tuple Int64 Int64)))
@@ -6884,7 +6884,7 @@
            garbage; the historically-flagged unsoundness).")
   (input  (do
             (def (main (: d Int64))
-              (match (list 5) ((list a b .. r) 1) (_ 2)))
+              (match #list(5) (#list(a b .. r) 1) (_ 2)))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 2 Int64)))
@@ -6896,7 +6896,7 @@
            refutes (above), exactly-minimum matches with an empty rest.")
   (input  (do
             (def (main (: d Int64))
-              (match (list 7 8) ((list a b .. r) (+ (* (+ a b) 10) (List.len r))) (_ -1)))
+              (match #list(7 8) (#list(a b .. r) (+ (* (+ a b) 10) (List.len r))) (_ -1)))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 150 Int64)))
@@ -6911,7 +6911,7 @@
             (def (build (: n Int64) (: acc (List Int64)))
               (if (= n 0) acc (build (- n 1) (List.push acc n))))
             (def (main (: n Int64))
-              (match (build n (list)) ((list a b .. r) (+ a b)) (_ -1)))
+              (match (build n #list()) (#list(a b .. r) (+ a b)) (_ -1)))
             (export main)))
   (call   main (: 4 Int64))
   (output (: 7 Int64))
@@ -7122,7 +7122,7 @@
   (doc    "The lexical-scope skip index hops over the non-binding spine (record / if / application) to the
            binding let. `k` (=5) sits under three non-binding ifs and a record projection above the let that
            binds it; each `(< k N)` is true so the innermost `k` runs, projected back = 5.")
-  (input  (do (def (main) (let ((k 5)) (if (< k 30) (if (< k 20) (if (< k 10) (. (record (= a k)) a) 1) 2) 3))) (export main)))
+  (input  (do (def (main) (let ((k 5)) (if (< k 30) (if (< k 20) (if (< k 10) (. #record((= a k)) a) 1) 2) 3))) (export main)))
   (call   main) (output (: 5 Int64)))
 
 (case "shadowing resolves nearest-wins through the scope-skip index"
@@ -7168,7 +7168,7 @@
             (def (inner (: r (Result (List Int64) Int64)))
               (match r ((Ok w) (+ ((. List len) w) ((. List len) w))) ((Err e) e)))
             (def (f (: c Bool) (: n Int64))
-              (match (if c (Some (build 0 n (list))) (None))
+              (match (if c (Some (build 0 n #list())) (None))
                 ((Some v) (inner (if c (Ok v) (Err 0))))
                 ((None) 0)))
             (def (main (: n Int64)) (f true n))
@@ -7184,7 +7184,7 @@
             (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
               (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
             (def (f (: c Bool) (: n Int64))
-              (match (if c (Some (build 0 n (list))) (None))
+              (match (if c (Some (build 0 n #list())) (None))
                 ((Some v) (+ ((. List len) v) ((. List len) v)))
                 ((None) 0)))
             (def (main (: n Int64)) (f true n))
@@ -7199,7 +7199,7 @@
   (input  (do
             (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
               (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
-            (def (f (: n Int64)) (let ((v (build 0 n (list)))) (+ ((. List len) v) ((. List len) v))))
+            (def (f (: n Int64)) (let ((v (build 0 n #list()))) (+ ((. List len) v) ((. List len) v))))
             (def (main (: n Int64)) (f n))
             (export main)))
   (call   main (: 3 Int64)) (output (: 6 Int64)) (live-objects 0))

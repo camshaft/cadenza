@@ -158,7 +158,7 @@
            re-measure census at flip time rather than pre-pinning a leak clause on a decline.")
   (input (do
 (def (depth (: node Ast)) (match node
-  ((Ast.List es) (match es ((list) 1) ((list h .. rest) (+ 1 (depth h)))))
+  ((Ast.List es) (match es (#list() 1) (#list(h .. rest) (+ 1 (depth h)))))
   (_ 1)))
 (def (frames (: k Int64))
   (if (= k 0) 0
