@@ -17781,39 +17781,11 @@ mod match_engine {
     }
 
     #[test]
-    fn a_bin_pattern_over_a_non_bytes_scrutinee_is_a_type_error() {
-        // A `(bin …)` pattern decodes a Bytes value, so it is only well-formed over a Bytes scrutinee.
-        // Matching it against a DEFINITE non-Bytes scrutinee (Int64/String/List) was silently accepted at
-        // `check` and gave the misleading generic "not a scalar literal or `_`" decline at compile. Now it
-        // is a clean CDZ0203 naming the real scrutinee type, the bin twin of the map-key / list-element
-        // pattern-type checks.
-        for (ty, val, name) in [
-            ("Int64", "n", "Int64"),
-            ("String", "s", "String"),
-            ("(List Int64)", "xs", "(List Int64)"),
-        ] {
-            let d = reject_full(&format!(
-                "(module m (def (f (: {val} {ty})) (match {val} ((bin (u8 x)) x) (_ 0))) (export f))"
-            ))
-            .unwrap_or_else(|| panic!("a bin pattern over {name} must reject"));
-            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "{name}: {}", d.message);
-            assert!(
-                d.message
-                    .contains("`(bin …)` pattern matches a Bytes value")
-                    && d.message.contains(name),
-                "{name}: names the bin-vs-scrutinee mismatch: {}",
-                d.message
-            );
-        }
-        // NO false reject: a bin pattern over a BYTES scrutinee is well-formed.
-        assert!(
-            reject_code(
-                "(module m (def (f (: b Bytes)) (match b ((bin (u8 x)) x) (_ 0))) (export f))"
-            )
-            .is_none(),
-            "a bin pattern over Bytes is valid"
-        );
-    }
+    // (a_bin_pattern_over_a_non_bytes_scrutinee_is_a_type_error migrated to corpus 16-binary-matching, in the
+    // bin-pattern MATCH section: a `(bin …)` pattern over a definite non-Bytes scrutinee (Int64/String/List)
+    // → CDZ0203 (message "`(bin …)` pattern matches a Bytes value")(message <scrutinee type>); + the
+    // no-false-reject control (bin over a Bytes param is not a type error — it declines only on the
+    // non-scalar-param boundary). --case grades the codes + messages + the bare declines.)
 
     #[test]
     // (a_structural_pattern_over_a_mismatched_scrutinee_kind_is_a_type_error migrated to corpus
