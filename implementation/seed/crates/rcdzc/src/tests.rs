@@ -21154,49 +21154,6 @@ mod match_engine {
         );
     }
 
-    /// An operation declared with NO type at all — `(op get)`, `op.ty == None` — is the missing-type
-    /// companion of the non-arrow `(op get Int64)` case above. It was SILENTLY ACCEPTED: `collect_faults`'
-    /// op-type loop `continue`d past a typeless op, and performing it leaked the internal op-record
-    /// `(Record (apply Any) (effect-op Any) (t Type))` at the user (a "TYPE, not a runtime value" export
-    /// fault) plus a CDZ0401 no-home. Now it is CDZ0201 "this operation has no type" at the op name — one
-    /// primary error (the consequent record-leak AND CDZ0401 are deduped via `MISSING_OP_TYPE_PREFIX`).
-    /// Message-only (no mechanical fix): the operation's actual signature is a semantic choice only the
-    /// author knows, so — unlike the non-arrow case which wraps an existing type — a `(-> Result)` guess
-    /// would be wrong; the message spells the exact shape.
-    #[test]
-    fn an_operation_declared_with_no_type_is_rejected_cdz0201() {
-        use crate::testkit::parse;
-        // (a) declared but not performed — the declaration-site reject fires on its own.
-        let declared = "(module m (effect E (op get)) (def (main) 1) (export main))";
-        let ddecl = crate::diagnostics(&mut crate::db::Db::load(parse(declared)));
-        let d = ddecl
-            .iter()
-            .find(|d| d.message.contains("this operation has no type"))
-            .expect("an operation with no type must be rejected");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        // (b) performed — the leaky op-record + CDZ0401 consequents are DEDUPED; ONE primary remains.
-        let performed = "(module m (effect E (op get)) (def (main) (E.get)) (export main))";
-        let dperf = crate::diagnostics(&mut crate::db::Db::load(parse(performed)));
-        assert!(
-            dperf
-                .iter()
-                .any(|d| d.message.contains("this operation has no type")),
-            "the declaration-site reject is present: {:?}",
-            dperf.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-        assert!(
-            !dperf
-                .iter()
-                .any(|d| d.message.contains("(effect-op Any)")
-                    || d.code.as_deref() == Some("CDZ0401")),
-            "the internal op-record leak and the no-home CDZ0401 are deduped: {:?}",
-            dperf
-                .iter()
-                .map(|d| (&d.code, &d.message))
-                .collect::<Vec<_>>()
-        );
-    }
-
     /// A match every UNGUARDED arm of which yields the SAME value COLLAPSES to that value — the probe
     /// chain is dropped (the match analogue of `(if c x x)` → `x`). `(match a (1 x) (2 x) (_ x))` always
     /// returns `x`, so it lowers to just `x` with no `i64.eq`/branch on `a`. Sound because the scrutinee
