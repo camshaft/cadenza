@@ -1,0 +1,18 @@
+# xtask-fmt — the Cadenza program formatter as its OWN minimal-dep crate (v-xtask-decompose: per-command
+# crate split). Formats `.cdz`/`.sexp` files by parsing the surface and re-printing it canonically (same
+# surface in and out), via `cdz convert`. Depends ONLY on xtask-support (the shared convert_bytes helper);
+# no dep on xtask itself, so editing this command rebuilds only this crate + xtask-support. The nix
+# `apps.fmt` runs this bin with CDZ_SEED_BIN_DIR (the nix-built cdz) — no cargo build of the toolchain.
+# `cargo xtask fmt` forwards here via v-fleet-tooling's cargo->nix redirect.
+[package]
+name = "xtask-fmt"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-fmt"
+path = "src/main.rs"
+
+[dependencies]
+xtask-support = { path = "../xtask-support" }

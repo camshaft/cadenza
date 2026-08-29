@@ -297,6 +297,16 @@
           doCheck = false;
         });
 
+        # xtaskFmtBin — the STANDALONE Cadenza formatter (v-xtask-decompose). Built from ONLY the xtask-fmt
+        # crate's closure (deps just xtask-support → cdz-contract → cadenza-ast), so it caches INDEPENDENTLY
+        # of xtask. `apps.fmt` wraps it with CDZ_SEED_BIN_DIR (the nix-built cdz) so it runs cargo-free.
+        # Output: $out/bin/xtask-fmt.
+        xtaskFmtBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-fmt"; }) // {
+          pname = "cdz-xtask-fmt";
+          cargoExtraArgs = "-p xtask-fmt";
+          doCheck = false;
+        });
+
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
         # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
@@ -457,6 +467,9 @@
           # xtask-canonicalize-baselines (v-xtask-decompose): the .gate-baseline* canonicalizer as its own
           # bin crate, deps only xtask-support. Registered here so the crane deps-src includes its Cargo.toml.
           xtask-canonicalize-baselines = "xtask/crates/xtask-canonicalize-baselines";
+          # xtask-fmt (v-xtask-decompose): the Cadenza formatter as its own bin crate, deps only xtask-support.
+          # Registered here so the crane deps-src includes its Cargo.toml.
+          xtask-fmt = "xtask/crates/xtask-fmt";
         };
         rootCrateNames = builtins.attrNames rootWorkspaceCrates;
         # direct member-edges of one crate across the three rebuild-relevant dep sections (A1 walk).
@@ -770,6 +783,8 @@
               xtask-lint-emoji = [ "cadenza-ast" "cdz-contract" "xtask-lint-emoji" "xtask-support" ];
               # xtask-canonicalize-baselines deps xtask-support (which deps cdz-contract→cadenza-ast).
               xtask-canonicalize-baselines = [ "cadenza-ast" "cdz-contract" "xtask-canonicalize-baselines" "xtask-support" ];
+              # xtask-fmt deps xtask-support (which deps cdz-contract→cadenza-ast).
+              xtask-fmt = [ "cadenza-ast" "cdz-contract" "xtask-fmt" "xtask-support" ];
               xtask-mandates = [ "xtask-mandates" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
@@ -3618,6 +3633,10 @@
         # `apps.canonicalize-baselines`; caches independently of xtask.
         packages.xtask-canonicalize-baselines = xtaskCanonicalizeBaselinesBin;
 
+        # The standalone Cadenza formatter bin (v-xtask-decompose). `nix build .#xtask-fmt` →
+        # result/bin/xtask-fmt. Backs `apps.fmt`; caches independently of xtask.
+        packages.xtask-fmt = xtaskFmtBin;
+
         # The standalone mandate-lint binary (v-xtask-decompose). `nix build .#xtask-mandates` →
         # result/bin/xtask-mandates. Backs `apps.lint-mandates` + the mandate gate; caches independently
         # of xtask (its closure is just the crate + syn).
@@ -3748,6 +3767,7 @@
               clippy-xtask-roundtrip = mkCrateClippyCrane { crate = "xtask-roundtrip"; };
               clippy-xtask-lint-emoji = mkCrateClippyCrane { crate = "xtask-lint-emoji"; };
               clippy-xtask-canonicalize-baselines = mkCrateClippyCrane { crate = "xtask-canonicalize-baselines"; };
+              clippy-xtask-fmt = mkCrateClippyCrane { crate = "xtask-fmt"; };
             };
             # cdz's clippy stays in its workspace-src check (crateCdzCheck runs `cargo clippy -p cdz` inside).
             clippyCraneAggregate = pkgs.runCommand "cargo-clippy-crane-aggregate"
@@ -3793,6 +3813,7 @@
               test-xtask-roundtrip = mkCrateTestCrane { crate = "xtask-roundtrip"; };
               test-xtask-lint-emoji = mkCrateTestCrane { crate = "xtask-lint-emoji"; };
               test-xtask-canonicalize-baselines = mkCrateTestCrane { crate = "xtask-canonicalize-baselines"; };
+              test-xtask-fmt = mkCrateTestCrane { crate = "xtask-fmt"; };
             };
             # COVERAGE-PARITY assert (concierge mandate — no test silently dropped vs `cargo test
             # --workspace`): the per-crate test crates PLUS cdz (crateCdzCheck) must EXACTLY equal the
@@ -3857,9 +3878,9 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
-              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
+              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
             # flakeReproBackstop: the REPRODUCIBILITY-BACKSTOP subset — the checks the `nix-flake (advisory)`
             # CI job should run INSTEAD of a whole `nix flake check`. Data-driven CI-speed (operator standing
@@ -4665,6 +4686,30 @@
           {
             type = "app";
             program = "${wrapper}/bin/cdz-roundtrip";
+          };
+
+        # apps.fmt — the Cadenza formatter as a nix-native app backed by the STANDALONE `xtaskFmtBin`
+        # (v-xtask-decompose). `nix run .#fmt -- [--to <surface>] [--check] <file>…`. Builds ONLY xtask-fmt
+        # (+ xtask-support), NOT the xtask monolith; the `Cmd::Fmt` arm is removed so `cargo xtask fmt`
+        # forwards here via the cargo→nix redirect. Needs only `cdz` (surface convert), so CDZ_SEED_BIN_DIR
+        # points at seedCompiler's bin/ (no cdz-corpus, unlike roundtrip) — cargo-free. Sets CDZ_REPO_ROOT
+        # only for the dev-fallback bin dir.
+        apps.fmt =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-fmt";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export CDZ_REPO_ROOT="$root"
+                export CDZ_SEED_BIN_DIR="${seedCompiler}/bin"
+                exec ${xtaskFmtBin}/bin/xtask-fmt "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-fmt";
           };
 
         # apps.lint-mandates — the mandate-lint as a nix-native app backed by the STANDALONE
