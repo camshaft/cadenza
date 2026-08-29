@@ -340,6 +340,7 @@ impl Fleet {
             "reap-wedged-nix-clients.sh",
             "refresh-tools.sh",
             "cargo-nix-shim.sh",
+            "nix-shim.sh",
             "cpu-monitor.sh",
         ] {
             let src = self.src.join(f);
@@ -2289,9 +2290,13 @@ fn with_lease(fleet: &Fleet, command: &[String]) {
         .filter(|&n| n > 0)
         .unwrap_or_else(|| lease_nix_fanout_budget(nproc, check_lease_max()));
     let nix_config = lease_nix_config(std::env::var("NIX_CONFIG").ok().as_deref(), budget);
+    // Mark the wrapped command as a SANCTIONED leased build so the nix-shim exempts it (CDZ_LEASED_NIX):
+    // `fleet with-lease -- nix build .#checks.<heavy>` is the very escape-hatch the shim's heavy-attr warn
+    // points agents to, so it must NOT itself trip the warn.
     let status = Command::new(program)
         .args(args)
         .env("NIX_CONFIG", nix_config)
+        .env("CDZ_LEASED_NIX", "1")
         .status();
     match status {
         Ok(s) => {
@@ -9316,6 +9321,10 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     // still streams) AND capture it to NAME the failing sub-check on RED (nix's summary alone doesn't).
     let spawned = Command::new(&nix_bin)
         .args(nix_gate_argv(&target))
+        // Mark as a SANCTIONED leased build so the nix-shim exempts it — this IS gate-local building
+        // `.#checks.<arch>.local-gate` (a heavy attr), so without the marker the shim would warn on the
+        // authoritative gate's own inner build (the recursion/false-warn trap).
+        .env("CDZ_LEASED_NIX", "1")
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::piped())
         .spawn();
@@ -9392,6 +9401,8 @@ fn run_gate_local_bounded(arch: &str, dir: &Path) -> CiVerdict {
     let child = Command::new(&nix_bin)
         .args(nix_gate_argv(&target))
         .current_dir(dir)
+        // Sanctioned leased build (local-gate = heavy attr) → mark for the nix-shim exemption.
+        .env("CDZ_LEASED_NIX", "1")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn();
@@ -14909,6 +14920,7 @@ mod tests {
             "reap-wedged-nix-clients.sh",
             "refresh-tools.sh",
             "cargo-nix-shim.sh",
+            "nix-shim.sh",
             "cpu-monitor.sh",
         ];
         let base = std::env::temp_dir().join(format!("cdz-materialize-{}", std::process::id()));
