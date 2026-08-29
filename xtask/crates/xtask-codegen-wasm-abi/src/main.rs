@@ -2,18 +2,21 @@
 //! opcode table, core+component valtype bytes, section ids, magic headers, functype form bytes. Carved out
 //! of `xtask/src/codegen.rs` (v-xtask-decompose, the codegen→build-time-nix directive).
 //!
-//! The operator's CODEGEN-SEXPR model (greenlit): `wasm-abi.sexp` is the AUTHORITATIVE, human-editable
-//! source of truth; `wasm-encoder` is the cross-check ORACLE (inverted from the old extract-from-encoder).
+//! The operator's CODEGEN-SEXPR model (ruled 2026-08-29): the flow is SEXPR → RUST, never rust → sexpr.
+//! `wasm-abi.sexp` is the HAND-AUTHORED, committed, human-editable SOURCE OF TRUTH — NOTHING generates it.
+//! `wasm-encoder` is ONLY the cross-check ORACLE the derived rust asserts against (a transcription typo in
+//! the authored sexpr is caught by that assertion, NOT by re-extracting bytes from the encoder).
 //! Modes:
-//!   - (default) — produce `wasm_abi.rs` by EXTRACTING each byte from `wasm-encoder` (the historical path,
-//!     kept until v-nix's `cdzWasmAbi` derivation flips to `--from-sexpr`, so it stays green meanwhile).
 //!   - `--from-sexpr` — produce `wasm_abi.rs` from the authoritative `wasm-abi.sexp`: `cdz convert` it to
 //!     cadenza-ast BINARY (dogfoods cadenza-ast as the codegen IR, no-json), decode + walk (`read_sexpr_tables`),
-//!     render. BYTE-IDENTICAL to the default (the acceptance test). Needs `cdz` from `CDZ_SEED_BIN_DIR`.
-//!   - `--oracle-check` — assert every opcode/valtype/section/magic byte in `wasm-abi.sexp` matches the
-//!     wasm-encoder oracle (the operator's guarantee, inverted: catches a sexpr transcription typo). v-nix
-//!     wires it as a required nix check.
-//!   - `--emit-sexpr` — re-derive `wasm-abi.sexp` from the oracle (bootstrap / after a wasm-encoder bump).
+//!     render. This IS the operator's sexpr → rust direction. Needs `cdz` from `CDZ_SEED_BIN_DIR`.
+//!   - (default) — produce `wasm_abi.rs` by EXTRACTING each byte from `wasm-encoder`. This is a TEMPORARY
+//!     PRE-FLIP BRIDGE ONLY — it is NOT a source of truth, and is kept solely so v-nix's `cdzWasmAbi`
+//!     derivation stays green until it flips to `--from-sexpr` (their derivation window). It is
+//!     byte-identical to the `--from-sexpr` output, which is why the flip is safe. To be removed on the flip.
+//!   - `--oracle-check` — assert every opcode/valtype/section/magic byte in the AUTHORED `wasm-abi.sexp`
+//!     matches the wasm-encoder oracle (catches a hand-authored transcription typo). v-nix wires it as a
+//!     required nix check. (The derived-crate baked-in unit-test form of this is the redo in progress.)
 //!
 //! A `cdzWasmAbi` nix derivation runs this bin to produce `wasm_abi.rs` at build time (a build-phase overlay
 //! copies it into rcdzc's src, so nothing generated is committed). Repo root from `CDZ_REPO_ROOT` (else cwd);
@@ -29,21 +32,6 @@ fn main() {
         .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
     let args: Vec<String> = std::env::args().skip(1).collect();
     let sexpr = repo.join("implementation/seed/crates/rcdzc/src/backend/wasm/wasm-abi.sexp");
-
-    // BOOTSTRAP (`--emit-sexpr`): re-derive the authoritative wasm-abi.sexp from the wasm-encoder oracle
-    // (correct-by-construction). A convenience — the committed sexpr is the hand-editable source of truth;
-    // this re-seeds it from the spec encoder (e.g. after a wasm-encoder bump adds an op).
-    if args.iter().any(|a| a == "--emit-sexpr") {
-        if let Some(parent) = sexpr.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        std::fs::write(&sexpr, wasm_abi::render_sexpr(&wasm_abi::collect())).unwrap_or_else(|e| {
-            eprintln!("xtask codegen: writing {}: {e}", sexpr.display());
-            std::process::exit(1);
-        });
-        println!("xtask codegen: wrote {}", sexpr.display());
-        return;
-    }
 
     // ORACLE-CHECK (`--oracle-check`): assert the committed sexpr's BYTES match the wasm-encoder oracle
     // (the operator's inverted guarantee — a derived test catches a transcription typo). v-nix wires this
@@ -70,12 +58,12 @@ fn main() {
         return;
     }
 
-    // Produce wasm_abi.rs (the byte table the backend consumes). Two producers, BYTE-IDENTICAL output:
-    //   default        — extract from the wasm-encoder crate (the historical path; keeps v-nix's cdzWasmAbi
-    //                     derivation green until it flips).
-    //   `--from-sexpr` — read the AUTHORITATIVE wasm-abi.sexp → cadenza-ast binary → walk → render (the
-    //                     operator's codegen-sexpr model). v-nix flips cdzWasmAbi to this + cdz in its window;
-    //                     then the sexpr is the sole source (wasm-encoder stays only as `--oracle-check`).
+    // Produce wasm_abi.rs (the byte table the backend consumes). The operator's flow is SEXPR → RUST:
+    //   `--from-sexpr` — read the AUTHORITATIVE, hand-authored wasm-abi.sexp → cadenza-ast binary → walk →
+    //                     render. THIS is the source-of-truth direction.
+    //   default        — extract from the wasm-encoder crate. A TEMPORARY PRE-FLIP BRIDGE ONLY (not a source
+    //                     of truth): byte-identical to `--from-sexpr`, kept green until v-nix flips cdzWasmAbi
+    //                     to `--from-sexpr` + cdz in their derivation window, then this default is removed.
     let tables = if args.iter().any(|a| a == "--from-sexpr") {
         wasm_abi::read_sexpr_tables(&sexpr_to_arenas(&cdz_bin(&repo), &sexpr))
     } else {
@@ -790,46 +778,6 @@ mod wasm_abi {
             byte: u8::from(id),
             doc,
         }
-    }
-
-    /// Render the tables as the AUTHORITATIVE Cadenza SEXPR source (`wasm-abi.sexp`) — the operator's
-    /// codegen-sexpr model. One entry per line inside a `(do …)`: `(opcode NAME byte)` for the opcode
-    /// table, `(single NAME byte "doc")` for the named single bytes (valtypes/sections/forms/export-kinds,
-    /// carrying their `///` doc), `(magic NAME b0 b1 … b7 "doc")` for the 8-byte headers. Bytes are DECIMAL
-    /// (the `render` hex formatting is a codegen concern, not the source's). This is the `--emit-sexpr`
-    /// bootstrap dump: it derives wasm-abi.sexp from the wasm-encoder oracle correct-by-construction; the
-    /// committed sexpr is then the hand-editable single source of truth, cross-checked back against the
-    /// oracle by a derived test. The `sexpr → cadenza-ast binary → this-crate-reads-it → render` pipeline is
-    /// what makes the sexpr reusable repo-wide (operator).
-    pub fn render_sexpr(t: &Tables) -> String {
-        // A Cadenza string literal: quote + escape `\` and `"` (doc text has backticks/em-dashes/unicode,
-        // which need no escaping — they round-trip through `cdz convert` verbatim, verified).
-        fn lit(doc: &str) -> String {
-            format!("\"{}\"", doc.replace('\\', "\\\\").replace('"', "\\\""))
-        }
-        let mut out = String::from("(do\n");
-        for o in &t.opcodes {
-            out.push_str(&format!("  (opcode {} {})\n", o.ident, o.byte));
-        }
-        for s in &t.singles {
-            out.push_str(&format!(
-                "  (single {} {} {})\n",
-                s.ident,
-                s.byte,
-                lit(s.doc)
-            ));
-        }
-        for m in &t.magics {
-            let bytes = m
-                .bytes
-                .iter()
-                .map(u8::to_string)
-                .collect::<Vec<_>>()
-                .join(" ");
-            out.push_str(&format!("  (magic {} {} {})\n", m.ident, bytes, lit(m.doc)));
-        }
-        out.push_str(")\n");
-        out
     }
 
     /// Read the tables back from the AUTHORITATIVE wasm-abi.sexp's decoded cadenza-ast (the producer path,
