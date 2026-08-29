@@ -13573,3 +13573,22 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 101 Int64))
   (call main (: -3 Int64)) (output (: 101 Int64)))
+
+(case "cdzw80 Bytes concat/slice/at/value-eq composite round-trips the cadenza hop"
+  (doc "Bytes-ops hop composite: a literal b\"\\x01\\x02\" concat a runtime-wrapped bin byte (len 3),
+        strict-bounds slice (slice(1,3) on len-3 → None → -1; slice(2,9) → None → -1), value-equality
+        against an identically-rebuilt bytes (true), and an Option-matched byte read (at(2) = the wrapped
+        n). n=65 → 30000-1000+100+650-1 = 29749; n=300 (wraps to 44) → 29539. Dual-path verified,
+        byte-idempotent.")
+  (input (do
+    (def (at (: x Bytes) (: i Int64)) (match (Bytes.at x i) ((Some v) v) ((None _u) -1)))
+    (def (sl (: x Bytes) (: a Int64) (: b Int64)) (match (Bytes.slice x a b) ((Some s) (Bytes.len s)) ((None _u) -1)))
+    (def (main (: n Int64))
+      (do (def b (Bytes.concat b"\x01\x02" (bin (u8 (UInt8.wrap n)))))
+          (+ (* 10000 (Bytes.len b))
+             (+ (* 1000 (sl b 1 3))
+                (+ (* 100 (if (= b (Bytes.concat b"\x01\x02" (bin (u8 (UInt8.wrap n))))) 1 0))
+                   (+ (* 10 (at b 2)) (sl b 2 9)))))))
+    (export main)))
+  (call main (: 65 Int64)) (output (: 29749 Int64))
+  (call main (: 300 Int64)) (output (: 29539 Int64)))
