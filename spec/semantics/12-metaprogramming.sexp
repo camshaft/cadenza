@@ -217,6 +217,19 @@
             (export main)))
   (output (: 100 Int64)))
 
+; A quasiquote in PATTERN position: a FINAL `,@name` binds the remaining elements of the matched form as a
+; list (`` `(f ,@args) `` folds `.. args` against the constant `(quote (f 1 2 3))` → args = the 3 operand
+; nodes). A NON-FINAL `,@` — `` `(f ,@init ,last) `` — is ill-formed (a rest binder is meaningful only last),
+; rejected CDZ0221 (the quote-pattern analogue of the binary-form CDZ0220). (migrated from rcdzc
+; a_quote_pattern_final_splice_binds_the_rest_and_a_non_final_splice_is_cdz0221.)
+(case "a final splice in a quote pattern binds the remaining elements as a list"
+  (input  (do (def (main) (match (quote (f 1 2 3)) (`(f ,@args) ((. List len) args)) (other 0))) (export main)))
+  (call   main) (output (: 3 Int64)))
+
+(case "a non-final splice in a quote pattern is rejected CDZ0221"
+  (input  (do (def (main) (match (quote (f 1 2 3)) (`(f ,@init ,last) last) (other other))) (export main)))
+  (error  CDZ0221))
+
 (case "eval of a quoted subtraction that goes negative preserves the sign"
   (doc    "`(eval (quote (- 3 10)))` = -7: the existing arithmetic eval cases produce only POSITIVE results,
            so none exercise a negative eval result. Pins that eval's arithmetic reduction carries the sign

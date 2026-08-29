@@ -19177,35 +19177,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_quote_pattern_final_splice_binds_the_rest_and_a_non_final_splice_is_cdz0221() {
-        // 12-metaprogramming §A Quasiquote In Pattern Position: a FINAL `,@name` binds the remaining
-        // elements as a list. `` `(f ,@args) `` desugars to `(Ast.List (list (Ast.Name "f") .. args))`,
-        // whose `.. args` rest binder folds against the constant `(quote (f 1 2 3))` → `args` = the three
-        // operand nodes; `List.len args` = 3. Compiles clean.
-        assert!(
-            reject_code(
-                "(module m (def (main) \
-                   (match (quote (f 1 2 3)) (`(f ,@args) ((. List len) args)) (other 0))) \
-                 (export main))"
-            )
-            .is_none(),
-            "a final `,@` in a quote pattern binds the rest of the elements"
-        );
-        // A NON-FINAL `,@` — `` `(f ,@init ,last) `` — is ill-formed (a rest binds the tail, so it is
-        // meaningful only last), rejected CDZ0221 (the quote-pattern analogue of the binary-form CDZ0220).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) \
-                   (match (quote (f 1 2 3)) (`(f ,@init ,last) last) (other other))) \
-                 (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0221"),
-            "a non-final `,@` in a quote pattern is CDZ0221"
-        );
-    }
-
-    #[test]
     fn a_scalar_compared_to_a_value_of_erased_type_param_lowers_to_a_scalar_compare() {
         // REGRESSION (v-iterators fused-iterator step): comparing a scalar literal against a value whose
         // static type is an UNRESOLVED type-param var mis-lowered. A value projected from a GENERIC-variant
