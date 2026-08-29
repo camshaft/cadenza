@@ -13592,3 +13592,19 @@
     (export main)))
   (call main (: 65 Int64)) (output (: 29749 Int64))
   (call main (: 300 Int64)) (output (: 29539 Int64)))
+
+(case "cdzw81 Qty values INSIDE compounds (record field + list elements) round-trip the cadenza hop"
+  (doc "The compound-position Qty face (the class where the 0225 map-of-quantities regression once lived):
+        a Qty in a record field projected + peeled, alongside a scalar co-field, plus Qty ELEMENTS in a
+        list read via List.at — n=7 → 700+50+14 = 764; n=-3 → -300+50-6 = -256. Dual-path verified,
+        byte-idempotent.")
+  (input (do
+    (def (main (: n Int64))
+      (do (def r (record (= q (Qty.of n (Unit.base #"meter"))) (= k 5)))
+          (def xs (list (Qty.of 1 (Unit.base #"meter")) (Qty.of (* n 2) (Unit.base #"meter"))))
+          (+ (* 100 (Qty.value (. r q)))
+             (+ (* 10 (. r k))
+                (Qty.value (match (List.at xs 1) ((Some v) v) ((None _u) (Qty.of 0 (Unit.base #"meter")))))))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 764 Int64))
+  (call main (: -3 Int64)) (output (: -256 Int64)))
