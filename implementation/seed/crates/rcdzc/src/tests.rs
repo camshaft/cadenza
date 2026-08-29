@@ -18824,44 +18824,11 @@ mod match_engine {
     }
 
     #[test]
-    fn a_cross_width_nan_comparison_is_a_type_error() {
-        // A `nan` value carries its DECLARING float width — `Float64.nan` is a Float64, `Float32.nan` a
-        // Float32 — so a cross-width comparison is the CDZ0301 no-silent-promotion error the identical
-        // FINITE comparison gets (numeric-model.md §Numeric Types Do Not Silently Promote). The hole was
-        // that `Prim::FloatNan` typed as a DEFERRED-width float, so a nan unified with EITHER width; the
-        // fix annotates each `Float{32,64}.nan` field with its module's `(Float width)` in the prelude
-        // (like `Int64.max` is `(: <lit> (Int 64))`), so the width unification fires as for a finite float.
-        let code = |body: &str| -> Option<String> {
-            let src = format!("(module m (def (main) {body}) (export main))");
-            compile_component(&crate::codec::encode(&parse(&src)))
-                .err()
-                .and_then(|d| d.code)
-        };
-        // Cross-width nan comparisons — CDZ0301, exactly as the finite cross-width comparison is.
-        assert_eq!(
-            code("(= Float32.nan Float64.nan)").as_deref(),
-            Some("CDZ0301")
-        );
-        assert_eq!(
-            code("(= Float32.nan (: 1.5 Float64))").as_deref(),
-            Some("CDZ0301")
-        );
-        assert_eq!(
-            code("(= (: 1.5 Float32) Float64.nan)").as_deref(),
-            Some("CDZ0301")
-        );
-        // The finite control rejects the same way (the behavior the nan path must match).
-        assert_eq!(
-            code("(= (: 1.5 Float32) (: 1.5 Float64))").as_deref(),
-            Some("CDZ0301")
-        );
-        // NO over-rejection / no regression: a SAME-width nan comparison still compiles (and folds true),
-        // and a nan vs a NON-float is still the cross-KIND CDZ0301 it was.
-        assert_eq!(code("(= Float32.nan Float32.nan)"), None);
-        assert_eq!(code("(= Float64.nan Float64.nan)"), None);
-        assert_eq!(code("(= Float64.nan 5)").as_deref(), Some("CDZ0301"));
-    }
-
+    // (a_cross_width_nan_comparison_is_a_type_error migrated to corpus 06-numeric-model, the nan-comparison
+    // type block in the NaN section: a cross-WIDTH nan comparison (Float32.nan vs Float64.nan / vs a Float64
+    // literal, either order) → CDZ0301, exactly as the finite cross-width comparison; a nan vs a non-float →
+    // cross-kind CDZ0301; and the SAME-width nan comparison compiles + folds TRUE (structural =, not IEEE
+    // arithmetic-identity false). --case grades the reject codes + the run values (all 7 PASS).)
     #[test]
     fn decimal_from_f64_round_trips_by_bits() {
         // The float-fold's result representation: `Decimal::from_f64(f)` builds a decimal whose
