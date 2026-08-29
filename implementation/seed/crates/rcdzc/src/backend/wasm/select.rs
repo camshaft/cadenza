@@ -1905,6 +1905,31 @@ fn escapes_as_reuse_base_or_moveout(db: &mut Db, arm: StructId, binder: StructId
     }
 }
 
+/// Whether `binder`, reaching the RESULT of `init` on SOME control-flow path, does so as a MOVE-OUT or an
+/// IN-PLACE-REUSED builder BASE ([`escapes_as_reuse_base_or_moveout`]) — descending `if`/`match` branch
+/// splits (either arm counts) and Let/Seq/Block tails. The D1 DROP-ELIDE distinguisher: a binder consumed
+/// into a later sibling initializer may be elided ONLY when it is a FRESH-ALLOC CHILD on EVERY path (its
+/// slot is dead — the concat-child D1 shape); if on ANY path it is instead moved out or reused-in-place as
+/// the base (so its slot BECOMES the later binding, e.g. LIST `l2 = push l1` where `l1`'s slot is the
+/// FBIP-reused survivor, or the 980 then-arm `keep = if c r1 (concat r1 …)` move-out), its slot is LIVE and
+/// the existing scope drop is its sole reclaim — do NOT elide (eliding leaks: LIST clean-0 → 2, 980 0 → 1).
+fn binder_reuses_or_moves_on_some_path(db: &mut Db, init: StructId, binder: StructId) -> bool {
+    match core_of(db, init) {
+        Core::If { then_, else_, .. } => {
+            binder_reuses_or_moves_on_some_path(db, then_, binder)
+                || binder_reuses_or_moves_on_some_path(db, else_, binder)
+        }
+        Core::Match { arms, .. } => arms
+            .iter()
+            .any(|a| binder_reuses_or_moves_on_some_path(db, a.body, binder)),
+        Core::Let { body, .. } => binder_reuses_or_moves_on_some_path(db, body, binder),
+        Core::Seq { tail, .. } => binder_reuses_or_moves_on_some_path(db, tail, binder),
+        Core::Block { body, .. } => binder_reuses_or_moves_on_some_path(db, body, binder),
+        // A non-branch result position: the binder reuses/moves iff it is the reuse-base/move-out here.
+        _ => escapes_as_reuse_base_or_moveout(db, init, binder),
+    }
+}
+
 /// Whether `binder` escapes through a sum-match CONTINUATION — a leaf's body, or a nested switch's arms
 /// (each recursed). The `Payload`/`Elem` path steps are heap reads that carry no binding, so only the arm
 /// continuations matter (mirrors the `MatchSum` arm walk in `binding_escapes`).
@@ -2743,6 +2768,29 @@ fn collect_retain_candidate_binders(db: &mut Db, id: StructId, out: &mut Vec<Str
     for child in core_child_ids(db, id) {
         collect_retain_candidate_binders(db, child, out);
     }
+}
+
+/// Whether any `Core::LocalRef`/`Core::Param` occurrence of `binder` WITHIN `id` is a Perceus RETAIN site
+/// (present in `dup_sites`) — i.e. the binder's slot reference is DUP'd (survives that consume) somewhere in
+/// `id`. The D1 drop-elide guard: a binder consumed into a later sibling initializer as a PURE MOVE (no dup
+/// anywhere in that init) is fully subsumed by the later binding, so its own scope drop double-frees it and
+/// must be elided; but if it has a dup_site there (the 980 shape: a then-arm MOVE-OUT plus an else-arm concat
+/// that DUP'd the binder), its slot reference SURVIVES and the existing drop is its sole reclaim — do NOT
+/// elide. Bottoms at the binder's own leaf occurrences; recurses every child via [`core_child_ids`].
+fn binder_has_dup_site_in(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    dup_sites: &HashSet<StructId>,
+) -> bool {
+    if matches!(core_of(db, id), Core::LocalRef { binder: b } | Core::Param { binder: b } if b == binder)
+        && dup_sites.contains(&id)
+    {
+        return true;
+    }
+    core_child_ids(db, id)
+        .into_iter()
+        .any(|c| binder_has_dup_site_in(db, c, binder, dup_sites))
 }
 
 /// Every immediate child NODE id of a Core node (all sub-expression occurrences, regardless of position).
@@ -16004,7 +16052,16 @@ fn emit(
             // multi-consume binding is never double-freed. `dup_sites` is cloned out of `out` so the drop's
             // `out.push` can borrow `out` mutably in the same loop.
             let dup_sites = out.dup_sites.clone();
+            // A binding's index in `bindings`, so its drop check can also inspect LATER sibling initializers
+            // (the D1 flat-multi-binding-let over-drop, v-memory-safety-aligned drop-elide).
+            let binder_index: HashMap<StructId, usize> = bindings
+                .iter()
+                .enumerate()
+                .map(|(i, (b, _))| (*b, i))
+                .collect();
             for &(binder, slot, value) in &heap_bindings {
+                // ESCAPES THE BODY → ownership transfers to the caller (it IS the result / a constructed
+                // element / a call arg) → do NOT drop (the ownership-transfer-on-return rule).
                 if binding_escapes_dup_aware(
                     db,
                     body,
@@ -16012,6 +16069,42 @@ fn emit(
                     false,
                     Some(&dup_sites),
                 ) {
+                    continue;
+                }
+                // DROP-ELIDE for a binder CONSUMED INTO A LATER SIBLING INITIALIZER (D1, the concat-child-of-
+                // keep over-drop). The body-only escape check above misses this: the optimizer copy-prop-SINKS
+                // single-use siblings into ONE flat `let` — `(let ((a X) (b (String.concat a y))) …)` moves
+                // `a` into `b`'s concat CHILD, so `a` is absent from the body yet already consumed. Its own
+                // scope drop then frees `a` a SECOND time (once as `b`'s child when `b` drops, once here) → the
+                // D1 double-free. Elide it: `b` subsumes `a`, `b`'s drop is the sole reclaim. GUARD = PURE MOVE
+                // ONLY (`!binder_has_dup_site_in` over the later inits): if `a` was DUP'd there — the 980 shape,
+                // a then-arm MOVE-OUT plus an else-arm concat that dup'd `a` so its slot SURVIVES — the existing
+                // drop is its sole reclaim and eliding it LEAKS (980 mode1 0→1). A pure move (no dup) is fully
+                // subsumed; a dup means the slot lives → keep the drop. Sound: only ever REMOVES a drop for a
+                // provably-moved binder → converts the current double-free to at-worst a benign leak on a
+                // conditional non-consuming path, never the reverse. Nested one-binding lets never reach here
+                // (the sibling init lives inside the outer body); only a flat multi-binding let does.
+                let idx = binder_index[&binder];
+                let later_inits = || bindings.iter().skip(idx + 1).map(|(_, v)| *v);
+                let escapes_later_init = later_inits().any(|v| {
+                    binding_escapes_dup_aware(
+                        db,
+                        v,
+                        EscapeTarget::Binder(binder),
+                        false,
+                        Some(&dup_sites),
+                    )
+                });
+                // Elide ONLY a PURE FRESH-ALLOC-CHILD consume: on NO path may the binder be moved out or
+                // reused-in-place as the base (that keeps its slot alive → the drop is its reclaim: LIST
+                // `push`, the 980 then-arm move-out), and it must have NO dup_site there (a dup keeps the
+                // slot alive too). Then the later binding fully subsumes it (concat child) → its own drop
+                // double-frees → elide. Otherwise KEEP the drop.
+                let reuses_or_moves =
+                    later_inits().any(|v| binder_reuses_or_moves_on_some_path(db, v, binder));
+                let dup_in_later_init =
+                    later_inits().any(|v| binder_has_dup_site_in(db, v, binder, &dup_sites));
+                if escapes_later_init && !reuses_or_moves && !dup_in_later_init {
                     continue;
                 }
                 // BORROWED-OPERAND materialize (breaker #45 witness-2 UAF): a self-keyed materialize
