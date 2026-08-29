@@ -778,9 +778,9 @@
                 # OVERLAY (v-nix, codegen→build-time-nix): stage the BUILD-TIME-generated contract schemas
                 # over cdz-platform/src/contracts, so the generated files (not committed source) drive the
                 # compile. cdz-platform's real src compiles ONLY here (clippy/test-cdz-platform — guarded to
-                # this crate; other crates STUB cdz-platform) + platformItest. Currently a byte-identical
-                # NO-OP (generated == committed, guarded by cdzPlatformContractsMatch); becomes LOAD-BEARING
-                # when the follow-on flip drops the committed src/contracts + gitignores them.
+                # this crate; other crates STUB cdz-platform) + platformItest. LOAD-BEARING since #5250 dropped
+                # the committed src/contracts + gitignored them — this overlay is now the SOLE source of the
+                # contract schemas for the compile (was a byte-identical no-op in the #5244 additive phase).
                 mkdir -p implementation/seed/crates/cdz-platform/src/contracts
                 cp ${cdzPlatformContracts}/contracts/*.rs implementation/seed/crates/cdz-platform/src/contracts/
               ''}
@@ -3916,6 +3916,24 @@
               src = seedTestSrc;
               extraInputs = [ pkgs.git ];
             };
+            # cdz-default-features check (v-nix, gate-hardening for the default-only-arm class — v-ft-agreed,
+            # flake-only wiring 2026-08-29). WHY: the nix seedCompiler + the per-crate crane checks build cdz
+            # `--no-default-features` (corpus-over-trigger, flake ~232), so a compile error in a DEFAULT-only
+            # `#[cfg(feature=…)]` arm (watch/lsp/completions/corpus/standalone) escapes them — that is how #5259
+            # (WatchCmd::Run) landed green yet broke every default/dev/packaged cdz build (the #5258→#5266
+            # whack-a-mole). This is a CHEAP `cargo check -p cdz` with DEFAULT features ON (NOT
+            # --no-default-features), consuming the shared cargoArtifacts (deps warm), scoped to cdz's default
+            # dep-closure via craneCrateCommon (so a corpus / compiler-ml / unrelated-crate edit does NOT rotate
+            # it). check-only = no codegen/link, seconds warm. Deliberately NOT in localGate: crateCdzCheck's
+            # `cargo build --workspace` already compiles cdz default-features at the authoritative gate, so this
+            # adds ZERO localGate weight — it exists so fast-gate (the inner loop, which has no per-crate cdz
+            # check) catches the class cheaply on a touched cdz. Wired into crateChecks "cdz" below.
+            cdzDefaultFeaturesCheck = craneLib.mkCargoDerivation ((craneCrateCommon { crate = "cdz"; }) // {
+              pname = "cdz-default-features-check";
+              doInstallCargoArtifacts = false;
+              buildPhaseCargoCommand = "cargo check --locked -p cdz";
+              installPhaseCommand = ''echo "ok: cdz-default-features-check (cargo check -p cdz, DEFAULT features — watch/lsp/completions/corpus/standalone arms)" > "$out"'';
+            });
             # crane MR2: the CLIPPY half via crane (per-crate cargoClippy consuming the shared cargoArtifacts →
             # deps NOT recompiled each run). Each maker takes crate/extraSrc/extraInputs. cdz stays
             # workspace-src (crateCdzCheck, different shape — its clippy is inside cargoWorkspaceCheck).
@@ -4355,6 +4373,10 @@
             # list to keep it closure-scoped would silently drop a new cdz test (the coverage regression the
             # parity guard forbids). Do NOT "fix" this back to a split.
             crate-cdz = crateCdzCheck;
+            # cdz-default-features: exposed for fast-gate (crateChecks "cdz") + explicit `nix build`. NOT a
+            # localGate constituent (crateCdzCheck's workspace build already covers default-features at the
+            # authoritative gate) — this is the cheap inner-loop catch for the default-only-arm class.
+            cdz-default-features = cdzDefaultFeaturesCheck;
             # The REQUIRED clippy contexts = the 2-WAY SHARD (see the clippyShardA/B bindings): per-crate crane
             # cargoClippy (shared cargoArtifacts → deps compiled ONCE), split into 2 parallel jobs to halve the
             # ~8.8m clippy critical-path pole. The former single `clippy` attr (= clippyCraneAggregate, the whole
@@ -4685,7 +4707,10 @@
             # crate → the check attr(s) that cover it. cdz is a combined `crate-cdz` (test+clippy in one);
             # every other root crate has `test-<c>` + `clippy-<c>`. Rendered to bash `case` arms below.
             crateChecks = name:
-              if name == "cdz" then [ "crate-cdz" ]
+              # cdz: crate-cdz (workspace test+clippy) PLUS cdz-default-features (the cheap default-only-arm
+              # catch — the per-crate crane checks + seedCompiler build --no-default-features, so a touched cdz
+              # in the inner loop needs this to catch a watch/lsp/completions/corpus/standalone cfg-arm break).
+              if name == "cdz" then [ "crate-cdz" "cdz-default-features" ]
               else [ "test-${name}" "clippy-${name}" ];
             # bash `case` arms mapping a crate DIR PREFIX → its space-joined check attrs (for git-diff detect).
             # MOST-SPECIFIC FIRST: sort crates by dir-path LENGTH descending so a crate NESTED under
