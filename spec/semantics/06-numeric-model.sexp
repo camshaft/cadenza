@@ -13522,3 +13522,20 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 1000 Int64))
   (call main (: -3 Int64)) (output (: 1000 Int64)))
+
+(case "cdzw79 float division by ZERO yields IEEE +inf (no trap) and two runtime +infs are BYTE-EQUAL — through the cadenza hop"
+  (doc "The infinity twin of the nan1 asymmetry fence: FLOAT division by zero does NOT trap (unlike
+        integer division) — it yields IEEE +inf — and two +infs from DIFFERENT computations compare
+        canonical-byte EQUAL (the same doctrine that makes NaN=NaN true), with the orderings consistent
+        (inf < inf false, inf > 10⁶ true). 101 for any n. Dual-path verified, hop byte-idempotent
+        (inf arises at RUNTIME so the ConstFloatNan emit gap is not hit).")
+  (input (do
+    (def (main (: n Int64))
+      (do (def i1 (/ (Float64.of-int (* n n)) 0.0))
+          (def i2 (/ (Float64.of-int (+ (* n n) 1)) 0.0))
+          (+ (* 100 (if (= i1 i2) 1 0))
+             (+ (* 10 (if (< i1 i2) 1 0))
+                (if (> i1 1000000.0) 1 0)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 101 Int64))
+  (call main (: -3 Int64)) (output (: 101 Int64)))
