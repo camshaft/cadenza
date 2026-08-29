@@ -2540,7 +2540,7 @@
   (host-responses (respond io.get (: 21 Int64)))
   (host-calls (call io.get))
   (call   main) (output (: 2131 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "TWO closures capturing one let-bound host call in a HELPER def's RECORD share ONE firing"
   (doc    "The RECORD-face sibling of the helper-def tuple case above (adv-62b): a helper `mk` returns a
@@ -5464,7 +5464,7 @@
   (call   main (: 1 Int64)) (output (: 231 Int64))
   (call   main (: 5 Int64)) (output (: 675 Int64))
   (call   main (: 0 Int64)) (output (: 120 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "closures capture successive SNAPSHOTS of a growing heap list"
   (doc    "The heap-snapshot companion of the per-iteration scalar capture: each build iteration
@@ -5486,7 +5486,7 @@
         (export main)))
   (call   main (: 0 Int64)) (output (: 12 Int64))
   (call   main (: 7 Int64)) (output (: 789 Int64))
-  (live-objects known-leak 13))
+  (live-objects known-leak 6))
 
 (case "closures stored as MAP VALUES dispatch by key with distinct captures"
   (doc    "The dispatch-table shape — closures as CHAMP map VALUES (the collection pins cover
@@ -5505,7 +5505,7 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 10105 Int64))
   (call   main (: 0 Int64)) (output (: 100 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a closure returned from a match arm carries the arm's HEAP payload binding"
   (doc    "The payload-binder capture face: the closure is built INSIDE a `(Some s)` arm, capturing the

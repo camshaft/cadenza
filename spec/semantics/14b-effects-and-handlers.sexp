@@ -6472,7 +6472,7 @@
   (host-responses (respond io.get (: 21 Int64)))
   (host-calls (call io.get))
   (output (: 2131 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "two DISTINCT let-bound host calls each captured by its own escaping closure fire once each in order (adv-62)"
   (doc    "The two-distinct-calls ORDER companion of the adv-62 single-call pin above (breaker escalation):
@@ -6495,7 +6495,7 @@
   (host-responses (respond io.a (: 3 Int64)) (respond io.b (: 5 Int64)))
   (host-calls (call io.a) (call io.b))
   (output (: 513 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a unit-result host op consumes its response row so the next value op reads its own (adv-65)"
   (doc    "adv-65 (breaker, HIGH wasm differential): a UNIT-result host op must CONSUME its response row,
@@ -6626,7 +6626,7 @@
   (host-responses (respond io.get (: 10 Int64)))
   (host-calls (call io.get))
   (output (: 38 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "a host-block scrutinee folding to a multi-arm sum switch fires the host op once (adv-62 switch face)"
   (doc    "adv-62 family, SWITCH-path face (vs the Leaf-fold face the base cases pin): the host block `(mk)`
@@ -7036,7 +7036,7 @@
                     ((None _u) -1)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1006 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a record-LITERAL scrutinee whose fields perform, destructured by a `(record …)` arm, DECLINES (breaker finding #8)"
   (doc    "REJECT-DON'T-MISCOMPILE (v-effects finding #8, breaker 3-backend-agree-wrong). A record-pattern

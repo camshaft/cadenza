@@ -210,7 +210,7 @@
   (call   main (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 2 Int64)) (output (: 31 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 1 1 0))
+  (live-objects 0))
 
 ; A CAPTURING closure whose HANDLE both ESCAPES WHOLE (stored into a heap collection / sum payload) AND is
 ; ALSO DIRECTLY CALLED — the "call BOTH ways" shape. The pinned idioms above call a stored closure via
@@ -769,8 +769,7 @@
             (def (main) (let ((fs #list((adder 1) (adder 2)))) (match (List.at fs 0) ((Some f) (f 10)) ((None u) -1))))
             (export main)))
   (output (: 11 Int64))
-  ;; pre-existing closure-in-list capture leak (bisect-verified identical pre/post; honest known-leak, coord v-corpus-harness)
-  (live-objects known-leak 1)
+  (live-objects 0)
   )
 
 (case "a closure stored as a MAP value is looked up by a runtime key and applied"
@@ -792,7 +791,7 @@
   (call   main (: 1 Int64) (: 5 Int64)) (output (: 50 Int64))
   (call   main (: 2 Int64) (: 5 Int64)) (output (: 105 Int64))
   (call   main (: 9 Int64) (: 5 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 1 1 0))
+  (live-objects 0))
 
 (case "two capturing closures stored as runtime tuple elements keep distinct captures"
   (doc    "The tuple-element runtime companion: `(tuple (adder 1) (adder 2))` bound via `let` holds two
@@ -7960,7 +7959,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 4070 Int64))
   (call   main (: 3 Int64)) (output (: 3008 Int64))
-  (live-objects known-leak 1 2))
+  (live-objects 0))
 
 (case "a pipeline chain threads handler STATE left-to-right through effectful stages"
   (doc    "`|>` composed with effects: two chained pipe stages each perform `(Ctr.tick)` — the desugar
@@ -8111,8 +8110,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 30 Int64))
-  ;; pre-existing closure-in-list capture leak (bisect-verified identical pre/post; honest known-leak, coord v-corpus-harness)
-  (live-objects known-leak 1)
+  (live-objects 0)
   )
 
 (case "ch04 a runtime-branch-selected closure applies"
@@ -9892,3 +9890,67 @@
   (input  (do (def (main (: n Int64)) (List.len #list((fn (v) (+ v 1))))) (export main)))
   (call   main (: 3 Int64))
   (output (: 1 Int64)))
+
+(case "an extracted closure re-stored into a new list then re-extracted and applied reclaims"
+  (doc    "A closure `(mk k)` extracted from a source list via `List.at` is MOVED into a fresh `#list(f)`
+           (a consuming container construction), re-extracted, and applied. The container-escape KEEPS the
+           extraction dup (the closure is genuinely moved out of the source sum shell), so after the inner
+           apply everything reclaims to zero — the UAF-safety companion of the closure-extraction fold: dup
+           KEPT for a real move-out, no double-free if it is ever wrongly dropped. `main k` = 10 + k.")
+  (input  (do (def (mk k) (fn (x) (+ x k)))
+              (def (main (: k Int64))
+                (let ((fs #list((mk k) (mk 2))))
+                  (match (List.at fs 0)
+                    ((Some f) (let ((gs #list(f))) (match (List.at gs 0) ((Some g) (g 10)) (None -2))))
+                    (None -1))))
+              (export main)))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 5 Int64)) (output (: 15 Int64))
+  (live-objects 0))
+
+(case "an extracted closure placed into a tuple then projected and applied reclaims"
+  (doc    "A closure `(mk k)` extracted via `List.at` is placed into a TUPLE `(tuple f 99)` (a consuming
+           construction), then projected back out `(. p 0)` and applied. Tuple-escape KEEPS the extraction
+           dup (genuine move-out), reclaiming to zero after the apply — no double-free. `main k` = 10 + k.")
+  (input  (do (def (mk k) (fn (x) (+ x k)))
+              (def (main (: k Int64))
+                (let ((fs #list((mk k) (mk 2))))
+                  (match (List.at fs 0)
+                    ((Some f) (let ((p (tuple f 99))) ((. p 0) 10)))
+                    (None -1))))
+              (export main)))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 5 Int64)) (output (: 15 Int64))
+  (live-objects 0))
+
+(case "a runtime-selected closure from a list of DISTINCT-BODY closures dispatches indirectly and reclaims"
+  (doc    "Unlike the same-factory runtime-index case, this list holds closures with DIFFERENT bodies —
+           `(adder k)` and `(mul k)` — so the apply site cannot devirtualize to one known body and must emit
+           a genuine indirect `call_indirect`. The selected closure is extracted and applied; the extraction
+           reclaims to zero (the call BORROWS the env cell on the indirect path too, so removing the shell-
+           reclaim dup is sound there as well). index `(if (> k 1) 1 0)`: k<2 → adder → 10+k; k>=2 → mul → 10*k.")
+  (input  (do (def (adder n) (fn (x) (+ x n)))
+              (def (mul n) (fn (x) (* x n)))
+              (def (main (: k Int64))
+                (let ((fs #list((adder k) (mul k))))
+                  (match (List.at fs (if (> k 1) 1 0)) ((Some f) (f 10)) (None -1))))
+              (export main)))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 1 Int64)) (output (: 11 Int64))
+  (call   main (: 2 Int64)) (output (: 20 Int64))
+  (call   main (: 3 Int64)) (output (: 30 Int64))
+  (live-objects 0))
+
+(case "an extracted closure passed through a helper then applied reclaims"
+  (doc    "A closure `(mk k)` extracted via `List.at` is passed as an ARGUMENT to a helper `(applyit g) =
+           (g 10)` and applied there — the closure reaches an apply through a PARAMETER boundary. Reclaims to
+           zero, no double-free. `main k` = 10 + k.")
+  (input  (do (def (mk k) (fn (x) (+ x k)))
+              (def (applyit g) (g 10))
+              (def (main (: k Int64))
+                (let ((fs #list((mk k) (mk 2))))
+                  (match (List.at fs 0) ((Some f) (applyit f)) (None -1))))
+              (export main)))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 5 Int64)) (output (: 15 Int64))
+  (live-objects 0))
