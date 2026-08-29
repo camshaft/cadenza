@@ -13025,3 +13025,24 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 13 Int64))
   (call main (: -1 Int64)) (output (: 2 Int64)))
+
+(case "cdzw63 NESTED list-rest patterns (a rest at BOTH nesting levels) round-trip the cadenza hop"
+  (doc "Rest-pattern depth face: `(list (list a .. inner) .. outer)` binds a rest inside the head
+        element's own pattern AND at the outer spine — n·100 + len(inner)·10 + len(outer) = n·100+22
+        for a [[n,5,6],[7],[8]] input. Dual-path verified, byte-idempotent.")
+  (input (do
+    (def (f (: xs (List (List Int64)))) (match xs ((list (list a .. inner) .. outer) (+ (* a 100) (+ (* (List.len inner) 10) (List.len outer)))) (_ -1)))
+    (def (main (: n Int64)) (f (list (list n 5 6) (list 7) (list 8))))
+    (export main)))
+  (call main (: 3 Int64)) (output (: 322 Int64))
+  (call main (: 9 Int64)) (output (: 922 Int64)))
+
+(case "a list rest pattern takes exactly ONE binder after `..` — a trailing anchor is rejected"
+  (doc "The grammar-rule fence for the rest position: `(list a .. mid b)` (an anchor AFTER the rest) is
+        not a supported shape — exactly one binder follows `..` (rest-to-end). Clear CDZ0201 with the
+        rule spelled in the message; identical on both compile paths.")
+  (input (do
+    (def (f (: xs (List Int64))) (match xs ((list a .. mid b) (+ a b)) (_ -1)))
+    (def (main) (f (list 1 2 3)))
+    (export main)))
+  (error CDZ0201))
