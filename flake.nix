@@ -354,6 +354,17 @@
           doCheck = false;
         });
 
+        # xtaskBenchBin — the STANDALONE runtime allocation benchmark (v-xtask-decompose). Built from ONLY the
+        # xtask-bench crate's closure (a std-only LEAF — no deps at all), so it caches INDEPENDENTLY of xtask.
+        # `apps.bench` wraps it with CDZ_REPO_ROOT; the bin itself shells `cargo test` in cdz-runtime for the
+        # measurement (so cargo must be on PATH at run time — same as the old `cargo xtask bench`). Output:
+        # $out/bin/xtask-bench.
+        xtaskBenchBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-bench"; }) // {
+          pname = "cdz-xtask-bench";
+          cargoExtraArgs = "-p xtask-bench";
+          doCheck = false;
+        });
+
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
         # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
@@ -601,6 +612,11 @@
           # xtask-codegen-wasm-abi (v-xtask-decompose): the wasm/component byte-table extractor
           # (codegen→build-time-nix), deps only wasm-encoder (external). Registered so crane sees its Cargo.toml.
           xtask-codegen-wasm-abi = "xtask/crates/xtask-codegen-wasm-abi";
+          # xtask-bench (v-xtask-decompose): the runtime allocation benchmark carved out of xtask/src/bench.rs
+          # into its own STD-ONLY leaf bin crate (NO deps — not even xtask-support). Registered here so the crane
+          # deps-src includes its Cargo.toml (else the workspace fails to load). `benchCheck` runs it; the
+          # xtask `Cmd::Bench` arm is removed so `cargo xtask bench` forwards to `apps.bench` (nix run .#bench).
+          xtask-bench = "xtask/crates/xtask-bench";
         };
         rootCrateNames = builtins.attrNames rootWorkspaceCrates;
         # direct member-edges of one crate across the three rebuild-relevant dep sections (A1 walk).
@@ -935,6 +951,8 @@
               # now deps cadenza-ast (reads wasm-abi.sexp's cadenza-ast binary in the --from-sexpr producer).
               xtask-codegen-wasm-abi = [ "cadenza-ast" "xtask-codegen-wasm-abi" ];
               xtask-mandates = [ "xtask-mandates" ];
+              # xtask-bench is a std-only leaf: NO workspace deps (not even xtask-support) — closure is just itself.
+              xtask-bench = [ "xtask-bench" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
               (builtins.attrNames expected);
@@ -3413,8 +3431,10 @@
         # dep-cache (cargoArtifactsReleaseCodegen) so a rotation recompiles only first-party, not the release
         # dep closure — same lever as gate-check, applied to the bench check. codegenVendor (not
         # seedCargoVendor) because the bench test compiles against the cdz-runtime lock. Behavior UNCHANGED:
-        # same `cargo run -p xtask -- bench` diffing cdz-runtime's hot_op_allocation_ceilings vs
-        # spec/bench/.alloc-baseline.
+        # runs the STANDALONE `xtask-bench` crate (v-xtask-decompose, carved out of the xtask monolith) diffing
+        # cdz-runtime's hot_op_allocation_ceilings vs spec/bench/.alloc-baseline — same measurement, off the
+        # monolith. xtask-bench resolves the repo root from cwd (the crane build dir = benchSrc) when
+        # CDZ_REPO_ROOT is unset, exactly as `cargo xtask bench` did.
         benchCheck = craneLib.mkCargoDerivation {
           pname = "cdz-bench-check";
           version = "0.0.0";
@@ -3426,10 +3446,10 @@
           nativeBuildInputs = [ ];
           RUST_MIN_STACK = "67108864";
           buildPhaseCargoCommand = ''
-            cargo run --locked --package xtask --profile release -- bench
+            cargo run --locked --package xtask-bench --profile release
           '';
           installPhaseCommand = ''
-            echo "ok: cdz-bench-check (cargo xtask bench, crane release-deps-cached)" > "$out"
+            echo "ok: cdz-bench-check (xtask-bench, crane release-deps-cached)" > "$out"
           '';
         };
 
@@ -4071,6 +4091,10 @@
         # result/bin/xtask-prune-baselines. Backs `apps.prune-baselines`; caches independently of xtask.
         packages.xtask-prune-baselines = xtaskPruneBaselinesBin;
 
+        # The standalone runtime allocation benchmark bin (v-xtask-decompose). `nix build .#xtask-bench` →
+        # result/bin/xtask-bench. Backs `apps.bench` + the rewired `benchCheck`; caches independently of xtask.
+        packages.xtask-bench = xtaskBenchBin;
+
         # The standalone mandate-lint binary (v-xtask-decompose). `nix build .#xtask-mandates` →
         # result/bin/xtask-mandates. Backs `apps.lint-mandates` + the mandate gate; caches independently
         # of xtask (its closure is just the crate + syn).
@@ -4226,6 +4250,7 @@
               clippy-xtask-codegen-contracts = mkCrateClippyCrane { crate = "xtask-codegen-contracts"; };
               clippy-xtask-codegen-wasm-abi = mkCrateClippyCrane { crate = "xtask-codegen-wasm-abi"; };
               clippy-xtask-prune-baselines = mkCrateClippyCrane { crate = "xtask-prune-baselines"; };
+              clippy-xtask-bench = mkCrateClippyCrane { crate = "xtask-bench"; };
             };
             # cdz's clippy stays in its workspace-src check (crateCdzCheck runs `cargo clippy -p cdz` inside).
             clippyCraneAggregate = pkgs.runCommand "cargo-clippy-crane-aggregate"
@@ -4279,6 +4304,9 @@
               test-xtask-codegen-contracts = mkCrateTestCrane { crate = "xtask-codegen-contracts"; };
               test-xtask-codegen-wasm-abi = mkCrateTestCrane { crate = "xtask-codegen-wasm-abi"; };
               test-xtask-prune-baselines = mkCrateTestCrane { crate = "xtask-prune-baselines"; };
+              # xtask-bench: runs its 4 pure unit tests (tolerance, parse_alloc_lines, baseline round-trip, diff
+              # classification). Leaf like the other xtask-* bins. REQUIRED by testCrateCoverageAssert.
+              test-xtask-bench = mkCrateTestCrane { crate = "xtask-bench"; };
             };
             # COVERAGE-PARITY assert (concierge mandate — no test silently dropped vs `cargo test
             # --workspace`): the per-crate test crates PLUS cdz (crateCdzCheck) must EXACTLY equal the
@@ -4343,9 +4371,9 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-prune-baselines clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-prune-baselines clippy-xtask-bench clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
-              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + xtask-codegen-wasm-abi + xtask-prune-baselines + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
+              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + xtask-codegen-wasm-abi + xtask-prune-baselines + xtask-bench + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
             # flakeReproBackstop: the REPRODUCIBILITY-BACKSTOP subset — the checks the `nix-flake (advisory)`
             # CI job should run INSTEAD of a whole `nix flake check`. Data-driven CI-speed (operator standing
@@ -5313,6 +5341,29 @@
           {
             type = "app";
             program = "${wrapper}/bin/cdz-prune-baselines";
+          };
+
+        # apps.bench — the runtime allocation benchmark as a nix-native app backed by the STANDALONE
+        # `xtaskBenchBin` (v-xtask-decompose). `nix run .#bench [-- --save]`. Builds ONLY xtask-bench (a
+        # std-only leaf), NOT the xtask monolith; the `Cmd::Bench` arm is removed so `cargo xtask bench`
+        # forwards here via the cargo→nix redirect. The bin shells `cargo test` in cdz-runtime for the
+        # measurement, so cargo/rustc come from the invoking dev shell (same as the old `cargo xtask bench`);
+        # the wrapper only resolves + exports CDZ_REPO_ROOT so the bin diffs the invoking worktree's baseline.
+        apps.bench =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-bench";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export CDZ_REPO_ROOT="$root"
+                exec ${xtaskBenchBin}/bin/xtask-bench "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-bench";
           };
 
         # apps.xtask — the GENERAL xtask entrypoint through nix (v-nix, operator all-nix mandate 2026-08-28:
