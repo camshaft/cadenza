@@ -301,7 +301,7 @@ fn materialize_specs(inputs: &[Artifact], dir: &Path, prog: &str) -> Option<Vec<
 /// rcdzc's `sidecar::encode`/`encode_request`/`encode_query` shape exactly (a byte-identity unit test pins
 /// `build_sidecar_request(rs) == rcdzc::sidecar::encode(rs)`). `cdz`'s query drivers only ever send `Query`
 /// requests (emit-tests takes a different path), but all `Request` arms are mirrored for completeness.
-pub fn build_sidecar_request(requests: &[rcdzc::Request]) -> Vec<u8> {
+pub fn build_sidecar_request(requests: &[cadenza_compile_abi::Request]) -> Vec<u8> {
     use cadenza_syntax::ast::IntValue;
     use cadenza_syntax::{Builder, Leaf, Radix};
 
@@ -309,41 +309,41 @@ pub fn build_sidecar_request(requests: &[rcdzc::Request]) -> Vec<u8> {
     let forms: Vec<_> = requests
         .iter()
         .map(|req| match req {
-            rcdzc::Request::Emit(t) => {
+            cadenza_compile_abi::Request::Emit(t) => {
                 let head = b.name("emit");
                 let target = b.name(target_cli(*t));
                 b.list(vec![head, target])
             }
-            rcdzc::Request::EmitTests => {
+            cadenza_compile_abi::Request::EmitTests => {
                 let h = b.name("emit-tests");
                 b.list(vec![h])
             }
-            rcdzc::Request::EmitTestsPerFile => {
+            cadenza_compile_abi::Request::EmitTestsPerFile => {
                 let h = b.name("emit-tests-per-file");
                 b.list(vec![h])
             }
-            rcdzc::Request::EmitTestsComposed => {
+            cadenza_compile_abi::Request::EmitTestsComposed => {
                 let h = b.name("emit-tests-composed");
                 b.list(vec![h])
             }
-            rcdzc::Request::EmitTestsConsumerOnly => {
+            cadenza_compile_abi::Request::EmitTestsConsumerOnly => {
                 let h = b.name("emit-tests-consumer-only");
                 b.list(vec![h])
             }
-            rcdzc::Request::EmitTestsShred => {
+            cadenza_compile_abi::Request::EmitTestsShred => {
                 let h = b.name("emit-tests-shred");
                 b.list(vec![h])
             }
-            rcdzc::Request::EmitTestsShredStandalone => {
+            cadenza_compile_abi::Request::EmitTestsShredStandalone => {
                 let h = b.name("emit-tests-shred-standalone");
                 b.list(vec![h])
             }
-            rcdzc::Request::EmitTestsShredTwoStage => {
+            cadenza_compile_abi::Request::EmitTestsShredTwoStage => {
                 let h = b.name("emit-tests-shred-two-stage");
                 b.list(vec![h])
             }
-            rcdzc::Request::Query(q) => {
-                use rcdzc::sidecar::Query;
+            cadenza_compile_abi::Request::Query(q) => {
+                use cadenza_compile_abi::sidecar::Query;
                 let (selector, arg): (&str, Option<_>) = match q {
                     Query::TypeOf { name: n } => {
                         ("type-of", Some(b.atom_leaf(Leaf::Str(n.clone().into()))))
@@ -399,9 +399,9 @@ pub fn build_sidecar_request(requests: &[rcdzc::Request]) -> Vec<u8> {
 /// The result-artifact KIND a single sidecar `Query` request materializes its answer under — the kind a
 /// delegated reader tags the captured bytes with (mirrors `rcdzc::sidecar::run_query`'s per-query kind).
 /// `None` for a non-`Query` request (never sent through `run_sidecar`), so the caller falls back in-process.
-fn query_result_kind(request: &rcdzc::Request) -> Option<&'static str> {
-    use rcdzc::sidecar::{self, Query};
-    let rcdzc::Request::Query(q) = request else {
+fn query_result_kind(request: &cadenza_compile_abi::Request) -> Option<&'static str> {
+    use cadenza_compile_abi::sidecar::{self, Query};
+    let cadenza_compile_abi::Request::Query(q) = request else {
         return None;
     };
     Some(match q {
@@ -429,21 +429,21 @@ fn query_result_kind(request: &rcdzc::Request) -> Option<&'static str> {
 /// — batch needs positional result-file reading, a later slice), so the caller runs in-process.
 pub fn run_sidecar_delegated(
     arenas: &cadenza_syntax::Arenas,
-    requests: &[rcdzc::Request],
+    requests: &[cadenza_compile_abi::Request],
     prog: &str,
-) -> Option<rcdzc::CompileOutput> {
+) -> Option<cadenza_compile_abi::CompileOutput> {
     let [request] = requests else {
         return None;
     };
     let kind = query_result_kind(request)?;
     let inputs = vec![
         Artifact::new(
-            rcdzc::Artifact::KIND_AST,
+            cadenza_compile_abi::Artifact::KIND_AST,
             "main",
             cadenza_syntax::codec::encode(arenas),
         ),
         Artifact::new(
-            rcdzc::sidecar::KIND_SIDECAR,
+            cadenza_compile_abi::sidecar::KIND_SIDECAR,
             "drive",
             build_sidecar_request(requests),
         ),
@@ -464,7 +464,7 @@ pub fn run_query_over_inputs(
     inputs: &[Artifact],
     result_kind: &str,
     prog: &str,
-) -> rcdzc::CompileOutput {
+) -> cadenza_compile_abi::CompileOutput {
     let dir = scratch_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("{prog}: cannot create temp dir {}: {e}", dir.display());
@@ -517,8 +517,12 @@ pub fn run_query_over_inputs(
     }
     // The captured stdout IS the query result artifact's bytes; tag it with the known result kind so the
     // caller's `out.artifact(result_kind)` finds it.
-    rcdzc::CompileOutput {
-        artifacts: vec![rcdzc::Artifact::new(result_kind, "0", output.stdout)],
+    cadenza_compile_abi::CompileOutput {
+        artifacts: vec![cadenza_compile_abi::Artifact::new(
+            result_kind,
+            "0",
+            output.stdout,
+        )],
         diagnostics: vec![],
         // A DELEGATED (subprocess) compile ran no in-process CSE partition — the metric is `rcdzc`'s own
         // test instrumentation, always 0 here (this field is always-present since CompileOutput moved to
@@ -533,8 +537,8 @@ pub fn run_query_over_inputs(
 
 /// An empty `CompileOutput` (no artifacts, no diagnostics) — a delegated query run's failure shape, where
 /// `cdz-compile` has already reported diagnostics on the inherited stderr.
-fn empty_output() -> rcdzc::CompileOutput {
-    rcdzc::CompileOutput {
+fn empty_output() -> cadenza_compile_abi::CompileOutput {
+    cadenza_compile_abi::CompileOutput {
         artifacts: vec![],
         diagnostics: vec![],
         // No compile ran (delegated failure shape); the CSE metric is always 0 here.
@@ -561,8 +565,8 @@ mod tests {
     /// are both present; run it with `cargo test -p cdz --no-default-features`.)
     #[test]
     fn built_sidecar_request_decodes_back_to_the_requests() {
-        use rcdzc::Request;
-        use rcdzc::sidecar::Query;
+        use cadenza_compile_abi::Request;
+        use cadenza_compile_abi::sidecar::Query;
         let reqs = vec![
             Request::Query(Query::TypeOf { name: "foo".into() }),
             Request::Query(Query::UsesOf { name: "bar".into() }),
@@ -598,14 +602,14 @@ mod tests {
         for r in &reqs {
             let bytes = build_sidecar_request(std::slice::from_ref(r));
             assert_eq!(
-                rcdzc::sidecar::decode(&bytes).as_deref(),
+                cadenza_compile_abi::sidecar::decode(&bytes).as_deref(),
                 Some(std::slice::from_ref(r)),
                 "single-request round-trip mismatch for {r:?}",
             );
         }
         // …and the whole batch (a multi-form root list) in one decode.
         assert_eq!(
-            rcdzc::sidecar::decode(&build_sidecar_request(&reqs)),
+            cadenza_compile_abi::sidecar::decode(&build_sidecar_request(&reqs)),
             Some(reqs.clone()),
             "batch round-trip mismatch",
         );
@@ -615,8 +619,8 @@ mod tests {
     /// reader tags captured bytes with this kind, so a drift would mis-key the caller's `out.artifact`.
     #[test]
     fn query_result_kinds_are_complete_and_correct() {
-        use rcdzc::Request::Query;
-        use rcdzc::sidecar::{self, Query as Q};
+        use cadenza_compile_abi::Request::Query;
+        use cadenza_compile_abi::sidecar::{self, Query as Q};
         let cases = [
             (Q::TypeOf { name: "n".into() }, sidecar::KIND_TYPE_INFO),
             (Q::UsesOf { name: "n".into() }, sidecar::KIND_USES),
