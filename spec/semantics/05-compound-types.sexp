@@ -407,7 +407,7 @@
   (call   main) (output (: 1 Int64)))
 
 (case "a map pattern over its matching Map scrutinee kind is valid and matches (no over-rejection)"
-  (input  (do (def (main) (match (map (1 10)) ((map (1 v)) v) (_ 0))) (export main)))
+  (input  (do (def (main) (match #map((= 1 10)) (#map((= 1 v)) v) (_ 0))) (export main)))
   (call   main) (output (: 10 Int64)))
 
 (case "a tuple pattern over its matching Tuple scrutinee kind is valid and matches (no over-rejection)"
@@ -16052,7 +16052,7 @@
   (error  CDZ0201))
 
 (case "a correctly-typed map-pattern key compiles and matches (no over-rejection)"
-  (input  (do (def (main) (match (map (1 10) (2 20)) ((map (1 v)) v) (_ 0))) (export main)))
+  (input  (do (def (main) (match #map((= 1 10) (= 2 20)) (#map((= 1 v)) v) (_ 0))) (export main)))
   (call   main) (output (: 10 Int64)))
 
 (case "a RUNTIME map's wrong-type key pattern is rejected too, not silently dead"
