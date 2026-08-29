@@ -9660,6 +9660,53 @@ mod match_engine {
     }
 
     #[test]
+    fn a_native_compound_equality_compiles_like_the_alias() {
+        // M3 parity: an equality `(= a b)` over NATIVE compound literals compiles exactly like the
+        // name-alias, across every kind — so `Eq`/`const_compound_eq`'s structural walk (order-independent
+        // for record/map/set, positional for tuple, ordered for list, recursive for nesting) reads the
+        // native ctor-leaf heads + FieldPair entries. (Behavioral truth — order-independence, ordered lists,
+        // nesting — is pinned by the corpus grade; this guards that the recognizers stay native-aware through
+        // Phase-2's reader/recognizer changes.) Native ≡ alias where an alias exists (sets have only the
+        // `#set`/`("set" …)` spelling, no bare-name alias, so the native form is checked alone):
+        for (label, src) in [
+            (
+                "native #record equality",
+                "(module m (def (main) (= #record((= x 1) (= y 2)) #record((= y 2) (= x 1)))) (export main))",
+            ),
+            (
+                "name-alias record equality (control)",
+                "(module m (def (main) (= (record (x 1) (y 2)) (record (y 2) (x 1)))) (export main))",
+            ),
+            (
+                "native #map equality",
+                "(module m (def (main) (= #map((= 1 10) (= 2 20)) #map((= 2 20) (= 1 10)))) (export main))",
+            ),
+            (
+                "native #set equality",
+                "(module m (def (main) (= #set(1 2 3) #set(3 2 1))) (export main))",
+            ),
+            (
+                "native #list equality",
+                "(module m (def (main) (= #list(1 2) #list(2 1))) (export main))",
+            ),
+            (
+                "native #tuple equality",
+                "(module m (def (main) (= #tuple(1 2) #tuple(1 2))) (export main))",
+            ),
+            (
+                "native nested #record-in-#list equality",
+                "(module m (def (main) (= #list(#record((= a 1))) #list(#record((= a 1))))) (export main))",
+            ),
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "{label}: native compound equality must compile like the alias, got {:?}",
+                reject_code(src)
+            );
+        }
+    }
+
+    #[test]
     fn a_refutable_list_element_dead_arm_with_a_runtime_leaf_compiles_across_the_family() {
         // Hazard-class boundary for #5450/#5472: a REFUTABLE list-arm element desugars to a guard + a body
         // re-match, and over a const-STRUCTURED scrutinee carrying a RUNTIME leaf a mismatching (dead) arm's
