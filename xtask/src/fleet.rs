@@ -1567,8 +1567,8 @@ fn install_git_hooks_inner(fleet: &Fleet, verbose: bool) -> HookInstallAction {
         "fail-open trunk-clobber logger",
         verbose,
     );
-    // The pre-commit trunk-guard + warn-only fmt-check. adopt_signature lets us replace the pre-existing
-    // HAND-PLACED trunk-guard (unmarked) with the fleet-marked version (same guard + the fmt-check) — a
+    // The pre-commit trunk-guard + staged-.rs auto-fmt. adopt_signature lets us replace the pre-existing
+    // HAND-PLACED trunk-guard (unmarked) with the fleet-marked version (same guard + the auto-fmt) — a
     // truly foreign pre-commit hook (no marker, no signature) is still left untouched. Its own outcome is
     // surfaced by `install_one_hook`'s prints (a heal/install is announced), so it need not be returned.
     let _pre_commit = install_one_hook(
@@ -1577,7 +1577,7 @@ fn install_git_hooks_inner(fleet: &Fleet, verbose: bool) -> HookInstallAction {
         &pre_commit_hook_body(),
         PRE_COMMIT_HOOK_MARKER,
         Some(PRE_COMMIT_TRUNK_GUARD_SIGNATURE),
-        "trunk-guard + warn-only fmt-check pre-commit hook",
+        "trunk-guard + staged-.rs auto-fmt pre-commit hook",
         verbose,
     );
     ref_txn
