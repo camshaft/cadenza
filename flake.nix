@@ -3806,6 +3806,56 @@
           '';
         };
 
+        # guideSite — the DEPLOYABLE static guide site (`guide/dist/`) built through NIX so the GitHub-Pages
+        # deploy reuses the SHARED nix cache instead of a cold raw build every 30-min cron (operator directive
+        # 2026-08-29, job 33275680429 — the pages deploy spent a lot of time building). Same build path as
+        # guideExamplesCheck (consume the cached cdzWasmPkg + componentStore, stage-wasm, npm ci, npm run build
+        # = codegen + tsc + vite), but WITHOUT the check:* battery (those gate in guideExamplesCheck / CI
+        # separately — a pure site build) and OUTPUTS `dist/` instead of a verdict. Cache win: cdzWasmPkg +
+        # componentStore + guideNpmDeps are all shared/cached, and this derivation is input-addressed on the
+        # guide + compiler-wasm closure, so an unchanged-trunk cron deploy is a nix-store CACHE HIT (near-instant)
+        # rather than a full ARM rebuild. The pages.yml workflow (v-gha-green) runs `nix build .#guide-site` and
+        # uploads $out as the Pages artifact; v-guide-infra owns the guide build inputs + the codegen bin.
+        guideSite = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-guide-site";
+          version = "0.0.0";
+          src = guideExamplesSrc;
+          nativeBuildInputs = [
+            rustToolchain
+            pkgs.nodejs_22
+            pkgs.npmHooks.npmConfigHook
+            xtaskCodegenGuideBin
+          ];
+          npmDeps = guideNpmDeps;
+          npmRoot = "guide";
+          # The Pages base path (project page https://<owner>.github.io/cadenza/) — same as guideExamplesCheck.
+          VITE_BASE = "/cadenza/";
+          CDZ_XTASK_CODEGEN_GUIDE = "${xtaskCodegenGuideBin}/bin/xtask-codegen-guide";
+          buildPhase = ''
+            runHook preBuild
+            # Consume the cached browser-compiler wasm pkg + stage it and the value-heap runtime into guide/
+            # (identical to guideExamplesCheck steps 1-2).
+            cp -r ${cdzWasmPkg} implementation/seed/crates/cdz-wasm/pkg
+            chmod -R u+w implementation/seed/crates/cdz-wasm/pkg
+            export CADENZA_STORE="${componentStore}"
+            node guide/scripts/stage-wasm.mjs
+            # Build the deployable site: `npm run build` = `npm run codegen` (regenerate the @generated .tsx +
+            # chapters.ts via CDZ_XTASK_CODEGEN_GUIDE) + `tsc -b` + `vite build` → guide/dist/. No check:* battery
+            # (gated in guideExamplesCheck/CI) — this is the pure Pages artifact build.
+            ( cd guide
+              npm ci
+              patchShebangs node_modules
+              npm run build
+            )
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            cp -r guide/dist "$out"
+            runHook postInstall
+          '';
+        };
+
         # ── guide-examples SHRED (operator directive 2026-08-28: the serial check:examples takes 10min+;
         # examples never change → SHRED it like the corpus, heavily cached + parallel). v-guide-infra owns the
         # shred CLI (scripts/shred-examples.mjs, #5091/#5096 — deterministic dir names, no timestamps); v-nix
@@ -4257,6 +4307,11 @@
         # → result/bin/xtask-codegen-guide. guideExamplesCheck sets CDZ_XTASK_CODEGEN_GUIDE to this so the
         # guide's `npm run codegen` regenerates the @generated .tsx from the .sexp source-of-truth in-gate.
         packages.xtask-codegen-guide = xtaskCodegenGuideBin;
+
+        # The DEPLOYABLE guide static site (guide/dist/) built through nix (operator 2026-08-29: nixify the
+        # Pages deploy for the shared cache). `nix build .#guide-site` → result/ = the site the pages.yml
+        # deploy uploads as the Pages artifact (cache-hit on unchanged trunk instead of a cold ARM rebuild).
+        packages.guide-site = guideSite;
 
         # The standalone baseline pruner bin (v-xtask-decompose). `nix build .#xtask-prune-baselines` →
         # result/bin/xtask-prune-baselines. Backs `apps.prune-baselines`; caches independently of xtask.
