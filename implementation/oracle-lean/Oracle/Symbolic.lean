@@ -43,14 +43,43 @@ inductive SymOutcome where
   | cannotProve (reason : String)
   deriving BEq, Inhabited
 
-/-- Canonicalize a symbolic expression by UNCONDITIONALLY-SOUND rewrites only (this first cut): recurse
-into subterms; an `if` on a constant boolean selects its branch; an `if` whose branches are identical
-collapses to that branch. Deliberately does NOT fold or reassociate arithmetic (see the soundness rule in
-the module header) — those are width/trap-aware increments (T2.0b+). -/
+/-- Constant-fold an operator applied to fully-CONSTANT operands, iff the fold is SOUND independent of
+integer width (the symbolic evaluator does not yet track width). So this folds ONLY operators that can
+never overflow / trap: COMPARISONS over integer constants (`< > <= >=`, total on `Int`), value EQUALITY
+(`=`), and BOOLEAN ops (`and`/`or`/`not`) over boolean constants. Returns `none` (leave symbolic) for a
+non-constant operand, a non-integer comparison, or ARITHMETIC (`+ - * / %`) — arithmetic folding needs
+width/overflow-trap-aware semantics (T2.0d); folding it here could produce a value where the program
+traps = a FALSE "proven", the one outcome worse than `cannotProve`. -/
+def foldConst? (op : String) (args : Array SymExpr) : Option Value :=
+  let consts := args.map (fun a => match a with | .const v => some v | _ => none)
+  if consts.any (·.isNone) then none
+  else match op, consts.filterMap id with
+    | "=",  #[a, b] => some (.bool (Value.valueEqSpec a b))
+    | "<",  #[.int x, .int y] => some (.bool (decide (x < y)))
+    | ">",  #[.int x, .int y] => some (.bool (decide (x > y)))
+    | "<=", #[.int x, .int y] => some (.bool (decide (x ≤ y)))
+    | ">=", #[.int x, .int y] => some (.bool (decide (x ≥ y)))
+    | "not", #[.bool b] => some (.bool (!b))
+    | "and", vs => if vs.all (· == .bool true) then some (.bool true)
+                   else if vs.any (· == .bool false) then some (.bool false) else none
+    | "or",  vs => if vs.any (· == .bool true) then some (.bool true)
+                   else if vs.all (· == .bool false) then some (.bool false) else none
+    | _, _ => none
+
+/-- Canonicalize a symbolic expression by SOUND rewrites only: recurse into subterms; SOUND constant
+folding of comparison/boolean ops (`foldConst?`); an `if` on a (now possibly-folded) constant boolean
+selects its branch; an `if` whose branches are identical collapses. Deliberately does NOT fold or
+reassociate ARITHMETIC (needs width/overflow-trap-aware semantics — T2.0d; an unsound fold = a FALSE
+"proven"). Folding a comparison/boolean CONDITION composes with `if`-selection to prove more of an
+optimizer's branch-elimination rewrites. -/
 partial def normalize : SymExpr → SymExpr
   | .var n => .var n
   | .const v => .const v
-  | .app op args => .app op (args.map normalize)
+  | .app op args =>
+    let args' := args.map normalize
+    match foldConst? op args' with
+    | some v => .const v
+    | none => .app op args'
   | .ite c t e =>
     match normalize c with
     | .const (.bool true) => normalize t
@@ -161,6 +190,19 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 #guard normalize (.ite (.const (.bool false)) (.var 0) (.var 1)) == SymExpr.var 1
 -- `if c then a else a` collapses to `a` (identical branches, condition irrelevant).
 #guard normalize (.ite (.var 2) (.var 0) (.var 0)) == SymExpr.var 0
+-- T2.0c SOUND constant folding of comparison/boolean ops:
+#guard normalize (.app "<" #[.const (.int 2), .const (.int 5)]) == SymExpr.const (.bool true)
+#guard normalize (.app ">=" #[.const (.int 2), .const (.int 5)]) == SymExpr.const (.bool false)
+#guard normalize (.app "=" #[.const (.int 3), .const (.int 3)]) == SymExpr.const (.bool true)
+#guard normalize (.app "and" #[.const (.bool true), .const (.bool false)]) == SymExpr.const (.bool false)
+#guard normalize (.app "or" #[.const (.bool false), .const (.bool true)]) == SymExpr.const (.bool true)
+#guard normalize (.app "not" #[.const (.bool true)]) == SymExpr.const (.bool false)
+-- KEY: a folded comparison CONDITION composes with `if`-selection → proves an optimizer's branch-elim.
+#guard normalize (.ite (.app "<" #[.const (.int 1), .const (.int 2)]) (.var 0) (.var 1)) == SymExpr.var 0
+-- a comparison with a NON-constant operand is left symbolic (not folded).
+#guard normalize (.app "<" #[.var 0, .const (.int 5)]) == SymExpr.app "<" #[.var 0, .const (.int 5)]
+-- SOUNDNESS: ARITHMETIC is NOT folded (needs width/overflow-trap semantics) — left symbolic.
+#guard normalize (.app "+" #[.const (.int 2), .const (.int 3)]) == SymExpr.app "+" #[.const (.int 2), .const (.int 3)]
 -- two structurally-identical symbolic forms are PROVEN equivalent for all inputs.
 #guard symEquiv (.sym (.app "+" #[.var 0, .const (.int 1)])) (.sym (.app "+" #[.var 0, .const (.int 1)])) == EquivVerdict.proven
 -- an optimizer that turned `if true then (x+1) else y` into `x+1` is PROVEN equivalent (const-cond select).
