@@ -1398,6 +1398,51 @@ mod tests {
     }
 
     #[test]
+    fn the_descriptor_vocabulary_parses_through_the_real_reader() {
+        // BOTH #5710-family parse bugs (string-head primitive #5751, record FieldPair fields #5763) slipped
+        // through because the unit tests HAND-BUILD descriptor nodes via `Builder` (2-lists, str-heads) that
+        // diverge from what the real front-end reader actually emits (native FieldPair, name-heads, ctor
+        // leaves). This pins the WHOLE 28-wit-abi descriptor vocabulary — variant (payload + bare case), enum,
+        // result-of/enum-err, list, option, unit, and DEEP record/variant/option nesting — as READ THROUGH the
+        // real reader (testkit::parse), so a future reader-representation change that breaks any descriptor
+        // shape fails HERE, not silently at a dropped world months later. Each world must parse (Some).
+        let worlds = [
+            // sp7: variant result with a payloaded case + a bare case.
+            "(world w (export iface (member f (func (param x (s64)) (result (variant (small (s64)) (big)))))))",
+            // result<list<u8>, variant<..>> — nested result/list/variant, the platform run member's shape.
+            "(world w (export guest (member run (func (param program (list (u8))) (result (result (list (u8)) (variant (timeout) (faulted))))))))",
+            // record param carrying a result<list<u8>, enum<..>> — result + enum + list nested in a record field.
+            "(world w (export iface (member f (func (param m (record (= a (result (list (u8)) (enum timeout missing schema faulted))))) (result (s64))))))",
+            // option param + unit result — the bare option + unit vocabulary.
+            "(world w (export iface (member f (func (param m (record (= d (option (s64))))) (result (unit))))))",
+            // Deeply nested: record → list → record → option field (the on-message request shape), exercising
+            // the FieldPair read recursing several levels through name-head compounds.
+            "(world w (export guest (member on-message (func (param m (record (= contract (list (u8))) (= payload (list (u8))))) (result (record (= items (list (record (= echo (list (u8))) (= deadline (option (u64)))))))))) ))",
+        ];
+        for (i, src) in worlds.iter().enumerate() {
+            let a = crate::testkit::parse(src);
+            assert!(
+                parse_target_world(&a, a.root).is_some(),
+                "descriptor-vocabulary world #{i} must parse through the real reader; got None:\n  {src}"
+            );
+        }
+        // Pin one rich shape's decoded value: the variant result (sp7) — a payloaded case + a bare case, in
+        // declaration order (a variant's case order is significant).
+        let a = crate::testkit::parse(
+            "(world w (export iface (member f (func (param x (s64)) (result (variant (small (s64)) (big)))))))",
+        );
+        let tw = parse_target_world(&a, a.root).expect("sp7 variant world parses");
+        assert_eq!(
+            tw.exports[0].members[0].func.result,
+            WitType::Variant(vec![
+                ("small".to_string(), Some(WitType::S64)),
+                ("big".to_string(), None),
+            ]),
+            "sp7 result: variant {{ small(s64), big }} in declaration order"
+        );
+    }
+
+    #[test]
     fn parses_each_scalar_primitive() {
         for (kind, want) in [
             ("bool", WitType::Bool),
