@@ -9923,6 +9923,46 @@ mod match_engine {
     }
 
     #[test]
+    fn native_compound_match_patterns_compile_over_an_untyped_scrutinee_like_the_alias() {
+        // M3 blocker (v-guide-infra): a native #-form compound MATCH pattern over a scrutinee whose type is
+        // NOT definitely a compound (an UNTYPED/Any param — the guide's shape) rejected CDZ0201 "a compound-
+        // constructor head leaf is not a value", while the name-alias compiled. lower_match's scalar-path
+        // decline (when classify_probe returns None) lowered the pattern HEAD to propagate an unbound-ctor
+        // poison; a native ctor-LEAF head spuriously poisoned CDZ0201 there. Now a recognized compound
+        // pattern (compound_form_of, any spelling) is exempt from that head-poison probe → it declines
+        // cleanly like the alias, and the type-directed lowering (once inference solves the scrutinee) handles
+        // it. Native ≡ alias, TYPED and UNTYPED:
+        for (label, src) in [
+            (
+                "native #tuple match, UNTYPED param",
+                "(module m (def (f p) (match p (#tuple(a b) a))) (def (main) (f #tuple(3 4))) (export main))",
+            ),
+            (
+                "native #record match, UNTYPED param",
+                "(module m (def (f p) (match p (#record((= x xv) (= y yv)) xv))) (def (main) (f #record((= x 1) (= y 2)))) (export main))",
+            ),
+            (
+                "name-alias tuple match, UNTYPED param (control)",
+                "(module m (def (f p) (match p ((tuple a b) a))) (def (main) (f (tuple 3 4))) (export main))",
+            ),
+            (
+                "native #tuple match, TYPED param",
+                "(module m (def (f (: p (Tuple Int64 Int64))) (match p (#tuple(a b) a))) (def (main) (f #tuple(3 4))) (export main))",
+            ),
+            (
+                "native #list match, TYPED param (rest + empty arms)",
+                "(module m (def (f (: xs (List Int64))) (match xs (#list() 0) (#list(h .. t) h))) (def (main) (f #list(1 2))) (export main))",
+            ),
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "{label}: a native compound match pattern must compile like the alias, got {:?}",
+                reject_code(src)
+            );
+        }
+    }
+
+    #[test]
     fn a_native_structural_pattern_over_a_wrong_kind_scrutinee_is_cdz0203() {
         // SOUNDNESS guard (05-compound-types "a tuple pattern over a non-tuple scrutinee is a type error",
         // and its list/map siblings): the match scrutinee-KIND check (lower_match) reads a pattern's

@@ -5709,11 +5709,28 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                 // runs on nullary-exported bodies alone). A genuinely not-yet-lowerable compound whose head
                 // resolves cleanly (or is not a name) yields no coded poison → the honest uncoded decline
                 // stands; no false alarm. `inner_pat` is already peeled of any `(guard …)` wrapper above.
+                // A COMPOUND pattern (`(list …)`/`(tuple …)`/`(record …)`/`(map …)`/`(set …)`, in ANY
+                // spelling — `compound_form_of` recognizes the native ctor-leaf head + the name/string alias)
+                // is a VALID pattern head, not an unbound-ctor error — its head must NOT be lowered as a value
+                // (a native ctor-LEAF head would spuriously poison CDZ0201 "compound-constructor head leaf is
+                // not a value", the misdiagnosis that made a native `#tuple`/`#record` match over a non-definite
+                // (Any) scrutinee reject while the name-alias declined cleanly). Only a NON-compound ctor-shaped
+                // head (`(Zorp x)`, `(List.Cons h t)`) gets its coded poison propagated.
+                let is_compound_pattern = [
+                    crate::ast::CompoundCtor::List,
+                    crate::ast::CompoundCtor::Tuple,
+                    crate::ast::CompoundCtor::Record,
+                    crate::ast::CompoundCtor::Map,
+                    crate::ast::CompoundCtor::Set,
+                ]
+                .iter()
+                .any(|&c| db.ast.compound_form_of(inner_pat, c).is_some());
                 let ctor_head = match db.ast.get(inner_pat) {
                     crate::ast::Struct::List(children) => children.first().copied(),
                     _ => None,
                 };
-                if let Some(head) = ctor_head
+                if !is_compound_pattern
+                    && let Some(head) = ctor_head
                     && let Core::Poison(reject) = core_of(db, head)
                     && reject.code.is_some()
                 {
