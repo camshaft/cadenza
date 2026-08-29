@@ -86,7 +86,7 @@ use crate::{
     Bytes, ContractId, Delivered, Error, Hash, HostId, Links, Message, Notification, Origin,
     ProgramHash, ReducerId, ReducerKind, Response,
 };
-use cadenza_ast::ast::{Arenas, Builder, Leaf, Struct, StructId};
+use cadenza_ast::ast::{Arenas, Builder, CompoundCtor, Leaf, Struct, StructId};
 use cadenza_ast::codec;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -848,16 +848,19 @@ fn spawn_to_ast(b: &mut Builder, spawn: &SpawnSpec) -> StructId {
 /// The items of a `("list" e…)` value — accepting both the string head `"list"` and the bare name head
 /// `list`, which denote the same construct.
 fn list_items(arenas: &Arenas, id: StructId) -> Option<&[StructId]> {
-    arenas
-        .as_ctor_form(id, "list")
-        .or_else(|| arenas.as_form(id, "list"))
+    // All three list spellings — native ctor-leaf head (rcdzc-compiled), `list` name alias, `("list" …)`
+    // string — via `compound_form_of`.
+    arenas.compound_form_of(id, CompoundCtor::List)
 }
 
 /// Whether `id` is a record value — the NAME-headed `(record …)` (the canonical Cadenza value form) or the
 /// STRING-headed `("record" …)` (the `cdz convert --to binary` surface form a HarnessSpec arrives as). Liberal
 /// about the head so a description reads either way, matching [`record_field`]/[`list_items`].
 fn is_record(arenas: &Arenas, id: StructId) -> bool {
-    arenas.as_form(id, "record").is_some() || arenas.as_ctor_form(id, "record").is_some()
+    // Recognize all THREE record spellings — the M2 native ctor-leaf head (what rcdzc compiles the harness
+    // description to), the `record` name alias, and the legacy `("record" …)` string — via `compound_form_of`.
+    // Before this, the native head read as "not a record", blocking §9 harness-run.
+    arenas.compound_form_of(id, CompoundCtor::Record).is_some()
 }
 
 /// A record's field read as a string, if present. `Ok(None)` when the field is absent; a present-but-not-a-
@@ -1456,8 +1459,7 @@ fn rewrite_value_canonical(
             // recursively canonicalized. Accept either head (`is_record`) so it is idempotent.
             if is_record(old, id) {
                 let fields = old
-                    .as_form(id, "record")
-                    .or_else(|| old.as_ctor_form(id, "record"))
+                    .compound_form_of(id, CompoundCtor::Record)
                     .expect("is_record just matched a record head");
                 let mut out = Vec::with_capacity(fields.len());
                 for &f in fields {
@@ -1599,6 +1601,29 @@ mod tests {
         let mut b = Builder::new();
         let root = build(&mut b);
         b.finish(root)
+    }
+
+    #[test]
+    fn reads_a_harness_description_whose_outer_record_is_the_native_ctor_leaf_form() {
+        // §9 regression guard: rcdzc compiles a harness description to the M2 NATIVE compound form — the outer
+        // record carries a `RecordCtor` ctor-LEAF head + native `FieldPair` entries, not the name-alias
+        // `(record …)` the platform's own builder emits. Before the descent recognized the native leaves,
+        // `is_record`/`record_field` returned "not a record" on the compiled harness (SpecError::NotARecord),
+        // blocking cdz-platform-itest's harness-run (the §9 harness-reducer-dispatch tail). Build the outer
+        // record NATIVELY (`b.compound(CompoundCtor::Record, [b.field_pair(name, val)…])`) and confirm it reads.
+        let arenas = built(|b| {
+            let default = b.atom_leaf(Leaf::Str(Arc::from("sys")));
+            // A registry sub-record — also native, to exercise nested native records.
+            let default_key = b.name("default");
+            let reg_field = b.field_pair(default_key, default);
+            let registry = b.compound(cadenza_ast::ast::CompoundCtor::Record, &[reg_field]);
+            let reg_key = b.name("registry");
+            let outer_field = b.field_pair(reg_key, registry);
+            b.compound(cadenza_ast::ast::CompoundCtor::Record, &[outer_field])
+        });
+        let spec = HarnessSpec::read(&arenas, arenas.root)
+            .expect("a native-#record harness description reads (not SpecError::NotARecord)");
+        assert_eq!(spec.registry.default, "sys");
     }
 
     /// A `("list" e…)` value (string head, the canonical list constructor).

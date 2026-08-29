@@ -27,7 +27,7 @@
 //! and a `cdz convert` surface value.
 
 use crate::{Bytes, Hash};
-use cadenza_ast::ast::{Builder, Leaf, Radix, Struct, StructId};
+use cadenza_ast::ast::{Builder, CompoundCtor, Leaf, Radix, Struct, StructId};
 use std::sync::Arc;
 
 // --- builders ---
@@ -175,13 +175,13 @@ pub fn record_field(
     id: StructId,
     name: &str,
 ) -> Option<StructId> {
-    // LIBERAL on the head: the canonical Value form (a platform-built payload, what a guest `Value.decode`s)
-    // is NAME-headed `(record …)`, while the ML SURFACE form (a HarnessSpec input from `cdz convert`) is
-    // string-headed `("record" …)`. Accept both (like `list_items`/`read_string_list`); the builders emit
-    // only the canonical name-head. `as_form` returns the fields after the head either way.
-    let fields = arenas
-        .as_form(id, "record")
-        .or_else(|| arenas.as_ctor_form(id, "record"))?;
+    // LIBERAL on the head, across ALL THREE record spellings: the M2 NATIVE ctor-leaf head (what rcdzc now
+    // compiles a record VALUE to — e.g. a harness description / contract value emitted by the guest), the
+    // NAME-headed `(record …)` alias, and the legacy string-headed `("record" …)` — via `compound_form_of`.
+    // (Before this, the native ctor-leaf head was missed, so a guest-compiled native record read as
+    // "not a record".) The `(= name value)` field head is read through the `as_name` FieldPair→"=" bridge,
+    // so it accepts the native FieldPair leaf too.
+    let fields = arenas.compound_form_of(id, CompoundCtor::Record)?;
     fields.iter().find_map(|&f| {
         let kv = arenas.as_form(f, "=")?;
         (kv.len() == 2 && arenas.as_name(kv[0]) == Some(name)).then_some(kv[1])

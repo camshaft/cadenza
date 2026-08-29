@@ -21,7 +21,7 @@ use super::log_value;
 use super::observation::{Entry, EventKind, EventOp, Record};
 use crate::contract_value::{as_ascribed, ascribe, bytes_leaf, read_bytes, read_hash};
 use crate::{Bytes, Contract, ContractId, Delivered, HostId, Message, Origin, ReducerId, Str};
-use cadenza_ast::ast::{Arenas, Builder, Leaf, Struct, StructId};
+use cadenza_ast::ast::{Arenas, Builder, CompoundCtor, Leaf, Struct, StructId};
 use cadenza_ast::codec;
 use std::sync::{Arc, OnceLock};
 
@@ -292,9 +292,8 @@ fn read_bool(arenas: &Arenas, id: StructId) -> Option<bool> {
 /// Read a `List(String)` value into its strings, or `None` if `id` is not a string list. Accepts both the
 /// string head `("list" …)` and the bare name head `(list …)`.
 fn read_string_list(arenas: &Arenas, id: StructId) -> Option<Vec<Str>> {
-    let items = arenas
-        .as_ctor_form(id, "list")
-        .or_else(|| arenas.as_form(id, "list"))?;
+    // All three list spellings incl. the M2 native ctor-leaf head (rcdzc-compiled checker values).
+    let items = arenas.compound_form_of(id, CompoundCtor::List)?;
     items
         .iter()
         .map(|&e| arenas.as_str(e).map(Str::from))
