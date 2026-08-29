@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(25) {
+    match c.variant(26) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -439,6 +439,9 @@ fn gen_main_body<C: Choice>(
         // A BOOLEAN-LOGIC body: `and` / `or` / `not` over integer comparisons (→ Bool) — short-circuit
         // boolean combinators the `gen_cond` arm (bare comparisons) never composed.
         24 => gen_bool_logic_body(c, out),
+        // A SIZED-INT SHIFT body: `<<` / `>>` (and a nested shift+bitwise) on a sized-int-ascribed operand
+        // — the narrow-width shift codegen the sized-int arm (which only did `+ * & | ^`) never emitted.
+        25 => gen_sized_shift_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1388,6 +1391,29 @@ fn gen_bool_logic_body<C: Choice>(c: &mut C, out: &mut String) {
         2 => write!(out, "(not {c1})").ok(),
         // Nested: `(and (or c1 c2) (not c3))`.
         _ => write!(out, "(and (or {c1} {c2}) (not {c3}))").ok(),
+    };
+}
+
+/// A SIZED-INT SHIFT body: `(<< (: a T) s)` / `(>> (: a T) s)` (and a nested `(& (<< …) (: b T))`) for a
+/// sized-int type `T`. The shift count `s` is 0..=3 and the operands 0..=3, so no shift is out of range
+/// (valid even for the 8-bit widths) and no left-shift overflows — keeping it on the graded path. Reaches
+/// the NARROW-WIDTH shift codegen the sized-int arm (which only emitted `+ * & | ^`) never did.
+fn gen_sized_shift_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the FORM + type before the operands (variant-ordering).
+    let form = c.variant(3);
+    let t = SIZED_INT_TYPES[c.variant(SIZED_INT_TYPES.len())];
+    let (a, b, s) = (
+        c.int_bounded(0, 3),
+        c.int_bounded(0, 3),
+        c.int_bounded(0, 3),
+    );
+    match form {
+        // Shift left.
+        0 => write!(out, "(<< (: {a} {t}) {s})").ok(),
+        // Shift right.
+        1 => write!(out, "(>> (: {a} {t}) {s})").ok(),
+        // Nested shift then bitwise-and (same width).
+        _ => write!(out, "(& (<< (: {a} {t}) {s}) (: {b} {t}))").ok(),
     };
 }
 
@@ -2771,6 +2797,45 @@ mod tests {
         assert!(saw_or, "should reach an `or`");
         assert!(saw_not, "should reach a `not`");
         assert!(saw_nested, "should reach a nested `(and (or …) (not …))`");
+    }
+
+    /// `gen_sized_shift_body` REACHES all three forms (shift-left, shift-right, nested shift+and) over a
+    /// breadth of sized-int types, and every body COMPILES (S175: narrow-width shift codegen).
+    #[test]
+    fn gen_sized_shift_body_reaches_all_forms_and_compiles() {
+        let (mut saw_shl, mut saw_shr, mut saw_nested) = (false, false, false);
+        let mut types = std::collections::BTreeSet::new();
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(2549);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_sized_shift_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_nested |= body.starts_with("(& (<< ");
+            saw_shl |= body.starts_with("(<< ");
+            saw_shr |= body.starts_with("(>> ");
+            for t in SIZED_INT_TYPES {
+                if body.contains(&format!(" {t})")) {
+                    types.insert(*t);
+                }
+            }
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "sized-shift body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_shl, "should reach a shift-left");
+        assert!(saw_shr, "should reach a shift-right");
+        assert!(saw_nested, "should reach a nested shift+and");
+        assert!(
+            types.len() >= 4,
+            "should reach >=4 distinct sized-int types"
+        );
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
