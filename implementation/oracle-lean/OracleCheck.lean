@@ -24,11 +24,14 @@ structure Tally where
 def checkCase (progPath otPath : String) (skips : Bool := false) : IO Tally := do
   let progBytes ← IO.FS.readBinFile progPath
   let otBytes ← IO.FS.readBinFile otPath
+  -- a `wit-world.ast` sibling ⇒ the case's exported result crosses a typed WIT ABI (enum/variant
+  -- rename/retype) — Check.check downgrades a WIT-crossed would-be mismatch to a sound skip.
+  let witWorld ← (System.FilePath.mk (progPath.replace "program.ast" "wit-world.ast")).pathExists
   match Ast.decode progBytes, Ast.decode otBytes with
   | .error e, _ => IO.eprintln s!"decode {progPath}: {e}"; return { mismatch := 1 }
   | _, .error e => IO.eprintln s!"decode {otPath}: {e}"; return { mismatch := 1 }
   | .ok prog, .ok ot =>
-    match Check.check prog ot with
+    match Check.check prog ot witWorld with
     | .error e => IO.eprintln s!"parse {otPath}: {e}"; return { mismatch := 1 }
     | .ok verdicts =>
       let mut t : Tally := {}

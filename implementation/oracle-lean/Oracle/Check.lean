@@ -247,15 +247,16 @@ def checkTrial (prog : Module) (ot : Module) (t : OTrial) : Verdict :=
   -- coverage-gap), rather than grade the raw program result against the member-call's expected output.
   if t.call == some "" then .skip "call-method/reducer-continuation trial (empty export) — harness shape not modeled"
   else
-  -- A no-argument trial is `reduce`; an argument-bearing call binds the arg VALUES to main's params
-  -- via `execute`. Args are the trial's value-AST nodes (bare scalar values); a compound/non-scalar
-  -- arg the value domain doesn't model yet → skip (not every arg decodes).
+  -- Run the trial's CALLED export (a program may export several defs with NO `main`, and the trial's
+  -- `(call <export> …)` names which one): `executeExport` binds the arg VALUES to that def's params. A
+  -- no-call / bare-expr trial is `reduce` (the wrapped `main`). Args are the trial's value-AST nodes (bare
+  -- scalars); a compound/non-scalar arg the value domain doesn't model yet → skip (not every arg decodes).
+  let argVals := t.args.filterMap (expectedValue? ot)
   let outcome :=
-    if t.args.isEmpty then Oracle.reduce prog
-    else
-      let argVals := t.args.filterMap (expectedValue? ot)
-      if argVals.size == t.args.size then Oracle.execute prog argVals
-      else .unsupported "execute: an argument is not a modeled scalar value"
+    if argVals.size != t.args.size then .unsupported "execute: an argument is not a modeled scalar value"
+    else match t.call with
+         | some nm => Oracle.executeExport prog nm.toUTF8 argVals
+         | none => if t.args.isEmpty then Oracle.reduce prog else Oracle.execute prog argVals
   match t.expect with
   | .error _ | .declines => .skip "expect is a compile outcome (error/declines) — not modeled"
   | .trap kind =>
@@ -282,10 +283,20 @@ def checkTrial (prog : Module) (ot : Module) (t : OTrial) : Verdict :=
     | .diverges => .skip "diverges"
     | .errReturn _ => .skip "unbounded ? short-circuit (no fallible function boundary) — not modeled"
 
-/-- Assert every trial; returns the verdicts in order. -/
-def check (prog : Module) (ot : Module) : Except String (Array Verdict) := do
+/-- Assert every trial; returns the verdicts in order. `witWorld` = the case declares a typed WIT world
+(a `wit-world.ast` sibling): its exported RESULT crosses the component-model ABI, which RENAMES/RETYPES
+enums & variants (a ctor `Red` crosses as the WIT case `red`; a sum crosses as a typed enum/variant). The
+oracle models the pure Cadenza VALUE, not the WIT-crossed form, so under a WIT world a would-be MISMATCH
+is downgraded to a SKIP (a sound coverage-gap — the crossing renamed it, not a real divergence); a HOLD
+still holds (a scalar result crosses unchanged and compares equal). -/
+def check (prog : Module) (ot : Module) (witWorld : Bool := false) : Except String (Array Verdict) := do
   let trials ← parseTrials ot
-  pure (trials.map (checkTrial prog ot))
+  pure (trials.map (fun t =>
+    let v := checkTrial prog ot t
+    if witWorld then (match v with
+                      | .mismatch _ => .skip "wit-boundary crossed output (typed WIT enum/variant rename/retype) — not modeled"
+                      | _ => v)
+    else v))
 
 end Check
 

@@ -100,8 +100,10 @@ def paramSpecNodes (m : Module) (targetId : Nat) : Array Nat :=
   | some (Node.list cs) => cs.extract 1 cs.size
   | _ => #[]
 
-/-- `main`'s parameter-spec node ids + body node, from `(do … (def (main <params…>) BODY) …)`. -/
-def mainParamsBody? (m : Module) : Option (Array Nat × Nat) := do
+/-- The param-spec nodes + body of the top-level `(def (<target> param…) BODY)` named `target`. Used to
+run a trial that calls a NAMED export — a program may export several defs (`(export same)` `(export
+implied)` …) with NO `main`, and a trial's `(call <export> …)` names which one to run. -/
+def namedParamsBody? (m : Module) (target : ByteArray) : Option (Array Nat × Nat) := do
   let root ← m.nodes[m.root]?
   match root with
   | Node.list stmts =>
@@ -110,10 +112,12 @@ def mainParamsBody? (m : Module) : Option (Array Nat × Nat) := do
       | some dc =>
         match defName? m dc, dc[1]?, dc[dc.size - 1]? with
         | some nm, some targetId, some bodyId =>
-          if nm == "main".toUTF8 then some (paramSpecNodes m targetId, bodyId) else none
+          if nm == target then some (paramSpecNodes m targetId, bodyId) else none
         | _, _, _ => none
       | none => none)
   | _ => none
+
+def mainParamsBody? (m : Module) : Option (Array Nat × Nat) := namedParamsBody? m "main".toUTF8
 
 /-- The width of a Cadenza integer type — parametric: an UNKNOWN width (an unresolved type variable
 `W`, e.g. in generic `(Int W)` code), a KNOWN concrete bit width, or BIG (arbitrary-precision `BigInt`,
@@ -2143,8 +2147,8 @@ end Eval
 /-- STAGE 2 — run a trial against the program: bind the call arguments to `main`'s parameters (with
 each param's declared integer type, so narrow-typed params trap at their width) and evaluate its body.
 For the no-argument trial this is a nullary `main` with an empty env. -/
-def execute (m : Ast.Module) (args : Array Value) : Outcome :=
-  match Eval.mainParamsBody? m with
+def executeExport (m : Ast.Module) (exportName : ByteArray) (args : Array Value) : Outcome :=
+  match Eval.namedParamsBody? m exportName with
   | some (specs, bodyId) =>
     if specs.size != args.size then
       .unsupported s!"execute: arity mismatch ({specs.size} params, {args.size} args)"
@@ -2160,10 +2164,13 @@ def execute (m : Ast.Module) (args : Array Value) : Outcome :=
         -- element of a returned compound) surfaces its trap at the output boundary.
         match Eval.evalNode m bindings.toList Eval.defaultIntTy Eval.defaultFuel bodyId with
         | .value v => Eval.observeDeep v
-        -- main IS the fallible boundary when a top-level `?` short-circuits its body → return the Err/None.
+        -- the export IS the fallible boundary when a top-level `?` short-circuits its body → return Err/None.
         | .errReturn ev => Eval.observeDeep ev
         | other => other
-  | none => .unsupported "execute: program is not a (do (def (main …) BODY) (export main)) form"
+  | none => .unsupported "execute: program has no (def (<export> …) BODY) for the called export"
+
+/-- STAGE 2 — run a trial against `main` (the default export). Kept for the common single-`main` program. -/
+def execute (m : Ast.Module) (args : Array Value) : Outcome := executeExport m "main".toUTF8 args
 
 /-- STAGE 1 — const-evaluate a closed program to its minimal form (grades a bare `(input E)` case).
 Equal to `execute` with no arguments (stage parity holds by construction). -/
