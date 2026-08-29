@@ -63,14 +63,22 @@ if [ "$_sub" = "xtask" ] && [ "${2:-}" = "build" ] && [ -z "${3:-}" ]; then
   exec nix run "$_flake#build"
 fi
 
-# ROUTE a whole-workspace / front-end `cargo build` (NO `-p`) → `nix run <flake>#build`. A `cargo build -p
-# CRATE` targets a SPECIFIC crate (maybe not the front-end, so `.#build` is not its equivalent) → falls
-# through to soft-warn + real cargo (conservative, like the `test -p` gate). `--release`/`--bin cdz…` (no
-# `-p`) still route: `.#build` materializes all the front-end bins.
+# ROUTE a whole-workspace / front-end `cargo build` (NO `-p`, NO `--target`) → `nix run <flake>#build`. Two
+# escape hatches to REAL cargo (silent pass-through), because `.#build` materializes the HOST-NATIVE
+# front-end only:
+#   • `-p CRATE` — a SPECIFIC crate (maybe not the front-end); falls through to soft-warn + real cargo.
+#   • `--target <triple>` — a CROSS-COMPILE (e.g. wasm-pack's INTERNAL `cargo build --target
+#     wasm32-unknown-unknown` for cdz-wasm); `.#build` is host-native so routing it broke guide-wasm
+#     (v-xtask/v-guide-infra regression on #5606). Pass it straight through, no route, no warn (often
+#     tool-internal — warning would be noise).
+# `--release`/`--bin cdz…` (no `-p`, no `--target`) still route: `.#build` materializes all front-end bins.
 if [ "$_sub" = "build" ]; then
   _has_p=0
   for a in "$@"; do
-    case "$a" in -p | --package | -p=* | --package=*) _has_p=1 ;; esac
+    case "$a" in
+      -p | --package | -p=* | --package=*) _has_p=1 ;;
+      --target | --target=*) run_real "$@" ;; # cross-compile → real cargo, silent (no .#build equivalent)
+    esac
   done
   if [ "$_has_p" = 0 ]; then
     _flake="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
