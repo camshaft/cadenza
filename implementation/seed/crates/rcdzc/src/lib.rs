@@ -98,6 +98,11 @@ pub mod param_sidecar;
 // one-tier evaluator reduces and splices — an embedded DSL grows at the AST level via an ordinary function.
 pub mod tagged_template;
 
+// Normalize a type-suffixed numeric literal leaf (`100N`/`0.5R`) into the `(: <body> BigInt|Rational)`
+// annotation a suffix denotes — restoring rcdzc's "the compiler never sees a `Suffixed` leaf" invariant
+// after the ast-consolidation made rcdzc consume cadenza-ast's codec (which preserves the leaf kind).
+pub mod suffixed;
+
 // The query engine: the single `Db` is PURE DATA (the AST + the columns); each query is a free
 // function in its own module over `&mut Db`, and each module owns exactly one column's fills —
 // `resolve` fills `resolved`, `infer` fills `types`, `lower` fills `core`. A query reads another

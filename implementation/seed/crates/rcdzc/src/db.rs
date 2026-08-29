@@ -2361,6 +2361,12 @@ impl Db {
         // Runs AFTER quote/eval desugar and BEFORE the parent index (so the emitted call resolves like
         // source). A malformed node is left untouched for `resolve` (an unbound-name error on the head).
         crate::tagged_template::expand(&mut ast);
+        // Normalize any type-suffixed numeric literal leaf (`100N`/`0.5R`) into the `(: <body>
+        // BigInt|Rational)` annotation a suffix denotes. The reader desugars suffixes, so a `Leaf::Suffixed`
+        // only survives from a codec source that preserves the kind (cadenza-ast's shared decode does, post
+        // ast-consolidation) — this restores rcdzc's "compiler never sees a `Suffixed`" invariant so the
+        // literal types via the ordinary annotation path. BEFORE the parent index, like the desugars above.
+        crate::suffixed::normalize(&mut ast);
         // Every expansion above (handle desugar, quote reification, eval reconstruction) runs HERE at
         // load, BEFORE resolve/type/lower/compile — it produces ordinary AST the rest of the pipeline then
         // type-checks, capability-checks (the manifest is `collect_host_imports` over the EXPANDED AST, so
