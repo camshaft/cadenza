@@ -1998,8 +1998,9 @@ mod tests {
         assert!(run_fmt(&fmt_args(vec![path.clone()], false, false, false)).unwrap());
         let after = std::fs::read_to_string(&file).unwrap();
         assert_eq!(
-            after, "(module m (def (main) 1) (export main))\n",
-            "in-place fmt canonicalizes to the printer's form + a trailing newline"
+            after, "(module m\n  (def (main) 1)\n\n  (export main))\n",
+            "in-place fmt canonicalizes to the printer's form (a top-level module lays out VERTICALLY — \
+             each definition on its own line, blank-separated — the readable canonical style) + a trailing newline"
         );
         // Idempotent: a second run leaves the bytes byte-identical.
         assert!(run_fmt(&fmt_args(vec![path], false, false, false)).unwrap());
