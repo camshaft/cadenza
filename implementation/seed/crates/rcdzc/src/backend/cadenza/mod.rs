@@ -1389,14 +1389,19 @@ fn emit_expr_viewed(
                             .to_string(),
                     ));
                 };
-                let (key, next_ty) = match &cur_ty {
-                    Ty::Tuple(ts) => (
-                        b.atom_leaf(Leaf::Int {
+                // Clone the type cursor so the arms can REASSIGN `cur_ty` (the single-variant peel below
+                // descends the type) without holding the `&cur_ty` match borrow.
+                let ct = cur_ty.clone();
+                match &ct {
+                    Ty::Tuple(ts) => {
+                        let key = b.atom_leaf(Leaf::Int {
                             value: IntValue::from_i64(i as i64),
                             radix: Radix::Dec,
-                        }),
-                        ts.get(i).cloned().unwrap_or(Ty::Any),
-                    ),
+                        });
+                        let dot = b.name(".");
+                        node = b.list(vec![dot, node, key]);
+                        cur_ty = ts.get(i).cloned().unwrap_or(Ty::Any);
+                    }
                     Ty::Record(fields) => {
                         let fname = fields.keys().nth(i).ok_or_else(|| {
                             Reject::decline(
@@ -1406,7 +1411,73 @@ fn emit_expr_viewed(
                             )
                         })?;
                         let key = b.name(&*fname.name);
-                        (key, fields.values().nth(i).cloned().unwrap_or(Ty::Any))
+                        let dot = b.name(".");
+                        node = b.list(vec![dot, node, key]);
+                        cur_ty = fields.values().nth(i).cloned().unwrap_or(Ty::Any);
+                    }
+                    // A SINGLE-VARIANT sum, typed as an ERASED `Ty::Nominal`, whose `Payload` step the
+                    // optimizer ELIDED (erasure): the runtime rep IS the sole variant's payload, so `Elem(i)`
+                    // indexes payload slot `i` (a field accessor `let Ctor(a,_,_)=x in a` inlined to a direct
+                    // element read). The surface `.` operator does NOT type-check on a nominal (the erasure
+                    // wall), so re-emit an inline single-arm `(match <node> ((<Ctor> b0 … b_{n-1}) b_i))` that
+                    // NAMES the ctor — the TYPE-CORRECT surface crossing (v-wasm-opt review #2). IRREFUTABLE
+                    // (one variant → exhaustive, no CDZ0210) and value-eq (recompile re-erases the newtype).
+                    // Gated to an EMITTED user single-variant sum (its `(type …)` must resolve the ctor on
+                    // recompile). `inner` is the erased payload machine-rep (a `Tuple` of slots for a
+                    // multi-payload variant, or the sole type for arity 1) — the source of slot `i`'s type.
+                    Ty::Nominal { decl, inner, .. }
+                        if emitted.contains(decl)
+                            && db
+                                .type_decl_by_occ(*decl)
+                                .is_some_and(|t| t.variants.len() == 1) =>
+                    {
+                        let decl = *decl;
+                        let arity = db
+                            .type_decl_by_occ(decl)
+                            .and_then(|t| t.variants.first())
+                            .map(|v| v.payloads.len())
+                            .unwrap_or(0);
+                        if i >= arity {
+                            return Err(Reject::decline(
+                                "the Cadenza backend reached a payload projection over a non-tuple/record \
+                                 value (single-variant slot out of range)"
+                                    .to_string(),
+                            ));
+                        }
+                        // The i-th payload slot's TYPE, for a following projection step: from the erased
+                        // `inner` payload rep (a `Tuple` of slots for a multi-payload variant, else the sole
+                        // type for arity 1).
+                        let slot_ty = match &**inner {
+                            Ty::Tuple(ts) if ts.len() == arity => {
+                                ts.get(i).cloned().unwrap_or(Ty::Any)
+                            }
+                            other if arity == 1 => other.clone(),
+                            _ => Ty::Any,
+                        };
+                        let head =
+                            crate::lower::variant_head_ast(db, b, decl, 0).ok_or_else(|| {
+                                Reject::decline(
+                                    "the Cadenza backend could not recover the single-variant ctor name for \
+                                     a payload projection"
+                                        .to_string(),
+                                )
+                            })?;
+                        let mut binders = Vec::with_capacity(arity);
+                        for _ in 0..arity {
+                            let nm = synth_payload_name(env.next_payload);
+                            env.next_payload += 1;
+                            binders.push(nm);
+                        }
+                        let mut pat_children = vec![head];
+                        for nm in &binders {
+                            pat_children.push(b.name(nm.clone()));
+                        }
+                        let pat = b.list(pat_children);
+                        let body = b.name(binders[i].clone());
+                        let match_head = b.name("match");
+                        let arm = b.list(vec![pat, body]);
+                        node = b.list(vec![match_head, node, arm]);
+                        cur_ty = slot_ty;
                     }
                     _ => {
                         return Err(Reject::decline(
@@ -1415,10 +1486,7 @@ fn emit_expr_viewed(
                                 .to_string(),
                         ));
                     }
-                };
-                let dot = b.name(".");
-                node = b.list(vec![dot, node, key]);
-                cur_ty = next_ty;
+                }
             }
             Ok(node)
         }
