@@ -120,6 +120,14 @@ pub enum Leaf {
     /// structural member head is recognized by kind identity rather than head text
     /// (`DESIGN-native-ast-compound-data.md`, the MEMBER tag).
     Member,
+    /// A native RATIONAL head — the tag of a `(RationalTag <num> <den>)` two-child node whose children are
+    /// the numerator and denominator, each an ORDINARY `Leaf::Int` value leaf (deduped in the pool, shared
+    /// with any equal integer). A distinct data type recognized by kind identity (operator seq-204/207: "a
+    /// unique tag marking a tree as a rational + a two-child node pointing at the int value leaves"), the
+    /// exact rational being num/den (NORMALIZED: lowest-terms, sign-on-numerator, denominator > 0).
+    /// Payloadless like `FieldPair`/`Member` — the two integer components are the child value leaves, not
+    /// carried in this leaf, so a rational reuses the arbitrary-precision `Int` machinery + leaf dedup.
+    Rational,
 }
 
 /// The numeric body a type suffix decorates — an exact integer (with its display radix) or an exact
@@ -1341,6 +1349,16 @@ impl Builder {
         self.list(vec![head, obj, key])
     }
 
+    /// Build a native RATIONAL `(RationalTag <num> <den>)` — a `List` whose HEAD is an `Atom` of the
+    /// payloadless [`Leaf::Rational`] tag, then the numerator and denominator nodes (each an ordinary
+    /// `Int` atom, so the integer components are first-class deduped value leaves). The two int nodes MUST
+    /// carry the NORMALIZED components (lowest-terms, sign-on-numerator, denominator > 0). The read twin is
+    /// [`Arenas::rational_parts`].
+    pub fn rational(&mut self, numerator: StructId, denominator: StructId) -> StructId {
+        let head = self.atom_leaf(Leaf::Rational);
+        self.list(vec![head, numerator, denominator])
+    }
+
     fn push(&mut self, s: Struct) -> StructId {
         let id = StructId(self.structure.len() as u32);
         self.structure.push(s);
@@ -1833,6 +1851,22 @@ impl Arenas {
         }
     }
 
+    /// The `(numerator, denominator)` of a native RATIONAL node — a `List` of exactly three whose head is
+    /// the [`Leaf::Rational`] tag. `None` otherwise. The read twin of [`Builder::rational`]; the two
+    /// returned ids are ordinary `Int` value-leaf atoms (normalized: lowest-terms, sign-on-numerator,
+    /// denominator > 0).
+    pub fn rational_parts(&self, id: StructId) -> Option<(StructId, StructId)> {
+        match self.get(id) {
+            Struct::List(items) if items.len() == 3 => {
+                match self.leaf(self.atom_leaf_id(items[0])?) {
+                    Leaf::Rational => Some((items[1], items[2])),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// The [`LeafId`] of `id` if it is an `Atom` occurrence, else `None` — a small accessor the native
     /// ctor-head recognizers ([`compound_ctor_leaf`], [`field_pair_parts`], [`member_parts`]) use to reach
     /// a head node's leaf without re-borrowing.
@@ -2061,6 +2095,41 @@ mod tests {
     use super::*;
     use num_bigint::BigInt;
     use std::str::FromStr;
+
+    #[test]
+    fn rational_node_builds_recognizes_and_round_trips() {
+        // The native RATIONAL node: Builder::rational(num, den) → a (RationalTag <num-int> <den-int>) List;
+        // rational_parts reads the two Int children back; the whole thing survives a codec round-trip. The
+        // num/den are ordinary Int value leaves (operator seq-204: "point at the int value leaves").
+        let mut b = Builder::new();
+        let num = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_i64(3),
+            radix: Radix::Dec,
+        });
+        let den = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_i64(4),
+            radix: Radix::Dec,
+        });
+        let rat = b.rational(num, den);
+        let a = b.finish(rat);
+
+        let (n, d) = a
+            .rational_parts(a.root)
+            .expect("rational_parts reads the tag+2-children node");
+        assert_eq!(a.as_int(n).map(|v| v.to_i64_bits()), Some(3));
+        assert_eq!(a.as_int(d).map(|v| v.to_i64_bits()), Some(4));
+        // A non-rational List is not misread.
+        assert_eq!(a.rational_parts(num), None);
+
+        // Codec round-trip: decode∘encode preserves the rational node (tag + both Int children).
+        let bytes = crate::codec::encode(&a);
+        let back = crate::codec::decode(&bytes).expect("rational node decodes");
+        let (n2, d2) = back
+            .rational_parts(back.root)
+            .expect("decoded rational still recognized");
+        assert_eq!(back.as_int(n2).map(|v| v.to_i64_bits()), Some(3));
+        assert_eq!(back.as_int(d2).map(|v| v.to_i64_bits()), Some(4));
+    }
 
     #[test]
     fn arenas_leaf_accessors_and_compound_recognizers() {
