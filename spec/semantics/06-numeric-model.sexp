@@ -13349,7 +13349,7 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 8 Int64))
   (call main (: -1 Int64)) (output (: -2 Int64))
-  (live-objects 1))
+  (live-objects 0))
 
 (case "unp2 native #list and #record patterns over UNTYPED scrutinees — the #5436 kind-completion of unp1"
   (doc "Completes the untyped-scrutinee inference family: an unannotated param whose #list pattern shapes
@@ -13387,7 +13387,7 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 107 Int64))
   (call main (: -1 Int64)) (output (: -3 Int64))
-  (live-objects 1))
+  (live-objects 0))
 
 (case "cdzw69 a GENERIC recursive sum (compound type-param payload) round-trips the cadenza hop"
   (doc "The #5448 fence: (type (Shape a) (Leaf a) (Node (Shape a) (Shape a))) — a generic sum whose
@@ -13502,7 +13502,7 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 107 Int64))
   (call main (: -4 Int64)) (output (: -12 Int64))
-  (live-objects 1))
+  (live-objects 0))
 
 (case "cdzw77 MUTUAL recursion (with mutual tail calls at 100k depth) round-trips the cadenza hop"
   (doc "Mutual-recursion face: even/odd defined through each other — the hop must re-emit BOTH defs with
