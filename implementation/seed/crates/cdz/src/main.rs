@@ -2076,14 +2076,24 @@ fn dispatch_compile_prepared(
     targets: &[rcdzc::Target],
     out: Option<PathBuf>,
     opt_level: rcdzc::OptLevel,
+    overflow: rcdzc::db::OverflowSpec,
 ) -> ExitCode {
     #[cfg(not(feature = "standalone"))]
     {
-        delegate::delegate_from_artifacts(&inputs, targets, out.as_deref(), opt_level, PROG)
+        delegate::delegate_from_artifacts(
+            &inputs,
+            targets,
+            out.as_deref(),
+            opt_level,
+            overflow,
+            PROG,
+        )
     }
     #[cfg(feature = "standalone")]
     {
-        compiler_cli::run_prepared(inputs, targets, out, opt_level, None, PROG)
+        compiler_cli::run_prepared_with_overflow(
+            inputs, targets, out, opt_level, overflow, None, PROG,
+        )
     }
 }
 
@@ -2185,9 +2195,16 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
     if let Some(iface) = args.component_name() {
         inputs.push(compiler_cli::component_name_artifact(iface));
     }
-    // Thread the requested `--opt-level` (default `O1`) through to the compile — `cdz compile
-    // --opt-level O2 foo.cdz` selects the release pass tier, same as the artifacts-in `rcdzc` path.
-    dispatch_compile_prepared(inputs, &targets, args.out_path(), args.opt_level())
+    // Thread the requested `--opt-level` (default `O1`) + `--overflow-signed`/`--overflow-unsigned`
+    // (default none) through to the compile — `cdz compile --opt-level O2 --overflow-signed wrap foo.cdz`
+    // selects the tier + the global overflow policy, same as the artifacts-in `rcdzc` path.
+    dispatch_compile_prepared(
+        inputs,
+        &targets,
+        args.out_path(),
+        args.opt_level(),
+        args.overflow_spec(),
+    )
 }
 
 /// Compile a set of SOURCE-file `specs` (already directory-expanded) into a wasm component, with the
@@ -2202,6 +2219,7 @@ fn compile_source_specs(
     out: Option<PathBuf>,
     targets: &[rcdzc::Target],
     opt_level: rcdzc::OptLevel,
+    overflow: rcdzc::db::OverflowSpec,
 ) -> ExitCode {
     let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
     for spec in specs {
@@ -2223,8 +2241,8 @@ fn compile_source_specs(
         inputs.push(compiler_cli::entry_artifact(entry));
     }
     // `run_prepared` applies the `[Wasm]` default when `targets` is empty, matching a bare `cdz compile`.
-    // `opt_level` is the resolved build tier.
-    dispatch_compile_prepared(inputs, targets, out, opt_level)
+    // `opt_level` is the resolved build tier; `overflow` the resolved global overflow policy.
+    dispatch_compile_prepared(inputs, targets, out, opt_level, overflow)
 }
 
 /// `cdz build [DIR]` — the manifest-driven compile (the `cargo build` analogue). Resolves the project's
@@ -2257,6 +2275,7 @@ fn run_build(args: &BuildArgs) -> ExitCode {
         args.out.clone(),
         &targets,
         opt_level,
+        manifest_overflow_spec(&project.m),
     )
 }
 
@@ -2270,8 +2289,9 @@ fn compile_project_component_bytes(
     specs: &[String],
     entry: &str,
     opt_level: rcdzc::OptLevel,
+    overflow: rcdzc::db::OverflowSpec,
 ) -> Result<Option<Vec<u8>>, ()> {
-    compile_project_component_bytes_named(specs, entry, opt_level, None)
+    compile_project_component_bytes_named(specs, entry, opt_level, overflow, None)
 }
 
 /// [`compile_project_component_bytes`] plus an optional `--component-name` — the interface a
@@ -2281,6 +2301,7 @@ fn compile_project_component_bytes_named(
     specs: &[String],
     entry: &str,
     opt_level: rcdzc::OptLevel,
+    overflow: rcdzc::db::OverflowSpec,
     component_name: Option<&str>,
 ) -> Result<Option<Vec<u8>>, ()> {
     let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
@@ -2311,7 +2332,7 @@ fn compile_project_component_bytes_named(
     if let Some(iface) = component_name {
         inputs.push(compiler_cli::component_name_artifact(iface));
     }
-    dispatch_project_to_bytes(inputs, opt_level)
+    dispatch_project_to_bytes(inputs, opt_level, overflow)
 }
 
 /// Compile prepared project `inputs` to the wasm COMPONENT BYTES in-memory: spawn `cdz-compile` under
@@ -2321,16 +2342,22 @@ fn compile_project_component_bytes_named(
 fn dispatch_project_to_bytes(
     inputs: Vec<rcdzc::Artifact>,
     opt_level: rcdzc::OptLevel,
+    overflow: rcdzc::db::OverflowSpec,
 ) -> Result<Option<Vec<u8>>, ()> {
     #[cfg(not(feature = "standalone"))]
     {
-        delegate::delegate_project_to_bytes(&inputs, opt_level, PROG)
+        delegate::delegate_project_to_bytes(&inputs, opt_level, overflow, PROG)
     }
     #[cfg(feature = "standalone")]
     {
         // Compile on the compiler-stack worker (deep-recursion guard), same as `check_one`/`run_prepared`.
         let out = rcdzc::run_with_compiler_stack(|| {
-            rcdzc::compile_with_opt(&inputs, &[rcdzc::Target::Wasm], opt_level)
+            rcdzc::compile_with_opt_and_overflow(
+                &inputs,
+                &[rcdzc::Target::Wasm],
+                opt_level,
+                overflow,
+            )
         });
         if out.has_error() {
             report_errors(&out);
@@ -2471,6 +2498,7 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
         &project.specs,
         &project.entry_name,
         opt_level,
+        manifest_overflow_spec(&project.m),
     ) {
         Ok(Some(b)) => b,
         Ok(None) => {
@@ -2502,7 +2530,7 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
     // `cadenza:<dep>/api`) and hand them to the runner as PEERS — `run_with_peers` composes them with the
     // consumer in one wasmtime store (v-peer-linking's cross-component binding). A build/resolve failure
     // is reported and aborts the run; the temp dep components are cleaned up afterward.
-    let dep_peers = match build_path_deps(&project, opt_level) {
+    let dep_peers = match build_path_deps(&project, opt_level, manifest_overflow_spec(&project.m)) {
         Ok(p) => p,
         Err(()) => {
             let _ = std::fs::remove_file(&out_wasm);
@@ -2540,12 +2568,13 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
 fn build_path_deps(
     project: &ProjectSpecs,
     opt_level: rcdzc::OptLevel,
+    overflow: rcdzc::db::OverflowSpec,
 ) -> Result<Vec<(String, std::path::PathBuf)>, ()> {
     // Delegate to the fallible core; on ANY error, clean up the temp dep components already written so a
     // mid-loop failure (dep N fails to build) doesn't leak deps 1..N-1's `.cdz-run-dep-*` files (the
     // caller only cleans the CONSUMER's temp). Cleanup is best-effort — the error is already reported.
     let mut peers = Vec::new();
-    match build_path_deps_into(project, opt_level, &mut peers) {
+    match build_path_deps_into(project, opt_level, overflow, &mut peers) {
         Ok(()) => Ok(peers),
         Err(()) => {
             for (_iface, path) in &peers {
@@ -2561,6 +2590,7 @@ fn build_path_deps(
 fn build_path_deps_into(
     project: &ProjectSpecs,
     opt_level: rcdzc::OptLevel,
+    overflow: rcdzc::db::OverflowSpec,
     peers: &mut Vec<(String, std::path::PathBuf)>,
 ) -> Result<(), ()> {
     if project.m.deps.is_empty() {
@@ -2637,6 +2667,7 @@ fn build_path_deps_into(
             &dep_specs.specs,
             &dep_specs.entry_name,
             opt_level,
+            overflow,
             Some(&iface),
         ) {
             Ok(Some(b)) => b,
@@ -2972,6 +3003,31 @@ fn resolve_opt_level_precedence(
         return Ok(rcdzc::OptLevel::O2);
     }
     Ok(rcdzc::OptLevel::default())
+}
+
+/// The GLOBAL overflow policy a `Project.cdz` manifest declares, as the `rcdzc::db::OverflowSpec` the
+/// compiler seeds `db.global_overflow` with. Precedence (numeric-model.md §Overflow): a module
+/// `(pragma overflow …)` overrides this global manifest default, which overrides the built-in `Trap`.
+/// Reads the validated `def overflow-signed`/`overflow-unsigned` fields (#5290): a valid `"trap"`/`"wrap"`
+/// maps to the matching mode; an ABSENT or MALFORMED field is `None` (that signedness falls through to
+/// the built-in `Trap` — a malformed value was already WARNED at parse and uses the default, so `None`
+/// matches). No CLI-flag precedence here: a project build (`cdz run`/`build`) has no `--overflow` flag,
+/// so the manifest IS the global level.
+fn manifest_overflow_spec(m: &Manifest) -> rcdzc::db::OverflowSpec {
+    fn mode(field: &Option<String>, malformed: bool) -> Option<rcdzc::db::OverflowMode> {
+        if malformed {
+            return None;
+        }
+        match field.as_deref() {
+            Some("trap") => Some(rcdzc::db::OverflowMode::Trap),
+            Some("wrap") => Some(rcdzc::db::OverflowMode::Wrap),
+            _ => None,
+        }
+    }
+    rcdzc::db::OverflowSpec {
+        signed: mode(&m.overflow_signed, m.overflow_signed_malformed),
+        unsigned: mode(&m.overflow_unsigned, m.overflow_unsigned_malformed),
+    }
 }
 
 // ── project metadata ─────────────────────────────────────────────────────────────────────────────
@@ -12077,6 +12133,41 @@ mod tests {
         assert_eq!(m.overflow_unsigned, None);
         assert!(!m.overflow_unsigned_malformed);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `manifest_overflow_spec` projects the parsed manifest overflow fields to the `rcdzc::db::OverflowSpec`
+    /// the compile threads into `db.global_overflow` (O2): a valid `"trap"`/`"wrap"` → the matching mode,
+    /// ABSENT or MALFORMED → `None` (falls through to the built-in `Trap` — a malformed value was warned +
+    /// uses the default, so `None` matches). Signed + unsigned independent. This is the manifest→compiler
+    /// half of the overflow global (twin 3); the rcdzc mechanism (`--overflow-*` → `db.global_overflow`) is O1.
+    #[test]
+    fn manifest_overflow_spec_maps_valid_absent_and_malformed() {
+        use rcdzc::db::{OverflowMode, OverflowSpec};
+        let spec = |signed: Option<&str>, s_mal: bool, unsigned: Option<&str>, u_mal: bool| {
+            let m = Manifest {
+                overflow_signed: signed.map(str::to_string),
+                overflow_signed_malformed: s_mal,
+                overflow_unsigned: unsigned.map(str::to_string),
+                overflow_unsigned_malformed: u_mal,
+                ..Manifest::default()
+            };
+            manifest_overflow_spec(&m)
+        };
+        // Valid + independent: signed wrap, unsigned trap.
+        assert_eq!(
+            spec(Some("wrap"), false, Some("trap"), false),
+            OverflowSpec {
+                signed: Some(OverflowMode::Wrap),
+                unsigned: Some(OverflowMode::Trap),
+            }
+        );
+        // Absent → None/None (default: fall through to the built-in Trap).
+        assert_eq!(spec(None, false, None, false), OverflowSpec::default());
+        // Malformed → None (it was warned at parse + uses default trap), even if a raw string lingers.
+        assert_eq!(
+            spec(Some("saturate"), true, None, false),
+            OverflowSpec::default()
+        );
     }
 
     /// `cdz test --list` emits the cadenza-ast-binary `(test-list (test <name> <is-property> <file>)…)`
