@@ -2227,6 +2227,12 @@ pub struct Db {
     /// `(i64, Option<i64>)` tuple. `refined_range` still projects out `int_range` so the interval
     /// consumers (`value_range`, the guard-elision fns) are unchanged.
     pub(crate) range_refinements: Vec<crate::fxhash::FxHashMap<StructId, ValueFact>>,
+    /// Memo for [`crate::lower::value_range`] — used ONLY when `range_refinements` is empty (no active
+    /// flow-sensitive refinement), where `value_range` is a PURE function of the node's core. `value_range`
+    /// recurses `LocalRef → initializer`, so over a sequential-dependency chain it re-walked all predecessors
+    /// per node (O(N²) compile-time — a `--warm-only` probe showed near-quadratic growth on N runtime lets).
+    /// Caching the refinement-free result makes it O(N). Refinement-active calls bypass this entirely.
+    pub(crate) value_range_memo: crate::fxhash::FxHashMap<StructId, Option<(i64, Option<i64>)>>,
 }
 
 impl Db {
@@ -3031,6 +3037,7 @@ impl Db {
             invariants,
             malformed_verify,
             range_refinements: Vec::new(),
+            value_range_memo: crate::fxhash::FxHashMap::default(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
         // underlying structural type. `decode_ty` consults this to normalize a `Ty::Sum` naming an
