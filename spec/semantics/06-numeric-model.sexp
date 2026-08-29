@@ -12130,10 +12130,12 @@
   (doc "The recursive-payload face of cdzw12: `(type E (Lit Int64) (Neg E))` is self-referential, and the
         n=8 value is the NESTED `(Neg (Lit 8))` — the decl re-emit must handle the recursive payload type
         and the value emit must recurse into the variant payload (a SumNew inside a SumNew, each carrying
-        its ascription through the hop). `(live-objects 0)`: post-M2 the runtime reclaims the nested sum
-        cells by the reported point (was 2 pre-M2); the cadenza hop reclaims IDENTICALLY to the direct path
-        (both 0, measured), so this is a benign reclaim-count re-pin, not a divergence. Dual-path verified;
-        the evl def keeps the sum consumed too (match arms over both variants).")
+        its ascription through the hop). `(live-objects 2 1)`: the returned nested sum is REACHABLE at the
+        reported point — n=8 returns `(Neg (Lit 8))` = 2 cells, n=-9 returns `(Lit 9)` = 1 cell (per-call,
+        measured on the DEBUG-COUNTERS runtime; the shipped runtime always reports 0, which earlier masked
+        this as a false-0). The cadenza hop reclaims identically to the direct path, so this is the correct
+        reachable-return balance, not a leak or a divergence. Dual-path verified; the evl def keeps the sum
+        consumed too (match arms over both variants).")
   (input (do (type E (Lit Int64) (Neg E)) (def (evl (: e E)) (match e ((Lit v) v) ((Neg x) (- 0 (evl x))))) (def (main (: n Int64)) (if (> n 0) (Neg (Lit n)) (Lit (- 0 n)))) (export main)))
   (call main (: 8 Int64))
   (output (: (Neg (Lit 8)) E))
@@ -12146,9 +12148,11 @@
         sum `(type E (Lit Int64) (Neg E))` is built at runtime AND matched back down by the recursive
         `evl` — the hop must re-emit the type decl, the SumNew values, AND the sum match (payload binders
         on both arms, recursion through the Neg payload). n=7 → evl(Neg(Lit 7)) = -7; n=-9 → evl(Lit 9)
-        = 9. Dual-path verified. `(live-objects 0)`: post-M2 the recursion-crossing residue is fully
-        reclaimed (was a known-leak of 2 pre-M2 — M2 genuinely fixed it); the cadenza hop reclaims
-        IDENTICALLY to the direct path (both 0, measured), so this is a benign re-pin, not a divergence.")
+        = 9. Dual-path verified. `(live-objects known-leak 2 1)`: main returns a SCALAR (-7 / 9), so the
+        recursion-crossing sum cells that stay live (2 at n=7, 1 at n=-9, measured on the DEBUG-COUNTERS
+        runtime) are a genuine KNOWN LEAK — NOT fixed by M2 (an earlier shipped-runtime measurement read 0
+        and wrongly claimed it fixed; the shipped runtime always reports 0). The cadenza hop leaks
+        identically to the direct path, so this is a real-but-accepted per-call leak, not a divergence.")
   (input (do (type E (Lit Int64) (Neg E)) (def (evl (: e E)) (match e ((Lit v) v) ((Neg x) (- 0 (evl x))))) (def (main (: n Int64)) (evl (if (> n 0) (Neg (Lit n)) (Lit (- 0 n))))) (export main)))
   (call main (: 7 Int64))
   (output (: -7 Int64))
@@ -12266,9 +12270,11 @@
         PAYLOAD — `(Some (None))` typed `Option (Option Int64)` — recovers `Option Int64` via
         payload-type instantiation at the concrete sum (the outer if-join solves only the OUTER type;
         the inner None's type must derive from the variant's instantiated payload). All three arms
-        exercised: nested-Some, Some-of-bare-None, bare outer None. `(live-objects 0)`: post-M2 the nested
-        value is reclaimed by the reported point (was 2 pre-M2); the cadenza hop reclaims IDENTICALLY to the
-        direct path (both 0, measured), so this is a benign reclaim-count re-pin, not a divergence.")
+        exercised: nested-Some, Some-of-bare-None, bare outer None. `(live-objects 2 0 0)`: the returned
+        nested Option is REACHABLE at the reported point — n=9 returns `(Some (Some 9))` = 2 cells, while
+        `(Some (None))` / `(None)` are unit-payload (0 cells), per-call (measured on the DEBUG-COUNTERS
+        runtime; the shipped runtime always reports 0, which earlier masked this as a false-0). The cadenza
+        hop reclaims identically to the direct path, so this is the correct reachable-return balance.")
   (input (do (def (main (: n Int64)) (if (> n 5) (Some (Some n)) (if (> n 0) (Some (None)) (None)))) (export main)))
   (call main (: 9 Int64))
   (output (: (Some (Some 9)) (Option (Option Int64))))
