@@ -2047,9 +2047,10 @@
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
   (output (: 2 Int64))
-  ; RECLAIM WIN: was known-leak 6; the runtime-list Set.of construction now reclaims fully (measured 0 on
-  ; 05WfA5uY, runtime args defeat fold). (v-memory-safety re-baseline, coord v-corpus-harness)
-  (live-objects 0))
+  ; the runtime-list Set.of construction (synthesized monomorphic fold) leaks 6 on 05WfA5uY (fresh cdz,
+  ; args defeat fold). [A prior re-pin to 0 was a STALE-CDZ artifact — an old cdz declined/folded runtime
+  ; Set.of; the current compiler builds it and it leaks. Corrected back to 6.] (v-memory-safety)
+  (live-objects known-leak 6))
 
 ; Building runtime sets at TWO different element types in ONE program. Each runtime-`Set.of` site gets its
 ; OWN synthesized fold def (`__set_of_rt$0`, `__set_of_rt$1`, …), so every fold is MONOMORPHIC — instantiated
@@ -2070,9 +2071,10 @@
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
   (output (: 22 Int64))
-  ; RECLAIM WIN: was known-leak 9; the two per-site monomorphic runtime Set.of folds now reclaim fully
-  ; (measured 0 on 05WfA5uY, runtime args defeat fold). (v-memory-safety re-baseline, coord v-corpus-harness)
-  (live-objects 0))
+  ; the two per-site monomorphic runtime Set.of folds leak 9 on 05WfA5uY (fresh cdz, args defeat fold).
+  ; [A prior re-pin to 0 was a STALE-CDZ artifact — an old cdz declined/folded runtime Set.of; the current
+  ; compiler builds it and it leaks. Corrected back to 9.] (v-memory-safety)
+  (live-objects known-leak 9))
 
 ; The N-site generalization of the per-site monomorphic fold: THREE runtime-`Set.of` sites at THREE distinct
 ; element types in one program — a `Set Int64`, a `Set Bool`, AND a `Set String`. Each site gets its own
