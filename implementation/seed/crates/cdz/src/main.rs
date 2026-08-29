@@ -4932,7 +4932,7 @@ fn list_tests(target: &str, files: &[String]) -> ExitCode {
 /// here we REWRITE it to this group's real `main-<group>.wasm` (or keep "" for standalone) and MERGE all
 /// groups' entries into the one manifest a runner reads (`cdz-run <target> --call <export> [--peer
 /// <main-iface>=<main-file>] --store S`). Compile-only; exits non-zero if any file fails to compile.
-fn run_emit_shred(files: &[String], out_dir: &std::path::Path) -> ExitCode {
+fn run_emit_shred(files: &[String], out_dir: &std::path::Path, standalone: bool) -> ExitCode {
     if let Err(e) = std::fs::create_dir_all(out_dir) {
         eprintln!(
             "{PROG}: --emit-shred: cannot create {}: {e}",
@@ -4940,9 +4940,21 @@ fn run_emit_shred(files: &[String], out_dir: &std::path::Path) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
+    // STANDALONE (`--standalone`, the operator hybrid for small-closure suites) drives `EmitTestsShredStandalone`
+    // (each `@test` self-contained, NO main → full coverage, no #4031 peer-boundary declines); else the shared-
+    // main peer shred.
+    let shred_req = if standalone {
+        rcdzc::Request::EmitTestsShredStandalone
+    } else {
+        rcdzc::Request::EmitTestsShred
+    };
     // The merged manifest's entries, collected across groups as owned fields (each group's arena is dropped
     // before the next): (name, is_property, file, export, target, main-iface, main-file).
     let mut all_entries: Vec<(String, bool, String, String, String, String, String)> = Vec::new();
+    // Target FILE basenames already written — so a `@test` name that repeats across files (e.g. choreography's
+    // ~3) gets a UNIQUE target file (disambiguated `-<group>`), never overwriting a sibling (the flat layout's
+    // one requirement, v-test-shred). The manifest `target` field is rewritten to the unique name it reads.
+    let mut written_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut any_fail = false;
     for (i, file) in files.iter().enumerate() {
         // GROUP = one project file + its import closure. Load it, encode each closure file's AST, drive
@@ -4969,7 +4981,7 @@ fn run_emit_shred(files: &[String], out_dir: &std::path::Path) -> ExitCode {
         inputs.push(rcdzc::Artifact::new(
             rcdzc::sidecar::KIND_SIDECAR,
             "drive",
-            rcdzc::sidecar::encode(&[rcdzc::Request::EmitTestsShred]),
+            rcdzc::sidecar::encode(&[shred_req.clone()]),
         ));
         inputs.push(compiler_cli::entry_artifact(&closure[0].name));
         let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
@@ -4991,9 +5003,11 @@ fn run_emit_shred(files: &[String], out_dir: &std::path::Path) -> ExitCode {
         } else {
             String::new()
         };
-        // Decode the group's manifest → the OWN test target names (this file's own `@test`s) + collect the own
-        // entries (with `main-file` rewritten to this group's real main / "" standalone).
-        let mut own_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Decode the group's manifest → the OWN `@test`s (this file's own, by the `file` field). For each, pick
+        // a UNIQUE target FILE name (disambiguate a cross-file name collision with `-<group>`), map the
+        // rcdzc consumer artifact name (`test-<name>`) → that unique file, and push the entry with `target`
+        // rewritten to it (+ `main-file` → this group's real main / "" standalone). `own` drives the writes.
+        let mut own: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         if let Some(m) = out
             .artifacts
             .iter()
@@ -5017,13 +5031,20 @@ fn run_emit_shred(files: &[String], out_dir: &std::path::Path) -> ExitCode {
                     if test_file != entry_stem {
                         continue; // an imported file's @test — its OWN group emits it (no cross-file dup)
                     }
-                    own_targets.insert(format!("test-{name}"));
+                    // Unique target file: `test-<name>.wasm`, else `test-<name>-<group>.wasm` on a cross-file
+                    // name collision (group index is unique, and within a group `@test` names are unique).
+                    let mut target = format!("test-{name}.wasm");
+                    if written_targets.contains(&target) {
+                        target = format!("test-{name}-{i}.wasm");
+                    }
+                    written_targets.insert(target.clone());
+                    own.insert(format!("test-{name}"), target.clone());
                     all_entries.push((
                         name,
                         arenas.as_bool(f[1]).unwrap_or(false),
                         test_file.to_string(),
                         arenas.as_str(f[3]).unwrap_or("").to_string(),
-                        arenas.as_str(f[4]).unwrap_or("").to_string(),
+                        target,
                         arenas.as_str(f[5]).unwrap_or("").to_string(),
                         group_main_file.clone(),
                     ));
@@ -5031,21 +5052,23 @@ fn run_emit_shred(files: &[String], out_dir: &std::path::Path) -> ExitCode {
             }
         }
         // Write MAIN (only when this file HAS own tests that link it — else the main is an orphan) + the OWN
-        // per-@test consumer components (`test-<name>.wasm`, flat).
+        // per-@test consumer components, each to its UNIQUE target file (from `own`).
         for a in &out.artifacts {
             match a.kind.as_str() {
-                "component-provider" if !own_targets.is_empty() => {
+                "component-provider" if !own.is_empty() => {
                     let p = out_dir.join(&group_main_file);
                     if let Err(e) = std::fs::write(&p, &a.bytes) {
                         eprintln!("{PROG}: --emit-shred: cannot write {}: {e}", p.display());
                         any_fail = true;
                     }
                 }
-                "component" if own_targets.contains(&a.name) => {
-                    let p = out_dir.join(format!("{}.wasm", a.name));
-                    if let Err(e) = std::fs::write(&p, &a.bytes) {
-                        eprintln!("{PROG}: --emit-shred: cannot write {}: {e}", p.display());
-                        any_fail = true;
+                "component" => {
+                    if let Some(target) = own.get(&a.name) {
+                        let p = out_dir.join(target);
+                        if let Err(e) = std::fs::write(&p, &a.bytes) {
+                            eprintln!("{PROG}: --emit-shred: cannot write {}: {e}", p.display());
+                            any_fail = true;
+                        }
                     }
                 }
                 _ => {}
@@ -5207,7 +5230,7 @@ fn run_test(args: &TestArgs) -> ExitCode {
             eprintln!("{PROG} test: --emit-shred requires --out-dir <DIR>");
             return ExitCode::FAILURE;
         };
-        return run_emit_shred(&files, out_dir);
+        return run_emit_shred(&files, out_dir, args.standalone);
     }
 
     // GATE ON `cdz check` CLEAN FIRST — before running any `@test`. A source file that fails to PARSE (an
@@ -6102,6 +6125,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 list: false, // watch RE-RUNS the suite; enumeration-and-exit is a one-shot direct-run mode
                 emit_shred: false, // watch RE-RUNS; the shred build-output is a one-shot direct-run mode
                 out_dir: None,
+                standalone: false,
             }),
             WatchCmd::Build => run_build(&BuildArgs {
                 dir: Some(dir_str.clone()),
@@ -7689,6 +7713,14 @@ struct TestArgs {
     /// The output directory for `--emit-shred` (created if absent). Required with `--emit-shred`.
     #[arg(long)]
     out_dir: Option<PathBuf>,
+    /// STANDALONE `--emit-shred`: emit each `@test` as a SELF-CONTAINED component (its library inlined), NO
+    /// main, `main-file=""` (the runner uses no `--peer`). The operator-approved hybrid uses this for
+    /// SMALL-closure suites (iterators/cad/choreography) — no peer boundary, so a compound-param `@test` that
+    /// would decline at the peer boundary (#4031) shreds cleanly here (FULL coverage), at the cost of
+    /// re-embedding each test's closure (fine for a small closure; the shared-main peer path stays for the big
+    /// compiler-ml closure). Only meaningful with `--emit-shred`.
+    #[arg(long)]
+    standalone: bool,
 }
 
 // ── cdz watch ──────────────────────────────────────────────────────────────────────────────────

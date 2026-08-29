@@ -331,6 +331,7 @@ fn compile_with_opt_inner(
     let mut emit_tests_composed = false;
     let mut emit_tests_consumer_only = false;
     let mut emit_tests_shred = false;
+    let mut emit_tests_shred_standalone = false;
     for req in &requests {
         match req {
             sidecar::Request::Query(q) => queries.push(q.clone()),
@@ -365,6 +366,11 @@ fn compile_with_opt_inner(
             // composed request — sets the flag, pushes no `Target`.
             sidecar::Request::EmitTestsShred => {
                 emit_tests_shred = true;
+            }
+            // `EmitTestsShredStandalone`: the shred branch with NO main — each `@test` self-contained.
+            sidecar::Request::EmitTestsShredStandalone => {
+                emit_tests_shred = true;
+                emit_tests_shred_standalone = true;
             }
         }
     }
@@ -805,7 +811,9 @@ fn compile_with_opt_inner(
         //    main-file, keeping enumeration uniform without betting on `--peer`-ing an empty provider).
         // The cdz-side `cdz test --emit-shred` groups a multi-file project by shared closure + drives this per
         // group, renaming each `main` → `main-<group>.wasm` + merging manifests (§S6b / v-test-shred layout).
-        let has_main = !library_edges.is_empty();
+        // STANDALONE mode forces NO main — every `@test` is self-contained (`compute_tests_for`), even when a
+        // shared library exists, so there is no peer boundary (compound-param tests shred cleanly, no #4031).
+        let has_main = !emit_tests_shred_standalone && !library_edges.is_empty();
         let mut main_file = String::new();
         let mut main_ok = true;
         if has_main {

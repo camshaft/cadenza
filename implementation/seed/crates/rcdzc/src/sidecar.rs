@@ -238,6 +238,15 @@ pub enum Request {
     /// `design/DESIGN-cdz-plugin-dispatch.md` §S6b. Runs on its OWN branch (multiple artifacts from one shared
     /// lowering), like the composed request.
     EmitTestsShred,
+    /// The STANDALONE variant of [`EmitTestsShred`]: emit NO main; each `@test` becomes a SELF-CONTAINED
+    /// component (its reachable library INLINED/included via [`layout::compute_tests_for`]), run with NO
+    /// `--peer`. The operator-approved caching-aware HYBRID uses this for SMALL-closure suites
+    /// (iterators/cad/choreography) — no cross-component peer boundary, so a compound-param `@test` that would
+    /// DECLINE at the peer boundary (the deferred #4031 limit) shreds CLEANLY here (full coverage), at the cost
+    /// of re-embedding each test's closure (fine for a small closure; the shared-main [`EmitTestsShred`] +
+    /// grouping stays for the big compiler-ml closure). Same per-test artifact + manifest shape as
+    /// [`EmitTestsShred`], but `main-file` = "" for every entry (there is no main). See §S6b.
+    EmitTestsShredStandalone,
     /// Read a fact column.
     Query(Query),
 }
@@ -472,6 +481,7 @@ fn decode_request(a: &Arenas, form: StructId) -> Option<Request> {
         "emit-tests-composed" => Request::EmitTestsComposed,
         "emit-tests-consumer-only" => Request::EmitTestsConsumerOnly,
         "emit-tests-shred" => Request::EmitTestsShred,
+        "emit-tests-shred-standalone" => Request::EmitTestsShredStandalone,
         "query" => Request::Query(decode_query(
             a,
             a.as_name(*children.get(1)?)?,
@@ -575,6 +585,7 @@ fn encode_request(b: &mut Builder, req: &Request) -> StructId {
         Request::EmitTestsComposed => nullary_form(b, "emit-tests-composed"),
         Request::EmitTestsConsumerOnly => nullary_form(b, "emit-tests-consumer-only"),
         Request::EmitTestsShred => nullary_form(b, "emit-tests-shred"),
+        Request::EmitTestsShredStandalone => nullary_form(b, "emit-tests-shred-standalone"),
         Request::Query(q) => encode_query(b, q),
     }
 }
@@ -2736,6 +2747,7 @@ mod tests {
             Request::EmitTestsComposed,
             Request::EmitTestsConsumerOnly,
             Request::EmitTestsShred,
+            Request::EmitTestsShredStandalone,
         ];
         // Exhaustiveness guard: adding a Request/Query variant fails to compile until listed above AND here.
         for r in &each {
@@ -2746,6 +2758,7 @@ mod tests {
                 | Request::EmitTestsComposed
                 | Request::EmitTestsConsumerOnly
                 | Request::EmitTestsShred
+                | Request::EmitTestsShredStandalone
                 | Request::Query(
                     Query::TypeOf { .. }
                     | Query::UsesOf { .. }
