@@ -2139,29 +2139,51 @@
           xtask-codegen-contracts "$out/contracts"
         '';
 
+        # wasmAbiSexpSrc: the AUTHORITATIVE hand-authored wasm-abi.sexp, staged at its repo-relative path so the
+        # bin's CDZ_REPO_ROOT join resolves it. Scoped to the ONE file → cdzWasmAbi/oracle rotate only when the
+        # sexp changes (not on an unrelated rcdzc edit; seedCompiler is a separate, already-warm localGate dep).
+        wasmAbiSexpSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = ./implementation/seed/crates/rcdzc/src/backend/wasm/wasm-abi.sexp;
+        };
         # cdzWasmAbi (v-nix, operator codegen→build-time-nix): the 2nd generated file — run v-xtask-decompose's
-        # xtask-codegen-wasm-abi bin (#5219) to EMIT rcdzc/src/backend/wasm/wasm_abi.rs at build time. PURE:
-        # the bin encodes one-off values with wasm-encoder + reads the opcode/tag bytes back (no cdz, no store,
-        # no runtime hash, no WIT read) — so this derivation needs NO seedCompiler/CDZ_* env, just the bin +
-        # rustfmt on PATH (it renders prettyplease then `rustfmt --edition 2024`, falling back to raw if rustfmt
-        # is absent → would diverge from the cargo-fmt'd committed). Out-file passed explicitly (the default is
-        # the committed path via CDZ_REPO_ROOT, unneeded here).
+        # xtask-codegen-wasm-abi bin to EMIT rcdzc/src/backend/wasm/wasm_abi.rs at build time. FLIPPED to the
+        # operator's SEXPR → RUST direction (--from-sexpr, #5316): the bin reads the authoritative wasm-abi.sexp,
+        # `cdz convert`s it to cadenza-ast binary, walks + renders — so this now needs `cdz` (CDZ_SEED_BIN_DIR =
+        # seedCompiler) + the sexp (CDZ_REPO_ROOT = wasmAbiSexpSrc), plus rustfmt (it renders prettyplease then
+        # `rustfmt --edition 2024`). Output stays BYTE-IDENTICAL to the retired wasm-encoder default (v-xtask
+        # holds that as the acceptance test), so cdzWasmAbiMatch stays green. seedCompiler is already a localGate
+        # closure dep (gate-check/cad-test) → no new heavy build, just this small render consuming the warm cdz.
         cdzWasmAbi = pkgs.runCommand "cdz-wasm-abi"
-          { nativeBuildInputs = [ xtaskCodegenWasmAbiBin rustToolchain ]; } ''
+          { nativeBuildInputs = [ xtaskCodegenWasmAbiBin seedCompiler rustToolchain ]; } ''
           set -euo pipefail
           mkdir -p "$out"
-          xtask-codegen-wasm-abi "$out/wasm_abi.rs"
+          export CDZ_REPO_ROOT="${wasmAbiSexpSrc}"
+          export CDZ_SEED_BIN_DIR="${seedCompiler}/bin"
+          xtask-codegen-wasm-abi --from-sexpr "$out/wasm_abi.rs"
         '';
         # DRIFT-GUARD: build-time-generated wasm_abi.rs MUST be byte-identical to the committed one, until the
-        # atomic overlay-flip drops the committed copy (v-xtask-decompose verified #5219 emits diff-clean).
+        # atomic overlay-flip drops the committed copy (v-xtask-decompose verified #5316 --from-sexpr emits
+        # diff-clean — byte-identical to the committed cargo-fmt'd file).
         cdzWasmAbiMatch = pkgs.runCommand "cdz-wasm-abi-match" { } ''
           set -euo pipefail
           if diff ${cdzWasmAbi}/wasm_abi.rs ${./implementation/seed/crates/rcdzc/src/backend/wasm/wasm_abi.rs} > wasmabi.diff; then
-            echo "ok: cdzWasmAbi (build-time codegen) == committed rcdzc/.../wasm_abi.rs (byte-identical)" > "$out"
+            echo "ok: cdzWasmAbi (build-time --from-sexpr codegen) == committed rcdzc/.../wasm_abi.rs (byte-identical)" > "$out"
           else
-            echo "DRIFT: build-time wasm-abi codegen != committed wasm_abi.rs — regen committed or fix the extractor:"
+            echo "DRIFT: build-time wasm-abi codegen != committed wasm_abi.rs — regen committed or fix the sexpr:"
             cat wasmabi.diff; exit 1
           fi
+        '';
+        # ORACLE-CHECK (operator's INVERTED guarantee, #5316): assert every opcode/valtype/section/magic byte in
+        # the authored wasm-abi.sexp matches the wasm-encoder spec oracle — a derived test that catches a sexpr
+        # transcription typo (the sexp is now the source of truth, so it must be cross-checked against the crate
+        # that defines the real bytes). Needs cdz (decode the sexp) + the bin (carries the wasm-encoder oracle).
+        wasmAbiOracle = pkgs.runCommand "cdz-wasm-abi-oracle"
+          { nativeBuildInputs = [ xtaskCodegenWasmAbiBin seedCompiler ]; } ''
+          set -euo pipefail
+          export CDZ_REPO_ROOT="${wasmAbiSexpSrc}"
+          export CDZ_SEED_BIN_DIR="${seedCompiler}/bin"
+          xtask-codegen-wasm-abi --oracle-check | tee "$out"
         '';
 
         # The program names a run references — every `program = "<name>"` field in the ML spec. This is
@@ -4453,6 +4475,10 @@
             # (also part of flake-repro-backstop). The harness runs that name a contract exercise it in anger.
             contract-hashes-valid = contractHashesValid;
             cdz-wasm-abi-match = cdzWasmAbiMatch;
+            # wasm-abi-oracle: the operator-required derived test — every wasm-abi.sexp byte matches the
+            # wasm-encoder oracle (catches a sexpr transcription typo now that the sexp is the source of truth).
+            # Standalone (like cdz-wasm-abi-match); runs under `nix flake check`.
+            wasm-abi-oracle = wasmAbiOracle;
             # The integration-test harness runs (§9): `harness-runs` is the aggregate; each individual run is
             # exposed below as `checks.<sys>.harness-<name>` (spread from harnessRunChecks) so `nix flake
             # check` runs them all AND CI can build/cache one run in isolation. `.#packages.cdz-platform-itest`
