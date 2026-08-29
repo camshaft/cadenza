@@ -9045,7 +9045,7 @@ mod trap_grading_tests {
             &std::collections::HashSet::new(),
         );
         assert!(
-            expr.contains("(record (") && expr.contains("(__r).0") && expr.contains("(__r).1"),
+            expr.contains("#record((") && expr.contains("(__r).0") && expr.contains("(__r).1"),
             "a record type must render structurally by field position, not Display the whole tuple: {expr}"
         );
         assert!(
@@ -9064,7 +9064,7 @@ mod trap_grading_tests {
             &std::collections::HashSet::new(),
         );
         assert!(
-            nested.contains("(record (") && nested.contains("(tuple "),
+            nested.contains("#record((") && nested.contains("#tuple("),
             "a record field that is a tuple renders structurally: {nested}"
         );
     }
@@ -9089,7 +9089,7 @@ mod trap_grading_tests {
             &std::collections::HashSet::new(),
         );
         assert!(
-            expr.contains("(tuple ") && expr.contains("(__r).0") && expr.contains("(__r).1"),
+            expr.contains("#tuple(") && expr.contains("(__r).0") && expr.contains("(__r).1"),
             "a newtype over a tuple renders the bare inner tuple, not Display: {expr}"
         );
         assert!(
@@ -9140,8 +9140,8 @@ mod trap_grading_tests {
             &std::collections::HashSet::new(),
         );
         assert_eq!(
-            expr, "\"(tuple)\".to_string()",
-            "an empty tuple renders the literal `(tuple)`, no path read, no trailing space: {expr}"
+            expr, "\"#tuple()\".to_string()",
+            "an empty tuple renders the literal `#tuple()`, no path read, no trailing space: {expr}"
         );
         // The whole-token guard still rejects a longer head — `(TupleX …)` must NOT match `Tuple`.
         assert_eq!(parse_head_type("(TupleX A)", "Tuple"), None);
@@ -9205,7 +9205,7 @@ mod trap_grading_tests {
             &std::collections::HashSet::new(),
         );
         assert!(
-            vexpr.contains("(Q {})") && vexpr.contains("(tuple "),
+            vexpr.contains("(Q {})") && vexpr.contains("#tuple("),
             "a single tuple payload stays nested: {vexpr}"
         );
     }
