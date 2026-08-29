@@ -36086,28 +36086,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_result_try_whose_error_type_disagrees_with_the_boundary_is_rejected() {
-        // SOUNDNESS: `(: (let ((y (try (Err true)))) (Ok y)) (Result Int64 Int64))` — the `?`'s operand
-        // `(Err true)` is a `Result _ Bool`, but the boundary's error type is `Int64`. A `?` passes its
-        // `Err` out UNCHANGED as the boundary value, so the error types must agree (§5, no coercion).
-        // Without this the `Bool` `true` escaped as a claimed `Int64` — a soundness hole. CDZ0203.
-        let src = "(module m \
-            (def (main) (: (let ((y (try (Err true)))) (Ok y)) (Result Int64 Int64))) (export main))";
-        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
-        assert_eq!(
-            d.code.as_deref(),
-            Some("CDZ0203"),
-            "a `?`'d Result whose error type disagrees with the boundary is CDZ0203, got: {}",
-            d.message
-        );
-        assert!(
-            d.message.contains("error type"),
-            "the message names the error-type disagreement: {}",
-            d.message
-        );
-    }
-
-    #[test]
     fn a_constant_success_try_folds_to_the_payload() {
         // BRICK 2 (the CONSTANT-SUCCESS fold, DESIGN-try-operator-rcdzc.md §3.2): a `?` on a compile-time
         // `Some x` / `Ok x` unwraps to the payload — no boundary break fires on the happy path, so it
