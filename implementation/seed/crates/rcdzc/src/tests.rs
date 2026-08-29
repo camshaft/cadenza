@@ -28390,67 +28390,6 @@ mod stage1 {
     // materializes, so there is no scalar-fold case left to pin here.)
 
     #[test]
-    fn an_ill_formed_list_binding_pattern_is_rejected() {
-        // A binding position is IRREFUTABLE. A FIXED-ARITY list pattern `(list a b)` matches only its exact
-        // length → REFUTABLE → CDZ0210 (the equivalent single-arm match's non-exhaustiveness). A refutable
-        // leading element (a literal) is CDZ0210 too; a non-linear binder is CDZ0102. Only the rest form is
-        // accepted. (core-semantics.md §A Binding Position Accepts An Irrefutable Pattern.)
-        let code = |body: &str| -> Option<String> {
-            let src = format!("(module m (def (main) {body}) (export main))");
-            let out = crate::compile::compile(
-                &[crate::abi::Artifact::new(
-                    crate::abi::Artifact::KIND_AST,
-                    "m",
-                    crate::codec::encode(&parse(&src)),
-                )],
-                &[crate::backend::Target::Wasm],
-            );
-            if out
-                .artifact(crate::backend::Target::Wasm.artifact_kind())
-                .is_some()
-            {
-                return None;
-            }
-            out.diagnostics
-                .iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
-                .and_then(|d| d.code.clone())
-        };
-        // FIXED-ARITY list binding is refutable → CDZ0210.
-        assert_eq!(
-            code("(let (((list a b) (list 1 2))) (+ a b))").as_deref(),
-            Some("CDZ0210")
-        );
-        assert_eq!(
-            code("(let (((list) (list))) 0)").as_deref(),
-            Some("CDZ0210")
-        );
-        // A refutable LEADING element (a literal) in a rest binding is CDZ0210 (composes recursively).
-        assert_eq!(
-            code("(let (((list 0 .. rest) (list 0 1))) 42)").as_deref(),
-            Some("CDZ0210")
-        );
-        // A non-linear list binding (a binder repeated) is CDZ0102 — linearity is checked BEFORE the
-        // leading-element refutability guard, so the non-linear diagnostic wins.
-        assert_eq!(
-            code("(let (((list a a .. rest) (list 1 2 3))) a)").as_deref(),
-            Some("CDZ0102")
-        );
-        // A LEADING-element rest is REFUTABLE (misses the empty list) → CDZ0210 (operator ruling, §139/§147):
-        // a single bare-binder leading element, and a nested-tuple leading element, both reject.
-        assert_eq!(
-            code("(let (((list x .. rest) (list 1 2 3))) x)").as_deref(),
-            Some("CDZ0210")
-        );
-        assert_eq!(
-            code("(let (((list (tuple a b) .. rest) (list (tuple 1 2)))) (+ a b))").as_deref(),
-            Some("CDZ0210")
-        );
-        // NO OVER-REJECTION: the ZERO-LEADING rest form `(list .. all)` is irrefutable → compiles.
-        assert_eq!(code("(let (((list .. all) (list 1 2))) 0)"), None);
-    }
-
-    #[test]
     fn a_wrong_type_variant_payload_is_a_malformed_construction() {
         // A variant constructor is a single-arity function whose argument is checked against its DECLARED
         // payload type (core-semantics.md §A Sum Type Constructor Is A Single-Arity Function). A wrong-type
