@@ -13677,3 +13677,15 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 31 Int64))
   (call main (: 1 Int64)) (output (: 31 Int64)))
+
+(case "fk2 NaN as a MAP key is FINDABLE — the map sibling of the fk1 set face"
+  (doc "Map.lookup with NaN as the probe finds the NaN-keyed entry (42 — anti-IEEE, canonical-bit key
+        equality), while a finite-float probe against the NaN-only map misses (None → -1).
+        10·42 + (-1) = 419 for any n. Both targets.")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 10 (match (Map.lookup #map((= Float64.nan 42) (= 1.5 7)) Float64.nan) ((Some v) v) ((None _u) -1)))
+         (match (Map.lookup #map((= Float64.nan 42)) (Float64.of-int n)) ((Some v) v) ((None _u) -1))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 419 Int64))
+  (call main (: -3 Int64)) (output (: 419 Int64)))
