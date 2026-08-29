@@ -41944,18 +41944,18 @@ mod sidecar_driven {
              kinds={:?}",
             out.artifacts.iter().map(|a| &a.kind).collect::<Vec<_>>()
         );
-        assert_eq!(providers[0].name, "cadenza:closure/api");
-        let iface_sidecar: Vec<&Artifact> = out
-            .artifacts
-            .iter()
-            .filter(|a| a.kind == crate::link::KIND_COMPONENT_NAME)
-            .collect();
-        assert_eq!(iface_sidecar.len(), 1, "one component-name iface sidecar");
-        assert_eq!(
-            String::from_utf8(iface_sidecar[0].bytes.clone()).unwrap(),
-            "cadenza:closure/api"
+        // MAIN artifact NAMED "main" (the file key → `main.wasm` under `-o D`), NOT the iface (the iface is the
+        // component's INTERFACE identity, carried in the manifest's `main-iface`). No `component-name` sidecar in
+        // the shred output — the manifest carries the iface.
+        assert_eq!(providers[0].name, "main");
+        assert!(
+            out.artifacts
+                .iter()
+                .all(|a| a.kind != crate::link::KIND_COMPONENT_NAME),
+            "shred emits NO component-name sidecar (the manifest carries main-iface)"
         );
-        // ONE thin CONSUMER per @test, named by the test's def name (`t-a`, `t-b`).
+        // ONE thin CONSUMER per @test, artifact NAMED `test-<def-name>` (→ `test-<name>.wasm` under `-o D`,
+        // matching the manifest `target`).
         let consumer_names: Vec<&str> = out
             .artifacts
             .iter()
@@ -41963,8 +41963,8 @@ mod sidecar_driven {
             .map(|a| a.name.as_str())
             .collect();
         assert!(
-            consumer_names.contains(&"t-a") && consumer_names.contains(&"t-b"),
-            "one consumer component per @test (by def name): {consumer_names:?}"
+            consumer_names.contains(&"test-t-a") && consumer_names.contains(&"test-t-b"),
+            "one consumer component per @test (named test-<def-name>): {consumer_names:?}"
         );
         assert_eq!(
             consumer_names.len(),

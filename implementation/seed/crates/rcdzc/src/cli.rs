@@ -631,6 +631,12 @@ fn parse_input_spec(spec: &str) -> InputSpec {
 fn ext_for_kind(kind: &str) -> &str {
     match kind {
         "component" => "wasm",
+        // The `EmitTestsShred` MAIN provider component — written `main.wasm` (its artifact NAME is "main") so
+        // `cdz test --emit-shred -o D` produces the fixed `D/main.wasm` the per-test targets `--peer`-link.
+        "component-provider" => "wasm",
+        // The `EmitTestsShred` cadenza-ast manifest — a `codec::encode`d value (the `(shred-manifest …)`
+        // tree), written `manifest.cdzb` (binary cadenza-ast, decoded with `cdz convert --from binary`).
+        "shred-manifest" => "cdzb",
         "rust" => "rs",
         // A detached DWARF sidecar (Mode S) is a bare `.wasm`-format core module of debug sections;
         // written with a `.dwarf` extension so it is distinct from the runnable `<name>.wasm`.
