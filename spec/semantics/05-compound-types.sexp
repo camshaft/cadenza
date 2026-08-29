@@ -3065,8 +3065,9 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 30310 Int64))
   (call main (: 2 Int64)) (output (: 41310 Int64))
-  ;; if-join-shared-child family residual (honest known-leak, coord v-corpus-harness/v-core-opt family fix)
-  (live-objects known-leak 0 1)
+  ;; RECLAIM WIN: if-join-shared MAP-insert member — family fix #5382 (dup-skip for the in-place-reuse
+  ;; Map.insert base) reclaims it fully. Co-verified [0,0] on fresh cdz/store 05WfA5uY. (v-memory-safety)
+  (live-objects 0 0)
   )
 
 (case "a third-generation overwrite path-copies away from both ancestors and all three read true"
@@ -3113,7 +3114,9 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 104 Int64))
   (call main (: 2 Int64)) (output (: 605 Int64))
-  (live-objects known-leak 0 2))
+  ;; RECLAIM WIN: if-join-shared LIST member — family fix #5382 (dup-skip for the in-place-reuse
+  ;; List.push base) reclaims it fully. Co-verified [0,0] on fresh cdz/store 05WfA5uY. (v-memory-safety)
+  (live-objects 0 0))
 
 (case "a select between a base map and its derived generation frees the loser but not shared nodes"
   (doc    "The COMPOSITION of generation sharing with the escape shape (the #20 family, pinned per
