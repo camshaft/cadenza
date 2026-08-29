@@ -911,6 +911,7 @@ fn describe_side(s: &cdz_smith::differential::Side) -> String {
         Side::Trap(t) => format!("trap {t}"),
         Side::Declined(d) => format!("declined {d}"),
         Side::ArtifactError(e) => format!("artifact-error {e}"),
+        Side::Unavailable(e) => format!("unavailable {e}"),
     }
 }
 
