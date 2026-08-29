@@ -13941,3 +13941,47 @@
   (call main (: 7 Int64)) (output (: 311 Int64))
   (call main (: 0 Int64)) (output (: 202 Int64))
   (call main (: 3 Int64)) (output (: 312 Int64)))
+
+(case "dn2 nested-switch DEFAULT arm — multi-depth patterns + wildcard through the cadenza hop"
+  (doc "The #5657 flip pinned (breaker dn2 witness, was the named 'nested-switch default arm' decline):
+        a recursive sum (type T (A T) (B Int64)) matched with MULTI-DEPTH patterns — a depth-2 arm
+        ((A (A inner)) recurse), a depth-2 mixed arm ((A (B v))), and a WILDCARD default — over a
+        runtime-branch-built scrutinee. n>0 walks A(A(A(B n))): 2+1+n; n<=0 hits the wildcard on a
+        bare (B n) → -1. n=7 → 10; n=0 → -1; n=-2 → -1. Dual-path value-eq, byte-idempotent,
+        rust-agreed; the walked chain retains its cells (the recursive-sum-chain retention class).")
+  (input (do
+    (type T (A T) (B Int64))
+    (def (f (: x T))
+      (match x
+        ((A (A inner)) (+ 2 (f inner)))
+        ((A (B v)) (+ 1 v))
+        (_w -1)))
+    (def (main (: n Int64)) (f (if (> n 0) (A (A (A (B n)))) (B n))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 10 Int64))
+  (call main (: 0 Int64)) (output (: -1 Int64))
+  (call main (: -2 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 4 1 1))
+
+(case "dn1 BRANCH-BUILT deep scrutinee — construction under an if inside the pattern spine, through the hop"
+  (doc "The dn1 face (was the disc-folded-root decline class, flipped by the #5657 series): the deep
+        scrutinee is BUILT with a branch INSIDE the constructor spine — (A (if (> n 3) (A (A (B n)))
+        (A (B (+ n 1))))) — so the discriminant cannot fold at the root, and the multi-depth match
+        (depth-2 arms + wildcard) walks whichever shape the branch built. n=7 → A(A(A(B 7))) →
+        2+1+7 = 10; n=2/0 → A(A(B n+1)) → 2 + wildcard(-1)? no — (A (B v)) at the inner step:
+        2 + f(B v) = 2 + (-1) = 1. Dual-path value-eq, byte-idempotent, rust-agreed; walked cells
+        retained (recursive-sum-chain class).")
+  (input (do
+    (type T (A T) (B Int64))
+    (def (f (: x T))
+      (match x
+        ((A (A inner)) (+ 2 (f inner)))
+        ((A (B v)) (+ 1 v))
+        (_w -1)))
+    (def (main (: n Int64))
+      (f (A (if (> n 3) (A (A (B n))) (A (B (+ n 1)))))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 10 Int64))
+  (call main (: 2 Int64)) (output (: 1 Int64))
+  (call main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 4 3 3))
