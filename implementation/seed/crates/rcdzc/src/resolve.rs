@@ -2825,7 +2825,12 @@ fn guard_cond_list_binds(
     }
     let pattern = g[0];
     // Only a `(list …)` inner pattern (a `(map …)`/variant/tuple guard is another case's concern).
-    if db.ast.as_form(pattern, "list").is_none() && db.ast.as_ctor_form(pattern, "list").is_none() {
+    // `compound_form_of` recognizes the native `#list(…)` ctor-leaf head too (not only the name/string alias).
+    if db
+        .ast
+        .compound_form_of(pattern, crate::ast::CompoundCtor::List)
+        .is_none()
+    {
         return None;
     }
     // The guard must be the PATTERN of a match arm `((guard …) body)` whose parent is a `(match …)`.
@@ -3086,8 +3091,10 @@ fn match_arm_record_binds(
                 find_binder_in_tuple(db, value_pat, name, &mut path, &mut heads)
             } else if is_list_pattern(db, value_pat) {
                 find_binder_in_list(db, value_pat, name, &mut path, &mut heads)
-            } else if db.ast.as_form(value_pat, "record").is_some()
-                || db.ast.as_ctor_form(value_pat, "record").is_some()
+            } else if db
+                .ast
+                .compound_form_of(value_pat, crate::ast::CompoundCtor::Record)
+                .is_some()
             {
                 record_pattern_binds_name(db, value_pat, name)
             } else {
@@ -3139,8 +3146,10 @@ fn match_arm_nested_record_binds(db: &Db, form: StructId, from: StructId, name: 
     }
     // The arm pattern must be a TUPLE / LIST / VARIANT compound — a TOP-LEVEL record is Case 6rec's, not
     // here (its own bare-binder fields wire; only a NESTED record under a compound is the unwired case).
-    let is_top_record = db.ast.as_form(arm_pat, "record").is_some()
-        || db.ast.as_ctor_form(arm_pat, "record").is_some();
+    let is_top_record = db
+        .ast
+        .compound_form_of(arm_pat, crate::ast::CompoundCtor::Record)
+        .is_some();
     if is_top_record {
         return false;
     }
@@ -3155,7 +3164,10 @@ fn match_arm_nested_record_binds(db: &Db, form: StructId, from: StructId, name: 
 /// other compound is walked into its children.
 fn pattern_has_nested_record_binding(db: &Db, pat: StructId, name: &str) -> bool {
     // A record node that binds `name` — the hit (this is the unwireable nested case).
-    if (db.ast.as_form(pat, "record").is_some() || db.ast.as_ctor_form(pat, "record").is_some())
+    if db
+        .ast
+        .compound_form_of(pat, crate::ast::CompoundCtor::Record)
+        .is_some()
         && record_pattern_binds_name(db, pat, name)
     {
         return true;
@@ -3603,8 +3615,10 @@ fn is_variant_pattern_binder_occurrence(db: &Db, id: StructId) -> bool {
                 // resolution (Case 6rec → `Member`) is a projection of the scrutinee, so the pattern
                 // occurrence carries no value. (`find_binder_in_pattern` excludes the `record` compound
                 // head, so the record shape needs this explicit check.)
-                || ((db.ast.as_form(pattern, "record").is_some()
-                    || db.ast.as_ctor_form(pattern, "record").is_some())
+                || (db
+                    .ast
+                    .compound_form_of(pattern, crate::ast::CompoundCtor::Record)
+                    .is_some()
                     && record_pattern_binds_name(db, pattern, nm));
             if !binds {
                 return false;
@@ -3652,7 +3666,12 @@ fn is_list_pattern_element_occurrence(db: &Db, id: StructId) -> bool {
         };
         // Is `parent` a `(list …)` pattern whose enclosing form is a match arm — directly, or wrapped in a
         // `(guard <list> cond)` (whose grandparent is then the arm)?
-        if db.ast.as_form(parent, "list").is_some() && list_pattern_is_arm_pattern(db, parent) {
+        if db
+            .ast
+            .compound_form_of(parent, crate::ast::CompoundCtor::List)
+            .is_some()
+            && list_pattern_is_arm_pattern(db, parent)
+        {
             // `parent` is the arm's list pattern. `id` is a genuine binder iff a leading element sub-pattern
             // or the rest binder binds its name — the SAME form-independent walk Cases 6l/6r/6lg use, so it
             // agrees exactly with where a body/guard reference resolves. (A pattern HEAD — the `(. Sum V)`
@@ -4187,8 +4206,10 @@ fn record_pattern_binds_name(db: &Db, record_pat: StructId, name: &str) -> bool 
             find_binder_in_tuple(db, value_pat, name, &mut path, &mut heads)
         } else if is_list_pattern(db, value_pat) {
             find_binder_in_list(db, value_pat, name, &mut path, &mut heads)
-        } else if db.ast.as_form(value_pat, "record").is_some()
-            || db.ast.as_ctor_form(value_pat, "record").is_some()
+        } else if db
+            .ast
+            .compound_form_of(value_pat, crate::ast::CompoundCtor::Record)
+            .is_some()
         {
             record_pattern_binds_name(db, value_pat, name)
         } else {
@@ -4469,8 +4490,10 @@ fn find_record_binder_in_pattern(
 ) -> Option<Symbol> {
     // A RECORD pattern here: does a BARE-binder field `(= key name)` bind `name`? (`path` reaches THIS
     // record; the field is name-keyed, no step pushed.)
-    if db.ast.as_form(pattern, "record").is_some()
-        || db.ast.as_ctor_form(pattern, "record").is_some()
+    if db
+        .ast
+        .compound_form_of(pattern, CompoundCtor::Record)
+        .is_some()
     {
         let fields = db.ast.compound_form_of(pattern, CompoundCtor::Record)?;
         for &pair in fields {
@@ -4681,8 +4704,10 @@ fn last_binder_named(
             // one-arm irrefutable match with zero new IR. Only the REST form is irrefutable (matches any
             // length); a fixed-arity `(list a b)` binding is refutable and rejected at lowering by
             // `check_binding_pattern` (CDZ0210) — this lookup only routes an in-scope binder to its value.
-            else if db.ast.as_form(lhs, "list").is_some()
-                || db.ast.as_ctor_form(lhs, "list").is_some()
+            else if db
+                .ast
+                .compound_form_of(lhs, crate::ast::CompoundCtor::List)
+                .is_some()
             {
                 if let Some((path, heads)) = find_leading_binder_in_list_pattern(db, lhs, name) {
                     return Some(Resolved::SumPayload {
@@ -4758,7 +4783,11 @@ fn last_binder_named(
                             find_binder_in_tuple(db, value_pat, name, &mut path, &mut heads)
                         } else if is_list_pattern(db, value_pat) {
                             find_binder_in_list(db, value_pat, name, &mut path, &mut heads)
-                        } else if db.ast.as_form(value_pat, "record").is_some() {
+                        } else if db
+                            .ast
+                            .compound_form_of(value_pat, crate::ast::CompoundCtor::Record)
+                            .is_some()
+                        {
                             record_pattern_binds_name(db, value_pat, name)
                         } else {
                             find_binder_in_pattern(db, value_pat, name, &mut path, &mut heads)
