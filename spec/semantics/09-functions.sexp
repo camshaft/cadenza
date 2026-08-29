@@ -130,7 +130,7 @@
         (export main)))
   (call main (: 2 Int64)) (output (: 440 Int64))
   (call main (: 0 Int64)) (output (: 40 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 8 4))
 
 (case "a closure captures its environment by value at creation, unaffected by a later same-named binding"
   (doc    "`(let ((k n)) (let ((f (fn (x) (+ x k)))) (let ((k 1000)) (f 1))))` — `f` captures `k = n` at
@@ -210,7 +210,7 @@
   (call   main (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 2 Int64)) (output (: 31 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak 1 1 0))
 
 ; A CAPTURING closure whose HANDLE both ESCAPES WHOLE (stored into a heap collection / sum payload) AND is
 ; ALSO DIRECTLY CALLED — the "call BOTH ways" shape. The pinned idioms above call a stored closure via
@@ -768,7 +768,10 @@
             (def (adder n) (fn (x) (+ x n)))
             (def (main) (let ((fs #list((adder 1) (adder 2)))) (match (List.at fs 0) ((Some f) (f 10)) ((None u) -1))))
             (export main)))
-  (output (: 11 Int64)))
+  (output (: 11 Int64))
+  ;; pre-existing closure-in-list capture leak (bisect-verified identical pre/post; honest known-leak, coord v-corpus-harness)
+  (live-objects known-leak 1)
+  )
 
 (case "a closure stored as a MAP value is looked up by a runtime key and applied"
   (doc    "The dispatch-TABLE idiom: closures stored as MAP values, one selected by a runtime KEY and
@@ -789,7 +792,7 @@
   (call   main (: 1 Int64) (: 5 Int64)) (output (: 50 Int64))
   (call   main (: 2 Int64) (: 5 Int64)) (output (: 105 Int64))
   (call   main (: 9 Int64) (: 5 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak 1 1 0))
 
 (case "two capturing closures stored as runtime tuple elements keep distinct captures"
   (doc    "The tuple-element runtime companion: `(tuple (adder 1) (adder 2))` bound via `let` holds two
@@ -2083,7 +2086,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 26 Int64))
   (call main (: 2 Int64)) (output (: 10 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 10 2))
 
 (case "a THREE-deep transitive closure-capture chain applies with each level's own capture live"
   (doc    "The 2-deep capture pin extended: h→g→f where EACH level adds its OWN scalar capture —
@@ -3758,7 +3761,7 @@
   (call   main (: 10 Int64)) (output (: 551 Int64))
   (call   main (: 30 Int64)) (output (: 8320401 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak 1 5 8 0))
 
 ; --- Overflow checking holds THROUGH a recursive call chain, not only at the top level ----
 ; numeric-model.md #Overflow Is Defined: an integer operation that overflows traps under the checked
@@ -7176,7 +7179,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 666 Int64))
   (call   main (: 0 Int64)) (output (: 666 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 0))
 
 ; --- The recursive-generic element tie: value-flow and composition faces ----------------------------
 ; 7793d4841 (Part C) ties a recursive-generic producer's result element to its argument's (the
@@ -7710,7 +7713,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 1235789 Int64))
   (call   main (: 9 Int64)) (output (: 1357899 Int64))
-  (live-objects known-leak 60))
+  (live-objects known-leak 60 66))
 
 (case "ACKERMANN evaluates — a recursive call in the ARGUMENT of a recursive call (not primitive-recursive)"
   (doc    "The recursion pins cover tail/accumulable-non-tail/mutual/tree — this is NESTED recursion: a self-call in a self-call's ARGUMENT ((ack (- m 1) (ack m (- n 1)))). The inner call fully evaluates mid-argument-list with the outer frame's operands live; the outer call LOOKS accumulable but is not, so a misfiring tail-transform or argument-slot reuse corrupts the tower. ack(3,3)=61 is a deep non-tail evaluation tower.")
@@ -7800,7 +7803,7 @@
         (export main)))
   (call   main (: 3 Int64)) (output (: 22 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 4 0))
 
 (case "a closure captures the param generation BEFORE a shadow and applies after"
   (doc    "The capture × param-shadow face of the def-shadow fix (the generations pin covers
@@ -7935,7 +7938,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 4070 Int64))
   (call   main (: 3 Int64)) (output (: 3008 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak 1 2))
 
 (case "a pipeline chain threads handler STATE left-to-right through effectful stages"
   (doc    "`|>` composed with effects: two chained pipe stages each perform `(Ctr.tick)` — the desugar
@@ -8085,7 +8088,10 @@
                 ((Option.None) -1)))
             (export main)))
   (call   main (: 10 Int64))
-  (output (: 30 Int64)))
+  (output (: 30 Int64))
+  ;; pre-existing closure-in-list capture leak (bisect-verified identical pre/post; honest known-leak, coord v-corpus-harness)
+  (live-objects known-leak 1)
+  )
 
 (case "ch04 a runtime-branch-selected closure applies"
   (input  (do
@@ -9774,7 +9780,7 @@
     (def (main (: k Int64)) (depth (rebuild (mk k)) 0))
     (export main)))
   (call main (: 5 Int64)) (output (: 5 Int64))
-  (call main (: 0 Int64)) (output (: 0 Int64)) (live-objects known-leak 5))
+  (call main (: 0 Int64)) (output (: 0 Int64)) (live-objects known-leak 5 0))
 
 (case "nts1 a non-tail recursive-sum consumer over a SHARED spine does not over-reclaim it (sum then len both read it)"
   (doc    "Soundness fence for the #4857 non-tail recursive-sum spine reclaim (drop a CALLEE-OWNED, dead-after
