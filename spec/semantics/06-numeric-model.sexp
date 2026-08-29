@@ -3195,7 +3195,7 @@
            `−128` is not one-too-small (a `> −128` check would reject it). The signed companion of the UInt8
            maximum case, covering BOTH edges of the two's-complement range.")
   (input  (tuple (Int8.of (BigInt.of 127)) (Int8.of (BigInt.of -128))))
-  (output (: (tuple 127 -128) (Tuple Int8 Int8))))
+  (output (: #tuple(127 -128) (Tuple Int8 Int8))))
 
 (case "a BigInt operation does not silently promote a fixed-width operand"
   (doc    "`(+ (BigInt.of 1) 1)` mixes a BigInt and an Int64 — two distinct numeric types — rejected
@@ -4787,7 +4787,7 @@
            wrap pinned above; a masked-unsigned fold would observe 128/255. Wrapped in `Int64.of` to widen
            the narrowed Int8 back to an observable Int64.")
   (input  (do (def (main) (tuple (Int64.of (Int8.wrap 128)) (Int64.of (Int8.wrap 255)))) (export main)))
-  (call   main) (output (: (tuple -128 -1) (Tuple Int64 Int64))))
+  (call   main) (output (: #tuple(-128 -1) (Tuple Int64 Int64))))
 
 (case "the Int64.max and Int64.min CONSTANTS compare equal to their boundary values at runtime"
   (doc    "The prelude boundary constants as runtime COMPARANDS: `(= n Int64.max)` and `(= n Int64.min)`
@@ -12063,7 +12063,7 @@
         regression mis-nesting, mis-ordering the record fields, or dropping a field would change the value.")
   (input (do (def (main (: n Int64)) (record (= pair (tuple n (+ n 1))) (= xs (list n (* n 2))))) (export main)))
   (call main (: 3 Int64))
-  (output (: (record (= pair (tuple 3 4)) (= xs (list 3 6))) (record (= pair (Tuple Int64 Int64)) (= xs (List Int64)))))
+  (output (: #record((= pair #tuple(3 4)) (= xs #list(3 6))) (record (pair (Tuple Int64 Int64)) (xs (List Int64)))))
   (live-objects 4))
 
 (case "cdzw12 the cadenza backend round-trips a USER-declared multi-variant sum value — the (type …) declaration re-emits"
