@@ -480,5 +480,9 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: emoji-lint
-      - name: cargo xtask lint-emoji (comment-scoped emoji-ban)
-        run: cargo xtask lint-emoji
+      - name: lint-emoji (comment-scoped emoji-ban)
+        # Run the standalone xtask-lint-emoji crate binary DIRECTLY (v-xtask-decompose carved the lint into
+        # its own minimal-dep crate; `cargo xtask lint-emoji` now forwards to the nix `apps.lint-emoji`, which
+        # exit-127s on this deliberately nix-free runner). `cargo run -p xtask-lint-emoji` compiles only that
+        # crate + xtask-support and lints cwd (the repo root) — no nix, no full-tree compile, keeps this fast.
+        run: cargo run -p xtask-lint-emoji
