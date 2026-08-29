@@ -10131,6 +10131,50 @@ mod match_engine {
     }
 
     #[test]
+    fn a_map_literal_with_mixed_types_or_a_duplicate_key_is_rejected_cdz0201() {
+        // SOUNDNESS guard (05-compound-types map-type-error cases): a `(map …)` literal with values (or keys)
+        // of two different types, or a duplicate literal key, is CDZ0201 — not silently built. The homogeneity
+        // + duplicate-const-key checks (the `collect` `Apply(MapNew)` name-alias arm) read entry pairs as the
+        // legacy 2-element `(k v)`, so a native `(= k v)` FieldPair entry (3-element, what `#map`/`(map (= k v))`
+        // now emit) was filtered out → ZERO entries collected → the checks never ran → mixed/duplicate maps
+        // silently type-checked. Now reads FieldPair entries (`field_pair_parts`/`field_pair`), so the name-alias
+        // map is checked exactly as the native `#map` (Resolved::Map) form already was.
+        for (label, src) in [
+            (
+                "mixed value types",
+                "(module m (def (main) (= (map (= \"a\" 1) (= \"b\" true)) (map (= \"a\" 1) (= \"b\" true)))) (export main))",
+            ),
+            (
+                "mixed int/float values",
+                "(module m (def (main) (= (map (= \"a\" 1) (= \"b\" 1.5)) (map (= \"a\" 1) (= \"b\" 1.5)))) (export main))",
+            ),
+            (
+                "mixed key types",
+                "(module m (def (main) (= (map (= \"a\" 1) (= 2 3)) (map (= \"a\" 1) (= 2 3)))) (export main))",
+            ),
+            (
+                "duplicate string key",
+                "(module m (def (main) (= (map (= \"a\" 1) (= \"a\" 2)) (map (= \"a\" 1) (= \"a\" 2)))) (export main))",
+            ),
+            (
+                "duplicate int key",
+                "(module m (def (main) (= (map (= 1 10) (= 1 20)) (map (= 1 10) (= 1 20)))) (export main))",
+            ),
+        ] {
+            assert_eq!(
+                reject_code(src).as_deref(),
+                Some("CDZ0201"),
+                "{label}: a mixed-type / duplicate-key map literal must reject CDZ0201, not silently build"
+            );
+        }
+        // A well-typed, distinct-key map still compiles (no false reject).
+        assert!(
+            reject_code("(module m (def (main) (= (map (= \"a\" 1) (= \"b\" 2)) (map (= \"a\" 1) (= \"b\" 2)))) (export main))").is_none(),
+            "a homogeneous, distinct-key map is accepted"
+        );
+    }
+
+    #[test]
     fn a_narrow_width_overflow_in_a_native_map_or_set_literal_element_is_rejected_cdz0302() {
         // SOUNDNESS guard (06-numeric-model): a literal MAP VALUE / MAP KEY / SET element that overflows its
         // annotated narrow width must be rejected CDZ0302, not silently truncated. The width-fit annotation
