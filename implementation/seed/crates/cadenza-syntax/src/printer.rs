@@ -3361,10 +3361,22 @@ impl<'a> Printer<'a> {
         match self.a.get(id) {
             Struct::List(items) if !items.is_empty() => {
                 let items = items.clone();
+                // The head spelling for the compound-pattern dispatch, recognized in EITHER kind: the
+                // native ctor-LEAF head (M2, what a canonical native compound pattern carries) via
+                // `head_ctor`, OR the shadowable NAME/`.`/`=` head via `head_name`. The VALUE path already
+                // resugars native ctor heads (through `literal_ctor`/`head_ctor`); the pattern path
+                // dispatched on bare `head_name`, so a native `Leaf::Ctor(Tuple/List/Map/Record)` PATTERN
+                // head returned `None` here, missed every sugar arm, and fell to the generic `Ctor(p, …)`
+                // arm — printing the classic name-head call `tuple(…)`/`list(…)`/… that does NOT re-read to
+                // the native compound pattern (the ML compound-PATTERN round-trip gap; mirrors how
+                // `is_binder_pattern` already combines both recognizers to ROUTE such a head into `pattern`).
+                let pat_head = self
+                    .head_ctor(items[0])
+                    .or_else(|| self.head_name(items[0]));
                 // tuple pattern `(tuple p …)` -> `(p, …)`, matching the value tuple. A 1-element
                 // `(tuple p)` prints `(p,)` (trailing comma) so it re-reads as a 1-tuple, not `(p)`
                 // grouping.
-                if self.head_name(items[0]).as_deref() == Some("tuple") && items.len() >= 2 {
+                if pat_head.as_deref() == Some("tuple") && items.len() >= 2 {
                     let subs = &items[1..];
                     self.doc.word("(");
                     for (i, &sub) in subs.iter().enumerate() {
@@ -3382,19 +3394,31 @@ impl<'a> Printer<'a> {
                 // list pattern `(list p… .. rest)` -> `[p, …, .. rest]`, the value list literal's twin
                 // in pattern position (unconditional like the tuple pattern — a pattern head `list` is
                 // the list constructor by grammar). A `..` marker glues to its rest binder.
-                if self.head_name(items[0]).as_deref() == Some("list") {
+                if pat_head.as_deref() == Some("list") {
                     self.print_pattern_seq("[", "]", &items[1..], |p, e| p.pattern(e));
                     return;
                 }
                 // map pattern `(map (k p) … .. rest)` -> `#{ k = p, …, .. rest }`, the key-directed
                 // twin of the map literal. Each entry is a `(key sub-pattern)` pair; the key is a value
                 // expression, the value slot a sub-pattern.
-                if self.head_name(items[0]).as_deref() == Some("map")
-                    && self.is_map_pattern(&items[1..])
-                {
+                if pat_head.as_deref() == Some("map") && self.is_map_pattern(&items[1..]) {
                     self.print_pattern_seq("#{ ", " }", &items[1..], |p, entry| {
                         if let Struct::List(pair) = p.a.get(entry) {
-                            let (key, sub) = (pair[0], pair[1]);
+                            // A map-pattern entry is EITHER the native FieldPair `(= key sub-pattern)` (M2,
+                            // what a canonical native map pattern carries — head is `Leaf::FieldPair`,
+                            // `head_name` reports `=`) OR a legacy 2-element `(key sub-pattern)` pair (what
+                            // the reader still emits). Both spell `key = sub`; without the FieldPair arm a
+                            // native map pattern printed `= = <key>` (the `=` head misread as the key) and
+                            // failed to re-read (the ML map-PATTERN round-trip gap, FACE 2).
+                            let (key, sub) = if pair.len() == 3
+                                && p.head_name(pair[0]).as_deref() == Some("=")
+                            {
+                                (pair[1], pair[2])
+                            } else if pair.len() == 2 {
+                                (pair[0], pair[1])
+                            } else {
+                                return;
+                            };
                             p.expr(key, 0);
                             p.doc.word(" = ");
                             p.pattern(sub);
@@ -3408,9 +3432,7 @@ impl<'a> Printer<'a> {
                 // B, full symmetry); the field is a plain name, the value slot a sub-pattern. Always
                 // renders `field = p` (a punned `(= x x)` prints `{ x = x }`, re-reading to the same
                 // `(record (= x x))`). Guarded on the record-pattern shape (all entries `(= name p)`).
-                if self.head_name(items[0]).as_deref() == Some("record")
-                    && self.is_record_pattern(&items[1..])
-                {
+                if pat_head.as_deref() == Some("record") && self.is_record_pattern(&items[1..]) {
                     // Empty record pattern `(record)` -> `{}` (no inner padding), matching the param
                     // path's empty render; `print_pattern_seq` would otherwise emit `{  }` (double space).
                     if items.len() == 1 {
@@ -3431,12 +3453,12 @@ impl<'a> Printer<'a> {
                 // binary pattern `(bin <segment> …)` -> `b[<segment>, …]`, the pattern-position twin of
                 // the construction literal (unconditional — `bin` is a reserved grammar form, not a
                 // shadowable ctor). Each segment is a sub-pattern (`u16(n)` binds `n`); `(bin)` -> `b[]`.
-                if self.head_name(items[0]).as_deref() == Some("bin") {
+                if pat_head.as_deref() == Some("bin") {
                     self.print_pattern_seq("b[", "]", &items[1..], |p, s| p.pattern(s));
                     return;
                 }
                 // dotted constructor `(. A B)` prints as A.B
-                if self.head_name(items[0]).as_deref() == Some(".")
+                if pat_head.as_deref() == Some(".")
                     && items.len() == 3
                     && let Some(key) = self.plain_key(items[2])
                 {
@@ -5167,7 +5189,7 @@ mod tests {
         // NOTE: no `guard` arm here — a guard `p if c` is only valid at a match arm's TOP level (the
         // reader rejects it NESTED inside a tuple/quote/etc.), so nesting it would build an arena with no
         // reader-reachable ML surface. The caller applies a guard at the arm level instead.
-        match rng.next() % 8 {
+        match rng.next() % 11 {
             0 => format!("(tuple {} {})", sub(rng), sub(rng)),
             1 => format!("(tuple {})", sub(rng)), // 1-tuple: `(p,)`
             2 => format!("(list {} {})", sub(rng), sub(rng)),
@@ -5183,7 +5205,17 @@ mod tests {
             // quote / quasiquote PATTERN — inner is itself a pattern, so a quote OVER an empty compound
             // (`(quote ())`) is reachable here, exercising the once-panicking path.
             6 => format!("(quote {})", sub(rng)),
-            _ => format!("(quasiquote {})", sub(rng)),
+            7 => format!("(quasiquote {})", sub(rng)),
+            // NATIVE ctor-leaf-head compound PATTERNS (`#tuple`/`#list`/`#map`) — the canonical M2 form a
+            // native compound match pattern carries (`Leaf::Ctor` head). These print through the SAME bracket
+            // sugar as the name-alias heads above (`(a, b)`/`[a, b]`/`#{ k = p }`) — without the pattern
+            // printer recognizing the native ctor head they fell to the generic `Ctor(p, …)` arm and printed
+            // the classic `tuple(…)`/`list(…)`/`map(…)` call form, breaking idempotence (the ML compound-
+            // PATTERN round-trip gap). Map entries stay the 2-element `(key sub)` pair (rcdzc's native
+            // map-pattern shape), NOT the value-record `FieldPair`.
+            8 => format!("#tuple({} {})", sub(rng), sub(rng)),
+            9 => format!("#list({} {})", sub(rng), sub(rng)),
+            _ => format!("#map((k {}))", sub(rng)),
         }
     }
 
