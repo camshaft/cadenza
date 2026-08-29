@@ -319,6 +319,7 @@ pub fn grade_run<F>(
     test_run: &TestRun,
     compile_status: i32,
     compile_diag: &str,
+    diag_wire: Option<&str>,
     mut run_trial: F,
 ) -> Result<GradeResult>
 where
@@ -327,6 +328,12 @@ where
     let compiled = compile_status == 0;
     let mut worst = Grade::Pass;
     let mut ran_a_trial = false;
+    // The STRUCTURED diagnostics (`KIND_DIAGNOSTICS` wire) a trial's `(fix …)`/`(count …)` facets grade
+    // against, parsed once. `None` = the pipeline did not capture the wire (diagnostic-QUALITY grading is
+    // OFF — the facets still parse/shred/decode, but are not asserted, today's behavior); `Some(faults)` =
+    // captured, so `grade_diag_quality` fires per diag-bearing trial. `Some(&[])` (captured but empty) is
+    // meaningful: a warning/fix case with no matching fault then FAILS ("expected a fault, found none").
+    let faults: Option<Vec<DiagFault>> = diag_wire.map(parse_diagnostics);
     // The observed host-call sequence of the first value-producing trial — the gate checks host_calls
     // against exactly this (a compiled program's host effects are the same on every trial).
     let mut first_observed: Option<Vec<String>> = None;
@@ -341,6 +348,11 @@ where
                     code,
                     msg.as_deref(),
                 ));
+                // DIAGNOSTIC-QUALITY facets (`(fix …)`/`(no-fix)`/`(count …)`) — graded against the captured
+                // structured faults for THIS error's `(Error, code)`. Only when the wire was captured.
+                if let (Some(faults), Some(diag)) = (&faults, &trial.diag) {
+                    worst = worst.worse(grade_diag_quality(faults, Severity::Error, code, diag));
+                }
                 if matches!(worst, Grade::Fail(_)) {
                     break;
                 }
@@ -364,6 +376,10 @@ where
                     code,
                     msg.as_deref(),
                 ));
+                // Same diagnostic-QUALITY facets, graded for THIS warning's `(Warning, code)`.
+                if let (Some(faults), Some(diag)) = (&faults, &trial.diag) {
+                    worst = worst.worse(grade_diag_quality(faults, Severity::Warning, code, diag));
+                }
                 if matches!(worst, Grade::Fail(_)) {
                     break;
                 }
@@ -1661,11 +1677,17 @@ mod tests {
         let bytes = codec::encode(&b.finish(root));
 
         let tr = decode_test_run(&bytes).expect("decodes");
-        let res = grade_run(&tr, 0, "", |_| Ok(Outcome::Value("42".into(), vec![]))).unwrap();
+        let res = grade_run(&tr, 0, "", None, |_| {
+            Ok(Outcome::Value("42".into(), vec![]))
+        })
+        .unwrap();
         assert_eq!(res.grade, Grade::Pass);
         assert!(res.ran_a_trial);
         // A wrong value → Fail.
-        let res = grade_run(&tr, 0, "", |_| Ok(Outcome::Value("41".into(), vec![]))).unwrap();
+        let res = grade_run(&tr, 0, "", None, |_| {
+            Ok(Outcome::Value("41".into(), vec![]))
+        })
+        .unwrap();
         assert!(matches!(res.grade, Grade::Fail(_)));
 
         // COMPILE-FAILURE grading of an output case (compile_status != 0, nothing runs):
@@ -1675,6 +1697,7 @@ mod tests {
             &tr,
             1,
             "cdz: error: parameter reference has no local slot",
+            None,
             never,
         )
         .unwrap();
@@ -1690,6 +1713,7 @@ mod tests {
             &tr,
             1,
             "cdz: error: a function parameter's type has no machine representation",
+            None,
             never,
         )
         .unwrap();
@@ -1703,6 +1727,7 @@ mod tests {
             &tr,
             1,
             "error [CDZ0210] (node 3): match is non-exhaustive",
+            None,
             never,
         )
         .unwrap();
@@ -1712,10 +1737,74 @@ mod tests {
             res.grade
         );
         // A silent decline (no error line at all) stays Todo.
-        let res = grade_run(&tr, 1, "", never).unwrap();
+        let res = grade_run(&tr, 1, "", None, never).unwrap();
         assert!(
             matches!(res.grade, Grade::Todo(_)),
             "silent decline → todo: {:?}",
+            res.grade
+        );
+    }
+
+    /// C1-PLUMBING: `grade_run` fires `grade_diag_quality` on a diag-bearing trial WHEN the structured
+    /// diagnostics wire is supplied (`Some`), and SKIPS it when the wire is absent (`None`) — the switch
+    /// that turns diagnostic-quality grading on without changing any case that lacks the wire.
+    #[test]
+    fn grade_run_fires_diag_quality_only_when_the_wire_is_present() {
+        let never =
+            |_: &GTrial| -> Result<Outcome> { panic!("compile-outcome case runs no trial") };
+        // An (error CDZ0201) trial pinning a fix `(replacement "foo")` + `(count 1)`.
+        let tr = TestRun {
+            description: "diag-quality".into(),
+            trials: vec![GTrial {
+                call: None,
+                expect: GExpect::Error("CDZ0201".into(), None),
+                diag: Some(DiagExpect {
+                    fix: Some(FixExpect {
+                        kind: None,
+                        replacement: Some(ReplMatch::Exact("foo".into())),
+                        verified: None,
+                    }),
+                    no_fix: false,
+                    count: Some(1),
+                }),
+            }],
+            host_responses: vec![],
+            host_calls: vec![],
+            warns: vec![],
+            live_objects: None,
+            live_objects_known_leak: false,
+            live_objects_per_call: None,
+        };
+        // The compile refused with the right code (so grade_compile_error passes) + the stderr line the
+        // code-check reads.
+        let diag = "cdz: error [CDZ0201] (node 1): bad separator";
+
+        // (a) Wire ABSENT → quality NOT graded; the case grades Pass on code alone (today's behavior).
+        let res = grade_run(&tr, 1, diag, None, never).unwrap();
+        assert_eq!(res.grade, Grade::Pass, "no wire → quality ungraded");
+
+        // (b) Wire present, ONE error CDZ0201 fault carrying a `replace` fix whose replacement is "foo",
+        // verified — matches the pinned fix + count 1 → Pass.
+        let wire_ok = "error\tCDZ0201\t1\treplace\t1\tfoo\tverified\tbad separator";
+        let res = grade_run(&tr, 1, diag, Some(wire_ok), never).unwrap();
+        assert_eq!(res.grade, Grade::Pass, "matching fix+count → pass");
+
+        // (c) Wire present but the fix's replacement is "bar" (≠ pinned "foo") → the quality grade FAILS.
+        let wire_bad = "error\tCDZ0201\t1\treplace\t1\tbar\tverified\tbad separator";
+        let res = grade_run(&tr, 1, diag, Some(wire_bad), never).unwrap();
+        assert!(
+            matches!(res.grade, Grade::Fail(_)),
+            "mismatched fix replacement → fail: {:?}",
+            res.grade
+        );
+
+        // (d) Wire present but carries TWO CDZ0201 faults (count ≠ 1) → the count facet FAILS.
+        let wire_two = "error\tCDZ0201\t1\treplace\t1\tfoo\tverified\tone\n\
+                        error\tCDZ0201\t2\treplace\t3\tfoo\tverified\ttwo";
+        let res = grade_run(&tr, 1, diag, Some(wire_two), never).unwrap();
+        assert!(
+            matches!(res.grade, Grade::Fail(_)),
+            "count mismatch → fail: {:?}",
             res.grade
         );
     }

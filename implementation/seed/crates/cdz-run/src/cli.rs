@@ -153,6 +153,13 @@ pub struct RunArgs {
     #[arg(long, value_name = "PATH")]
     pub compile_diag: Option<PathBuf>,
 
+    /// GRADE mode: the compiler's STRUCTURED diagnostics wire (`KIND_DIAGNOSTICS` / `cdz check --json`),
+    /// one fault per TAB-columned line, for grading a case's DIAGNOSTIC-QUALITY facets (`(fix …)` /
+    /// `(no-fix)` / `(count N)`). ABSENT → diagnostic-quality grading is OFF (the facets are ignored; the
+    /// code + message checks from `--compile-diag` still run). Distinct from `--compile-diag` (human stderr).
+    #[arg(long, value_name = "PATH")]
+    pub diagnostics: Option<PathBuf>,
+
     /// The interface a `(wit-world …)` case's guest exports under (its `(component-name …)`), used ONLY
     /// with `--grade` to qualify a trial's call as `<iface>#<export>` — the same qualification the gate
     /// applies for a world-imposed export. Absent → the export is called by its bare name.
@@ -245,6 +252,12 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
             None => String::new(),
         };
+        // The structured diagnostics wire, when the compile phase captured it (`--diagnostics`). `Some`
+        // turns diagnostic-QUALITY grading ON for this case; `None` (flag absent) leaves it OFF.
+        let diag_wire: Option<String> = cli
+            .diagnostics
+            .as_ref()
+            .map(|p| std::fs::read_to_string(p).unwrap_or_default());
         let baseline = match &cli.baseline {
             Some(p) => Some(
                 std::fs::read_to_string(p)
@@ -298,6 +311,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             cli.component_name.as_deref(),
             cli.compile_status,
             &compile_diag,
+            diag_wire.as_deref(),
             baseline.as_deref(),
             &peers,
         );
