@@ -174,6 +174,150 @@ function findMatchingClose(s, from, name) {
   return s.length;
 }
 
+// ---- block layer: a chapter .tsx → .sexp (meta from chapters.ts + article blocks) ----
+import { readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { extractFilesProp } from "./example-extract.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/// Read the chapters.ts registry entry for a chapter file → { slug, title, pillar, section, blurb }.
+function chapterMeta(tsxPath) {
+  const base = basename(tsxPath); // e.g. Philosophy.tsx
+  const reg = readFileSync(join(HERE, "../src/content/chapters.ts"), "utf8");
+  // Find the entry object whose Component imports ./chapters/<base>; the fields precede the Component line.
+  const idx = reg.indexOf(`./chapters/${base}`);
+  if (idx === -1) throw new Error(`chapters.ts: no entry importing ./chapters/${base}`);
+  const start = reg.lastIndexOf("{", idx);
+  const entry = reg.slice(start, idx);
+  const field = (name) => {
+    const m = new RegExp(`${name}:\\s*"([^"]*)"`).exec(entry);
+    return m ? m[1] : null;
+  };
+  return {
+    slug: field("slug"),
+    title: field("title"),
+    pillar: field("pillar") ?? "language", // pillarOf default
+    section: field("section"),
+    blurb: field("blurb"),
+  };
+}
+
+/// The `<article>…</article>` inner body of a chapter component.
+function articleBody(tsx) {
+  const m = /<article>([\s\S]*)<\/article>/.exec(tsx);
+  if (!m) throw new Error("no <article>…</article> found");
+  return m[1];
+}
+
+/// Emit a prose block `(tag <inline>…)` from a block's inner JSX (outer whitespace trimmed — a block edge
+/// carries no space, matching the pilot .sexp).
+function proseBlock(tag, inner) {
+  return `  (${tag} ${parseInline(inner.trim()).join(" ")})`;
+}
+
+/// A runnable/exercise attr string (template-cooked), from example-extract's grab-equivalent on the element.
+function attr(el, name) {
+  const tl = new RegExp(`${name}=\\{\`([\\s\\S]*?)\`\\}`).exec(el);
+  if (tl) return cookTemplate(tl[1]);
+  const s = new RegExp(`${name}="([^"]*)"`).exec(el);
+  return s ? s[1] : null;
+}
+
+/// Convert a whole chapter .tsx → its .sexp document (string).
+export function convertChapter(tsxPath) {
+  const tsx = readFileSync(tsxPath, "utf8");
+  const meta = chapterMeta(tsxPath);
+  const body = articleBody(tsx);
+
+  // Walk top-level block elements in document order. Elements are self-closing (Runnable/Exercise) or paired
+  // (H1/Lede/P/H2/Note/Why). Chunk by the next block-open position (block elements never nest each other).
+  const BLOCK = /<(H1|Lede|P|H2|Note|Why|Runnable|Exercise)\b/g;
+  const opens = [];
+  let m;
+  while ((m = BLOCK.exec(body))) opens.push({ tag: m[1], at: m.index });
+  const lines = [];
+  for (let k = 0; k < opens.length; k++) {
+    const { tag, at } = opens[k];
+    const end = k + 1 < opens.length ? opens[k + 1].at : body.length;
+    const chunk = body.slice(at, end);
+    if (tag === "Runnable") {
+      lines.push(runnableBlock(chunk, tsxPath));
+    } else if (tag === "Exercise") {
+      lines.push(exerciseBlock(chunk));
+    } else if (tag === "Why") {
+      const tenet = /tenet="([^"]*)"/.exec(chunk)?.[1] ?? "";
+      const inner = /<Why[^>]*>([\s\S]*?)<\/Why>/.exec(chunk)?.[1] ?? "";
+      lines.push(`  (why (tenet ${sexpString(tenet)}) ${parseInline(inner.trim()).join(" ")})`);
+    } else {
+      const inner = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(chunk)?.[1] ?? "";
+      const t = tag === "Lede" ? "lede" : tag.toLowerCase(); // H1→h1, H2→h2, P→p, Note→note, Lede→lede
+      if (tag === "H1") continue; // title comes from meta, not a block
+      lines.push(proseBlock(t, inner));
+    }
+  }
+
+  let out = `(chapter\n  (slug ${sexpString(meta.slug)})\n  (title ${sexpString(meta.title)})\n`;
+  out += `  (pillar ${sexpString(meta.pillar)})\n`;
+  if (meta.section) out += `  (section ${sexpString(meta.section)})\n`;
+  if (meta.blurb) out += `  (blurb ${sexpString(meta.blurb)})\n`;
+  out += lines.join("\n") + ")\n";
+  return out;
+}
+
+/// A JSX prop `name={<>…</>}` (prompt/hint) → its inline JSX (fragment inner), or null.
+function jsxProp(chunk, name) {
+  const m = new RegExp(`${name}=\\{\\s*<>([\\s\\S]*?)</>\\s*\\}`).exec(chunk);
+  return m ? m[1] : null;
+}
+
+/// Emit a `(runnable …)` from its element chunk (source/expected/expect/id/title/mode/authored-in/wrap +
+/// multi-file files). Extracts attrs directly (cooked) — extractExamples is lossy for Runnable's expected.
+function runnableBlock(chunk, tsxPath) {
+  let s = `  (runnable`;
+  if (/files=\{\[/.test(chunk)) {
+    const files = extractFilesProp(chunk, tsxPath);
+    s += `\n    (files`;
+    for (const f of files) {
+      s += `\n      (file (name ${sexpString(f.name)}) (source ${sexpString(f.source)}) (surface ${sexpString(f.surface)})`;
+      s += f.entry ? ` (entry "true"))` : `)`;
+    }
+    s += `)`;
+  } else {
+    s += `\n    (source ${sexpString(attr(chunk, "source") ?? "")})`;
+  }
+  for (const [a, k] of [["expected", "expected"], ["expect", "expect"], ["id", "id"], ["title", "title"], ["mode", "mode"], ["authoredIn", "authored-in"]]) {
+    const v = attr(chunk, a);
+    if (v != null) s += `\n    (${k} ${sexpString(v)})`;
+  }
+  if (/wrap=\{false\}/.test(chunk)) s += `\n    (wrap "false")`;
+  return s + `)`;
+}
+
+/// Emit an `(exercise …)` from its element chunk (id + prompt/hint JSX + starter/solution/expected attrs).
+function exerciseBlock(chunk) {
+  let s = `  (exercise`;
+  const id = attr(chunk, "id");
+  if (id) s += `\n    (id ${sexpString(id)})`;
+  const prompt = jsxProp(chunk, "prompt");
+  if (prompt) s += `\n    (prompt ${parseInline(prompt.trim()).join(" ")})`;
+  for (const name of ["starter", "solution", "expected"]) {
+    const v = attr(chunk, name);
+    if (v != null) s += `\n    (${name} ${sexpString(v)})`;
+  }
+  const hint = jsxProp(chunk, "hint");
+  if (hint) s += `\n    (hint ${parseInline(hint.trim()).join(" ")})`;
+  return s + `)`;
+}
+
+// ---- CLI: convert a chapter .tsx → .sexp on stdout ----
+const cliArg = process.argv[2];
+if (cliArg && cliArg.endsWith(".tsx")) {
+  process.stdout.write(convertChapter(cliArg));
+  process.exit(0);
+}
+
 // ---- self-test ----
 if (process.argv.includes("--self-test")) {
   // Spaces around inline marks are PRESERVED (the visible-text collapse keeps a single space) — matches the
