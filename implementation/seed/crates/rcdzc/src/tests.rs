@@ -10163,6 +10163,35 @@ mod match_engine {
     }
 
     #[test]
+    fn a_native_record_destructuring_binding_param_binds_like_the_classic_spelling() {
+        // M3-canonical equivalence (breaker flag, the def-param twin of the #5340/#5346 match-pattern
+        // hardening): a NATIVE `#record(…)` destructuring PARAM must bind its irrefutable fields exactly as the
+        // classic `(record …)` spelling — `check_binding_pattern`'s record arm read `as_form` (name-only), so a
+        // native `#record` param fell through to the ctor classifier's CDZ0201 "not a tuple, record, or
+        // constructor" while classic `(record …)` + native `#tuple` params compiled. Now reads `compound_form_of`.
+        for (label, src) in [
+            (
+                "native #record param",
+                "(module m (def (get #record((= x a))) a) (def (main) (get #record((= x 9)))) (export main))",
+            ),
+            (
+                "classic (record …) param control",
+                "(module m (def (get (record (= x a))) a) (def (main) (get (record (= x 9)))) (export main))",
+            ),
+            (
+                "native #tuple param control",
+                "(module m (def (get #tuple(a b)) (+ a b)) (def (main) (get #tuple(3 4))) (export main))",
+            ),
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "{label}: an irrefutable record/tuple destructuring param must compile (got {:?})",
+                reject_code(src)
+            );
+        }
+    }
+
+    #[test]
     fn a_map_destructuring_binding_param_is_refutable_rejected_cdz0210() {
         // SOUNDNESS/diagnostic guard (M3 completeness; v-syntax flag post-#5310): a map DESTRUCTURING param
         // `def get(#{ 1 = v }) = v` — s-expr `(get (map (= 1 v)))` — tests KEY PRESENCE, so it is REFUTABLE

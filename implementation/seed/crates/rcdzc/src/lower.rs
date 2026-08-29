@@ -9377,15 +9377,19 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     // host perform AND an arm is a record-destructure. The workaround the message names — bind the record
     // with `let`, then read its fields by `(. r field)` projection — evaluates each performing field exactly
     // once (verified: `rw2` = 56).
-    if db.ast.as_form(scrutinee, "record").is_some()
+    if db
+        .ast
+        .compound_form_of(scrutinee, CompoundCtor::Record)
+        .is_some()
         && scrutinee_reaches_host_perform(db, scrutinee)
         && arms.iter().any(|&(pat, _)| {
             let inner = match db.ast.as_form(pat, "guard") {
                 Some(g) if g.len() == 2 => g[0],
                 _ => pat,
             };
-            db.ast.as_form(inner, "record").is_some()
-                || db.ast.as_ctor_form(inner, "record").is_some()
+            db.ast
+                .compound_form_of(inner, CompoundCtor::Record)
+                .is_some()
         })
     {
         return Core::Poison(Reject::coded(
@@ -9698,7 +9702,15 @@ pub(crate) fn check_binding_pattern(
     // whereas a tuple pattern must match the full arity. (Record-pattern irrefutability is governed by the
     // general §A Binding Position Accepts An Irrefutable Pattern sentence, cited above at the binding-position
     // entry — the spec has no record-pattern-specific sentence to //# here, so no dedicated citation.)
-    if let Some(fields) = db.ast.as_form(pat, "record").map(<[_]>::to_vec) {
+    if let Some(fields) = db
+        .ast
+        .compound_form_of(pat, CompoundCtor::Record)
+        .map(<[_]>::to_vec)
+    {
+        // `compound_form_of` recognizes the native `#record(…)` ctor-leaf head too (not only the name/string
+        // alias) — so a native `#record` destructuring PARAM binds like the classic `(record …)` (M3 canonical:
+        // native works everywhere classic does; the def-param twin of the #5340/#5346 match-pattern hardening,
+        // and the sibling of the tuple arm above which already reads native).
         // Linearity across the WHOLE pattern (CDZ0102) — two field values may not bind the same name.
         check_pattern_linear(db, pat)?;
         // The record's field types by name (when the value type is a solved record — else each field value
