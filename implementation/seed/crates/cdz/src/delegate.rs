@@ -519,6 +519,8 @@ pub fn run_query_over_inputs(
         // test instrumentation, always 0 here (this field is always-present since CompileOutput moved to
         // the shared crate).
         cse_partition_core_eq_calls: 0,
+        // Same as the CSE metric: `rcdzc`'s own test instrumentation, no in-process lowering ran here.
+        value_range_uncached_calls: 0,
     }
 }
 
@@ -530,6 +532,8 @@ fn empty_output() -> rcdzc::CompileOutput {
         diagnostics: vec![],
         // No compile ran (delegated failure shape); the CSE metric is always 0 here.
         cse_partition_core_eq_calls: 0,
+        // Same as the CSE metric: no in-process lowering ran, so the value_range counter is 0.
+        value_range_uncached_calls: 0,
     }
 }
 

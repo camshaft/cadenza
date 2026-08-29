@@ -1908,6 +1908,12 @@ pub struct Db {
     /// `a_wide_arithmetic_body_partitions_cse_candidates_in_bounded_time`.
     #[cfg(test)]
     pub(crate) cse_partition_core_eq_calls: u64,
+    /// Test-only compile-cost counter: how many times [`crate::lower::value_range_uncached`] ran (a
+    /// `value_range` query that missed its refinement-free memo). Surfaced via
+    /// `CompileOutput::value_range_uncached_calls` for the regression guard
+    /// (`value_range_stays_linear_on_a_runtime_binding_chain`) to assert LINEAR (not quadratic) growth.
+    #[cfg(test)]
+    pub(crate) value_range_uncached_calls: u64,
     /// The solved-type column. Filled only by [`crate::infer`].
     pub(crate) types: Column<StructId, Ty>,
     /// The ground TYPE-VALUE memo — the read-through cache for [`crate::eval::typeval_of`]. Distinct from
@@ -3003,6 +3009,8 @@ impl Db {
             resolved_of_calls: 0,
             #[cfg(test)]
             cse_partition_core_eq_calls: 0,
+            #[cfg(test)]
+            value_range_uncached_calls: 0,
             types: Column::new(),
             typeval: Column::new(),
             typeval_memo_live: false,

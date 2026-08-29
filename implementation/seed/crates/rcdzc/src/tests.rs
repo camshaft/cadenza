@@ -33941,6 +33941,65 @@ mod stage1 {
     }
 
     #[test]
+    fn value_range_stays_linear_on_a_runtime_binding_chain() {
+        // REGRESSION (perf, superlinear): `lower::value_range` recurses `LocalRef → value_range(initializer)`,
+        // so over a SEQUENTIAL-DEPENDENCY chain `(x_i (+ x_{i-1} p))` it re-walked every predecessor per node
+        // = O(N²) compile-time (an empirical `--warm-only` probe measured near-quadratic growth while wasm
+        // output stayed linear). FIX: `value_range` memoizes its refinement-free result (gated on
+        // `db.range_refinements.is_empty()`), making `value_range_uncached` run ~once per node = O(N). The
+        // NOISE-FREE signal is the per-`Db` `value_range_uncached_calls` count read off THIS compile's
+        // `CompileOutput` (a single-compile metric, not a parallel-test-contaminated global). A future
+        // un-memoization flips the count back to quadratic; this pins it LINEAR. `p` is a runtime param so
+        // the chain does NOT const-fold (a constant chain would collapse and exercise nothing).
+        fn chain_src(n: usize) -> String {
+            let lets: String = (1..n)
+                .map(|i| format!("(x{i} (+ x{} p))", i - 1))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut sum = String::from("x0");
+            for i in 1..n {
+                sum = format!("(+ x{i} {sum})");
+            }
+            format!("(module m (def (main (: p Int64)) (let ((x0 p) {lets}) {sum})) (export main))")
+        }
+        fn uncached_calls(src: &str) -> u64 {
+            // Read the per-`Db` `value_range_uncached` count off the CompileOutput of THIS compile — a
+            // single-compile metric, contamination-proof (see the CSE-partition twin). On the bumped
+            // compiler-stack worker: a deep chain recurses deep in lowering and would overflow the default
+            // cargo-test thread stack (`compile_component` routes through this worker; driving `compile`
+            // directly to read the per-`Db` field does not, so wrap it as the sibling deep-recursion tests do).
+            crate::host::run_with_compiler_stack(|| {
+                let out = crate::compile::compile(
+                    &[crate::abi::Artifact::new(
+                        crate::abi::Artifact::KIND_AST,
+                        "main",
+                        crate::codec::encode(&parse(src)),
+                    )],
+                    &[crate::backend::Target::Wasm],
+                );
+                out.value_range_uncached_calls
+            })
+        }
+        // Growing the chain 4× (N=100 → 400) grows `value_range_uncached` calls ~4× when LINEAR (memoized);
+        // the O(N²) recompute grows ~16×. Assert the ratio stays SUB-QUADRATIC (< 6×) — comfortably above
+        // the linear 4× (some constant-factor slack), far below the quadratic 16×. Both counts must be > 0
+        // (the compile actually ran `value_range`).
+        let c100 = uncached_calls(&chain_src(100));
+        let c400 = uncached_calls(&chain_src(400));
+        assert!(
+            c100 > 0 && c400 > 0,
+            "value_range ran on the chain: {c100}, {c400}"
+        );
+        assert!(
+            c400 < 6 * c100,
+            "value_range must stay ~O(N) on a runtime sequential-binding chain (memo intact): N=100 made \
+             {c100} `value_range_uncached` calls, N=400 made {c400} (a 4× LINEAR ratio ~ {}×; the O(N²) \
+             recompute would be ~16× — a regression un-memoized `value_range`)",
+            c400 / c100.max(1)
+        );
+    }
+
+    #[test]
     fn a_deep_uniform_arith_chain_partitions_cse_candidates_in_bounded_time() {
         // REGRESSION (perf): the CSE partition's hash bucketing (`core_hash_key`) must use a FULL-DEPTH
         // memoized structural hash, NOT a shallow (one-level) one. A UNIFORM-shape body — a deep

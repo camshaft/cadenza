@@ -300,6 +300,14 @@ pub struct CompileOutput {
     /// cross-crate `#[cfg(test)]` field cannot be set from a dependent's tests — 8 harmless bytes, always
     /// `0` outside `rcdzc`'s emit path.
     pub cse_partition_core_eq_calls: u64,
+    /// A DIAGNOSTIC METRIC: the `rcdzc` Db's `value_range_uncached_calls` count from this compile — how many
+    /// times `lower::value_range_uncached` ran (i.e. a `value_range` query that MISSED its refinement-free
+    /// memo). `value_range` recurses `LocalRef → initializer`, so without the memo it is O(N²) over a
+    /// sequential-dependency chain; the memo makes uncached calls ~O(nodes). Surfaced here (the `Db` is
+    /// dropped before returning) for the regression-guard test to assert a LINEAR bound — a future
+    /// un-memoization flips it back to quadratic. `0` outside `rcdzc`'s lowering path. Always-present (same
+    /// cross-crate-`#[cfg(test)]` reason as `cse_partition_core_eq_calls` above) — 8 harmless bytes.
+    pub value_range_uncached_calls: u64,
 }
 
 impl CompileOutput {

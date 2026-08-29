@@ -475,6 +475,7 @@ fn compile_with_opt_inner(
             diagnostics: Vec::new(),
             // No emit ran on this query-only path, so no CSE partition compares happened.
             cse_partition_core_eq_calls: 0,
+            value_range_uncached_calls: 0,
         };
     }
 
@@ -1097,6 +1098,16 @@ fn compile_with_opt_inner(
             #[cfg(test)]
             {
                 db.cse_partition_core_eq_calls
+            }
+            #[cfg(not(test))]
+            {
+                0
+            }
+        },
+        value_range_uncached_calls: {
+            #[cfg(test)]
+            {
+                db.value_range_uncached_calls
             }
             #[cfg(not(test))]
             {
@@ -6844,5 +6855,6 @@ fn fail_with(query_artifacts: Vec<Artifact>, rejects: Vec<Reject>) -> CompileOut
             .collect(),
         // An early failure — no emit ran, so no CSE partition compares happened.
         cse_partition_core_eq_calls: 0,
+        value_range_uncached_calls: 0,
     }
 }

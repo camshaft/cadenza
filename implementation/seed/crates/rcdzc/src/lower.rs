@@ -23834,6 +23834,11 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
 }
 
 fn value_range_uncached(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
+    // Test-only compile-cost counter (pins the O(N²)→O(N) memo — see `value_range` + the regression guard).
+    #[cfg(test)]
+    {
+        db.value_range_uncached_calls += 1;
+    }
     // A CONSTANT's range is exactly itself — `[v, v]` (the tightest possible).
     if let Core::ConstInt(v) = core_of(db, id)
         && let Some(v) = v.to_i64()
