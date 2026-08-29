@@ -1168,12 +1168,15 @@ fn emit_expr_viewed(
             }
             Ok(b.list(children))
         }
-        // A scalar MATCH over a runtime Int/Bool scrutinee — re-emit as an `if`-CHAIN of literal-equality
+        // A scalar MATCH over a runtime Int/Bool/Char scrutinee — re-emit as an `if`-CHAIN of literal-equality
         // probes: `(match s (l0 b0) … (_ bn))` → `(if (= s l0) b0 (if … bn))`. This is VALUE-equivalent
         // (the backend itself lowers a scalar match to a probe chain), reusing the `if`/`=` emit; the
-        // scrutinee is a pure scalar, so re-emitting it per probe is side-effect-free. M1 handles LITERAL
-        // probes (`Int`/`Bool`) + a wildcard tail, UNGUARDED; a guarded arm or a non-scalar probe
-        // (`Str`/`Char`/`Bytes`/`ListLen`/`MapHasKeys`) declines (later slices).
+        // scrutinee is a pure scalar, so re-emitting it per probe is side-effect-free. A `Char` is a Unicode
+        // scalar value with a runtime `=` (like `Int`) — its literal re-emits as `#\c` and recompiles to the
+        // same char-equality probe. M1 handles LITERAL probes (`Int`/`Bool`/`Char`) + a wildcard tail,
+        // UNGUARDED; a guarded arm or a still-non-scalar probe (`Str`/`Bytes`/`ListLen`/`MapHasKeys` — a
+        // runtime `Str`/`Bytes` match desugars to an equality if-chain in `lower` before the backend, so it
+        // reaches here only in an un-desugared residue) declines (later slices).
         Core::Match { scrutinee, arms } => {
             if arms.is_empty() {
                 return Err(Reject::decline(
@@ -1185,11 +1188,12 @@ fn emit_expr_viewed(
                     arm.probe,
                     crate::core::Probe::Int(_)
                         | crate::core::Probe::Bool(_)
+                        | crate::core::Probe::Char(_)
                         | crate::core::Probe::Wild
                 ) {
                     return Err(Reject::decline(
                         "the Cadenza backend does not yet lower a non-scalar match probe \
-                         (Str/Char/Bytes/list/map)"
+                         (Str/Bytes/list/map)"
                             .to_string(),
                     ));
                 }
@@ -2948,8 +2952,16 @@ fn emit_match_chain(
             let lit = b.atom_leaf(Leaf::Bool(*x));
             Some(b.list(vec![eq, scrut, lit]))
         }
+        crate::core::Probe::Char(c) => {
+            // A char is a Unicode scalar value with a runtime `=`; `#\c` re-emits the literal (the same
+            // leaf `Core::ConstChar` emits), so the probe recompiles to the identical char-equality test.
+            let eq = b.name("=");
+            let scrut = emit_expr(db, b, scrutinee, None, env, emitted)?;
+            let lit = b.atom_leaf(Leaf::Char(*c));
+            Some(b.list(vec![eq, scrut, lit]))
+        }
         crate::core::Probe::Wild => None,
-        // The caller pre-scanned the arms to only Int/Bool/Wild.
+        // The caller pre-scanned the arms to only Int/Bool/Char/Wild.
         _ => {
             return Err(Reject::decline(
                 "the Cadenza backend does not yet lower this match probe".to_string(),
