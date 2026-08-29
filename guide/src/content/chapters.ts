@@ -3,6 +3,11 @@
 /// Each chapter is a lazily-loaded TSX module (so it can embed <Runnable> examples). The order here
 /// is the reading order; front-loads Cadenza's differentiators (effects, the value model) after the
 /// fundamentals, per the guide's information architecture.
+///
+/// The CHAPTERS[] array below is @GENERATED (`npm run codegen:registry`): reading ORDER comes from
+/// `chapter-order.mjs` (the editorial lever) and every per-chapter field (title/blurb/pillar/section/
+/// exercises) is DERIVED from that chapter's `.sexp`. Do NOT hand-edit the generated region — edit the
+/// `.sexp` (metadata) or `chapter-order.mjs` (order). Everything else in this file is hand-written.
 
 import type { ComponentType } from "react";
 import { lazy } from "react";
@@ -46,6 +51,7 @@ export function pillarOf(c: Chapter): Pillar {
 export const NON_TEACHING_SECTIONS: ReadonlySet<string> = new Set(["Wrapping up", "Example applications"]);
 
 export const CHAPTERS: Chapter[] = [
+  // <generated:chapters> — DO NOT EDIT; `npm run codegen:registry` (from chapter-order.mjs + each chapter's .sexp)
   {
     slug: "welcome",
     title: "Welcome",
@@ -129,7 +135,6 @@ export const CHAPTERS: Chapter[] = [
     title: "Iteration without loops",
     blurb: "Cadenza has no for or while; you repeat work with recursion and the fold family. Here's how, and why.",
     section: "Fundamentals",
-    exercises: 0,
     Component: lazy(() => import("./chapters/Iteration.tsx")),
   },
   {
@@ -241,7 +246,6 @@ export const CHAPTERS: Chapter[] = [
     title: "Design by contract",
     blurb: "@requires and @ensures turn an assumption into an enforced check at the function boundary.",
     section: "What makes Cadenza different",
-    exercises: 0,
     Component: lazy(() => import("./chapters/DesignByContract.tsx")),
   },
   {
@@ -316,8 +320,6 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/ExampleApps.tsx")),
   },
   {
-    // NOT "playground": the top-level `/playground` route (the full IDE) is matched before `/:slug`,
-    // so a chapter with that slug would be shadowed and unreachable. Use a distinct slug.
     slug: "using-the-playground",
     title: "The playground",
     blurb: "The full editor: a REPL, compiled-output views, and shareable links.",
@@ -338,10 +340,6 @@ export const CHAPTERS: Chapter[] = [
     section: "Wrapping up",
     Component: lazy(() => import("./chapters/WhatsNext.tsx")),
   },
-  // ── Cadenza the Platform ─────────────────────────────────────────────────────────────────────────
-  // The agent-kernel pillar. Concept-level chapters, content deliberately light (kernel is early-stage);
-  // every kernel claim is sourced from v-agent-harness's design/agent-harness-kernel.md. This pillar grows
-  // incrementally; the intro below bridges from the language pillar's "History as a value" chapter.
   {
     slug: "platform-overview",
     title: "Cadenza the Platform",
@@ -382,6 +380,7 @@ export const CHAPTERS: Chapter[] = [
     section: "Writing a reducer",
     Component: lazy(() => import("./chapters/WritingAReducer.tsx")),
   },
+  // </generated:chapters>
 ];
 
 export function chapterAt(slug: string): { chapter: Chapter; index: number } | null {
