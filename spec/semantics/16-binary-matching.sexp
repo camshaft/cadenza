@@ -174,6 +174,31 @@
             (_ 0)))
   (output (: 258 Int64)))
 
+; A `(bin …)` pattern decodes a Bytes value, so the `bin` head constrains the scrutinee to Bytes (intro
+; above). Over a DEFINITE non-Bytes scrutinee (Int64/String/List) it is a type error CDZ0203 naming the
+; `(bin …)`-matches-a-Bytes rule + the real scrutinee type — the bin twin of the map-key / structural-pattern
+; scrutinee-kind checks (not the misleading generic "not a scalar literal or `_`" decline it once gave).
+; Migrated from rcdzc a_bin_pattern_over_a_non_bytes_scrutinee_is_a_type_error.
+(case "a bin pattern over an Int64 scrutinee is a type error"
+  (input  (do (def (f (: n Int64)) (match n ((bin (u8 x)) x) (_ 0))) (export f)))
+  (error  CDZ0203 (message "`(bin …)` pattern matches a Bytes value") (message "Int64")))
+
+(case "a bin pattern over a String scrutinee is a type error"
+  (input  (do (def (f (: s String)) (match s ((bin (u8 x)) x) (_ 0))) (export f)))
+  (error  CDZ0203 (message "`(bin …)` pattern matches a Bytes value") (message "String")))
+
+(case "a bin pattern over a List scrutinee is a type error"
+  (input  (do (def (f (: xs (List Int64))) (match xs ((bin (u8 x)) x) (_ 0))) (export f)))
+  (error  CDZ0203 (message "`(bin …)` pattern matches a Bytes value")))
+
+(case "a bin pattern over a Bytes scrutinee is NOT a type error (declines only on the non-scalar param boundary)"
+  (doc    "The no-false-reject control: a `(bin …)` pattern over a genuine Bytes scrutinee is well-typed — no
+           CDZ0203. Here `b : Bytes` is an EXPORTED parameter, and a non-scalar entry parameter has no scalar
+           boundary representation yet, so the program DECLINES at emit (not a type reject) — confirming the
+           bin/Bytes match itself is accepted, distinct from the wrong-kind rejects above.")
+  (input  (do (def (f (: b Bytes)) (match b ((bin (u8 x)) x) (_ 0))) (export f)))
+  (declines))
+
 (case "a le pattern segment reads a fixed-width integer little-endian"
   (doc    "The construction `(bin (u16 258 le))` emitted `(list 2 1)`; matching those same bytes against
            `(bin (u16 n le))` reads them back least-significant byte first, recovering n = 258. Pins that
