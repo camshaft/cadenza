@@ -33753,6 +33753,91 @@ mod stage1 {
     }
 
     #[test]
+    fn param_apply_extra_handled_stays_polynomial_on_a_nested_applied_lambda_tree() {
+        // REGRESSION (perf, EXPONENTIAL — seq-203 #5755): `effects::param_apply_extra_handled`'s transitive
+        // apply-site homing follows a known non-recursive sub-callee by RE-ENTERING itself. When a callee's
+        // body applies the SAME sub-callee TWICE at the same inter-procedural depth — a binary DOUBLING tree
+        // `f_i(b) = (+ (f_{i-1} b) (f_{i-1} b))`, `f0(b) = handle R … (b unit)` — the un-memoized follow
+        // re-analyzes each shared sub-callee body 2× per level = 2^N compile-time (v-compiler-perf: the
+        // operator's "compiler hangs" class). FIX: memoize on `(callee_body, arity, depth)` — the two sibling
+        // `(f_{i-1} b)` calls share the key, so the 2nd is a cache HIT → the analysis collapses to POLYNOMIAL
+        // (measured EXACTLY N²: N=4→16, N=6→36, N=8→64, N=10→100). The NOISE-FREE signal is the per-`Db`
+        // `param_apply_extra_handled_calls` count read off THIS compile's `CompileOutput` (a single-compile
+        // metric, not a parallel-test-contaminated global). A future un-memoization flips the count back to
+        // EXPONENTIAL (measured un-memoized: N=4→37, N=6→177, N=8→749, N=10→3049 ≈ ×2.05/N); this pins it
+        // POLYNOMIAL. The lambda performs `R.roll`, homed transitively by `f0`'s `handle R`, so it COMPILES
+        // (exercises the full transitive-homing walk, not an early decline).
+        //
+        // WHY SMALL N (4 and 10, not the 2^N-hang region): the doubling ALSO drives an exponential effect-
+        // CONTINUATION lowering, so FULL-compile time is 2^N regardless of this memo (measured with the memo
+        // intact: N=8 0.45s, N=10 2s, N=12 9.4s, N=14 45s — the emit, not the param_apply analysis). We
+        // therefore pin the param_apply analysis via its COUNT (which the memo alone controls) at a tractable
+        // N where emit still finishes, NOT via wall-time. N also stays under the `depth < 32` follow-gate —
+        // beyond it the `{R}` grant cannot propagate the whole tree, the lambda false-declines CDZ0401, and
+        // the compile returns via `fail_with` (counter 0), which is not what this measures.
+        fn chain_src(n: usize) -> String {
+            // f0 applies its param under `handle R`; each f_i applies f_{i-1} TWICE with `b` (a binary
+            // DOUBLING tree). Both sibling `(f_{i-1} b)` calls sit at the SAME inter-procedural depth → the
+            // memo key `(f_{i-1}_body, arity, depth)` is IDENTICAL, so the 2nd is a cache HIT. Without the
+            // memo both re-analyze → 2^N. (A LINEAR pass-through `f_i(b)=f_{i-1}(b)` never revisits a key, so
+            // it would NOT exercise the memo — the doubling is essential.)
+            let mut defs = String::from(
+                "(def (f0 (: b (-> Unit Int64))) (handle R 5 ((roll (u) s (resume s s))) (b unit))) ",
+            );
+            for i in 1..n {
+                defs.push_str(&format!(
+                    "(def (f{i} (: b (-> Unit Int64))) (+ (f{} b) (f{} b))) ",
+                    i - 1,
+                    i - 1
+                ));
+            }
+            format!(
+                "(do (effect R (op roll (-> Unit Int64))) {defs}\
+                 (def (main) (f{} (fn (u) (R.roll)))) (export main))",
+                n - 1
+            )
+        }
+        fn homed_calls(src: &str) -> u64 {
+            // Read the per-`Db` `param_apply_extra_handled_calls` count off THIS compile's `CompileOutput`
+            // (a single-compile metric, contamination-proof — see the value_range/CSE-partition twins). The
+            // transitive follow recurses deep in the effects walk, so wrap on the compiler worker stack as
+            // the sibling deep-recursion tests do.
+            crate::host::run_with_compiler_stack(|| {
+                let out = crate::compile::compile(
+                    &[crate::abi::Artifact::new(
+                        crate::abi::Artifact::KIND_AST,
+                        "main",
+                        crate::codec::encode(&crate::testkit::parse(src)),
+                    )],
+                    &[crate::backend::Target::Wasm],
+                );
+                out.param_apply_extra_handled_calls
+            })
+        }
+        // Grow the tree depth N=4 → 10 (both under the `depth < 32` follow-gate, so both COMPILE). The count
+        // ratio is a normalized signal that cancels constant factors: MEMOIZED it is quadratic — 16 → 100 =
+        // 6.25× (= (10/4)²); UN-MEMOIZED it is exponential — 37 → 3049 = 82× (2^N). Assert the ratio stays
+        // sub-exponential (< 20×): comfortably ABOVE the quadratic 6.25× (>3× slack for constant-factor/
+        // higher-order drift), far BELOW the exponential 82× (>4× margin). VERIFIED the guard bites:
+        // neutralizing the `(callee_body, arity, depth)` memo makes N=10 report 3049 (> 20·37 = 740) → this
+        // assertion FAILS. Both counts must be > 0 (the tree ran the transitive homing — a 0 would mean a
+        // false-decline via `fail_with`, see the header note).
+        let c4 = homed_calls(&chain_src(4));
+        let c10 = homed_calls(&chain_src(10));
+        assert!(
+            c4 > 0 && c10 > 0,
+            "the transitive homing ran on the tree (nonzero = it compiled, not a false-decline): {c4}, {c10}"
+        );
+        assert!(
+            c10 < 20 * c4,
+            "param_apply_extra_handled must stay POLYNOMIAL on a nested applied-lambda doubling tree (memo \
+             intact): N=4 made {c4} body-runs, N=10 made {c10} (a quadratic ratio ~ {}×; the 2^N recompute \
+             is ~82× — a regression un-memoized param_apply_extra_handled, the seq-203 hang)",
+            c10 / c4.max(1)
+        );
+    }
+
+    #[test]
     fn a_deep_uniform_arith_chain_partitions_cse_candidates_in_bounded_time() {
         // REGRESSION (perf): the CSE partition's hash bucketing (`core_hash_key`) must use a FULL-DEPTH
         // memoized structural hash, NOT a shallow (one-level) one. A UNIFORM-shape body — a deep

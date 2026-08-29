@@ -521,6 +521,8 @@ pub fn run_query_over_inputs(
         cse_partition_core_eq_calls: 0,
         // Same as the CSE metric: `rcdzc`'s own test instrumentation, no in-process lowering ran here.
         value_range_uncached_calls: 0,
+        // Same: no in-process effects home-analysis ran, so the param_apply_extra_handled counter is 0.
+        param_apply_extra_handled_calls: 0,
     }
 }
 
@@ -534,6 +536,8 @@ fn empty_output() -> rcdzc::CompileOutput {
         cse_partition_core_eq_calls: 0,
         // Same as the CSE metric: no in-process lowering ran, so the value_range counter is 0.
         value_range_uncached_calls: 0,
+        // Same: no in-process effects home-analysis ran, so the param_apply_extra_handled counter is 0.
+        param_apply_extra_handled_calls: 0,
     }
 }
 

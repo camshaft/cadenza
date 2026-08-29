@@ -1944,6 +1944,13 @@ pub struct Db {
     /// (`value_range_stays_linear_on_a_runtime_binding_chain`) to assert LINEAR (not quadratic) growth.
     #[cfg(test)]
     pub(crate) value_range_uncached_calls: u64,
+    /// Test-only compile-cost counter: how many times [`crate::effects::param_apply_extra_handled`] ran its
+    /// body (a call that missed its `(callee_body, arity, depth)` memo). Surfaced via
+    /// `CompileOutput::param_apply_extra_handled_calls` for the regression guard
+    /// (`param_apply_extra_handled_stays_linear_on_a_nested_applied_lambda_chain`) to assert LINEAR (not
+    /// exponential) growth — pins the seq-203 #5755 memo.
+    #[cfg(test)]
+    pub(crate) param_apply_extra_handled_calls: u64,
     /// The solved-type column. Filled only by [`crate::infer`].
     pub(crate) types: Column<StructId, Ty>,
     /// The ground TYPE-VALUE memo — the read-through cache for [`crate::eval::typeval_of`]. Distinct from
@@ -3047,6 +3054,8 @@ impl Db {
             cse_partition_core_eq_calls: 0,
             #[cfg(test)]
             value_range_uncached_calls: 0,
+            #[cfg(test)]
+            param_apply_extra_handled_calls: 0,
             types: Column::new(),
             typeval: Column::new(),
             typeval_memo_live: false,
