@@ -2526,3 +2526,34 @@
 (case "a bare effect declaration keyword form declares nothing and is rejected"
   (input (do (effect) (def (main) 0) (export main)))
   (error CDZ0201 (message "declares nothing") (message "`(effect)`")))
+
+; A definition is `(def <name> <value>)` / `(def (<name> <param>…) <body>)` — exactly ONE body and a real
+; name (distinct from the bare `(def)` "declares nothing" cases above, which have no signature at all). A
+; no-body def `(def (main))` formerly surfaced only at emit (a check≡compile gap); a too-many-body `(def
+; (main) 1 2)` was silently accepted (the trailing form dropped — a silent miscompile); a nameless `(def ()
+; …)` / `(def (5 x) …)` registered an empty unreachable name. All are now CDZ0201 (the too-many carries a
+; delete-the-surplus fix). A QUOTED `(def …)` is inert data and is NOT flagged. (migrated from rcdzc
+; a_definition_with_the_wrong_body_count_is_cdz0201.)
+(case "a definition with a signature but no body is rejected"
+  (input (do (def (main)) (export main)))
+  (error CDZ0201 (message "has no body")))
+
+(case "a value definition with no body is rejected"
+  (input (do (def x) (def (main) 1) (export main)))
+  (error CDZ0201 (message "has no body")))
+
+(case "a definition with more than one body is rejected with a delete-the-surplus fix"
+  (input (do (def (main) 1 2) (export main)))
+  (error CDZ0201 (message "more than one body") (fix (kind delete))))
+
+(case "a definition with an empty signature has no name and is rejected"
+  (input (do (def () 1) (def (main) 0) (export main)))
+  (error CDZ0201 (message "has no name")))
+
+(case "a definition with a non-name signature head has no name and is rejected"
+  (input (do (def (5 x) 1) (def (main) 0) (export main)))
+  (error CDZ0201 (message "has no name")))
+
+(case "a quoted def form is inert data and is not flagged as a malformed declaration"
+  (input (do (def (main) (do (quote (def foo)) 0)) (export main)))
+  (call main) (output (: 0 Int64)))

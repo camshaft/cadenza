@@ -4914,6 +4914,23 @@
   (input  (let ((#tuple(a b c) #tuple(1 2))) a))
   (error  CDZ0201))
 
+; A `let`/`fn` takes EXACTLY ONE body — `(let (binds) b1 b2)` / `(fn (params) b1 b2)` with a trailing form
+; is malformed (the surplus form was silently DROPPED — a miscompile). Rejected CDZ0201 naming the form +
+; the `(do …)` sequencing hint, with a delete-the-surplus fix. A single body, or one body that is itself a
+; `(do …)` sequence, is well-formed. (migrated from rcdzc a_let_or_fn_with_more_than_one_body_is_cdz0201.)
+(case "a let with more than one body is rejected with a delete-the-surplus fix"
+  (input  (do (def (main) (let ((x 1)) x 99)) (export main)))
+  (error  CDZ0201 (message "more than one body") (fix (kind delete))))
+
+(case "an inline lambda with more than one body is rejected"
+  (input  (do (def (main) ((fn (x) x 99) 5)) (export main)))
+  (error  CDZ0201 (message "more than one body")))
+
+(case "a single-body let whose one body is a (do …) sequence is well-formed and runs"
+  (input  (do (def (main) (let ((x 1)) (do (+ x 1) x))) (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
 (case "a tuple binding pattern against a non-tuple value is a shape error"
   (doc    "`(let (((tuple a b) 5)) a)` — a tuple pattern cannot match a scalar `Int64` value: a kind
            mismatch (CDZ0201, core-semantics.md #A Binding Position Accepts An Irrefutable Pattern). Pins
