@@ -12881,3 +12881,28 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 7 Int32))
   (call main (: -5 Int64)) (output (: 0 Int32)))
+
+(case "cdzw55 a fully-static handled effect ERASES through the cadenza hop to its symbolic residual"
+  (doc "Effects-hop census (breaker): a state-threading handler over three performs folds SYMBOLICALLY
+        (the entry n stays opaque) and the hop re-emits the pure arithmetic residual — the effect
+        construct never reaches the backend. n=5 → 5+6+7 = 18; n=0 → 3. Byte-idempotent.")
+  (input (do
+    (effect St (op next (-> Unit Int64)))
+    (def (sum3) (+ (St.next) (+ (St.next) (St.next))))
+    (def (main (: n Int64)) (handle St n ((next (_u) s (resume s (+ s 1)))) (sum3)))
+    (export main)))
+  (call main (: 5 Int64)) (output (: 18 Int64))
+  (call main (: 0 Int64)) (output (: 3 Int64)))
+
+(case "cdzw56 a RUNTIME-count handled effect hops as its state-threaded recursion residual"
+  (doc "The non-foldable face of the effects-hop census: the perform count depends on the runtime arg
+        (a recursive loop of n performs), so the handler cannot erase statically — effects lowering
+        produces a state-passing recursion and the hop re-emits THAT, dual-path equal and
+        byte-idempotent. n=3 → 10+11+12 = 33; n=0 → 0.")
+  (input (do
+    (effect E (op get (-> Unit Int64)))
+    (def (loop (: k Int64)) (if (<= k 0) 0 (+ (E.get) (loop (- k 1)))))
+    (def (main (: n Int64)) (handle E 10 ((get (_u) s (resume s (+ s 1)))) (loop n)))
+    (export main)))
+  (call main (: 3 Int64)) (output (: 33 Int64))
+  (call main (: 0 Int64)) (output (: 0 Int64)))
