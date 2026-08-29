@@ -5,8 +5,9 @@
 //! structural rewriter. Factored out of `main.rs` so `lsp.rs` need not duplicate ~200 lines of tree
 //! surgery (wrap/insert quick-fixes need the same builder `cdz fix` uses).
 
-/// Apply a structural fix to `source`, returning the edited text — the STRUCTURAL realization of an
-/// [`rcdzc::DiagnosticFix`]. Rather than splice bytes by hand (finding a list's closing paren for an
+/// Apply a structural fix to `source`, returning the edited text — the STRUCTURAL realization of a
+/// diagnostic's suggested fix (`rcdzc`'s `DiagnosticFix`, delivered in-process or over the sidecar wire).
+/// Rather than splice bytes by hand (finding a list's closing paren for an
 /// insert, trimming a separator for a delete, substituting a `…` sentinel for a wrap, reshaping the wrap
 /// for the surface), it builds the NEW TREE — the parsed program with the target node transformed per the
 /// fix — and hands old+new to `cadenza_syntax`'s formatting-preserving structural rewriter
@@ -291,7 +292,15 @@ pub(crate) fn split_top_forms(text: &str) -> Vec<String> {
     }
 }
 
-/// Substitute the [`rcdzc::WRAP_HOLE`] atom inside `template` with `fill` — the structural realization of
+/// The wrap-fix HOLE sentinel — the placeholder atom a wrap fix-template carries (`(Some …)`) for the
+/// wrapped subtree to replace. A cdz-LOCAL copy of the `…` char rcdzc's fix templates emit, so a
+/// `!standalone` `cdz` need not link `rcdzc` just for this const (the fix templates cross the delegated
+/// sidecar boundary as cadenza-ast, carrying this same `…` atom either way — the dep-flip's crate-split).
+/// A `#[cfg(feature = "standalone")]` drift-guard test pins it EQUAL to `rcdzc::WRAP_HOLE` so the copy can
+/// never silently diverge from the compiler's sentinel.
+pub(crate) const WRAP_HOLE: char = '…';
+
+/// Substitute the [`WRAP_HOLE`] atom inside `template` with `fill` — the structural realization of
 /// a wrap: `(Some …)` with `…` replaced by the wrapped subtree becomes `(Some <subtree>)`. Recurses; a
 /// non-hole node is copied structurally (preserving its provenance so an unchanged child keeps its span).
 pub(crate) fn substitute_hole(
@@ -301,7 +310,7 @@ pub(crate) fn substitute_hole(
     use cadenza_syntax::query::Tree;
     match template {
         Tree::Atom(cadenza_syntax::ast::Leaf::Name(n), _)
-            if &**n == rcdzc::WRAP_HOLE.to_string().as_str() =>
+            if &**n == WRAP_HOLE.to_string().as_str() =>
         {
             fill.clone()
         }
@@ -403,6 +412,16 @@ pub(crate) fn delete_target(
 mod tests {
     use super::*;
 
+    /// DRIFT-GUARD: the cdz-local [`WRAP_HOLE`] must equal the `…` char rcdzc's fix templates emit
+    /// (`rcdzc::WRAP_HOLE`) — pinned here so the local copy (which lets a `!standalone` `cdz` avoid linking
+    /// `rcdzc` for this const) can never silently diverge from the compiler's sentinel. Runs only in a
+    /// `standalone` build (the only config where `rcdzc` is linked to compare against).
+    #[cfg(feature = "standalone")]
+    #[test]
+    fn wrap_hole_matches_rcdzc_sentinel() {
+        assert_eq!(WRAP_HOLE, rcdzc::WRAP_HOLE);
+    }
+
     #[test]
     fn split_top_forms_keeps_a_single_form_whole() {
         // One top-level form (`read_all` returns it directly, not wrapped in a synthetic `(do …)`) → a
@@ -477,8 +496,7 @@ mod tests {
         use cadenza_syntax::query::Tree;
         // A wrap realizes `(Some <HOLE>)` with the wrapped subtree in place of the hole atom. Build the
         // template from the real WRAP_HOLE spelling so the atom matches the production code's sentinel.
-        let template =
-            parse_fragment(&format!("(Some {})", rcdzc::WRAP_HOLE)).expect("template parses");
+        let template = parse_fragment(&format!("(Some {})", WRAP_HOLE)).expect("template parses");
         let fill = parse_fragment("(compute 1)").expect("fill parses");
         let filled = substitute_hole(&template, &fill);
         assert_eq!(
@@ -495,7 +513,7 @@ mod tests {
         );
         // A bare hole atom at the root becomes exactly the fill.
         let bare_hole = Tree::Atom(
-            cadenza_syntax::ast::Leaf::Name(rcdzc::WRAP_HOLE.to_string().into()),
+            cadenza_syntax::ast::Leaf::Name(WRAP_HOLE.to_string().into()),
             None,
         );
         assert_eq!(
