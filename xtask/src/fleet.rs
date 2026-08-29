@@ -6900,6 +6900,27 @@ fn sync_base_prefers_origin_main(
         && (origin_is_ancestor_of_trunk || trunk_is_ancestor_of_origin)
 }
 
+/// Pause-aware base preference — the case [`sync_base_prefers_origin_main`] MISSES. During the pr-sync
+/// PAUSE, `trunk` is not merely behind origin/main: the re-parent model (pr-sync historically rebuilt
+/// trunk under fresh shas) leaves it commit-distinct = FORKED, so NEITHER is an ancestor of the other and
+/// the strict-ancestor check falls back to the frozen `trunk` — mis-basing an agent that HAS un-landed own
+/// commits onto a tip thousands of commits stale (v-compiler-perf 2026-08-29: rebooted after 9d onto a
+/// stale-trunk base, its target test since deleted on origin/main, its measurements invalid). Under the
+/// direct-to-main self-merge model the LIVE integration point is origin/main, so detect the pause by
+/// COMMIT-COUNT lag — origin/main commits not on trunk ≥ the pause threshold, independent of ancestry —
+/// and base on origin/main. The threshold keeps the pr-sync-LIVE re-parent steady state (small lag,
+/// tree-equal-but-commit-distinct) on `trunk` as before; only the deep pause lag redirects. Pure over its
+/// inputs; `om_ahead_of_trunk` = the caller's `git rev-list --count trunk..origin/main`.
+fn sync_base_pause_prefers_origin_main(
+    origin_main_sha: &str,
+    trunk_sha: &str,
+    om_ahead_of_trunk: usize,
+) -> bool {
+    !origin_main_sha.is_empty()
+        && origin_main_sha != trunk_sha
+        && pr_sync_paused_by_trunk_lag(om_ahead_of_trunk)
+}
+
 fn sync(fleet: &Fleet, force: bool) {
     let cwd = std::env::current_dir().expect("cwd");
     let git = |args: &[&str]| -> std::process::Output {
@@ -6985,19 +7006,38 @@ fn sync(fleet: &Fleet, force: bool) {
         git_ok(&["merge-base", "--is-ancestor", "origin/main", TRUNK]);
     let trunk_is_ancestor_of_origin =
         git_ok(&["merge-base", "--is-ancestor", TRUNK, "origin/main"]);
+    // How far origin/main is ahead of (a possibly-FORKED) trunk, by COMMIT COUNT — independent of the
+    // ancestor relationship the strict check uses. During the pr-sync pause this is the deep lag (~thousands)
+    // even when trunk has forked, which the strict-ancestor check can't see.
+    let om_ahead_of_trunk: usize =
+        git_stdout(&["rev-list", "--count", &format!("{TRUNK}..origin/main")])
+            .parse()
+            .unwrap_or(0);
+    let base_pause_redirect =
+        sync_base_pause_prefers_origin_main(&origin_main_sha, &trunk_sha_full, om_ahead_of_trunk);
     let base: &str = if sync_base_prefers_origin_main(
         &origin_main_sha,
         &trunk_sha_full,
         origin_is_ancestor_of_trunk,
         trunk_is_ancestor_of_origin,
-    ) {
+    ) || base_pause_redirect
+    {
         "origin/main"
     } else {
         TRUNK
     };
     if base != TRUNK {
         // Two directions, same fix: origin/main is the authoritative published tip either way.
-        if trunk_is_ancestor_of_origin {
+        if base_pause_redirect && !trunk_is_ancestor_of_origin {
+            println!(
+                "fleet sync: pr-sync is PAUSED and local trunk ({}) is ~{om_ahead_of_trunk} commits behind + \
+                 FORKED from origin/main (the re-parent model left it commit-distinct, so the strict-ancestor \
+                 check falls back to the stale trunk). Basing this sync on origin/main — the LIVE \
+                 direct-to-main integration point — so your un-landed commits replay onto the real tip, not a \
+                 thousands-stale base.",
+                &trunk_sha_full[..trunk_sha_full.len().min(12)]
+            );
+        } else if trunk_is_ancestor_of_origin {
             println!(
                 "fleet sync: local trunk ({}) is BEHIND origin/main — its writer pr-sync is paused/stopped \
                  so the trunk ref is STALE while origin/main advanced via direct-to-main landings. Basing \
@@ -19538,6 +19578,31 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(!sync_base_prefers_origin_main("aaa", "", true, true));
         // Degenerate all-empty → false (the emptiness guards stop a vacuous equal-empty pass).
         assert!(!sync_base_prefers_origin_main("", "", true, true));
+    }
+
+    #[test]
+    fn sync_base_pause_prefers_origin_main_covers_the_forked_stale_trunk() {
+        // args: (origin_main_sha, trunk_sha, om_ahead_of_trunk)
+        // The bug this closes (v-compiler-perf): during the pause trunk is FORKED (neither an ancestor) so
+        // sync_base_prefers_origin_main is FALSE — but the deep COMMIT-COUNT lag flags the pause → origin/main.
+        assert!(sync_base_pause_prefers_origin_main(
+            "aaa",
+            "bbb",
+            PR_SYNC_PAUSED_TRUNK_LAG
+        ));
+        assert!(sync_base_pause_prefers_origin_main("aaa", "bbb", 2594));
+        // BELOW the pause threshold (the pr-sync-LIVE re-parent steady state: small tree-equal lag) → keep
+        // trunk, so normal single-writer flow is untouched.
+        assert!(!sync_base_pause_prefers_origin_main(
+            "aaa",
+            "bbb",
+            PR_SYNC_PAUSED_TRUNK_LAG - 1
+        ));
+        assert!(!sync_base_pause_prefers_origin_main("aaa", "bbb", 0));
+        // EQUAL shas (in sync) → nothing to redirect even if the count somehow reads high.
+        assert!(!sync_base_pause_prefers_origin_main("aaa", "aaa", 2594));
+        // Unresolved origin/main (empty) → can't prefer it.
+        assert!(!sync_base_pause_prefers_origin_main("", "bbb", 2594));
     }
 
     #[test]
