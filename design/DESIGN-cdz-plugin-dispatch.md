@@ -231,14 +231,12 @@ S4/S6 are the two that actually delete the heavy transitive graph.
 >   standalone in-process `list_tests` (flipped from JSON → the identical value, #5360). `is-property` =
 >   `!params.is_empty() || name.ends_with("-gen")` (the `-gen` fix landed in #5360). The encoding open-Q is
 >   RESOLVED: `KIND_TEST_LIST` is a cadenza-ast VALUE, forwarded verbatim.
-> - The EVAL-time nix-enumeration "open piece" (a committed text name-index vs …) is CLOSED on DIRECTION:
->   discovery is **compiler-informed via `cdz test --list`, NO committed index** (operator seq 171; the eval
->   source-scan v-test-shred briefly considered was vetoed — "want the compiler to tell us"). The nix
->   MECHANISM is still a v-nix A/B (per v-nix 2026-08-29): **pure dyn-drv** (build-time-emitted per-test .drvs)
->   vs **scoped-CACHED-IFD** (flake reads the `--list` binary at eval, creates N per-test drvs) — BOTH consume
->   the same `cdz test --list` binary + both give the shared-closure CA amortization, so the two-stage is
->   agnostic to the A/B. NB scoped-cached-IFD ≠ the *literal* per-eval IFD that was vetoed (that one triggers a
->   compiler build every eval). So `--list`'s final shape is pure cadenza-ast-binary — landed, no text-index.
+> - The EVAL-time nix-enumeration "open piece" is now FULLY RESOLVED + LANDED: discovery is
+>   **compiler-informed via `cdz test --list`, NO committed index** (operator seq 171), and the nix MECHANISM
+>   A/B was DECIDED — **SCOPED-CACHED-IFD** (concierge greenlit 2026-08-29; pure dyn-drv is R&D-blocked in
+>   nix 2.34.8; reversible to dyn-drv on a nix upgrade). Its discovery drv reads a nix-readable projection at
+>   eval: **`cdz test --list --format nix`** (LANDED #5461) — a pure, `(file,name)`-sorted attrset list
+>   `[ { name; is_property; file; } … ]` the flake `import`s. The canonical binary `--list` stays the default.
 > - `standalone` still links rcdzc for `list_tests` (in-process); the delegate build spawns cdz-compile. The
 >   rcdzc-free-cdz end-state is the full S6 (runner + query arms all spawn-cdz-compile), not this slice.
 
@@ -283,6 +281,14 @@ settle with v-ast-consolidate + v-cdz-delegate at S6.)
 
 ### S6b — COMPILER-DRIVEN test SHRED emit (operator refinement 2026-08-29, 3rd)
 
+> **✅ TWO-STAGE SHIPPED + E2E-GREEN (2026-08-29):** the standalone-everywhere two-stage closure-emit shred
+> is COMPLETE on main — `emit_fragment` #5401 (v-cadenza) + `--export` splice #5405 + `EmitTestsShredTwoStage`
+> producer #5423 + `cdz test --emit-shred --two-stage` surface #5431 + `--list --format nix` discovery #5461.
+> v-test-shred scale-validated on cad (emit 1.29s vs standalone >3min; splice+run works). The old "HARD-BLOCKED
+> on cadenza closures" note below is RESOLVED (closures lowered in #5108). v-nix is wiring the scoped-cached-IFD
+> fan-out (iterators-first). Remaining: heavy-suite full COVERAGE awaits v-cadenza-backend user-sum re-emit
+> (cad shredded 7/138 — the rest decline on match-over-user-sum). Detail → the vertical log. History below.
+>
 > **🔀 SUPERSEDED (2026-08-29 operator pivot — STANDALONE-EVERYWHERE; below kept for history):**
 > The PEER-composition model in this section (`main.wasm` provider + `test-<k>.wasm --peer main=main.wasm`
 > consumers, `compute_tests_consumer`/`compute_shared_closure_provider`, the "main = whole library" gap) is
