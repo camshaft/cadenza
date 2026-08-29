@@ -2557,3 +2557,44 @@
 (case "a quoted def form is inert data and is not flagged as a malformed declaration"
   (input (do (def (main) (do (quote (def foo)) 0)) (export main)))
   (call main) (output (: 0 Int64)))
+
+; An export clause names a DEFINITION: `(export <name>)` / `(export <name>…)`. An argument that is not a
+; bare name — `(export (g x))` / `(export 5)` / `(export)` / a non-name element of a multi-name export — was
+; SILENTLY DROPPED (the scan only recorded an Export when the argument `as_name`s), so the program compiled
+; as if the export were never written. Now rejected CDZ0201 at the chokepoint ("an export names a
+; definition"); a compound whose HEAD is a name recovers the intent with a replace-with-`g` fix, while a
+; non-recoverable argument gets the message alone. A CONSTRUCTOR-export `(export (. T A))` / `(export (. T
+; *))` (the opaque-types surface) is well-formed and NOT flagged; a malformed ctor-export `(. T)` / `(. T A
+; B)` gets the constructor-export-specific message. (migrated from rcdzc
+; a_malformed_export_clause_is_rejected_not_silently_dropped.)
+(case "a compound export clause whose head is a name is rejected with a recover-the-name fix"
+  (input (do (def (g) 1) (export (g x))))
+  (error CDZ0201 (message "an export names a definition") (fix (kind replace) (replacement "g"))))
+
+(case "a non-name export argument is rejected"
+  (input (do (def (g) 1) (export 5)))
+  (error CDZ0201 (message "an export names a definition")))
+
+(case "an empty export clause is rejected"
+  (input (do (def (g) 1) (export)))
+  (error CDZ0201 (message "an export names a definition")))
+
+(case "a non-name element of a multi-name export is rejected, not silently dropped"
+  (input (do (def (a) 1) (export a 5)))
+  (error CDZ0201 (message "an export names a definition")))
+
+(case "a constructor-export of a named variant is well-formed and not flagged"
+  (input (do (type T (A) (B)) (export (. T A)) (def (main) 1) (export main)))
+  (call main) (output (: 1 Int64)))
+
+(case "a constructor-export of all variants (. T *) is well-formed and not flagged"
+  (input (do (type T (A) (B)) (export (. T *)) (def (main) 1) (export main)))
+  (call main) (output (: 1 Int64)))
+
+(case "a malformed constructor-export with no ctor segment gets the constructor-export message"
+  (input (do (type T (A) (B)) (export (. T)) (def (main) 1) (export main)))
+  (error CDZ0201 (message "a constructor-export is")))
+
+(case "a malformed constructor-export with too many segments gets the constructor-export message"
+  (input (do (type T (A) (B)) (export (. T A B)) (def (main) 1) (export main)))
+  (error CDZ0201 (message "a constructor-export is")))
