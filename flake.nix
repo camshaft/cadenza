@@ -3780,6 +3780,13 @@
               # the upcoming chapters.ts→@generated derivation. Pure node (reads guide/src + chapters.ts), no
               # cargo/xtask, zero new inputs (guideExamplesSrc already includes ./guide).
               npm run check:registry-derive
+              # (v-guide-infra #5774) chapters.ts CHAPTERS[] is now @generated (codegen regenerates it from
+              # chapter-order.mjs + the .sexp). check:registry-sync (codegen-registry.mjs --check) asserts the
+              # COMMITTED chapters.ts byte-equals the generated output (like check:codegen-sync for the .tsx) —
+              # the primary drift gate, which SUBSUMES check:registry-derive above (committed==generated ⇒ the
+              # derived fields trivially match). Kept both (harmless; derive is the narrower field-level check).
+              # Pure node, no cargo/xtask, zero new inputs.
+              npm run check:registry-sync
               npm run check:diagnostics
               npm run check:examples
               npm run check:calculator
