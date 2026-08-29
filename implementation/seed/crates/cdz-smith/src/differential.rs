@@ -132,9 +132,11 @@ pub fn compare(wasm: &Side, rust: &Side) -> Diff {
         },
         // A decline on EITHER side means "not comparable here" — never a mismatch (soundness).
         (Side::Declined(_), _) | (_, Side::Declined(_)) => Diff::Agree,
-        // Both ran to a value: agree iff the canonical strings are identical.
+        // Both ran to a value: agree iff the canonical strings are identical — OR denote the same value in
+        // different render DIALECTS (INTERIM: wasm/cdz-run emit the M2 native `#ctor(…)` compound render,
+        // cdz-rust-render still emits the pre-M2 paren-led `(ctor …)`; see [`renders_agree`]).
         (Side::Value(a), Side::Value(b)) => {
-            if a == b {
+            if a == b || renders_agree(a, b) {
                 Diff::Agree
             } else {
                 Diff::Mismatch {
@@ -258,6 +260,57 @@ fn run_wasm_bytes(bytes: &[u8], store: &std::path::Path) -> Side {
         // don't file it as a mismatch. (An INVALID component is already the invalid-wasm oracle's job.)
         Err(e) => Side::Declined(format!("wasm run failed: {e}")),
     }
+}
+
+/// True if two rendered VALUE strings denote the SAME value despite render-DIALECT differences. INTERIM
+/// stopgap for the post-M2 render split: wasm (`cdz-run`) emits the M2 native `#ctor(…)` compound render
+/// (canonical), while `cdz-rust-render` still emits the pre-M2 paren-led `(ctor …)` — so a `#tuple(1 2)`
+/// vs `(tuple 1 2)` are the same value but differ textually, false-mismatching every compound value.
+/// Normalizes the `#ctor(` heads to `(ctor `, parses BOTH, and compares the CANONICAL codec encodings
+/// (whitespace / empty-compound-spacing agnostic). A genuine value difference still fails (the parsed
+/// structures differ → different codec bytes). Falls back to `false` if either side does not parse.
+/// (v-rust-backend owns migrating cdz-rust-render to canonical `#ctor(…)`; drop this once it lands.)
+fn renders_agree(a: &str, b: &str) -> bool {
+    let (na, nb) = (normalize_render_dialect(a), normalize_render_dialect(b));
+    if na == nb {
+        return true;
+    }
+    match (
+        cadenza_syntax::sexpr::read(&na),
+        cadenza_syntax::sexpr::read(&nb),
+    ) {
+        (Ok(pa), Ok(pb)) => {
+            cadenza_syntax::codec::encode(&pa) == cadenza_syntax::codec::encode(&pb)
+        }
+        _ => false,
+    }
+}
+
+/// Rewrite the M2 native `#<ctor>(` compound-render heads to the paren-led `(<ctor> ` form, so a native
+/// `#ctor(…)` render and a legacy `(ctor …)` render of the same value normalize to a common, parseable
+/// dialect. Only an `#<ident>(` sequence is rewritten; a bare `#` (or `#foo` not followed by `(`) is left
+/// as-is. See [`renders_agree`].
+fn normalize_render_dialect(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut rest = s;
+    while let Some(hash) = rest.find('#') {
+        out.push_str(&rest[..hash]);
+        let after = &rest[hash + 1..];
+        let idlen = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '_'))
+            .unwrap_or(after.len());
+        if idlen > 0 && after[idlen..].starts_with('(') {
+            out.push('(');
+            out.push_str(&after[..idlen]);
+            out.push(' ');
+            rest = &after[idlen + 1..];
+        } else {
+            out.push('#');
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Strip the `(: <value> <Type>)` value-form wrapper down to the bare `<value>`, matching what
@@ -957,6 +1010,28 @@ mod tests {
         );
         // An empty native compound `#set()`.
         assert_eq!(strip_value_annotation("(: #set() (Set Int64))"), "#set()");
+    }
+
+    /// The interim render-dialect normalizer: the M2 native `#ctor(…)` render (wasm) and the pre-M2
+    /// paren-led `(ctor …)` render (cdz-rust-render) of the SAME value AGREE, while a genuine value
+    /// difference still DISAGREES (must not be masked). Guards the S114 wasm-vs-rust stopgap.
+    #[test]
+    fn renders_agree_bridges_the_m2_dialect_split_without_masking_real_diffs() {
+        // Same value, different dialect → AGREE.
+        assert!(renders_agree("#tuple(1 2)", "(tuple 1 2)"));
+        assert!(renders_agree("#list(1 2 3)", "(list 1 2 3)"));
+        assert!(renders_agree("#set(1 2 3)", "(set 1 2 3)"));
+        // Nested + the empty-compound spacing split (`#tuple()` vs `(tuple)`).
+        assert!(renders_agree(
+            "#tuple(true #tuple())",
+            "(tuple true (tuple))"
+        ));
+        // Identical scalars → AGREE (fast path).
+        assert!(renders_agree("42", "42"));
+        // A GENUINE value difference must NOT be masked → DISAGREE.
+        assert!(!renders_agree("#tuple(1 2)", "(tuple 1 3)"));
+        assert!(!renders_agree("#list(1 2 3)", "(list 1 2)"));
+        assert!(!renders_agree("41", "42"));
     }
 
     /// A non-zero `run-rust` exit (a usage/harness error for one program) must classify as a
