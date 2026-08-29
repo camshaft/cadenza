@@ -1117,18 +1117,19 @@ fn gen_discard_body<C: Choice>(c: &mut C, out: &mut String) {
 /// ordering (#5519) as the RETURNED Bool value — my `gen_float` only emitted float relations inside `if`
 /// GUARDS (the returned value stayed a float), so the ordering result itself was never the graded value.
 fn gen_float_ordering_body<C: Choice>(c: &mut C, out: &mut String) {
-    // Pick the width + relation + NaN choice BEFORE the operand literals (variant-ordering).
+    // Pick the width + relation + special-operand choice BEFORE the operand literals (variant-ordering).
     let is_f32 = c.variant(2) == 1;
     let rel = ["<", ">", "<=", ">="][c.variant(4)];
-    // ~1/3 of the Float64 forms: make the LEFT operand `(Float64.nan)` — IEEE says every ordering with NaN
-    // is UNORDERED (all `< > <= >=` are false), which #5519 models NaN-unordered. (Float64 only — there is
-    // no Float32 nan constructor in the surface.)
-    let left_nan = !is_f32 && c.variant(3) == 0;
+    // For Float64, the LEFT operand is one of three kinds (Float32 has no nan/Infinity constructor → a
+    // finite literal): `(Float64.nan)` — every ordering with NaN is UNORDERED (all false, #5519 NaN-
+    // unordered); `(Float64.Infinity)` — +inf is ORDERED above every finite (inf > x true, inf < x false;
+    // #5563 models it); or a finite literal.
+    let left_kind = if is_f32 { 2 } else { c.variant(3) };
     write!(out, "({rel} ").ok();
-    if left_nan {
-        out.push_str("(Float64.nan)");
-    } else {
-        gen_float_lit(c, is_f32, out);
+    match left_kind {
+        0 => out.push_str("(Float64.nan)"),
+        1 => out.push_str("(Float64.Infinity)"),
+        _ => gen_float_lit(c, is_f32, out),
     }
     out.push(' ');
     gen_float_lit(c, is_f32, out);
@@ -2212,7 +2213,7 @@ mod tests {
     /// (`< > <= >=`), and every body COMPILES (S149: float ordering as the returned Bool value — #5519).
     #[test]
     fn gen_float_ordering_body_reaches_both_widths_and_all_rels_and_compiles() {
-        let (mut saw_f64, mut saw_f32, mut saw_nan) = (false, false, false);
+        let (mut saw_f64, mut saw_f32, mut saw_nan, mut saw_inf) = (false, false, false, false);
         let mut rels_seen = std::collections::BTreeSet::new();
         for seed in 0u64..512 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1291);
@@ -2225,6 +2226,7 @@ mod tests {
             let mut body = String::new();
             gen_float_ordering_body(&mut ByteCursorChoice::new(&bytes), &mut body);
             saw_nan |= body.contains("Float64.nan");
+            saw_inf |= body.contains("Float64.Infinity");
             if body.contains("Float32") {
                 saw_f32 = true;
             } else {
@@ -2245,6 +2247,10 @@ mod tests {
         assert!(saw_f64, "should reach a Float64 ordering");
         assert!(saw_f32, "should reach a Float32 ordering");
         assert!(saw_nan, "should reach a NaN-operand (Float64.nan) ordering");
+        assert!(
+            saw_inf,
+            "should reach an Infinity-operand (Float64.Infinity) ordering"
+        );
         assert_eq!(
             rels_seen.len(),
             4,
