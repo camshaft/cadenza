@@ -88,9 +88,18 @@ pub fn install(findings_dir: PathBuf, commit: String, timeout: Duration) {
 /// then disarm and beat the heart (this compile finished in time). If the watchdog is NOT installed
 /// (unit tests, `once`/repro), just runs `compile` unguarded — so this is safe to wrap every compile.
 pub fn guard<T>(source: &str, compile: impl FnOnce() -> T) -> T {
-    let Some(w) = WATCH.get() else {
-        return compile();
-    };
+    match WATCH.get() {
+        Some(w) => guard_with(w, source, compile),
+        None => compile(),
+    }
+}
+
+/// The core of [`guard`] against a specific watch (factored out so it is unit-testable against a
+/// bare [`CompileWatch`] with no spawned abort-thread). Publishes `source`, arms the deadline, and
+/// runs `compile` under a [`Disarm`] drop-guard so the deadline is cleared + the heart beaten on
+/// BOTH a normal return AND an unwinding panic — a panicking compile must never leave a stale armed
+/// deadline that would false-fire the watchdog on a later idle window.
+fn guard_with<T>(w: &CompileWatch, source: &str, compile: impl FnOnce() -> T) -> T {
     // Publish what we're about to compile so the watchdog can file it on a hang.
     if let Ok(mut s) = w.current_source.lock() {
         s.clear();
@@ -100,12 +109,20 @@ pub fn guard<T>(source: &str, compile: impl FnOnce() -> T) -> T {
     w.deadline_ns
         .store(deadline.as_nanos() as u64, Ordering::SeqCst);
 
-    let out = compile();
+    // Disarm on scope exit (normal OR unwind), so the deadline is never left armed past the compile.
+    let _disarm = Disarm(w);
+    compile()
+}
 
-    // Disarm the deadline and beat the heart: this compile finished in time.
-    w.deadline_ns.store(0, Ordering::SeqCst);
-    w.heartbeat.fetch_add(1, Ordering::SeqCst);
-    out
+/// RAII: on drop, disarm the deadline (0 = no compile in flight) and bump the heartbeat — the "this
+/// compile finished" signal, run unconditionally so an unwinding panic can't strand an armed deadline.
+struct Disarm<'a>(&'a CompileWatch);
+
+impl Drop for Disarm<'_> {
+    fn drop(&mut self) {
+        self.0.deadline_ns.store(0, Ordering::SeqCst);
+        self.0.heartbeat.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// The watchdog thread: if the armed deadline passes without the heartbeat advancing, the current
@@ -198,6 +215,65 @@ mod tests {
         assert!(
             t >= Duration::from_secs(1) && t <= Duration::from_secs(600),
             "compile timeout is a finite hang threshold, got {t:?}"
+        );
+    }
+
+    /// A bare `CompileWatch` with NO spawned abort-thread — lets us exercise the arm/disarm state
+    /// machine directly without risking a real `process::abort()`.
+    fn bare_watch() -> CompileWatch {
+        CompileWatch {
+            current_source: Mutex::new(String::new()),
+            heartbeat: AtomicU64::new(0),
+            deadline_ns: AtomicU64::new(0),
+            epoch: Instant::now(),
+            findings_dir: std::env::temp_dir(),
+            commit: "test".to_string(),
+            timeout: Duration::from_secs(60),
+        }
+    }
+
+    /// A NORMAL compile arms then disarms the deadline and beats the heart exactly once.
+    #[test]
+    fn guard_with_arms_and_disarms_on_normal_return() {
+        let w = bare_watch();
+        let out = guard_with(&w, "(prog)", || 7);
+        assert_eq!(out, 7);
+        assert_eq!(
+            w.deadline_ns.load(Ordering::SeqCst),
+            0,
+            "deadline disarmed after a normal compile"
+        );
+        assert_eq!(
+            w.heartbeat.load(Ordering::SeqCst),
+            1,
+            "heartbeat beaten once"
+        );
+        assert_eq!(
+            &*w.current_source.lock().unwrap(),
+            "(prog)",
+            "source published"
+        );
+    }
+
+    /// The panic-safety invariant: a compile that PANICS must still leave the deadline DISARMED and
+    /// the heart BEATEN (via the `Disarm` drop-guard), so an unwinding compile never strands an armed
+    /// deadline that would later false-fire the watchdog. Without the RAII guard this regresses.
+    #[test]
+    fn guard_with_disarms_even_when_the_compile_panics() {
+        let w = bare_watch();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            guard_with(&w, "(boom)", || panic!("simulated compile panic"));
+        }));
+        assert!(r.is_err(), "the panic propagates out of guard_with");
+        assert_eq!(
+            w.deadline_ns.load(Ordering::SeqCst),
+            0,
+            "deadline MUST be disarmed even on an unwinding panic (no stale armed deadline)"
+        );
+        assert_eq!(
+            w.heartbeat.load(Ordering::SeqCst),
+            1,
+            "heartbeat beaten on unwind too"
         );
     }
 }
