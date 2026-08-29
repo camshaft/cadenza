@@ -410,6 +410,23 @@
             ./spec/semantics
           ];
         };
+        # roundtripCheck builds -p cdz -p cdz-corpus + runs xtask-roundtrip, so its true closure is those three
+        # crates' dep-closures — NOT the whole workspace. seedRoundtripSrc (all crates) rotated the check on ANY
+        # crate edit (MEASURED 2026-08-29: a cdz-platform edit — a HOT platform-push crate roundtrip does not
+        # build — rotated it 3ws3jj19->rc2z93m7, forcing a from-scratch cdz-compiler rebuild + corpus round-trip
+        # = pure waste). SCOPE it to the closure (full src) + Cargo.toml-only for the rest + spec/semantics (the
+        # corpus xtask-roundtrip reads at runtime); the check stubs the non-closure members (stubClosure below)
+        # so cargo still loads the workspace. Mirrors seedCompilerSrc/scopedToolSrc. Now a non-closure-crate
+        # edit (cdz-platform, cdz-rust-*, cdz-cad, cdz-smith, …) no longer rotates roundtrip.
+        roundtripClosure = pkgs.lib.unique (
+          crateClosure "cdz" ++ crateClosure "cdz-corpus" ++ crateClosure "xtask-roundtrip");
+        seedRoundtripSrcScoped = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions (
+            (pkgs.lib.concatMap crateCompileSrc roundtripClosure)
+            ++ nonClosureManifests roundtripClosure
+            ++ [ ./xtask/Cargo.toml ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ./spec/semantics ]);
+        };
         # crateCdzCheckSrc = seedTestSrc MINUS spec/semantics — the caching fast-path narrowing for the ONE
         # whole-workspace localGate constituent (crateCdzCheck). MEASURED (v-nix caching push 2026-08-29): a
         # 1-line corpus edit (spec/semantics/*.sexp — the HIGHEST-frequency fleet change) was rotating
@@ -437,7 +454,7 @@
             ./rust-toolchain.toml
           ];
         };
-        cargoWorkspaceCheck = { name, cargoCmd, src ? seedSrc, extraInputs ? [ ] }:
+        cargoWorkspaceCheck = { name, cargoCmd, src ? seedSrc, extraInputs ? [ ], stubClosure ? null }:
           pkgs.stdenvNoCC.mkDerivation {
             pname = name;
             version = "0.0.0";
@@ -445,6 +462,15 @@
             nativeBuildInputs = [ rustToolchain ] ++ extraInputs;
             buildPhase = ''
               runHook preBuild
+              # stubClosure (v-nix caching 2026-08-29): when set, this check runs on a SCOPED src (full src for
+              # the given dep-closure + Cargo.toml-only for the rest) — so an edit to a NON-closure crate does
+              # NOT rotate it. cargo still LOADS the whole workspace (needs every member's src/lib.rs present),
+              # so synthesize empty stubs for the non-closure members (the seedCompilerSrc/crane pattern). Only
+              # opt-in checks pass stubClosure; the default (null) keeps the whole-tree behavior (fmt/crate-cdz).
+              ${pkgs.lib.optionalString (stubClosure != null) ''
+                chmod -R u+w .
+                ${stubNonClosure stubClosure}
+              ''}
               # #5250 flip: cdz-platform/src/contracts is build-time-generated (dropped from the committed
               # tree). ANY workspace-src check that COMPILES or FORMATS cdz-platform must see it or `mod
               # contracts;` (cdz-platform/src/lib.rs) fails to resolve — `cargo fmt --all` (fmtCheck) and
@@ -4408,7 +4434,11 @@
               # seedRoundtripSrc root (carries spec/semantics), so the bin's repo-root cwd fallback finds
               # the corpus. Same tool-build cost as before (the old `xtask roundtrip` cargo-built them too).
               cargoCmd = "cargo build --locked --profile release -p cdz -p cdz-corpus && CDZ_SEED_BIN_DIR=\"$PWD/target/release\" cargo run --locked --profile release -p xtask-roundtrip";
-              src = seedRoundtripSrc;
+              # SCOPED src (v-nix caching): only the cdz+cdz-corpus+xtask-roundtrip dep-closure has full src;
+              # the rest are Cargo.toml-only + stubbed (stubClosure) so cargo loads the workspace. A non-closure
+              # crate edit (e.g. cdz-platform) no longer rotates this check. See seedRoundtripSrcScoped's note.
+              src = seedRoundtripSrcScoped;
+              stubClosure = roundtripClosure;
             };
             # emoji-lint (v-nix 2026-08-09): the GHA `emoji-lint` job (checks.yml — `cargo xtask lint-emoji`,
             # #2579) had NO nix equivalent, so under the GHA-off cutover (localGate is the sole merge gate)
