@@ -7817,22 +7817,10 @@ mod match_engine {
     // module MEMBER miss and a sum-type VARIANT miss stay CDZ0201 (their own category word). --case grades
     // all 4 reject codes.)
 
-    #[test]
-    fn a_generic_newtype_at_two_instantiations_stays_distinct() {
-        // `Box Int64` and `Box Bool` are DISTINCT types (same `decl`, different `inner`), so comparing
-        // them across the boundary is a type error — the nominal-over-generic analogue of `Option Int64 ≠
-        // Option Bool`. (Confirms the per-instantiation `inner` keeps instantiations apart.) A
-        // nominal-vs-nominal clash stays CDZ0203 (the newtype-vs-untagged-inner CDZ0202 above fires only
-        // when the OTHER operand is not itself a nominal).
-        assert_eq!(
-            reject_code(
-                "(module m (type Box (Mk a)) \
-                   (def (main) (= (Mk 1) (Mk true))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0203")
-        );
-    }
+    // (a_generic_newtype_at_two_instantiations_stays_distinct migrated to corpus 05-compound-types, in the
+    // newtype nominal-boundary block: "a generic newtype at two DIFFERENT instantiations stays distinct"
+    // ((type Box (Mk a)), (= (Mk 1) (Mk true)) → CDZ0203 — Box Int64 ≠ Box Bool, per-instantiation inner keeps
+    // them apart; a nominal-vs-nominal clash stays CDZ0203, vs the newtype-vs-untagged-inner CDZ0202 sibling).)
 
     #[test]
     fn a_newtype_over_a_sum_erases_to_the_same_component_as_the_bare_sum() {

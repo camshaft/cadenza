@@ -5356,6 +5356,15 @@
   (input  (do (type Box (Mk a)) (def (main) (= (Mk 1) 1)) (export main)))
   (error  CDZ0202))
 
+(case "a generic newtype at two DIFFERENT instantiations stays distinct"
+  (doc    "`Box Int64` and `Box Bool` are DISTINCT types (same `decl`, different `inner`), so comparing them
+           is a type error — the nominal-over-generic analogue of `Option Int64 ≠ Option Bool`, confirming the
+           per-instantiation `inner` keeps instantiations apart. A nominal-vs-NOMINAL clash stays CDZ0203 (the
+           newtype-vs-untagged-inner CDZ0202 above fires only when the OTHER operand is not itself a nominal).
+           From rcdzc a_generic_newtype_at_two_instantiations_stays_distinct.")
+  (input  (do (type Box (Mk a)) (def (main) (= (Mk 1) (Mk true))) (export main)))
+  (error  CDZ0203))
+
 (case "a newtype over a record still rejects a missing field through the tag"
   (doc    "The tag does NOT swallow the closed-record check: `.z` on a newtype over `(Record (x …))` rejects
            CDZ0212 (absent-record-field) exactly as it would on the bare record — seeing through the tag
