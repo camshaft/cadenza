@@ -165,7 +165,9 @@ pub use abi::{
     wrap_prefix_suffix,
 };
 pub use backend::Target;
-pub use compile::{compile, compile_component, compile_with_opt, diagnostics};
+pub use compile::{
+    compile, compile_component, compile_with_opt, compile_with_opt_and_overflow, diagnostics,
+};
 pub use host::run_with_compiler_stack;
 pub use opt::{CorePass, OptLevel, PassManager};
 pub use sidecar::{Query, Request};

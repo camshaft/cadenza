@@ -95,6 +95,30 @@ pub fn compile_with_opt(
     targets: &[Target],
     opt_level: crate::opt::OptLevel,
 ) -> CompileOutput {
+    // The default GLOBAL overflow policy (`OverflowSpec::default()` = None/None → the built-in `Trap`, per
+    // the numeric model). A caller with a `Project.cdz` overflow global uses `compile_with_opt_and_overflow`
+    // directly; this keeps every existing caller unchanged.
+    compile_with_opt_and_overflow(
+        inputs,
+        targets,
+        opt_level,
+        crate::db::OverflowSpec::default(),
+    )
+}
+
+/// The compile entry parameterized by BOTH the optimization level AND the GLOBAL overflow policy — the
+/// sink for a `Project.cdz` `def overflow-signed`/`overflow-unsigned` manifest global (`numeric-model.md`
+/// §Overflow precedence: module `(pragma overflow …)` > this global manifest default > the built-in
+/// `Trap`). The `overflow` [`crate::db::OverflowSpec`] seeds `db.global_overflow`, which
+/// `infer::overflow_mode_of` reads (via `Db::global_overflow_default`) for an arith node with NO
+/// governing module spec. `compile_with_opt(inputs, targets, level)` is exactly this with
+/// `OverflowSpec::default()` (None/None), so the module-pragma and no-policy paths are byte-identical.
+pub fn compile_with_opt_and_overflow(
+    inputs: &[Artifact],
+    targets: &[Target],
+    opt_level: crate::opt::OptLevel,
+    overflow: crate::db::OverflowSpec,
+) -> CompileOutput {
     // Establish the compile-stack precondition at the SHARED SINK — every entry point (the bin, the tests
     // calling `compile`/`compile_with_opt` directly, `compile_component`) reaches compilation through here,
     // so wrapping here is the one place that guarantees the guard-sized worker stack for ALL of them. (The
@@ -105,13 +129,16 @@ pub fn compile_with_opt(
     // (`cli.rs`, `cdz-kernel`, `cdz-smith`) existing outer wrap does NOT double-spawn. (`compile_component`
     // no longer wraps — it reaches its guard-sized stack through this sink like every other caller.) The
     // borrowed inputs/targets and the `CompileOutput` result are all `Send`, so the scoped worker is sound.
-    crate::host::run_with_compiler_stack(|| compile_with_opt_inner(inputs, targets, opt_level))
+    crate::host::run_with_compiler_stack(|| {
+        compile_with_opt_inner(inputs, targets, opt_level, overflow)
+    })
 }
 
 fn compile_with_opt_inner(
     inputs: &[Artifact],
     targets: &[Target],
     opt_level: crate::opt::OptLevel,
+    overflow: crate::db::OverflowSpec,
 ) -> CompileOutput {
     trace!(target: "rcdzc::compile", inputs = inputs.len(), targets = targets.len(), level = %opt_level, "compile requested");
     // Select the `ast` input artifact(s) and decode them into ONE arena. A single `ast` (the common
@@ -167,6 +194,12 @@ fn compile_with_opt_inner(
     });
 
     let mut db = Db::load_linked(arenas, linkage);
+    // Seed the GLOBAL overflow policy (from a `Project.cdz` overflow manifest global, `OverflowSpec`
+    // default = None/None otherwise) BEFORE any infer/lower pass runs: `infer::overflow_mode_of` reads
+    // `db.global_overflow` lazily (during `type_of` on an arith node with no governing module pragma), so
+    // setting it right after `Db::load_linked` — before the first compile pass touches an arith node —
+    // makes the manifest global take effect at the correct precedence (module pragma > this > `Trap`).
+    db.global_overflow = overflow;
     // Hand the compiler the per-file pre-resolve SOURCE snapshots captured by `link_inputs` (before
     // `Db::load` mutated the arena). The self-reflection fill (`Ast.module` → `Prim::ReflectModule`) reflects
     // the enclosing module from these at lowering, keyed by `file_of`. Set here (post-load), like
