@@ -2748,6 +2748,48 @@
   (call main)
   (output (: 5 Int64)))
 
+; ── malformed VARIANT POSITION in a type declaration (migrated from rcdzc
+;    a_malformed_variant_position_in_a_type_declaration_is_rejected) ──
+; A `(type …)` tail element is a VARIANT: a bare NAME (`Red`) or a `(Name payload…)` form. Anything else —
+; a bare literal `(type T 5)`, a list headed by a non-name `(type T (5 Int64))`, an empty list `()`, a
+; string — was SILENTLY DROPPED, so `(type T Red 5 Blue)` became the two-variant `{Red,Blue}` with `5`
+; invisibly gone and a match on Red/Blue then wrongly type-checked as EXHAUSTIVE (a silent correctness
+; hazard). Each malformed variant position now rejects CDZ0201 ("a variant … must be a name").
+(case "a bare literal in a variant position of a type declaration is rejected"
+  (input (do (type T 5) (def (main) 0) (export main)))
+  (error CDZ0201 (message "must be a name")))
+
+(case "a literal amid valid variants is rejected, not silently dropped"
+  (input (do (type T Red 5 Blue) (def (main) 0) (export main)))
+  (error CDZ0201 (message "must be a name")))
+
+(case "a variant form headed by a non-name is rejected"
+  (input (do (type T (5 Int64)) (def (main) 0) (export main)))
+  (error CDZ0201 (message "must be a name")))
+
+(case "an empty list in a variant position is rejected"
+  (input (do (type T ()) (def (main) 0) (export main)))
+  (error CDZ0201 (message "must be a name")))
+
+(case "a string literal in a variant position is rejected"
+  (input (do (type T (Red) "str") (def (main) 0) (export main)))
+  (error CDZ0201 (message "must be a name")))
+
+(case "the dropped-variant exhaustiveness hazard is rejected at the declaration"
+  (doc    "`(type T Red 5 Blue)` with a match on Red/Blue no longer compiles as though exhaustive — the
+           malformed `5` is a hard CDZ0201 at the declaration, closing the silent-drop → false-exhaustive
+           correctness hazard.")
+  (input (do (type T Red 5 Blue) (def (main) (match (T.Red) ((T.Red) 10) ((T.Blue) 20))) (export main)))
+  (error CDZ0201 (message "must be a name")))
+
+(case "valid variant shapes (nullary / generic / record payload) do not false-positive as malformed"
+  (input (do (type Color Red Green Blue)
+             (type Opt (Sm a) Nn)
+             (type C (Mk (Record (: x Int64))))
+             (def (main) 0) (export main)))
+  (call main)
+  (output (: 0 Int64)))
+
 ; ── variant-payload + effect-op type-position validation (migrated from rcdzc
 ;    an_unknown_type_in_a_variant_payload_is_rejected + an_unknown_type_in_an_effect_operation_type_is_rejected) ──
 ; The declaration-site record-aware type-position walk (validate_type_position) also guards sum-variant
