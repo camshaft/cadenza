@@ -12847,3 +12847,37 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 38 Int64))
   (call main (: -3 Int64)) (output (: 18 Int64)))
+
+(case "a list ctor force-evaluates a recursively-OVERFLOWING element — the specific integer-overflow trap kind"
+  (doc "smith find (v-cdz-smith, resolved by #5328/#5339 strict-arg-eval; promotion greenlit): the list
+        ctor's second element is a recursion bottoming at Int64.min then multiplying — an integer
+        overflow. Strict construction forces the element, so the compare never decides: the program
+        TRAPS with the specific 'integer overflow' kind (not a generic unreachable), matching oracle+rust.")
+  (input (do (def (r n) (if (<= n 0) -9223372036854775808 (* n (r (- n 1)))))
+             (def (main) (not (= (list 255 (r 4) (if (<= -1000000 -1000000) -1000000 -1000000)) (list -1000000 -1000000 -1000000))))
+             (export main)))
+  (call main)
+  (trap "integer overflow"))
+
+(case "a list ctor force-evaluates a SHIFT-COUNT-out-of-range element — the guard's unreachable trap kind"
+  (doc "smith find (v-cdz-smith, resolved by #5328/#5339; promotion greenlit): the element recursion
+        reaches (<< 1 -2147483648) — a shift count far out of range; the emitted range guard traps
+        via unreachable. Pins strict construction forcing the element AND the shift-guard trap kind.")
+  (input (do (def (r n) (if (<= n 0) -2147483648 (<< n (r (- n 1)))))
+             (def (main) (= (list -1 (r 2) 0) (list -1000000 -1000000 -1000000)))
+             (export main)))
+  (call main)
+  (trap "unreachable"))
+
+(case "cdzw54 a Qty whose magnitude is a MATCH of checked-narrow arms wraps whole through the cadenza hop"
+  (doc "The #5362 fence (Match/MatchList/MatchSum extension of the #5341 leaf-walk): Qty.of over a match
+        whose arms are all bare-inner magnitudes (checked narrows) must wrap WHOLE — pre-#5362 this was
+        the same wrapper-drop miscompile via an arm position. Observed via a Qty.value peel: Some 7 → 7,
+        None → 0; dual-path verified, hop byte-idempotent. A MIXED-leaf arm split correctly declines
+        (#5355).")
+  (input (do
+    (def (q (: o (Option Int64))) (Qty.of (match o ((Some n) (Int32.of n)) ((None _u) (Int32.of 0))) (Unit.base #"meter")))
+    (def (main (: n Int64)) (Qty.value (q (if (> n 0) (Some n) (None)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 7 Int32))
+  (call main (: -5 Int64)) (output (: 0 Int32)))
