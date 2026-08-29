@@ -1071,6 +1071,24 @@
             ((. m answer) unit)))
   (error  CDZ0602))
 
+; The REMOVED contract-identity directives `contract`/`input`/`output` (a contract's identity is now derived
+; from its evaluated `descriptor`, not dedicated directives — the D3 pragma deprecation, #4542) are no longer
+; in PRAGMA_REGISTRY, so each is now an UNKNOWN module directive: rejected CDZ0601 naming it as not-a-directive,
+; exactly as any invented key is. Pins the removal — a future re-add of any of these keys to the registry flips
+; these cases, forcing a deliberate decision. Migrated from rcdzc
+; contract_input_output_pragmas_are_removed_and_now_reject_as_unknown.
+(case "the removed `contract` module directive is now an unknown-directive reject"
+  (input  (do (module m (pragma contract "x") (def (answer) 42)) ((. m answer) unit)))
+  (error  CDZ0601 (message "`contract` is not a module directive")))
+
+(case "the removed `input` module directive is now an unknown-directive reject"
+  (input  (do (module m (pragma input "x") (def (answer) 42)) ((. m answer) unit)))
+  (error  CDZ0601 (message "`input` is not a module directive")))
+
+(case "the removed `output` module directive is now an unknown-directive reject"
+  (input  (do (module m (pragma output "x") (def (answer) 42)) ((. m answer) unit)))
+  (error  CDZ0601 (message "`output` is not a module directive")))
+
 (case "an export and a like-named metadata key do not collide"
   (doc    "Witnesses core-semantics.md #A Module Carries Its Manifest And Entry As Metadata (2nd
            sentence): metadata is reached by a key distinct from every export name, so metadata access

@@ -13306,31 +13306,10 @@ mod match_engine {
         );
     }
 
-    #[test]
-    fn contract_input_output_pragmas_are_removed_and_now_reject_as_unknown() {
-        // `modules-and-namespaces.md` §A Contract Module Declares Its Identity: a contract's identity is now
-        // derived from its evaluated `descriptor`, NOT from dedicated `contract`/`input`/`output` module
-        // directives (removed in #4542 — the D3 pragma deprecation). Those keys are therefore no longer in
-        // `PRAGMA_REGISTRY`, so each is an UNKNOWN directive: rejected CDZ0601 (not ignored, not CDZ0602),
-        // exactly as any invented key is. This pins the removal — a future re-add of any of these keys to
-        // the registry flips this test, forcing a deliberate decision rather than a silent revival.
-        for key in ["contract", "input", "output"] {
-            let src = format!("(module m (pragma {key} \"x\") (def (main) 1) (export main))");
-            assert_eq!(
-                reject_code(&src).as_deref(),
-                Some("CDZ0601"),
-                "removed contract directive `{key}` is now an unknown module directive"
-            );
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src)));
-            assert!(
-                diags.iter().any(|d| d
-                    .message
-                    .contains(&format!("`{key}` is not a module directive"))),
-                "the reject for removed key `{key}` names it as not-a-directive: {:?}",
-                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-            );
-        }
-    }
+    // (contract_input_output_pragmas_are_removed_and_now_reject_as_unknown migrated to corpus 11-modules,
+    // after the unknown/malformed pragma cases: the removed `contract`/`input`/`output` module directives
+    // are each now an unknown-directive reject → CDZ0601 (message "`<key>` is not a module directive").
+    // --case grades the code + message (all 3 PASS). Pins the #4542 removal; a re-add flips these cases.)
 
     #[test]
     fn a_default_integer_pragma_makes_a_bare_literal_take_the_declared_type() {
