@@ -409,9 +409,11 @@
            set of field names, so a repeated export is the CDZ0201 duplicate-field ill-formedness — the
            export analogue of the duplicate definition above and of `(record (a 1) (a 2))`. The compiler
            MUST reject it (CDZ0201), never emit a component with two export entries named `a` (which the
-           component binary format forbids, so the emitted bytes fail to parse).")
+           component binary format forbids, so the emitted bytes fail to parse). Carries a DELETE fix on the
+           redundant later `(export a)` (the earlier one already makes `a` public). Fix-quality migrated from
+           rcdzc a_duplicate_export_carries_a_delete_the_duplicate_fix.")
   (input  (do (def (a) 42) (export a) (export a)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "exported more than once") (fix (kind delete))))
 
 (case "a duplicate export of the entry is rejected"
   (doc    "The `main` sibling: `(export main)` twice. Same CDZ0201 duplicate-export rejection — the
