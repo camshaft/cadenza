@@ -349,6 +349,10 @@ impl<'a> Printer<'a> {
             Leaf::Ctor(c) => self.doc.word(crate::sexpr::compound_ctor_word(*c)),
             Leaf::FieldPair => self.doc.word("="),
             Leaf::Member => self.doc.word("."),
+            // The rational-literal HEAD leaf (seq-204) is likewise a LIST head: the well-formed
+            // `num r den` ML surface is resugared at the list level (v-syntax's lane), so this bare tag
+            // renders only a best-effort marker for a stray atom occurrence, keeping the printer total.
+            Leaf::Rational => self.doc.word("#rational"),
         }
     }
 

@@ -131,6 +131,8 @@ fn leaf(l: &Leaf) -> String {
         Leaf::Ctor(c) => format!("Ctor {c:?}"),
         Leaf::FieldPair => "FieldPair".to_string(),
         Leaf::Member => "Member".to_string(),
+        // The rational-literal HEAD leaf (seq-204) — a payloadless tag like FieldPair/Member.
+        Leaf::Rational => "Rational".to_string(),
     }
 }
 
