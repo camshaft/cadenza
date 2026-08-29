@@ -10131,6 +10131,38 @@ mod match_engine {
     }
 
     #[test]
+    fn const_eval_matches_native_compound_patterns_so_the_const_trap_surfaces() {
+        // SOUNDNESS guard (28-compiler-primitives dc02, a MISCOMPILE the M2 native-compound migration exposed):
+        // `const_pattern_matches` (the const-evaluator's arm selector) recognized only the NAME-alias
+        // `(tuple …)`/`(list …)` pattern heads (`as_form`), NOT the native `#tuple(…)`/`#list(…)` ctor-leaf head.
+        // So a `(const (: t (Tuple …)))` recursion whose match arm uses a NATIVE tuple pattern silently DECLINED
+        // the whole const-eval (an "undecidable shape") → the const-fold countdown never ran → its `(trap …)`
+        // was LOST (compiled clean / `None`, not CDZ0304). `corpus_roundtrip` (structural) could not catch this —
+        // only the behavioral grade. Now reads `compound_form_of` (native + alias), so the const trap surfaces
+        // in BOTH spellings.
+        for (label, src) in [
+            (
+                "native #tuple const-param countdown",
+                "(module m (def (f (const (: t (Tuple Int64 Int64)))) (match t (#tuple(a b) (if (= a b) (trap \"met\") (f #tuple((- a 1) b)))))) (def (main) (f #tuple(3 1))) (export main))",
+            ),
+            (
+                "name-alias tuple const-param countdown",
+                "(module m (def (f (const (: t (Tuple Int64 Int64)))) (match t ((tuple a b) (if (= a b) (trap \"met\") (f (tuple (- a 1) b)))))) (def (main) (f (tuple 3 1))) (export main))",
+            ),
+            (
+                "native #list const-param countdown",
+                "(module m (def (f (const (: t (List Int64)))) (match t (#list() (trap \"met\")) (#list(h .. r) (f r)))) (def (main) (f #list(1 2))) (export main))",
+            ),
+        ] {
+            assert_eq!(
+                reject_code(src).as_deref(),
+                Some("CDZ0304"),
+                "{label}: the const-param countdown's trap must surface CDZ0304 (const-eval must match the native compound pattern), not be silently lost"
+            );
+        }
+    }
+
+    #[test]
     fn a_map_rest_pattern_with_an_entry_after_the_rest_is_rejected_cdz0201() {
         // SOUNDNESS guard (05-compound-types map-rest-shape): a map REST pattern's `.. rest` binds the
         // remaining map and must be LAST — a keyed entry AFTER the rest (`(map (= 1 v) .. rest (= 2 w))`)
