@@ -198,5 +198,41 @@ private def _equivProg (na nb : UInt8) : Module :=
 -- two programs with different constant bodies are not proven → `skip` (never a false `holds`).
 #guard (match judgeEquivNode (_equivProg 42 43) 21 with | .skip _ => true | _ => false)
 
+-- END-TO-END: a `(batch (equiv PA PB))` request through the full `judgeBatchBytes` stdin→stdout path that
+-- `cdz-oracle` runs (encode → decode → judge → encode the `(verdicts …)` response). Wraps `_equivProg`'s
+-- `(equiv …)` (node 21) in a `(batch …)` root (nodes 22/23). Verifies the fuzzer's real invocation shape.
+private def _batchEquiv (na nb : UInt8) : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "def".toUTF8, Leaf.name "main".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[na]), Leaf.name "export".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[nb]), Leaf.name "equiv".toUTF8, Leaf.name "batch".toUTF8],
+    nodes := #[.atom 1, .atom 2, .list #[1], .atom 3, .list #[0, 2, 3],
+               .atom 4, .atom 2, .list #[5, 6], .atom 0, .list #[8, 4, 7],
+               .atom 1, .atom 2, .list #[11], .atom 5, .list #[10, 12, 13],
+               .atom 4, .atom 2, .list #[15, 16], .atom 0, .list #[18, 14, 17],
+               .atom 6, .list #[20, 9, 19],
+               .atom 7, .list #[22, 21]],
+    root := 23 }
+-- `(batch (equiv P P))` (identical) → the full pipeline responds `(verdicts (holds))`.
+#guard (match judgeBatchBytes (Ast.encode (_batchEquiv 42 42)) with
+        | .ok resp =>
+          match Ast.decode resp with
+          | .ok rm =>
+            Check.headStr? rm rm.root == some "verdicts" &&
+            (match (kidsOf rm rm.root)[0]? with
+             | some vid => Check.headStr? rm vid == some "holds"
+             | none => false)
+          | _ => false
+        | _ => false)
+-- `(batch (equiv P42 P43))` (differing) → `(verdicts (skip …))` (a cannot-prove, never a false holds).
+#guard (match judgeBatchBytes (Ast.encode (_batchEquiv 42 43)) with
+        | .ok resp =>
+          match Ast.decode resp with
+          | .ok rm =>
+            (match (kidsOf rm rm.root)[0]? with
+             | some vid => Check.headStr? rm vid == some "skip"
+             | none => false)
+          | _ => false
+        | _ => false)
+
 end Batch
 end Oracle
