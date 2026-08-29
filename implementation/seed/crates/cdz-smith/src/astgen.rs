@@ -1368,30 +1368,50 @@ fn gen_wide_compound_body<C: Choice>(c: &mut C, out: &mut String) {
     };
 }
 
-/// A BOOLEAN-LOGIC body: `and` / `or` / `not` composed over integer comparisons `(<rel> a b)` — a Bool
-/// result exercising the short-circuit boolean combinator lowering (the `gen_cond` arm only emitted bare
-/// comparisons, never `and`/`or`/`not` over them). Includes a nested `(and (or …) (not …))` form.
+/// Max recursion depth for [`gen_bool_expr`] — bounds the deep bool-shape space.
+const BOOL_DEPTH: usize = 3;
+
+/// A RECURSIVE bool expression: at depth 0 a leaf comparison `(<rel> a b)`; above that, `and`/`or` over two
+/// bool SUB-EXPRESSIONS or `not` of one (each recursing at `depth-1`), or a leaf. Reaches the DEEP bool
+/// grammar (nested `and`/`or`/`not` over comparisons + nested bools) instead of a couple of shallow shapes.
+fn gen_bool_expr<C: Choice>(c: &mut C, depth: usize, out: &mut String) {
+    // At depth 0 (or ~1/4 of the time above it) emit a LEAF comparison.
+    if depth == 0 || c.variant(4) == 3 {
+        let rels = ["<", ">", "<=", ">=", "="];
+        let rel = rels[c.variant(5)];
+        let (a, b) = (c.int_bounded(0, 20), c.int_bounded(0, 20));
+        write!(out, "({rel} {a} {b})").ok();
+        return;
+    }
+    // Pick the combinator BEFORE recursing (variant-ordering).
+    match c.variant(3) {
+        0 => {
+            out.push_str("(and ");
+            gen_bool_expr(c, depth - 1, out);
+            out.push(' ');
+            gen_bool_expr(c, depth - 1, out);
+            out.push(')');
+        }
+        1 => {
+            out.push_str("(or ");
+            gen_bool_expr(c, depth - 1, out);
+            out.push(' ');
+            gen_bool_expr(c, depth - 1, out);
+            out.push(')');
+        }
+        _ => {
+            out.push_str("(not ");
+            gen_bool_expr(c, depth - 1, out);
+            out.push(')');
+        }
+    }
+}
+
+/// A BOOLEAN-LOGIC body: a RECURSIVE `and`/`or`/`not` expression over integer comparisons (depth-bounded by
+/// [`BOOL_DEPTH`]) — a Bool result exercising the short-circuit boolean combinator lowering at DEPTH (nested
+/// `and`/`or`/`not` over bool sub-expressions), not just a couple of shallow shapes.
 fn gen_bool_logic_body<C: Choice>(c: &mut C, out: &mut String) {
-    // Pick the FORM + comparison relations before the operands (variant-ordering).
-    let form = c.variant(4);
-    let rels = ["<", ">", "<=", ">=", "="];
-    let (r1, r2, r3) = (c.variant(5), c.variant(5), c.variant(5));
-    let (a1, b1) = (c.int_bounded(0, 20), c.int_bounded(0, 20));
-    let (a2, b2) = (c.int_bounded(0, 20), c.int_bounded(0, 20));
-    let (a3, b3) = (c.int_bounded(0, 20), c.int_bounded(0, 20));
-    let c1 = format!("({} {a1} {b1})", rels[r1]);
-    let c2 = format!("({} {a2} {b2})", rels[r2]);
-    let c3 = format!("({} {a3} {b3})", rels[r3]);
-    match form {
-        // Conjunction of two comparisons.
-        0 => write!(out, "(and {c1} {c2})").ok(),
-        // Disjunction of two comparisons.
-        1 => write!(out, "(or {c1} {c2})").ok(),
-        // Negation of a comparison.
-        2 => write!(out, "(not {c1})").ok(),
-        // Nested: `(and (or c1 c2) (not c3))`.
-        _ => write!(out, "(and (or {c1} {c2}) (not {c3}))").ok(),
-    };
+    gen_bool_expr(c, BOOL_DEPTH, out);
 }
 
 /// A SIZED-INT SHIFT body: `(<< (: a T) s)` / `(>> (: a T) s)` (and a nested `(& (<< …) (: b T))`) for a
@@ -2783,10 +2803,14 @@ mod tests {
             }
             let mut body = String::new();
             gen_bool_logic_body(&mut ByteCursorChoice::new(&bytes), &mut body);
-            saw_nested |= body.starts_with("(and (or ");
-            saw_and |= body.starts_with("(and (") && !body.starts_with("(and (or ");
-            saw_or |= body.starts_with("(or ");
-            saw_not |= body.starts_with("(not ");
+            saw_and |= body.contains("(and ");
+            saw_or |= body.contains("(or ");
+            saw_not |= body.contains("(not ");
+            // A DEEP shape: >= 2 boolean combinators = a bool op nested inside another (recursion working).
+            let combinators = body.matches("(and ").count()
+                + body.matches("(or ").count()
+                + body.matches("(not ").count();
+            saw_nested |= combinators >= 2;
             let src = format!("(do (def (main) {body}) (export main))");
             assert!(
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
@@ -2796,7 +2820,10 @@ mod tests {
         assert!(saw_and, "should reach an `and`");
         assert!(saw_or, "should reach an `or`");
         assert!(saw_not, "should reach a `not`");
-        assert!(saw_nested, "should reach a nested `(and (or …) (not …))`");
+        assert!(
+            saw_nested,
+            "should reach a DEEP (recursively-nested) bool shape"
+        );
     }
 
     /// `gen_sized_shift_body` REACHES all three forms (shift-left, shift-right, nested shift+and) over a
