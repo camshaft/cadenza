@@ -4978,61 +4978,74 @@ fn run_emit_shred(files: &[String], out_dir: &std::path::Path) -> ExitCode {
             any_fail = true;
             continue;
         }
-        // This group's MAIN file name (the emit sets `main-file` = "main.wasm" iff it emitted a provider;
-        // rewrite to a per-group name so mains from different groups don't collide in the flat dir).
+        // ENTRY-SCOPE by the manifest `file` field. A PACKAGE's linked program enumerates EVERY linked file's
+        // `@test`s (not just the entry's) — so without this, each file re-emits the WHOLE package's tests
+        // (cad: 996 entries for 138 real tests). Each `@test` belongs to its OWN source file's group (emitted
+        // when THAT file is the entry), so keep only entries whose `file` == this entry file's stem, and write
+        // only those tests' components. An independent-file suite (iterators) has file == entry_stem for all
+        // (its closure is just itself), so nothing is dropped there.
+        let entry_stem = closure[0].name.clone();
         let has_main = out.artifacts.iter().any(|a| a.kind == "component-provider");
         let group_main_file = if has_main {
             format!("main-{i}.wasm")
         } else {
             String::new()
         };
+        // Decode the group's manifest → the OWN test target names (this file's own `@test`s) + collect the own
+        // entries (with `main-file` rewritten to this group's real main / "" standalone).
+        let mut own_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Some(m) = out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == rcdzc::sidecar::KIND_SHRED_MANIFEST)
+        {
+            let Some(arenas) = cadenza_syntax::codec::decode(&m.bytes) else {
+                eprintln!("{PROG}: --emit-shred: could not decode {file}'s shred manifest");
+                any_fail = true;
+                continue;
+            };
+            if let Some(entries) = arenas.as_form(arenas.root, "shred-manifest") {
+                for &e in entries {
+                    let Some(f) = arenas.as_form(e, "entry") else {
+                        continue;
+                    };
+                    if f.len() != 7 {
+                        continue;
+                    }
+                    let name = arenas.as_str(f[0]).unwrap_or("").to_string();
+                    let test_file = arenas.as_str(f[2]).unwrap_or("");
+                    if test_file != entry_stem {
+                        continue; // an imported file's @test — its OWN group emits it (no cross-file dup)
+                    }
+                    own_targets.insert(format!("test-{name}"));
+                    all_entries.push((
+                        name,
+                        arenas.as_bool(f[1]).unwrap_or(false),
+                        test_file.to_string(),
+                        arenas.as_str(f[3]).unwrap_or("").to_string(),
+                        arenas.as_str(f[4]).unwrap_or("").to_string(),
+                        arenas.as_str(f[5]).unwrap_or("").to_string(),
+                        group_main_file.clone(),
+                    ));
+                }
+            }
+        }
+        // Write MAIN (only when this file HAS own tests that link it — else the main is an orphan) + the OWN
+        // per-@test consumer components (`test-<name>.wasm`, flat).
         for a in &out.artifacts {
             match a.kind.as_str() {
-                // MAIN provider → `main-<group>.wasm`.
-                "component-provider" => {
+                "component-provider" if !own_targets.is_empty() => {
                     let p = out_dir.join(&group_main_file);
                     if let Err(e) = std::fs::write(&p, &a.bytes) {
                         eprintln!("{PROG}: --emit-shred: cannot write {}: {e}", p.display());
                         any_fail = true;
                     }
                 }
-                // Per-@test CONSUMER `test-<name>` → `test-<name>.wasm` (flat; the artifact name IS the file
-                // stem). Two files with a same-named `@test` would collide here — the flat model assumes
-                // suite-unique test names (true for the gate suites).
-                "component" => {
+                "component" if own_targets.contains(&a.name) => {
                     let p = out_dir.join(format!("{}.wasm", a.name));
                     if let Err(e) = std::fs::write(&p, &a.bytes) {
                         eprintln!("{PROG}: --emit-shred: cannot write {}: {e}", p.display());
                         any_fail = true;
-                    }
-                }
-                // The group's per-program MANIFEST → decode + collect its entries with `main-file` rewritten
-                // to this group's real main (or "" for a standalone group).
-                k if k == rcdzc::sidecar::KIND_SHRED_MANIFEST => {
-                    let Some(arenas) = cadenza_syntax::codec::decode(&a.bytes) else {
-                        eprintln!("{PROG}: --emit-shred: could not decode {file}'s shred manifest");
-                        any_fail = true;
-                        continue;
-                    };
-                    let Some(entries) = arenas.as_form(arenas.root, "shred-manifest") else {
-                        continue;
-                    };
-                    for &e in entries {
-                        let Some(f) = arenas.as_form(e, "entry") else {
-                            continue;
-                        };
-                        if f.len() != 7 {
-                            continue;
-                        }
-                        all_entries.push((
-                            arenas.as_str(f[0]).unwrap_or("").to_string(),
-                            arenas.as_bool(f[1]).unwrap_or(false),
-                            arenas.as_str(f[2]).unwrap_or("").to_string(),
-                            arenas.as_str(f[3]).unwrap_or("").to_string(),
-                            arenas.as_str(f[4]).unwrap_or("").to_string(),
-                            arenas.as_str(f[5]).unwrap_or("").to_string(),
-                            group_main_file.clone(),
-                        ));
                     }
                 }
                 _ => {}
