@@ -95,6 +95,8 @@ jobs:
           npm run check:codegen-sync
           npm run check:examples
           npm run check:calculator
+          npm run check:prose
+          npm run check:prose-native
           npm run build
 
       - uses: actions/configure-pages@v6

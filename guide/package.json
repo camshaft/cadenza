@@ -21,6 +21,7 @@
     "audit:mobile": "LD_PRELOAD=/usr/lib64/libstdc++.so.6 LD_LIBRARY_PATH=/usr/lib64:/lib64 node scripts/mobile-audit.mjs",
     "check:calculator": "node scripts/check-calculator.mjs",
     "check:prose": "node scripts/check-prose-annotations.mjs",
+    "check:prose-native": "node scripts/check-prose-native-compound.mjs",
     "check:codegen": "node scripts/check-codegen.mjs",
     "check:codegen-sync": "node scripts/codegen-chapters.mjs --check",
     "check:bundle": "node scripts/check-bundle.mjs",
