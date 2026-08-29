@@ -171,6 +171,14 @@
   (input  (do (def (main) (: 5 42)) (export main)))
   (error  CDZ0203))
 
+(case "a value compound in a type annotation's type position is rejected"
+  (doc    "`(: 5 (tuple 1 2))` puts a VALUE tuple — not a type — in type position, the compound-value
+           companion of the bare-literal `(: 5 42)` case above. A value compound is not a type, so the
+           annotation is meaningless and rejects CDZ0203 ('expected a type'), rather than being resolved as
+           a value and silently dropped. (migrated from rcdzc a_non_type_in_a_type_annotation_position.)")
+  (input  (do (def (main) (: 5 (tuple 1 2))) (export main)))
+  (error  CDZ0203))
+
 (case "a non-constructor type applied to arguments in type position is rejected"
   (doc    "`(: true (Int64 Int64))` applies `Int64` — which is NOT a type constructor (it takes no
            arguments) — to an argument, a malformed type expression. Were the operand simply `Int64`, the
@@ -539,6 +547,34 @@
            validation covers a signature parameter, not only a value annotation.")
   (input  (do (def (f (: x foo)) x) (def (main) (f 7)) (export main)))
   (error  CDZ0101))
+
+(case "a literal as a parameter's annotation type is rejected"
+  (doc    "The parameter-annotation companion of the value-annotation `(: 5 42)` literal case: `(def (f (:
+           x 42)) x)` annotates the parameter `x` with the VALUE `42` in type position. A literal is not a
+           type, so it rejects CDZ0203 ('expected a type') just as it does in a value annotation — the
+           type-operand validation is uniform across both annotation forms. (migrated from rcdzc
+           a_non_type_in_a_type_annotation_position.)")
+  (input  (do (def (f (: x 42)) x) (def (main) (f 7)) (export main)))
+  (error  CDZ0203))
+
+(case "a genuine type mismatch in an annotation still rejects (no over-rejection)"
+  (doc    "The no-over-rejection control's REJECT half as a standalone case: `(: 5 Bool)` names a real type
+           `Bool` that CONTRADICTS the Int64 value `5`, so it rejects CDZ0203 — the validation of the type
+           OPERAND (is it a type?) does not swallow the ordinary value-vs-type mismatch check. Pins that
+           annotating with a well-formed but wrong type still faults. (migrated from rcdzc
+           a_non_type_in_a_type_annotation_position.)")
+  (input  (do (def (main) (: 5 Bool)) (export main)))
+  (error  CDZ0203))
+
+(case "an arrow parameter annotation compiles and applies (a positive control)"
+  (doc    "A positive control proving the type-operand validation does not over-reject a WELL-FORMED arrow
+           type: an arrow-typed parameter `(: g (-> Int64 Int64))` applied to a lambda compiles and runs.
+           (migrated from rcdzc a_non_type_in_a_type_annotation_position.)")
+  (input  (do (def (f (: g (-> Int64 Int64))) (g 1))
+              (def (main) (f (fn (x) (+ x 1))))
+              (export main)))
+  (call   main)
+  (output (: 2 Int64)))
 
 (case "a well-formed annotation still checks and accepts a matching type (the control)"
   (doc    "The control pinning the rejects above are about VALIDATING the type operand, not annotations
