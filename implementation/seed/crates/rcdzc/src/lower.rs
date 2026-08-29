@@ -5409,7 +5409,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             Some(g) if g.len() == 2 => g[0],
             _ => pat,
         };
-        db.ast.compound_ctor_either(inner) == Some(CompoundCtor::Map)
+        db.ast.compound_form_of(inner, CompoundCtor::Map).is_some()
     }) {
         return lower_match_map(db, scrutinee, arms);
     }
@@ -7431,7 +7431,9 @@ fn map_pattern_with_wildcard_values(db: &mut Db, map_pat: StructId) -> StructId 
 /// key-presence-test guard + a body that re-matches the binder to bind the values
 /// (`desugar_refutable_map_list_elements`). A non-map element returns `false`.
 fn is_map_element_pattern(db: &Db, elem_pat: StructId) -> bool {
-    db.ast.compound_ctor_either(elem_pat) == Some(CompoundCtor::Map)
+    db.ast
+        .compound_form_of(elem_pat, CompoundCtor::Map)
+        .is_some()
 }
 
 /// PRE-PASS for `lower_match_list` (the MAP twin of `desugar_refutable_ctor_list_elements`): rewrite an arm
@@ -10846,14 +10848,14 @@ fn pattern_constraints(
 /// pattern) or the `"tuple"` string-literal primitive. Mirrors `resolve::is_tuple_pattern` (kept local
 /// so lower does not depend on resolve's private helpers).
 fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
-    db.ast.compound_ctor_either(id) == Some(CompoundCtor::Tuple)
+    db.ast.compound_form_of(id, CompoundCtor::Tuple).is_some()
 }
 
 /// Whether `id` is a list PATTERN `(list p0 p1…)` — a `list` NAME head (the shadowable alias the reader
 /// keeps) or the `"list"` string-literal primitive. Routes a variant's list payload into element-by-
 /// element descent (`pattern_constraints`'s list arm), the list analogue of [`is_tuple_pattern`].
 fn is_list_pattern(db: &Db, id: StructId) -> bool {
-    db.ast.compound_ctor_either(id) == Some(CompoundCtor::List)
+    db.ast.compound_form_of(id, CompoundCtor::List).is_some()
 }
 
 /// The DISPLAY name of the constructor a `(Ctor arg…)` pattern applies — read from the pattern's SOURCE
@@ -10882,7 +10884,7 @@ fn ctor_pattern_name(db: &Db, pat: StructId) -> String {
 /// string-literal primitive. Routes a NESTED map sub-pattern into `pattern_constraints`'s map arm (a
 /// key-presence test + `MapField` value reads), the map analogue of [`is_tuple_pattern`]/[`is_list_pattern`].
 fn is_map_pattern(db: &Db, id: StructId) -> bool {
-    db.ast.compound_ctor_either(id) == Some(CompoundCtor::Map)
+    db.ast.compound_form_of(id, CompoundCtor::Map).is_some()
 }
 
 /// The element occurrences of `id` when it is a tuple CONSTRUCTOR expression — the symbol-headed
