@@ -672,7 +672,16 @@ effect op-handler arm heads exempted (#5475), and empty list `()` (#5520, `ch.fi
   STDOUT (~10 lines) BEFORE the codemod output — it pollutes a `> file` redirect into an "unterminated list"
   corpus parse error. The Phase-2 migration must strip it (`awk 'f||/^[;(]/{f=1;print}'`) or run the built
   binary directly, and run the whole corpus in ONE `nix develop -c bash -c '<loop>'` (banner prints once).
-- **Input-vs-output scoping:** `nativize_compound_source` nativizes compound literals ANYWHERE in the text —
-  both `(input …)` programs AND `(output …)` expected values. That ALIGNS with v-corpus-harness's
-  (output)→#ctor render re-pin (both sides become native), but overlaps their file edits → COORDINATE the
-  sequencing (their render re-pin vs this nativization) so the two passes compose, not clobber.
+- **SEQUENCE = A (decided 2026-08-29, v-corpus-harness owns render):** v-corpus-harness re-pins
+  `(output)→#ctor` FIRST (grade-driven — the expected value must match the gate RENDER, which NORMALIZES
+  `Ast.List`→`(. Ast List)`, `Qty.of`, `#"sym"`, map/set key ORDER, `Bytes`→`b"…"`; a text-nativize can't
+  reproduce that, so whole-file (B) was rejected). THEN v-ast-compound nativizes the INPUT side with
+  **`cdz-nativize --skip-outputs`** (`nativize_compound_source_skip_outputs`, #5548): nativizes `(input …)`
+  programs + `(call …)` argument values (input-side, render-independent) and leaves every `(output …)`
+  subtree UNTOUCHED (`nat_walk` flips its `collect` flag off inside `(output …)`). The two passes compose —
+  v-corpus-harness owns `(output)`, v-ast-compound owns `(input)`/`(call)`, different lines, no clobber.
+- **REHEARSED (2026-08-29):** ran `cdz-nativize --skip-outputs` over all 34 corpus files → `(output …)`
+  native-form count UNCHANGED corpus-wide (101 → 101, zero outputs touched) + `xtask roundtrip` on every
+  result = **9652 programs ok, 0 failures**. The exact seq-A input step is proven end-to-end. (Window re-run:
+  `for f in spec/semantics/[0-9]*.sexp; do cdz-nativize --skip-outputs <$f | awk 'f||/^[;(]/{f=1;print}'
+  >$f.nat; mv $f.nat $f; done` in ONE `nix develop -c bash -c` — banner gotcha above.)
