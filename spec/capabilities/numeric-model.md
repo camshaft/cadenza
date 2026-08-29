@@ -49,6 +49,14 @@ The unqualified arithmetic operator — `+`, `-`, and `*` — MUST trap on overf
 
 The compiler MUST NOT emit an integer operation whose overflow behavior is undefined.
 
+### A Reassociating Optimization May Reorder Or Avoid An Overflow Trap
+
+An optimization MAY reassociate a chain of the same value-associative arithmetic operator — `+` or `*` — so that the overflow trap the ordinary operator would raise MAY be attributed to a different operand than the source association names, or, where the reassociated evaluation order has no overflowing intermediate, not be raised at all; accumulator introduction, which turns a non-tail fold into a constant-stack loop, is the motivating example.
+
+Because integer `+` and `*` are exactly associative and every executed operation remains individually checked, a reassociated chain MUST still either produce the chain's exact mathematical result or trap, and MUST NOT yield a wrapped or otherwise incorrect value: a chain whose exact result overflows the type traps under every reassociation, while a chain whose exact result is in range either traps at an intermediate that the chosen association overflows or, under a reassociation that avoids that intermediate, produces the exact result.
+
+A program MUST NOT depend on the exact operand at which a reassociable `+` or `*` chain traps.
+
 ### An Overflow-Fallible Operation Reports Overflow Rather Than Trapping
 
 An integer type MUST offer, alongside its trapping arithmetic, a named overflow-fallible form of each of addition, subtraction, and multiplication whose result is the exact value wrapped in the present case when it is in range and the absent case when the operation overflows, so that a program can branch on overflow without trapping.
