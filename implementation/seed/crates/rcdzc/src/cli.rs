@@ -21,7 +21,7 @@
 //! when exactly one artifact is produced and `-o` does not name an existing directory, in which case
 //! `-o` is the exact output FILE path. With no `-o`, artifacts are written to the current directory.
 
-use crate::{Artifact, OptLevel, Severity, Target, compile_with_opt};
+use crate::{Artifact, OptLevel, Severity, Target, compile_with_opt_and_overflow};
 use clap::Parser;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -88,6 +88,18 @@ pub struct CompileArgs {
     /// artifact is shaped.
     #[arg(long, value_name = "LEVEL", default_value_t = OptLevelArg::default())]
     opt_level: OptLevelArg,
+
+    /// The GLOBAL signed-integer overflow policy for this compile — `trap` (overflow is a fault) or `wrap`
+    /// (modulo 2^width). Omitted → no global default (that signedness falls through to the built-in
+    /// `Trap`). This is the `Project.cdz` `def overflow-signed` manifest global reaching the compiler; a
+    /// module `(pragma overflow (signed …))` still OVERRIDES it (precedence: module > this global > trap).
+    #[arg(long, value_name = "MODE")]
+    overflow_signed: Option<OverflowModeArg>,
+
+    /// The GLOBAL unsigned-integer overflow policy (`trap`/`wrap`) — the `Project.cdz` `def
+    /// overflow-unsigned` global; same precedence (module pragma > this > trap). Omitted → fall through.
+    #[arg(long, value_name = "MODE")]
+    overflow_unsigned: Option<OverflowModeArg>,
 
     /// Write the compiler's DIAGNOSTICS (the well-formedness fault set) to this path as a SIDE ARTIFACT —
     /// the `KIND_DIAGNOSTICS` wire (one fault per line, 8 TAB columns: severity/code/node/fix-kind/fix-node/
@@ -163,6 +175,24 @@ impl std::fmt::Display for OptLevelArg {
                 OptLevelArg::O3 => "o3",
             }
         )
+    }
+}
+
+/// The `--overflow-signed`/`--overflow-unsigned` choice, as a clap-parsed value (its own enum so clap
+/// validates the spelling `trap`/`wrap` and `--help` lists them), mapping to the core
+/// [`crate::db::OverflowMode`]. `trap` = overflow is a fault; `wrap` = modulo 2^width.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum OverflowModeArg {
+    Trap,
+    Wrap,
+}
+
+impl OverflowModeArg {
+    fn to_core(self) -> crate::db::OverflowMode {
+        match self {
+            OverflowModeArg::Trap => crate::db::OverflowMode::Trap,
+            OverflowModeArg::Wrap => crate::db::OverflowMode::Wrap,
+        }
     }
 }
 
@@ -242,6 +272,17 @@ impl CompileArgs {
     /// driver (the `cdz` bin) reads this to call [`run_prepared`] with the chosen level.
     pub fn opt_level(&self) -> OptLevel {
         self.opt_level.to_core()
+    }
+
+    /// The GLOBAL overflow policy (`--overflow-signed`/`--overflow-unsigned`) as an
+    /// [`crate::db::OverflowSpec`] — the pair a wrapping driver (the `cdz` bin) hands to
+    /// [`run_prepared_with_overflow`] to seed `db.global_overflow`. Either sub-form absent → `None` (that
+    /// signedness falls through to the next precedence level — the built-in `Trap`).
+    pub fn overflow_spec(&self) -> crate::db::OverflowSpec {
+        crate::db::OverflowSpec {
+            signed: self.overflow_signed.map(OverflowModeArg::to_core),
+            unsigned: self.overflow_unsigned.map(OverflowModeArg::to_core),
+        }
     }
 }
 
@@ -338,12 +379,14 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
     // Read `opt_level` + `emit_diagnostics` BEFORE moving `cli.out` into the call (a partial move would
     // poison `cli`, and the `&Path` must borrow a local, not a moved-from `cli`).
     let opt_level = cli.opt_level();
+    let overflow = cli.overflow_spec();
     let emit_diagnostics = cli.emit_diagnostics.clone();
-    run_prepared(
+    run_prepared_with_overflow(
         inputs,
         &cli.targets(),
         cli.out,
         opt_level,
+        overflow,
         emit_diagnostics.as_deref(),
         prog,
     )
@@ -464,12 +507,38 @@ fn copy_subtree(
 /// host boundary's compile+report+write tail, exposed so a wrapping driver (the `cdz` bin) can
 /// pre-build artifacts from SOURCE files (parsing them in-process with its front-end, injecting the
 /// `ast` + `spans` artifacts) and reuse the identical output-writing behavior. `targets` is the
-/// explicit `--target` list (empty ⇒ apply the default here). `out` is the `-o` destination.
+/// explicit `--target` list (empty ⇒ apply the default here). `out` is the `-o` destination. Uses the
+/// default (empty) GLOBAL overflow policy; a driver with a `Project.cdz` overflow global uses
+/// [`run_prepared_with_overflow`] directly, so every existing caller stays unchanged.
 pub fn run_prepared(
     inputs: Vec<Artifact>,
     targets: &[Target],
     out: Option<PathBuf>,
     opt_level: OptLevel,
+    emit_diagnostics: Option<&std::path::Path>,
+    prog: &str,
+) -> ExitCode {
+    run_prepared_with_overflow(
+        inputs,
+        targets,
+        out,
+        opt_level,
+        crate::db::OverflowSpec::default(),
+        emit_diagnostics,
+        prog,
+    )
+}
+
+/// [`run_prepared`] parameterized by the GLOBAL overflow policy (`overflow`) — the sink a driver uses to
+/// pass a `Project.cdz` `def overflow-signed`/`overflow-unsigned` global through to the compile (it
+/// reaches `db.global_overflow` via [`crate::compile_with_opt_and_overflow`]). `run_prepared(..)` is
+/// exactly this with `OverflowSpec::default()` (None/None → the built-in `Trap`).
+pub fn run_prepared_with_overflow(
+    inputs: Vec<Artifact>,
+    targets: &[Target],
+    out: Option<PathBuf>,
+    opt_level: OptLevel,
+    overflow: crate::db::OverflowSpec,
     emit_diagnostics: Option<&std::path::Path>,
     prog: &str,
 ) -> ExitCode {
@@ -502,7 +571,9 @@ pub fn run_prepared(
     // stack the ambient thread happens to have. See `rcdzc::host`.
     let out_dest = out;
     let cli_out = &out_dest;
-    let out = crate::run_with_compiler_stack(|| compile_with_opt(&inputs, &targets, opt_level));
+    let out = crate::run_with_compiler_stack(|| {
+        compile_with_opt_and_overflow(&inputs, &targets, opt_level, overflow)
+    });
 
     // `--emit-diagnostics <path>`: write the DIAGNOSTICS wire as a side artifact BEFORE reporting/writing,
     // UNCONDITIONALLY (even on an error/decline compile — the fault set is exactly what a caller wants
@@ -791,6 +862,44 @@ mod tests {
             name,
             crate::codec::encode(&b.finish(root)),
         )
+    }
+
+    /// `--overflow-signed`/`--overflow-unsigned` parse to the core [`crate::db::OverflowMode`] and project
+    /// to an [`crate::db::OverflowSpec`] via `overflow_spec()`; an ABSENT flag is `None` (that signedness
+    /// falls through to the built-in `Trap`, NOT an implicit trap override — the module-pragma > global >
+    /// trap precedence relies on `None` meaning "no global default").
+    #[test]
+    fn overflow_flags_parse_to_a_global_spec_and_absent_is_none() {
+        use clap::Parser;
+        assert_eq!(
+            OverflowModeArg::Trap.to_core(),
+            crate::db::OverflowMode::Trap
+        );
+        assert_eq!(
+            OverflowModeArg::Wrap.to_core(),
+            crate::db::OverflowMode::Wrap
+        );
+        // Both flags → both sides of the spec.
+        let both = CompileArgs::try_parse_from([
+            "rcdzc",
+            "prog.cdz",
+            "--overflow-signed",
+            "wrap",
+            "--overflow-unsigned",
+            "trap",
+        ])
+        .expect("parses");
+        assert_eq!(
+            both.overflow_spec(),
+            crate::db::OverflowSpec {
+                signed: Some(crate::db::OverflowMode::Wrap),
+                unsigned: Some(crate::db::OverflowMode::Trap),
+            }
+        );
+        // Absent → None/None (the default): falls through to trap, distinct from an explicit `trap` global.
+        let none = CompileArgs::try_parse_from(["rcdzc", "prog.cdz"]).expect("parses");
+        assert_eq!(none.overflow_spec(), crate::db::OverflowSpec::default());
+        assert_eq!(none.overflow_spec().signed, None);
     }
 
     /// `--export` splices every `ast` input's `(do …)` items into ONE `(do <all-items> (export <sym>))`
