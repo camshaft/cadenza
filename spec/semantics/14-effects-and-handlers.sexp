@@ -57,6 +57,34 @@
   (host-calls (call ask.ask))
   (output (: 100 Int64)))
 
+; An operation is PERFORMED like a function, so its declared type MUST be an arrow `(-> Arg… Result)` (a
+; nullary op is `(-> Result)`). A WELL-FORMED non-arrow type `(op get Int64)` was silently accepted and
+; leaked the internal op-record on perform ("(effect-op Any)"). Rejected AT THE DECLARATION (CDZ0201 "an
+; operation's type must be an arrow") with a wrap-into-arrow fix; a bare-type op that is ALSO performed
+; reports the ONE decl-site error (the leak is deduped → (no-other-errors)). A canonical `(-> …)` op
+; compiles; an UNKNOWN op-type NAME keeps its more-actionable CDZ0101, not a spurious arrow reject. (migrated
+; from rcdzc a_non_arrow_effect_operation_type_is_rejected_with_a_wrap_fix.)
+(case "a non-arrow effect operation type is rejected with a wrap-into-arrow fix"
+  (input (do (effect E (op get Int64)) (def (main) 0) (export main)))
+  (error CDZ0201 (message "an operation's type must be an arrow") (fix (kind wrap))))
+
+(case "a non-arrow generic effect operation type is rejected"
+  (input (do (effect E (op get (Option Int64))) (def (main) 0) (export main)))
+  (error CDZ0201 (message "an operation's type must be an arrow")))
+
+(case "a performed non-arrow operation reports one decl-site error, not the internal op-record leak"
+  (input (do (effect E (op get Int64))
+             (def (main) (handle E 0 ((get (u) s (resume 5 s))) (+ (E.get) 1))) (export main)))
+  (error CDZ0201 (message "an operation's type must be an arrow")) (no-other-errors))
+
+(case "a canonical nullary arrow operation type compiles (the control)"
+  (input (do (effect E (op get (-> Int64))) (def (main) 0) (export main)))
+  (call main) (output (: 0 Int64)))
+
+(case "an unknown operation-type name keeps its unbound CDZ0101, not a spurious arrow reject"
+  (input (do (effect E (op get Nonesuch)) (def (main) 0) (export main)))
+  (error CDZ0101))
+
 (case "a branch-dead host-call leaks no import or host-call at any optimization level"
   (doc    "Capability-safety fence at the #4805 (force-lower-all POST-layout) seam: an effectful helper `io`
            that delegates `ask.ask` to the host is referenced ONLY inside a `(if false …)` branch that const-
