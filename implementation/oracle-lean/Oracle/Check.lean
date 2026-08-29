@@ -91,6 +91,18 @@ def stripFrame (m : Module) (i : Nat) : Nat :=
     | none => i
   | _ => i
 
+/-- A rational VALUE renders as a `name` leaf `"num/den"` (deterministic-value-form). Parse it back to the
+normalized `Value.rational` so a computed rational compares against its written form. `none` if the name is
+not a `int/int` shape. -/
+def parseRationalName? (b : ByteArray) : Option Value := do
+  let s ← String.fromUTF8? b
+  match s.splitOn "/" with
+  | [ns, ds] => do
+    let n ← ns.toInt?
+    let d ← ds.toInt?
+    Eval.mkRational n d
+  | _ => none
+
 mutual
 /-- Interpret an expected value-AST node (its `(: v T)` frame stripped) as a `Value` — a scalar leaf,
 or a compound `(Some e)` / `(None …)` / `(Ok e)` / `(Err e)` / `(tuple e…)` / `(list e…)` (recursively).
@@ -98,7 +110,8 @@ or a compound `(Some e)` / `(None …)` / `(Ok e)` / `(Err e)` / `(tuple e…)` 
 partial def expectedValue? (m : Module) (i : Nat) : Option Value :=
   let s := stripFrame m i
   match m.nodes[s]? with
-  | Option.some (Node.atom lid) => (m.leaves[lid]?).bind Value.ofLeaf
+  | Option.some (Node.atom lid) =>
+    (m.leaves[lid]?).bind (fun l => Value.ofLeaf l <|> (match l with | .name b => parseRationalName? b | _ => none))
   | Option.some (Node.list cs) =>
     if Eval.qualHead? m cs == Option.some ("Set".toUTF8, "of".toUTF8) then
       -- a Set value `((. Set of) (list e…))` — parse the list arg, canonicalize (sort + dedupe)
