@@ -1017,3 +1017,130 @@ mod wasm_abi {
         proc_macro2::Ident::new(name, Span::call_site())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::wasm_abi::{self, Magic, Opcode, Single, Tables};
+
+    /// Clone the tables by hand (the entry structs are deliberately non-`Clone` value types) so a test
+    /// can mutate a copy while leaving the oracle intact — the stand-in for "someone hand-edits the sexpr".
+    fn rebuild(t: &Tables) -> Tables {
+        Tables {
+            opcodes: t
+                .opcodes
+                .iter()
+                .map(|o| Opcode {
+                    ident: o.ident,
+                    byte: o.byte,
+                })
+                .collect(),
+            singles: t
+                .singles
+                .iter()
+                .map(|s| Single {
+                    ident: s.ident,
+                    byte: s.byte,
+                    doc: s.doc,
+                })
+                .collect(),
+            magics: t
+                .magics
+                .iter()
+                .map(|m| Magic {
+                    ident: m.ident,
+                    bytes: m.bytes,
+                    doc: m.doc,
+                })
+                .collect(),
+        }
+    }
+
+    /// The wasm-encoder oracle table must agree with itself — non-empty in each category, and
+    /// `oracle_mismatches` finds zero disagreements. Guards the extraction (a byte read back that
+    /// doesn't round-trip, or an empty category, is a broken oracle).
+    #[test]
+    fn oracle_table_is_self_consistent() {
+        let t = wasm_abi::collect();
+        assert!(
+            !t.opcodes.is_empty() && !t.singles.is_empty() && !t.magics.is_empty(),
+            "an oracle category is empty: {} opcodes, {} singles, {} magics",
+            t.opcodes.len(),
+            t.singles.len(),
+            t.magics.len(),
+        );
+        let mismatches = wasm_abi::oracle_mismatches(&t, &wasm_abi::collect());
+        assert!(
+            mismatches.is_empty(),
+            "the oracle table disagrees with itself: {mismatches:?}"
+        );
+    }
+
+    /// A fat-fingered byte in the sexpr (the exact transcription typo the operator's inverted guarantee
+    /// exists to catch) must be reported by `--oracle-check`. This is the invariant that makes the sexpr
+    /// safe as the authoritative source: a wrong `0x41` can't ship silently.
+    #[test]
+    fn oracle_check_catches_a_transcription_typo() {
+        let oracle = wasm_abi::collect();
+        let mut sexpr = rebuild(&oracle);
+        let ident = sexpr.opcodes[0].ident;
+        sexpr.opcodes[0].byte = sexpr.opcodes[0].byte.wrapping_add(1);
+        let mismatches = wasm_abi::oracle_mismatches(&oracle, &sexpr);
+        assert!(
+            mismatches
+                .iter()
+                .any(|m| m.contains(ident) && m.contains("!=")),
+            "expected a byte-mismatch report for {ident}, got {mismatches:?}"
+        );
+    }
+
+    /// A structural drift — an entry dropped from or invented in the sexpr — must also be reported, not
+    /// just a wrong byte on a present entry. Pins the MISSING / not-in-oracle arms of the cross-check.
+    #[test]
+    fn oracle_check_catches_missing_and_extra_entries() {
+        let oracle = wasm_abi::collect();
+
+        let mut dropped = rebuild(&oracle);
+        let dropped_ident = dropped.opcodes[0].ident;
+        dropped.opcodes.remove(0);
+        let m = wasm_abi::oracle_mismatches(&oracle, &dropped);
+        assert!(
+            m.iter()
+                .any(|s| s.contains(dropped_ident) && s.contains("MISSING")),
+            "expected a MISSING report for dropped {dropped_ident}, got {m:?}"
+        );
+
+        let mut extra = rebuild(&oracle);
+        extra.opcodes.push(Opcode {
+            ident: "NOT_A_REAL_OPCODE",
+            byte: 0xff,
+        });
+        let m = wasm_abi::oracle_mismatches(&oracle, &extra);
+        assert!(
+            m.iter()
+                .any(|s| s.contains("NOT_A_REAL_OPCODE")
+                    && s.contains("NOT in the wasm-encoder oracle")),
+            "expected an extra-entry report, got {m:?}"
+        );
+    }
+
+    /// Pin two spec anchors end-to-end: the extracted bytes for `i32.const`/`i32.add` (0x41/0x6a — the
+    /// file's own banner example) and that `render` emits them into a hex `op` module. A render change
+    /// that stopped emitting hex, dropped the module, or mis-mapped an opcode flips this.
+    #[test]
+    fn render_pins_known_spec_bytes() {
+        let t = wasm_abi::collect();
+        let op_byte = |ident: &str| t.opcodes.iter().find(|o| o.ident == ident).map(|o| o.byte);
+        assert_eq!(op_byte("I32_CONST"), Some(0x41), "i32.const opcode drifted");
+        assert_eq!(op_byte("I32_ADD"), Some(0x6a), "i32.add opcode drifted");
+
+        let rust = wasm_abi::render(&t).to_string();
+        assert!(
+            rust.contains("pub mod op"),
+            "render dropped the op module: {rust}"
+        );
+        assert!(
+            rust.contains("0x41"),
+            "render is not emitting hex opcode bytes"
+        );
+    }
+}
