@@ -8974,48 +8974,16 @@ mod match_engine {
         }
     }
 
-    /// A MALFORMED `@tag` — `(@ (tag …) def)` whose argument is not exactly ONE STRING — must be REJECTED,
-    /// not silently dropped. `strip_annotations` records the tag only for `(tag "string")`; any other arg
-    /// shape (`(tag 5)`, `(tag foo)`, `(tag)`, `(tag "a" "b")`) recorded the tag NOWHERE, so the def was
-    /// untagged with no signal — masking the author's mistake (a `cdz test --tag` filter then matches
-    /// nothing). `collect_faults` now rejects each, naming the required one-string shape. (Flagged by
-    /// v-diagnostics; annotation semantics are v-property-testing's charter.)
+    /// The malformed-`@tag` REJECT shapes (a `(tag …)` argument that is not exactly ONE STRING — `(tag 5)`,
+    /// `(tag foo)`, `(tag)`, `(tag "a" "b")` → CDZ0201 "`@tag` annotation takes exactly one STRING") + the
+    /// valid-`@tag("string")` control migrated to corpus 09-functions. What STAYS here is the corpus-
+    /// inexpressible no-DOUBLE dedup: a malformed `@tag` wrapping a NON-def is ONE mistake — "wraps no
+    /// definition" — NOT ALSO a malformed-tag fault (the `@tag` contract applies only to a def;
+    /// `strip_annotations` records the malformed-tag AFTER the def check). This is a no-OTHER-code assertion
+    /// the corpus `(error …)` surface (per-code `(count)`) cannot express (Copilot PR#484).
     #[test]
-    fn a_malformed_tag_annotation_is_rejected_not_silently_dropped() {
+    fn a_malformed_tag_annotation_on_a_non_def_is_not_a_double_diagnostic() {
         use crate::testkit::parse;
-        for src in [
-            "(module m (@ (tag 5) (def (c) 3)) (export c))", // non-string (number)
-            "(module m (@ (tag foo) (def (c) 3)) (export c))", // non-string (bare name)
-            "(module m (@ (tag) (def (c) 3)) (export c))",   // zero args
-            "(module m (@ (tag \"a\" \"b\") (def (c) 3)) (export c))", // two args
-        ] {
-            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| {
-                    d.message
-                        .contains("`@tag` annotation takes exactly one STRING")
-                })
-                .unwrap_or_else(|| panic!("a malformed `@tag` must be rejected: {src}"));
-            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        }
-        // NO false positive: a VALID `@tag("string")` (bare, or stacked with `@test`) is accepted silently.
-        for ok in [
-            "(module m (@ (tag \"slow\") (def (c) 3)) (export c))",
-            "(module m (@ (tag \"slow\") (@ test (def (c) 3))) (export c))",
-        ] {
-            assert!(
-                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                    .iter()
-                    .any(|d| d
-                        .message
-                        .contains("`@tag` annotation takes exactly one STRING")),
-                "a valid @tag is not flagged: {ok}"
-            );
-        }
-        // A malformed `@tag` wrapping a NON-def is ONE mistake — "wraps no definition" — NOT ALSO a
-        // malformed-tag fault (the `@tag` contract only applies to a def). `strip_annotations` records the
-        // malformed-tag AFTER the def check, so `(@ (tag 5) 5)` yields exactly the wraps-no-definition
-        // diagnostic, not two redundant ones (Copilot PR#484).
         let non_def = crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (@ (tag 5) 5) (def (main) 0) (export main))",
         )));

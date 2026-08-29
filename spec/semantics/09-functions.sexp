@@ -6938,6 +6938,30 @@
   (input  (do (@ test (def)) (def (main) 0) (export main)))
   (error  CDZ0201 (message "annotation wraps no definition") (message "`(@ <name> (def …))`")))
 
+; The `@tag(<string>)` annotation takes EXACTLY ONE STRING argument — a non-string (number / bare name),
+; zero args, or two args is CDZ0201 naming the contract; a valid `@tag("string")` is accepted silently and
+; transparently unwraps to its def. Migrated from rcdzc a_malformed_tag_annotation_is_rejected_not_silently_dropped
+; (the four malformed shapes + the valid control; the no-double dedup on a @tag over a NON-def stays in rust).
+(case "a @tag annotation over a non-string number is rejected"
+  (input  (do (@ (tag 5) (def (c) 3)) (export c)))
+  (error  CDZ0201 (message "`@tag` annotation takes exactly one STRING")))
+
+(case "a @tag annotation over a non-string bare name is rejected"
+  (input  (do (@ (tag foo) (def (c) 3)) (export c)))
+  (error  CDZ0201 (message "`@tag` annotation takes exactly one STRING")))
+
+(case "a @tag annotation with zero arguments is rejected"
+  (input  (do (@ (tag) (def (c) 3)) (export c)))
+  (error  CDZ0201 (message "`@tag` annotation takes exactly one STRING")))
+
+(case "a @tag annotation with two arguments is rejected"
+  (input  (do (@ (tag "a" "b") (def (c) 3)) (export c)))
+  (error  CDZ0201 (message "`@tag` annotation takes exactly one STRING")))
+
+(case "a valid @tag string annotation is accepted and unwraps to its def"
+  (input  (do (@ (tag "slow") (def (c) 3)) (export c)))
+  (call   c) (output (: 3 Int64)))
+
 ; COST HEURISTIC (Addendum 4). The UNANNOTATED default is always-inline, but a LARGE, MULTIPLY-CALLED def
 ; whose call has a runtime-dependent argument is emitted ONCE and called instead of duplicated at each site.
 ; This is an EMISSION-STRATEGY choice — it does NOT change semantics — so it is observable only via the
