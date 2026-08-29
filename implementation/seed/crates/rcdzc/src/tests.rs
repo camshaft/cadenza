@@ -9446,6 +9446,41 @@ mod match_engine {
         );
     }
 
+    #[test]
+    fn an_explosive_self_application_const_fold_declines_instead_of_overflowing_the_stack() {
+        // v-cdz-smith seed 14281198340853570680 (`selfapp-typeinfer-overflow` escape): an EXPLOSIVE
+        // self-application drove the const-fold recursion `const_eval` <-> `const_eval_apply` past the
+        // native `rcdzc-compile` worker stack and HARD-ABORTED the process (SIGABRT, bypassing
+        // `catch_unwind`). `const_eval`'s `budget` bounds cumulative WORK but not native call DEPTH; the
+        // added `db.descent_depth` guard (shared with `core_of`/`type_of`, the stack-sizing policy) now
+        // DECLINES the fold at the depth limit, so the ill-formed program is REJECTED cleanly. This test
+        // running to completion (no process abort) IS the core assertion — a companion to the deep-recursion
+        // robustness tests `host.rs` sizes the worker stack for.
+        let src = "(do (def (main) (let ((v0 (fn (v1) (v1 (. (v1 v1) 2))))) (. (v0 (fn (v2) (v2 v0))) f0))) (export main))";
+        let out = crate::host::run_with_compiler_stack(|| {
+            compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "main",
+                    crate::codec::encode(&parse(src)),
+                )],
+                &[Target::Wasm],
+            )
+        });
+        assert!(
+            out.has_error(),
+            "the ill-formed self-application must DECLINE (not compile, not crash): {:?}",
+            out.diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            out.artifact(Target::Wasm.artifact_kind()).is_none(),
+            "no wasm artifact for a declined self-application"
+        );
+    }
+
     /// The coded rejection a program produces, or `None` if it compiled. Used to pin a well-formedness
     /// rejection (CDZ code) rather than a silent miscompile.
     fn reject_code(src: &str) -> Option<String> {
