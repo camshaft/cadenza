@@ -2715,6 +2715,13 @@ fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp
                 _ => NominalDisp::Construct,
             }
         }
+        // A payload READ — a stored sum/list slot read back. `nominal_disposition` is reached ONLY when this
+        // node's OWN solved type is the nominal (the caller matched `eff_ty` = `Ty::Nominal`), so the slot
+        // stored the nominal and the read yields it directly: PASS-THROUGH (emit the read; it carries the
+        // nominal, no re-wrap). NOT the ambiguous `Call` case — a `SumPayload`'s value is fixed by the slot
+        // type, not inferred from a return. (compiler-ml: the run-src interpreter reads Ty/Subst/… nominal
+        // fields out of its node/state records — every one of these was the `_ => Decline` newtype gap.)
+        Core::SumPayload { .. } => NominalDisp::PassThrough,
         // Control flow / binding carry the nominal through from their sub-expressions.
         Core::If { .. }
         | Core::Let { .. }
