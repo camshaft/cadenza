@@ -18,7 +18,12 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
-use rcdzc::{Artifact, OptLevel, Target};
+// The compile-BOUNDARY types come from the shared `cadenza-compile-abi` crate (not via `rcdzc`'s
+// re-exports) — the first step of making `cdz` speak the boundary vocabulary WITHOUT linking `rcdzc` in a
+// `!standalone` build. `cadenza_compile_abi::{Artifact, OptLevel, Target}` are the identical definitions
+// `rcdzc` produces + `pub use`s, so this is byte-identical here; the remaining fully-qualified `rcdzc::`
+// boundary refs (Request/CompileOutput/sidecar) repoint in follow-up slices now that the dep edge exists.
+use cadenza_compile_abi::{Artifact, OptLevel, Target};
 
 /// Locate the `cdz-compile` binary to delegate to. Resolution order, most-specific first:
 ///  1. `$CDZ_COMPILE_BIN` — an explicit path (how the nix package injects the content-addressed
