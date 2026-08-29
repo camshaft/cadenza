@@ -17,7 +17,9 @@ pub mod sidecar;
 pub mod spans;
 pub mod target;
 
-pub use abi::Artifact;
+pub use abi::{
+    Artifact, Diagnostic, DiagnosticFix, FixKind, Severity, WRAP_HOLE, wrap_prefix_suffix,
+};
 pub use opt::OptLevel;
 pub use sidecar::{Query, Request, decode, encode};
 pub use target::Target;

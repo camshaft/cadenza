@@ -132,6 +132,10 @@ pub mod backend;
 // The build-tool ABI (kinded artifacts + diagnostics) and the pure compilation entry (no I/O — the
 // part that ports to the Cadenza self-host). A CLI bin puts filesystem/args on top of `compile`.
 pub mod abi;
+// ABI-projection bridges: the rcdzc-internal `diag::{Reject, Fix, Code}` -> shared-crate `Diagnostic`/
+// `DiagnosticFix` conversions, as free fns (the orphan rule forbids them as inherent impls on the moved
+// boundary types). Only rcdzc PRODUCES diagnostics; a host-boundary helper, not ported to the self-host.
+pub(crate) mod abi_bridge;
 pub mod compile;
 // Package linking — merge N named `ast` input artifacts into ONE compilation unit (one merged arena
 // under a synthesized `(do …)` root) BEFORE the pure pipeline runs, so `Db::load` sees one program
