@@ -13302,3 +13302,18 @@
   (call main (: 7 Int64)) (output (: 107 Int64))
   (call main (: -1 Int64)) (output (: -3 Int64))
   (live-objects 1))
+
+(case "cdzw69 a GENERIC recursive sum (compound type-param payload) round-trips the cadenza hop"
+  (doc "The #5448 fence: (type (Shape a) (Leaf a) (Node (Shape a) (Shape a))) — a generic sum whose
+        payloads carry the type param — must re-emit its (type …) decl with the param surface intact,
+        plus the recursive fold matching it (was declining: type_ast couldn't render Ty::Var).
+        Tree = Node(Leaf n, Node(Leaf 2, Leaf 3)) → n+5. Dual-path verified, hop byte-idempotent. known-leak 3 = the
+        recursion-class residual (the §4 family).")
+  (input (do
+    (type (Shape a) (Leaf a) (Node (Shape a) (Shape a)))
+    (def (sum (: s (Shape Int64))) (match s ((Leaf v) v) ((Node l r) (+ (sum l) (sum r)))))
+    (def (main (: n Int64)) (sum (Node (Leaf n) (Node (Leaf 2) (Leaf 3)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 12 Int64))
+  (call main (: -4 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 3))
