@@ -3,11 +3,21 @@
 //! Scalars render directly; a string uses `cadenza-syntax`'s escape table (the dual of the reader's
 //! unescape), so a rendered string is byte-identical to what the front-end prints and reads back.
 //! Floats follow the corpus value form (`-0.0`, `NaN`, integral floats as `N.0`).
+//!
+//! Compounds render in the native `#ctor(…)` value-forms (`#list`/`#tuple`/`#record`) — the operator-ruled
+//! canonical VALUE render (`#ctor` everywhere for values; TYPE descriptors stay name-head per seq-206). This
+//! is the SAME spelling the value-encode / rust-backend / nullary path emits (#5586), so an arg-taking typed-
+//! interface-export result (rendered here from a live wasmtime `Val`) matches a nullary program's
+//! value-form-encoded `(output …)` — one uniform #ctor value spelling across every face.
+//!
+//! (A follow-up `render_val_typed` slice adds the guest-result-Ty leaf disambiguation — a `list<u8>` as
+//! `Bytes` `b"…"` vs `List UInt8` `#list(…)`, a `string` as a `Symbol` `#"…"` — threaded from the compile
+//! via a `cdz-result-type` component custom section.)
 
 use cadenza_syntax::literal;
 use wasmtime::component::Val;
 
-/// Render `v` to its canonical text.
+/// Render `v` to its canonical text (the type-blind render — a `Val` already tags its shape by variant).
 pub fn render_val(v: &Val) -> String {
     match v {
         Val::Bool(b) => b.to_string(),
@@ -25,19 +35,26 @@ pub fn render_val(v: &Val) -> String {
         // Closed-escape-set render (the dual of the reader's unescape), so a non-printable scalar
         // renders verbatim and reads back to the same value.
         Val::String(s) => format!("\"{}\"", literal::escape_string(s)),
-        Val::List(xs) | Val::Tuple(xs) => {
+        // LIST + TUPLE render in the native `#list(…)` / `#tuple(…)` value-forms — DISTINCT (the native forms
+        // disambiguate what the old head-less `(x y)` conflated), matching the value-encode / rust-backend
+        // spelling.
+        Val::List(xs) => {
             let inner: Vec<String> = xs.iter().map(render_val).collect();
-            format!("({})", inner.join(" "))
+            format!("#list({})", inner.join(" "))
         }
-        // A RECORD renders in the corpus value-form `(record (= name value) …)`, in field order — the same
-        // spelling the resource-escape / codec path prints, so a typed interface-export result (rendered
-        // here) matches a `(wit-world …)` case's `(output …)` clause.
+        Val::Tuple(xs) => {
+            let inner: Vec<String> = xs.iter().map(render_val).collect();
+            format!("#tuple({})", inner.join(" "))
+        }
+        // A RECORD renders the native `#record((= name value) …)` value-form, in field order — the same
+        // spelling the value-encode / resource-escape path prints, so a typed interface-export result
+        // (rendered here) matches a `(wit-world …)` case's `(output …)` clause after the #ctor unification.
         Val::Record(fields) => {
             let inner: Vec<String> = fields
                 .iter()
                 .map(|(n, v)| format!("(= {n} {})", render_val(v)))
                 .collect();
-            format!("(record {})", inner.join(" "))
+            format!("#record({})", inner.join(" "))
         }
         // An OPTION renders `(Some <value>)` / `(None unit)` — the corpus sum value-form (the `unit` payload
         // marks the absent case, matching the reader).
@@ -90,5 +107,47 @@ pub fn display_float(f: f64) -> String {
         format!("{f:.0}.0")
     } else {
         format!("{f}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasmtime::component::Val;
+
+    /// Compounds render in the native `#ctor(…)` forms (the operator-ruled #ctor-everywhere value render):
+    /// `#list`/`#tuple` are DISTINCT (not the old head-less `(x y)`), a record is `#record((= n v)…)`.
+    /// Sums/variants keep the `(case …)` value-form.
+    #[test]
+    fn compounds_render_native_ctor_forms() {
+        let ints = |xs: &[i64]| xs.iter().map(|&i| Val::S64(i)).collect::<Vec<_>>();
+        assert_eq!(render_val(&Val::List(ints(&[1, 2]))), "#list(1 2)");
+        assert_eq!(render_val(&Val::Tuple(ints(&[1, 2]))), "#tuple(1 2)");
+        // list vs tuple of the same elements are now DISTINGUISHABLE.
+        assert_ne!(
+            render_val(&Val::List(ints(&[3, 4]))),
+            render_val(&Val::Tuple(ints(&[3, 4])))
+        );
+        assert_eq!(
+            render_val(&Val::Record(vec![
+                ("x".into(), Val::S64(3)),
+                ("y".into(), Val::S64(13)),
+            ])),
+            "#record((= x 3) (= y 13))"
+        );
+        // nested: a record holding a tuple + a list.
+        assert_eq!(
+            render_val(&Val::Record(vec![
+                ("pair".into(), Val::Tuple(ints(&[3, 4]))),
+                ("xs".into(), Val::List(ints(&[3, 6]))),
+            ])),
+            "#record((= pair #tuple(3 4)) (= xs #list(3 6)))"
+        );
+        // Sums stay the (case …) value-form (NOT a #ctor).
+        assert_eq!(render_val(&Val::Option(None)), "(None unit)");
+        assert_eq!(
+            render_val(&Val::Option(Some(Box::new(Val::S64(5))))),
+            "(Some 5)"
+        );
     }
 }
