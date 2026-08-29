@@ -13483,3 +13483,14 @@
   (call main (: 8 Int64)) (output (: 10 Int64))
   (call main (: 7 Int64)) (output (: 1 Int64))
   (call main (: 100001 Int64)) (output (: 1 Int64)))
+
+(case "e10 a heap ctor DISCARDED as a do-statement elides its arg trap — the discard-spelling boundary"
+  (doc "The do-discard half of the ruling-A discard boundary (breaker CASE3, settled by three-way
+        convergence: both backends + the #5507 oracle model): a heap-collection ctor whose value is
+        discarded as a NON-FINAL do item elides entirely — its trap-possible arg is NOT forced — while
+        the SAME ctor dead-LET-bound TRAPS (#5328/#5332, the strict_force_eval set). The boundary is the
+        SPELLING: let-binding = reached-and-forced; bare do-item = discarded-and-elided (§283 family).
+        42 at both d=0 (trap elided) and d=5.")
+  (input (do (def (main (: d Int64)) (do (list 1 (/ 5 d)) 42)) (export main)))
+  (call main (: 0 Int64)) (output (: 42 Int64))
+  (call main (: 5 Int64)) (output (: 42 Int64)))
