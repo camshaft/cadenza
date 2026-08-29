@@ -10,34 +10,40 @@
   (note "apply(content-type, payload, resumes) → list of effect-requests " (br) " content-type = a record of a family name + a version; payload / resumes = optional bytes")
   (p "The effect-kinds and the effect-request are ordinary Cadenza types, a closed sum and a record, the same declarations you'd write for any data. Here they are, matching the kernel's interface:")
   (runnable
-    (source "type EffectKind =
-  | Shell()
-  | Http()
-  | Model()
-  | Now()
-  | Timer()
-  | Emit()
+    (source (type EffectKind (Shell) (Http) (Model) (Now) (Timer) (Emit))
 
-type EffectRequest =
-  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
+(type
+  EffectRequest
+  (Mk
+    (Record
+      (: kind EffectKind)
+      (: target String)
+      (: payload (Option Bytes))
+      (: correlation (Option Bytes)))))
 
-def main() = EffectKind.Http()")
-    (authored-in "ml"))
+(def (main) ((. EffectKind Http)))))
   (h2 "The empty reducer")
   (p "The smallest reducer that works ignores every input and asks for nothing. It's total (it can't brick the agent) and it's the honest starting point: a fold that advances the log and requests no effects. Here " (c "apply") " returns the empty list for every event, and a " (c "main") " exercises it on a sample message and shows exactly what came back, the list of effect-requests itself:")
   (runnable
-    (source "type EffectKind = | Shell() | Http() | Model() | Now() | Timer() | Emit()
-type EffectRequest =
-  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
+    (source (type EffectKind (Shell) (Http) (Model) (Now) (Timer) (Emit))
 
-def apply(
-  ct: Record(family: String, version: UInt(32)),
-  payload: Option(Bytes),
-  resumes: Option(Bytes),
-) -> List(EffectRequest) = []
+(type
+  EffectRequest
+  (Mk
+    (Record
+      (: kind EffectKind)
+      (: target String)
+      (: payload (Option Bytes))
+      (: correlation (Option Bytes)))))
 
-def main() = apply({ family = \"message\", version = 1 }, None(), None())")
-    (authored-in "ml"))
+(def
+  (apply
+    (: ct (Record (: family String) (: version (UInt 32))))
+    (: payload (Option Bytes))
+    (: resumes (Option Bytes)))
+  (: #list() (List EffectRequest)))
+
+(def (main) (apply #record((= family "message") (= version 1)) (None) (None)))))
   (p "The result is " (c "[]") ", the empty list: no effects, for any event. To turn this program into something the kernel can run, you compile it as a " (em "component") " bound to the reducer interface, naming that interface on the command line:")
   (note "cdz compile reducer.cdz --target wasm --component-name cadenza:agent-kernel/fold")
   (p "The " (c "--component-name") " flag is the whole difference between an ordinary program and a component the kernel can load: it exports " (c "apply") " through the named " (c "cadenza:agent-kernel/fold") " interface the kernel expects, so the kernel can marshal each event into the call and read the effect-requests back out. (That marshalling and the component export are the kernel's side of the boundary; the examples on this page run " (c "apply") "'s logic directly, the way you'd unit-test it, rather than through the component interface.)")
@@ -45,55 +51,79 @@ def main() = apply({ family = \"message\", version = 1 }, None(), None())")
   (h2 "Emitting an effect")
   (p "A useful reducer asks for work. An effect-request names a " (em "kind") " (which capability), a " (em "target") ", an optional " (em "payload") ", and an optional " (em "correlation") " tag the kernel echoes back on the resume so you can match a completion to the request that caused it. This reducer returns a single " (c "Http") " request on every event; the " (c "main") " reaches into the returned list and shows the " (em "target") " the reducer asked the kernel to fetch:")
   (runnable
-    (source "type EffectKind = | Shell() | Http() | Model() | Now() | Timer() | Emit()
-type EffectRequest =
-  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
+    (source (type EffectKind (Shell) (Http) (Model) (Now) (Timer) (Emit))
 
-def apply(
-  ct: Record(family: String, version: UInt(32)),
-  payload: Option(Bytes),
-  resumes: Option(Bytes),
-) -> List(EffectRequest) =
-  [ EffectRequest.Mk({
-      kind = EffectKind.Http(),
-      target = \"https://ok.host/x\",
-      payload = None(),
-      correlation = Some(String.to-bytes(\"step-1\")),
-    }) ]
+(type
+  EffectRequest
+  (Mk
+    (Record
+      (: kind EffectKind)
+      (: target String)
+      (: payload (Option Bytes))
+      (: correlation (Option Bytes)))))
 
-def main() =
-  match List.at(apply({ family = \"message\", version = 1 }, None(), None()), 0) with
-    | Some(Mk(r)) => r.target
-    | None() => \"no effect\"")
-    (authored-in "ml"))
+(def
+  (apply
+    (: ct (Record (: family String) (: version (UInt 32))))
+    (: payload (Option Bytes))
+    (: resumes (Option Bytes)))
+  (:
+    #list(((. EffectRequest Mk)
+        #record((= kind ((. EffectKind Http)))
+          (= target "https://ok.host/x")
+          (= payload (None))
+          (= correlation (Some ((. String to-bytes) "step-1"))))))
+    (List EffectRequest)))
+
+(def
+  (main)
+  (match
+    ((. List at) (apply #record((= family "message") (= version 1)) (None) (None)) 0)
+    ((Some (Mk r)) (. r target))
+    ((None) "no effect")))))
   (p "The result is " (c "\"https://ok.host/x\"") ", the exact target the reducer chose. A returned effect-request is " (em "declarative") ": the reducer doesn't perform the HTTP call, it hands the kernel a description of the work and returns. The kernel schedules it, and when it completes, calls " (c "apply") " again with the " (em "resumes") " field set to that same " (c "correlation") " tag, echoed back verbatim. The tag is the reducer's " (em "own") " token, not a kernel-assigned id, so a later " (c "apply") " whose " (c "resumes") " matches the token you chose is the completion of the request you made. That guest-chosen token is the only resume mechanism; a " (c "resumes") " of " (c "None") " means \"not a resume\", an inbound message, not the answer to an earlier request. That's how a pure fold reaches the outside world without ever blocking inside the reducer.")
   (h2 "Deciding by event")
   (p "Real reducers branch on what arrived. The content-type's " (c "family") " and the " (c "resumes") " field are enough to distinguish an inbound message from an effect completing. A common shape: on a resume, stop (the effect you asked for is done, don't cascade); on a fresh message, act; otherwise ignore. This reducer emits one " (c "Http") " request for a message and nothing for a resume or any other family. Here the " (c "main") " hands it a fresh " (em "message") ", so it takes the acting branch, and shows what the reducer decided to do, the target of the request it emits:")
   (runnable
-    (source "type EffectKind = | Shell() | Http() | Model() | Now() | Timer() | Emit()
-type EffectRequest =
-  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
+    (source (type EffectKind (Shell) (Http) (Model) (Now) (Timer) (Emit))
 
-def apply(
-  ct: Record(family: String, version: UInt(32)),
-  payload: Option(Bytes),
-  resumes: Option(Bytes),
-) -> List(EffectRequest) =
-  match resumes with
-    | Some(_) => []
-    | None() =>
-      if ct.family == \"message\" then
-        [ EffectRequest.Mk({ kind = EffectKind.Http(), target = \"https://ok.host/x\", payload = None(), correlation = None() }) ]
-      else
-        []
+(type
+  EffectRequest
+  (Mk
+    (Record
+      (: kind EffectKind)
+      (: target String)
+      (: payload (Option Bytes))
+      (: correlation (Option Bytes)))))
 
-def decision(ct, payload, resumes) =
-  match List.at(apply(ct, payload, resumes), 0) with
-    | Some(Mk(r)) => r.target
-    | None() => \"(no effect)\"
+(def
+  (apply
+    (: ct (Record (: family String) (: version (UInt 32))))
+    (: payload (Option Bytes))
+    (: resumes (Option Bytes)))
+  (:
+    (match
+      resumes
+      ((Some _) #list())
+      ((None)
+        (if
+          (= (. ct family) "message")
+          #list(((. EffectRequest Mk)
+              #record((= kind ((. EffectKind Http)))
+                (= target "https://ok.host/x")
+                (= payload (None))
+                (= correlation (None)))))
+          #list())))
+    (List EffectRequest)))
 
-def main() = decision({ family = \"message\", version = 1 }, None(), None())")
-    (authored-in "ml"))
+(def
+  (decision ct payload resumes)
+  (match
+    ((. List at) (apply ct payload resumes) 0)
+    ((Some (Mk r)) (. r target))
+    ((None) "(no effect)")))
+
+(def (main) (decision #record((= family "message") (= version 1)) (None) (None)))))
   (p "On a message the reducer dispatches to the acting branch and the result is " (c "\"https://ok.host/x\"") ", the target it emitted. Change " (c "main") " to hand " (c "apply") " a resume instead, " (c "decision(&#123; family = \"result\", version = 1 &#125;, None(), Some(String.to-bytes(\"tok\")))") ", and the first " (c "match") " arm fires and it renders " (c "\"(no effect)\"") ": a completion doesn't cascade. The reducer's whole behaviour is this one " (c "match") " on the event, which is exactly what makes it easy to test.")
   (h2 "Reading session state: an effect through a binding")
   (p "An effect-request is for work the kernel does " (em "later") ". But a reducer often needs something " (em "now") ", most commonly its own session's key-value store, to read a counter before deciding. That's a host capability, and Cadenza reaches it the same way it reaches any capability: an " (strong "effect") " declares the operations, and a " (strong "binding") " says which interface the host provides them through. The same construct that calls a host store would call a peer component, the program performs the effect and the binding routes it.")
