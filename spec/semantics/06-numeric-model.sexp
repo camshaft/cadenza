@@ -2751,7 +2751,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 0))
 
 (case "mixed-sign Rational add and multiply normalize signs through one runtime chain"
   (doc    "Runtime sign params steer add AND multiply against one expected value (-1/6): face 1 hits
@@ -8731,7 +8731,7 @@
             (def (main) (loop 70 (BigInt.of 1)))
             (export main)))
   (output (: 1180591620717411303424 BigInt))
-  (live-objects known-leak 71))
+  (live-objects known-leak 1))
 
 (case "a BigInt factorial accumulator computes 25! exactly"
   (doc    "THE canonical BigInt program: `fac(25)` with a BigInt accumulator — `(* acc (BigInt.of n))` at
@@ -8747,7 +8747,7 @@
             (def (main) (fac 25 (BigInt.of 1)))
             (export main)))
   (output (: 15511210043330985984000000 BigInt))
-  (live-objects known-leak 26))
+  (live-objects known-leak 1))
 
 (case "a BigInt is usable as a set element, deduplicated by its arbitrary-precision value"
   (doc    "`(Set.len (Set.of (list (BigInt.of 5) (BigInt.of 5) (BigInt.of 7))))` = 2: a set of BigInt
@@ -9001,7 +9001,7 @@
   (doc "Threading a Rational through a recursive accumulator sums 1/2 three times to 3/2, then compares 3/2 < 2/1 as true, exercising borrow/consume drop discipline across the recursion.")
   (input (do (def (loop (: n Int64) (: acc Rational)) (if (= n 0) acc (loop (- n 1) (+ acc (Rational.of 1 2))))) (def (main) (if (< (loop 3 (Rational.of 0 1)) (Rational.of 2 1)) 1 0)) (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 0))
 
 (case "a runtime-computed Rational crosses the host boundary as its exact value"
   (doc    "`(Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000))))` — a Rational built
@@ -10326,7 +10326,7 @@
             (export main)))
   (call   main (: 20 Int64)) (output (: 1 Int64))
   (call   main (: 7 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 60 21))
+  (live-objects known-leak 0 0))
 
 ;; -- guard-elision trap-preservation boundaries: masks and remainders never license dropping overflow guards (breaker batch 372, from the 2026-07-17 banked candidate) --
 (case "geb1 a mask by -1 is NOT narrowing — the add guard stays and traps at MAX"
