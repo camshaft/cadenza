@@ -74,6 +74,12 @@ interface heap {
   bytes-set: func(buf: u32, index: u32, value: u32) -> u32; // 14
   bytes-get: func(buf: u32, index: u32) -> u32;             // 15
   bytes-len: func(buf: u32) -> u32;                         // 16
+  // `bytes-scalar-at` reads the `scalar-index`-th Unicode SCALAR of the String's UTF-8 bytes and returns
+  //    its codepoint; an out-of-range (or ill-formed) index returns u32::MAX (0xFFFFFFFF), which is not a
+  //    valid scalar, so the compiler maps it to `None` when building `(Option Char)`. O(scalar_index) — a
+  //    UTF-8 walk from the start (String is variable-width, NOT O(1) scalar-indexable). Consumed by the
+  //    compiler's `String.scalar-at` on a RUNTIME string (the constant case folds to a `Leaf::Char`).
+  bytes-scalar-at: func(buf: u32, scalar-index: u32) -> u32; // (codegen-assigned index; name-sorted)
 
   // ── String (indices 17–18) — a stored UTF-8 string leaf. The component model marshals the
   //    `string` across the boundary, so the runtime just stores/returns the bytes VERBATIM: it
