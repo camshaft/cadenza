@@ -344,6 +344,16 @@
           doCheck = false;
         });
 
+        # xtaskPruneBaselinesBin — the `.gate-baseline*` unreferenced-entry pruner (v-xtask-decompose). Built
+        # from ONLY the xtask-prune-baselines crate's closure (deps xtask-support → cdz-contract → cadenza-ast),
+        # so it caches INDEPENDENTLY of xtask. `apps.prune-baselines` runs it with CDZ_SEED_BIN_DIR (the
+        # nix-built cdz-corpus for the corpus title set). Output: $out/bin/xtask-prune-baselines.
+        xtaskPruneBaselinesBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-prune-baselines"; }) // {
+          pname = "cdz-xtask-prune-baselines";
+          cargoExtraArgs = "-p xtask-prune-baselines";
+          doCheck = false;
+        });
+
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
         # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
@@ -507,6 +517,9 @@
           # xtask-fmt (v-xtask-decompose): the Cadenza formatter as its own bin crate, deps only xtask-support.
           # Registered here so the crane deps-src includes its Cargo.toml.
           xtask-fmt = "xtask/crates/xtask-fmt";
+          # xtask-prune-baselines (v-xtask-decompose): the .gate-baseline* pruner as its own bin crate, deps
+          # only xtask-support. Registered here so the crane deps-src includes its Cargo.toml.
+          xtask-prune-baselines = "xtask/crates/xtask-prune-baselines";
           # xtask-codegen-contracts (v-xtask-decompose): the contract-schema projector (codegen→build-time-nix),
           # deps cadenza-ast + cdz-contract. Registered here so the crane deps-src includes its Cargo.toml.
           xtask-codegen-contracts = "xtask/crates/xtask-codegen-contracts";
@@ -838,6 +851,8 @@
               xtask-canonicalize-baselines = [ "cadenza-ast" "cdz-contract" "xtask-canonicalize-baselines" "xtask-support" ];
               # xtask-fmt deps xtask-support (which deps cdz-contract→cadenza-ast).
               xtask-fmt = [ "cadenza-ast" "cdz-contract" "xtask-fmt" "xtask-support" ];
+              # xtask-prune-baselines deps xtask-support (which deps cdz-contract→cadenza-ast).
+              xtask-prune-baselines = [ "cadenza-ast" "cdz-contract" "xtask-prune-baselines" "xtask-support" ];
               # xtask-codegen-contracts deps cadenza-ast + cdz-contract (cdz-contract deps cadenza-ast).
               xtask-codegen-contracts = [ "cadenza-ast" "cdz-contract" "xtask-codegen-contracts" ];
               # xtask-codegen-wasm-abi deps only external crates (wasm-encoder/syn/quote/prettyplease) — its
@@ -3786,6 +3801,10 @@
         # emit rcdzc/src/backend/wasm/wasm_abi.rs at build time.
         packages.xtask-codegen-wasm-abi = xtaskCodegenWasmAbiBin;
 
+        # The standalone baseline pruner bin (v-xtask-decompose). `nix build .#xtask-prune-baselines` →
+        # result/bin/xtask-prune-baselines. Backs `apps.prune-baselines`; caches independently of xtask.
+        packages.xtask-prune-baselines = xtaskPruneBaselinesBin;
+
         # The standalone mandate-lint binary (v-xtask-decompose). `nix build .#xtask-mandates` →
         # result/bin/xtask-mandates. Backs `apps.lint-mandates` + the mandate gate; caches independently
         # of xtask (its closure is just the crate + syn).
@@ -3919,6 +3938,7 @@
               clippy-xtask-fmt = mkCrateClippyCrane { crate = "xtask-fmt"; };
               clippy-xtask-codegen-contracts = mkCrateClippyCrane { crate = "xtask-codegen-contracts"; };
               clippy-xtask-codegen-wasm-abi = mkCrateClippyCrane { crate = "xtask-codegen-wasm-abi"; };
+              clippy-xtask-prune-baselines = mkCrateClippyCrane { crate = "xtask-prune-baselines"; };
             };
             # cdz's clippy stays in its workspace-src check (crateCdzCheck runs `cargo clippy -p cdz` inside).
             clippyCraneAggregate = pkgs.runCommand "cargo-clippy-crane-aggregate"
@@ -3967,6 +3987,7 @@
               test-xtask-fmt = mkCrateTestCrane { crate = "xtask-fmt"; };
               test-xtask-codegen-contracts = mkCrateTestCrane { crate = "xtask-codegen-contracts"; };
               test-xtask-codegen-wasm-abi = mkCrateTestCrane { crate = "xtask-codegen-wasm-abi"; };
+              test-xtask-prune-baselines = mkCrateTestCrane { crate = "xtask-prune-baselines"; };
             };
             # COVERAGE-PARITY assert (concierge mandate — no test silently dropped vs `cargo test
             # --workspace`): the per-crate test crates PLUS cdz (crateCdzCheck) must EXACTLY equal the
@@ -4031,9 +4052,9 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-prune-baselines clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
-              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + xtask-codegen-wasm-abi + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
+              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + xtask-codegen-wasm-abi + xtask-prune-baselines + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
             # flakeReproBackstop: the REPRODUCIBILITY-BACKSTOP subset — the checks the `nix-flake (advisory)`
             # CI job should run INSTEAD of a whole `nix flake check`. Data-driven CI-speed (operator standing
@@ -4957,6 +4978,29 @@
           {
             type = "app";
             program = "${wrapper}/bin/cdz-canonicalize-baselines";
+          };
+
+        # apps.prune-baselines — the `.gate-baseline*` unreferenced-entry pruner as a nix-native app backed
+        # by the STANDALONE `xtaskPruneBaselinesBin` (v-xtask-decompose). `nix run .#prune-baselines [-- --check]`.
+        # Builds ONLY xtask-prune-baselines (+ xtask-support), NOT the xtask monolith; the `Cmd::PruneBaselines`
+        # arm is removed so `cargo xtask prune-baselines` forwards here. Needs the corpus title set → point
+        # CDZ_SEED_BIN_DIR at the nix-built cdz-corpus (`cdzCorpus`), cargo-free (no `cargo build -p cdz-corpus`).
+        apps.prune-baselines =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-prune-baselines";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export CDZ_REPO_ROOT="$root"
+                export CDZ_SEED_BIN_DIR="${cdzCorpus}/bin"
+                exec ${xtaskPruneBaselinesBin}/bin/xtask-prune-baselines "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-prune-baselines";
           };
 
         # apps.xtask — the GENERAL xtask entrypoint through nix (v-nix, operator all-nix mandate 2026-08-28:
