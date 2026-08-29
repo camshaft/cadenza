@@ -1916,6 +1916,49 @@
             --cdz ${seedCompiler}/bin/cdz --out "$out"
         '';
 
+        # cdzPlatformContracts (v-nix, operator codegen→build-time-nix): run v-xtask-decompose's standalone
+        # xtask-codegen-contracts bin (#5209) to EMIT cdz-platform/src/contracts/*.rs at BUILD time, so the
+        # generated contract schemas need not be committed source. The bin reads CDZ_REPO_ROOT-relative:
+        # implementation/seed/crates/cdz-platform/contracts/{kernel,userspace}/*.cdz + guests/contract-id.cdz,
+        # runs `cdz convert`→binary AST + executes descriptor() for the id (same delegate-cdz shape as
+        # contractHashes above: CDZ_STORE + CDZ_COMPILE_BIN + CDZ_RUN_BIN), then render_schema → <name>.rs +
+        # mod.rs into the out dir. Stage a WRITABLE repo tree ($TMPDIR/repo) with just those inputs (the bin
+        # writes a target/codegen-contract-stage scratch under CDZ_REPO_ROOT, so it must be writable). This is
+        # the FIRST half of the flip (additive — nothing consumes it yet); cdzPlatformContractsMatch below
+        # guards it byte-identical to the committed src/contracts until the atomic overlay-flip lands.
+        cdzPlatformContracts = pkgs.runCommand "cdz-platform-contracts"
+          # rustToolchain provides `rustfmt` — the bin renders via prettyplease THEN runs `rustfmt --edition
+          # 2024`, falling back to raw (unformatted) prettyplease if rustfmt is absent. Without rustfmt on PATH
+          # the output diverges from the committed (cargo-fmt'd, edition 2024) src/contracts on line-wrapping.
+          { nativeBuildInputs = [ xtaskCodegenContractsBin seedCompiler rustToolchain ]; } ''
+          set -euo pipefail
+          export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+          root="$TMPDIR/repo"; plat="$root/implementation/seed/crates/cdz-platform"
+          mkdir -p "$plat/guests"
+          cp -r ${./implementation/seed/crates/cdz-platform/contracts} "$plat/contracts"
+          cp ${./implementation/seed/crates/cdz-platform/guests/contract-id.cdz} "$plat/guests/contract-id.cdz"
+          chmod -R u+w "$root"
+          export CDZ_REPO_ROOT="$root"
+          export CDZ_SEED_BIN_DIR="${seedCompiler}/bin"
+          export CDZ_STORE="${componentStore}"
+          export CDZ_COMPILE_BIN="${cdzCompile}/bin/cdz-compile"
+          export CDZ_RUN_BIN="${cdzRun}/bin/cdz-run"
+          mkdir -p "$out/contracts"
+          xtask-codegen-contracts "$out/contracts"
+        '';
+        # DRIFT-GUARD: the build-time-generated contracts MUST be byte-identical to the committed
+        # src/contracts (v-xtask-decompose verified #5209 emits diff-clean) — until the atomic overlay-flip
+        # drops the committed copies. A mismatch = codegen + committed drifted → loud red.
+        cdzPlatformContractsMatch = pkgs.runCommand "cdz-platform-contracts-match" { } ''
+          set -euo pipefail
+          if diff -r ${cdzPlatformContracts}/contracts ${./implementation/seed/crates/cdz-platform/src/contracts} > contracts.diff; then
+            echo "ok: cdzPlatformContracts (build-time codegen) == committed cdz-platform/src/contracts (byte-identical)" > "$out"
+          else
+            echo "DRIFT: build-time contract codegen != committed src/contracts — regen committed or fix the projector:"
+            cat contracts.diff; exit 1
+          fi
+        '';
+
         # The program names a run references — every `program = "<name>"` field in the ML spec. This is
         # DEPENDENCY DISCOVERY for the nix graph (which programs a run's derivation depends on, so caching is
         # per-program); the actual name→path substitution is an AST-validated `cdz rewrite` at build time
@@ -3694,6 +3737,10 @@
         # .#xtask-codegen-contracts` → result/bin/xtask-codegen-contracts. The `cdzPlatformContracts`
         # derivation (v-nix, in progress) runs it to emit cdz-platform/src/contracts/*.rs at build time.
         packages.xtask-codegen-contracts = xtaskCodegenContractsBin;
+        # The build-time-generated contract schemas (v-nix). `nix build .#cdz-platform-contracts` →
+        # result/contracts/{<name>.rs,mod.rs}. The atomic overlay-flip will stage these into cdz-platform's
+        # compile in place of the (to-be-dropped) committed src/contracts.
+        packages.cdz-platform-contracts = cdzPlatformContracts;
 
         # The wasm/component byte-table extractor bin (v-xtask-decompose, codegen→build-time-nix). `nix build
         # .#xtask-codegen-wasm-abi` → result/bin/xtask-codegen-wasm-abi. A `cdzWasmAbi` derivation runs it to
@@ -4156,6 +4203,7 @@
             # `nix build .#checks.<sys>.contract-hashes-valid` — the contract name→hash mapping is well-formed
             # (also part of flake-repro-backstop). The harness runs that name a contract exercise it in anger.
             contract-hashes-valid = contractHashesValid;
+            cdz-platform-contracts-match = cdzPlatformContractsMatch;
             # The integration-test harness runs (§9): `harness-runs` is the aggregate; each individual run is
             # exposed below as `checks.<sys>.harness-<name>` (spread from harnessRunChecks) so `nix flake
             # check` runs them all AND CI can build/cache one run in isolation. `.#packages.cdz-platform-itest`
