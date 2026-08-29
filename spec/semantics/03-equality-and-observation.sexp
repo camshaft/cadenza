@@ -1640,6 +1640,37 @@
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
+(case "list construction strictly evaluates an EFFECTFUL element argument — the perform runs even when the list is discarded"
+  (doc    "The effect companion of the strict-construction rule (operator ruling — strict list construction;
+           core-semantics.md #A Trap Occurs Only Where Its Computation Is Observed says a heap-collection ctor
+           evaluates its element arguments so their traps AND EFFECTS occur, regardless of consumer, including
+           when the collection is bound and then discarded). Here the second element `((. P acc) 5)` PERFORMS
+           `acc 5`, threading 5 into the handler's state; the list `x` is then DISCARDED and `main` returns
+           `((. P rd))` = the state. Result 5 proves the perform RAN at construction even though `x` is never
+           observed — the effectful element argument is strict. GREEN regression guard: it must stay 5 so a
+           strict-construction fix for pure-trapping arguments does not regress the already-strict effect path.")
+  (input  (do (effect P (op acc (-> Int64 Int64)) (op rd (-> Int64)))
+              (def (main) (handle P (: 0 Int64)
+                            ((acc (v) s (resume v (+ s v))) (rd () s (resume s s)))
+                            (let ((x (list 1 ((. P acc) 5)))) ((. P rd)))))
+              (export main)))
+  (output (: 5 Int64)))
+
+(case "list construction strictly evaluates an EFFECTFUL element argument — the perform runs even when = short-circuits"
+  (doc    "The equality companion: the same performing list `(list 1 ((. P acc) 5))` is the LEFT operand of an
+           `=` against `(list 9 9)`, which mismatches at element 0. The comparison short-circuits, and its bool
+           is discarded; `main` returns `((. P rd))` = the handler state. Result 5 proves the perform RAN when
+           the left operand was CONSTRUCTED — before/independent of the comparison deciding — so a constructed
+           `=` operand's effectful element argument is strict, not deferred by the short-circuit. GREEN
+           regression guard (must stay 5): pairs with the pure-trapping `=` operand case above, whose trap the
+           strict-construction fix must add without disturbing this already-strict effect path.")
+  (input  (do (effect P (op acc (-> Int64 Int64)) (op rd (-> Int64)))
+              (def (main) (handle P (: 0 Int64)
+                            ((acc (v) s (resume v (+ s v))) (rd () s (resume s s)))
+                            (let ((b (= (list 1 ((. P acc) 5)) (list 9 9)))) ((. P rd)))))
+              (export main)))
+  (output (: 5 Int64)))
+
 (case "recursive-sum equality over FLOAT payloads compares by canonical float bytes along the walk"
   (doc    "The float-leaf member of the recursive-walk family (the Int64-payload cases above compare
            integer leaves): `(type FL (FNil) (FCons Float64 FL))` — each spine node carries a Float64, so
