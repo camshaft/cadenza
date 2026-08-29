@@ -129,6 +129,31 @@
   (input  (do (def (main) (Qty.of 5 (Unit.* (Unit.base #"m")))) (export main)))
   (error  CDZ0201))
 
+; `Qty.of <value> <unit>` requires its SECOND argument to be a UNIT: a non-unit second arg (a bare Int, a
+; String, a tuple) made `eval::unit_of` return None and `type_of`'s `Qty.of` arm silently fall through to
+; `Any`, so `cdz check` passed a quantity with no real unit. Now CDZ0201 naming the unit forms. Migrated from
+; rcdzc a_non_unit_second_argument_to_qty_of_is_rejected (the no-double contrast — an UNBOUND unit name
+; surfaces its own CDZ0101, not ALSO the not-a-unit reject — is a no-other-code assertion kept in rust).
+(case "a Qty.of second argument that is a bare integer is rejected as not a unit"
+  (input  (do (def (main) (Qty.of 5 5)) (export main)))
+  (error  CDZ0201 (message "`Qty.of`'s second argument must be a UNIT")))
+
+(case "a Qty.of second argument that is a string is rejected as not a unit"
+  (input  (do (def (main) (Qty.of 5 "s")) (export main)))
+  (error  CDZ0201 (message "`Qty.of`'s second argument must be a UNIT")))
+
+(case "a Qty.of second argument that is a tuple is rejected as not a unit"
+  (input  (do (def (main) (Qty.value (Qty.of 5 (tuple 1 2)))) (export main)))
+  (error  CDZ0201 (message "`Qty.of`'s second argument must be a UNIT")))
+
+(case "a valid base-unit Qty.of is accepted and Qty.value recovers the magnitude (no over-rejection)"
+  (input  (do (def (main) (Qty.value (Qty.of 5 (Unit.base #"meter")))) (export main)))
+  (call   main) (output (: 5 Int64)))
+
+(case "a valid Unit.one Qty.of is accepted and Qty.value recovers the magnitude"
+  (input  (do (def (main) (Qty.value (Qty.of 5 Unit.one))) (export main)))
+  (call   main) (output (: 5 Int64)))
+
 ; A quantity in a NON-REFERENCE unit DISPLAYS at its dimension's reference unit with the magnitude
 ; SCALED to that reference — the same normalize-to-reference the mixed-unit combine runs, so a single
 ; quantity and a homogeneous combine render identically. This is the fix for the calc relabel bug
