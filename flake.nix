@@ -1193,17 +1193,22 @@
         '';
 
         # ── test-shred: per-@test wasm matrix (v-test-shred; design/DESIGN-test-shred-per-test-caching.md) ──
-        # Mirrors the corpus per-case caching graph for a cadenza @test SUITE: TWO-STAGE SHRED a project (`cdz
-        # test --emit-shred --two-stage`, in-process rcdzc, wasmtime-free, content-addressed) into a SHARED
-        # closure fragment (compiled ONCE) + per-@test fragments + a manifest, then one exec per @test that
-        # SPLICES+COMPILES the closure + this test's fragment (`cdz-compile <closure> <test> --export`) and runs
-        # it (`cdz-run` + the value-heap store), graded by EXIT CODE (clean = PASS, trap = FAIL — a @test has no
-        # expected value). Enumerated at EVAL via the compiler-informed `testDiscovery` scoped-cached-IFD (`cdz
-        # test --list --format nix`, see below — NO committed index); a @test ABSENT from the shred manifest (a
-        # decliner, e.g. a user-sum re-emit gap) SKIPS (exit 0). ADDITIVE — does NOT retire
+        # Mirrors the corpus per-case caching graph for a cadenza @test SUITE: SHRED a project (`cdz test
+        # --emit-shred`, in-process rcdzc, wasmtime-free, content-addressed) into per-@test wasm + a manifest,
+        # then one exec per @test that runs it (`cdz-run` + the value-heap store), graded by EXIT CODE (clean =
+        # PASS, trap = FAIL — a @test has no expected value). Enumerated at EVAL via the compiler-informed
+        # `testDiscovery` scoped-cached-IFD (`cdz test --list --format nix`, see below — NO committed index).
+        # PER-SUITE MODE (v-test-shred coverage audit 2026-08-29 — see testShredSuites): --standalone emits each
+        # @test independently (FULL coverage; exec runs the per-test wasm directly, `--peer`-wiring a dep if the
+        # manifest records one) — the mode a small-closure suite (iterators) needs to run ALL its tests + be
+        # retire-ready. --two-stage instead emits ONE shared closure fragment + per-@test fragments (compile-
+        # once caching) and each exec SPLICES+COMPILES the closure + its fragment (`cdz-compile <closure> <test>
+        # --export`); it trades coverage for caching (a @test whose fragment the emit_fragment path can't yet
+        # lower — higher-order params / generic-open user-sum — is ABSENT from the manifest and SKIPS, exit 0),
+        # so it is reserved for HEAVY suites once that coverage is real. ADDITIVE — does NOT retire
         # `cad-tests`/`testCadenzaProject`; per-suite retire as each suite's per-test shred covers ALL its tests.
-        # iterators wired; cad/compiler-ml after v-cadenza user-sum re-emit; choreography after collision-free
-        # per-@test target filenames. Parse `testDiscovery`'s imported list → [{ stem; name }] per entry.
+        # iterators wired (standalone, 360/360); cad/compiler-ml/choreography follow after v-cadenza re-emit +
+        # collision-free per-@test target filenames. Parse `testDiscovery`'s imported list → [{ stem; name }] per entry.
         # Keyed by (file-STEM, name): a @test name can repeat across a suite's files, so the stem (baseNameOf
         # file, ext stripped) disambiguates + matches the manifest's `file` field to resolve the RIGHT per-@test
         # fragment (spliced against the shared closure), so no collision even for same-named tests across files.
@@ -1229,7 +1234,7 @@
         # SHRED (content-addressed) — compile the project's @tests to per-@test wasm + `manifest.cdzb` ONCE.
         # Closure = the `cdz` binary (emit-shred drives rcdzc IN-PROCESS; wasmtime-free; NO store — compile
         # only). CA so a compiler change that re-emits identical wasm cache-hits every exec.
-        mkTestShred = { proj, dir }:
+        mkTestShred = { proj, dir, mode }:
           pkgs.runCommand "test-shred-${proj}"
             {
               nativeBuildInputs = [ seedCompiler ];
@@ -1239,15 +1244,17 @@
             } ''
             set -euo pipefail
             export HOME="$TMPDIR/home"; mkdir -p "$HOME" "$out"
-            # emit-shred EXITS NON-ZERO when some @tests DECLINE (a #4031 compound-param boundary reject under
-            # the current peer emit) — but it still WRITES the manifest + the shreddable per-@test wasm. Those
-            # declines are EXPECTED + informational (the manifest is the authoritative runnable set; a decliner
-            # SKIPS in its exec, and testCadenzaProject still covers it — this matrix is ADDITIVE). So tolerate
-            # the non-zero exit but guard on a MISSING manifest, which IS a real emit failure. (Standalone-all
-            # emit — the operator's pick, v-cdz building — has no declines → exit 0 → this branch is inert.)
-            if ! cdz test --emit-shred --two-stage ${pkgs.lib.fileset.toSource { root = ./.; fileset = dir; }}/implementation/${proj} --out-dir "$out"; then
-              [ -f "$out/manifest.cdzb" ] || { echo "test-shred: --two-stage produced no manifest for ${proj} (real emit failure)" >&2; exit 1; }
-              echo "test-shred: --two-stage for ${proj} exited non-zero (expected — some @tests declined, e.g. user-sum re-emit gap); manifest present, proceeding with the shreddable subset" >&2
+            # emit-shred EXITS NON-ZERO when some @tests DECLINE — but it still WRITES the manifest + the
+            # shreddable per-@test wasm, so tolerate the non-zero exit and guard only on a MISSING manifest (a
+            # real emit failure). WHICH tests decline depends on the MODE: --standalone emits the FULL suite
+            # (each @test compiled independently → NO declines for a small-closure suite like iterators → exit 0
+            # → this branch is inert, all N run), whereas --two-stage trades coverage for a compile-once shared
+            # closure (emit_fragment cannot yet lower higher-order params / generic-open user-sum type-decl, so
+            # those @tests decline + SKIP). Per-suite mode (below) picks standalone for full-coverage/retire-ready
+            # small suites and reserves two-stage for HEAVY suites once emit_fragment coverage is real.
+            if ! cdz test --emit-shred --${mode} ${pkgs.lib.fileset.toSource { root = ./.; fileset = dir; }}/implementation/${proj} --out-dir "$out"; then
+              [ -f "$out/manifest.cdzb" ] || { echo "test-shred: --${mode} produced no manifest for ${proj} (real emit failure)" >&2; exit 1; }
+              echo "test-shred: --${mode} for ${proj} exited non-zero (expected under two-stage — some @tests declined, e.g. higher-order-param / user-sum re-emit gap); manifest present, proceeding with the shreddable subset" >&2
             fi
           '';
         # EXEC — grade ONE @test. Closure = the COMPILER-FREE `cdz-run` + the `cdz` binary (for the `cdz
@@ -1262,41 +1269,65 @@
         # convert --to sexpr` renders it, a gawk RS="(entry" pass tokenizes the 7 positional fields (name
         # is-property file export target main-iface main-file; main-iface is "" for two-stage, main-file is the
         # closure fragment). A @test absent from the manifest (a decliner, e.g. user-sum re-emit gap) SKIPS.
-        mkTestExec = { proj, shred, fileStem, testName }:
+        mkTestExec = { proj, shred, fileStem, testName, mode }:
           pkgs.runCommand "test-shred-exec-${proj}-${fileStem}-${testName}"
             {
-              nativeBuildInputs = [ seedCompiler cdzCompile cdzRun pkgs.gawk ];
+              # two-stage needs cdz-compile for the closure+fragment SPLICE; standalone runs the per-test wasm
+              # DIRECTLY (leaner closure — the point of standalone for a small suite), so it drops cdz-compile.
+              nativeBuildInputs = [ seedCompiler cdzRun pkgs.gawk ]
+                ++ pkgs.lib.optional (mode == "two-stage") cdzCompile;
             } ''
             set -euo pipefail
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
             export CDZ_STORE="${componentStore}"
+            # Decode this @test's manifest entry by (name, fileStem). 7 positional fields:
+            # name is-property file export target main-iface main-file. main-iface/main-file mean different
+            # things per mode: STANDALONE — main-iface is the peer interface + main-file its wasm (a --peer
+            # dep, both "" for a self-contained test); TWO-STAGE — main-file is the shared closure fragment to
+            # splice (main-iface ""). We print all four (export target iface main) and branch on mode below.
             line=$(cdz convert --from binary --to sexpr ${shred}/manifest.cdzb \
               | gawk -v n="${testName}" -v fs="${fileStem}" 'BEGIN { RS = "\\(entry" } NR > 1 {
                   c = 0; nf = split($0, t, /[ \t\n]+/);
                   for (i = 1; i <= nf; i++) { if (t[i] != "") { c++; f[c] = t[i]; if (c == 7) break } }
                   for (k = 1; k <= 7; k++) { gsub(/^"/, "", f[k]); gsub(/"?\)+$/, "", f[k]); gsub(/"$/, "", f[k]) }
-                  if (f[1] == n && f[3] == fs) { print f[4] "\t" f[5] "\t" f[7] }
+                  if (f[1] == n && f[3] == fs) { print f[4] "\t" f[5] "\t" f[6] "\t" f[7] }
                 }')
             if [ -z "$line" ]; then
-              echo "skip: @test ${fileStem}::${testName} not in shred manifest (declined)" > "$out"
-              exit 0
+              # Under STANDALONE the full suite emits, so a missing entry is unexpected (loud); under TWO-STAGE a
+              # decliner (higher-order param / user-sum re-emit gap) legitimately SKIPS (testCadenzaProject covers it).
+              ${if mode == "standalone" then ''
+                echo "test-shred exec: @test ${fileStem}::${testName} MISSING from the standalone manifest — standalone emits the full suite, so this is a real emit/discovery drift, not a decline" >&2
+                exit 1
+              '' else ''
+                echo "skip: @test ${fileStem}::${testName} not in shred manifest (declined — two-stage emit_fragment gap)" > "$out"
+                exit 0
+              ''}
             fi
-            IFS=$'\t' read -r texport ttarget tclosure <<< "$line"
-            # SPLICE+COMPILE: shared closure fragment (built once, cache-HIT across the suite) + this test's
-            # fragment → standalone wasm (cdz-compile multi-input + --export, the operator option-b splice).
-            cdz-compile ${shred}/"$tclosure" ${shred}/"$ttarget" --export "$texport" -o test.wasm
-            cdz-run test.wasm --call "$texport" --store "${componentStore}" --runtime ${runtimeDebug}
+            IFS=$'\t' read -r texport ttarget tiface tmain <<< "$line"
+            ${if mode == "standalone" then ''
+              # STANDALONE: the per-test wasm is self-contained — run it DIRECTLY (no compiler splice). If the
+              # manifest records a peer (iface + main-file), wire it via --peer.
+              args=("${shred}/$ttarget" --call "$texport" --store "${componentStore}" --runtime ${runtimeDebug})
+              if [ -n "$tmain" ]; then args+=(--peer "$tiface=${shred}/$tmain"); fi
+              cdz-run "''${args[@]}"
+            '' else ''
+              # TWO-STAGE: SPLICE+COMPILE the shared closure fragment (built once, cache-HIT across the suite) +
+              # this test's fragment → standalone wasm (cdz-compile multi-input + --export), then run it.
+              cdz-compile ${shred}/"$tmain" ${shred}/"$ttarget" --export "$texport" -o test.wasm
+              cdz-run test.wasm --call "$texport" --store "${componentStore}" --runtime ${runtimeDebug}
+            ''}
             echo "ok: @test ${proj}/${testName} PASS" > "$out"
           '';
         # Per-suite check MAP `{ "<name>" = execDrv }` — shred once, one exec per @test (parallel, CA-cached).
-        testShredSuiteChecks = { proj, dir }:
-          let shred = mkTestShred { inherit proj dir; };
+        testShredSuiteChecks = { proj, dir, mode }:
+          let shred = mkTestShred { inherit proj dir mode; };
           in builtins.listToAttrs (map
-            (e: { name = "${e.stem}::${e.name}"; value = mkTestExec { inherit proj shred; fileStem = e.stem; testName = e.name; }; })
+            (e: { name = "${e.stem}::${e.name}"; value = mkTestExec { inherit proj shred mode; fileStem = e.stem; testName = e.name; }; })
             (testShredIndexEntries proj dir));
-        # Per-suite AGGREGATE — every @test's exec marker (a skip is exit 0). Non-vacuity guarded.
-        mkTestShredSuiteAgg = { proj, dir }:
-          let cases = testShredSuiteChecks { inherit proj dir; };
+        # Per-suite AGGREGATE — every @test's exec marker (under standalone every case RUNS; under two-stage a
+        # decliner is exit 0 = skip). Non-vacuity guarded.
+        mkTestShredSuiteAgg = { proj, dir, mode }:
+          let cases = testShredSuiteChecks { inherit proj dir mode; };
           in assert (builtins.length (builtins.attrNames cases)) > 0;
           pkgs.runCommand "test-shred-${proj}-all" { } ''
             ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues cases)}
@@ -1307,12 +1338,23 @@
         # operator directed us OFF of — the committed tests-shred-index.txt is now REMOVED (#5473 wired the
         # compiler-informed `testDiscovery` scoped-cached-IFD e2e-green, so `testShredIndexEntries` imports
         # discovery, not the file). So the guard is both broken by #5360 AND obsolete; dropped.)
-        # v1 SUITES: small-closure suites only (compiler-ml stays coarse via cad-tests until grouping + X5b).
-        # START with iterators (e2e-validated); cad/choreography follow (choreography needs unique per-@test
-        # target filenames for its ~3 cross-file same-name @tests before its flat layout is collision-free).
-        testShredSuites = { iterators = ./implementation/iterators; };
+        # v1 SUITES — each suite picks its shred MODE (v-test-shred coverage audit 2026-08-29):
+        #   · standalone = FULL coverage (every @test emitted + compiled independently); the mode for a
+        #     small-closure suite (iterators) that must run ALL its tests to be retire-ready (drop its coarse
+        #     cad-tests arm). iterators is 360/360 under standalone — two-stage only ran 56/360 (the other 304
+        #     declined the emit_fragment higher-order-param / generic-user-sum gap and SKIPPED, a HOLLOW green),
+        #     and iterators' closure is small enough that two-stage's compile-once caching buys nothing.
+        #   · two-stage = compile-once shared closure (trades coverage for caching); correct ONLY for a HEAVY
+        #     suite (e.g. compiler-ml, ~215s closure) AND only once emit_fragment coverage is real (currently
+        #     64/854 for compiler-ml) — so NO suite wires two-stage yet; it stays defined for when that lands.
+        # cad/choreography follow (choreography needs unique per-@test target filenames for its ~3 cross-file
+        # same-name @tests before its flat layout is collision-free; both await v-cadenza re-emit coverage).
+        testShredSuites = {
+          iterators = { dir = ./implementation/iterators; mode = "standalone"; };
+        };
         testShredFileAggs = pkgs.lib.mapAttrs'
-          (proj: dir: pkgs.lib.nameValuePair "test-shred-${proj}" (mkTestShredSuiteAgg { inherit proj dir; }))
+          (proj: cfg: pkgs.lib.nameValuePair "test-shred-${proj}"
+            (mkTestShredSuiteAgg { inherit proj; inherit (cfg) dir mode; }))
           testShredSuites;
 
         # ── rcdzc→WASM: the Cadenza COMPILER as a wasm artifact (agent-harness v0.2, operator 2026-08-03) ─
