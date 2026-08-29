@@ -95,7 +95,7 @@ export const EXAMPLES: Example[] = [
     surface: "sexpr",
     source: `(do
   (def (area r) (* (. r w) (. r h)))
-  (def (main) (area (record (w 4) (h 5))))
+  (def (main) (area #record((= w 4) (= h 5))))
   (export main))`,
     expected: "20",
   },
@@ -162,7 +162,7 @@ export const EXAMPLES: Example[] = [
     theme: "basics",
     surface: "sexpr",
     source: `(do
-  (def (main) (tuple 1 2 3))
+  (def (main) #tuple(1 2 3))
   (export main))`,
     expected: "(: #tuple(1 2 3) (Tuple Int64 Int64 Int64))",
   },
@@ -180,10 +180,10 @@ export const EXAMPLES: Example[] = [
   ; into a (head, tail) pair of tuples at a fixed index; Tuple.concat is its inverse,
   ; welding two tuples back into one. Split (1 2 3 4 5) at 2, then rebuild it.
   (def (main)
-    (let ((parts (Tuple.split-at (tuple 1 2 3 4 5) 2)))
+    (let ((parts (Tuple.split-at #tuple(1 2 3 4 5) 2)))
       (match parts
-        ((tuple head tail)
-         (tuple head tail (Tuple.concat head tail))))))
+        (#tuple(head tail)
+         #tuple(head tail (Tuple.concat head tail))))))
   (export main))`,
     expected: "(: #tuple(#tuple(1 2) #tuple(3 4 5) #tuple(1 2 3 4 5)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64 Int64) (Tuple Int64 Int64 Int64 Int64 Int64)))",
   },
@@ -195,7 +195,7 @@ export const EXAMPLES: Example[] = [
     source: `(do
   ; Concatenate two lists and return the RESULT — you see the whole list, not just its length.
   (def (main)
-    (List.concat (list 1 2) (list 3 4 5)))
+    (List.concat #list(1 2) #list(3 4 5)))
   (export main))`,
     expected: "(: #list(1 2 3 4 5) (List Int64))",
   },
@@ -212,9 +212,9 @@ export const EXAMPLES: Example[] = [
   ; update — the original list is unchanged). Indices must be in [0, len).
   (def (set-at xs i v) (List.update xs i v))
   (def (main)
-    (let ((xs (list 10 20 30 40 50)))
+    (let ((xs #list(10 20 30 40 50)))
       ; Update index 0 and index 4 of xs; then show xs ITSELF is untouched.
-      (tuple (set-at xs 0 99) (set-at xs 4 99) xs)))
+      #tuple((set-at xs 0 99) (set-at xs 4 99) xs)))
   (export main))`,
     expected: "(: #tuple(#list(99 20 30 40 50) #list(10 20 30 40 99) #list(10 20 30 40 50)) (Tuple (List Int64) (List Int64) (List Int64)))",
   },
@@ -241,7 +241,7 @@ export const EXAMPLES: Example[] = [
       ((Neg x) (- 0 (eval x)))))
   ; (2 + 3) * -(4)  ==>  -20
   (def (main)
-    (eval (Mul (tuple (Add (tuple (Lit 2) (Lit 3)))
+    (eval (Mul #tuple((Add #tuple((Lit 2) (Lit 3)))
                       (Neg (Lit 4))))))
   (export main))`,
     expected: "-20",
@@ -298,7 +298,7 @@ export const EXAMPLES: Example[] = [
   ; adder RETURNS a closure that adds a fixed k to its argument.
   (def (adder k) (fn (x) (+ x k)))
   (def (main)
-    (tuple
+    #tuple(
       ; add 3, four times: 10 -> 13 -> 16 -> 19 -> 22
       (apply-n-times (adder 3) 4 10)
       ; double, five times: 1 -> 2 -> 4 -> 8 -> 16 -> 32
@@ -319,14 +319,14 @@ export const EXAMPLES: Example[] = [
   ; Looking a result up before recomputing turns exponential fib into linear.
   (def (fib n mp)
     (match (Map.lookup mp n)
-      ((Some v) (tuple v mp))
+      ((Some v) #tuple(v mp))
       ((None)
        (if (< n 2)
-           (tuple n (Map.insert mp n n))
+           #tuple(n (Map.insert mp n n))
            (let ((a (fib (- n 1) mp)))
              (let ((b (fib (- n 2) (. a 1))))
                (let ((r (+ (. a 0) (. b 0))))
-                 (tuple r (Map.insert (. b 1) n r)))))))))
+                 #tuple(r (Map.insert (. b 1) n r)))))))))
   (def (main) (. (fib 30 (Map.empty)) 0))
   (export main))`,
     expected: "832040",
@@ -353,7 +353,7 @@ export const EXAMPLES: Example[] = [
           ((Some x) (tally xs (+ i 1) n (bump mp x)))
           ((None) mp))))
   (def (main)
-    (let ((xs (list 3 1 3 3 1 2)))
+    (let ((xs #list(3 1 3 3 1 2)))
       (Map.to-list (tally xs 0 (List.len xs) (Map.empty)))))
   (export main))`,
     expected: "(: #list(#tuple(1 2) #tuple(2 1) #tuple(3 3)) (List (Tuple Int64 Int64)))",
@@ -377,10 +377,10 @@ export const EXAMPLES: Example[] = [
   (def (main)
     (let ((stock (Map.insert (Map.insert (Map.empty) 1 5) 2 2)))
       (match (Map.swap stock 1 9)
-        ((tuple old-apples restocked)
+        (#tuple(old-apples restocked)
          (match (Map.take restocked 2)
-           ((tuple gone-pears final)
-            (tuple old-apples gone-pears (Map.to-list final))))))))
+           (#tuple(gone-pears final)
+            #tuple(old-apples gone-pears (Map.to-list final))))))))
   (export main))`,
     expected: "(: #tuple((Some 5) (Some 2) #list(#tuple(1 9))) (Tuple (Option Int64) (Option Int64) (List (Tuple Int64 Int64))))",
   },
@@ -404,7 +404,7 @@ export const EXAMPLES: Example[] = [
     (let ((red (String.to-bytes "red"))
           (blue (String.to-bytes "blue")))
       (let ((m (bump (bump (bump (bump (Map.empty) red) blue) red) red)))
-        (tuple (Map.lookup m red) (Map.lookup m blue)))))
+        #tuple((Map.lookup m red) (Map.lookup m blue)))))
   (export main))`,
     expected: "(: #tuple((Some 3) (Some 1)) (Tuple (Option Int64) (Option Int64)))",
   },
@@ -428,7 +428,7 @@ export const EXAMPLES: Example[] = [
                 (Map.insert (Map.empty) (Symbol.of "red") 16711680)
                 (Symbol.of "green") 65280)
               (Symbol.of "blue") 255)))
-      (tuple
+      #tuple(
         (Map.lookup palette (Symbol.of "green"))
         (Map.lookup palette (Symbol.of "teal"))
         (= (Symbol.of "red") (Symbol.of "red")))))
@@ -448,7 +448,7 @@ export const EXAMPLES: Example[] = [
   (def (main)
     (let ((magic b"GIF89a"))
       (match (Bytes.at magic 0)
-        ((Some first) (tuple (Bytes.len magic) first))
+        ((Some first) #tuple((Bytes.len magic) first))
         ((None) (trap "byte-literal: unexpectedly empty")))))
   (export main))`,
     expected: "(: #tuple(6 71) (Tuple Int64 Int64))",
@@ -467,10 +467,10 @@ export const EXAMPLES: Example[] = [
   ; we report the byte length of each value's canonical encoding.
   (def (size v) (Bytes.len (Value.encode v)))
   (def (main)
-    (tuple
-      (size (record (x 3) (y 4)))
+    #tuple(
+      (size #record((= x 3) (= y 4)))
       (size (Some 7))
-      (size (list 1 2 3))))
+      (size #list(1 2 3))))
   (export main))`,
     expected: "(: (tuple 102 61 66) (Tuple Int64 Int64 Int64))",
   },
@@ -488,10 +488,10 @@ export const EXAMPLES: Example[] = [
   ; byte-identical output (a content address). Bytes has a total order, so we compare the
   ; encodings directly with =. Equal records -> identical bytes; a differing field -> not.
   (def (main)
-    (let ((ba (Value.encode (record (x 3) (y 4))))
-          (bb (Value.encode (record (x 3) (y 4))))
-          (bc (Value.encode (record (x 3) (y 5)))))
-      (tuple (Bytes.len ba) (= ba bb) (= ba bc))))
+    (let ((ba (Value.encode #record((= x 3) (= y 4))))
+          (bb (Value.encode #record((= x 3) (= y 4))))
+          (bc (Value.encode #record((= x 3) (= y 5)))))
+      #tuple((Bytes.len ba) (= ba bb) (= ba bc))))
   (export main))`,
     expected: "(: (tuple 102 true false) (Tuple Int64 Bool Bool))",
   },
@@ -510,11 +510,11 @@ export const EXAMPLES: Example[] = [
   ; Decode is partial (None if the bytes don't fit the type), so we match on the Option.
   (type Point (Mk (Record (: x Int64) (: y Int64))))
   (def (main)
-    (let ((p (Point.Mk (record (x 3) (y 4)))))
+    (let ((p (Point.Mk #record((= x 3) (= y 4)))))
       (let ((bytes (Value.encode p)))
         (match (: (Value.decode bytes) (Option Point))
-          ((Some (Point.Mk r)) (tuple (Bytes.len bytes) (+ (. r x) (. r y))))
-          ((None) (tuple (Bytes.len bytes) 0))))))
+          ((Some (Point.Mk r)) #tuple((Bytes.len bytes) (+ (. r x) (. r y))))
+          ((None) #tuple((Bytes.len bytes) 0))))))
   (export main))`,
     expected: "(: (tuple 73 7) (Tuple Int64 Int64))",
   },
@@ -548,7 +548,7 @@ export const EXAMPLES: Example[] = [
   (def (total) (+ (+ (/ 1 2) (/ 1 3)) (/ 1 12)))
   ; Pull the reduced fraction apart into its two BigInt components.
   (def (main)
-    (tuple (Rational.numerator (total)) (Rational.denominator (total))))
+    #tuple((Rational.numerator (total)) (Rational.denominator (total))))
   (export main))`,
     expected: "(: #tuple(11 12) (Tuple BigInt BigInt))",
   },
@@ -566,7 +566,7 @@ export const EXAMPLES: Example[] = [
   ; floor/ceil project an EXACT fraction to an Int64, rounding toward -inf / +inf.
   ; 7/2 = 3.5 -> floor 3, ceil 4.   -7/2 = -3.5 -> floor -4, ceil -3.
   (def (main)
-    (tuple
+    #tuple(
       (Rational.floor (/ 7 2))
       (Rational.ceil (/ 7 2))
       (Rational.floor (/ -7 2))
@@ -620,8 +620,8 @@ export const EXAMPLES: Example[] = [
   (def (sym-diff a b)
     (Set.union (Set.difference a b) (Set.difference b a)))
   (def (main)
-    (let ((a (Set.of (list 1 2 3 4)))
-          (b (Set.of (list 3 4 5 6))))
+    (let ((a (Set.of #list(1 2 3 4)))
+          (b (Set.of #list(3 4 5 6))))
       (Set.to-list (sym-diff a b))))
   (export main))`,
     expected: "(: #list(1 2 5 6) (List Int64))",
@@ -641,7 +641,7 @@ export const EXAMPLES: Example[] = [
   (def (mutual a b)
     (Set.to-list (Set.intersection (Set.of a) (Set.of b))))
   (def (main)
-    (mutual (list 1 2 3 4 5) (list 3 4 5 6 7)))
+    (mutual #list(1 2 3 4 5) #list(3 4 5 6 7)))
   (export main))`,
     expected: "(: #list(3 4 5) (List Int64))",
   },
@@ -656,7 +656,7 @@ export const EXAMPLES: Example[] = [
     source: `(do
   ; A stack is a cons list — push and pop are just constructors and match.
   (type Stack (Empty unit) (Cons (Tuple Int64 Stack)))
-  (def (push s x) (Cons (tuple x s)))
+  (def (push s x) (Cons #tuple(x s)))
   ; A postfix token: a number, or a binary operator.
   (type Tok (Num Int64) (Plus unit) (Times unit))
   ; An operator pops the top two operands and pushes the result. A well-formed postfix expression always
@@ -684,7 +684,7 @@ export const EXAMPLES: Example[] = [
   (def (top s) (match s ((Cons t) (. t 0)) ((Empty _) (trap "rpn: empty result stack"))))
   ; 3 4 + 5 *  ==>  (3 + 4) * 5 = 35
   (def (main)
-    (let ((toks (list (Num 3) (Num 4) (Plus unit) (Num 5) (Times unit))))
+    (let ((toks #list((Num 3) (Num 4) (Plus unit) (Num 5) (Times unit))))
       (top (run toks 0 (List.len toks) (Empty unit)))))
   (export main))`,
     expected: "35",
@@ -733,9 +733,9 @@ export const EXAMPLES: Example[] = [
         acc
         (step-from xs (+ i 1) n
           (List.push acc (rule (cell xs (- i 1)) (cell xs i) (cell xs (+ i 1)))))))
-  (def (step xs) (step-from xs 0 (List.len xs) (list)))
+  (def (step xs) (step-from xs 0 (List.len xs) #list()))
   (def (gens xs k) (if (= k 0) xs (gens (step xs) (- k 1))))
-  (def (main) (gens (list 0 0 0 0 0 0 0 1) 4))
+  (def (main) (gens #list(0 0 0 0 0 0 0 1) 4))
   (export main))`,
     expected: "(: #list(0 0 0 1 1 1 1 1) (List Int64))",
   },
@@ -765,11 +765,11 @@ export const EXAMPLES: Example[] = [
           ((Some r) (sum-age xs (+ i 1) n (+ acc (age r))))
           ((None) acc))))
   (def (main)
-    (let ((people (list (record (name "Ada") (age 36))
-                        (record (name "Alan") (age 41))
-                        (record (name "Grace") (age 40)))))
+    (let ((people #list(#record((= name "Ada") (= age 36))
+                        #record((= name "Alan") (= age 41))
+                        #record((= name "Grace") (= age 40)))))
       ; Return (the projected ages, their average) — both the data and the result.
-      (tuple (ages people 0 (List.len people) (: (list) (List Int64)))
+      #tuple((ages people 0 (List.len people) (: #list() (List Int64)))
              (/ (sum-age people 0 (List.len people) 0) (List.len people)))))
   (export main))`,
     expected: "(: #tuple(#list(36 41 40) 39) (Tuple (List Int64) Int64))",
@@ -797,10 +797,10 @@ export const EXAMPLES: Example[] = [
     (if (= j cols)
         acc
         (go m (+ j 1) cols rows
-          (List.push acc (col m j 0 rows (: (list) (List Int64)))))))
+          (List.push acc (col m j 0 rows (: #list() (List Int64)))))))
   (def (main)
-    (let ((m (list (list 1 2 3) (list 4 5 6))))
-      (go m 0 3 2 (: (list) (List (List Int64))))))
+    (let ((m #list(#list(1 2 3) #list(4 5 6))))
+      (go m 0 3 2 (: #list() (List (List Int64))))))
   (export main))`,
     expected: "(: #list(#list(1 4) #list(2 5) #list(3 6)) (List (List Int64)))",
   },
@@ -854,15 +854,15 @@ export const EXAMPLES: Example[] = [
   ; Walk the list carrying the current value + its running count; emit on a change.
   (def (go xs i n cur cnt acc)
     (if (= i n)
-        (List.push acc (tuple cur cnt))
+        (List.push acc #tuple(cur cnt))
         (let ((x (at xs i)))
           (if (= x cur)
               (go xs (+ i 1) n cur (+ cnt 1) acc)
-              (go xs (+ i 1) n x 1 (List.push acc (tuple cur cnt)))))))
+              (go xs (+ i 1) n x 1 (List.push acc #tuple(cur cnt)))))))
   (def (main)
-    (let ((xs (list 1 1 1 2 3 3)))
+    (let ((xs #list(1 1 1 2 3 3)))
       ; Annotate the empty seed so its element type is known before the first push.
-      (go xs 1 (List.len xs) (at xs 0) 1 (: (list) (List (Tuple Int64 Int64))))))
+      (go xs 1 (List.len xs) (at xs 0) 1 (: #list() (List (Tuple Int64 Int64))))))
   (export main))`,
     expected: "(: #list(#tuple(1 3) #tuple(2 1) #tuple(3 2)) (List (Tuple Int64 Int64)))",
   },
@@ -881,7 +881,7 @@ export const EXAMPLES: Example[] = [
   ; Partition xs[i..n) into (lows, highs) relative to pivot: < pivot goes low, >= goes high.
   (def (part xs i n pivot lows highs)
     (if (= i n)
-        (tuple lows highs)
+        #tuple(lows highs)
         (let ((x (at xs i)))
           (if (< x pivot)
               (part xs (+ i 1) n pivot (List.push lows x) highs)
@@ -891,11 +891,11 @@ export const EXAMPLES: Example[] = [
     (if (< (List.len xs) 2)
         xs
         (let ((pivot (at xs 0)))
-          (match (part xs 1 (List.len xs) pivot (: (list) (List Int64)) (: (list) (List Int64)))
-            ((tuple lows highs)
-             (List.concat (List.concat (qsort lows) (list pivot)) (qsort highs)))))))
+          (match (part xs 1 (List.len xs) pivot (: #list() (List Int64)) (: #list() (List Int64)))
+            (#tuple(lows highs)
+             (List.concat (List.concat (qsort lows) #list(pivot)) (qsort highs)))))))
   (def (main)
-    (qsort (list 5 3 8 1 9 2 7 4 6)))
+    (qsort #list(5 3 8 1 9 2 7 4 6)))
   (export main))`,
     expected: "(: #list(1 2 3 4 5 6 7 8 9) (List Int64))",
   },
@@ -927,8 +927,8 @@ export const EXAMPLES: Example[] = [
     (go xs target 0 (- (List.len xs) 1)))
   (def (main)
     ; A sorted list; find 11 -> (Some 5), then confirm 8 is absent -> (None).
-    (let ((xs (list 1 3 5 7 9 11 13 15 17 19)))
-      (tuple (bsearch xs 11) (bsearch xs 8))))
+    (let ((xs #list(1 3 5 7 9 11 13 15 17 19)))
+      #tuple((bsearch xs 11) (bsearch xs 8))))
   (export main))`,
     expected: "(: #tuple((Some 5) (None unit)) (Tuple (Option Int64) (Option Int64)))",
   },
@@ -947,20 +947,20 @@ export const EXAMPLES: Example[] = [
   ; Insert keeps the ordering invariant: smaller keys go left, larger go right, dup ignored.
   (def (insert (: t Tree) (: x Int64))
     (match t
-      ((Leaf _u) (Node (tuple x (Leaf unit) (Leaf unit))))
+      ((Leaf _u) (Node #tuple(x (Leaf unit) (Leaf unit))))
       ((Node nd)
-       (match nd ((tuple v l r)
+       (match nd (#tuple(v l r)
          (if (< x v)
-             (Node (tuple v (insert l x) r))
+             (Node #tuple(v (insert l x) r))
              (if (> x v)
-                 (Node (tuple v l (insert r x)))
-                 (Node (tuple v l r)))))))))
+                 (Node #tuple(v l (insert r x)))
+                 (Node #tuple(v l r)))))))))
   ; In-order traversal yields the values in SORTED order — the tree sorts for free.
   (def (inorder (: t Tree))
     (match t
-      ((Leaf _u) (: (list) (List Int64)))
+      ((Leaf _u) (: #list() (List Int64)))
       ((Node nd)
-       (match nd ((tuple v l r)
+       (match nd (#tuple(v l r)
          (List.concat (List.push (inorder l) v) (inorder r)))))))
   (def (build (: xs (List Int64)) (: i Int64) (: t Tree))
     (if (= i (List.len xs))
@@ -969,7 +969,7 @@ export const EXAMPLES: Example[] = [
           ((Some x) (build xs (+ i 1) (insert t x)))
           ((None) (trap "build: index out of range")))))
   (def (main)
-    (let ((xs (list 5 3 8 1 4 7 9 2 6)))
+    (let ((xs #list(5 3 8 1 4 7 9 2 6)))
       (inorder (build xs 0 (Leaf unit)))))
   (export main))`,
     expected: "(: #list(1 2 3 4 5 6 7 8 9) (List Int64))",
@@ -1044,7 +1044,7 @@ export const EXAMPLES: Example[] = [
         ((None) (trap "caesar: bad code point")))))
   (def (main)
     ; 'A' shifted by 3 -> 'D'; 'Y' shifted by 3 wraps around -> 'B'.
-    (tuple (shift (letter "A") 3) (shift (letter "Y") 3)))
+    #tuple((shift (letter "A") 3) (shift (letter "Y") 3)))
   (export main))`,
     expected: "(: #tuple(#\\D #\\B) (Tuple Char Char))",
   },
@@ -1058,7 +1058,7 @@ export const EXAMPLES: Example[] = [
     surface: "sexpr",
     source: `(do
   ; A lone U+0301 COMBINING ACUTE ACCENT, decoded from its two UTF-8 bytes.
-  (def (accent) (String.from-bytes (Bytes.of (list 204 129))))
+  (def (accent) (String.from-bytes (Bytes.of #list(204 129))))
   (def (main)
     (match (accent)
       ((Some acc)
@@ -1066,7 +1066,7 @@ export const EXAMPLES: Example[] = [
        ; "e" + combining-accent composes into the single precomposed scalar "é".
        (let ((composed (String.concat "e" acc)))
          ; (scalar count, byte count) of the composed "é" — 1 scalar, 2 bytes.
-         (tuple (String.scalar-len composed) (String.byte-len composed))))
+         #tuple((String.scalar-len composed) (String.byte-len composed))))
       ((None) (trap "nfc: invalid accent bytes"))))
   (export main))`,
     expected: "(: (tuple 1 2) (Tuple Int64 Int64))",
@@ -1087,7 +1087,7 @@ export const EXAMPLES: Example[] = [
     (match (String.slice s lo hi) ((Some part) part) ((None) "")))
   (def (main)
     (let ((d "2026-08-14"))
-      (tuple (field d 0 4) (field d 5 7) (field d 8 10))))
+      #tuple((field d 0 4) (field d 5 7) (field d 8 10))))
   (export main))`,
     expected: "(: #tuple(\"2026\" \"08\" \"14\") (Tuple String String String))",
   },
@@ -1182,7 +1182,7 @@ export const EXAMPLES: Example[] = [
               acc))))
   (def (solve n placed row)
     (if (= row n) 1 (try-cols n placed row 0 0)))
-  (def (main) (solve 8 (: (list) (List Int64)) 0))
+  (def (main) (solve 8 (: #list() (List Int64)) 0))
   (export main))`,
     expected: "92",
   },
@@ -1201,8 +1201,8 @@ export const EXAMPLES: Example[] = [
   (def (rev xs i acc)
     (if (< i 0) acc (rev xs (- i 1) (List.push acc (at xs i)))))
   (def (main)
-    (let ((xs (list 1 2 3 4 5)))
-      (rev xs (- (List.len xs) 1) (: (list) (List Int64)))))
+    (let ((xs #list(1 2 3 4 5)))
+      (rev xs (- (List.len xs) 1) (: #list() (List Int64)))))
   (export main))`,
     expected: "(: #list(5 4 3 2 1) (List Int64))",
   },
@@ -1222,7 +1222,7 @@ export const EXAMPLES: Example[] = [
     (List.prepend stack x))
   (def (main)
     ; Push 10, then 20, then 30 — so 30 ends up on top of the stack.
-    (push (push (push (: (list) (List Int64)) 10) 20) 30))
+    (push (push (push (: #list() (List Int64)) 10) 20) 30))
   (export main))`,
     expected: "(: #list(30 20 10) (List Int64))",
   },
@@ -1243,7 +1243,7 @@ export const EXAMPLES: Example[] = [
   (def (main)
     ; Show BOTH: the generated syntax tree, AND the value eval computes from it.
     ; (eval runs a compile-time-visible quasiquote, so the runnable copy is inline.)
-    (tuple
+    #tuple(
       (build 6 5)
       (eval (quasiquote (+ (* (unquote 6) (unquote 6)) (unquote 5))))))
   (export main))`,
@@ -1282,20 +1282,20 @@ export const EXAMPLES: Example[] = [
   (type Iter (Nil unit) (Cons (Tuple Int64 Iter)))
   (def (from-list xs)
     (match xs
-      ((list) (Nil unit))
-      ((list h .. t) (Cons (tuple h (from-list t))))))
+      (#list() (Nil unit))
+      (#list(h .. t) (Cons #tuple(h (from-list t))))))
   ; Keep elements satisfying p.
   (def (ifilter it p)
     (match it
       ((Nil _) (Nil unit))
       ((Cons c) (if (p (. c 0))
-                    (Cons (tuple (. c 0) (ifilter (. c 1) p)))
+                    (Cons #tuple((. c 0) (ifilter (. c 1) p)))
                     (ifilter (. c 1) p)))))
   ; Apply f to every element.
   (def (imap it f)
     (match it
       ((Nil _) (Nil unit))
-      ((Cons c) (Cons (tuple (f (. c 0)) (imap (. c 1) f))))))
+      ((Cons c) (Cons #tuple((f (. c 0)) (imap (. c 1) f))))))
   ; Reduce left-to-right with f, starting from acc.
   (def (ifold it acc f)
     (match it
@@ -1303,7 +1303,7 @@ export const EXAMPLES: Example[] = [
       ((Cons c) (ifold (. c 1) (f acc (. c 0)) f))))
   ; evens of 1..6 -> triple -> sum = 36
   (def (main)
-    (ifold (imap (ifilter (from-list (list 1 2 3 4 5 6)) (fn (x) (= 0 (% x 2))))
+    (ifold (imap (ifilter (from-list #list(1 2 3 4 5 6)) (fn (x) (= 0 (% x 2))))
                  (fn (x) (* x 3)))
            0
            (fn (a x) (+ a x))))
@@ -1323,8 +1323,8 @@ export const EXAMPLES: Example[] = [
   (type Iter (Nil unit) (Cons (Tuple Int64 Iter)))
   (def (from-list xs)
     (match xs
-      ((list) (Nil unit))
-      ((list h .. t) (Cons (tuple h (from-list t))))))
+      (#list() (Nil unit))
+      (#list(h .. t) (Cons #tuple(h (from-list t))))))
   ; Walk a and b in lockstep: sum head-a * head-b, recurse on both tails.
   ; Stops at the shorter (either Nil ends it).
   (def (dot a b)
@@ -1332,14 +1332,14 @@ export const EXAMPLES: Example[] = [
       ((Nil _) 0)
       ((Cons pa)
        (match pa
-         ((tuple ha ra)
+         (#tuple(ha ra)
           (match b
             ((Nil _) 0)
             ((Cons pb)
              (match pb
-               ((tuple hb rb) (+ (* ha hb) (dot ra rb)))))))))))
+               (#tuple(hb rb) (+ (* ha hb) (dot ra rb)))))))))))
   ; [1,2,3] · [4,5,6] = 1*4 + 2*5 + 3*6 = 32
-  (def (main) (dot (from-list (list 1 2 3)) (from-list (list 4 5 6))))
+  (def (main) (dot (from-list #list(1 2 3)) (from-list #list(4 5 6))))
   (export main))`,
     expected: "32",
   },
