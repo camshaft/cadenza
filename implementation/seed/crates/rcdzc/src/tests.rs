@@ -29295,32 +29295,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_admitted_float_width_is_rejected_cdz0302() {
-        // 06-numeric-model: `(Float N)` for N ∉ {32,64} — the admitted IEEE set — is rejected CDZ0302
-        // (numeric-model.md §A Floating-Point Type Is Indexed By A Compile-Time Width), the float
-        // analogue of an out-of-range integer width. A non-admitted `(Float N)` reduces to the sentinel
-        // width 0 (via `reduce_ctor`), which the annotation check rejects. Set-MEMBERSHIP, not a range:
-        // 16 and 48 both fail even though 48 is within 1..=64 (an integer width would accept it).
-        for body in [
-            "(: 1.5 (Float 16))",
-            "(: 1.5 (Float 48))",
-            "(: 1.5 (Float 0))",
-            "(: 1.5 (Float 128))",
-        ] {
-            let msg = expect_decline(body);
-            assert!(
-                msg.contains("admitted IEEE widths"),
-                "a non-admitted float width must be rejected CDZ0302: {body}; got: {msg}"
-            );
-        }
-        // An ADMITTED width (`Float64`) types cleanly and CROSSES as f64 — the value runs to 1.5, not a
-        // CDZ0302. (A `Float32` value declines at emit until the f32 path lands — F3/F4 — but is
-        // WELL-TYPED, no CDZ0302; that decline is covered where the emit path is exercised.) That RUN
-        // (`(: 1.5 (Float 64))` and the `Float64` alias both cross as f64) is corpus-covered by
-        // 06-numeric-model "(: (: 1.5 (Float 64)) Float64)"; this test keeps only the non-admitted reject.
-    }
-
-    #[test]
     fn a_non_admitted_float_width_carries_a_nearest_admitted_retype_fix() {
         // The ACTIONABLE half of the non-admitted float-width CDZ0302 (`diagnostics.md` §A Diagnostic
         // Carries A Route To A Fix), the float twin of the over-ceiling-integer BigInt fix. A concrete

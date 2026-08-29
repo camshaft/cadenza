@@ -219,6 +219,29 @@
   (input  ((. UInt8 of) (: -1 Int32)))
   (error  CDZ0302))
 
+; The FLOAT analogue of an out-of-range integer width: `(Float N)` is admitted ONLY for N ∈ {32,64} (the IEEE
+; single/double set) — a set MEMBERSHIP test, not a range, so 16 and 48 BOTH reject even though 48 is within
+; the integer 1..=64 (an integer width would accept it). A non-admitted `(Float N)` reduces to the sentinel
+; width 0, which the annotation check rejects CDZ0302 naming the admitted set (numeric-model.md §A
+; Floating-Point Type Is Indexed By A Compile-Time Width). The admitted `Float64` value runs (corpus case
+; "(: (: 1.5 (Float 64)) Float64)"). (migrated from rcdzc a_non_admitted_float_width_is_rejected_cdz0302;
+; the nearest-admitted-precision .fix stays a white-box rcdzc pin.)
+(case "a below-single-precision float width is rejected as a non-admitted IEEE width"
+  (input  (do (def (main) (: 1.5 (Float 16))) (export main)))
+  (error  CDZ0302 (message "admitted IEEE widths")))
+
+(case "a between-widths float width is rejected even though it is within the integer 1..=64 range"
+  (input  (do (def (main) (: 1.5 (Float 48))) (export main)))
+  (error  CDZ0302 (message "admitted IEEE widths")))
+
+(case "a zero float width is rejected as non-admitted"
+  (input  (do (def (main) (: 1.5 (Float 0))) (export main)))
+  (error  CDZ0302 (message "admitted IEEE widths")))
+
+(case "an above-double-precision float width is rejected as non-admitted"
+  (input  (do (def (main) (: 1.5 (Float 128))) (export main)))
+  (error  CDZ0302 (message "admitted IEEE widths")))
+
 ; `Float64.of-int` is exact only up to 2^53 — the largest integer a Float64's 52-bit mantissa (+ implicit
 ; leading 1) represents with no gap. At and beyond 2^53 the representable integers thin to every-other,
 ; so the conversion of an odd integer just past 2^53 must ROUND to the nearest representable even one
