@@ -1085,6 +1085,18 @@
             ((. m answer) unit)))
   (error  CDZ0602))
 
+(case "the default-fraction pragma with its type argument omitted is malformed (CDZ0602)"
+  (doc    "The fraction twin of the default-integer arity check: `(pragma default-fraction)` names a
+           registered key but omits its one required type argument, so it is the structural CDZ0602
+           (malformed args) — distinct from the numeric-domain CDZ0303 a well-formed-but-wrong-type
+           argument would get. (migrated from rcdzc a_default_fraction_pragma_with_wrong_arity_is_cdz0602.)")
+  (input  (do
+            (module m
+              (pragma default-fraction)
+              (def (x) 5))
+            ((. m x) unit)))
+  (error  CDZ0602))
+
 ; The REMOVED contract-identity directives `contract`/`input`/`output` (a contract's identity is now derived
 ; from its evaluated `descriptor`, not dedicated directives — the D3 pragma deprecation, #4542) are no longer
 ; in PRAGMA_REGISTRY, so each is now an UNKNOWN module directive: rejected CDZ0601 naming it as not-a-directive,

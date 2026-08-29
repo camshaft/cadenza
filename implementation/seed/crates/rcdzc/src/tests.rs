@@ -13418,19 +13418,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_default_fraction_pragma_with_wrong_arity_is_cdz0602() {
-        // A recognized key with its required type argument OMITTED → the structural CDZ0602 (malformed),
-        // distinct from the numeric-domain CDZ0303 — the fraction twin of the default-integer arity check.
-        assert_eq!(
-            reject_code(
-                "(module top (def (main) (do (module m (pragma default-fraction) (def (x) 5)) ((. m x) unit))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0602")
-        );
-    }
-
-    #[test]
     fn a_default_fraction_pragma_takes_precedence_over_default_float() {
         // Both pragmas in one module: the EXACT-fraction default is the stronger statement (exact by
         // default), so a bare decimal grounds to `Rational` (`0.5` → `1/2`), NOT the `default-float` width.
