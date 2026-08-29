@@ -6165,40 +6165,14 @@ mod runtime_ops {
     // rejected" ((type E (A Int8) (B Int64)), (: (E.A 999) E) → CDZ0302, a Ty::Sum vs the Ty::Nominal newtype)
     // + a fitting multi-variant control that runs. --case grades the reject code + the run value.)
 
-    #[test]
-    fn cdz_check_rejects_a_float_literal_grounded_to_float32_through_an_arith_spine() {
-        // Width-fit audit, 5th position (CONTEXTUAL arith-spine Float32). `(+ a 1.0e300)` over `(: a
-        // Float32)`: the `+` unifies operand widths, grounding `1.0e300` to Float32 where it saturates to
-        // `inf` — a value with no written form. Before, this COMPILED + materialized inf (no check), while
-        // the INT analogue `(+ a 10000)` over UInt8 rejects CDZ0201. Now `literal_binop_float32_context`
-        // climbs the float arith spine and, on a `Float32` sibling context + a literal that doesn't fit f32,
-        // rejects CDZ0201 (contextual, no annotation to blame — matching the int arith-spine verdict).
-        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (def (f (: a Float32)) (+ a 1.0e300)) (export f))",
-        )));
-        let d = diags
-            .iter()
-            .find(|d| d.severity == crate::abi::Severity::Error)
-            .expect(
-                "expected a check-level reject for a Float32-grounded overflowing float literal",
-            );
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-
-        // NO OVER-REJECTION: a fitting literal, a Float64 context (holds 1.0e300), and a bare literal with
-        // no narrow-float context (stays Float64) all pass.
-        let check_clean = |src: &str| {
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            assert!(
-                diags
-                    .iter()
-                    .all(|d| d.severity != crate::abi::Severity::Error),
-                "expected NO check reject for: {src}\ngot: {diags:?}"
-            );
-        };
-        check_clean("(module m (def (f (: a Float32)) (+ a 1.5)) (export f))");
-        check_clean("(module m (def (f (: a Float64)) (+ a 1.0e300)) (export f))");
-        check_clean("(module m (def (f) (+ 1.0e300 1.0)) (export f))");
-    }
+    // (cdz_check_rejects_a_float_literal_grounded_to_float32_through_an_arith_spine migrated to corpus
+    // 06-numeric-model, the CONTEXTUAL arith-spine face: `(+ a 1.0e300)` over `(: a Float32)` grounds
+    // `1.0e300` to Float32 (saturates to inf, no written form) → CDZ0201 (contextual, no annotation to blame —
+    // matching the int arith-spine `(+ a 10000)` over UInt8 verdict; formerly compiled + materialized inf) +
+    // a fitting arith-spine control that runs (a+1.5 → 3.5). --case grades the reject code + the run value.
+    // The two Float64-holds negatives ((+ a 1.0e300) over Float64, and a bare `(+ 1.0e300 1.0)`) are not
+    // corpus-migrated — they compile and run to the finite 1.0e300, whose ~300-digit exact-Float64 decimal an
+    // (output …) cannot legibly pin.)
 
     // ── runtime `wrap` (R3): the emitted mask-and-reinterpret over a runtime operand ──────────────
     //
