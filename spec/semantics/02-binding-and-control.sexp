@@ -4819,6 +4819,23 @@
   (input  (do (def (main) (let ((#list(a b) #list(1 2))) (+ a b))) (export main)))
   (error  CDZ0210))
 
+; Further ill-formed list bindings (migrated from rcdzc an_ill_formed_list_binding_pattern_is_rejected): an
+; EMPTY `#list()` binder matches only the empty list (refutable, CDZ0210); a REST binding with a refutable
+; LEADING element — a literal `#list(0 .. rest)` — is CDZ0210 (the rest exemption covers length, not a
+; refutable leading element); a NON-LINEAR list binder `#list(a a .. rest)` repeats `a` → CDZ0102
+; (linearity is checked BEFORE the leading-element refutability guard, so the non-linear code wins).
+(case "an empty list binding pattern is refutable and rejected"
+  (input  (do (def (main) (let ((#list() #list())) 0)) (export main)))
+  (error  CDZ0210))
+
+(case "a rest binding with a refutable literal leading element is rejected"
+  (input  (do (def (main) (let ((#list(0 .. rest) #list(0 1))) 42)) (export main)))
+  (error  CDZ0210))
+
+(case "a non-linear list binding pattern is rejected CDZ0102 before the refutability guard"
+  (input  (do (def (main) (let ((#list(a a .. rest) #list(1 2 3))) a)) (export main)))
+  (error  CDZ0102))
+
 ; The refutable / ill-shaped / non-linear rejections. A binding position has no alternative arm, so its
 ; pattern MUST be irrefutable and its shape MUST match the value's type (core-semantics.md #A Binding
 ; Position Accepts An Irrefutable Pattern).
