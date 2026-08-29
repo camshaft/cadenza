@@ -5194,7 +5194,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         // A closure's captured values are unconditionally part of the value; a closure application
         // unconditionally evaluates the closure and its argument. Descend for their provable faults.
         Core::Closure { captures, .. } => {
-            for c in captures {
+            for &c in captures.iter() {
                 collect_reached_poisons(db, c, out);
             }
         }

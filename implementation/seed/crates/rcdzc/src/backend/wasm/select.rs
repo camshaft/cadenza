@@ -6006,7 +6006,7 @@ fn collect_used_ops_into_seen(
             out.insert(OP_ARR_ALLOC);
             out.insert(OP_ARR_SET);
             out.insert(OP_BOX_INT); // slot 0 = box-int(code)
-            for &c in &captures {
+            for &c in captures.iter() {
                 if let Ok(Some(op)) = box_op(db, c) {
                     out.insert(op);
                 }

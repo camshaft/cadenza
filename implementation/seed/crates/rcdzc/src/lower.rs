@@ -13259,7 +13259,10 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
         captures: captures.clone(),
     });
     trace!(target: "rcdzc::lower", node = id.0, body = body.0, code, n_params = params.len(), n_captures = captures.len(), "lift lambda → Core::Closure");
-    Core::Closure { code, captures }
+    Core::Closure {
+        code,
+        captures: captures.into(),
+    }
 }
 
 /// Collect the lambda body's FREE-VARIABLE capture set into `captures` (ordered, distinct, first-use
@@ -14462,7 +14465,7 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
             {
                 fp.push_str("|clos");
                 fp.push_str(&code.to_string());
-                for cap in captures {
+                for &cap in captures.iter() {
                     fp.push(':');
                     subtree_fingerprint(db, cap, &mut fp);
                 }

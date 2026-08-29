@@ -1342,7 +1342,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
     match crate::lower::core_of(db, id) {
         Core::Closure { code, captures } => {
             out.insert(code);
-            for c in captures {
+            for &c in captures.iter() {
                 collect_closure_codes(db, c, out);
             }
         }
@@ -1892,7 +1892,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         // calls. The lifted function's OWN body is reached via the lifted-def worklist (a lifted lambda is
         // a synthetic def added to the emission set separately), not here.
         crate::core::Core::Closure { captures, .. } => {
-            for c in captures {
+            for &c in captures.iter() {
                 collect_call_callees(db, c, out);
             }
         }

@@ -1279,7 +1279,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         // captures must be walked or that host op is missed and the program declines. The closure's BODY is
         // walked separately (it emits as its own lifted function whose body the layout reaches).
         Core::Closure { captures, .. } => {
-            for c in captures {
+            for &c in captures.iter() {
                 collect_host_imports(db, c, out);
             }
         }

@@ -1657,7 +1657,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         // A closure's CAPTURES may include a host-call result carrying a string arg — walk them (the body
         // is walked as its own lifted function). Mirrors `collect_host_imports`'s `Core::Closure` arm.
         Core::Closure { captures, .. } => {
-            for c in captures {
+            for &c in captures.iter() {
                 collect_host_arg_strings(db, c, out);
             }
         }

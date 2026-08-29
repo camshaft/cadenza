@@ -1299,7 +1299,8 @@ pub enum Core {
     //# A function value MUST capture the bindings in scope at the point it is created, so that applying it later observes those captured bindings rather than the bindings in scope at the point of application.
     Closure {
         code: usize,
-        captures: Vec<StructId>,
+        // Build-once-immutable; Rc<[StructId]> for the cheap memo-hit/recursive-walk clone (see `Call`).
+        captures: std::rc::Rc<[StructId]>,
     },
     /// A read of the k-th CAPTURED free variable inside a LIFTED closure body — `arr-get(env, 1 + index)`
     /// then the value's own unbox/borrow. The lifted function receives its closure CELL as its first wasm
