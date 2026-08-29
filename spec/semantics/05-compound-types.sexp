@@ -8841,6 +8841,16 @@
   (input     (List.update #list(1 2 3) 1 true))
   (error     CDZ0201))
 
+(case "prepending an element of a different type onto a list is a type error"
+  (doc    "`(List.prepend (list 1 2) true)` prepends a Bool onto an Int64 list — the front-insertion
+           companion of the `List.push` mismatch. The result is not homogeneous (collections-and-text.md
+           #A List Is An Ordered Homogeneous Sequence), a MALFORMED COLLECTION (CDZ0201), coded uniformly
+           with the push / update / literal cases (#A Collection's Homogeneity Violation Is A Malformed
+           Collection). Pins that the element-type check covers `List.prepend` too, not only push/update.
+           From rcdzc a_list_prepend_type_mismatch_is_rejected.")
+  (input     (List.prepend #list(1 2) true))
+  (error     CDZ0201))
+
 ; Homogeneity is by element TYPE, and two compound values of the same KIND but different SHAPE are
 ; different types (type-system.md #Structural Values Are Comparable Only When Their Shapes Match:
 ; records equal only when their field-name SETS match, tuples only when their lengths match, sums
