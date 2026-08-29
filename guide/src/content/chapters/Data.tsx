@@ -22,21 +22,21 @@ export default function Data() {
         there are but the type of each one, in order. The two slots hold different types, and that's
         fine, because a tuple's shape is part of its type.
       </P>
-      <Runnable title="A tuple" source={`(tuple 7 true)`} />
+      <Runnable title="A tuple" source={`#tuple(7 true)`} />
 
       <H2>Records</H2>
       <P>
         A record has a fixed set of <em>named</em> fields. Reach a field with the <C>.</C> accessor,
         here the <C>leap</C> flag of a little "year" record:
       </P>
-      <Runnable source={`(let ((y (record (year 2026) (leap true))))
+      <Runnable source={`(let ((y #record((= year 2026) (= leap true))))
   (. y leap))`} />
 
       <P>
         Return the whole record and, just like the tuple, it carries a structural type, one entry per
         field, each with its own type:
       </P>
-      <Runnable source={`(record (year 2026) (leap true))`} />
+      <Runnable source={`#record((= year 2026) (= leap true))`} />
 
       <Why tenet="Everything is a record">
         Records aren't just one data type among many, since they're the mechanism the whole language is
@@ -53,13 +53,13 @@ export default function Data() {
         identity. A tuple matches position by position, so <C>(tuple 1 2)</C> equals another{" "}
         <C>(tuple 1 2)</C>:
       </P>
-      <Runnable source={`(= (tuple 1 2) (tuple 1 2))`} />
+      <Runnable source={`(= #tuple(1 2) #tuple(1 2))`} />
       <P>
         A record matches by <em>field name</em>, not field order, so the same fields written in a
         different order are still the same record. That's the by-name nature showing through: a record is
         its set of named fields, however you list them.
       </P>
-      <Runnable source={`(= (record (x 1) (y 2)) (record (y 2) (x 1)))`} />
+      <Runnable source={`(= #record((= x 1) (= y 2)) #record((= y 2) (= x 1)))`} />
 
       <H2>Taking one apart in a match</H2>
       <P>
@@ -68,8 +68,8 @@ export default function Data() {
         <C>b</C> in one step, then adds them:
       </P>
       <Runnable
-        source={`(match (tuple 3 4)
-  ((tuple a b) (+ a b)))`}
+        source={`(match #tuple(3 4)
+  (#tuple(a b) (+ a b)))`}
       />
       <P>
         One arm is enough: a two-tuple always has exactly this shape, so <C>(tuple a b)</C> is an{" "}
@@ -84,7 +84,7 @@ export default function Data() {
         and the accessor chains to reach inside. Here a record has one field, <C>pair</C>, holding a
         tuple; we reach the field, then index into the tuple to pull out its second element:
       </P>
-      <Runnable source={`(. (. (record (pair (tuple 10 20))) pair) 1)`} />
+      <Runnable source={`(. (. #record((= pair #tuple(10 20))) pair) 1)`} />
       <P>
         Reaching <C>pair</C> gets the tuple, then index <C>1</C> pulls its second element, <C>20</C>.
         We'll lean on this in the next chapter, but for now the point is just that the two ways of bundling
@@ -96,7 +96,7 @@ export default function Data() {
         Since functions are values, they can live in tuples and records too. Here we pull a function
         out of a tuple and call it:
       </P>
-      <Runnable source={`((. (tuple (fn (x) (+ x 1)) 9) 0) 5)`} />
+      <Runnable source={`((. #tuple((fn (x) (+ x 1)) 9) 0) 5)`} />
       <P>
         Element <C>0</C> of the tuple is the increment function; applying it to <C>5</C> gives <C>6</C>.
         The <C>9</C> in the other slot just rides along, since a tuple can mix a function and a plain value.
@@ -112,7 +112,7 @@ export default function Data() {
           </>
         }
         starter={`(. (record (x 10) (y 20) (z 30)) ?)`}
-        solution={`(. (record (x 10) (y 20) (z 30)) y)`}
+        solution={`(. #record((= x 10) (= y 20) (= z 30)) y)`}
         expected="20"
         hint={
           <>
@@ -132,7 +132,7 @@ export default function Data() {
           </>
         }
         starter={`(. (. (record (point (tuple 7 8 9))) point) ?)`}
-        solution={`(. (. (record (point (tuple 7 8 9))) point) 2)`}
+        solution={`(. (. #record((= point #tuple(7 8 9))) point) 2)`}
         expected="9"
         hint={
           <>

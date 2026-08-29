@@ -14,26 +14,26 @@ export default function Lists() {
         <C>List.push</C> and <C>List.concat</C> return a new list and leave the original untouched.
         Ask a list its length with <C>List.len</C>.
       </P>
-      <Runnable source={`(List.len (list 1 2 3))`} />
+      <Runnable source={`(List.len #list(1 2 3))`} />
 
       <H2>Building lists</H2>
       <P>
         <C>List.push</C> adds an element to the end; <C>List.concat</C> joins two lists. Each returns a
         whole new list, so Run this and you'll see the result, <C>(list 1 2 3)</C>, not just a count:
       </P>
-      <Runnable source={`(List.push (list 1 2) 3)`} />
+      <Runnable source={`(List.push #list(1 2) 3)`} />
       <P>
         <C>List.prepend</C> is the mirror of <C>push</C>: it adds an element to the <em>front</em> rather
         than the end. It takes the list first and the new element second, the same receiver-first order as{" "}
         <C>push</C>, so prepending <C>1</C> to <C>(list 2 3)</C> gives <C>(list 1 2 3)</C>, the new element
         leading:
       </P>
-      <Runnable source={`(List.prepend (list 2 3) 1)`} />
+      <Runnable source={`(List.prepend #list(2 3) 1)`} />
       <P>
         <C>List.concat</C> joins two lists into a new one, so Run this and you see the whole joined list,{" "}
         <C>(list 1 2 3 4 5)</C>, the two inputs laid end to end:
       </P>
-      <Runnable source={`(List.concat (list 1 2) (list 3 4 5))`} />
+      <Runnable source={`(List.concat #list(1 2) #list(3 4 5))`} />
 
       <H2>Reaching in safely</H2>
       <P>
@@ -44,7 +44,7 @@ export default function Lists() {
       </P>
       <Runnable
         source={`(def (main)
-  (match (List.at (list 10 20 30) 1)
+  (match (List.at #list(10 20 30) 1)
     ((Some x) x)
     ((None _) -1)))`}
       />
@@ -70,7 +70,7 @@ export default function Lists() {
         then read the original back:
       </P>
       <Runnable
-        source={`(let ((original (list 10 20 30))
+        source={`(let ((original #list(10 20 30))
       (bumped   (List.update original 1 99)))
   (match (List.at original 1)
     ((Some x) x)
@@ -86,7 +86,7 @@ export default function Lists() {
         Return the updated list itself and you can see the change in place, one slot different,{" "}
         <C>(list 10 99 30)</C>, and the input <C>(list 10 20 30)</C> still intact wherever else it's held:
       </P>
-      <Runnable source={`(List.update (list 10 20 30) 1 99)`} />
+      <Runnable source={`(List.update #list(10 20 30) 1 99)`} />
 
       <Why tenet="Immutable, persistent values">
         Every value in Cadenza is immutable; an "update" always produces a fresh value and leaves every
@@ -105,7 +105,7 @@ export default function Lists() {
       </P>
       <Runnable
         source={`(def (count xs) (List.len xs))
-(def (main) (count (list 10 20 30 40)))`}
+(def (main) (count #list(10 20 30 40)))`}
       />
       <P>
         Four elements in, so <C>4</C> out, and you never wrote the element type: <C>count</C> works on a
@@ -120,9 +120,9 @@ export default function Lists() {
       <Runnable
         source={`(def (sum xs)
   (match xs
-    ((list) 0)
-    ((list x .. rest) (+ x (sum rest)))))
-(def (main) (sum (list 10 20 30)))`}
+    (#list() 0)
+    (#list(x .. rest) (+ x (sum rest)))))
+(def (main) (sum #list(10 20 30)))`}
       />
       <P>
         The empty case is the base case, <C>0</C>, the sum of nothing, and each step peels off one
@@ -155,12 +155,12 @@ export default function Lists() {
         <C>(list 20 30)</C>, and matching it pulls out <C>20</C>:
       </P>
       <Runnable
-        source={`(match (list 10 20 30)
-  ((list a .. rest)
+        source={`(match #list(10 20 30)
+  (#list(a .. rest)
    (match rest
-     ((list b .. r) b)
-     ((list) 0)))
-  ((list) 0))`}
+     (#list(b .. r) b)
+     (#list() 0)))
+  (#list() 0))`}
       />
       <P>
         A leading element can still be any pattern, so <C>(list (tuple x y) .. rest)</C> is fine, only the
@@ -184,7 +184,7 @@ export default function Lists() {
         starter={`(match (List.at (List.update (list 5 6 7) 0 ?) 0)
   ((Some x) x)
   ((None _) 0))`}
-        solution={`(match (List.at (List.update (list 5 6 7) 0 50) 0)
+        solution={`(match (List.at (List.update #list(5 6 7) 0 50) 0)
   ((Some x) x)
   ((None _) 0))`}
         expected="50"
@@ -206,7 +206,7 @@ export default function Lists() {
           </>
         }
         starter={`(List.len (List.? (list 10 20 30) 99))`}
-        solution={`(List.len (List.push (list 10 20 30) 99))`}
+        solution={`(List.len (List.push #list(10 20 30) 99))`}
         expected="4"
         hint={
           <>
@@ -232,9 +232,9 @@ export default function Lists() {
 (def (main) (prod (list 1 2 3 4)))`}
         solution={`(def (prod xs)
   (match xs
-    ((list) 1)
-    ((list x .. rest) (* x (prod rest)))))
-(def (main) (prod (list 1 2 3 4)))`}
+    (#list() 1)
+    (#list(x .. rest) (* x (prod rest)))))
+(def (main) (prod #list(1 2 3 4)))`}
         expected="24"
         hint={
           <>
@@ -257,7 +257,7 @@ export default function Lists() {
         starter={`(match (List.at (List.? (list 1 2 3) 0) 0)
   ((Some x) x)
   ((None _) -1))`}
-        solution={`(match (List.at (List.prepend (list 1 2 3) 0) 0)
+        solution={`(match (List.at (List.prepend #list(1 2 3) 0) 0)
   ((Some x) x)
   ((None _) -1))`}
         expected="0"

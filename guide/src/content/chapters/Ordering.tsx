@@ -112,12 +112,12 @@ export default function Ordering() {
         Text compares in dictionary order. So <C>(Bytes.of (list 1 2))</C> comes before{" "}
         <C>(Bytes.of (list 1 3))</C>, decided at the first byte that differs:
       </P>
-      <Runnable source={`(< (Bytes.of (list 1 2)) (Bytes.of (list 1 3)))`} />
+      <Runnable source={`(< (Bytes.of #list(1 2)) (Bytes.of #list(1 3)))`} />
       <P>
         Watch the <em>unsigned</em> part: a byte holding <C>128</C> is <em>greater</em> than one holding{" "}
         <C>127</C>, not less, because the bytes are compared as 0–255, never as signed numbers:
       </P>
-      <Runnable source={`(> (Bytes.of (list 128)) (Bytes.of (list 127)))`} />
+      <Runnable source={`(> (Bytes.of #list(128)) (Bytes.of #list(127)))`} />
       <P>
         A <C>Map</C> key or a <C>Set</C> element needs two things: the collection compares keys for{" "}
         <em>equality</em> to find an entry, and it uses a <em>total order</em> to enumerate its contents in a
@@ -128,8 +128,8 @@ export default function Ordering() {
       <Runnable
         source={`(do (def (main)
       (Map.lookup
-        (Map.insert (Map.empty) (Bytes.of (list 1 2)) 42)
-        (Bytes.of (list 1 2))))
+        (Map.insert (Map.empty) (Bytes.of #list(1 2)) 42)
+        (Bytes.of #list(1 2))))
     (export main))`}
       />
       <P>
