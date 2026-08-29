@@ -310,7 +310,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(9) {
+    match c.variant(10) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -328,6 +328,8 @@ fn gen_main_body<C: Choice>(
         7 => gen_typed_fn_call_body(c, fresh, out),
         // BUILD + CONSUME a compound (projection / List.len / Option match): consumption emit.
         8 => gen_compound_consume(c, out),
+        // A `?`/`try` body: a fallible (Result/Option) boundary + a `(try …)` unwrap / short-circuit.
+        9 => gen_try_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -906,6 +908,43 @@ fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
             }
         },
     }
+}
+
+/// A `?`/`try` body: `main` is a FALLIBLE fn (a `Result`/`Option` boundary, established by the body
+/// ascription), and `(try …)` UNWRAPS a success ctor (`Ok`/`Some` → the payload) or SHORT-CIRCUITS a
+/// failure ctor (`Err`/`None` → the fn's own value). Shape `(: (let ((x (try (<ctor> …)))) (<wrap> x))
+/// (<sum-ty>))`: the outer ascription is REQUIRED — a bare `(try (Ok 5))` under a non-fallible `main` is
+/// CDZ0230 (no boundary to break to); the `let` binds the unwrapped payload; the tail re-wraps it in the
+/// SAME sum. Reaches the `?` success-fold + the `Core::Block`/`Break` short-circuit lowering that #5249
+/// grades — a surface no other body hits. A CONSTANT operand (a runtime `?` still declines), so it stays
+/// on the compile path. Payload type is any scalar (verified: Int64/sized/float/bool all compile).
+fn gen_try_body<C: Choice>(c: &mut C, out: &mut String) {
+    let t = pick_scalar_ty(c);
+    let ty = t.name();
+    match c.variant(4) {
+        // Result Ok SUCCESS → `(try (Ok <t>))` unwraps to the payload → `(Ok x)`.
+        0 => {
+            out.push_str("(: (let ((x (try (Ok ");
+            gen_scalar_leaf(c, t, out);
+            write!(out, ")))) (Ok x)) (Result {ty} {ty}))").ok();
+        }
+        // Result Err SHORT-CIRCUIT → `(try (Err <t>))` breaks the boundary → the fn's value is `(Err <t>)`.
+        1 => {
+            out.push_str("(: (let ((x (try (Err ");
+            gen_scalar_leaf(c, t, out);
+            write!(out, ")))) (Ok x)) (Result {ty} {ty}))").ok();
+        }
+        // Option Some SUCCESS → `(try (Some <t>))` unwraps → `(Some x)`.
+        2 => {
+            out.push_str("(: (let ((x (try (Some ");
+            gen_scalar_leaf(c, t, out);
+            write!(out, ")))) (Some x)) (Option {ty}))").ok();
+        }
+        // Option None SHORT-CIRCUIT → `(try None)` breaks the boundary → the fn's value is `None`.
+        _ => {
+            write!(out, "(: (let ((x (try None))) (Some x)) (Option {ty}))").ok();
+        }
+    };
 }
 
 /// Append one coerced `Int64` expression: at `depth == 0` (or when the base variant is picked) an
@@ -1649,6 +1688,38 @@ mod tests {
         }
         assert!(saw_set, "should reach a #set literal");
         assert!(saw_map, "should reach a #map literal");
+    }
+
+    /// `gen_try_body` REACHES all four `?`/`try` forms (Ok/Err success+short-circuit for Result, Some/None
+    /// for Option) and every body COMPILES (S118: fills the `?`/try codegen gap #5249 unlocked). Guards the
+    /// try arm — a malformed ascription/boundary would decline/CDZ0230 here.
+    #[test]
+    fn gen_try_body_reaches_all_forms_and_compiles() {
+        let (mut saw_ok, mut saw_err, mut saw_some, mut saw_none) = (false, false, false, false);
+        for seed in 0u64..1024 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(307);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_try_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_ok |= body.contains("(try (Ok ");
+            saw_err |= body.contains("(try (Err ");
+            saw_some |= body.contains("(try (Some ");
+            saw_none |= body.contains("(try None)");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "try body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_ok, "should reach a Result Ok-success try");
+        assert!(saw_err, "should reach a Result Err-short-circuit try");
+        assert!(saw_some, "should reach an Option Some-success try");
+        assert!(saw_none, "should reach an Option None-short-circuit try");
     }
 
     /// Every operator the generator can emit is a valid Int64→Int64→Int64 op the compiler CLEANLY
