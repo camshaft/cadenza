@@ -22,7 +22,7 @@ export default function RecordsTuples() {
       </P>
       <Runnable
         source={`(def (area r) (* (. r w) (. r h)))
-(def (main) (area (record (w 4) (h 5))))`}
+(def (main) (area #record((= w 4) (= h 5))))`}
       />
 
       <P>
@@ -39,7 +39,7 @@ export default function RecordsTuples() {
         selector naming which field, and the new value, and it hands back a copy with that field replaced.
         Here a price of <C>2</C> becomes <C>9</C>:
       </P>
-      <Runnable source={`(. (Record.with (record (item 1) (price 2)) #"price" 9) price)`} />
+      <Runnable source={`(. (Record.with #record((= item 1) (= price 2)) #"price" 9) price)`} />
       <Note>
         The field is named with a <C>#</C> selector, written <C>#"price"</C> in the s-expr surface and{" "}
         <C>#price</C> in the ML surface (flip the syntax toggle to see it). It's a symbol picking the
@@ -50,7 +50,7 @@ export default function RecordsTuples() {
         updated version, then read the <em>original</em> back and you'll see it never moved:
       </P>
       <Runnable
-        source={`(let ((base (record (hp 5) (mp 3))))
+        source={`(let ((base #record((= hp 5) (= mp 3))))
   (. (Record.with base #"hp" 99) hp))`}
       />
       <P>
@@ -62,13 +62,13 @@ export default function RecordsTuples() {
         <C>Record.extend</C>. Keeping them separate is deliberate, because it means a typo'd field name can't
         silently create a new field where you meant to update an old one:
       </P>
-      <Runnable source={`(. (Record.extend (record (x 1) (y 2)) #"z" 3) z)`} />
+      <Runnable source={`(. (Record.extend #record((= x 1) (= y 2)) #"z" 3) z)`} />
       <P>
         And the compiler holds the line: use <C>Record.with</C> on a field that isn't there and it
         won't guess, but tells you to reach for <C>Record.extend</C> instead.
       </P>
       <Runnable
-        source={`(. (Record.with (record (a 1)) #"z" 5) z)`}
+        source={`(. (Record.with #record((= a 1)) #"z" 5) z)`}
         expect="error"
       />
 
@@ -78,7 +78,7 @@ export default function RecordsTuples() {
         fields are the <em>union</em> of both. Merge a record of sizes with a record of colours and you can
         reach any field of either side:
       </P>
-      <Runnable source={`(. (Record.merge (record (w 4) (h 5)) (record (r 255))) r)`} />
+      <Runnable source={`(. (Record.merge #record((= w 4) (= h 5)) #record((= r 255))) r)`} />
       <P>
         The result has all three fields <C>w</C>, <C>h</C>, and <C>r</C>, so <C>.r</C> reads <C>255</C>.
         And the same no-clobber discipline applies: the two records must have <em>disjoint</em> fields. Ask
@@ -86,7 +86,7 @@ export default function RecordsTuples() {
         winner:
       </P>
       <Runnable
-        source={`(. (Record.merge (record (x 1)) (record (x 2))) x)`}
+        source={`(. (Record.merge #record((= x 1)) #record((= x 2))) x)`}
         expect="error"
       />
 
@@ -95,7 +95,7 @@ export default function RecordsTuples() {
         Records and tuples nest freely, so a field can hold another record and a tuple can hold a record,
         and so on. Chain the accessor to reach inside:
       </P>
-      <Runnable source={`(. (. (record (pt (record (x 3) (y 4)))) pt) y)`} />
+      <Runnable source={`(. (. #record((= pt #record((= x 3) (= y 4)))) pt) y)`} />
 
       <H2>Tuples as lightweight pairs</H2>
       <P>
@@ -104,8 +104,8 @@ export default function RecordsTuples() {
         pair, and since a tuple is an ordinary value it can hand the whole flipped pair straight back:
       </P>
       <Runnable
-        source={`(def (swap p) (tuple (. p 1) (. p 0)))
-(def (main) (swap (tuple 3 7)))`}
+        source={`(def (swap p) #tuple((. p 1) (. p 0)))
+(def (main) (swap #tuple(3 7)))`}
       />
       <P>
         The result is <C>(tuple 7 3)</C>, both elements in their new positions, returned as one value
@@ -117,7 +117,7 @@ export default function RecordsTuples() {
         tuple's elements simply follow the first, their indices shifting up. Cat a pair onto a triple and
         index <C>3</C> of the result is the first element of the second tuple, <C>4</C>:
       </P>
-      <Runnable source={`(. (Tuple.concat (tuple 1 2) (tuple 3 4 5)) 3)`} />
+      <Runnable source={`(. (Tuple.concat #tuple(1 2) #tuple(3 4 5)) 3)`} />
 
       <Why tenet="Records are named, tuples are positional">
         Why have both? A tuple is a fixed <em>positional</em> product you reach into by index, and it reads
@@ -136,7 +136,7 @@ export default function RecordsTuples() {
       <Runnable
         source={`(def (sq x) (* x x))
 (def (dist2 p) (+ (sq (. p x)) (sq (. p y))))
-(def (main) (dist2 (record (x 3) (y 4))))`}
+(def (main) (dist2 #record((= x 3) (= y 4))))`}
       />
 
       <H2>Your turn</H2>
@@ -148,7 +148,7 @@ export default function RecordsTuples() {
 (def (main) (perimeter (record (w 4) (h 5))))`}
         solution={`(def (perimeter r)
   (+ (* 2 (. r w)) (* 2 (. r h))))
-(def (main) (perimeter (record (w 4) (h 5))))`}
+(def (main) (perimeter #record((= w 4) (= h 5))))`}
         expected="18"
         hint={<>Mirror the width term for the height: <C>(* 2 (. r h))</C>.</>}
       />
@@ -163,7 +163,7 @@ export default function RecordsTuples() {
           </>
         }
         starter={`(. (Tuple.concat (tuple 1 2) (tuple 3 4 5)) ?)`}
-        solution={`(. (Tuple.concat (tuple 1 2) (tuple 3 4 5)) 4)`}
+        solution={`(. (Tuple.concat #tuple(1 2) #tuple(3 4 5)) 4)`}
         expected="5"
         hint={
           <>
@@ -184,7 +184,7 @@ export default function RecordsTuples() {
           </>
         }
         starter={`(. (Record.? (record (x 10) (y 20)) #"z" 30) z)`}
-        solution={`(. (Record.extend (record (x 10) (y 20)) #"z" 30) z)`}
+        solution={`(. (Record.extend #record((= x 10) (= y 20)) #"z" 30) z)`}
         expected="30"
         hint={
           <>
