@@ -282,6 +282,29 @@
   (input  (do (type (Box a) (Mk a)) (def (f (: x (Box))) 0) (def (main) 0) (export main)))
   (error  CDZ0203 (message "`Box` takes 1 type argument") (message "but 0 were supplied")))
 
+; The same wrong-arity check fires in a VARIANT-PAYLOAD type position at the DECLARATION, not only in an
+; annotation: `(type W (Wrap (Box Int64 Bool)))` over 1-arg `(Box a)` was SILENTLY ACCEPTED (a user generic
+; REDUCES to a Ty::Sum dropping the extra arg, so validate_type_position's typeval_of early-return waved it
+; through), and the mis-arity surfaced only LATER as a confusing construction-site CDZ0201. Now the arity
+; check runs BEFORE the typeval_of return, rejecting CDZ0203 at the declaration with the same actionable
+; message. Migrated from rcdzc a_wrong_arity_generic_in_a_variant_payload_is_cdz0203_at_the_declaration.
+(case "a wrong-arity user generic in a variant payload is rejected at the declaration"
+  (input  (do (type (Box a) (Mk a)) (type W (Wrap (Box Int64 Bool))) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "`Box` takes 1 type argument") (message "but 2 were supplied")))
+
+(case "a wrong-arity built-in generic in a variant payload is rejected at the declaration"
+  (input  (do (type W (Wrap (Option Int64 Bool))) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "`Option` takes 1 type argument") (message "but 2 were supplied")))
+
+(case "a RIGHT-arity generic variant payload constructs and matches (no false wrong-arity)"
+  (input  (do (type (Box a) (Mk a)) (type W (Wrap (Box Int64)))
+              (def (main) (match (Wrap (Mk 5)) ((Wrap b) (match b ((Mk v) v))))) (export main)))
+  (call   main) (output (: 5 Int64)))
+
+(case "a PARAM-parameterized generic payload (Box a) inside another generic is valid, not wrong-arity"
+  (input  (do (type (Box a) (Mk a)) (type (Pair a) (P (Box a))) (def (main) 0) (export main)))
+  (call   main) (output (: 0 Int64)))
+
 ; The single-param applied case above covers the flat one-argument face; the resolve path also handles
 ; MULTI-parameter generics and NESTED type-arguments (a user generic inside a built-in generic, or inside
 ; another user generic). Each was equally CDZ0101-unresolvable under the parenthesized-head `""`-name bug
