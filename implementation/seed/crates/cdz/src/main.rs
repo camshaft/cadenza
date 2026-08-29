@@ -4922,6 +4922,165 @@ fn list_tests(target: &str, files: &[String]) -> ExitCode {
     }
 }
 
+/// `cdz test --emit-shred` — the compiler-driven test SHRED (the operator model), the body behind the flag.
+/// Drives the `EmitTestsShred` sidecar IN-PROCESS (linked `rcdzc`, the same in-process compile the `cdz test`
+/// runner uses — no wasmtime, no cdz-run) PER PROJECT FILE (each its own shared-closure GROUP: a multi-file
+/// project is NOT one linkable program — independent files don't share an entry, and packages are DAGs), and
+/// writes a single FLAT `out_dir/`: `main-<group>.wasm` (each group's emitted library, when it has one) +
+/// `test-<name>.wasm` (the per-`@test` components, flat) + ONE `manifest.cdzb` (the merged cadenza-ast-binary
+/// manifest). Each group's per-program manifest carries `main-file` = "main.wasm" (has-lib) or "" (standalone);
+/// here we REWRITE it to this group's real `main-<group>.wasm` (or keep "" for standalone) and MERGE all
+/// groups' entries into the one manifest a runner reads (`cdz-run <target> --call <export> [--peer
+/// <main-iface>=<main-file>] --store S`). Compile-only; exits non-zero if any file fails to compile.
+fn run_emit_shred(files: &[String], out_dir: &std::path::Path) -> ExitCode {
+    if let Err(e) = std::fs::create_dir_all(out_dir) {
+        eprintln!(
+            "{PROG}: --emit-shred: cannot create {}: {e}",
+            out_dir.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    // The merged manifest's entries, collected across groups as owned fields (each group's arena is dropped
+    // before the next): (name, is_property, file, export, target, main-iface, main-file).
+    let mut all_entries: Vec<(String, bool, String, String, String, String, String)> = Vec::new();
+    let mut any_fail = false;
+    for (i, file) in files.iter().enumerate() {
+        // GROUP = one project file + its import closure. Load it, encode each closure file's AST, drive
+        // `EmitTestsShred` in-process (link + emit over this group's linked program). A file's closure is its
+        // own group; a standalone file (no imports) is a lone-file group (→ possibly no main).
+        let closure = match load_import_closure_with(file, &|_| None) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{PROG}: {e}");
+                any_fail = true;
+                continue;
+            }
+        };
+        let mut inputs: Vec<rcdzc::Artifact> = closure
+            .iter()
+            .map(|f| {
+                rcdzc::Artifact::new(
+                    rcdzc::Artifact::KIND_AST,
+                    f.name.clone(),
+                    cadenza_syntax::codec::encode(&f.arenas),
+                )
+            })
+            .collect();
+        inputs.push(rcdzc::Artifact::new(
+            rcdzc::sidecar::KIND_SIDECAR,
+            "drive",
+            rcdzc::sidecar::encode(&[rcdzc::Request::EmitTestsShred]),
+        ));
+        inputs.push(compiler_cli::entry_artifact(&closure[0].name));
+        let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+        if out.has_error() {
+            report_errors(&out);
+            any_fail = true;
+            continue;
+        }
+        // This group's MAIN file name (the emit sets `main-file` = "main.wasm" iff it emitted a provider;
+        // rewrite to a per-group name so mains from different groups don't collide in the flat dir).
+        let has_main = out.artifacts.iter().any(|a| a.kind == "component-provider");
+        let group_main_file = if has_main {
+            format!("main-{i}.wasm")
+        } else {
+            String::new()
+        };
+        for a in &out.artifacts {
+            match a.kind.as_str() {
+                // MAIN provider → `main-<group>.wasm`.
+                "component-provider" => {
+                    let p = out_dir.join(&group_main_file);
+                    if let Err(e) = std::fs::write(&p, &a.bytes) {
+                        eprintln!("{PROG}: --emit-shred: cannot write {}: {e}", p.display());
+                        any_fail = true;
+                    }
+                }
+                // Per-@test CONSUMER `test-<name>` → `test-<name>.wasm` (flat; the artifact name IS the file
+                // stem). Two files with a same-named `@test` would collide here — the flat model assumes
+                // suite-unique test names (true for the gate suites).
+                "component" => {
+                    let p = out_dir.join(format!("{}.wasm", a.name));
+                    if let Err(e) = std::fs::write(&p, &a.bytes) {
+                        eprintln!("{PROG}: --emit-shred: cannot write {}: {e}", p.display());
+                        any_fail = true;
+                    }
+                }
+                // The group's per-program MANIFEST → decode + collect its entries with `main-file` rewritten
+                // to this group's real main (or "" for a standalone group).
+                k if k == rcdzc::sidecar::KIND_SHRED_MANIFEST => {
+                    let Some(arenas) = cadenza_syntax::codec::decode(&a.bytes) else {
+                        eprintln!("{PROG}: --emit-shred: could not decode {file}'s shred manifest");
+                        any_fail = true;
+                        continue;
+                    };
+                    let Some(entries) = arenas.as_form(arenas.root, "shred-manifest") else {
+                        continue;
+                    };
+                    for &e in entries {
+                        let Some(f) = arenas.as_form(e, "entry") else {
+                            continue;
+                        };
+                        if f.len() != 7 {
+                            continue;
+                        }
+                        all_entries.push((
+                            arenas.as_str(f[0]).unwrap_or("").to_string(),
+                            arenas.as_bool(f[1]).unwrap_or(false),
+                            arenas.as_str(f[2]).unwrap_or("").to_string(),
+                            arenas.as_str(f[3]).unwrap_or("").to_string(),
+                            arenas.as_str(f[4]).unwrap_or("").to_string(),
+                            arenas.as_str(f[5]).unwrap_or("").to_string(),
+                            group_main_file.clone(),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // The MERGED manifest — ONE `(shred-manifest (entry name is-property file export target main-iface
+    // main-file)…)` across all groups, `codec::encode`d (the cadenza-ast-binary tooling format).
+    let mut b = cadenza_syntax::Builder::new();
+    let mut children: Vec<cadenza_syntax::StructId> = Vec::with_capacity(all_entries.len() + 1);
+    children.push(b.name("shred-manifest"));
+    for (name, is_prop, file, export, target, iface, main_file) in &all_entries {
+        let head = b.name("entry");
+        let name_n = b.atom_leaf(cadenza_syntax::Leaf::Str(name.as_str().into()));
+        let isprop_n = b.atom_leaf(cadenza_syntax::Leaf::Bool(*is_prop));
+        let file_n = b.atom_leaf(cadenza_syntax::Leaf::Str(file.as_str().into()));
+        let export_n = b.atom_leaf(cadenza_syntax::Leaf::Str(export.as_str().into()));
+        let target_n = b.atom_leaf(cadenza_syntax::Leaf::Str(target.as_str().into()));
+        let iface_n = b.atom_leaf(cadenza_syntax::Leaf::Str(iface.as_str().into()));
+        let mainfile_n = b.atom_leaf(cadenza_syntax::Leaf::Str(main_file.as_str().into()));
+        children.push(b.list(vec![
+            head, name_n, isprop_n, file_n, export_n, target_n, iface_n, mainfile_n,
+        ]));
+    }
+    let root = b.list(children);
+    let manifest_path = out_dir.join("manifest.cdzb");
+    if let Err(e) = std::fs::write(
+        &manifest_path,
+        cadenza_syntax::codec::encode(&b.finish(root)),
+    ) {
+        eprintln!(
+            "{PROG}: --emit-shred: cannot write {}: {e}",
+            manifest_path.display()
+        );
+        any_fail = true;
+    }
+    if any_fail {
+        ExitCode::FAILURE
+    } else {
+        eprintln!(
+            "cdz: shredded {} test(s) into {}",
+            all_entries.len(),
+            out_dir.display()
+        );
+        ExitCode::SUCCESS
+    }
+}
+
 fn run_test(args: &TestArgs) -> ExitCode {
     // Resolve WHICH files to run. Cases:
     //  - NO arg → search UP from the current directory for the nearest `Project.cdz` (like `cargo test`
@@ -5027,6 +5186,15 @@ fn run_test(args: &TestArgs) -> ExitCode {
     // file) but nothing after it.
     if args.list {
         return list_tests(&target, &files);
+    }
+    // `--emit-shred`: shred the suite into per-@test wasm + a manifest (compile-only), then EXIT. Shares the
+    // exact file-resolution above; the per-group emit + write is `run_emit_shred`.
+    if args.emit_shred {
+        let Some(out_dir) = args.out_dir.as_deref() else {
+            eprintln!("{PROG} test: --emit-shred requires --out-dir <DIR>");
+            return ExitCode::FAILURE;
+        };
+        return run_emit_shred(&files, out_dir);
     }
 
     // GATE ON `cdz check` CLEAN FIRST — before running any `@test`. A source file that fails to PARSE (an
@@ -5919,6 +6087,8 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 warm_only: false, // watch RUNS the tests on each change, never a warm-only pass
                 report_time: false, // watch is an interactive re-run; timing is an opt-in of a direct run
                 list: false, // watch RE-RUNS the suite; enumeration-and-exit is a one-shot direct-run mode
+                emit_shred: false, // watch RE-RUNS; the shred build-output is a one-shot direct-run mode
+                out_dir: None,
             }),
             WatchCmd::Build => run_build(&BuildArgs {
                 dir: Some(dir_str.clone()),
@@ -5946,6 +6116,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 opt_level: None,
                 grade: None,
                 baseline: None,
+                diagnostics: None, // watch `run` doesn't grade diagnostics (a compile-phase grade wire)
                 compile_status: 0,
                 compile_diag: None,
                 diagnostics: None,
@@ -7489,6 +7660,23 @@ struct TestArgs {
     /// the per-test wasm + the full manifest as a BUILD output); `--list` is the eval-time NAMES-only half.
     #[arg(long)]
     list: bool,
+    /// SHRED the resolved suite into per-`@test` wasm COMPONENTS + a manifest, into `--out-dir`, and EXIT
+    /// (compile only — NO run, no wasmtime). The compiler-driven test shred (operator model): each project
+    /// file (its own shared-closure group) emits — via the `EmitTestsShred` sidecar, IN-PROCESS — a MAIN
+    /// component (its emitted library, `main-<group>.wasm`) when it has one, plus one thin CONSUMER per `@test`
+    /// (`test-<name>.wasm`) that links main + exports just that test; a file with no emitted library (all
+    /// inlined/prims) emits SELF-CONTAINED per-test components + no main. Writes a single FLAT `<out-dir>/`:
+    /// `main-<group>.wasm` (per group) + `test-<name>.wasm` (flat) + `manifest.cdzb` (ONE cadenza-ast-binary
+    /// manifest, `(shred-manifest (entry name is-property file export target main-iface main-file)…)`). A
+    /// runner (v-test-shred's nix matrix) then fans out one derivation per entry: `cdz-run <target> --call
+    /// <export> [--peer <main-iface>=<main-file>] --store S` → exit code (0=PASS/trap=FAIL). Requires
+    /// `--out-dir`. Wasmtime-free (the EMIT; the RUN is the external `cdz-run`). Peer of `--list` (the
+    /// eval-time names-only half); this is the BUILD-output half.
+    #[arg(long)]
+    emit_shred: bool,
+    /// The output directory for `--emit-shred` (created if absent). Required with `--emit-shred`.
+    #[arg(long)]
+    out_dir: Option<PathBuf>,
 }
 
 // ── cdz watch ──────────────────────────────────────────────────────────────────────────────────
