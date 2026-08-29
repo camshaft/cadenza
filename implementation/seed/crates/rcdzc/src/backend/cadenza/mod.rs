@@ -225,7 +225,10 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
 
     // One `(def …)` per reachable definition, in layout order (a stable, target-neutral order).
     for &def in &layout.order {
-        root_children.push(emit_def(db, &mut b, def, &emitted, &lifted)?);
+        let dn = db.defs[def].name.clone();
+        root_children.push(
+            emit_def(db, &mut b, def, &emitted, &lifted).map_err(|e| with_def_context(e, &dn))?,
+        );
     }
 
     // Then the exports, so recompiling the emitted program reaches the SAME definition set (an export-
@@ -289,7 +292,11 @@ pub fn emit_fragment(
     // ONLY the named subset, in `layout.order` (deterministic) — NO exports (added at splice time).
     for &def in &layout.order {
         if subset.contains(&db.defs[def].name) {
-            root_children.push(emit_def(db, &mut b, def, &emitted, &lifted)?);
+            let dn = db.defs[def].name.clone();
+            root_children.push(
+                emit_def(db, &mut b, def, &emitted, &lifted)
+                    .map_err(|e| with_def_context(e, &dn))?,
+            );
         }
     }
 
@@ -371,6 +378,18 @@ fn emit_type_surface(db: &Db, b: &mut Builder, occ: StructId) -> Option<StructId
 /// Reconstruct `(def (<name> (: <p> <Ty>)…) <body>)` for definition `def`. B1a handles NULLARY defs and
 /// parameterized defs whose parameters have a value-form-representable type; a parameter of a type with
 /// no surface (a function/continuation/unsolved type — `type_ast` returns `None`) declines.
+/// Prepend the owning def's name to a DECLINE's message so a `--target cadenza` / two-stage-shred emit
+/// failure names WHICH def declined (the class message alone — e.g. "payload projection over a
+/// non-tuple/record value" — does not say which def, which blocks per-def attribution + minimal-witness
+/// reduction downstream, v-test-shred). A CODED rejection (`code.is_some()`) is already anchored to a node,
+/// so it is left as-is; the prefix guard keeps a re-wrap from double-prefixing.
+fn with_def_context(mut e: Reject, def_name: &str) -> Reject {
+    if e.code.is_none() && !e.message.starts_with("def `") {
+        e.message = format!("def `{def_name}`: {}", e.message);
+    }
+    e
+}
+
 fn emit_def(
     db: &mut Db,
     b: &mut Builder,
