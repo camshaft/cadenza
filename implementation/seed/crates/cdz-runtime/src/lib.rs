@@ -4334,27 +4334,6 @@ fn op_dup(h: Handle) {
     }
 }
 
-/// `dup-if-rc-gt-1` — SHARING-AWARE conditional retain: dup `h` (rc++) IFF it is currently SHARED (rc > 1),
-/// otherwise a no-op. Returns `h` (for threading). The runtime primitive for the snowflake-UAF fix
-/// (v-memory-safety's rc-conditional escape-retain, v-core-opt-endorsed): a payload BORROWED out of a
-/// boundary-owned scrutinee and stored into a result ctor needs an INDEPENDENT reference ONLY when the
-/// scrutinee is caller-SHARED (rc > 1 = the N-fold's N live refs) — then the escaped payload must survive
-/// the scrutinee's other owners; for a UNIQUELY-owned scrutinee (rc == 1) it must NOT dup (an unconditional
-/// dup broadly over-retained, ~20 corpus leaks). All cases fall out of `node_rc` + `op_dup`: heap rc==1 →
-/// no dup; heap rc>1 → dup; an IMMEDIATE (`node_rc` sentinel 2) or IMMORTAL (`node_rc` == IMMORTAL) → the
-/// `op_dup` call is itself a no-op, so it is safe/cheap and never retains a non-refcounted value.
-///
-/// ⚠️ COUPLING (v-memory-safety, recorded): this is sound ONLY while the boundary-owned arg is NOT
-/// drop-cascaded (a pre-existing leak). If that arg-drop leak is ever fixed, the retain must become
-/// UNCONDITIONAL (fire for rc == 1 too) or the snowflake UAF re-opens — a `dup-if-rc-gt-1` site would then
-/// need re-review. Flagged so the coupling is not lost at the primitive.
-fn op_dup_if_shared(h: Handle) -> Handle {
-    if node_rc(h) > 1 {
-        op_dup(h); // op_dup is itself a no-op for an immediate / IMMORTAL, so this only retains a real shared node
-    }
-    h
-}
-
 /// The refcount of `h` (0 for null). The FBIP fast paths read this to decide, PER NODE, whether the
 /// node is uniquely owned (`rc == 1`, safe to mutate in place) or shared (`rc > 1`, must path-copy) —
 /// the aliasing-safety rule: a shared node backs another persistent version and must stay byte-identical.
@@ -6835,9 +6814,6 @@ impl Guest for Component {
     }
     fn drop(handle: u32) {
         op_drop(Handle::from_u32(handle))
-    }
-    fn dup_if_shared(handle: u32) -> u32 {
-        op_dup_if_shared(Handle::from_u32(handle)).to_u32()
     }
     fn reset(node: u32) -> u32 {
         op_reset(Handle::from_u32(node)).to_u32()
@@ -18018,48 +17994,6 @@ mod tests {
         assert_eq!(live_nodes(), before + 1, "only the kept element remains");
         op_drop(kept); // the returned owner is eventually released
         assert_eq!(live_nodes(), before, "no leak once the kept owner drops");
-    }
-
-    /// `dup-if-rc-gt-1` (op_dup_if_shared): the sharing-aware conditional retain for the snowflake-UAF fix.
-    /// Retains ONLY a SHARED node (rc > 1); a uniquely-owned node (rc == 1), an immediate, or an immortal is
-    /// a no-op. Pins each case rc-balanced.
-    #[test]
-    fn dup_if_shared_retains_only_a_shared_node() {
-        reset();
-        // rc == 1 (uniquely owned): NO dup — a single drop reclaims, no leak.
-        {
-            let before = live_nodes();
-            let unique = boxed_int_leaf(7);
-            assert_eq!(node_rc(unique), 1);
-            let r = op_dup_if_shared(unique);
-            assert_eq!(r, unique, "returns the handle for threading");
-            assert_eq!(node_rc(unique), 1, "rc==1 (unique) → NO dup");
-            op_drop(unique); // one ref → one drop
-            assert_eq!(live_nodes(), before, "unique: no dup → balanced by one drop");
-        }
-        // rc > 1 (shared): dup — needs the matching extra drop.
-        {
-            let before = live_nodes();
-            let shared = boxed_int_leaf(9);
-            op_dup(shared); // rc = 2
-            assert_eq!(node_rc(shared), 2);
-            op_dup_if_shared(shared); // rc = 3 (shared → dup)
-            assert_eq!(node_rc(shared), 3, "rc>1 (shared) → dup");
-            op_drop(shared);
-            op_drop(shared);
-            op_drop(shared); // 3 refs → 3 drops
-            assert_eq!(live_nodes(), before, "shared: the conditional dup is balanced by the matching drops");
-        }
-        // immortal (empty-set singleton): node_rc == IMMORTAL (>1) but op_dup no-ops on it → not retained.
-        {
-            let before = live_nodes();
-            let immortal = op_set_empty();
-            let rc0 = node_rc(immortal);
-            op_dup_if_shared(immortal);
-            assert_eq!(node_rc(immortal), rc0, "immortal: op_dup no-ops → rc unchanged (never retained)");
-            op_drop(immortal); // immortal drop is a no-op
-            assert_eq!(live_nodes(), before, "immortal: no leak / no spurious retain");
-        }
     }
 
     /// The NESTED-COMPOUND variant of the projection-escape — the `spec@76aa1bdc` UAF shape. The test
