@@ -2304,6 +2304,38 @@
   (call   main (: 7 Int64))
   (output (: 8 Int64)))
 
+; A type-value is compile-time-only — it never flows from runtime data (type-system.md §226), so it has no
+; boundary/runtime form. Where one WOULD need a runtime representation — a PARAMETERIZED type-valued export
+; (its result would depend on a runtime arg), a `(: t Type)` parameter used in a VALUE position, a type-value
+; nested in a compound RESULT — the compiler reports ONE coded reject (CDZ0201 "is a TYPE, not a runtime
+; value", or CDZ0203 for a Bool-checked `if` condition) and DEDUPS the downstream no-runtime-form declines,
+; so it is one clean error, not a 2–4-line cascade. `(no-other-errors)` pins the no-cascade (no other coded
+; error accompanies the reject). A BAKEABLE type-value — a nullary `(: Int64 Type)` export that reduces to a
+; fully compile-time-known type — DOES cross and is not rejected. (migrated from rcdzc
+; a_non_bakeable_type_valued_export / a_type_valued_param_used_in_a_value_position /
+; a_type_stored_in_a_compound_result, the one-coded-error-not-a-cascade family; enabled by the C1
+; (no-other-errors) facet.)
+(case "a parameterized type-valued export is one coded error, not a no-runtime-form cascade"
+  (input (do (def (main (: n Int64)) Int64) (export main)))
+  (error CDZ0201 (message "is a TYPE, not a runtime value")) (no-other-errors))
+
+(case "a bakeable nullary type-value export crosses the boundary (the control)"
+  (input (do (def (main) (: Int64 Type)) (export main)))
+  (call main)
+  (output (: Int64 Type)))
+
+(case "a type-valued parameter in an arithmetic position is one coded error, no cascade"
+  (input (do (def (f (: t Type)) (+ t 1)) (def (main) (f Int64)) (export main)))
+  (error CDZ0201) (no-other-errors))
+
+(case "a type-valued parameter as a Bool-checked if condition is one coded error, no cascade"
+  (input (do (def (f (: t Type)) (if t 1 2)) (def (main) (f Int64)) (export main)))
+  (error CDZ0203 (message "found Type")) (no-other-errors))
+
+(case "a type-value nested in a compound result is one coded error, no cascade"
+  (input (do (def (main) #tuple(Int64 5)) (export main)))
+  (error CDZ0201 (message "is a TYPE, not a runtime value")) (no-other-errors))
+
 (case "Type.eq branches on a type-valued parameter, monomorphized per passed type"
   (doc    "`Type.eq` accepts a TYPE-VALUED PARAMETER `t` as an operand: `(def (is-int (: t Type) (: x
            Int64)) (if (Type.eq t Int64) 1 0))`. At each instantiation `t` is a concrete compile-time
