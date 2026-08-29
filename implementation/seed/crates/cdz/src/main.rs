@@ -9921,8 +9921,15 @@ fn manifest_strings(
     if let Some(s) = arenas.as_str(value_id) {
         return vec![s.to_string()];
     }
-    // A list literal is the compound-ctor form `("list" elem…)` — a STRING head, so `as_ctor_form`.
-    if let Some(elems) = arenas.as_ctor_form(value_id, "list") {
+    // A list literal is the `List` compound. Read it with `compound_form_of` (the transitional DUAL-READ):
+    // it accepts the M2 native ctor-LEAF-KIND head (`Leaf::Ctor(List)`, what the reader now emits after the
+    // native-compound flag-day #5112) AND the legacy STRING-primitive head (`("list" …)`). The old
+    // `as_ctor_form(value_id, "list")` matched ONLY the string head, so after #5112 a manifest's
+    // `def tests = ["src/*.cdz"]` parsed to a native `List` compound that this returned EMPTY for → every
+    // project reported "declares no `tests`" (a manifest-tests resolution regression, distinct from the run
+    // path which resolves files via this same reader — both were broken; the eval-outage masked it).
+    if let Some(elems) = arenas.compound_form_of(value_id, cadenza_syntax::ast::CompoundCtor::List)
+    {
         return elems
             .iter()
             .filter_map(|&e| arenas.as_str(e))
@@ -11293,6 +11300,39 @@ mod tests {
             }
         }
         assert!(checked, "expected a CDZ0306 unused-binding warning: {text}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A manifest's `def tests = ["…"]` (and `modules`/`exclude`) parses through the READER, so the list
+    /// literal is whatever native shape the reader emits — after the native-compound flag-day (#5112) that
+    /// is a `List` compound with a native ctor-LEAF head (`Leaf::Ctor(List)`), NOT a `("list" …)` STRING
+    /// head. `manifest_strings` once matched only the string head (`as_ctor_form(_, "list")`), so a real
+    /// `Project.cdz` parsed to an EMPTY `tests` list → every project reported `declares no `tests`` (both
+    /// the run path and `cdz test --list`; the eval-outage masked it). This pins the fix: a manifest read
+    /// through the actual reader must yield the declared entries. Guards the `compound_form_of` dual-read.
+    #[test]
+    fn parse_manifest_reads_a_native_list_tests_field() {
+        let dir = tmp("manifest-native-list");
+        let file = dir.join("Project.cdz");
+        std::fs::write(
+            &file,
+            "def name = \"demo\"\ndef modules = [\"src/*.cdz\"]\ndef tests = [\"src/a.cdz\", \"src/b.cdz\"]\ndef exclude = []\n",
+        )
+        .unwrap();
+        let (_source, arenas, _spans) =
+            load_program_spanned(&file.to_string_lossy()).expect("manifest loads");
+        let m = parse_manifest(&arenas);
+        assert_eq!(m.name.as_deref(), Some("demo"), "def name reads");
+        assert_eq!(
+            m.modules,
+            vec!["src/*.cdz"],
+            "def modules reads the native list"
+        );
+        assert_eq!(
+            m.tests,
+            vec!["src/a.cdz", "src/b.cdz"],
+            "def tests reads the native `List`-compound literal (regression: `declares no tests`)"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
