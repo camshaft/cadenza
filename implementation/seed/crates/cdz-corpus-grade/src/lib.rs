@@ -239,6 +239,11 @@ pub struct TestRun {
     /// still holds the FIRST count (so the uniform/direct-gate path keeps grading call[0]); the wasm nix
     /// grade path uses this list to balance EACH call against its own count.
     pub live_objects_per_call: Option<Vec<u32>>,
+    /// `true` iff the case authored `(no-other-errors)` — a CASE-LEVEL no-cascade assertion: after the
+    /// trials, the set of EMITTED error-severity fault codes must be a SUBSET of the case's asserted
+    /// `(error CODE)` codes (FAIL on any unasserted error code). Errors only. Composes with per-code
+    /// `(count …)`; only enforced when the diagnostics wire was captured (`diag_wire` `Some`).
+    pub no_other_errors: bool,
 }
 
 /// The combined grade of a case + whether any runnable trial actually ran (a pure error/declines case runs
@@ -447,6 +452,34 @@ where
                 "host-call sequence mismatch: expected {:?}, observed {:?}",
                 test_run.host_calls, observed
             ));
+        }
+    }
+
+    // CASE-LEVEL `(no-other-errors)` — the no-cascade assertion: every EMITTED coded error-fault must be one
+    // the case asserted via an `(error CODE)` trial. Any coded error outside that set is an unexpected cascade
+    // (FAIL). Only when the diagnostics wire was captured (`Some(faults)`); errors only (warnings orthogonal).
+    // A codeless error fault carries no code to match, so it is out of this facet's scope (the primary decline
+    // is graded by its own trial's message).
+    if test_run.no_other_errors
+        && let Some(faults) = &faults
+    {
+        let asserted: std::collections::HashSet<&str> = test_run
+            .trials
+            .iter()
+            .filter_map(|t| match &t.expect {
+                GExpect::Error(code, _) => Some(code.as_str()),
+                _ => None,
+            })
+            .collect();
+        for f in faults.iter().filter(|f| f.severity == Severity::Error) {
+            if let Some(code) = f.code.as_deref()
+                && !asserted.contains(code)
+            {
+                worst = worst.worse(Grade::Fail(format!(
+                    "(no-other-errors): unexpected error {code} beyond the asserted {asserted:?}"
+                )));
+                break;
+            }
         }
     }
 
@@ -947,6 +980,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
     let mut live_objects: Option<u32> = None;
     let mut live_objects_known_leak = false;
     let mut live_objects_per_call: Option<Vec<u32>> = None;
+    let mut no_other_errors = false;
 
     for &clause in children(&a, root) {
         match a.head_name(clause) {
@@ -1019,6 +1053,8 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
                     live_objects_per_call = Some(counts);
                 }
             }
+            // `(no-other-errors)` — the bare case-level no-cascade flag (shredded from the case clause).
+            Some("no-other-errors") => no_other_errors = true,
             _ => {}
         }
     }
@@ -1032,6 +1068,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
         live_objects,
         live_objects_known_leak,
         live_objects_per_call,
+        no_other_errors,
     })
 }
 
@@ -1784,6 +1821,7 @@ mod tests {
             live_objects: None,
             live_objects_known_leak: false,
             live_objects_per_call: None,
+            no_other_errors: false,
         };
         // The compile refused with the right code (so grade_compile_error passes) + the stderr line the
         // code-check reads.
@@ -1816,6 +1854,67 @@ mod tests {
             matches!(res.grade, Grade::Fail(_)),
             "count mismatch → fail: {:?}",
             res.grade
+        );
+    }
+
+    #[test]
+    fn no_other_errors_flags_an_unasserted_cascade_code() {
+        let never =
+            |_: &GTrial| -> Result<Outcome> { panic!("compile-outcome case runs no trial") };
+        // A case asserting exactly ONE error (CDZ0201), optionally with the `(no-other-errors)` clause.
+        let mk = |no_other: bool| TestRun {
+            description: "no-other-errors".into(),
+            trials: vec![GTrial {
+                call: None,
+                expect: GExpect::Error("CDZ0201".into(), vec![]),
+                diag: None,
+            }],
+            host_responses: vec![],
+            host_calls: vec![],
+            warns: vec![],
+            live_objects: None,
+            live_objects_known_leak: false,
+            live_objects_per_call: None,
+            no_other_errors: no_other,
+        };
+        let diag = "cdz: error [CDZ0201] (node 1): bad thing";
+        // (a) EXACTLY the asserted code emitted → Pass.
+        let wire_one = "error\tCDZ0201\t1\t-\t-\t-\t-\tbad thing";
+        assert_eq!(
+            grade_run(&mk(true), 1, diag, Some(wire_one), never)
+                .unwrap()
+                .grade,
+            Grade::Pass
+        );
+        // (b) an EXTRA unasserted CDZ0999 error (a cascade) → `(no-other-errors)` FAILS.
+        let wire_cascade = "error\tCDZ0201\t1\t-\t-\t-\t-\tbad thing\n\
+                            error\tCDZ0999\t2\t-\t-\t-\t-\tcascade";
+        assert!(
+            matches!(
+                grade_run(&mk(true), 1, diag, Some(wire_cascade), never)
+                    .unwrap()
+                    .grade,
+                Grade::Fail(_)
+            ),
+            "an unasserted error code must fail no-other-errors"
+        );
+        // (c) WITHOUT the clause the same cascade is NOT flagged by this facet → Pass.
+        assert_eq!(
+            grade_run(&mk(false), 1, diag, Some(wire_cascade), never)
+                .unwrap()
+                .grade,
+            Grade::Pass,
+            "no clause → cascade not graded"
+        );
+        // (d) an extra WARNING is ignored (errors only) → Pass even with the clause.
+        let wire_warn = "error\tCDZ0201\t1\t-\t-\t-\t-\tbad thing\n\
+                         warning\tCDZ0305\t2\t-\t-\t-\t-\tdead arm";
+        assert_eq!(
+            grade_run(&mk(true), 1, diag, Some(wire_warn), never)
+                .unwrap()
+                .grade,
+            Grade::Pass,
+            "a warning is orthogonal to no-other-errors"
         );
     }
 
