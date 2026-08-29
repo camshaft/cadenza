@@ -701,5 +701,12 @@ NOT break), plus **32 native≡alias PARITY controls** whose whole point is asse
   transition purpose, catching e.g. #5484); (3) proptest_gen.rs → emit `#word(…)`. (4) other rcdzc-touching
   verticals own their own added test inputs — this is a FLEET-WIDE tests.rs migration, coordinate.
 - **Owner:** unassigned — NOT purely v-ast-compound (tests.rs is shared). Flagged to concierge/v-syntax so the
-  window plan includes it; else the pinned `rcdzc --lib` gate reds mid-flag-day. (Same concern applies to any
-  OTHER crate's tests that embed alias-spelled programs — audit before the flip.)
+  window plan includes it; else the pinned `rcdzc --lib` gate reds mid-flag-day.
+- **FLEET-WIDE scope (audited 2026-08-29):** the reader flip reds EVERY crate's test gate that embeds
+  alias-spelled compound programs, not just rcdzc — ~860 alias-in-string test lines across 13 crates:
+  rcdzc ~567, cdz-smith ~74, cadenza-syntax ~63, cdz-cad ~56, cadenza-syntax-sexpr ~43, cdz-platform ~19,
+  cdz-runtime ~14, cadenza-ast ~9, cdz-run ~7, cdz-rust-render ~5, cdz-rust-run ~2, cdz-corpus-grade ~2,
+  cdz ~1. So the atomic window's gate (§13.3) spans a FLEET-WIDE test migration: each crate owner nativizes
+  their own embedded test programs (+ any expected-render output strings that assert the old `(list …)`
+  render → now `#list(…)`) in-window, coordinated by the concierge. This is the largest single Phase-2
+  surface after the corpus — plan it as such.
