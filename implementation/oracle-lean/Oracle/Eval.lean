@@ -402,7 +402,10 @@ partial def cmpValue (a b : Value) : Option Ordering :=
   -- NaN). `-0.0`/`+0.0` keep distinct bits (spec: sign-significant zero). For CANONICALIZATION, not IEEE.
   match Value.asF64? a, Value.asF64? b with
   | some fa, some fb =>
-    let key := fun (f : Float) => if f.isNaN then (0 : UInt64) else f.toBits
+    -- canonical NaN key = the standard quiet-NaN bits `0x7ff8000000000000` (a NaN pattern, so distinct
+    -- from EVERY finite/±inf), NOT 0 — `(0.0).toBits` IS 0, which would collide NaN with 0.0 (a set
+    -- `#set(NaN 0.0)` must have len 2). All NaN spellings map to it → NaN==NaN dedupes.
+    let key := fun (f : Float) => if f.isNaN then (0x7ff8000000000000 : UInt64) else f.toBits
     some (compare (key fa) (key fb))
   | _, _ =>
   match a, b with
