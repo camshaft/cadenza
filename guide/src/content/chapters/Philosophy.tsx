@@ -71,8 +71,8 @@ export default function Philosophy() {
       <P>
         You'll see these ideas show up again and again as concrete features, from safe indexing that returns
         an <C>Option</C>, to numbers that refuse to silently convert, to a <C>match</C> that insists on
-        patterns. Each chapter flags the tenet at work in a <span className="text-cadenza-300">✦ Why
-        it's this way</span> box. Keep an eye out for them.
+        patterns. Each chapter flags the tenet at work in a <em>✦ Why it's this way</em> box. Keep an eye
+        out for them.
       </P>
 
       <P>
