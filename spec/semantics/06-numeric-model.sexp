@@ -12329,3 +12329,35 @@
   (call main (: 7 Int64)) (output (: 7 Int64))
   (call main (: -3 Int64)) (output (: -3 Int64))
   (call main (: -20 Int64)) (output (: -99 Int64)))
+
+(case "cdzw40 a chained Map build + lookup + Option match round-trips through the cadenza hop"
+  (doc "Map face of the hop coverage (breaker scout: the backend's map/set item was already functional):
+        Map.empty → two inserts → Map.lookup on the runtime key, matched through Some/None. Hop must
+        re-emit the whole chain byte-idempotently; values pin dual-path agreement. 1→10, 2→20, miss→-1.")
+  (input (do
+    (def (main (: n Int64)) (match (Map.lookup (Map.insert (Map.insert (Map.empty) 1 10) 2 20) n) ((Some v) v) ((None _u) -1)))
+    (export main)))
+  (call main (: 1 Int64)) (output (: 10 Int64))
+  (call main (: 2 Int64)) (output (: 20 Int64))
+  (call main (: 7 Int64)) (output (: -1 Int64)))
+
+(case "cdzw41 Set.of + Set.contains on a runtime probe round-trips through the cadenza hop"
+  (doc "Set membership face of the hop coverage: a literal-built set probed with the runtime arg on
+        both the hit and miss sides. 1→member, 2→member, 7→not.")
+  (input (do
+    (def (main (: n Int64)) (if (Set.contains (Set.of (list 1 2 3)) n) 1 0))
+    (export main)))
+  (call main (: 1 Int64)) (output (: 1 Int64))
+  (call main (: 2 Int64)) (output (: 1 Int64))
+  (call main (: 7 Int64)) (output (: 0 Int64)))
+
+(case "cdzw42 Set.of DUP-COLLAPSE observed through to-list length survives the cadenza hop"
+  (doc "The semantic face: (Set.of (list n 2 3)) at n=2 collapses the duplicate → len 2, at n=1/n=7 the
+        three elements are distinct → len 3. Pins that the hop preserves set-construction dedup, not just
+        the container plumbing.")
+  (input (do
+    (def (main (: n Int64)) (List.len (Set.to-list (Set.of (list n 2 3)))))
+    (export main)))
+  (call main (: 1 Int64)) (output (: 3 Int64))
+  (call main (: 2 Int64)) (output (: 2 Int64))
+  (call main (: 7 Int64)) (output (: 3 Int64)))
