@@ -2033,7 +2033,7 @@ fn dispatch_compile_prepared(
     }
     #[cfg(feature = "standalone")]
     {
-        compiler_cli::run_prepared(inputs, targets, out, opt_level, PROG)
+        compiler_cli::run_prepared(inputs, targets, out, opt_level, None, PROG)
     }
 }
 

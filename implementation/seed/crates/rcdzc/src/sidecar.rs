@@ -650,6 +650,50 @@ fn atom_int(b: &mut Builder, n: u32) -> StructId {
 //# A tooling query over source that does not fully parse MUST return a defined partial result rather than fail opaquely.
 //= spec/capabilities/tooling-and-lsp.md#queries-over-incomplete-source-are-total
 //# A tooling query MUST NOT crash the editor session on malformed source.
+/// Serialize the well-formedness fault set as the `KIND_DIAGNOSTICS` wire: one fault per line, 8 TAB-
+/// separated columns — `severity  code  node-id  fix-kind  fix-node  fix-replacement  fix-verified
+/// message` (see the `Query::Diagnostics` arm for the column contract; `message` is last so it stays a
+/// free-text remainder). SHARED by that sidecar arm AND `rcdzc::cli`'s `--emit-diagnostics` side-artifact
+/// flag, so the two serializations never drift. `crate::diagnostics(db)` is the ungated "as-you-type" fault
+/// set (`collect_faults`, no export/layout gating), so this is well-defined even on an error/decline compile.
+pub fn diagnostics_wire(diags: &[crate::Diagnostic]) -> Vec<u8> {
+    let mut text = String::new();
+    for d in diags {
+        let severity = match d.severity {
+            crate::Severity::Error => "error",
+            crate::Severity::Warning => "warning",
+        };
+        let code = d.code.as_deref().unwrap_or("-");
+        let node = d.node.map_or_else(|| "-".to_string(), |n| n.to_string());
+        let (fix_kind, fix_node, fix_repl, fix_verified) = match &d.fix {
+            Some(f) => (
+                match f.kind {
+                    crate::FixKind::Replace => "replace",
+                    crate::FixKind::InsertInto => "insert",
+                    crate::FixKind::Wrap => "wrap",
+                    crate::FixKind::Delete => "delete",
+                }
+                .to_string(),
+                f.node.to_string(),
+                f.replacement.replace(['\n', '\t'], " "),
+                if f.verified { "verified" } else { "heuristic" }.to_string(),
+            ),
+            None => (
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+            ),
+        };
+        // Newlines in a message would break the one-line-per-fault framing — collapse them.
+        let message = d.message.replace('\n', " ");
+        text.push_str(&format!(
+            "{severity}\t{code}\t{node}\t{fix_kind}\t{fix_node}\t{fix_repl}\t{fix_verified}\t{message}\n"
+        ));
+    }
+    text.into_bytes()
+}
+
 pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
     match query {
         Query::TypeOf { name } => {
@@ -726,44 +770,10 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             //   - `message` is LAST so it stays a free-text remainder (a consumer splits on the first seven
             //     tabs). A rendered replacement is tab-free (names / s-expressions), so the fix columns
             //     never collide with the message split.
-            let mut text = String::new();
-            for d in crate::diagnostics(db) {
-                let severity = match d.severity {
-                    crate::Severity::Error => "error",
-                    crate::Severity::Warning => "warning",
-                };
-                let code = d.code.as_deref().unwrap_or("-");
-                let node = d.node.map_or_else(|| "-".to_string(), |n| n.to_string());
-                let (fix_kind, fix_node, fix_repl, fix_verified) = match &d.fix {
-                    Some(f) => (
-                        match f.kind {
-                            crate::FixKind::Replace => "replace",
-                            crate::FixKind::InsertInto => "insert",
-                            crate::FixKind::Wrap => "wrap",
-                            crate::FixKind::Delete => "delete",
-                        }
-                        .to_string(),
-                        f.node.to_string(),
-                        f.replacement.replace(['\n', '\t'], " "),
-                        if f.verified { "verified" } else { "heuristic" }.to_string(),
-                    ),
-                    None => (
-                        "-".to_string(),
-                        "-".to_string(),
-                        "-".to_string(),
-                        "-".to_string(),
-                    ),
-                };
-                // Newlines in a message would break the one-line-per-fault framing — collapse them.
-                let message = d.message.replace('\n', " ");
-                text.push_str(&format!(
-                    "{severity}\t{code}\t{node}\t{fix_kind}\t{fix_node}\t{fix_repl}\t{fix_verified}\t{message}\n"
-                ));
-            }
             QueryResult {
                 kind: KIND_DIAGNOSTICS,
                 name: "diagnostics".to_string(),
-                bytes: text.into_bytes(),
+                bytes: diagnostics_wire(&crate::diagnostics(db)),
             }
         }
         Query::ResolveOf { node } => {
