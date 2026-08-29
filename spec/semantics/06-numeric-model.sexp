@@ -13888,3 +13888,21 @@
   (call main (: 0 Int64)) (output (: 127 Int64))
   (call main (: -4 Int64)) (output (: -273 Int64))
   (live-objects known-leak 2))
+
+(case "sn1 SIGNED Int8 shifts — arithmetic >> sign-extends; << range-checks the negative boundary"
+  (doc "The signed sibling of the UInt8 logical-shift pins (#5639 territory): `>>` on a signed narrow
+        int is an ARITHMETIC shift — the sign bit smears in (-128 >> 1 = -64, -1 >> 7 = -1), never
+        zero-fill. `<<` on a negative value range-checks the RESULT against the signed width: -2 << 6
+        = -128 fits exactly at the lower boundary; -2 << 7 = -256 traps the narrow overflow check; and
+        a count at the type width (8) traps unreachable (the count bound is the TYPE width). All five
+        cells agree wasm/rust (runtime-opaque operands trap 'integer overflow in left shift' on rust);
+        the const twins compile-reject CDZ0304 on both targets.")
+  (input (do
+    (def (shr (: a Int8) (: b Int8)) (>> a b))
+    (def (shl (: a Int8) (: b Int8)) (<< a b))
+    (export shr) (export shl)))
+  (call shr (: -128 Int8) (: 1 Int8)) (output (: -64 Int8))
+  (call shr (: -1 Int8) (: 7 Int8)) (output (: -1 Int8))
+  (call shl (: -2 Int8) (: 6 Int8)) (output (: -128 Int8))
+  (call shl (: -2 Int8) (: 7 Int8)) (trap "overflow")
+  (call shl (: -1 Int8) (: 8 Int8)) (trap "unreachable"))
