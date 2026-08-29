@@ -1437,22 +1437,17 @@ fn emit_expr_viewed(
                             .and_then(|t| t.variants.first())
                             .map(|v| v.payloads.len())
                             .unwrap_or(0);
-                        if i >= arity {
-                            return Err(Reject::decline(
-                                "the Cadenza backend reached a payload projection over a non-tuple/record \
-                                 value (single-variant slot out of range)"
-                                    .to_string(),
-                            ));
-                        }
-                        // The i-th payload slot's TYPE, for a following projection step: from the erased
-                        // `inner` payload rep (a `Tuple` of slots for a multi-payload variant, else the sole
-                        // type for arity 1).
-                        let slot_ty = match &**inner {
-                            Ty::Tuple(ts) if ts.len() == arity => {
-                                ts.get(i).cloned().unwrap_or(Ty::Any)
-                            }
-                            other if arity == 1 => other.clone(),
-                            _ => Ty::Any,
+                        // The erased `inner` rep IS what `Elem(i)` indexes. TWO layouts, discriminated by
+                        // arity vs the inner tuple's arity (NOT `i < arity`):
+                        //  - MULTI-payload variant (`arity == inner_len`, e.g. Subst(Map,Map,Map)): each
+                        //    payload IS a tuple element → `(match node ((Ctor b0…b_{n-1}) b_i))`, body `b_i`.
+                        //  - ARITY-1 TUPLE-payload NEWTYPE (`arity == 1`, inner a `Tuple` of len > 1, e.g.
+                        //    WrapT(Tuple(Int64,Int64)) — breaker): the sole payload IS the tuple, so `Elem(i)`
+                        //    projects INTO it → `(match node ((Ctor t) (. t i)))`, body `(. t i)`. (Emitting a
+                        //    bare `(. node i)` would project the NOMINAL — the CDZ0201 recompile bug.)
+                        let inner_len = match &**inner {
+                            Ty::Tuple(ts) => Some(ts.len()),
+                            _ => None,
                         };
                         let head =
                             crate::lower::variant_head_ast(db, b, decl, 0).ok_or_else(|| {
@@ -1462,22 +1457,56 @@ fn emit_expr_viewed(
                                         .to_string(),
                                 )
                             })?;
-                        let mut binders = Vec::with_capacity(arity);
-                        for _ in 0..arity {
-                            let nm = synth_payload_name(env.next_payload);
+                        if inner_len == Some(arity) && i < arity {
+                            // Multi-payload: bind every slot, return slot `i`.
+                            let slot_ty = match &**inner {
+                                Ty::Tuple(ts) => ts.get(i).cloned().unwrap_or(Ty::Any),
+                                _ => Ty::Any,
+                            };
+                            let mut pat_children = vec![head];
+                            let mut bi = None;
+                            for slot in 0..arity {
+                                let nm = synth_payload_name(env.next_payload);
+                                env.next_payload += 1;
+                                if slot == i {
+                                    bi = Some(nm.clone());
+                                }
+                                pat_children.push(b.name(nm));
+                            }
+                            let pat = b.list(pat_children);
+                            let body = b.name(bi.expect("slot i < arity is bound"));
+                            let match_head = b.name("match");
+                            let arm = b.list(vec![pat, body]);
+                            node = b.list(vec![match_head, node, arm]);
+                            cur_ty = slot_ty;
+                        } else if arity == 1 && inner_len.is_some_and(|l| i < l) {
+                            // Arity-1 tuple-payload newtype: bind the sole payload `t`, project `(. t i)`.
+                            let slot_ty = match &**inner {
+                                Ty::Tuple(ts) => ts.get(i).cloned().unwrap_or(Ty::Any),
+                                _ => Ty::Any,
+                            };
+                            let t = synth_payload_name(env.next_payload);
                             env.next_payload += 1;
-                            binders.push(nm);
+                            let t_pat = b.name(t.clone());
+                            let pat = b.list(vec![head, t_pat]);
+                            let dot = b.name(".");
+                            let idx = b.atom_leaf(Leaf::Int {
+                                value: IntValue::from_i64(i as i64),
+                                radix: Radix::Dec,
+                            });
+                            let t_ref = b.name(t);
+                            let proj = b.list(vec![dot, t_ref, idx]);
+                            let match_head = b.name("match");
+                            let arm = b.list(vec![pat, proj]);
+                            node = b.list(vec![match_head, node, arm]);
+                            cur_ty = slot_ty;
+                        } else {
+                            return Err(Reject::decline(
+                                "the Cadenza backend reached a payload projection over a single-variant sum \
+                                 whose erased payload layout it does not yet index"
+                                    .to_string(),
+                            ));
                         }
-                        let mut pat_children = vec![head];
-                        for nm in &binders {
-                            pat_children.push(b.name(nm.clone()));
-                        }
-                        let pat = b.list(pat_children);
-                        let body = b.name(binders[i].clone());
-                        let match_head = b.name("match");
-                        let arm = b.list(vec![pat, body]);
-                        node = b.list(vec![match_head, node, arm]);
-                        cur_ty = slot_ty;
                     }
                     _ => {
                         return Err(Reject::decline(
