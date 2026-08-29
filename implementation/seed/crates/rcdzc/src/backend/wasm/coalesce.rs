@@ -16,7 +16,7 @@
 //! opportunity, never a miscompile). Forward branches only SHRINK real liveness (mutually-exclusive
 //! arms), so the span stays a sound superset. No explicit control-flow graph is needed.
 //!
-//! ⚠ LOOPS (back-edges) BREAK this: a `loop`'s `br` jumps BACKWARD, so a declared local read early in
+//! WARNING: LOOPS (back-edges) BREAK this: a `loop`'s `br` jumps BACKWARD, so a declared local read early in
 //! a loop body is live ACROSS the back-edge — PAST its textual last mention (a later iteration
 //! re-reads it) — which the flat span misses. The only loop the wasm backend emits is the
 //! self-tail-call→loop transform, whose loop-carried state lives in PARAMETER slots (never coalesced),
@@ -63,7 +63,7 @@ pub fn coalesce_locals(
 
     // First and last flat-index mention per slot (None = never mentioned).
     //
-    // ⚠ READ-BEFORE-WRITE: if a slot's FIRST mention is a `local.get` (a read, not a
+    // WARNING: READ-BEFORE-WRITE: if a slot's FIRST mention is a `local.get` (a read, not a
     // `set`/`tee` write), the slot is live from function ENTRY — it reads wasm's implicit
     // zero-initialization, so its true live range starts at index 0, not at that read. We anchor its
     // first-mention at 0 so an earlier-dying slot can never be coalesced into it and clobber that

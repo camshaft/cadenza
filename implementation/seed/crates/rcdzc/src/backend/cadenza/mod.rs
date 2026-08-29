@@ -2292,7 +2292,7 @@ fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp
 /// escapes AS a quantity — never over a pass-through, and (the subtle part) never over an erased-op leaf
 /// that only LOOKS like a quantity node.
 ///
-/// 🪤 The trap [`Prim::QtyValue`] sets: `Qty.value` (and other unit-erasing ops) lower to NOTHING — the
+/// TRAP: The trap [`Prim::QtyValue`] sets: `Qty.value` (and other unit-erasing ops) lower to NOTHING — the
 /// magnitude Core node is left in place, still carrying its `Ty::Qty` solved type, but the ENCLOSING
 /// context (the `Qty.value` result, the def's inferred result type) is the bare inner numeric. So an
 /// `Arith`/`Compare`/`Convert`/const leaf reached here with `eff_ty == Ty::Qty` is almost always an
