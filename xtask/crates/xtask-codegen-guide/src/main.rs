@@ -3,11 +3,11 @@
 //! walks the guide-doc heads, and emits the `@generated` TSX chapter module — replacing the node
 //! `scripts/codegen-chapters.mjs`. Operator: one parser (Rust), no node parser; binary AST = interchange.
 //!
-//! INCREMENT 2 (this): byte-exact TSX-render PARITY with chapterModel.ts's PROSE codegen (chapter meta →
-//! H1 + Lede + h2/p/note blocks; inline text/em/c/br/strong/link/app-link), so `check:codegen-sync` passes
-//! on the 2 flipped pilots. Example blocks (runnable/exercise/why) + link-split + registry land next.
-//!
-//! Usage: `xtask-codegen-guide <chapter.sexp>` prints the rendered TSX to stdout.
+//! Renders: chapter meta → H1 + Lede; ordered blocks h2/p/note (byte-parity with chapterModel.ts) +
+//! runnable/exercise/why (I5 example blocks); inline text/em/c/br/strong/link/app-link. The PROSE subset is
+//! byte-identical to chapterModel.ts (so `check:codegen-sync` holds on the pilots); example blocks emit
+//! extraction-compatible + DOM-correct TSX (fidelity = `check:codegen` DOM vs pre-flip hand-written).
+//! Multi-file `(files …)` runnables are deferred to a follow-up. Usage: `[--check] <chapter.sexp>`.
 use cadenza_ast::ast::{Arenas, Struct, StructId};
 
 fn main() {
@@ -35,8 +35,6 @@ fn main() {
     let tsx = render_chapter(&a, chapter);
 
     if check {
-        // Parity gate: the rendered TSX must byte-match the sibling committed `.tsx` (same stem). Exit 1 on
-        // drift — proves the emit-xtask reproduces the current codegen for the flipped chapters.
         let sibling = std::path::Path::new(&path).with_extension("tsx");
         let committed = std::fs::read_to_string(&sibling).unwrap_or_else(|e| {
             eprintln!(
@@ -83,51 +81,89 @@ fn children(a: &Arenas, id: StructId) -> &[StructId] {
 
 /// The lone string value of a `(key "value")` attribute form, e.g. `(slug "x")` → `"x"`.
 fn attr_str(a: &Arenas, id: StructId) -> Option<&str> {
-    let c = children(a, id);
-    c.first().and_then(|&v| a.as_str(v))
+    children(a, id).first().and_then(|&v| a.as_str(v))
 }
 
-// ---- render: chapter Arenas → @generated TSX string (byte-parity with chapterModel.ts renderChapter) ----
+/// The string of a NAMED sub-attribute `(name "value")` among a node's children, e.g. `(source "…")`.
+fn named_attr<'a>(a: &'a Arenas, node: StructId, name: &str) -> Option<&'a str> {
+    children(a, node)
+        .iter()
+        .find(|&&f| a.head_name(f) == Some(name))
+        .and_then(|&f| attr_str(a, f))
+}
+
+/// A block in document order — prose (h2/p/note) or an example (runnable/exercise/why).
+enum Block<'a> {
+    Prose(&'static str, &'a [StructId]), // (tag, inline children)
+    Runnable(StructId),
+    Exercise(StructId),
+    Why(StructId),
+}
+
+// ---- render: chapter Arenas → @generated TSX string ----
 
 fn render_chapter(a: &Arenas, chapter: StructId) -> String {
     let mut title = "";
+    let mut slug = "";
     let mut lede: Option<&[StructId]> = None;
-    let mut blocks: Vec<(&'static str, &[StructId])> = Vec::new(); // (tag, inline-children)
+    let mut blocks: Vec<Block> = Vec::new();
     for &f in children(a, chapter) {
         match a.head_name(f) {
             Some("title") => title = attr_str(a, f).unwrap_or(""),
+            Some("slug") => slug = attr_str(a, f).unwrap_or(""),
             Some("lede") => lede = Some(children(a, f)),
-            // pillar/section/slug/blurb = registry metadata, NOT rendered into the .tsx.
-            Some("slug") | Some("pillar") | Some("section") | Some("blurb") => {}
-            Some("h2") => blocks.push(("H2", children(a, f))),
-            Some("p") => blocks.push(("P", children(a, f))),
-            Some("note") => blocks.push(("Note", children(a, f))),
-            _ => {} // runnable/exercise/why: increment-3
+            Some("pillar") | Some("section") | Some("blurb") => {} // registry metadata, not in .tsx
+            Some("h2") => blocks.push(Block::Prose("H2", children(a, f))),
+            Some("p") => blocks.push(Block::Prose("P", children(a, f))),
+            Some("note") => blocks.push(Block::Prose("Note", children(a, f))),
+            Some("runnable") => blocks.push(Block::Runnable(f)),
+            Some("exercise") => blocks.push(Block::Exercise(f)),
+            Some("why") => blocks.push(Block::Why(f)),
+            _ => {}
         }
     }
-    let slug = children(a, chapter)
-        .iter()
-        .find(|&&f| a.head_name(f) == Some("slug"))
-        .and_then(|&f| attr_str(a, f))
-        .unwrap_or("");
 
-    // Import set — EXACTLY the heads used (tsc noUnusedLocals). H1 always; Lede/H2/P/Note per use; C if
-    // inline code; Ch / AppLink if a chapter / app link is used. Sorted for determinism (BTreeSet).
+    // Import set — EXACTLY the heads used (tsc noUnusedLocals). Prose: H1 always; Lede/H2/P/Note per use; C
+    // if inline code (incl inside example prose). Links: Ch/AppLink. Example components: Runnable/Exercise/Why.
     let mut prose: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
     prose.insert("H1");
     if lede.is_some() {
         prose.insert("Lede");
     }
-    for (tag, _) in &blocks {
-        prose.insert(tag);
-    }
     let mut uses_ch = false;
     let mut uses_app = false;
+    let (mut uses_runnable, mut uses_exercise, mut uses_why) = (false, false, false);
     if let Some(l) = lede {
         scan_inline(a, l, &mut prose, &mut uses_ch, &mut uses_app);
     }
-    for (_, ch) in &blocks {
-        scan_inline(a, ch, &mut prose, &mut uses_ch, &mut uses_app);
+    for b in &blocks {
+        match *b {
+            Block::Prose(tag, ch) => {
+                prose.insert(tag);
+                scan_inline(a, ch, &mut prose, &mut uses_ch, &mut uses_app);
+            }
+            Block::Runnable(_) => uses_runnable = true,
+            Block::Exercise(n) => {
+                uses_exercise = true;
+                // prompt/hint inline prose may carry (c …)/links → contribute imports.
+                if let Some(p) = named_child(a, n, "prompt") {
+                    scan_inline(a, p, &mut prose, &mut uses_ch, &mut uses_app);
+                }
+                if let Some(h) = named_child(a, n, "hint") {
+                    scan_inline(a, h, &mut prose, &mut uses_ch, &mut uses_app);
+                }
+            }
+            Block::Why(n) => {
+                uses_why = true;
+                scan_inline(
+                    a,
+                    why_children(a, n),
+                    &mut prose,
+                    &mut uses_ch,
+                    &mut uses_app,
+                );
+            }
+        }
     }
 
     let mut out = String::new();
@@ -150,6 +186,15 @@ fn render_chapter(a: &Arenas, chapter: StructId) -> String {
             link_imports.join(", ")
         ));
     }
+    if uses_runnable {
+        out.push_str("import { Runnable } from \"../../components/Runnable.tsx\";\n");
+    }
+    if uses_exercise {
+        out.push_str("import { Exercise } from \"../../components/Exercise.tsx\";\n");
+    }
+    if uses_why {
+        out.push_str("import { Why } from \"../../components/Why.tsx\";\n");
+    }
     out.push('\n');
     out.push_str(&format!("export default function {}() {{\n", pascal(slug)));
     out.push_str("  return (\n");
@@ -158,13 +203,110 @@ fn render_chapter(a: &Arenas, chapter: StructId) -> String {
     if let Some(l) = lede {
         out.push_str(&format!("      <Lede>{}</Lede>\n", render_inlines(a, l)));
     }
-    for (tag, ch) in &blocks {
-        out.push_str(&format!("      <{tag}>{}</{tag}>\n", render_inlines(a, ch)));
+    for b in &blocks {
+        match *b {
+            Block::Prose(tag, ch) => {
+                out.push_str(&format!("      <{tag}>{}</{tag}>\n", render_inlines(a, ch)))
+            }
+            Block::Runnable(n) => out.push_str(&render_runnable(a, n)),
+            Block::Exercise(n) => out.push_str(&render_exercise(a, n)),
+            Block::Why(n) => out.push_str(&render_why(a, n)),
+        }
     }
     out.push_str("    </article>\n");
     out.push_str("  );\n");
     out.push_str("}\n");
     out
+}
+
+/// The inline children of a named `(name <inline>…)` sub-form (e.g. exercise `(prompt …)`), skipping the name.
+fn named_child<'a>(a: &'a Arenas, node: StructId, name: &str) -> Option<&'a [StructId]> {
+    children(a, node)
+        .iter()
+        .find(|&&f| a.head_name(f) == Some(name))
+        .map(|&f| children(a, f))
+}
+
+/// A `(why (tenet "…") <inline>…)`'s prose children (everything after the leading `(tenet …)` attr).
+fn why_children(a: &Arenas, node: StructId) -> &[StructId] {
+    let ch = children(a, node);
+    if ch.first().map(|&f| a.head_name(f)) == Some(Some("tenet")) {
+        &ch[1..]
+    } else {
+        ch
+    }
+}
+
+// ---- example blocks (I5) — extraction-compatible + DOM-correct; no @generated byte-parity reference ----
+
+fn render_runnable(a: &Arenas, node: StructId) -> String {
+    let src = named_attr(a, node, "source").unwrap_or("");
+    let mut out = String::from("      <Runnable\n");
+    out.push_str(&format!("        source={{`{src}`}}\n"));
+    // Optional scalar props, fixed order. authored-in → authoredIn; wrap "false" → wrap={false}.
+    for (sexp_key, tsx_key) in [
+        ("expected", "expected"),
+        ("expect", "expect"),
+        ("id", "id"),
+        ("title", "title"),
+        ("mode", "mode"),
+        ("authored-in", "authoredIn"),
+    ] {
+        if let Some(v) = named_attr(a, node, sexp_key) {
+            out.push_str(&format!("        {tsx_key}={}\n", jsx_attr(v)));
+        }
+    }
+    if named_attr(a, node, "wrap") == Some("false") {
+        out.push_str("        wrap={false}\n");
+    }
+    out.push_str("      />\n");
+    out
+}
+
+fn render_exercise(a: &Arenas, node: StructId) -> String {
+    let mut out = String::from("      <Exercise\n");
+    if let Some(id) = named_attr(a, node, "id") {
+        out.push_str(&format!("        id={}\n", jsx_attr(id)));
+    }
+    if let Some(p) = named_child(a, node, "prompt") {
+        out.push_str(&format!(
+            "        prompt={{<>{}</>}}\n",
+            render_inlines(a, p)
+        ));
+    }
+    if let Some(s) = named_attr(a, node, "starter") {
+        out.push_str(&format!("        starter={{`{s}`}}\n"));
+    }
+    if let Some(s) = named_attr(a, node, "solution") {
+        out.push_str(&format!("        solution={{`{s}`}}\n"));
+    }
+    if let Some(e) = named_attr(a, node, "expected") {
+        out.push_str(&format!("        expected={}\n", jsx_attr(e)));
+    }
+    if let Some(h) = named_child(a, node, "hint") {
+        out.push_str(&format!("        hint={{<>{}</>}}\n", render_inlines(a, h)));
+    }
+    out.push_str("      />\n");
+    out
+}
+
+fn render_why(a: &Arenas, node: StructId) -> String {
+    let tenet = named_attr(a, node, "tenet").unwrap_or("");
+    format!(
+        "      <Why tenet={}>{}</Why>\n",
+        jsx_attr(tenet),
+        render_inlines(a, why_children(a, node))
+    )
+}
+
+/// A JSX string-valued attribute: `="value"` when the value is plain, else `={"…"}` (JS-escaped) when it
+/// holds a `"`/`{`/`}`/`<`/`>` that a bare `="…"` couldn't carry.
+fn jsx_attr(v: &str) -> String {
+    if v.contains(['"', '{', '}', '<', '>']) {
+        format!("{{{}}}", json_string(v))
+    } else {
+        format!("\"{v}\"")
+    }
 }
 
 /// Learn the import needs of an inline sequence: `(c …)` → C; chapter link → Ch; app link → AppLink; recurse em/strong/link.
@@ -182,11 +324,11 @@ fn scan_inline(
             }
             Some("link") => {
                 *uses_ch = true;
-                scan_inline(a, &children(a, i)[1..], prose, uses_ch, uses_app); // skip the (slug …) attr
+                scan_inline(a, &children(a, i)[1..], prose, uses_ch, uses_app);
             }
             Some("app-link") => {
                 *uses_app = true;
-                scan_inline(a, &children(a, i)[1..], prose, uses_ch, uses_app); // skip the (route …) attr
+                scan_inline(a, &children(a, i)[1..], prose, uses_ch, uses_app);
             }
             Some("em") | Some("strong") => scan_inline(a, children(a, i), prose, uses_ch, uses_app),
             _ => {}
@@ -199,9 +341,8 @@ fn render_inlines(a: &Arenas, ins: &[StructId]) -> String {
 }
 
 fn render_inline(a: &Arenas, i: StructId) -> String {
-    // A bare string atom = text.
-    if let Some(t) = a.as_str(i)
-        && matches!(a.get(i), Struct::Atom(_))
+    if matches!(a.get(i), Struct::Atom(_))
+        && let Some(t) = a.as_str(i)
     {
         return escape_text(t);
     }
