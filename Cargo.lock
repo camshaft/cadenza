@@ -3445,6 +3445,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask-duvet-check"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "xtask-fmt"
 version = "0.0.0"
 dependencies = [
