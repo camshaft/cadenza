@@ -23337,42 +23337,15 @@ mod diagnostics {
 
     // (a_non_numeric_mismatch_to_a_float_operator_carries_no_coercion_fix migrated to corpus 06-numeric-model
     //  "a non-numeric operand mixed with a float operator carries NO coercion fix" (CDZ0203 (no-fix)).)
-    #[test]
-    fn an_integer_width_mismatch_offers_an_of_conversion_fix() {
-        // The integer-width coercion (sibling of the D7 float case): `(+ a b)` with `a:Int32`, `b:Int64`
-        // is CDZ0301 (no silent promotion), repaired by the corpus-blessed CHECKED conversion
-        // `(<TargetInt>.of …)` (`06-numeric-model.sexp` — `(+ 2 (Int64.of 1))`). The target is the
-        // EXPECTED operand's type; applying the fix type-checks.
-        let d = first_error("(module m (def (f (: a Int32) (: b Int64)) (+ a b)) (export f))");
-        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
-        let fix = d.fix.expect("a coercion fix is carried");
-        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-        assert_eq!(
-            fix.replacement,
-            format!("(Int32.of {})", crate::abi::WRAP_HOLE),
-            "wraps the operand in the expected int type's `.of`"
-        );
-        assert!(!fix.verified, "`.of` is checked (can trap) → heuristic");
-        // ROUND TRIP (type-level): applying the wrap yields `(+ a (Int32.of b))`, whose operands are both
-        // Int32 — the CDZ0301 width mismatch the fix targets is GONE. (The checked integer `.of` narrowing
-        // of a RUNTIME operand still DECLINES at emit today — a documented later increment, see the runtime
-        // `Int8.of` narrowing tests — so the applied form is well-TYPED but not yet emit-clean; that is a
-        // separate emit gap, not a failure of the coercion fix, which correctly clears the type error. So
-        // we assert the CDZ0301 specifically is cleared, not a full compile.)
-        let applied_errs = all_errors(
-            "(module m (def (f (: a Int32) (: b Int64)) (+ a (Int32.of b))) (export f))",
-        );
-        assert!(
-            !applied_errs
-                .iter()
-                .any(|d| d.code.as_deref() == Some("CDZ0301")),
-            "applying the `(Int32.of …)` coercion clears the CDZ0301 width mismatch: {:?}",
-            applied_errs
-                .iter()
-                .map(|d| (&d.code, &d.message))
-                .collect::<Vec<_>>()
-        );
-    }
+    // (an_integer_width_mismatch_offers_an_of_conversion_fix migrated to corpus 06-numeric-model:
+    // "an integer-width mismatch under an operator offers an of-conversion wrap fix" ((+ a b), a:Int32
+    // b:Int64 → CDZ0301 (fix (kind wrap)(replacement-contains "(Int32.of ")(unverified))) + the ROUND-TRIP
+    // "applying the integer-width of-conversion wrap clears the mismatch and runs" ((+ a (Int32.of b)),
+    // f(5,3) → 8 : Int32). NOTE: the applied form now COMPILES AND RUNS — the "declines at emit" the old
+    // rust comment described (checked int `.of` narrowing of a runtime operand) has since been fixed, so
+    // the corpus pins a real run value, a stronger pin than the old "CDZ0301 is cleared" type-level assert.
+    // --case grades the reject code + the run value; the (Int32.of …) wrap facet by nix corpus-grade
+    // (replacement-contains precedent: the "(Int64.of "/"(Int8.of " annotation-position siblings are landed).)
 
     // (a_float_precision_mismatch_names_floats_and_offers_an_of_conversion_fix migrated to corpus
     // 06-numeric-model: "a float precision mismatch under an operator names floats and offers an
