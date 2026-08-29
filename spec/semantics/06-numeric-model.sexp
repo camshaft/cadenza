@@ -12426,3 +12426,27 @@
   (call main (: 1 Int64)) (output (: 3 Int64))
   (call main (: 2 Int64)) (output (: 2 Int64))
   (call main (: 7 Int64)) (output (: 3 Int64)))
+
+(case "a trap DEFERRED in a tuple slot is FORCED when the tuple materializes into a list — even in a dropped element"
+  (doc "The reconciliation face between tuple-slot deferral (the #5145 eq pins: an unobserved slot's trap
+        does not occur) and strict list construction (operator ruling A, #5194): deferral applies only to a
+        NEVER-MATERIALIZED tuple. Building the tuple INTO a heap list forces its slots (heap cells hold
+        values, not thunks), so `(list (tuple (/ 5 d) 1) (tuple 20 30))` traps at d=0 even though only
+        element 1 is selected and the trapping tuple is DROPPED — on both the #5205 const-index fold path
+        and the runtime-index path (verified twins). At d=5, element 1 → 20+30 = 50.")
+  (input (do
+    (def (main (: d Int64)) (match (List.at (list (tuple (/ 5 d) 1) (tuple 20 30)) 1) ((Some (tuple a b)) (+ a b)) ((None _u) -1)))
+    (export main)))
+  (call main (: 5 Int64)) (output (: 50 Int64))
+  (call main (: 0 Int64)) (trap "divide by zero"))
+
+(case "an element-arg trap fires BEFORE an out-of-bounds miss — construction precedes the index probe"
+  (doc "The trap-ORDER face of ruling A: `(List.at (list (/ 5 d)) 5)` at d=0 has both a trapping element
+        arg and an out-of-range index. Construction evaluates the args first, so the ÷0 fires and the
+        result is a TRAP, not the (None) miss; at d=5 the same probe is the plain OOB miss → None.")
+  (input (do
+    (def (main (: d Int64)) (List.at (list (/ 5 d)) 5))
+    (export main)))
+  (call main (: 5 Int64)) (output (: (None unit) (Option Int64)))
+  (call main (: 0 Int64)) (trap "divide by zero")
+  (live-objects 1))
