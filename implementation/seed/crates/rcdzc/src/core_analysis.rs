@@ -1342,7 +1342,7 @@ mod tests {
             &mut db,
             Core::SumNew {
                 disc: 0,
-                payloads: vec![p],
+                payloads: vec![p].into(),
             },
             sum_ty,
         );

@@ -1473,7 +1473,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         }
         Core::Proj { operand, .. } => collect_host_imports(db, operand, out),
         Core::SumNew { payloads, .. } => {
-            for p in payloads {
+            for &p in payloads.iter() {
                 collect_host_imports(db, p, out);
             }
         }

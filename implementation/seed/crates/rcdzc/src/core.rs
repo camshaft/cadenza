@@ -971,7 +971,8 @@ pub enum Core {
     //# Construction MUST be via application in all cases: `(Some 5)`, `(None unit)`, `(Sign.Zero unit)`.
     SumNew {
         disc: u32,
-        payloads: Vec<StructId>,
+        // Build-once-immutable; Rc<[StructId]> for the cheap memo-hit/recursive-walk clone (see `Call`).
+        payloads: std::rc::Rc<[StructId]>,
     },
     /// A MATCH over a SUM scrutinee, compiled to a DECISION TREE. The ROOT switch dispatches on
     /// `sum-disc(scrutinee)` (`path` is empty — the scrutinee itself); each arm's continuation is a leaf

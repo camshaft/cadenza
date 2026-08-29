@@ -7435,7 +7435,7 @@ fn emit_sum_payload(
             && payloads.len() != 1
         {
             let mut parts = Vec::with_capacity(payloads.len());
-            for &p in &payloads {
+            for &p in payloads.iter() {
                 parts.push(emit(db, p, env, ctx)?);
             }
             return Ok(format!("({})", parts.join(", ")));

@@ -5885,7 +5885,7 @@ fn collect_used_ops_into_seen(
                 _ => {
                     out.insert(OP_ARR_ALLOC);
                     out.insert(OP_ARR_SET);
-                    for p in &payloads {
+                    for p in payloads.iter() {
                         if let Ok(Some(op)) = box_op(db, *p) {
                             out.insert(op);
                         }
