@@ -2141,10 +2141,11 @@
 
         # wasmAbiSexpSrc: the AUTHORITATIVE hand-authored wasm-abi.sexp, staged at its repo-relative path so the
         # bin's CDZ_REPO_ROOT join resolves it. Scoped to the ONE file → cdzWasmAbi/oracle rotate only when the
-        # sexp changes (not on an unrelated rcdzc edit; seedCompiler is a separate, already-warm localGate dep).
+        # sexp changes. It lives at the TOP-LEVEL `data/` (OUTSIDE the rust compiler tree — language-independent,
+        # operator seq-173, moved there in #5333); the bin joins CDZ_REPO_ROOT with `data/wasm-abi.sexp`.
         wasmAbiSexpSrc = pkgs.lib.fileset.toSource {
           root = ./.;
-          fileset = ./implementation/seed/crates/rcdzc/src/backend/wasm/wasm-abi.sexp;
+          fileset = ./data/wasm-abi.sexp;
         };
         # cdzWasmAbi (v-nix, operator codegen→build-time-nix): the 2nd generated file — run v-xtask-decompose's
         # xtask-codegen-wasm-abi bin to EMIT rcdzc/src/backend/wasm/wasm_abi.rs at build time. FLIPPED to the
