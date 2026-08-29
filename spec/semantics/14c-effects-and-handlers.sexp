@@ -7221,7 +7221,7 @@
   (call   main (: 2 Int64)) (output (: 199 Int64))
   (call   main (: 1 Int64)) (output (: 99 Int64))
   (call   main (: 0 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 3))
 
 
 ; ── User GENERIC sums resolving BY NAME (breaker gs — the resolve-path fix promotion) ─────────

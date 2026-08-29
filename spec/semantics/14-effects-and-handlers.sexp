@@ -4191,7 +4191,7 @@
                 (St.total #list((BigInt.of n) (BigInt.of 100) (BigInt.of 3000)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 3105 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 9))
 
 (case "a list of RATIONALS op result — exact fractions cross resume and fold to a canonical sum"
   (doc    "The exact-arithmetic element face: `(list 1/2 1/3 1/30)` crosses resume and the body folds
@@ -4212,7 +4212,7 @@
                      (Int64.of (Rational.denominator r))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 145 Int64))
-  (live-objects known-leak 24))
+  (live-objects known-leak 15))
 
 (case "a list-to-list TRANSFORMER op — heap payloads cross BOTH slots of one dispatch"
   (doc    "Every crossing pin carries heap in ONE slot per dispatch (scalar the other way); a
