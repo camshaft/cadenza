@@ -10163,6 +10163,52 @@ mod match_engine {
     }
 
     #[test]
+    fn a_map_destructuring_binding_param_is_refutable_rejected_cdz0210() {
+        // SOUNDNESS/diagnostic guard (M3 completeness; v-syntax flag post-#5310): a map DESTRUCTURING param
+        // `def get(#{ 1 = v }) = v` — s-expr `(get (map (= 1 v)))` — tests KEY PRESENCE, so it is REFUTABLE
+        // and cannot appear in a binding position (a keyed map may not contain the key; the only irrefutable
+        // form, a bare `(map .. rest)`, is just a whole-map name-bind). `check_binding_pattern` had no map arm,
+        // so it fell through to the ctor classifier's generic "not a tuple, record, or constructor" (CDZ0201);
+        // now it is the actionable CDZ0210 (the map analogue of the fixed-arity/leading-rest list refutability),
+        // in BOTH the native `#map(…)` and name-alias `(map …)` spellings.
+        for (label, src) in [
+            (
+                "name-alias map param",
+                "(module m (def (get (map (= 1 v))) v) (def (main) (get (map (= 1 5)))) (export main))",
+            ),
+            (
+                "native #map param",
+                "(module m (def (get #map((= 1 v))) v) (def (main) (get #map((= 1 5)))) (export main))",
+            ),
+        ] {
+            let d = reject_full(src)
+                .unwrap_or_else(|| panic!("{label}: expected a rejection, compiled clean"));
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0210"),
+                "{label}: a refutable map binding param must reject CDZ0210 (got {:?}: {})",
+                d.code,
+                d.message
+            );
+            assert!(
+                d.message.contains("map binding pattern is refutable"),
+                "{label}: the message should name the map-refutability repair, got: {}",
+                d.message
+            );
+        }
+        // CONTROLS (no false reject): binding the WHOLE map to a name compiles; a keyed map pattern in a
+        // MATCH arm (whose fallback covers the missing key) compiles.
+        assert!(
+            reject_code("(module m (def (get (: mp (Map Int64 Int64))) (Map.len mp)) (def (main) (get (map (= 1 5)))) (export main))").is_none(),
+            "binding the whole map to a name is irrefutable and compiles"
+        );
+        assert!(
+            reject_code("(module m (def (get (: mp (Map Int64 Int64))) (match mp ((map (= 1 v)) v) (_ 0))) (def (main) (get (map (= 1 5)))) (export main))").is_none(),
+            "a keyed map pattern in a match arm (with a fallback) compiles"
+        );
+    }
+
+    #[test]
     fn a_map_rest_pattern_with_an_entry_after_the_rest_is_rejected_cdz0201() {
         // SOUNDNESS guard (05-compound-types map-rest-shape): a map REST pattern's `.. rest` binds the
         // remaining map and must be LAST — a keyed entry AFTER the rest (`(map (= 1 v) .. rest (= 2 w))`)
