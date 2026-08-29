@@ -860,7 +860,7 @@
   (call main (: 12345 Int64) (: 3 Int64)) (output (: 3 Int64))
   (call main (: 7 Int64) (: 5 Int64)) (output (: 3 Int64))
   (call main (: 99 Int64) (: 2 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 2 3))
 
 (case "generated string keys OVERWRITE by content and the first word's final value is observable"
   (doc    "The value-side companion: word→draw-index inserted per draw (collided keys OVERWRITE by
@@ -894,7 +894,7 @@
   (call main (: 12345 Int64) (: 3 Int64)) (output (: 31 Int64))
   (call main (: 99 Int64) (: 4 Int64)) (output (: 41 Int64))
   (call main (: 11 Int64) (: 6 Int64)) (output (: 43 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 16 21 30))
 
 (case "symbols interned from GENERATED strings dedup by content in a symbol set"
   (doc    "The symbol-intern analogue: Symbol.of over generator-produced strings dedups by CONTENT
@@ -958,7 +958,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 1102 Int64))
   (call main (: 2 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 10 0))
 
 (case "a generated list reverses twice to itself — an involution property over generated content"
   (doc    "The involution law over GENERATED content: an 8-element list of masked LCG draws, reversed
@@ -1018,7 +1018,7 @@
   (call   main (: 12345 Int64)) (output (: 1 Int64))
   (call   main (: 777 Int64)) (output (: 1 Int64))
   (call   main (: -7 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 4 4 6))
 
 (case "a scalar-aware string shrinker converges to the 1-minimal failing string"
   (doc    "The STRING sibling of the list-shrinker pin (:782) and the original program behind the
@@ -1048,7 +1048,7 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 304 Int64))
   (call   main (: 0 Int64)) (output (: 202 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 12 0))
 
 ; --- The 2-D coordinate-descent pair shrinker. ---
 
