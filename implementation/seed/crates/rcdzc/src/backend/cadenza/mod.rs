@@ -509,6 +509,34 @@ fn emit_expr_viewed(
                 }
             }
         }
+        // A unit-bearing QUANTITY (`Ty::Qty`) — the unit is compile-time + ERASED, so the value's Core IS the
+        // bare magnitude (a scalar typed `Qty`); the surface `((. Qty of) <mag> <unit>)` must be re-inserted
+        // where the value genuinely escapes AS a quantity, like an erased nominal. `qty_disposition` (see it
+        // for the erased-`Qty.value` trap) classifies conservatively: a CONSTRUCT site (a bare magnitude
+        // binder — a `def` returning `(Qty.of <param> <unit>)`) → wrap `((. Qty of) <mag-peeled-to-inner>
+        // <unit>)`, the unit reconstructed from the type's unit map via lower's `unit_value_ast` (the
+        // canonical value form); a PASS-THROUGH (control flow / a binder already `Ty::Qty`) → emit the core
+        // as-is (the wrap sits at the true leaves); anything else declines (decline-don't-miscompile).
+        Ty::Qty { inner, unit } => {
+            let inner = (**inner).clone();
+            let unit = unit.clone();
+            match qty_disposition(db, id) {
+                NominalDisp::Construct => {
+                    let head = member_access(b, "Qty", "of");
+                    let mag = emit_expr_viewed(db, b, id, Some(inner), None, env, emitted)?;
+                    let unit_node = crate::lower::unit_value_ast(b, &unit);
+                    return Ok(b.list(vec![head, mag, unit_node]));
+                }
+                NominalDisp::PassThrough => {}
+                NominalDisp::Decline => {
+                    return Err(Reject::decline(
+                        "the Cadenza backend does not yet re-emit a quantity value from this \
+                         construction site (an ambiguous magnitude-vs-quantity position)"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
         _ => {}
     }
     match core_of(db, id) {
@@ -714,7 +742,11 @@ fn emit_expr_viewed(
         // int→int CHECKED narrow carries a range-check `Trap` above the `Convert`, which declines on `Trap`
         // first; a `Wrap` narrow is total, has no such `Trap`, and reaches here.)
         Core::Convert { op, operand } => {
-            let ty = crate::infer::type_of(db, id);
+            // Use `eff_ty` (the view-aware type), not `type_of(id)`: a Convert that IS a `Qty` magnitude is
+            // reached with `view = Some(inner)` (the peeled numeric type), so its own node type is `Qty`
+            // while `eff_ty` is the real result type (`Float64`/…). For a non-peeled Convert `eff_ty ==
+            // type_of(id)`, so this is unchanged there.
+            let ty = eff_ty.clone();
             let member = match op {
                 crate::resolved::Prim::FloatOfInt => "of-int",
                 crate::resolved::Prim::Wrap => "wrap",
@@ -2193,6 +2225,52 @@ fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp
         | Core::MatchSum { .. }
         | Core::MatchList { .. } => NominalDisp::PassThrough,
         // Anything else (a `Call` that may return inner OR nominal, a compound builder, …) is ambiguous.
+        _ => NominalDisp::Decline,
+    }
+}
+
+/// How a `Ty::Qty` (unit-bearing quantity) value at a node should be re-emitted — the QUANTITY twin of
+/// [`nominal_disposition`]. A quantity erases its (compile-time) unit, so its value's Core IS the bare
+/// magnitude; the `((. Qty of) <mag> <unit>)` surface must be re-inserted only where the value GENUINELY
+/// escapes AS a quantity — never over a pass-through, and (the subtle part) never over an erased-op leaf
+/// that only LOOKS like a quantity node.
+///
+/// 🪤 The trap [`Prim::QtyValue`] sets: `Qty.value` (and other unit-erasing ops) lower to NOTHING — the
+/// magnitude Core node is left in place, still carrying its `Ty::Qty` solved type, but the ENCLOSING
+/// context (the `Qty.value` result, the def's inferred result type) is the bare inner numeric. So an
+/// `Arith`/`Compare`/`Convert`/const leaf reached here with `eff_ty == Ty::Qty` is almost always an
+/// erased-peel magnitude whose real escape type is numeric — wrapping it re-inserts a `Qty.of` the direct
+/// path never renders (a same-unit runtime sum `(Qty.value (+ (Qty.of n m) (Qty.of 5 m)))` returns bare
+/// `Int64 8`, NOT `(Qty.of 8 m)`), and a constant magnitude additionally drops the reference-unit display
+/// scale that [`const_value_ast`] owns. Both were confirmed corpus regressions. So this classifier is
+/// CONSERVATIVE: it Constructs ONLY at a bare magnitude BINDER (`Core::Param`/`LocalRef` whose declared
+/// type is the inner numeric) — the one shape that genuinely re-emits `(Qty.of <name> <unit>)` and round-
+/// trips (a `def` returning `(Qty.of v u)` over a param `v`). A binder already typed `Ty::Qty` is a wrapped
+/// quantity → pass-through. Control flow carries the quantity through (its true leaves handle the wrap).
+/// EVERYTHING ELSE declines — an erased-op / constant / call magnitude cannot be soundly re-wrapped here
+/// (decline-don't-miscompile); those are a later slice (needing the escape type threaded, not the erased
+/// node's own `Ty::Qty`).
+fn qty_disposition(db: &mut Db, id: StructId) -> NominalDisp {
+    match core_of(db, id) {
+        // A binder already typed `Ty::Qty` is a wrapped quantity (pass-through, emit the bare name); a
+        // binder holding the inner magnitude (declared numeric) is the ONE sound construction site — a
+        // `def` returning `(Qty.of <param> <unit>)` re-emits exactly this.
+        Core::Param { binder } | Core::LocalRef { binder } => {
+            match crate::infer::type_of(db, binder) {
+                Ty::Qty { .. } => NominalDisp::PassThrough,
+                _ => NominalDisp::Construct,
+            }
+        }
+        // Control flow / binding carry the quantity through from their sub-expressions.
+        Core::If { .. }
+        | Core::Let { .. }
+        | Core::Match { .. }
+        | Core::MatchSum { .. }
+        | Core::MatchList { .. } => NominalDisp::PassThrough,
+        // An erased-op / constant / call magnitude reached with `eff_ty == Ty::Qty` is (almost always) an
+        // erased `Qty.value`-peel whose real escape type is numeric — do NOT re-wrap (the direct path emits
+        // it bare); a genuine quantity-returning construction from such a site needs the escape type
+        // threaded, a later slice. Decline-don't-miscompile.
         _ => NominalDisp::Decline,
     }
 }

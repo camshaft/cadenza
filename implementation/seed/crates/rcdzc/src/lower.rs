@@ -17669,7 +17669,7 @@ fn const_value_ast_at(
 /// negative-exponent factors with their exponents made positive. Uses the `#"name"` SYMBOL leaf per base
 /// so the rendered unit re-reads to the same `Unit`. `Unit.base` is member access; `Unit.^`/`Unit.*`/
 /// `Unit./` stay BARE names (their segment is not alphabetic, so the reader does not desugar them).
-fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit) -> StructId {
+pub(crate) fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit) -> StructId {
     use crate::ast::Leaf;
     let entries: Vec<(String, i64)> = unit.entries().map(|(n, e)| (n.clone(), *e)).collect();
     if entries.is_empty() {
