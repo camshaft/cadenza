@@ -167,7 +167,7 @@ export default function PatternMatching() {
       <Runnable
         source={`(def (setting m)
   (match m
-    ((map ("width" v) .. rest) (Some v))
+    (#map((= "width" v) .. rest) (Some v))
     (_ (None unit))))
 (def (main)
   (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))`}

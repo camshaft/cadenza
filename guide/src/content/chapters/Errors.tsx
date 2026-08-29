@@ -78,7 +78,7 @@ export default function Errors() {
         spot you asked it to, rather than limping on with a bogus value.
       </Note>
       <Runnable
-        source={`(Option.expect (List.at (list 10 20 30) 9) "index out of range")`}
+        source={`(Option.expect (List.at #list(10 20 30) 9) "index out of range")`}
         expect="error"
       />
       <P>

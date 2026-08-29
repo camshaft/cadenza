@@ -141,10 +141,10 @@ export default function AdHocPolymorphism() {
       <Runnable
         source={`(def (len xs)
   (match xs
-    ((list) 0)
-    ((list h .. t) (+ 1 (len t)))))
+    (#list() 0)
+    (#list(h .. t) (+ 1 (len t)))))
 (def (main)
-  (+ (len (list 1 2 3)) (len (list "a" "b"))))`}
+  (+ (len #list(1 2 3)) (len #list("a" "b"))))`}
       />
       <P>
         That calls <C>len</C> at <C>List Int64</C> and <C>List String</C> for <C>3 + 2 = 5</C>, with a

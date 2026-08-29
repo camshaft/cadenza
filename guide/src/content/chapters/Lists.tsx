@@ -144,8 +144,8 @@ export default function Lists() {
         then match it.
       </Note>
       <Runnable
-        source={`(match (list 1 2 3)
-  ((list a .. (list b .. r)) a)
+        source={`(match #list(1 2 3)
+  (#list(a .. #list(b .. r)) a)
   (_ 0))`}
         expect="error"
       />

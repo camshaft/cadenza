@@ -147,7 +147,7 @@ export default function Ordering() {
       </P>
       <Runnable
         source={`(do (def (main)
-      (Set.len (Set.of (list (fn (x) (+ x 1))))))
+      (Set.len (Set.of #list((fn (x) (+ x 1))))))
     (export main))`}
         expect="error"
       />
