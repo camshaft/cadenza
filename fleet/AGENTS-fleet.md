@@ -253,6 +253,16 @@ This is the STANDING model for EVERY agent (not just the platform lane), and it 
   `LANDABLE` (or a `HOLD` whose ONLY failing sub-check is a KNOWN pre-existing red unrelated to your change)
   open your OWN PR against `main` and `gh pr merge --admin`. Each PR stays a meaningful coherent unit (the
   FLOOR/CEILING rules below still apply).
+- **🔴 NEVER put command output or environment into a PR body/title — construct PR bodies from STATIC
+  LITERAL text only** (operator P0, seq-198: a PR leaked the ENTIRE env dump into its description). A PR
+  body/title must be hand-written prose describing the change — NEVER `$(...)`/backtick command
+  substitution, NEVER `env`/`printenv`/`set`/a captured log, NEVER a variable that could hold command
+  output. This is the SAME class as the fleet-send quoting discipline: a shell mishap (an apostrophe or
+  backtick inside a double-quoted `--body "..."`) can splice `env`/command output into the body. To stay
+  safe: SINGLE-quote the `--body` (or pass it from a file/stdin literal), and put ZERO dynamic content in
+  it. A sanitizing **`cargo xtask fleet pr`** wrapper (that scans for + refuses env/secret material and
+  builds the body from a literal) is being built and will become the ONLY sanctioned PR path — until then,
+  do NOT paste any command output into `gh pr create`/`gh pr edit --body`, and prefer a literal body file.
 - **The hourly advisory run needs an eyeball:** a RED hourly run is surfaced by the `concierge`, who relays
   it to the owning lane to fix — it does not auto-block anyone.
 
