@@ -4862,6 +4862,33 @@
   (input  (do (def (f #tuple(0 b)) b) (def (main) (f #tuple(9 5))) (export main)))
   (error  CDZ0210))
 
+; The INLINE-LAMBDA face: a refutable binding inside an INLINE / let-bound lambda's body or parameter is the
+; same CDZ0210 a def-body binding gets (a lambda parameter desugars to a body `let`). An earlier over-accept
+; let these through — an inline lambda body was not walked for binding refutability — so these pin that the
+; irrefutability check reaches INSIDE inline lambdas, to any nesting depth, while a generic/irrefutable body
+; stays clean. (migrated from rcdzc a_refutable_binding_pattern_inside_an_inline_lambda_rejects_cdz0210.)
+(case "a refutable let inside an inline lambda body is rejected"
+  (input  (do (def (main) (let ((f (fn (p) (let (((Some x) p)) x)))) (f (Some 3)))) (export main)))
+  (error  CDZ0210))
+
+(case "a refutable constructor parameter on an inline lambda is rejected"
+  (input  (do (def (main) (let ((f (fn ((Some x)) x))) (f (Some 3)))) (export main)))
+  (error  CDZ0210))
+
+(case "a refutable let nested two inline-lambda levels deep is rejected"
+  (input  (do (def (main) (let ((outer (fn (x) (let ((inner (fn (z) (let ((5 y)) y)))) 3)))) 9)) (export main)))
+  (error  CDZ0210))
+
+(case "an irrefutable tuple parameter on an inline lambda is legal and applies (the control)"
+  (input  (do (def (main) (let ((f (fn (#tuple(a b)) (+ a b)))) (f #tuple(3 4)))) (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
+(case "a generic bare-parameter inline lambda compiles clean (no spurious binding fault at depth)"
+  (input  (do (def (main) (let ((id (fn (x) x))) (id 5))) (export main)))
+  (call   main)
+  (output (: 5 Int64)))
+
 (case "a multi-variant constructor nested in a tuple let-binder is refutable and rejected"
   (doc    "`(let (((tuple (Some x) b) (tuple (Some 5) 9))) x)` puts the multi-variant constructor pattern
            `(Some x)` in a tuple binding element. A multi-variant ctor is refutable (the `None` variant is
