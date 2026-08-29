@@ -10071,6 +10071,42 @@ mod match_engine {
     }
 
     #[test]
+    fn a_native_structural_pattern_over_a_wrong_kind_scrutinee_is_cdz0203() {
+        // SOUNDNESS guard (05-compound-types "a tuple pattern over a non-tuple scrutinee is a type error",
+        // and its list/map siblings): the match scrutinee-KIND check (lower_match) reads a pattern's
+        // structural kind to reject a `(list …)`/`(tuple …)`/`(map …)` pattern over a scrutinee of a
+        // DIFFERENT kind (CDZ0203). It read `head_name(pat)` (NAME-alias only), so after M3 nativized corpus
+        // patterns to `#tuple`/`#list`/`#map`, a NATIVE pattern (Ctor-leaf head → head_name None) slipped the
+        // check and fell through to a misleading generic CDZ0201. Now reads `compound_form_of` — native AND
+        // alias must both surface the SAME CDZ0203. (corpus_roundtrip is structural + could not catch this;
+        // the behavioral grade did — the grade-not-just-roundtrip discipline.)
+        for (label, src) in [
+            (
+                "native #tuple over Int64",
+                "(module m (def (main) (match 5 (#tuple(a b) a) (_ 0))) (export main))",
+            ),
+            (
+                "name-alias (tuple …) over Int64",
+                "(module m (def (main) (match 5 ((tuple a b) a) (_ 0))) (export main))",
+            ),
+            (
+                "native #list over Int64",
+                "(module m (def (main) (match 5 (#list(a b) a) (_ 0))) (export main))",
+            ),
+            (
+                "native #tuple over Map",
+                "(module m (def (main) (match (Map.insert (Map.empty) 1 2) (#tuple(a b) a) (_ 0))) (export main))",
+            ),
+        ] {
+            assert_eq!(
+                reject_code(src).as_deref(),
+                Some("CDZ0203"),
+                "{label}: a structural pattern over a wrong-kind scrutinee must reject CDZ0203 (native ≡ alias)"
+            );
+        }
+    }
+
+    #[test]
     fn a_native_record_destructuring_binding_param_binds_like_the_classic_spelling() {
         // M3-canonical equivalence (breaker flag, the def-param twin of the #5340/#5346 match-pattern
         // hardening): a NATIVE `#record(…)` destructuring PARAM must bind its irrefutable fields exactly as the
