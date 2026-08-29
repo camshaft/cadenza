@@ -12592,6 +12592,29 @@
   (input (do (def (f) (: 3 Float64)) (export f)))
   (error CDZ0203 (fix (kind replace) (replacement "3.0") (unverified))))
 
+; ── the ARGUMENT-position twin: passing a value to an ANNOTATED parameter is annotation-context, so an int
+; literal to a `(: x Float64)` parameter is the SAME add-the-fraction fault a direct `(: 3 Float64)` reports —
+; ONE CDZ0203 with the `3`→`3.0` retype, NOT the old CDZ0301+CDZ0203 double (the call-site arg-unify now DEFERS
+; to the reduced body's annotation check for a referenced, reducible parameter). From rcdzc
+; an_int_literal_argument_to_a_float_parameter_reports_one_coded_fault_with_a_retype_fix.
+(case "an int literal argument to a float parameter is one annotation-context fault with a retype fix"
+  (doc "`(g 3)` with `g`'s parameter `(: x Float64)` REFERENCED in the body: the arg is checked in annotation
+        context and reports a CDZ0203 carrying the `make it a float literal` retype (`3`→`3.0`) — the same fault
+        a direct `(: 3 Float64)` reports, NOT a bare arg-mismatch. (once) pins exactly one CDZ0203. (The no-double
+        dedup — that NO redundant CDZ0301 accompanies it — stays in the reduced rust test, since corpus
+        (count)/(once) is PER-CODE, not a total-program-error count / no-other-code assertion.)")
+  (input (do (def (g (: x Float64)) x) (def y (g 3)) (export y)))
+  (error CDZ0203 (message "make it a float literal") (once)
+                 (fix (kind replace) (replacement "3.0") (unverified))))
+
+(case "an int argument to an UNREFERENCED float parameter is the sole arg-unify CDZ0301"
+  (doc "When the body IGNORES the parameter (`(def (g (: x Float64)) 0)`), the reduced body has no annotation
+        check to defer to, so the call-site arg-unify remains the SOLE reporter — its CDZ0301 (no implicit
+        conversion) still fires (not doubled, but not dropped). The contrast that shows the dedup above is a
+        DEFERRAL to the body check, not a blanket suppression.")
+  (input (do (def (g (: x Float64)) 0) (def y (g 3)) (export y)))
+  (error CDZ0301))
+
 (case "an integer literal annotated a narrow float type offers an add-the-fraction fix (Float32)"
   (input (do (def (f) (: 5 Float32)) (export f)))
   (error CDZ0203 (fix (kind replace) (replacement "5.0") (unverified))))
