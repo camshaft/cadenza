@@ -296,12 +296,19 @@ one crate (`cargo test -p <crate>`) — never the whole workspace on the shared 
 Under the all-nix mandate `cargo xtask build` / `cargo build` route to `nix run .#build` (front-end + store
 from the shared /nix/store, zero per-worktree bloat) — correct for gate/CI/final-verify, but nix is
 source-hash-keyed so it rebuilds the top crate FROM SCRATCH on every 1-file change (>2min, no cargo
-incremental-object reuse). For the fast implement→build→validate loop where you need the `cdz`/`cdz-compile`
-bins to run a witness, prefix with the shim bypass — `CDZ_NO_CARGO_SHIM=1 cargo xtask build` — to get real
-incremental cargo (~seconds). `export CDZ_NO_CARGO_SHIM=1` for your dev shell while iterating; UNSET it (or
-a fresh shell) for gate/test, which stay on nix. (Pending-operator-confirm: this tight-loop cargo carve-out
-is a scoped exception to the all-nix mandate, surfaced to the operator 2026-08-29; it may be finalized or
-withdrawn — the shared-store nix path stays the default for everything except tight iteration.)
+incremental-object reuse — a fast-incremental nix dev-build is not feasible, v-nix-confirmed). Two
+sanctioned tight-loop paths for the fast implement→build→validate loop (where you need the `cdz`/`cdz-compile`
+bins to run a witness):
+- **PREFERRED (no env): `cargo build -p rcdzc -p cdz -p cdz-run`** — the `-p` form is NOT routed by the shim
+  (only a bare/no-`-p` `cargo build` routes to `.#build`), so it runs real INCREMENTAL cargo (~seconds after
+  the first) AND produces the actual bins. No env var needed.
+- **Full escape: `CDZ_NO_CARGO_SHIM=1 cargo xtask build`** — bypasses the shim entirely (e.g. if you want the
+  whole `xtask build` flow incl codegen/store). `export CDZ_NO_CARGO_SHIM=1` for your dev shell while iterating.
+UNSET the env (or a fresh shell) for gate/test, which stay on nix. (Pending-operator-confirm: this tight-loop
+cargo carve-out is a scoped exception to the all-nix mandate, surfaced to the operator 2026-08-29 — the shared-
+store nix path stays the default for everything except tight iteration; the GATE + witness-running still go
+through nix. `cargo build -p` stays WARN-not-fail even at the eventual hard-fail flip — it is the sanctioned
+incremental path.)
 
 **🔒 A HEAVY nix build MUST go through `cargo xtask fleet with-lease` — a RAW `nix build .#…` escapes the
 concurrency cap.** `CDZ_CHECK_LEASE_MAX` (+ `fleet with-lease`) exists so heavy nix builds don't all run
