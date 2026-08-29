@@ -48,4 +48,13 @@ SHIM_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cargo-nix-shim.sh"
 if [ -f "$SHIM_SRC" ]; then
   cp "$SHIM_SRC" "$BIN/cargo" 2>/dev/null && chmod +x "$BIN/cargo" 2>/dev/null || true
 fi
+
+# all-nix nix shim (operator 2026-08-29, load-108 escape-close): install fleet/nix-shim as ~/.local/bin/nix
+# so a BARE `nix build .#checks.<heavy>` / `--option substitute false` gets a WARN pointing at the leased
+# gate-local. WARN-ONLY + FAIL-OPEN (default = real nix) with CDZ_NO_NIX_SHIM=1 kill-switch + a
+# CDZ_LEASED_NIX exemption for the sanctioned leased builds. Idempotent cp from the sibling hub copy.
+NIX_SHIM_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/nix-shim.sh"
+if [ -f "$NIX_SHIM_SRC" ]; then
+  cp "$NIX_SHIM_SRC" "$BIN/nix" 2>/dev/null && chmod +x "$BIN/nix" 2>/dev/null || true
+fi
 exit 0
