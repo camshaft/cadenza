@@ -1178,15 +1178,15 @@
         # Mirrors the corpus per-case caching graph for a cadenza @test SUITE: SHRED a project into per-@test
         # wasm (`cdz test --emit-shred`, in-process rcdzc, wasmtime-free, content-addressed) then one
         # COMPILER-FREE exec per @test (`cdz-run` + the value-heap store) graded by EXIT CODE (clean
-        # return = PASS, trap = FAIL — a @test has no expected value). Enumerated at EVAL from a COMMITTED
-        # plain-text index (`implementation/<proj>/tests-shred-index.txt`, `name<TAB>is_property` per the
-        # compiler `Db`, no IFD); a @test ABSENT from the shred manifest (a #4031 compound-param decliner)
+        # return = PASS, trap = FAIL — a @test has no expected value). Enumerated at EVAL via the
+        # compiler-informed `testDiscovery` scoped-cached-IFD (`cdz test --list --format nix`, see below —
+        # NO committed index); a @test ABSENT from the shred manifest (a #4031 compound-param decliner)
         # SKIPS (exit 0). ADDITIVE — does NOT retire `cad-tests`/`testCadenzaProject`; per-suite retire as
         # each suite's per-test shred covers ALL its tests. Small-closure suites (iterators/cad/choreography)
         # only for now; compiler-ml stays COARSE (its `cad-test-compiler-ml` arm) until shared-closure
         # grouping + X5b make its per-test peer shred viable. A `main-file=""` entry (standalone test) drops
         # `--peer`; a grouped entry composes its library main via `--peer <iface>=<main>` over the shared runtime.
-        # Parse the committed index → [{ stem; name }] from each `stem<TAB>name<TAB>is_property` line.
+        # Parse `testDiscovery`'s imported list → [{ stem; name }] per entry.
         # Keyed by (file-STEM, name): a @test name can repeat across a suite's files, and the stem matches
         # the manifest's `file` field, so the exec resolves the RIGHT per-@test target (standalone emits a
         # UNIQUE target per (stem,name), so no collision even for same-named tests across files).
@@ -1287,9 +1287,9 @@
           '';
         # (The committed-index DRIFT-GUARD was removed: it jq-parsed `cdz test --list` as JSON, which #5360
         # flipped to cadenza-ast-binary → the guard reds. And it guarded the committed-index approach the
-        # operator directed us OFF of — the committed tests-shred-index.txt is transitional, being replaced by
-        # v-nix's compiler-informed dyn-drv/IFD discovery [holds the index removal until that wiring builds
-        # e2e]. So the guard is both broken by #5360 AND obsolete; dropped now to un-red the additive check.)
+        # operator directed us OFF of — the committed tests-shred-index.txt is now REMOVED (#5473 wired the
+        # compiler-informed `testDiscovery` scoped-cached-IFD e2e-green, so `testShredIndexEntries` imports
+        # discovery, not the file). So the guard is both broken by #5360 AND obsolete; dropped.)
         # v1 SUITES: small-closure suites only (compiler-ml stays coarse via cad-tests until grouping + X5b).
         # START with iterators (e2e-validated); cad/choreography follow (choreography needs unique per-@test
         # target filenames for its ~3 cross-file same-name @tests before its flat layout is collision-free).
