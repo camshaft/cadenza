@@ -1941,21 +1941,23 @@ if [ "${{FLEET_SKIP_TESTS_RS_WARN:-}}" != "1" ]; then
   fi
 fi
 
-# (4) cdz-run RunArgs → downstream cdz WARN (fail-open; concierge issue 2026-08-29, fleet-broken TWICE).
+# (4) cdz-run RunArgs → downstream cdz WARN (fail-open; concierge issue 2026-08-29, fleet-broken 3x/session).
 # cdz-run/src/cli.rs holds `RunArgs`, which the DOWNSTREAM cdz front-end bin constructs at cdz/src/main.rs
-# (WatchCmd::Run) + two cdz test literals. `cargo xtask dev-gate` auto-scopes to the CHANGED crate (cdz-run)
-# and does NOT rebuild cdz, so a RunArgs FIELD-ADD compiles clean under dev-gate but breaks cdz with E0063
-# — and that slipped to main fleet-wide twice (#5746, #5766), redding everyone's gate-local/nix-cdz. So when
-# cli.rs is staged, WARN the author to ALSO build the downstream bin before landing. Warn-only + narrow (only
-# this file); the durable class-kill (a RunArgs `..Default::default()` / dev-gate learning the cdz-run→cdz
-# edge) is tracked separately. Silence: FLEET_SKIP_CDZRUN_CDZ_WARN=1.
+# (WatchCmd::Run) AND two cdz `#[cfg(test)]` literals. `cargo xtask dev-gate` auto-scopes to the CHANGED
+# crate (cdz-run) and does NOT rebuild cdz, so a RunArgs FIELD-ADD compiles clean under dev-gate but breaks
+# cdz with E0063 — slipped to main fleet-wide 3x this session (#5685/#5746/#5766; #5766 needed TWO fixes: the
+# bin caller AND the test literals). So the build MUST be `-p cdz --all-targets` (the `--all-targets` is what
+# catches the #[cfg(test)] literals the bin-only build misses). When cli.rs is staged, WARN to run it. Warn-
+# only + narrow (only this file); the durable class-kill (a RunArgs Default so field-adds don't break
+# initializers / dev-gate learning the cdz-run→cdz edge) is tracked separately. Silence: FLEET_SKIP_CDZRUN_CDZ_WARN=1.
 if [ "${{FLEET_SKIP_CDZRUN_CDZ_WARN:-}}" != "1" ]; then
   _cli="implementation/seed/crates/cdz-run/src/cli.rs"
   if git diff --cached --name-only --diff-filter=ACM -- "$_cli" 2>/dev/null | grep -q .; then
     echo "⚠ fleet pre-commit: $_cli (cdz-run RunArgs) is staged. Before you land, also build the DOWNSTREAM" >&2
-    echo "  front-end bin:  cargo build -p cdz --all-targets  (or CDZ_NO_CARGO_SHIM=1 cargo build -p cdz)." >&2
+    echo "  cdz bin AND its test literals:  cargo build -p cdz --all-targets  (the -p form runs real cargo," >&2
+    echo "  not the nix shim; --all-targets is REQUIRED — it catches the cdz #[cfg(test)] RunArgs literals)." >&2
     echo "  dev-gate scopes to cdz-run and SKIPS cdz, so a RunArgs field-add breaks cdz's WatchCmd::Run" >&2
-    echo "  initializer with E0063 — this slipped to main fleet-wide twice. (Silence: FLEET_SKIP_CDZRUN_CDZ_WARN=1.)" >&2
+    echo "  initializer with E0063 — slipped to main fleet-wide 3x this session. (Silence: FLEET_SKIP_CDZRUN_CDZ_WARN=1.)" >&2
   fi
 fi
 exit 0
