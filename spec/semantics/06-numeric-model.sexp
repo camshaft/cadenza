@@ -13240,3 +13240,12 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 127 Int64))
   (call main (: -2 Int64)) (output (: 28 Int64)))
+
+(case "cdzw67 a depth-24 nested tuple destructure round-trips the cadenza hop — the fold-budget fence"
+  (doc "Depth-stress census (breaker): nested-tuple destructures hop up to depth 24; at depth 25 the
+        match residual becomes a disc-folded root and DECLINES (the known named face). This case pins
+        the budget's floor — if the fold/inline depth budget silently shrinks, this flips to a decline.
+        Value = innermost a + b = n+1.")
+  (input (do (def (main (: n Int64)) (match (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple n 1) 2) 3) 4) 5) 6) 7) 8) 9) 10) 11) 12) 13) 14) 15) 16) 17) 18) 19) 20) 21) 22) 23) 24) (#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(a b) c0) c1) c2) c3) c4) c5) c6) c7) c8) c9) c10) c11) c12) c13) c14) c15) c16) c17) c18) c19) c20) c21) c22) (+ a b)))) (export main)))
+  (call main (: 7 Int64)) (output (: 8 Int64))
+  (call main (: -3 Int64)) (output (: -2 Int64)))
