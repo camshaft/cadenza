@@ -41982,6 +41982,56 @@ mod sidecar_driven {
                     .unwrap_or_else(|e| panic!("shred artifact `{}` validates: {e}", a.name));
             }
         }
+        // The MANIFEST — a cadenza-ast VALUE (codec-encoded), one `(entry name is-property file export
+        // target main-iface)` per emitted test. Decode it + assert the shape + field values the runner reads.
+        let manifest_art = out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == crate::sidecar::KIND_SHRED_MANIFEST)
+            .expect("a shred-manifest artifact");
+        let arena =
+            crate::codec::decode(&manifest_art.bytes).expect("manifest decodes as cadenza-ast");
+        let root = arena.root;
+        let entries = arena
+            .as_form(root, "shred-manifest")
+            .expect("root is (shred-manifest …)");
+        assert_eq!(entries.len(), 2, "one manifest entry per emitted test");
+        // Collect (name, is_property, export, target, main-iface) per entry; assert the fields for t-a/t-b.
+        let mut seen: std::collections::HashMap<String, (bool, String, String, String)> =
+            std::collections::HashMap::new();
+        for &e in entries {
+            let fields = arena.as_form(e, "entry").expect("each child is (entry …)");
+            assert_eq!(
+                fields.len(),
+                6,
+                "entry = name is-property file export target main-iface"
+            );
+            let name = arena.as_str(fields[0]).expect("name Str").to_string();
+            let is_property = arena.as_bool(fields[1]).expect("is-property Bool");
+            let export = arena.as_str(fields[3]).expect("export Str").to_string();
+            let target = arena.as_str(fields[4]).expect("target Str").to_string();
+            let iface = arena.as_str(fields[5]).expect("main-iface Str").to_string();
+            seen.insert(name, (is_property, export, target, iface));
+        }
+        for t in ["t-a", "t-b"] {
+            let (is_prop, export, target, iface) = seen
+                .get(t)
+                .unwrap_or_else(|| panic!("manifest has an entry for {t}"));
+            assert!(!is_prop, "{t} is a nullary unit test (is-property=false)");
+            assert_eq!(
+                export, t,
+                "export symbol = the raw @test def name for a plain @test"
+            );
+            assert_eq!(
+                target,
+                &format!("test-{t}.wasm"),
+                "target = test-<name>.wasm"
+            );
+            assert_eq!(
+                iface, "cadenza:closure/api",
+                "main-iface = the --peer interface"
+            );
+        }
     }
 
     #[test]
