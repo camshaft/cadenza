@@ -6431,12 +6431,13 @@ fn mark_bigint_expected_literals(
         }
         return;
     }
-    // A `(List BigInt)` type-expr over a list literal (name-headed `(list …)` OR string-headed
-    // `("list" …)` — the ML `[…]` form): ground each bare-literal element. Read the element type from the
-    // `List` type-expr's second position.
-    if let Some(list_ty_tail) = ast
-        .as_form(ty_expr, "List")
-        .or_else(|| ast.as_ctor_form(ty_expr, "List"))
+    // A `(List BigInt)` type-expr over a list literal: ground each bare-literal element. The TYPE ctor head
+    // is always the NAME `List` — the reader emits a type constructor as a name-head application `(List …)`,
+    // NEVER a string-head `("List" …)` (that has no reader/ML surface; `from_spelling` is lowercase-VALUE
+    // only), so `as_form` (name-head) is the sole live reader-produced arm (verified with v-syntax, M3). The
+    // VALUE side (the annotated list literal) is read via `compound_form_of` below, which accepts both the
+    // native `#list(…)` ctor-leaf head and the `(list …)`/`("list" …)` aliases.
+    if let Some(list_ty_tail) = ast.as_form(ty_expr, "List")
         && let Some(&elem_ty) = list_ty_tail.first()
         && ast.as_name(elem_ty) == Some("BigInt")
         && let Some(elems) = ast.compound_form_of(value, CompoundCtor::List)
