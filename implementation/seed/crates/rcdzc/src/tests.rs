@@ -23120,32 +23120,10 @@ mod diagnostics {
         }
     }
 
-    #[test]
-    fn an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix() {
-        // The numeric-mismatch fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
-        // A Fix): `(+ 2.0 x)` mixes a float with an integer `x : Int64` under the ONE arithmetic operator
-        // — CDZ0301 (no silent promotion) — and the repair conforms the SECOND operand to the FIRST (the
-        // leading float), so it is the corpus-blessed `(Float64.of-int x)` WRAP converting the integer.
-        // Applying it makes the program type-check.
-        let d = first_error("(module m (def (f (: x Int64)) (+ 2.0 x)) (export f))");
-        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
-        // The message names the no-silent-promotion RULE and the two types, not a bare unifier dump.
-        assert!(
-            d.message.contains("no implicit conversion")
-                && d.message.contains("Float64")
-                && d.message.contains("Int64"),
-            "CDZ0301 names the rule + both numeric types: {}",
-            d.message
-        );
-        let fix = d.fix.expect("a coercion fix is carried");
-        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-        assert_eq!(
-            fix.replacement,
-            format!("(Float64.of-int {})", crate::abi::WRAP_HOLE),
-            "wraps the integer operand in Float64.of-int"
-        );
-        assert!(!fix.verified, "a coercion is a heuristic (intent guess)");
-    }
+    // (an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix migrated to corpus 06-numeric-model
+    //  "an integer operand to a float operator offers an of-int coercion fix" — CDZ0301 with the multi-substring
+    //  message (no implicit conversion / Float64 / Int64) + (fix (kind wrap) (replacement "(Float64.of-int …)")
+    //  (unverified)); the multi-message form landed via C1 #5277.)
 
     #[test]
     fn an_int_literal_argument_to_a_float_parameter_reports_one_coded_fault_with_a_retype_fix() {
