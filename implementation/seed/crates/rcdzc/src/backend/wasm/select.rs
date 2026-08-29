@@ -2780,24 +2780,52 @@ fn binder_absent_in_subtree(binder: StructId, id: StructId) -> bool {
 /// De-dups a parameter referenced more than once. Used to seed `collect_dup_sites` — from `select_function`
 /// (which then emits the dups) AND from `collect_used_ops` (which must import `OP_DUP` iff a dup site
 /// exists), so the two agree on the retain set. Walks every child (a binding/reference nests anywhere).
+/// Read the `Core` at `id` BY REFERENCE (no clone) and run `f` over it — the borrow twin of the common
+/// `f(&core_of(db, id))` clone. During emit the tree is fully lowered/memoized, so the common path borrows
+/// the memoized node from the column; falls back to the cloning `core_of` only for an un-memoized node or
+/// when a `core_override` is installed (which `core_of` itself prefers). `f` returns a `Copy`/owned value
+/// (it cannot hold the borrow or touch `db` mutably), so the borrow is released before the caller resumes —
+/// which is what lets a RECURSIVE walk classify a node by borrow, then recurse (needing `&mut Db`) with no
+/// per-node Core clone. Byte-identical to `f(&core_of(db, id))`.
+fn with_core_ref<R>(db: &mut Db, id: StructId, f: impl FnOnce(&Core) -> R) -> R {
+    if db.core_override.is_empty()
+        && let crate::arena::Slot::Filled(c) = db.core.get(id)
+    {
+        return f(c);
+    }
+    f(&core_of(db, id))
+}
+
 fn collect_retain_candidate_binders(db: &mut Db, id: StructId, out: &mut Vec<StructId>) {
-    match core_of(db, id) {
-        Core::Let { bindings, .. } => {
-            for (binder, _) in bindings.iter() {
+    // Classify the node's binder(s) by BORROW (no Core clone), then do the `type_of` checks + recursion
+    // (both need `&mut Db`) after the borrow is released. `Let` collects its binder occ ids; `Param` its one.
+    enum Cand {
+        Let(Vec<StructId>),
+        Param(StructId),
+        None,
+    }
+    let cand = with_core_ref(db, id, |c| match c {
+        Core::Let { bindings, .. } => Cand::Let(bindings.iter().map(|(b, _)| *b).collect()),
+        Core::Param { binder } => Cand::Param(*binder),
+        _ => Cand::None,
+    });
+    match cand {
+        Cand::Let(binders) => {
+            for binder in binders {
                 // `is_heap_type_for_retain`: a still-`Var` binder type counts as a candidate (leak-safe;
                 // avoids the demand-order UAF where a not-yet-ground heap payload was skipped). The dup/drop
                 // EMISSION is concrete-type-gated, so a Var that solves to a scalar emits nothing.
-                if is_heap_type_for_retain(&type_of(db, *binder)) {
-                    out.push(*binder);
+                if is_heap_type_for_retain(&type_of(db, binder)) {
+                    out.push(binder);
                 }
             }
         }
-        Core::Param { binder }
-            if is_heap_type_for_retain(&type_of(db, binder)) && !out.contains(&binder) =>
-        {
-            out.push(binder);
+        Cand::Param(binder) => {
+            if is_heap_type_for_retain(&type_of(db, binder)) && !out.contains(&binder) {
+                out.push(binder);
+            }
         }
-        _ => {}
+        Cand::None => {}
     }
     for child in core_child_ids(db, id) {
         collect_retain_candidate_binders(db, child, out);
@@ -2817,8 +2845,11 @@ fn binder_has_dup_site_in(
     binder: StructId,
     dup_sites: &HashSet<StructId>,
 ) -> bool {
-    if matches!(core_of(db, id), Core::LocalRef { binder: b } | Core::Param { binder: b } if b == binder)
-        && dup_sites.contains(&id)
+    if with_core_ref(
+        db,
+        id,
+        |c| matches!(c, Core::LocalRef { binder: b } | Core::Param { binder: b } if *b == binder),
+    ) && dup_sites.contains(&id)
     {
         return true;
     }
@@ -3226,9 +3257,15 @@ fn binder_occurs_rec(
         // memoize a cycle-artifact `false`.
         return (false, true);
     }
-    let (here, tainted) = match core_of(db, id) {
-        Core::LocalRef { binder: b } | Core::Param { binder: b } => (b == binder, false),
-        _ => {
+    // Read the node's leaf-binder (if it IS a `LocalRef`/`Param`) by BORROW — no clone; the recursive `_`
+    // arm needs `&mut Db`, so classify first, then recurse after the borrow is released.
+    let leaf_binder = with_core_ref(db, id, |c| match c {
+        Core::LocalRef { binder: b } | Core::Param { binder: b } => Some(*b),
+        _ => None,
+    });
+    let (here, tainted) = match leaf_binder {
+        Some(b) => (b == binder, false),
+        None => {
             in_progress.insert(id);
             let mut occurred = false;
             let mut tainted = false;
