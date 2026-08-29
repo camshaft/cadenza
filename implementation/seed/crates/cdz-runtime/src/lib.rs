@@ -24266,15 +24266,20 @@ mod tests {
         }
     }
 
-    /// CO-VERIFY (v-core-opt #5352 ROPE member, 980) — completes the family co-verify (#5357 did vec/set/map)
-    /// for the ONE member whose builder does NOT refit in place: `String.concat` → `bytes-concat` allocates a
-    /// NEW concat node with the base as a CHILD (the base's rc1 ref MOVES into the node) rather than subsuming
-    /// the base's own node. Same net contract: the rc1 base is CONSUMED into the result, so the result's
-    /// single post-if drop reclaims it (the base survives as the concat node's child), no leak, no double-free.
-    /// Distinct from `rope_dup_retained_operand_survives_being_consumed_by_concat` (the rc==2 SHARED case);
-    /// this is the rc==1 dup-skipped if-join-shared else-arm.
+    /// A rope `bytes-concat` that CONSUMES a uniquely-owned (rc==1) base into the result, with the result
+    /// dropped once, balances (base survives as the new concat node's child; the single drop reclaims it).
+    /// A valid consume + single-drop reclaim.
+    ///
+    /// ⚠️ SCOPE CORRECTION (was mis-framed as an if-join-shared co-verify): this does NOT model the
+    /// if-join-shared "concat-child-of-keep" shape, which is the UNSAFE one. `bytes-concat` does NOT refit
+    /// the base in place — it ALLOCATES a NEW node with base as a CHILD — so unlike vec-push/set-insert/
+    /// map-insert (which SUBSUME the base in place, making the base IS-the-result identity that lets the
+    /// #5352 dup-skip-alone predicate hold), a rope concat leaves base as a distinct consumed child. On a
+    /// fresh cdz, the rope if-join (980) mode2 DOUBLE-FREES under dup-skip-alone, so v-core-opt's predicate
+    /// narrows `escapes_into_if_result` to the IN-PLACE-REUSE builders and EXCLUDES concat (the dup must be
+    /// RETAINED for concat). This test only pins the plain consume-balance, NOT that if-join concat is safe.
     #[test]
-    fn if_join_shared_rc1_rope_base_consumed_by_concat_balances_on_single_drop() {
+    fn rope_concat_of_rc1_base_balances_on_single_drop() {
         reset();
         let before = live_nodes();
         // A uniquely-owned (rc1) multi-node rope base.
