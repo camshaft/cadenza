@@ -6144,58 +6144,13 @@ mod runtime_ops {
     // their run value renders as the full ~300-digit exact-Float64 decimal, which a corpus (output …) cannot
     // legibly pin; the Float32-only reject specificity is still shown by every reject case being Float32.)
 
-    #[test]
-    fn cdz_check_rejects_a_narrow_width_overflow_projected_through_option_or_result_expect() {
-        // A SILENT MISCOMPILE (wrong value, no error on check OR emit — the worst class), now a check reject.
-        // `(: (Option.expect (if c (Some 10000) None) "x") UInt8)` at c=true RAN TO 16 (`10000 as UInt8`,
-        // truncated) with no diagnostic: `expect` projects the sum payload, so the UInt8 result width
-        // propagated down into the `Some` payload, where EMIT truncated it (a `wrap`) while `cdz check` never
-        // descended the runtime `if` into `(Some 10000)`. A CONSTANT `(Some 10000)` folds (`expect` reduces
-        // to the payload, caught by the scalar check); only a RUNTIME sum slipped. The fix descends a
-        // `SumExpect`'s sum argument against the sum type with its payload arg substituted to `want` (arg 0 —
-        // the `Some`/`Ok` payload for both Option and Result), routing the branch `(Some 10000)` through the
-        // Sum-payload width check. Now rejects CDZ0302 at check, matching the direct + constant forms.
-        let check_rejects = |src: &str| {
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            let d = diags
-                .iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
-                .unwrap_or_else(|| panic!("expected a check-level reject for: {src}"));
-            assert_eq!(
-                d.code.as_deref(),
-                Some("CDZ0302"),
-                "expected CDZ0302 for {src}, got: {}",
-                d.message
-            );
-        };
-        // Option.expect and Result.expect (payload is arg 0 for Some AND Ok), over a runtime if.
-        check_rejects(
-            "(module m (def (f (: c Bool)) (: (Option.expect (if c (Some 10000) None) \"x\") UInt8)) (export f))",
-        );
-        check_rejects(
-            "(module m (def (f (: c Bool)) (: (Result.expect (if c (Ok 10000) (Err \"e\")) \"x\") UInt8)) (export f))",
-        );
-
-        // NO OVER-REJECTION: a fitting payload, an Int64 result (fits), and no narrow annotation all pass.
-        let check_clean = |src: &str| {
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            assert!(
-                diags
-                    .iter()
-                    .all(|d| d.severity != crate::abi::Severity::Error),
-                "expected NO check reject for: {src}\ngot: {diags:?}"
-            );
-        };
-        check_clean(
-            "(module m (def (f (: c Bool)) (: (Option.expect (if c (Some 100) None) \"x\") UInt8)) (export f))",
-        );
-        check_clean(
-            "(module m (def (f (: c Bool)) (: (Option.expect (if c (Some 10000) None) \"x\") Int64)) (export f))",
-        );
-        check_clean(
-            "(module m (def (f (: c Bool)) (Option.expect (if c (Some 10000) None) \"x\")) (export f))",
-        );
-    }
+    // (cdz_check_rejects_a_narrow_width_overflow_projected_through_option_or_result_expect migrated to corpus
+    // 06-numeric-model, the Option/Result-`expect` PROJECTION face: a narrow result width propagates into the
+    // sum payload, so an out-of-range payload literal in a RUNTIME sum reached via Option.expect / Result.expect
+    // (payload = arg 0 for Some AND Ok) is CDZ0302 at check — this was a SILENT MISCOMPILE (c=true ran to
+    // 10000 as UInt8 = 16 with NO diagnostic; a CONSTANT sum folds + is caught, only a RUNTIME sum slipped).
+    // Migrated as 2 CDZ0302 rejects + 3 running no-over-rejection controls (fitting payload → 100, Int64 result
+    // fits → 10000, no narrow annotation → 10000). --case grades the reject codes + run values (all 5 PASS).)
 
     #[test]
     fn cdz_check_rejects_a_narrow_width_overflow_in_a_record_field_or_map_position() {

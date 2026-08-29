@@ -1065,6 +1065,32 @@
   (input  (do (def (f) (: (if true 1.5 0.5) Float32)) (export f)))
   (call   f) (output (: 1.5 Float32)))
 
+; ── the narrow-width check descends through an Option/Result `expect` PROJECTION: a narrow result width
+; propagates down into the sum PAYLOAD, so an out-of-range payload literal in a RUNTIME sum reached via
+; `(Option.expect …)` / `(Result.expect …)` (payload = arg 0 for both `Some` and `Ok`) is CDZ0302 at check.
+; This was a SILENT MISCOMPILE (`c=true` ran to `10000 as UInt8 = 16` with NO diagnostic on check OR emit —
+; the worst class): a CONSTANT sum folds (caught by the scalar check), but a RUNTIME sum slipped the descent.
+; Migrated from rcdzc cdz_check_rejects_a_narrow_width_overflow_projected_through_option_or_result_expect.
+(case "a narrow-width overflow projected through Option.expect over a runtime sum is rejected at check"
+  (input  (do (def (f (: c Bool)) (: (Option.expect (if c (Some 10000) None) "x") UInt8)) (export f)))
+  (error  CDZ0302))
+
+(case "a narrow-width overflow projected through Result.expect over a runtime sum is rejected at check"
+  (input  (do (def (f (: c Bool)) (: (Result.expect (if c (Ok 10000) (Err "e")) "x") UInt8)) (export f)))
+  (error  CDZ0302))
+
+(case "a fitting payload projected through Option.expect under a narrow annotation runs (no over-rejection)"
+  (input  (do (def (f (: c Bool)) (: (Option.expect (if c (Some 100) None) "x") UInt8)) (export f)))
+  (call   f (: true Bool)) (output (: 100 UInt8)))
+
+(case "an out-of-Int8 payload projected through Option.expect under an Int64 result fits and runs"
+  (input  (do (def (f (: c Bool)) (: (Option.expect (if c (Some 10000) None) "x") Int64)) (export f)))
+  (call   f (: true Bool)) (output (: 10000 Int64)))
+
+(case "a payload projected through Option.expect with NO narrow annotation stays Int64 and runs"
+  (input  (do (def (f (: c Bool)) (Option.expect (if c (Some 10000) None) "x")) (export f)))
+  (call   f (: true Bool)) (output (: 10000 Int64)))
+
 (case "a literal MAP VALUE that overflows the annotated value width is rejected"
   (doc    "`(: (map (1 999)) (Map Int64 Int8))` — the map type's declared value `Int8` grounds the entry's
            value literal `999`, which overflows Int8 → CDZ0302. The width fit-check must descend into a map's
