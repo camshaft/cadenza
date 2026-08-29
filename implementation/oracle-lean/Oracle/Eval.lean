@@ -533,8 +533,12 @@ def variantCtorArity? (m : Module) (name : ByteArray) : Option Nat :=
     match (userSumTypes m).findSome? (fun (_, ctors) =>
             (ctors.find? (fun c => c.1 == name)).map (fun c => (ctors.length, c.2))) with
     | some (nvariants, ar) =>
-      let isNewtype := nvariants == 1 && ar == 1
-      if isNewtype || ar ≥ 2 then none else some ar
+      -- a SINGLE-variant type with ≥1 field(s) ERASES (no tag): arity 1 → its field (newtypeCtor?), arity
+      -- ≥2 → the tuple of its fields (structNewtypeCtor?) — 05-compound "a multi-payload struct newtype
+      -- escapes as its payload tuple". So it is NOT a tagged variant → none here. A MULTI-variant sum's
+      -- ctor IS tagged (`variant C payload`, payload = unit/field/tuple by arity) → some ar. A SOLE NULLARY
+      -- ctor (nvariants==1, ar==0) → some 0 (evalVariantCtor erases it to unit via soleNullaryCtor?).
+      if nvariants == 1 && ar ≥ 1 then none else some ar
     | none => (preludeSumCtors.find? (fun p => name == p.1.toUTF8)).map (·.2)
 
 /-- Is `name` a NEWTYPE constructor — the SOLE variant of its user type, carrying EXACTLY ONE field?
@@ -553,6 +557,14 @@ type, e.g. Option's `None`, stays tagged to distinguish it from its siblings). (
 def soleNullaryCtor? (m : Module) (name : ByteArray) : Bool :=
   !((defNames m).contains name) &&
   (userSumTypes m).any (fun (_, ctors) => match ctors with | [(cn, 0)] => cn == name | _ => false)
+
+/-- A STRUCT NEWTYPE ctor: the SOLE ctor of its type, with ≥2 fields (`(type Pt (Mk Int64 Int64))`). Like a
+newtype (single-field → its field) it SCALAR-ERASES — its value is the bare TUPLE of its fields (tag erased
+into the type header), NOT a tagged `variant` (05-compound "a multi-payload struct newtype escapes as its
+payload tuple"). A multi-field ctor of a MULTI-variant sum keeps its tag (that path stays a `variant`). -/
+def structNewtypeCtor? (m : Module) (name : ByteArray) : Bool :=
+  !((defNames m).contains name) &&
+  (userSumTypes m).any (fun (_, ctors) => match ctors with | [(cn, ar)] => cn == name && ar ≥ 2 | _ => false)
 
 /-- The constructor NAME an application/pattern head denotes: a bare name head `C`, or a qualified
 member-access head `(. T C)` → `C`. -/
@@ -831,6 +843,8 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         (match (ctorAppName? m children).bind (fun c => if (env.lookup? c).isSome then none else some c) with
          | some cname =>
            if newtypeCtor? m cname then (children[1]?).map (fun pId => evalNode m env defaultIntTy fuel pId)
+           -- a single-variant ≥2-field STRUCT newtype erases to the bare TUPLE of its fields (no tag).
+           else if structNewtypeCtor? m cname then some (evalSeqCtor m env fuel children Value.tuple false)
            else (variantCtorArity? m cname).map (fun ar => evalVariantCtor m env fuel cname ar children)
          | none => none)
         <|> (if qualHead? m children == some ("Set".toUTF8, "of".toUTF8) then some (evalSetOf m env fuel children) else none)
@@ -1565,13 +1579,18 @@ partial def evalVariantCtor (m : Module) (env : Env) (fuel : Nat) (cname : ByteA
   else if cs == "Some" && arity == 1 then .value (Value.some (payload ()))
   else if cs == "Ok" && arity == 1 then .value (Value.ok (payload ()))
   else if cs == "Err" && arity == 1 then .value (Value.err (payload ()))
-  else match arity with
-       -- a SOLE nullary ctor erases to `unit` (single-ctor type carries no info); a nullary ctor of a
-       -- MULTI-ctor type stays a tagged variant (needed to tell it from its siblings).
-       | 0 => .value (if soleNullaryCtor? m cname then .unit else .variant cname .unit)
-       | _ => match children[1]? with
-              | some pId => .value (.variant cname (outcomeToValue (evalNode m env defaultIntTy fuel pId)))
-              | none => .value (.variant cname .unit)
+  else
+    -- the field arguments (children after the ctor head), each stored as a value or a deferred `poison`
+    -- (lazy, like a tuple/record field — spec Q2).
+    let fields := (children.extract 1 children.size).map (fun pId => outcomeToValue (evalNode m env defaultIntTy fuel pId))
+    match arity with
+    -- a SOLE nullary ctor erases to `unit` (single-ctor type carries no info); a nullary ctor of a
+    -- MULTI-ctor type stays a tagged variant (needed to tell it from its siblings).
+    | 0 => .value (if soleNullaryCtor? m cname then .unit else .variant cname .unit)
+    -- single-field → `variant C payload`; MULTI-field (≥2) → `variant C (tuple f1…fN)` (the payload is a
+    -- tuple of the fields — symmetric with matchPat's `(C p1…pN)` and expectedValue?'s `(C v1…vN)`).
+    | 1 => .value (.variant cname (fields[0]?.getD .unit))
+    | _ => .value (.variant cname (.tuple fields))
 
 /-- A sequence constructor `(tuple e…)` / `(list e…)`: evaluate each element, storing a non-value
 element as a `poison` (deferred) rather than propagating it — an element that is never observed
@@ -1827,6 +1846,13 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
       (match ctorAppName? m pc with
        | some cname =>
          if newtypeCtor? m cname then some (match pc[1]? with | some sp => matchPat m sp subj | none => .ok (some []))
+         -- a struct-newtype pattern `(Mk p1…pN)` erases: the subject IS the bare TUPLE of fields → match
+         -- each subpattern against its tuple element (no tag to compare).
+         else if structNewtypeCtor? m cname then
+           some (let subpats := pc.extract 1 pc.size
+                 match subj with
+                 | .tuple es => if es.size == subpats.size then matchSeq m (subpats.zip es).toList else .ok none
+                 | _ => .ok none)
          else match variantCtorArity? m cname with
            | some ar =>
              -- SYMMETRIC with evalVariantCtor: a user ctor named None/Some/Ok/Err at the CANONICAL arity
@@ -1839,7 +1865,18 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
                else if csm == "Ok" && ar == 1 then (match subj, pc[1]? with | .ok p, some sp => matchPat m sp p | .ok _, none => .ok (some []) | _, _ => .ok none)
                else if csm == "Err" && ar == 1 then (match subj, pc[1]? with | .err p, some sp => matchPat m sp p | .err _, none => .ok (some []) | _, _ => .ok none)
                else match subj with
-                    | .variant tag payload => if tag == cname then (match pc[1]? with | some sp => matchPat m sp payload | none => .ok (some [])) else .ok none
+                    | .variant tag payload =>
+                      if tag == cname then
+                        -- 0 subpats → nullary; 1 → match the single payload; ≥2 → the payload is a TUPLE
+                        -- of the fields (symmetric with the multi-field ctor construction), match each.
+                        let subpats := pc.extract 1 pc.size
+                        (match subpats.size with
+                         | 0 => .ok (some [])
+                         | 1 => matchPat m subpats[0]! payload
+                         | _ => (match payload with
+                                 | .tuple es => if es.size == subpats.size then matchSeq m (subpats.zip es).toList else .ok none
+                                 | _ => .ok none))
+                      else .ok none
                     | _ => .ok none)
            | none => none
        | none => none)
