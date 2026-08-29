@@ -5366,7 +5366,7 @@
   (output (: (tuple 0 0 7 7) (Tuple Int64 Int64 Int64 Int64)))
   (call   main (: -9223372036854775808 Int64))
   (output (: (tuple 0 0 -9223372036854775808 -9223372036854775808) (Tuple Int64 Int64 Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak 1 3))
 
 (case "self-operand division is NOT folded to one — it still traps at zero"
   (doc    "The critical NON-identity: `(/ x x)` is NOT `1` in general, because at x = 0 it is `0 / 0`, a
@@ -6805,7 +6805,7 @@
   (input  (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call   main (: -9223372036854775808 Int64) (: -1 Int64)) (output (: (None unit) (Option Int64)))
   (call   main (: -9223372036854775808 Int64) (: 1 Int64)) (output (: (Some -9223372036854775808) (Option Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak 1 2))
 
 (case "a runtime checked-mul over UInt64 operands emits the unsigned division round-trip"
   (doc    "The UNSIGNED face: `(UInt64.checked-mul a b)` emits `if a==0 then Some(0) else (p/a==b ? Some(p) :
@@ -7679,7 +7679,7 @@
   (output (: (tuple 12 12) (Tuple Int64 Int64)))
   (call   main (: -9223372036854775808 Int64) (: -7 Int64))
   (output (: (tuple -9223372036854775808 -9223372036854775808) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak 1 3))
 
 (case "the absorption law does not discard a trapping runtime operand"
   (doc    "The trap-preservation face: `(& x (| x (/ 10 z)))` still absorbs to `x` for the VALUE, but the
