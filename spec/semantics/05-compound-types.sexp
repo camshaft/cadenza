@@ -10348,13 +10348,20 @@
   (doc    "The contrast to the empty-sum case above: `(type C Red Green)` is INHABITED (two variants), so a
            zero-arm `(match c)` covers neither — it is non-exhaustive and rejects CDZ0210. Only the EMPTY
            sum earns the zero-arm exemption; a populated sum's zero-arm match is the ordinary
-           non-exhaustiveness error. Pins the boundary the empty-sum exemption draws.")
+           non-exhaustiveness error. Pins the boundary the empty-sum exemption draws. A zero-arm inhabited
+           match is the DEGENERATE non-exhaustive case (EVERY variant uncovered), so it routes through the
+           same rustc-gold diagnostic a partially-covered match uses: the message NAMES all uncovered
+           variants (`Red`, `Green`) as `not covered` and it carries the full add-arms INSERT fix — one
+           covering `(trap \"TODO: V\")` arm per variant, space-joined in declaration order. (Enhanced from
+           rcdzc a_zero_arm_match_on_an_inhabited_sum_offers_the_full_add_arms_fix.)")
   (input  (do
             (type C Red Green)
             (def (f (: c C)) (match c))
             (def (main) 0)
             (export main)))
-  (error  CDZ0210))
+  (error  CDZ0210 (message "`Red`") (message "`Green`") (message "not covered")
+                  (fix (kind insert-into)
+                       (replacement "(Red (trap \"TODO: Red\")) (Green (trap \"TODO: Green\"))"))))
 
 (case "a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive"
   (doc    "The user-sum, disc-≥1 companion of the nested-exhaustiveness case: `(type W (A Int64) (V (Option
