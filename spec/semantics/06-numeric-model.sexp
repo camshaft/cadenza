@@ -12718,3 +12718,16 @@
         rcdzc a_non_literal_integer_annotated_a_float_offers_an_of_int_wrap (the literal control).")
   (input (do (def (f) (: 3 Float64)) (export f)))
   (error CDZ0203 (fix (replacement "3.0"))))
+
+(case "cepn1 CONST-EVAL destructures native #tuple/#list patterns — the #5325 second half"
+  (doc "The const-eval face of the native pattern spellings (#5325 bundled fix; regressed at the M2
+        flag-day): a fully-constant match over #tuple/#list literals with native patterns folds at
+        compile time — (match #tuple(3 4) (#tuple(a b) (+ a b))) = 7 and the explicit const block over
+        #list = 6, summed → 13. The hop emits the folded literal (verified (def (main) 13)-class emit),
+        so the corpus-cadenza check also fences the fold staying at its fixpoint.")
+  (input (do
+    (def (main) (+ (match #tuple(3 4) (#tuple(a b) (+ a b)))
+                   (const (match #list(1 2 3) (#list(a b c) (* a (* b c))) (_ -1)))))
+    (export main)))
+  (call main)
+  (output (: 13 Int64)))
