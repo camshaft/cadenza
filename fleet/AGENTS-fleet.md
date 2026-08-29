@@ -260,9 +260,11 @@ This is the STANDING model for EVERY agent (not just the platform lane), and it 
   output. This is the SAME class as the fleet-send quoting discipline: a shell mishap (an apostrophe or
   backtick inside a double-quoted `--body "..."`) can splice `env`/command output into the body. To stay
   safe: SINGLE-quote the `--body` (or pass it from a file/stdin literal), and put ZERO dynamic content in
-  it. A sanitizing **`cargo xtask fleet pr`** wrapper (that scans for + refuses env/secret material and
-  builds the body from a literal) is being built and will become the ONLY sanctioned PR path — until then,
-  do NOT paste any command output into `gh pr create`/`gh pr edit --body`, and prefer a literal body file.
+  it. **The sanctioned PR path is now `cargo xtask fleet pr create --title '…' --body-file <file> [--base
+  main] [--head <branch>]`** — write the body as a LITERAL FILE (no command output), and the tool scans it
+  for env-dump/secret material (REFUSING if found) + hands it to `gh` via `--body-file` (gh reads the file;
+  no body string ever passes through a shell). PREFER it over raw `gh pr create`. If you must use raw `gh`,
+  single-quote the `--body` and paste ZERO command output. (`gh pr merge --admin` for landing is unchanged.)
 - **The hourly advisory run needs an eyeball:** a RED hourly run is surfaced by the `concierge`, who relays
   it to the owning lane to fix — it does not auto-block anyone.
 
