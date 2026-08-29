@@ -2148,14 +2148,20 @@ fn emit_match_sum(
                             cont = els.as_ref();
                         }
                         // A NESTED variant match on the immediate payload — `(Some (Some x))` / `(Some
-                        // (None))`. The outer arm's cont is a nested `Switch` on the payload's discriminant
-                        // (path `[Payload]`), sharing the outer probe (Maranget). v1 scope: a SINGLE-payload
-                        // outer variant, a nested switch on the IMMEDIATE payload, and inner arms that are
-                        // bare `Leaf` bodies. Reconstruct one flattened surface arm `(<OuterV> (<InnerV>
-                        // b…)) <body>` per inner leaf, registering the inner binder at the deep path
-                        // `[Payload, Payload]` (`… Elem(i)` for a multi-payload inner). A deeper/non-payload
-                        // nested path, a multi-payload OUTER variant, a guarded/literal/nested-switch inner
-                        // cont, or a default inner arm declines (later slices).
+                        // (None))` and DEEPER (`(Wrap (Some (Some x)))`, arbitrary depth). The outer arm's
+                        // cont is a nested `Switch` on the payload's discriminant (path `[Payload]`), sharing
+                        // the outer probe (Maranget). Scope: a LINEAR chain of SINGLE-payload variants
+                        // (`arity == 1` at every intermediate level) ending in a `Leaf` body whose variant may
+                        // be multi-payload. [`emit_nested_switch_chain`] recurses the chain to arbitrary depth,
+                        // reconstructing one flattened surface arm `(<V0> (<V1> … (<Vk> b…)))` per leaf and
+                        // registering the leaf binder under the FULL path from the ROOT scrutinee
+                        // (`[Payload, Payload, …]`, `… Elem(i)` for a multi-payload leaf) — the exact key the
+                        // body's `Core::SumPayload` reads (keying by the full step vector, NEVER a truncated
+                        // suffix, is the correctness crux: a length-only key would collide distinct same-length
+                        // prefixes). A MULTI-payload INTERMEDIATE variant (a nested switch on a tuple slot, e.g.
+                        // `(Pair (Some a) (Some b))`), a deeper/non-payload nested path, a guarded/literal inner
+                        // cont, or a DEFAULT inner arm still declines (later slices). Preserves the depth-1
+                        // shape byte-for-byte (the single-level case is this recursion of depth 1).
                         SumCont::Switch {
                             path: npath,
                             arms: inner_arms,
@@ -2169,92 +2175,20 @@ fn emit_match_sum(
                                             .to_string(),
                                     )
                                 })?;
-                            let inner_decl = match &payload_ty {
-                                Ty::Sum { decl, .. } => *decl,
-                                _ => {
-                                    return Err(Reject::decline(
-                                        "the Cadenza backend nested-match payload is not a sum"
-                                            .to_string(),
-                                    ));
-                                }
-                            };
-                            if db.is_user_node(inner_decl) && !emitted.contains(&inner_decl) {
-                                return Err(Reject::decline(
-                                    "the Cadenza backend does not re-emit a nested match over an \
-                                     un-emitted user sum"
-                                        .to_string(),
-                                ));
-                            }
-                            for inner in inner_arms {
-                                let Some(inner_disc) = inner.disc else {
-                                    return Err(Reject::decline(
-                                        "the Cadenza backend does not yet lower a nested-switch default \
-                                         arm"
-                                            .to_string(),
-                                    ));
-                                };
-                                let SumCont::Leaf(inner_body) = &inner.cont else {
-                                    return Err(Reject::decline(
-                                        "the Cadenza backend does not yet lower a guarded/literal/deeper \
-                                         nested-switch inner arm"
-                                            .to_string(),
-                                    ));
-                                };
-                                let inner_arity = db
-                                    .type_decl_by_occ(inner_decl)
-                                    .and_then(|t| t.variants.get(inner_disc as usize))
-                                    .map(|v| v.payloads.len())
-                                    .ok_or_else(|| {
-                                        Reject::decline(
-                                            "the Cadenza backend could not recover the inner variant \
-                                             arity"
-                                                .to_string(),
-                                        )
-                                    })?;
-                                let mut inner_binders = Vec::with_capacity(inner_arity);
-                                for slot in 0..inner_arity {
-                                    let name = synth_payload_name(env.next_payload);
-                                    env.next_payload += 1;
-                                    let ipath: Vec<PathStep> = if inner_arity == 1 {
-                                        vec![PathStep::Payload, PathStep::Payload]
-                                    } else {
-                                        vec![
-                                            PathStep::Payload,
-                                            PathStep::Payload,
-                                            PathStep::Elem(slot),
-                                        ]
-                                    };
-                                    env.payloads.insert((scrutinee, ipath), name.clone());
-                                    inner_binders.push(name);
-                                }
-                                // `(<OuterV> (<InnerV> <inner_binder>…))` — fresh heads per surface arm.
-                                let outer_head = crate::lower::variant_head_ast(db, b, decl, disc)
-                                    .ok_or_else(|| {
-                                        Reject::decline(
-                                            "the Cadenza backend could not recover the outer variant \
-                                             name"
-                                                .to_string(),
-                                        )
-                                    })?;
-                                let inner_head =
-                                    crate::lower::variant_head_ast(db, b, inner_decl, inner_disc)
-                                        .ok_or_else(|| {
-                                        Reject::decline(
-                                            "the Cadenza backend could not recover the inner \
-                                                 variant name"
-                                                .to_string(),
-                                        )
-                                    })?;
-                                let mut inner_pat_children = vec![inner_head];
-                                for n in &inner_binders {
-                                    inner_pat_children.push(b.name(n.clone()));
-                                }
-                                let inner_pat = b.list(inner_pat_children);
-                                let nested_pat = b.list(vec![outer_head, inner_pat]);
-                                let body_node =
-                                    emit_expr(db, b, *inner_body, expected.clone(), env, emitted)?;
-                                children.push(b.list(vec![nested_pat, body_node]));
-                            }
+                            let wrap = vec![(decl, disc)];
+                            emit_nested_switch_chain(
+                                db,
+                                b,
+                                scrutinee,
+                                &payload_ty,
+                                npath.as_ref(),
+                                inner_arms,
+                                &wrap,
+                                &expected,
+                                env,
+                                emitted,
+                                &mut children,
+                            )?;
                             break;
                         }
                         _ => {
@@ -2270,6 +2204,162 @@ fn emit_match_sum(
         }
     }
     Ok(b.list(children))
+}
+
+/// Recurse a LINEAR chain of nested single-payload variant switches, emitting one FLATTENED surface arm
+/// `(<V0> (<V1> … (<Vk> b…)))` per leaf into `children`. Called from [`emit_match_sum`] when an outer arm's
+/// cont is a nested `Switch` on the immediate payload; recurses to arbitrary depth.
+///
+/// - `root_scrutinee` — the ROOT match scrutinee, the key under which every payload binder is registered.
+/// - `switch_ty` — the SOLVED `Ty::Sum` of the value THIS switch dispatches on (the value at `path`).
+/// - `path` — the FULL path from the root to this switch's scrutinee value (`[Payload]`, `[Payload, Payload]`,
+///   …). Payload binders are registered under `(root_scrutinee, path ++ [Payload {, Elem(slot)}])` — the exact
+///   key the body's `Core::SumPayload` carries. Keying by the FULL step vector (never a length/suffix) is the
+///   correctness crux: a truncated key would collide two distinct same-length prefixes → a silent wrong-payload
+///   read (the wasm `select.rs` lesson).
+/// - `wrap` — the outer variant `(decl, disc)` wrappers, OUTERMOST-first, rebuilt (fresh head per surface arm)
+///   around the built inner pattern so `(<Vk> b…)` becomes `(<V0> (<V1> … (<Vk> b…)))`.
+///
+/// A LEAF arm emits (its variant may be multi-payload — each slot binds at `… Elem(slot)`). A `Switch` arm on a
+/// SINGLE-payload inner variant (`arity == 1`) at the IMMEDIATE payload path recurses one level deeper. Anything
+/// else — a multi-payload intermediate (a switch on a tuple slot), a non-immediate-payload nested path, a
+/// guarded/literal inner cont, a DEFAULT (wildcard) inner arm, or an un-emitted user sum at ANY level — declines
+/// (later slices), so the emit never produces a pattern the recompile cannot re-lower identically.
+#[allow(clippy::too_many_arguments)]
+fn emit_nested_switch_chain(
+    db: &mut Db,
+    b: &mut Builder,
+    root_scrutinee: StructId,
+    switch_ty: &Ty,
+    path: &[crate::core::PathStep],
+    inner_arms: &[crate::core::SumArm],
+    wrap: &[(StructId, u32)],
+    expected: &Option<Ty>,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+    children: &mut Vec<StructId>,
+) -> Result<(), Reject> {
+    use crate::core::{PathStep, SumCont};
+    let decl = match switch_ty {
+        Ty::Sum { decl, .. } => *decl,
+        _ => {
+            return Err(Reject::decline(
+                "the Cadenza backend nested-match payload is not a sum".to_string(),
+            ));
+        }
+    };
+    // (per-level) A user sum whose `(type …)` was not re-emitted must decline HERE, not only at the root —
+    // its variant heads must resolve on recompile. Option/Result are ambient (prelude), so they proceed.
+    if db.is_user_node(decl) && !emitted.contains(&decl) {
+        return Err(Reject::decline(
+            "the Cadenza backend does not re-emit a nested match over an un-emitted user sum"
+                .to_string(),
+        ));
+    }
+    for inner in inner_arms {
+        let Some(inner_disc) = inner.disc else {
+            return Err(Reject::decline(
+                "the Cadenza backend does not yet lower a nested-switch default arm".to_string(),
+            ));
+        };
+        let inner_arity = db
+            .type_decl_by_occ(decl)
+            .and_then(|t| t.variants.get(inner_disc as usize))
+            .map(|v| v.payloads.len())
+            .ok_or_else(|| {
+                Reject::decline(
+                    "the Cadenza backend could not recover the inner variant arity".to_string(),
+                )
+            })?;
+        match &inner.cont {
+            // LEAF — the deepest level. Bind each payload slot under the FULL path from the root, build
+            // `(<Vk> b…)`, then wrap outward with the accumulated outer heads (innermost wrap first).
+            SumCont::Leaf(inner_body) => {
+                let mut binders = Vec::with_capacity(inner_arity);
+                for slot in 0..inner_arity {
+                    let name = synth_payload_name(env.next_payload);
+                    env.next_payload += 1;
+                    let mut bpath: Vec<PathStep> = path.to_vec();
+                    bpath.push(PathStep::Payload);
+                    if inner_arity != 1 {
+                        bpath.push(PathStep::Elem(slot));
+                    }
+                    env.payloads.insert((root_scrutinee, bpath), name.clone());
+                    binders.push(name);
+                }
+                let leaf_head = crate::lower::variant_head_ast(db, b, decl, inner_disc)
+                    .ok_or_else(|| {
+                        Reject::decline(
+                            "the Cadenza backend could not recover the inner variant name"
+                                .to_string(),
+                        )
+                    })?;
+                let mut pat_children = vec![leaf_head];
+                for n in &binders {
+                    pat_children.push(b.name(n.clone()));
+                }
+                let mut pat = b.list(pat_children);
+                for (wd, wdisc) in wrap.iter().rev() {
+                    let wh =
+                        crate::lower::variant_head_ast(db, b, *wd, *wdisc).ok_or_else(|| {
+                            Reject::decline(
+                                "the Cadenza backend could not recover an outer variant name"
+                                    .to_string(),
+                            )
+                        })?;
+                    pat = b.list(vec![wh, pat]);
+                }
+                let body_node = emit_expr(db, b, *inner_body, expected.clone(), env, emitted)?;
+                children.push(b.list(vec![pat, body_node]));
+            }
+            // A DEEPER switch on this inner variant's SINGLE payload (`arity == 1`) at the immediate payload
+            // path `path ++ [Payload]` — recurse, extending the wrap with this variant and the path by one.
+            SumCont::Switch {
+                path: np,
+                arms: deeper,
+            } if inner_arity == 1 => {
+                let mut want: Vec<PathStep> = path.to_vec();
+                want.push(PathStep::Payload);
+                if np.as_ref() != want.as_slice() {
+                    return Err(Reject::decline(
+                        "the Cadenza backend does not yet lower a nested switch at a non-immediate-payload \
+                         path"
+                            .to_string(),
+                    ));
+                }
+                let payload_ty =
+                    sum_payload_expected(db, decl, inner_disc, switch_ty).ok_or_else(|| {
+                        Reject::decline(
+                            "the Cadenza backend could not recover the nested-match payload type"
+                                .to_string(),
+                        )
+                    })?;
+                let mut wrap2 = wrap.to_vec();
+                wrap2.push((decl, inner_disc));
+                emit_nested_switch_chain(
+                    db,
+                    b,
+                    root_scrutinee,
+                    &payload_ty,
+                    &want,
+                    deeper,
+                    &wrap2,
+                    expected,
+                    env,
+                    emitted,
+                    children,
+                )?;
+            }
+            _ => {
+                return Err(Reject::decline(
+                    "the Cadenza backend does not yet lower a guarded/literal/multi-payload/deeper \
+                     nested-switch inner arm"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Reconstruct the surface `(match <scrutinee> (<list-pattern> <body>)…)` for a `Core::MatchList` — a match
