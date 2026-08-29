@@ -1918,7 +1918,18 @@ fn emit_expr_viewed(
             Ok(b.list(vec![head, s, st, en]))
         }
         Core::StrToBytes { string } => {
-            let head = member_access(b, "String", "to-bytes");
+            // A `StrToBytes` node TYPED `Symbol` is the optimizer's lowering of `Symbol.of(s)` — a symbol's
+            // identity IS its normalized bytes, so `Symbol.of` folds to `StrToBytes` while the node keeps its
+            // `Ty::Symbol`. Re-emit it as `(Symbol.of s)`, NOT `(String.to-bytes s)`: emitting `to-bytes` would
+            // yield a `Bytes` value, breaking arm unification in an enclosing match (or any Symbol-typed
+            // context) so the re-emit fails to type-check (13-strings/0057: a `Symbol.of(s)` arm sibling to a
+            // `Symbol` constant arm emitted as Bytes → hop² CDZ0203 "match arms differ: Bytes vs Symbol").
+            let member = if matches!(eff_ty, Ty::Symbol) {
+                ("Symbol", "of")
+            } else {
+                ("String", "to-bytes")
+            };
+            let head = member_access(b, member.0, member.1);
             let s = emit_expr(db, b, string, None, env, emitted)?;
             Ok(b.list(vec![head, s]))
         }
