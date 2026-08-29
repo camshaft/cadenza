@@ -12482,3 +12482,14 @@
   (call main (: 5 Int64)) (output (: (None unit) (Option Int64)))
   (call main (: 0 Int64)) (trap "divide by zero")
   (live-objects 1))
+
+(case "cdzw47 a Qty constructed at a bare-magnitude binder and consumed to its value round-trips the cadenza hop"
+  (doc "The #5239 fence: the cadenza backend re-emits an erased quantity as ((. Qty of) <mag> <unit>) at a
+        bare-magnitude binder — `(Qty.value (Qty.of (* n 3) (Unit.base #\"meter\")))` must hop
+        byte-idempotently and agree with the direct path (n=7 → 21). The Qty-ARITHMETIC and Qty-as-RETURN
+        faces still decline ('ambiguous magnitude-vs-quantity position') and are banked flip witnesses.")
+  (input (do
+    (def (main (: n Int64)) (Qty.value (Qty.of (* n 3) (Unit.base #"meter"))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 21 Int64))
+  (call main (: -4 Int64)) (output (: -12 Int64)))
