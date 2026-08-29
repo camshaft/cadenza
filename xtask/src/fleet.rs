@@ -1040,6 +1040,36 @@ pub enum FleetCmd {
         #[arg(long)]
         reap_dead_letters: bool,
     },
+    /// Wrapped PR tool — the SANCTIONED way to open a PR (operator P0 seq-198: a raw `gh pr create`
+    /// leaked the ENTIRE env dump into its description). It SANITIZES the title/body against env-dump +
+    /// secret material (REFUSING if found) and hands the body to `gh` as a FILE (never a shell/argv
+    /// string), so a shell mishap can't splice `env`/command output into it. Use instead of raw `gh pr`.
+    Pr {
+        #[command(subcommand)]
+        action: PrAction,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum PrAction {
+    /// Open a PR with a SANITIZED, literal body. Reads the body from a FILE (literal text — never
+    /// shell-substituted), scans title+body for env-dump/secret-like material and REFUSES if any is
+    /// found, then invokes `gh pr create … --body-file <file>` (gh reads the file; no body string ever
+    /// passes through a shell). Err on the side of refusing.
+    Create {
+        /// PR title — static literal prose ONLY (no command output).
+        #[arg(long)]
+        title: String,
+        /// Path to a file holding the PR body (literal text; scanned, then handed to `gh --body-file`).
+        #[arg(long)]
+        body_file: PathBuf,
+        /// Base branch (default: main).
+        #[arg(long, default_value = "main")]
+        base: String,
+        /// Head branch (default: the current branch).
+        #[arg(long)]
+        head: Option<String>,
+    },
 }
 
 /// A message as delivered into an inbox. Serialized one-per-file so delivery is a single atomic
@@ -1225,6 +1255,150 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::MrStatus { query } => mr_status(&fleet, &query),
         FleetCmd::BatchStage { refs } => batch_stage(&fleet, &refs),
         FleetCmd::BatchCommit { execute } => batch_commit(&fleet, execute),
+        FleetCmd::Pr { action } => fleet_pr(&fleet, action),
+    }
+}
+
+// ── pr (sanitized PR wrapper) ─────────────────────────────────────────────────────────────────
+
+/// Scan a PR title+body for env-dump / secret material — PURE so it's unit-tested. Returns human-readable
+/// findings (empty = clean). CONSERVATIVE by design: the STRUCTURAL leak-prevention is `fleet pr create`
+/// handing the body to `gh` as a FILE (no shell substitution — the actual cause of the P0 leak), so this
+/// scanner is belt-and-braces and must NOT false-positive on the legion of legit fleet PR bodies that
+/// DOCUMENT env vars in prose (e.g. `CDZ_CHECK_LEASE_MAX=2`, `export CDZ_NO_CARGO_SHIM=1`). So it flags only
+/// UNAMBIGUOUS dumps/secrets: (1) a large BLOCK of KEY=VALUE env-assignment lines (a real `env` dump is
+/// dozens; prose rarely has ≥8), (2) a secret-NAMED key with a non-trivial VALUE (a real credential, not
+/// `=1`/`=true`), (3) a recognizable secret VALUE token (sk-ant-…, AKIA…, ghp_…). `env_assign_line` counts
+/// `[EXPORT] KEY=VALUE` where KEY is env-var-shaped (UPPER/digit/_).
+fn pr_body_secret_findings(title: &str, body: &str) -> Vec<String> {
+    let mut findings = Vec::new();
+    let mut env_lines = 0usize;
+    let text = format!("{title}\n{body}");
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        let rest = line.strip_prefix("export ").map(str::trim).unwrap_or(line);
+        let Some(eq) = rest.find('=') else { continue };
+        let key = &rest[..eq];
+        let val = rest[eq + 1..].trim();
+        let key_shaped = !key.is_empty()
+            && key
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            && key
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase() || c == '_');
+        if !key_shaped || val.is_empty() {
+            continue;
+        }
+        env_lines += 1;
+        // (2) secret-NAMED key with a non-trivial value → a real credential.
+        let ku = key.to_ascii_uppercase();
+        let secret_named = ku.starts_with("AWS_")
+            || ku.starts_with("ANTHROPIC_")
+            || [
+                "TOKEN",
+                "SECRET",
+                "PASSWORD",
+                "PASSWD",
+                "API_KEY",
+                "CREDENTIAL",
+                "SESSION_TOKEN",
+                "ACCESS_KEY",
+            ]
+            .iter()
+            .any(|p| ku.contains(p));
+        let trivial = matches!(val, "1" | "0" | "true" | "false" | "yes" | "no") || val.len() <= 4;
+        if secret_named && !trivial {
+            findings.push(format!(
+                "line {}: secret-named key with a real value — `{key}=…`",
+                i + 1
+            ));
+        }
+        // (3) recognizable secret VALUE token.
+        if val.contains("sk-ant-")
+            || val.starts_with("AKIA")
+            || val.starts_with("ghp_")
+            || val.starts_with("xoxb-")
+        {
+            findings.push(format!(
+                "line {}: value looks like a live credential token",
+                i + 1
+            ));
+        }
+    }
+    // (1) a large block of env assignments = an env dump.
+    if env_lines >= 8 {
+        findings.push(format!(
+            "{env_lines} KEY=VALUE env-assignment lines — this looks like an ENV DUMP; a PR body must be prose, not environment"
+        ));
+    }
+    findings
+}
+
+/// `fleet pr` — the sanitized PR wrapper (operator P0 seq-198). See [`PrAction`].
+fn fleet_pr(_fleet: &Fleet, action: PrAction) {
+    match action {
+        PrAction::Create {
+            title,
+            body_file,
+            base,
+            head,
+        } => {
+            let body = match std::fs::read_to_string(&body_file) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!(
+                        "fleet pr create: cannot read --body-file {}: {e}",
+                        body_file.display()
+                    );
+                    std::process::exit(2);
+                }
+            };
+            let findings = pr_body_secret_findings(&title, &body);
+            if !findings.is_empty() {
+                eprintln!(
+                    "fleet pr create: REFUSING — the title/body looks like it carries env-dump or secret material:"
+                );
+                for f in &findings {
+                    eprintln!("  ✗ {f}");
+                }
+                eprintln!(
+                    "A PR body must be STATIC LITERAL PROSE describing the change — never `env`/command output/a credential."
+                );
+                eprintln!(
+                    "Fix the body file + re-run. (This guard exists because a raw PR leaked the entire env dump — operator P0 seq-198.)"
+                );
+                std::process::exit(1);
+            }
+            // SAFE: the body goes to `gh` as a FILE (gh reads it) + the title as a single literal argv arg
+            // via Command — NO shell, so no `$(…)`/backtick/apostrophe mishap can splice command output in.
+            let mut args: Vec<String> = vec![
+                "pr".into(),
+                "create".into(),
+                "--title".into(),
+                title,
+                "--base".into(),
+                base,
+                "--body-file".into(),
+                body_file.display().to_string(),
+            ];
+            if let Some(h) = head {
+                args.push("--head".into());
+                args.push(h);
+            }
+            eprintln!(
+                "fleet pr create: body scanned clean → `gh pr create … --body-file` (no shell, literal body)…"
+            );
+            match Command::new("gh").args(&args).status() {
+                Ok(s) if s.success() => {}
+                Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+                Err(e) => {
+                    eprintln!("fleet pr create: failed to invoke `gh`: {e}");
+                    std::process::exit(127);
+                }
+            }
+        }
     }
 }
 
@@ -20366,6 +20540,51 @@ branch refs/heads/fleet/trunk-tools
             lease_nix_config(Some("cores = 99\n"), 2),
             "cores = 99\nmax-jobs = 2\ncores = 2\n"
         );
+    }
+
+    #[test]
+    fn pr_body_secret_findings_flags_dumps_and_secrets_not_prose() {
+        // CLEAN: prose that MENTIONS config env vars mid-sentence must NOT trip (the key isn't line-start
+        // env-shaped) — this is the false-positive class that would break legit fleet-tooling PRs.
+        assert!(
+            pr_body_secret_findings(
+                "fleet(x): tune the cap",
+                "Sets CDZ_CHECK_LEASE_MAX=2 for the tight loop; verified via harness."
+            )
+            .is_empty(),
+            "a config env var mentioned in prose must not be flagged"
+        );
+        // CLEAN: a couple of `export FOO=trivial` lines (instructions) — below the dump threshold, not secret.
+        assert!(
+            pr_body_secret_findings(
+                "t",
+                "export CDZ_NO_CARGO_SHIM=1\nexport CDZ_CHECK_LEASE_MAX=2"
+            )
+            .is_empty(),
+            "a couple trivial export lines are not an env dump"
+        );
+        // FLAG: a real ENV DUMP (>=8 line-start KEY=VALUE).
+        let dump = (0..12)
+            .map(|i| format!("VAR{i}=/some/path/value/{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !pr_body_secret_findings("t", &dump).is_empty(),
+            "an env dump (>=8 KEY=VALUE lines) must be flagged"
+        );
+        // FLAG: real secret values (secret-named key + non-trivial value / recognizable token).
+        assert!(
+            !pr_body_secret_findings("t", "ANTHROPIC_API_KEY=sk-ant-abcdef0123456789").is_empty()
+        );
+        assert!(
+            !pr_body_secret_findings(
+                "t",
+                "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIexampleSECRETkey0123"
+            )
+            .is_empty()
+        );
+        // CLEAN: a secret-NAMED key with a TRIVIAL value (a toggle mention on its own line) is not a leak.
+        assert!(pr_body_secret_findings("t", "SESSION_TOKEN=0").is_empty());
     }
 
     #[test]
