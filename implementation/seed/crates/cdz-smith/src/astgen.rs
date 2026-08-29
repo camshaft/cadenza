@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(19) {
+    match c.variant(20) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -419,6 +419,9 @@ fn gen_main_body<C: Choice>(
         // `String.slice` / a bare string literal (→ String value) over small fixed strings — a whole op
         // family the Int64/compound grammar never reached.
         18 => gen_string_body(c, out),
+        // A BYTES-op body: `Bytes.len` / `Bytes.at` (→ scalar) or a `b"…"` literal / `Bytes.of` / concat
+        // (→ Bytes value) — the Bytes construct family, distinct from String and the Int64/compound grammar.
+        19 => gen_bytes_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1220,6 +1223,33 @@ fn gen_string_body<C: Choice>(c: &mut C, out: &mut String) {
         3 => write!(out, "(String.slice \"{s}\" 0 1)").ok(),
         // A bare string literal value.
         _ => write!(out, "\"{s}\"").ok(),
+    };
+}
+
+/// A BYTES-op body: `Bytes.len` (→ Int64) / `Bytes.at` at index 0 (→ a byte scalar) or a `b"…"` literal /
+/// `Bytes.of (list …)` / `Bytes.concat` (→ a Bytes value) over small fixed nonempty byte strings. Reaches
+/// the Bytes value + Bytes-op lowering — a construct family distinct from String and the numeric/compound
+/// grammar. `Bytes.of` elements are 0..=255 (valid bytes); indices are in-bounds by construction.
+fn gen_bytes_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the FORM + string + byte operands before writing (variant-ordering).
+    let form = c.variant(5);
+    let s = ["a", "ab", "abc"][c.variant(3)];
+    let (x, y, z) = (
+        c.int_bounded(0, 255),
+        c.int_bounded(0, 255),
+        c.int_bounded(0, 255),
+    );
+    match form {
+        // A byte length → Int64.
+        0 => write!(out, "(Bytes.len b\"{s}\")").ok(),
+        // A byte at index 0 → a scalar.
+        1 => write!(out, "(Bytes.at b\"{s}\" 0)").ok(),
+        // A `b"…"` literal → a Bytes value.
+        2 => write!(out, "b\"{s}\"").ok(),
+        // `Bytes.of` a small byte list → a Bytes value.
+        3 => write!(out, "(Bytes.of (list {x} {y} {z}))").ok(),
+        // Concatenation → a Bytes value.
+        _ => write!(out, "(Bytes.concat b\"{s}\" b\"{s}\")").ok(),
     };
 }
 
@@ -2403,6 +2433,40 @@ mod tests {
         assert!(saw_concat, "should reach String.concat");
         assert!(saw_slice, "should reach String.slice");
         assert!(saw_lit, "should reach a bare string literal");
+    }
+
+    /// `gen_bytes_body` REACHES all five Bytes-op forms (len, at, literal, of-list, concat) and every body
+    /// COMPILES (S167: the Bytes construct family — distinct from String and numeric/compound grammar).
+    #[test]
+    fn gen_bytes_body_reaches_all_forms_and_compiles() {
+        let (mut saw_len, mut saw_at, mut saw_lit, mut saw_of, mut saw_concat) =
+            (false, false, false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1789);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_bytes_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_len |= body.contains("Bytes.len");
+            saw_at |= body.contains("Bytes.at");
+            saw_of |= body.contains("Bytes.of");
+            saw_concat |= body.contains("Bytes.concat");
+            saw_lit |= body.starts_with("b\"");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "bytes-op body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_len, "should reach Bytes.len");
+        assert!(saw_at, "should reach Bytes.at");
+        assert!(saw_lit, "should reach a b\"…\" literal");
+        assert!(saw_of, "should reach Bytes.of");
+        assert!(saw_concat, "should reach Bytes.concat");
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
