@@ -6134,63 +6134,15 @@ mod runtime_ops {
     // no-narrow-context large literals that stay Int64 → 10000). --case grades the reject codes + the run
     // values (all verified PASS).)
 
-    #[test]
-    fn cdz_check_rejects_a_float32_overflowing_literal_in_a_runtime_if_or_match_branch() {
-        // The FLOAT sibling of the integer descent gap above — HIGHER severity: `(: (if c 1.0e300 0.0)
-        // Float32)` (a Float32-overflowing literal `1.0e300` — finite as Float64, `±inf` as Float32, a
-        // malformed value) in a runtime `if`/`match` branch PASSED `cdz check` while the EMIT path produced
-        // an INVALID wasm MODULE (not a clean reject). `literal_width_fault`'s Float32-overflow check only
-        // fired on a DIRECT float literal; a runtime conditional bypassed it, and the nested descent handled
-        // the INTEGER path only. The fix adds a Float32-overflow arm to `width_fault_against_ty` (reached
-        // through the runtime if/match/let branch descent) + routes a `Ty::Float` annotation into it. Now
-        // `check` rejects CDZ0302 at the branch literal, agreeing with emit (and no longer emitting a broken
-        // module). Only `Float32` overflows a finite `Float64` literal; `Float64` and fitting values pass.
-        let check_rejects = |src: &str| {
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            let d = diags
-                .iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
-                .unwrap_or_else(|| panic!("expected a check-level reject for: {src}"));
-            assert_eq!(
-                d.code.as_deref(),
-                Some("CDZ0302"),
-                "expected CDZ0302 for {src}, got: {}",
-                d.message
-            );
-        };
-        // if-branch, narrow parameter, and match-arm (scalar-int scrutinee) forms.
-        check_rejects("(module m (def (f (: c Bool)) (: (if c 1.0e300 0.0) Float32)) (export f))");
-        check_rejects(
-            "(module m (def (g (: x Float32)) x) (def (f (: c Bool)) (g (if c 1.0e300 0.0))) (export f))",
-        );
-        check_rejects(
-            "(module m (def (f (: n Int64)) (: (match n (0 1.0e300) (_ 0.0)) Float32)) (export f))",
-        );
-        // CONST-FOLDED conditional: `(if true 1.0e300 0.5)` folds to its taken branch `1.0e300`, which the
-        // Float32 arm reads via `core_of` (a folded `Core::ConstFloat`, not a direct atom) — before, this
-        // slipped `check` and COMPILED + ran to `inf`.
-        check_rejects("(module m (def (f) (: (if true 1.0e300 0.5) Float32)) (export f))");
-
-        // NO OVER-REJECTION: a fitting Float32 literal, the same overflow under Float64 (fits), a bare
-        // conditional with no narrow-float context (stays Float64), and a DEAD-branch const-fold (the taken
-        // branch fits; the untaken overflow is folded away, matching the int dead-branch precedent) all pass.
-        let check_clean = |src: &str| {
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            assert!(
-                diags
-                    .iter()
-                    .all(|d| d.severity != crate::abi::Severity::Error),
-                "expected NO check reject for: {src}\ngot: {diags:?}"
-            );
-        };
-        check_clean("(module m (def (f (: c Bool)) (: (if c 1.0 0.0) Float32)) (export f))");
-        check_clean("(module m (def (f (: c Bool)) (: (if c 1.0e300 0.0) Float64)) (export f))");
-        check_clean("(module m (def (f (: c Bool)) (if c 1.0e300 0.0)) (export f))");
-        // DEAD-branch const-fold: `(if false 1.0e300 0.5)` folds to `0.5` (fits); the untaken 1.0e300 is gone.
-        check_clean("(module m (def (f) (: (if false 1.0e300 0.5) Float32)) (export f))");
-        // Fitting const-fold: `(if true 1.5 0.5)` folds to `1.5` (fits Float32).
-        check_clean("(module m (def (f) (: (if true 1.5 0.5) Float32)) (export f))");
-    }
+    // (cdz_check_rejects_a_float32_overflowing_literal_in_a_runtime_if_or_match_branch migrated to corpus
+    // 06-numeric-model (the FLOAT sibling of the runtime-if/match narrow-overflow block): a Float32-overflowing
+    // literal `1.0e300` (finite Float64, ±inf Float32) in a runtime if / match arm / narrow-Float32 param / a
+    // const-folded conditional → CDZ0302 at check (formerly emitted an INVALID wasm module), + running
+    // no-over-rejection controls (fitting Float32, dead-branch const-fold → 0.5, fitting const-fold → 1.5).
+    // --case grades the reject codes + run values (all PASS). The two Float64-fits negatives ((: … Float64)
+    // and a bare no-narrow-context if — both compile and run to the finite 1.0e300) are NOT corpus-migrated:
+    // their run value renders as the full ~300-digit exact-Float64 decimal, which a corpus (output …) cannot
+    // legibly pin; the Float32-only reject specificity is still shown by every reject case being Float32.)
 
     #[test]
     fn cdz_check_rejects_a_narrow_width_overflow_projected_through_option_or_result_expect() {

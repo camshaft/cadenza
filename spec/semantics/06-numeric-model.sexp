@@ -1029,6 +1029,42 @@
   (input  (do (def (f (: n Int64)) (match n (0 10000) (_ 0))) (export f)))
   (call   f (: 0 Int64)) (output (: 10000 Int64)))
 
+; ── the FLOAT sibling (HIGHER stakes): a Float32-OVERFLOWING literal `1.0e300` (finite as Float64, ±inf as
+; Float32 — a malformed value) in a runtime `if`/`match` branch or reaching a narrow Float32 parameter is
+; CDZ0302 at check, matching emit (check formerly emitted an INVALID wasm module here). Only Float32 overflows
+; a finite Float64 literal. Migrated from rcdzc cdz_check_rejects_a_float32_overflowing_literal_in_a_runtime_if_or_match_branch.
+(case "a Float32-overflowing branch literal in a runtime if is rejected at check"
+  (input  (do (def (f (: c Bool)) (: (if c 1.0e300 0.0) Float32)) (export f)))
+  (error  CDZ0302))
+
+(case "a Float32-overflowing branch literal reaching a narrow Float32 parameter is rejected at check"
+  (input  (do (def (g (: x Float32)) x) (def (f (: c Bool)) (g (if c 1.0e300 0.0))) (export f)))
+  (error  CDZ0302))
+
+(case "a Float32-overflowing match-arm literal is rejected at check"
+  (input  (do (def (f (: n Int64)) (: (match n (0 1.0e300) (_ 0.0)) Float32)) (export f)))
+  (error  CDZ0302))
+
+(case "a Float32-overflowing literal in a const-folded conditional is rejected at check"
+  (doc    "`(if true 1.0e300 0.5)` folds to its taken branch `1.0e300`, read via a folded `Core::ConstFloat`
+           (not a direct atom) — before, this slipped check and COMPILED + ran to `inf`.")
+  (input  (do (def (f) (: (if true 1.0e300 0.5) Float32)) (export f)))
+  (error  CDZ0302))
+
+(case "a fitting Float32 branch literal under a narrow-float annotation runs (no over-rejection)"
+  (input  (do (def (f (: c Bool)) (: (if c 1.0 0.0) Float32)) (export f)))
+  (call   f (: true Bool)) (output (: 1.0 Float32)))
+
+(case "a DEAD-branch Float32 overflow folds away and the taken branch runs (no over-rejection)"
+  (doc    "`(if false 1.0e300 0.5)` folds to `0.5` (fits Float32); the untaken 1.0e300 is gone — the int
+           dead-branch precedent for floats.")
+  (input  (do (def (f) (: (if false 1.0e300 0.5) Float32)) (export f)))
+  (call   f) (output (: 0.5 Float32)))
+
+(case "a fitting Float32 const-folded conditional runs (no over-rejection)"
+  (input  (do (def (f) (: (if true 1.5 0.5) Float32)) (export f)))
+  (call   f) (output (: 1.5 Float32)))
+
 (case "a literal MAP VALUE that overflows the annotated value width is rejected"
   (doc    "`(: (map (1 999)) (Map Int64 Int8))` — the map type's declared value `Int8` grounds the entry's
            value literal `999`, which overflows Int8 → CDZ0302. The width fit-check must descend into a map's
