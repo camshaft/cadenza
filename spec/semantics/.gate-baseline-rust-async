@@ -1311,7 +1311,6 @@ pass	a bare effect declaration that is never performed is well-formed
 pass	a bare empty list reflects an undetermined element, distinct from a concrete list type
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare in-range ConstFloat if-branch under a Float32 annotation emits valid f32 and runs
-pass	a bare list of scalars in a record result crosses the export boundary
 pass	a bare literal annotated Float32 is grounded at binary32 precision (literal path, not a runtime demote)
 pass	a bare literal argument out of range for a narrow parameter width is rejected at check
 pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
@@ -2416,7 +2415,6 @@ pass	a let-bound host result captured by two escaping closures fires the host op
 pass	a let-bound if-selected partial constructor is applied and reclaimed once (borrowed-operand path)
 pass	a let-bound lambda passed to a returned-closure factory
 pass	a let-bound lambda whose body performs is applied in the handle body
-pass	a let-bound partial application of a runtime closure declines (residual-closure lift is a later capability)
 pass	a let-bound record produced by an if is read at both fields
 pass	a let-bound record produced by an if, two fields read, compiles and runs
 pass	a let-bound returned closure applied twice folds each application independently
@@ -2472,7 +2470,6 @@ pass	a list of closures each keeps its own capture, selected by a runtime index
 pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of maps: a runtime index then looks a runtime key up in the found map
 pass	a list of nominal-over-quantity newtypes is a compound Map key
-pass	a list of records in a record result crosses the export boundary
 pass	a list of records with different field sets is a type error
 pass	a list of records: a runtime index then reads a field of the found record
 pass	a list of sets: a runtime index then tests membership in the found set
@@ -2737,7 +2734,6 @@ pass	a multi-byte runtime bit-field takes the matching wide unsigned type
 pass	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
 pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-export shared call is a repeatable (borrow<t>) callback
-pass	a multi-field record result crosses the export boundary
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-level RRB list persistently updates deep interior-level indices leaving the original intact
 pass	a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall to the next field
@@ -2823,7 +2819,6 @@ pass	a named multi-argument function applies in explicit curried form
 pass	a named multi-argument function applies to all its arguments at once
 pass	a named rate unit converts to the reference rate (Float)
 pass	a named runtime binding computes its value exactly once
-pass	a named variant-with-payload field in a record result crosses the export boundary on both arms
 pass	a named width alias and its width-indexed expansion name the same type
 pass	a named-wildcard guard binder over a string binds in both the guard and the body
 pass	a narrow addition reconciles a constant LEFT operand to the variable's width
@@ -3513,7 +3508,6 @@ pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a recursively-built linked list renders its full runtime spine
-pass	a reduce-shaped wrapper seeding a second generic helper at two element types declines pending the transitive tie
 pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a redundant relational check inside its own truthy branch is known-true and its dead branch is eliminated
 pass	a reference to an unbound name is rejected before running
@@ -4418,7 +4412,6 @@ pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
 pass	a tuple payload extracted through a helper return must not be rejected as a type error
 pass	a tuple payload returned through a helper from a built-in Option must not trap
 pass	a tuple scrutinee built from TWO performs — the guard relates both dispatch results
-pass	a tuple with a Char leaf declines compound ordering — Char has no blessed order
 pass	a tuple with a Float64 element MISSES a Map key with a different float leaf
 pass	a tuple with a Float64 element is a Map key found by a separately-built equal key
 pass	a tuple with a Qty leaf as a map key hits by magnitude-and-unit content
@@ -5202,7 +5195,6 @@ pass	an operation with a RECORD parameter binds the compound and the arm reads i
 pass	an operation with a TUPLE parameter binds the compound and the arm projects it
 pass	an operator applied inside a lambda passed to an annotated named HOF
 pass	an option value annotated with the wrong payload type is rejected
-pass	an option<s64> field in a record result crosses the export boundary on both arms
 pass	an or connective with a non-boolean operand is a type error
 pass	an or whose left operand short-circuits elides the performing right operand
 pass	an ordering < of two same-bits Float32 literals const-folds false
@@ -7217,7 +7209,6 @@ pass	reifying a positive-infinity float into an Ast.Float declines
 pass	rejection sampling draws until the refinement holds — an only-even generator produces an even value
 pass	rejection sampling into a narrow range refinement produces only in-range values
 pass	rejection sampling terminates on fuel exhaustion when the refinement is unsatisfiable
-pass	remainder (%) on a quantity declines cleanly (not a leaked scheme mismatch)
 pass	remainder BY the state — truncated dividend-sign semantics hold as the state walks through negative and positive divisors
 pass	remainder by negative one annihilates to zero at every input including the minimum
 pass	remainder by one folds to zero but does not discard a trapping runtime operand

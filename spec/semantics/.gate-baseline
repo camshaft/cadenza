@@ -2500,7 +2500,6 @@ pass	a let-bound host result captured by two escaping closures fires the host op
 pass	a let-bound if-selected partial constructor is applied and reclaimed once (borrowed-operand path)
 pass	a let-bound lambda passed to a returned-closure factory
 pass	a let-bound lambda whose body performs is applied in the handle body
-pass	a let-bound partial application of a runtime closure declines (residual-closure lift is a later capability)
 pass	a let-bound peer compound is read twice (both live) then reclaimed
 pass	a let-bound record produced by an if is read at both fields
 pass	a let-bound record produced by an if, two fields read, compiles and runs
@@ -3677,7 +3676,6 @@ pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a recursively-built linked list renders its full runtime spine
-pass	a reduce-shaped wrapper seeding a second generic helper at two element types declines pending the transitive tie
 pass	a reducer emitting no effects builds an empty-requests step and runs (via an imposed WIT world)
 pass	a reducer performing a RECORD host import reads a field of the result (via an imposed WIT world)
 pass	a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)
