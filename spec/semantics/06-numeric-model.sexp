@@ -13396,3 +13396,15 @@
   (call main (: 7 Int64)) (output (: 1 Int64))
   (call main (: -9 Int64)) (output (: 2 Int64))
   (call main (: -2 Int64)) (output (: 0 Int64)))
+
+(case "cdzw72 a 100k-deep TAIL recursion completes through the cadenza hop — TCO survives re-emit"
+  (doc "Depth-stress, control-flow axis (the data-depth twin is cdzw67): a self tail-loop summing k..1
+        at n=100000 must complete on BOTH paths — the re-emitted def must still lower as a tail loop
+        (a re-emit that broke tail position would stack-overflow). Sum = n(n+1)/2 = 5000050000.
+        Byte-idempotent.")
+  (input (do
+    (def (loop (: k Int64) (: acc Int64)) (if (<= k 0) acc (loop (- k 1) (+ acc k))))
+    (def (main (: n Int64)) (loop n 0))
+    (export main)))
+  (call main (: 100000 Int64)) (output (: 5000050000 Int64))
+  (call main (: 3 Int64)) (output (: 6 Int64)))
