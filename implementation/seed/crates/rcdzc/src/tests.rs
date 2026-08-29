@@ -23511,20 +23511,8 @@ mod diagnostics {
         );
     }
 
-    #[test]
-    fn a_non_aliased_int_width_target_carries_no_conversion_fix() {
-        // The conversion is GATED to an ALIASED width ({8,16,32,64}) — those are the only BOUND names. The
-        // TARGET is the FIRST operand's type (the one the operator pins); with a non-aliased `(Int 48)`
-        // first, the target renders to `Int48`, which nothing binds, so no fix is offered (suggesting an
-        // unbound `(Int48.of …)` would be worse than none).
-        let d = first_error("(module m (def (f (: a (Int 48)) (: b Int64)) (+ a b)) (export f))");
-        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
-        assert!(
-            d.fix.is_none(),
-            "no fix for a non-aliased target width (would be unbound): {:?}",
-            d.fix
-        );
-    }
+    // (a_non_aliased_int_width_target_carries_no_conversion_fix migrated to corpus 06-numeric-model
+    //  "a mixed-int-width operator with a non-aliased target width carries NO conversion fix" (CDZ0301 (no-fix)).)
 
     #[test]
     fn an_int_annotation_mismatch_offers_an_of_conversion_fix() {
@@ -23558,69 +23546,13 @@ mod diagnostics {
         assert!(d.fix.is_none(), "no coercion fix Bool→Int64: {:?}", d.fix);
     }
 
-    #[test]
-    fn an_integer_valued_float_literal_annotated_int_offers_a_drop_the_fraction_fix() {
-        // `(: 3.0 Int64)` / `(: 100.0 Int8)` — an integer-valued FLOAT literal annotated an INTEGER type —
-        // is CDZ0203, repaired by DROPPING the fractional form: REPLACE `3.0` with `3` (the annotation-
-        // position mirror of the arg-position float-literal fix, `(+ 2 3.0)` → `3`). Range-checked, so it
-        // type-checks in one shot.
-        for (src, want) in [
-            ("(module m (def (f) (: 3.0 Int64)) (export f))", "3"),
-            ("(module m (def (f) (: 100.0 Int8)) (export f))", "100"),
-        ] {
-            let d = first_error(src);
-            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-            let fix = d.fix.expect("a drop-the-fraction fix is carried");
-            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-            assert_eq!(fix.replacement, want, "drops the `.0`: {}", d.message);
-            assert!(
-                !fix.verified,
-                "keep-int vs make-float is the author's call → heuristic"
-            );
-        }
-        // NO fix for a NON-integer float (`2.5`) or an OUT-OF-RANGE one (`500.0` : Int8) — truncating /
-        // narrowing is the author's semantic choice, not the compiler's to make.
-        for src in [
-            "(module m (def (f) (: 2.5 Int64)) (export f))",
-            "(module m (def (f) (: 500.0 Int8)) (export f))",
-        ] {
-            let d = first_error(src);
-            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-            assert!(
-                d.fix.is_none(),
-                "no drop-fraction fix for a non-integer / out-of-range float: {src} → {:?}",
-                d.fix
-            );
-        }
-    }
+    // (an_integer_valued_float_literal_annotated_int_offers_a_drop_the_fraction_fix migrated to corpus
+    //  06-numeric-model: the drop-fraction Replace cases (Int64 "3" / Int8 "100") + the no-fix halves
+    //  (non-integer 2.5 / out-of-range 500.0 → CDZ0203 (no-fix)).)
 
-    #[test]
-    fn an_integer_literal_annotated_a_float_offers_an_add_the_fraction_fix() {
-        // The MIRROR of the drop-fraction fix: an INTEGER literal annotated a FLOAT type — `(: 3 Float64)`,
-        // `(: 5 Float32)` — is CDZ0203, repaired by ADDING the fractional form: REPLACE `3` with `3.0` (a
-        // valid float literal). One-shot; the annotation-position mirror of the arg-position `of-int` coercion.
-        for (src, want) in [
-            ("(module m (def (f) (: 3 Float64)) (export f))", "3.0"),
-            ("(module m (def (f) (: 5 Float32)) (export f))", "5.0"),
-        ] {
-            let d = first_error(src);
-            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-            let fix = d.fix.expect("an add-the-fraction fix is carried");
-            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-            assert_eq!(fix.replacement, want, "adds the `.0`: {}", d.message);
-            assert!(
-                !fix.verified,
-                "int-vs-float intent is the author's call → heuristic"
-            );
-        }
-        // NO fix for a non-literal (a Bool value annotated Float) — only a bare int LITERAL retypes.
-        let d = first_error("(module m (def (f) (: true Float64)) (export f))");
-        assert!(
-            d.fix.is_none(),
-            "no add-fraction fix for a Bool: {:?}",
-            d.fix
-        );
-    }
+    // (an_integer_literal_annotated_a_float_offers_an_add_the_fraction_fix migrated to corpus 06-numeric-model:
+    //  the add-fraction Replace cases (Float64 "3.0" / Float32 "5.0") + the no-fix half (Bool annotated
+    //  Float → CDZ0203 (no-fix)).)
 
     #[test]
     fn a_non_literal_integer_annotated_a_float_offers_an_of_int_wrap() {

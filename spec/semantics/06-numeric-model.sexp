@@ -12541,3 +12541,57 @@
   (call main (: 7 Int64)) (output (: 67 Int64))
   (call main (: -100 Int64)) (output (: -1 Int64))
   (live-objects 1))
+
+; ── numeric-literal annotation-mismatch + int-width-mixing FIX-quality (migrated from rcdzc diagnostics) ──
+; Each carries (or deliberately withholds) a mechanical repair the corpus now grades via the (fix …) facet
+; (C1 #5255). Fix-kind + replacement + verified assertions relocated from the rcdzc diagnostics tests named
+; in each case; the rejects themselves are backend-agnostic compile faults.
+(case "an integer-valued float literal annotated an integer type offers a drop-the-fraction fix (Int64)"
+  (doc "`(: 3.0 Int64)` — an integer-valued FLOAT literal annotated an INTEGER type — is CDZ0203, repaired by
+        REPLACING `3.0` with `3` (drop the fractional form; range-checked so it type-checks in one shot).
+        Heuristic (keep-int vs make-float is the author's call). From rcdzc
+        an_integer_valued_float_literal_annotated_int_offers_a_drop_the_fraction_fix.")
+  (input (do (def (f) (: 3.0 Int64)) (export f)))
+  (error CDZ0203 (fix (kind replace) (replacement "3") (unverified))))
+
+(case "an integer-valued float literal annotated a narrow integer type offers a drop-the-fraction fix (Int8)"
+  (input (do (def (f) (: 100.0 Int8)) (export f)))
+  (error CDZ0203 (fix (kind replace) (replacement "100") (unverified))))
+
+(case "an integer literal annotated a float type offers an add-the-fraction fix (Float64)"
+  (doc "The MIRROR: an INTEGER literal annotated a FLOAT type — `(: 3 Float64)` — is CDZ0203, repaired by
+        REPLACING `3` with `3.0` (a valid float literal). Heuristic (int-vs-float intent is the author's
+        call). From rcdzc an_integer_literal_annotated_a_float_offers_an_add_the_fraction_fix.")
+  (input (do (def (f) (: 3 Float64)) (export f)))
+  (error CDZ0203 (fix (kind replace) (replacement "3.0") (unverified))))
+
+(case "an integer literal annotated a narrow float type offers an add-the-fraction fix (Float32)"
+  (input (do (def (f) (: 5 Float32)) (export f)))
+  (error CDZ0203 (fix (kind replace) (replacement "5.0") (unverified))))
+
+(case "a mixed-int-width operator with a non-aliased target width carries NO conversion fix"
+  (doc "The int-width coercion fix is GATED to an ALIASED width ({8,16,32,64}, the only BOUND names). With a
+        non-aliased `(Int 48)` first operand, the target renders `Int48` which nothing binds, so NO fix is
+        offered (suggesting an unbound `(Int48.of …)` would be worse than none). The reject stays CDZ0301.
+        From rcdzc a_non_aliased_int_width_target_carries_no_conversion_fix.")
+  (input (do (def (f (: a (Int 48)) (: b Int64)) (+ a b)) (export f)))
+  (error CDZ0301 (no-fix)))
+
+(case "a non-integer float literal annotated an integer type carries NO drop-fraction fix"
+  (doc "The drop-fraction fix is withheld when it would change the VALUE: `(: 2.5 Int64)` (non-integer) and
+        `(: 500.0 Int8)` (out-of-range for Int8) both stay CDZ0203 with NO fix — truncating / narrowing is the
+        author's semantic choice, not the compiler's. From rcdzc
+        an_integer_valued_float_literal_annotated_int_offers_a_drop_the_fraction_fix (the no-fix half).")
+  (input (do (def (f) (: 2.5 Int64)) (export f)))
+  (error CDZ0203 (no-fix)))
+
+(case "an out-of-range float literal annotated a narrow integer type carries NO drop-fraction fix"
+  (input (do (def (f) (: 500.0 Int8)) (export f)))
+  (error CDZ0203 (no-fix)))
+
+(case "a bool value annotated a float type carries NO add-fraction fix"
+  (doc "Only a bare int LITERAL retypes to a float; a Bool value annotated Float — `(: true Float64)` — is
+        CDZ0203 with NO add-fraction fix. From rcdzc
+        an_integer_literal_annotated_a_float_offers_an_add_the_fraction_fix (the no-fix half).")
+  (input (do (def (f) (: true Float64)) (export f)))
+  (error CDZ0203 (no-fix)))
