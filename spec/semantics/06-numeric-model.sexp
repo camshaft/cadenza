@@ -13469,3 +13469,17 @@
   (call main (: 7 Int64)) (output (: 107 Int64))
   (call main (: -4 Int64)) (output (: -12 Int64))
   (live-objects 1))
+
+(case "cdzw77 MUTUAL recursion (with mutual tail calls at 100k depth) round-trips the cadenza hop"
+  (doc "Mutual-recursion face: even/odd defined through each other — the hop must re-emit BOTH defs with
+        their cross-references intact, and the mutual TAIL calls must stay in tail position (n=100001
+        completes — a broken tail chain would overflow). ev(8)/od(8) → 10; ev(7)/od(7) → 1;
+        n=100001 (odd) → 1. Byte-idempotent.")
+  (input (do
+    (def (ev (: n Int64)) (if (= n 0) 1 (od (- n 1))))
+    (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1))))
+    (def (main (: n Int64)) (+ (* 10 (ev n)) (od n)))
+    (export main)))
+  (call main (: 8 Int64)) (output (: 10 Int64))
+  (call main (: 7 Int64)) (output (: 1 Int64))
+  (call main (: 100001 Int64)) (output (: 1 Int64)))
