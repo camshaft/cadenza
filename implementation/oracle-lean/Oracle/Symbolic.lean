@@ -1,0 +1,145 @@
+/-
+`Oracle.Symbolic` — the T2 SYMBOLIC-EQUIVALENCE arm (operator seq-196, ruling B): prove an input program
+`P` and its `--target cadenza` round-trip `P' = roundtrip(P)` are functionally equivalent FOR ALL INPUTS,
+by symbolic evaluation → canonical normalization → structural equality (NOT sampled). A fresh symbolic
+VARIABLE stands for each program parameter (the whole input domain); `symEval` evaluates a program body to
+a `SymExpr` over those vars; `normalize` canonicalizes; two programs whose normal forms are structurally
+equal are PROVEN equivalent for all inputs. When it cannot decide (an unmodeled construct, or two
+fully-normalized-but-different forms) it returns `cannotProve` — it NEVER claims a false divergence (the
+normalizer is deliberately incomplete; a genuine divergence is confirmed by the sampled differential).
+
+This is the analyzable-fragment guarantee: straight-line scalar arithmetic/comparison/boolean + `if` are
+provable here; `let`, match/sum, collections, and recursion are the incompleteness boundary (→ `cannotProve`,
+degrade to v-cdz-smith's sampled net) and land in later increments (T2.0b+). SOUNDNESS RULE: every
+`normalize` rewrite MUST be a semantic identity for all inputs INCLUDING trap behavior — so this first cut
+does NOT fold arithmetic (folding needs width/overflow-trap-aware semantics; a wrong fold = a FALSE
+"proven", the one outcome worse than `cannotProve`) and does NOT reassociate `+`/`*` (can move the overflow
+trap point). It only performs unconditionally-sound rewrites: `if` on a constant condition selects the
+branch, and an `if` with identical branches collapses.
+-/
+import Oracle.Ast
+import Oracle.Value
+import Oracle.Eval
+
+namespace Oracle
+open Oracle.Ast Oracle.Value Eval
+
+/-- A SYMBOLIC value: an expression over symbolic input variables (`var n` = the n-th program parameter)
+and concrete constants, plus the modeled scalar operators and conditionals. -/
+inductive SymExpr where
+  | var (n : Nat)                            -- the n-th program parameter (a symbolic input)
+  | const (v : Value)                        -- a concrete value (a literal, or a future folded constant)
+  | app (op : String) (args : Array SymExpr) -- a modeled operator (`+ - * / % < > <= >= = and or not`)
+  | ite (c t e : SymExpr)                    -- a conditional on a (possibly symbolic) condition
+  deriving BEq, Inhabited
+
+/-- The symbolic OUTCOME of evaluating a program with symbolic inputs. `cannotProve` records WHY so the
+caller can distinguish an incompleteness-boundary gap from a strong (normalized-but-different) lead. -/
+inductive SymOutcome where
+  | sym (e : SymExpr)
+  | cannotProve (reason : String)
+  deriving BEq, Inhabited
+
+/-- Canonicalize a symbolic expression by UNCONDITIONALLY-SOUND rewrites only (this first cut): recurse
+into subterms; an `if` on a constant boolean selects its branch; an `if` whose branches are identical
+collapses to that branch. Deliberately does NOT fold or reassociate arithmetic (see the soundness rule in
+the module header) — those are width/trap-aware increments (T2.0b+). -/
+partial def normalize : SymExpr → SymExpr
+  | .var n => .var n
+  | .const v => .const v
+  | .app op args => .app op (args.map normalize)
+  | .ite c t e =>
+    match normalize c with
+    | .const (.bool true) => normalize t
+    | .const (.bool false) => normalize e
+    | c' =>
+      let t' := normalize t
+      let e' := normalize e
+      if t' == e' then t' else .ite c' t' e'
+
+/-- A symbolic environment: each program parameter name bound to its symbolic variable. -/
+abbrev SymEnv := List (ByteArray × SymExpr)
+
+/-- Symbolically evaluate the node `i` under `senv` (params → symbolic vars). Covers the ANALYZABLE SCALAR
+FRAGMENT: a bound parameter → its var; a scalar literal → `const`; `(if c t e)` → `ite`; a `(: e T)`
+ascription → its value (type carried structurally — both programs ascribe the same, and Rational grounding
+etc. is a future increment); an arithmetic/comparison/boolean operator → `app`. Everything else — `let`,
+match/sum, collections, calls, recursion — is the incompleteness boundary → `cannotProve` (honest; degrade
+to the sampled differential there). Sound: never invents a value for an unmodeled construct. -/
+partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
+  match m.nodes[i]? with
+  | some (Node.atom lid) =>
+    match m.leaves[lid]? with
+    | some (Leaf.name b) =>
+      match senv.find? (fun p => p.1 == b) with
+      | some (_, e) => .sym e
+      | none => .cannotProve "symeval: free name (not a bound parameter)"
+    | some l =>
+      match Value.ofLeaf l with
+      | some v => .sym (.const v)
+      | none => .cannotProve "symeval: non-scalar leaf"
+    | none => .cannotProve "symeval: leaf index out of range"
+  | some (Node.list children) =>
+    match m.headName? (Node.list children) with
+    | some h =>
+      if h == "if".toUTF8 then
+        match children[1]?, children[2]?, children[3]? with
+        | some cId, some tId, some eId =>
+          match symEval m senv cId, symEval m senv tId, symEval m senv eId with
+          | .sym c, .sym t, .sym e => .sym (.ite c t e)
+          | .cannotProve r, _, _ => .cannotProve r
+          | _, .cannotProve r, _ => .cannotProve r
+          | _, _, .cannotProve r => .cannotProve r
+        | _, _, _ => .cannotProve "symeval: malformed if"
+      else if h == ":".toUTF8 then
+        match children[1]? with
+        | some vId => symEval m senv vId
+        | none => .cannotProve "symeval: malformed ascription"
+      else match String.fromUTF8? h with
+        | some hs =>
+          if arithOps.contains hs || cmpOps.contains hs || hs == "=" || hs == "and" || hs == "or" || hs == "not" then
+            let outs := (children.extract 1 children.size).map (fun c => symEval m senv c)
+            match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
+            | some r => .cannotProve r
+            | none => .sym (.app hs (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
+          else .cannotProve s!"symeval: operator/construct '{hs}' not yet modeled (boundary)"
+        | none => .cannotProve "symeval: non-UTF8 head"
+    | none => .cannotProve "symeval: non-name head"
+  | none => .cannotProve "symeval: node index out of range"
+
+/-- The equivalence VERDICT. `cannotProve` carries a reason: `"boundary"` (hit the incompleteness limit —
+weak lead) vs `"normalized-but-different"` (both sides fully normalized yet differ — a STRONG suspected
+cadenza-backend miscompile, worth escalating to the sampled differential for confirmation). -/
+inductive Verdict where
+  | proven
+  | cannotProve (reason : String)
+  deriving BEq, Inhabited
+
+/-- Symbolic-equivalence of two symbolic outcomes (the input program's and its cadenza round-trip's,
+each evaluated with the SAME symbolic input variables). PROVEN iff both normalize to the identical form
+(a true forall-inputs statement over the analyzable fragment); otherwise `cannotProve`, distinguishing a
+boundary gap from a normalized-but-different strong lead. NEVER a false-divergence claim. -/
+def symEquiv (a b : SymOutcome) : Verdict :=
+  match a, b with
+  | .sym ea, .sym eb => if normalize ea == normalize eb then .proven else .cannotProve "normalized-but-different"
+  | .cannotProve r, _ => .cannotProve s!"boundary: {r}"
+  | _, .cannotProve r => .cannotProve s!"boundary: {r}"
+
+-- ── self-tests (the normalize/equiv pipeline; module-level symEval-of-a-real-program1.ast is T2.0b) ──
+-- `if true then a else b` normalizes to `a`.
+#guard normalize (.ite (.const (.bool true)) (.var 0) (.var 1)) == SymExpr.var 0
+-- `if false then a else b` normalizes to `b`.
+#guard normalize (.ite (.const (.bool false)) (.var 0) (.var 1)) == SymExpr.var 1
+-- `if c then a else a` collapses to `a` (identical branches, condition irrelevant).
+#guard normalize (.ite (.var 2) (.var 0) (.var 0)) == SymExpr.var 0
+-- two structurally-identical symbolic forms are PROVEN equivalent for all inputs.
+#guard symEquiv (.sym (.app "+" #[.var 0, .const (.int 1)])) (.sym (.app "+" #[.var 0, .const (.int 1)])) == Verdict.proven
+-- an optimizer that turned `if true then (x+1) else y` into `x+1` is PROVEN equivalent (const-cond select).
+#guard symEquiv (.sym (.ite (.const (.bool true)) (.app "+" #[.var 0, .const (.int 1)]) (.var 1)))
+                (.sym (.app "+" #[.var 0, .const (.int 1)])) == Verdict.proven
+-- genuinely different symbolic forms → cannotProve (never a false "proven").
+#guard symEquiv (.sym (.var 0)) (.sym (.var 1)) == Verdict.cannotProve "normalized-but-different"
+-- an unmodeled operand poisons the whole side → boundary cannotProve.
+#guard symEquiv (.cannotProve "unmodeled") (.sym (.var 0)) == Verdict.cannotProve "boundary: unmodeled"
+
+end Oracle
