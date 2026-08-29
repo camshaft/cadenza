@@ -1044,6 +1044,15 @@ pub struct Db {
     /// authoritative resolved value per node, so const-fold + backend + oracle cannot drift).
     pub overflow_specs: crate::fxhash::FxHashMap<StructId, OverflowSpec>,
 
+    /// The GLOBAL overflow default from the `Project.cdz` manifest (`overflow-signed`/`overflow-unsigned`) —
+    /// the precedence level BELOW a module `(pragma overflow …)` and ABOVE the built-in `Trap` default
+    /// (`numeric-model.md` §"Overflow Behavior Is Configurable By Policy": module-pragma > global-manifest >
+    /// trap). `None`/`None` (the `Default`) when no manifest default is set → arithmetic traps unless a
+    /// module pragma says otherwise. THREADED IN by the manifest ingestion (v-cdz-crate-split owns the
+    /// `Project.cdz` parse — `overflow_signed`/`overflow_unsigned` manifest fields); read per node by
+    /// `infer::overflow_mode_of` via [`Db::global_overflow_default`] when a node has no governing module spec.
+    pub global_overflow: OverflowSpec,
+
     /// The declaration occurrences of sums that are C-style ENUMS — MORE than one variant, EVERY variant
     /// nullary (no payloads). Such a value carries no data beyond WHICH variant it is, so it needs no heap
     /// box: it is represented at run time DIRECTLY as its discriminant `i32` (construction is a
@@ -2898,6 +2907,9 @@ impl Db {
             resume_escape_operands: None,
             default_float_literals,
             overflow_specs,
+            // No manifest global default at load; the manifest ingestion (v-cdz-crate-split) sets it when a
+            // `Project.cdz` declares `overflow-signed`/`overflow-unsigned`. Default → module-pragma-or-trap.
+            global_overflow: OverflowSpec::default(),
             enum_disc: crate::fxhash::FxHashSet::default(),
             parent,
             child_ix,
@@ -3791,6 +3803,18 @@ impl Db {
     /// name reference, so a linear scan here made resolution O(N²) on a many-def program.
     pub fn def_by_name(&self, name: &str) -> Option<usize> {
         self.def_name_index.get(name).copied()
+    }
+
+    /// The GLOBAL (`Project.cdz` manifest) overflow default for an operand of the given signedness, or `None`
+    /// if the manifest sets none (→ the built-in `Trap`). The precedence level between a module
+    /// `(pragma overflow …)` and `Trap`; read by `infer::overflow_mode_of` when a node has no governing
+    /// module spec. See [`Db::global_overflow`].
+    pub fn global_overflow_default(&self, unsigned: bool) -> Option<OverflowMode> {
+        if unsigned {
+            self.global_overflow.unsigned
+        } else {
+            self.global_overflow.signed
+        }
     }
 
     /// The `(doc "…")` text captured off the definition whose SIGNATURE occurrence is `sig_occ`, or

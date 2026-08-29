@@ -13284,6 +13284,59 @@ mod match_engine {
     }
 
     #[test]
+    fn overflow_mode_of_resolves_the_single_mode_by_operand_signedness() {
+        // STAGE 2a (ruling B): `infer::overflow_mode_of` resolves ONE mode per unqualified `+`/`-`/`*` node
+        // — the module pragma's mode selected by the operand's concrete SIGNEDNESS, else the global manifest
+        // default, else `Trap`.
+        use crate::db::OverflowMode;
+        // (1) SIGNED operand under `(signed wrap)(unsigned trap)` → Wrap (the signed slot).
+        let mut db = crate::db::Db::load(parse(
+            "(module m (pragma overflow (signed wrap) (unsigned trap)) \
+               (def (f (: x Int64)) (+ x 1)) (export f))",
+        ));
+        let signed_ops: Vec<_> = db.overflow_specs.keys().copied().collect();
+        assert!(!signed_ops.is_empty(), "the `(+ x 1)` node is marked");
+        for n in signed_ops {
+            assert_eq!(
+                crate::infer::overflow_mode_of(&mut db, n),
+                OverflowMode::Wrap,
+                "a signed op under (signed wrap) resolves to Wrap"
+            );
+        }
+        // (2) UNSIGNED operand under the SAME pragma → Trap (the unsigned slot — signedness selects).
+        let mut db_u = crate::db::Db::load(parse(
+            "(module m (pragma overflow (signed wrap) (unsigned trap)) \
+               (def (f (: x UInt64)) (+ x 1)) (export f))",
+        ));
+        let unsigned_ops: Vec<_> = db_u.overflow_specs.keys().copied().collect();
+        assert!(!unsigned_ops.is_empty());
+        for n in unsigned_ops {
+            assert_eq!(
+                crate::infer::overflow_mode_of(&mut db_u, n),
+                OverflowMode::Trap,
+                "an UNSIGNED op under (unsigned trap) resolves to Trap — signedness selects the slot"
+            );
+        }
+        // (3) NO pragma → no module spec, global default unset → the built-in `Trap`. (Any arith node
+        //     resolves Trap; construct one via a scratch and read its type-of node through the same path.)
+        let mut db_none =
+            crate::db::Db::load(parse("(module m (def (f (: x Int64)) (+ x 1)) (export f))"));
+        assert!(
+            db_none.overflow_specs.is_empty(),
+            "no pragma → no marked nodes"
+        );
+        // A node absent from `overflow_specs` resolves to the global/Trap level; pick the `f` def body's
+        // occurrence range and assert the default holds for a representative node (the export def's body).
+        let f = db_none.def_by_name("f").expect("def f");
+        let body = db_none.defs[f].body.expect("f body");
+        assert_eq!(
+            crate::infer::overflow_mode_of(&mut db_none, body),
+            OverflowMode::Trap,
+            "with no pragma and no manifest default, overflow resolves to the built-in Trap"
+        );
+    }
+
+    #[test]
     fn an_overflow_pragma_marks_each_unqualified_arith_node_with_its_policy() {
         // `numeric-model.md` §A Module May Declare Its Overflow Policy: a `(pragma overflow (signed <mode>)
         // (unsigned <mode>))` module governs the trap/wrap behavior of each unqualified `+`/`-`/`*` WRITTEN
