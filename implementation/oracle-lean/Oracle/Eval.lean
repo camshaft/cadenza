@@ -397,6 +397,14 @@ dedupe); this recursive lexicographic order is consistent with structural `==`. 
 order threaded here — float-form-mixing / NaN) or a `closure`/`poison` is encountered → that key/element
 stays "unorderable" (a sound skip, as before). Different non-float constructors are ordered by `valRank`. -/
 partial def cmpValue (a b : Value) : Option Ordering :=
+  -- BOTH floats (any form: `.float`/`.f64`/`.floatNan`/`.floatInf`) → a total order by CANONICAL f64 bits,
+  -- so the float FORMS unify (`.float 1.5` == `.f64 1.5`) and all NaN collapse to one key (spec: a single
+  -- NaN). `-0.0`/`+0.0` keep distinct bits (spec: sign-significant zero). For CANONICALIZATION, not IEEE.
+  match Value.asF64? a, Value.asF64? b with
+  | some fa, some fb =>
+    let key := fun (f : Float) => if f.isNaN then (0 : UInt64) else f.toBits
+    some (compare (key fa) (key fb))
+  | _, _ =>
   match a, b with
   | .int x, .int y => some (compare x y)
   | .bool x, .bool y => some (compare (x == true) (y == true))
@@ -443,6 +451,12 @@ partial def cmpValMapEntries (xs ys : Array (Value × Value)) (i : Nat) : Option
     | r => r
   else some (compare xs.size ys.size)
 end
+
+/-- CANONICAL structural equality for set/map KEYS & elements (`cmpValue a b == .eq`): unlike raw `BEq`, it
+unifies float FORMS (`.f64 1.5` = `.float 1.5`), folds all NaN equal, and keeps `-0.0` ≠ `0.0` — so a
+computed float key is found by its literal, and NaN keys dedupe (spec CHAMP-canonical key equality). A
+float/closure/poison-free compound compares exactly as `==`. -/
+def valEq (a b : Value) : Bool := cmpValue a b == some Ordering.eq
 
 /-- ENV-AWARE operand-width inference: a `(: e T)` ascription gives its integer type; an arithmetic op is
 BigInt if EITHER operand is (BigInt is contagious — unbounded, no overflow); a qualified `((. BigInt …) …)`
@@ -682,7 +696,7 @@ def canonSet (elems : Array Value) : Option (Array Value) :=
   -- `none` only on a float/closure/poison element (stays unorderable → skip).
   if elems.all (fun e => (cmpValue e e).isSome) then
     let sorted := elems.qsort (fun a b => cmpValue a b == some Ordering.lt)
-    some (sorted.foldl (fun acc e => if acc.size > 0 && acc[acc.size - 1]! == e then acc else acc.push e) #[])
+    some (sorted.foldl (fun acc e => if acc.size > 0 && valEq (acc[acc.size - 1]!) e then acc else acc.push e) #[])
   else none
 
 /-- Canonicalize a Map's entries: require every KEY be orderable, SORT by key, dedupe by key (a later
@@ -693,7 +707,7 @@ def canonMap (entries : Array (Value × Value)) : Option (Array (Value × Value)
     -- survivor independent of qsort stability — a duplicate key `(map (= n 1) (= n 2))` must keep the LAST
     -- value (2), not an arbitrary one (06-numeric cdzw19: last-insert-wins survives the stored-order replay).
     let deduped := entries.foldl (fun acc e =>
-      match acc.findIdx? (fun a => a.1 == e.1) with
+      match acc.findIdx? (fun a => valEq a.1 e.1) with
       | some i => acc.set! i e
       | none => acc.push e) #[]
     some (deduped.qsort (fun a b => cmpValue a.1 b.1 == some Ordering.lt))
@@ -1530,7 +1544,7 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
           | _, _ => .unsupported "List.concat: non-list operand")
   else if is "Set" "contains" then
     some (match a1, a2 with
-          | some (.value (.set es)), some (.value x) => .value (.bool (es.any (· == x)))
+          | some (.value (.set es)), some (.value x) => .value (.bool (es.any (valEq · x)))
           | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
           | some (.trap t), _ | _, some (.trap t) => .trap t
           | some .diverges, _ | _, some .diverges => .diverges
@@ -1547,7 +1561,7 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
   else if is "Map" "lookup" then
     some (match a1, a2 with
           | some (.value (.map es)), some (.value k) =>
-            (match (es.find? (fun kv => kv.1 == k)).map (·.2) with | some v => .value (.some v) | none => .value .none)
+            (match (es.find? (fun kv => valEq kv.1 k)).map (·.2) with | some v => .value (.some v) | none => .value .none)
           | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
           | some (.trap t), _ | _, some (.trap t) => .trap t
           | some .diverges, _ | _, some .diverges => .diverges
@@ -1595,7 +1609,7 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
   else if is "Map" "remove" then
     some (match a1, a2 with
           | some (.value (.map es)), some (.value k) =>
-            (match canonMap (es.filter (fun kv => !(kv.1 == k))) with | some cm => .value (.map cm) | none => .unsupported "Map.remove: unorderable key")
+            (match canonMap (es.filter (fun kv => !(valEq kv.1 k))) with | some cm => .value (.map cm) | none => .unsupported "Map.remove: unorderable key")
           | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
           | some (.trap t), _ | _, some (.trap t) => .trap t
           | some .diverges, _ | _, some .diverges => .diverges
@@ -1896,6 +1910,10 @@ partial def evalProject (m : Module) (env : Env) (fuel : Nat) (children : Array 
   | some recId, some fieldId =>
     -- `(. Map empty)` used as a value = the empty map (a prelude module value, not a record projection).
     if (nameOf? m recId == some "Map".toUTF8) && (nameOf? m fieldId == some "empty".toUTF8) then .value (.map #[])
+    -- prelude float CONSTANTS `Float64.nan` / `Float32.nan` (a member-access value, not a projection) →
+    -- the canonical NaN (all NaN spellings unify via specFloatEq / valEq's canonical-bits order).
+    else if ((nameOf? m recId == some "Float64".toUTF8) || (nameOf? m recId == some "Float32".toUTF8))
+            && (nameOf? m fieldId == some "nan".toUTF8) then .value .floatNan
     else
     match evalNode m env defaultIntTy fuel recId with
     | .value (.record fields) =>
