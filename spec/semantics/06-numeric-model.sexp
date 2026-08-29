@@ -12643,3 +12643,21 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 14 Int64))
   (call main (: -4 Int64)) (output (: -8 Int64)))
+
+(case "gcn1 a guard condition reads a binder bound by a record NESTED in the guard's Some pattern"
+  (doc "The #5300 fence (breaker-found via the #5146 guard ladder, s3): a guard cond referencing a binder
+        from a (record …) NESTED inside the guard's variant pattern — (guard (Some (record (= x a) …))
+        (> a 5)) — was CDZ0101 unbound while the ARM BODY read the same binder fine; guard_cond scope
+        registration walked only top-level pattern binders. #5300 descends via the record-field path.
+        n=7 → guard true → 703; n=2 → guard false → fall-through arm reads (. r y) → 3; n=-5 → None → -1.
+        (The cadenza hop still declines this shape — a named nested-sum-step gap, banked separately.)")
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (Some (record (= x n) (= y 3))) (None))
+        ((guard (Some (record (= x a) (= y b))) (> a 5)) (+ (* a 100) b))
+        ((Some r) (. r y))
+        ((None _u) -1)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 703 Int64))
+  (call main (: 2 Int64)) (output (: 3 Int64))
+  (call main (: -5 Int64)) (output (: -1 Int64)))
