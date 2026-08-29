@@ -13408,3 +13408,24 @@
     (export main)))
   (call main (: 100000 Int64)) (output (: 5000050000 Int64))
   (call main (: 3 Int64)) (output (: 6 Int64)))
+
+(case "cdzw73 a THREE-deep guard chain on one variant cascades through the cadenza hop"
+  (doc "The chain extension of cdzw37's single guard: three guards on the SAME Some pattern in descending
+        ranges, the unguarded same-variant arm, and None — each tier must fall through the false guards
+        above it and the hop must re-emit the whole cont chain in order. 200→1200 (tier 1), 50→150
+        (tier 2), 5→15 (tier 3), -3→-3 (unguarded), None→-1. Byte-idempotent.")
+  (input (do
+    (def (f (: o (Option Int64)))
+      (match o
+        ((guard (Some v) (> v 100)) (+ v 1000))
+        ((guard (Some v) (> v 10)) (+ v 100))
+        ((guard (Some v) (> v 0)) (+ v 10))
+        ((Some v) v)
+        ((None _u) -1)))
+    (def (main (: n Int64)) (f (if (> n -50) (Some n) (None))))
+    (export main)))
+  (call main (: 200 Int64)) (output (: 1200 Int64))
+  (call main (: 50 Int64)) (output (: 150 Int64))
+  (call main (: 5 Int64)) (output (: 15 Int64))
+  (call main (: -3 Int64)) (output (: -3 Int64))
+  (call main (: -99 Int64)) (output (: -1 Int64)))
