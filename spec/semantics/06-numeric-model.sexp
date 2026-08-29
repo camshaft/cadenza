@@ -12999,3 +12999,16 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 17 Int64))
   (call main (: 2 Int64)) (output (: 2 Int64)))
+
+(case "cdzw61 a runtime BIT-FIELD binary construction round-trips the cadenza hop"
+  (doc "The #5394 fence (Core::BinBitsBuild → (bin (bits v k)…), the bit-granular sibling of cdzw57's
+        byte-field face): 3+1+4 bits packed into one byte from runtime-wrapped exact-width UInts.
+        n=5 → 101|1|0101 = 0xB5 = 181 → 281; n=2 → 010|1|0010 = 0x52 = 82 → 182 (hand-derived).
+        Observed via Bytes.len + an Option-matched byte read; dual-path verified, hop byte-idempotent.")
+  (input (do
+    (def (b (: n Int64)) (bin (bits ((. (UInt 3) wrap) n) 3) (bits ((. (UInt 1) wrap) 1) 1) (bits ((. (UInt 4) wrap) n) 4)))
+    (def (at (: x Bytes) (: i Int64)) (match (Bytes.at x i) ((Some v) v) ((None _u) -1)))
+    (def (main (: n Int64)) (do (def x (b n)) (+ (* 100 (Bytes.len x)) (at x 0))))
+    (export main)))
+  (call main (: 5 Int64)) (output (: 281 Int64))
+  (call main (: 2 Int64)) (output (: 182 Int64)))
