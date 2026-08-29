@@ -1665,6 +1665,36 @@ mod tests {
     }
 
     #[test]
+    fn native_compound_reader_printer_round_trips_extreme_edge_cases() {
+        // Hardening: native #-form reader/printer round-trip on EXTREME edge cases beyond the corpus —
+        // deep nesting, #-form as a MAP KEY, arity-1, #set-of-compounds, Member inside a #record value,
+        // empty-nested. Each must `print(read(s)) == s` (byte-exact) + re-read structurally-equal. Guards the
+        // reader/printer against a resugaring/nesting regression on the shapes the corpus doesn't exercise.
+        for s in [
+            "#tuple(x)",                                                   // arity-1 tuple
+            "#list(x)",                                                    // arity-1 list
+            "#set(x)",                                                     // arity-1 set
+            "#map((= k v))", // arity-1 map (FieldPair)
+            "#list(#tuple(#record((= x #map((= 1 #set(1 2)))))))", // deep nesting, all kinds
+            "#map((= #tuple(1 2) 3))", // #-form as a MAP KEY
+            "#map((= #list(1) #set(2)))", // #-form key AND value
+            "#set(#tuple(1 2) #record((= x 1)) #list(3))", // set of mixed compounds
+            "#record((= a #list(1 2)) (= b #set(3 4)) (= c #tuple(5 6)))", // record of compounds
+            "#record((= x (. r y)))", // Member inside a #record value
+            "#list(#list() #tuple() #record() #map() #set())", // empties nested in a list
+            "#map((= 1 #map((= 2 #map((= 3 4))))))", // nested maps (FieldPair depth)
+        ] {
+            let a = read(s).unwrap_or_else(|e| panic!("{s}: read failed: {:?}", e.0));
+            let printed = print(&a);
+            assert_eq!(printed, s, "{s}: printer must resugar byte-exact");
+            assert!(
+                read(&printed).unwrap().structurally_eq(&a),
+                "{s}: reader ∘ printer must round-trip structurally"
+            );
+        }
+    }
+
+    #[test]
     fn hash_record_and_map_entries_read_to_field_pairs() {
         // A DIRECT `(= k v)` entry of a `#record`/`#map` reads to a `FieldPair` head (ruling A); the key
         // and value are the written nodes.
