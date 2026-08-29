@@ -8250,46 +8250,13 @@ mod match_engine {
     // + "a wrong-constructor pattern over a newtype scrutinee is a type error" ((Some n) over UserId → CDZ0203).
     // --case grades the reject codes (both PASS).)
 
-    #[test]
-    fn a_multi_payload_pattern_of_wrong_arity_is_rejected() {
-        // A constructor-arity mismatch — `(Mk a b c)` against a 2-field `Mk` — names a nonexistent third
-        // element; it must REJECT (CDZ0201), never bind `c` past the field tuple (a wrong value / invalid
-        // wasm). The correct-arity sibling compiles; only the over-arity pattern faults.
-        let over = reject_full(
-            "(module m (type Pair (Mk Int64 Int64)) \
-               (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a b c) (+ a b)))) (export main))",
-        )
-        .expect("an over-arity multi-payload pattern is a malformed destructure");
-        assert_eq!(
-            over.code.as_deref(),
-            Some("CDZ0201"),
-            "got: {}",
-            over.message
-        );
-        // The message NAMES the constructor + counts ELEMENTS/fields — not the internal "payload(s)" /
-        // "newtype" / "variant carries" terms it leaked before (the constructor twin of the tuple-pattern
-        // shape message).
-        assert!(
-            over.message
-                .contains("this pattern binds 3 elements for `Mk`, but `Mk` carries 2 fields")
-                && !over.message.contains("payload"),
-            "names the ctor + counts fields, no internal 'payload' term: {}",
-            over.message
-        );
-        // The single-value-carrier variant matched with several binders points at the one-sub-pattern form.
-        let single = reject_full(
-            "(module m (type P (Mk Int64) (Other)) \
-               (def (f (: p P)) (match p ((Mk x y) x) ((Other) 0))) (export f))",
-        )
-        .expect("a multi-binder pattern on a single-value ctor rejects");
-        assert!(
-            single.message.contains(
-                "`Mk` carries a single value of type Int64 — bind it with one sub-pattern `(Mk x)`"
-            ),
-            "a single-value ctor points at the one-sub-pattern form: {}",
-            single.message
-        );
-    }
+    // (a_multi_payload_pattern_of_wrong_arity_is_rejected migrated to corpus 02-binding-and-control, as the
+    // CONSTRUCTOR twin of the tuple-pattern-arity family: "a constructor pattern of the wrong arity is a type
+    // error naming the field count" ((Pair.Mk a b c) on a 2-field Mk → CDZ0201 (message "this pattern binds 3
+    // elements for `Mk`, but `Mk` carries 2 fields")) + "a multi-binder pattern on a single-value constructor
+    // points at the one-sub-pattern form" ((Mk x y) on (Mk Int64) → CDZ0201 (message "`Mk` carries a single
+    // value of type Int64 — bind it with one sub-pattern `(Mk x)`")). --case grades code + message (both PASS).
+    // The NOT-"payload" negative is the corpus-inexpressible remainder, covered by the positive field-count message.)
 
     #[test]
     fn an_exported_closure_body_is_type_checked() {

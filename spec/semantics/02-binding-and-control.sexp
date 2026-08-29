@@ -3405,6 +3405,23 @@
   (input  (match #tuple(1 #tuple(2 3)) (#tuple(a #tuple(b c d)) 9) (_ 0)))
   (error  CDZ0201))
 
+; The CONSTRUCTOR twin of the tuple-pattern-shape rule: a user-sum constructor pattern must bind exactly the
+; ctor's field arity — an over-arity `(Mk a b c)` on a 2-field `Mk`, or several binders on a single-value
+; carrier, is the same static shape mismatch (CDZ0201), and the message NAMES the constructor + counts its
+; FIELDS (not the internal "payload" term the compiler once leaked). Migrated from rcdzc
+; a_multi_payload_pattern_of_wrong_arity_is_rejected.
+(case "a constructor pattern of the wrong arity is a type error naming the field count"
+  (doc    "`(Pair.Mk a b c)` binds THREE elements against a two-field `Mk` — a nonexistent third element, a
+           static shape mismatch CDZ0201 (never bind `c` past the field tuple → a wrong value / invalid wasm).")
+  (input  (do (type Pair (Mk Int64 Int64)) (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a b c) (+ a b)))) (export main)))
+  (error  CDZ0201 (message "this pattern binds 3 elements for `Mk`, but `Mk` carries 2 fields")))
+
+(case "a multi-binder pattern on a single-value constructor points at the one-sub-pattern form"
+  (doc    "A single-value-carrier variant `(Mk Int64)` matched with SEVERAL binders `(Mk x y)` is the same
+           shape mismatch; the message points at the one-sub-pattern form `(Mk x)`.")
+  (input  (do (type P (Mk Int64) (Other)) (def (f (: p P)) (match p ((Mk x y) x) ((Other) 0))) (export f)))
+  (error  CDZ0201 (message "`Mk` carries a single value of type Int64 — bind it with one sub-pattern `(Mk x)`")))
+
 ; The recursion covers a nested LITERAL pattern's type too, not only a nested tuple's arity. A literal
 ; pattern matches by equality, defined only WITHIN one type (core-semantics.md #Equality Is Structural),
 ; so a literal pattern whose type differs from the value at its position can never match — CDZ0201 at the
