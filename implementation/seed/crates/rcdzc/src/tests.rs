@@ -20362,50 +20362,12 @@ mod match_engine {
     }
 
     #[test]
-    fn a_cross_type_variant_pattern_is_rejected_not_type_confused() {
-        // SOUNDNESS: a match arm's constructor pattern must belong to the SCRUTINEE's sum, not merely be
-        // SOME sum's variant with the right name. A `T` value matched against `Option`'s `Some` pattern
-        // is a type error (CDZ0203) — without the check the payload binds under Option's type over T's
-        // bytes (a wrong value, or invalid wasm when widths differ). Sum identity is by declaration
-        // occurrence, so `T` ≠ `Option` and `T` ≠ `U` even when they share a variant name.
-        assert_eq!(
-            reject_code(
-                "(module m (type T (A Int64)) \
-                   (def (main) (match (T.A 5) ((Some x) x) ((None) 0))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0203"),
-            "a T value matched against Option patterns must reject, not bind through Some"
-        );
-        // The sharper witness: differing payload WIDTH (`U.A` carries Bool, `T.A` carries Int64) would
-        // emit invalid wasm if accepted — must reject at type-check.
-        assert_eq!(
-            reject_code(
-                "(module m (type T (A Int64)) (type U (A Bool)) \
-                   (def (main) (match (T.A 5) ((U.A x) (if x 1 0)))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0203"),
-            "a cross-type variant pattern with a differing payload width must reject, not miscompile"
-        );
-        // NO OVER-REJECTION: a SAME-type match, and a legitimately-nested cross-sum match (an Option
-        // carrying a T, each pattern checked against its own level's type), both still compile.
-        assert!(
-            reject_code(
-                "(module m (type T (A Int64)) (def (main) (match (T.A 5) ((T.A x) x))) (export main))"
-            )
-            .is_none(),
-            "a same-type sum match must still compile"
-        );
-        assert!(
-            reject_code(
-                "(module m (type T (A Int64)) \
-                   (def (main) (match (Some (T.A 5)) ((Some (T.A y)) y) ((None) 0))) (export main))"
-            )
-            .is_none(),
-            "an Option legitimately carrying a T, matched by (Some (T.A y)), must still compile"
-        );
-    }
+    // (a_cross_type_variant_pattern_is_rejected_not_type_confused was already fully covered by corpus
+    // 05-compound-types (the cross-type variant-pattern section): "a match on a value of one sum type rejects
+    // a pattern from a different sum type" (T value vs Option Some → CDZ0203), "a cross-type variant pattern
+    // whose payload width differs is rejected" (U.A on T.A → CDZ0203), "a same-type sum match is accepted and
+    // binds the payload" (→ 5), plus "a runtime Option carrying a user sum is matched by a nested constructor
+    // pattern" (the legitimately-nested cross-sum control). Redundant, removed.)
 
     #[test]
     fn a_guard_condition_must_be_bool_and_its_faults_surface() {
