@@ -142,10 +142,10 @@ export default function PlatformExecution() {
           {
             name: "events",
             source: `(do
-  (def turn (list (record (kind #"task")  (val "count files"))
-                  (record (kind #"model") (val "shell"))
-                  (record (kind #"tool")  (val "3"))
-                  (record (kind #"done")  (val "there are 3"))))
+  (def turn #list(#record((= kind #"task")  (= val "count files"))
+                  #record((= kind #"model") (= val "shell"))
+                  #record((= kind #"tool")  (= val "3"))
+                  #record((= kind #"done")  (= val "there are 3"))))
   (export turn))`,
             surface: "sexpr",
           },
@@ -161,8 +161,8 @@ export default function PlatformExecution() {
       (String.concat acc (String.concat "done:" v)))))))
   (def (run xs acc)
     (match xs
-      ((list) acc)
-      ((list e .. rest) (run rest (step acc e)))))
+      (#list() acc)
+      (#list(e .. rest) (run rest (step acc e)))))
   (def (main) (run turn ""))
   (export main))`,
             surface: "sexpr",

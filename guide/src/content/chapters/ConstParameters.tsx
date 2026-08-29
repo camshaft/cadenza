@@ -138,7 +138,7 @@ export default function ConstParameters() {
         }
         starter={`(def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
   (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
-(def (main) (fold-n (record (op (fn (x) (+ x ?)))) 3 0))`}
+(def (main) (fold-n #record((= op (fn (x) (+ x ?)))) 3 0))`}
         solution={`(def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
   (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
 (def (main) (fold-n #record((= op (fn (x) (+ x 5)))) 3 0))`}

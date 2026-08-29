@@ -186,7 +186,7 @@ export default function AdHocPolymorphism() {
         }
         starter={`(def (triple n) (* 3 n))
 (def (apply-op dict x) ((. dict op) x))
-(def (main) (apply-op (record (op ?)) 5))`}
+(def (main) (apply-op #record((= op ?)) 5))`}
         solution={`(def (triple n) (* 3 n))
 (def (apply-op dict x) ((. dict op) x))
 (def (main) (apply-op #record((= op triple)) 5))`}

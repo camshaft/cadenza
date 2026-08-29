@@ -199,7 +199,7 @@ export default function PropertyTesting() {
           </>
         }
         starter={`(def (len-is xs n) (= (List.len xs) n))
-(def (main) (len-is (list 10 20 30) ?))`}
+(def (main) (len-is #list(10 20 30) ?))`}
         solution={`(def (len-is xs n) (= (List.len xs) n))
 (def (main) (len-is #list(10 20 30) 3))`}
         expected="true"

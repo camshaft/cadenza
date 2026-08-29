@@ -387,7 +387,7 @@ export default function Metaprogramming() {
         }
         starter={`(def (triple x) (* 3 x))
 (def (main)
-  (eval (Ast.List (list (Ast.Name "triple") ?))))`}
+  (eval (Ast.List #list((Ast.Name "triple") ?))))`}
         solution={`(def (triple x) (* 3 x))
 (def (main)
   (eval (Ast.List #list((Ast.Name "triple") (Ast.Int 14)))))`}
@@ -410,7 +410,7 @@ export default function Metaprogramming() {
             <C>g</C> plus the three spliced nodes. Fill the list so the count is <C>4</C>.
           </>
         }
-        starter={`(match (quasiquote (g (unquote-splicing (list 10 20 ?))))
+        starter={`(match (quasiquote (g (unquote-splicing #list(10 20 ?))))
   ((Ast.List es) (List.len es))
   (_             0))`}
         solution={`(match (quasiquote (g (unquote-splicing #list(10 20 30))))

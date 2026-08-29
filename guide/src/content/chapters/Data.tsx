@@ -111,7 +111,7 @@ export default function Data() {
             answer is <C>20</C>.
           </>
         }
-        starter={`(. (record (x 10) (y 20) (z 30)) ?)`}
+        starter={`(. #record((= x 10) (= y 20) (= z 30)) ?)`}
         solution={`(. #record((= x 10) (= y 20) (= z 30)) y)`}
         expected="20"
         hint={
@@ -131,7 +131,7 @@ export default function Data() {
             pulls out the <em>last</em> element, <C>9</C>.
           </>
         }
-        starter={`(. (. (record (point (tuple 7 8 9))) point) ?)`}
+        starter={`(. (. #record((= point #tuple(7 8 9))) point) ?)`}
         solution={`(. (. #record((= point #tuple(7 8 9))) point) 2)`}
         expected="9"
         hint={

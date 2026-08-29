@@ -120,7 +120,7 @@ export default function IrrefutablePatterns() {
             parts. With <C>(tuple 10 20)</C> the answer is <C>30</C>.
           </>
         }
-        starter={`(def (main) (let (((tuple a b) (tuple 10 20))) ?))`}
+        starter={`(def (main) (let ((#tuple(a b) #tuple(10 20))) ?))`}
         solution={`(def (main) (let ((#tuple(a b) #tuple(10 20))) (+ a b)))`}
         expected="30"
         hint={<>Both names come from the tuple pattern, so the body is <C>(+ a b)</C>.</>}
@@ -134,8 +134,8 @@ export default function IrrefutablePatterns() {
             the <em>first</em> part. With <C>(fst (tuple 7 9))</C> the answer is <C>7</C>.
           </>
         }
-        starter={`(def (fst (tuple a b)) ?)
-(def (main) (fst (tuple 7 9)))`}
+        starter={`(def (fst #tuple(a b)) ?)
+(def (main) (fst #tuple(7 9)))`}
         solution={`(def (fst #tuple(a b)) a)
 (def (main) (fst #tuple(7 9)))`}
         expected="7"

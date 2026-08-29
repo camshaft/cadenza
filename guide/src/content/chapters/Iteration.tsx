@@ -90,11 +90,11 @@ export default function Iteration() {
         mode="test"
         source={`(def (rev xs acc)
   (match xs
-    ((list) acc)
-    ((list x .. rest) (rev rest (List.prepend acc x)))))
+    (#list() acc)
+    (#list(x .. rest) (rev rest (List.prepend acc x)))))
 (def (nth xs i) (match (List.at xs i) ((Some v) v) ((None _) 0)))
 (@ test (def (rev-reverses)
-  (let ((r (rev (list 1 2 3) (list))))
+  (let ((r (rev #list(1 2 3) #list())))
     (assert-eq (+ (* 100 (nth r 0)) (+ (* 10 (nth r 1)) (nth r 2))) 321
       "rev of (1 2 3) should read back as 3,2,1"))))`}
       />

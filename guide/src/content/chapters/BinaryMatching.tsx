@@ -197,7 +197,7 @@ export default function BinaryMatching() {
             body's length, <C>3</C>.
           </>
         }
-        starter={`(match (Bytes.of (list 3 10 20 30 99))
+        starter={`(match (Bytes.of #list(3 10 20 30 99))
   ((bin (u8 n) (bytes body ?) (bytes rest)) (Bytes.len body))
   (_                                        0))`}
         solution={`(match (Bytes.of #list(3 10 20 30 99))
