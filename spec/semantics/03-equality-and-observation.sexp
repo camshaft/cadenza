@@ -1630,6 +1630,21 @@
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
+(case "list construction traps at a first-DIFFERING position too — the = short-circuit does not save the trapping arg"
+  (doc    "The first-difference twin of the case above, pinning the runtime path fixed by the const-eq fold decline
+           (v-core-opt CASE1, #5241): `(= (list 1 (/ 5 d)) (list 9 9))` — element 0 DIFFERS (1 vs 9), so a lazy
+           comparison would decide FALSE at element 0 and never force `(/ 5 d)`. Under strict list construction
+           (operator ruling A, #5194) the left operand is CONSTRUCTED — evaluating `(/ 5 d)` — before `=` runs, so
+           at d=0 it TRAPS on divide-by-zero (it previously folded to false, dropping the trap; the fold now
+           DECLINES for a list/set/map operand with a trap-possible arg and routes to the materializing runtime
+           value-eq). At d=1 the list is `(list 1 5)`, which differs from `(list 9 9)` at element 0 → false. Pins
+           that the eq short-circuit governs only WHICH already-evaluated values are inspected, never whether a
+           constructed operand's arguments are evaluated. Contrast the tuple short-circuit case above, which stays
+           false — tuple/record construction is lazy in an unprojected element, a heap-collection constructor is not.")
+  (input  (do (def (main (: d Int64)) (= (list 1 (/ 5 d)) (list 9 9))) (export main)))
+  (call   main (: 0 Int64)) (trap   "divide by zero")
+  (call   main (: 1 Int64)) (output (: false Bool)))
+
 (case "list construction strictly evaluates its element arguments — a trapping argument traps under List.len"
   (doc    "The consumer-independent companion: `(List.len (list 1 (/ 5 d)))` at d=0 TRAPS because constructing the
            list evaluates its element arguments — `(/ 5 d)` — even though only the length is taken and the heap
