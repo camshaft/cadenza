@@ -41753,6 +41753,116 @@ mod sidecar_driven {
         }
     }
 
+    /// `Request::EmitTestsShredTwoStage` (§S6b two-stage): emit cadenza-ast FRAGMENTS, not wasm — ONE shared
+    /// no-export closure fragment (`closure`, the reachable non-`@test` library) + one per-`@test` fragment
+    /// (`test-<name>`), each a bare `(do (def..)..)` with NO export (the export is added later by the
+    /// `--export` splice). Same recursive-`tri` fixture as the wasm shred test. Pins: the closure fragment
+    /// carries `tri` (and no `(export …)`), each per-test fragment carries ONLY its own test def, and the
+    /// manifest records `target`=`test-<name>.cdzb` + `main-file`=`closure.cdzb` per entry (the two fragments
+    /// the fan-out splice-compiles via `rcdzc closure.cdzb test-<name>.cdzb --export <name>`).
+    #[test]
+    fn emit_tests_shred_two_stage_emits_closure_and_per_test_fragments() {
+        let src = crate::codec::encode(&parse(
+            "(do \
+             (def (tri (: n Int64)) (if (= n 0) 0 (+ n (tri (- n 1))))) \
+             (@ test (def (t-a) (if (= (tri 3) 6) unit (trap \"x\")))) \
+             (@ test (def (t-b) (if (= (tri 4) 10) unit (trap \"x\")))))",
+        ));
+        let out = crate::host::run_with_compiler_stack(|| {
+            crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "suite", src.clone()),
+                    Artifact::new(
+                        sidecar::KIND_SIDECAR,
+                        "drive",
+                        sidecar::encode(&[Request::EmitTestsShredTwoStage]),
+                    ),
+                ],
+                &[],
+            )
+        });
+        assert!(
+            !out.has_error(),
+            "two-stage emit does not error: {:?}",
+            out.diagnostics
+        );
+        // NO wasm/provider artifacts — two-stage emits FRAGMENTS (kind `ast`) only.
+        assert!(
+            out.artifacts.iter().all(|a| a.kind != "component-provider"
+                && a.kind != crate::backend::Target::Wasm.artifact_kind()),
+            "two-stage emits fragments, not wasm: kinds={:?}",
+            out.artifacts.iter().map(|a| &a.kind).collect::<Vec<_>>()
+        );
+        // The shared closure fragment: a bare `(do (def tri …) …)` with NO `(export …)`.
+        let closure = out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == Artifact::KIND_AST && a.name == "closure")
+            .expect("a `closure` ast fragment");
+        let ca = crate::codec::decode(&closure.bytes).expect("closure decodes as cadenza-ast");
+        let citems = ca.as_form(ca.root, "do").expect("closure root is `(do …)`");
+        let cnames: Vec<Option<&str>> = citems.iter().map(|&i| ca.head_name(i)).collect();
+        assert!(
+            cnames.iter().all(|h| *h != Some("export")),
+            "closure fragment carries NO export: {cnames:?}"
+        );
+        // The closure carries the reachable library — at least one `(def …)` (the recursive `tri` helper,
+        // emitted standalone rather than inlined; its exact name is optimization-dependent, e.g. an
+        // accumulator-intro rename `tri$acc`, so assert a library def is PRESENT, not a specific name).
+        assert!(
+            citems.iter().any(|&i| ca.as_form(i, "def").is_some()),
+            "closure fragment carries the reachable library def(s)"
+        );
+        // One per-test fragment each, named `test-<name>`, carrying ONLY that test's def.
+        for tname in ["t-a", "t-b"] {
+            let frag = out
+                .artifacts
+                .iter()
+                .find(|a| a.kind == Artifact::KIND_AST && a.name == format!("test-{tname}"))
+                .unwrap_or_else(|| panic!("a `test-{tname}` fragment"));
+            let ta = crate::codec::decode(&frag.bytes).expect("per-test decodes");
+            let titems = ta
+                .as_form(ta.root, "do")
+                .expect("per-test root is `(do …)`");
+            assert!(
+                titems.iter().all(|&i| ta.head_name(i) != Some("export")),
+                "per-test fragment carries no export"
+            );
+        }
+        // The manifest: `target`=`test-<name>.cdzb` + `main-file`=`closure.cdzb` per entry.
+        let manifest = out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == crate::sidecar::KIND_SHRED_MANIFEST)
+            .expect("a shred-manifest artifact");
+        let ma = crate::codec::decode(&manifest.bytes).expect("manifest decodes");
+        let entries = ma
+            .as_form(ma.root, "shred-manifest")
+            .expect("root is `(shred-manifest …)`");
+        assert_eq!(entries.len(), 2, "one entry per @test");
+        for &e in entries {
+            let fields = ma.as_form(e, "entry").expect("`(entry …)`");
+            // Positional (head stripped): [0]name [1]is-property [2]file [3]export [4]target [5]main-iface
+            // [6]main-file.
+            let name = ma.as_str(fields[0]).unwrap_or("");
+            assert_eq!(
+                ma.as_str(fields[3]),
+                Some(name),
+                "export = the test's raw name"
+            );
+            assert_eq!(
+                ma.as_str(fields[4]),
+                Some(format!("test-{name}.cdzb").as_str()),
+                "target = the per-test fragment"
+            );
+            assert_eq!(
+                ma.as_str(fields[6]),
+                Some("closure.cdzb"),
+                "main-file = the shared closure fragment"
+            );
+        }
+    }
+
     /// `EmitTestsShred` on a STANDALONE suite (no emitted shared library — the `@test`s call only prims /
     /// inlined defs, so `library_edges` is empty): emit NO main, each `@test` a SELF-CONTAINED component, and
     /// the manifest `main-file` = "" (v-test-shred's exec then runs the target with NO `--peer`). This pins the

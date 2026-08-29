@@ -247,6 +247,16 @@ pub enum Request {
     /// grouping stays for the big compiler-ml closure). Same per-test artifact + manifest shape as
     /// [`EmitTestsShred`], but `main-file` = "" for every entry (there is no main). See §S6b.
     EmitTestsShredStandalone,
+    /// The TWO-STAGE variant of [`EmitTestsShred`] for standalone-everywhere heavy suites (compiler-ml/cad):
+    /// emit cadenza-ast FRAGMENTS, not wasm. ONE shared-closure fragment (`closure.cdzb`, a no-export
+    /// `(do (def..)..)` of the reachable non-`@test` library, via [`backend::cadenza::emit_fragment`] with
+    /// `include_type_decls=true`, lowered ONCE — its byte-stable bytes are v-nix's CA key) + one per-`@test`
+    /// fragment (`test-<name>.cdzb`, `emit_fragment({test}, include_type_decls=false)`). The per-test wasm is
+    /// built LATER by v-nix's fan-out as `rcdzc closure.cdzb test-<name>.cdzb --export <name>` (the `--export`
+    /// splice, #5405) — so the ~1360-fn closure's expensive lower+opt happens ONCE + CA-caches, and each test
+    /// is cheap codegen: O(closure_once + tests×body) instead of standalone's O(tests×closure). See §S6b
+    /// (two-stage) + `backend/cadenza::emit_fragment` (#5401).
+    EmitTestsShredTwoStage,
     /// Read a fact column.
     Query(Query),
 }
@@ -482,6 +492,7 @@ fn decode_request(a: &Arenas, form: StructId) -> Option<Request> {
         "emit-tests-consumer-only" => Request::EmitTestsConsumerOnly,
         "emit-tests-shred" => Request::EmitTestsShred,
         "emit-tests-shred-standalone" => Request::EmitTestsShredStandalone,
+        "emit-tests-shred-two-stage" => Request::EmitTestsShredTwoStage,
         "query" => Request::Query(decode_query(
             a,
             a.as_name(*children.get(1)?)?,
@@ -586,6 +597,7 @@ fn encode_request(b: &mut Builder, req: &Request) -> StructId {
         Request::EmitTestsConsumerOnly => nullary_form(b, "emit-tests-consumer-only"),
         Request::EmitTestsShred => nullary_form(b, "emit-tests-shred"),
         Request::EmitTestsShredStandalone => nullary_form(b, "emit-tests-shred-standalone"),
+        Request::EmitTestsShredTwoStage => nullary_form(b, "emit-tests-shred-two-stage"),
         Request::Query(q) => encode_query(b, q),
     }
 }
@@ -2748,6 +2760,7 @@ mod tests {
             Request::EmitTestsConsumerOnly,
             Request::EmitTestsShred,
             Request::EmitTestsShredStandalone,
+            Request::EmitTestsShredTwoStage,
         ];
         // Exhaustiveness guard: adding a Request/Query variant fails to compile until listed above AND here.
         for r in &each {
@@ -2759,6 +2772,7 @@ mod tests {
                 | Request::EmitTestsConsumerOnly
                 | Request::EmitTestsShred
                 | Request::EmitTestsShredStandalone
+                | Request::EmitTestsShredTwoStage
                 | Request::Query(
                     Query::TypeOf { .. }
                     | Query::UsesOf { .. }

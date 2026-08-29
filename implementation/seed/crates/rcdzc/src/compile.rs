@@ -332,6 +332,7 @@ fn compile_with_opt_inner(
     let mut emit_tests_consumer_only = false;
     let mut emit_tests_shred = false;
     let mut emit_tests_shred_standalone = false;
+    let mut emit_tests_shred_two_stage = false;
     for req in &requests {
         match req {
             sidecar::Request::Query(q) => queries.push(q.clone()),
@@ -371,6 +372,13 @@ fn compile_with_opt_inner(
             sidecar::Request::EmitTestsShredStandalone => {
                 emit_tests_shred = true;
                 emit_tests_shred_standalone = true;
+            }
+            // `EmitTestsShredTwoStage`: emit cadenza-ast FRAGMENTS (not wasm) — one shared-closure
+            // `(do (def..)..)` no-export fragment + one per-`@test` fragment, spliced+compiled LATER by the
+            // fan-out (`rcdzc closure.cdzb test.cdzb --export <name>`). Its OWN top-level branch below (does
+            // NOT set `emit_tests_shred`, so the wasm shred block is skipped).
+            sidecar::Request::EmitTestsShredTwoStage => {
+                emit_tests_shred_two_stage = true;
             }
         }
     }
@@ -454,6 +462,7 @@ fn compile_with_opt_inner(
         || emit_tests_composed
         || emit_tests_consumer_only
         || emit_tests_shred
+        || emit_tests_shred_two_stage
     {
         layout::compute_tests(&mut db)
     } else {
@@ -905,6 +914,105 @@ fn compile_with_opt_inner(
                 let target_n = atom_str(&mut b, &target);
                 let iface_n = atom_str(&mut b, CLOSURE_IFACE);
                 let mainfile_n = atom_str(&mut b, &main_file);
+                entries.push(b.list(vec![
+                    head, name_n, isprop_n, file_n, export_n, target_n, iface_n, mainfile_n,
+                ]));
+            }
+            let manifest_head = b.name("shred-manifest");
+            let mut children = Vec::with_capacity(entries.len() + 1);
+            children.push(manifest_head);
+            children.extend(entries);
+            let root = b.list(children);
+            artifacts.push(Artifact::new(
+                sidecar::KIND_SHRED_MANIFEST,
+                "manifest",
+                crate::codec::encode(&b.finish(root)),
+            ));
+        }
+    }
+
+    // TWO-STAGE shred (§S6b, standalone-everywhere heavy suites): emit cadenza-ast FRAGMENTS, not wasm. ONE
+    // shared-closure no-export fragment (`closure.cdzb`) + one per-`@test` fragment (`test-<name>.cdzb`), both
+    // via `backend::cadenza::emit_fragment` over the SAME full-suite `layout` (its `layout.order` filter is
+    // deterministic → byte-stable fragment = v-nix's CA key). The per-test WASM is built LATER by the fan-out:
+    // `rcdzc closure.cdzb test-<name>.cdzb --export <name>` (the `--export` splice, #5405) — closure lowered
+    // ONCE + CA-cached, each test cheap codegen. Manifest reuses the 7-field shred-manifest shape with
+    // `main-file` = "closure.cdzb" (the shared CA fragment) + `target` = "test-<name>.cdzb" (the per-test
+    // fragment); the fan-out reads those two + `export` for the splice.
+    if emit_tests_shred_two_stage {
+        let test_defs = db.test_defs();
+        let test_set: crate::fxhash::FxHashSet<usize> = test_defs.iter().copied().collect();
+        // The shared closure = every reachable non-`@test` BODY-having def, by source name (the fragment mode
+        // filters `layout.order` to this set; `body.is_some()` mirrors the shred main's provider edge filter).
+        let closure_names: std::collections::HashSet<String> = layout
+            .order
+            .iter()
+            .copied()
+            .filter(|d| !test_set.contains(d) && db.defs[*d].body.is_some())
+            .map(|d| db.defs[d].name.clone())
+            .collect();
+        // The shared-closure fragment — lowered ONCE, `include_type_decls=true` so each `(type …)` appears
+        // exactly once in the spliced program (per-test fragments pass false → no duplicate decl on recompile).
+        let closure_ok = match backend::cadenza::emit_fragment(
+            &mut db,
+            &layout,
+            &closure_names,
+            true,
+        ) {
+            Ok(bytes) => {
+                artifacts.push(Artifact::new(Artifact::KIND_AST, "closure", bytes));
+                true
+            }
+            Err(mut r) => {
+                trace!(target: "rcdzc::compile", reason = %r.message, "two-stage closure fragment declined");
+                sanitize_origin(&db, &mut r);
+                diagnostics.push(Diagnostic::from_reject(&r));
+                // No closure ⇒ the per-test fragments (which splice against it) are void — skip them.
+                false
+            }
+        };
+        if closure_ok {
+            let mut b = crate::ast::Builder::new();
+            let atom_str =
+                |b: &mut crate::ast::Builder, s: &str| b.atom_leaf(crate::ast::Leaf::Str(s.into()));
+            let mut entries: Vec<crate::ast::StructId> = Vec::with_capacity(test_defs.len());
+            for &def in &test_defs {
+                let name = db.defs[def].name.clone();
+                let subset: std::collections::HashSet<String> =
+                    std::iter::once(name.clone()).collect();
+                let per_test = match backend::cadenza::emit_fragment(
+                    &mut db, &layout, &subset, false,
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(mut r) => {
+                        trace!(target: "rcdzc::compile", test = %name, reason = %r.message, "two-stage per-test fragment declined");
+                        sanitize_origin(&db, &mut r);
+                        diagnostics.push(Diagnostic::from_reject(&r));
+                        continue;
+                    }
+                };
+                artifacts.push(Artifact::new(
+                    Artifact::KIND_AST,
+                    format!("test-{name}"),
+                    per_test,
+                ));
+                // Manifest entry — the 7-field shred-manifest shape. `target`/`main-file` are the two
+                // fragments the fan-out splices; `export` is the boundary symbol (`--export <export>`).
+                let d = &db.defs[def];
+                let is_property = !d.params.is_empty() || d.name.ends_with("-gen");
+                let file = db
+                    .file_of(d.sig_occ)
+                    .and_then(|fi| db.file_path(fi))
+                    .unwrap_or("")
+                    .to_string();
+                let head = b.name("entry");
+                let name_n = atom_str(&mut b, &name);
+                let isprop_n = b.atom_leaf(crate::ast::Leaf::Bool(is_property));
+                let file_n = atom_str(&mut b, &file);
+                let export_n = atom_str(&mut b, &name);
+                let target_n = atom_str(&mut b, &format!("test-{name}.cdzb"));
+                let iface_n = atom_str(&mut b, "");
+                let mainfile_n = atom_str(&mut b, "closure.cdzb");
                 entries.push(b.list(vec![
                     head, name_n, isprop_n, file_n, export_n, target_n, iface_n, mainfile_n,
                 ]));
