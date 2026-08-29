@@ -18758,3 +18758,16 @@
 (export main)))
   (call main (: 100 Int64))
   (output (: 211 Int64)))
+
+(case "rsh1 (seq-203 #5823 reduce-share SOUNDNESS gate) a handler-applying fn reached via a beta-copy at a DOUBLING fan-out: each f_i applies f_{i-1} TWICE, f0 delegates its lambda arg b under (handle R 5 … resume s s), so f0 answers 5 and f_i doubles it. The (head->resolved-body) reduce_cache key (which killed the 2^N compile-hang) SHARES the fan-out's identical (body,args) reductions across sites; the handler resumption is threaded correctly THROUGH the shared reductions, so main = 5*2^5 = 160. A future reduce_cache-key change that re-opened the re-parent scope contamination would corrupt the shared effect reductions and flip this value (v-effects a39; co-verified v-compiler-perf byte-compare fixed==parent). Complements the pure-capturing 09-functions adv->202 twin."
+  (input  (do
+            (effect R (op roll (-> Unit Int64)))
+            (def (f0 (: b (-> Unit Int64))) (handle R 5 ((roll (u) s (resume s s))) (b unit)))
+            (def (f1 (: b (-> Unit Int64))) (+ (f0 b) (f0 b)))
+            (def (f2 (: b (-> Unit Int64))) (+ (f1 b) (f1 b)))
+            (def (f3 (: b (-> Unit Int64))) (+ (f2 b) (f2 b)))
+            (def (f4 (: b (-> Unit Int64))) (+ (f3 b) (f3 b)))
+            (def (f5 (: b (-> Unit Int64))) (+ (f4 b) (f4 b)))
+            (def (main) (f5 (fn (u) (R.roll))))
+            (export main)))
+  (call   main) (output (: 160 Int64)))
