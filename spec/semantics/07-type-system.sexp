@@ -268,6 +268,28 @@
   (input  (do (def (main) (: 5 List)) (export main)))
   (error  CDZ0203))
 
+; The DECLARATION-position face: a bare generic ctor with NO argument in a variant PAYLOAD or an effect-op
+; arrow type must give the SAME needs-an-argument reject the annotation positions do. `validate_type_position`
+; used to wave a bare user generic through (typeval_of succeeds on it, reducing to a Ty::Sum with a fresh
+; var → early-return); it now runs the bare-ctor check first, so a declaration position agrees with an
+; annotation: CDZ0203 "`<ctor>` is a type constructor — it needs a type argument here". (migrated from rcdzc
+; a_bare_generic_ctor_missing_its_argument_in_a_declaration_type_position_is_cdz0203.)
+(case "a bare user generic ctor in a variant payload needs a type argument"
+  (input  (do (type (Box a) (Mk a)) (type W (Wrap Box)) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "`Box` is a type constructor — it needs a type argument")))
+
+(case "a bare built-in generic in a variant payload needs a type argument"
+  (input  (do (type W (Wrap Option)) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "`Option` is a type constructor — it needs a type argument")))
+
+(case "a bare user generic ctor in an effect-operation type needs a type argument"
+  (input  (do (type (Box a) (Mk a)) (effect E (op emit (-> Box Int64))) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "`Box` is a type constructor — it needs a type argument")))
+
+(case "a bare MONOMORPHIC type in a variant payload is valid (not a missing-argument ctor)"
+  (input  (do (type Color (Red) (Green)) (type W (Wrap Color)) (def (main) 0) (export main)))
+  (call   main) (output (: 0 Int64)))
+
 ; ── OVER/WRONG-arity generic type application (migrated from rcdzc
 ; a_wrong_arity_generic_type_application_in_an_annotation_is_cdz0203_for_user_and_builtin) ──
 ; A generic type applied with the WRONG NUMBER of type arguments — over-supplied, under-supplied, or bare —
