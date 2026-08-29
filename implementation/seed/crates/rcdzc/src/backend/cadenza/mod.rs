@@ -344,22 +344,26 @@ fn emit_def(
         lifted: Some(lifted.clone()),
         ..BinderEnv::default()
     };
-    // A def whose RESULT type is a concrete `Ty::Qty` AND whose body is DIRECTLY a runtime ARITHMETIC
-    // magnitude re-emits the quantity wrapper at the tail: `(def (main …) (Qty.of (* n 2) u))` erases
-    // (`Qty.of` drops its compile-time unit) to a bare `Core::Arith` typed `Ty::Qty`, so re-inserting
-    // `((. Qty of) <magnitude> <unit>)` here reconstructs the genuine quantity return (recompiling folds it
-    // back to the same erased Arith → value-eq + byte-idempotent). The escape type is the def RESULT type
-    // (`def_result_ty`), NOT the body node's own solved type — an erased `Qty.value` peel (`(Qty.value (+ q
-    // r))`) leaves the SAME `Core::Arith`-typed-`Ty::Qty` body but its result type is the bare inner numeric,
-    // so it is NOT matched here and still declines (the direct path returns bare numeric).
+    // A def whose RESULT type is a concrete `Ty::Qty` AND whose body reduces to a BARE-INNER runtime
+    // magnitude re-emits the quantity wrapper around the WHOLE body at the tail: `(def (main …) (Qty.of
+    // (* n 2) u))` erases (`Qty.of` drops its compile-time unit) to a bare arithmetic node typed `Ty::Qty`,
+    // so re-inserting `((. Qty of) <magnitude> <unit>)` reconstructs the genuine quantity return
+    // (recompiling folds it back → value-eq + byte-idempotent). [`qty_leaf`] classifies the body's value
+    // leaves: a `Core::Arith`/`Convert`/tower-binop is a bare-inner magnitude, and `If`/`Let` thread to
+    // their tail leaves (a `Trap` diverges, neutral). WRAP-WHOLE fires only when EVERY value leaf is
+    // bare-inner — this covers a computed magnitude AND a CHECKED-NARROW `(Qty.of (Int32.of n) u)` (which
+    // erases to `(if range (trap) ((. Int32 wrap) n))`, whose bare-inner leaf would otherwise emit
+    // unwrapped, silently DROPPING the Qty — a dual-path value miscompile; see `qty_leaf`).
     //
-    // Deliberately restricted to a DIRECT `Core::Arith` body: reconstructing at a nested match-arm /
-    // collection-element position (where a `Ty::Qty` value ALSO appears, e.g. `(list (Qty.of v u) (Qty.of
-    // (+ v 1) u))`) would fire INCONSISTENTLY across sibling positions and mistype the re-emitted program
-    // (`CDZ0203 match arms differ … (Qty …) vs Int64`, confirmed on 18-units-of-measure/0225). Those are a
-    // later, separately-verified slice; keeping this at the def tail proves it cannot leak.
+    // The escape type is the def RESULT type (`def_result_ty`), NOT the body node's own solved type — an
+    // erased `Qty.value` peel (`(Qty.value (+ q r))`) leaves the same magnitude-typed-`Ty::Qty` body but
+    // its result type is the bare inner numeric, so it is NOT matched here and still declines. A body whose
+    // leaves are Param binders (`(if c (Qty.of x u)(Qty.of y u))` over inner params) is NOT bare-inner →
+    // falls through to the normal emit, where each leaf SELF-constructs via `qty_disposition` (wrapping the
+    // whole would DOUBLE-wrap). Restricting WRAP-WHOLE to the def tail keeps it from firing inconsistently
+    // across nested match-arm / collection-element siblings (the `18-units-of-measure/0225` CDZ0203 hazard).
     let body_node = match def_result_ty(db, def, params.len()) {
-        Some(Ty::Qty { inner, unit }) if matches!(core_of(db, body), Core::Arith { .. }) => {
+        Some(Ty::Qty { inner, unit }) if qty_leaf(db, body) == LeafKind::BareInner => {
             let head = member_access(b, "Qty", "of");
             let mag =
                 emit_expr_viewed(db, b, body, Some((*inner).clone()), None, &mut env, emitted)?;
@@ -369,6 +373,48 @@ fn emit_def(
         _ => emit_expr(db, b, body, None, &mut env, emitted)?,
     };
     Ok(b.list(vec![def_head, sig, body_node]))
+}
+
+/// How a value leaf of a `Ty::Qty`-result def body classifies for the tail WRAP-WHOLE decision in
+/// [`emit_def`] — see there for the miscompile it fixes.
+#[derive(PartialEq, Clone, Copy)]
+enum LeafKind {
+    /// A bare-INNER runtime magnitude producer (`Arith`/`Convert`/tower binop) — emits the bare inner value,
+    /// so the WHOLE body must be wrapped `(Qty.of … u)`.
+    BareInner,
+    /// A `Trap` — diverges, produces no value; NEUTRAL when merging sibling arms.
+    Diverges,
+    /// Anything else (a `Param`/`LocalRef` that SELF-constructs, a const, a `Call`, a compound, a `Match*`) —
+    /// keep the body on the normal pass-through/decline path; do NOT wrap-whole.
+    Other,
+}
+
+/// Classify a `Ty::Qty`-result def body by its value LEAVES, threading through `If`/`Let` to the tail
+/// positions. `BareInner` iff every non-diverging leaf is a bare-inner magnitude (so the whole body is a
+/// magnitude to wrap); `Other` if any leaf self-constructs / declines (`Param`/const/`Call`/compound/`Match*`).
+/// `Match*` bodies stay `Other` (their arm-body walk is a separate slice) → they keep the existing behavior.
+fn qty_leaf(db: &mut Db, id: StructId) -> LeafKind {
+    match core_of(db, id) {
+        Core::Arith { .. }
+        | Core::Convert { .. }
+        | Core::BigIntBinOp { .. }
+        | Core::RationalBinOp { .. }
+        | Core::BigIntOfI64 { .. } => LeafKind::BareInner,
+        Core::Trap => LeafKind::Diverges,
+        Core::If { then_, else_, .. } => merge_leaf(qty_leaf(db, then_), qty_leaf(db, else_)),
+        Core::Let { body, .. } => qty_leaf(db, body),
+        _ => LeafKind::Other,
+    }
+}
+
+/// Merge two sibling-arm [`LeafKind`]s: `Diverges` is neutral (a trapping arm carries no value), two
+/// `BareInner` stay `BareInner`, anything else (a self-constructing / declining leaf, or a mix) is `Other`.
+fn merge_leaf(a: LeafKind, b: LeafKind) -> LeafKind {
+    match (a, b) {
+        (LeafKind::Diverges, x) | (x, LeafKind::Diverges) => x,
+        (LeafKind::BareInner, LeafKind::BareInner) => LeafKind::BareInner,
+        _ => LeafKind::Other,
+    }
 }
 
 /// The def's RESULT type — its inferred scheme type ([`crate::infer::def_scheme`]) with `n_params`
