@@ -3246,7 +3246,7 @@
 ; Bytes = remains the filed flat-operands-only decline).
 
 (case "ce08 equality of two RUNTIME-built Maps"
-  (input  (do (def (f (: n Int64)) (= (Map.insert (map) n 1) (Map.insert (map) n 1))) (export f)))
+  (input  (do (def (f (: n Int64)) (= (Map.insert #map() n 1) (Map.insert #map() n 1))) (export f)))
   (call   f 3)
   (output (: true Bool)))
 

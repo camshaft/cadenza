@@ -8485,7 +8485,7 @@
 (case "ey1 a Symbol entry param keys a Map"
   (input (do
     (def (main (: s Symbol))
-      (match (Map.lookup (Map.insert (map) (Symbol.of "hot") 42) s)
+      (match (Map.lookup (Map.insert #map() (Symbol.of "hot") 42) s)
         ((Option.Some v) v)
         ((Option.None) -1)))
     (export main)))
@@ -8605,7 +8605,7 @@
 (case "clk1 a closure capturing a MAP reclaims after invocation"
   (input (do
     (def (main (: n Int64))
-      (let ((m (Map.insert (Map.insert (map) n 10) (+ n 1) 20)))
+      (let ((m (Map.insert (Map.insert #map() n 10) (+ n 1) 20)))
         (let ((f (fn (k) (match (Map.lookup m k) ((Option.Some v) v) ((Option.None) -1)))))
           (f (+ n 1)))))
     (export main)))

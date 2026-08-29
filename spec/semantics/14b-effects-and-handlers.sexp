@@ -7746,7 +7746,7 @@
   (input  (do
             (effect Reg (op touch (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle Reg (map (= 1 10))
+              (handle Reg #map((= 1 10))
                 ((touch (k) s (resume (match (Map.lookup s k) ((Some v) v) ((None) 0))
                                       (Map.insert s k (+ (match (Map.lookup s k) ((Some v) v) ((None) 0)) 1)))))
                 (+ (Reg.touch n) (+ (* 10 (Reg.touch n)) (* 100 (Reg.touch 1))))))
@@ -7758,7 +7758,7 @@
   (input  (do
             (effect Reg (op touch (-> Int64 Int64)) (op size (-> Int64)))
             (def (main (: n Int64))
-              (handle Reg (map)
+              (handle Reg #map()
                 ((touch (k) s (resume (Map.len s) (Map.insert s k k)))
                  (size () s (resume (Map.len s) s)))
                 (let ((a (Reg.touch n)))
@@ -7772,7 +7772,7 @@
   (input  (do
             (effect Reg (op drop (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle Reg (map (= 1 11) (= 2 22) (= 3 33))
+              (handle Reg #map((= 1 11) (= 2 22) (= 3 33))
                 ((drop (k) s (resume (Map.len (Map.remove s k)) (Map.remove s k))))
                 (+ (Reg.drop n) (+ (* 10 (Reg.drop n)) (* 100 (Reg.drop 3))))))
             (export main)))
@@ -8078,7 +8078,7 @@
             (def (main (: n Int64))
               (handle St n
                 ((next () s (resume s (+ s 1))))
-                (+ (Map.len (map (= (St.next) (St.next)) (= (St.next) 100)))
+                (+ (Map.len #map((= (St.next) (St.next)) (= (St.next) 100)))
                    (* 10 (St.next)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 82 Int64))

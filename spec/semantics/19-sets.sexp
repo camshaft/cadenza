@@ -3935,7 +3935,7 @@
 (case "nz4 a Map discriminates +0.0 and -0.0 keys"
   (input (do
     (def (main (: x Float64))
-      (let ((m (Map.insert (Map.insert (map) x 10) (* x -1.0) 20)))
+      (let ((m (Map.insert (Map.insert #map() x 10) (* x -1.0) 20)))
         (match (Map.lookup m (* x -1.0))
           ((Option.Some v) (match (Map.lookup m x) ((Option.Some w) (+ v (* 100 w))) ((Option.None) -2)))
           ((Option.None) -1))))
@@ -3962,7 +3962,7 @@
 (case "nk3 a NaN Map KEY is findable by another runtime NaN (hash and equality agree)"
   (input (do
     (def (main (: x Float64))
-      (match (Map.lookup (Map.insert (map) (- (/ x 0.0) (/ x 0.0)) 42) (- (/ (* x 3.0) 0.0) (/ (* x 3.0) 0.0)))
+      (match (Map.lookup (Map.insert #map() (- (/ x 0.0) (/ x 0.0)) 42) (- (/ (* x 3.0) 0.0) (/ (* x 3.0) 0.0)))
         ((Option.Some v) v)
         ((Option.None) -1)))
     (export main)))
@@ -3995,7 +3995,7 @@
 (case "ck4 a Map keyed by Char discriminates and looks up"
   (input (do
     (def (main (: n Int64))
-      (let ((m (Map.insert (Map.insert (map) #\x 10) (if (> n 0) #\y #\x) 20)))
+      (let ((m (Map.insert (Map.insert #map() #\x 10) (if (> n 0) #\y #\x) 20)))
         (match (Map.lookup m #\x)
           ((Option.Some v) (match (Map.lookup m #\y) ((Option.Some w) (+ v w)) ((Option.None) -2)))
           ((Option.None) -1))))
@@ -4092,7 +4092,7 @@
 (case "xf4 a Map keyed by encode-Bytes discriminates two different encodes"
   (input (do
     (def (main (: n Int64))
-      (let ((m (Map.insert (Map.insert (map) (Ast.encode (Ast.Int (BigInt.of n))) 10) (Ast.encode (Ast.Name "x")) 20)))
+      (let ((m (Map.insert (Map.insert #map() (Ast.encode (Ast.Int (BigInt.of n))) 10) (Ast.encode (Ast.Name "x")) 20)))
         (match (Map.lookup m (Ast.encode (Ast.Int (BigInt.of n))))
           ((Option.Some v) v)
           ((Option.None) -1))))

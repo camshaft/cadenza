@@ -3795,7 +3795,7 @@
   (input  (do
             (type T (Leaf Int64) (Node String T T))
             (def (pv (: op String))
-              (match (Map.lookup (Map.insert (Map.insert (Map.insert (map) "a" 1) "b" 2) "c" 3) op)
+              (match (Map.lookup (Map.insert (Map.insert (Map.insert #map() "a" 1) "b" 2) "c" 3) op)
                 (((. Option Some) p) p)
                 (((. Option None) _) 0)))
             (def (top (: t T)) (match t (((. T Leaf) _) 99) (((. T Node) op _ _) (pv op))))

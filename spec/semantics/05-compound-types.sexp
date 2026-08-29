@@ -370,7 +370,7 @@
   (doc    "`(match 5 ((map (1 v)) v) (_ 0))` — a `(map …)` pattern matches a Map value, and the Int64 `5`
            is not a Map, rejected CDZ0203. Pins the map pattern head's scrutinee-kind check, the map twin
            of the list case.")
-  (input  (do (def (main) (match 5 ((map (= 1 v)) v) (_ 0))) (export main)))
+  (input  (do (def (main) (match 5 (#map((= 1 v)) v) (_ 0))) (export main)))
   (error  CDZ0203))
 
 ; A `(map (k v)…)` pattern tests only that the NAMED keys are PRESENT (it is refutable on key-presence, not
@@ -392,7 +392,7 @@
            222 here. Pins that a no-key map pattern is matches-any. Expected (n=1): 111.")
   (input  (do
             (def (probe (: m (Map Int64 Int64)))
-              (match m ((map) 111) (_ 222)))
+              (match m (#map() 111) (_ 222)))
             (def (mk (: n Int64)) (if (> n 0) (Map.insert (Map.empty) 1 5) (Map.empty)))
             (def (main (: n Int64)) (probe (mk n)))
             (export main)))
@@ -2833,7 +2833,7 @@
             (def (h (: env (Map String Int64)) (: d Int64))
               (if (= d 0) (Option.expect (Map.lookup env "x") "v")
                   (+ (h (Map.insert env "x" 2) 0) (h env 0))))
-            (def (main) (h (Map.insert (map) "x" 1) 1))
+            (def (main) (h (Map.insert #map() "x" 1) 1))
             (export main)))
   (output (: 3 Int64))
   (live-objects known-leak 1))
@@ -3032,7 +3032,7 @@
             (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
               (if (< i n) (build (+ i 1) n (Map.insert acc i i)) acc))
             (def (main (: n Int64))
-              (let ((m (build 0 n (map))))
+              (let ((m (build 0 n #map())))
                 (+ (Map.len (Map.insert m 99 99)) (Map.len m))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 7 Int64))
@@ -3859,7 +3859,7 @@
             (def (get (: env (Map String Ty)) (: k String))
               (match (Map.lookup env k) ((Some t) (Out.Ok t)) (None (Out.Err k))))
             (def (present (: o Out)) (match o ((Out.Ok _) 1) ((Out.Err _) 0)))
-            (def (main) (present (get (Map.insert (map) "x" (Ty.Con "Int")) "x")))
+            (def (main) (present (get (Map.insert #map() "x" (Ty.Con "Int")) "x")))
             (export main)))
   (output (: 1 Int64))
   (live-objects known-leak 1))
@@ -3879,7 +3879,7 @@
            String companion of the sum-valued map case above.")
   (input  (do
             (def (canon (: b Bool))
-              (let ((m (Map.insert (Map.insert (map) "add" "plus") "neg" "minus")))
+              (let ((m (Map.insert (Map.insert #map() "add" "plus") "neg" "minus")))
                 (match (Map.lookup m (if b "add" "neg")) ((Some s) (if (= s "plus") 1 2)) (None -1))))
             (def (main (: b Bool)) (canon b)) (export main)))
   (call   main (: true Bool)) (output (: 1 Int64))
@@ -3892,7 +3892,7 @@
            the ordinary absent optional, alongside the hit case above.")
   (input  (do
             (def (main)
-              (let ((m (Map.insert (map) "add" "plus")))
+              (let ((m (Map.insert #map() "add" "plus")))
                 (match (Map.lookup m "sub") ((Some s) (String.byte-len s)) (None -1))))
             (export main)))
   (output (: -1 Int64))
@@ -3905,7 +3905,7 @@
            companion of the list-valued-map `List.len` case.")
   (input  (do
             (def (main)
-              (let ((m (Map.insert (Map.insert (map) "a" "hello") "b" "hi")))
+              (let ((m (Map.insert (Map.insert #map() "a" "hello") "b" "hi")))
                 (match (Map.lookup m "a") ((Some s) (String.byte-len s)) (None -1))))
             (export main)))
   (output (: 5 Int64))
@@ -6055,9 +6055,9 @@
   (input  (do
             (def (f (: xs (List (Map Int64 Int64))))
               (match xs
-                (#list((map (= 1 a)) .. rest) a)
+                (#list(#map((= 1 a)) .. rest) a)
                 (_ (- 0 1))))
-            (def (main) (f #list((map (= 1 77)))))
+            (def (main) (f #list(#map((= 1 77)))))
             (export main)))
   (output (: 77 Int64)))
 
@@ -6069,9 +6069,9 @@
   (input  (do
             (def (f (: xs (List (Map Int64 Int64))))
               (match xs
-                (#list((map (= 9 a)) .. rest) a)
+                (#list(#map((= 9 a)) .. rest) a)
                 (_ (- 0 1))))
-            (def (main) (f #list((map (= 1 77)))))
+            (def (main) (f #list(#map((= 1 77)))))
             (export main)))
   (output (: -1 Int64)))
 
@@ -6083,9 +6083,9 @@
   (input  (do
             (def (f (: xs (List (Map Int64 Int64))))
               (match xs
-                (#list((map (= 1 a) (= 2 b)) .. rest) (+ a b))
+                (#list(#map((= 1 a) (= 2 b)) .. rest) (+ a b))
                 (_ (- 0 1))))
-            (def (main) (f #list((map (= 1 100) (= 2 5)))))
+            (def (main) (f #list(#map((= 1 100) (= 2 5)))))
             (export main)))
   (output (: 105 Int64)))
 
@@ -8838,7 +8838,7 @@
            list-homogeneity manifestation of the different-keyset map-comparison bug (shapes_incompatible
            shares one arm for Record and Map). MUST be true. Contrast the record/tuple cases above, which
            ARE non-homogeneous because field set / arity IS the type.")
-  (input     (= #list((map (= "a" 1)) (map (= "b" 2))) #list((map (= "a" 1)) (map (= "b" 2)))))
+  (input     (= #list(#map((= "a" 1)) #map((= "b" 2))) #list(#map((= "a" 1)) #map((= "b" 2)))))
   (output    (: true Bool)))
 
 ; --- Nested collections at RUN TIME: a collection op's result feeds another collection op --------------
@@ -9766,7 +9766,7 @@
 
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
-  (input  (= (map (= "a" 1) (= "b" 2)) (map (= "b" 2) (= "a" 1))))
+  (input  (= #map((= "a" 1) (= "b" 2)) #map((= "b" 2) (= "a" 1))))
   (output (: true Bool)))
 
 ; The order-independence case above compares two constant `(map …)` literals (they fold). These pin it at
@@ -9823,7 +9823,7 @@
            rather than answering; the map path emits an equality that answers false. MUST be true. A
            generation whose map equality cannot yet compare a runtime map against a const one declines
            rather than answering false.")
-  (input   (let ((j (+ 2 3))) (let ((k 5)) (= (map (= j 1)) (map (= k 1))))))
+  (input   (let ((j (+ 2 3))) (let ((k 5)) (= #map((= j 1)) #map((= k 1))))))
   (output  (: true Bool)))
 
 ; The positive half of the map-key-is-a-value rule: a name bound in scope, used in a key position, keys
@@ -9842,7 +9842,7 @@
            in scope, not compile-time labels). A reader that treated the key as the literal name would key
            by `\"a\"` and this equality would be false. Pins the positive half of the map-key-is-a-value
            rule (the unbound-key scope-error case below is the negative half). MUST be true.")
-  (input      (let ((a 5)) (= (map (= a 1)) (Map.insert Map.empty 5 1))))
+  (input      (let ((a 5)) (= #map((= a 1)) (Map.insert Map.empty 5 1))))
   (output     (: true Bool)))
 
 (case "two distinct names bound to the same value key the same map entry"
@@ -9851,7 +9851,7 @@
            overwrites `(a 1)`), size 1 — keys are compared by value (collections-and-text.md #Keys Are
            Compared By Value), and 5 = 5. If the key were the literal name, `a` and `b` would be distinct
            string keys and the map would have size 2. MUST be 1.")
-  (input      (let ((a 5)) (let ((b 5)) (Map.len (map (= a 1) (= b 2))))))
+  (input      (let ((a 5)) (let ((b 5)) (Map.len #map((= a 1) (= b 2))))))
   (output     (: 1 Int64)))
 
 ; The value-not-literal rule holds when the bound value is itself a STRING, ruling out a type-driven
@@ -9870,7 +9870,7 @@
            that the value-not-literal rule holds at String key type too, ruling out a type-driven ident
            coercion (a reader that stringified an ident only for a String key type would still be wrong
            here — the key is the bound value `\"x\"`, not the name). MUST be true.")
-  (input      (let ((a "x")) (= (map (= a 1)) (Map.insert Map.empty "x" 1))))
+  (input      (let ((a "x")) (= #map((= a 1)) (Map.insert Map.empty "x" 1))))
   (output     (: true Bool)))
 
 (case "distinct names bound to the same string key the same map entry"
@@ -9878,7 +9878,7 @@
            both bound to `\"k\"`, so `(map (a 1) (b 2))` has ONE entry at key `\"k\"` (size 1) — keys
            compared by value, and `\"k\"` = `\"k\"`. If the key were the literal name, they would be
            distinct string keys `\"a\"`/`\"b\"` and size would be 2. MUST be 1.")
-  (input      (let ((a "k")) (let ((b "k")) (Map.len (map (= a 1) (= b 2))))))
+  (input      (let ((a "k")) (let ((b "k")) (Map.len #map((= a 1) (= b 2))))))
   (output     (: 1 Int64)))
 
 ; A map's KEY is a VALUE, not a compile-time label: collections-and-text.md #A Map's Canonical Form —
@@ -9913,7 +9913,7 @@
            family: a position that must EVALUATE its operand must not reinterpret an unresolvable name as a
            String). A generation that does not yet evaluate a map key as a scoped value declines rather than
            coercing.")
-  (input      (map (= undefined-key 1)))
+  (input      #map((= undefined-key 1)))
   (error      CDZ0101))
 
 ; --- A map's values share one type (and its keys share one type) -------------------------
@@ -9927,7 +9927,7 @@
   (doc    "`(map (a 1) (b true))` associates `a`→Int64 and `b`→Bool: the values do not share one type,
            so the map is not well-typed and the compiler rejects it (CDZ0201, collections-and-text.md
            #A Map Associates Keys With Values — values of ONE type).")
-  (input      (= (map (= "a" 1) (= "b" true)) (map (= "a" 1) (= "b" true))))
+  (input      (= #map((= "a" 1) (= "b" true)) #map((= "a" 1) (= "b" true))))
   (error      CDZ0201))
 
 (case "a map mixing integer and float values is a type error"
@@ -9935,7 +9935,7 @@
            (numeric-model.md #Numeric Types Do Not Silently Promote), so `(map (a 1) (b 2.5))` has two
            value types and is ill-typed — CDZ0201. Pins that map value-homogeneity holds across the
            numeric types too, mirroring the list case.")
-  (input      (= (map (= "a" 1) (= "b" 2.5)) (map (= "a" 1) (= "b" 2.5))))
+  (input      (= #map((= "a" 1) (= "b" 2.5)) #map((= "a" 1) (= "b" 2.5))))
   (error      CDZ0201))
 
 ; The KEY-homogeneity half of the same rule, on the `(map …)` LITERAL path. collections-and-text.md #A Map
@@ -9964,7 +9964,7 @@
            2))` here — the construction-path half the value check already covers. A generation that does
            not yet check a map literal's key homogeneity on construction declines rather than building a
            heterogeneous-key map.")
-  (input      (let ((j 5)) (let ((k true)) (map (= j 1) (= k 2)))))
+  (input      (let ((j 5)) (let ((k true)) #map((= j 1) (= k 2)))))
   (error      CDZ0201))
 
 ; As with a list (the compound-shape homogeneity cases above), map value-homogeneity is by value TYPE:
@@ -9978,14 +9978,14 @@
            so a map associating them as values is not value-homogeneous — CDZ0201 (collections-and-text.md
            #A Map Associates Keys With Values: values of ONE type). Mirrors the list-of-diff-field-records
            case.")
-  (input      (= (map (= "a" #record((= x 1))) (= "b" #record((= y 2)))) (map (= "a" #record((= x 1))) (= "b" #record((= y 2))))))
+  (input      (= #map((= "a" #record((= x 1))) (= "b" #record((= y 2)))) #map((= "a" #record((= x 1))) (= "b" #record((= y 2))))))
   (error      CDZ0201))
 
 (case "a map with tuple values of different arities is a type error"
   (doc    "`(tuple 1 2)` and `(tuple 1 2 3)` are different tuple types (different lengths), so a map
            with them as values is not value-homogeneous — CDZ0201. Pins that the map-value homogeneity
            check compares tuple ARITY, mirroring the list case.")
-  (input      (= (map (= "a" #tuple(1 2)) (= "b" #tuple(1 2 3))) (map (= "a" #tuple(1 2)) (= "b" #tuple(1 2 3)))))
+  (input      (= #map((= "a" #tuple(1 2)) (= "b" #tuple(1 2 3))) #map((= "a" #tuple(1 2)) (= "b" #tuple(1 2 3)))))
   (error      CDZ0201))
 
 (case "a map with a duplicate key is a type error"
@@ -9993,7 +9993,7 @@
            most once.\" `(map (a 1) (a 2))` repeats the key `a`, so it is ill-typed and the compiler
            rejects it (CDZ0201) rather than build it — a repeated key makes the association ambiguous
            (which value does `a` hold?).")
-  (input      (= (map (= "a" 1) (= "a" 2)) (map (= "a" 1) (= "a" 2))))
+  (input      (= #map((= "a" 1) (= "a" 2)) #map((= "a" 1) (= "a" 2))))
   (error      CDZ0201))
 
 (case "a map with a duplicate int key is a type error"
@@ -10001,7 +10001,7 @@
            `1`, so which value `1` holds is ambiguous and the compiler rejects it (CDZ0201). A map MUST
            contain each key at most once (collections-and-text.md #A Map Associates Keys With Values) for
            every literal key kind, not only strings.")
-  (input      (= (map (= 1 10) (= 1 20)) (map (= 1 10) (= 1 20))))
+  (input      (= #map((= 1 10) (= 1 20)) #map((= 1 10) (= 1 20))))
   (error      CDZ0201))
 
 (case "a map with a spelling-variant duplicate key is a type error"
@@ -10009,19 +10009,19 @@
            `(map (1 10) (2 20) (0x1 30))` repeats the key `1` and is rejected (CDZ0201). Pins that the
            duplicate-key check canonicalizes numeric spellings before comparing, not a token compare — a
            dec/hex spelling of one value is one key.")
-  (input      (= (map (= 1 10) (= 2 20) (= 0x1 30)) (map (= 1 10) (= 2 20) (= 0x1 30))))
+  (input      (= #map((= 1 10) (= 2 20) (= 0x1 30)) #map((= 1 10) (= 2 20) (= 0x1 30))))
   (error      CDZ0201))
 
 (case "a map with a duplicate bool key is a type error"
   (doc    "The bool-key companion: `(map (true 1) (true 2))` repeats the key `true`, rejected CDZ0201 —
            the each-key-at-most-once rule holds for every literal key kind.")
-  (input      (= (map (= true 1) (= true 2)) (map (= true 1) (= true 2))))
+  (input      (= #map((= true 1) (= true 2)) #map((= true 1) (= true 2))))
   (error      CDZ0201))
 
 (case "a map with a duplicate unit key is a type error"
   (doc    "The unit-key companion: `(map (() 1) (() 2))` repeats the sole unit key `()`, rejected CDZ0201 —
            even a type with one inhabitant cannot key a map twice.")
-  (input      (= (map (= () 1) (= () 2)) (map (= () 1) (= () 2))))
+  (input      (= #map((= () 1) (= () 2)) #map((= () 1) (= () 2))))
   (error      CDZ0201))
 
 (case "comparing a map to a record is a type error"
@@ -10031,7 +10031,7 @@
            collections-and-text.md #A Map Associates Keys With Values). Comparing values of two
            different types is a type error the compiler rejects (CDZ0201), even though they carry the
            same keys mapped to the same values.")
-  (input      (= (map (= "a" 1) (= "b" 2)) #record((= a 1) (= b 2))))
+  (input      (= #map((= "a" 1) (= "b" 2)) #record((= a 1) (= b 2))))
   (error      CDZ0201))
 
 (case "comparing an empty map to an empty record is a type error"
@@ -10039,7 +10039,7 @@
            An empty map and an empty record are different types (type-system.md #Structural Values Are
            Comparable Only When Their Shapes Match), so the comparison is a type error the compiler
            rejects (CDZ0201).")
-  (input      (= (map) #record()))
+  (input      (= #map() #record()))
   (error      CDZ0201))
 
 ; --- Two maps with different KEY SETS are comparable: the result is false, not a type error ---
@@ -10063,7 +10063,7 @@
            associate the same keys, so `=` is FALSE (collections-and-text.md #A Map Associates Keys With
            Values), NOT a type error. The seed wrongly treats the key set as a shape and rejects the
            comparison (CDZ0201) — a miscompile that refuses a valid program. MUST be false.")
-  (input      (= (map (= "a" 1) (= "b" 2)) (map (= "a" 1) (= "c" 2))))
+  (input      (= #map((= "a" 1) (= "b" 2)) #map((= "a" 1) (= "c" 2))))
   (output     (: false Bool)))
 
 (case "two maps of different sizes are unequal, not a type error"
@@ -10073,7 +10073,7 @@
            size-difference companion of the case above; the seed rejects it (CDZ0201) rather than
            yielding false — the same miscompile. Contrast records `(= (record (a 1)) (record (a 1) (b
            2)))`, which IS a type error, because a record's field set IS its shape.")
-  (input      (= (map (= "a" 1)) (map (= "a" 1) (= "b" 2))))
+  (input      (= #map((= "a" 1)) #map((= "a" 1) (= "b" 2))))
   (output     (: false Bool)))
 
 (case "an empty map is unequal to a non-empty map, not a type error"
@@ -10082,7 +10082,7 @@
            emptiness on one side of a map comparison yields false, not a shape-mismatch rejection
            (contrast the empty-map-vs-empty-record case above, which IS a type error because map and
            record are different types). MUST be false.")
-  (input      (= (map) (map (= "a" 1))))
+  (input      (= #map() #map((= "a" 1))))
   (output     (: false Bool)))
 
 (case "member access on a map is a type error"
@@ -10090,7 +10090,7 @@
            a field from the RECORD it is applied to; applied to a value that is not a record it is a
            type error. A map is not a record (its keys are a collection, not a fixed field set), so
            `(. m a)` on a map `m` is rejected (CDZ0201) rather than projecting the entry for `a`.")
-  (input      (let ((m (map (= "a" 1) (= "b" 2)))) (. m a)))
+  (input      (let ((m #map((= "a" 1) (= "b" 2)))) (. m a)))
   (error      CDZ0201))
 
 ; --- Shape-mismatch comparisons within one kind are type errors -------------------------
@@ -15001,7 +15001,7 @@
                 (((. E Var))       (Option.expect (Map.lookup env 0) "v"))
                 (((. E Bind) body) (ev body (Map.insert env 0 2)))
                 (((. E Add) a b)   (+ (ev a env) (ev b env)))))
-            (def (main) (ev ((. E Add) ((. E Bind) ((. E Var))) ((. E Var))) (Map.insert (map) 0 1)))
+            (def (main) (ev ((. E Add) ((. E Bind) ((. E Var))) ((. E Var))) (Map.insert #map() 0 1)))
             (export main)))
   (output (: 3 Int64))
   (live-objects known-leak 1))
@@ -15111,7 +15111,7 @@
   (input  (do
             (def (main)
               (let ((j (+ 2 3)))
-                (match (Map.lookup (map (= j 1)) 5)
+                (match (Map.lookup #map((= j 1)) 5)
                   ((Some v) v)
                   ((None _) -1)))) (export main)))
   (output (: 1 Int64)))
@@ -15826,7 +15826,7 @@
            is 1. Pins that a map value nests (a map is an ordinary heap value, stored/read like any
            compound), so `Map.len` of the looked-up inner map is 1.")
   (input  (do (def (main)
-                (match (Map.lookup (Map.insert Map.empty 1 (map (= 2 20))) 1)
+                (match (Map.lookup (Map.insert Map.empty 1 #map((= 2 20))) 1)
                   ((Some inner) (Map.len inner))
                   ((None _) 0))) (export main)))
   (output (: 1 Int64))
@@ -15846,7 +15846,7 @@
            map-keys are EQUAL maps collapse to one. `(map ((map (1 10)) 1) ((map (1 10)) 2))` names the key
            `(map (1 10))` twice → ONE entry, size 1 (the same each-key-at-most-once rule as any key type). A
            key compared by handle identity would keep both. MUST be 1.")
-  (input  (do (def (main) (Map.len (map (= (map (= 1 10)) 1) (= (map (= 1 10)) 2)))) (export main)))
+  (input  (do (def (main) (Map.len #map((= #map((= 1 10)) 1) (= #map((= 1 10)) 2)))) (export main)))
   (output (: 1 Int64)))
 
 (case "two distinct map-keys are distinct entries"
@@ -15854,7 +15854,7 @@
            has TWO entries (size 2) — the map-keys `(map (1 10))` and `(map (2 20))` are unequal values, so
            they do not collapse. Pins that a map key is discriminated by its canonical VALUE (contrast the
            equal-map-keys case above, size 1).")
-  (input  (do (def (main) (Map.len (map (= (map (= 1 10)) 1) (= (map (= 2 20)) 2)))) (export main)))
+  (input  (do (def (main) (Map.len #map((= #map((= 1 10)) 1) (= #map((= 2 20)) 2)))) (export main)))
   (output (: 2 Int64)))
 
 ; The above collapse cases pin that EQUAL compound keys are one entry (size), but not WHICH value survives a
@@ -15925,7 +15925,7 @@
   (input  (do
             (def (main)
               (match (Map.insert Map.empty 1 10)
-                ((map (= 1 v)) v)
+                (#map((= 1 v)) v)
                 (_           0))) (export main)))
   (output (: 10 Int64)))
 
@@ -15936,7 +15936,7 @@
   (input  (do
             (def (main)
               (match (Map.insert Map.empty 1 10)
-                ((map (= 2 v)) v)
+                (#map((= 2 v)) v)
                 (_           99))) (export main)))
   (output (: 99 Int64)))
 
@@ -15947,7 +15947,7 @@
   (input  (do
             (def (main)
               (match (Map.insert (Map.insert Map.empty 1 10) 2 20)
-                ((map (= 1 v) .. rest) (Map.len rest))
+                (#map((= 1 v) .. rest) (Map.len rest))
                 (_                   0))) (export main)))
   (output (: 1 Int64)))
 
@@ -15964,7 +15964,7 @@
               (if b (Map.insert (Map.empty) "a" 5) (Map.insert (Map.empty) "b" 9)))
             (def (look (: m (Map String Int64)))
               (match m
-                ((map (= "a" v) .. rest) (+ v (Map.len rest)))
+                (#map((= "a" v) .. rest) (+ v (Map.len rest)))
                 (_                     -1)))
             (def (main) (look (pick true))) (export main)))
   (output (: 5 Int64)))
@@ -15986,9 +15986,9 @@
   (input  (do
             (def (f (: t (Tuple (Map Int64 Int64) Int64)))
               (match t
-                (#tuple((map (= 1 a)) k) (+ a k))
+                (#tuple(#map((= 1 a)) k) (+ a k))
                 (_ (- 0 1))))
-            (def (main) (f #tuple((map (= 1 100)) 5)))
+            (def (main) (f #tuple(#map((= 1 100)) 5)))
             (export main)))
   (output (: 105 Int64)))
 
@@ -16000,9 +16000,9 @@
   (input  (do
             (def (f (: t (Tuple (Map Int64 Int64) Int64)))
               (match t
-                (#tuple((map (= 7 a)) k) (+ a k))
+                (#tuple(#map((= 7 a)) k) (+ a k))
                 (_ (- 0 1))))
-            (def (main) (f #tuple((map (= 1 100)) 5)))
+            (def (main) (f #tuple(#map((= 1 100)) 5)))
             (export main)))
   (output (: -1 Int64)))
 
@@ -16018,7 +16018,7 @@
             (def (pick (: n Int64)) (Map.insert (Map.empty) "a" n))
             (def (look (: m (Map String Int64)))
               (match m
-                ((map (= "a" 0) .. rest) 1)
+                (#map((= "a" 0) .. rest) 1)
                 (_                     -1)))
             (def (main) (look (pick 0))) (export main)))
   (output (: 1 Int64)))
@@ -16034,7 +16034,7 @@
   (input  (do
             (def (main)
               (match (Map.insert (Map.empty) "a" #tuple(3 4))
-                ((map (= "a" #tuple(x y)) .. rest) (+ x y))
+                (#map((= "a" #tuple(x y)) .. rest) (+ x y))
                 (_                               -1)))
             (export main)))
   (output (: 7 Int64)))
@@ -16051,7 +16051,7 @@
               (if b (Map.insert (Map.empty) "a" #tuple(3 4)) (Map.empty)))
             (def (look (: m (Map String (Tuple Int64 Int64))))
               (match m
-                ((map (= "a" #tuple(x y)) .. rest) (+ x y))
+                (#map((= "a" #tuple(x y)) .. rest) (+ x y))
                 (_                               -1)))
             (def (main) (look (pick true))) (export main)))
   (output (: 7 Int64)))
@@ -16066,7 +16066,7 @@
   (input  (do
             (def (look (: m (Map String (Option Int64))))
               (match m
-                ((map (= "a" (Some n)) .. rest) n)
+                (#map((= "a" (Some n)) .. rest) n)
                 (_                            -1)))
             (def (main) (look (Map.insert (Map.empty) "a" (Some 5)))) (export main)))
   (output (: 5 Int64)))
@@ -16081,7 +16081,7 @@
             (type Box (Mk Int64))
             (def (main)
               (match (Map.insert (Map.empty) "a" (Box.Mk 5))
-                ((map (= "a" (Box.Mk n)) .. rest) n)
+                (#map((= "a" (Box.Mk n)) .. rest) n)
                 (_                             -1)))
             (export main)))
   (output (: 5 Int64)))
@@ -16094,7 +16094,7 @@
   (input  (do
             (def (main)
               (match (Map.insert (Map.empty) "a" #tuple(#tuple(1 2) 3))
-                ((map (= "a" #tuple(#tuple(x y) z)) .. rest) x)
+                (#map((= "a" #tuple(#tuple(x y) z)) .. rest) x)
                 (_                                        -1)))
             (export main)))
   (output (: 1 Int64)))
@@ -16112,8 +16112,8 @@
            → first fails, second `3 > 0` holds → 200; h=0 → both fail → wildcard 300.")
   (input  (do (def (main (: h Int64))
                 (match (Map.insert (Map.insert (Map.empty) 1 h) 2 20)
-                  ((guard (map (= 1 v) .. r) (> v 5)) 100)
-                  ((guard (map (= 1 v) .. r) (> v 0)) 200)
+                  ((guard #map((= 1 v) .. r) (> v 5)) 100)
+                  ((guard #map((= 1 v) .. r) (> v 0)) 200)
                   (_ 300)))
               (export main)))
   (call   main (: 9 Int64))
@@ -16131,8 +16131,8 @@
            TRUE → arm 1 (100). Pins that a guarded map arm's guard is EVALUATED (not ignored) on the const
            path and that a TRUE fold selects the arm — the const analogue of the runtime fall-through case.")
   (input  (match (Map.insert (Map.insert (Map.empty) 1 7) 2 20)
-            ((guard (map (= 1 v) .. r) (> v 5)) 100)
-            ((guard (map (= 1 v) .. r) (> v 0)) 200)
+            ((guard #map((= 1 v) .. r) (> v 5)) 100)
+            ((guard #map((= 1 v) .. r) (> v 0)) 200)
             (_ 300)))
   (output (: 100 Int64)))
 
@@ -16143,8 +16143,8 @@
            a trap, not a wrong-arm selection) — the const twin of the runtime fall-through, closing the map
            const-path guard fold's false branch.")
   (input  (match (Map.insert (Map.insert (Map.empty) 1 3) 2 20)
-            ((guard (map (= 1 v) .. r) (> v 5)) 100)
-            ((guard (map (= 1 v) .. r) (> v 0)) 200)
+            ((guard #map((= 1 v) .. r) (> v 5)) 100)
+            ((guard #map((= 1 v) .. r) (> v 0)) 200)
             (_ 300)))
   (output (: 200 Int64)))
 
@@ -16164,7 +16164,7 @@
   (input  (do
             (def (main (: n Int64))
               (match (Map.insert (Map.insert (Map.empty) 1 5) 2 n)
-                ((guard (map (= 1 v) .. r) (> v 3)) v)
+                ((guard #map((= 1 v) .. r) (> v 3)) v)
                 (_ -1)))
             (export main)))
   (call   main (: 9 Int64)) (output (: 5 Int64)))
@@ -16181,8 +16181,8 @@
   (input  (do
             (def (f (: n Int64))
               (match (Map.insert (Map.insert (Map.empty) 1 5) 2 n)
-                ((guard (map (= 1 v) .. r) (> v 100)) v)
-                ((guard (map (= 1 v) .. r) (> v 3)) (+ v 1))
+                ((guard #map((= 1 v) .. r) (> v 100)) v)
+                ((guard #map((= 1 v) .. r) (> v 3)) (+ v 1))
                 (_ -1)))
             (def (main (: d Int64)) (f 9))
             (export main)))
@@ -16688,7 +16688,7 @@
   (input  (do
             (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
             (def (main)
-              (match (Map.lookup (map (= (add 2 3) 42)) 5)
+              (match (Map.lookup #map((= (add 2 3) 42)) 5)
                 ((Some v) v)
                 ((None) (- 0 1))))
             (export main)))
@@ -16706,8 +16706,8 @@
   (input  (do
             (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
             (def (main)
-              (match (map (= (add 2 3) 42))
-                ((map (= 5 v) .. rest) v)
+              (match #map((= (add 2 3) 42))
+                (#map((= 5 v) .. rest) v)
                 (_ (- 0 1))))
             (export main)))
   (output (: 42 Int64)))
@@ -17030,8 +17030,8 @@
            directions (present and absent) of the value selection.")
   (input  (do
             (def (main (: k Int64))
-              (match (map (= k 42))
-                ((map (= 5 v) .. rest) v)
+              (match #map((= k 42))
+                (#map((= 5 v) .. rest) v)
                 (_ -1)))
             (export main)))
   (call   main (: 5 Int64))
@@ -17046,8 +17046,8 @@
            whenever ANY entry's key is runtime (rather than comparing per-entry) answers -1.")
   (input  (do
             (def (main (: k Int64))
-              (match (map (= k 1) (= 5 42))
-                ((map (= 5 v) .. rest) v)
+              (match #map((= k 1) (= 5 42))
+                (#map((= 5 v) .. rest) v)
                 (_ -1)))
             (export main)))
   (call   main (: 7 Int64))
@@ -17060,8 +17060,8 @@
            compile-time placeholder instead of its runtime result binds garbage).")
   (input  (do
             (def (main (: k Int64))
-              (match (map (= 5 (+ k 1)))
-                ((map (= 5 v) .. rest) v)
+              (match #map((= 5 (+ k 1)))
+                (#map((= 5 v) .. rest) v)
                 (_ -1)))
             (export main)))
   (call   main (: 9 Int64))
@@ -17074,8 +17074,8 @@
            satisfaction in one arm.")
   (input  (do
             (def (main (: k Int64))
-              (match (map (= k 1) (= 7 2))
-                ((map (= 5 a) (= 7 b) .. rest) (+ (* a 10) b))
+              (match #map((= k 1) (= 7 2))
+                (#map((= 5 a) (= 7 b) .. rest) (+ (* a 10) b))
                 (_ -1)))
             (export main)))
   (call   main (: 5 Int64))
@@ -17091,8 +17091,8 @@
            in rest → 44).")
   (input  (do
             (def (main (: k Int64))
-              (match (map (= k 42) (= 7 9))
-                ((map (= 5 v) .. rest) (+ v (Map.len rest)))
+              (match #map((= k 42) (= 7 9))
+                (#map((= 5 v) .. rest) (+ v (Map.len rest)))
                 (_ -1)))
             (export main)))
   (call   main (: 5 Int64))
@@ -18059,7 +18059,7 @@
            the CDZ0101. A generation that skipped this would let a mistyped map-pattern head error only at
            emit, hiding it from the fast diagnostics path.")
   (input  (do (def (go (: mp (Map Int64 Int64)))
-                (match mp ((map (= 1 v)) v) ((Zorp x) (go mp)) (_ 0)))
+                (match mp (#map((= 1 v)) v) ((Zorp x) (go mp)) (_ 0)))
               (export go)))
   (error CDZ0101))
 
@@ -18356,7 +18356,7 @@
            unbound-name cascade accompanies it. A generation that skipped this would leave a mistyped map
            rest pattern blaming the user's binder instead of naming the shape rule.")
   (input  (do (def (f (: mp (Map Int64 Int64)))
-                (match mp ((map (= 1 v) .. rest (= 2 w)) v) (_ 0)))
+                (match mp (#map((= 1 v) .. rest (= 2 w)) v) (_ 0)))
               (export f)))
   (error CDZ0201))
 
@@ -18370,7 +18370,7 @@
            in suppressing the unbound cascade. Sibling of the top-level map-rest + record-pattern cases.")
   (input  (do (type W (Wrap (Map Int64 Int64)))
               (def (f (: w W))
-                (match w ((Wrap (map (= 1 v) .. r (= 2 x))) v) (_ 0)))
+                (match w ((Wrap #map((= 1 v) .. r (= 2 x))) v) (_ 0)))
               (export f)))
   (error CDZ0201))
 
@@ -20411,7 +20411,7 @@
 (case "pd8 a shared MAP operand survives an insert — both views keep their own len"
   (input (do
     (def (main (: n Int64))
-      (let ((m (Map.insert (map) n 10)))
+      (let ((m (Map.insert #map() n 10)))
         (let ((m2 (Map.insert m (+ n 1) 20)))
           (+ (Map.len m) (* 10 (Map.len m2))))))
     (export main)))
@@ -20493,7 +20493,7 @@
 (case "lk4 shared Map and Set operands across inserts leave no live heap objects"
   (input (do
     (def (main (: n Int64))
-      (let ((m (Map.insert (map) n 10)))
+      (let ((m (Map.insert #map() n 10)))
         (let ((m2 (Map.insert m (+ n 1) 20)))
           (let ((s #set(n)))
             (let ((s2 (Set.insert s (+ n 1))))
@@ -20557,10 +20557,10 @@
     (def (rd (: m (Map Int64 Int64)))
       (match (Map.lookup m 0) ((Option.Some v) v) ((Option.None) -1)))
     (def (main (: n Int64))
-      (+ (handle E (Map.insert (map) 0 n)
+      (+ (handle E (Map.insert #map() 0 n)
            ((tick () s (resume (rd s) (Map.insert s 0 (+ (rd s) 1)))))
            (+ (E.tick) (E.tick)))
-         (* 100 (handle E (Map.insert (map) 0 (* n 2))
+         (* 100 (handle E (Map.insert #map() 0 (* n 2))
            ((tick () s (resume (rd s) (Map.insert s 0 (+ (rd s) 1)))))
            (+ (E.tick) (E.tick))))))
     (export main)))
@@ -20710,7 +20710,7 @@
            the owned Some shell after the payload read; a leaked shell would scale to ~N live -- net 0.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64))) (if (< i n) (build (+ i 1) n (Map.insert mp i (* i 10))) mp))
-            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (Option.expect (Map.lookup (build 0 3 (map)) 1) "v"))) tot))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (Option.expect (Map.lookup (build 0 3 #map()) 1) "v"))) tot))
             (def (f (: n Int64)) (loop 0 n 0))
             (export f)))
   (call   f (: 500 Int64)) (output (: 5000 Int64))
@@ -20746,7 +20746,7 @@
            net 0.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64))) (if (< i n) (build (+ i 1) n (Map.insert mp i (* i 10))) mp))
-            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (match (Map.lookup (build 0 3 (map)) 1) ((Option.Some v) v) ((Option.None _) 7)))) tot))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (match (Map.lookup (build 0 3 #map()) 1) ((Option.Some v) v) ((Option.None _) 7)))) tot))
             (def (f (: n Int64)) (loop 0 n 0))
             (export f)))
   (call   f (: 500 Int64)) (output (: 5000 Int64))
@@ -23296,7 +23296,7 @@
   (doc    "`(map (\"a\" 0) .. rest)` matches only a map whose value at key \"a\" is 0. Over a RUNTIME map
            `{\"a\": 0}` (built by a conditional so not const-folded) the literal sub-pattern matches → 1.")
   (input  (do (def (pick (: n Int64)) (Map.insert (Map.empty) "a" n))
-              (def (look (: m (Map String Int64))) (match m ((map (= "a" 0) .. rest) 1) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m (#map((= "a" 0) .. rest) 1) (_ -1)))
               (def (main (: n Int64)) (look (pick n))) (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
@@ -23305,7 +23305,7 @@
   (doc    "The refutation face: over `{\"a\": 9}` the value at \"a\" is not the literal 0, so the
            `(map (\"a\" 0) …)` arm does not fire and the match falls through to the catch-all → -1.")
   (input  (do (def (pick (: n Int64)) (Map.insert (Map.empty) "a" n))
-              (def (look (: m (Map String Int64))) (match m ((map (= "a" 0) .. rest) 1) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m (#map((= "a" 0) .. rest) 1) (_ -1)))
               (def (main (: n Int64)) (look (pick n))) (export main)))
   (call   main (: 9 Int64))
   (output (: -1 Int64)))
@@ -23314,7 +23314,7 @@
   (doc    "`(map (\"a\" 0) (\"b\" y) .. rest)` fires only when \"a\"'s value is the literal 0 AND \"b\" is
            present, binding `y` to \"b\"'s value. Over `{\"a\": 0, \"b\": 5}` → binds y = 5.")
   (input  (do (def (pick (: a Int64)) (Map.insert (Map.insert (Map.empty) "a" a) "b" 5))
-              (def (look (: m (Map String Int64))) (match m ((map (= "a" 0) (= "b" y) .. rest) y) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m (#map((= "a" 0) (= "b" y) .. rest) y) (_ -1)))
               (def (main (: a Int64)) (look (pick a))) (export main)))
   (call   main (: 0 Int64))
   (output (: 5 Int64)))
@@ -23324,7 +23324,7 @@
            \"b\" is present but \"a\"'s value 1 is not the literal 0, so the whole arm is refuted and the match
            falls through to the catch-all → -1 (a literal value sub-pattern gates the WHOLE arm).")
   (input  (do (def (pick (: a Int64)) (Map.insert (Map.insert (Map.empty) "a" a) "b" 5))
-              (def (look (: m (Map String Int64))) (match m ((map (= "a" 0) (= "b" y) .. rest) y) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m (#map((= "a" 0) (= "b" y) .. rest) y) (_ -1)))
               (def (main (: a Int64)) (look (pick a))) (export main)))
   (call   main (: 1 Int64))
   (output (: -1 Int64)))
@@ -23337,7 +23337,7 @@
   (doc    "`(map (\"a\" (Some n)) .. rest)` over a RUNTIME map `{\"a\": Some 5}` (built by a conditional so
            not const-folded): the value at \"a\" matches `(Some n)`, binding n = 5.")
   (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.empty) "a" (Some 5)) (Map.insert (Map.empty) "a" None)))
-              (def (look (: m (Map String (Option Int64)))) (match m ((map (= "a" (Some n)) .. rest) n) (_ -1)))
+              (def (look (: m (Map String (Option Int64)))) (match m (#map((= "a" (Some n)) .. rest) n) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: true Bool))
   (output (: 5 Int64))
@@ -23347,7 +23347,7 @@
   (doc    "The refutation face: over `{\"a\": None}` the value at \"a\" is not `(Some n)`, so the arm is
            refuted and the match falls through to the catch-all → -1.")
   (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.empty) "a" (Some 5)) (Map.insert (Map.empty) "a" None)))
-              (def (look (: m (Map String (Option Int64)))) (match m ((map (= "a" (Some n)) .. rest) n) (_ -1)))
+              (def (look (: m (Map String (Option Int64)))) (match m (#map((= "a" (Some n)) .. rest) n) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: false Bool))
   (output (: -1 Int64))
@@ -23356,7 +23356,7 @@
 (case "a refutable map value sub-pattern folds the same over a constant map"
   (doc    "The constant-map form folds identically: matching `{\"a\": Some 7}` against `(map (\"a\" (Some n)) …)`
            binds n = 7.")
-  (input  (do (def (main) (match (Map.insert (Map.empty) "a" (Some 7)) ((map (= "a" (Some n)) .. rest) n) (_ -1)))
+  (input  (do (def (main) (match (Map.insert (Map.empty) "a" (Some 7)) (#map((= "a" (Some n)) .. rest) n) (_ -1)))
               (export main)))
   (output (: 7 Int64)))
 
@@ -23368,7 +23368,7 @@
   (doc    "Over a RUNTIME map `{\"a\": k}` (built by a conditional so not const-folded), the `(map (\"a\" v) …)`
            arm fires — key \"a\" is present → binds v to its runtime value. main(7) → 7.")
   (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" k) (Map.insert (Map.empty) "b" 2)))
-              (def (look (: m (Map String Int64))) (match m ((map (= "a" v) .. rest) v) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m (#map((= "a" v) .. rest) v) (_ -1)))
               (def (main (: k Int64)) (look (pick true k))) (export main)))
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
@@ -23377,7 +23377,7 @@
   (doc    "The refutation face: `pick false` → `{\"b\": 2}`, so the `(map (\"a\" v) …)` arm's key \"a\" is
            ABSENT → the match falls through to the catch-all → -1.")
   (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" k) (Map.insert (Map.empty) "b" 2)))
-              (def (look (: m (Map String Int64))) (match m ((map (= "a" v) .. rest) v) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m (#map((= "a" v) .. rest) v) (_ -1)))
               (def (main (: k Int64)) (look (pick false k))) (export main)))
   (call   main (: 7 Int64))
   (output (: -1 Int64)))
@@ -23386,7 +23386,7 @@
   (doc    "A multi-key arm `(map (\"a\" x) (\"b\" y) …)` fires only when EVERY named key is present. Over
            `{\"a\": 3, \"b\": 4}` both are present → binds x=3,y=4 → x+y = 7.")
   (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.insert (Map.empty) "a" 3) "b" 4) (Map.insert (Map.empty) "a" 3)))
-              (def (look (: m (Map String Int64))) (match m ((map (= "a" x) (= "b" y) .. rest) (+ x y)) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m (#map((= "a" x) (= "b" y) .. rest) (+ x y)) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: true Bool))
   (output (: 7 Int64)))
@@ -23404,7 +23404,7 @@
            refutes, pinned by the multi-key case above.")
   (input  (do
             (def (mk (: s Int64)) (Map.insert (Map.insert (Map.insert (Map.empty) 1 (+ s 10)) 2 (+ s 20)) 3 (+ s 30)))
-            (def (main (: s Int64)) (match (mk s) ((map (= 2 x)) x) (_ -1)))
+            (def (main (: s Int64)) (match (mk s) (#map((= 2 x)) x) (_ -1)))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 20 Int64)))
@@ -23413,7 +23413,7 @@
   (doc    "Over `{\"a\": 3}` (missing \"b\") the two-key arm `(map (\"a\" x) (\"b\" y) …)` is refuted → falls
            through to the catch-all → -1.")
   (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.insert (Map.empty) "a" 3) "b" 4) (Map.insert (Map.empty) "a" 3)))
-              (def (look (: m (Map String Int64))) (match m ((map (= "a" x) (= "b" y) .. rest) (+ x y)) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m (#map((= "a" x) (= "b" y) .. rest) (+ x y)) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: false Bool))
   (output (: -1 Int64)))
@@ -23435,14 +23435,14 @@
            at run time (a non-foldable recursive call), so the `5` arm matches by VALUE and binds v = 42. The
            const-fold path would report the runtime key absent and wrongly take the catch-all.")
   (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-              (def (main) (match (map (= (add 2 3) 42)) ((map (= 5 v) .. rest) v) (_ (- 0 1)))) (export main)))
+              (def (main) (match #map((= (add 2 3) 42)) (#map((= 5 v) .. rest) v) (_ (- 0 1)))) (export main)))
   (output (: 42 Int64)))
 
 (case "a map match over a map literal with a non-matching runtime key falls through"
   (doc    "The dual: the literal's runtime key is 6 (`add 2 4`), so the `5` arm misses by value → the match
            falls through to the catch-all → -1.")
   (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-              (def (main) (match (map (= (add 2 4) 42)) ((map (= 5 v) .. rest) v) (_ (- 0 1)))) (export main)))
+              (def (main) (match #map((= (add 2 4) 42)) (#map((= 5 v) .. rest) v) (_ (- 0 1)))) (export main)))
   (output (: -1 Int64)))
 
 (case "Map.lookup of a map literal with a runtime key finds the value by value, not a const-fold"
@@ -23452,7 +23452,7 @@
            fold would report the runtime key absent → None → -1 (the map twin of the Set.contains runtime-
            element fold miscompile).")
   (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-              (def (main) (match (Map.lookup (map (= (add 2 3) 42)) 5) ((Some v) v) ((None) (- 0 1)))) (export main)))
+              (def (main) (match (Map.lookup #map((= (add 2 3) 42)) 5) ((Some v) v) ((None) (- 0 1)))) (export main)))
   (output (: 42 Int64)))
 
 ; ── breaker batch 551: the #4597 §5 sum-spine reclaim BOUNDARY. The fix (dup(rest)+drop(old
@@ -23500,7 +23500,7 @@
            from the solved construct type (not defaulted to i64), so it composes on the rust backend too
            (rcdzc #4601). Completes the runtime-map-match family with cases above.")
   (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.insert (Map.insert (Map.empty) "a" 1) "b" 2) "c" 3) (Map.empty)))
-              (def (look (: m (Map String Int64))) (match m ((map (= "a" v) .. rest) (+ v (Map.len rest))) (_ -1)))
+              (def (look (: m (Map String Int64))) (match m (#map((= "a" v) .. rest) (+ v (Map.len rest))) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: true Bool))
   (output (: 3 Int64)))
@@ -23512,7 +23512,7 @@
   (doc    "`(map (\"a\" (tuple x y)) .. rest)` over a RUNTIME map `{\"a\": (k, 4)}` binds x=k, y=4 → (+ x y).
            With k=3 → 7.")
   (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" #tuple(k 4)) (Map.empty)))
-              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m ((map (= "a" #tuple(x y)) .. rest) (+ x y)) (_ -1)))
+              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m (#map((= "a" #tuple(x y)) .. rest) (+ x y)) (_ -1)))
               (def (main (: k Int64)) (look (pick true k))) (export main)))
   (call   main (: 3 Int64))
   (output (: 7 Int64)))
@@ -23521,7 +23521,7 @@
   (doc    "An ABSENT key falls through to the catch-all — the presence test fails before the value read. Here
            `pick false` → empty map, so the `\"a\"` arm's key is absent → -1.")
   (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" #tuple(k 4)) (Map.empty)))
-              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m ((map (= "a" #tuple(x y)) .. rest) (+ x y)) (_ -1)))
+              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m (#map((= "a" #tuple(x y)) .. rest) (+ x y)) (_ -1)))
               (def (main (: k Int64)) (look (pick false k))) (export main)))
   (call   main (: 3 Int64))
   (output (: -1 Int64)))
@@ -23531,7 +23531,7 @@
            n = k (the value read walks the ctor payload after the Map.lookup unwrap). With k=9 → 9.")
   (input  (do (type Box (Mk Int64))
               (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" (Box.Mk k)) (Map.empty)))
-              (def (look (: m (Map String Box))) (match m ((map (= "a" (Box.Mk n)) .. rest) n) (_ -1)))
+              (def (look (: m (Map String Box))) (match m (#map((= "a" (Box.Mk n)) .. rest) n) (_ -1)))
               (def (main (: k Int64)) (look (pick true k))) (export main)))
   (call   main (: 9 Int64))
   (output (: 9 Int64)))
@@ -23571,7 +23571,7 @@
            guard `(> 5 3)` holds → body returns v = 5. The run re-verifies a VALID artifact.")
   (input  (do (def (main (: n Int64))
                 (match (Map.insert (Map.insert (Map.empty) 1 5) 2 n)
-                  ((guard (map (= 1 v) .. r) (> v 3)) v)
+                  ((guard #map((= 1 v) .. r) (> v 3)) v)
                   (_ (- 0 1)))) (export main)))
   (call   main (: 9 Int64))
   (output (: 5 Int64)))
@@ -23965,7 +23965,7 @@
   (error CDZ0201 (message "record field must be (= key value)") (fix (kind delete))))
 
 (case "a surplus map entry (name-alias form) carries a delete-the-surplus fix"
-  (input (do (def (main) (map (1 2 3))) (export main)))
+  (input (do (def (main) #map((1 2 3))) (export main)))
   (error CDZ0201 (message "a map entry is a (key value) pair") (fix (kind delete))))
 
 (case "a surplus map entry (primitive form) carries a delete-the-surplus fix"
@@ -23984,5 +23984,5 @@
   (doc "A map literal repeating a literal KEY — (map (1 10) (1 20) (2 30)) — is CDZ0201 (a map contains each key
         at most once), carrying a DELETE fix on the redundant entry. From rcdzc
         a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix.")
-  (input (do (def (f) (Map.len (map (1 10) (1 20) (2 30)))) (def (main) 0) (export main)))
+  (input (do (def (f) (Map.len #map((1 10) (1 20) (2 30)))) (def (main) 0) (export main)))
   (error CDZ0201 (message "map contains each key") (fix (kind delete))))

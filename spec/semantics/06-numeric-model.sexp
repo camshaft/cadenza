@@ -933,7 +933,7 @@
            value literal `999`, which overflows Int8 → CDZ0302. The width fit-check must descend into a map's
            VALUE type; before the descent reached maps, this escaped and silently truncated (999 → -25).
            Pins that the descent reaches map values.")
-  (input  (: (map (= 1 999)) (Map Int64 Int8)))
+  (input  (: #map((= 1 999)) (Map Int64 Int8)))
   (error  CDZ0302))
 
 (case "a literal MAP KEY that overflows the annotated key width is rejected"
@@ -941,7 +941,7 @@
            literal `999`, which overflows Int8 → CDZ0302. The width fit-check must descend into a map's KEY
            type (not only the value); before the descent reached map keys, this escaped the check. Pins that
            the descent reaches map keys — the key twin of the map-value case.")
-  (input  (: (map (= 999 1)) (Map Int8 Int64)))
+  (input  (: #map((= 999 1)) (Map Int8 Int64)))
   (error  CDZ0302))
 
 (case "an out-of-range literal MAP VALUE through a builder chain (Map.insert) is rejected"
@@ -12224,7 +12224,7 @@
         holds the LAST value. The hop re-emits entries in STORED order and the recompiled program rebuilds
         by re-inserting — if the emit reordered entries, last-wins would flip the value. n=5 →
         (map (5 2)). Dual-path verified. `(live-objects 1)` = the reachable returned map.")
-  (input (do (def (main (: n Int64)) (map (= n 1) (= n 2))) (export main)))
+  (input (do (def (main (: n Int64)) #map((= n 1) (= n 2))) (export main)))
   (call main (: 5 Int64))
   (output (: #map((= 5 2)) (Map Int64 Int64)))
   (call main (: -3 Int64))
