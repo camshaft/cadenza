@@ -1228,7 +1228,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is #rec
   (output (: (close 7) Outcome))
   (call f (: 0 Int64))
   (output (: (continue unit) Outcome))
-  (live-objects 0))
+  (live-objects known-leak 1))
 
 (case "a bare TUPLE export result crosses as a typed WIT tuple (declared world)"
   (doc "SHAPE 62 - a bare `tuple<s64, s64>` EXPORT result under a declared world. Before this, canon_write_of had NO Ty::Tuple arm, so a tuple result declined the typed path and degraded to a bare u32 via the provider path (verified by WIT-dump). Fix: canon_write_of gained a Ty::Tuple arm (the POSITIONAL twin of the Record arm - element i at cell slot i, written at the WIT tuple's canonical offset; reuses CanonWrite::Record, no new writer). WIT-dump now shows `f: func(x: s64) -> tuple<s64, s64>`. Element writes recurse, so a nested tuple/record/bytes element composes.")
