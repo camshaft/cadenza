@@ -277,6 +277,9 @@ export function convertChapter(tsxPath) {
   }
 
   let out = `(chapter\n  (slug ${sexpString(meta.slug)})\n  (title ${sexpString(title)})\n`;
+  // (nav-title …) = the sidebar label, ONLY when it differs from the H1 (title). H1 and sidebar are
+  // distinct concerns (editor decision c); registry-derivation defaults the sidebar to (title) when absent.
+  if (meta.title != null && meta.title !== title) out += `  (nav-title ${sexpString(meta.title)})\n`;
   out += `  (pillar ${sexpString(meta.pillar)})\n`;
   if (meta.section) out += `  (section ${sexpString(meta.section)})\n`;
   if (meta.blurb) out += `  (blurb ${sexpString(meta.blurb)})\n`;
