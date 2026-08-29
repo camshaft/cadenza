@@ -1131,6 +1131,13 @@ pub enum Resolved {
     /// program declines while an int↔float MIX rejects at the type check — both decline-don't-miscompile.
     /// The exact `Decimal` is carried so a future float-arithmetic increment reads the literal value.
     Float(crate::ast::Decimal),
+    /// A native RATIONAL literal (`3r2` → numerator `3`, denominator `2`) — the `Leaf::Rational` node the
+    /// reader builds (a head tag + two integer-leaf children, read by `Arenas::rational_parts`). Types as
+    /// `Ty::Rational` and `core_of` folds it to a normalized `Core::ConstRational` (gcd-reduced, sign on the
+    /// numerator, zero-denominator → a `CDZ0304` constant trap) — the same fold `(: n Rational)` uses, so a
+    /// native `3r2` and an annotated `(: 3/2 …)` produce the identical exact value. The two `IntValue`s are
+    /// the numerator and denominator as WRITTEN (unnormalized); `normalized_rational` reduces them.
+    Rational(IntValue, IntValue),
     /// The unit value (`()`).
     Unit,
     /// A reference to a binding: the name at this occurrence denotes the value at `value` (the

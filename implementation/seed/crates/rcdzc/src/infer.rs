@@ -377,6 +377,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Float(_) => module_default_fraction_ty(db, id)
             .or_else(|| module_default_float_ty(db, id))
             .unwrap_or_else(Ty::float),
+        // A native rational literal (`3r2`) is EXACTLY `Ty::Rational` — the numerator/denominator are
+        // written, so there is nothing to default (unlike a bare literal): the type is fixed by the form.
+        Resolved::Rational(_, _) => Ty::Rational,
         Resolved::Unit => Ty::Unit,
         // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
         // EXCEPT when the ref is to an annotated let-binder `((: n T) v)` whose declared type `T` and the
@@ -15753,6 +15756,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::SymbolConst(_)
         | Resolved::Bytes(_)
         | Resolved::Char(_)
+        | Resolved::Rational(_, _)
         | Resolved::Unit
         | Resolved::TypeVal(_) => {}
         // An anonymous LAMBDA `(fn (params…) body)`: check its parameter list is LINEAR, exactly as a

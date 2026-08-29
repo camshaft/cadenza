@@ -387,6 +387,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
         // they consume it; the CONSTANT itself is now a real core value.
         Resolved::Float(d) => default_fraction_rational(db, id).unwrap_or(Core::ConstFloat(d)),
+        // A native rational literal (`3r2`) folds to a normalized `Core::ConstRational` — the SAME exact
+        // fold `(: n Rational)` uses (`normalized_rational`: gcd-reduce, sign on the numerator, a zero
+        // denominator → a CDZ0304 constant trap). So `3r2` and an annotated rational produce an identical
+        // value; the numerator/denominator carried in the resolved node are the written (unnormalized) pair.
+        Resolved::Rational(num, den) => normalized_rational(num, den),
         Resolved::Unit => Core::Unit,
         // A name is its bound value's core. If that value is a KEPT `let` binding (a multi-use runtime
         // computation the enclosing `let` named once — see `lower_let`), this reference reads the
@@ -14908,6 +14913,7 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
         | Resolved::Bytes(_)
         | Resolved::Char(_)
         | Resolved::Float(_)
+        | Resolved::Rational(_, _)
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }

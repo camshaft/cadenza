@@ -12930,6 +12930,64 @@ mod match_engine {
     }
 
     #[test]
+    fn a_native_rational_literal_resolves_infers_and_lowers_to_a_normalized_const_rational() {
+        // seq-204 native-rational flag-day (my resolve/lower part): a `Leaf::Rational` node (the reader's
+        // `3r2`, staged by v-ast-consolidate) resolves to `Resolved::Rational(num, den)`, types as
+        // `Ty::Rational`, and lowers to a NORMALIZED `Core::ConstRational` — the same fold `(: n Rational)`
+        // uses. Built via `Builder` (the reader's `3r2` syntax is v-syntax's part, not landed yet).
+        use crate::ast::{Builder, IntValue, Leaf, Radix};
+        use crate::core::Core;
+        // `(module m (def (main) 4r2) (export main))` — 4/2 is NOT lowest terms, so lowering must reduce it
+        // to 2/1 (proving normalized_rational runs, not a raw copy of the written pair).
+        let mut b = Builder::new();
+        let n4 = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_i64(4),
+            radix: Radix::Dec,
+        });
+        let d2 = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_i64(2),
+            radix: Radix::Dec,
+        });
+        let rat = b.rational(n4, d2); // the native 4r2 node
+        let main_sig = {
+            let mn = b.name("main");
+            b.list(vec![mn])
+        };
+        let def = {
+            let dh = b.name("def");
+            b.list(vec![dh, main_sig, rat])
+        };
+        let export = {
+            let eh = b.name("export");
+            let mn = b.name("main");
+            b.list(vec![eh, mn])
+        };
+        let module = {
+            let mh = b.name("module");
+            let mn = b.name("m");
+            b.list(vec![mh, mn, def, export])
+        };
+        let mut db = crate::db::Db::load(b.finish(module));
+        // resolve: the native node → Resolved::Rational(4, 2) (the WRITTEN, unnormalized pair).
+        assert_eq!(
+            crate::resolve::resolved_of(&mut db, rat),
+            crate::resolved::Resolved::Rational(IntValue::from_i64(4), IntValue::from_i64(2)),
+            "a Leaf::Rational node resolves to Resolved::Rational with the written num/den"
+        );
+        // infer: types as Ty::Rational.
+        assert!(
+            matches!(crate::infer::type_of(&mut db, rat), crate::ty::Ty::Rational),
+            "a native rational literal types as Ty::Rational"
+        );
+        // lower: folds to a NORMALIZED Core::ConstRational — 4/2 → 2/1.
+        assert_eq!(
+            crate::lower::core_of(&mut db, rat),
+            Core::ConstRational(IntValue::from_i64(2), IntValue::from_i64(1)),
+            "4r2 lowers to the normalized 2/1 ConstRational (gcd-reduced)"
+        );
+    }
+
+    #[test]
     fn overflow_mode_of_resolves_the_single_mode_by_operand_signedness() {
         // STAGE 2a (ruling B): `infer::overflow_mode_of` resolves ONE mode per unqualified `+`/`-`/`*` node
         // — the module pragma's mode selected by the operand's concrete SIGNEDNESS, else the global manifest

@@ -455,6 +455,17 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             if children.is_empty() {
                 return Resolved::Unit;
             }
+            // A NATIVE RATIONAL literal `Leaf::Rational` node (`3r2` — a head tag + numerator/denominator
+            // integer leaves, read by `rational_parts`) is a constant VALUE, not an application: resolve it
+            // to `Resolved::Rational(num, denom)` (the two written `IntValue`s) so `type_of` gives it
+            // `Ty::Rational` and `core_of` folds a normalized `Core::ConstRational`. A malformed one (a child
+            // that is not an integer leaf — the reader never builds that) falls through to the ordinary
+            // head dispatch below rather than being mis-read as a rational.
+            if let Some((n, d)) = db.ast.rational_parts(id)
+                && let (Some(num), Some(den)) = (db.ast.as_int(n), db.ast.as_int(d))
+            {
+                return Resolved::Rational(num.clone(), den.clone());
+            }
             // The compound-value-constructor PRIMITIVES are STRING-LITERAL heads: `("record" …)` builds
             // a record, `("tuple" …)` builds a tuple. A string is unspellable as an identifier, so the
             // primitive is unshadowable — dispatched here, before the NAME dispatch. The ordinary names
