@@ -12966,3 +12966,22 @@
     (export main)))
   (call main (: 300 Int64)) (output (: 501484 Int64))
   (call main (: 7 Int64)) (output (: 500077 Int64)))
+
+(case "cdzw58 RUNTIME BigInt arithmetic (widen + add + mul beyond i64) round-trips the cadenza hop"
+  (doc "The runtime twin of cdzw51's const face: (BigInt.of n) widens a runtime scalar, adds a 20-digit
+        literal and doubles — the hop must re-emit the runtime BigInt op chain (not a folded const).
+        n=7 → 200000000000000000012; n=-3 → 199999999999999999992 (hand-derived). Dual-path verified,
+        byte-idempotent; live 1 = the returned BigInt.")
+  (input (do (def (main (: n Int64)) (* (+ (BigInt.of n) 99999999999999999999N) 2N)) (export main)))
+  (call main (: 7 Int64)) (output (: 200000000000000000012 BigInt))
+  (call main (: -3 Int64)) (output (: 199999999999999999992 BigInt))
+  (live-objects 1))
+
+(case "cdzw59 RUNTIME Rational arithmetic reduces to lowest terms through the cadenza hop"
+  (doc "Runtime rational face: (Rational.of n 3) + 1/6 reduces (n=7: 15/6 → 5/2, numerator 5; n=-3:
+        -5/6, numerator -5) — the hop re-emits the runtime rational chain and the reduction happens
+        identically on both paths. Observed via Rational.numerator (a BigInt, live 1).")
+  (input (do (def (main (: n Int64)) (Rational.numerator (+ (Rational.of n 3) (Rational.of 1 6)))) (export main)))
+  (call main (: 7 Int64)) (output (: 5 BigInt))
+  (call main (: -3 Int64)) (output (: -5 BigInt))
+  (live-objects 1))
