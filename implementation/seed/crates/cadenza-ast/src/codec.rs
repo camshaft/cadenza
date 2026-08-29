@@ -132,6 +132,10 @@ const KIND_MAP_CTOR: u8 = 23;
 const KIND_SET_CTOR: u8 = 24;
 const KIND_FIELD_PAIR: u8 = 25;
 const KIND_MEMBER: u8 = 26;
+// The native RATIONAL head (`Leaf::Rational`) — the payloadless tag of a `(RationalTag <num> <den>)`
+// two-child node (children = ordinary `Leaf::Int` value leaves); a distinct data type recognized by kind
+// (operator seq-204/207). Payloadless like FIELD_PAIR/MEMBER.
+const KIND_RATIONAL: u8 = 27;
 const SUFFIX_BIGINT: u8 = 0;
 const SUFFIX_RATIONAL: u8 = 1;
 const BODY_INT: u8 = 0;
@@ -312,6 +316,7 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
         }),
         Leaf::FieldPair => out.push(KIND_FIELD_PAIR),
         Leaf::Member => out.push(KIND_MEMBER),
+        Leaf::Rational => out.push(KIND_RATIONAL),
         Leaf::Str(s) => {
             out.push(KIND_STR);
             write_bytes(out, s.as_bytes());
@@ -549,6 +554,7 @@ fn read_leaf(r: &mut Reader) -> Result<Leaf, DecodeError> {
         KIND_SET_CTOR => Leaf::Ctor(CompoundCtor::Set),
         KIND_FIELD_PAIR => Leaf::FieldPair,
         KIND_MEMBER => Leaf::Member,
+        KIND_RATIONAL => Leaf::Rational,
         KIND_STR => Leaf::Str(read_string(r)?.into()),
         KIND_BYTES => Leaf::Bytes(read_raw_bytes(r)?.into()),
         KIND_BOOL_FALSE => Leaf::Bool(false),
@@ -1049,6 +1055,7 @@ mod tests {
             (Leaf::Ctor(CompoundCtor::Set), 24u8),
             (Leaf::FieldPair, 25u8),
             (Leaf::Member, 26u8),
+            (Leaf::Rational, 27u8),
         ] {
             let mut raw = Vec::new();
             write_leaf(&mut raw, &leaf);
@@ -1084,6 +1091,7 @@ mod tests {
             enc(&Leaf::Ctor(CompoundCtor::Set)),
             enc(&Leaf::FieldPair),
             enc(&Leaf::Member),
+            enc(&Leaf::Rational),
         ];
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
