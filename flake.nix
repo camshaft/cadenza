@@ -5295,7 +5295,12 @@
               text = ''
                 echo "cdz gate: nix build .#checks.${system}.local-gate (full battery; CONVENIENCE — the" >&2
                 echo "          authoritative merge gate is 'cargo xtask fleet gate-local')…" >&2
-                exec nix build ".#checks.${system}.local-gate" --print-build-logs "$@"
+                # --keep-going: build+report EVERY sub-check even when a sibling fails, so one run surfaces the
+                # FULL failing set — not a drip (breaker/concierge gate-hygiene 2026-08-29: ~18 gate-check
+                # failures stayed masked 8 cycles behind faster-failing siblings that aborted the build early).
+                # (The AUTHORITATIVE gate-local's nix_gate_argv in fleet.rs is v-ft's lane — recommended there
+                # too; this keeps the convenience surface consistent.)
+                exec nix build ".#checks.${system}.local-gate" --keep-going --print-build-logs "$@"
               '';
             };
           in
