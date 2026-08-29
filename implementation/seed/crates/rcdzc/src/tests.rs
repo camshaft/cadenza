@@ -16663,32 +16663,13 @@ mod match_engine {
     }
 
     #[test]
-    fn a_non_unit_second_argument_to_qty_of_is_rejected() {
-        // `Qty.of <value> <unit>` — the VALUE-position companion of the Qty-TYPE unit check. A non-unit
-        // second arg (`(Qty.of 5 5)`, `(Qty.of 5 "s")`, `(Qty.of 5 (tuple 1 2))`) made `eval::unit_of`
-        // return None and `type_of`'s `Qty.of` arm SILENTLY fell through to `Any` — so `cdz check` passed
-        // (a quantity with no real unit slipped by). Now rejected CDZ0201, naming the unit forms.
-        let msg = |src: &str| -> Option<String> {
-            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| {
-                    d.message
-                        .contains("`Qty.of`'s second argument must be a UNIT")
-                })
-                .map(|d| d.message)
-        };
-        for src in [
-            "(module m (def (main) (Qty.of 5 5)) (export main))",
-            "(module m (def (main) (Qty.of 5 \"s\")) (export main))",
-            "(module m (def (main) (Qty.value (Qty.of 5 (tuple 1 2)))) (export main))",
-        ] {
-            assert!(
-                msg(src).is_some(),
-                "a non-unit Qty.of second arg is rejected: {src}"
-            );
-        }
-        // NO double-report: a bare UNBOUND unit name surfaces its OWN CDZ0101 (unbound), NOT also the
-        // not-a-unit reject (guarded on the arg being otherwise fault-free).
+    fn a_non_unit_qty_of_arg_unbound_unit_is_not_a_double_report() {
+        // The non-unit-second-arg rejects (CDZ0201 "`Qty.of`'s second argument must be a UNIT" for a bare
+        // Int / String / tuple) + the valid Unit.base/Unit.one controls migrated to corpus 18-units-of-measure
+        // (the Qty.of argument-validation reject cluster). What STAYS here is the corpus-inexpressible
+        // no-DOUBLE contrast: a bare UNBOUND unit name (`(Qty.of 5 meter)`, meter undefined) surfaces its OWN
+        // CDZ0101 (unbound), NOT ALSO the not-a-unit reject (the check is guarded on the arg being otherwise
+        // fault-free) — a no-OTHER-message assertion the corpus (error …) surface cannot express.
         let unbound = crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (def (main) (Qty.of 5 meter)) (export main))",
         )));
@@ -16702,16 +16683,6 @@ mod match_engine {
             "a bare unbound unit gets only its own unbound-name error, not a double: {:?}",
             unbound.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
-        // NO false change: a VALID unit expression (`Unit.base`/`Unit.one`) is unaffected.
-        for ok in [
-            "(module m (def (main) (Qty.value (Qty.of 5 (Unit.base #\"meter\")))) (export main))",
-            "(module m (def (main) (Qty.value (Qty.of 5 Unit.one))) (export main))",
-        ] {
-            assert!(
-                msg(ok).is_none(),
-                "a valid Qty.of unit is not flagged: {ok}"
-            );
-        }
     }
 
     #[test]
