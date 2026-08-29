@@ -365,6 +365,16 @@
           doCheck = false;
         });
 
+        # xtaskInstallLspBin — the STANDALONE `install-lsp` command (v-xtask-decompose). Built from ONLY the
+        # xtask-install-lsp crate's closure (a std+xshell LEAF — no workspace deps), so it caches independently
+        # of xtask. `apps.install-lsp` wraps it with CDZ_REPO_ROOT (+ args passthrough for --uninstall). Output:
+        # $out/bin/xtask-install-lsp.
+        xtaskInstallLspBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-install-lsp"; }) // {
+          pname = "cdz-xtask-install-lsp";
+          cargoExtraArgs = "-p xtask-install-lsp";
+          doCheck = false;
+        });
+
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
         # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
@@ -623,6 +633,10 @@
           # deps-src includes its Cargo.toml (else the workspace fails to load). `benchCheck` runs it; the
           # xtask `Cmd::Bench` arm is removed so `cargo xtask bench` forwards to `apps.bench` (nix run .#bench).
           xtask-bench = "xtask/crates/xtask-bench";
+          # xtask-install-lsp (v-xtask-decompose): the `install-lsp` command carved into its own std+xshell
+          # LEAF crate. A ROOT workspace member (xtask/crates/* glob), so it MUST be registered here or the
+          # crane deps-src omits its Cargo.toml → `cargo build --workspace` (crateCdzCheck) fails to load.
+          xtask-install-lsp = "xtask/crates/xtask-install-lsp";
         };
         rootCrateNames = builtins.attrNames rootWorkspaceCrates;
         # direct member-edges of one crate across the three rebuild-relevant dep sections (A1 walk).
@@ -967,6 +981,8 @@
               xtask-mandates = [ "xtask-mandates" ];
               # xtask-bench is a std-only leaf: NO workspace deps (not even xtask-support) — closure is just itself.
               xtask-bench = [ "xtask-bench" ];
+              # xtask-install-lsp is a std+xshell LEAF: no workspace deps → closure is just itself.
+              xtask-install-lsp = [ "xtask-install-lsp" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
               (builtins.attrNames expected);
@@ -4178,6 +4194,10 @@
         # result/bin/xtask-bench. Backs `apps.bench` + the rewired `benchCheck`; caches independently of xtask.
         packages.xtask-bench = xtaskBenchBin;
 
+        # The standalone install-lsp bin (v-xtask-decompose). `nix build .#xtask-install-lsp`. Backs
+        # `apps.install-lsp`; caches independently of xtask.
+        packages.xtask-install-lsp = xtaskInstallLspBin;
+
         # The standalone mandate-lint binary (v-xtask-decompose). `nix build .#xtask-mandates` →
         # result/bin/xtask-mandates. Backs `apps.lint-mandates` + the mandate gate; caches independently
         # of xtask (its closure is just the crate + syn).
@@ -4325,6 +4345,7 @@
               clippy-xtask-codegen-wasm-abi = mkCrateClippyCrane { crate = "xtask-codegen-wasm-abi"; };
               clippy-xtask-prune-baselines = mkCrateClippyCrane { crate = "xtask-prune-baselines"; };
               clippy-xtask-bench = mkCrateClippyCrane { crate = "xtask-bench"; };
+              clippy-xtask-install-lsp = mkCrateClippyCrane { crate = "xtask-install-lsp"; };
             };
             # cdz's clippy stays in its workspace-src check (crateCdzCheck runs `cargo clippy -p cdz` inside).
             clippyCraneAggregate = pkgs.runCommand "cargo-clippy-crane-aggregate"
@@ -4383,6 +4404,7 @@
               # xtask-bench: runs its 4 pure unit tests (tolerance, parse_alloc_lines, baseline round-trip, diff
               # classification). Leaf like the other xtask-* bins. REQUIRED by testCrateCoverageAssert.
               test-xtask-bench = mkCrateTestCrane { crate = "xtask-bench"; };
+              test-xtask-install-lsp = mkCrateTestCrane { crate = "xtask-install-lsp"; };
             };
             # COVERAGE-PARITY assert (concierge mandate — no test silently dropped vs `cargo test
             # --workspace`): the per-crate test crates PLUS cdz (crateCdzCheck) must EXACTLY equal the
@@ -4447,7 +4469,7 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-prune-baselines clippy-xtask-bench clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-prune-baselines clippy-xtask-bench clippy-xtask-install-lsp clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
               echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + xtask-codegen-wasm-abi + xtask-prune-baselines + xtask-bench + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
@@ -5436,6 +5458,28 @@
         # forwards here via the cargo→nix redirect. The bin shells `cargo test` in cdz-runtime for the
         # measurement, so cargo/rustc come from the invoking dev shell (same as the old `cargo xtask bench`);
         # the wrapper only resolves + exports CDZ_REPO_ROOT so the bin diffs the invoking worktree's baseline.
+        # apps.install-lsp — the LSP-installer as a nix-native app backed by the STANDALONE xtaskInstallLspBin
+        # (v-xtask-decompose). `nix run .#install-lsp [-- --uninstall]`. Builds ONLY xtask-install-lsp (a
+        # std+xshell leaf), NOT the xtask monolith; the `Cmd::InstallLsp` arm is removed so `cargo xtask
+        # install-lsp` forwards here. Sets CDZ_REPO_ROOT so the relocated bin finds the invoking worktree
+        # (it symlinks integrations/vscode + builds the cdz LSP server from there); args pass through for --uninstall.
+        apps.install-lsp =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-install-lsp";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export CDZ_REPO_ROOT="$root"
+                exec ${xtaskInstallLspBin}/bin/xtask-install-lsp "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-install-lsp";
+          };
+
         apps.bench =
           let
             wrapper = pkgs.writeShellApplication {
