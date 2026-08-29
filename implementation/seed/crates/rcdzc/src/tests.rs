@@ -8438,46 +8438,6 @@ mod match_engine {
     // strip-time shape check; name-resolution/boolean-typedness is checked later at denotation, see
     // requires_ensures_predicate_unbound_name_is_cdz0101_valid_names_ok below.)
 
-    /// Verification Inc-b b4c: a `@requires`/`@ensures` predicate references only names in scope — the
-    /// def's PARAMETERS, `ret` (for `@ensures`), and prelude/global names. A name that is none of those is
-    /// UNBOUND → CDZ0101 at the annotation (good locality). The b4a2-deferred name check, done where the
-    /// scope is known: each predicate name occurrence is checked against the param set + `ret`, and any other
-    /// name must resolve standalone (a prelude op does; a stray name poisons CDZ0101).
-    #[test]
-    fn requires_ensures_predicate_unbound_name_is_cdz0101_valid_names_ok() {
-        use crate::testkit::parse;
-        // UNBOUND: a name that is not a param, not `ret`, not a prelude op.
-        for (src, why) in [
-            (
-                "(module m (@ (requires (> y 0)) (def (f (: x Int64)) (+ x 1))) (export f))",
-                "@requires references unbound `y` (param is x)",
-            ),
-            (
-                "(module m (@ (ensures (> zzz 0)) (def (f (: x Int64)) (+ x 1))) (export f))",
-                "@ensures references unbound `zzz`",
-            ),
-        ] {
-            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.code.as_deref() == Some("CDZ0101"))
-                .unwrap_or_else(|| panic!("an unbound predicate name must be CDZ0101: {why}"));
-            assert_eq!(d.code.as_deref(), Some("CDZ0101"), "{why}: {}", d.message);
-        }
-        // BOUND: params, `ret` (in @ensures), and prelude operators (`>`,`+`,`<=`) all in scope — no CDZ0101.
-        for ok in [
-            "(module m (@ (requires (> x 0)) (def (f (: x Int64)) (+ x 1))) (export f))", // param x
-            "(module m (@ (ensures (> ret 0)) (def (f (: x Int64)) (+ x 1))) (export f))", // result ret
-            "(module m (@ (requires (<= x 100)) (@ (ensures (> ret x)) (def (f (: x Int64)) (+ x 1)))) (export f))",
-        ] {
-            assert!(
-                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                    .iter()
-                    .any(|d| d.code.as_deref() == Some("CDZ0101")),
-                "a predicate over params/ret/prelude-ops must NOT flag unbound: {ok}"
-            );
-        }
-    }
-
     /// Verification Inc-b a1: the compiler-bundled verification KERNEL asset (`verify_kernel.cdz`) READS as
     /// a well-formed s-expression module and declares the pieces a1/a3 need — the ABSTRACT `Thm` sequent
     /// and the `licenses` match predicate. This is the parse-level validation of the asset the compiler will

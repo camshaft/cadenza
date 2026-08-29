@@ -2882,6 +2882,19 @@
             (export main)))
   (error  CDZ0101))
 
+; The @requires/@ensures analogue of the @invariant name-resolution pin: a predicate references only names
+; in scope — the def's PARAMETERS, `ret` (for @ensures), and prelude/global names. A name that is none of
+; those is UNBOUND → CDZ0101 at the annotation (b4c discipline). The valid-names path (a predicate over
+; params / ret / prelude ops) is the satisfying-@requires/@ensures family elsewhere in this file. (migrated
+; from rcdzc requires_ensures_predicate_unbound_name_is_cdz0101_valid_names_ok.)
+(case "an @requires predicate referencing an unbound name is rejected CDZ0101"
+  (input  (do (@ (requires (> y 0)) (def (f (: x Int64)) (+ x 1))) (export f)))
+  (error  CDZ0101))
+
+(case "an @ensures predicate referencing an unbound name is rejected CDZ0101"
+  (input  (do (@ (ensures (> zzz 0)) (def (f (: x Int64)) (+ x 1))) (export f)))
+  (error  CDZ0101))
+
 (case "@invariant destructure-arm predicate: a stray name inside the arm is still REJECTED (arm binder scope does not mask it)"
   (doc    "The destructure-form sibling of the flat unbound-name reject above. The canonical
            `@invariant(match self ((T.V v) …))` shape binds `v` predicate-LOCALLY (in scope in the arm — see
