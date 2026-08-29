@@ -310,7 +310,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(10) {
+    match c.variant(11) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -330,6 +330,8 @@ fn gen_main_body<C: Choice>(
         8 => gen_compound_consume(c, out),
         // A `?`/`try` body: a fallible (Result/Option) boundary + a `(try …)` unwrap / short-circuit.
         9 => gen_try_body(c, out),
+        // A DESTRUCTURING pattern match: `(match (tuple/record …) ((tuple/record …binders…) <binder>))`.
+        10 => gen_pattern_match_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -945,6 +947,55 @@ fn gen_try_body<C: Choice>(c: &mut C, out: &mut String) {
             write!(out, "(: (let ((x (try None))) (Some x)) (Option {ty}))").ok();
         }
     };
+}
+
+/// A DESTRUCTURING pattern-match body: `match` a native `tuple`/`record` (or a `Some`-wrapped tuple) with
+/// a PATTERN that binds its components, returning one bound component (type `t`). Exercises the native
+/// compound-PATTERN lowering (#5257 round-trip) + `MatchSum`/binder-extract emit — distinct from the
+/// projection (`(. c i)`) and sum-ctor matches. Every element is the SAME scalar type `t` and the arm
+/// returns a binder of that type, so it stays type-correct + on the compile path; the destructured
+/// tuple/record + the nested `(Some (tuple …))` all GRADE (verified lean:HOLDS). Lists are NOT
+/// pattern-destructured (a fixed-arity `(list a b c)` pattern is CDZ0210) — projection/`List.len` cover them.
+fn gen_pattern_match_body<C: Choice>(c: &mut C, out: &mut String) {
+    let t = pick_scalar_ty(c);
+    match c.variant(4) {
+        // 2-tuple destructure → return the first binder.
+        0 => {
+            out.push_str("(match (tuple ");
+            gen_scalar_leaf(c, t, out);
+            out.push(' ');
+            gen_scalar_leaf(c, t, out);
+            out.push_str(") ((tuple x y) x))");
+        }
+        // 3-tuple destructure → return the middle binder.
+        1 => {
+            out.push_str("(match (tuple ");
+            gen_scalar_leaf(c, t, out);
+            out.push(' ');
+            gen_scalar_leaf(c, t, out);
+            out.push(' ');
+            gen_scalar_leaf(c, t, out);
+            out.push_str(") ((tuple x y z) y))");
+        }
+        // Record destructure → return the `b` field's binder.
+        2 => {
+            out.push_str("(match (record (= a ");
+            gen_scalar_leaf(c, t, out);
+            out.push_str(") (= b ");
+            gen_scalar_leaf(c, t, out);
+            out.push_str(")) ((record (= a x) (= b y)) y))");
+        }
+        // NESTED: a `Some`-wrapped 2-tuple, destructured in the `Some` pattern; `None` → a same-typed default.
+        _ => {
+            out.push_str("(match (Some (tuple ");
+            gen_scalar_leaf(c, t, out);
+            out.push(' ');
+            gen_scalar_leaf(c, t, out);
+            out.push_str(")) ((Some (tuple x y)) x) ((None) ");
+            gen_scalar_leaf(c, t, out);
+            out.push_str("))");
+        }
+    }
 }
 
 /// Append one coerced `Int64` expression: at `depth == 0` (or when the base variant is picked) an
@@ -1720,6 +1771,41 @@ mod tests {
         assert!(saw_err, "should reach a Result Err-short-circuit try");
         assert!(saw_some, "should reach an Option Some-success try");
         assert!(saw_none, "should reach an Option None-short-circuit try");
+    }
+
+    /// `gen_pattern_match_body` REACHES all destructuring-pattern forms (tuple-2 / tuple-3 / record /
+    /// nested Some-tuple) and every body COMPILES (S119: fills the compound-PATTERN gap #5257 round-trips).
+    /// A malformed pattern (or an unsupported list pattern → CDZ0210) would surface here.
+    #[test]
+    fn gen_pattern_match_body_reaches_all_forms_and_compiles() {
+        let (mut saw_t2, mut saw_t3, mut saw_rec, mut saw_nested) = (false, false, false, false);
+        for seed in 0u64..1024 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(409);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_pattern_match_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_t2 |= body.contains("((tuple x y) x)");
+            saw_t3 |= body.contains("((tuple x y z) y)");
+            saw_rec |= body.contains("((record (= a x) (= b y)) y)");
+            saw_nested |= body.contains("((Some (tuple x y)) x)");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "pattern-match body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_t2, "should reach a 2-tuple destructure pattern");
+        assert!(saw_t3, "should reach a 3-tuple destructure pattern");
+        assert!(saw_rec, "should reach a record destructure pattern");
+        assert!(
+            saw_nested,
+            "should reach a nested Some-tuple destructure pattern"
+        );
     }
 
     /// Every operator the generator can emit is a valid Int64→Int64→Int64 op the compiler CLEANLY
