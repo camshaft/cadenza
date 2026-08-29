@@ -6074,7 +6074,7 @@ mod tests {
         let messy = "(module m (def (add a b)   (+ a b)) (export add))";
         let formatted = format_document(messy, false).expect("a clean parse formats");
         assert_eq!(
-            formatted, "(module m (def (add a b) (+ a b)) (export add))\n",
+            formatted, "(module m\n  (def (add a b) (+ a b))\n\n  (export add))\n",
             "the formatter should canonicalize whitespace + newline-terminate, got {formatted:?}"
         );
     }
@@ -6171,14 +6171,14 @@ mod tests {
             "edit starts at doc start"
         );
         assert_eq!(
-            edits[0].new_text, "(module m (def (add a b) (+ a b)) (export add))\n",
+            edits[0].new_text, "(module m\n  (def (add a b) (+ a b))\n\n  (export add))\n",
             "the edit carries the canonical text"
         );
         // Now make the doc canonical and re-format → no edit.
         server.docs.insert(
             uri.clone(),
             Document {
-                text: "(module m (def (add a b) (+ a b)) (export add))\n".to_string(),
+                text: "(module m\n  (def (add a b) (+ a b))\n\n  (export add))\n".to_string(),
                 is_ml: false,
             },
         );

@@ -305,6 +305,16 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
         // Deferred literal Doc ops, queued AFTER a list's opening `(` + head so they fire in order.
         OpenSpace,
         OpenBlank,
+        // A HARD break (always fires) — forces the enclosing consistent box to break. Used for the
+        // head→first-definition separator of a TOP-LEVEL `(do …)` / `module`, so a program lays out
+        // VERTICALLY (each definition on its own line) even when it would fit `width` — a program reads
+        // as a stacked list of defs, not a wrapped paragraph. One hardbreak breaks the whole do/module
+        // box, so its soft `OpenBlank` def-separators fire too; each def's OWN box stays flat if it fits.
+        OpenHardBreak,
+        // A NON-breaking literal space — renders ` ` always, never a newline (unlike `OpenSpace`, which
+        // fires as a break when its consistent box breaks). Used to keep a `module`'s NAME hugging its head
+        // (`(module m`) even though the surrounding box is force-broken by the definition list below it.
+        OpenAttach,
         CloseParen, // emits `word(")")` then `end()` — the box closer paired with each `cbox`+`(`.
     }
     let mut stack: Vec<Work> = vec![Work::Node(root, root_top)];
@@ -312,6 +322,8 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
         match w {
             Work::OpenSpace => doc.space(),
             Work::OpenBlank => blank_line(doc),
+            Work::OpenHardBreak => doc.hardbreak(),
+            Work::OpenAttach => doc.word(" "),
             Work::CloseParen => {
                 doc.word(")");
                 doc.end();
@@ -371,11 +383,24 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
                         _ => usize::MAX,
                     };
                     // Push in REVERSE so the stack pops head, sep, child1, sep, child2, …, ) in order.
+                    let is_module = a.head_name(id) == Some("module");
                     stack.push(Work::CloseParen);
                     for (i, &child) in items.iter().enumerate().skip(1).rev() {
                         stack.push(Work::Node(child, false));
                         stack.push(if i > blank_sep_from {
                             Work::OpenBlank
+                        } else if i == blank_sep_from {
+                            // The head→FIRST-DEFINITION separator of a top-level `do`/`module`
+                            // (`blank_sep_from` is that first-def index; `usize::MAX` for a nested `do`, so
+                            // this never fires there). A HARD break here forces the whole do/module box to
+                            // break, laying the program out vertically regardless of `width`; the def
+                            // separators (`OpenBlank`) then fire too, while each def's own box stays flat.
+                            Work::OpenHardBreak
+                        } else if is_module && i == 1 {
+                            // A module's NAME hugs its head (`(module m`) with a non-breaking space — so the
+                            // force-break above (which breaks the whole consistent box) does not push the name
+                            // onto its own line.
+                            Work::OpenAttach
                         } else {
                             Work::OpenSpace
                         });
@@ -1523,6 +1548,42 @@ mod tests {
     }
 
     #[test]
+    fn a_top_level_program_lays_out_vertically_even_when_it_fits() {
+        // Operator (a)-canonical requirement (the guide DISPLAYS canonical sexpr): a top-level program is a
+        // stacked list of definitions, so a `(do …)` / `module` lays out VERTICALLY — each member on its own
+        // line, blank-separated — regardless of whether the whole program would fit `width` on one line. A
+        // NESTED `do` (a statement block / function body) stays width-driven. Each member's own box still
+        // stays flat when it fits (a short def is one line).
+        let src = "(do (def (main) (f 5)) (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x 1))) (export main))";
+        let a = read(src).unwrap();
+        // At width 100 the whole program (~90 chars) WOULD fit on one line — but it must still break.
+        let out = print_pretty_width(&a, 100);
+        assert_eq!(
+            out,
+            "(do\n  (def (main) (f 5))\n\n  (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x 1)))\n\n  (export main))",
+            "top-level program must lay out vertically at width 100:\n{out}"
+        );
+        // Each member's OWN box stays flat when it fits — the `(def (main) (f 5))` and the `@` member are
+        // each one line (only the do-level broke), so this is readable, not over-broken.
+        assert!(
+            out.contains("  (def (main) (f 5))\n"),
+            "member stays flat:\n{out}"
+        );
+        // Re-reads to the same arena (formatting is whitespace-insensitive) — round-trip preserved.
+        assert!(
+            read(&out).unwrap().structurally_eq(&a),
+            "vertical layout re-reads identically"
+        );
+        // A NESTED `do` (a def body) is NOT force-broken — it stays on one line when it fits.
+        let nested = read("(def (f) (do (g) (h)))").unwrap();
+        assert_eq!(
+            print_pretty_width(&nested, 100),
+            "(def (f) (do (g) (h)))",
+            "a nested do (statement block) stays width-driven, not force-broken"
+        );
+    }
+
+    #[test]
     fn a_compound_value_renders_and_round_trips_as_the_native_ctor_form() {
         // DRIFT GUARD (requested by v-rust-backend; protects #5586 + its bytes-second render_val + the M3
         // name-head-alias removal): the CANONICAL render of a compound VALUE is the native `#ctor` form
@@ -2247,11 +2308,11 @@ mod tests {
             print_pretty_width(&a, 25),
             "(do\n  (def (a x) (+ x 1))\n\n  (def (b y) (* y 2)))"
         );
-        // A module blank-separates members, keeping `module` and the name attached.
+        // A module blank-separates members, keeping `module` and the name attached (`(module m`).
         let a = read("(module m (type T A B) (def (a x) x) (def (b y) y))").unwrap();
         assert_eq!(
             print_pretty_width(&a, 25),
-            "(module\n  m\n  (type T A B)\n\n  (def (a x) x)\n\n  (def (b y) y))"
+            "(module m\n  (type T A B)\n\n  (def (a x) x)\n\n  (def (b y) y))"
         );
     }
 
