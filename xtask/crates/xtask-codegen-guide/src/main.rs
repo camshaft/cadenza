@@ -14,6 +14,7 @@ use cadenza_syntax_core::spans::SpanTable;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let check = args.iter().any(|a| a == "--check");
+    let migrate = args.iter().any(|a| a == "--migrate");
     let path = match args.iter().find(|a| !a.starts_with("--")) {
         Some(p) => p.clone(),
         None => {
@@ -36,6 +37,28 @@ fn main() {
         eprintln!("xtask-codegen-guide: no (chapter …) form in {path}");
         std::process::exit(1);
     });
+
+    // --migrate: rewrite eligible `(source "…")` / `(starter …)` / `(solution …)` STRING literals in place as
+    // embedded AST forms (seq-213/214). Eligible = a sexpr-surface code string that re-parses cleanly; ML
+    // sources (authored-in "ml") and non-parsing fragments are left as strings. Render output is unchanged by
+    // construction (code_payload span-slices the embedded forms back to the same text), which the caller
+    // verifies with --check. Idempotent: an already-embedded source has no string atom to migrate.
+    if migrate {
+        match migrate_sources(&text, &a, &spans, chapter) {
+            Some((new_text, n)) => {
+                std::fs::write(&path, &new_text).unwrap_or_else(|e| {
+                    eprintln!("xtask-codegen-guide --migrate: write {path}: {e}");
+                    std::process::exit(1);
+                });
+                println!("migrated {n} source(s) → embedded AST in {path}");
+            }
+            None => println!(
+                "{path}: no eligible string source to embed (ml/unparsing/already-embedded)"
+            ),
+        }
+        return;
+    }
+
     let tsx = render_chapter(&a, chapter, &text, &spans);
 
     if check {
@@ -134,6 +157,101 @@ fn code_payload(
     let start = spans.get(first)?.start;
     let end = spans.get(*kids.last()?)?.end;
     text.get(start..end).map(str::to_string)
+}
+
+// ---- --migrate: rewrite eligible `(name "…")` code STRINGS as embedded AST forms `(name <forms>)` ----
+
+/// Rewrite a chapter's runnable/exercise code STRING literals as embedded AST forms, in place. Returns
+/// `(new_text, count)` or `None` if nothing was eligible. Eligibility (conservative — the render output must
+/// stay byte-identical, verified by `--check`): a runnable's `(source …)` (+ each multi-file `(file (source
+/// …))`) and an exercise's `(starter …)`/`(solution …)`, WHEN the sub-form is a single string atom whose
+/// (unescaped) content re-parses cleanly as s-expr. ML sources (`authored-in "ml"` — not s-expr) and any
+/// content that does not parse are left as strings. Replacements are applied right-to-left so earlier byte
+/// offsets stay valid. The content is spliced RAW (unescaped, continuation lines at their original column 0,
+/// exactly as the string held them) so `code_payload`'s span-slice reproduces the same displayed code.
+fn migrate_sources(
+    text: &str,
+    a: &Arenas,
+    spans: &SpanTable,
+    chapter: StructId,
+) -> Option<(String, usize)> {
+    let mut repls: Vec<(usize, usize, String)> = Vec::new();
+    for &f in children(a, chapter) {
+        match a.head_name(f) {
+            Some("runnable") => {
+                if named_attr(a, f, "authored-in") == Some("ml") {
+                    continue; // ML surface is not s-expr — never embed.
+                }
+                collect_embed(a, spans, f, "source", &mut repls);
+                if let Some(files) = named_node(a, f, "files") {
+                    for &file in children(a, files) {
+                        if a.head_name(file) == Some("file") {
+                            collect_embed(a, spans, file, "source", &mut repls);
+                        }
+                    }
+                }
+            }
+            Some("exercise") => {
+                collect_embed(a, spans, f, "starter", &mut repls);
+                collect_embed(a, spans, f, "solution", &mut repls);
+            }
+            _ => {}
+        }
+    }
+    if repls.is_empty() {
+        return None;
+    }
+    let n = repls.len();
+    repls.sort_by_key(|r| std::cmp::Reverse(r.0)); // apply right-to-left: later offsets first
+    let mut out = text.to_string();
+    for (s, e, content) in repls {
+        out.replace_range(s..e, &content);
+    }
+    Some((out, n))
+}
+
+/// If `node`'s `(name …)` sub-form is a single STRING atom whose content re-parses as s-expr, queue a
+/// replacement of that string LITERAL's span (quotes included) with the raw (unescaped) content.
+fn collect_embed(
+    a: &Arenas,
+    spans: &SpanTable,
+    node: StructId,
+    name: &str,
+    out: &mut Vec<(usize, usize, String)>,
+) {
+    let Some(holder) = named_node(a, node, name) else {
+        return;
+    };
+    let kids = children(a, holder);
+    if kids.len() != 1 {
+        return; // already embedded (forms) or empty — nothing to migrate
+    }
+    let atom = kids[0];
+    if !matches!(a.get(atom), Struct::Atom(_)) {
+        return; // already a form, not a string
+    }
+    let Some(content) = a.as_str(atom) else {
+        return; // not a string atom (a bare name/int) — leave it
+    };
+    // Only embed content that re-parses cleanly as s-expr (else it is ML / a fragment — keep the string).
+    let Ok(parsed) = cadenza_syntax_sexpr::read_all(content) else {
+        return;
+    };
+    // COLLISION GUARD: if the code is a single STRING-LITERAL expression (e.g. the runnable `"hello, world"`),
+    // embedding it yields `(source "…")` — INDISTINGUISHABLE from the old string form, so `code_payload` would
+    // take the string path and unescape away the quotes. Leave such sources as strings. (`read_all` wraps top
+    // forms in a synthetic `(do …)`, so `children(root)` are the top forms.)
+    let roots = children(&parsed, parsed.root);
+    if roots.len() == 1
+        && matches!(parsed.get(roots[0]), Struct::Atom(_))
+        && parsed.as_str(roots[0]).is_some()
+    {
+        return;
+    }
+    let Some(sp) = spans.get(atom) else {
+        return;
+    };
+    out.push((sp.start, sp.end, content.to_string()));
 }
 
 /// A block in document order — prose (h2/p/note) or an example (runnable/exercise/why).
@@ -644,6 +762,34 @@ mod tests {
             "(def a 1) ; between\n(def b 2)"
         );
         let _ = (a, spans, r, text); // (first block kept for readability; assertion is on the between-forms case)
+    }
+
+    #[test]
+    fn migrate_embeds_normal_source_but_keeps_string_literal_and_skips_ml() {
+        // A lone string-literal runnable (`"hi"`) must stay a STRING (embedding collides with the string
+        // form and would lose the quotes); an ML runnable must stay a STRING (not s-expr); a normal sexpr
+        // runnable IS embedded as forms.
+        let text = "(chapter (slug \"x\")\n  (runnable (source \"\\\"hi\\\"\"))\n  (runnable (source \"def main() = 5\") (authored-in \"ml\"))\n  (runnable (source \"(def (main) 5)\")))\n";
+        let (a, spans) = parse(text);
+        let ch = locate_chapter(&a).unwrap();
+        let (new_text, n) = migrate_sources(text, &a, &spans, ch).expect("one embedded");
+        assert_eq!(n, 1, "only the plain sexpr runnable is embedded");
+        assert!(
+            new_text.contains("(source \"\\\"hi\\\"\")"),
+            "string-literal code stays a string"
+        );
+        assert!(
+            new_text.contains("(source \"def main() = 5\")"),
+            "ml source stays a string"
+        );
+        assert!(
+            new_text.contains("(source (def (main) 5))"),
+            "plain sexpr source is embedded as forms"
+        );
+        // Idempotent: a second pass finds nothing to embed.
+        let (a2, spans2) = parse(&new_text);
+        let ch2 = locate_chapter(&a2).unwrap();
+        assert!(migrate_sources(&new_text, &a2, &spans2, ch2).is_none());
     }
 
     #[test]

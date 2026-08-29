@@ -9,14 +9,14 @@
   (why (tenet "Written for agents and humans") "Cadenza's whole shape follows from one choice of audience: it is meant to be " (em "written and read by AI agents") " as much as by people. Once your author is a machine that manipulates structure and acts on your output, a cascade of decisions follows: code stored as data, diagnostics that carry verified fixes, one program shown in whichever syntax the reader prefers. As you go, watch how often a feature traces back to this.")
   (p "This guide is interactive. Every example below is " (strong "live") ": you can edit the code and press " (c "▶ Run") " to compile and execute it right here in your browser. There is no server. The Cadenza compiler itself has been compiled to WebAssembly, so when you press Run, your browser compiles your program to a WebAssembly component and runs it, all locally.")
   (runnable
-    (source "(+ 2 3)")
+    (source (+ 2 3))
     (title "Your first program"))
   (p "Try changing " (c "2") " and " (c "3") " to other numbers, then Run again. The result is " (c "5") ", and though nothing here says so, Cadenza has inferred its type is " (c "Int64") ", the checked 64-bit integer you'll meet in " (strong "The numeric model") ".")
   (h2 "One language, two syntaxes")
   (p "A Cadenza program is stored as a single canonical structure, code as data. What you read is a " (em "projection") " of that structure, and more than one projection exists. Use the " (strong "syntax toggle in the header") " to switch every example on the page between the " (em "conventional") " surface (an ML/Rust-family syntax) and the " (em "s-expression") " surface (the direct code-as-data form). Switching never changes the program, since it is the same structure, printed differently.")
   (note "Flip the header toggle now and watch this example re-render. Both forms compile to the exact same component.")
   (runnable
-    (source "((fn (x) (+ x 1)) 5)")
+    (source ((fn (x) (+ x 1)) 5))
     (title "The same program, either way"))
   (why (tenet "One representation, many syntaxes") "A Cadenza program isn't " (em "really") " text, but a uniform data structure (code as data), and each syntax is just a lossless " (em "projection") " of it. That's why there's no single \"the syntax\" everyone must agree on: humans get a readable surface, agents get a literal-structure surface, and neither is privileged. It also means whitespace, line endings, and which syntax you chose can never change a program's identity, because the identity is the tree, not the text.")
   (h2 "How to use this guide")

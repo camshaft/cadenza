@@ -20,10 +20,16 @@ const sexps = readdirSync(chaptersDir).filter((f) => f.endsWith(".sexp")).sort()
 const isStringAtom = (n) => isAtom(n) && n.atom.startsWith('"');
 const findings = [];
 
+// Embedded CODE holders (seq-213/214): their nested s-expr forms may contain adjacent string atoms that are a
+// real code concat expression (e.g. Cadenza `("ye" + "s")`), NOT prose wrapping — the boundary is load-bearing.
+// This lint is prose-only, so skip these subtrees entirely (before embedding they were opaque single strings).
+const CODE_HOLDERS = new Set(["source", "starter", "solution"]);
+
 // Walk every list; for each pair of CONSECUTIVE string-atom children, check the wrap-boundary join.
 function walk(node, file) {
   if (!isList(node)) return;
   const kids = node.list;
+  if (kids.length && isAtom(kids[0]) && CODE_HOLDERS.has(kids[0].atom)) return; // embedded code, not prose
   for (let i = 0; i + 1 < kids.length; i++) {
     if (isStringAtom(kids[i]) && isStringAtom(kids[i + 1])) {
       const a = unquoteAtom(kids[i].atom);
