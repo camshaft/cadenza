@@ -474,7 +474,6 @@ fn compile_with_opt_inner(
             artifacts: query_artifacts,
             diagnostics: Vec::new(),
             // No emit ran on this query-only path, so no CSE partition compares happened.
-            #[cfg(test)]
             cse_partition_core_eq_calls: 0,
         };
     }
@@ -1091,8 +1090,19 @@ fn compile_with_opt_inner(
         diagnostics,
         // Surface the emit path's per-`Db` CSE-partition compare count (the `Db` is dropped here) for the
         // regression-guard test to read a single-compile value — see `Db::cse_partition_core_eq_calls`.
-        #[cfg(test)]
-        cse_partition_core_eq_calls: db.cse_partition_core_eq_calls,
+        // The `CompileOutput` field is always-present (it moved to the shared crate, where a
+        // `#[cfg(test)]` field can't be set from `rcdzc`'s tests), but the `Db` COUNTER stays
+        // `#[cfg(test)]` (it's CSE-lane test instrumentation) — so read it under test, else a harmless 0.
+        cse_partition_core_eq_calls: {
+            #[cfg(test)]
+            {
+                db.cse_partition_core_eq_calls
+            }
+            #[cfg(not(test))]
+            {
+                0
+            }
+        },
     }
 }
 
@@ -6833,7 +6843,6 @@ fn fail_with(query_artifacts: Vec<Artifact>, rejects: Vec<Reject>) -> CompileOut
             .map(crate::abi_bridge::diagnostic_from_reject)
             .collect(),
         // An early failure — no emit ran, so no CSE partition compares happened.
-        #[cfg(test)]
         cse_partition_core_eq_calls: 0,
     }
 }
