@@ -3417,6 +3417,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask-codegen-guide"
+version = "0.0.0"
+dependencies = [
+ "cadenza-ast",
+ "cadenza-syntax-sexpr",
+]
+
+[[package]]
 name = "xtask-codegen-wasm-abi"
 version = "0.0.0"
 dependencies = [

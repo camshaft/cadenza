@@ -1,0 +1,23 @@
+# xtask-codegen-guide — the guide sexp→TSX codegen (cadenza-docs I5, the whole-guide→sexpr flip).
+# Operator direction: ONE parser (the main Rust cadenza-syntax-sexpr reader), binary AST is the interchange,
+# and a DEDICATED xtask emits JS/TSX from it — no second (node) parser. This crate reads a chapter `.sexp`
+# via the main reader into a cadenza-ast `Arenas` (the binary-AST interchange), walks the guide-doc heads
+# (chapter/h2/p/note/lede/why/runnable/exercise + inline em/c/br/strong/link/app-link), and emits the
+# `@generated` chapter `.tsx`. Replaces the node `scripts/codegen-chapters.mjs` (I4 pilot). Modeled on
+# `xtask-codegen-wasm-abi` (v-xtask-decompose's codegen→build-time-nix pattern): same read+walk scaffold,
+# String-TSX render instead of Rust-token render. No cdz subprocess — `read_all` parses in-process.
+[package]
+name = "xtask-codegen-guide"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-codegen-guide"
+path = "src/main.rs"
+
+[dependencies]
+# The MAIN s-expr reader (text → Arenas) + the AST/codec — the operator's "one parser": the guide's sexpr
+# chapters parse via the SAME reader Cadenza programs use; guide-doc heads are just generic Name-head lists.
+cadenza-syntax-sexpr = { path = "../../../implementation/seed/crates/cadenza-syntax-sexpr" }
+cadenza-ast = { path = "../../../implementation/seed/crates/cadenza-ast" }
