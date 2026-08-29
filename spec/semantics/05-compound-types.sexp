@@ -124,17 +124,19 @@
            form) — a record's field names are a fixed SET whether written as a value or a type, so this is
            ill-formed and rejected (CDZ0201), the type-form twin of the value-form `(record (a 1) (a 2))`
            reject. Not silently deduplicated to `(Record (: x Bool))` by a last-wins insert. Here the type is
-           written in an annotation's type position.")
+           written in an annotation's type position. The reject NAMES the duplicated field and carries a
+           DELETE fix on the redundant `(name Type)` entry (the type-form twin of the value-form delete fix).")
   (input      (: #record((= x 1)) (Record (: x Int64) (: x Bool))))
-  (error      CDZ0201))
+  (error      CDZ0201 (message "record type names field `x` more than once") (fix (kind delete))))
 
 (case "a duplicate field in a variant's record-type payload is a type error"
   (doc    "The duplicate-field record TYPE is caught wherever a record type is written, not only in an
            annotation: a sum variant whose payload type is `(Record (: x Int64) (: x Bool))` names `x` twice
            and is rejected (CDZ0201). Pins that the fixed-field-set check reaches a record type nested in a
-           type declaration, the variant-payload companion of the annotation case above.")
+           type declaration, the variant-payload companion of the annotation case above. Same coded message
+           + delete fix.")
   (input      (do (type T (V (Record (: x Int64) (: x Bool)))) (def (main) 1) (export main)))
-  (error      CDZ0201))
+  (error      CDZ0201 (message "record type names field `x` more than once") (fix (kind delete))))
 
 ; A SUM's variant names are a set too, exactly as a record's field names are — type-system.md #The
 ; Structural Types makes a sum "of named variants" whose shape is "its variant names with their payload
