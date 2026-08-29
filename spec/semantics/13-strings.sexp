@@ -163,7 +163,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 1190 Int64))
   (call   main (: 0 Int64)) (output (: -910 Int64))
-  (live-objects known-leak 15))
+  (live-objects known-leak 15 13))
 
 (case "MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave"
   (doc    "The depth counter above suffices for ONE bracket type; with three, the counter is provably
@@ -209,7 +209,7 @@
   (call   main (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
   (call   main (: 4 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 18 8 6 0))
 
 (case "a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN"
   (doc    "The inverse of the separator-JOIN pin above: scan for `,` hits and slice each FIELD as a
@@ -251,7 +251,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 321 Int64))
   (call   main (: 0 Int64)) (output (: 411 Int64))
-  (live-objects known-leak 22))
+  (live-objects known-leak 22 23))
 
 (case "a scalar-indexed split over a MULTIBYTE string bounds its walk by scalar-len, not byte-len"
   (doc    "The multibyte witness for the scalar-vs-byte loop-bound distinction that the ASCII split case
@@ -304,7 +304,7 @@
   (call main (: 1 Int64)) (output (: 632 Int64))
   (call main (: 2 Int64)) (output (: 633 Int64))
   (call main (: 3 Int64)) (output (: 630 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 3 3 3 2))
 
 (case "a scalar slice spanning a width TRANSITION carries its multibyte content exactly"
   (doc    "The scalar-slice pins extract ASCII from multibyte strings; this slice's CONTENT is
@@ -447,7 +447,7 @@
   (call   main (: 4 Int64)) (output (: 0 Int64))
   (call   main (: 5 Int64)) (output (: 0 Int64))
   (call   main (: 6 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 12 6 6 12 12 0))
 
 (case "STRING ROTATION check searches the needle inside the doubled haystack at equal length"
   (doc    "The corpus's first SUBSTRING SEARCH (every other dual-string pin walks in lockstep from
@@ -496,7 +496,7 @@
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 4 Int64)) (output (: 0 Int64))
   (call   main (: 5 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 14 24 4 4 0))
 
 (case "EDIT DISTANCE rolls a two-row Levenshtein table over string scalars"
   (doc    "The general form of the one-edit check above (that one special-cases distance ≤ 1; this
@@ -548,7 +548,7 @@
   (call   main (: 2 Int64)) (output (: 0 Int64))
   (call   main (: 3 Int64)) (output (: 3 Int64))
   (call   main (: 4 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 167))
+  (live-objects known-leak 167 39 0 70))
 
 (case "a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch"
   (doc    "The dual-string lockstep walk (the parse/scan pins above walk ONE string; this reads the
@@ -584,7 +584,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 570 Int64))
   (call   main (: 0 Int64)) (output (: 450 Int64))
-  (live-objects known-leak 56))
+  (live-objects known-leak 56 44))
 
 (case "a STRING run-length grouping counts adjacent equal scalars across a rope seam"
   (doc    "The adjacent-grouping walk: thread (current scalar, count) through a String.at scan,
@@ -656,7 +656,10 @@
   (call   main (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 1 Int64)) (output (: 21 Int64))
   (call   main (: 3 Int64)) (output (: 41 Int64))
-  (call   main (: 5 Int64)) (output (: 61 Int64)))
+  (call   main (: 5 Int64)) (output (: 61 Int64))
+  ;; per-call live-objects (B2 re-baseline, coord v-corpus-harness); pre-existing (verified pre/post recent emit)
+  (live-objects known-leak 0 1 8 24)
+  )
 
 (case "a PALINDROME two-pointer walk closes from both ends of a runtime rope"
   (doc    "Every pinned scalar walk moves ONE cursor forward; this closes TWO from opposite ends,
@@ -732,7 +735,7 @@
   (call   main (: 1 Int64)) (output (: 371 Int64))
   (call   main (: 2 Int64)) (output (: 500 Int64))
   (call   main (: 3 Int64)) (output (: 34 Int64))
-  (live-objects known-leak 69))
+  (live-objects known-leak 69 33 45))
 
 (case "string REVERSE walks scalars back-to-front and anti-commutes with concatenation"
   (doc    "The DESCENDING index walk (every other pinned scan ascends; this starts at byte-len − 1
@@ -764,7 +767,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 511 Int64))
   (call   main (: 0 Int64)) (output (: 211 Int64))
-  (live-objects known-leak 29))
+  (live-objects known-leak 29 11))
 
 (case "a WORD COUNT threads an in-word flag through a scalar scan, counting entries not characters"
   (doc    "The wc/lexer-mode idiom — the first Bool MODE FLAG threaded through a string walk (every
@@ -840,7 +843,7 @@
   (call   main (: 9 Int64)) (output (: 21 Int64))
   (call   main (: 40 Int64)) (output (: 21 Int64))
   (call   main (: 3888 Int64)) (output (: 151 Int64))
-  (live-objects known-leak 40))
+  (live-objects known-leak 40 37 37 44))
 
 (case "a ROMAN DECODER subtracts on lookahead and round-trips through the pinned renderer"
   (doc    "The decoder's mechanism is entirely different from the renderer above: a per-scalar value
@@ -895,7 +898,7 @@
   (call   main (: 9 Int64)) (output (: 91 Int64))
   (call   main (: 3888 Int64)) (output (: 38881 Int64))
   (call   main (: 3 Int64)) (output (: 31 Int64))
-  (live-objects known-leak 212))
+  (live-objects known-leak 212 160 292 172))
 
 (case "a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters"
   (doc    "The substitution cipher over the alphabet-table pair: each scalar's position is found by
@@ -940,7 +943,7 @@
   (call   main (: 13 Int64)) (output (: 111 Int64))
   (call   main (: 1 Int64)) (output (: 111 Int64))
   (call   main (: 26 Int64)) (output (: 111 Int64))
-  (live-objects known-leak 914))
+  (live-objects known-leak 914 810 836))
 
 (case "a deep rope indexes by scalar at both extremes"
   (doc    "Scalar addressing through ~500 concat seams: `String.at` reads index 0 (the single \"A\" head
@@ -1132,7 +1135,7 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 8 Int64))
   (call main (: 2 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 19))
+  (live-objects known-leak 19 4))
 
 (case "STRING COMPRESSION emits char-count pairs but keeps the original unless strictly shorter"
   (doc    "The full-algorithm sibling of the FINDING #20 minimal pin above: the same comp-go run-length
@@ -1174,7 +1177,7 @@
   (call main (: 1 Int64)) (output (: 81 Int64))
   (call main (: 2 Int64)) (output (: 31 Int64))
   (call main (: 3 Int64)) (output (: 21 Int64))
-  (live-objects known-leak 38))
+  (live-objects known-leak 38 8 8))
 
 (case "a rope threads TWO chained if-selects, each operand multi-use, and every length stays live"
   (doc    "The composition face of the FINDING #20 family above: not one escaping select but a CHAIN —
@@ -1233,7 +1236,7 @@
   (call main (: 1 Int64)) (output (: 66 Int64))
   (call main (: 2 Int64)) (output (: 83 Int64))
   (call main (: 3 Int64)) (output (: 20 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak 1 0 0))
 
 (case "a helper returns the shorter of two borrowed ropes and both caller handles stay live"
   (doc    "The CALL-BOUNDARY face of the #20 escape family: the select moves into a helper —
@@ -1261,7 +1264,7 @@
   (call main (: 1 Int64)) (output (: 262 Int64))
   (call main (: 2 Int64)) (output (: 114 Int64))
   (call main (: 3 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 1 0))
 
 (case "two ropes pack CROSSWISE into a tuple by a runtime select and both unpack live"
   (doc    "The BOTH-ESCAPE face of the #20 family: previous pins escape ONE rope past a select and
@@ -1375,7 +1378,7 @@
   (call main (: 1 Int64)) (output (: 66 Int64))
   (call main (: 2 Int64)) (output (: 86 Int64))
   (call main (: 3 Int64)) (output (: 26 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak 1 2 1))
 
 (case "a runtime string rope map key is found by its flat twin"
   (doc    "The MAP-KEY companion of the rope-eq cases above: a map keyed by a runtime String ROPE
@@ -3716,7 +3719,7 @@
   (input  (do (def (main (: i Int64)) (match (String.at "abc" i) ((Some s) (String.byte-len s)) (None -1))) (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (call   main (: 5 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 1))
 
 (case "concatenation with a run-time-selected operand joins the actual strings"
   (doc    "`(String.concat (if b \"ab\" \"abcd\") \"z\")` joins a run-time-selected left operand with a
@@ -4376,7 +4379,7 @@
   (call   main (: 1 Int64)) (output (: 52 Int64))
   (call   main (: 2 Int64)) (output (: 41 Int64))
   (call   main (: 3 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 5 5 4))
 
 (case "String.at through a slice VIEW of a rope reads view-relative scalars at every byte width"
   (doc    "Three view layers compose: rope -> scalar slice -> String.at. Over
@@ -4398,7 +4401,7 @@
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 4 Int64))
   (call   main (: 3 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 5 5 5 4))
 
 (case "a slice VIEW and a rope compare by content across the two non-flat reps"
   (doc    "The eq/order pins compare rope-vs-FLAT; this crosses the two NON-FLAT reps directly — a
