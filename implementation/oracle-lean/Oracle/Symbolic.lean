@@ -188,7 +188,49 @@ partial def symMatchPat (m : Module) (patId : Nat) (v : SymExpr) : Option (Optio
         | .ctor _ _ => some none
         | .record _ => some none
         | _ => none
-      else none
+      -- a USER (or prelude) sum-constructor pattern `(C p…)` / `((. T C) p…)`, mirroring symCtorConstruct's
+      -- erasure so pattern and value use ONE representation: a NEWTYPE pattern binds the erased payload
+      -- directly; a struct-newtype matches the field tuple; a sole-nullary matches `unit`; a tagged ctor
+      -- matches `.ctor cname` (arity 1 → payload; arity ≥2 → the tuple payload). Wrong tag → no-match.
+      else match ctorAppName? m pc with
+        | none => none
+        | some cname =>
+          if newtypeCtor? m cname then (match pc[1]? with | some sp => symMatchPat m sp v | none => some (some []))
+          else if structNewtypeCtor? m cname then
+            (match v with
+             | .tuple es =>
+               let sps := pc.extract 1 pc.size
+               if sps.size != es.size then some none
+               else (sps.zip es).foldl (fun (acc : Option (Option SymEnv)) p =>
+                 match acc with
+                 | some (some env) => (match symMatchPat m p.1 p.2 with | some (some e2) => some (some (e2 ++ env)) | some none => some none | none => none)
+                 | other => other) (some (some []))
+             | .const _ => some none | .ctor _ _ => some none | .record _ => some none | _ => none)
+          else if soleNullaryCtor? m cname then
+            (match v with
+             | .const cv => if cv == Value.unit then some (some []) else some none
+             | .ctor _ _ => some none | .tuple _ => some none | .record _ => some none | _ => none)
+          else match variantCtorArity? m cname with
+            | none => none
+            | some ar =>
+              (match v with
+               | .ctor t args =>
+                 if t != cname then some none
+                 else if ar == 0 then some (some [])
+                 else if ar == 1 then (match pc[1]?, args[0]? with
+                                       | some sp, some p => symMatchPat m sp p
+                                       | some _, none => some none
+                                       | none, _ => some (some []))
+                 else (match args[0]? with
+                       | some (SymExpr.tuple es) =>
+                         let sps := pc.extract 1 pc.size
+                         if sps.size != es.size then some none
+                         else (sps.zip es).foldl (fun (acc : Option (Option SymEnv)) p =>
+                           match acc with
+                           | some (some env) => (match symMatchPat m p.1 p.2 with | some (some e2) => some (some (e2 ++ env)) | some none => some none | none => none)
+                           | other => other) (some (some []))
+                       | _ => some none)
+               | .const _ => some none | .tuple _ => some none | .record _ => some none | _ => none)
     | none => none
   | none => none
 
@@ -609,5 +651,16 @@ private def _userSumProg : Module :=
                .atom 9, .atom 7, .list #[16, 17], .atom 0, .list #[19, 8, 15, 18]],
     root := 20 }
 #guard symEvalMain _userSumProg == SymOutcome.sym (.ctor "Num".toUTF8 #[.const (.int 5)])
+-- construct-then-MATCH a user sum: `(match (Num 5) ((Num x) x))` binds x=5 via the tagged-variant pattern → 5.
+private def _matchUserProg : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "type".toUTF8, Leaf.name "E".toUTF8, Leaf.name "Num".toUTF8,
+                Leaf.name "Int64".toUTF8, Leaf.name "Wrap".toUTF8, Leaf.name "def".toUTF8, Leaf.name "main".toUTF8,
+                Leaf.name "match".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[5]), Leaf.name "x".toUTF8, Leaf.name "export".toUTF8],
+    nodes := #[.atom 1, .atom 2, .atom 3, .atom 4, .list #[2, 3], .atom 5, .atom 4, .list #[5, 6], .list #[0, 1, 4, 7],
+               .atom 6, .atom 7, .list #[10], .atom 3, .atom 9, .list #[12, 13], .atom 3, .atom 10, .list #[15, 16],
+               .atom 10, .list #[17, 18], .atom 8, .list #[20, 14, 19], .list #[9, 11, 21],
+               .atom 11, .atom 7, .list #[23, 24], .atom 0, .list #[26, 8, 22, 25]],
+    root := 27 }
+#guard symEvalMain _matchUserProg == SymOutcome.sym (.const (.int 5))
 
 end Oracle
