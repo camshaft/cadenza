@@ -13494,3 +13494,15 @@
   (input (do (def (main (: d Int64)) (do (list 1 (/ 5 d)) 42)) (export main)))
   (call main (: 0 Int64)) (output (: 42 Int64))
   (call main (: 5 Int64)) (output (: 42 Int64)))
+
+(case "cdzw78 closure COMPOSITION (a HOF returning a built closure) applied twice round-trips the cadenza hop"
+  (doc "The composition face: compose builds a NEW closure from two lambda args and returns it; twice
+        applies the composite twice — ((n+3)·2+3)·2. n=7 → 46; n=-5 → -2. Untyped HOF params (compose's
+        f/g infer), a returned fn value, and double application — all through the hop, byte-idempotent.")
+  (input (do
+    (def (twice f (: x Int64)) (f (f x)))
+    (def (compose f g) (fn ((: x Int64)) (f (g x))))
+    (def (main (: n Int64)) (twice (compose (fn ((: a Int64)) (* a 2)) (fn ((: b Int64)) (+ b 3))) n))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 46 Int64))
+  (call main (: -5 Int64)) (output (: -2 Int64)))
