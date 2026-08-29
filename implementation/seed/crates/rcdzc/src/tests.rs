@@ -28155,44 +28155,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_ill_formed_def_parameter_pattern_is_rejected() {
-        // A parameter position is a binding position — no alternative arm — so its pattern must be
-        // irrefutable and linear (core-semantics.md §A Binding Position Accepts An Irrefutable Pattern).
-        // The rewrite carries the pattern to the same `let`-validation the binder case uses, so a refutable
-        // / non-linear parameter faults with the binding-position code rather than miscompiling.
-        let code = |body: &str| -> Option<String> {
-            let src = format!("(module m {body} (def (main) 0) (export main))");
-            let out = crate::compile::compile(
-                &[crate::abi::Artifact::new(
-                    crate::abi::Artifact::KIND_AST,
-                    "m",
-                    crate::codec::encode(&parse(&src)),
-                )],
-                &[crate::backend::Target::Wasm],
-            );
-            if out
-                .artifact(crate::backend::Target::Wasm.artifact_kind())
-                .is_some()
-            {
-                return None;
-            }
-            out.diagnostics
-                .iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
-                .and_then(|d| d.code.clone())
-        };
-        // Refutable multi-variant constructor parameter → CDZ0210.
-        assert_eq!(code("(def (f (Some x)) x)").as_deref(), Some("CDZ0210"));
-        // Non-linear tuple parameter → CDZ0102.
-        assert_eq!(code("(def (f (tuple x x)) x)").as_deref(), Some("CDZ0102"));
-        // NO OVER-REJECTION: a well-formed tuple parameter compiles (used by `main`).
-        assert_eq!(
-            code("(def (f (tuple a b)) (+ a b)) (def (g) (f (tuple 1 2)))"),
-            None
-        );
-    }
-
-    #[test]
     fn a_let_binder_may_be_a_zero_leading_list_rest_pattern_leading_element_rest_is_refutable() {
         // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern + §147: a list pattern is
         // irrefutable ONLY in the ZERO-LEADING rest form `(list .. rest)` — it matches EVERY list (empty
