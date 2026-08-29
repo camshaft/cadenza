@@ -19707,6 +19707,30 @@ fn lower_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
     let rhs = core_of(db, args[1]);
     match (lhs, rhs) {
         (Core::ConstInt(a), Core::ConstInt(b)) => {
+            // OVERFLOW POLICY (STAGE 2b, numeric-model §Overflow Behavior Is Configurable By Policy,
+            // #5313/#5337): under a `(pragma overflow (signed|unsigned wrap))` module a CONSTANT `+`/`-`/`*`
+            // that overflows must WRAP (two's-complement, mod 2^width) — NOT reject CDZ0304. `overflow_mode_of`
+            // resolves this node's authoritative mode (module pragma by operand signedness > global manifest >
+            // Trap; post-mono, #5686) — the SAME decision the backend codegen (2b runtime half) + the oracle
+            // read, so const-fold cannot drift from runtime. A Wrap node folds to the EXACT result truncated
+            // to the operand's solved width via `IntValue::wrap_to` (identical to what the runtime wrapping op
+            // yields). Only `+`/`-`/`*` carry a policy (the spec's configurable ops); `/`/`%`/shift/bitwise
+            // keep their existing folds. A non-overflowing op wraps to itself (no-op), so this changes nothing
+            // except at overflow. `Trap` mode does NOT match here → falls through to the existing
+            // overflow→CDZ0304 logic below, unchanged.
+            if matches!(op, Prim::Add | Prim::Sub | Prim::Mul)
+                && crate::infer::overflow_mode_of(db, id) == crate::db::OverflowMode::Wrap
+                && let crate::ty::Ty::Int(it) = peel_qty_inner_ty(crate::infer::type_of(db, id))
+            {
+                let exact = match op {
+                    Prim::Add => a.add(&b),
+                    Prim::Sub => a.sub(&b),
+                    _ => a.mul(&b), // Mul (the `matches!` guard admits only Add/Sub/Mul)
+                };
+                let wrapped = exact.wrap_to(it.ground_signed(), it.ground_width());
+                trace!(target: "rcdzc::fold", node = id.0, op = intrinsic_name(op), "constant +/-/* WRAPS mod 2^width (pragma overflow wrap) instead of trapping");
+                return Core::ConstInt(wrapped);
+            }
             // ALGEBRAIC IDENTITY FIRST — before the i64 fold. `fold_arith` evaluates over `i64`, so an
             // operand at/above `2^63` (a legitimate `UInt64` constant, e.g. `UInt64.max = 2^64-1`) has no
             // `i64` and `fold_arith` rejects it CDZ0304 ("constant operand does not fit the integer width")
@@ -27062,6 +27086,29 @@ fn const_eval_apply(
                     payloads: Vec::new(),
                 });
             }
+        }
+        // OVERFLOW POLICY in const_eval (STAGE 2b, #5313/#5337): a `+`/`-`/`*` whose NODE resolves to Wrap
+        // mode wraps its CVal result to the operand's solved width (two's-complement, mod 2^width) instead of
+        // computing the exact bignum (which would later surface an overflow as CDZ0302/CDZ0304). This is the
+        // CVal-interpreter twin of the `lower_arith` Wrap fast-path — same overflow_mode_of decision + same
+        // `wrap_to`, so a const-FOLDED recursion (`(const (f 2))`) under `(pragma overflow … wrap)` wraps
+        // per-op exactly like the runtime wrapping op + the direct fold (no drift). Handled HERE (not in
+        // `apply_const_prim`, which carries no `db`/node) because the mode+width need `node`'s type — the same
+        // reason the width-dependent ops above are handled at this caller. Trap mode falls through to the
+        // exact `apply_const_prim` fold (an overflow then surfaces as today). Only `+`/`-`/`*` carry a policy.
+        if matches!(prim, Prim::Add | Prim::Sub | Prim::Mul)
+            && crate::infer::overflow_mode_of(db, node) == crate::db::OverflowMode::Wrap
+            && let [CVal::Int(a), CVal::Int(b)] = &vs[..]
+            && let crate::ty::Ty::Int(it) = peel_qty_inner_ty(crate::infer::type_of(db, node))
+        {
+            let exact = match prim {
+                Prim::Add => a.add(b),
+                Prim::Sub => a.sub(b),
+                _ => a.mul(b), // Mul (the `matches!` guard admits only Add/Sub/Mul)
+            };
+            return Some(CVal::Int(
+                exact.wrap_to(it.ground_signed(), it.ground_width()),
+            ));
         }
         if let Some(r) = apply_const_prim(prim, &vs) {
             return Some(r);

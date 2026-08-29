@@ -147,6 +147,51 @@
   (input  (+ Int64.max 1))
   (error  CDZ0304))
 
+; --- CONFIGURABLE OVERFLOW POLICY (numeric-model §Overflow Behavior Is Configurable By Policy) ----------
+; A module `(pragma overflow (signed <mode>) (unsigned <mode>))` overrides the default trap-on-overflow for
+; unqualified +/-/* over that signedness. Under `wrap`, a CONSTANT overflow WRAPS (two's-complement, mod
+; 2^width) at COMPILE time instead of rejecting CDZ0304 — const-fold honors the SAME resolved mode
+; (`infer::overflow_mode_of`) the runtime codegen + oracle read, so a wrap module's constant overflow and
+; its runtime overflow agree. The default (no pragma) still rejects a provable constant overflow (case above).
+(case "under (pragma overflow (signed wrap)) a constant signed + overflow WRAPS instead of CDZ0304"
+  (doc    "`(+ Int64.max 1)` overflows Int64; under a signed-wrap module it folds to the two's-complement
+           wrap `Int64.min` (mod 2^64) rather than rejecting — const-fold honors overflow_mode_of=Wrap.")
+  (input  (do (pragma overflow (signed wrap)) (def (main) (+ 9223372036854775807 1)) (export main)))
+  (output (: -9223372036854775808 Int64)))
+
+(case "signed-wrap: a constant * overflow wraps (Int64.max * 2 = -2)"
+  (input  (do (pragma overflow (signed wrap)) (def (main) (* 9223372036854775807 2)) (export main)))
+  (output (: -2 Int64)))
+
+(case "signed-wrap at a NARROW width wraps mod 2^width (Int8 127 + 1 = -128)"
+  (doc    "The wrap is at the OPERAND width, not i64: an Int8 `+` wraps mod 2^8, folding 127+1 to -128.")
+  (input  (do (pragma overflow (signed wrap)) (def (main) (+ (: 127 Int8) (: 1 Int8))) (export main)))
+  (output (: -128 Int8)))
+
+(case "unsigned-wrap wraps an unsigned overflow (UInt8 255 + 1 = 0)"
+  (input  (do (pragma overflow (unsigned wrap)) (def (main) (+ (: 255 UInt8) (: 1 UInt8))) (export main)))
+  (output (: 0 UInt8)))
+
+(case "signed-wrap does NOT wrap an UNSIGNED overflow — unsigned falls through to the Trap default (CDZ0304)"
+  (doc    "The pragma is signedness-selective: `(signed wrap)` governs only signed ops; an unsigned overflow
+           with no `(unsigned …)` sub-form falls through to the global/Trap default and still rejects.")
+  (input  (do (pragma overflow (signed wrap)) (def (main) (+ (: 255 UInt8) (: 1 UInt8))) (export main)))
+  (error  CDZ0304))
+
+(case "signed-wrap: a const-FOLDED recursion that overflows wraps per-op (not CDZ0302/CDZ0304)"
+  (doc    "The const-evaluator (CVal) honors the same wrap mode as the direct fold: `(const (f 2))` where
+           `f` adds 1 twice onto Int64.max wraps each `+` at Int64 width — f(2) = wrap(wrap(max+1)+1) =
+           Int64.min+1. Pins that const_eval's +/-/* wrap in step with lower's arith fold (no drift).")
+  (input  (do (pragma overflow (signed wrap))
+              (def (f (: n Int64)) (if (<= n 0) 9223372036854775807 (+ (f (- n 1)) 1)))
+              (def (main) (const (f 2)))
+              (export main)))
+  (output (: -9223372036854775807 Int64)))
+
+(case "under a wrap pragma a NON-overflowing + is unchanged (2 + 3 = 5)"
+  (input  (do (pragma overflow (signed wrap)) (def (main) (+ 2 3)) (export main)))
+  (output (: 5 Int64)))
+
 (case "an ordinary-+ fold whose EXACT result overflows traps under any reassociation"
   (doc    "The runtime, reassociation-STABLE face of the overflow trap (numeric-model.md #A Reassociating
            Optimization May Reorder Or Avoid An Overflow Trap, operator ruling 2026-08-29): an optimizer MAY
