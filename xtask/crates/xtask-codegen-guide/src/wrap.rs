@@ -14,6 +14,9 @@
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Surface {
     Sexpr,
+    // Part of the faithful wrapModule.ts port (ml wrapping) + exercised by the unit tests. The shred wraps in
+    // sexpr and renders ml via `cdz convert`, so the binary never constructs this — kept for port fidelity.
+    #[allow(dead_code)]
     Ml,
 }
 
