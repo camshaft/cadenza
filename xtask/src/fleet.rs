@@ -1379,21 +1379,28 @@ const PRE_COMMIT_HOOK_MARKER: &str = "# fleet:pre-commit";
 
 /// The fleet `pre-commit` hook body. Two guards: (1) the TRUNK-GUARD (refuse a direct commit onto
 /// `trunk` outside the pr-sync worktree — the single-writer invariant, same as the prior hand-placed
-/// hook); (2) a WARN-ONLY staged-`.rs` rustfmt check (concierge call 2026-08-28). WHY warn-only: it is
-/// FAIL-OPEN (never blocks a mid-flow commit — only the trunk-guard blocks), matching the
-/// `reference-transaction` logger's philosophy, and it catches at the SOURCE the recurring
-/// ambient-vs-pinned fmt drift that reds fast-gate / `cargo xtask check` cargo-fmt fleet-wide (fixed
-/// reactively 3× — the active toolchain IS the pinned 1.95.0 via rust-toolchain.toml, so ambient
-/// `cargo fmt --check` == pinned; a fast check with no dev-shell suffices). Only runs when a `.rs` file
-/// is staged (a docs/config commit skips it). `FLEET_SKIP_FMT_CHECK=1` silences the warn;
-/// `ALLOW_TRUNK_COMMIT=1` bypasses the trunk-guard (both preserved).
+/// hook); (2) an AUTO-FMT of the crates owning staged `.rs` (concierge durable fix 2026-08-29). WHY the
+/// upgrade from warn-only: peers were IGNORING the warn and landing unformatted rust, which reds the
+/// REQUIRED rustfmt gate fleet-wide — it recurred 3×/3 ticks (test-deletion churn leaving a stray blank
+/// line before a `#[test]` that the pinned rustfmt strips). Now the hook AUTO-RUNS the pinned rustfmt on
+/// the crate(s) owning the staged `.rs` and re-stages the result, so the fix is INCLUDED and unformatted
+/// code can't land. Mechanics (per the v-gha-green caveat): SCOPED per-owning-crate via
+/// `cargo fmt --manifest-path` (reads each crate's edition — the workspace mixes 2021/2024 — so it matches
+/// CI's pinned rustfmt), NOT `cargo fmt --all` (which trips locally on cdz-platform's cfg'd `mod contracts`
+/// macos-E0583 gap; that crate is SKIPPED). The active toolchain is the pinned 1.95.0 (rust-toolchain.toml)
+/// so ambient `cargo fmt` == CI's fmt, no dev-shell needed. SAFE re-stage: only files with NO pre-fmt
+/// unstaged changes are `git add`ed (re-adding a partially-staged file would sweep its unstaged hunks into
+/// the commit — those are warned + left for the author). Still FAIL-OPEN (never blocks a mid-flow commit —
+/// only the trunk-guard blocks); runs only when a `.rs` is staged. `FLEET_SKIP_FMT_CHECK=1` disables the
+/// auto-fmt; `ALLOW_TRUNK_COMMIT=1` bypasses the trunk-guard (both preserved).
 fn pre_commit_hook_body() -> String {
     format!(
         r##"#!/usr/bin/env bash
 {PRE_COMMIT_HOOK_MARKER}
 # Fleet pre-commit (installed by `cargo xtask fleet up` -> install_git_hooks; reproducible, self-healing,
 # never clobbers a truly-foreign hook). (1) trunk-guard: single-writer protection for `trunk`.
-# (2) warn-only staged-.rs fmt check: fail-open, catches ambient-vs-pinned rustfmt drift at the source.
+# (2) auto-fmt staged-.rs crates: fail-open, auto-runs the pinned rustfmt + re-stages so unformatted rust
+# can't land and re-red the fleet-wide rustfmt gate.
 set -uo pipefail
 
 # (1) TRUNK-GUARD — refuse a direct commit onto `trunk` unless in the pr-sync worktree (the integrator).
@@ -1414,15 +1421,46 @@ if [ "${{ALLOW_TRUNK_COMMIT:-}}" != "1" ] && [ "${{ALLOW_MAIN_COMMIT:-}}" != "1"
   fi
 fi
 
-# (2) WARN-ONLY staged-.rs rustfmt check (fail-open — this section NEVER exits non-zero).
+# (2) AUTO-FMT staged-.rs crates (fail-open — this section NEVER exits non-zero). Auto-runs the pinned
+# rustfmt on the CRATES owning staged .rs and re-stages the result, so unformatted rust can't land and
+# re-red the fleet-wide rustfmt gate (warn-only was ignored → recurred 3x/3 ticks on test-deletion churn).
 if [ "${{FLEET_SKIP_FMT_CHECK:-}}" != "1" ]; then
-  if git diff --cached --name-only --diff-filter=ACM -- '*.rs' 2>/dev/null | grep -q . ; then
-    # ambient cargo fmt == the pinned 1.95.0 (rust-toolchain.toml), so --check is exact + fast (no nix).
-    if ! cargo fmt --check >/dev/null 2>&1; then
-      echo "⚠ fleet pre-commit: rustfmt drift in the workspace (you are staging .rs files)." >&2
-      echo "  Run \`cargo fmt\` (pinned 1.95.0 via rust-toolchain.toml) — unformatted rust reds fast-gate /" >&2
-      echo "  \`cargo xtask check\` cargo-fmt FLEET-WIDE. Warn-only: this commit proceeds." >&2
-      echo "  (Silence with FLEET_SKIP_FMT_CHECK=1.)" >&2
+  staged_rs="$(git diff --cached --name-only --diff-filter=ACM -- '*.rs' 2>/dev/null)"
+  if [ -n "$staged_rs" ]; then
+    # Files that ALSO have unstaged changes (partially staged) — captured BEFORE fmt. Re-adding these would
+    # pull their unstaged hunks into the commit, so we do NOT auto-add them (warn + leave to the author).
+    unstaged_before="$(git diff --name-only -- '*.rs' 2>/dev/null)"
+    # Owning crate manifest (nearest ancestor Cargo.toml) for each staged .rs; unique.
+    manifests="$(
+      printf '%s\n' "$staged_rs" | while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        d="$(dirname "$f")"
+        while [ "$d" != "." ] && [ "$d" != "/" ]; do
+          if [ -f "$d/Cargo.toml" ]; then printf '%s\n' "$d/Cargo.toml"; break; fi
+          d="$(dirname "$d")"
+        done
+      done | sort -u
+    )"
+    # Auto-fmt each owning crate with the pinned rustfmt (rust-toolchain.toml 1.95.0 == CI's pinned fmt;
+    # `cargo fmt` is fast + reads each crate's edition, so the result matches the gate). SKIP cdz-platform
+    # (its cfg'd `mod contracts` is the accepted macos-E0583 gap that trips `cargo fmt` locally; CI's fmt
+    # derivation doesn't hit it). Fail-open per crate.
+    printf '%s\n' "$manifests" | while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      case "$m" in */cdz-platform/Cargo.toml) continue ;; esac
+      cargo fmt --manifest-path "$m" >/dev/null 2>&1 || true
+    done
+    # Re-stage the now-formatted staged files — but ONLY those with no pre-fmt unstaged changes (see above).
+    partial=0
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if printf '%s\n' "$unstaged_before" | grep -qxF -- "$f"; then partial=1; continue; fi
+      git add -- "$f" 2>/dev/null || true
+    done < <(printf '%s\n' "$staged_rs")
+    if [ "$partial" = 1 ]; then
+      echo "⚠ fleet pre-commit: some staged .rs are PARTIALLY staged (also have unstaged edits) — NOT" >&2
+      echo "  auto-formatted (auto-adding would sweep unstaged hunks into the commit). Run \`cargo fmt\` +" >&2
+      echo "  re-stage those files yourself. (Disable auto-fmt with FLEET_SKIP_FMT_CHECK=1.)" >&2
     fi
   fi
 fi
@@ -18330,7 +18368,7 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     }
 
     #[test]
-    fn pre_commit_hook_body_keeps_the_trunk_guard_and_is_fmt_warn_only() {
+    fn pre_commit_hook_body_keeps_the_trunk_guard_and_auto_fmts_staged_crates() {
         let b = pre_commit_hook_body();
         // Fleet-marked (so install adopts/heals it) + carries the trunk-guard signature (so the unmarked
         // hand-placed hook is recognized for adoption).
@@ -18339,14 +18377,24 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // Trunk-guard still BLOCKS (exit 1) + preserves the ALLOW_TRUNK_COMMIT bypass.
         assert!(b.contains("exit 1"));
         assert!(b.contains("ALLOW_TRUNK_COMMIT"));
-        // FMT check is WARN-ONLY: runs cargo fmt --check, has the silence escape, only on staged .rs,
-        // and the script's LAST statement is `exit 0` (fail-open — the fmt section never blocks).
-        assert!(b.contains("cargo fmt --check"));
+        // FMT section AUTO-FIXES (concierge durable fix): it runs the pinned rustfmt PER OWNING CRATE
+        // (`cargo fmt --manifest-path`, so each crate's edition is honored — CI-matching) and RE-STAGES the
+        // result (`git add`), only on staged .rs, with the FLEET_SKIP_FMT_CHECK escape.
+        assert!(b.contains("cargo fmt --manifest-path"));
+        assert!(b.contains("git add -- "));
         assert!(b.contains("FLEET_SKIP_FMT_CHECK"));
         assert!(b.contains("--diff-filter=ACM -- '*.rs'"));
+        // The v-gha-green CAVEAT is honored: it must NOT use `cargo fmt --all` (trips locally on
+        // cdz-platform's cfg'd `mod contracts` E0583 gap) — instead it SKIPS cdz-platform explicitly.
+        assert!(
+            !b.contains("cargo fmt --all"),
+            "must not use `cargo fmt --all` (trips on the cdz-platform cfg'd-mod gap) — scope per-crate"
+        );
+        assert!(b.contains("cdz-platform"));
+        // Fail-open: the script's LAST statement is `exit 0` (the fmt section never blocks a commit).
         assert!(
             b.trim_end().ends_with("exit 0"),
-            "the hook must END fail-open (exit 0) so the fmt check never blocks a commit"
+            "the hook must END fail-open (exit 0) so the fmt section never blocks a commit"
         );
     }
 
