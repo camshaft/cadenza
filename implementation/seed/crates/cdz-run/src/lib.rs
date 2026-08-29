@@ -3584,12 +3584,7 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
             // — is coerced POSITIONALLY, never name-unwrapped (its `(list 7)` element is a value, not a
             // `name=value` field; the legacy `(name value)` heuristic would otherwise mistake the `list` head
             // for a field name and strip it to a bare `7`, which then fails to coerce as a list).
-            let is_record_erased = s
-                .trim()
-                .strip_prefix('(')
-                .map(str::trim_start)
-                .and_then(|r| r.split_whitespace().next())
-                == Some("record");
+            let is_record_erased = is_record_headed(s);
             if is_record_erased && fields.iter().all(|f| named_field(f).is_some()) {
                 fields.sort_by(|a, b| named_field(a).unwrap().0.cmp(&named_field(b).unwrap().0));
             }
@@ -3772,6 +3767,20 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
 /// component `tuple<…>` at the boundary, so the corpus's record VALUE `(record (= x 10) (= y 3))` presents
 /// each field this way; the driver reorders + unwraps them. Returns `None` for a plain scalar or a
 /// positional tuple field (so those stay untouched).
+/// Whether a value literal is RECORD-headed — either the paren spelling `(record …)` or the native ctor
+/// `#record(…)` (what M3 input-nativization writes). Used by the tuple-erased coercion path to decide
+/// whether to name-sort + unwrap the `(= name value)` field groups (a record value crossing as a `tuple<…>`)
+/// vs coerce positionally (a genuine tuple). Recognizing ONLY the paren form let a nativized `#record(…)`
+/// arg skip the unwrap and mis-coerce its `(= name value)` group as a scalar (the #5718 follow-on gap).
+fn is_record_headed(s: &str) -> bool {
+    let st = s.trim();
+    st.strip_prefix('(')
+        .map(str::trim_start)
+        .and_then(|r| r.split_whitespace().next())
+        == Some("record")
+        || st.starts_with("#record(")
+}
+
 fn named_field(field: &str) -> Option<(String, String)> {
     let parts = parse_tuple_fields(field)?;
     // Canonical triple `(= name value)` → drop the `=` head; else a legacy pair `(name value)`.
@@ -4141,6 +4150,20 @@ mod tests {
             vec!["list", "#record((= x 1))", "#record((= x 2))"]
         );
         assert!(parse_tuple_fields("#nope").is_none()); // `#head` without a paren group is not a ctor form
+    }
+
+    #[test]
+    fn record_head_detected_for_both_paren_and_native_ctor() {
+        // A record value crossing as a tuple<…> must be name-sorted + unwrapped; detect the record head in
+        // BOTH spellings (the #record(…) native form is what M3 nativization writes — the #5718 follow-on).
+        assert!(is_record_headed("(record (= x 42))"));
+        assert!(is_record_headed("#record((= x 42))"));
+        assert!(is_record_headed("  #record((= a 1) (= b 2))  "));
+        // A genuine positional tuple is NOT record-headed (must coerce positionally, never name-unwrap).
+        assert!(!is_record_headed("(tuple 3 4)"));
+        assert!(!is_record_headed("(3 4)"));
+        assert!(!is_record_headed("#tuple(3 4)"));
+        assert!(!is_record_headed("#list(1 2 3)"));
     }
 
     #[test]
