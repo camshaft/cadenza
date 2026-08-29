@@ -105,12 +105,16 @@ partial def normalize : SymExpr → SymExpr
 /-- A symbolic environment: each program parameter name bound to its symbolic variable. -/
 abbrev SymEnv := List (ByteArray × SymExpr)
 
+mutual
 /-- Symbolically evaluate the node `i` under `senv` (params → symbolic vars). Covers the ANALYZABLE SCALAR
 FRAGMENT: a bound parameter → its var; a scalar literal → `const`; `(if c t e)` → `ite`; a `(: e T)`
 ascription → its value (type carried structurally — both programs ascribe the same, and Rational grounding
-etc. is a future increment); an arithmetic/comparison/boolean operator → `app`. Everything else — `let`,
-match/sum, collections, calls, recursion — is the incompleteness boundary → `cannotProve` (honest; degrade
-to the sampled differential there). Sound: never invents a value for an unmodeled construct. -/
+etc. is a future increment); an arithmetic/comparison/boolean operator → `app`; a `(let ((n v)…) body)`
+→ sequentially bind each `n` to `symEval v` (let*, later bindings see earlier) then `symEval body`
+(substitution matches Cadenza's lazy let — an unused binding vanishes; SOUND-conservative: if any binding
+value is unmodelable it sinks the whole `let`, since an eager/discarded binding's trap can't be ruled out).
+Everything else — match/sum, collections, calls, recursion — is the incompleteness boundary → `cannotProve`
+(honest; degrade to the sampled differential there). Sound: never invents a value for an unmodeled construct. -/
 partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
   match m.nodes[i]? with
   | some (Node.atom lid) =>
@@ -140,6 +144,13 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
         match children[1]? with
         | some vId => symEval m senv vId
         | none => .cannotProve "symeval: malformed ascription"
+      else if h == "let".toUTF8 then
+        match children[1]?, children[2]? with
+        | some bindingsId, some bodyId =>
+          match m.nodes[bindingsId]? with
+          | some (Node.list pairs) => symLet m senv pairs.toList bodyId
+          | _ => .cannotProve "symeval: let bindings not a list"
+        | _, _ => .cannotProve "symeval: malformed let"
       else match String.fromUTF8? h with
         | some hs =>
           if arithOps.contains hs || cmpOps.contains hs || hs == "=" || hs == "and" || hs == "or" || hs == "not" then
@@ -151,6 +162,29 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
         | none => .cannotProve "symeval: non-UTF8 head"
     | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
+
+/-- Symbolically evaluate a `(let ((n v)…) body)`: bind the remaining `(name value)` pairs `ps`
+sequentially (each `v` symEval'd in the env extended with the EARLIER bindings — let*), then `symEval`
+the body. A binding whose value is unmodelable (`cannotProve`) sinks the whole `let` — SOUND-conservative:
+that binding could be an eager/discarded one (a strict list/set/map ctor, or a `?`) whose trap we cannot
+rule out, so we must not silently drop it and claim a value. -/
+partial def symLet (m : Module) (senv : SymEnv) (ps : List Nat) (bodyId : Nat) : SymOutcome :=
+  match ps with
+  | [] => symEval m senv bodyId
+  | pid :: rest =>
+    match m.nodes[pid]? with
+    | some (Node.list pc) =>
+      match pc[0]?, pc[1]? with
+      | some nId, some vId =>
+        match nameOf? m nId with
+        | some nm =>
+          match symEval m senv vId with
+          | .sym e => symLet m ((nm, e) :: senv) rest bodyId
+          | .cannotProve r => .cannotProve r
+        | none => .cannotProve "symeval: let binding missing name"
+      | _, _ => .cannotProve "symeval: malformed let binding"
+    | _ => .cannotProve "symeval: let binding not a (name value) pair"
+end
 
 /-- The equivalence VERDICT. `cannotProve` carries a reason: `"boundary"` (hit the incompleteness limit —
 weak lead) vs `"normalized-but-different"` (both sides fully normalized yet differ — a STRONG suspected
@@ -245,5 +279,13 @@ private def _progMain (n : UInt8) : Module :=
 #guard equivMain (_progMain 42) (_progMain 42) == EquivVerdict.proven
 -- two programs with different constant bodies are NOT proven equivalent (never a false "proven").
 #guard equivMain (_progMain 42) (_progMain 43) == EquivVerdict.cannotProve "normalized-but-different"
+
+-- `let`: `(let ((x 5)) x)` symbolically evaluates to `const 5` (sequential bind then body-lookup).
+-- leaves 0:let 1:x 2:(5); nodes 0:.atom x, 1:.atom 5, 2:(x 5) pair, 3:((x 5)) bindings, 4:.atom x body, 5:.atom let, 6:(let …).
+private def _letExpr : Module :=
+  { leaves := #[Leaf.name "let".toUTF8, Leaf.name "x".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[5])],
+    nodes := #[.atom 1, .atom 2, .list #[0, 1], .list #[2], .atom 1, .atom 0, .list #[5, 3, 4]],
+    root := 6 }
+#guard symEval _letExpr [] 6 == SymOutcome.sym (.const (.int 5))
 
 end Oracle
