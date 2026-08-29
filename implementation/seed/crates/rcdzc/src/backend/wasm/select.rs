@@ -6407,8 +6407,16 @@ fn coalesce_func(f: &mut SelectedFunc, emit_debug: bool) {
             }
         }
     }
-    let (remap, new_declared) =
-        crate::backend::wasm::coalesce::coalesce_locals(&f.params, &f.declared, &f.code, &pinned);
+    // Reuse dead-param slots only when NOT emitting DWARF (a param's scalar DIE must not share a slot
+    // with a re-homed local) — same gate as pinning. The plain-`wasm` target (shipped + gap-sweep)
+    // gets the extra param-heavy coalescing; a debug build keeps params fixed.
+    let (remap, new_declared) = crate::backend::wasm::coalesce::coalesce_locals(
+        &f.params,
+        &f.declared,
+        &f.code,
+        &pinned,
+        !emit_debug,
+    );
     for op in &mut f.code {
         match op {
             Lir::LocalGet(s) | Lir::LocalSet(s) | Lir::LocalTee(s) => *s = remap[*s as usize],
@@ -24961,13 +24969,19 @@ mod tests {
             "the element vec-get reads the list param slot 0 directly; got {:?}",
             &f.code[vec_get_pos - 3..=vec_get_pos]
         );
-        // No instruction stores the list handle into slot 0 (it is a param — read-only here).
+        // The list handle is never COPIED into slot 0 BEFORE its last read (vec-get): the borrowed
+        // list param is read directly through both borrows, never stored into scratch first — that is
+        // the no-handle-copy intent this test guards. (Relaxed deliberately: AFTER vec-get the borrowed
+        // list is fully consumed, so local-slot COALESCING may soundly re-home a later local into the
+        // now-dead param slot 0 — `reuse_dead_param_slots`, the same dead-slot reuse `wasm-opt` does.
+        // That post-consumption `LocalTee(0)` is a legitimate slot reuse, NOT a handle copy, so the
+        // guard covers only the pre-consumption prefix, not the whole body.)
         assert!(
-            !f.code
+            !f.code[..=vec_get_pos]
                 .iter()
                 .any(|i| matches!(i, Lir::LocalSet(0) | Lir::LocalTee(0))),
-            "the list param slot 0 is never written (no handle copy); got {:?}",
-            f.code
+            "the list param slot 0 is never written BEFORE its last read (no handle copy); got {:?}",
+            &f.code[..=vec_get_pos]
         );
 
         // BYTES.AT shares the same reuse (bytes handle read by `bytes-len` + `bytes-get`): a param bytes
@@ -24990,12 +25004,20 @@ mod tests {
             "the bounds-check bytes-len reads the bytes param slot 0 directly; got {:?}",
             &f.code[..=blen_pos]
         );
+        // Same guard + deliberate relaxation as the List.at case: the bytes handle is never COPIED into
+        // slot 0 before its last read (bytes-get); after that the borrowed bytes is consumed, so
+        // dead-param-slot COALESCING may soundly re-home a later local into slot 0. Guard the prefix.
+        let bget_pos = f
+            .code
+            .iter()
+            .position(|i| matches!(i, Lir::CallImport(op) if *op == OP_BYTES_GET))
+            .expect("an element bytes-get");
         assert!(
-            !f.code
+            !f.code[..=bget_pos]
                 .iter()
                 .any(|i| matches!(i, Lir::LocalSet(0) | Lir::LocalTee(0))),
-            "the bytes param slot 0 is never written (no handle copy); got {:?}",
-            f.code
+            "the bytes param slot 0 is never written BEFORE its last read (no handle copy); got {:?}",
+            &f.code[..=bget_pos]
         );
     }
 
@@ -25466,6 +25488,10 @@ mod tests {
     fn signed_divide_by_power_of_two_strength_reduces_to_the_bias_shift_sequence() {
         // (def (f (: n Int64)) (/ n 8)) — a SIGNED `/ 2^k` (k=3) becomes the branchless round-toward-zero
         // bias sequence, no `i64.div_s`: stash n in $a, then `(n + ((n >>ₛ 63) >>ᵤ 61)) >>ₛ 3`.
+        // With dead-param-slot reuse (plain-wasm) the dividend scratch $a re-homes into the param's OWN
+        // slot 0 (n is dead after these reads, so `reuse_dead_param_slots` coalesces $a onto slot 0):
+        // `LocalGet(0) ; LocalTee(0)` re-stashes n into its own slot (a harmless self-tee) → 0 declared
+        // scratch locals instead of 1.
         let ast = crate::testkit::parse(
             "(module m (def (f (: n Int64)) (/ n 8)) (def (main) 0) (export main))",
         );
@@ -25477,8 +25503,8 @@ mod tests {
             f.code,
             vec![
                 Lir::LocalGet(0),
-                Lir::LocalTee(1), // $a = n, keeping n on the stack as the first quotient read.
-                Lir::LocalGet(1),
+                Lir::LocalTee(0), // $a = n re-homed into the dead param slot 0 (self-tee), keeping n on the stack.
+                Lir::LocalGet(0),
                 Lir::ConstI64(63),
                 Lir::I64ShrS, // n >>ₛ 63 — all-ones iff n<0.
                 Lir::ConstI64(61),
@@ -26928,7 +26954,10 @@ mod tests {
         // directly (no `local.get $r_inner ; local.tee $a` copy, no separate $r_inner slot). Slots:
         // outer mul $a=3 (the inner add writes here), $b=c=slot 2 (a direct param, no scratch), $r=4;
         // the inner add reuses $a=3 as its own $r and its a,b are direct params → no scratch of its own.
-        // So only slots 3 and 4 are declared — 2 locals, down from 3 before the dest-threading.
+        // So (before coalescing) only slots 3 and 4 are declared — 2 locals, down from 3 before the
+        // dest-threading. AFTER coalescing with dead-param-slot reuse it drops to ONE declared: params
+        // a,b,c are all read once (each dead after its read), so a scratch re-homes into a dead param
+        // slot (`reuse_dead_param_slots`, plain-wasm) — the dest-threading win compounds with slot reuse.
         let ast = crate::testkit::parse(
             "(module m (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (def (main) 0) (export main))",
         );
@@ -26936,7 +26965,7 @@ mod tests {
         let layout = layout_of(&mut db);
         let (params, body) = function_of(&mut db, "f");
         let f = select_function(&mut db, body, &params, &layout).expect("select");
-        assert_eq!(f.declared, vec![ValType::I64; 2]);
+        assert_eq!(f.declared, vec![ValType::I64; 1]);
     }
 
     #[test]
@@ -26946,8 +26975,12 @@ mod tests {
         // into the add's $a (`local.get $r_inner ; local.tee $a`, plus a dead $r_inner slot), the shift is
         // emitted with `ResultDest::Slot($a)` so its `local.set` IS the store into the add's operand slot —
         // exactly like the nested checked `+`/`-`/`*` path. The add's RHS is the inline constant `1` (no
-        // scratch). So the shift's own $r is the add's $a slot, and only that slot + the add's $r are
-        // declared: 2 locals, down from 3 before the dest-threading (the eliminated copy freed a local).
+        // scratch). So the shift's own $r is the add's $a slot, and (before local-slot coalescing) that
+        // slot + the add's $r are declared: 2 locals, down from 3 before the dest-threading (the
+        // eliminated copy freed a local). AFTER coalescing with dead-param-slot reuse it drops to ONE
+        // declared: the sole param `a` is dead after its last read (the shift's operand + the overflow
+        // check), so the add's $r is soundly re-homed into the dead param slot 0 (`reuse_dead_param_slots`,
+        // plain-wasm) — the closing `LocalGet(0)` reads that re-homed result, not the param.
         let ast = crate::testkit::parse(
             "(module m (def (f (: a Int64)) (+ (* a 2) 1)) (def (main) 0) (export main))",
         );
@@ -26957,8 +26990,9 @@ mod tests {
         let f = select_function(&mut db, body, &params, &layout).expect("select");
         assert_eq!(
             f.declared,
-            vec![ValType::I64; 2],
-            "the nested shift writes the add's operand slot directly — no extra $r_inner copy slot; got {:?}",
+            vec![ValType::I64; 1],
+            "dest-threading + dead-param-slot reuse: the shift writes the add's operand slot directly \
+             (no $r_inner copy) and the add's $r re-homes into the dead param slot → 1 declared; got {:?}",
             f.code
         );
         // The shift is present (strength reduction fired) and there is NO `i64.mul`.

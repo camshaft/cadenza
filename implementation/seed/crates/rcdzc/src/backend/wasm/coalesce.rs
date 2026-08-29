@@ -47,6 +47,11 @@ use crate::backend::wasm::lir::{Lir, ValType};
 /// - `new_declared` is the reduced declared-local value types, in new-slot order (the slots that
 ///   follow the parameters).
 ///
+/// `reuse_dead_param_slots` lets a declared local be re-homed into a PARAM's slot when the param is
+/// dead everywhere that local is live (a sound extra coalescing win on param-heavy functions, matching
+/// `wasm-opt`). Pass `false` whenever this emit produces DWARF (a param's `DW_TAG_variable` must not
+/// share a slot with a re-homed local); the plain-`wasm` shipped/gap-sweep target passes `true`.
+///
 /// The caller applies `remap` to every `Local{Get,Set,Tee}` in the body, replaces the function's
 /// `declared` with `new_declared`, and remaps its debug slot references (pinned or not) through
 /// `remap`.
@@ -55,6 +60,7 @@ pub fn coalesce_locals(
     declared: &[ValType],
     code: &[Lir],
     pinned: &std::collections::HashSet<u32>,
+    reuse_dead_param_slots: bool,
 ) -> (Vec<u32>, Vec<ValType>) {
     let nparams = params.len() as u32;
     let total = nparams + declared.len() as u32;
@@ -134,6 +140,27 @@ pub fn coalesce_locals(
         members: Vec<u32>,
     }
     let mut colors: Vec<Color> = Vec::new();
+
+    // DEAD-PARAM-SLOT REUSE (only when this emit produces NO DWARF — `reuse_dead_param_slots`; a param's
+    // scalar `DW_TAG_variable` would collide with a local re-homed into its slot). Seed each PARAM slot
+    // as a pre-occupied color (member = the param itself). A declared local may then take a param's slot
+    // iff it shares the param's `ValType` AND does not interfere with the param — i.e. the param is DEAD
+    // everywhere the local is live (params are entry-live in the interference graph, so a local live at
+    // entry correctly interferes with every param and cannot steal a slot; a local defined after a param
+    // dies does not). This matches what `wasm-opt`'s CoalesceLocals does — reusing dead-param slots is
+    // the bulk of its edge over a params-fixed pass on param-heavy helpers. Params still keep their own
+    // slots (they only ever gain co-residents, never move) and the functype's param count is unchanged;
+    // a local that reuses a param slot simply does not appear in `new_declared`. Seeded FIRST so the
+    // greedy scan prefers reusing an existing param slot over allocating a fresh declared slot.
+    if reuse_dead_param_slots {
+        for p in 0..nparams {
+            colors.push(Color {
+                new_slot: p,
+                ty: params[p as usize],
+                members: vec![p],
+            });
+        }
+    }
 
     for old in order {
         let ty = declared[(old - nparams) as usize];
@@ -433,7 +460,8 @@ mod tests {
             Lir::LocalSet(1),
             Lir::LocalGet(1),
         ];
-        let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins());
+        let (remap, decl) =
+            coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins(), false);
         assert_eq!(decl, vec![ValType::I64]); // collapsed to 1 local
         assert_eq!(remap, vec![0, 0]); // both old slots → new slot 0
     }
@@ -447,7 +475,8 @@ mod tests {
             Lir::LocalGet(0),
             Lir::LocalGet(1),
         ];
-        let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins());
+        let (remap, decl) =
+            coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins(), false);
         assert_eq!(decl, vec![ValType::I64, ValType::I64]);
         assert_eq!(remap, vec![0, 1]);
     }
@@ -461,7 +490,8 @@ mod tests {
             Lir::LocalSet(1),
             Lir::LocalGet(1),
         ];
-        let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I32], &code, &no_pins());
+        let (remap, decl) =
+            coalesce_locals(&[], &[ValType::I64, ValType::I32], &code, &no_pins(), false);
         assert_eq!(decl, vec![ValType::I64, ValType::I32]);
         assert_eq!(remap, vec![0, 1]);
     }
@@ -481,9 +511,49 @@ mod tests {
             &[ValType::I64, ValType::I64],
             &code,
             &no_pins(),
+            false,
         );
         assert_eq!(decl, vec![ValType::I64]); // 2 declared → 1
         assert_eq!(remap, vec![0, 1, 1]); // param fixed at 0; both declared → new slot 1
+    }
+
+    #[test]
+    fn dead_param_slot_reused_by_a_later_local_when_enabled() {
+        // 1 param (slot 0) used ONLY at entry (dead after @0); 1 declared local (slot 1) def@1 use@2.
+        // Disjoint from the param → with reuse enabled, the local is re-homed into the DEAD param's slot
+        // 0, so NO new declared local is emitted (decl empty). With reuse OFF, the local keeps slot 1.
+        let code = vec![
+            Lir::LocalGet(0), // param used once, then dead
+            Lir::LocalSet(1),
+            Lir::LocalGet(1),
+        ];
+        let (remap, decl) =
+            coalesce_locals(&[ValType::I64], &[ValType::I64], &code, &no_pins(), true);
+        assert_eq!(decl, Vec::<ValType>::new()); // the local reused the param slot → 0 declared locals
+        assert_eq!(remap, vec![0, 0]); // param stays 0; declared local → param slot 0
+
+        // reuse OFF → params fixed, local takes its own slot (the pre-#(this) behavior).
+        let (remap_off, decl_off) =
+            coalesce_locals(&[ValType::I64], &[ValType::I64], &code, &no_pins(), false);
+        assert_eq!(decl_off, vec![ValType::I64]);
+        assert_eq!(remap_off, vec![0, 1]);
+    }
+
+    #[test]
+    fn live_param_slot_is_not_reused() {
+        // Param (slot 0) read at @1 AND @3 (live across the local's range); declared local (slot 1)
+        // def@0 use@2. They are simultaneously live → the local must NOT steal the param's slot even
+        // with reuse enabled (a live param slot is off-limits — soundness).
+        let code = vec![
+            Lir::LocalSet(1),
+            Lir::LocalGet(0), // param live here …
+            Lir::LocalGet(1),
+            Lir::LocalGet(0), // … and still here (spans the local)
+        ];
+        let (remap, decl) =
+            coalesce_locals(&[ValType::I64], &[ValType::I64], &code, &no_pins(), true);
+        assert_eq!(decl, vec![ValType::I64]); // local keeps its own slot
+        assert_ne!(remap[1], remap[0]); // did NOT reuse the live param's slot 0
     }
 
     #[test]
@@ -496,7 +566,8 @@ mod tests {
             Lir::LocalSet(1),
             Lir::LocalGet(1),
         ];
-        let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins());
+        let (remap, decl) =
+            coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins(), false);
         assert_eq!(decl, vec![ValType::I64]);
         assert_eq!(remap, vec![0, 0]);
     }
@@ -511,7 +582,7 @@ mod tests {
             code.push(Lir::LocalGet(k));
         }
         let declared = vec![ValType::I64; n as usize];
-        let (remap, decl) = coalesce_locals(&[], &declared, &code, &no_pins());
+        let (remap, decl) = coalesce_locals(&[], &declared, &code, &no_pins(), false);
         assert_eq!(decl.len(), 1); // 50 locals → 1
         assert!(remap.iter().all(|&r| r == 0));
     }
@@ -520,7 +591,8 @@ mod tests {
     fn unmentioned_declared_local_is_dropped() {
         // slot1 (i64) is declared but never referenced → dropped; slot0 kept.
         let code = vec![Lir::LocalSet(0), Lir::LocalGet(0)];
-        let (_remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins());
+        let (_remap, decl) =
+            coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins(), false);
         assert_eq!(decl, vec![ValType::I64]); // the dead local is gone
     }
 
@@ -543,6 +615,7 @@ mod tests {
             &[ValType::I64, ValType::I64, ValType::I64],
             &code,
             &pinned,
+            false,
         );
         assert_eq!(decl, vec![ValType::I64, ValType::I64, ValType::I64]); // all 3 distinct
         assert_eq!(remap, vec![0, 1, 2]); // no sharing: identity here
@@ -566,6 +639,7 @@ mod tests {
             &[ValType::I64, ValType::I64, ValType::I64],
             &code,
             &pinned,
+            false,
         );
         assert_eq!(decl.len(), 2); // pinned slot0 + one shared free slot
         assert_eq!(remap[0], 0); // pinned → its own slot
@@ -586,7 +660,8 @@ mod tests {
             Lir::LocalSet(1),
             Lir::LocalGet(1),
         ];
-        let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins());
+        let (remap, decl) =
+            coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins(), false);
         assert_eq!(decl, vec![ValType::I64, ValType::I64]); // stay distinct
         assert_ne!(remap[0], remap[1]);
     }
@@ -597,7 +672,8 @@ mod tests {
         // it must be KEPT (given a slot), unlike the free unmentioned case which is dropped.
         let code = vec![Lir::LocalSet(0), Lir::LocalGet(0)];
         let pinned: HashSet<u32> = [1u32].into_iter().collect();
-        let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &pinned);
+        let (remap, decl) =
+            coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &pinned, false);
         assert_eq!(decl, vec![ValType::I64, ValType::I64]); // both kept (the pinned dead one survives)
         assert_eq!(remap[1], 1); // pinned slot gets a valid distinct slot
     }
@@ -682,7 +758,8 @@ mod tests {
             Lir::LocalSet(0), // 4
             Lir::LocalGet(0), // 5
         ];
-        let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins());
+        let (remap, decl) =
+            coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins(), false);
         assert_eq!(decl, vec![ValType::I64]); // 2 → 1: the hole is exploited
         assert_eq!(remap[0], remap[1]); // both old slots share the one new slot
     }
@@ -700,7 +777,8 @@ mod tests {
             Lir::Br(0),                  // 5
             Lir::End,                    // 6
         ];
-        let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins());
+        let (remap, decl) =
+            coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins(), false);
         assert_eq!(decl, vec![ValType::I64]); // 2 → 1
         assert_eq!(remap[0], remap[1]);
     }
@@ -719,7 +797,8 @@ mod tests {
             Lir::Br(0),                  // 5
             Lir::End,                    // 6
         ];
-        let (remap, decl) = coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins());
+        let (remap, decl) =
+            coalesce_locals(&[], &[ValType::I64, ValType::I64], &code, &no_pins(), false);
         assert_eq!(decl, vec![ValType::I64, ValType::I64]); // stay distinct
         assert_ne!(remap[0], remap[1]);
     }
