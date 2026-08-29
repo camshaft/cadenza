@@ -10007,6 +10007,36 @@ mod match_engine {
     }
 
     #[test]
+    fn native_compound_recognition_matches_the_alias_across_lingering_behavior_paths() {
+        // dc02-class hardening: three rcdzc behavior-path recognizers still read the NAME/STRING alias only
+        // (eval.rs record-field-key β-immunity via compound_ctor_either; lower.rs scalar-replacement +
+        // ctor-payload-irrefutability via as_form(_,"tuple")). After M3 nativized the corpus, a NATIVE form
+        // hitting these paths was mis-handled (a native #record field key matching a param could be
+        // β-substituted → corrupted; a native #tuple payload mis-classified refutable). All three now read
+        // compound_form_of (native + name + string). Pin native ≡ alias (both compile clean):
+        for (label, src) in [
+            (
+                "native #record field key is β-immune (not substituted → corrupted)",
+                "(module m (def (f (: x Int64)) #record((x 5))) (def (main) (f 7)) (export main))",
+            ),
+            (
+                "name-alias record field key β-immune (control)",
+                "(module m (def (f (: x Int64)) (record (x 5))) (def (main) (f 7)) (export main))",
+            ),
+            (
+                "native #tuple ctor-payload is an irrefutable match binder",
+                "(module m (def (g (: p (Option (Tuple Int64 Int64)))) (match p ((Some #tuple(a b)) (+ a b)) (_ 0))) (def (main) (g (Some #tuple(3 4)))) (export main))",
+            ),
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "{label}: must compile clean (native compound recognition must match the alias), got {:?}",
+                reject_code(src)
+            );
+        }
+    }
+
+    #[test]
     fn a_native_structural_pattern_over_a_wrong_kind_scrutinee_is_cdz0203() {
         // SOUNDNESS guard (05-compound-types "a tuple pattern over a non-tuple scrutinee is a type error",
         // and its list/map siblings): the match scrutinee-KIND check (lower_match) reads a pattern's

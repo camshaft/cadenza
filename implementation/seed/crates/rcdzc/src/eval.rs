@@ -894,7 +894,10 @@ fn is_binder_occurrence(db: &Db, id: StructId) -> bool {
     // `(record …)` or the unshadowable STRING primitive `("record" …)`. (A field pair has exactly two
     // children; a `(meta name)` key is already immune as it is not a bare param name.)
     if pair_children.len() == 2
-        && (db.ast.compound_ctor_either(grandparent) == Some(CompoundCtor::Record))
+        && db
+            .ast
+            .compound_form_of(grandparent, CompoundCtor::Record)
+            .is_some()
     {
         return true;
     }
