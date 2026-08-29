@@ -17360,19 +17360,8 @@ mod match_engine {
         assert_eq!(count("vec-empty"), 0, "no vec-empty seed");
     }
 
-    #[test]
-    fn a_mixed_element_list_is_rejected() {
-        // A list is HOMOGENEOUS (collections-and-text.md §A List Is A Homogeneous Sequence): every element
-        // shares one type. `(list 1 true)` mixes Int64 and Bool — a MALFORMED COLLECTION (CDZ0201), the
-        // UNIFORM collection-homogeneity code (§A Collection's Homogeneity Violation Is A Malformed
-        // Collection), NOT the CDZ0203 a two-types-must-agree conflict (an `if`/annotation) takes. Pins
-        // the homogeneity check + its uniform code. (Via `len` so `main` returns a scalar.)
-        assert_eq!(
-            reject_code("(module m (def (main) ((. List len) (list 1 true))) (export main))")
-                .as_deref(),
-            Some("CDZ0201")
-        );
-    }
+    // (a_mixed_element_list_is_rejected was already covered by corpus 05-compound-types "a list mixing
+    // integer and boolean elements is a type error" (`#list(1 true)` → CDZ0201) — redundant, removed.)
 
     #[test]
     fn a_bin_value_out_of_range_for_its_segment_is_a_provable_trap() {
@@ -18053,21 +18042,9 @@ mod match_engine {
         );
     }
 
-    #[test]
-    fn a_list_push_type_mismatch_is_rejected() {
-        // `List.push : ∀a. (List a) → a → (List a)` — the appended element must match the list's element
-        // type. `(List.push (list 1 2) true)` pushes a Bool onto a `List Int64` — a heterogeneous result,
-        // a MALFORMED COLLECTION (CDZ0201), the same UNIFORM homogeneity code as a mixed literal and the
-        // map/set homogeneity checks (collections-and-text.md §A Collection's Homogeneity Violation Is A
-        // Malformed Collection). Pins the push element-homogeneity check + its uniform code.
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) ((. List len) ((. List push) (list 1 2) true))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0201")
-        );
-    }
+    // (a_list_push_type_mismatch_is_rejected was already covered by corpus 05-compound-types "pushing an
+    // element of a different type onto a list is a type error" ((List.push #list(1 2) true) → CDZ0201) —
+    // redundant, removed.)
 
     #[test]
     fn every_collection_receiver_op_takes_its_receiver_first() {
@@ -18137,35 +18114,13 @@ mod match_engine {
         }
     }
 
-    #[test]
-    fn a_list_prepend_type_mismatch_is_rejected() {
-        // `List.prepend : ∀a. (List a) → a → (List a)` — like `push`, the prepended element must match the
-        // list's element type. `(List.prepend (list 1 2) true)` prepends a Bool onto a `List Int64` — a
-        // heterogeneous result, a MALFORMED COLLECTION (CDZ0201), the front-insertion companion of the push
-        // mismatch, coded with the same UNIFORM homogeneity code.
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) ((. List len) ((. List prepend) (list 1 2) true))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0201")
-        );
-    }
+    // (a_list_prepend_type_mismatch_is_rejected migrated to corpus 05-compound-types "prepending an element
+    // of a different type onto a list is a type error" ((List.prepend #list(1 2) true) → CDZ0201) — the one
+    // uncovered list-op homogeneity face, added next to the push/update cases.)
 
-    #[test]
-    fn a_list_update_type_mismatch_is_rejected() {
-        // `List.update : ∀a. (List a) → Int64 → a → (List a)` — the replacement element must match the
-        // list's element type. `(List.update (list 1 2 3) 1 true)` puts a Bool where an Int64 was — a
-        // non-homogeneous result, a MALFORMED COLLECTION (CDZ0201), the `List.update` companion of the
-        // push mismatch, coded uniformly (§A Collection's Homogeneity Violation Is A Malformed Collection).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) ((. List len) ((. List update) (list 1 2 3) 1 true))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0201")
-        );
-    }
+    // (a_list_update_type_mismatch_is_rejected was already covered by corpus 05-compound-types "updating a
+    // list slot with an element of a different type is a type error" ((List.update #list(1 2 3) 1 true) →
+    // CDZ0201) — redundant, removed.)
 
     #[test]
     fn a_multi_use_let_bound_list_is_built_once() {
