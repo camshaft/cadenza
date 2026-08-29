@@ -24054,3 +24054,15 @@
   (call main (: 7 Int64)) (output (: 4 Int64))
   (call main (: -1 Int64)) (output (: 4 Int64))
   (live-objects 0))
+
+(case "dlp1 a binding CONSUMED into a later sibling's init (fresh-alloc child, branch-varying) reclaims clean — the #5424 D1 fence"
+  (doc "The D1 flat-let over-drop face (980-residual double-free, fixed #5424): r1 is consumed as a child
+        into r2's initializer where r2's construction BRANCHES (one arm wraps r1 alone, the other adds a
+        sibling) — pre-fix the let-drop elision double-freed r1. Values = the branch-selected lengths
+        (1/2) with a fully-clean reclaim (live 0) on both branches.")
+  (input (do
+    (def (main (: n Int64)) (do (def r1 (list n 2)) (def r2 (if (> n 0) (list r1) (list r1 (list 9)))) (List.len r2)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 1 Int64))
+  (call main (: -1 Int64)) (output (: 2 Int64))
+  (live-objects 0))
