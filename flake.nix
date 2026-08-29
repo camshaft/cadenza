@@ -746,6 +746,15 @@
             preBuild = ''
               chmod -R u+w .
               ${stubNonClosure closure}
+              ${pkgs.lib.optionalString (crate == "cdz-platform") ''
+                # OVERLAY (v-nix, codegen→build-time-nix): stage the BUILD-TIME-generated contract schemas
+                # over cdz-platform/src/contracts, so the generated files (not committed source) drive the
+                # compile. cdz-platform's real src compiles ONLY here (clippy/test-cdz-platform — guarded to
+                # this crate; other crates STUB cdz-platform) + platformItest. Currently a byte-identical
+                # NO-OP (generated == committed, guarded by cdzPlatformContractsMatch); becomes LOAD-BEARING
+                # when the follow-on flip drops the committed src/contracts + gitignores them.
+                cp ${cdzPlatformContracts}/contracts/*.rs implementation/seed/crates/cdz-platform/src/contracts/
+              ''}
             '';
             doInstallCargoArtifacts = false;
           };
@@ -1716,6 +1725,12 @@
           nativeBuildInputs = [ rustToolchain ];
           buildPhase = ''
             runHook preBuild
+            # OVERLAY (v-nix, codegen→build-time-nix): stage the build-time-generated contract schemas over
+            # cdz-platform/src/contracts — this bin compiles cdz-platform's real src. Byte-identical no-op
+            # today; load-bearing after the flip drops the committed src/contracts. (Same overlay the per-crate
+            # clippy/test-cdz-platform checks apply via craneCrateCommon.)
+            chmod -R u+w implementation/seed/crates/cdz-platform/src
+            cp ${cdzPlatformContracts}/contracts/*.rs implementation/seed/crates/cdz-platform/src/contracts/
             ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
             cargo build --release --locked -p cdz-platform --bin cdz-platform-itest --features "testing host"
             runHook postBuild
