@@ -1382,9 +1382,12 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
           | some .diverges, _ | _, some .diverges => .diverges
           | _, _ => .unsupported "wrapping arithmetic: non-integer operand")
   else if (parseIntTyName? qual).isSome && (mem == "wrap".toUTF8 || mem == "of".toUTF8) then
-    -- numeric conversion `(. <IntTy> wrap|of) x`: `wrap` reinterprets x mod 2^w (total); `of` is checked
-    -- (traps `overflow` if x is out of the target range); on BigInt both are identity. Value = int (type
-    -- stripped by the grader). Wrap-vs-of chosen per the member name.
+    -- numeric conversion `(. <IntTy> wrap|of) x`: `wrap` reinterprets x mod 2^w (total); `of` is CHECKED —
+    -- it range-checks and, if x is out of the target range, TRAPS with kind `unreachable` (the range-check
+    -- `if x∉[lo,hi] then <unreachable>`), NOT `overflow` (which is for arithmetic ops). Pinned by corpus
+    -- 06-numeric: `Int8.of (200:UInt8)`, `Int64.of (UInt8.of n)`, `Rational.truncate` R→i64 overflow all
+    -- `(trap "unreachable")` (:4088/:4106/:343 — "wasm traps unreachable"). On BigInt both are identity.
+    -- Value = int (type stripped by the grader). Wrap-vs-of chosen per the member name.
     let tty := (parseIntTyName? qual).get!
     some (match a1 with
           | some (.value (.int x)) =>
@@ -1397,7 +1400,7 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
                else
                  let lo : Int := if tty.signed then -((2 : Int) ^ (w - 1)) else 0
                  let hi : Int := if tty.signed then (2 : Int) ^ (w - 1) else (2 : Int) ^ w
-                 if lo ≤ x && x < hi then .value (.int x) else .trap "overflow"
+                 if lo ≤ x && x < hi then .value (.int x) else .trap "unreachable"
              | _ => .value (.int x))            -- BigInt: identity (both wrap and of)
           | some (.value _) => .unsupported "numeric conversion: non-integer operand"
           | some o => o | none => .unsupported "numeric conversion arity")
