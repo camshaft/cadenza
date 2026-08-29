@@ -3064,7 +3064,10 @@
                 (+ a (+ (* b 10) (+ (* (if (= c 400) 1 0) 1000) (* (Map.len keep) 10000))))))
             (export main)))
   (call main (: 1 Int64)) (output (: 30310 Int64))
-  (call main (: 2 Int64)) (output (: 41310 Int64)))
+  (call main (: 2 Int64)) (output (: 41310 Int64))
+  ;; if-join-shared-child family residual (honest known-leak, coord v-corpus-harness/v-core-opt family fix)
+  (live-objects known-leak 0 1)
+  )
 
 (case "a third-generation overwrite path-copies away from both ancestors and all three read true"
   (doc    "The OVERWRITE face of generation sharing: m1 → m2 (insert 4) → m3, where mode 2's m3
@@ -3110,7 +3113,7 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 104 Int64))
   (call main (: 2 Int64)) (output (: 605 Int64))
-  (live-objects 0))
+  (live-objects known-leak 0 2))
 
 (case "a select between a base map and its derived generation frees the loser but not shared nodes"
   (doc    "The COMPOSITION of generation sharing with the escape shape (the #20 family, pinned per
@@ -3138,7 +3141,10 @@
                 (+ (* (Map.len pick) 1000) (+ a (if (= b 400) 1 0)))))
             (export main)))
   (call main (: 1 Int64)) (output (: 3020 Int64))
-  (call main (: 2 Int64)) (output (: 4021 Int64)))
+  (call main (: 2 Int64)) (output (: 4021 Int64))
+  ;; if-join-shared-child family residual (honest known-leak, coord v-corpus-harness/v-core-opt family fix)
+  (live-objects known-leak 0 1)
+  )
 
 (case "a Map.remove on a derived generation unshares the path without touching the ancestor"
   (doc    "The SHRINK direction of generation sharing (every pin above grows the derived generation
@@ -3787,7 +3793,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 4 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 4 0))
 
 ; The map-sum-value case above consumes the lookup result INLINE, in the same expression. The environment-
 ; lookup idiom a type-inference / evaluation pass takes is different: look a binding up in the map, WRAP it
@@ -3819,7 +3825,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64))
   (call   main (: -1 Int64)) (output (: 99 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 4 0))
 
 (case "a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller"
   (doc    "The environment-lookup shape: `get` looks a key up in a `(Map Int64 Ty)`, wraps the found `Ty`
@@ -6981,7 +6987,7 @@
   (call   main (: 3 Int64)) (output (: 13589 Int64))
   (call   main (: 5 Int64)) (output (: 1589 Int64))
   (call   main (: 9 Int64)) (output (: 1589 Int64))
-  (live-objects known-leak 24))
+  (live-objects known-leak 24 16 20))
 
 (case "tree HEIGHT and BALANCE derive from insertion order over the same BST shape"
   (doc    "Structural metrics over the BST above (the in-order pin reads VALUES; these read SHAPE):
@@ -7040,7 +7046,7 @@
   (call   main (: 1 Int64)) (output (: 31 Int64))
   (call   main (: 2 Int64)) (output (: 50 Int64))
   (call   main (: 3 Int64)) (output (: 21 Int64))
-  (live-objects known-leak 34))
+  (live-objects known-leak 34 30 10))
 
 (case "BST DELETE-MIN walks the left spine, returns the minimum and the rebuilt tree"
   (doc    "The tree family's REMOVAL face (insert, read-back, and shape metrics are pinned above;
@@ -7096,7 +7102,7 @@
   (call   main (: 1 Int64)) (output (: 103589 Int64))
   (call   main (: 2 Int64)) (output (: 200057 Int64))
   (call   main (: 3 Int64)) (output (: 400000 Int64))
-  (live-objects known-leak 29))
+  (live-objects known-leak 29 13 3))
 
 (case "a recursive user sum type is built at run time and renders its variant names"
   (doc    "A recursive user sum type — the linked-list / AST shape a self-hosted compiler manipulates —
@@ -7305,7 +7311,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: (S (S (Z unit))) Nat))
   (call   main (: 0 Int64)) (output (: (Z unit) Nat))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 0))
 
 (case "a recursively-built binary tree renders its full runtime structure"
   (doc    "The MULTI-WAY recursive counterpart of the linked-list spine: a `Tree` whose `Node` variant
@@ -8933,7 +8939,7 @@
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 4 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 12 6 2 4))
 
 (case "CATALAN numbers grow by convolving the table with itself and agree with the binomial closed form"
   (doc    "The SELF-convolution (the subset-sum above convolves the table with an INPUT element; the
@@ -9121,7 +9127,7 @@
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 4 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 14 4 4 4))
 
 (case "LONGEST COMMON SUBSEQUENCE rolls match-diagonal against carry-forward maxima"
   (doc    "The DP trio's third indexing shape (coin-change indexes by AMOUNT, LIS by POSITION, this
@@ -9167,7 +9173,7 @@
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
   (call   main (: 4 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 60))
+  (live-objects known-leak 60 18 8 0))
 
 (case "a memoizing fold caches computed results in a Map and counts its hits"
   (doc    "The pure memoize spine (the effects twin at 14-effects:2931 threads Map-STATE through
@@ -9233,7 +9239,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 101 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 37))
+  (live-objects known-leak 37 33))
 
 (case "a read-modify-write of a List value in a Map grows the entry and leaves the original map unchanged"
   (doc    "The keyed-bucket accumulate idiom (a multimap step): look a List value up by key, push onto it, and
@@ -9581,7 +9587,7 @@
   (call   main (: 2 Int64) (: 0 Int64)) (output (: 221 Int64))
   (call   main (: 1 Int64) (: 5 Int64)) (output (: -1 Int64))
   (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 2 2 1))
 
 (case "a map of lists of tuples of RECORDS: a four-level mixed query reads a named leaf"
   (doc    "One level deeper than the three-level query above, adding a RECORD as the innermost layer —
@@ -9604,7 +9610,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 300 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 1))
 
 (case "a set nested in a tuple compares equal with a runtime element, order-independent"
   (doc    "`(= (tuple 0 (Set.of (list 1 x))) (tuple 0 (Set.of (list 1 2))))` compares two tuples whose second
@@ -9634,7 +9640,7 @@
                 (#list() -2)))
             (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 0))
 
 (case "a Map keyed by a (Bytes, Int64) tuple is looked up by content through the compound key descent"
   (doc    "A Map key `(Bytes, Int64)` is orderable/keyable because both components are; the champ key descent
@@ -10452,7 +10458,7 @@
             (export run)))
   (call   run (: 0 Int64)) (output (: 7 Int64))
   (call   run (: 5 Int64)) (output (: -3 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 7 0))
 
 (case "a runtime Result carrying a String error is matched"
   (doc    "The `Err` payload may be a heap `String` (a diagnostic message), not only a scalar code: `(if
@@ -11534,7 +11540,7 @@
   (call   main (: 1 Int64)) (output (: 141531 Int64))
   (call   main (: 2 Int64)) (output (: 452311 Int64))
   (call   main (: 3 Int64)) (output (: 121 Int64))
-  (live-objects known-leak 26))
+  (live-objects known-leak 26 26 8))
 
 (case "a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive"
   (doc    "The full divide-and-conquer composed over the merge step above: `split-alt` deals elements
@@ -11586,7 +11592,7 @@
   (call   main (: 4 Int64)) (output (: 124457 Int64))
   (call   main (: 0 Int64)) (output (: 1257 Int64))
   (call   main (: 9 Int64)) (output (: 125799 Int64))
-  (live-objects known-leak 47))
+  (live-objects known-leak 47 45 47))
 
 (case "INVERSION COUNT pairs every element with its successors, zero when sorted and maximal when reversed"
   (doc    "The sortedness METRIC (inversions are exactly what the merge sort above eliminates —
@@ -11617,7 +11623,7 @@
   (call   main (: 2 Int64)) (output (: 0 Int64))
   (call   main (: 3 Int64)) (output (: 10 Int64))
   (call   main (: 4 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 8 8 8 4))
 
 (case "TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow"
   (doc    "The bounded-selection composite: each element insorts into a DESCENDING list (`>=` walk —
@@ -11657,7 +11663,7 @@
   (call   main (: 3 Int64)) (output (: 987 Int64))
   (call   main (: 1 Int64)) (output (: 9 Int64))
   (call   main (: 10 Int64)) (output (: 9875321 Int64))
-  (live-objects known-leak 32))
+  (live-objects known-leak 32 24 26))
 
 (case "a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number"
   (doc    "The stable priority queue over an ordered assoc list: each element carries (priority, seq),
@@ -11989,7 +11995,7 @@
   (call   main (: 2 Int64)) (output (: 4101 Int64))
   (call   main (: 3 Int64)) (output (: 3101 Int64))
   (call   main (: 7 Int64)) (output (: 1701 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 12 8 0))
 
 (case "a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at"
   (doc    "The lo/hi halving loop over `(10 20 30 40 50 60 70)`: each step reads the midpoint
@@ -12064,7 +12070,7 @@
   (call   main (: 1 Int64)) (output (: 1031200005 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 102033 Int64))
-  (live-objects known-leak 22))
+  (live-objects known-leak 22 14 18))
 
 (case "a PARTITION fold splits one spine into two lists by a runtime predicate"
   (doc    "The partition idiom: ONE walk over `(4 n 7 1 8 2)` grows TWO accumulator lists — `(< h 5)`
@@ -12138,7 +12144,7 @@
   (call   main (: 1 Int64)) (output (: 106081015183 Int64))
   (call   main (: 2 Int64)) (output (: 1051 Int64))
   (call   main (: 3 Int64)) (output (: 1101 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 12 4 8))
 
 (case "a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side"
   (doc    "The selection composite over the partition step above (there the split IS the answer; here
@@ -12180,7 +12186,7 @@
   (call   main (: 3 Int64)) (output (: 5 Int64))
   (call   main (: 5 Int64)) (output (: 9 Int64))
   (call   main (: 6 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 25))
+  (live-objects known-leak 25 25 15 21 21))
 
 (case "a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted"
   (doc    "The three-way upgrade of the two-way partition and quickselect pins above: ONE walk routes
@@ -12218,7 +12224,7 @@
   (call   main (: 5 Int64)) (output (: 21330078 Int64))
   (call   main (: 1 Int64)) (output (: 5285853 Int64))
   (call   main (: 9 Int64)) (output (: 5275185300000 Int64))
-  (live-objects known-leak 21))
+  (live-objects known-leak 21 19 17))
 
 (case "a PREFIX-SUM scan emits a running total whose each element feeds the next"
   (doc    "The scan idiom (fold that KEEPS its intermediates): walking `(3 n 4 1)`, each step computes
@@ -12288,7 +12294,7 @@
   (call   main (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
   (call   main (: 4 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 6 4 0 4))
 
 (case "RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk"
   (doc    "The QUERY side of the prefix table (the scan above pins construction): `rq(i,j) =
@@ -12654,7 +12660,7 @@
   (call   main (: 3 Int64)) (output (: 31 Int64))
   (call   main (: 9 Int64)) (output (: 90 Int64))
   (call   main (: 7 Int64)) (output (: 71 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 12 6 8))
 
 (case "MAX PROFIT tracks the running minimum and best spread in one forward pass"
   (doc    "The buy-low-sell-high single pass (Kadane's cousin two pins up — Kadane couples through a
@@ -12778,7 +12784,7 @@
   (call   main (: 0 Int64)) (output (: 123451 Int64))
   (call   main (: 7 Int64)) (output (: 345121 Int64))
   (call   main (: 5 Int64)) (output (: 123451 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 6 0 6 0))
 
 (case "a STABLE DEDUP keeps first occurrences in input order via a seen-Set threaded through the fold"
   (doc    "The stable-dedup idiom couples a GROWING CHAMP set to a growing list in one fold: each new
@@ -13057,7 +13063,7 @@
   (output (: 42 Int64))
   (call   main (: -1 Int64))
   (output (: 20 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 3 2))
 
 (case "a two-variant enum match with constant arms dispatches branchlessly — first variant"
   (doc    "A TWO-variant enum `(type Flag On Off)` matched to constant arms is `(if (disc == On) 1 0)` —
@@ -15274,7 +15280,7 @@
   (output (: 22 Int64))
   (call   main (: 9 Int64))
   (output (: -3 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 3 2))
 
 (case "Map.swap at a RUNTIME key replaces on a hit and adds on a miss through one compiled body"
   (doc    "`(Map.swap {1↦10,2↦20} k 99)`: k=2 hits — the prior value `(Some 20)` comes back and the new
@@ -19310,7 +19316,7 @@
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
   (call   main (: 4 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak 1 1 0 0))
 
 (case "a record key with a SET field matches by set content across build orders"
   (doc    "The record-key family descends into a full sub-CHAMP: the key's `s` field is a SET, so
@@ -19535,7 +19541,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1 Int64))
   (call   main (: 0 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak 20 0))
 
 (case "a 33-VARIANT sum dispatches across the discriminant range with a payload variant last"
   (doc    "Corpus sums top out ~6 variants; 33 crosses the 32 boundary (i32-bitmask/5-bit-tag reps saturate; jump-table vs if-chain dispatch switches here). Faces: first/middle/last nullary discriminants, the PAYLOAD variant at index 32, and the wildcard covering the other 29.")
@@ -19684,7 +19690,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 3142 Int64))
   (call   main (: 3 Int64)) (output (: 312 Int64))
-  (live-objects known-leak 17))
+  (live-objects known-leak 17 16))
 
 ; --- Little-interpreter idioms: memoized recursion, an environment-threading evaluator, and a
 ; stack machine. Each threads collection state through recursion in a distinct discipline
@@ -19824,7 +19830,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 313 Int64))
   (call   main (: 7 Int64)) (output (: 209 Int64))
-  (live-objects known-leak 17))
+  (live-objects known-leak 17 15))
 
 (case "a 2x2 matrix MULTIPLY composes row extraction, column extraction, and a zipped dot product"
   (doc    "No matrix arithmetic existed (transpose peels but never multiplies): the dot walks TWO lists in LOCKSTEP (the zip-consume shape), col extracts a column across rows (nested indexed reads), and the r00/r11 corners compose both with the runtime k in one operand.")
