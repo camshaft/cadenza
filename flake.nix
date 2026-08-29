@@ -319,6 +319,19 @@
           doCheck = false;
         });
 
+        # xtaskCodegenContractsBin — the contract-schema projector (v-xtask-decompose, codegen→build-time-nix).
+        # Carved from codegen.rs's generate_contracts (RENDER path only). Built from its own closure (deps
+        # cadenza-ast + cdz-contract + the syn/quote/prettyplease render stack), so it caches independently of
+        # xtask. A `cdzPlatformContracts` derivation (v-nix, mirroring contractHashes) runs this over the
+        # contract sources with the seed cdz + component store to EMIT cdz-platform/src/contracts/*.rs at build
+        # time — a build-phase overlay then copies them in, so nothing generated is committed. Output:
+        # $out/bin/xtask-codegen-contracts. Verified: emits BYTE-IDENTICAL output to the committed contracts.
+        xtaskCodegenContractsBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-codegen-contracts"; }) // {
+          pname = "cdz-xtask-codegen-contracts";
+          cargoExtraArgs = "-p xtask-codegen-contracts";
+          doCheck = false;
+        });
+
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
         # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
@@ -482,6 +495,9 @@
           # xtask-fmt (v-xtask-decompose): the Cadenza formatter as its own bin crate, deps only xtask-support.
           # Registered here so the crane deps-src includes its Cargo.toml.
           xtask-fmt = "xtask/crates/xtask-fmt";
+          # xtask-codegen-contracts (v-xtask-decompose): the contract-schema projector (codegen→build-time-nix),
+          # deps cadenza-ast + cdz-contract. Registered here so the crane deps-src includes its Cargo.toml.
+          xtask-codegen-contracts = "xtask/crates/xtask-codegen-contracts";
         };
         rootCrateNames = builtins.attrNames rootWorkspaceCrates;
         # direct member-edges of one crate across the three rebuild-relevant dep sections (A1 walk).
@@ -797,6 +813,8 @@
               xtask-canonicalize-baselines = [ "cadenza-ast" "cdz-contract" "xtask-canonicalize-baselines" "xtask-support" ];
               # xtask-fmt deps xtask-support (which deps cdz-contract→cadenza-ast).
               xtask-fmt = [ "cadenza-ast" "cdz-contract" "xtask-fmt" "xtask-support" ];
+              # xtask-codegen-contracts deps cadenza-ast + cdz-contract (cdz-contract deps cadenza-ast).
+              xtask-codegen-contracts = [ "cadenza-ast" "cdz-contract" "xtask-codegen-contracts" ];
               xtask-mandates = [ "xtask-mandates" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
@@ -3654,6 +3672,11 @@
         # replacement). Distinct from `packages.world-artifacts` (plural = the emitted-artifacts derivation).
         packages.world-artifact = cdzWorldArtifactBin;
 
+        # The contract-schema projector bin (v-xtask-decompose, codegen→build-time-nix). `nix build
+        # .#xtask-codegen-contracts` → result/bin/xtask-codegen-contracts. The `cdzPlatformContracts`
+        # derivation (v-nix, in progress) runs it to emit cdz-platform/src/contracts/*.rs at build time.
+        packages.xtask-codegen-contracts = xtaskCodegenContractsBin;
+
         # The standalone mandate-lint binary (v-xtask-decompose). `nix build .#xtask-mandates` →
         # result/bin/xtask-mandates. Backs `apps.lint-mandates` + the mandate gate; caches independently
         # of xtask (its closure is just the crate + syn).
@@ -3785,6 +3808,7 @@
               clippy-xtask-lint-emoji = mkCrateClippyCrane { crate = "xtask-lint-emoji"; };
               clippy-xtask-canonicalize-baselines = mkCrateClippyCrane { crate = "xtask-canonicalize-baselines"; };
               clippy-xtask-fmt = mkCrateClippyCrane { crate = "xtask-fmt"; };
+              clippy-xtask-codegen-contracts = mkCrateClippyCrane { crate = "xtask-codegen-contracts"; };
             };
             # cdz's clippy stays in its workspace-src check (crateCdzCheck runs `cargo clippy -p cdz` inside).
             clippyCraneAggregate = pkgs.runCommand "cargo-clippy-crane-aggregate"
@@ -3831,6 +3855,7 @@
               test-xtask-lint-emoji = mkCrateTestCrane { crate = "xtask-lint-emoji"; };
               test-xtask-canonicalize-baselines = mkCrateTestCrane { crate = "xtask-canonicalize-baselines"; };
               test-xtask-fmt = mkCrateTestCrane { crate = "xtask-fmt"; };
+              test-xtask-codegen-contracts = mkCrateTestCrane { crate = "xtask-codegen-contracts"; };
             };
             # COVERAGE-PARITY assert (concierge mandate — no test silently dropped vs `cargo test
             # --workspace`): the per-crate test crates PLUS cdz (crateCdzCheck) must EXACTLY equal the
@@ -3895,9 +3920,9 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
-              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
+              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
             # flakeReproBackstop: the REPRODUCIBILITY-BACKSTOP subset — the checks the `nix-flake (advisory)`
             # CI job should run INSTEAD of a whole `nix flake check`. Data-driven CI-speed (operator standing

@@ -1,0 +1,30 @@
+# xtask-codegen-contracts — project each `cdz-platform/contracts/*.cdz` contract into its generated Rust
+# schema module (`<name>.rs` + `mod.rs`), as its OWN minimal-dep crate (v-xtask-decompose: the
+# codegen→build-time-nix directive). Carved out of xtask/src/codegen.rs's `generate_contracts`. This is the
+# RENDER path only (read the .cdz → `cdz convert` to AST → execute `descriptor()` for identity → emit the
+# builder-call schema) — it OMITS the `cdz test` @test-validation step, which stays a `codegen --check`
+# concern. A `cdzPlatformContracts` nix derivation runs this bin (mirroring the `contractHashes` derivation)
+# to produce the generated sources at BUILD time, which a build-phase overlay copies into cdz-platform's
+# src/contracts/ — so nothing generated is committed (operator: derive-in-build, do not commit).
+#
+# Deps are exactly codegen's contract-render surface: cadenza-ast (the language value model + AST codec, the
+# ONLY compiler dep — the projection reads the AST, never links the compiler), cdz-contract
+# (identity_from_descriptor), and the syn/quote/proc-macro2/prettyplease render stack. The `cdz` binary
+# itself comes from CDZ_SEED_BIN_DIR at runtime (no cargo build of the toolchain).
+[package]
+name = "xtask-codegen-contracts"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-codegen-contracts"
+path = "src/main.rs"
+
+[dependencies]
+cadenza-ast = { path = "../../../implementation/seed/crates/cadenza-ast" }
+cdz-contract = { path = "../../../implementation/seed/crates/cdz-contract" }
+prettyplease = "0.2"
+syn = { version = "2", features = ["full", "parsing"] }
+quote = "1"
+proc-macro2 = "1"
