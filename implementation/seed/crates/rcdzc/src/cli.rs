@@ -59,6 +59,18 @@ pub struct CompileArgs {
     #[arg(long, value_name = "NAME")]
     entry: Option<String>,
 
+    /// SPLICE mode: FLAT-MERGE every `ast` INPUT into ONE program (concatenating their top-level defs) +
+    /// add a single `(export <SYM>)`, then compile that as a single standalone component. This is the
+    /// two-stage test-shred per-test compile: `rcdzc <closure.cdzb> <test.cdzb> --export <sym> -o test.wasm`
+    /// — the shared-closure fragment + the per-test fragment (each a no-export `(do (def..)..)` from
+    /// `--target cadenza`'s fragment mode) merge into one `(do (def..)+ (export <sym>))`. `<SYM>` names the
+    /// test's boundary export (a def in the merged program). DISTINCT from `--entry`: `--entry` LINKS files
+    /// as a cross-component PACKAGE (via `(import …)`), whereas `--export` CONCATENATES them into ONE
+    /// component — so a CA-cached shared-closure fragment is reused across a suite's tests with no per-test
+    /// re-lower. Mutually exclusive with `--entry`.
+    #[arg(long, value_name = "SYM", conflicts_with = "entry")]
+    export: Option<String>,
+
     /// The INTERFACE this component publishes its exports under, when compiled as a cross-component
     /// PROVIDER (`DESIGN-cross-component-interop-rcdzc.md` X4b) — e.g. `--component-name cadenza:math/api`.
     /// A peer consumer binds to it with an `(effect …)` `(bind "cadenza:math/api")`-ed to this name (the
@@ -295,6 +307,21 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
         inputs.push(Artifact::new(parsed.kind, parsed.name, bytes));
     }
 
+    // `--export <SYM>` = the two-stage SPLICE mode: FLAT-MERGE every `ast` input's top-level defs into ONE
+    // program + append a single `(export <SYM>)`, replacing the whole input set with that one program. This
+    // is the per-test shred compile (`rcdzc closure.cdzb test.cdzb --export sym`): the shared-closure
+    // fragment + the per-test fragment concatenate into one standalone component (NOT a cross-component
+    // package link — that is `--entry`, which `conflicts_with = "entry"` keeps mutually exclusive).
+    if let Some(export_sym) = &cli.export {
+        match splice_ast_inputs(&inputs, export_sym) {
+            Ok(spliced) => inputs = vec![spliced],
+            Err(e) => {
+                eprintln!("{prog}: --export: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     // A `--entry <NAME>` names the package entry file — inject it as a `KIND_ENTRY` artifact (its bytes
     // ARE the entry name), the same stream `compile()` reads the entry from (`DESIGN-package-linking.md`
     // §3c). Absent, a multi-`ast` package declines (no rule to pick the entry); a single-file compile
@@ -337,6 +364,100 @@ pub fn component_name_artifact(iface: &str) -> Artifact {
         "component-name",
         iface.as_bytes().to_vec(),
     )
+}
+
+/// FLAT-MERGE the `ast` input artifacts into ONE `(do (def..)+ (export <sym>))` program artifact — the
+/// `--export` two-stage splice. Each input's top-level items concatenate in order: a `(do item..)` root
+/// contributes its items (the shared-closure fragment + the per-test fragment are each a no-export
+/// `(do (def..)..)`), a bare single-form root contributes itself. A single `(export <sym>)` is appended so
+/// the merged standalone component publishes exactly the test's boundary export. Errors when an input isn't
+/// a decodable `ast` artifact (the merged program's own well-formedness — an undefined `<sym>`, a duplicate
+/// def — is left to the compiler, which reports it precisely). Returns the merged `KIND_AST` artifact.
+fn splice_ast_inputs(inputs: &[Artifact], export_sym: &str) -> Result<Artifact, String> {
+    use crate::ast::Builder;
+    let mut b = Builder::new();
+    let mut items: Vec<crate::ast::StructId> = Vec::new();
+    for art in inputs {
+        if art.kind != Artifact::KIND_AST {
+            return Err(format!(
+                "input `{}` is kind `{}`, not `ast` — --export splices ast fragments only",
+                art.name, art.kind
+            ));
+        }
+        let src = crate::codec::decode(&art.bytes).ok_or_else(|| {
+            format!(
+                "input `{}` is not a decodable cadenza-ast program",
+                art.name
+            )
+        })?;
+        match src.as_form(src.root, "do") {
+            // A `(do item..)` fragment contributes each of its items (deep-copied into the new arena).
+            Some(do_items) => {
+                let owned: Vec<crate::ast::StructId> = do_items.to_vec();
+                for it in owned {
+                    items.push(copy_subtree(&mut b, &src, it));
+                }
+            }
+            // A bare single-form program contributes itself.
+            None => items.push(copy_subtree(&mut b, &src, src.root)),
+        }
+    }
+    // The single boundary export the standalone component publishes: `(export <sym>)`.
+    let export_head = b.name("export");
+    let export_name = b.name(export_sym);
+    let export_form = b.list(vec![export_head, export_name]);
+    items.push(export_form);
+    // Wrap all items in one `(do …)` program root.
+    let do_head = b.name("do");
+    let mut children = Vec::with_capacity(items.len() + 1);
+    children.push(do_head);
+    children.extend(items);
+    let root = b.list(children);
+    Ok(Artifact::new(
+        Artifact::KIND_AST,
+        export_sym,
+        crate::codec::encode(&b.finish(root)),
+    ))
+}
+
+/// Deep-copy the subtree rooted at `id` of `src` into builder `b`, returning the new root id. Iterative
+/// post-order so a deep program can't overflow the native stack. (A local twin of the same routine the
+/// `cdz` doc/repl assemblers use over this shared `cadenza_ast` arena — no public graft exists to share.)
+fn copy_subtree(
+    b: &mut crate::ast::Builder,
+    src: &crate::ast::Arenas,
+    id: crate::ast::StructId,
+) -> crate::ast::StructId {
+    use crate::ast::Struct;
+    enum Job {
+        Visit(crate::ast::StructId),
+        EmitList(usize),
+    }
+    let mut jobs = vec![Job::Visit(id)];
+    let mut results: Vec<crate::ast::StructId> = Vec::new();
+    while let Some(job) = jobs.pop() {
+        match job {
+            Job::Visit(sid) => match src.get(sid) {
+                Struct::Atom(lid) => {
+                    let leaf = src.leaf(*lid).clone();
+                    let n = b.atom_leaf(leaf);
+                    results.push(n);
+                }
+                Struct::List(kids) => {
+                    jobs.push(Job::EmitList(kids.len()));
+                    for &k in kids.iter().rev() {
+                        jobs.push(Job::Visit(k));
+                    }
+                }
+            },
+            Job::EmitList(n) => {
+                let kids = results.split_off(results.len() - n);
+                let node = b.list(kids);
+                results.push(node);
+            }
+        }
+    }
+    results.pop().expect("copy_subtree leaves a root")
 }
 
 /// Compile a set of ALREADY-BUILT input artifacts to the requested targets and write the outputs — the
@@ -647,5 +768,62 @@ fn ext_for_kind(kind: &str) -> &str {
         // `link-map` (a diagnostics demux table) is likewise UTF-8 text.
         "type-info" | "uses" | "link-map" => "txt",
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::Builder;
+
+    /// Build a `KIND_AST` artifact for a `(do <name>…)` fragment — each name a bare top-level item, so the
+    /// splice's do-child merge is exercised without needing full `(def …)` bodies (the splice copies items
+    /// structurally; def well-formedness is the compiler's concern, not the splice's).
+    fn do_fragment(name: &str, items: &[&str]) -> Artifact {
+        let mut b = Builder::new();
+        let mut kids = vec![b.name("do")];
+        for it in items {
+            kids.push(b.name(*it));
+        }
+        let root = b.list(kids);
+        Artifact::new(
+            Artifact::KIND_AST,
+            name,
+            crate::codec::encode(&b.finish(root)),
+        )
+    }
+
+    /// `--export` splices every `ast` input's `(do …)` items into ONE `(do <all-items> (export <sym>))`
+    /// program — the two-stage per-test compile (shared-closure fragment ++ per-test fragment ++ export).
+    /// Pins: items concatenate IN ORDER across fragments, and exactly one `(export <sym>)` is appended last.
+    #[test]
+    fn export_splices_do_fragments_in_order_with_a_single_export() {
+        let closure = do_fragment("closure", &["helper1", "helper2"]);
+        let test = do_fragment("test", &["mytest"]);
+        let merged = splice_ast_inputs(&[closure, test], "mytest").expect("splices");
+        assert_eq!(merged.kind, Artifact::KIND_AST);
+        let a = crate::codec::decode(&merged.bytes).expect("merged decodes as cadenza-ast");
+        let items = a.as_form(a.root, "do").expect("merged root is a `(do …)`");
+        assert_eq!(items.len(), 4, "2 closure items + 1 test item + 1 export");
+        // The three source items concatenate in fragment/source order.
+        assert_eq!(a.as_name(items[0]), Some("helper1"));
+        assert_eq!(a.as_name(items[1]), Some("helper2"));
+        assert_eq!(a.as_name(items[2]), Some("mytest"));
+        // The final item is exactly `(export mytest)`.
+        let export = a
+            .as_form(items[3], "export")
+            .expect("last item is `(export …)`");
+        assert_eq!(export.len(), 1);
+        assert_eq!(a.as_name(export[0]), Some("mytest"));
+    }
+
+    /// A non-`ast` input is rejected — `--export` splices ast fragments only (a wrong-kind input is a
+    /// caller error, surfaced as a tool error rather than silently mis-spliced).
+    #[test]
+    fn export_rejects_a_non_ast_input() {
+        let ast = do_fragment("f", &["a"]);
+        let other = Artifact::new("wasm", "w", vec![0, 1, 2]);
+        let err = splice_ast_inputs(&[ast, other], "a").expect_err("non-ast input rejected");
+        assert!(err.contains("not `ast`"), "{err}");
     }
 }
