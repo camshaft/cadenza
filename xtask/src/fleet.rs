@@ -5953,20 +5953,79 @@ fn file_mtime_unix(path: &Path) -> Option<u64> {
 // Fail-OPEN: if the lease dir can't be created/read, `check` proceeds unthrottled (a coordination
 // convenience must never HARD-BLOCK a developer's gate on an fs hiccup).
 
-/// Max concurrent NON-priority (`vertical`) checks. Small by design — a full check is a whole build +
-/// gate; the heaviest is gate-local (the 12-constituent required-set aggregate EVERY agent runs pre-merge).
-/// Lowered 3→2 (concierge+v-compiler-perf 2026-08-29: with the fleet RESUMED to ~28+ active agents,
-/// gate-local was UNCOMPLETABLE most of a session — even 3 concurrent full gate-locals crawled/were evicted
-/// under the daemon contention). 2 lets each concurrent heavy build get more of the daemon and actually
-/// COMPLETE instead of all thrashing. Tunable per-host via `CDZ_CHECK_LEASE_MAX`. NB this only bounds
-/// builds that go THROUGH the lease (`cargo xtask {check,gate,gate-local}` / `fleet with-lease`); a bare
-/// `nix build .#checks…` escapes it (the with-lease mandate + the reaper cover that class).
+/// The static concurrency floor + ceiling for the LOAD-ADAPTIVE vertical-check cap (operator seq-208
+/// 2026-08-29). FLOOR (2) is the load-108-saturation-safe value the fleet ran at before — the adaptive
+/// cap NEVER drops below it, so under heavy load behaviour is identical to the old static cap-2 (no
+/// regression). CEIL (5) is a CONCURRENCY ceiling, NOT a CPU-safety number: total leased CPU is already
+/// pinned to ~half the box REGARDLESS of the cap, because `lease_nix_fanout_budget` divides the per-holder
+/// core budget by `(max+1)` — a higher cap just splits the same ~half-box budget among more, SMALLER
+/// concurrent builds (CPUQuota=56 is the hard backstop either way). So the ceiling only bounds how many
+/// tiny builds we let thrash the daemon at once; 5 concurrent gate-locals is ample and past it the
+/// per-build slice gets uselessly small. Both are overridable via `CDZ_CHECK_LEASE_MAX` (which pins an
+/// exact value and disables adaptivity entirely).
+const CHECK_LEASE_ADAPTIVE_FLOOR: usize = 2;
+const CHECK_LEASE_ADAPTIVE_CEIL: usize = 5;
+
+/// Read the 1-minute load average from `/proc/loadavg` (the first field). `None` off-Linux or on any
+/// parse/read error → the caller fails safe to the FLOOR. Always-fresh + zero-dependency (no coupling to
+/// the cpu-monitor daemon's sample freshness), which is why it's the adaptive-cap signal.
+fn read_loadavg1() -> Option<f64> {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse::<f64>()
+        .ok()
+}
+
+/// The load-adaptive cap DECISION (pure, so the policy is unit-pinned without the fs read): pick a
+/// vertical-check concurrency cap in `[floor, ceil]` from the current 1-min loadavg vs `nproc`. GENEROUS
+/// (ceil) when the box has spare run-queue capacity — so queued agents build concurrently instead of
+/// idle-waiting on the lock (operator seq-208: "constantly working, not waiting on a lock") — and tightens
+/// linearly toward the floor as loadavg approaches `nproc` (real saturation), where fewer concurrent leased
+/// builds leave room for the rest of the run queue. `busy = loadavg1 / nproc` clamped to `[0,1]`; the cap
+/// is `ceil - round((ceil-floor)·busy)`, so an idle box → ceil and a fully-loaded box → floor. Degenerate
+/// inputs fail safe to the floor: `nproc == 0`, `ceil <= floor`, or a non-finite/negative loadavg.
+fn adaptive_check_lease_cap(loadavg1: f64, nproc: usize, floor: usize, ceil: usize) -> usize {
+    if nproc == 0 || ceil <= floor || !loadavg1.is_finite() || loadavg1 < 0.0 {
+        return floor;
+    }
+    let busy = (loadavg1 / nproc as f64).clamp(0.0, 1.0);
+    let span = (ceil - floor) as f64;
+    let shed = (span * busy).round() as usize;
+    ceil.saturating_sub(shed).max(floor)
+}
+
+/// Max concurrent NON-priority (`vertical`) checks. A full check is a whole build + gate; the heaviest is
+/// gate-local (the 12-constituent required-set aggregate EVERY agent runs pre-merge). LOAD-ADAPTIVE by
+/// default (operator seq-208 2026-08-29): the earlier static cap-2 (a load-108-saturation stopgap) was
+/// CPU-blind and needlessly SERIALIZED agents on an idle box (measured ~91% idle, agents lock-gated not
+/// CPU-bound) — so unless an explicit `CDZ_CHECK_LEASE_MAX` pins a value, the cap is chosen from live
+/// loadavg between [FLOOR, CEIL]: generous when idle, floor under saturation (see `adaptive_check_lease_cap`).
+/// An explicit `CDZ_CHECK_LEASE_MAX` still wins and DISABLES adaptivity (the operator override + the interim
+/// window.sh pin — dropped once this default is live fleet-wide). NB this only bounds builds that go THROUGH
+/// the lease (`cargo xtask {check,gate,gate-local}` / `fleet with-lease`); a bare `nix build .#checks…`
+/// escapes it (the with-lease mandate + the reaper cover that class).
 fn check_lease_max() -> usize {
-    std::env::var("CDZ_CHECK_LEASE_MAX")
+    if let Some(n) = std::env::var("CDZ_CHECK_LEASE_MAX")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(2)
+    {
+        return n; // explicit operator override — pins the value, disables adaptivity.
+    }
+    let nproc = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
+    match read_loadavg1() {
+        Some(load) => adaptive_check_lease_cap(
+            load,
+            nproc,
+            CHECK_LEASE_ADAPTIVE_FLOOR,
+            CHECK_LEASE_ADAPTIVE_CEIL,
+        ),
+        None => CHECK_LEASE_ADAPTIVE_FLOOR, // fail safe: no load signal → the saturation-safe floor.
+    }
 }
 
 /// Per-HOLDER nix fan-out budget (cores) for a leased build. The check-lease caps the NUMBER of
@@ -20707,6 +20766,40 @@ branch refs/heads/fleet/trunk-tools
     }
 
     #[test]
+    fn adaptive_check_lease_cap_is_generous_when_idle_and_floors_under_load() {
+        let (floor, ceil) = (2, 5);
+        // 64-core box (operator seq-208 conditions). IDLE → ceil: agents build concurrently, don't wait.
+        assert_eq!(adaptive_check_lease_cap(0.0, 64, floor, ceil), ceil);
+        // Measured seq-208 load ~5.6/64 (~9% busy) → still generous (round(3*0.087)=0 shed).
+        assert_eq!(adaptive_check_lease_cap(5.6, 64, floor, ceil), 5);
+        // Monotonic non-increasing as load climbs, always within [floor, ceil].
+        let mut prev = ceil + 1;
+        for load in 0..=64 {
+            let cap = adaptive_check_lease_cap(load as f64, 64, floor, ceil);
+            assert!(
+                (floor..=ceil).contains(&cap),
+                "cap {cap} out of [{floor},{ceil}] at load {load}"
+            );
+            assert!(
+                cap <= prev,
+                "cap must not RISE as load climbs (load {load}: {cap} > {prev})"
+            );
+            prev = cap;
+        }
+        // Full saturation (loadavg ≥ nproc) → the saturation-safe FLOOR (identical to the old static cap-2).
+        assert_eq!(adaptive_check_lease_cap(64.0, 64, floor, ceil), floor);
+        assert_eq!(adaptive_check_lease_cap(200.0, 64, floor, ceil), floor); // clamps past nproc
+        // Midpoint (50% busy) sheds ~half the span: 5 - round(3*0.5)=5-2=3.
+        assert_eq!(adaptive_check_lease_cap(32.0, 64, floor, ceil), 3);
+        // Degenerate inputs all fail SAFE to the floor (never a spurious high cap on bad data).
+        assert_eq!(adaptive_check_lease_cap(1.0, 0, floor, ceil), floor); // nproc=0
+        assert_eq!(adaptive_check_lease_cap(f64::NAN, 64, floor, ceil), floor);
+        assert_eq!(adaptive_check_lease_cap(-1.0, 64, floor, ceil), floor);
+        assert_eq!(adaptive_check_lease_cap(0.0, 64, 5, 5), 5); // ceil==floor → that value
+        assert_eq!(adaptive_check_lease_cap(0.0, 64, 5, 2), 5); // ceil<floor → floor
+    }
+
+    #[test]
     fn lease_nix_fanout_budget_bounds_total_below_nproc_and_floors_at_one() {
         // 64-core host, default lease_max=3 → 3 vertical + 1 priority = 4 holders. Budget = 64/(2*4) = 8;
         // 4 holders × 8 = 32 ≈ half the box (headroom for the fleet's jobs=4 cargo).
@@ -20827,19 +20920,40 @@ branch refs/heads/fleet/trunk-tools
     }
 
     #[test]
-    fn check_lease_max_reads_env_with_sane_default() {
-        // Default is 2 (lowered from 3, 2026-08-29 gate-local starvation relief); a positive override
-        // parses; garbage/zero fall back to the default.
+    fn check_lease_max_env_override_wins_else_adaptive_in_range() {
+        // The env plumbing (the exact adaptive POLICY is pinned deterministically by
+        // `adaptive_check_lease_cap_is_generous_when_idle_and_floors_under_load`): a positive
+        // `CDZ_CHECK_LEASE_MAX` is an explicit operator override that wins and DISABLES adaptivity;
+        // absent/zero/garbage fall through to the LOAD-ADAPTIVE default, which is always in
+        // [FLOOR, CEIL] regardless of the box's current load (so this stays deterministic).
         // (Env is process-global; set+clear around the assert to avoid cross-test bleed.)
         // SAFETY: single-threaded test, no other thread reads the env concurrently.
+        let in_range =
+            |n: usize| (CHECK_LEASE_ADAPTIVE_FLOOR..=CHECK_LEASE_ADAPTIVE_CEIL).contains(&n);
         unsafe { std::env::remove_var("CDZ_CHECK_LEASE_MAX") };
-        assert_eq!(check_lease_max(), 2);
+        assert!(
+            in_range(check_lease_max()),
+            "no env → adaptive within [floor, ceil]"
+        );
         unsafe { std::env::set_var("CDZ_CHECK_LEASE_MAX", "5") };
-        assert_eq!(check_lease_max(), 5);
+        assert_eq!(
+            check_lease_max(),
+            5,
+            "explicit override wins + disables adaptivity"
+        );
+        unsafe { std::env::set_var("CDZ_CHECK_LEASE_MAX", "8") };
+        assert_eq!(
+            check_lease_max(),
+            8,
+            "override is honored verbatim even above the adaptive ceil"
+        );
         unsafe { std::env::set_var("CDZ_CHECK_LEASE_MAX", "0") };
-        assert_eq!(check_lease_max(), 2, "zero is rejected → default");
+        assert!(
+            in_range(check_lease_max()),
+            "zero is rejected → adaptive fallback"
+        );
         unsafe { std::env::set_var("CDZ_CHECK_LEASE_MAX", "nonsense") };
-        assert_eq!(check_lease_max(), 2, "garbage → default");
+        assert!(in_range(check_lease_max()), "garbage → adaptive fallback");
         unsafe { std::env::remove_var("CDZ_CHECK_LEASE_MAX") };
     }
 

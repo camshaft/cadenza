@@ -46,19 +46,13 @@ if [ -z "${CARGO_BUILD_JOBS:-}" ]; then
   export CARGO_BUILD_JOBS="$_jobs"
 fi
 
-# Concurrent-heavy-check cap in the MATERIALIZED env. Exporting it here makes the CURRENT binary honor the
-# cap at runtime (acquire_check_lease reads the env each call) the moment a window (re)launches — no rebuild
-# wait — and every agent agreeing on the same max keeps the shared lease consistent. Value 5 (operator
-# seq-208 2026-08-29, concierge-authorized): the earlier cap-2 was a load-108 SATURATION stopgap, but with
-# the box measured ~91% IDLE (loadavg ~5.6/64) and agents lock-GATED not CPU-bound, cap-2 needlessly
-# serialized them. 5 is CPUQuota-safe: each leased build self-caps to ~nproc/(2·(max+1)) cores, so 5 holders
-# × ~10 cores = ~50 < the 56-core nix-daemon CPUQuota (the real overload governor, the hard backstop).
-# INTERIM stopgap: the durable fix is a LOAD-ADAPTIVE compiled default (floor 2 / hw-derived ceil ~5) —
-# once that lands this pin is DROPPED so windows pick up the adaptive default gradually on relaunch, and
-# CDZ_CHECK_LEASE_MAX stays only as an explicit operator override. Respect an override already set.
-if [ -z "${CDZ_CHECK_LEASE_MAX:-}" ]; then
-  export CDZ_CHECK_LEASE_MAX=5
-fi
+# Concurrent-heavy-check cap: NO LONGER PINNED HERE (operator seq-208 2026-08-29). The cap is now a
+# LOAD-ADAPTIVE compiled default in `check_lease_max()` — generous (up to ceil 5) when the box has spare
+# run-queue capacity so queued agents build concurrently instead of idle-waiting on the lock, tightening to
+# the saturation-safe floor 2 as loadavg approaches nproc. Pinning `CDZ_CHECK_LEASE_MAX` here would DISABLE
+# that adaptivity (an explicit value wins), so the earlier interim =5 stopgap pin is dropped: windows pick
+# up the adaptive default gradually as they relaunch. To force a fixed cap for host tuning / an incident,
+# set CDZ_CHECK_LEASE_MAX in the environment before launch (it still wins as an explicit operator override).
 
 # Resolve the agent's config from the registry. The hub is BARE (no Cargo workspace), so run the
 # xtask from any worktree that has one — the pr-sync worktree always exists and holds trunk.
