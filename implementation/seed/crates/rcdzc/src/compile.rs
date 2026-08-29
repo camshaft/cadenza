@@ -605,13 +605,13 @@ fn compile_with_opt_inner(
                     Err(mut r) => {
                         trace!(target: "rcdzc::compile", file = %name, reason = %r.message, "per-file test emit declined");
                         sanitize_origin(&db, &mut r);
-                        diagnostics.push(Diagnostic::from_reject(&r));
+                        diagnostics.push(crate::abi_bridge::diagnostic_from_reject(&r));
                     }
                 },
                 Err(mut r) => {
                     trace!(target: "rcdzc::compile", file = %name, reason = %r.message, "per-file test layout declined");
                     sanitize_origin(&db, &mut r);
-                    diagnostics.push(Diagnostic::from_reject(&r));
+                    diagnostics.push(crate::abi_bridge::diagnostic_from_reject(&r));
                 }
             }
         }
@@ -671,7 +671,7 @@ fn compile_with_opt_inner(
             .any(|(_, n, _)| !stems_seen.insert(stem_of(n)));
         let all_filed = named_files.len() == by_file.len();
         if !all_filed || stem_collision {
-            diagnostics.push(Diagnostic::from_reject(&Reject::decline(
+            diagnostics.push(crate::abi_bridge::diagnostic_from_reject(&Reject::decline(
                 "composed test emit needs every `@test` in a file with a DISTINCT import stem: a file with \
                  no link path, or two files sharing a stem (e.g. `a/t.cdz` + `b/t.cdz` across directories), \
                  would collide the per-file component demux — falling back to the per-file test build",
@@ -757,7 +757,7 @@ fn compile_with_opt_inner(
                             Err(mut r) => {
                                 trace!(target: "rcdzc::compile", file = %name, reason = %r.message, "composed consumer emit declined");
                                 sanitize_origin(&db, &mut r);
-                                diagnostics.push(Diagnostic::from_reject(&r));
+                                diagnostics.push(crate::abi_bridge::diagnostic_from_reject(&r));
                             }
                         }
                     }
@@ -767,7 +767,7 @@ fn compile_with_opt_inner(
                     // decline so the caller falls back to the per-file path.
                     trace!(target: "rcdzc::compile", reason = %r.message, "composed provider emit declined — fall back to per-file");
                     sanitize_origin(&db, &mut r);
-                    diagnostics.push(Diagnostic::from_reject(&r));
+                    diagnostics.push(crate::abi_bridge::diagnostic_from_reject(&r));
                 }
             }
         }
@@ -846,7 +846,7 @@ fn compile_with_opt_inner(
                     // the consumers would hit the same boundary limit). The caller falls back.
                     trace!(target: "rcdzc::compile", reason = %r.message, "shred main (library provider) emit declined");
                     sanitize_origin(&db, &mut r);
-                    diagnostics.push(Diagnostic::from_reject(&r));
+                    diagnostics.push(crate::abi_bridge::diagnostic_from_reject(&r));
                     main_ok = false;
                 }
             }
@@ -879,7 +879,7 @@ fn compile_with_opt_inner(
                     Err(mut r) => {
                         trace!(target: "rcdzc::compile", test = %name, reason = %r.message, "shred consumer emit declined");
                         sanitize_origin(&db, &mut r);
-                        diagnostics.push(Diagnostic::from_reject(&r));
+                        diagnostics.push(crate::abi_bridge::diagnostic_from_reject(&r));
                     }
                 }
             }
@@ -966,7 +966,7 @@ fn compile_with_opt_inner(
             Err(mut r) => {
                 trace!(target: "rcdzc::compile", reason = %r.message, "two-stage closure fragment declined");
                 sanitize_origin(&db, &mut r);
-                diagnostics.push(Diagnostic::from_reject(&r));
+                diagnostics.push(crate::abi_bridge::diagnostic_from_reject(&r));
                 // No closure ⇒ the per-test fragments (which splice against it) are void — skip them.
                 false
             }
@@ -987,7 +987,7 @@ fn compile_with_opt_inner(
                     Err(mut r) => {
                         trace!(target: "rcdzc::compile", test = %name, reason = %r.message, "two-stage per-test fragment declined");
                         sanitize_origin(&db, &mut r);
-                        diagnostics.push(Diagnostic::from_reject(&r));
+                        diagnostics.push(crate::abi_bridge::diagnostic_from_reject(&r));
                         continue;
                     }
                 };
@@ -1049,7 +1049,7 @@ fn compile_with_opt_inner(
             Err(mut r) => {
                 trace!(target: "rcdzc::compile", ?target, reason = %r.message, "target emit declined");
                 sanitize_origin(&db, &mut r);
-                diagnostics.push(Diagnostic::from_reject(&r));
+                diagnostics.push(crate::abi_bridge::diagnostic_from_reject(&r));
             }
         }
     }
@@ -1145,7 +1145,10 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
     // `collect_faults` already sanitizes each fault's origin (stripping a synthesized-node anchor) and
     // dedups, so the faults are display-ready here.
     let faults = collect_faults(db);
-    let mut out: Vec<Diagnostic> = faults.iter().map(Diagnostic::from_reject).collect();
+    let mut out: Vec<Diagnostic> = faults
+        .iter()
+        .map(crate::abi_bridge::diagnostic_from_reject)
+        .collect();
     // WARNINGS ride alongside the faults so "diagnostics as you type" (`Query::Diagnostics` / `cdz
     // check`) surfaces them too — an unused binding and a dead-trap are exactly the kind of thing an
     // editor's inline lint should show. They are non-error severity, so they never deny an artifact.
@@ -5587,7 +5590,7 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
                 None => false,
             };
             if redundant && db.is_user_node(*pat) {
-                let mut diag = Diagnostic::warning(
+                let mut diag = crate::abi_bridge::diagnostic_warning(
                     crate::diag::Code::RedundantArm,
                     "this match arm is unreachable — the earlier arms already cover every value it \
                      would match (a duplicate, a pattern shadowed by an earlier catch-all, or a \
@@ -5604,9 +5607,8 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
                 if let Some(arm) = db.parent_of(*pat)
                     && db.is_user_node(arm)
                 {
-                    diag = diag.with_fix(&crate::diag::Fix::delete_heuristic(
-                        arm,
-                        "remove this unreachable arm",
+                    diag = diag.with_fix(crate::abi_bridge::diagnostic_fix_from_fix(
+                        &crate::diag::Fix::delete_heuristic(arm, "remove this unreachable arm"),
                     ));
                 }
                 out.push(diag);
@@ -5715,7 +5717,11 @@ fn walk_for_dead_traps(
                      (an unused element, binding, or argument) — likely a bug"
                 }
             };
-            out.push(Diagnostic::warning(Code::DeadTrap, msg, at));
+            out.push(crate::abi_bridge::diagnostic_warning(
+                Code::DeadTrap,
+                msg,
+                at,
+            ));
         } else {
             walk_for_dead_traps(db, child, out, seen);
         }
@@ -5866,7 +5872,7 @@ fn warn_reachable_const_trap(db: &mut Db, branch: StructId, out: &mut Vec<Diagno
         // WHICH trap the demoted operation will raise. Keeps the "potentially reachable trap" wording the
         // CDZ0309 corpus grade matches on (a `contains` check).
         let kind = r.message.split(" — ").next().unwrap_or(&r.message).trim();
-        out.push(Diagnostic::warning(
+        out.push(crate::abi_bridge::diagnostic_warning(
             Code::ReachableTrap,
             format!(
                 "this operation resulted in a potentially reachable trap ({kind}): it always traps when this \
@@ -6329,7 +6335,7 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
             "prefix with `_` to mark intentionally unused",
         );
         out.push(
-            Diagnostic::warning(
+            crate::abi_bridge::diagnostic_warning(
                 Code::UnusedBinding,
                 format!(
                     "unused {}: `{}` is never used (prefix with `_` to silence)",
@@ -6337,7 +6343,7 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
                 ),
                 Some(b.name_occ),
             )
-            .with_fix(&fix),
+            .with_fix(crate::abi_bridge::diagnostic_fix_from_fix(&fix)),
         );
     }
     out
@@ -6420,7 +6426,7 @@ fn collect_discarded_value_warnings(db: &mut Db) -> Vec<Diagnostic> {
                 "remove the discarded statement (or bind its value with a `let`)",
             );
             out.push(
-                Diagnostic::warning(
+                crate::abi_bridge::diagnostic_warning(
                     Code::DiscardedValue,
                     format!(
                         "this `{}`-typed value is computed but discarded — a non-final form of a \
@@ -6430,7 +6436,7 @@ fn collect_discarded_value_warnings(db: &mut Db) -> Vec<Diagnostic> {
                     ),
                     Some(s),
                 )
-                .with_fix(&fix),
+                .with_fix(crate::abi_bridge::diagnostic_fix_from_fix(&fix)),
             );
         }
     }
@@ -6789,7 +6795,10 @@ fn fail(rejects: Vec<Reject>) -> CompileOutput {
 fn fail_with(query_artifacts: Vec<Artifact>, rejects: Vec<Reject>) -> CompileOutput {
     CompileOutput {
         artifacts: query_artifacts,
-        diagnostics: rejects.iter().map(Diagnostic::from_reject).collect(),
+        diagnostics: rejects
+            .iter()
+            .map(crate::abi_bridge::diagnostic_from_reject)
+            .collect(),
         // An early failure — no emit ran, so no CSE partition compares happened.
         #[cfg(test)]
         cse_partition_core_eq_calls: 0,
