@@ -535,6 +535,13 @@
           # member (no own [workspace]), so — like cdz-contract / cdz-world-artifact — it MUST be registered
           # here or the crane deps-layer src omits its Cargo.toml and the whole workspace fails to load.
           cdz-wasm-opt-gap = "implementation/seed/crates/cdz-wasm-opt-gap";
+          # wasm-abi-table (v-xtask-decompose C2 option-B): the derived wasm/component byte-table as a
+          # standalone LEAF crate (lib rlib; NO normal deps; dev-dep wasm-encoder ONLY). rcdzc will DEP it for
+          # the constants + stay wasm-encoder-free. A ROOT workspace member (no own [workspace]), so — like
+          # cdz-contract / cdz-world-artifact — it MUST be registered here or the crane deps-layer src omits
+          # its Cargo.toml and the whole workspace fails to load. Its src/lib.rs is generated from
+          # data/wasm-abi.sexp by `xtask-codegen-wasm-abi --crate-lib` (committed byte-identical for now).
+          wasm-abi-table = "implementation/seed/crates/wasm-abi-table";
           rcdzc = "implementation/seed/crates/rcdzc";
           xtask = "xtask";
           # xtask-mandates (v-xtask-decompose): the mandate-lint carved out of the xtask monolith into its
@@ -4214,6 +4221,10 @@
               test-cdz-rust-render = mkCrateTestCrane { crate = "cdz-rust-render"; };
               test-cdz-rust-run = mkCrateTestCrane { crate = "cdz-rust-run"; };
               test-cdz-wasm-opt-gap = mkCrateTestCrane { crate = "cdz-wasm-opt-gap"; };
+              # wasm-abi-table: runs its baked-in `#[cfg(test)] mod oracle` (155 asserts vs the wasm-encoder
+              # spec — the operator's inverted guarantee). Leaf like cdz-wasm-opt-gap: test-crane only, no
+              # clippy-crane. REQUIRED by testCrateCoverageAssert now that it is a rootWorkspaceCrates member.
+              test-wasm-abi-table = mkCrateTestCrane { crate = "wasm-abi-table"; };
               test-cdz-world-artifact = mkCrateTestCrane { crate = "cdz-world-artifact"; };
               test-rcdzc = mkCrateTestCrane {
                 crate = "rcdzc";
