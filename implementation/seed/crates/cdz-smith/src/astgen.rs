@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(22) {
+    match c.variant(23) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -429,6 +429,10 @@ fn gen_main_body<C: Choice>(
         // A NESTED-SUM body: a sum value wrapping another sum/compound — `(Some (Some …))`, `(Ok (Some …))`,
         // `(Some (tuple …))`, `(Some (list …))` — deeper sum-wrapping than the flat Some/Ok/Err arms.
         21 => gen_nested_sum_body(c, out),
+        // An INT CROSS-WIDTH CONVERSION body: `(<Target>.of (: <v> <Source>))` between any two sized-int
+        // types (widen / narrow / cross-sign) — the int-conversion codegen my sized-int arm never reached
+        // (it only ascribed literals + `(T.of <Int64>)`).
+        22 => gen_int_conversion_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1315,6 +1319,18 @@ fn gen_nested_sum_body<C: Choice>(c: &mut C, out: &mut String) {
         // Option of a list.
         _ => write!(out, "(: (Some (list {a} {b} {k})) (Option (List Int64)))").ok(),
     };
+}
+
+/// An INT CROSS-WIDTH CONVERSION body: `(<Target>.of (: <v> <Source>))` for any Source/Target pair in
+/// [`SIZED_INT_TYPES`] (widen, narrow, cross-sign, or identity). The value is 0..=100 — in range for EVERY
+/// target (the smallest max is `Int8`'s 127) — so the checked conversion never traps/declines, keeping it
+/// on the graded path. Reaches the int-to-int conversion codegen the sized-int arm (literal ascription +
+/// `T.of` from Int64 only) never exercised.
+fn gen_int_conversion_body<C: Choice>(c: &mut C, out: &mut String) {
+    let src = SIZED_INT_TYPES[c.variant(SIZED_INT_TYPES.len())];
+    let tgt = SIZED_INT_TYPES[c.variant(SIZED_INT_TYPES.len())];
+    let v = c.int_bounded(0, 100);
+    write!(out, "({tgt}.of (: {v} {src}))").ok();
 }
 
 /// A MUTUALLY-RECURSIVE program: two TOP-LEVEL sibling defs that call EACH OTHER, plus a param-less `main`
@@ -2597,6 +2613,41 @@ mod tests {
         assert!(saw_ro, "should reach Result-of-Option");
         assert!(saw_ot, "should reach Option-of-tuple");
         assert!(saw_ol, "should reach Option-of-list");
+    }
+
+    /// `gen_int_conversion_body` reaches a BREADTH of Source/Target int-type pairs (≥4 distinct targets +
+    /// ≥4 distinct sources) and every `(<Target>.of (: <v> <Source>))` body COMPILES (S170: int cross-width
+    /// conversion codegen — widen/narrow/cross-sign).
+    #[test]
+    fn gen_int_conversion_body_reaches_breadth_and_compiles() {
+        let mut targets = std::collections::BTreeSet::new();
+        let mut sources = std::collections::BTreeSet::new();
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(2161);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_int_conversion_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            for t in SIZED_INT_TYPES {
+                if body.starts_with(&format!("({t}.of ")) {
+                    targets.insert(*t);
+                }
+                if body.contains(&format!(" {t}))")) {
+                    sources.insert(*t);
+                }
+            }
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "int-conversion body must COMPILE: {src}"
+            );
+        }
+        assert!(targets.len() >= 4, "should reach >=4 distinct target types");
+        assert!(sources.len() >= 4, "should reach >=4 distinct source types");
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
