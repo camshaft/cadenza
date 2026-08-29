@@ -922,6 +922,14 @@ pub struct Db {
     /// component funcs (byte-identical to before). Set AFTER `Db::load`/`load_linked` by the caller
     /// (`compile`), which reads the request artifact.
     pub component_name: Option<String>,
+    /// Whether this emit will produce DWARF debug info that references function LOCAL SLOTS — set by
+    /// `backend::emit` from the target (`wasm-debug`/`dwarf`, or a lean `wasm` paired with a `dwarf`
+    /// sidecar). The wasm backend's local-slot COALESCER reads this: when true it PINS debug-named
+    /// slots (a `let`-binding / match-binder a DWARF DIE points at) so they keep distinct, correctly
+    /// located slots; when false (a plain standalone `wasm` — the shipped + gap-sweep target, no DWARF
+    /// consumer) it coalesces ALL non-interfering slots freely (dramatically fewer declared locals on
+    /// the effects-lowering blowup). Default `false`.
+    pub emit_debug: bool,
     /// PER-FILE pre-resolve SOURCE snapshots, indexed by the SAME file index [`file_of`](Db::file_of)
     /// returns — the comment-stripped raw arena of a linked file, captured in `compile::link_inputs`
     /// BEFORE `Db::load` runs any mutating pass (strip_def_docs / verify / world-import-export injection /
@@ -2902,6 +2910,7 @@ impl Db {
             type_decls,
             effect_decls,
             component_name: None,
+            emit_debug: false,
             source_snapshots: Vec::new(),
             wit_world: None,
             effect_bindings,

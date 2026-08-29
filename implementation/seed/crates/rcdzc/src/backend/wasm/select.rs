@@ -6276,24 +6276,30 @@ pub fn select_function(
 ///   is a later slice.)
 /// - **Debug-named locals:** a `let`-binding / match-binder that a DWARF DIE points at is PINNED — it
 ///   keeps a distinct slot, so a debugger never reads another variable's value within its scope.
-fn coalesce_func(f: &mut SelectedFunc) {
+fn coalesce_func(f: &mut SelectedFunc, emit_debug: bool) {
     // Coalescing is sound across ALL control flow — the interference graph is built from precise
     // backward liveness iterated to a fixpoint over the structured CFG (loop back-edges included), so
     // a loop-carried declared local is correctly kept live across its back-edge (see the `coalesce`
     // module doc). No loop-skip guard is needed.
     let nparams = f.params.len() as u32;
-    // DECLARED slots a DWARF DIE references (let-binding locals + match-binder scopes). Param debug
-    // locals are slots < nparams — already fixed, so they need no pin.
+    // DECLARED slots a DWARF DIE references (let-binding locals + match-binder scopes) are PINNED so
+    // they keep distinct, correctly located slots — but ONLY when this emit actually produces DWARF
+    // (`emit_debug`, from the target). A plain `wasm` emit has no DWARF consumer, so pinning would only
+    // block coalescing (the effects-lowering blowup pins thousands of continuation temps otherwise);
+    // there we leave `pinned` empty and coalesce every non-interfering slot. Param debug locals are
+    // slots < nparams — already fixed, so they never need a pin.
     let mut pinned: HashSet<u32> = HashSet::new();
-    for lv in &f.locals {
-        if lv.slot >= nparams {
-            pinned.insert(lv.slot);
+    if emit_debug {
+        for lv in &f.locals {
+            if lv.slot >= nparams {
+                pinned.insert(lv.slot);
+            }
         }
-    }
-    for sc in &f.scopes {
-        for v in &sc.vars {
-            if v.slot >= nparams {
-                pinned.insert(v.slot);
+        for sc in &f.scopes {
+            for v in &sc.vars {
+                if v.slot >= nparams {
+                    pinned.insert(v.slot);
+                }
             }
         }
     }
@@ -6806,7 +6812,8 @@ pub fn select_function_of(
     };
     // Reuse non-interfering declared local slots (shrinks the local-decl count + `local.*` index widths;
     // largest win on the effects local-slot blowup). Rewrites body + declared + debug slot refs in place.
-    coalesce_func(&mut f);
+    // Pins debug-named slots only when this emit produces DWARF (`db.emit_debug`).
+    coalesce_func(&mut f, db.emit_debug);
     Ok(f)
 }
 

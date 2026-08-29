@@ -83,6 +83,26 @@ pub fn coalesce_locals(
     // (register-allocation style). Two slots sharing a color (new slot) must not interfere.
     let adj = build_interference(total, code);
 
+    // Diagnostic trace (`RUST_LOG=rcdzc::wasm::coalesce=trace`): declared count, pinned (debug-named)
+    // count, peak simultaneous liveness (the true register pressure = a lower bound on the achievable
+    // color count), and max interference degree — so a residual local-bloat can be told apart as a
+    // coalescing gap (peak << declared) vs genuine pressure / redundant-temp bloat only DCE removes
+    // (peak ≈ declared). Gated by the tracing level, computed only when that target is enabled.
+    if tracing::enabled!(target: "rcdzc::wasm::coalesce", tracing::Level::TRACE) {
+        let (lo, _ev) = compute_liveness(code);
+        let peak = lo.iter().map(|s| s.len()).max().unwrap_or(0);
+        let max_deg = adj.iter().map(|s| s.len()).max().unwrap_or(0);
+        let pinned_declared = pinned.iter().filter(|&&s| s >= nparams).count();
+        tracing::trace!(
+            target: "rcdzc::wasm::coalesce",
+            declared = declared.len(),
+            pinned = pinned_declared,
+            peak_live = peak,
+            max_degree = max_deg,
+            "coalesce interference profile"
+        );
+    }
+
     // Identity remap; parameters stay put.
     let mut remap: Vec<u32> = (0..total).collect();
     let mut new_declared: Vec<ValType> = Vec::new();
@@ -271,6 +291,7 @@ fn branch_target_live(
 /// share one slot = a MISCOMPILE. So no case ever spuriously CLEARS `live` (e.g. `unreachable` is a
 /// no-op that keeps `live`); an unconditional `br` sets `live` to the target label's set because the
 /// fall-through after it genuinely never executes.
+#[cfg(test)]
 fn compute_live_out(code: &[Lir]) -> Vec<std::collections::HashSet<u32>> {
     compute_liveness(code).0
 }
