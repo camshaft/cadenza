@@ -1548,9 +1548,13 @@
            has values (every integer) that no arm covers, so an empty arm list is genuinely NON-EXHAUSTIVE
            and rejected CDZ0210 — NOT the malformed no-arms rejection it once was, and NOT the vacuously
            exhaustive zero-arm match a Never-typed scrutinee admits. Pins that the zero-arm base case is
-           exhaustive only when the scrutinee is uninhabited.")
+           exhaustive only when the scrutinee is uninhabited. A SCALAR scrutinee (no named variants) keeps
+           the generic `zero-arm match is exhaustive only` message and carries an add-a-wildcard-arm INSERT
+           fix — a single `(_ (trap \"TODO\"))` arm covers any scalar. (Enhanced from rcdzc
+           a_zero_arm_match_on_an_inhabited_sum_offers_the_full_add_arms_fix scalar tail.)")
   (input  (do (def (f (: n Int64)) (match n)) (export f)))
-  (error  CDZ0210))
+  (error  CDZ0210 (message "zero-arm match is exhaustive only")
+                  (fix (kind insert-into) (replacement "(_ (trap \"TODO\"))"))))
 
 ; TYPE REFLECTION — `(Type.of e)` reduces at compile time to the type-VALUE of `e`'s inferred type,
 ; realizing type-system.md #Inference And First-Class Types Meet At A Bidirectional Boundary (a type is
