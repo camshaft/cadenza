@@ -397,7 +397,7 @@
             (module a (def (h) 2) (export h))
             (def (main) 0)
             (export main)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "module `a` is declared more than once") (fix (kind delete))))
 
 (case "two distinct-named modules in one scope coexist"
   (doc    "The control: two modules with DIFFERENT names `a` and `b` in one scope are both bound and both
@@ -2545,6 +2545,14 @@
         op. From rcdzc a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix.")
   (input (do (effect E (op a (-> Int64 Unit)) (op a (-> Int64 Unit))) (def (main) 5) (export main)))
   (error CDZ0201 (fix (kind delete))))
+
+(case "performing a duplicate-operation effect reports one declaration-site error, not a leaked record-field consequent"
+  (doc "PERFORMING a dup-op effect projects its synth record, which used to re-report the same duplicate as a
+        misleading 'record names field more than once' (leaking the internal record). Only the declaration-site
+        op reject remains → (no-other-errors) pins that no record-field consequent accompanies it. (migrated
+        from rcdzc a_duplicate_effect_operation_is_rejected.)")
+  (input (do (effect E (op get (-> Unit Int64)) (op get (-> Unit Bool))) (def (main) (E.get)) (export main)))
+  (error CDZ0201) (no-other-errors))
 
 ; ── bare zero-operand declaration keyword forms declare NOTHING → rejected, naming the form (migrated from
 ; rcdzc a_bare_declaration_keyword_form_declares_nothing_is_rejected) ──
