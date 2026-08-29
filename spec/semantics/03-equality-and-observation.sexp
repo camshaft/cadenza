@@ -1671,6 +1671,19 @@
   (call   main (: 0 Int64)) (trap   "divide by zero")
   (call   main (: 1 Int64)) (output (: 0 Int64)))
 
+(case "a dead-let list construction with a HEAP-producing trapping arg also traps — force-eval extends to heap leaves"
+  (doc    "The heap-producing-arg companion of the scalar dead-let case above (v-core-opt #5339 closed the
+           documented interim gap): `(let ((x #list((Rational.of 1 d)))) 0)` binds a list whose element is a
+           HEAP-producing `Rational.of`, DISCARDS `x`, and returns 0 — yet at d=0 the zero-denominator
+           `(Rational.of 1 0)` TRAPS (its `unreachable` kind, the same trap the DIRECT `(Rational.of 1 0)`
+           raises), because strict list construction now force-evaluates a trap-possible HEAP-producing element
+           arg too, not only scalars (the discarded fresh handle is rc-reclaimed, no leak). At d=1 the arg is
+           fine and the discarded list folds away → 0. Completes ruling-A (#5194) strict dead-ctor argument
+           forcing over BOTH scalar and heap-producing element args.")
+  (input  (do (def (main (: d Int64)) (let ((x #list((Rational.of 1 d)))) 0)) (export main)))
+  (call   main (: 0 Int64)) (trap   "unreachable")
+  (call   main (: 1 Int64)) (output (: 0 Int64)))
+
 (case "list construction strictly evaluates an EFFECTFUL element argument — the perform runs even when the list is discarded"
   (doc    "The effect companion of the strict-construction rule (operator ruling — strict list construction;
            core-semantics.md #A Trap Occurs Only Where Its Computation Is Observed says a heap-collection ctor
