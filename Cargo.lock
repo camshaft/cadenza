@@ -1956,6 +1956,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "cadenza-ast",
+ "cadenza-compile-abi",
  "cadenza-syntax",
  "cdz-num",
  "cdz-rt",
