@@ -126,6 +126,7 @@ partial def normalize : SymExpr → SymExpr
       -- the operand (incl. its traps) and never overflow; `x*0`→0 DROPS the operand so it needs a trap-free
       -- guard. INTEGER `0`/`1` ONLY — the float analogues (`x+0.0`, `x*0.0`) are UNSOUND (`-0.0`, `nan`/`inf`).
       let isI := fun (e : SymExpr) (n : Int) => e == SymExpr.const (Value.int n)
+      let isB := fun (e : SymExpr) (b : Bool) => e == SymExpr.const (Value.bool b)
       match op, args' with
       | "+", #[a, b] => if isI b 0 then a else if isI a 0 then b else .app op args'
       | "-", #[a, b] => if isI b 0 then a else .app op args'
@@ -133,6 +134,21 @@ partial def normalize : SymExpr → SymExpr
                         else if isI b 0 && !mayTrap a then SymExpr.const (Value.int 0)
                         else if isI a 0 && !mayTrap b then SymExpr.const (Value.int 0)
                         else .app op args'
+      -- SHORT-CIRCUIT boolean identities (Cadenza `or`/`and` evaluate left→right, short-circuiting). `or`:
+      -- `(or true _)`→true UNCONDITIONALLY (2nd operand not evaluated); `(or false b)`→b; `(or a false)`→a;
+      -- `(or a true)`→true ONLY if `!mayTrap a` (a IS evaluated first — a trapping a must still trap). `and` dual.
+      | "or", #[a, b] =>
+        if isB a true then SymExpr.const (Value.bool true)
+        else if isB a false then b
+        else if isB b false then a
+        else if isB b true && !mayTrap a then SymExpr.const (Value.bool true)
+        else .app op args'
+      | "and", #[a, b] =>
+        if isB a false then SymExpr.const (Value.bool false)
+        else if isB a true then b
+        else if isB b true then a
+        else if isB b false && !mayTrap a then SymExpr.const (Value.bool false)
+        else .app op args'
       | _, _ => .app op args'
   | .tuple es => .tuple (es.map normalize)
   | .record fs => .record (fs.map (fun kv => (kv.1, normalize kv.2)))
@@ -582,6 +598,15 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
        == SymExpr.app "*" #[.app "/" #[.var 0, .const (.int 0)], .const (.int 0)]
 -- float x+0.0 is NOT simplified (unsound: -0.0) — stays symbolic.
 #guard normalize (.app "+" #[.var 0, .const (.f64 0.0)]) == SymExpr.app "+" #[.var 0, .const (.f64 0.0)]
+-- SHORT-CIRCUIT boolean identities: (or true X)→true, (or X false)→X, (and false X)→false, (and X true)→X.
+#guard normalize (.app "or" #[.const (.bool true), .var 0]) == SymExpr.const (.bool true)
+#guard normalize (.app "or" #[.var 0, .const (.bool false)]) == SymExpr.var 0
+#guard normalize (.app "and" #[.const (.bool false), .var 0]) == SymExpr.const (.bool false)
+#guard normalize (.app "and" #[.var 0, .const (.bool true)]) == SymExpr.var 0
+-- (or X true)→true only when X is trap-free (a var here); a trapping X keeps the or (X is evaluated first).
+#guard normalize (.app "or" #[.var 0, .const (.bool true)]) == SymExpr.const (.bool true)
+#guard normalize (.app "or" #[.app "/" #[.var 0, .const (.int 0)], .const (.bool true)])
+       == SymExpr.app "or" #[.app "/" #[.var 0, .const (.int 0)], .const (.bool true)]
 -- FLOAT arithmetic IS folded (IEEE total, no trap → sound): mirrors v-cdz-smith's fp-1/fp-2 false-positives.
 #guard normalize (.app "+" #[.const (.f64 475.0), .const (.f64 514.0)]) == SymExpr.const (.f64 989.0)
 #guard normalize (.app "*" #[.const (.f64 6.0), .const (.f64 7.0)]) == SymExpr.const (.f64 42.0)
