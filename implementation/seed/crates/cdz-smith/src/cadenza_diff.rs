@@ -19,6 +19,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use crate::lean::EquivTrial;
+
 /// Per-`cdz`-invocation wall-clock cap (seconds). A generated program can HANG the compiler (deep
 /// recursion) or the runtime; without a cap the blocking `Command::output()` would wedge the whole sweep
 /// (observed at S179). Each compile/run is wrapped with `timeout -s KILL` so a hang is killed + the pair
@@ -220,6 +222,56 @@ pub fn cadenza_diff(cdz: &Path, source: &str, store: &Path, tmp: &Path) -> CzDif
     CzDiff::from_sides(&direct, &cadenza)
 }
 
+/// The `--target cadenza` round-trip AST for a program — the input to v-lean-oracle's `(equiv P P')`
+/// symbolic-equivalence trial (the SAME `mid.ast` the value-eq [`cadenza_diff`] recompiles, exposed as
+/// a decoded AST instead of run for a value). See [`equiv_trial_for`].
+pub enum RoundtripAst {
+    /// `--target cadenza` emitted the optimized program as binary AST, decoded here.
+    Ast(cadenza_syntax::ast::Arenas),
+    /// The front-end/cadenza-emit DECLINED (a coverage gap / `/cadenza-declined` marker) — not comparable.
+    Declined(String),
+    /// The `--target cadenza` compile HUNG (hit the per-call timeout) — a non-termination witness.
+    Hang,
+}
+
+/// Produce the `--target cadenza` round-trip AST for `source`: run `cdz compile P --target cadenza -o
+/// mid.ast` (the SAME step [`cadenza_diff`]'s cadenza path uses) and DECODE the emitted binary AST rather
+/// than recompiling+running it. `tmp` is a unique scratch dir. A decline → [`RoundtripAst::Declined`], a
+/// hang → [`RoundtripAst::Hang`], and an emitted-but-undecodable blob → `Declined` (never a panic).
+pub fn cadenza_roundtrip_ast(cdz: &Path, source: &str, tmp: &Path) -> RoundtripAst {
+    let src_path = tmp.join("p.sexp");
+    if let Err(e) = std::fs::write(&src_path, source) {
+        return RoundtripAst::Declined(format!("scratch write failed: {e}"));
+    }
+    let ast_path = tmp.join("mid.ast");
+    match cdz_compile(cdz, &[&src_path], true, &ast_path) {
+        Ok(()) => {}
+        Err(CompileErr::Timeout) => return RoundtripAst::Hang,
+        Err(CompileErr::Decline(r)) => return RoundtripAst::Declined(format!("cadenza-emit: {r}")),
+    }
+    let bytes = match std::fs::read(&ast_path) {
+        Ok(b) => b,
+        Err(e) => return RoundtripAst::Declined(format!("read mid.ast: {e}")),
+    };
+    match cadenza_syntax::codec::decode(&bytes) {
+        Some(arenas) => RoundtripAst::Ast(arenas),
+        None => RoundtripAst::Declined("mid.ast did not decode as binary AST".to_string()),
+    }
+}
+
+/// Build an [`EquivTrial`] pairing `source`'s ORIGINAL AST with its `--target cadenza` round-trip — the
+/// unit v-lean-oracle's symbolic-equivalence oracle proves (`(equiv orig cadenza)` HOLDS = the cadenza
+/// backend preserved the program's meaning for ALL inputs). Returns `None` (SKIP this program) when the
+/// source does not parse, or the round-trip DECLINED / HUNG (the `/cadenza-declined` case) — i.e. only a
+/// cleanly round-tripped program yields a comparable equiv trial.
+pub fn equiv_trial_for(cdz: &Path, source: &str, tmp: &Path) -> Option<EquivTrial> {
+    let orig = cadenza_syntax::sexpr::read(source).ok()?;
+    match cadenza_roundtrip_ast(cdz, source, tmp) {
+        RoundtripAst::Ast(cadenza) => Some(EquivTrial { orig, cadenza }),
+        RoundtripAst::Declined(_) | RoundtripAst::Hang => None,
+    }
+}
+
 impl CzDiff {
     /// Compare two outcomes: a `Skip` on EITHER side → `Agree` (non-comparable); both `Trap` → `Agree`;
     /// equal `Value` → `Agree`; anything else (differing values, or one traps + one values) → `Mismatch`.
@@ -275,5 +327,46 @@ mod tests {
             CzDiff::from_sides(&Outcome::Value("7".into()), &Outcome::Trap),
             CzDiff::Mismatch { .. }
         ));
+    }
+
+    /// Unparseable source yields no equiv trial (SKIP) — and short-circuits BEFORE invoking `cdz` (the
+    /// `sexpr::read(...)?` fails first), so this is a pure test needing no binary.
+    #[test]
+    fn equiv_trial_for_skips_unparseable_source() {
+        let tmp = std::env::temp_dir();
+        assert!(
+            equiv_trial_for(Path::new("/nonexistent-cdz"), "(( not balanced", &tmp).is_none(),
+            "unparseable source must skip (None) without touching cdz"
+        );
+    }
+
+    /// LIVE: a cleanly round-tripping scalar program yields an equiv trial pairing the ORIGINAL AST with
+    /// its `--target cadenza` round-trip — both self-contained programs (a `(do …)` list root). Skips
+    /// (does not fail) when no `cdz` is discoverable; the fuzz cycle runs it for real.
+    #[test]
+    fn equiv_trial_for_pairs_orig_with_cadenza_roundtrip() {
+        let Some(cdz) = crate::differential::discover_cdz() else {
+            eprintln!("skipping: no cdz binary discovered (set CDZ_SMITH_CDZ)");
+            return;
+        };
+        let tmp =
+            std::env::temp_dir().join(format!("cdz-smith-equiv-trial-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp);
+        let src = "(do (def (main) (+ 1 2)) (export main))";
+        match equiv_trial_for(&cdz, src, &tmp) {
+            Some(t) => {
+                use cadenza_syntax::ast::Struct;
+                assert!(
+                    matches!(t.orig.get(t.orig.root), Struct::List(_)),
+                    "orig side is a program"
+                );
+                assert!(
+                    matches!(t.cadenza.get(t.cadenza.root), Struct::List(_)),
+                    "cadenza round-trip side is a program"
+                );
+            }
+            None => eprintln!("skipping assert: cadenza round-trip declined for this cdz build"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
