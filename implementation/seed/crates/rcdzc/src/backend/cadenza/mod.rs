@@ -395,8 +395,9 @@ enum LeafKind {
     BareInner,
     /// A `Trap` — diverges, produces no value; NEUTRAL when merging sibling arms.
     Diverges,
-    /// Anything else (a `Param`/`LocalRef` that SELF-constructs, a const, a `Call`, a compound, a `Match*`) —
-    /// keep the body on the normal pass-through/decline path; do NOT wrap-whole.
+    /// A leaf that SELF-constructs or declines — a `Param`/`LocalRef` (wraps via its own `qty_disposition`
+    /// Construct), a const, a `Call`, a compound — keep the body on the normal pass-through/decline path;
+    /// do NOT wrap-whole (wrapping a Param leaf would double-wrap).
     Other,
     /// A control-flow body whose leaves MIX `BareInner` and `Other` (`(if c (Qty.of (Int32.of a) u) (Qty.of x
     /// u))` — a checked-narrow arm + a Param arm). Wrap-whole is wrong (the Param arm self-constructs → would
@@ -405,10 +406,12 @@ enum LeafKind {
     Mixed,
 }
 
-/// Classify a `Ty::Qty`-result def body by its value LEAVES, threading through `If`/`Let` to the tail
-/// positions. `BareInner` iff every non-diverging leaf is a bare-inner magnitude (so the whole body is a
-/// magnitude to wrap); `Other` if any leaf self-constructs / declines (`Param`/const/`Call`/compound/`Match*`).
-/// `Match*` bodies stay `Other` (their arm-body walk is a separate slice) → they keep the existing behavior.
+/// Classify a `Ty::Qty`-result def body by its value LEAVES, threading through ALL control flow
+/// (`If`/`Let`/`Match`/`MatchList`/`MatchSum`) to the tail positions. `BareInner` iff every non-diverging
+/// leaf is a bare-inner magnitude (so the whole body is a magnitude to wrap-whole); `Other` if any leaf
+/// self-constructs / declines (`Param`/const/`Call`/compound); `Mixed` on a `BareInner`+`Other` split
+/// (which [`emit_def`] declines). Covering `Match*` closes the same wrapper-drop miscompile [`emit_def`]
+/// fixes for `If`/`Let`, when a match arm's body is a bare-inner magnitude (e.g. a checked-narrow).
 fn qty_leaf(db: &mut Db, id: StructId) -> LeafKind {
     match core_of(db, id) {
         Core::Arith { .. }
@@ -419,7 +422,46 @@ fn qty_leaf(db: &mut Db, id: StructId) -> LeafKind {
         Core::Trap => LeafKind::Diverges,
         Core::If { then_, else_, .. } => merge_leaf(qty_leaf(db, then_), qty_leaf(db, else_)),
         Core::Let { body, .. } => qty_leaf(db, body),
+        // A match: the value leaves are the arm bodies (the guard/scrutinee are not value positions).
+        Core::Match { arms, .. } => {
+            let mut acc = LeafKind::Diverges;
+            for a in arms.iter() {
+                acc = merge_leaf(acc, qty_leaf(db, a.body));
+            }
+            acc
+        }
+        Core::MatchList { arms, .. } => {
+            let mut acc = LeafKind::Diverges;
+            for a in arms.iter() {
+                acc = merge_leaf(acc, qty_leaf(db, a.body));
+            }
+            acc
+        }
+        Core::MatchSum { root, .. } => qty_cont_leaf(db, &root),
         _ => LeafKind::Other,
+    }
+}
+
+/// Fold [`qty_leaf`] over every body position of a sum-match continuation tree (the `MatchSum` twin of the
+/// arm-body walk in [`qty_leaf`]): a `Leaf` body, a `Guarded`/`LitTest` body threaded with its `els`
+/// fall-through, and each `Switch` arm's nested cont.
+fn qty_cont_leaf(db: &mut Db, cont: &crate::core::SumCont) -> LeafKind {
+    use crate::core::SumCont;
+    match cont {
+        SumCont::Leaf(body) => qty_leaf(db, *body),
+        SumCont::Guarded { body, els, .. } => {
+            merge_leaf(qty_leaf(db, *body), qty_cont_leaf(db, els))
+        }
+        SumCont::LitTest { then_, els, .. } => {
+            merge_leaf(qty_cont_leaf(db, then_), qty_cont_leaf(db, els))
+        }
+        SumCont::Switch { arms, .. } => {
+            let mut acc = LeafKind::Diverges;
+            for a in arms.iter() {
+                acc = merge_leaf(acc, qty_cont_leaf(db, &a.cont));
+            }
+            acc
+        }
     }
 }
 
