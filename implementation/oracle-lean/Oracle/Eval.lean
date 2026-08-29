@@ -1703,7 +1703,15 @@ partial def evalCmp (m : Module) (env : Env) (fuel : Nat) (op : String) (childre
     else evalBinValues m env fuel aId bId (fun va vb =>
       match compareVals va vb with
       | some ord => .value (.bool (cmpHolds op ord))
-      | none => .unsupported "eval: ordering on a type that offers no total order (float/compound)")
+      | none =>
+        -- FLOAT ordering (`<`/`>`/`<=`/`>=`): IEEE partial order — Lean's `Float` comparison is IEEE, so a
+        -- NaN operand makes every comparison FALSE, and `-0.0`/`+0.0` compare equal. (A Float32-ascribed
+        -- operand is already demoted to its f32 value by evalAscribe, so it orders on the f32 bits.)
+        match Value.asF64? va, Value.asF64? vb with
+        | some fa, some fb =>
+          .value (.bool (match op with
+                         | "<" => fa < fb | ">" => fa > fb | "<=" => fa ≤ fb | ">=" => fa ≥ fb | _ => false))
+        | _, _ => .unsupported "eval: ordering on a type that offers no total order (compound/unit)")
   | _, _ => .unsupported s!"eval: malformed {op}"
 
 /-- `(not a)` — boolean negation; a non-boolean value is a typecheck error we do not model → skip. -/
