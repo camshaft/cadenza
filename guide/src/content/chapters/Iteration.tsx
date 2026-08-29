@@ -1,43 +1,19 @@
-import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
+// @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (chapterModel.ts).
+import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { Ch } from "../../components/ChapterLink.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
-import { Link } from "react-router-dom";
 import { Why } from "../../components/Why.tsx";
 
 export default function Iteration() {
   return (
     <article>
       <H1>Iteration without loops</H1>
-      <Lede>
-        Coming from most languages, you would reach for a <C>for</C> or a <C>while</C> here. Cadenza has
-        neither. This chapter is how you repeat work instead, and why the language leaves loops out.
-      </Lede>
-
-      <P>
-        There is no loop keyword in Cadenza. The full set of keywords is <C>def</C>, <C>do</C>,{" "}
-        <C>effect</C>, <C>else</C>, <C>export</C>, <C>handle</C>, <C>if</C>, <C>import</C>, <C>in</C>,{" "}
-        <C>let</C>, <C>match</C>, <C>module</C>, <C>return</C>, <C>then</C>, and <C>type</C>, with no{" "}
-        <C>for</C>, no <C>while</C>, and no <C>loop</C>. Repetition is done with <em>functions that call
-        themselves</em>: recursion. That sounds like a limitation. It removes a whole class of bugs.
-      </P>
-
+      <Lede>Coming from most languages, you would reach for a <C>for</C> or a <C>while</C> here. Cadenza has neither. This chapter is how you repeat work instead, and why the language leaves loops out.</Lede>
+      <P>There is no loop keyword in Cadenza. The full set of keywords is <C>def</C>, <C>do</C>, <C>effect</C>, <C>else</C>, <C>export</C>, <C>handle</C>, <C>if</C>, <C>import</C>, <C>in</C>, <C>let</C>, <C>match</C>, <C>module</C>, <C>return</C>, <C>then</C>, and <C>type</C>, with no <C>for</C>, no <C>while</C>, and no <C>loop</C>. Repetition is done with <em>functions that call themselves</em>: recursion. That sounds like a limitation. It removes a whole class of bugs.</P>
       <H2>Why no loops</H2>
-      <P>
-        A loop is a <em>statement</em>: it runs for its side effects, mutating a counter and an
-        accumulator until a condition flips. That mutable state is where off-by-one errors, uninitialized
-        accumulators, and forgotten updates live. Cadenza is expression-oriented (everything computes a{" "}
-        <em>value</em>), so repetition computes a value too. There is no loop variable to misinitialize
-        and no <C>i++</C> to forget, because there is no mutable loop state at all: each step is a fresh
-        function call with its arguments spelled out.
-      </P>
-
+      <P>A loop is a <em>statement</em>: it runs for its side effects, mutating a counter and an accumulator until a condition flips. That mutable state is where off-by-one errors, uninitialized accumulators, and forgotten updates live. Cadenza is expression-oriented (everything computes a <em>value</em>), so repetition computes a value too. There is no loop variable to misinitialize and no <C>i++</C> to forget, because there is no mutable loop state at all: each step is a fresh function call with its arguments spelled out.</P>
       <H2>The mechanism: a recursive accumulator</H2>
-      <P>
-        The workhorse pattern is a function that carries the answer-so-far in an argument, the{" "}
-        <em>accumulator</em>, and calls itself with an updated one. It needs two things: a{" "}
-        <strong>base case</strong> that stops the recursion and returns the accumulator, and a{" "}
-        <strong>recursive case</strong> that does one step and recurses on the rest. Here is a sum from{" "}
-        <C>n</C> down to <C>1</C>:
-      </P>
+      <P>The workhorse pattern is a function that carries the answer-so-far in an argument, the <em>accumulator</em>, and calls itself with an updated one. It needs two things: a <strong>base case</strong> that stops the recursion and returns the accumulator, and a <strong>recursive case</strong> that does one step and recurses on the rest. Here is a sum from <C>n</C> down to <C>1</C>:</P>
       <Runnable
         source={`(def (main) (sum-to 5 0))
 (def (sum-to n acc)
@@ -45,17 +21,8 @@ export default function Iteration() {
     acc
     (sum-to (- n 1) (+ acc n))))`}
       />
-      <P>
-        Read it as a loop turned inside out: <C>acc</C> is the running total, <C>n</C> counts down, the{" "}
-        <C>(= n 0)</C> check is the exit condition, and each call adds <C>n</C> to <C>acc</C> and
-        continues. When <C>n</C> reaches <C>0</C> the base case hands back the total, <C>15</C>. Nothing
-        mutates; each call just receives the next pair of values.
-      </P>
-      <P>
-        The same shape works over a list. Match the list by its structure, either the empty list{" "}
-        <C>#list()</C> or a non-empty <C>#list(x .. rest)</C> that binds the first element to <C>x</C> and
-        the remainder to <C>rest</C>, and thread the accumulator through:
-      </P>
+      <P>Read it as a loop turned inside out: <C>acc</C> is the running total, <C>n</C> counts down, the <C>(= n 0)</C> check is the exit condition, and each call adds <C>n</C> to <C>acc</C> and continues. When <C>n</C> reaches <C>0</C> the base case hands back the total, <C>15</C>. Nothing mutates; each call just receives the next pair of values.</P>
+      <P>The same shape works over a list. Match the list by its structure, either the empty list <C>#list()</C> or a non-empty <C>#list(x .. rest)</C> that binds the first element to <C>x</C> and the remainder to <C>rest</C>, and thread the accumulator through:</P>
       <Runnable
         source={`(def (main) (sum-list #list(10 20 30) 0))
 (def (sum-list xs acc)
@@ -63,13 +30,7 @@ export default function Iteration() {
     (#list() acc)
     (#list(x .. rest) (sum-list rest (+ acc x)))))`}
       />
-      <P>
-        The empty list is the base case (return the accumulator); the non-empty case adds the head to the
-        accumulator and recurses on the tail. Toggle to the ML surface and the pattern reads as{" "}
-        <C>[x, .. rest]</C>. Building a value instead of a number is the identical move. Here it reverses a
-        list by taking each element off the front and putting it on the <em>front</em> of the accumulator,
-        so the first element read ends up deepest and the last read ends up first:
-      </P>
+      <P>The empty list is the base case (return the accumulator); the non-empty case adds the head to the accumulator and recurses on the tail. Toggle to the ML surface and the pattern reads as <C>[x, .. rest]</C>. Building a value instead of a number is the identical move. Here it reverses a list by taking each element off the front and putting it on the <em>front</em> of the accumulator, so the first element read ends up deepest and the last read ends up first:</P>
       <Runnable
         source={`(def (main) (rev #list(1 2 3) #list()))
 (def (rev xs acc)
@@ -77,17 +38,8 @@ export default function Iteration() {
     (#list() acc)
     (#list(x .. rest) (rev rest (List.prepend acc x)))))`}
       />
-      <P>
-        Prepending is what does the reversing: element <C>1</C> is placed first, then <C>2</C> goes in
-        front of it, then <C>3</C> in front of that, so <C>#list(1 2 3)</C> comes back as{" "}
-        <C>#list(3 2 1)</C>. <Link to="/lists" className="text-cadenza-300 underline-offset-2 hover:underline">
-        <C>List.prepend</C></Link> adds an element to the front, which is what flips the order; appending each
-        element to the end with <C>List.push</C> would instead copy the list unchanged. A quick{" "}
-        <C>@test</C> pins it, reading the three positions of the result back and checking they spell{" "}
-        <C>3</C>, <C>2</C>, <C>1</C> (as the single number <C>321</C>):
-      </P>
+      <P>Prepending is what does the reversing: element <C>1</C> is placed first, then <C>2</C> goes in front of it, then <C>3</C> in front of that, so <C>#list(1 2 3)</C> comes back as <C>#list(3 2 1)</C>. <Ch to="/lists"> <C>List.prepend</C></Ch> adds an element to the front, which is what flips the order; appending each element to the end with <C>List.push</C> would instead copy the list unchanged. A quick <C>@test</C> pins it, reading the three positions of the result back and checking they spell <C>3</C>, <C>2</C>, <C>1</C> (as the single number <C>321</C>):</P>
       <Runnable
-        mode="test"
         source={`(def (rev xs acc)
   (match xs
     (#list() acc)
@@ -97,32 +49,11 @@ export default function Iteration() {
   (let ((r (rev #list(1 2 3) #list())))
     (assert-eq (+ (* 100 (nth r 0)) (+ (* 10 (nth r 1)) (nth r 2))) 321
       "rev of (1 2 3) should read back as 3,2,1"))))`}
+        mode="test"
       />
-
-      <Note>
-        Notice the recursive call is the <em>last</em> thing each step does: it sits in <em>tail
-        position</em>. A recursion in tail position compiles to a loop. It reuses one stack frame
-        rather than stacking a new one per element, so an accumulator over a long list runs in constant
-        stack space. Threading the accumulator is what puts the call in tail position; a version that adds{" "}
-        <em>after</em> the recursive call (<C>{`(+ x (sum rest))`}</C>) does not, and you meet exactly that
-        shape in the next chapter.
-      </Note>
-
-      <Why tenet="Repetition is a value, not a statement">
-        A loop mutates state for effect; a recursive function <em>returns</em> the result of repeating.
-        Making iteration an expression means every repetition has a value and a type, there is no mutable
-        loop counter to get wrong, and the same tool, a function, does the job with no special loop
-        syntax to learn. Uniformity over special cases, applied to the oldest control structure there is.
-      </Why>
-
-      <P>
-        You will rarely write the accumulator by hand for long. The <em>fold</em> family packages exactly
-        this pattern (a base value and a step that combines the running result with each element), so you
-        state the step and let the traversal disappear. The next chapter, <Link to="/lists" className="text-cadenza-300 underline-offset-2 hover:underline">Lists</Link>,
-        puts recursion to work over sequences, and <Link to="/iterators" className="text-cadenza-300 underline-offset-2 hover:underline">Iterators</Link>{" "}
-        adds a lazy, on-demand layer on top: the fold vocabulary (<C>map</C>, <C>filter</C>, <C>fold</C>)
-        built from the very mechanism you just saw.
-      </P>
+      <Note>Notice the recursive call is the <em>last</em> thing each step does: it sits in <em>tail position</em>. A recursion in tail position compiles to a loop. It reuses one stack frame rather than stacking a new one per element, so an accumulator over a long list runs in constant stack space. Threading the accumulator is what puts the call in tail position; a version that adds <em>after</em> the recursive call (<C>(+ x (sum rest))</C>) does not, and you meet exactly that shape in the next chapter.</Note>
+      <Why tenet="Repetition is a value, not a statement">A loop mutates state for effect; a recursive function <em>returns</em> the result of repeating. Making iteration an expression means every repetition has a value and a type, there is no mutable loop counter to get wrong, and the same tool, a function, does the job with no special loop syntax to learn. Uniformity over special cases, applied to the oldest control structure there is.</Why>
+      <P>You will rarely write the accumulator by hand for long. The <em>fold</em> family packages exactly this pattern (a base value and a step that combines the running result with each element), so you state the step and let the traversal disappear. The next chapter, <Ch to="/lists">Lists</Ch>, puts recursion to work over sequences, and <Ch to="/iterators">Iterators</Ch> adds a lazy, on-demand layer on top: the fold vocabulary (<C>map</C>, <C>filter</C>, <C>fold</C>) built from the very mechanism you just saw.</P>
     </article>
   );
 }

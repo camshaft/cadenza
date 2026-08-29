@@ -1,0 +1,103 @@
+(chapter
+  (slug "strings")
+  (title "Strings & text")
+  (pillar "language")
+  (section "Fundamentals")
+  (blurb "Unicode text, joining, and character vs byte length.")
+  (lede "Text as a sequence of Unicode characters, with two honest ways to measure it.")
+  (p "A string literal is written in double quotes. Strings are values like any other, so you can bind them, pass them, and return them.")
+  (runnable
+    (source "\"hello, world\""))
+  (h2 "Joining strings")
+  (p (c "String.concat") " joins two strings into a new one (strings are immutable, so it returns a fresh value). Chain it, or wrap it in a function:")
+  (runnable
+    (source "(def (greet name)
+  (String.concat \"Hello, \" name))
+(def (main) (greet \"Cadenza\"))"))
+  (p (c "(greet \"Cadenza\")") " joins the two pieces into " (c "\"Hello, Cadenza\"") ", a brand-new string, with the two inputs left untouched.")
+  (h2 "How long is a string?")
+  (p "Here's a question with two right answers. How long is " (c "\"café\"") "? Counted in " (em "characters") " it's 4; counted in " (em "bytes") " (its UTF-8 encoding) it's 5, because " (c "é") " takes two bytes. Cadenza gives you both, named so you can't confuse them:")
+  (runnable
+    (source "(String.scalar-len \"café\")"))
+  (runnable
+    (source "(String.byte-len \"café\")"))
+  (why (tenet "A string is Unicode characters, not bytes") "A Cadenza string is a sequence of Unicode " (em "scalar values") " (characters), not a bag of bytes, so what it contains doesn't depend on how it's encoded. But real programs sometimes need the byte size (for a buffer, a protocol). Rather than pick one meaning of \"length\" and make the other a footgun, the language offers " (em "both") ", under names that say which you're getting: " (c "scalar-len") " counts characters, " (c "byte-len") " counts UTF-8 bytes. No silent surprise when a non-ASCII character makes the two disagree.")
+  (h2 "Reaching in safely")
+  (p "Like " (c "List.at") ", " (c "String.at") " returns an " (c "Option") ", either the one-character string at a given position or " (c "None") " if the index is past the end. You never read off the end by accident. And it indexes by " (em "character") ", not byte, so in " (c "\"café\"") " the character at index " (c "3") " is the " (c "é") ", even though that " (c "é") " starts at byte 3 and spans two bytes:")
+  (runnable
+    (source "(def (main)
+  (match (String.at \"café\" 3)
+    ((Some ch) ch)
+    ((None _) \"?\")))"))
+  (note "The compiler itself builds its diagnostics and export names out of strings this way, so string handling isn't a separate library but part of how Cadenza describes itself.")
+  (h2 "Compared by value")
+  (p "Two strings are equal when they hold the same characters, which is structural equality, not identity. So a string you " (em "built") " equals a literal with the same content: " (c "(String.concat \"ab\" \"c\")") " equals " (c "\"abc\"") ", however each was made.")
+  (runnable
+    (source "(= (String.concat \"ab\" \"c\") \"abc\")"))
+  (h2 "Crossing to bytes and back")
+  (p "Text and raw bytes are different types (the next chapter, " (strong "Bytes") ", is all about the raw side), and the crossing is explicit. " (c "String.to-bytes") " gives a string's UTF-8 encoding, so " (c "\"café\"") " is five bytes, the two-byte " (c "é") " included. Going back is " (c "String.from-bytes") ", which returns an " (c "Option") ", because not every byte sequence is valid UTF-8, and a round-trip of well-formed text succeeds:")
+  (runnable
+    (source "(def (main)
+  (match (String.from-bytes (String.to-bytes \"café\"))
+    ((Some s) (String.scalar-len s))
+    ((None _) -1)))"))
+  (p "The bytes decode back to " (c "\"café\"") ", four characters, the same value we started with. The " (c "Option") " is the honest part: decoding " (em "arbitrary") " bytes can fail, so " (c "from-bytes") " hands you an " (c "Option") " to handle rather than assuming the bytes are text.")
+  (h2 "Slicing out a substring")
+  (p "To take a run of characters rather than a single one, " (c "String.slice") " selects a half-open range " (c "[start, end)") ", from " (c "start") " up to " (em "but not including") " " (c "end") ". Like " (c "at") ", the range might fall outside the string, so it returns an " (c "Option") ". The first five characters of " (c "\"hello world\"") " are " (c "\"hello\"") ", which is 5 characters long:")
+  (runnable
+    (source "(def (main)
+  (String.scalar-len
+    (Option.expect (String.slice \"hello world\" 0 5) \"in range\")))"))
+  (p "The bounds count " (em "characters") ", the same as " (c "at") ", so slicing " (c "\"café\"") " from " (c "0") " to " (c "3") " gives the three characters " (c "\"caf\"") ", never splitting the two-byte " (c "é") " down the middle. A range where " (c "start") " equals " (c "end") " is a valid, empty slice (" (c "Some \"\"") "); one that runs off the end is " (c "None") ", not a trap.")
+  (h2 "Characters")
+  (p "A string is a sequence of " (em "characters") " (Unicode scalar values), and " (c "Char") " is the type of a single one. A character literal is written " (c "#\\a") ": a " (c "#\\") " followed by the scalar. Its Unicode scalar value (its code point) is read with " (c "Char.to-int") ", so " (c "#\\a") " is " (c "97") ":")
+  (runnable
+    (source "(Char.to-int #\\a)"))
+  (p (c "String.scalar-at") " reads the character at a scalar position, the single-character companion of " (c "slice") ". Like " (c "at") " and " (c "slice") " it's fallible, returning an " (c "Option Char") ", so an out-of-range position is " (c "None") " rather than a trap. The character at position " (c "1") " of " (c "\"hello\"") " is " (c "#\\e") ", whose scalar value is " (c "101") ":")
+  (runnable
+    (source "(def (main)
+  (Char.to-int
+    (Option.expect (String.scalar-at \"hello\" 1) \"in range\")))"))
+  (p (c "Char.to-int") " reads a character's Unicode scalar value (its code point) as an " (c "Int64") ". It's " (em "total") ": every character has a code point, so it never fails. Going the other way, " (c "Char.from-int") " is " (em "fallible") ", since not every integer is a valid scalar, so it returns an " (c "Option Char") ". Code point " (c "97") " is " (c "#\\a") ":")
+  (runnable
+    (source "(def (main)
+  (Char.to-int
+    (Option.expect (Char.from-int 97) \"valid scalar\")))"))
+  (p "Because " (c "from-int") " is fallible, the invalid cases are data, not crashes. Code point " (c "55296") " is " (c "U+D800") ", a surrogate that is never a standalone scalar, so " (c "from-int") " gives " (c "None") ", and this match takes the " (c "None") " arm to return " (c "0") ":")
+  (runnable
+    (source "(def (main)
+  (match (Char.from-int 55296)
+    ((Some c) (Char.to-int c))
+    ((None) 0)))"))
+  (why (tenet "A character converts to and from an integer, honestly") "Every character has an integer code point, so " (c "Char.to-int") " is total. But the reverse isn't, because the surrogate range and everything past " (c "U+10FFFF") " aren't scalar values, so " (c "Char.from-int") " returns an " (c "Option") " instead of inventing an ill-formed character. The type tells you which direction can fail.")
+  (p "Characters compare by their code point. " (c "=") " tests two characters for equality, and " (c "&lt;") ", " (c "&gt;") ", " (c "&lt;=") ", and " (c "&gt;=") " order them by scalar value, so " (c "#\\a") " (code point 97) sorts before " (c "#\\z") " (122) and this comparison is " (c "true") ":")
+  (runnable
+    (source "(< #\\a #\\z)"))
+  (p "Characters are one view of text. Underneath sits the raw encoding, the octets a file or a protocol actually carries. That's " (em "bytes") ", next.")
+  (h2 "Your turn")
+  (p "First a length question, then a slice. The word " (c "\"naïve\"") " has an accented " (c "ï") " that takes two bytes in UTF-8, so its character count and its byte count disagree, and the point is to pick the operation that answers the question you actually mean.")
+  (exercise
+    (id "strings:1")
+    (prompt "How many " (em "characters") " are in " (c "\"naïve\"") "? Pick the length that counts characters, so the answer is " (c "5") ".")
+    (starter "(def (main) (String.?-len \"naïve\"))")
+    (solution "(def (main) (String.scalar-len \"naïve\"))")
+    (expected "5")
+    (hint "Characters (Unicode scalars), not bytes → " (c "scalar-len") ". The accented " (c "ï") " is still one character."))
+  (exercise
+    (id "strings:2")
+    (prompt "Now a slice, and the half-open range is the whole trick. Pull the first three characters, " (c "\"cad\"") ", out of " (c "\"cadenza\"") " by filling in the " (em "end") " index. The check compares the slice against " (c "\"cad\"") ", so getting the boundary right gives " (c "true") ".")
+    (starter "(def (main)
+  (= (Option.expect (String.slice \"cadenza\" 0 ?) \"in range\") \"cad\"))")
+    (solution "(def (main)
+  (= (Option.expect (String.slice \"cadenza\" 0 3) \"in range\") \"cad\"))")
+    (expected "true")
+    (hint "The range is " (c "[start, end)") ", so " (c "end") " is " (em "excluded") ". To keep characters at indices " (c "0") ", " (c "1") ", " (c "2") " (the " (c "\"cad\"") ") and stop before index " (c "3") ", the end is " (c "3") ", not " (c "2") ". Write " (c "2") " and you'd get only " (c "\"ca\"") "."))
+  (exercise
+    (id "strings:3")
+    (prompt "Now a character. Read the first character of " (c "\"Zebra\"") " and give its Unicode code point. The letter " (c "Z") " is code point " (c "90") ", so pick the operation that turns a character into its integer and the answer is " (c "90") ".")
+    (starter "(def (main)
+  (Char.?-int (Option.expect (String.scalar-at \"Zebra\" 0) \"in range\")))")
+    (solution "(def (main)
+  (Char.to-int (Option.expect (String.scalar-at \"Zebra\" 0) \"in range\")))")
+    (expected "90")
+    (hint (c "String.scalar-at") " hands you the character (an " (c "Option Char") ", unwrapped here by " (c "Option.expect") "), and " (c "Char.to-int") " reads its code point. The total direction is " (c "to-int") "; " (c "from-int") " is the fallible reverse.")))

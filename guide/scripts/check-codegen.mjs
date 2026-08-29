@@ -16,22 +16,40 @@
 /// VACUOUS-PASS FLOOR (v-guide-infra discipline): ZERO fixtures discovered ⇒ FAIL loudly. A codegen gate
 /// that silently checks nothing (moved dir / broken glob) must not read green. Floor = 1.
 
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, delimiter } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const guideRoot = join(here, "..");
+const repoRoot = join(guideRoot, "..");
 const fixturesDir = join(guideRoot, "src/content/codegen/fixtures");
 
-let parseChapter, renderChapter;
-try {
-  ({ parseChapter, renderChapter } = await import(join(guideRoot, "src/content/codegen/chapterModel.ts")));
-} catch (e) {
-  console.error("check-codegen: could not load the codegen core (need Node ≥22 for --experimental-strip-types).");
-  console.error(String(e));
-  process.exit(1);
+// Find `name` on $PATH (pure node, no `which` dependency — the nix sandbox may lack one).
+function resolveOnPath(name) {
+  for (const d of (process.env.PATH || "").split(delimiter)) {
+    if (d && existsSync(join(d, name))) return join(d, name);
+  }
+  return null;
 }
+
+// ENGINE (cadenza-docs I5): render via the Rust xtask `xtask-codegen-guide` (the MAIN parser reads the .sexp
+// → binary AST → TSX), retiring the node chapterModel.ts. Binary resolution mirrors codegen-chapters.mjs:
+// (1) explicit override env $CDZ_XTASK_CODEGEN_GUIDE; (2) `xtask-codegen-guide` on $PATH (v-nix's crane
+// `xtaskCodegenGuideBin` via nativeBuildInputs — the nix path, no cargo vendor needed); (3) `cargo build -p`
+// fallback for native dev (the `-p` form falls through the all-nix cargo-shim to real cargo).
+let xtaskBin = process.env.CDZ_XTASK_CODEGEN_GUIDE || resolveOnPath("xtask-codegen-guide");
+if (!xtaskBin) {
+  try {
+    execFileSync("cargo", ["build", "-p", "xtask-codegen-guide", "--quiet"], { cwd: repoRoot, stdio: "inherit" });
+  } catch (e) {
+    console.error(`check-codegen: could not build xtask-codegen-guide — ${String(e.message || e).slice(0, 160)}`);
+    process.exit(1);
+  }
+  xtaskBin = join(repoRoot, "target/debug/xtask-codegen-guide");
+}
+const renderSexp = (p) => execFileSync(xtaskBin, [p], { encoding: "utf8" });
 
 const WRITE = process.argv.includes("--write");
 const sexpFiles = readdirSync(fixturesDir).filter((f) => f.endsWith(".sexp")).sort();
@@ -46,13 +64,7 @@ if (sexpFiles.length < FLOOR) {
 let drift = 0;
 for (const sexp of sexpFiles) {
   const base = sexp.replace(/\.sexp$/, "");
-  const src = readFileSync(join(fixturesDir, sexp), "utf8");
-  const parsed = parseChapter(src);
-  if (!parsed.ok) {
-    console.error(`check-codegen: ${sexp} — parse declined: ${parsed.reason}`);
-    process.exit(1);
-  }
-  const tsx = renderChapter(parsed.model);
+  const tsx = renderSexp(join(fixturesDir, sexp));
   // The golden file is `.expected.tsx.txt`, NOT `.tsx`: it's the expected OUTPUT TEXT the codegen emits for
   // a chapter at `src/content/chapters/<Name>.tsx` (its `../../components/Prose.tsx` import is relative to
   // THAT dir). Kept as `.txt` so `tsc -b` doesn't try to compile the fixture as a live module from the
@@ -116,24 +128,17 @@ const visibleText = (tsx) => {
     .trim();
 };
 for (const sexp of chapterSexps) {
-  const src = readFileSync(join(chaptersSrcDir, sexp), "utf8");
-  const parsed = parseChapter(src);
-  if (!parsed.ok) {
-    console.error(`check-codegen [chapter-fidelity]: ${sexp} — parse declined: ${parsed.reason}`);
-    fidelityFails++;
-    continue;
-  }
-  const pascal = parsed.model.slug.split(/[-_]/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join("");
-  const handPath = join(chaptersSrcDir, `${pascal}.tsx`);
+  const base = sexp.replace(/\.sexp$/, ""); // .sexp stem == PascalCase(slug) == the .tsx stem
+  const handPath = join(chaptersSrcDir, `${base}.tsx`);
   let hand;
   try { hand = readFileSync(handPath, "utf8"); } catch { continue; } // generated-only chapter: nothing to compare
-  const genVisible = visibleText(renderChapter(parsed.model));
+  const genVisible = visibleText(renderSexp(join(chaptersSrcDir, sexp)));
   const handVisible = visibleText(hand);
   if (genVisible !== handVisible) {
     fidelityFails++;
     let i = 0; while (i < genVisible.length && i < handVisible.length && genVisible[i] === handVisible[i]) i++;
     console.error(
-      `check-codegen [chapter-fidelity]: ${sexp} does NOT reproduce ${pascal}.tsx's visible text.\n` +
+      `check-codegen [chapter-fidelity]: ${sexp} does NOT reproduce ${base}.tsx's visible text.\n` +
         `  first divergence @${i}:\n    hand: …${JSON.stringify(handVisible.slice(Math.max(0, i - 40), i + 40))}\n` +
         `    gen:  …${JSON.stringify(genVisible.slice(Math.max(0, i - 40), i + 40))}`,
     );

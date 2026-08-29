@@ -1,148 +1,36 @@
-import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
-import { Ch, AppLink } from "../../components/ChapterLink.tsx";
-import type { ReactNode } from "react";
+// @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (chapterModel.ts).
+import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { AppLink, Ch } from "../../components/ChapterLink.tsx";
 
-/// Fixed-route app links to the two full-screen apps this chapter points at — thin wrappers over the shared
-/// AppLink so the (heavier) app-route styling lives in one place (components/ChapterLink).
-function PlaygroundLink({ children }: { children: ReactNode }) {
-  return <AppLink to="/playground">{children}</AppLink>;
-}
-
-function CalculatorLink({ children }: { children: ReactNode }) {
-  return <AppLink to="/calculator">{children}</AppLink>;
-}
-
-export default function Playground() {
+export default function UsingThePlayground() {
   return (
     <article>
       <H1>The playground</H1>
-      <Lede>
-        Every example in this guide is a scratchpad, but the <PlaygroundLink>playground</PlaygroundLink>{" "}
-        is the full workshop: a real editor, a REPL, and a window into what your code compiles to.
-      </Lede>
-
-      <P>
-        The same compiler that runs the guide's inline examples powers a standalone editor. Nothing runs
-        on a server: the compiler is itself WebAssembly, so your code is compiled and executed entirely
-        in your browser. Here's what you can do there beyond pressing Run.
-      </P>
-
+      <Lede>Every example in this guide is a scratchpad, but the <AppLink to="/playground">playground</AppLink> is the full workshop: a real editor, a REPL, and a window into what your code compiles to.</Lede>
+      <P>The same compiler that runs the guide's inline examples powers a standalone editor. Nothing runs on a server: the compiler is itself WebAssembly, so your code is compiled and executed entirely in your browser. Here's what you can do there beyond pressing Run.</P>
       <H2>A REPL over your own module</H2>
-      <P>
-        Pressing Run evaluates one thing: your module's <C>main</C>. But a module usually defines{" "}
-        <em>many</em> functions, and often you want to poke at them one at a time: call{" "}
-        <C>double</C> on 21, then on 100, then try <C>compose</C> on the result. That's what the{" "}
-        <strong>REPL</strong> tab is for.
-      </P>
-      <P>
-        Type an expression, in whichever syntax you're using, and press Enter. It's evaluated against
-        every definition your buffer declares, and the value comes back rendered just like a run. Say
-        your editor holds:
-      </P>
-      <Note>
-        <C>{`(def (double n) (* n 2))`}</C> and <C>{`(def (add a b) (+ a b))`}</C>
-      </Note>
-      <P>
-        Then in the REPL you can enter <C>(double 21)</C> and get <C>42</C>, or nest calls freely:{" "}
-        <C>(double (add 3 4))</C> gives <C>14</C>. Results aren't limited to numbers: an expression that
-        builds a list or a tuple shows the whole value, the same canonical form a run produces. Press
-        the up arrow to recall a previous expression and tweak it.
-      </P>
-
-      <Note>
-        The REPL calls your functions by compiling a tiny program that invokes them and running it, so a
-        REPL answer is exactly what the compiled program computes, never a separate interpreter that
-        might disagree. It's the real thing, every time.
-      </Note>
-
+      <P>Pressing Run evaluates one thing: your module's <C>main</C>. But a module usually defines <em>many</em> functions, and often you want to poke at them one at a time: call <C>double</C> on 21, then on 100, then try <C>compose</C> on the result. That's what the <strong>REPL</strong> tab is for.</P>
+      <P>Type an expression, in whichever syntax you're using, and press Enter. It's evaluated against every definition your buffer declares, and the value comes back rendered just like a run. Say your editor holds:</P>
+      <Note><C>(def (double n) (* n 2))</C> and <C>(def (add a b) (+ a b))</C></Note>
+      <P>Then in the REPL you can enter <C>(double 21)</C> and get <C>42</C>, or nest calls freely: <C>(double (add 3 4))</C> gives <C>14</C>. Results aren't limited to numbers: an expression that builds a list or a tuple shows the whole value, the same canonical form a run produces. Press the up arrow to recall a previous expression and tweak it.</P>
+      <Note>The REPL calls your functions by compiling a tiny program that invokes them and running it, so a REPL answer is exactly what the compiled program computes, never a separate interpreter that might disagree. It's the real thing, every time.</Note>
       <H2>See what it compiles to</H2>
-      <P>
-        The <strong>Compiled</strong> tab shows the output of the backend. <strong>WAT</strong> is the
-        WebAssembly text of the core module your program becomes, the actual instructions that run.
-        <strong>Rust</strong> (and <strong>Rust (async)</strong>) show the same program lowered to Rust
-        source instead, because Cadenza is target-neutral above its backend: one typed program, more than
-        one place it can go.
-      </P>
-      <P>
-        It's worth a look even if you never write WebAssembly by hand: seeing <C>(+ 2 3)</C> become a
-        single constant, or a recursive function become a loop, makes the compiler feel less like a black
-        box.
-      </P>
-
+      <P>The <strong>Compiled</strong> tab shows the output of the backend. <strong>WAT</strong> is the WebAssembly text of the core module your program becomes, the actual instructions that run. <strong>Rust</strong> (and <strong>Rust (async)</strong>) show the same program lowered to Rust source instead, because Cadenza is target-neutral above its backend: one typed program, more than one place it can go.</P>
+      <P>It's worth a look even if you never write WebAssembly by hand: seeing <C>(+ 2 3)</C> become a single constant, or a recursive function become a loop, makes the compiler feel less like a black box.</P>
       <H2>The editor helps as you type</H2>
-      <P>
-        The playground's editor is a small IDE. Mistakes are underlined <em>as you type</em>, with the
-        same diagnostics the compiler would report, with no need to run first. Hover a name to see its
-        inferred type. The <strong>Diagnostics</strong> tab lists every problem, and clicking one jumps
-        to it in the source. The <strong>AST</strong> tab shows the raw tree the compiler sees, the one
-        structure both syntaxes are just views of.
-      </P>
-      <P>
-        It goes further than underlining. Rest the caret on a name and every other use of it tints
-        softly, the declaration included, so you can see a value's whole reach at a glance.{" "}
-        <strong>⌘-click</strong> (or Ctrl-click) that name to jump straight to where it's defined. And
-        when a mistake has an obvious repair, the diagnostic offers a <em>quick-fix</em>: apply it and
-        the compiler's suggested edit is spliced in for you. Call a function and the editor writes each
-        argument's name in front of it in soft grey, so <C>add(1, 2)</C> reads as <C>add(x: 1, y: 2)</C>{" "}
-        with the parameter names taken from the function's own definition, and an argument already named
-        after its parameter is left alone so the hints stay quiet. And where you leave a parameter's type to
-        be inferred, the editor writes that inferred type in the same soft grey, so <C>def double(x)</C>{" "}
-        reads as <C>def double(x: Int64)</C>; a parameter you annotated yourself, or one that stays fully
-        generic, gets no such hint. These aren't editor heuristics guessing from
-        spelling: every one is the compiler answering a question about your actual program, live in the
-        browser.
-      </P>
-      <P>
-        Even the colours come from the compiler. Rather than guessing a token's role from its spelling,
-        the editor asks the compiler what each name <em>means</em>, so a type, a constructor, a function,
-        a local, and an <em>unbound</em> name (a typo the compiler can't resolve) each get their own
-        colour. The highlighting is the same understanding the type checker has, not a separate guess.
-      </P>
-
+      <P>The playground's editor is a small IDE. Mistakes are underlined <em>as you type</em>, with the same diagnostics the compiler would report, with no need to run first. Hover a name to see its inferred type. The <strong>Diagnostics</strong> tab lists every problem, and clicking one jumps to it in the source. The <strong>AST</strong> tab shows the raw tree the compiler sees, the one structure both syntaxes are just views of.</P>
+      <P>It goes further than underlining. Rest the caret on a name and every other use of it tints softly, the declaration included, so you can see a value's whole reach at a glance. <strong>⌘-click</strong> (or Ctrl-click) that name to jump straight to where it's defined. And when a mistake has an obvious repair, the diagnostic offers a <em>quick-fix</em>: apply it and the compiler's suggested edit is spliced in for you. Call a function and the editor writes each argument's name in front of it in soft grey, so <C>add(1, 2)</C> reads as <C>add(x: 1, y: 2)</C> with the parameter names taken from the function's own definition, and an argument already named after its parameter is left alone so the hints stay quiet. And where you leave a parameter's type to be inferred, the editor writes that inferred type in the same soft grey, so <C>def double(x)</C> reads as <C>def double(x: Int64)</C>; a parameter you annotated yourself, or one that stays fully generic, gets no such hint. These aren't editor heuristics guessing from spelling: every one is the compiler answering a question about your actual program, live in the browser.</P>
+      <P>Even the colours come from the compiler. Rather than guessing a token's role from its spelling, the editor asks the compiler what each name <em>means</em>, so a type, a constructor, a function, a local, and an <em>unbound</em> name (a typo the compiler can't resolve) each get their own colour. The highlighting is the same understanding the type checker has, not a separate guess.</P>
       <H2>Share what you made</H2>
-      <P>
-        Press <strong>Share</strong> and the whole program is packed into the page's URL: no account, no
-        server, no saved file. Send the link and the recipient opens your exact program, in the syntax
-        you wrote it. It's the fastest way to ask a question or show something off.
-      </P>
-
+      <P>Press <strong>Share</strong> and the whole program is packed into the page's URL: no account, no server, no saved file. Send the link and the recipient opens your exact program, in the syntax you wrote it. It's the fastest way to ask a question or show something off.</P>
       <H2>A calculator, too</H2>
-      <P>
-        There's a lighter-weight sibling for quick sums: the{" "}
-        <CalculatorLink>calculator</CalculatorLink>. It's a focused prompt over the same language, tuned for
-        arithmetic you'd otherwise reach for a desk calculator to do, except it's <em>exact</em>. Fractions
-        stay fractions (<C>1 / 3 + 1 / 3 + 1 / 3</C> is <C>1</C>, not <C>0.9999…</C>), dimensioned quantities
-        carry their units, and big integers don't overflow. Recall the previous result with <C>ans</C> and
-        keep going.
-      </P>
-      <P>
-        It's the <strong>Exact fractions</strong> and <strong>Units of measure</strong> chapters made
-        interactive: reach for it when you want a number now, and the playground when you want a program.
-      </P>
-
+      <P>There's a lighter-weight sibling for quick sums: the <AppLink to="/calculator">calculator</AppLink>. It's a focused prompt over the same language, tuned for arithmetic you'd otherwise reach for a desk calculator to do, except it's <em>exact</em>. Fractions stay fractions (<C>1 / 3 + 1 / 3 + 1 / 3</C> is <C>1</C>, not <C>0.9999…</C>), dimensioned quantities carry their units, and big integers don't overflow. Recall the previous result with <C>ans</C> and keep going.</P>
+      <P>It's the <strong>Exact fractions</strong> and <strong>Units of measure</strong> chapters made interactive: reach for it when you want a number now, and the playground when you want a program.</P>
       <H2>More to explore</H2>
-      <P>
-        Two more surfaces run the same in-browser compiler, each showing off a different corner of the
-        language. The <Ch to="/cad">CAD preview</Ch> renders a solid modelled in Cadenza, a 3D shape built
-        from exact rational coordinates and real units (the <strong>exact CAD</strong> worked example in{" "}
-        <Ch to="/units">Units of measure</Ch> made visible), which you can orbit and inspect. And the{" "}
-        <Ch to="/notebook">notebook</Ch> is a live document: markdown prose interleaved with runnable code
-        cells and interactive widgets: drag a slider and every dependent cell recomputes, so a
-        compound-interest model or a data table stays parametric. Both are ordinary Cadenza programs;
-        they just render its results as geometry, tables, and charts instead of a single value.
-      </P>
-
+      <P>Two more surfaces run the same in-browser compiler, each showing off a different corner of the language. The <Ch to="/cad">CAD preview</Ch> renders a solid modelled in Cadenza, a 3D shape built from exact rational coordinates and real units (the <strong>exact CAD</strong> worked example in <Ch to="/units">Units of measure</Ch> made visible), which you can orbit and inspect. And the <Ch to="/notebook">notebook</Ch> is a live document: markdown prose interleaved with runnable code cells and interactive widgets: drag a slider and every dependent cell recomputes, so a compound-interest model or a data table stays parametric. Both are ordinary Cadenza programs; they just render its results as geometry, tables, and charts instead of a single value.</P>
       <H2>Beyond the browser</H2>
-      <P>
-        Everything here runs the real compiler in your browser, and that same compiler ships as a single
-        command-line tool for working on your own machine, which the next chapter, <Ch to="/cdz-toolchain">The
-        cdz toolchain</Ch>, covers in full.
-      </P>
-
-      <P>
-        For now, open the <PlaygroundLink>playground</PlaygroundLink> and paste in the last program you wrote
-        in this guide, then reach for the REPL and start calling its pieces.
-      </P>
+      <P>Everything here runs the real compiler in your browser, and that same compiler ships as a single command-line tool for working on your own machine, which the next chapter, <Ch to="/cdz-toolchain">The cdz toolchain</Ch>, covers in full.</P>
+      <P>For now, open the <AppLink to="/playground">playground</AppLink> and paste in the last program you wrote in this guide, then reach for the REPL and start calling its pieces.</P>
     </article>
   );
 }
