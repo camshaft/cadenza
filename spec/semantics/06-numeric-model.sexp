@@ -12301,3 +12301,31 @@
   (call main (: 7 Int64)) (output (: 100 Int64))
   (call main (: 2 Int64)) (output (: 2 Int64))
   (call main (: -5 Int64)) (output (: -1 Int64)))
+
+(case "cdzw38 a NESTED variant pattern (Option-of-Option) round-trips through the cadenza hop"
+  (doc "The #5184 fence (nested-switch, the last Maranget bucket), built-in face: (Some (Some x)) /
+        (Some (None)) / (None) over an OPAQUE Option-of-Option scrutinee must re-emit as the nested
+        pattern surface and stay at its fold fixpoint. n=7 → Some(Some 7) → 70; n=-3 → Some(None) → 1;
+        n=-20 → None → -1. Dual-path verified. The guard-over-nested inner arm still declines
+        ('guarded/literal/deeper nested-switch inner arm') and is banked as a flip witness, not pinned.")
+  (input (do
+    (def (f (: oo (Option (Option Int64)))) (match oo ((Some (Some x)) (* x 10)) ((Some (None _u)) 1) ((None _u) -1)))
+    (def (main (: n Int64)) (f (if (> n 0) (Some (Some n)) (if (< n -10) (None) (Some (None))))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 70 Int64))
+  (call main (: -3 Int64)) (output (: 1 Int64))
+  (call main (: -20 Int64)) (output (: -1 Int64)))
+
+(case "cdzw39 a USER sum nested inside Option round-trips its nested-switch through the cadenza hop"
+  (doc "cdzw38's user-sum sibling: (Some (Ok v)) / (Some (Err e)) / (None) — the nested variant is a
+        USER declaration, so the hop must ALSO re-emit the (type R …) decl and qualify the inner heads
+        against it (the cdzw12-14 decl lineage meets #5184's nested switch). n=7 → 7; n=-3 →
+        Some(Err 3) → -3; n=-20 → None → -99. Dual-path verified.")
+  (input (do
+    (type R (Ok Int64) (Err Int64))
+    (def (f (: x (Option R))) (match x ((Some (Ok v)) v) ((Some (Err e)) (- 0 e)) ((None _u) -99)))
+    (def (main (: n Int64)) (f (if (> n 0) (Some (Ok n)) (if (< n -10) (None) (Some (Err (- 0 n)))))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 7 Int64))
+  (call main (: -3 Int64)) (output (: -3 Int64))
+  (call main (: -20 Int64)) (output (: -99 Int64)))
