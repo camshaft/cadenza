@@ -27994,17 +27994,21 @@ fn lower_str_scalar_at(db: &mut Db, id: StructId, string: StructId, index: Struc
                 }
             }
         }
-        // A runtime string/index: `String.scalar-at` yields a `Char`, and a RUNTIME `Char` has no machine
-        // representation yet (a `Core::ConstChar` only folds at compile time; there is no runtime Char rep —
-        // the same reason a runtime char PATTERN declines), so the runtime scalar-at path cannot build its
-        // `(Option Char)` result. This is NOT a "String is constant-only" limit (`String.at`/`String.slice`
-        // walk a runtime string fine) — it is the missing runtime-Char rep. Name that + the two working
-        // runtime alternatives so a char-scanner is not stuck (rustc-gold "say how to fix it").
+        // A runtime string/index: `String.scalar-at` yields a bare `Char`. At runtime a char IS just its
+        // integer code-point — there is NO distinct runtime char representation (operator WONTFIX, the
+        // char-rep decision): runtime char COMPUTE works (`Char.from-int`/`to-int`, char `=`/`<`/match all
+        // execute on the i32 code-point slot), but the value BOUNDARY renders a char as its code-point NUMBER,
+        // not a `#\c` literal. So a runtime `String.scalar-at` is INTENTIONALLY not provided — it is
+        // implementable (its `(Option Char)` builds like any sum) but would hand back a `Char` that renders as
+        // a number; steer to the alternatives that render. NOT a "String is constant-only" limit
+        // (`String.at`/`String.slice` walk a runtime string fine). (rustc-gold "say how to fix it".)
         _ => Core::Poison(Reject::decline(
-            "String.scalar-at yields a Char, and a runtime Char has no representation yet, so scalar-at over \
-             a runtime string is not computed — use `String.at` (a runtime `(Option String)` one-scalar \
-             read) for a runtime char-scan, or `Bytes.at` on `String.to-bytes` for ASCII byte scanning; \
-             `String.scalar-at` works when the string and index are compile-time constants",
+            "`String.scalar-at` over a runtime string is intentionally not provided: it yields a bare `Char`, \
+             and at runtime a char is just its integer code-point, so it would render as the code-point number \
+             rather than a `#\\c` char literal (there is no distinct runtime char representation, by design). \
+             Use `String.at` (a runtime `(Option String)` one-scalar read, which renders as text) for a runtime \
+             char-scan, or `Bytes.at` on `String.to-bytes` for byte scanning; `String.scalar-at` folds when the \
+             string and index are compile-time constants",
         )),
     }
 }
