@@ -24066,3 +24066,26 @@
   (call main (: 7 Int64)) (output (: 1 Int64))
   (call main (: -1 Int64)) (output (: 2 Int64))
   (live-objects 0))
+
+(case "mfp1 a nested #map element with an ABSENT const key over a runtime-value map falls through — the #5472 fence"
+  (doc "The const-path sibling of #5450 (breaker mf-ladder): the head element's map has CONST keys but a
+        RUNTIME value, so the refutable-map-element desugar guards with a runtime lookup — an absent
+        required key (5) must FALL THROUGH (pre-#5472: compile error 'arm mis-selected' + a Poison
+        cascade). Arm 2 requires key 1 — present — and binds the runtime value: n·10. Falls to the
+        wildcard when no map arm matches is covered by the single-arm twin below.")
+  (input (do
+    (def (f xs) (match xs ((list #map((= 5 v)) _r) v) ((list #map((= 1 w)) _r) (* w 10)) (_ -1)))
+    (def (main (: n Int64)) (f (list #map((= 1 n)) #map((= 2 20)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 70 Int64))
+  (call main (: -2 Int64)) (output (: -20 Int64)))
+
+(case "mfp2 the single-map-arm twin — absent key falls to the WILDCARD, not an error"
+  (doc "mfp1's minimal twin (the mf3 repro): one map arm requiring the absent key 5, wildcard fallback —
+        must yield -1, not the pre-#5472 'arm mis-selected' compile error.")
+  (input (do
+    (def (f xs) (match xs ((list #map((= 5 v)) _r) v) (_ -1)))
+    (def (main (: n Int64)) (f (list #map((= 1 n)) #map((= 2 20)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: -1 Int64))
+  (call main (: -2 Int64)) (output (: -1 Int64)))
