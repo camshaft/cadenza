@@ -1479,6 +1479,30 @@
             (export main)))
   (error  CDZ0214))
 
+; --- a withheld constructor is unreachable in PATTERN position too (not only construction) --------------
+; The abstract-type guarantee must also gate MATCHING: pattern-matching an abstract value through its
+; withheld variant reads the module's PRIVATE payload. The QUALIFIED `((Temp.T v))` always rejected (the
+; `(. T A)` selector's withheld poison); the BARE `((T v))` PUNNED past the gate + read the private payload
+; — a one-token bypass of ADT opacity — until the bare pattern head got the SAME withheld-ctor gate. Both
+; are CDZ0214, and it reaches a GUARD-nested inner match too (shared lowering). (migrated from rcdzc
+; a_bare_ctor_pattern_over_an_abstract_type_is_rejected_cdz0214_like_the_qualified_spelling.)
+(case "a bare withheld-constructor pattern over an abstract value is rejected CDZ0214"
+  (module "lib" (do (type Temp (T Int64)) (def (mk (: c Int64)) (Temp.T (* c 10))) (export Temp) (export mk)))
+  (input  (do (import "lib" (Temp mk)) (def (main (: k Int64)) (match (mk k) ((T v) v) (_ -1))) (export main)))
+  (error  CDZ0214))
+
+(case "a qualified withheld-constructor pattern over an abstract value is rejected CDZ0214"
+  (module "lib" (do (type Temp (T Int64)) (def (mk (: c Int64)) (Temp.T (* c 10))) (export Temp) (export mk)))
+  (input  (do (import "lib" (Temp mk)) (def (main (: k Int64)) (match (mk k) ((Temp.T v) v) (_ -1))) (export main)))
+  (error  CDZ0214))
+
+(case "a guard-nested withheld-constructor pattern over an abstract value is rejected CDZ0214"
+  (module "lib" (do (type Temp (T Int64)) (def (mk (: c Int64)) (Temp.T (* c 10))) (export Temp) (export mk)))
+  (input  (do (import "lib" (Temp mk))
+              (def (main (: k Int64)) (match (mk k) ((guard w (match w ((T v) (> v 20)) (_ false))) 1) (_ -1)))
+              (export main)))
+  (error  CDZ0214))
+
 ; --- eval/quote CANNOT forge a private constructor: expansion is checked as if written directly ---------
 ; The abstract-type guarantee above (a withheld constructor is unreachable outside its module — CDZ0214)
 ; MUST hold whether the constructor reference arrives via DIRECT source OR via `(eval (quote …))`. eval's

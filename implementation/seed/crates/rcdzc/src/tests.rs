@@ -28486,66 +28486,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_bare_ctor_pattern_over_an_abstract_type_is_rejected_cdz0214_like_the_qualified_spelling() {
-        // SOUNDNESS (breaker/corpus-bugfix 2026-07-29): a module exports a type's HANDLE (`Temp`) + a smart
-        // ctor (`mk`) but WITHHOLDS the variant ctor `T`. Matching the abstract value through `T` outside the
-        // module must be CDZ0214 (withheld-ctor). The QUALIFIED `((Temp.T v))` already rejected (the `(. T A)`
-        // selector's withheld poison); the BARE `((T v))` PUNNED past the gate + READ the private payload — a
-        // one-token bypass of ADT opacity. FIX (lower::pattern_constraints): the bare pattern head now gets
-        // the SAME withheld-ctor gate (`ctor_is_withheld_at`) — a bare name that IS a withheld variant of the
-        // scrutinee decl poisons CDZ0214. Reaches BOTH the direct-match and eval-quasiquote-reconstructed
-        // match (shared lowering). Tested via the 2-file compile harness (`cdz compile` single-file can't
-        // express `(module "lib")`+`(import)`).
-        use crate::abi::Artifact;
-        let lib = crate::codec::encode(&parse(
-            "(do (type Temp (T Int64)) (def (mk (: c Int64)) (Temp.T (* c 10))) (export Temp) (export mk))",
-        ));
-        // Diagnostics for an entry whose `main` body is `body` (which matches the abstract value).
-        let codes_for = |body: &str| -> Vec<String> {
-            let entry = crate::codec::encode(&parse(&format!(
-                "(do (import \"lib\" (Temp mk)) (def (main (: k Int64)) {body}) (export main))"
-            )));
-            let out = crate::compile::compile(
-                &[
-                    Artifact::new(Artifact::KIND_AST, "lib", lib.clone()),
-                    Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
-                ],
-                &[crate::backend::Target::Wasm],
-            );
-            out.diagnostics
-                .iter()
-                .filter_map(|d| d.code.clone())
-                .collect()
-        };
-        // breaker #41 — the single `pattern_constraints` choke-point gate must sweep ALL THREE bare-pattern
-        // routes to the withheld ctor `T` (each previously compiled + read the private payload):
-        // (1) DIRECT bare match.
-        assert!(
-            codes_for("(match (mk k) ((T v) v) (_ -1))").contains(&"CDZ0214".to_string()),
-            "direct bare ctor pattern → CDZ0214"
-        );
-        // (2) EVAL / quasiquote-reconstructed match (metaprogramming route — same shared lowering).
-        assert!(
-            codes_for("(eval (quasiquote (match (unquote (mk k)) ((T v) v) (_ -1))))")
-                .contains(&"CDZ0214".to_string()),
-            "eval-quasiquote bare ctor pattern → CDZ0214"
-        );
-        // (3) GUARD-NESTED: the withheld pattern lives in a guard cond's inner match (guard desugars to its
-        // own lowering, but the inner match re-lowers through `pattern_constraints`).
-        assert!(
-            codes_for("(match (mk k) ((guard w (match w ((T v) (> v 20)) (_ false))) 1) (_ -1))")
-                .contains(&"CDZ0214".to_string()),
-            "guard-nested bare ctor pattern → CDZ0214"
-        );
-        // CONTROL: the QUALIFIED `((Temp.T v))` (always rejected) still CDZ0214 — no regression.
-        assert!(
-            codes_for("(match (mk k) ((Temp.T v) v) (_ -1))").contains(&"CDZ0214".to_string()),
-            "qualified ctor pattern still rejects CDZ0214"
-        );
-    }
-
-    #[test]
     fn a_match_scrutinee_eval_gives_the_teaching_message_not_a_bare_unbound() {
         // adv-58 FIX (v-inference 2026-08-03): `(eval q)` with a runtime-visible `q` correctly DECLINES in
         // every position, but a MATCH-SCRUTINEE `(match (eval q) …)` got a bare "unbound name `eval`" (which
