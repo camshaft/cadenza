@@ -119,6 +119,95 @@ fn ml_has_export(trimmed: &str) -> bool {
     trimmed.lines().any(|l| head_word(l.trim_start(), "export"))
 }
 
+/// Count TOP-LEVEL s-expr forms in `s` (a form = a depth-0 balanced list, string, char literal, or bare-atom
+/// run). Skips `"…"` strings (with `\` escapes), `#\x` char literals (the char after `#\` is literal, not a
+/// paren), and `;` line comments, so a `(`/`)` inside them never miscounts. Used to detect a MULTI-FORM
+/// source (a defs-block) even when its lead form isn't a recognized head — e.g. the canonical `((. Unit
+/// define) …)` form of a `Unit.define` statement, which a head match alone would miss.
+fn top_level_form_count(s: &str) -> usize {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut depth = 0usize;
+    let mut forms = 0usize;
+    // `boundary` = the next depth-0 form-start begins a NEW form. True at start + after depth-0 whitespace/
+    // comment. A form-start CONTIGUOUS with the previous form (no whitespace) is a continuation — Cadenza's
+    // application/compound syntax `f(x)`, `#tuple(1 2)`, `f(x)(y)` is ONE form, not two.
+    let mut boundary = true;
+    while i < b.len() {
+        let c = b[i];
+        if c == b';' {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            if depth == 0 {
+                boundary = true;
+            }
+        } else if c == b'"' {
+            if depth == 0 {
+                if boundary {
+                    forms += 1;
+                }
+                boundary = false;
+            }
+            i += 1;
+            while i < b.len() {
+                if b[i] == b'\\' {
+                    i += 2;
+                } else if b[i] == b'"' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+        } else if c == b'#' && i + 1 < b.len() && b[i + 1] == b'\\' {
+            if depth == 0 {
+                if boundary {
+                    forms += 1;
+                }
+                boundary = false;
+            }
+            i += 2;
+            if i < b.len() && b[i].is_ascii_alphanumeric() {
+                while i < b.len() && b[i].is_ascii_alphanumeric() {
+                    i += 1;
+                }
+            } else {
+                i += 1; // a punctuation char literal like #\(
+            }
+        } else if c == b'(' {
+            if depth == 0 {
+                if boundary {
+                    forms += 1;
+                }
+                boundary = false;
+            }
+            depth += 1;
+            i += 1;
+        } else if c == b')' {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                boundary = false; // a chained `(` after this close is the same form
+            }
+            i += 1;
+        } else if c.is_ascii_whitespace() {
+            if depth == 0 {
+                boundary = true;
+            }
+            i += 1;
+        } else {
+            if depth == 0 {
+                if boundary {
+                    forms += 1;
+                }
+                boundary = false;
+            }
+            i += 1;
+        }
+    }
+    forms
+}
+
 /// Supply the missing `export` (and, for a bare expression, a `main`) so a snippet compiles — a faithful
 /// port of wrapModule.ts `wrapModule`. sexpr gathers top-level forms under one `(do …)` (s-expr has no bare
 /// multi-form top level); ml uses its native newline-separated top level.
@@ -129,7 +218,12 @@ pub fn wrap_module(src: &str, surface: Surface) -> String {
             if head_word(trimmed, "(module") || head_word(trimmed, "(do") {
                 return trimmed.to_string();
             }
-            if head_word(trimmed, "(pragma")
+            // A recognized decl/stmt head OR any MULTI-FORM source is a defs-block (gather + export). The
+            // multi-form check is what makes a defs-block whose lead form isn't a literal head (e.g. the
+            // canonical `((. Unit define) …)` of a Unit.define statement) wrap correctly instead of collapsing
+            // every form into one `(def (main) …)` body (CDZ0201). A single non-head form is a bare expression.
+            if top_level_form_count(trimmed) > 1
+                || head_word(trimmed, "(pragma")
                 || head_word(trimmed, "(def")
                 || head_word(trimmed, "(type")
                 || head_word(trimmed, "(effect")
@@ -194,6 +288,40 @@ mod tests {
         assert_eq!(
             wrap_module("(type T (A) (B))", Sexpr),
             "(do (type T (A) (B)) (export main))"
+        );
+    }
+
+    #[test]
+    fn top_level_form_count_handles_strings_chars_comments() {
+        assert_eq!(top_level_form_count("(f 5)"), 1);
+        assert_eq!(top_level_form_count("(a) (b)"), 2);
+        assert_eq!(top_level_form_count("42"), 1);
+        // a `(`/`)` inside a string / char literal / comment must NOT count
+        assert_eq!(top_level_form_count("(f \"(\")"), 1);
+        assert_eq!(top_level_form_count("(f #\\( )"), 1);
+        assert_eq!(top_level_form_count("(f 5) ; (comment)\n(g 6)"), 2);
+        assert_eq!(top_level_form_count("#\"sym\" (f 1)"), 2);
+        // application / compound syntax is ONE form (atom or form immediately followed by `(…)`)
+        assert_eq!(top_level_form_count("#tuple(1 2)"), 1);
+        assert_eq!(top_level_form_count("#list(1 2 3)"), 1);
+        assert_eq!(top_level_form_count("f(x)(y)"), 1);
+        assert_eq!(
+            top_level_form_count("((. Unit define) #\"f\" ((. Unit of) #\"m\") 1 1)"),
+            1
+        );
+    }
+
+    #[test]
+    fn multi_form_non_head_lead_is_a_defs_block() {
+        // THE BUG FIX: a Unit.define statement in its CANONICAL form `((. Unit define) …)` is not a literal
+        // head, but the source is MULTI-FORM (statement + def main), so it must be a defs-block — NOT collapse
+        // into `(def (main) form1 form2)` (which trips CDZ0201 "more than one body").
+        let src = "((. Unit define) #\"furlong\" ((. Unit of) #\"foot\") 660 1)\n\n(def (main) 5)";
+        assert_eq!(wrap_module(src, Sexpr), format!("(do {src} (export main))"));
+        // a genuinely single bare expression still becomes `(def (main) …)`.
+        assert_eq!(
+            wrap_module("((. String length) \"hi\")", Sexpr),
+            "(do (def (main) ((. String length) \"hi\")) (export main))"
         );
     }
 

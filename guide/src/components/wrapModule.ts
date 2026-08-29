@@ -73,11 +73,65 @@ export function topLevelDefNames(trimmed: string, surface: Surface): string[] {
   return names;
 }
 
+/// Count TOP-LEVEL s-expr forms in `s` (a form = a depth-0 balanced list, string, char literal, or bare-atom
+/// run). Skips `"…"` strings (with `\` escapes), `#\x` char literals (the char after `#\` is literal, not a
+/// paren), and `;` line comments, so a `(`/`)` inside them never miscounts. Used to detect a MULTI-FORM
+/// (defs-block) source even when its lead form isn't a recognized head. Lightweight scan, not a parser.
+function sexprTopLevelFormCount(s: string): number {
+  // `boundary` = the next depth-0 form-start begins a NEW form (true at start + after depth-0 whitespace/
+  // comment). A form-start CONTIGUOUS with the previous form is a continuation — Cadenza's application/
+  // compound syntax `f(x)`, `#tuple(1 2)`, `f(x)(y)` is ONE form, not two.
+  let i = 0, depth = 0, forms = 0, boundary = true;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === ";") {
+      while (i < s.length && s[i] !== "\n") i++;
+      if (depth === 0) boundary = true;
+    } else if (c === '"') {
+      if (depth === 0) { if (boundary) forms++; boundary = false; }
+      i++;
+      while (i < s.length) {
+        if (s[i] === "\\") i += 2;
+        else if (s[i] === '"') { i++; break; }
+        else i++;
+      }
+    } else if (c === "#" && s[i + 1] === "\\") {
+      if (depth === 0) { if (boundary) forms++; boundary = false; }
+      i += 2;
+      if (i < s.length && /[A-Za-z0-9]/.test(s[i])) while (i < s.length && /[A-Za-z0-9]/.test(s[i])) i++;
+      else i++;
+    } else if (c === "(") {
+      if (depth === 0) { if (boundary) forms++; boundary = false; }
+      depth++; i++;
+    } else if (c === ")") {
+      if (depth > 0) depth--;
+      if (depth === 0) boundary = false; // a chained `(` after this close is the same form
+      i++;
+    } else if (/\s/.test(c)) {
+      if (depth === 0) boundary = true;
+      i++;
+    } else {
+      if (depth === 0) { if (boundary) forms++; boundary = false; }
+      i++;
+    }
+  }
+  return forms;
+}
+
 export function wrapModule(src: string, surface: Surface): string {
   const trimmed = src.trim();
   if (surface === "sexpr") {
     if (/^\(module\b/.test(trimmed) || /^\(do\b/.test(trimmed)) return trimmed;
-    if (PRAGMA_HEAD_SEXPR.test(trimmed) || new RegExp(`^\\((${DECL_HEAD}|${STMT_HEAD})\\b`).test(trimmed))
+    // A recognized decl/stmt head OR any MULTI-FORM source is a defs-block (gather under `(do …)` + export).
+    // The multi-form check is what makes a defs-block whose LEAD form isn't a literal head wrap correctly —
+    // e.g. a `Unit.define` statement in its canonical `((. Unit define) …)` form (as the canonical formatter
+    // or the binary-AST printer emit it): head-matching alone would miss it and collapse every form into one
+    // `(def (main) …)` body → CDZ0201 "more than one body". A single non-head form is a bare expression.
+    if (
+      sexprTopLevelFormCount(trimmed) > 1 ||
+      PRAGMA_HEAD_SEXPR.test(trimmed) ||
+      new RegExp(`^\\((${DECL_HEAD}|${STMT_HEAD})\\b`).test(trimmed)
+    )
       return `(do ${trimmed} (export ${exportNames(trimmed, surface).join(" ")}))`;
     return `(do (def (main) ${trimmed}) (export main))`;
   }

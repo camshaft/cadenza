@@ -12,32 +12,20 @@ export default function PatternMatching() {
       <H2>Matching literals</H2>
       <P>A <C>match</C> chooses an arm by matching the scrutinee against each arm's <em>pattern</em>. The last arm here uses <C>_</C>, the wildcard, which matches anything:</P>
       <Runnable
-        source={`(match 2
-  (1 10)
-  (2 20)
-  (_ 0))`}
+        source={`(match 2 (1 10) (2 20) (_ 0))`}
       />
       <P>Change the <C>2</C> being matched to <C>1</C> or <C>7</C> and Run to see a different arm fire.</P>
       <P>Literals aren't just numbers, since you can match a <C>String</C> the same way, and this is the everyday shape for dispatching on a keyword or command name. Here <C>known-op</C> reports whether a name is one of the operations it recognises, answering <C>false</C> for everything else:</P>
       <Runnable
-        source={`(def (known-op name)
-  (match name
-    ("add" true)
-    ("sub" true)
-    (_ false)))
+        source={`(def (known-op name) (match name ("add" true) ("sub" true) (_ false)))
+
 (def (main) (known-op "sub"))`}
       />
       <P><C>"sub"</C> takes the second arm, <C>true</C>. Change it to <C>"add"</C> or something unknown like <C>"mul"</C> and Run again. Note the answer is an honest <C>Bool</C>, not a stand-in number: a recognised name is <C>true</C>, anything else is <C>false</C>. (When a lookup needs to hand back a <em>result</em> that might not exist, you reach for <C>Option</C> rather than a magic value like <C>-1</C>, which is exactly what the next section builds.) The <C>_</C> arm isn't optional here: <C>String</C> (like <C>Int64</C>) has infinitely many values, so the compiler can't see that you've covered them all: leave the wildcard off and it declines with a non-exhaustive-match error, the same guarantee you'll meet with sums below.</P>
       <P>The same shape works for characters. A <C>Char</C> literal is written <C>#\a</C> (the <strong>Strings &amp; text</strong> chapter covers characters), and a <C>match</C> dispatches on one by its Unicode code point. Here <C>is-vowel</C> answers whether a character is a lowercase vowel:</P>
       <Runnable
-        source={`(def (is-vowel c)
-  (match c
-    (#\\a true)
-    (#\\e true)
-    (#\\i true)
-    (#\\o true)
-    (#\\u true)
-    (_ false)))
+        source={`(def (is-vowel c) (match c (#\\a true) (#\\e true) (#\\i true) (#\\o true) (#\\u true) (_ false)))
+
 (def (main) (is-vowel #\\e))`}
       />
       <P><C>#\e</C> takes its arm, so the answer is <C>true</C>. Change it to a consonant like <C>#\z</C> and the wildcard arm answers <C>false</C>. As with numbers and strings, the <C>_</C> arm is required, since <C>Char</C> has far too many values for the compiler to see them all listed.</P>
@@ -45,10 +33,8 @@ export default function PatternMatching() {
       <P>A sum type is a set of tagged variants. You declare it with <C>type</C>, build a value with one of its constructors, and take it apart by matching each variant. Here <C>Opt</C> is either <C>Some</C> carrying an <C>Int64</C>, or <C>None</C>. The <C>(Some x)</C> arm <em>binds</em> the payload to <C>x</C>:</P>
       <Runnable
         source={`(type Opt (Some Int64) (None unit))
-(def (main)
-  (match (Some 7)
-    ((Some x) x)
-    ((None _) 0)))`}
+
+(def (main) (match (Some 7) ((Some x) x) ((None _) 0)))`}
       />
       <P>Swap <C>(Some 7)</C> for <C>(None unit)</C> and Run to take the other arm, which returns <C>0</C>.</P>
       <H2>The compiler checks you covered every case</H2>
@@ -56,20 +42,16 @@ export default function PatternMatching() {
       <Note>This one is <strong>meant to be refused</strong>. Run it and read the status bar: <C>non-exhaustive match</C>, the missing variant named for you, before the program ever runs.</Note>
       <Runnable
         source={`(type Opt (Some Int64) (None unit))
-(def (main)
-  (match (Some 7)
-    ((Some x) x)))`}
+
+(def (main) (match (Some 7) ((Some x) x)))`}
         expect="error"
       />
       <Why tenet="match is patterns, not predicates">Many languages let a branch head be any boolean test. Cadenza deliberately doesn't: a <C>match</C> arm is always a <em>pattern</em>, whether a constructor that destructures, a literal, a binding, or <C>_</C>. Why refuse the more flexible option? Because a head that could be an arbitrary predicate quietly demotes the real question, <em>"did you handle every variant?"</em>, down to <em>"is there an else?"</em>. Keeping arms as patterns is what lets the compiler check exhaustiveness against the type, and turn a whole class of "forgot a case" bugs into compile errors. Value conditions still have a home; it's just <C>if</C>, not <C>match</C>.</Why>
       <H2>Guards: a pattern plus a condition</H2>
       <P>When you do want to test a value, not just its shape, an arm can carry a <em>guard</em>: a pattern with an <C>if</C> condition. The arm fires only when the pattern matches <em>and</em> the guard holds. Here a number is classified by sign:</P>
       <Runnable
-        source={`(def (sign n)
-  (match n
-    ((guard x (< x 0)) -1)
-    (0 0)
-    (_ 1)))
+        source={`(def (sign n) (match n ((guard x (< x 0)) -1) (0 0) (_ 1)))
+
 (def (main) (sign -8))`}
       />
       <P><C>(guard x (&lt; x 0))</C> binds the value to <C>x</C> and fires only when <C>x &lt; 0</C>, so <C>-8</C> returns <C>-1</C>; <C>0</C> takes the literal arm, and everything else the wildcard. A guard is the bridge between "match on shape" and "decide on value", without turning the whole arm back into an arbitrary predicate.</P>
@@ -77,23 +59,18 @@ export default function PatternMatching() {
       <P>Sums aren't limited to <C>Some</C>/<C>None</C>. A traffic light is a three-variant sum, and a <C>match</C> over it must cover all three (or the compiler complains):</P>
       <Runnable
         source={`(type Light (Red unit) (Yellow unit) (Green unit))
-(def (wait l)
-  (match l
-    ((Red _) 30)
-    ((Yellow _) 5)
-    ((Green _) 0)))
+
+(def (wait l) (match l ((Red _) 30) ((Yellow _) 5) ((Green _) 0)))
+
 (def (main) (wait (Red unit)))`}
       />
       <Note>This is the typed cousin of the symbol dispatch from the Symbols chapter. A symbol tag is checked with <C>=</C> and any typo compiles; a sum's variants are checked by the compiler, so a forgotten or misspelled case is caught. Reach for a sum when the set of cases is fixed and worth enforcing.</Note>
       <H2>Matching a map by key</H2>
       <P>A <C>match</C> can also look <em>inside a collection</em>. A map pattern, <C>#map((= key binder) .. rest)</C>, fires when the map contains that key, binding the associated value to <C>binder</C> (and the leftover entries to <C>rest</C>). It's the pattern-matching counterpart to a <C>Map.lookup</C>: here <C>setting</C> reads the <C>"width"</C> from a config map, returning <C>(Some v)</C> when the key is present and <C>(None unit)</C> when it's absent, because a missing key is an absence, not a magic number:</P>
       <Runnable
-        source={`(def (setting m)
-  (match m
-    (#map((= "width" v) .. rest) (Some v))
-    (_ (None unit))))
-(def (main)
-  (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))`}
+        source={`(def (setting m) (match m (#map((= "width" v) .. rest) (Some v)) (_ (None unit))))
+
+(def (main) (setting ((. Map insert) ((. Map insert) ((. Map empty)) "width" 80) "height" 50)))`}
       />
       <P>The map has a <C>"width"</C>, so the arm fires, binds <C>v</C> to <C>80</C>, and returns <C>(Some 80)</C>. Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns <C>(None unit)</C>. Toggle to the conventional surface and the pattern reads as <C>{"#{ \"width\" = v, .. rest }"}</C>, a map-literal shape on the left of a match arm (the <strong>Maps &amp; sets</strong> chapter later builds out maps as values).</P>
       <H2>Your turn</H2>
@@ -101,30 +78,22 @@ export default function PatternMatching() {
         id="pattern-matching:1"
         prompt={<>Add the missing <C>None</C> arm so this compiles and returns <C>0</C>.</>}
         starter={`(type Opt (Some Int64) (None unit))
-(def (main)
-  (match (None unit)
-    ((Some x) x)
-    ?))`}
+
+(def (main) (match (None unit) ((Some x) x) ?))`}
         solution={`(type Opt (Some Int64) (None unit))
-(def (main)
-  (match (None unit)
-    ((Some x) x)
-    ((None _) 0)))`}
+
+(def (main) (match (None unit) ((Some x) x) ((None _) 0)))`}
         expected="0"
         hint={<>The missing case is <C>None</C>; an arm is a <C>(pattern body)</C> pair: <C>((None _) 0)</C>.</>}
       />
       <Exercise
         id="pattern-matching:2"
         prompt={<>Write the <em>guard condition</em> so <C>grade</C> returns <C>1</C> for a passing score of <C>60</C> or more, and <C>0</C> otherwise. With <C>(grade 75)</C> the answer is <C>1</C>.</>}
-        starter={`(def (grade s)
-  (match s
-    ((guard x ?) 1)
-    (_ 0)))
+        starter={`(def (grade s) (match s ((guard x ?) 1) (_ 0)))
+
 (def (main) (grade 75))`}
-        solution={`(def (grade s)
-  (match s
-    ((guard x (>= x 60)) 1)
-    (_ 0)))
+        solution={`(def (grade s) (match s ((guard x (>= x 60)) 1) (_ 0)))
+
 (def (main) (grade 75))`}
         expected="1"
         hint={<>The guard binds the score to <C>x</C>; the condition for passing is "60 or more", namely <C>(&gt;= x 60)</C>. <C>75</C> clears it, so the first arm fires.</>}

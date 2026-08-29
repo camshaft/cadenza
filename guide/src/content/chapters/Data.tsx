@@ -19,8 +19,7 @@ export default function Data() {
       <H2>Records</H2>
       <P>A record has a fixed set of <em>named</em> fields. Reach a field with the <C>.</C> accessor, here the <C>leap</C> flag of a little "year" record:</P>
       <Runnable
-        source={`(let ((y #record((= year 2026) (= leap true))))
-  (. y leap))`}
+        source={`(let ((y #record((= year 2026) (= leap true)))) (. y leap))`}
       />
       <P>Return the whole record and, just like the tuple, it carries a structural type, one entry per field, each with its own type:</P>
       <Runnable
@@ -39,8 +38,7 @@ export default function Data() {
       <H2>Taking one apart in a match</H2>
       <P>Beyond reaching a single field, you can bind <em>all</em> of a tuple's parts at once by matching its shape, the same <C>match</C> you use for any value. Here a two-tuple binds <C>a</C> and <C>b</C> in one step, then adds them:</P>
       <Runnable
-        source={`(match #tuple(3 4)
-  (#tuple(a b) (+ a b)))`}
+        source={`(match #tuple(3 4) (#tuple(a b) (+ a b)))`}
       />
       <P>One arm is enough: a two-tuple always has exactly this shape, so <C>#tuple(a b)</C> is an <em>irrefutable</em> pattern that can't fail to match, and no catch-all is needed. Destructuring like this is the subject of <strong>Pattern matching</strong>; the point here is that a tuple or record is an ordinary value a pattern can name and take apart.</P>
       <H2>They compose</H2>
