@@ -4146,14 +4146,14 @@ fn op_str_from_bytes(buf: Handle) -> Handle {
 /// no consume). Decodes the flat leaf as UTF-8 and takes the Nth `char`; a well-formed String always
 /// decodes, but an ill-formed buffer (defensive) reads as `NO_SCALAR`, never a trap.
 ///
-/// WARNING: NOT YET WIT-EXPORTED — the ready runtime half of a coordinated `str-scalar-at` op (the compiler
-/// declines `String.scalar-at` on a RUNTIME string at lower.rs `lower_str_scalar_at`, "constant strings
-/// only"; the constant case folds to a `Leaf::Char`). Kept UNEXPORTED (no WIT line, no `Guest` method) →
-/// DCE'd from the shipped wasm → frozen runtime hash UNCHANGED. When the compiler wires
-/// `Core::StrScalarAt` it adds ONLY the one-line WIT export + a `Guest` method calling THIS fn (returns
-/// `NO_SCALAR`=out-of-range, so the compiler builds the `(Option Char)` sum), plus the runtime emit —
-/// the flatten + UTF-8 scalar walk is done and proven here. The SCALAR-indexed String family
-/// (`scalar-len`/`scalar-at`/`slice`) all rest on this same UTF-8 walk.
+/// WIT-EXPORTED as `bytes-scalar-at` (the runtime half of the `str-scalar-at` op). Returns the codepoint
+/// or `NO_SCALAR`=u32::MAX (out-of-range / ill-formed), so the compiler maps that sentinel to `None` when
+/// building the `(Option Char)` sum. PENDING the compiler side: `String.scalar-at` on a RUNTIME string
+/// still declines at lower.rs `lower_str_scalar_at` ("constant strings only"; the constant case folds to a
+/// `Leaf::Char`) until a `Core::StrScalarAt` variant + backend emit (i32 codepoint → Char box, sentinel →
+/// None) is wired — that is a compiler-variant addition (v-compiler-primitives/v-rust-backend), tracked to
+/// flip corpus 13-strings:3218. The flatten + UTF-8 scalar walk is done and proven here. The SCALAR-indexed
+/// String family (`scalar-len`/`scalar-at`/`slice`) all rest on this same UTF-8 walk.
 ///
 /// COST: COST — O(scalar_index): reaching the i-th scalar walks the UTF-8 from the START (a String is not
 /// scalar-indexable in O(1) — variable-width encoding). This is INHERENT to random access by scalar
@@ -4165,7 +4165,6 @@ fn op_str_from_bytes(buf: Handle) -> Handle {
 /// build a left-to-right lexer on it. (The current compiler-in-Cadenza lexer sidesteps the whole area by
 /// lexing `List Int64` char-codes — which is O(N) via `List` iteration, so the cursor gap is not yet
 /// blocking; raise the cursor only when a real-String sequential scan is written.)
-#[cfg_attr(not(test), allow(dead_code))]
 fn op_bytes_scalar_at(buf: Handle, scalar_index: u32) -> u32 {
     const NO_SCALAR: u32 = u32::MAX; // out-of-range / ill-formed sentinel (not a valid Unicode scalar)
     if is_immediate(buf) {
@@ -6709,6 +6708,9 @@ impl Guest for Component {
     }
     fn bytes_len(buf: u32) -> u32 {
         op_bytes_len(Handle::from_u32(buf))
+    }
+    fn bytes_scalar_at(buf: u32, scalar_index: u32) -> u32 {
+        op_bytes_scalar_at(Handle::from_u32(buf), scalar_index)
     }
     fn str_new(s: String) -> u32 {
         op_str_new(s).to_u32()
