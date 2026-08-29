@@ -5,13 +5,15 @@
 //!
 //! So far the crate holds the pure-data boundary enums — the requested [`Target`], the [`OptLevel`],
 //! and the sidecar [`Request`]/[`Query`] request vocabulary — plus the [`sidecar::encode`]/[`decode`]
-//! codec that serializes a request list to/from the canonical binary AST (the one `cadenza-ast` dep).
-//! Later slices move the kinded `Artifact` list and the source `spans` side-table. The compiler
-//! IMPLEMENTATIONS behind the boundary (query eval over a live `Db`, `compile`, the backends) stay in
-//! `rcdzc`.
+//! codec that serializes a request list to/from the canonical binary AST (the one `cadenza-ast` dep),
+//! and the source [`spans`] side-table (`SpanData`/`LineStarts` + its codec, a debug compile's kinded
+//! input). A later slice moves the kinded `Artifact` list + the `{artifacts, diagnostics}` result. The
+//! compiler IMPLEMENTATIONS behind the boundary (query eval over a live `Db`, `compile`, the backends)
+//! stay in `rcdzc`.
 
 pub mod opt;
 pub mod sidecar;
+pub mod spans;
 pub mod target;
 
 pub use opt::OptLevel;
