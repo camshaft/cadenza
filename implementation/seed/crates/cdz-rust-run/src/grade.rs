@@ -31,6 +31,7 @@ pub fn grade(
     async_mode: bool,
     compile_status: i32,
     compile_diag: &str,
+    diag_wire: Option<&str>,
     workdir: &Path,
     baseline: Option<&str>,
 ) -> Result<ExitCode> {
@@ -42,6 +43,7 @@ pub fn grade(
         async_mode,
         compile_status,
         compile_diag,
+        diag_wire,
         workdir,
     )?;
     // The exit reproduces `xtask gate --check --target rust` when a baseline is supplied (fail ONLY on a
@@ -56,6 +58,7 @@ pub fn grade(
 /// under `workdir` (each trial in its own subdir), linking `rlibs`; COMPILE outcomes (`expect-error`/
 /// `expect-declines`) + `warns` are graded from `compile_status`/`compile_diag` by the shared grader — no
 /// run. `async_mode` links `cdz_rt` and reads the async signature markers.
+#[allow(clippy::too_many_arguments)] // the corpus exec's full rust grade surface (module + rlibs + metadata + diag)
 pub fn grade_to_result(
     test_run: &cdz_corpus_grade::TestRun,
     module: Option<&str>,
@@ -63,6 +66,7 @@ pub fn grade_to_result(
     async_mode: bool,
     compile_status: i32,
     compile_diag: &str,
+    diag_wire: Option<&str>,
     workdir: &Path,
 ) -> Result<GradeResult> {
     let host_responses = test_run.host_responses.clone();
@@ -73,38 +77,46 @@ pub fn grade_to_result(
     // shared grade `Outcome` (carrying the observed host-calls). Only invoked for a COMPILED value/trap
     // trial (the shared grader grades a refused compile / a compile-outcome case without running).
     let mut trial_no = 0usize;
-    grade_run(test_run, compile_status, compile_diag, |trial: &GTrial| {
-        let module = module.ok_or_else(|| {
+    grade_run(
+        test_run,
+        compile_status,
+        compile_diag,
+        diag_wire,
+        |trial: &GTrial| {
+            let module = module.ok_or_else(|| {
             anyhow::anyhow!(
                 "grade: an output/trap case compiled (status 0) but no emitted Rust was supplied"
             )
         })?;
-        let (export, args) = match &trial.call {
-            Some(c) => (c.export.clone(), c.args.clone()),
-            None => {
-                let name = sole_export_name(module, async_mode).ok_or_else(|| {
-                    anyhow::anyhow!("grade: no `(call …)` and no exported fn in the emitted Rust")
-                })?;
-                (name, Vec::new())
-            }
-        };
-        let driver = build_driver_source(
-            module,
-            &export,
-            &args,
-            &host_responses,
-            &host_calls,
-            async_mode,
-        );
-        let dir = workdir.join(format!("trial-{trial_no}"));
-        trial_no += 1;
-        std::fs::create_dir_all(&dir)?;
-        Ok(match compile_and_run(&driver, &dir, rlibs, async_mode) {
-            RunOutcome::Value(v, observed) => GradeOutcome::Value(v, observed),
-            RunOutcome::Trap(t) => GradeOutcome::Trap(t),
-            RunOutcome::BadArtifact(e) => GradeOutcome::BadArtifact(e),
-        })
-    })
+            let (export, args) = match &trial.call {
+                Some(c) => (c.export.clone(), c.args.clone()),
+                None => {
+                    let name = sole_export_name(module, async_mode).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "grade: no `(call …)` and no exported fn in the emitted Rust"
+                        )
+                    })?;
+                    (name, Vec::new())
+                }
+            };
+            let driver = build_driver_source(
+                module,
+                &export,
+                &args,
+                &host_responses,
+                &host_calls,
+                async_mode,
+            );
+            let dir = workdir.join(format!("trial-{trial_no}"));
+            trial_no += 1;
+            std::fs::create_dir_all(&dir)?;
+            Ok(match compile_and_run(&driver, &dir, rlibs, async_mode) {
+                RunOutcome::Value(v, observed) => GradeOutcome::Value(v, observed),
+                RunOutcome::Trap(t) => GradeOutcome::Trap(t),
+                RunOutcome::BadArtifact(e) => GradeOutcome::BadArtifact(e),
+            })
+        },
+    )
 }
 
 #[cfg(test)]
@@ -116,7 +128,11 @@ mod tests {
     fn one_trial(call: Option<GCall>, expect: GExpect) -> TestRun {
         TestRun {
             description: "test".into(),
-            trials: vec![GTrial { call, expect }],
+            trials: vec![GTrial {
+                call,
+                expect,
+                diag: None,
+            }],
             host_responses: vec![],
             host_calls: vec![],
             warns: vec![],
@@ -145,6 +161,7 @@ mod tests {
             false,
             0,
             "",
+            None,
             &workdir("pass"),
         )
         .unwrap();
@@ -172,6 +189,7 @@ mod tests {
             false,
             0,
             "",
+            None,
             &workdir("fail"),
         )
         .unwrap();
@@ -190,6 +208,7 @@ mod tests {
             false,
             1,
             "cdz: error [CDZ0999] (node 1): not yet supported",
+            None,
             &workdir("declines"),
         )
         .unwrap();

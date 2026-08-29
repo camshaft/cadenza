@@ -50,6 +50,11 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     compile_diag: Option<PathBuf>,
 
+    /// The compiler's STRUCTURED diagnostics wire (`KIND_DIAGNOSTICS` / `cdz check --json`) for grading a
+    /// case's DIAGNOSTIC-QUALITY facets (`(fix …)`/`(no-fix)`/`(count N)`). Absent → quality grading OFF.
+    #[arg(long, value_name = "PATH")]
+    diagnostics: Option<PathBuf>,
+
     /// The directory holding `libcdz_rt.rlib` (linked only in `--async` mode).
     #[arg(long, value_name = "DIR")]
     cdz_rt_dir: Option<PathBuf>,
@@ -99,6 +104,10 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
         None => String::new(),
     };
+    let diag_wire: Option<String> = cli
+        .diagnostics
+        .as_ref()
+        .map(|p| std::fs::read_to_string(p).unwrap_or_default());
     let baseline = match &cli.baseline {
         Some(p) => Some(
             std::fs::read_to_string(p)
@@ -124,6 +133,7 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         cli.r#async,
         cli.compile_status,
         &compile_diag,
+        diag_wire.as_deref(),
         &workdir,
         baseline.as_deref(),
     )

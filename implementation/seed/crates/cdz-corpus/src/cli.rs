@@ -15,7 +15,7 @@ use cadenza_syntax::ast::{Arenas, Builder, Leaf, StructId};
 use cadenza_syntax::codec;
 use cadenza_syntax::sexpr;
 
-use crate::{Expect, Record};
+use crate::{DiagQuality, Expect, Record, ReplMatch};
 
 /// The arguments to `cdz corpus` / `cdz-corpus` — read the executable-semantics corpus.
 #[derive(clap::Args)]
@@ -358,6 +358,10 @@ fn oracle_trials_ast(rec: &Record) -> Vec<u8> {
                 let cl = str_leaf(&mut b, code);
                 form(&mut b, "expect-error", vec![cl])
             }
+            Expect::Warning(code, _) => {
+                let cl = str_leaf(&mut b, code);
+                form(&mut b, "expect-warning", vec![cl])
+            }
             Expect::Declines(_) => form(&mut b, "expect-declines", vec![]),
         };
         tk.push(e);
@@ -437,6 +441,10 @@ fn expect_kind(rec: &Record) -> &'static str {
         Some(Expect::Output(_)) => "output",
         Some(Expect::Trap(_)) => "trap",
         Some(Expect::Error(..)) => "error",
+        // A warning case COMPILES (must succeed → produce an artifact) AND emits a warning — a COMPILE
+        // outcome graded from the diagnostic (grade_compile_warning), distinct from `error` (compile must
+        // REFUSE). The exec router handles `warning` as compile-must-succeed + grade-from-diag (no run).
+        Some(Expect::Warning(..)) => "warning",
         Some(Expect::Declines(_)) => "declines",
         None => "output", // a case always has ≥1 trial; default is harmless
     }
@@ -491,6 +499,12 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
         }
         let e = expect_form(&mut b, &t.expect);
         tk.push(e);
+        // The DIAGNOSTIC-QUALITY facets as trial-level clauses (siblings of the expect form) — `(fix …)`,
+        // `(no-fix)`, `(count N)` — which `cdz_corpus_grade::decode_trial` reads back into a `DiagExpect`.
+        // Authored NESTED inside `(error …)`/`(warning …)`, lifted to trial level here.
+        if let Some(d) = &t.diag {
+            push_diag_forms(&mut b, &mut tk, d);
+        }
         trials.push(b.list(tk));
     }
     kids.push(b.list(trials));
@@ -566,6 +580,14 @@ fn expect_form(b: &mut Builder, e: &Expect) -> StructId {
             }
             form(b, "expect-error", leaves)
         }
+        Expect::Warning(code, msg) => {
+            let cl = str_leaf(b, code);
+            let mut leaves = vec![cl];
+            if let Some(m) = msg {
+                leaves.push(str_leaf(b, m));
+            }
+            form(b, "expect-warning", leaves)
+        }
         Expect::Trap(reason) => {
             let leaf = str_leaf(b, reason);
             form(b, "expect-trap", vec![leaf])
@@ -577,6 +599,44 @@ fn expect_form(b: &mut Builder, e: &Expect) -> StructId {
             };
             form(b, "expect-declines", leaves)
         }
+    }
+}
+
+/// Push a trial's DIAGNOSTIC-QUALITY facets as clause forms onto `tk` (the trial's child list) — `(fix
+/// (kind K)? (replacement "r")|(replacement-contains "s")? (verified|unverified)?)`, `(no-fix)`, and
+/// `(count N)`. The mirror of `cdz_corpus_grade::decode_trial`'s read of these clauses; `(count 1)` is
+/// emitted plainly (the `(once)` shorthand is a parse-time convenience, canonicalized to `count 1`).
+fn push_diag_forms(b: &mut Builder, tk: &mut Vec<StructId>, d: &DiagQuality) {
+    if let Some(fx) = &d.fix {
+        let mut fk: Vec<StructId> = Vec::new();
+        if let Some(kind) = &fx.kind {
+            let kl = str_leaf(b, kind);
+            fk.push(form(b, "kind", vec![kl]));
+        }
+        match &fx.replacement {
+            Some(ReplMatch::Exact(r)) => {
+                let rl = str_leaf(b, r);
+                fk.push(form(b, "replacement", vec![rl]));
+            }
+            Some(ReplMatch::Contains(s)) => {
+                let sl = str_leaf(b, s);
+                fk.push(form(b, "replacement-contains", vec![sl]));
+            }
+            None => {}
+        }
+        match fx.verified {
+            Some(true) => fk.push(form(b, "verified", vec![])),
+            Some(false) => fk.push(form(b, "unverified", vec![])),
+            None => {}
+        }
+        tk.push(form(b, "fix", fk));
+    }
+    if d.no_fix {
+        tk.push(form(b, "no-fix", vec![]));
+    }
+    if let Some(n) = d.count {
+        let nl = str_leaf(b, &n.to_string());
+        tk.push(form(b, "count", vec![nl]));
     }
 }
 
@@ -730,6 +790,40 @@ mod tests {
         );
         let run_tr = sexpr::print(&codec::decode(&test_run_ast(&recs[2])).unwrap());
         assert!(run_tr.contains("main"), "call export in test-run: {run_tr}");
+    }
+
+    /// The DIAGNOSTIC-QUALITY facets + the `(warning …)` result kind reach the shredded `test-run.ast` as
+    /// trial-level clauses — exactly the wire `cdz_corpus_grade::decode_trial` reads. The two crates share
+    /// the sexp wire (no type dep), so this pins the emitter half of that contract.
+    #[test]
+    fn diag_quality_facets_reach_the_shredded_test_run() {
+        let recs = crate::read(
+            r#"(case "fix" (input 1_)
+                 (error CDZ0201 (fix (kind replace) (replacement "1") (verified)) (count 2)))
+               (case "warn" (input (do (def (main) 0) (export main)))
+                 (warning CDZ0305 (message "dead") (no-fix)))"#,
+        )
+        .unwrap();
+        let fix_tr = sexpr::print(&codec::decode(&test_run_ast(&recs[0])).unwrap());
+        assert!(fix_tr.contains("expect-error"), "error kind: {fix_tr}");
+        assert!(fix_tr.contains("(fix"), "fix clause: {fix_tr}");
+        assert!(
+            fix_tr.contains("replacement") && fix_tr.contains("verified"),
+            "fix facets: {fix_tr}"
+        );
+        assert!(
+            fix_tr.contains("(count") && fix_tr.contains('2'),
+            "count: {fix_tr}"
+        );
+
+        let warn_tr = sexpr::print(&codec::decode(&test_run_ast(&recs[1])).unwrap());
+        assert!(
+            warn_tr.contains("expect-warning") && warn_tr.contains("CDZ0305"),
+            "warning: {warn_tr}"
+        );
+        assert!(warn_tr.contains("no-fix"), "no-fix clause: {warn_tr}");
+        // The warning case ROUTES as its own kind for the exec router.
+        assert_eq!(expect_kind(&recs[1]), "warning");
     }
 
     /// `oracle-trials` emits each trial's VALUES as BINARY AST (parsed from value-form text, not opaque

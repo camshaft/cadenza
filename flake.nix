@@ -2279,7 +2279,10 @@
 
             # Compile. A refusal (error/declines case) is NOT a derivation failure — capture the outcome; the
             # exec grades it. `emit.wasm` is present only on success.
-            if cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$out/emit.wasm" 2>"$out/compile.err"; then
+            # `--emit-diagnostics` writes the KIND_DIAGNOSTICS wire (the well-formedness fault set, with any
+            # fixes) to `$out/diagnostics` UNCONDITIONALLY (even on error/decline — it exits the normal compile
+            # status), so the exec can grade a case's `(fix …)`/`(count …)` diagnostic-QUALITY assertions (C1).
+            if cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$out/emit.wasm" --emit-diagnostics "$out/diagnostics" 2>"$out/compile.err"; then
               printf '0' > "$out/compile.status"
             else
               printf '%s' "$?" > "$out/compile.status"
@@ -2321,6 +2324,10 @@
             status=$(cat ${build}/compile.status)
             args=(--grade ${build}/test-run.ast --compile-status "$status" --compile-diag ${build}/compile.err
                   --baseline ${./spec/semantics/.gate-baseline})
+            # `--diagnostics` feeds the captured KIND_DIAGNOSTICS wire to the shared grader so a case's
+            # diagnostic-QUALITY facets ((fix …)/(no-fix)/(count N)) are asserted (C1). `mkCorpusBuild` always
+            # writes `diagnostics` (unconditional --emit-diagnostics); absent ⇒ the grader leaves quality OFF.
+            if [ -e ${build}/diagnostics ]; then args+=(--diagnostics ${build}/diagnostics); fi
             if [ -e ${build}/emit.wasm ]; then args=(${build}/emit.wasm "''${args[@]}"); fi
             if [ -e ${build}/component-name ]; then args+=(--component-name "$(cat ${build}/component-name)"); fi
             # (peer) L3: compose each provider peer the build compiled — `--peer <iface>=<peer-wasm>` binds

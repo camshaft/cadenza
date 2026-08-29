@@ -167,6 +167,12 @@ pub fn exec_exit(result: &GradeResult, description: &str, baseline: Option<&str>
 pub struct GTrial {
     pub call: Option<GCall>,
     pub expect: GExpect,
+    /// Optional DIAGNOSTIC-QUALITY assertions for an `(error …)` / `(warning …)` compile outcome — a
+    /// structural `(fix …)` / `(no-fix)` / exact `(count N)`/`(once)` beyond the code + message. `None`
+    /// when the case asserts only code + message (the common form). Graded by [`grade_diag_quality`]
+    /// against the structured diagnostics once the exec captures them (the `(error …)` diagnostic-quality
+    /// capability — lets the corpus "express fixes", migrating the `rcdzc/tests.rs` fix-it tests).
+    pub diag: Option<DiagExpect>,
 }
 
 pub struct GCall {
@@ -191,6 +197,11 @@ pub enum GExpect {
     Trap(String),
     /// `(expect-error CODE msg?)` — the compiler must REFUSE with exactly `CODE` (+ optional message substring).
     Error(String, Option<String>),
+    /// `(expect-warning CODE msg?)` — the compiler must COMPILE (produce an artifact) AND emit a WARNING with
+    /// exactly `CODE` (+ optional message substring). Severity-distinct from `Error` (which DENIES the
+    /// artifact): a warning ACCOMPANIES a produced component. Pairs with a `(count N)` for the exact-count
+    /// warning cases (e.g. "exactly one CDZ0305 dead-trap warning") a presence-only `(warns …)` can't express.
+    Warning(String, Option<String>),
     /// `(expect-declines msg?)` — the compiler must refuse (any code, or codeless); optional message substring.
     Declines(Option<String>),
 }
@@ -308,6 +319,7 @@ pub fn grade_run<F>(
     test_run: &TestRun,
     compile_status: i32,
     compile_diag: &str,
+    diag_wire: Option<&str>,
     mut run_trial: F,
 ) -> Result<GradeResult>
 where
@@ -316,6 +328,12 @@ where
     let compiled = compile_status == 0;
     let mut worst = Grade::Pass;
     let mut ran_a_trial = false;
+    // The STRUCTURED diagnostics (`KIND_DIAGNOSTICS` wire) a trial's `(fix …)`/`(count …)` facets grade
+    // against, parsed once. `None` = the pipeline did not capture the wire (diagnostic-QUALITY grading is
+    // OFF — the facets still parse/shred/decode, but are not asserted, today's behavior); `Some(faults)` =
+    // captured, so `grade_diag_quality` fires per diag-bearing trial. `Some(&[])` (captured but empty) is
+    // meaningful: a warning/fix case with no matching fault then FAILS ("expected a fault, found none").
+    let faults: Option<Vec<DiagFault>> = diag_wire.map(parse_diagnostics);
     // The observed host-call sequence of the first value-producing trial — the gate checks host_calls
     // against exactly this (a compiled program's host effects are the same on every trial).
     let mut first_observed: Option<Vec<String>> = None;
@@ -330,6 +348,11 @@ where
                     code,
                     msg.as_deref(),
                 ));
+                // DIAGNOSTIC-QUALITY facets (`(fix …)`/`(no-fix)`/`(count …)`) — graded against the captured
+                // structured faults for THIS error's `(Error, code)`. Only when the wire was captured.
+                if let (Some(faults), Some(diag)) = (&faults, &trial.diag) {
+                    worst = worst.worse(grade_diag_quality(faults, Severity::Error, code, diag));
+                }
                 if matches!(worst, Grade::Fail(_)) {
                     break;
                 }
@@ -341,6 +364,22 @@ where
                     compile_diag,
                     msg.as_deref(),
                 ));
+                if matches!(worst, Grade::Fail(_)) {
+                    break;
+                }
+                continue;
+            }
+            GExpect::Warning(code, msg) => {
+                worst = worst.worse(grade_compile_warning(
+                    compiled,
+                    compile_diag,
+                    code,
+                    msg.as_deref(),
+                ));
+                // Same diagnostic-QUALITY facets, graded for THIS warning's `(Warning, code)`.
+                if let (Some(faults), Some(diag)) = (&faults, &trial.diag) {
+                    worst = worst.worse(grade_diag_quality(faults, Severity::Warning, code, diag));
+                }
                 if matches!(worst, Grade::Fail(_)) {
                     break;
                 }
@@ -519,7 +558,7 @@ pub fn grade_trial(expect: &GExpect, outcome: &Outcome) -> Grade {
             )),
         },
         // Not reached (compile-outcome expectations are graded before the run), but total for safety.
-        GExpect::Error(..) | GExpect::Declines(..) => Grade::Todo(
+        GExpect::Error(..) | GExpect::Declines(..) | GExpect::Warning(..) => Grade::Todo(
             "compile-outcome expectation is graded from the diagnostic, not the run".into(),
         ),
     }
@@ -560,6 +599,32 @@ pub fn grade_compile_declines(compiled: bool, diag: &str, msg: Option<&str>) -> 
                 Grade::Fail(format!("declined, but message {message:?} lacks {p:?}"))
             }
         }
+    }
+}
+
+/// Grade an `(expect-warning CODE msg?)` against the compile outcome — the SEVERITY-warning companion of
+/// `grade_compile_error`. The program must COMPILE (a warning accompanies a produced artifact; a refusal is
+/// a Fail — the expected warning never got the chance to fire), AND the diagnostic must carry a `warning
+/// [CODE]` with that exact code (+ optional message substring). Distinct from the presence-only `(warns …)`
+/// clause: this is a first-class outcome kind, so it composes with a `(count N)` for the exact-count warning
+/// cases. A DIFFERENT/absent warning code is `Todo` (refused-to-confirm), never a false pass.
+pub fn grade_compile_warning(compiled: bool, diag: &str, want: &str, msg: Option<&str>) -> Grade {
+    if !compiled {
+        return Grade::Fail(format!(
+            "expected the program to COMPILE with warning {want} but the compiler REFUSED it"
+        ));
+    }
+    let emitted = collect_warnings(diag);
+    let hit = emitted
+        .iter()
+        .any(|(c, m)| c == want && msg.is_none_or(|p| m.contains(p)));
+    if hit {
+        Grade::Pass
+    } else {
+        Grade::Todo(format!(
+            "compiled, but warning {want}{} not among {emitted:?}",
+            msg.map(|p| format!(" (~ {p:?})")).unwrap_or_default()
+        ))
     }
 }
 
@@ -991,6 +1056,12 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
     let mut second_call: Option<Vec<String>> = None;
     let mut drop_handle = false;
     let mut expect: Option<GExpect> = None;
+    // The diagnostic-QUALITY facets (`(fix …)` / `(no-fix)` / `(count N)` / `(once)`) that pin more than the
+    // code + message on an `(expect-error …)` / `(expect-warning …)` case — accumulated into a `DiagExpect`
+    // below. Absent clauses leave the facet unconstrained (an all-absent `DiagExpect` grades as a no-op Pass).
+    let mut diag_fix: Option<FixExpect> = None;
+    let mut diag_no_fix = false;
+    let mut diag_count: Option<u32> = None;
     for &child in items {
         match a.head_name(child) {
             Some("call") => {
@@ -1053,6 +1124,15 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
                     }
                 }
             }
+            Some("expect-warning") => {
+                if let Some(t) = a.as_form(child, "expect-warning") {
+                    let code = t.first().copied().and_then(|id| str_leaf(a, id));
+                    let msg = t.get(1).copied().and_then(|id| str_leaf(a, id));
+                    if let Some(code) = code {
+                        expect = Some(GExpect::Warning(code, msg));
+                    }
+                }
+            }
             Some("expect-declines") => {
                 let msg = a
                     .as_form(child, "expect-declines")
@@ -1060,6 +1140,20 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
                     .and_then(|id| str_leaf(a, id));
                 expect = Some(GExpect::Declines(msg));
             }
+            // `(count N)` — the fault-count the `(severity, code)` set must match exactly; `(once)` is the
+            // common `(count 1)` shorthand.
+            Some("count") => {
+                diag_count = a
+                    .as_form(child, "count")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| str_leaf(a, id))
+                    .and_then(|s| s.trim().parse::<u32>().ok());
+            }
+            Some("once") => diag_count = Some(1),
+            // `(no-fix)` — the matched fault must carry NO repair (mutually exclusive with `(fix …)`).
+            Some("no-fix") => diag_no_fix = true,
+            // `(fix (kind K)? (replacement R)? / (replacement-contains S)? (verified|unverified)?)`.
+            Some("fix") => diag_fix = Some(decode_fix_expect(a, child)),
             _ => {}
         }
     }
@@ -1076,10 +1170,58 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
     } else {
         None
     };
+    // Fold the diagnostic-quality facets into a `DiagExpect`, or `None` when the case pinned none (the
+    // common code+message-only form) — `None` and an empty `DiagExpect` both grade as a no-op quality Pass,
+    // but `None` keeps the shredded `test-run.ast` clause-free.
+    let diag = {
+        let d = DiagExpect {
+            fix: diag_fix,
+            no_fix: diag_no_fix,
+            count: diag_count,
+        };
+        (!d.is_empty()).then_some(d)
+    };
     Some(GTrial {
         call,
         expect: expect?,
+        diag,
     })
+}
+
+/// Decode a `(fix (kind K)? (replacement R)? / (replacement-contains S)? (verified|unverified)?)` clause
+/// into a [`FixExpect`]. Each sub-clause is optional (an absent facet is unconstrained); `(replacement R)`
+/// pins an EXACT match and `(replacement-contains S)` a SUBSTRING (mutually exclusive — the last one wins if
+/// both appear, an authoring slip). A bare `(fix)` constrains nothing but still requires SOME fix be present.
+fn decode_fix_expect(a: &Arenas, id: StructId) -> FixExpect {
+    let mut fx = FixExpect::default();
+    for &child in a.as_form(id, "fix").unwrap_or(&[]) {
+        match a.head_name(child) {
+            Some("kind") => {
+                fx.kind = a
+                    .as_form(child, "kind")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|cid| str_leaf(a, cid));
+            }
+            Some("replacement") => {
+                fx.replacement = a
+                    .as_form(child, "replacement")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|cid| str_leaf(a, cid))
+                    .map(ReplMatch::Exact);
+            }
+            Some("replacement-contains") => {
+                fx.replacement = a
+                    .as_form(child, "replacement-contains")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|cid| str_leaf(a, cid))
+                    .map(ReplMatch::Contains);
+            }
+            Some("verified") => fx.verified = Some(true),
+            Some("unverified") => fx.verified = Some(false),
+            _ => {}
+        }
+    }
+    fx
 }
 
 /// A form's children after the head (`items[1..]`), or empty for a non-list / headless node.
@@ -1468,6 +1610,51 @@ mod tests {
         ));
     }
 
+    /// `grade_compile_warning` = the severity-warning companion: COMPILE + warning-code-present is Pass; a
+    /// REFUSAL (didn't compile) is Fail; a different/absent warning code is Todo (never a false pass).
+    #[test]
+    fn compile_warning_grade() {
+        // Compiled + the warning present (+ message substring) → Pass.
+        assert_eq!(
+            grade_compile_warning(
+                true,
+                "cdz: warning [CDZ0305] (node 3): this trap is unreachable (dead code)",
+                "CDZ0305",
+                Some("unreachable")
+            ),
+            Grade::Pass
+        );
+        assert_eq!(
+            grade_compile_warning(
+                true,
+                "warning [CDZ0306] (node 1): unused binding",
+                "CDZ0306",
+                None
+            ),
+            Grade::Pass
+        );
+        // Refused (didn't compile) → Fail (the warning never fired).
+        assert!(matches!(
+            grade_compile_warning(false, "", "CDZ0305", None),
+            Grade::Fail(_)
+        ));
+        // Compiled but a DIFFERENT/absent warning code → Todo (refused-to-confirm, not a false pass).
+        assert!(matches!(
+            grade_compile_warning(true, "warning [CDZ0999] (node 2): other", "CDZ0305", None),
+            Grade::Todo(_)
+        ));
+        // Right code, message substring MISSING → Todo (the code matched but the phrase check failed).
+        assert!(matches!(
+            grade_compile_warning(
+                true,
+                "warning [CDZ0305] (node 3): dead trap",
+                "CDZ0305",
+                Some("nope")
+            ),
+            Grade::Todo(_)
+        ));
+    }
+
     #[test]
     fn grade_run_orchestrates_an_output_trial() {
         // Build a (test-run …) with one output trial, decode it, grade with a stub runner.
@@ -1490,11 +1677,17 @@ mod tests {
         let bytes = codec::encode(&b.finish(root));
 
         let tr = decode_test_run(&bytes).expect("decodes");
-        let res = grade_run(&tr, 0, "", |_| Ok(Outcome::Value("42".into(), vec![]))).unwrap();
+        let res = grade_run(&tr, 0, "", None, |_| {
+            Ok(Outcome::Value("42".into(), vec![]))
+        })
+        .unwrap();
         assert_eq!(res.grade, Grade::Pass);
         assert!(res.ran_a_trial);
         // A wrong value → Fail.
-        let res = grade_run(&tr, 0, "", |_| Ok(Outcome::Value("41".into(), vec![]))).unwrap();
+        let res = grade_run(&tr, 0, "", None, |_| {
+            Ok(Outcome::Value("41".into(), vec![]))
+        })
+        .unwrap();
         assert!(matches!(res.grade, Grade::Fail(_)));
 
         // COMPILE-FAILURE grading of an output case (compile_status != 0, nothing runs):
@@ -1504,6 +1697,7 @@ mod tests {
             &tr,
             1,
             "cdz: error: parameter reference has no local slot",
+            None,
             never,
         )
         .unwrap();
@@ -1519,6 +1713,7 @@ mod tests {
             &tr,
             1,
             "cdz: error: a function parameter's type has no machine representation",
+            None,
             never,
         )
         .unwrap();
@@ -1532,6 +1727,7 @@ mod tests {
             &tr,
             1,
             "error [CDZ0210] (node 3): match is non-exhaustive",
+            None,
             never,
         )
         .unwrap();
@@ -1541,10 +1737,74 @@ mod tests {
             res.grade
         );
         // A silent decline (no error line at all) stays Todo.
-        let res = grade_run(&tr, 1, "", never).unwrap();
+        let res = grade_run(&tr, 1, "", None, never).unwrap();
         assert!(
             matches!(res.grade, Grade::Todo(_)),
             "silent decline → todo: {:?}",
+            res.grade
+        );
+    }
+
+    /// C1-PLUMBING: `grade_run` fires `grade_diag_quality` on a diag-bearing trial WHEN the structured
+    /// diagnostics wire is supplied (`Some`), and SKIPS it when the wire is absent (`None`) — the switch
+    /// that turns diagnostic-quality grading on without changing any case that lacks the wire.
+    #[test]
+    fn grade_run_fires_diag_quality_only_when_the_wire_is_present() {
+        let never =
+            |_: &GTrial| -> Result<Outcome> { panic!("compile-outcome case runs no trial") };
+        // An (error CDZ0201) trial pinning a fix `(replacement "foo")` + `(count 1)`.
+        let tr = TestRun {
+            description: "diag-quality".into(),
+            trials: vec![GTrial {
+                call: None,
+                expect: GExpect::Error("CDZ0201".into(), None),
+                diag: Some(DiagExpect {
+                    fix: Some(FixExpect {
+                        kind: None,
+                        replacement: Some(ReplMatch::Exact("foo".into())),
+                        verified: None,
+                    }),
+                    no_fix: false,
+                    count: Some(1),
+                }),
+            }],
+            host_responses: vec![],
+            host_calls: vec![],
+            warns: vec![],
+            live_objects: None,
+            live_objects_known_leak: false,
+            live_objects_per_call: None,
+        };
+        // The compile refused with the right code (so grade_compile_error passes) + the stderr line the
+        // code-check reads.
+        let diag = "cdz: error [CDZ0201] (node 1): bad separator";
+
+        // (a) Wire ABSENT → quality NOT graded; the case grades Pass on code alone (today's behavior).
+        let res = grade_run(&tr, 1, diag, None, never).unwrap();
+        assert_eq!(res.grade, Grade::Pass, "no wire → quality ungraded");
+
+        // (b) Wire present, ONE error CDZ0201 fault carrying a `replace` fix whose replacement is "foo",
+        // verified — matches the pinned fix + count 1 → Pass.
+        let wire_ok = "error\tCDZ0201\t1\treplace\t1\tfoo\tverified\tbad separator";
+        let res = grade_run(&tr, 1, diag, Some(wire_ok), never).unwrap();
+        assert_eq!(res.grade, Grade::Pass, "matching fix+count → pass");
+
+        // (c) Wire present but the fix's replacement is "bar" (≠ pinned "foo") → the quality grade FAILS.
+        let wire_bad = "error\tCDZ0201\t1\treplace\t1\tbar\tverified\tbad separator";
+        let res = grade_run(&tr, 1, diag, Some(wire_bad), never).unwrap();
+        assert!(
+            matches!(res.grade, Grade::Fail(_)),
+            "mismatched fix replacement → fail: {:?}",
+            res.grade
+        );
+
+        // (d) Wire present but carries TWO CDZ0201 faults (count ≠ 1) → the count facet FAILS.
+        let wire_two = "error\tCDZ0201\t1\treplace\t1\tfoo\tverified\tone\n\
+                        error\tCDZ0201\t2\treplace\t3\tfoo\tverified\ttwo";
+        let res = grade_run(&tr, 1, diag, Some(wire_two), never).unwrap();
+        assert!(
+            matches!(res.grade, Grade::Fail(_)),
+            "count mismatch → fail: {:?}",
             res.grade
         );
     }
@@ -1969,5 +2229,107 @@ mod tests {
         assert_eq!(tr.live_objects, None);
         assert!(!tr.live_objects_known_leak);
         assert_eq!(tr.live_objects_per_call, None);
+    }
+
+    /// `decode_trial` reads the diagnostic-QUALITY clauses `(fix …)` / `(no-fix)` / `(count N)` / `(once)`
+    /// into `GTrial.diag` (a `DiagExpect`), and leaves it `None` when the trial pins only code + message.
+    /// The decoded facets are exactly what `grade_diag_quality` grades against — this is the parse end of
+    /// C1's "corpus expresses fixes" capability, the counterpart to the shred/authoring render in cdz-corpus.
+    #[test]
+    fn decode_reads_diag_quality_clauses() {
+        use cadenza_syntax::ast::{Builder, Leaf};
+        use std::sync::Arc;
+        // Build a `(test-run … (trials (trial (expect-error CDZ0101) <extra…>)))` and return the decoded
+        // trial's `diag`. `mk_extra` builds the trial's diagnostic-quality clause forms in the owned builder.
+        let decode_diag = |mk_extra: &dyn Fn(
+            &mut Builder,
+        ) -> Vec<cadenza_syntax::ast::StructId>|
+         -> Option<DiagExpect> {
+            let mut b = Builder::new();
+            let s = |b: &mut Builder, t: &str| b.atom_leaf(Leaf::Str(Arc::from(t)));
+            let extra = mk_extra(&mut b);
+            let head = b.name("test-run");
+            let dh = b.name("description");
+            let dv = s(&mut b, "case");
+            let desc = b.list(vec![dh, dv]);
+            let th = b.name("trial");
+            let eh = b.name("expect-error");
+            let ec = s(&mut b, "CDZ0101");
+            let expect = b.list(vec![eh, ec]);
+            let mut trial_kids = vec![th, expect];
+            trial_kids.extend(extra);
+            let trial = b.list(trial_kids);
+            let trials_head = b.name("trials");
+            let trials = b.list(vec![trials_head, trial]);
+            let root = b.list(vec![head, desc, trials]);
+            let bytes = codec::encode(&b.finish(root));
+            decode_test_run(&bytes)
+                .unwrap()
+                .trials
+                .into_iter()
+                .next()
+                .unwrap()
+                .diag
+        };
+
+        // A full `(fix (kind replace) (replacement "foo") (verified))` + `(count 1)`.
+        let diag = decode_diag(&|b| {
+            let s = |b: &mut Builder, t: &str| b.atom_leaf(Leaf::Str(Arc::from(t)));
+            let fh = b.name("fix");
+            let kh = b.name("kind");
+            let kv = s(b, "replace");
+            let kind = b.list(vec![kh, kv]);
+            let rh = b.name("replacement");
+            let rv = s(b, "foo");
+            let repl = b.list(vec![rh, rv]);
+            let vh = b.name("verified");
+            let ver = b.list(vec![vh]);
+            let fix = b.list(vec![fh, kind, repl, ver]);
+            let ch = b.name("count");
+            let cv = s(b, "1");
+            let count = b.list(vec![ch, cv]);
+            vec![fix, count]
+        })
+        .expect("diag present");
+        assert_eq!(diag.count, Some(1));
+        assert!(!diag.no_fix);
+        let fx = diag.fix.expect("fix present");
+        assert_eq!(fx.kind.as_deref(), Some("replace"));
+        assert_eq!(fx.replacement, Some(ReplMatch::Exact("foo".into())));
+        assert_eq!(fx.verified, Some(true));
+
+        // `(no-fix)` + `(once)` (== count 1).
+        let diag = decode_diag(&|b| {
+            let nfh = b.name("no-fix");
+            let no_fix = b.list(vec![nfh]);
+            let oh = b.name("once");
+            let once = b.list(vec![oh]);
+            vec![no_fix, once]
+        })
+        .expect("diag present");
+        assert!(diag.no_fix);
+        assert_eq!(diag.count, Some(1));
+        assert!(diag.fix.is_none());
+
+        // A bare `(fix (replacement-contains "bar") (unverified))`.
+        let diag = decode_diag(&|b| {
+            let fh = b.name("fix");
+            let rch = b.name("replacement-contains");
+            let rcv = b.atom_leaf(Leaf::Str(Arc::from("bar")));
+            let rcontains = b.list(vec![rch, rcv]);
+            let uvh = b.name("unverified");
+            let unver = b.list(vec![uvh]);
+            let fix = b.list(vec![fh, rcontains, unver]);
+            vec![fix]
+        })
+        .expect("diag present");
+        let fx = diag.fix.expect("fix present");
+        assert_eq!(fx.replacement, Some(ReplMatch::Contains("bar".into())));
+        assert_eq!(fx.verified, Some(false));
+        assert_eq!(fx.kind, None);
+        assert_eq!(diag.count, None);
+
+        // No quality clause at all → diag is None (the common code+message-only form).
+        assert_eq!(decode_diag(&|_| vec![]), None);
     }
 }
