@@ -2150,6 +2150,33 @@
         cdzCorpus = mkPhaseBin { pname = "cdz-corpus"; crate = "cdz-corpus"; closure = crateClosure "cdz-corpus"; };
         cdzCompile = mkPhaseBin { pname = "cdz-compile"; crate = "rcdzc"; bin = "cdz-compile"; closure = crateClosure "rcdzc"; injectRuntimeHash = true; };
         cdzRun = mkPhaseBin { pname = "cdz-run"; crate = "cdz-run"; closure = crateClosure "cdz-run"; };
+        # cdzHandWrapper / cdzRunHandWrapper — the SELF-CONTAINED front-end wrappers (hoisted out of apps.cdz /
+        # apps.cdz-run so `apps.build` can materialize the SAME wrapper into a worktree's target/release/ — no
+        # drift). Each exports the phase-bin overrides (CDZ_COMPILE_BIN / CDZ_STORE / CDZ_RUN_BIN / CDZ_CALC_BIN,
+        # caller-override-honored via :-) then execs the seed bin, so a hand-run `./target/release/cdz compile`
+        # uses the warm nix compiler + store instead of shelling to nix/cargo (the raw seed bin's fallback fails
+        # outside a flake + is slow inside one). componentStore/cdzCompile/cdzCalc are later in this let — fine,
+        # the let is recursive. This is why apps.build's materialized bins "just work" for the full compile→run
+        # loop with no per-worktree cargo.
+        cdzHandWrapper = pkgs.writeShellApplication {
+          name = "cdz";
+          runtimeInputs = [ ];
+          text = ''
+            export CDZ_COMPILE_BIN="''${CDZ_COMPILE_BIN:-${cdzCompile}/bin/cdz-compile}"
+            export CDZ_STORE="''${CDZ_STORE:-${componentStore}}"
+            export CDZ_RUN_BIN="''${CDZ_RUN_BIN:-${cdzRun}/bin/cdz-run}"
+            export CDZ_CALC_BIN="''${CDZ_CALC_BIN:-${cdzCalc}/bin/cdz-calc}"
+            exec "${seedCompiler}/bin/cdz" "$@"
+          '';
+        };
+        cdzRunHandWrapper = pkgs.writeShellApplication {
+          name = "cdz-run";
+          runtimeInputs = [ ];
+          text = ''
+            export CDZ_STORE="''${CDZ_STORE:-${componentStore}}"
+            exec "${seedCompiler}/bin/cdz-run" "$@"
+          '';
+        };
         # cdz-calc: the standalone calc/repl binary `cdz calc` (alias `cdz repl`) forwards to (v-cdz-crate-split
         # #5167 dropped cdz's cdz-calc lib dep — it pulled cdz-run/wasmtime transitively — making it a
         # CDZ_CALC_BIN passthrough). Built here so apps.cdz can inject CDZ_CALC_BIN for an interactive
@@ -5445,49 +5472,19 @@
         # via `:-`), exactly as the flake's corpus checks do (flake.nix ~L665/1555) — making the app
         # SELF-CONTAINED (works outside `nix develop` too). Because `nix run .#cdz` evaluates the CURRENT
         # (dirty) flake, `cdzCompile`/`componentStore` still rebuild-on-edit from the worktree.
-        apps.cdz =
-          let
-            cdzw = pkgs.writeShellApplication {
-              name = "cdz";
-              runtimeInputs = [ ];
-              text = ''
-                export CDZ_COMPILE_BIN="''${CDZ_COMPILE_BIN:-${cdzCompile}/bin/cdz-compile}"
-                export CDZ_STORE="''${CDZ_STORE:-${componentStore}}"
-                # CDZ_RUN_BIN: LIVE (v-cdz-crate-split #5123 — `cdz run` direct-component arm now forwards to
-                # the cdz-run binary). Caller override honored via :- , exactly like CDZ_COMPILE_BIN/CDZ_STORE.
-                # This is the ONLY run-side injection needed: v-cdz-crate-split re-scoped (#5125) that
-                # `cdz run-rust` is rust-TARGET (rustc-native, NO wasmtime → not a cdz-run user) and
-                # cdz-rust-run is the corpus --grade GRADER (no source→verdict bin to forward to), so a
-                # CDZ_RUST_RUN_BIN pre-wire was dropped as unneeded.
-                export CDZ_RUN_BIN="''${CDZ_RUN_BIN:-${cdzRun}/bin/cdz-run}"
-                # CDZ_CALC_BIN: `cdz calc`/`cdz repl` is a passthrough to the standalone cdz-calc binary
-                # (v-cdz-crate-split #5167, so cdz sheds cdz-calc's transitive cdz-run/wasmtime lib dep). So
-                # an interactive `cdz calc` in the nix shell / packaged cdz resolves the binary. Same
-                # env→sibling→PATH convention + caller-override :- as the other CDZ_*_BIN.
-                export CDZ_CALC_BIN="''${CDZ_CALC_BIN:-${cdzCalc}/bin/cdz-calc}"
-                exec "${seedCompiler}/bin/cdz" "$@"
-              '';
-            };
-          in
-          {
-            type = "app";
-            program = "${cdzw}/bin/cdz";
-          };
-        apps.cdz-run =
-          let
-            cdzrunw = pkgs.writeShellApplication {
-              name = "cdz-run";
-              runtimeInputs = [ ];
-              text = ''
-                export CDZ_STORE="''${CDZ_STORE:-${componentStore}}"
-                exec "${seedCompiler}/bin/cdz-run" "$@"
-              '';
-            };
-          in
-          {
-            type = "app";
-            program = "${cdzrunw}/bin/cdz-run";
-          };
+        # apps.cdz / apps.cdz-run — the self-contained front-end via the hoisted wrappers (cdzHandWrapper /
+        # cdzRunHandWrapper, defined near cdzRun so apps.build materializes the SAME wrapper — no drift). The
+        # wrappers export CDZ_COMPILE_BIN/CDZ_STORE/CDZ_RUN_BIN/CDZ_CALC_BIN (caller-override :-) then exec the
+        # seed bin, so a bare `nix run .#cdz -- compile prog.cdz` (or the apps.build-materialized target/release/cdz)
+        # uses the warm nix compiler + store, never shelling to nix/cargo. Rebuilds-on-edit (dirty-flake eval).
+        apps.cdz = {
+          type = "app";
+          program = "${cdzHandWrapper}/bin/cdz";
+        };
+        apps.cdz-run = {
+          type = "app";
+          program = "${cdzRunHandWrapper}/bin/cdz-run";
+        };
         # apps.cdz-compile — the STANDALONE compiler (rcdzc's `cdz-compile` bin) directly, bypassing
         # `cdz`'s delegate spawn. Same bin `cdz compile` delegates to; useful to invoke the compiler
         # on its own (`nix run .#cdz-compile -- prog.sexp -t wasm -o out.wasm`). No CDZ_STORE (compile
@@ -5502,6 +5499,53 @@
         # gate-local` (fleet.rs), which wraps this same local-gate build WITH the check-lease slot (#4997),
         # failing-sub-check naming (#4868), and transient-vs-real advisory (#4891) — none of which a bare
         # build has. Use `gate` for a quick local full-gate look; gate-local stays the pre-merge gate.
+        # apps.build — the ALL-NIX replacement for `cargo xtask build` (operator all-nix mandate 2026-08-29:
+        # "no more ad-hoc cargo runs, no more bloated target directories"). `cargo xtask build` recompiles the
+        # value-heap runtime + front-end bins FROM SOURCE into the worktree's target/ — the #1 rebuild-the-world
+        # hotspot (174 worktrees × multi-GB target/, cross-worktree redundant cdz/rcdzc/dep rebuilds). But every
+        # output it produces ALREADY exists as a shared nix derivation: the front-end bins (seedCompiler's
+        # cdz+cdz-run, cdzCompile's cdz-compile) and the content-addressed value-heap runtime store
+        # (componentStore = the NFC + release + debug-counters heaps, byte-identical to what `xtask build`
+        # writes to target/cadenza-store). So this app just MATERIALIZES those shared-store outputs into the
+        # worktree's expected paths as SYMLINKS — zero cargo, a target/ of only symlinks (no bloat) — preserving
+        # the `./target/release/cdz` + `target/cadenza-store` contract the loops/scripts use. The cargo→nix shim
+        # (v-fleet-tooling) redirects `cargo xtask build` here. For a self-contained run, `nix run .#cdz` is the
+        # peer (it exports CDZ_STORE/CDZ_COMPILE_BIN); this app is the "give me the warm bins + store" surface.
+        apps.build =
+          let
+            builder = pkgs.writeShellApplication {
+              name = "cdz-build";
+              runtimeInputs = [ pkgs.git pkgs.coreutils ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                mkdir -p "$root/target/release" "$root/target/cadenza-store"
+                # Front-end bins from the SHARED /nix/store (never a per-worktree cargo build). cdz + cdz-run are
+                # the SELF-CONTAINED WRAPPERS (same ones apps.cdz/apps.cdz-run use) — they export
+                # CDZ_COMPILE_BIN/CDZ_STORE/CDZ_RUN_BIN so a hand-run `./target/release/cdz compile prog.cdz`
+                # works with the warm nix compiler + store (never shelling to nix/cargo). cdz-compile is the raw
+                # bin (compile-only, no store/env needed; it carries the injected runtime hash).
+                ln -sfn ${cdzHandWrapper}/bin/cdz "$root/target/release/cdz"
+                ln -sfn ${cdzRunHandWrapper}/bin/cdz-run "$root/target/release/cdz-run"
+                ln -sfn ${cdzCompile}/bin/cdz-compile "$root/target/release/cdz-compile"
+                # The content-addressed value-heap runtime store: symlink each artifact into a REAL (writable)
+                # target/cadenza-store dir (not a dir-symlink to the RO store) so reads hit the shared heaps AND
+                # cdz can still write new per-program components alongside.
+                for f in ${componentStore}/*; do
+                  ln -sfn "$f" "$root/target/cadenza-store/$(basename "$f")"
+                done
+                echo "cdz build (all-nix): linked front-end bins + value-heap store from the shared /nix/store — no cargo, no bloated target/." >&2
+                echo "  cdz         -> ${seedCompiler}/bin/cdz" >&2
+                echo "  cdz-run     -> ${cdzRun}/bin/cdz-run" >&2
+                echo "  cdz-compile -> ${cdzCompile}/bin/cdz-compile" >&2
+                echo "  store       -> ${componentStore} (CDZ_STORE=$root/target/cadenza-store)" >&2
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${builder}/bin/cdz-build";
+          };
+
         apps.gate =
           let
             gate = pkgs.writeShellApplication {
