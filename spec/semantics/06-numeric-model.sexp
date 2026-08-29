@@ -12595,3 +12595,14 @@
         an_integer_literal_annotated_a_float_offers_an_add_the_fraction_fix (the no-fix half).")
   (input (do (def (f) (: true Float64)) (export f)))
   (error CDZ0203 (no-fix)))
+
+(case "an integer operand to a float operator offers an of-int coercion fix"
+  (doc "`(+ 2.0 x)` mixes a Float64 with an integer `x : Int64` under the ONE arithmetic operator — CDZ0301
+        (no silent promotion, naming the rule AND both numeric types). The repair conforms the SECOND operand
+        to the FIRST (the leading float): a `(Float64.of-int x)` WRAP. Heuristic (a coercion is an intent
+        guess). Distinct from the `(+ 2.0 2)` all-literal mismatch above — here the integer operand is a
+        NON-literal (a param), so the fix WRAPS it rather than retyping a literal. Migrated from rcdzc
+        an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix.")
+  (input (do (def (f (: x Int64)) (+ 2.0 x)) (export f)))
+  (error CDZ0301 (message "no implicit conversion") (message "Float64") (message "Int64")
+                 (fix (kind wrap) (replacement "(Float64.of-int …)") (unverified))))
