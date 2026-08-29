@@ -1,0 +1,22 @@
+# cargo-nix-hints.tsv — the cargo→nix equivalent HINT MAP the cargo-nix-shim prints (all-nix mandate,
+# operator 2026-08-29). OWNERSHIP: v-fleet-tooling owns the wrapper mechanism; v-nix OWNS this map's
+# CONTENT (the nix-equivalent knowledge) — v-nix PRs entries as it lands apps. The shim reads this via
+# `git rev-parse --show-toplevel`/fleet/cargo-nix-hints.tsv (tracked → checked out in every worktree).
+#
+# FORMAT: one entry per line, KEY<TAB>HINT. Blank lines + `#` comments ignored. KEY = the cargo shape the
+# shim computes from argv (see cargo-nix-shim.sh key_for): the `xtask:<sub>` forms for `cargo xtask <sub>`,
+# else the bare cargo subcommand. A cargo command with NO key here → generic warn + logged to the gaps file
+# (~/.cdz-cargo-gaps.tsv) for v-nix to add an equivalent. `cargo xtask fleet …` is EXEMPT (control plane).
+xtask:build	nix run .#build   (interim until apps.build lands: nix run .#cdz — self-contained warm bin+store)
+xtask:gate	cargo xtask fleet gate-local   (nix local-gate; or nix run .#gate)
+xtask:dev-gate	nix run .#fast-gate [-- CRATE]
+xtask:check	nix run .#fast-gate   (+ nix run .#fmt)
+xtask:test	nix run .#test
+xtask:codegen	nix build .#cdz-wasm-abi / .#cdz-platform-contracts   (codegen derivations)
+xtask:bench	nix run .#bench
+build	nix run .#build   (front-end bin: nix run .#cdz)
+run	nix run .#<app>   (if an app exists; else this is a gap — flag v-nix)
+test	nix run .#test -- CRATE   (single-test-with-output app coming)
+clippy	nix run .#fast-gate   (or nix build .#checks.<sys>.clippy-CRATE)
+fmt	nix run .#fmt   (or the pre-commit hook auto-fmts)
+bench	nix run .#bench

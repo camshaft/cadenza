@@ -2,11 +2,15 @@
 # cargo-nix-shim — installed as ~/.local/bin/cargo (which sits BEFORE rustup's ~/.cargo/bin on the agent
 # snapshot PATH), so it intercepts the fleet's `cargo` invocations.
 #
-# WHY (all-nix cutover, operator 2026-08-28: "use nix for test runs"): route `cargo test -p CRATE` to the
-# nix per-crate test app (`nix run <flake>#test -- CRATE`, v-nix #5129) — which inherits the shared crane
-# cargoArtifacts (deps compiled ONCE fleet-wide) and recompiles only the top crate — instead of a bare
-# cargo recompile per worktree. The nix test app is the run surface; there is deliberately no `test` PATH
-# wrapper (it would shadow the shell/coreutils `test` builtin), so this cargo shim is the interception point.
+# WHY (all-nix mandate, operator 2026-08-29: "absolutely everything on nix, no ad-hoc cargo, no bloated
+# target dirs" — phased): the SOFT-WARN rollout. For a build/test/gate `cargo` invocation this shim prints
+# a deprecation warning naming the nix-flake equivalent (from the v-nix-owned `fleet/cargo-nix-hints.tsv`),
+# LOGS a gap to `~/.cdz-cargo-gaps.tsv` when no equivalent is mapped yet (v-nix's build list), and STILL
+# RUNS cargo (non-blocking) — the per-call warning IS the rollout; a later flip makes it hard-fail once the
+# low-hanging fruit is nix-covered (v-nix owns that criterion). ALREADY-ROUTED: a clean `cargo test -p
+# CRATE` execs `nix run <flake>#test -- CRATE` (#5129/#5136 — shared crane cargoArtifacts, top-crate-only
+# recompile). `cargo xtask fleet …` (the orchestration control plane) is EXEMPT. There is deliberately no
+# `test` PATH wrapper (it would shadow the shell `test` builtin), so this cargo shim is the interception point.
 #
 # SAFETY — this shadows `cargo` for the WHOLE fleet (every `cargo xtask fleet …` orchestration call flows
 # through it), so a bug here is a fleet-wide wedge. Therefore:
@@ -38,29 +42,72 @@ run_real() {
   exit 127
 }
 
-# Emergency bypass + fast-path everything that isn't `cargo test`.
+# Emergency bypass — kill-switch execs real cargo unchanged.
 [ -n "${CDZ_NO_CARGO_SHIM:-}" ] && run_real "$@"
-[ "${1:-}" = "test" ] || run_real "$@"
 
-# Parse the `test` args. Redirect ONLY `test -p CRATE [flags-only]` (exactly one crate, no positional
-# test-name filter, no `--` binary args) → nix. Anything else → real cargo (safe default).
-shift
-_ncrate=0; _crate=""; _positional=0; _want_crate=0
-for a in "$@"; do
-  if [ "$_want_crate" = 1 ]; then _crate="$a"; _ncrate=$((_ncrate + 1)); _want_crate=0; continue; fi
-  case "$a" in
-    -p|--package) _want_crate=1 ;;
-    -p=*) _crate="${a#-p=}"; _ncrate=$((_ncrate + 1)) ;;
-    --package=*) _crate="${a#--package=}"; _ncrate=$((_ncrate + 1)) ;;
-    --) _positional=1 ;;   # everything after `--` goes to the test binary (a filter) → cargo
-    -*) : ;;               # a flag (e.g. --release, --lib) — allowed
-    *) _positional=1 ;;    # a bare positional (a test-name filter, or a flag's value) → cargo
-  esac
-done
+_sub="${1:-}"
 
-if [ "$_ncrate" = 1 ] && [ -n "$_crate" ] && [ "$_positional" = 0 ]; then
-  _flake="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
-  echo "cargo-shim: routing 'cargo test -p $_crate' → nix run $_flake#test -- $_crate (all-nix: cached deps, top-crate recompile; bypass with CDZ_NO_CARGO_SHIM=1)." >&2
-  exec nix run "$_flake#test" -- "$_crate"
+# CONTROL-PLANE EXEMPT: `cargo xtask fleet …` is the fleet orchestration hot loop — NEVER warn/touch it
+# (routing every heartbeat/inbox/sync through nix would add per-command eval overhead to the control loop;
+# its xtask bin is tiny, not the target-dir bloat). Run the real cargo immediately, silently.
+if [ "$_sub" = "xtask" ] && [ "${2:-}" = "fleet" ]; then run_real "$@"; fi
+
+# Compute the all-nix hint KEY for this cargo shape (empty = a cargo cmd we don't warn on — `--version`,
+# `+toolchain`, `cargo xtask <non-build-subcmd>`, …). `xtask:<sub>` for the build/gate/test xtask subcmds.
+_key=""
+case "$_sub" in
+  xtask)
+    case "${2:-}" in
+      build | gate | dev-gate | check | test | codegen | bench) _key="xtask:${2}" ;;
+    esac
+    ;;
+  build | run | bench | clippy | fmt) _key="$_sub" ;;
+  test) _key="test" ;;
+esac
+
+# `cargo test -p CRATE` (clean whole-crate: exactly one crate, NO positional test-name filter, no `--`
+# binary args) ROUTES to the nix per-crate test (#5136 — already all-nix: cached deps, top-crate recompile).
+# Anything else falls through to the soft-warn + real cargo below.
+if [ "$_sub" = "test" ]; then
+  shift
+  _ncrate=0; _crate=""; _positional=0; _want_crate=0
+  for a in "$@"; do
+    if [ "$_want_crate" = 1 ]; then _crate="$a"; _ncrate=$((_ncrate + 1)); _want_crate=0; continue; fi
+    case "$a" in
+      -p | --package) _want_crate=1 ;;
+      -p=*) _crate="${a#-p=}"; _ncrate=$((_ncrate + 1)) ;;
+      --package=*) _crate="${a#--package=}"; _ncrate=$((_ncrate + 1)) ;;
+      --) _positional=1 ;; # everything after `--` goes to the test binary (a filter) → cargo
+      -*) : ;;             # a flag (e.g. --release, --lib) — allowed
+      *) _positional=1 ;;  # a bare positional (a test-name filter, or a flag's value) → cargo
+    esac
+  done
+  if [ "$_ncrate" = 1 ] && [ -n "$_crate" ] && [ "$_positional" = 0 ]; then
+    _flake="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+    echo "cargo-shim: routing 'cargo test -p $_crate' → nix run $_flake#test -- $_crate (all-nix: cached deps, top-crate recompile; bypass with CDZ_NO_CARGO_SHIM=1)." >&2
+    exec nix run "$_flake#test" -- "$_crate"
+  fi
+  set -- test "$@" # restore argv for the soft-warn + real cargo below
 fi
-run_real test "$@"
+
+# SOFT-WARN (all-nix mandate, operator 2026-08-29): for a build/test/gate cargo shape, print the
+# deprecation warning + the nix equivalent (from the v-nix-owned hint map), or LOG A GAP if unmapped, then
+# STILL RUN real cargo (non-blocking — the per-call warning is the rollout; a later flip makes it hard-fail).
+if [ -n "$_key" ]; then
+  _top="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+  _hint=""
+  if [ -f "$_top/fleet/cargo-nix-hints.tsv" ]; then
+    _hint="$(grep -v '^#' "$_top/fleet/cargo-nix-hints.tsv" 2>/dev/null \
+      | awk -F'\t' -v k="$_key" '$1 == k { sub(/^[^\t]*\t/, ""); print; exit }')"
+  fi
+  if [ -n "$_hint" ]; then
+    echo "⚠ cargo is being DEPRECATED (all-nix mandate) — prefer: $_hint  [still running cargo; silence: CDZ_NO_CARGO_SHIM=1]" >&2
+  else
+    # No nix equivalent mapped → record the gap for v-nix to build an equivalent, then still run.
+    _gaps="${CDZ_CARGO_GAPS_LOG:-$HOME/.cdz-cargo-gaps.tsv}"
+    printf '%s\t%s\tcargo %s\n' "$(date +%s 2>/dev/null || echo 0)" "$_top" "$*" >> "$_gaps" 2>/dev/null || true
+    echo "⚠ cargo is being DEPRECATED (all-nix mandate) — no nix equivalent mapped for 'cargo $_sub …' yet; logged for v-nix. [still running cargo; silence: CDZ_NO_CARGO_SHIM=1]" >&2
+  fi
+fi
+
+run_real "$@"
