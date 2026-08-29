@@ -1516,6 +1516,23 @@ fn emit_expr_viewed(
             let by = emit_expr(db, b, bytes, None, env, emitted)?;
             Ok(b.list(vec![head, by]))
         }
+        // CHAR CONVERSIONS — member-access ops `((. Char <member>) <operand>)`. `Char.to-int : Char →
+        // Int64` (total scalar-value read); `Char.from-int : Int64 → (Option Char)` (fallible). A CONSTANT
+        // operand folds in `lower` (to a `ConstInt` / `Some #\c`|`None`) and never reaches here, so a
+        // surviving node is a genuinely-runtime char/int (a param/local/`if`-join). Both surfaces have a
+        // FIXED result type from the member signature, so no ascription is needed — recompile re-derives
+        // the same node (byte-idempotent). The dropped `disc_some`/`disc_none` on `from-int` are the
+        // built-in `Option` discriminants, rebuilt on recompile from the prelude.
+        Core::CharToInt { operand } => {
+            let head = member_access(b, "Char", "to-int");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
+        Core::IntToCharChecked { operand, .. } => {
+            let head = member_access(b, "Char", "from-int");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
         // `Option.expect` / `Result.expect` — unwrap the present variant's payload or TRAP on absence. The
         // surface `((. <Module> expect) <scrutinee> <message>)`; the MODULE (`Option`/`Result`) is recovered
         // from the scrutinee's solved sum declaration NAME. The `"message"` operand was DROPPED at lowering
