@@ -38,6 +38,12 @@
 /// Behind `differential` (shells out to the `cdz` binary), like [`differential`].
 #[cfg(feature = "differential")]
 pub mod cadenza_diff;
+/// The in-process COMPILE-hang watchdog for the differential sweeps: the wasm RUN side is already
+/// epoch-bounded by `cdz_run`, but a `rcdzc::compile_component` non-termination is an unguarded native
+/// loop that would wedge an in-process sweep — this arms a watchdog that files a `Timeout` hang-witness
+/// and aborts (matching the subprocess `cadenza_diff` sweep's `timeout -s KILL` coverage). See its docs.
+#[cfg(feature = "differential")]
+pub mod compile_guard;
 /// The wasm-vs-rust differential oracle. Behind the off-by-default `differential` feature because it
 /// depends on `cdz-run` (wasmtime), which must not link into the instrumented libFuzzer target — see
 /// the crate's `[features]` in Cargo.toml.

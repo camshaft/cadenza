@@ -212,7 +212,7 @@ pub fn run_wasm_with_args(source: &str, store: &std::path::Path, args: &[String]
         Err(e) => return Side::Declined(format!("parse error: {}", e.0)),
     };
     let bytes = cadenza_syntax::codec::encode(&arenas);
-    run_wasm_bytes(&bytes, store, args)
+    run_wasm_bytes(&bytes, store, args, source)
 }
 
 /// Run a BINARY-AST blob through the WASM backend — the next-gen entropy path's analog of [`run_wasm`].
@@ -227,25 +227,38 @@ pub fn run_wasm_ast(ast_bytes: &[u8], store: &std::path::Path) -> Side {
         Err(e) => return Side::Declined(format!("decode: {e:?}")),
     };
     let bytes = cadenza_syntax::codec::encode(&arenas);
-    run_wasm_bytes(&bytes, store, &[])
+    // Render the decoded AST back to source so a compile-HANG on this blob files a reproducible
+    // hang-witness (the binary-AST-entropy path has no source string of its own).
+    let report_source = cadenza_syntax::printer::print(&arenas, 100);
+    run_wasm_bytes(&bytes, store, &[], &report_source)
 }
 
 /// Compile already-encoded binary-AST `bytes` to a component and run it in-process with call `args` — the
 /// shared tail of [`run_wasm`] (text path) and [`run_wasm_ast`] (binary-AST-entropy path). `args` are the
 /// values passed to the exported entry (empty for a `main`/0-arg export; `cdz-run` coerces each to a param
-/// type). See [`run_wasm_with_args`].
-fn run_wasm_bytes(bytes: &[u8], store: &std::path::Path, args: &[String]) -> Side {
-    // Compile to a component. A rejection/decline (errors-as-data) → not comparable.
-    let component = match rcdzc::compile_component(bytes) {
-        Ok(c) => c,
-        Err(diag) => {
-            return Side::Declined(
-                diag.code
-                    .clone()
-                    .unwrap_or_else(|| "wasm-decline".to_string()),
-            );
-        }
-    };
+/// type). See [`run_wasm_with_args`]. `report_source` is the program source to file if the COMPILE HANGS —
+/// the wasm RUN is already epoch-bounded by `cdz_run` (a runaway loop TRAPS), but `rcdzc::compile_component`
+/// is an unguarded native call, so it runs under [`crate::compile_guard::guard`]: a sweep that installed the
+/// watchdog captures a compile non-termination as a `Timeout` hang-witness and aborts, instead of wedging.
+fn run_wasm_bytes(
+    bytes: &[u8],
+    store: &std::path::Path,
+    args: &[String],
+    report_source: &str,
+) -> Side {
+    // Compile to a component under the compile-hang watchdog. A rejection/decline (errors-as-data) →
+    // not comparable; a HANG (native loop) is captured + aborted by the watchdog (no-op if uninstalled).
+    let component =
+        match crate::compile_guard::guard(report_source, || rcdzc::compile_component(bytes)) {
+            Ok(c) => c,
+            Err(diag) => {
+                return Side::Declined(
+                    diag.code
+                        .clone()
+                        .unwrap_or_else(|| "wasm-decline".to_string()),
+                );
+            }
+        };
 
     // Resolve the value-heap runtime by content address, if the component imports one.
     let runtime = match cdz_run::required_runtime(&component) {
