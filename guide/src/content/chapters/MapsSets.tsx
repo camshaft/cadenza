@@ -96,7 +96,7 @@ export default function MapsSets() {
       <Runnable source={`(Set.of #list(1 2 2 3))`} />
       <P>
         Toggle to the conventional surface and that reads <C>#(1, 2, 2, 3)</C>, and in fact every{" "}
-        <C>Set.of (list …)</C> earlier in this chapter has been showing as <C>#(…)</C> whenever the toggle
+        <C>Set.of #list(…)</C> earlier in this chapter has been showing as <C>#(…)</C> whenever the toggle
         was on. A map literal spells each entry <C>key = value</C> inside <C>{"#{…}"}</C>; here two entries,
         and returning it shows both:
       </P>

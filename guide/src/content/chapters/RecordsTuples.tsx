@@ -108,7 +108,7 @@ export default function RecordsTuples() {
 (def (main) (swap #tuple(3 7)))`}
       />
       <P>
-        The result is <C>(tuple 7 3)</C>, both elements in their new positions, returned as one value
+        The result is <C>#tuple(7 3)</C>, both elements in their new positions, returned as one value
         you could pass along or reach into further.
       </P>
       <P>
@@ -158,7 +158,7 @@ export default function RecordsTuples() {
         prompt={
           <>
             Concatenating shifts the second tuple's indices up by the first's length. Cat{" "}
-            <C>(tuple 1 2)</C> onto <C>(tuple 3 4 5)</C> and reach the <em>last</em> element, <C>5</C>, by
+            <C>#tuple(1 2)</C> onto <C>#tuple(3 4 5)</C> and reach the <em>last</em> element, <C>5</C>, by
             its index in the joined tuple. Which index is it?
           </>
         }
@@ -167,7 +167,7 @@ export default function RecordsTuples() {
         expected="5"
         hint={
           <>
-            The joined tuple is <C>(tuple 1 2 3 4 5)</C>, five elements with indices <C>0</C> to <C>4</C>. The
+            The joined tuple is <C>#tuple(1 2 3 4 5)</C>, five elements with indices <C>0</C> to <C>4</C>. The
             <C>5</C> is last, so its index is <C>4</C>, not <C>2</C>, because the first tuple pushed it two slots
             over.
           </>
@@ -178,7 +178,7 @@ export default function RecordsTuples() {
         id="records-tuples:3"
         prompt={
           <>
-            <C>(record (x 10) (y 20))</C> has no <C>z</C> field. Add one, <C>z = 30</C>, then read it back
+            <C>#record((= x 10) (= y 20))</C> has no <C>z</C> field. Add one, <C>z = 30</C>, then read it back
             for the answer <C>30</C>. Which operation adds a <em>new</em> field, <C>with</C> or{" "}
             <C>extend</C>? Fill in the blank.
           </>
