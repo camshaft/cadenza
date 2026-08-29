@@ -151,15 +151,18 @@ pub const KIND_TEST_LIST: &str = "test-list";
 /// cadenza-ast-binary directive; `cdz test --emit-shred` forwards it + consumers decode with the ONE shared
 /// `codec`), MIRRORING its shape with the extra exec fields. Shape: `(shred-manifest (entry <name>
 /// <is-property> <file> <export> <target> <main-iface>)…)` — a `shred-manifest`-headed form, one `(entry …)`
-/// child per SUCCESSFULLY-EMITTED test, POSITIONAL `Str`/`Bool` leaves: `name` (raw def name = the
+/// child per SUCCESSFULLY-EMITTED test, POSITIONAL `Str`/`Bool` leaves (7 fields): `name` (raw def name = the
 /// `test-list` identity), `is-property` (`Bool`, same `!params.is_empty() || name.ends_with("-gen")`
 /// classification), `file` (source path, empty if none), `export` (the wasm export symbol the runner
-/// `--call`s — for a plain `@test` this equals `name`, the raw def name `compute_tests_consumer` exports it
-/// under), `target` (the per-test component file, `test-<name>.wasm`), `main-iface` (the `--peer` interface
-/// the target imports `main.wasm` under, `cadenza:closure/api`). Only tests whose consumer EMITTED are
-/// listed (a compound-param test that declined pre-#4031 has no target, so it is omitted — the runner never
-/// tries to run a missing component). Deterministic (`test_defs` order). Emit-shred build output
-/// (v-cdz-crate-split); v-test-shred's `mkTestExec` reads it to fan out one exec derivation per entry.
+/// `--call`s — for a plain `@test` this equals `name`), `target` (the per-test component file,
+/// `test-<name>.wasm`), `main-iface` (the interface the target imports `main` under, `cadenza:closure/api`),
+/// `main-file` (the MAIN component file this test `--peer`s — `main.wasm` when the program has a shared
+/// library, or "" for a STANDALONE test that runs with NO `--peer`; the cdz side rewrites it to
+/// `main-<group>.wasm` when merging per-group manifests). The runner: `cdz-run <target> --call <export>
+/// [--peer <main-iface>=<main-file>] --store S` → exit code (the `--peer` conditional on a non-empty
+/// `main-file`). Only tests whose consumer EMITTED are listed (a compound-param test that declined pre-#4031
+/// has no target, so it is omitted — the runner never runs a missing component). Deterministic (`test_defs`
+/// order). Emit-shred build output (v-cdz-crate-split); v-test-shred's `mkTestExec` reads it per entry.
 pub const KIND_SHRED_MANIFEST: &str = "shred-manifest";
 
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
