@@ -49,6 +49,9 @@ inductive Value where
   -- IEEE compute, so an arithmetic result carries the raw `f64` here. It has no leaf form (never encoded);
   -- `asF64?` reads it directly and `valueEqSpec` compares it f64-bit-exact against any float spelling.
   | f64 (f : Float)
+  -- an EXACT Rational value, kept NORMALIZED (den > 0, gcd(|num|,den) = 1) so structural `BEq` is value
+  -- equality. Renders as the `num/den` string (a `name` leaf) — see Check.expectedValue?.
+  | rational (num den : Int)
   | unit
   -- compound values (their canonical forms, per `cdz-run`'s render): Option, Result, tuple, list
   | some (v : Value)
@@ -112,10 +115,14 @@ def ofLeaf : Leaf → Option Value
   | .name b => if b == unitName then Option.some .unit else Option.none
   -- an `N`-suffixed BigInt literal (`5N`, suffix 0): arbitrary-precision, but the VALUE is just that
   -- integer — the oracle's `.int` is unbounded `Int`, so BigInt arith is exact int arith at `.big` width
-  -- (no overflow; see operandTyEnv?). (An `R`-suffixed Rational literal stays unmodeled → skip.)
+  -- (no overflow; see operandTyEnv?).
   | .suffixed 0 (.intBody neg _ mag) =>
     let n := Int.ofNat (beBytesToNat mag)
     Option.some (.int (if neg then -n else n))
+  -- an `R`-suffixed Rational literal (`5R`, suffix 1): the exact rational `n/1` (already normalized).
+  | .suffixed 1 (.intBody neg _ mag) =>
+    let n := Int.ofNat (beBytesToNat mag)
+    Option.some (.rational (if neg then -n else n) 1)
   | _ => Option.none
 
 /-- A SCALAR value as its standalone canonical value-AST module (root atom → the value's leaf). A

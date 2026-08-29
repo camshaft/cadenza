@@ -371,6 +371,8 @@ def compareVals : Value → Value → Option Ordering
   | .str a, .str b => some (cmpBytes a b)
   | .char a, .char b => some (cmpBytes a b)
   | .bytes a, .bytes b => some (cmpBytes a b)   -- Bytes: content-lexicographic over unsigned bytes (spec §329)
+  -- exact Rational order: a/b < c/d ⟺ a·d < c·b (both denominators normalized POSITIVE).
+  | .rational a b, .rational c d => some (compare (a * d) (c * b))
   | _, _ => none
 
 /-- Whether a relational operator holds given the three-way `Ordering` of its operands. -/
@@ -388,7 +390,7 @@ def valRank : Value → Nat
   | .float .. => 5 | .floatNan => 6 | .floatInf _ => 7 | .f64 _ => 8 | .unit => 9
   | .some _ => 10 | .none => 11 | .ok _ => 12 | .err _ => 13 | .tuple _ => 14
   | .list _ => 15 | .record _ => 16 | .set _ => 17 | .map _ => 18 | .variant .. => 19
-  | .closure .. => 20 | .poison _ => 21
+  | .closure .. => 20 | .poison _ => 21 | .rational .. => 22
 
 mutual
 /-- A total STRUCTURAL order over NON-FLOAT values, for CANONICALIZING a set/map with COMPOUND keys/
@@ -410,6 +412,7 @@ partial def cmpValue (a b : Value) : Option Ordering :=
   | _, _ =>
   match a, b with
   | .int x, .int y => some (compare x y)
+  | .rational a b, .rational c d => some (compare (a * d) (c * b))   -- exact rational order (dens positive)
   | .bool x, .bool y => some (compare (x == true) (y == true))
   | .str x, .str y => some (cmpBytes x y)
   | .char x, .char y => some (cmpBytes x y)
@@ -460,6 +463,29 @@ unifies float FORMS (`.f64 1.5` = `.float 1.5`), folds all NaN equal, and keeps 
 computed float key is found by its literal, and NaN keys dedupe (spec CHAMP-canonical key equality). A
 float/closure/poison-free compound compares exactly as `==`. -/
 def valEq (a b : Value) : Bool := cmpValue a b == some Ordering.eq
+
+/-- Build a NORMALIZED exact `Rational` value `num/den`: `none` if `den == 0` (the caller traps
+div-by-zero). Otherwise the sign is moved to the numerator (den > 0) and both are divided by their gcd,
+so structural `BEq` on the result is value equality (spec §"An Exact Rational Has A Canonical Normalized
+Form"). `0/d` normalizes to `0/1`. -/
+def mkRational (num den : Int) : Option Value :=
+  if den == 0 then none
+  else
+    let (n, d) := if den < 0 then (-num, -den) else (num, den)   -- d > 0
+    let g : Int := Int.ofNat (n.gcd d)                            -- gcd(|n|, d) ≥ 1 (=d when n=0)
+    let g := if g == 0 then 1 else g
+    some (.rational (n / g) (d / g))
+
+/-- Exact rational arithmetic `(a/b) op (c/d)` with `b, d > 0` (normalized) → a normalized Rational. `/`
+by a ZERO rational (`c == 0`) traps div-by-zero; `+ - *` never divide by zero (b·d > 0). -/
+def rationalArith (op : String) (a b c d : Int) : Outcome :=
+  match op with
+  | "+" => (match mkRational (a * d + c * b) (b * d) with | some v => .value v | none => .trap "div-by-zero")
+  | "-" => (match mkRational (a * d - c * b) (b * d) with | some v => .value v | none => .trap "div-by-zero")
+  | "*" => (match mkRational (a * c) (b * d) with | some v => .value v | none => .trap "div-by-zero")
+  | "/" => if c == 0 then .trap "div-by-zero"
+           else (match mkRational (a * d) (b * c) with | some v => .value v | none => .trap "div-by-zero")
+  | _ => .unsupported s!"eval: rational operator {op} not modeled"
 
 /-- ENV-AWARE operand-width inference: a `(: e T)` ascription gives its integer type; an arithmetic op is
 BigInt if EITHER operand is (BigInt is contagious — unbounded, no overflow); a qualified `((. BigInt …) …)`
@@ -1293,17 +1319,40 @@ partial def evalAscribe (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (chil
   | some valId, some tyId =>
     let o := evalNode m env ((parseIntTy? m tyId).getD ty) fuel valId
     let isF32 := (nameOf? m tyId) == some "Float32".toUTF8
+    -- A `Rational` ascription GROUNDS a numeric LITERAL to its exact rational (06-numeric "Annotations
+    -- Constrain"): a bare integer `n` → `n/1`; a decimal/scientific literal `±sig×10^exp` → the exact
+    -- fraction (`exp≥0`: `sig·10^exp / 1`; `exp<0`: `sig / 10^-exp`), reduced+sign-normalized by mkRational
+    -- (e.g. `0.5`→1/2, `0.1`→1/10, `-0.75`→-3/4, `12e2`→1200/1) — EXACT, no float rounding.
+    let isRat := (nameOf? m tyId) == some "Rational".toUTF8
     match o with
     -- A `Float32` ascription over a COMPUTED float (`.f64`, an arithmetic result) can't be graded at f64
     -- precision: exact f32 arithmetic rounds at EACH op, and demoting only the final result would
     -- double-round. The evaluator doesn't yet thread float precision through the operations, so SKIP
     -- (Float32 ARITHMETIC is a pending increment). A Float64 (or unascribed) computed float grades normally.
+    -- A COMPUTED f64 can't be grounded to an EXACT rational (its exact decimal is lost) → skip under Rational.
     | .value (.f64 _) => if isF32
                          then .unsupported "eval: Float32 arithmetic not modeled (per-op f32 demote pending)"
+                         else if isRat
+                         then .unsupported "eval: Rational grounding of a computed float not modeled"
                          else o
-    -- A `Float32` ascription over a float LITERAL / ±inf / NaN: DEMOTE to f32 precision (a SINGLE round —
-    -- the literal's f64 value rounded to f32 and back to f64), so two literals that share f32 bits compare
-    -- equal and a demoting `<`/`>` orders on the f32 value (06-numeric "…demote to the same bits…" pins).
+    -- A bare integer literal annotated Rational grounds to `n/1`.
+    | .value (.int n) => if isRat then (match mkRational n 1 with | some v => .value v | none => o) else o
+    -- A decimal/scientific literal annotated Rational grounds to its EXACT fraction (`sig×10^exp`).
+    | .value (.float neg exp sig) =>
+      if isRat then
+        let mag0 : Int := Int.ofNat (Value.beBytesToNat sig)
+        let mag : Int := if neg then -mag0 else mag0
+        let p : Int := (10 : Int) ^ exp.natAbs
+        (match (if exp ≥ 0 then mkRational (mag * p) 1 else mkRational mag p) with
+         | some v => .value v | none => .trap "div-by-zero")
+      -- A `Float32` ascription over a float LITERAL: DEMOTE to f32 precision (a SINGLE round — the literal's
+      -- f64 value rounded to f32 and back), so two literals that share f32 bits compare equal.
+      else if isF32 then
+        (match Value.asF64? (.float neg exp sig) with
+         | some f => .value (.f64 (Float.toFloat32 f).toFloat)
+         | none => o)
+      else o
+    -- A `Float32` ascription over ±inf / NaN: DEMOTE to f32 precision (single round; ±inf/NaN are stable).
     | .value fv => if isF32 then
                      (match Value.asF64? fv with
                       | some f => .value (.f64 (Float.toFloat32 f).toFloat)
@@ -1352,6 +1401,8 @@ partial def evalArith (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : S
       | .value va, .value vb =>
         match va, vb with
         | .int a, .int b => evalArithOp op a b opTy
+        -- exact Rational arithmetic (`+ - * /`): closed, normalized, no rounding; `/` by 0 traps.
+        | .rational a b, .rational c d => rationalArith op a b c d
         | _, _ =>
           -- both operands are floats (a literal, ±inf/NaN, or a computed f64) → IEEE float arithmetic.
           -- Skip if a Float32 is involved (per-op f32 rounding not yet threaded → f64 compute would be wrong).
@@ -1551,6 +1602,15 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
           | some (.trap t), _ | _, some (.trap t) => .trap t
           | some .diverges, _ | _, some .diverges => .diverges
           | _, _ => .unsupported "List.concat: non-list operand")
+  else if is "Rational" "of" then
+    -- `(Rational.of n d)` → the normalized exact rational `n/d`; a ZERO denominator traps div-by-zero.
+    some (match a1, a2 with
+          | some (.value (.int n)), some (.value (.int d)) =>
+            (match mkRational n d with | some v => .value v | none => .trap "div-by-zero")
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "Rational.of: non-integer operand")
   else if is "Set" "contains" then
     some (match a1, a2 with
           | some (.value (.set es)), some (.value x) => .value (.bool (es.any (valEq · x)))
@@ -2359,13 +2419,29 @@ def evalMain (m : Module) (fuel : Nat) : Outcome :=
   | some b => evalNode m [] defaultIntTy fuel b
   | none => .unsupported "eval: program is not a (do (def (main) BODY) (export main)) form"
 
+/-- Does the module carry a `(pragma default-fraction …)` directive? Such a pragma changes the DEFAULT
+type of bare numeric literals in scope (e.g. `Rational`, so a bare `0.5` grounds to `1/2` and `(/ 1 2)`
+is EXACT rational division `1/2`, not the Int64 truncation `0`). The oracle does not thread a scope-level
+default-literal-type, so a program carrying it is a coverage gap → SKIP (rather than grade its literals at
+the wrong Int64/Float64 default and emit a false mismatch). Rational grounding via an explicit
+`(: … Rational)` annotation IS modeled (evalAscribe); only the implicit pragma default is unmodeled. -/
+def containsDefaultFractionPragma? (m : Module) : Bool :=
+  m.nodes.any (fun node =>
+    match node with
+    | Node.list cs =>
+      headName? m node == some "pragma".toUTF8 &&
+      (cs[1]?).bind (nameOf? m) == some "default-fraction".toUTF8
+    | _ => false)
+
 end Eval
 
 /-- STAGE 2 — run a trial against the program: bind the call arguments to `main`'s parameters (with
 each param's declared integer type, so narrow-typed params trap at their width) and evaluate its body.
 For the no-argument trial this is a nullary `main` with an empty env. -/
 def executeExport (m : Ast.Module) (exportName : ByteArray) (args : Array Value) : Outcome :=
-  match Eval.namedParamsBody? m exportName with
+  if Eval.containsDefaultFractionPragma? m then
+    .unsupported "execute: (pragma default-fraction …) literal defaulting not modeled"
+  else match Eval.namedParamsBody? m exportName with
   | some (specs, bodyId) =>
     if specs.size != args.size then
       .unsupported s!"execute: arity mismatch ({specs.size} params, {args.size} args)"
