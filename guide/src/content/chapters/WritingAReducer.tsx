@@ -13,35 +13,41 @@ export default function WritingAReducer() {
       <Note>apply(content-type, payload, resumes) → list of effect-requests <br /> content-type = a record of a family name + a version; payload / resumes = optional bytes</Note>
       <P>The effect-kinds and the effect-request are ordinary Cadenza types, a closed sum and a record, the same declarations you'd write for any data. Here they are, matching the kernel's interface:</P>
       <Runnable
-        source={`type EffectKind =
-  | Shell()
-  | Http()
-  | Model()
-  | Now()
-  | Timer()
-  | Emit()
+        source={`(type EffectKind (Shell) (Http) (Model) (Now) (Timer) (Emit))
 
-type EffectRequest =
-  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
+(type
+  EffectRequest
+  (Mk
+    (Record
+      (: kind EffectKind)
+      (: target String)
+      (: payload (Option Bytes))
+      (: correlation (Option Bytes)))))
 
-def main() = EffectKind.Http()`}
-        authoredIn="ml"
+(def (main) ((. EffectKind Http)))`}
       />
       <H2>The empty reducer</H2>
       <P>The smallest reducer that works ignores every input and asks for nothing. It's total (it can't brick the agent) and it's the honest starting point: a fold that advances the log and requests no effects. Here <C>apply</C> returns the empty list for every event, and a <C>main</C> exercises it on a sample message and shows exactly what came back, the list of effect-requests itself:</P>
       <Runnable
-        source={`type EffectKind = | Shell() | Http() | Model() | Now() | Timer() | Emit()
-type EffectRequest =
-  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
+        source={`(type EffectKind (Shell) (Http) (Model) (Now) (Timer) (Emit))
 
-def apply(
-  ct: Record(family: String, version: UInt(32)),
-  payload: Option(Bytes),
-  resumes: Option(Bytes),
-) -> List(EffectRequest) = []
+(type
+  EffectRequest
+  (Mk
+    (Record
+      (: kind EffectKind)
+      (: target String)
+      (: payload (Option Bytes))
+      (: correlation (Option Bytes)))))
 
-def main() = apply({ family = "message", version = 1 }, None(), None())`}
-        authoredIn="ml"
+(def
+  (apply
+    (: ct (Record (: family String) (: version (UInt 32))))
+    (: payload (Option Bytes))
+    (: resumes (Option Bytes)))
+  (: #list() (List EffectRequest)))
+
+(def (main) (apply #record((= family "message") (= version 1)) (None) (None)))`}
       />
       <P>The result is <C>[]</C>, the empty list: no effects, for any event. To turn this program into something the kernel can run, you compile it as a <em>component</em> bound to the reducer interface, naming that interface on the command line:</P>
       <Note>cdz compile reducer.cdz --target wasm --component-name cadenza:agent-kernel/fold</Note>
@@ -50,56 +56,80 @@ def main() = apply({ family = "message", version = 1 }, None(), None())`}
       <H2>Emitting an effect</H2>
       <P>A useful reducer asks for work. An effect-request names a <em>kind</em> (which capability), a <em>target</em>, an optional <em>payload</em>, and an optional <em>correlation</em> tag the kernel echoes back on the resume so you can match a completion to the request that caused it. This reducer returns a single <C>Http</C> request on every event; the <C>main</C> reaches into the returned list and shows the <em>target</em> the reducer asked the kernel to fetch:</P>
       <Runnable
-        source={`type EffectKind = | Shell() | Http() | Model() | Now() | Timer() | Emit()
-type EffectRequest =
-  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
+        source={`(type EffectKind (Shell) (Http) (Model) (Now) (Timer) (Emit))
 
-def apply(
-  ct: Record(family: String, version: UInt(32)),
-  payload: Option(Bytes),
-  resumes: Option(Bytes),
-) -> List(EffectRequest) =
-  [ EffectRequest.Mk({
-      kind = EffectKind.Http(),
-      target = "https://ok.host/x",
-      payload = None(),
-      correlation = Some(String.to-bytes("step-1")),
-    }) ]
+(type
+  EffectRequest
+  (Mk
+    (Record
+      (: kind EffectKind)
+      (: target String)
+      (: payload (Option Bytes))
+      (: correlation (Option Bytes)))))
 
-def main() =
-  match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
-    | Some(Mk(r)) => r.target
-    | None() => "no effect"`}
-        authoredIn="ml"
+(def
+  (apply
+    (: ct (Record (: family String) (: version (UInt 32))))
+    (: payload (Option Bytes))
+    (: resumes (Option Bytes)))
+  (:
+    #list(((. EffectRequest Mk)
+        #record((= kind ((. EffectKind Http)))
+          (= target "https://ok.host/x")
+          (= payload (None))
+          (= correlation (Some ((. String to-bytes) "step-1"))))))
+    (List EffectRequest)))
+
+(def
+  (main)
+  (match
+    ((. List at) (apply #record((= family "message") (= version 1)) (None) (None)) 0)
+    ((Some (Mk r)) (. r target))
+    ((None) "no effect")))`}
       />
       <P>The result is <C>"https://ok.host/x"</C>, the exact target the reducer chose. A returned effect-request is <em>declarative</em>: the reducer doesn't perform the HTTP call, it hands the kernel a description of the work and returns. The kernel schedules it, and when it completes, calls <C>apply</C> again with the <em>resumes</em> field set to that same <C>correlation</C> tag, echoed back verbatim. The tag is the reducer's <em>own</em> token, not a kernel-assigned id, so a later <C>apply</C> whose <C>resumes</C> matches the token you chose is the completion of the request you made. That guest-chosen token is the only resume mechanism; a <C>resumes</C> of <C>None</C> means "not a resume", an inbound message, not the answer to an earlier request. That's how a pure fold reaches the outside world without ever blocking inside the reducer.</P>
       <H2>Deciding by event</H2>
       <P>Real reducers branch on what arrived. The content-type's <C>family</C> and the <C>resumes</C> field are enough to distinguish an inbound message from an effect completing. A common shape: on a resume, stop (the effect you asked for is done, don't cascade); on a fresh message, act; otherwise ignore. This reducer emits one <C>Http</C> request for a message and nothing for a resume or any other family. Here the <C>main</C> hands it a fresh <em>message</em>, so it takes the acting branch, and shows what the reducer decided to do, the target of the request it emits:</P>
       <Runnable
-        source={`type EffectKind = | Shell() | Http() | Model() | Now() | Timer() | Emit()
-type EffectRequest =
-  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
+        source={`(type EffectKind (Shell) (Http) (Model) (Now) (Timer) (Emit))
 
-def apply(
-  ct: Record(family: String, version: UInt(32)),
-  payload: Option(Bytes),
-  resumes: Option(Bytes),
-) -> List(EffectRequest) =
-  match resumes with
-    | Some(_) => []
-    | None() =>
-      if ct.family == "message" then
-        [ EffectRequest.Mk({ kind = EffectKind.Http(), target = "https://ok.host/x", payload = None(), correlation = None() }) ]
-      else
-        []
+(type
+  EffectRequest
+  (Mk
+    (Record
+      (: kind EffectKind)
+      (: target String)
+      (: payload (Option Bytes))
+      (: correlation (Option Bytes)))))
 
-def decision(ct, payload, resumes) =
-  match List.at(apply(ct, payload, resumes), 0) with
-    | Some(Mk(r)) => r.target
-    | None() => "(no effect)"
+(def
+  (apply
+    (: ct (Record (: family String) (: version (UInt 32))))
+    (: payload (Option Bytes))
+    (: resumes (Option Bytes)))
+  (:
+    (match
+      resumes
+      ((Some _) #list())
+      ((None)
+        (if
+          (= (. ct family) "message")
+          #list(((. EffectRequest Mk)
+              #record((= kind ((. EffectKind Http)))
+                (= target "https://ok.host/x")
+                (= payload (None))
+                (= correlation (None)))))
+          #list())))
+    (List EffectRequest)))
 
-def main() = decision({ family = "message", version = 1 }, None(), None())`}
-        authoredIn="ml"
+(def
+  (decision ct payload resumes)
+  (match
+    ((. List at) (apply ct payload resumes) 0)
+    ((Some (Mk r)) (. r target))
+    ((None) "(no effect)")))
+
+(def (main) (decision #record((= family "message") (= version 1)) (None) (None)))`}
       />
       <P>On a message the reducer dispatches to the acting branch and the result is <C>"https://ok.host/x"</C>, the target it emitted. Change <C>main</C> to hand <C>apply</C> a resume instead, <C>decision(&#123; family = "result", version = 1 &#125;, None(), Some(String.to-bytes("tok")))</C>, and the first <C>match</C> arm fires and it renders <C>"(no effect)"</C>: a completion doesn't cascade. The reducer's whole behaviour is this one <C>match</C> on the event, which is exactly what makes it easy to test.</P>
       <H2>Reading session state: an effect through a binding</H2>
