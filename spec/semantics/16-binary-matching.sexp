@@ -1243,7 +1243,7 @@
   (call main (: 1 Int64)) (output (: 230 Int64))
   (call main (: 2 Int64)) (output (: 18 Int64))
   (call main (: 3 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 9 4 0))
 
 (case "a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin"
   (doc    "The transcoder pin further down re-encodes the SAME decoded n and checks only Bytes.len;
@@ -1625,7 +1625,7 @@
   (call main (: 1 Int64)) (output (: 11 Int64))
   (call main (: 2 Int64)) (output (: 70 Int64))
   (call main (: 3 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 3 0 0))
 
 (case "a length-prefixed frame built FRESH from a runtime payload round-trips through its own parser"
   (doc    "The reframe pins re-encode a DECODED n; this COMPUTES the header from the payload at
@@ -1652,7 +1652,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 318 Int64))
   (call main (: 2 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 4 0))
 
 (case "a MIXED-endian frame packs big and little fields side by side and round-trips both"
   (doc    "Per-SEGMENT byte-order independence: a BIG-endian u16 beside a LITTLE-endian u16 in one
@@ -1983,7 +1983,7 @@
         (export main)))
   (call   main (: 105 UInt8)) (output (: 2 Int64))
   (call   main (: 255 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 0))
 
 (case "a runtime bin match decodes a FINAL utf8 segment at a NON-ZERO static offset"
   (doc    "The static-offset companion of the final constant-size utf8 pin (:1878, which reads utf8 at
@@ -2004,7 +2004,7 @@
         (export main)))
   (call   main (: 105 UInt8)) (output (: 12 Int64))
   (call   main (: 255 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 0))
 
 (case "a runtime bin match decodes a FINAL DEPENDENT-size utf8 segment"
   (doc    "The dependent-size companion of the constant-size utf8 pins (:1878/:1899): a `(u8 n)` length
@@ -2026,7 +2026,7 @@
         (export main)))
   (call   main (: 105 UInt8)) (output (: 2 Int64))
   (call   main (: 255 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 0))
 
 (case "a runtime bin match decodes a NON-FINAL dependent-size utf8 segment before a trailing field"
   (doc    "The non-final face of the dependent-size utf8 decode: `(bin (u8 n) (utf8 s n) (u8 7))` — the
@@ -2047,7 +2047,7 @@
         (export main)))
   (call   main (: 105 UInt8)) (output (: 2 Int64))
   (call   main (: 255 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 0))
 
 (case "a dependent-size utf8 whose length prefix OVERRUNS the frame is a non-match, not a trap"
   (doc    "Trap-safety of the dependent-size utf8 read (the totality companion of the ill-formed-bytes
@@ -2070,7 +2070,7 @@
   (call   main (: 1 UInt8)) (output (: 1 Int64))
   (call   main (: 5 UInt8)) (output (: -1 Int64))
   (call   main (: 0 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 0 0))
 
 (case "le multi-byte fields read little-endian at runtime offsets, unsigned and signed"
   (doc    "The le pin (:159) round-trips one const u16; this reads le fields from RUNTIME slice offsets
@@ -2094,7 +2094,7 @@
   (call   main (: 1 Int64)) (output (: 67305985 Int64))
   (call   main (: 3 Int64)) (output (: 4294837251 Int64))
   (call   main (: 5 Int64)) (output (: -2 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak 1 1 0))
 
 (case "a runtime bin ENCODE lays out le and signed fields byte-exactly"
   (doc    "The ENCODE twin of the le decode pins — expression-position `(bin (u32 x le) (i16 -2))` over a
@@ -2329,7 +2329,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 60015 Int64))
   (call   main (: 0 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 10 1))
 
 ; --- bin construction/decode order + the frame-body perform walk. ---
 
@@ -2484,7 +2484,7 @@
     (export main)))
   (call main (: 105 UInt8)) (output (: 2 Int64))
   (call main (: 255 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 0))
 
 (case "cu02 runtime FINAL dependent-size utf8 segment decodes"
   (input (do
@@ -2497,7 +2497,7 @@
     (export main)))
   (call main (: 105 UInt8)) (output (: 2 Int64))
   (call main (: 255 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 0))
 
 (case "cu03 CONTROL runtime non-final dependent-size BYTES segment"
   (input (do
