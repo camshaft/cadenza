@@ -5045,3 +5045,32 @@
   (call main (: 1 Int64)) (output (: 80 Int64))
   (call main (: 2 Int64)) (output (: 80 Int64))
   (live-objects 0))
+
+(case "nfc1 runtime-constructed strings are NFC-normalized on every backend"
+  (doc "The #5707 acceptance face (breaker adv-rust-runtime-skips-nfc lineage, was 112 wasm vs 23 rust):
+        a runtime (String.concat \"e\" U+0301) equals the precomposed literal, set-dedups with it, and
+        byte-lens 2 (n=1 -> 112); the NON-composing q+U+0301 stays 3 bytes + self-equal + dedups
+        (n=0 -> 113, the over-normalization guard); from-bytes re-normalizes identically (n=-5 -> 2).
+        NFC-before-value is a String-type INVARIANT every runtime constructor must maintain
+        (collections-and-text.md); the rust cdz-rt Core::NfcNormalize arm was a no-op until #5707.")
+  (input (do
+    (def (main (: n Int64))
+      (if (> n 0)
+          (do
+            (def pre "é")
+            (def dec (String.concat "e" "́"))
+            (+ (* 100 (if (= pre dec) 1 0))
+               (+ (* 10 (Set.len #set(pre dec)))
+                  (String.byte-len dec))))
+          (if (> n -3)
+              (do
+                (def qc (String.concat "q" "́"))
+                (+ (* 100 (if (= qc qc) 1 0))
+                   (+ (* 10 (Set.len #set(qc (String.concat "q" "́"))))
+                      (String.byte-len qc))))
+              (match (String.from-bytes (String.to-bytes (String.concat "e" "́")))
+                ((Some s) (String.byte-len s)) ((None _u) -1)))))
+    (export main)))
+  (call main (: 1 Int64)) (output (: 112 Int64))
+  (call main (: 0 Int64)) (output (: 113 Int64))
+  (call main (: -5 Int64)) (output (: 2 Int64)))
