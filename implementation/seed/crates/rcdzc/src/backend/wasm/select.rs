@@ -2177,6 +2177,20 @@ fn collect_consuming_payload_sites_expr(
         Core::Break { value } => {
             collect_consuming_payload_sites_expr(db, value, scrut, consuming, out)
         }
+        // A CLOSURE APPLICATION: the `closure` operand is APPLIED (its env is read in place — a BORROW; the
+        // apply does NOT move the closure reference out of the arm), so an extracted scrutinee-child closure
+        // reached HERE does NOT escape → it must NOT be shell-reclaim-dup'd (the outer shell-drop's cascade
+        // already reclaims it; the spurious dup was the List.at/String.at extraction leak, v-mem-endorsed
+        // option (b)). Without this arm the default `_` marks the closure `consuming=true` → a spurious dup
+        // → the extracted closure ref survives rc1 (clA2/clA3). The ARGS are genuinely CONSUMED by the call.
+        // (A closure that ESCAPES via a CONTAINER — `#list(f)`/`(tuple f …)` — is NOT reached here: it flows
+        // through a ctor whose default `consuming=true` KEEPS its dup, so clE1/clE3 stay sound.)
+        Core::CallClosure { closure, args } => {
+            collect_consuming_payload_sites_expr(db, closure, scrut, false, out);
+            for &a in args.iter() {
+                collect_consuming_payload_sites_expr(db, a, scrut, true, out);
+            }
+        }
         Core::Let { bindings, body } => {
             for (_, v) in bindings.iter() {
                 collect_consuming_payload_sites_expr(db, *v, scrut, true, out);
