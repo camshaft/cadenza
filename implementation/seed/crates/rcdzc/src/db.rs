@@ -1697,6 +1697,18 @@ pub struct Db {
     /// reading it at each reference keeps the two ends of one binding in agreement.
     pub(crate) kept_bindings: crate::fxhash::FxHashSet<StructId>,
 
+    /// (A) STRICT heap-collection construction (#5194), CASE2: element-arg COMPUTATIONS decomposed out of a
+    /// DEAD list/set/map ctor by `lower_let`, recorded here so the backend `Core::Seq` emit does NOT §283-
+    /// elide them. A reached heap-collection ctor's args are STRICT — their traps must occur even when the
+    /// collection is discarded — and (A) OVERRIDES the general §283 "an unobserved trap is elidable"
+    /// affordance for exactly these args (v-spec-oracle). Semantically (A) requires only EVALUATING the
+    /// trap-possible arg computation, NOT building the collection (an already-value/borrowed element raises
+    /// no trap → contributes nothing → is left untouched, so there is no consume/reclaim and no double-free).
+    /// So `lower_let` decomposes the ctor to its trap-possible scalar arg computations, marks them here, and
+    /// sequences them (discarded) before the body; the Seq emit force-evaluates a marked stmt (its trap
+    /// fires) and drops its scalar result. A memo of a lowering decision, like `kept_bindings`.
+    pub(crate) strict_force_eval: crate::fxhash::FxHashSet<StructId>,
+
     /// LAMBDA-LIFTED closures — the body occurrences of `(fn …)` lambdas that survived lowering as a
     /// RUNTIME value (passed to a recursive callee, stored in a runtime cell) and were lifted to
     /// standalone wasm functions. In discovery order; a lambda's position here is its funcref-TABLE slot
@@ -2879,6 +2891,7 @@ impl Db {
             rec_visited: crate::fxhash::FxHashSet::default(),
             rec_worklist: Vec::new(),
             kept_bindings: crate::fxhash::FxHashSet::default(),
+            strict_force_eval: crate::fxhash::FxHashSet::default(),
             lifted: Vec::new(),
             lifted_by_body: crate::fxhash::FxHashMap::default(),
             sum_reachable: crate::fxhash::FxHashMap::default(),

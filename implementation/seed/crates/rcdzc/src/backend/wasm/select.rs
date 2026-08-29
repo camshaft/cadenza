@@ -17291,8 +17291,21 @@ fn emit(
         //# A sequencing block MUST evaluate to the value of its last form.
         Core::Seq { stmts, tail } => {
             for s in &stmts {
-                // A discarded PURE statement is unobserved — elide it (its trap, if any, is dead-init).
                 if !crate::lower::subtree_reaches_host_call(db, *s) {
+                    // (A) STRICT heap-collection construction (#5194 CASE2): a strict-construction arg
+                    // computation `lower_let` decomposed out of a DEAD list/set/map ctor is marked in
+                    // `db.strict_force_eval` and MUST be evaluated (its trap fires) — the (A)-overrides-§283
+                    // rule (v-spec-oracle): a reached heap-collection ctor's args are strict, NOT deferrable.
+                    // These are SCALAR-typed computations, so the discarded result is popped with a bare
+                    // `drop` (no refcount). Nothing is built and no borrowed value is touched → no reclaim.
+                    if db.strict_force_eval.contains(s) {
+                        emit(db, *s, slots, base, high, scratch_ty, layout, out)?;
+                        if valtype_of(&crate::infer::type_of(db, *s)).is_some() {
+                            out.push(Lir::Drop);
+                        }
+                        continue;
+                    }
+                    // A discarded PURE statement is unobserved — elide it (its trap, if any, is dead-init).
                     continue;
                 }
                 // A host-reaching statement must run. Emit it; if it left a MACHINE VALUE on the stack (a

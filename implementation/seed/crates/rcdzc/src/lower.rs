@@ -2982,6 +2982,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     // instead present the rewritten node as the child, which that check would reject. (A
                     // perform's own binders were already substituted by the fold; only free names need this.)
                     db.reparent(rewritten, Some(id), db.child_ix_of(id) as u32);
+                    // (A) CASE2 (#5321): mark the reduced-handle subtree as a handler region so `lower_let`'s
+                    // strict-heap-ctor decompose SKIPS a dead ctor whose `let` lands here — the handler
+                    // tail/#st-drop lowering reads `do` forms not `Core::Seq`, so the decompose's Seq wrapper
+                    // would perturb it (olc1/cst1/sga1). Marked BEFORE the body's descendants are lowered.
+                    crate::effects::mark_handler_region(db, rewritten);
                     // ESCAPED-CLOSURE LEAK GUARD (diagnostic quality). The rewritten body may STILL carry a
                     // discharged-op perform lexically inside a LIVE lambda — the fold could not route it
                     // because the closure ESCAPED its reach (stored in a collection, extracted via `List.at`
@@ -3012,6 +3017,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                 crate::effects::reduce_handle(db, init, &arms, inlined)
                         {
                             db.reparent(rw2, Some(id), db.child_ix_of(id) as u32);
+                            crate::effects::mark_handler_region(db, rw2);
                             if !crate::effects::reduced_body_leaks_escaped_perform(db, rw2, &arms) {
                                 // Commit the recovery ONLY if it folds to a POISON-FREE core. The inline
                                 // rewrite can rebuild a `let` whose binding-init held the helper call (a
@@ -4666,6 +4672,136 @@ fn value_ctor_can_trap(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// Whether `ty` is a MACHINE SCALAR (Int/Bool/Char/Float/Unit) — a value with no heap cell / refcount. A
+/// force-evaluated strict-construction arg of this type leaves a bare scalar on the stack that a plain wasm
+/// `drop` reclaims (no rc), so restricting CASE2's decomposition to scalar-typed trap computations keeps the
+/// reclaim trivial (no rc-drop, no double-free) — the sound interim subset.
+fn is_machine_scalar_ty(ty: &crate::ty::Ty) -> bool {
+    matches!(
+        ty.strip_nominal(),
+        crate::ty::Ty::Int(_)
+            | crate::ty::Ty::Bool
+            | crate::ty::Ty::Char
+            | crate::ty::Ty::Float(_)
+            | crate::ty::Ty::Unit
+    )
+}
+
+/// (A) STRICT heap-collection construction (#5194) CASE2 decomposition: collect the TRAP-possible SCALAR
+/// element-arg COMPUTATIONS of a dead list/set/map ctor, recursing THROUGH nested value ctors. Per
+/// v-spec-oracle, (A) requires evaluating ONLY the arg computations that can TRAP/perform — NOT building the
+/// collection: an already-value / BORROWED leaf (a param/capture/constant) raises no trap (`is_trap_free`),
+/// contributes nothing, and is left UNTOUCHED (never consumed → never dropped → no double-free). A
+/// host-reaching (effectful) arg is force-kept by the existing machinery, so it is skipped here. INTERIM:
+/// restricted to SCALAR-typed trap computations (`(/ 5 d)`, checked arith) — their discarded results are
+/// scalars (a plain stack drop, no rc), so there is NO reclaim question; a heap-producing trap arg
+/// (`Rational.of`) is a KNOWN gap (its trap is missed) pending the reclaim shape (v-mem).
+fn collect_trap_scalar_args(db: &mut Db, id: StructId, out: &mut Vec<StructId>) {
+    match core_of(db, id) {
+        Core::ListNew { elems } | Core::SetOf { elems, .. } | Core::Tuple { elems } => {
+            let es: Vec<StructId> = elems.to_vec();
+            for e in es {
+                collect_trap_scalar_args(db, e, out);
+            }
+        }
+        Core::MapNew { entries, .. } => {
+            let ents: Vec<(StructId, StructId)> = entries.to_vec();
+            for (k, v) in ents {
+                collect_trap_scalar_args(db, k, out);
+                collect_trap_scalar_args(db, v, out);
+            }
+        }
+        Core::Record { fields } => {
+            let fs: Vec<StructId> = fields.values().copied().collect();
+            for v in fs {
+                collect_trap_scalar_args(db, v, out);
+            }
+        }
+        Core::SumNew { payloads, .. } => {
+            let ps: Vec<StructId> = payloads.to_vec();
+            for p in ps {
+                collect_trap_scalar_args(db, p, out);
+            }
+        }
+        _ => {
+            if !is_trap_free(db, id)
+                && !subtree_reaches_host_call(db, id)
+                && is_machine_scalar_ty(&crate::infer::type_of(db, id))
+            {
+                out.push(id);
+            }
+        }
+    }
+}
+
+/// (A) CASE2: wrap `body` in a `Core::Seq` whose DISCARDED statements are the trap-possible SCALAR arg
+/// computations decomposed (via `collect_trap_scalar_args`) out of the DEAD heap-collection ctors in
+/// `dead_inits`, and MARK them in `db.strict_force_eval` so the backend Seq emit does NOT §283-elide them —
+/// the (A)-overrides-§283 rule (v-spec-oracle). Never builds a collection, never touches a borrowed/value
+/// element → no reclaim, no double-free. EXCLUDES a lambda-ish init BEFORE any `core_of` (using
+/// `should_keep_binding`'s lift-free structural guards), because `core_of`-lowering a dead lambda binding
+/// SPECULATIVELY LIFTS it and pollutes `db.captured_ref`, poisoning the body's shared closure fold. Returns
+/// `body` unchanged when nothing trap-possible remains.
+///
+/// SKIPS the whole decompose when the enclosing `let`-form `node` lies within a HANDLER-ARM-TAIL / `#st`-
+/// threaded region (`effects::node_in_handler_region`, #5321): the handler tail / `#st`-drop / per-dispatch-
+/// reclaim lowering recognizes sequencing via `do` FORMS, NOT `Core::Seq`, so a `Seq` wrapper there perturbs
+/// it (olc1/cst1/sga1 leaks). Conformance-neutral: only a RARE pure-trap dead ctor inside a reduced handle
+/// then skips strict-eval — a known-gap v-spec-oracle pins, NEVER a miscompile.
+fn wrap_body_with_strict_arg_eval(
+    db: &mut Db,
+    node: StructId,
+    dead_inits: &[StructId],
+    body: StructId,
+) -> StructId {
+    // SKIP inside a reduced-handler region (#5321). `mark_handler_region` marks the reduced-handle AST
+    // subtree, but `lower_let` also processes lets SYNTHESIZED during lowering (the effects fold's #st-state
+    // lets, sunk copies) whose ids post-date the mark and so are NOT in the set — yet they are PARENTED under
+    // the marked rewritten body. So walk ANCESTORS (not just `node` itself): if `node` or any ancestor is a
+    // marked region node, the let is within a handler region → skip the decompose (else cst1's per-dispatch
+    // synthesized #st lets perturb the handler drop, +444 leak). Bounded by the parent chain length.
+    let mut anc = Some(node);
+    while let Some(a) = anc {
+        if crate::effects::node_in_handler_region(db, a) {
+            return body;
+        }
+        anc = db.parent_of(a);
+    }
+    // SKIP the whole decompose when the `let` BODY contains a CAPTURING lambda. A closure can CAPTURE a
+    // (dead-looking) ctor binding — `(let ((s #set(n (+ n 1)))) (let ((f (fn (k) (Set.contains s k)))) …))`
+    // (clk2): a single-use closure copy-propagates, inlining the captured `s` into the lifted closure body,
+    // so `s` is NOT a clean dead-discard. Decomposing its trap-args into an enclosing `Seq` while the closure
+    // also builds `s` collides with the closure-lift slot/scratch setup → invalid wasm. `body_captures_free_
+    // runtime_name` is the SAME lift-free lexical walk `should_keep_binding` uses (it never `core_of`-lowers,
+    // so it cannot pollute `captured_ref`). Conformance-neutral: a rare pure-trap dead ctor in a let whose
+    // body captures then skips strict-eval — a known-gap, never a miscompile.
+    if body_captures_free_runtime_name(db, body, &mut Vec::new()) {
+        return body;
+    }
+    let mut stmts: Vec<StructId> = Vec::new();
+    for &init in dead_inits {
+        if matches!(resolved_of(db, init), Resolved::Lambda { .. })
+            || crate::eval::lambda_body(db, init).is_some()
+            || if_or_match_selects_lambda(db, init)
+            || compound_contains_lambda(db, init)
+            || subtree_reaches_host_call(db, init)
+        {
+            continue;
+        }
+        if is_strict_heap_ctor_with_trappable_arg(db, init) {
+            collect_trap_scalar_args(db, init, &mut stmts);
+        }
+    }
+    if stmts.is_empty() {
+        return body;
+    }
+    for &s in &stmts {
+        db.strict_force_eval.insert(s);
+    }
+    let ty = crate::infer::type_of(db, body);
+    synth_core(db, Core::Seq { stmts, tail: body }, ty)
+}
+
 fn lower_let(
     db: &mut Db,
     node: StructId,
@@ -4759,8 +4895,12 @@ fn lower_let(
     }
     // The body's core (its references to kept bindings now lower to `LocalRef`).
     if kept.is_empty() {
-        // Nothing named — the ordinary erase: the `let`'s value is its body's value.
-        return core_of(db, body);
+        // Ordinary erase — but (A) CASE2 (#5194): before erasing, force-evaluate the trap-possible scalar
+        // arg computations of any dead heap-collection ctor (their traps must occur though the collection is
+        // discarded), sequenced before the body. Every binding is dead here.
+        let dead: Vec<StructId> = bindings.iter().map(|&(_n, init)| init).collect();
+        let wrapped = wrap_body_with_strict_arg_eval(db, node, &dead, body);
+        return core_of(db, wrapped);
     }
     // POST-FOLD DEAD-BINDING RECLAIM: `should_keep_binding` decides on the PRE-fold use count, but a use
     // can then FOLD AWAY (e.g. `List.len`/`List.at` over a `let`-bound constant list follow the binder and
@@ -4799,12 +4939,18 @@ fn lower_let(
         // Some kept binding folded dead — un-record it so a stray later reference (there is none by
         // construction, but keep `db.kept_bindings` consistent with the emitted `Core::Let`) does not
         // lower to a `LocalRef` for a slot that no longer exists.
+        let mut dropped_inits: Vec<StructId> = Vec::new();
         for (binder, _) in &kept {
             if !live.iter().any(|(b, _)| b == binder) {
                 db.kept_bindings.remove(binder);
+                dropped_inits.push(*binder);
             }
         }
         trace!(target: "rcdzc::lower", body = body.0, dropped = kept.len() - live.len(), "let: reclaimed dead bindings whose uses all folded");
+        // (A) CASE2: force-evaluate the trap-possible scalar args of any DROPPED heap-collection ctor,
+        // sequenced before the body (inside the surviving Let, so a live-binding a trap-arg reads is bound).
+        // A dropped binding is NON-host-reaching (the `live` filter keeps host-reaching), so no effect moves.
+        let body = wrap_body_with_strict_arg_eval(db, node, &dropped_inits, body);
         if live.is_empty() {
             return core_of(db, body);
         }
