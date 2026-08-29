@@ -2768,6 +2768,22 @@ fn resolve_project_manifest(
                     mpath.display()
                 );
             }
+            // An invalid `overflow-signed`/`overflow-unsigned` (wrong type or a value outside {trap, wrap})
+            // was dropped to None; it has a safe default (`trap`), so WARN the declared policy is ignored.
+            if m.overflow_signed_malformed {
+                eprintln!(
+                    "{PROG}: warning: {}: `overflow-signed` is not one of \"trap\"/\"wrap\" (e.g. \
+                     `def overflow-signed = \"wrap\"`) — ignoring it and using the default `trap`",
+                    mpath.display()
+                );
+            }
+            if m.overflow_unsigned_malformed {
+                eprintln!(
+                    "{PROG}: warning: {}: `overflow-unsigned` is not one of \"trap\"/\"wrap\" (e.g. \
+                     `def overflow-unsigned = \"wrap\"`) — ignoring it and using the default `trap`",
+                    mpath.display()
+                );
+            }
             if !m.duplicate_keys.is_empty() {
                 // Last-wins silently discards the earlier `def` — warn so a duplicated `entry`/`opt-level`/…
                 // (which can quietly change what builds) isn't a surprise.
@@ -3063,6 +3079,17 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
         Some(o) => obj.string("opt_level", o),
         None => obj.raw("opt_level", "null"),
     }
+    // The GLOBAL integer-overflow policy (signed + unsigned) — `"trap"`/`"wrap"`, or `null` when the
+    // manifest sets none (the compiler's default `trap` applies). A malformed/unknown value reads `null`
+    // here with the reason surfaced in `warnings` (matching how `opt_level` reports a dropped value).
+    match &m.overflow_signed {
+        Some(p) => obj.string("overflow_signed", p),
+        None => obj.raw("overflow_signed", "null"),
+    }
+    match &m.overflow_unsigned {
+        Some(p) => obj.string("overflow_unsigned", p),
+        None => obj.raw("overflow_unsigned", "null"),
+    }
     // The pattern lists PLUS their resolved, glob-expanded, exclude-filtered, existence-checked file sets.
     obj.raw("modules", &str_array(&m.modules));
     obj.raw(
@@ -3124,6 +3151,18 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
     if m.opt_level_malformed {
         warnings
             .push("`opt-level` is not a string (expected one of O0/O1/O2/O3) — ignored, using the default tier".to_string());
+    }
+    if m.overflow_signed_malformed {
+        warnings.push(
+            "`overflow-signed` is not one of \"trap\"/\"wrap\" — ignored, using the default `trap`"
+                .to_string(),
+        );
+    }
+    if m.overflow_unsigned_malformed {
+        warnings.push(
+            "`overflow-unsigned` is not one of \"trap\"/\"wrap\" — ignored, using the default `trap`"
+                .to_string(),
+        );
     }
     if !m.duplicate_keys.is_empty() {
         warnings.push(format!(
@@ -10111,6 +10150,10 @@ fn is_ml_source(file: &str) -> bool {
 ///   demo/fixture a wildcard would otherwise sweep up).
 /// - `def deps = ["../lib", …]`   — PATH dependencies: sibling project dirs `cdz run` builds + peer-binds
 ///   across the component boundary (each published as `cadenza:<dep>/api`).
+/// - `def overflow-signed = "trap"` / `def overflow-unsigned = "trap"` — the project's GLOBAL integer
+///   overflow policy for signed/unsigned arithmetic, one of `"trap"` (fault on overflow) or `"wrap"`
+///   (two's-complement). Absent → the compiler default `trap`. This is the global default a module
+///   `#[overflow(...)]` pragma overrides; the effective policy enters the reproducible build hash (v-nix).
 #[derive(Default, Debug)]
 struct Manifest {
     name: Option<String>,
@@ -10139,6 +10182,29 @@ struct Manifest {
     /// `entry` (required → hard error), `opt-level` has a safe default, so a consumer WARNS (the setting
     /// was silently dropped) and continues rather than failing. `false` when absent OR a valid string.
     opt_level_malformed: bool,
+    /// The project's GLOBAL integer-overflow policy for SIGNED arithmetic (`def overflow-signed =
+    /// "trap"`), as the raw string — one of `"trap"` (a checked op that faults on overflow) or `"wrap"`
+    /// (two's-complement wraparound). `None` = no manifest setting, so the compiler's DEFAULT applies
+    /// (`trap`, the 2026-08-29 ruling). This is the GLOBAL default in the per-node overflow resolution a
+    /// module `#[overflow(...)]` pragma OVERRIDES (precedence: module pragma > this global > default trap).
+    /// The effective policy MUST enter the reproducible build hash (a program's meaning is fixed by
+    /// source+manifest, never an ambient flag) — that hash folding is v-nix's lane; this field is the
+    /// source of truth it reads.
+    overflow_signed: Option<String>,
+    /// Set when the manifest HAS a `def overflow-signed` but its value is NOT a valid policy string — the
+    /// wrong TYPE (e.g. `def overflow-signed = 42`) OR a string outside `{trap, wrap}` (e.g. `"saturate"`,
+    /// not yet supported). `overflow_signed` resolves to `None` (the default `trap` applies) yet the field
+    /// is PRESENT. Like `opt-level`, this has a safe default, so a consumer WARNS (the declared policy was
+    /// ignored) and continues rather than failing. `false` when absent OR a valid `"trap"`/`"wrap"`.
+    overflow_signed_malformed: bool,
+    /// The project's GLOBAL integer-overflow policy for UNSIGNED arithmetic (`def overflow-unsigned =
+    /// "wrap"`), the unsigned twin of [`Manifest::overflow_signed`] — `"trap"`/`"wrap"`, `None` → default
+    /// `trap`. Signed + unsigned are configured SEPARATELY (a project may want checked signed but wrapping
+    /// unsigned, or vice versa). Same precedence + build-hash contract as the signed field.
+    overflow_unsigned: Option<String>,
+    /// Set when the manifest HAS a `def overflow-unsigned` but its value is not a valid `{trap, wrap}`
+    /// string — the unsigned twin of [`Manifest::overflow_signed_malformed`]. `false` when absent OR valid.
+    overflow_unsigned_malformed: bool,
     /// Known manifest keys declared MORE THAN ONCE (e.g. two `def entry` lines). The parser is last-wins
     /// (each arm overwrites), so a duplicate silently discards the earlier value — a `def entry = "a.cdz"`
     /// followed by `def entry = "b.cdz"` builds `b.cdz` with no hint the first was dropped. A consumer WARNS
@@ -10212,6 +10278,28 @@ fn manifest_strings(
             .collect();
     }
     Vec::new()
+}
+
+/// The values a `def overflow-signed`/`def overflow-unsigned` manifest field accepts — the closed policy
+/// alphabet. `trap` = a checked op that faults on overflow; `wrap` = two's-complement wraparound.
+/// (`saturate` is a plausible future member, deliberately NOT accepted yet — an unknown value is rejected,
+/// not silently treated as the default.)
+const OVERFLOW_POLICY_VALUES: [&str; 2] = ["trap", "wrap"];
+
+/// Parse a `def overflow-signed`/`overflow-unsigned` value into `(policy, malformed)`. A valid `"trap"`/
+/// `"wrap"` string → `(Some(policy), false)`. A wrong TYPE (non-string) OR a string outside the closed
+/// `{trap, wrap}` alphabet → `(None, true)` — the field is present but unusable, so the default `trap`
+/// applies and the consumer WARNS (mirrors `opt-level`'s safe-default-with-warning handling). This keeps
+/// the effective policy well-defined: a project never silently compiles under a mis-typed policy string.
+fn resolve_overflow_field(
+    arenas: &cadenza_syntax::Arenas,
+    value_id: cadenza_syntax::StructId,
+) -> (Option<String>, bool) {
+    match manifest_strings(arenas, value_id).into_iter().next() {
+        Some(s) if OVERFLOW_POLICY_VALUES.contains(&s.as_str()) => (Some(s), false),
+        // A string outside {trap, wrap}, OR a non-string value → malformed (present but ignored).
+        _ => (None, true),
+    }
 }
 
 /// Whether `pat` is a GLOB (contains a wildcard metacharacter) rather than a literal file name. A
@@ -10383,7 +10471,15 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
         // A KNOWN key seen before is a duplicate (last-wins); record it once so a consumer can warn.
         if matches!(
             name,
-            "name" | "entry" | "modules" | "tests" | "exclude" | "opt-level" | "deps"
+            "name"
+                | "entry"
+                | "modules"
+                | "tests"
+                | "exclude"
+                | "opt-level"
+                | "overflow-signed"
+                | "overflow-unsigned"
+                | "deps"
         ) {
             if seen.contains(&name) {
                 if !m.duplicate_keys.iter().any(|k| k == name) {
@@ -10416,6 +10512,17 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
                 // `def opt-level` present but no string extracted → wrong TYPE (not `"O2"`). Record it so a
                 // consumer can WARN the setting was ignored rather than silently building at the default.
                 m.opt_level_malformed = m.opt_level.is_none();
+            }
+            "overflow-signed" => {
+                // Accept only a valid policy string `"trap"`/`"wrap"`; a wrong TYPE (non-string) OR an
+                // unknown value (e.g. `"saturate"`, not yet supported) resolves to None + malformed, so the
+                // default `trap` applies and a consumer warns rather than silently honoring a bad setting.
+                (m.overflow_signed, m.overflow_signed_malformed) =
+                    resolve_overflow_field(arenas, value_id);
+            }
+            "overflow-unsigned" => {
+                (m.overflow_unsigned, m.overflow_unsigned_malformed) =
+                    resolve_overflow_field(arenas, value_id);
             }
             "deps" => {
                 m.deps = manifest_strings(arenas, value_id)
@@ -11608,6 +11715,63 @@ mod tests {
             vec!["src/a.cdz", "src/b.cdz"],
             "def tests reads the native `List`-compound literal (regression: `declares no tests`)"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The GLOBAL overflow-policy manifest fields (`def overflow-signed`/`overflow-unsigned`, #5290):
+    /// a valid `"trap"`/`"wrap"` reads through; a value outside `{trap, wrap}` (or a wrong type) resolves
+    /// to `None` + `malformed` (the default `trap` applies, a warning fires); an ABSENT field is `None`
+    /// but NOT malformed. Signed + unsigned are independent. Guards the closed-alphabet resolution the
+    /// numeric-model spec + v-inference's per-node resolution + v-nix's build-hash all read.
+    #[test]
+    fn parse_manifest_reads_overflow_policy_fields() {
+        // Valid + independent: signed wrap, unsigned trap.
+        let dir = tmp("manifest-overflow-valid");
+        let file = dir.join("Project.cdz");
+        std::fs::write(
+            &file,
+            "def name = \"demo\"\ndef entry = \"main.cdz\"\ndef overflow-signed = \"wrap\"\ndef overflow-unsigned = \"trap\"\n",
+        )
+        .unwrap();
+        let (_s, arenas, _sp) = load_program_spanned(&file.to_string_lossy()).expect("loads");
+        let m = parse_manifest(&arenas);
+        assert_eq!(m.overflow_signed.as_deref(), Some("wrap"), "signed reads");
+        assert!(!m.overflow_signed_malformed);
+        assert_eq!(
+            m.overflow_unsigned.as_deref(),
+            Some("trap"),
+            "unsigned reads"
+        );
+        assert!(!m.overflow_unsigned_malformed);
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Unknown value (`saturate` not yet supported) → None + malformed on signed; a valid unsigned
+        // alongside is unaffected.
+        let dir = tmp("manifest-overflow-unknown");
+        let file = dir.join("Project.cdz");
+        std::fs::write(
+            &file,
+            "def entry = \"main.cdz\"\ndef overflow-signed = \"saturate\"\ndef overflow-unsigned = \"wrap\"\n",
+        )
+        .unwrap();
+        let (_s, arenas, _sp) = load_program_spanned(&file.to_string_lossy()).expect("loads");
+        let m = parse_manifest(&arenas);
+        assert_eq!(m.overflow_signed, None, "unknown value drops to None");
+        assert!(m.overflow_signed_malformed, "unknown value is malformed");
+        assert_eq!(m.overflow_unsigned.as_deref(), Some("wrap"));
+        assert!(!m.overflow_unsigned_malformed);
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Absent → None but NOT malformed (the default `trap` applies silently, no warning).
+        let dir = tmp("manifest-overflow-absent");
+        let file = dir.join("Project.cdz");
+        std::fs::write(&file, "def entry = \"main.cdz\"\n").unwrap();
+        let (_s, arenas, _sp) = load_program_spanned(&file.to_string_lossy()).expect("loads");
+        let m = parse_manifest(&arenas);
+        assert_eq!(m.overflow_signed, None);
+        assert!(!m.overflow_signed_malformed, "absent is not malformed");
+        assert_eq!(m.overflow_unsigned, None);
+        assert!(!m.overflow_unsigned_malformed);
         std::fs::remove_dir_all(&dir).ok();
     }
 
