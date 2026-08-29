@@ -1476,6 +1476,25 @@ fn emit_expr_viewed(
             }
             Ok(b.list(children))
         }
+        // A runtime BIT-FIELD binary construction `(bin (bits v k) …)` — the `Core::BinBitsBuild` sibling of
+        // `BinBuild`: each `BinBitsField` packs the low `k` bits of a runtime value (`k` a compile-time
+        // constant read at resolve). Re-emit `(bin (bits <value> <k>) …)` (same `bin` head; the segment head
+        // is the `bits` keyword, then the runtime value, then the constant width `k`). A constant bit-field
+        // `bin` folds to `Core::ConstBytes` in `lower`, so a surviving `BinBitsBuild` is genuinely runtime.
+        Core::BinBitsBuild { fields } => {
+            let mut children = Vec::with_capacity(1 + fields.len());
+            children.push(b.name("bin"));
+            for f in fields.iter() {
+                let bits_head = b.name("bits");
+                let val = emit_expr(db, b, f.value, None, env, emitted)?;
+                let k = b.atom_leaf(Leaf::Int {
+                    value: IntValue::from_i64(i64::from(f.k)),
+                    radix: Radix::Dec,
+                });
+                children.push(b.list(vec![bits_head, val, k]));
+            }
+            Ok(b.list(children))
+        }
         Core::BytesLen { operand } => {
             let head = member_access(b, "Bytes", "len");
             let x = emit_expr(db, b, operand, None, env, emitted)?;
