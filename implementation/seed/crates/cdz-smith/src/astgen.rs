@@ -361,7 +361,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(15) {
+    match c.variant(16) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -396,6 +396,9 @@ fn gen_main_body<C: Choice>(
         // A DISCARD body: a non-def LEADING do-statement whose value is computed then DISCARDED, followed
         // by the tail that is the block's value — the sequencing/dead-value drop lowering that #5507 grades.
         14 => gen_discard_body(c, out),
+        // A FLOAT-ORDERING body: `main : Bool` from a float comparison `(< f f)` / `> / <= / >=` — the
+        // IEEE float ordering (#5519) as the RETURNED value (my float bodies only used it in `if` guards).
+        15 => gen_float_ordering_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1099,6 +1102,21 @@ fn gen_discard_body<C: Choice>(c: &mut C, out: &mut String) {
         // Discard a BOOL comparison.
         _ => write!(out, "(do (< {a} {b}) (+ {a} {b}))").ok(),
     };
+}
+
+/// A FLOAT-ORDERING body: `main : Bool` = a float ordering comparison `(<rel> <flit> <flit>)` for `<rel>`
+/// in `< > <= >=`, over two same-width float literals (Float64 or Float32). Reaches the IEEE float
+/// ordering (#5519) as the RETURNED Bool value — my `gen_float` only emitted float relations inside `if`
+/// GUARDS (the returned value stayed a float), so the ordering result itself was never the graded value.
+fn gen_float_ordering_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the width + relation BEFORE the operand literals (variant-ordering).
+    let is_f32 = c.variant(2) == 1;
+    let rel = ["<", ">", "<=", ">="][c.variant(4)];
+    write!(out, "({rel} ").ok();
+    gen_float_lit(c, is_f32, out);
+    out.push(' ');
+    gen_float_lit(c, is_f32, out);
+    out.push(')');
 }
 
 /// A MUTUALLY-RECURSIVE program: two TOP-LEVEL sibling defs that call EACH OTHER, plus a param-less `main`
@@ -2121,6 +2139,48 @@ mod tests {
         assert!(saw_tuple, "should reach a discarded-tuple form");
         assert!(saw_list, "should reach a discarded-list form");
         assert!(saw_bool, "should reach a discarded-bool form");
+    }
+
+    /// `gen_float_ordering_body` REACHES both widths (Float64, Float32) and all four ordering relations
+    /// (`< > <= >=`), and every body COMPILES (S149: float ordering as the returned Bool value — #5519).
+    #[test]
+    fn gen_float_ordering_body_reaches_both_widths_and_all_rels_and_compiles() {
+        let (mut saw_f64, mut saw_f32) = (false, false);
+        let mut rels_seen = std::collections::BTreeSet::new();
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1291);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_float_ordering_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            if body.contains("Float32") {
+                saw_f32 = true;
+            } else {
+                saw_f64 = true;
+            }
+            for rel in ["<=", ">=", "<", ">"] {
+                if body.starts_with(&format!("({rel} ")) {
+                    rels_seen.insert(rel);
+                    break;
+                }
+            }
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "float-ordering body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_f64, "should reach a Float64 ordering");
+        assert!(saw_f32, "should reach a Float32 ordering");
+        assert_eq!(
+            rels_seen.len(),
+            4,
+            "should reach all four ordering relations"
+        );
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
