@@ -1161,6 +1161,19 @@ impl<'a> Printer<'a> {
     fn return_type(&self, body: StructId) -> Option<(StructId, StructId)> {
         let t = self.a.as_form(body, ":")?;
         if t.len() == 2 {
+            // A `(: <suffixed> BigInt|Rational)` is a SELF-TYPED literal — the `N`/`R` suffix already
+            // carries the type, and the value-position resugar prints it bare (`100N`/`0.5R`), which
+            // re-reads to the SAME `(: <suffixed> …)` ascription. Do NOT hoist it to a `-> R` return type:
+            // hoisting drops the ascription and emits `-> R = 100N`, whose bare `100N` body RE-desugars to
+            // `(: <suffixed> R)` on read — so the def/fn gains a return-type ascription that was NOT in the
+            // source (a round-trip mismatch: `(def (f) 255N)` printed `def f() -> BigInt = 255N`, re-read as
+            // a return-typed def). Leave it as the body; the suffix-resugar renders it. Mirrors the resugar
+            // guard (`(: <Suffixed> …)`).
+            if let Struct::Atom(l) = self.a.get(t[0])
+                && matches!(self.a.leaf(*l), Leaf::Suffixed { .. })
+            {
+                return None;
+            }
             Some((t[0], t[1]))
         } else {
             None

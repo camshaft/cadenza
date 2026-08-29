@@ -769,6 +769,16 @@
   (input  100000000000000000000N)
   (output (: 100000000000000000000 BigInt)))
 
+(case "a def body that is a bare N-suffixed BigInt literal round-trips (no spurious return-type hoist)"
+  (doc    "`def main() = 99999999999999999999N` — the suffixed literal desugars to `(: <val> BigInt)`, but
+           the ML printer must NOT hoist that self-typed ascription to a `-> BigInt` return type: the `N`
+           suffix already carries the type, the value-position resugar prints the body bare (`…N`), and a
+           hoisted `-> BigInt` would re-read as a return-typed def not present in the source (an ML
+           round-trip AST mismatch — the def-body position the bare-literal case above does not cover).
+           Beyond-i64 magnitude also exercises the arbitrary-precision path.")
+  (input  (do (def (main) 99999999999999999999N) (export main)))
+  (call   main) (output (: 99999999999999999999 BigInt)))
+
 (case "N-suffixed literals compose under BigInt arithmetic"
   (doc    "`(+ 100N 1N)` = 101 as a BigInt: each suffixed literal is a real BigInt value, so the exact
            `+` runs over them — the math 'just works' over the suffixed spelling exactly as over
