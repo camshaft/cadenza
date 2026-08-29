@@ -13622,3 +13622,16 @@
   (call main (: 7 Int64)) (output (: 310 Int64))
   (call main (: 1 Int64)) (output (: 210 Int64))
   (call main (: -2 Int64)) (output (: 320 Int64)))
+
+(case "cdzw83 RECORD keys are field-order-INSENSITIVE — two spellings dedup in a set and compare equal — through the cadenza hop"
+  (doc "cdzw82's record sibling: records are canonical (key-sorted), so #record((= a 1) (= b 2)) and
+        #record((= b 2) (= a 1)) are ONE value — they dedup in a #set (3 spelled elements → 2 distinct)
+        and compare structurally equal regardless of the RUNTIME field value. 21 for any n.
+        Dual-path verified, byte-idempotent.")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 10 (Set.len #set(#record((= a 1) (= b 2)) #record((= b 2) (= a 1)) #record((= a n) (= b 9)))))
+         (if (= #record((= a 1) (= b n)) #record((= b n) (= a 1))) 1 0)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 21 Int64))
+  (call main (: 1 Int64)) (output (: 21 Int64)))
