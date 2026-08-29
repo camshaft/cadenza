@@ -129,6 +129,24 @@
   (input  (+ Int64.max 1))
   (error  CDZ0304))
 
+(case "an ordinary-+ fold whose EXACT result overflows traps under any reassociation"
+  (doc    "The runtime, reassociation-STABLE face of the overflow trap (numeric-model.md #A Reassociating
+           Optimization May Reorder Or Avoid An Overflow Trap, operator ruling 2026-08-29): an optimizer MAY
+           reassociate an ordinary `+` chain (accumulator introduction turns this non-tail fold into a
+           constant-stack loop), so the exact TRAP POINT is implementation-defined and a net-fits chain whose
+           source order overflows an intermediate may return the exact result rather than trap. What is STABLE
+           and pinned here: a chain whose EXACT result OVERFLOWS the type traps under EVERY reassociation (some
+           intermediate must overflow), and an in-range chain returns the exact value. `sum` right-folds
+           `(+ h (sum t))` over three copies of a runtime `x` = 3·x with the ORDINARY (trapping) `+`. At
+           x = 4_000_000_000_000_000_000 the exact 3x = 1.2e19 exceeds Int64.max, so it TRAPS (no association
+           fits). At x = 1_000_000_000 the exact 3x = 3e9 is in range → 3e9. Pins the stable boundary, NOT the
+           implementation-defined net-fits trap point.")
+  (input  (do (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list h .. t) (+ h (sum t)))))
+              (def (main (: x Int64)) (sum (list x x x)))
+              (export main)))
+  (call   main (: 4000000000000000000 Int64)) (trap   "integer overflow")
+  (call   main (: 1000000000 Int64)) (output (: 3000000000 Int64)))
+
 (case "an explicit conversion makes the operation well-typed"
   (doc    "Witnesses numeric-model.md #Exact Arithmetic Is Exact (2nd sentence): the conversion
            Float64.of-int is written explicitly, then the two Float64 operands are added with the ONE
