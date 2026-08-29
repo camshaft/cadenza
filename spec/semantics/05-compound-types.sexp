@@ -23986,3 +23986,36 @@
         a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix.")
   (input (do (def (f) (Map.len #map((1 10) (1 20) (2 30)))) (def (main) 0) (export main)))
   (error CDZ0201 (message "map contains each key") (fix (kind delete))))
+
+(case "ijs1 an if-join binder CONCAT-shared into both arms reclaims clean — the #5382 dup-skip exclusion"
+  (doc "The #5382 fence (980 ROPE mode-2 UAF class, breaker ladder j1): a binder reaching both if-arms as
+        a CONCAT child is NOT an in-place-reuse base, so the dup-skip must not fire — pre-#5382 the
+        over-reach freed the shared child (UAF). Both arms concat the binder (left/right positions);
+        values and a fully-clean reclaim (live 0) on both branches.")
+  (input (do
+    (def (main (: n Int64)) (do (def b (list n 2)) (List.len (if (> n 0) (List.concat b (list 3)) (List.concat (list 0) b)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 3 Int64))
+  (call main (: -1 Int64)) (output (: 3 Int64))
+  (live-objects 0))
+
+(case "ijs2 the in-place-reuse family still fires the if-join dup-skip — tight reclaim preserved"
+  (doc "ijs1's must-hold twin: List.push / List.update arms ARE proven in-place-reuse bases, so the
+        #5382 predicate keeps the skip and the reclaim stays tight (live 0) — the narrowing must not
+        over-retain the sound family.")
+  (input (do
+    (def (main (: n Int64)) (do (def b (list n 2 9)) (List.len (if (> n 0) (List.push b 7) (List.update b 1 5)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 4 Int64))
+  (call main (: -1 Int64)) (output (: 3 Int64))
+  (live-objects 0))
+
+(case "ijs3 a rope (String.concat) if-join shared binder reclaims clean on both arm positions"
+  (doc "The string/rope face of #5382 (the original 980 was a rope): a runtime-built string shared into
+        both arms as a concat child (left/right) — values (byte lengths) and clean reclaim.")
+  (input (do
+    (def (main (: n Int64)) (do (def s (String.concat "ab" (if (> n 5) "c" "d"))) (String.byte-len (if (> n 0) (String.concat s "x") (String.concat "y" s)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 4 Int64))
+  (call main (: -1 Int64)) (output (: 4 Int64))
+  (live-objects 0))
