@@ -2482,6 +2482,16 @@
 ; --- Constructor-position validation-walk probes (uncalled-def CONSTRUCTION faces; the ML
 ; differential classifies each — all three decline in ML today, coverage-not-yet). ---
 
+(case "a bare undeclared capitalized ctor on the called path is rejected (an open sum does not sanction it)"
+  (doc    "OS1 load-bearing: the open-sum row variable does NOT sanction an undeclared LOCAL constructor
+           name. A bare capitalized head that names no declared variant — `(Nope 5)` — still rejects
+           CDZ0101 (unbound), NOT accepted-as-a-possibly-open-ctor. Open-ness is declared via the explicit
+           `.. r` marker on a `(type …)`, never by treating any-undeclared-ctor-as-open. Pins that the
+           marker did not open a hole for typo'd ctor names on the called path (the uncalled-def face is the
+           case below). (migrated from rcdzc an_undeclared_capitalized_ctor_still_rejects_cdz0101.)")
+  (input  (do (def (main) (Nope 5)) (export main)))
+  (error  CDZ0101))
+
 (case "an unbound CONSTRUCTOR applied in an uncalled def is rejected"
   (doc    "The construction-position face of the uncalled-def scope walk: `(NoSuchCtor 1)` in a never-called def's body — a reachability skip that only validates ctor heads on the called path runs to 42. rcdzc rejects CDZ0101; the pattern-position twin (an unbound ctor as a match-arm HEAD) is pinned in 05-compound-types.")
   (input  (do
