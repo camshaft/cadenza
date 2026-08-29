@@ -1563,6 +1563,32 @@ mod tests {
     }
 
     #[test]
+    fn a_construction_spread_round_trips_through_the_sexpr_surface() {
+        // The construction spread `.. s` (seq-204 GO, all four collection ctors) reaches the corpus/harness
+        // through the SEXPR surface, so the reader + printer must round-trip it as the flat `.. <operand>`
+        // marker at ANY position (multiple/interior — a CONSTRUCTION spread, unlike a trailing-only PATTERN
+        // rest). Read -> compact print -> byte-identical, and encode->decode->print stays stable. (The
+        // LOWERING of a construction spread is v-inference's slice — this pins the surface the corpus writes.)
+        for form in [
+            "#list(0 .. c 9)",
+            "#list(.. a .. b)",
+            "#set(.. a x)",
+            "#set(1 .. a 2 .. b)",
+            "#map(.. m (= 1 2))",
+            "#map((= 1 2) .. m (= 3 4))",
+            "#record(.. base (= a 1))",
+            "#record((= a 1) .. b (= c 2) .. d)",
+        ] {
+            let a = read(form).unwrap();
+            assert_eq!(print(&a), form, "sexpr round-trip of {form}");
+            // encode -> decode -> print stays the same flat spread form.
+            let bytes = cadenza_ast::codec::encode(&a);
+            let back = cadenza_ast::codec::decode(&bytes).expect("spread construction decodes");
+            assert_eq!(print(&back), form, "binary round-trip of {form}");
+        }
+    }
+
+    #[test]
     fn nativize_compound_source_exempts_effect_op_handler_arm_heads() {
         // An effect op-handler arm names its operation BARE at the arm head. When the op is named after a
         // compound ctor (`set` is the real case — a State effect's setter; also list/map/tuple/record), that

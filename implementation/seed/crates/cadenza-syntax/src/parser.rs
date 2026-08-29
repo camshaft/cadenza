@@ -3827,6 +3827,20 @@ impl<'a> Parser<'a> {
         if !self.at(Kind::RBrace) {
             loop {
                 let before = self.pos;
+                // `.. r` spreads a record's fields into the literal (`{ ..base, a = 1 }`) — the record twin
+                // of the list/map construction spread: a flat `Name("..")` sibling + the spread operand among
+                // the `(= name value)` field triples (the SAME marker the compiler's collection lowering
+                // scans for; well-formedness is the compiler's, matching the s-expr surface). An ordinary
+                // field otherwise. (The construction-spread LOWERING is v-inference's slice; this is surface.)
+                if self.rest_marker(&mut items, |p| p.expr(crate::token::PREC_SEQ + 1)) {
+                    if !self.sep_continue(Kind::RBrace) {
+                        break;
+                    }
+                    if self.pos == before {
+                        self.bump();
+                    }
+                    continue;
+                }
                 // Own-line `//` comment(s) leading this field (`{\n // note\n a = 1, … }`) sit in the
                 // field's first-token slot; drain here (before the name) and wrap the `(name value)` pair
                 // below (`is_pairs`/the record printer unwrap it). Own-line has no swallow hazard.
@@ -3996,6 +4010,19 @@ impl<'a> Parser<'a> {
         if !self.at(Kind::RParen) {
             loop {
                 let before = self.pos;
+                // `.. s` spreads a set into the literal (`#(..a, x)`) — the set twin of the list/map/record
+                // construction spread: a flat `Name("..")` sibling + operand in the `(set …)` ctor node (the
+                // SAME marker the compiler's collection lowering scans for). An ordinary element otherwise.
+                // (The set-spread LOWERING — Set.union — is v-inference's slice; this is the surface.)
+                if self.rest_marker(&mut elems, |p| p.expr(crate::token::PREC_SEQ + 1)) {
+                    if !self.sep_continue(Kind::RParen) {
+                        break;
+                    }
+                    if self.pos == before {
+                        self.bump();
+                    }
+                    continue;
+                }
                 // Own-line leading comment before this element (own-line has no swallow hazard), then the
                 // element, then a same-line trailing comment on the LAST element (gated on `at(RParen)`).
                 let leading = self.take_comments_here();

@@ -377,6 +377,18 @@ impl<'a> Printer<'a> {
                 // Native `Leaf::Ctor(Set)` — elements are its direct children (the M2 native set ctor,
                 // uniform with the others); renders back to `#(…)`. The legacy `((. Set of) (list …))`
                 // member form is recognized separately below (dual-support during the corpus migration).
+                // A set CONSTRUCTION spread (`#(..a, x)`) carries a flat `Name("..")` marker — render through
+                // the rest-aware path (`.. a`), the twin of the list/map/record spread; else the plain path.
+                "set" if inline_ok && self.has_rest_marker(args) => {
+                    return self.bracketed_rest(
+                        "#(",
+                        ")",
+                        false,
+                        args,
+                        |p, e| p.expr(e, 0),
+                        |p, e| p.expr(e, 0),
+                    );
+                }
                 "set" if inline_ok => return self.bracketed_comment_aware("#(", ")", false, args),
                 _ => {}
             }
@@ -3018,7 +3030,7 @@ impl<'a> Printer<'a> {
     /// field's own name (`(x x)`) prints as just `{ x }` (the inverse of the reader's `{ x }` → `(x x)`
     /// pun). A field with any other value prints the full `name = value`.
     fn print_record(&mut self, fields: &[StructId]) {
-        self.bracketed_pairs_comment_aware("{", "}", fields, |p, field| {
+        let field = |p: &mut Self, field: StructId| {
             // A value-record field is the canonical `(= name value)` triple (RV2, DESIGN-record-type-
             // syntax Phase B) — read name/value from children 1/2, dropping the `=` head; the printed
             // SURFACE `{ name = value }` is UNCHANGED (only the arena gained the explicit `=`). Tolerate
@@ -3037,7 +3049,13 @@ impl<'a> Printer<'a> {
                 p.doc.word(" = ");
                 p.expr(value, 0);
             }
-        });
+        };
+        // A record CONSTRUCTION spread (`{ ..base, a = 1 }`) carries a flat `Name("..")` marker among the
+        // field triples — render through the rest-aware path (`.. base`), the twin of the map/list spread.
+        if self.has_rest_marker(fields) {
+            return self.bracketed_rest("{", "}", true, fields, field, |p, e| p.expr(e, 0));
+        }
+        self.bracketed_pairs_comment_aware("{", "}", fields, field);
     }
 
     /// Like `bracketed` (padded braces) but each field/entry may be wrapped in `(comment-after "text"
@@ -4292,9 +4310,20 @@ impl<'a> Printer<'a> {
         if self.has_nonlast_comment_after(args) {
             return false;
         }
-        args.iter().all(|&a| {
-            let inner = self.strip_field_comments(a);
-            match self.a.get(inner) {
+        // Scan, skipping CONSTRUCTION spreads: a `..` marker (followed by one operand) may appear at ANY
+        // position and more than once (`{ a = 1, ..b, c = 2, ..d }`); `bracketed_rest` renders them.
+        // Every other item must be a well-formed field.
+        let mut i = 0;
+        while i < args.len() {
+            if self.head_name(args[i]).as_deref() == Some("..") {
+                if i + 1 >= args.len() {
+                    return false; // a `..` with no operand is malformed → generic form
+                }
+                i += 2;
+                continue;
+            }
+            let inner = self.strip_field_comments(args[i]);
+            let ok = match self.a.get(inner) {
                 // `(= name value)` — the canonical field; key is `p[1]`, must be a plain field name.
                 Struct::List(p) if p.len() == 3 && self.head_name(p[0]).as_deref() == Some("=") => {
                     self.plain_key(p[1]).is_some()
@@ -4302,8 +4331,13 @@ impl<'a> Printer<'a> {
                 // Legacy `(name value)` pair — key is `p[0]`.
                 Struct::List(p) if p.len() == 2 => self.plain_key(p[0]).is_some(),
                 _ => false,
+            };
+            if !ok {
+                return false;
             }
-        })
+            i += 1;
+        }
+        true
     }
 
     /// A map the `#{ key: v, … }` surface handles: every entry is a `(key value)` pair (any key),
@@ -4312,14 +4346,29 @@ impl<'a> Printer<'a> {
     /// binder are rendered by `bracketed_rest`. A map whose `..` is not a well-formed trailing
     /// `.. rest` falls back to the generic call form so it still round-trips.
     fn is_map_shape(&self, args: &[StructId]) -> bool {
-        match args
-            .iter()
-            .position(|&a| self.head_name(a).as_deref() == Some(".."))
-        {
-            // `.. rest` must be the LAST group (marker at len-2, one binder at len-1); before it, pairs.
-            Some(i) => i + 2 == args.len() && self.is_pairs(&args[..i]),
-            None => self.is_pairs(args),
+        // Reject a non-last same-line comment wrapper (no faithful `#{…}` rendering) — the whole-slice check
+        // the old `is_pairs(args)` performed, kept explicit now that the scan below is per-item.
+        if self.has_nonlast_comment_after(args) {
+            return false;
         }
+        // Scan, skipping spreads: a `..` marker (+ one operand) may appear at ANY position and more than
+        // once — a PATTERN rest is trailing-only, but a CONSTRUCTION spread (`#{ ..a, k = v, ..b }`) is
+        // uniform with list/record; `bracketed_rest` renders them. Every other item must be a pair.
+        let mut i = 0;
+        while i < args.len() {
+            if self.head_name(args[i]).as_deref() == Some("..") {
+                if i + 1 >= args.len() {
+                    return false; // a `..` with no operand is malformed → generic form
+                }
+                i += 2;
+                continue;
+            }
+            if !self.is_pairs(std::slice::from_ref(&args[i])) {
+                return false;
+            }
+            i += 1;
+        }
+        true
     }
 
     /// A def the `def name(…) = body` (function) surface handles: a signature LIST `(name p…)` (head
@@ -9312,6 +9361,21 @@ mod tests {
         assert_eq!(
             assert_roundtrip("[1, .. [2, 3], 4]", 80),
             "[1, .. [2, 3], 4]"
+        );
+        // RECORD construction spread (`{ ..base, a = 1 }`) — the record twin; interior + multiple spreads.
+        assert_eq!(
+            assert_roundtrip("{ .. base, a = 1 }", 80),
+            "{ .. base, a = 1 }"
+        );
+        assert_eq!(
+            assert_roundtrip("{ a = 1, .. b, c = 2, .. d }", 80),
+            "{ a = 1, .. b, c = 2, .. d }"
+        );
+        // SET construction spread (`#(..a, x)`) — the set twin; leading + interior spreads.
+        assert_eq!(assert_roundtrip("#(.. a, x)", 80), "#(.. a, x)");
+        assert_eq!(
+            assert_roundtrip("#(1, .. a, 2, .. b)", 80),
+            "#(1, .. a, 2, .. b)"
         );
 
         // --- pattern (list) ---
