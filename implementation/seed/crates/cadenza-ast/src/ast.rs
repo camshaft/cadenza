@@ -1854,17 +1854,6 @@ impl Arenas {
         }
     }
 
-    /// If `id` is a `List` headed by the STRING-LITERAL `head` (a constructor primitive), the tail.
-    pub fn as_ctor_form(&self, id: StructId, head: &str) -> Option<&[StructId]> {
-        match self.get(id) {
-            Struct::List(items) => match items.first() {
-                Some(&h) if self.as_str(h) == Some(head) => Some(&items[1..]),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     /// If `id` is an `Atom` of an integer literal, its value. (Used to read an integer member key as a
     /// tuple position — `(. t 0)` — where a name key would be a record field instead.)
     pub fn as_int(&self, id: StructId) -> Option<&IntValue> {
@@ -2935,17 +2924,11 @@ mod tests {
 
     #[test]
     fn head_and_form_accessors_distinguish_name_from_ctor() {
-        // `head_name`/`as_form` read a NAME head; `head_ctor`/`as_ctor_form` read a STRING head. A
-        // string-headed form has no name head (and vice-versa), so the accessors don't cross over.
+        // `head_name`/`as_form` read a NAME head; `head_ctor` reads a STRING head. A string-headed form
+        // has no name head (and vice-versa), so the accessors don't cross over.
         let str_headed = form(Leaf::Str("record".into()), &[Leaf::Bool(false)]);
         assert_eq!(str_headed.head_ctor(str_headed.root), Some("record"));
         assert_eq!(str_headed.head_name(str_headed.root), None);
-        assert_eq!(
-            str_headed
-                .as_ctor_form(str_headed.root, "record")
-                .map(<[_]>::len),
-            Some(1)
-        );
         assert_eq!(str_headed.as_form(str_headed.root, "record"), None);
 
         let name_headed = form(Leaf::Name("if".into()), &[Leaf::Bool(true)]);
