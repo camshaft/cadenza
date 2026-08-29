@@ -268,6 +268,13 @@ pub mod exports {
                 }
                 #[doc(hidden)]
                 #[allow(non_snake_case)]
+                pub unsafe fn _export_dup_if_shared_cabi<T: Guest>(arg0: i32) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::dup_if_shared(arg0 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
                 pub unsafe fn _export_map_alloc_cabi<T: Guest>(arg0: i32) -> i32 {
                     #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
                     let result0 = T::map_alloc(arg0 as u32);
@@ -1066,6 +1073,13 @@ pub mod exports {
                     /// 19
                     fn drop(handle: u32) -> ();
                     /// 20
+                    /// `dup-if-shared` (semantically "dup-if-rc-gt-1"; WIT names cannot have a numeric `-1` segment) —
+                    ///    SHARING-AWARE conditional retain: dup the handle (rc++) IFF it is currently SHARED (rc > 1), else a
+                    ///    no-op; returns the handle. The compiler emits it where a payload borrowed out of a boundary-owned
+                    ///    scrutinee escapes into a result ctor: it needs an independent ref only when the scrutinee is
+                    ///    caller-shared (rc > 1), NOT when uniquely owned (rc == 1). No-op for an immediate/immortal.
+                    fn dup_if_shared(handle: u32) -> u32;
+                    /// (codegen-assigned index; name-sorted)
                     /// ── Map (indices 21–25) — a key→value collection with DYNAMIC keys, a DISTINCT type from a
                     ///    record (whose field set is fixed and whose "keys" are compile-time indices). Both keys and
                     ///    values are handles. Stored as positional (key, value) pairs; the runtime stores them
@@ -1648,22 +1662,26 @@ pub mod exports {
                         (export_name = "cadenza:runtime/heap#drop")] unsafe extern "C" fn
                         export_drop(arg0 : i32,) { unsafe { $($path_to_types)*::
                         _export_drop_cabi::<$ty > (arg0) } } #[unsafe (export_name =
-                        "cadenza:runtime/heap#map-alloc")] unsafe extern "C" fn
-                        export_map_alloc(arg0 : i32,) -> i32 { unsafe {
-                        $($path_to_types)*:: _export_map_alloc_cabi::<$ty > (arg0) } }
-                        #[unsafe (export_name = "cadenza:runtime/heap#map-set")] unsafe
-                        extern "C" fn export_map_set(arg0 : i32, arg1 : i32, arg2 : i32,
-                        arg3 : i32,) -> i32 { unsafe { $($path_to_types)*::
-                        _export_map_set_cabi::<$ty > (arg0, arg1, arg2, arg3) } }
-                        #[unsafe (export_name = "cadenza:runtime/heap#map-key")] unsafe
-                        extern "C" fn export_map_key(arg0 : i32, arg1 : i32,) -> i32 {
-                        unsafe { $($path_to_types)*:: _export_map_key_cabi::<$ty > (arg0,
+                        "cadenza:runtime/heap#dup-if-shared")] unsafe extern "C" fn
+                        export_dup_if_shared(arg0 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_dup_if_shared_cabi::<$ty > (arg0) }
+                        } #[unsafe (export_name = "cadenza:runtime/heap#map-alloc")]
+                        unsafe extern "C" fn export_map_alloc(arg0 : i32,) -> i32 {
+                        unsafe { $($path_to_types)*:: _export_map_alloc_cabi::<$ty >
+                        (arg0) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#map-set")] unsafe extern "C" fn
+                        export_map_set(arg0 : i32, arg1 : i32, arg2 : i32, arg3 : i32,)
+                        -> i32 { unsafe { $($path_to_types)*:: _export_map_set_cabi::<$ty
+                        > (arg0, arg1, arg2, arg3) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#map-key")] unsafe extern "C" fn
+                        export_map_key(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_map_key_cabi::<$ty > (arg0, arg1) }
+                        } #[unsafe (export_name = "cadenza:runtime/heap#map-val")] unsafe
+                        extern "C" fn export_map_val(arg0 : i32, arg1 : i32,) -> i32 {
+                        unsafe { $($path_to_types)*:: _export_map_val_cabi::<$ty > (arg0,
                         arg1) } } #[unsafe (export_name =
-                        "cadenza:runtime/heap#map-val")] unsafe extern "C" fn
-                        export_map_val(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
-                        $($path_to_types)*:: _export_map_val_cabi::<$ty > (arg0, arg1) }
-                        } #[unsafe (export_name = "cadenza:runtime/heap#map-len")] unsafe
-                        extern "C" fn export_map_len(arg0 : i32,) -> i32 { unsafe {
+                        "cadenza:runtime/heap#map-len")] unsafe extern "C" fn
+                        export_map_len(arg0 : i32,) -> i32 { unsafe {
                         $($path_to_types)*:: _export_map_len_cabi::<$ty > (arg0) } }
                         #[unsafe (export_name = "cadenza:runtime/heap#reset")] unsafe
                         extern "C" fn export_reset(arg0 : i32,) -> i32 { unsafe {
@@ -2136,10 +2154,10 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2553] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xfb\x12\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2571] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x8d\x13\x01A\x02\x01\
 A\x04\x01B\x03\x01p}\x01@\x01\x04utf8\0\0\0\x04\0\x03nfc\x01\x01\x03\0\x15cadenz\
-a:nfc/normalize\x05\0\x01B\x9b\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
+a:nfc/normalize\x05\0\x01B\x9c\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
 \x01\x06handley\0x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bo\
 ol\x01\x02\x01@\x01\x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\
 \x04\0\x09box-float\x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01\
@@ -2152,49 +2170,49 @@ aluey\0y\x04\0\x09bytes-set\x01\x0c\x01@\x02\x03bufy\x05indexy\0y\x04\0\x09bytes
 -get\x01\x0d\x01@\x01\x03bufy\0y\x04\0\x09bytes-len\x01\x0e\x01@\x02\x03bufy\x0c\
 scalar-indexy\0y\x04\0\x0fbytes-scalar-at\x01\x0f\x01@\x01\x01ss\0y\x04\0\x07str\
 -new\x01\x10\x01@\x01\x06handley\0s\x04\0\x07str-get\x01\x11\x01@\x01\x06handley\
-\x01\0\x04\0\x03dup\x01\x12\x04\0\x04drop\x01\x12\x04\0\x09map-alloc\x01\x06\x01\
-@\x04\x01my\x05indexy\x03keyy\x05valuey\0y\x04\0\x07map-set\x01\x13\x01@\x02\x01\
-my\x05indexy\0y\x04\0\x07map-key\x01\x14\x04\0\x07map-val\x01\x14\x01@\x01\x01my\
-\0y\x04\0\x07map-len\x01\x15\x01@\x01\x04nodey\0y\x04\0\x05reset\x01\x16\x01@\x02\
-\x03leny\x05tokeny\0y\x04\0\x0farr-alloc-reuse\x01\x17\x01@\x03\x04discy\x07payl\
-oady\x05tokeny\0y\x04\0\x0dsum-new-reuse\x01\x18\x01@\0\0y\x04\0\x09vec-empty\x01\
-\x19\x01@\x01\x01vy\0y\x04\0\x07vec-len\x01\x1a\x01@\x02\x01vy\x05indexy\0y\x04\0\
-\x07vec-get\x01\x1b\x01@\x02\x01vy\x04elemy\0y\x04\0\x08vec-push\x01\x1c\x01@\x03\
-\x01vy\x05indexy\x04elemy\0y\x04\0\x0avec-update\x01\x1d\x01@\x02\x01ay\x01by\0y\
-\x04\0\x0cbytes-concat\x01\x1e\x01@\x03\x03bufy\x05starty\x03leny\0y\x04\0\x0bby\
-tes-slice\x01\x1f\x04\0\x0dbytes-compact\x01\x0e\x04\0\x09map-empty\x01\x19\x01@\
-\x03\x01my\x03keyy\x03valy\0y\x04\0\x0amap-insert\x01\x20\x01@\x02\x01my\x03keyy\
-\0y\x04\0\x0amap-lookup\x01!\x04\0\x0amap-remove\x01!\x04\0\x08map-size\x01\x15\x04\
-\0\x08map-iter\x01\x15\x01@\x01\x03cury\0y\x04\0\x0dmap-iter-next\x01\"\x04\0\x0c\
-map-iter-key\x01\"\x04\0\x0cmap-iter-val\x01\"\x04\0\x09set-empty\x01\x19\x01@\x02\
-\x01sy\x04elemy\0y\x04\0\x0aset-insert\x01#\x01@\x02\x01sy\x04elemy\0\x7f\x04\0\x0c\
-set-contains\x01$\x04\0\x0aset-remove\x01#\x01@\x01\x01sy\0y\x04\0\x08set-size\x01\
-%\x04\0\x08set-iter\x01%\x04\0\x0dset-iter-next\x01\"\x04\0\x0dset-iter-elem\x01\
-\"\x04\0\x0clive-objects\x01\x19\x04\0\x0avec-concat\x01\x1e\x01o\x02yy\x01@\x02\
-\x01vy\x05indexy\0&\x04\0\x09vec-split\x01'\x04\0\x09set-union\x01\x1e\x04\0\x10\
-set-intersection\x01\x1e\x04\0\x0eset-difference\x01\x1e\x04\0\x0avec-of-arr\x01\
-\x09\x01@\x02\x01ay\x01by\0\x7f\x04\0\x08value-eq\x01(\x01@\x02\x01vy\x04descy\0\
-y\x04\0\x0cvalue-encode\x01)\x01@\x01\x01vv\0y\x04\0\x0bbox-float32\x01*\x01@\x01\
-\x06handley\0v\x04\0\x0bget-float32\x01+\x04\0\x0dbigint-of-i64\x01\0\x04\0\x15b\
-igint-to-i64-checked\x01\x01\x04\0\x0abigint-add\x01\x1e\x04\0\x0abigint-sub\x01\
-\x1e\x04\0\x0abigint-mul\x01\x1e\x04\0\x0abigint-div\x01\x1e\x01@\x02\x01ay\x01b\
-y\0x\x04\0\x0abigint-cmp\x01,\x04\0\x08vec-drop\x01\x1b\x04\0\x0abigint-rem\x01\x1e\
-\x01@\x02\x03numy\x03deny\0y\x04\0\x0brational-of\x01-\x01@\x01\x01ry\0y\x04\0\x0c\
-rational-num\x01.\x04\0\x0crational-den\x01.\x04\0\x0crational-add\x01\x1e\x04\0\
-\x0crational-sub\x01\x1e\x04\0\x0crational-mul\x01\x1e\x04\0\x0crational-div\x01\
-\x1e\x04\0\x0crational-cmp\x01,\x04\0\x0fbigint-of-bytes\x01\x0e\x01@\x02\x01sy\x04\
-descy\0y\x04\0\x0bset-to-list\x01/\x01@\x02\x01my\x04descy\0y\x04\0\x0bmap-to-li\
-st\x010\x04\0\x0estr-from-bytes\x01\x0e\x01@\x03\x01ay\x01by\x04descy\0z\x04\0\x09\
-value-cmp\x011\x01@\x02\x01ay\x04descy\0y\x04\0\x12value-canonicalize\x012\x01@\x03\
-\x01ay\x01by\x04descy\0\x7f\x04\0\x0fvalue-eq-shaped\x013\x04\0\x11str-nfc-norma\
-lize\x01%\x01@\x02\x05bytesy\x04descy\0y\x04\0\x0cvalue-decode\x014\x01@\x01\x05\
-bytesy\0y\x04\0\x0bhash-blake3\x015\x01@\x02\x06handley\x05discsy\0y\x04\0\x09as\
-t-print\x016\x04\0\x0aast-encode\x016\x01@\x02\x0cbytes-handley\x05discsy\0y\x04\
-\0\x0aast-decode\x017\x04\0\x0dmark-immortal\x01\x0b\x04\0\x12mark-immortal-deep\
-\x01\x0b\x04\0\x0bvec-prepend\x01\x1c\x04\0\x14cadenza:runtime/heap\x05\x01\x04\0\
-\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09produce\
-rs\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.\
-41.0";
+\x01\0\x04\0\x03dup\x01\x12\x04\0\x04drop\x01\x12\x04\0\x0ddup-if-shared\x01\x0b\
+\x04\0\x09map-alloc\x01\x06\x01@\x04\x01my\x05indexy\x03keyy\x05valuey\0y\x04\0\x07\
+map-set\x01\x13\x01@\x02\x01my\x05indexy\0y\x04\0\x07map-key\x01\x14\x04\0\x07ma\
+p-val\x01\x14\x01@\x01\x01my\0y\x04\0\x07map-len\x01\x15\x01@\x01\x04nodey\0y\x04\
+\0\x05reset\x01\x16\x01@\x02\x03leny\x05tokeny\0y\x04\0\x0farr-alloc-reuse\x01\x17\
+\x01@\x03\x04discy\x07payloady\x05tokeny\0y\x04\0\x0dsum-new-reuse\x01\x18\x01@\0\
+\0y\x04\0\x09vec-empty\x01\x19\x01@\x01\x01vy\0y\x04\0\x07vec-len\x01\x1a\x01@\x02\
+\x01vy\x05indexy\0y\x04\0\x07vec-get\x01\x1b\x01@\x02\x01vy\x04elemy\0y\x04\0\x08\
+vec-push\x01\x1c\x01@\x03\x01vy\x05indexy\x04elemy\0y\x04\0\x0avec-update\x01\x1d\
+\x01@\x02\x01ay\x01by\0y\x04\0\x0cbytes-concat\x01\x1e\x01@\x03\x03bufy\x05start\
+y\x03leny\0y\x04\0\x0bbytes-slice\x01\x1f\x04\0\x0dbytes-compact\x01\x0e\x04\0\x09\
+map-empty\x01\x19\x01@\x03\x01my\x03keyy\x03valy\0y\x04\0\x0amap-insert\x01\x20\x01\
+@\x02\x01my\x03keyy\0y\x04\0\x0amap-lookup\x01!\x04\0\x0amap-remove\x01!\x04\0\x08\
+map-size\x01\x15\x04\0\x08map-iter\x01\x15\x01@\x01\x03cury\0y\x04\0\x0dmap-iter\
+-next\x01\"\x04\0\x0cmap-iter-key\x01\"\x04\0\x0cmap-iter-val\x01\"\x04\0\x09set\
+-empty\x01\x19\x01@\x02\x01sy\x04elemy\0y\x04\0\x0aset-insert\x01#\x01@\x02\x01s\
+y\x04elemy\0\x7f\x04\0\x0cset-contains\x01$\x04\0\x0aset-remove\x01#\x01@\x01\x01\
+sy\0y\x04\0\x08set-size\x01%\x04\0\x08set-iter\x01%\x04\0\x0dset-iter-next\x01\"\
+\x04\0\x0dset-iter-elem\x01\"\x04\0\x0clive-objects\x01\x19\x04\0\x0avec-concat\x01\
+\x1e\x01o\x02yy\x01@\x02\x01vy\x05indexy\0&\x04\0\x09vec-split\x01'\x04\0\x09set\
+-union\x01\x1e\x04\0\x10set-intersection\x01\x1e\x04\0\x0eset-difference\x01\x1e\
+\x04\0\x0avec-of-arr\x01\x09\x01@\x02\x01ay\x01by\0\x7f\x04\0\x08value-eq\x01(\x01\
+@\x02\x01vy\x04descy\0y\x04\0\x0cvalue-encode\x01)\x01@\x01\x01vv\0y\x04\0\x0bbo\
+x-float32\x01*\x01@\x01\x06handley\0v\x04\0\x0bget-float32\x01+\x04\0\x0dbigint-\
+of-i64\x01\0\x04\0\x15bigint-to-i64-checked\x01\x01\x04\0\x0abigint-add\x01\x1e\x04\
+\0\x0abigint-sub\x01\x1e\x04\0\x0abigint-mul\x01\x1e\x04\0\x0abigint-div\x01\x1e\
+\x01@\x02\x01ay\x01by\0x\x04\0\x0abigint-cmp\x01,\x04\0\x08vec-drop\x01\x1b\x04\0\
+\x0abigint-rem\x01\x1e\x01@\x02\x03numy\x03deny\0y\x04\0\x0brational-of\x01-\x01\
+@\x01\x01ry\0y\x04\0\x0crational-num\x01.\x04\0\x0crational-den\x01.\x04\0\x0cra\
+tional-add\x01\x1e\x04\0\x0crational-sub\x01\x1e\x04\0\x0crational-mul\x01\x1e\x04\
+\0\x0crational-div\x01\x1e\x04\0\x0crational-cmp\x01,\x04\0\x0fbigint-of-bytes\x01\
+\x0e\x01@\x02\x01sy\x04descy\0y\x04\0\x0bset-to-list\x01/\x01@\x02\x01my\x04desc\
+y\0y\x04\0\x0bmap-to-list\x010\x04\0\x0estr-from-bytes\x01\x0e\x01@\x03\x01ay\x01\
+by\x04descy\0z\x04\0\x09value-cmp\x011\x01@\x02\x01ay\x04descy\0y\x04\0\x12value\
+-canonicalize\x012\x01@\x03\x01ay\x01by\x04descy\0\x7f\x04\0\x0fvalue-eq-shaped\x01\
+3\x04\0\x11str-nfc-normalize\x01%\x01@\x02\x05bytesy\x04descy\0y\x04\0\x0cvalue-\
+decode\x014\x01@\x01\x05bytesy\0y\x04\0\x0bhash-blake3\x015\x01@\x02\x06handley\x05\
+discsy\0y\x04\0\x09ast-print\x016\x04\0\x0aast-encode\x016\x01@\x02\x0cbytes-han\
+dley\x05discsy\0y\x04\0\x0aast-decode\x017\x04\0\x0dmark-immortal\x01\x0b\x04\0\x12\
+mark-immortal-deep\x01\x0b\x04\0\x0bvec-prepend\x01\x1c\x04\0\x14cadenza:runtime\
+/heap\x05\x01\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\
+\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-\
+bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {
