@@ -3191,7 +3191,7 @@
   (input  (do
             (def foo 5)
             (def (main) (host (foo) 5)) (export main)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "foo") (message "effect")))
 
 (case "a bind directive naming a value definition rather than an effect is rejected"
   (doc    "The `(bind …)` peer-binding analogue of the host-delegates-a-value reject above (the U-pivot
@@ -3217,7 +3217,7 @@
   (input  (do
             (effect A (op a (-> Unit Int64)))
             (def (main) (host (A A) (A.a))) (export main)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "more than once")))
 
 (case "binding the same effect to a peer twice is rejected"
   (doc    "The `(bind …)` peer-routing analogue of the duplicate-host-delegation reject above (the U-pivot
