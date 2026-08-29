@@ -3,13 +3,16 @@
 //! it (`cdz`). See the crate manifest for the extraction rationale (the compile-boundary analogue of
 //! `cadenza-ast`'s AST-wire crate).
 //!
-//! This first slice holds the two pure-data leaf enums the boundary names — the requested [`Target`]
-//! and the [`OptLevel`]. Later slices move the kinded `Artifact` list, the sidecar `Request`/`Query`
-//! wire + codec, and the source `spans` side-table. The compiler IMPLEMENTATIONS behind the boundary
-//! (query eval over a live `Db`, `compile`, the backends) stay in `rcdzc`.
+//! So far the crate holds the pure-data boundary enums — the requested [`Target`], the [`OptLevel`],
+//! and the sidecar [`Request`]/[`Query`] request vocabulary. Later slices move the encode/decode codec
+//! for those requests (which takes a `cadenza-ast` dep), the kinded `Artifact` list, and the source
+//! `spans` side-table. The compiler IMPLEMENTATIONS behind the boundary (the request codec today,
+//! query eval over a live `Db`, `compile`, the backends) stay in `rcdzc`.
 
 pub mod opt;
+pub mod sidecar;
 pub mod target;
 
 pub use opt::OptLevel;
+pub use sidecar::{Query, Request};
 pub use target::Target;
