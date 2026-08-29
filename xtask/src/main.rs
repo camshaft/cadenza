@@ -193,15 +193,6 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
-    /// Run the runtime allocation benchmark (gross heap allocs per hot op) and diff against the
-    /// committed baseline `spec/bench/.alloc-baseline`. Allocation count — not wall-clock — is the
-    /// tracked metric: it is identical native↔wasm and deterministic, so it catches an allocation
-    /// regression the way `gate --check` catches a behavior one. Exits non-zero on a regression.
-    Bench {
-        /// Record the current counts as the committed baseline, then exit.
-        #[arg(long)]
-        save: bool,
-    },
     /// Citation-coverage regression gate (wired into `check`): run `duvet report`, count the `//=` /
     /// `//#` citation annotations, and fail if the count drops below the committed floor in
     /// `.duvet/coverage-floor.json` — a deleted/stranded citation turns the gate red. Gates on a
@@ -317,7 +308,6 @@ fn main() {
         Cmd::MergeBaseline { ours, theirs } => merge_baseline(&ours, &theirs),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
         Cmd::Codegen { check } => codegen::run(&paths, check),
-        Cmd::Bench { save } => bench::run(&paths, save),
         Cmd::DuvetCheck { save } => duvet_check::run(&paths, save),
         Cmd::Miri { filter } => miri(&paths, &filter),
         Cmd::GuideWasm { store } => guide_wasm(&paths, store),
@@ -408,7 +398,6 @@ fn miri(paths: &Paths, filter: &str) {
     }
 }
 
-mod bench;
 mod codegen;
 mod duvet_check;
 mod fleet;
