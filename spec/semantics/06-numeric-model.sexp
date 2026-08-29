@@ -13663,3 +13663,17 @@
   (call main (: 7 Int64)) (output (: 31 Int64))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: -2 Int64)) (output (: 30 Int64)))
+
+(case "fk1 NaN as a SET element dedups and is FINDABLE — canonical-bit float keys"
+  (doc "The float-key doctrine face (#5556 oracle territory): NaN participates in a #set as an ordinary
+        canonical-bit key — two NaN elements DEDUP to one (the byte-equality doctrine, nan1's collection
+        sibling) and Set.contains FINDS NaN (impossible under IEEE where NaN≠NaN). Set {NaN,NaN,1.5,n} →
+        3 distinct → 30, + contains(NaN) → 31 for any n. (The hop declines this shape — ConstFloatNan,
+        the known parked face; HOP-1 declines skip.)")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 10 (Set.len #set(Float64.nan Float64.nan 1.5 (Float64.of-int n))))
+         (if (Set.contains #set(Float64.nan 2.5) Float64.nan) 1 0)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 31 Int64))
+  (call main (: 1 Int64)) (output (: 31 Int64)))
