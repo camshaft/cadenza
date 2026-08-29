@@ -1763,6 +1763,25 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             key,
         });
     }
+    // Case 6recng: `form` is a GUARD `(guard <compound with a NESTED (record …)> <cond>)` ascended from the
+    // cond → a bare-binder field of a record NESTED in the guard's variant/tuple/list pattern is in scope in
+    // the guard cond (`(guard (Some (record (= x a))) (> a 5))` — the guard reads `a`). The guard-cond twin of
+    // Case 6rec-nested: the binder resolves to the SAME `RecordField` the arm BODY reference gets, so the
+    // guard reads the nested field off the scrutinee exactly as the body would. Caught here (form=guard,
+    // from=cond) because at the arm `from` is the guard wrapper, not the cond, so
+    // `match_arm_nested_record_binds_path` cannot fire for a guard-cond reference (its `from == guard_cond`
+    // check misses). Without this, a guard reading a nested-record binder was a spurious CDZ0101 while the
+    // body reading the same binder compiled (breaker's s3).
+    if let Some((scrutinee, path, key, heads)) =
+        guard_cond_nested_record_binds_path(db, form, from, name)
+    {
+        return Some(Resolved::RecordField {
+            scrutinee,
+            path: path.into(),
+            key,
+            heads: heads.into(),
+        });
+    }
     // Case 6bg: `form` is a GUARD `(guard (bin <seg>…) <cond>)`, ascended from `<cond>` → a SEGMENT binder of
     // the bin pattern is in scope in the guard cond (`(guard (bin (u8 n)) (> n 5))` — the guard reads `n`).
     // The binary analogue of Case 6lg/6tg/6recg: the binder resolves to the SAME `BinField` Case B gives the
@@ -2737,6 +2756,54 @@ fn guard_cond_variant_binds(
     } else {
         None
     }
+}
+
+/// If `form` is a guard `(guard <compound-pattern> <cond>)` ascended from its `<cond>`, and the inner
+/// compound (variant/tuple/list) pattern NESTS a `(record …)` sub-pattern binding `name` at a bare-binder
+/// field, the `(scrutinee, path-to-record, field-key, heads)` for the `RecordField` read — the guard-cond
+/// twin of Case 6rec-nested ([`match_arm_nested_record_binds_path`]). `(guard (Some (record (x a))) (> a 0))`
+/// binds `a` (path `[Payload]`, head `Some`, key `x`) for the guard cond. A guard-cond reference ascends into
+/// the `(guard …)` form (THIS case) before it would reach the arm — where `from` is the guard WRAPPER, not
+/// the cond, so `match_arm_nested_record_binds_path`'s `from == guard_cond` check cannot fire for a guard-cond
+/// reference. A TOP-LEVEL record guard is Case 6recg's ([`guard_cond_record_binds`]), so a non-empty `path`
+/// is required here. `None` otherwise. (`find_record_binder_in_pattern` — the descent Case 6rec-nested uses —
+/// walks variant/tuple/list compounds into a nested record; a bare `find_binder_in_pattern`, which
+/// `guard_cond_variant_binds` uses, skips the `record` head, which is why the plain variant guard case misses
+/// this and it needs its own twin.)
+fn guard_cond_nested_record_binds_path(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, Vec<crate::core::PathStep>, Symbol, Vec<StructId>)> {
+    let g = db.ast.as_form(form, "guard")?;
+    if g.len() != 2 || g[1] != from {
+        return None;
+    }
+    let pattern = g[0];
+    let arm = db.parent_of(form)?;
+    let Struct::List(pb) = db.ast.get(arm) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[0] != form {
+        return None; // `form` must be the arm's pattern position
+    }
+    let matchf = db.parent_of(arm)?;
+    let mtail = db.ast.as_form(matchf, "match")?;
+    let scrutinee = *mtail.first()?;
+    if arm == scrutinee {
+        return None;
+    }
+    // Descend the compound pattern for a NESTED `(record …)` binding `name` — the same walk Case 6rec-nested
+    // uses; `path` reaches the RECORD (the field is name-keyed via the returned key). A non-empty path is
+    // required (a TOP-LEVEL record guard is Case 6recg's).
+    let mut path = Vec::new();
+    let mut heads = Vec::new();
+    let key = find_record_binder_in_pattern(db, pattern, name, &mut path, &mut heads)?;
+    if path.is_empty() {
+        return None; // the record is the whole guard pattern → Case 6recg's job
+    }
+    Some((scrutinee, path, key, heads))
 }
 
 /// If `form` is a guard `(guard (list p… [.. rest]) <cond>)` ascended from its `<cond>`, and the LIST
