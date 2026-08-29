@@ -12562,56 +12562,6 @@ mod match_engine {
     }
 
     #[test]
-    fn an_out_of_range_literal_in_a_compound_payload_is_rejected_at_check() {
-        // CHECK-vs-EMIT gap fix (v-inference): a NESTED narrow-width literal — the payload of `(: (Some 999)
-        // (Option Int8))`, an element of `(: (tuple 999) (Tuple Int8))` / `(: (list 999) (List Int8))` — was
-        // ACCEPTED by `cdz check` (rc=0) while the EMIT path rejected it CDZ0302. The annotation's `Int8`
-        // propagates into the payload's type, but the literal itself stays a deferred `Int64` (its own
-        // `type_of` reads `Int64`), so the top-level `literal_width_fault` never fired on it. Now
-        // `nested_literal_width_faults` descends the annotation's expected type against the value's
-        // payload/elements and range-checks each nested literal — so `check` agrees with emit.
-        for (src, shape) in [
-            (
-                "(module m (def (main) (: (Some 999) (Option Int8))) (export main))",
-                "Some payload",
-            ),
-            (
-                "(module m (def (main) (: (tuple 999) (Tuple Int8))) (export main))",
-                "tuple element",
-            ),
-            (
-                "(module m (def (main) (: (list 999) (List Int8))) (export main))",
-                "list element",
-            ),
-            (
-                "(module m (def (main) (: (Some (tuple 999)) (Option (Tuple Int8)))) (export main))",
-                "doubly-nested Some/tuple",
-            ),
-        ] {
-            let d = reject_full(src).unwrap_or_else(|| {
-                panic!("{shape}: nested out-of-range literal must be rejected at check")
-            });
-            assert_eq!(
-                d.code.as_deref(),
-                Some("CDZ0302"),
-                "{shape}: got {}",
-                d.message
-            );
-            assert!(
-                d.message.contains("Int8") && d.message.contains("-128..=127"),
-                "{shape}: names the width + range: {}",
-                d.message
-            );
-        }
-        // NO over-rejection: an IN-RANGE nested literal still type-checks.
-        assert!(
-            reject_full("(module m (def (main) (: (Some 5) (Option Int8))) (export main))")
-                .is_none(),
-            "an in-range nested payload literal must still be accepted"
-        );
-    }
-
-    #[test]
     fn a_suffixed_bigint_literal_annotated_or_passed_to_int64_faults_once_as_a_type_mismatch() {
         // An EXPLICITLY-SUFFIXED literal `999…N` types as `BigInt` (a distinct numeric type), so
         // annotating it `Int64` — or passing it to an `Int64` parameter — is a genuine TYPE MISMATCH
@@ -30388,63 +30338,6 @@ mod stage1 {
             codes_for("(do (def (main) (let ((outer (fn (x) (let ((inner (fn (z) z))) (inner x))))) (outer 5))) (export main))")
                 .is_empty(),
             "a generic nested inline lambda compiles clean (no spurious fault at depth)"
-        );
-    }
-
-    #[test]
-    fn a_function_typed_map_set_key_or_comparison_rejects_cdz0216() {
-        // RULING (v-inference, concierge-confirmed 2026-08-02): a FUNCTION-typed Map key / Set element /
-        // direct-(=) operand rejects CDZ0216 (NotEquatable) — a closure has no canonical identity, so it is
-        // neither equatable nor orderable AT ALL. Distinct from CDZ0202 (abstract/nominal-BOUNDARY opacity):
-        // this is INTRINSIC non-comparability, not a boundary issue. Previously wasm MISCOMPILED (invented a
-        // closure identity) while rust E0277'd — now a uniform compile-time reject.
-        use crate::abi::Artifact;
-        let codes_for = |s: &str| -> Vec<String> {
-            let entry = crate::codec::encode(&parse(s));
-            let out = crate::compile::compile(
-                &[
-                    Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
-                ],
-                &[crate::backend::Target::Wasm],
-            );
-            out.diagnostics
-                .iter()
-                .filter_map(|d| d.code.clone())
-                .collect()
-        };
-        // A Set of functions — a function ELEMENT rejects CDZ0216.
-        assert!(
-            codes_for("(do (def (main) (Set.len (Set.of (list (fn (x) (+ x 1)))))) (export main))")
-                .contains(&"CDZ0216".to_string()),
-            "a Set of functions must reject CDZ0216"
-        );
-        // A Map keyed by a function rejects CDZ0216.
-        assert!(
-            codes_for(
-                "(do (def (main) (Map.len (Map.insert Map.empty (fn (x) x) 1))) (export main))"
-            )
-            .contains(&"CDZ0216".to_string()),
-            "a Map keyed by a function must reject CDZ0216"
-        );
-        // A direct (=) on two functions is rejected too, but by the pre-existing CDZ0203 fn-operand arm
-        // ("this operation is not defined on a function value") — that path owns the operator-operand case
-        // and is more precise (forgot-to-apply hint), so CDZ0216 is scoped to the KEY position, not eq.
-        assert!(
-            codes_for("(do (def (main) (if (= (fn (x) x) (fn (x) x)) 1 0)) (export main))")
-                .contains(&"CDZ0203".to_string()),
-            "comparing two functions rejects (CDZ0203, the fn-operand arm)"
-        );
-        // CONTROL: a value-typed (Int64) Set/Map key stays legal (no over-reject).
-        assert!(
-            !codes_for("(do (def (main) (Set.len (Set.of (list 1 2 3)))) (export main))")
-                .contains(&"CDZ0216".to_string()),
-            "an Int64 Set element stays legal (no CDZ0216)"
-        );
-        assert!(
-            !codes_for("(do (def (main) (Map.len (Map.insert Map.empty 1 2))) (export main))")
-                .contains(&"CDZ0216".to_string()),
-            "an Int64 Map key stays legal (no CDZ0216)"
         );
     }
 

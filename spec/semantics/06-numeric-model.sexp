@@ -930,6 +930,28 @@
   (input  (: (Some 999) (Option Int8)))
   (error  CDZ0302))
 
+(case "a literal in a TUPLE element that overflows the annotated width is rejected"
+  (doc    "`(: #tuple(999) (Tuple Int8))` — the annotation's element type `Int8` grounds the tuple element
+           literal `999`, which overflows Int8 (-128..=127) → CDZ0302, the tuple-element face of the
+           Some-payload descent above. (migrated from rcdzc an_out_of_range_literal_in_a_compound_payload.)")
+  (input  (do (def (main) (: #tuple(999) (Tuple Int8))) (export main)))
+  (error  CDZ0302))
+
+(case "a literal in a LIST element that overflows the annotated width is rejected"
+  (doc    "`(: #list(999) (List Int8))` — the annotation's element type `Int8` grounds the list element
+           literal `999`, which overflows Int8 → CDZ0302, the list-element face of the compound-payload
+           descent. (migrated from rcdzc an_out_of_range_literal_in_a_compound_payload.)")
+  (input  (do (def (main) (: #list(999) (List Int8))) (export main)))
+  (error  CDZ0302))
+
+(case "a literal in a DOUBLY-NESTED compound payload that overflows the annotated width is rejected"
+  (doc    "`(: (Some #tuple(999)) (Option (Tuple Int8)))` — the overflowing `999` sits TWO compound levels
+           down (a tuple element inside a Some payload). The width fit-check must descend to any depth →
+           CDZ0302, pinning the descent recursion. (migrated from rcdzc
+           an_out_of_range_literal_in_a_compound_payload.)")
+  (input  (do (def (main) (: (Some #tuple(999)) (Option (Tuple Int8)))) (export main)))
+  (error  CDZ0302))
+
 (case "a literal in a USER-DECLARED sum payload that overflows the annotated width is rejected"
   (doc    "`(type W (W Int8))` then `(: (W 999) W)` — the sum type W's declared payload Int8 grounds the `W`
            constructor's literal argument `999`, which overflows Int8 → CDZ0302, exactly as the bare `(: 999
