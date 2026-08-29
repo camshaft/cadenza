@@ -12927,3 +12927,13 @@
     (export main)))
   (call main (: 3 Int64)) (output (: 33 Int64))
   (call main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "bign1 a beyond-i64 N-suffixed LITERAL renders and re-reads through every surface — the #5371 printer fence"
+  (doc "The direct-literal twin of cdzw51 (which uses a fold-produced value): pre-#5371 the ML printer
+        hoisted a self-typed N-suffixed literal into the def return type, and the 20-digit literal failed
+        the ml→binary→ml leg. Pins the literal spelling surviving all surfaces AND the value itself.
+        live 1 = the returned BigInt heap value.")
+  (input (do (def (main) 99999999999999999999N) (export main)))
+  (call main)
+  (output (: 99999999999999999999 BigInt))
+  (live-objects 1))
