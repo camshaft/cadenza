@@ -36,6 +36,7 @@ inductive SymExpr where
   | ite (c t e : SymExpr)                    -- a conditional on a (possibly symbolic) condition
   | tuple (elems : Array SymExpr)            -- a tuple value (lazy elements); positional projection reads one
   | record (fields : Array (ByteArray × SymExpr)) -- a record value, fields sorted by key; field projection reads one
+  | ctor (tag : ByteArray) (args : Array SymExpr)  -- a tagged constructor value (Some/Ok/Err payload, None nullary)
   deriving BEq, Inhabited
 
 /-- The symbolic OUTCOME of evaluating a program with symbolic inputs. `cannotProve` records WHY so the
@@ -80,6 +81,7 @@ partial def mayTrap : SymExpr → Bool
   | .ite c t e => mayTrap c || mayTrap t || mayTrap e
   | .tuple es => es.any mayTrap
   | .record fs => fs.any (fun kv => mayTrap kv.2)
+  | .ctor _ args => args.any mayTrap
 
 /-- Canonicalize a symbolic expression by SOUND rewrites only: recurse into subterms; SOUND constant
 folding of comparison/boolean ops (`foldConst?`); an `if` on a (now possibly-folded) constant boolean
@@ -97,6 +99,7 @@ partial def normalize : SymExpr → SymExpr
     | none => .app op args'
   | .tuple es => .tuple (es.map normalize)
   | .record fs => .record (fs.map (fun kv => (kv.1, normalize kv.2)))
+  | .ctor tag args => .ctor tag (args.map normalize)
   | .ite c t e =>
     match normalize c with
     | .const (.bool true) => normalize t
@@ -128,7 +131,8 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
     | some (Leaf.name b) =>
       match senv.find? (fun p => p.1 == b) with
       | some (_, e) => .sym e
-      | none => .cannotProve "symeval: free name (not a bound parameter)"
+      | none => if b == "None".toUTF8 then .sym (.ctor "None".toUTF8 #[])
+                else .cannotProve "symeval: free name (not a bound parameter)"
     | some l =>
       match Value.ofLeaf l with
       | some v => .sym (.const v)
@@ -164,6 +168,12 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
         match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
         | some r => .cannotProve r
         | none => .sym (.tuple (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
+      else if h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then
+        -- a built-in unary Option/Result constructor (lazy payload).
+        match children[1]? with
+        | some aId => (match symEval m senv aId with | .sym e => .sym (.ctor h #[e]) | .cannotProve r => .cannotProve r)
+        | none => .cannotProve "symeval: constructor missing payload"
+      else if h == "None".toUTF8 then .sym (.ctor "None".toUTF8 #[])
       else if h == "record".toUTF8 then
         -- a record value: (record (f1 v1) (f2 v2)…), fields sorted by key (matching evalRecord's canonical
         -- form + catching a field-reorder). An unmodelable field value sinks the record (conservative).
@@ -365,5 +375,14 @@ private def _recExpr : Module :=
 #guard symEval _recExpr [] 7 == SymOutcome.sym (.record #[("a".toUTF8, .const (.int 1)), ("b".toUTF8, .const (.int 2))])
 -- projecting field `b` → `const 2`.
 #guard symEval _recExpr [] 10 == SymOutcome.sym (.const (.int 2))
+
+-- built-in Option/Result construction: `(Some 5)` → `.ctor "Some" [const 5]`; bare `None` → `.ctor "None" []`.
+private def _someExpr : Module :=
+  { leaves := #[Leaf.name "Some".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[5])],
+    nodes := #[.atom 0, .atom 1, .list #[0, 1]], root := 2 }
+#guard symEval _someExpr [] 2 == SymOutcome.sym (.ctor "Some".toUTF8 #[.const (.int 5)])
+private def _noneExpr : Module :=
+  { leaves := #[Leaf.name "None".toUTF8], nodes := #[.atom 0], root := 0 }
+#guard symEval _noneExpr [] 0 == SymOutcome.sym (.ctor "None".toUTF8 #[])
 
 end Oracle
