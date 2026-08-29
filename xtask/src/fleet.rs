@@ -1852,6 +1852,8 @@ fn pre_commit_hook_body() -> String {
 # (2) auto-fmt staged-.rs crates: fail-open, auto-runs the pinned rustfmt + re-stages so unformatted rust
 # can't land and re-red the fleet-wide rustfmt gate. (3) warn (fail-open) on a NET-ADD of #[test] to
 # rcdzc/src/tests.rs — nudge toward a language-agnostic corpus test (the delanguaging lane shrinks it).
+# (4) warn (fail-open) when cdz-run/src/cli.rs (RunArgs) is staged — nudge to also build the downstream cdz
+# bin (dev-gate scopes to cdz-run + misses cdz's WatchCmd::Run E0063; broke the fleet twice).
 set -uo pipefail
 
 # (1) TRUNK-GUARD — refuse a direct commit onto `trunk` unless in the pr-sync worktree (the integrator).
@@ -1936,6 +1938,24 @@ if [ "${{FLEET_SKIP_TESTS_RS_WARN:-}}" != "1" ]; then
       echo "  See spec/semantics/README.md. If this is a genuine compiler-internal white-box invariant NOT" >&2
       echo "  expressible in the corpus, proceed — warn-only. (Silence: FLEET_SKIP_TESTS_RS_WARN=1.)" >&2
     fi
+  fi
+fi
+
+# (4) cdz-run RunArgs → downstream cdz WARN (fail-open; concierge issue 2026-08-29, fleet-broken TWICE).
+# cdz-run/src/cli.rs holds `RunArgs`, which the DOWNSTREAM cdz front-end bin constructs at cdz/src/main.rs
+# (WatchCmd::Run) + two cdz test literals. `cargo xtask dev-gate` auto-scopes to the CHANGED crate (cdz-run)
+# and does NOT rebuild cdz, so a RunArgs FIELD-ADD compiles clean under dev-gate but breaks cdz with E0063
+# — and that slipped to main fleet-wide twice (#5746, #5766), redding everyone's gate-local/nix-cdz. So when
+# cli.rs is staged, WARN the author to ALSO build the downstream bin before landing. Warn-only + narrow (only
+# this file); the durable class-kill (a RunArgs `..Default::default()` / dev-gate learning the cdz-run→cdz
+# edge) is tracked separately. Silence: FLEET_SKIP_CDZRUN_CDZ_WARN=1.
+if [ "${{FLEET_SKIP_CDZRUN_CDZ_WARN:-}}" != "1" ]; then
+  _cli="implementation/seed/crates/cdz-run/src/cli.rs"
+  if git diff --cached --name-only --diff-filter=ACM -- "$_cli" 2>/dev/null | grep -q .; then
+    echo "⚠ fleet pre-commit: $_cli (cdz-run RunArgs) is staged. Before you land, also build the DOWNSTREAM" >&2
+    echo "  front-end bin:  cargo build -p cdz --all-targets  (or CDZ_NO_CARGO_SHIM=1 cargo build -p cdz)." >&2
+    echo "  dev-gate scopes to cdz-run and SKIPS cdz, so a RunArgs field-add breaks cdz's WatchCmd::Run" >&2
+    echo "  initializer with E0063 — this slipped to main fleet-wide twice. (Silence: FLEET_SKIP_CDZRUN_CDZ_WARN=1.)" >&2
   fi
 fi
 exit 0
