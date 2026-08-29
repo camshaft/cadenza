@@ -1209,9 +1209,15 @@ mod tests {
         assert_ne!(decline_signature("CDZ without digits"), "CDZ");
         // Backtick-quoted op/type names are STRIPPED, so a host-boundary gap CLASS dedups regardless of
         // the specific op (`o` vs `p`) or result type (`Bytes` vs `(List Int64)`) — one gap, one repro.
-        let g_o_bytes = decline_signature("the host operation `o` has a result of type `Bytes`, which …");
-        let g_p_list = decline_signature("the host operation `p` has a result of type `(List Int64)`, which …");
-        assert_eq!(g_o_bytes, g_p_list, "same host-result gap class must share a signature");
+        let g_o_bytes =
+            decline_signature("the host operation `o` has a result of type `Bytes`, which …");
+        let g_p_list = decline_signature(
+            "the host operation `p` has a result of type `(List Int64)`, which …",
+        );
+        assert_eq!(
+            g_o_bytes, g_p_list,
+            "same host-result gap class must share a signature"
+        );
         // A genuinely different gap keeps a different signature.
         assert_ne!(
             g_o_bytes,
