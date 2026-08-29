@@ -1280,14 +1280,16 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
 /// `[EXPORT] KEY=VALUE` where KEY is env-var-shaped (UPPER/digit/_).
 fn pr_body_secret_findings(title: &str, body: &str) -> Vec<String> {
     let mut findings = Vec::new();
-    let mut env_lines = 0usize;
     let text = format!("{title}\n{body}");
-    for (i, raw) in text.lines().enumerate() {
-        let line = raw.trim();
-        let rest = line.strip_prefix("export ").map(str::trim).unwrap_or(line);
-        let Some(eq) = rest.find('=') else { continue };
-        let key = &rest[..eq];
-        let val = rest[eq + 1..].trim();
+    // Tokenize on WHITESPACE (not just the line-first `=`) so INLINE / one-line dumps — many `KEY=VALUE`
+    // on one line, e.g. a `set`/`env` dump collapsed by a shell, or an inline `AWS_SESSION_TOKEN=…` — are
+    // caught, not only line-start assignments. `export FOO=1` splits so the bare `export` token (no `=`) is
+    // skipped and `FOO=1` is checked.
+    let mut env_toks = 0usize;
+    for tok in text.split_whitespace() {
+        let Some(eq) = tok.find('=') else { continue };
+        let key = &tok[..eq];
+        let val = &tok[eq + 1..];
         let key_shaped = !key.is_empty()
             && key
                 .chars()
@@ -1299,8 +1301,8 @@ fn pr_body_secret_findings(title: &str, body: &str) -> Vec<String> {
         if !key_shaped || val.is_empty() {
             continue;
         }
-        env_lines += 1;
-        // (2) secret-NAMED key with a non-trivial value → a real credential.
+        env_toks += 1;
+        // (2) secret-NAMED key with a non-trivial value → a real credential (caught even INLINE / one-line).
         let ku = key.to_ascii_uppercase();
         let secret_named = ku.starts_with("AWS_")
             || ku.starts_with("ANTHROPIC_")
@@ -1318,27 +1320,23 @@ fn pr_body_secret_findings(title: &str, body: &str) -> Vec<String> {
             .any(|p| ku.contains(p));
         let trivial = matches!(val, "1" | "0" | "true" | "false" | "yes" | "no") || val.len() <= 4;
         if secret_named && !trivial {
-            findings.push(format!(
-                "line {}: secret-named key with a real value — `{key}=…`",
-                i + 1
-            ));
+            findings.push(format!("secret-named key with a real value — `{key}=…`"));
         }
-        // (3) recognizable secret VALUE token.
+        // (3) recognizable secret VALUE token on an assignment.
         if val.contains("sk-ant-")
             || val.starts_with("AKIA")
             || val.starts_with("ghp_")
             || val.starts_with("xoxb-")
         {
             findings.push(format!(
-                "line {}: value looks like a live credential token",
-                i + 1
+                "assignment `{key}=…` value looks like a live credential token"
             ));
         }
     }
-    // (1) a large block of env assignments = an env dump.
-    if env_lines >= 8 {
+    // (1) a large block of env assignments = an env dump (token-based, so a one-line collapsed dump counts).
+    if env_toks >= 8 {
         findings.push(format!(
-            "{env_lines} KEY=VALUE env-assignment lines — this looks like an ENV DUMP; a PR body must be prose, not environment"
+            "{env_toks} KEY=VALUE env assignments — this looks like an ENV DUMP; a body must be prose, not environment"
         ));
     }
     // (4) whole-text credential-token scan — catches a leaked token ANYWHERE regardless of KEY=VALUE line
@@ -20681,6 +20679,17 @@ branch refs/heads/fleet/trunk-tools
             )
             .is_empty(),
             "documenting the token prefixes in prose must not false-positive"
+        );
+        // FLAG: a one-line / INLINE env dump (many space-separated KEY=VALUE on ONE line, incl an inline
+        // secret) — the WHITESPACE-token scan catches what the old line-first parse missed (a real leak a
+        // live test delivered before this hardening).
+        assert!(
+            !pr_body_secret_findings(
+                "PATH=/usr/bin HOME=/home/x AWS_SESSION_TOKEN=abcdef0123456789 FOO=1 BAR=2 BAZ=3 QUX=4 ZIP=5",
+                ""
+            )
+            .is_empty(),
+            "a one-line inline env dump / inline secret must be flagged"
         );
     }
 
