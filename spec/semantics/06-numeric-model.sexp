@@ -13140,3 +13140,19 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 117 Int64))
   (call main (: -2 Int64)) (output (: 18 Int64)))
+
+(case "cdzw66 RUNTIME closures in a data structure — built, runtime-indexed, applied — round-trip the cadenza hop"
+  (doc "The unfoldable closure face (breaker census: plain HOFs, captures, and even branch-selected
+        closures all INLINE away pre-backend — a closure only reaches the backend when stored in a data
+        structure and selected at runtime): a #list of two lambdas, List.at with a runtime-varying index,
+        the Some-matched closure applied to the runtime arg. The hop re-emits the lambda VALUES inside
+        the #list faithfully. n=7 → (+ 7 1) = 8; n=-1 → (* -1 2) = -2. Dual-path verified,
+        byte-idempotent; live 1 = the surviving closure-list cell (the known retained-cell class).")
+  (input (do
+    (def (main (: n Int64))
+      (do (def fs (list (fn ((: k Int64)) (+ k 1)) (fn ((: k Int64)) (* k 2))))
+          (match (List.at fs (if (> n 0) 0 1)) ((Some f) (f n)) ((None _u) -1))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 8 Int64))
+  (call main (: -1 Int64)) (output (: -2 Int64))
+  (live-objects 1))
