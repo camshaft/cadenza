@@ -350,7 +350,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(12) {
+    match c.variant(13) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -375,6 +375,10 @@ fn gen_main_body<C: Choice>(
         // A BIGINT / RATIONAL body (`main : BigInt`/`Rational`): arbitrary-precision + exact-rational value
         // / arith lowering — a numeric family the Int64/Float/sized grammar never reached.
         11 => gen_bignum_body(c, out),
+        // A PARTIAL-APPLICATION / currying body: a local def applied to FEWER args than its arity yields a
+        // closure over the remaining params, later completed — the def-call under-arity + applyClosure
+        // currying that #5488 grades (was a skip: "operator/application not modeled").
+        12 => gen_partial_application_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -983,6 +987,44 @@ fn gen_bignum_body<C: Choice>(c: &mut C, out: &mut String) {
             let op = ["+", "-", "*", "/"][c.variant(4)];
             write!(out, "({op} {a}R {b}R)").ok()
         }
+    };
+}
+
+/// A PARTIAL-APPLICATION / currying body: a LOCAL def applied to FEWER args than its arity yields a
+/// CLOSURE over the remaining params, which is then completed. Reaches the def-call under-arity dispatch
+/// and the `applyClosure` currying that #5488 grades (a `(f a)` with `f` under-applied becomes a closure
+/// capturing `a`, later completed with the rest). Self-contained (a nested `(do (def …) …)` with small
+/// Int64 literals), so it stays type-correct and on the compile path. Verified compiles; #5488 verified
+/// the value-shapes GRADE — `(sub 10)` then `(f 3)` is 7; chained `(((add3 1) 2) 3)` is 6; `(add3 1 2)`
+/// then `(g 3)` is 6.
+fn gen_partial_application_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the FORM before consuming the operand choices — else a short entropy seed exhausts the cursor
+    // on the args and `variant` always defaults to 0 (never reaching the chained/2-arg forms).
+    let form = c.variant(3);
+    let (a, b, k) = (
+        c.int_bounded(0, 99),
+        c.int_bounded(0, 99),
+        c.int_bounded(0, 99),
+    );
+    match form {
+        // 2-ary def, partial to 1 arg via `let`, then complete: `(let ((f (pa A))) (f B))`.
+        0 => write!(
+            out,
+            "(do (def (pa a b) (- a b)) (let ((f (pa {a}))) (f {b})))"
+        )
+        .ok(),
+        // 3-ary def, CHAINED currying one arg at a time: `(((pa3 A) B) K)`.
+        1 => write!(
+            out,
+            "(do (def (pa3 a b c) (+ (+ a b) c)) (((pa3 {a}) {b}) {k}))"
+        )
+        .ok(),
+        // 3-ary def, partial to 2 args via `let`, then complete: `(let ((g (pa3 A B))) (g K))`.
+        _ => write!(
+            out,
+            "(do (def (pa3 a b c) (+ (+ a b) c)) (let ((g (pa3 {a} {b}))) (g {k})))"
+        )
+        .ok(),
     };
 }
 
@@ -1882,6 +1924,36 @@ mod tests {
         }
         assert!(saw_n, "should reach a BigInt (N) form");
         assert!(saw_r, "should reach a Rational (R) form");
+    }
+
+    /// `gen_partial_application_body` REACHES all three currying forms (2-ary `let`-partial, 3-ary chained,
+    /// 3-ary 2-arg `let`-partial) and every body COMPILES (S143: fills the partial-application gap that
+    /// #5488 now grades — a local def under-applied → a closure over the remaining params, later completed).
+    #[test]
+    fn gen_partial_application_body_reaches_all_forms_and_compiles() {
+        let (mut saw_2ary, mut saw_chain, mut saw_2arg) = (false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(827);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_partial_application_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_2ary |= body.contains("(def (pa a b)");
+            saw_chain |= body.contains("(((pa3 ");
+            saw_2arg |= body.contains("((g (pa3 ");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "partial-application body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_2ary, "should reach a 2-ary `let`-partial form");
+        assert!(saw_chain, "should reach a 3-ary chained-currying form");
+        assert!(saw_2arg, "should reach a 3-ary 2-arg `let`-partial form");
     }
 
     /// `gen_try_body` REACHES all four `?`/`try` forms (Ok/Err success+short-circuit for Result, Some/None
