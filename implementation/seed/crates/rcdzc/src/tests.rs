@@ -8431,32 +8431,6 @@ mod match_engine {
         );
     }
 
-    /// Verification Inc-b (D) CAPTURE-GUARD: a def whose PARAM is literally named `ret` cannot carry
-    /// `@ensures` — the `@ensures` result binder `ret` would shadow the param, so enforcement is impossible.
-    /// Rather than silently skip (a footgun — a quietly-unenforced contract), `collect_faults` REJECTS it
-    /// (CDZ0201) naming the fix. A pure diagnostics invariant (no run). The RUN-TIME enforcement of a bare
-    /// `@ensures` — a violated postcondition traps, a satisfied one is value-transparent — is pinned in the
-    /// corpus (`26-program-conditions.sexp`: "a PLAIN @ensures postcondition is ENFORCED at body-exit" and
-    /// "… is value-transparent when SATISFIED"), which links the runtime the check needs.
-    #[test]
-    fn a_bare_ensures_on_a_param_named_ret_is_rejected_not_silently_skipped() {
-        use crate::testkit::parse;
-        // CAPTURE-GUARD REJECT: a def whose PARAM is literally named `ret` cannot carry `@ensures` — the
-        // `@ensures` result binder `ret` would shadow the param, so enforcement is impossible. Rather than
-        // silently skip (a footgun — a quietly-unenforced contract), `collect_faults` REJECTS it (CDZ0201)
-        // naming the fix (rename the param). Assert the diagnostic fires (breaker 2026-07-17; the result binder
-        // was renamed `it`→`ret` per the operator's collision-safety directive).
-        let guarded =
-            "(module m (@ (ensures (>= ret 0)) (def (f (: ret Int64)) (- ret 100))) (export f))";
-        let d = crate::diagnostics(&mut crate::db::Db::load(parse(guarded)))
-            .into_iter()
-            .find(|d| d.message.contains("cannot carry `@ensures`"))
-            .expect(
-                "an @ensures on a def with a param named `ret` is REJECTED, not silently skipped",
-            );
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-    }
-
     // (a_malformed_requires_ensures_arity_is_rejected_not_silently_dropped migrated to corpus
     // 26-program-conditions, the "@requires/@ensures ARITY discipline" block: zero-arg and two-arg
     // @requires/@ensures → CDZ0201 (message "takes exactly one PREDICATE argument"), plus the two valid
