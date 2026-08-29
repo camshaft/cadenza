@@ -26239,6 +26239,26 @@ type CEnv = crate::fxhash::FxHashMap<StructId, CVal>;
 /// declines rather than hangs (the same soundness guard the unroll relies on). Reuses `resolved_of` for the
 /// resolved form; delegates nothing to `core_of` (it is a closed value interpreter), so it composes.
 fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Option<CVal> {
+    // NATIVE-DEPTH GUARD (shared `db.descent_depth` — the compiler-wide recursion policy the `rcdzc-compile`
+    // worker stack in `host.rs` is sized from). `const_eval` <-> `const_eval_apply` mutually recurse to fold
+    // an application; the `budget` below bounds cumulative WORK but NOT native call DEPTH, so an EXPLOSIVE
+    // self-application — `(v1 v1)` whose fold re-applies unboundedly (v-cdz-smith's `selfapp-typeinfer-
+    // overflow` escape, seed 14281198340853570680) — drove this recursion PAST the native stack and
+    // HARD-ABORTED the worker (SIGABRT, bypassing `catch_unwind` + the hang watchdog) BEFORE the budget ran
+    // out. Bounding it here on the SAME counter as `core_of`/`type_of` caps the COMBINED lowering+fold depth
+    // at the stack-sized limit: past it, DECLINE the fold (`None`) — the caller falls back to runtime
+    // lowering / the resource-limit decline — instead of overflowing. Far above any real fold's depth.
+    if db.descent_depth >= crate::db::DESCENT_DEPTH_LIMIT {
+        trace!(target: "rcdzc::lower", node = node.0, "const-eval depth limit hit → decline fold (explosive self-application)");
+        return None;
+    }
+    db.descent_depth += 1;
+    let r = const_eval_inner(db, node, env, budget);
+    db.descent_depth -= 1;
+    r
+}
+
+fn const_eval_inner(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Option<CVal> {
     if *budget == 0 {
         return None;
     }
