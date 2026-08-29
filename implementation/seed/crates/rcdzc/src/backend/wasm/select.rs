@@ -1930,6 +1930,34 @@ fn binder_reuses_or_moves_on_some_path(db: &mut Db, init: StructId, binder: Stru
     }
 }
 
+/// Whether the loop-rebind VALUE `arg` PROVABLY produces a FRESH heap value that does NOT alias or descend
+/// the old accumulator — the SOUND sufficient condition for the borrowed-accumulator drop (`drop_old_borrowed`
+/// in `emit_loop_iteration`). A runtime `rational-add`/`bigint-*` (RationalBinOp/BigIntBinOp) computes a NEW
+/// Rational/BigInt (fresh num/den or magnitude) from its operands' VALUES; it never returns or embeds an
+/// operand's cell, so once such an op has read the old accumulator, that accumulator is genuinely dead and
+/// dropping it frees nothing the new value references (harmonic/Rational/BigInt numeric folds → clean).
+/// EXCLUDES the SHARE hazards the drop must NOT touch (all produce a value that aliases/descends the old
+/// accumulator, so its shell-drop would cascade-free a carried cell → UAF/corruption):
+///   • a `LocalRef`/`Proj`/match-PAYLOAD binder that IS a CHILD of the old accumulator — the tail fold
+///     `(def (bb s) (match s ((Leaf r) r) ((Diff l _t) (bb l))))` rebinds the slot to `l`, a child of the
+///     old `Diff`; dropping the old `Diff` cascade-frees the carried `l` (breaker's reduced CAD repro,
+///     silent value corruption / the 7 CAD `unreachable` double-frees);
+///   • a ctor SHARING the accumulator (`v2max`→`Vec2.V2` reusing the max operand's Rational child, CSG
+///     `fuse`→`Solid.Union` with the accumulator as a payload child);
+///   • a `Call` (may alias/consume/share via the callee).
+/// Following Let/Seq/Block tails; conservative `false` for everything else (keep the drop OFF → at worst the
+/// pre-fix benign leak, never a cascade double-free). NARROWER than "borrowed-not-consumed" alone, which
+/// over-approximated "dead" for compound accumulators whose children are carried forward.
+fn rebind_produces_fresh_numeric(db: &mut Db, arg: StructId) -> bool {
+    match core_of(db, arg) {
+        Core::RationalBinOp { .. } | Core::BigIntBinOp { .. } => true,
+        Core::Let { body, .. } => rebind_produces_fresh_numeric(db, body),
+        Core::Seq { tail, .. } => rebind_produces_fresh_numeric(db, tail),
+        Core::Block { body, .. } => rebind_produces_fresh_numeric(db, body),
+        _ => false,
+    }
+}
+
 /// Whether `binder` escapes through a sum-match CONTINUATION — a leaf's body, or a nested switch's arms
 /// (each recursed). The `Payload`/`Elem` path steps are heap reads that carry no binding, so only the arm
 /// continuations matter (mirrors the `MatchSum` arm walk in `binding_escapes`).
@@ -9028,6 +9056,57 @@ fn emit_loop_iteration(
                 }
         })
         .collect();
+    // BORROWED-ACCUMULATOR RECLAIM (v-core-opt; v-effects K1-reviewed ORTHOGONAL): a loop-carried param
+    // updated by a BORROWING op — `rational-add`/`bigint-*` READ the old accumulator and return a FRESH
+    // value — is DEAD after its rebind, but the general store below just LocalSet-overwrites the slot, so
+    // the old (distinct-cell) accumulator LEAKS every iteration (harmonic/codec/absorption numeric folds:
+    // +1 value/iter; the systemic corpus-06 +N). Drop the old value on rebind. GATED to a PURE BORROW so a
+    // CONSUMED / FBIP-reused param (`List.push acc x` — the op reuses `acc` in place, old==new cell) is
+    // NEVER double-freed:
+    //   (c) NOT identity / RestFrom / SumPayload-consume — excludes the K1/spine class the #5090/#5142 loop
+    //       dup-skip fence governs (all RestFrom-consumed), so this never fires on a fenced param; and
+    //   (d) the param is NOT consumed by ANY rebind arg (`!binding_escapes(arg, binder)` for every arg) —
+    //       a borrow-only param whose ref is NOT carried into the next iteration (a `List.push acc` consumes
+    //       `acc` into the arg → escapes → excluded). Since old-acc and new-acc are INDEPENDENT cells for a
+    //       borrowing op, the drop needs NO dup (unlike the §5 sum-spine reclaim, where old is new's parent).
+    // SINGLE-MEMBER only: a mutual loop's cross-arm param classification is deferred (v-effects' edge — a
+    // param borrowed here but RestFrom/grandchild-consumed in a sibling arm could double-free).
+    let single_member = tl.members.len() == 1;
+    let member_params: Vec<StructId> = if single_member {
+        db.defs[tl.members[0]].params.clone()
+    } else {
+        Vec::new()
+    };
+    let drop_old_borrowed: Vec<bool> = (0..args.len())
+        .map(|i| {
+            if !single_member
+                || is_identity[i]
+                || is_restfrom_consume[i]
+                || is_sumpayload_consume[i]
+                || i >= tl.param_slots.len()
+                || i >= member_params.len()
+            {
+                return false;
+            }
+            let binder = db
+                .ast
+                .as_form(member_params[i], ":")
+                .and_then(|t| t.first().copied())
+                .unwrap_or(member_params[i]);
+            if !is_heap_type(&type_of(db, binder)) {
+                return false;
+            }
+            // Dead iff NOT consumed by any rebind arg (only borrowed) AND the accumulator's NEW value is a
+            // PROVABLY-FRESH numeric op (rational-add/bigint — never aliases/descends the old accumulator).
+            // The `binding_escapes` "borrowed-not-consumed" check ALONE over-approximated "dead": a compound
+            // accumulator whose CHILD is carried forward (a match-payload binder `l` = a child of the old
+            // `s`, or a ctor/Call sharing it) passes it, but dropping the old shell cascade-frees the carried
+            // child → UAF (breaker's reduced CAD fold `bb (Diff l _t) => bb l`; the 7 CAD double-frees). The
+            // fresh-numeric gate is the SOUND sufficient condition — see `rebind_produces_fresh_numeric`.
+            !args.iter().any(|&a| binding_escapes(db, a, binder, false))
+                && rebind_produces_fresh_numeric(db, args[i])
+        })
+        .collect();
     let mut eval_order: Vec<usize> = (0..args.len())
         .filter(|&i| !is_identity[i] && !is_restfrom_consume[i])
         .collect();
@@ -9100,6 +9179,21 @@ fn emit_loop_iteration(
             spine_old_scratch.push(sc);
         }
     }
+    // BORROWED-ACCUMULATOR reclaim (save half): SAVE each borrowed-rebound loop-param's OLD value into a
+    // fresh scratch (a slot COPY, no rc change — the old handle stays owned in scratch), so it can be dropped
+    // AFTER the stores without interleaving with the parallel-move arg stack. Mirrors the §5 save; the drop
+    // (post-store, below) needs NO dup since old-acc and new-acc are independent cells.
+    let mut borrowed_old_scratch: Vec<u32> = Vec::new();
+    for (i, &drop_old) in drop_old_borrowed.iter().enumerate() {
+        if drop_old {
+            let sc = *high;
+            *high = (*high).max(sc + 1);
+            scratch_ty.insert(sc, ValType::I32);
+            out.push(Lir::LocalGet(tl.param_slots[i])); // [old-v]
+            out.push(Lir::LocalSet(sc)); // scratch = old-v (slot copy)
+            borrowed_old_scratch.push(sc);
+        }
+    }
     // Args start ABOVE the saved-shell scratch so their emit never reuses those persistent slots (and never
     // below the body scratch floor `base`).
     let mut arg_base = base.max(*high);
@@ -9134,6 +9228,14 @@ fn emit_loop_iteration(
             out.push(Lir::LocalGet(sc)); // [old-v]
             out.push(Lir::CallImport(OP_DROP)); // free old-v; cascade decrements rest → owned → []
         }
+    }
+    // BORROWED-ACCUMULATOR reclaim (drop half): the new value is now in the param slot; free each saved OLD
+    // borrowed accumulator. NO dup — old-acc and new-acc are independent cells (a borrowing op allocated the
+    // new value), so this drop does not cascade into the carried value. Net per iteration: the old
+    // accumulator is freed, the leak is gone (the systemic corpus-06 +N fix).
+    for &sc in &borrowed_old_scratch {
+        out.push(Lir::LocalGet(sc)); // [old-v]
+        out.push(Lir::CallImport(OP_DROP)); // free the dead old accumulator → []
     }
     out.loop_reassign_no_dup = saved_no_dup;
     // For a mutual group, set the `which` state so the next iteration dispatches into the callee's body.
