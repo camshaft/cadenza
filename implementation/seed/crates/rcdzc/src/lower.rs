@@ -25886,20 +25886,41 @@ fn lower_map_field(
         // INTO that value to the binder — folded over the constant value via `fold_sum_path` (`(tuple 3 4)`
         // at `Elem(0)` folds to `3`), exactly as a nested tuple/payload binder folds over its scrutinee.
         Some(k) => {
+            let mut all_misses_decidable = true;
             for (ek, ev) in entries.iter() {
-                if const_compound_eq(db, *ek, k) == Some(true) {
-                    if value_steps.is_empty() {
-                        return core_of(db, *ev);
+                match const_compound_eq(db, *ek, k) {
+                    Some(true) => {
+                        if value_steps.is_empty() {
+                            return core_of(db, *ev);
+                        }
+                        let ev = *ev;
+                        return match fold_sum_path(db, ev, value_steps) {
+                            Some(c) => c,
+                            None => Core::Poison(Reject::decline(
+                                "a nested value sub-pattern over a runtime value in a constant map is not yet matched",
+                            )),
+                        };
                     }
-                    let ev = *ev;
-                    return match fold_sum_path(db, ev, value_steps) {
-                        Some(c) => c,
-                        None => Core::Poison(Reject::decline(
-                            "a nested value sub-pattern over a runtime value in a constant map is not yet matched",
-                        )),
-                    };
+                    Some(false) => {} // decidably NOT this key — keep scanning
+                    None => all_misses_decidable = false, // undecidable (a runtime key) — can't prove absence
                 }
             }
+            if all_misses_decidable {
+                // The key is PROVABLY absent from this constant-KEYED map (every entry key compared decidably
+                // unequal). A value binder for a definitively-absent key is only ever lowered in a DEAD arm:
+                // every caller gates key presence first — the direct map matcher skips an arm whose key is
+                // absent (so it never calls here), and a nested `(list (map (k v)…) …)` element is desugared
+                // with a key-PRESENCE guard (`desugar_refutable_map_list_elements`). When that element's map
+                // has a RUNTIME value the presence guard is a runtime `Map.lookup` test, so the guarded arm's
+                // body is kept in the `MatchList` and its binder Core is lowered EAGERLY even though the guard
+                // gates it false at run time. Emit a divergent `Core::Trap` (well-typed, never executed under
+                // the guard) rather than a hard Poison that fails compilation of a VALID program — the nested
+                // const-keyed sibling of the top-level runtime fall-through (#5450), and the map twin of
+                // `lower_map_field_runtime`'s guaranteed-present `None → trap` dead branch.
+                return Core::Trap;
+            }
+            // A non-constant (runtime) KEY left presence undecidable — the runtime map matcher should have
+            // routed this; a defensive decline rather than risk a mis-selection.
             Core::Poison(Reject::decline(
                 "a map pattern value binder's key is absent from the constant map (arm mis-selected)",
             ))
