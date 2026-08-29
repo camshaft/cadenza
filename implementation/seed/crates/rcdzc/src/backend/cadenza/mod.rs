@@ -370,6 +370,17 @@ fn emit_def(
             let unit_node = crate::lower::unit_value_ast(b, &unit);
             b.list(vec![head, mag, unit_node])
         }
+        // A partial-bare-inner control-flow tail (a checked-narrow arm mixed with a Param/other arm) can be
+        // neither wrapped-whole (the Param arm self-constructs → double-wrap) nor passed through (the bare-inner
+        // arm silently drops its wrapper — the #5341 miscompile in an arm position). Decline it (a uniform-arm
+        // reconstruction is a later slice); the direct-wasm path is what the corpus grades against.
+        Some(Ty::Qty { .. }) if qty_leaf(db, body) == LeafKind::Mixed => {
+            return Err(Reject::decline(
+                "the Cadenza backend does not yet re-emit a quantity return whose control-flow arms MIX a \
+                 bare-magnitude (e.g. checked-narrow) arm with a constructing arm"
+                    .to_string(),
+            ));
+        }
         _ => emit_expr(db, b, body, None, &mut env, emitted)?,
     };
     Ok(b.list(vec![def_head, sig, body_node]))
@@ -387,6 +398,11 @@ enum LeafKind {
     /// Anything else (a `Param`/`LocalRef` that SELF-constructs, a const, a `Call`, a compound, a `Match*`) —
     /// keep the body on the normal pass-through/decline path; do NOT wrap-whole.
     Other,
+    /// A control-flow body whose leaves MIX `BareInner` and `Other` (`(if c (Qty.of (Int32.of a) u) (Qty.of x
+    /// u))` — a checked-narrow arm + a Param arm). Wrap-whole is wrong (the Param arm self-constructs → would
+    /// double-wrap) and the normal pass-through drops the bare-inner arm's wrapper (the #5341 miscompile in an
+    /// arm position) → [`emit_def`] DECLINES it (decline-don't-miscompile; a uniform-arm slice is later).
+    Mixed,
 }
 
 /// Classify a `Ty::Qty`-result def body by its value LEAVES, threading through `If`/`Let` to the tail
@@ -407,13 +423,17 @@ fn qty_leaf(db: &mut Db, id: StructId) -> LeafKind {
     }
 }
 
-/// Merge two sibling-arm [`LeafKind`]s: `Diverges` is neutral (a trapping arm carries no value), two
-/// `BareInner` stay `BareInner`, anything else (a self-constructing / declining leaf, or a mix) is `Other`.
+/// Merge two sibling-arm [`LeafKind`]s: `Diverges` is neutral (a trapping arm carries no value); two
+/// `BareInner` stay `BareInner`; two `Other` stay `Other`; a `BareInner`+`Other` split (or anything already
+/// `Mixed`) is `Mixed` (a partial-bare-inner control flow that must decline, not silently drop an arm).
 fn merge_leaf(a: LeafKind, b: LeafKind) -> LeafKind {
     match (a, b) {
         (LeafKind::Diverges, x) | (x, LeafKind::Diverges) => x,
+        (LeafKind::Mixed, _) | (_, LeafKind::Mixed) => LeafKind::Mixed,
         (LeafKind::BareInner, LeafKind::BareInner) => LeafKind::BareInner,
-        _ => LeafKind::Other,
+        (LeafKind::Other, LeafKind::Other) => LeafKind::Other,
+        // one BareInner + one Other → a mixed control flow.
+        _ => LeafKind::Mixed,
     }
 }
 
