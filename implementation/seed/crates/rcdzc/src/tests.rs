@@ -22697,25 +22697,9 @@ mod diagnostics {
             .collect()
     }
 
-    #[test]
-    fn a_duplicate_record_field_carries_a_delete_the_duplicate_fix() {
-        // A record naming a field twice (CDZ0201) now carries the mechanical repair: DELETE the redundant
-        // `(key value)` entry — the SECOND occurrence, since the first already binds the name. Read a field
-        // so the record is reached (a bare record value declines for the heap first).
-        let d = first_error("(module m (def (f) (. (record (a 1) (a 2) (b 3)) b)) (export f))");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("more than once"),
-            "names the fault: {}",
-            d.message
-        );
-        let fix = d.fix.expect("a delete-the-duplicate fix is carried");
-        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
-        assert!(
-            !fix.verified,
-            "removing vs renaming is the author's call → heuristic"
-        );
-    }
+    // (a_duplicate_record_field_carries_a_delete_the_duplicate_fix migrated to corpus 05-compound-types
+    //  "a record with a duplicate field name is a type error" — enhanced with (fix (kind delete) (unverified))
+    //  now that the corpus (error ...) form grades fix-quality (C1 #5255).)
 
     #[test]
     fn a_wrong_arity_record_or_map_entry_offers_a_delete_the_surplus_fix() {
@@ -22863,21 +22847,9 @@ mod diagnostics {
         );
     }
 
-    #[test]
-    fn a_duplicate_export_carries_a_delete_the_duplicate_fix() {
-        // Exporting a name twice (CDZ0201) now carries a DELETE fix on the redundant later `(export …)`
-        // clause — the earlier one already makes the name public, so removing the duplicate is the direct
-        // resolution (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
-        let d = first_error("(module m (def (a) 1) (export a) (export a))");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("exported more than once"),
-            "names the fault: {}",
-            d.message
-        );
-        let fix = d.fix.expect("a delete-the-duplicate-export fix is carried");
-        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
-    }
+    // (a_duplicate_export_carries_a_delete_the_duplicate_fix migrated to corpus 11-modules "a duplicate export
+    //  clause for the same name is rejected" — enhanced with (fix (kind delete)) now that the corpus (error ...)
+    //  form grades fix-quality (C1 #5255).)
 
     #[test]
     fn a_multi_name_export_clause_exports_every_name() {

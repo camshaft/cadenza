@@ -99,9 +99,11 @@
   (doc    "`(record (a 1) (a 2))` names the field `a` twice — not a fixed SET of field names, so it is
            ill-typed and the compiler rejects it (CDZ0201, core-semantics.md #A Record Has A Fixed Set
            Of Named Fields), or declines if it does not yet cover the fixed-field-set rule
-           (reject-don't-miscompile).")
+           (reject-don't-miscompile). Carries a DELETE fix on the redundant second `(= a 2)` entry (the
+           first already binds the name) — heuristic (unverified: removing vs renaming is the author's call).
+           Fix-quality migrated from rcdzc a_duplicate_record_field_carries_a_delete_the_duplicate_fix.")
   (input      (record (= a 1) (= a 2)))
-  (error      CDZ0201))
+  (error      CDZ0201 (message "more than once") (fix (kind delete) (unverified))))
 
 (case "a record with a non-adjacent duplicate field name is a type error"
   (doc    "The duplicate need not be adjacent: `(record (a 1) (b 2) (a 3))` still names `a` twice, so
