@@ -4250,6 +4250,40 @@
   (call   run (: -5 Int64))
   (output (: 0 Int64)))
 
+; A `nan` value carries its DECLARING float width — `Float64.nan` is a Float64, `Float32.nan` a Float32 — so
+; a cross-WIDTH nan comparison is the CDZ0301 no-silent-promotion error the identical FINITE cross-width
+; comparison gets (§Numeric Types Do Not Silently Promote); a nan vs a NON-float is the cross-KIND CDZ0301.
+; A SAME-width nan comparison compiles and folds — `=` is STRUCTURAL (canonical byte form), so `nan = nan` at
+; one width is TRUE (not the IEEE arithmetic-identity false). Migrated from rcdzc
+; a_cross_width_nan_comparison_is_a_type_error.
+(case "a cross-width nan comparison (Float32.nan vs Float64.nan) is a type error"
+  (input  (do (def (main) (= Float32.nan Float64.nan)) (export main)))
+  (error  CDZ0301))
+
+(case "a Float32.nan compared to a Float64 literal is a type error"
+  (input  (do (def (main) (= Float32.nan (: 1.5 Float64))) (export main)))
+  (error  CDZ0301))
+
+(case "a Float32 literal compared to Float64.nan is a type error"
+  (input  (do (def (main) (= (: 1.5 Float32) Float64.nan)) (export main)))
+  (error  CDZ0301))
+
+(case "the finite cross-width comparison rejects the same way (the behavior the nan path matches)"
+  (input  (do (def (main) (= (: 1.5 Float32) (: 1.5 Float64))) (export main)))
+  (error  CDZ0301))
+
+(case "a nan compared to a non-float is the cross-kind type error"
+  (input  (do (def (main) (= Float64.nan 5)) (export main)))
+  (error  CDZ0301))
+
+(case "a SAME-width Float32 nan comparison compiles and folds true (structural =, not IEEE)"
+  (input  (do (def (main) (= Float32.nan Float32.nan)) (export main)))
+  (call   main) (output (: true Bool)))
+
+(case "a SAME-width Float64 nan comparison compiles and folds true (structural =, not IEEE)"
+  (input  (do (def (main) (= Float64.nan Float64.nan)) (export main)))
+  (call   main) (output (: true Bool)))
+
 ; The cases above pin nan-propagation and float `/0 → ±inf`. The IEEE INDETERMINATE forms — an operation on
 ; an actual INFINITY whose result IEEE leaves undefined — are the companion: `inf − inf` and `inf × 0.0` are
 ; both NaN (not 0, not inf). A genuine +inf is produced at RUN TIME by dividing a runtime finite by 0.0 (a
