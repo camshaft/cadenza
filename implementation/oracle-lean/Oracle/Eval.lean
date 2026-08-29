@@ -1583,6 +1583,23 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
               .value (.bytes (ByteArray.mk (es.map (fun e => match e with | .int n => UInt8.ofNat n.toNat | _ => 0))))
             else .unsupported "Bytes.of: element is not a 0..255 byte"
           | some (.value _) => .unsupported "Bytes.of: not a list" | some o => o | none => .unsupported "Bytes.of arity")
+  else if is "String" "slice" then
+    -- SCALAR-indexed substring `String.slice s start end` → `Some s[start..end)` when
+    -- `0 ≤ start ≤ end ≤ scalar-count`, else `None` (fallible VIEW; 13-strings §227/1428). Three operands.
+    let a3 := (children[3]?).map (fun i => evalNode m env defaultIntTy fuel i)
+    some (match a1, a2, a3 with
+          | some (.value (.str bytes)), some (.value (.int start)), some (.value (.int «end») ) =>
+            (match String.fromUTF8? bytes with
+             | some s =>
+               let cs := s.toList
+               if 0 ≤ start && start ≤ «end» && «end» ≤ Int.ofNat cs.length then
+                 .value (.some (.str (String.toUTF8 (String.mk ((cs.drop start.toNat).take («end».toNat - start.toNat))))))
+               else .value .none
+             | none => .unsupported "String.slice: invalid UTF-8")
+          | some (.unsupported r), _, _ | _, some (.unsupported r), _ | _, _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _, _ | _, some (.trap t), _ | _, _, some (.trap t) => .trap t
+          | some .diverges, _, _ | _, some .diverges, _ | _, _, some .diverges => .diverges
+          | _, _, _ => .unsupported "String.slice: operand")
   else if is "String" "at" then
     -- indexed CHARACTER access (by Unicode SCALAR, matching Lean's String.data) → Option single-char
     -- String: `Some s[i]` when 0 ≤ i < char-count, else `None`. (`"café"[3]="é"`, `"😀b"[1]="b"`.)
