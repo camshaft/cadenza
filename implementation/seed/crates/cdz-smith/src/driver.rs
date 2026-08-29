@@ -351,6 +351,65 @@ pub fn differential_sweep(
     Ok(stats)
 }
 
+/// The CADENZA-BACKEND equivalence sweep (operator seq-184): for each generated program, compare the
+/// DIRECT wasm value against the `--target cadenza` round-trip value ([`crate::cadenza_diff::cadenza_diff`]).
+/// A divergence is a cadenza-backend miscompile — filed like a wasm-vs-rust differential finding. Uses a
+/// fresh scratch dir per program (cleaned between iterations).
+#[cfg(feature = "differential")]
+pub fn cadenza_differential_sweep(
+    cfg: &Config,
+    store: &std::path::Path,
+    cdz: &std::path::Path,
+    count: u64,
+) -> std::io::Result<DiffStats> {
+    use crate::cadenza_diff::{CzDiff, cadenza_diff};
+    let fstore = FindingStore::open(&cfg.findings_dir)?;
+    let mut stats = DiffStats::default();
+    let mut rng = SplitMix64::new(cfg.run_seed);
+    let tmp = std::env::temp_dir().join(format!("cdz-smith-cadenza-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp);
+    for i in 0..count {
+        let seed = rng.next();
+        let source = program_for_seed(seed);
+        // Fresh scratch for this program (avoid a stale artifact leaking across iterations).
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+        match cadenza_diff(cdz, &source, store, &tmp) {
+            CzDiff::Agree => stats.agreed += 1,
+            CzDiff::Mismatch { direct, cadenza } => {
+                stats.mismatched += 1;
+                let detail = format!("cadenza-equiv: direct={direct} cadenza={cadenza}");
+                let finding = Finding {
+                    category: Category::Differential,
+                    program: source.clone(),
+                    crash: None,
+                    detail: Some(detail),
+                    commit: cfg.commit.clone(),
+                };
+                file_and_tally(
+                    &fstore,
+                    &finding,
+                    &mut stats.new_buckets,
+                    &mut stats.duplicate_hits,
+                    seed,
+                    "cadenza-equiv mismatch",
+                );
+            }
+        }
+        if cfg.progress_every != 0 && (i + 1).is_multiple_of(cfg.progress_every) {
+            eprintln!(
+                "[cdz-smith] cadenza-differential {}/{count} | {} agreed, {} mismatched ({} buckets)",
+                i + 1,
+                stats.agreed,
+                stats.mismatched,
+                stats.new_buckets,
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(stats)
+}
+
 /// The watchdog thread: if the armed deadline passes without the heartbeat advancing, the current
 /// compile has hung — file a timeout finding for its seed and abort the process.
 fn spawn_watchdog(progress: Arc<Progress>, epoch: Instant, cfg: Config) {
