@@ -13700,65 +13700,6 @@ mod match_engine {
     }
 
     #[test]
-    fn an_empty_quote_is_cdz0201_not_an_unbound_name() {
-        // 07-type-system "an empty quote is rejected, not a crash": `(quote)` with no operand is
-        // MALFORMED — quote requires exactly one operand, the form it denotes. It rejects CDZ0201 (a
-        // well-formedness defect), NOT the CDZ0101 unbound-name error a non-grammar `quote` head produced,
-        // and never panics reaching for the absent quoted node. `quote` is a grammar head now, so this is
-        // an arity check.
-        assert_eq!(
-            reject_code("(module m (def (main) (quote)) (export main))").as_deref(),
-            Some("CDZ0201")
-        );
-        // A one-operand `(quote FORM)` is well-formed and now REIFIES to the `Ast` value it denotes
-        // (`(quote 5)` -> `(Ast.Int 5)`, via `crate::quote::reify_quotes`), so it compiles clean — no
-        // rejection, no longer the CDZ0101 unbound-name error nor a Todo decline.
-        assert_eq!(
-            reject_code("(module m (def (main) (quote 5)) (export main))"),
-            None,
-            "a well-formed (quote FORM) reifies to an Ast value, it is not a coded rejection"
-        );
-    }
-
-    #[test]
-    fn a_quote_with_too_many_operands_offers_a_delete_the_surplus_fix() {
-        // `(quote 1 2)` has too many operands — quote takes exactly one. The mechanical repair is to
-        // DELETE the surplus operand (the second), the same surplus-arg delete fix an over-applied
-        // operator gets (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
-        // Shared across the quasiquote family (`quote`/`quasiquote`/`unquote`).
-        let find = |src: &str| {
-            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.message.contains("takes exactly one operand"))
-                .unwrap_or_else(|| panic!("an arity fault is reported for {src}"))
-        };
-        let d = find("(module m (def (main) (quote 1 2)) (export main))");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert_eq!(
-            d.fix.as_ref().map(|f| f.kind),
-            Some(crate::abi::FixKind::Delete),
-            "a too-many-operands quote carries a delete fix: {:?}",
-            d.fix
-        );
-        // `quasiquote` shares the shape.
-        let qq = find("(module m (def (main) (quasiquote 1 2)) (export main))");
-        assert_eq!(
-            qq.fix.as_ref().map(|f| f.kind),
-            Some(crate::abi::FixKind::Delete),
-            "quasiquote too-many-operands carries a delete fix: {:?}",
-            qq.fix
-        );
-        // NO fix for a ZERO-operand `(quote)` — there is nothing to delete, and supplying the form is not
-        // a mechanical edit.
-        let empty = find("(module m (def (main) (quote)) (export main))");
-        assert!(
-            empty.fix.is_none(),
-            "an empty quote has no surplus to delete: {:?}",
-            empty.fix
-        );
-    }
-
-    #[test]
     fn a_fixed_arity_grammar_form_with_too_many_operands_offers_a_delete_fix() {
         // The fixed-arity grammar forms `if`/`and`/`or`/`not` reject a wrong operand count (CDZ0201);
         // TOO MANY now carries a delete-the-surplus fix (the same surplus-arg delete an over-applied

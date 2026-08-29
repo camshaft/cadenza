@@ -1376,6 +1376,18 @@
   (input  (quote))
   (error  CDZ0201))
 
+; The too-MANY-operand face: `quote`/`quasiquote` take EXACTLY one operand (the form they denote), so a
+; surplus operand is CDZ0201 with a delete-the-surplus fix (the mechanical repair — delete the extra form),
+; the same surplus-arg delete an over-applied operator gets. (The empty `(quote)` above carries no fix —
+; nothing to delete.) (migrated from rcdzc a_quote_with_too_many_operands_offers_a_delete_the_surplus_fix.)
+(case "a quote with too many operands is rejected with a delete-the-surplus fix"
+  (input  (do (def (main) (quote 1 2)) (export main)))
+  (error  CDZ0201 (message "takes exactly one operand") (fix (kind delete))))
+
+(case "a quasiquote with too many operands is rejected with a delete-the-surplus fix"
+  (input  (do (def (main) (quasiquote 1 2)) (export main)))
+  (error  CDZ0201 (message "takes exactly one operand") (fix (kind delete))))
+
 (case "a record field with no value expression is rejected, not a crash"
   (doc    "A record entry `(a)` names the field `a` but supplies no value: `(record (a))` is ill-formed
            — a record entry is a `(name value)` pair. The compiler rejects it (CDZ0201), never
