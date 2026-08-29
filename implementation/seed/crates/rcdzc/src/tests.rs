@@ -23260,15 +23260,15 @@ mod diagnostics {
     //  (unverified)); the multi-message form landed via C1 #5277.)
 
     #[test]
-    fn an_int_literal_argument_to_a_float_parameter_reports_one_coded_fault_with_a_retype_fix() {
-        // Passing a value to an ANNOTATED parameter is annotation-context: the argument must satisfy the
-        // declared type, exactly as a direct `(: arg T)` does. So a `(g 3)` to a `(: x Float64)` parameter
-        // is the SAME fault a direct `(: 3 Float64)` reports — ONE CDZ0203 carrying the retype fix `3` →
-        // `3.0`. It previously DOUBLE-reported: the call-site arg-unify added a redundant CDZ0301 (no
-        // implicit conversion) at the same span alongside the reduced-body's CDZ0203, because a REFERENCED
-        // parameter's argument is checked by BOTH the arg-unify and the substituted body's synthesized
-        // `(: arg paramtype)` annotation. The arg-unify now DEFERS to the body check for a referenced,
-        // reducible parameter (the authoritative annotation-context report with the actionable fix).
+    fn an_int_literal_argument_to_a_float_parameter_reports_no_double() {
+        // The code/message/retype-fix facets migrated to corpus 06-numeric-model ("an int literal argument to
+        // a float parameter is one annotation-context fault with a retype fix" — CDZ0203 (message "make it a
+        // float literal")(fix (kind replace)(replacement "3.0")); + "an int argument to an UNREFERENCED float
+        // parameter is the sole arg-unify CDZ0301"). What STAYS here is the corpus-INEXPRESSIBLE half: the
+        // no-DOUBLE dedup is a TOTAL-program-error-count / no-OTHER-code assertion, which the corpus (error …)
+        // surface cannot express — its (count N)/(once) is PER-CODE (counts faults carrying that code), so it
+        // cannot assert "exactly ONE error total, and NO accompanying CDZ0301".
+        // Referenced param: the arg-unify's redundant CDZ0301 DEFERS to the reduced body's CDZ0203 → one error.
         let errs = all_errors("(module m (def (g (: x Float64)) x) (def y (g 3)) (export y))");
         assert_eq!(
             errs.len(),
@@ -23278,19 +23278,7 @@ mod diagnostics {
                 .map(|d| (&d.code, &d.message))
                 .collect::<Vec<_>>()
         );
-        let d = &errs[0];
-        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-        assert!(
-            d.message.contains("make it a float literal"),
-            "carries the annotation-context retype message: {}",
-            d.message
-        );
-        let fix = d.fix.as_ref().expect("a retype fix is carried");
-        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-        assert_eq!(fix.replacement, "3.0", "retypes the int literal to a float");
-
-        // An UNREFERENCED parameter (the body ignores `x`) is NOT covered by the body check, so the
-        // arg-unify remains the SOLE reporter — its CDZ0301 still fires (no double, but not dropped either).
+        // Unreferenced param: no body check to defer to, so the sole arg-unify CDZ0301 survives (one error).
         let ignored = all_errors("(module m (def (g (: x Float64)) 0) (def y (g 3)) (export y))");
         assert_eq!(
             ignored.len(),
