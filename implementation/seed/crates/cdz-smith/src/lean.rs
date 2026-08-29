@@ -537,4 +537,64 @@ mod tests {
             verdicts[1]
         );
     }
+
+    /// END-TO-END self-test of the `(equiv P P')` encoder against the REAL oracle, following the exact
+    /// contract v-lean-oracle verified + pinned (`Oracle/Batch.lean` `_batchEquiv`, #5729/#5719): a
+    /// `(batch (equiv P P))` with IDENTICAL P must judge `(holds)` (proven-equivalent), and a flipped
+    /// literal (`42` vs `43`) must judge `(skip "equiv: normalized-but-different")` (cannot-prove).
+    ///
+    /// Runs ONLY when the oracle is discoverable, and is ROBUST to oracle VERSION SKEW: a pre-#5719
+    /// oracle does not know the `(equiv …)` node and rejects it with a `(skip "…not (trial …)")`, so
+    /// this treats that stale-oracle signal as "skip" rather than a failure (the NOTE below's don't-
+    /// couple-to-oracle-artifact-version discipline). Only an equiv-AWARE oracle exercises the
+    /// assertions; the wire-shape unit tests above cover the encoder version-independently.
+    #[test]
+    fn equiv_self_test_against_oracle_check() {
+        let Some(oracle) = discover_oracle_check() else {
+            eprintln!(
+                "skipping: no oracle-check (nix build .#oracle-lean; set CDZ_SMITH_ORACLE_CHECK)"
+            );
+            return;
+        };
+        let p = ast("(do (def (main) 42) (export main))");
+        // Case 1: identical programs → PROVEN equivalent (on an equiv-aware oracle).
+        let holds = judge_batch_items(
+            &oracle,
+            &[BatchItem::Equiv(EquivTrial {
+                orig: p.clone(),
+                cadenza: p.clone(),
+            })],
+        )
+        .expect("oracle judges the equiv batch");
+        // A pre-#5719 oracle rejects the unknown node ("…not (trial …)"); skip rather than fail on skew.
+        if let [Verdict::Skip(reason)] = holds.as_slice()
+            && reason.contains("not (trial")
+        {
+            eprintln!(
+                "skipping: oracle predates the (equiv …) node (#5719) — got stale skip {reason:?}; \
+                 rebuild with `nix build .#oracle-lean`"
+            );
+            return;
+        }
+        assert_eq!(
+            holds,
+            vec![Verdict::Holds],
+            "(equiv P P) must be proven equivalent"
+        );
+        // Case 2: a flipped literal → CANNOT-PROVE (normalized-but-different).
+        let differ = judge_batch_items(
+            &oracle,
+            &[BatchItem::Equiv(EquivTrial {
+                orig: p,
+                cadenza: ast("(do (def (main) 43) (export main))"),
+            })],
+        )
+        .expect("oracle judges the equiv batch");
+        assert_eq!(differ.len(), 1);
+        assert!(
+            matches!(differ[0], Verdict::Skip(_)),
+            "(equiv 42 43) must be cannot-prove (skip normalized-but-different), got {:?}",
+            differ[0]
+        );
+    }
 }
