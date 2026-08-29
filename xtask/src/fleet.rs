@@ -522,6 +522,13 @@ pub enum FleetCmd {
         /// Free-form detail (may be multiline).
         #[arg(long, default_value = "")]
         body: String,
+        /// Read the body from a FILE (literal text) instead of `--body` — the leak-safe path (operator P0
+        /// seq-198): a body built from a file never transits a double-quoted shell literal, so no
+        /// backtick/`$()` mishap can command-substitute `env`/`set` output into it (the #5654 vector). If
+        /// both are given, `--body-file` wins. Either way the subject+body are scanned + REFUSED on
+        /// env-dump/secret material.
+        #[arg(long)]
+        body_file: Option<PathBuf>,
         /// Sender name. If omitted: falls back to `$FLEET_AGENT`, then to the current worktree's
         /// `fleet/<agent>` branch (so a forgotten `--from` still routes), then `unknown`. A
         /// reply-expecting kind (merge-request/ask/issue) is REFUSED if the sender resolves to
@@ -1159,12 +1166,13 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             subject,
             r#ref,
             body,
+            body_file,
             from,
             no_wake,
             force,
             urgency,
         } => send(
-            &fleet, &to, &kind, &subject, &r#ref, &body, from, no_wake, force, &urgency,
+            &fleet, &to, &kind, &subject, &r#ref, &body, body_file, from, no_wake, force, &urgency,
         ),
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
@@ -1332,6 +1340,34 @@ fn pr_body_secret_findings(title: &str, body: &str) -> Vec<String> {
         findings.push(format!(
             "{env_lines} KEY=VALUE env-assignment lines — this looks like an ENV DUMP; a PR body must be prose, not environment"
         ));
+    }
+    // (4) whole-text credential-token scan — catches a leaked token ANYWHERE regardless of KEY=VALUE line
+    // shape (an env dump collapsed onto one line, or a token pasted into prose). A known prefix must be
+    // IMMEDIATELY followed by a long credential-shaped run (alnum/`_`/`-`), so a bare prefix MENTIONED in
+    // prose (e.g. this very function, or a PR documenting `sk-ant-`/`ghp_`) does NOT trip — only a real
+    // token does.
+    for (tok, min_run) in [
+        ("sk-ant-", 12usize),
+        ("ghp_", 20),
+        ("xoxb-", 10),
+        ("AKIA", 16),
+        ("ASIA", 16),
+    ] {
+        let mut hay = text.as_str();
+        while let Some(pos) = hay.find(tok) {
+            let after = &hay[pos + tok.len()..];
+            let run = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                .count();
+            if run >= min_run {
+                findings.push(format!(
+                    "a live-looking credential token (`{tok}…`) appears in the text"
+                ));
+                break;
+            }
+            hay = &hay[pos + tok.len()..];
+        }
     }
     findings
 }
@@ -2494,6 +2530,7 @@ fn send(
     subject: &str,
     r#ref: &str,
     body: &str,
+    body_file: Option<PathBuf>,
     from: Option<String>,
     no_wake: bool,
     force: bool,
@@ -2508,6 +2545,39 @@ fn send(
         );
         std::process::exit(1);
     }
+    // Effective body: `--body-file` (leak-safe literal) wins over `--body`.
+    let body: String = match &body_file {
+        Some(p) => match std::fs::read_to_string(p) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("fleet send: cannot read --body-file {}: {e}", p.display());
+                std::process::exit(2);
+            }
+        },
+        None => body.to_string(),
+    };
+    // P0 LEAK-GUARD (operator seq-198): REFUSE a message whose subject/body is env-dump or secret-shaped —
+    // the SAME scan `fleet pr create` uses. A markdown-backtick/`$()` span inside an inline double-quoted
+    // `--subject "…"`/`--body "…"` command-substitutes in the CALLER's shell BEFORE the arg reaches us (the
+    // #5654 vector: a span wrapping `set` printed the whole env into the message), so we cannot PREVENT it —
+    // but we CONTAIN it: refuse to WRITE/DELIVER the leak (a hard error beats a stored + delivered env dump).
+    let leak = pr_body_secret_findings(subject, &body);
+    if !leak.is_empty() {
+        eprintln!(
+            "fleet send: REFUSING — the --subject/--body looks like it carries env-dump or secret material:"
+        );
+        for f in &leak {
+            eprintln!("  ✗ {f}");
+        }
+        eprintln!(
+            "A message is PROSE — never `env`/`set`/command output/a credential. Use --body-file with a literal"
+        );
+        eprintln!(
+            "heredoc file; NEVER an inline double-quoted --body/--subject with backticks or $() (the #5654 vector)."
+        );
+        std::process::exit(1);
+    }
+    let body: &str = &body;
     // Resolve the sender robustly. Priority: explicit `--from`, then `$FLEET_AGENT`, then DERIVE it —
     // first from the current worktree's BRANCH (`fleet/<agent>` → `<agent>`), then, if that fails, from
     // the current worktree's PATH via the registry (worktree → agent). The derivation is the key
@@ -20585,6 +20655,33 @@ branch refs/heads/fleet/trunk-tools
         );
         // CLEAN: a secret-NAMED key with a TRIVIAL value (a toggle mention on its own line) is not a leak.
         assert!(pr_body_secret_findings("t", "SESSION_TOKEN=0").is_empty());
+        // FLAG: a credential-token marker ANYWHERE (even in prose / no KEY=VALUE shape) — whole-text scan.
+        assert!(
+            !pr_body_secret_findings("t", "oops pasted ghp_0123456789abcdefABCDEF0123 here")
+                .is_empty()
+        );
+        assert!(
+            !pr_body_secret_findings("leaked sk-ant-api03-abcdef0123456789 in the subject", "")
+                .is_empty()
+        );
+        // CLEAN: prose with none of the token markers stays clean (no false-positive from the token scan).
+        assert!(
+            pr_body_secret_findings(
+                "fleet(x): landed",
+                "Bumped CDZ_CHECK_LEASE_MAX and verified via gate-local."
+            )
+            .is_empty()
+        );
+        // CLEAN (the dogfood false-positive this fixes): DOCUMENTING the token prefixes in prose (bare
+        // `sk-ant-`/`ghp_`/`AKIA` with no long run after) must NOT trip — only a real token does.
+        assert!(
+            pr_body_secret_findings(
+                "t",
+                "the scanner flags sk-ant-/ghp_/xoxb-/AKIA/ASIA prefixes"
+            )
+            .is_empty(),
+            "documenting the token prefixes in prose must not false-positive"
+        );
     }
 
     #[test]
