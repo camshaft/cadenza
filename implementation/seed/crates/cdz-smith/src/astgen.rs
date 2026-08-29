@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(21) {
+    match c.variant(22) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -426,6 +426,9 @@ fn gen_main_body<C: Choice>(
         // (tuple-of-lists / list-of-tuples / record with compound fields) — deeper structural shapes the
         // flat single-level compound arms never reach.
         20 => gen_nested_compound_body(c, out),
+        // A NESTED-SUM body: a sum value wrapping another sum/compound — `(Some (Some …))`, `(Ok (Some …))`,
+        // `(Some (tuple …))`, `(Some (list …))` — deeper sum-wrapping than the flat Some/Ok/Err arms.
+        21 => gen_nested_sum_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1284,6 +1287,33 @@ fn gen_nested_compound_body<C: Choice>(c: &mut C, out: &mut String) {
         3 => write!(out, "(list (tuple {a} {b}) (tuple {x} {y}))").ok(),
         // A record whose fields are a tuple and a list → a nested compound value.
         _ => write!(out, "(record (= a (tuple {a} {b})) (= b (list {x} {y})))").ok(),
+    };
+}
+
+/// A NESTED-SUM body: a sum value that WRAPS another sum or compound, ascribed to its (nested) type —
+/// `(Some (Some n))`, `(Ok (Some n))`, `(Some (tuple a b))`, `(Some (list …))`. Deeper sum-wrapping than
+/// the flat Some/Ok/Err arms; the ascription is required (a bare nested `Some`/`Ok` is type-ambiguous).
+fn gen_nested_sum_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the FORM before consuming operand choices (variant-ordering).
+    let form = c.variant(4);
+    let (a, b, k) = (
+        c.int_bounded(0, 99),
+        c.int_bounded(0, 99),
+        c.int_bounded(0, 99),
+    );
+    match form {
+        // Option of Option.
+        0 => write!(out, "(: (Some (Some {a})) (Option (Option Int64)))").ok(),
+        // Result whose Ok payload is an Option.
+        1 => write!(out, "(: (Ok (Some {a})) (Result (Option Int64) Int64))").ok(),
+        // Option of a tuple.
+        2 => write!(
+            out,
+            "(: (Some (tuple {a} {b})) (Option (Tuple Int64 Int64)))"
+        )
+        .ok(),
+        // Option of a list.
+        _ => write!(out, "(: (Some (list {a} {b} {k})) (Option (List Int64)))").ok(),
     };
 }
 
@@ -2536,6 +2566,37 @@ mod tests {
         assert!(saw_tol, "should reach a tuple-of-lists");
         assert!(saw_lot, "should reach a list-of-tuples");
         assert!(saw_rec, "should reach a record-of-compounds");
+    }
+
+    /// `gen_nested_sum_body` REACHES all four forms (Option-of-Option, Result-of-Option, Option-of-tuple,
+    /// Option-of-list) and every body COMPILES (S169: deeper sum-wrapping than the flat Some/Ok/Err arms).
+    #[test]
+    fn gen_nested_sum_body_reaches_all_forms_and_compiles() {
+        let (mut saw_oo, mut saw_ro, mut saw_ot, mut saw_ol) = (false, false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(2039);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_nested_sum_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_oo |= body.contains("(Some (Some ");
+            saw_ro |= body.contains("(Ok (Some ");
+            saw_ot |= body.contains("(Some (tuple ");
+            saw_ol |= body.contains("(Some (list ");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "nested-sum body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_oo, "should reach Option-of-Option");
+        assert!(saw_ro, "should reach Result-of-Option");
+        assert!(saw_ot, "should reach Option-of-tuple");
+        assert!(saw_ol, "should reach Option-of-list");
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
