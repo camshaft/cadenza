@@ -575,9 +575,14 @@ def canonSet (elems : Array Value) : Option (Array Value) :=
 entry wins — the canonical Map form is sorted-by-key with unique keys). `none` on an unorderable key. -/
 def canonMap (entries : Array (Value × Value)) : Option (Array (Value × Value)) :=
   if entries.all (fun e => (compareVals e.1 e.1).isSome) then
-    let sorted := entries.qsort (fun a b => compareVals a.1 b.1 == some Ordering.lt)
-    some (sorted.foldl (fun acc e =>
-      if acc.size > 0 && acc[acc.size - 1]!.1 == e.1 then acc.set! (acc.size - 1) e else acc.push e) #[])
+    -- LAST-insert-wins per key, in INSERTION order, THEN sort by key. Deduping BEFORE the sort makes the
+    -- survivor independent of qsort stability — a duplicate key `(map (= n 1) (= n 2))` must keep the LAST
+    -- value (2), not an arbitrary one (06-numeric cdzw19: last-insert-wins survives the stored-order replay).
+    let deduped := entries.foldl (fun acc e =>
+      match acc.findIdx? (fun a => a.1 == e.1) with
+      | some i => acc.set! i e
+      | none => acc.push e) #[]
+    some (deduped.qsort (fun a b => compareVals a.1 b.1 == some Ordering.lt))
   else none
 
 /-- `Map.insert m k v`: replace any existing entry for `k`, then add `k ↦ v` (canonicalized by `canonMap`). -/
@@ -1123,15 +1128,23 @@ partial def evalAscribe (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (chil
   match children[1]?, children[2]? with
   | some valId, some tyId =>
     let o := evalNode m env ((parseIntTy? m tyId).getD ty) fuel valId
+    let isF32 := (nameOf? m tyId) == some "Float32".toUTF8
+    match o with
     -- A `Float32` ascription over a COMPUTED float (`.f64`, an arithmetic result) can't be graded at f64
     -- precision: exact f32 arithmetic rounds at EACH op, and demoting only the final result would
     -- double-round. The evaluator doesn't yet thread float precision through the operations, so SKIP
-    -- (preserving the pre-existing behavior — Float32 arithmetic is a pending increment). A Float64 (or
-    -- unascribed) computed float grades normally; a Float32 LITERAL is unaffected (handled elsewhere).
-    match o with
-    | .value (.f64 _) => if (nameOf? m tyId) == some "Float32".toUTF8
+    -- (Float32 ARITHMETIC is a pending increment). A Float64 (or unascribed) computed float grades normally.
+    | .value (.f64 _) => if isF32
                          then .unsupported "eval: Float32 arithmetic not modeled (per-op f32 demote pending)"
                          else o
+    -- A `Float32` ascription over a float LITERAL / ±inf / NaN: DEMOTE to f32 precision (a SINGLE round —
+    -- the literal's f64 value rounded to f32 and back to f64), so two literals that share f32 bits compare
+    -- equal and a demoting `<`/`>` orders on the f32 value (06-numeric "…demote to the same bits…" pins).
+    | .value fv => if isF32 then
+                     (match Value.asF64? fv with
+                      | some f => .value (.f64 (Float.toFloat32 f).toFloat)
+                      | none => o)
+                   else o
     | _ => o
   | _, _ => .unsupported "eval: malformed ascription"
 
