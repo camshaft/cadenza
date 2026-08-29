@@ -24890,22 +24890,44 @@ fn lower_list_at(db: &mut Db, id: StructId, list: StructId, index: StructId) -> 
     // `let`-bound (a kept multi-use binding lowers the reference to a `LocalRef`, followed by the helper).
     if let (Some(elems), Core::ConstInt(i)) = (const_list_elems(db, list), core_of(db, index)) {
         // The index is a signed Int64; a negative value or one `>= arity` is out of bounds → `None`.
-        match i.to_i64() {
-            Some(n) if n >= 0 && (n as usize) < elems.len() => {
-                trace!(target: "rcdzc::fold", node = id.0, index = n, "List.at folds to Some (in-bounds constant index)");
-                return Core::SumNew {
-                    disc: disc_some,
-                    payloads: vec![elems[n as usize]],
-                };
-            }
-            _ => {
-                trace!(target: "rcdzc::fold", node = id.0, "List.at folds to None (out-of-bounds constant index)");
-                return Core::SumNew {
-                    disc: disc_none,
-                    payloads: Vec::new(),
-                };
+        let kept: Option<usize> = i
+            .to_i64()
+            .and_then(|n| (n >= 0 && (n as usize) < elems.len()).then_some(n as usize));
+        // STRICT LIST CONSTRUCTION (operator ruling A, #5194): a list constructor is REACHED here (it is the
+        // `List.at` operand), so EVERY element ARG is evaluated even though the read selects only one — the
+        // optimizer may drop the list OBJECT but MUST preserve arg evaluation. This fold DISCARDS the
+        // non-selected elements, so it is sound ONLY when every DROPPED element is trap-free; if a dropped
+        // sibling could trap, keep the runtime `Core::ListAt` (whose `ListNew` operand builds the list,
+        // evaluating all args → the trap fires), mirroring the `List.len` trap-preservation gate. The
+        // SELECTED element's own eval is preserved — it is the returned payload. (Out-of-bounds → `None`
+        // drops ALL elements, so all must be trap-free.)
+        let mut dropped_trap_free = true;
+        for (j, &e) in elems.iter().enumerate() {
+            if Some(j) != kept && !is_trap_free(db, e) {
+                dropped_trap_free = false;
+                break;
             }
         }
+        if dropped_trap_free {
+            return match kept {
+                Some(n) => {
+                    trace!(target: "rcdzc::fold", node = id.0, index = n as i64, "List.at folds to Some (in-bounds constant index; dropped siblings trap-free)");
+                    Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![elems[n]],
+                    }
+                }
+                None => {
+                    trace!(target: "rcdzc::fold", node = id.0, "List.at folds to None (out-of-bounds constant index; all elements trap-free)");
+                    Core::SumNew {
+                        disc: disc_none,
+                        payloads: Vec::new(),
+                    }
+                }
+            };
+        }
+        trace!(target: "rcdzc::fold", node = id.0, "List.at const-index fold DECLINED — a dropped element can trap; keep runtime ListAt to preserve strict-construction arg eval (ruling A)");
+        // fall through to the runtime read below (its ListNew operand evaluates all element args).
     }
     // A runtime list or runtime index — emit the bounds-checked runtime read.
     Core::ListAt {
