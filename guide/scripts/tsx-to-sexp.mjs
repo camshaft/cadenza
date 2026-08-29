@@ -175,7 +175,8 @@ function findMatchingClose(s, from, name) {
 }
 
 // ---- block layer: a chapter .tsx → .sexp (meta from chapters.ts + article blocks) ----
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractFilesProp } from "./example-extract.mjs";
@@ -311,9 +312,77 @@ function exerciseBlock(chunk) {
   return s + `)`;
 }
 
-// ---- CLI: convert a chapter .tsx → .sexp on stdout ----
-const cliArg = process.argv[2];
-if (cliArg && cliArg.endsWith(".tsx")) {
+// ---- per-chapter fidelity verifier: convert → render (xtask) → compare to the old .tsx ----
+
+/// The PROSE visible text of a chapter .tsx: the concatenated visible text of its H1/Lede/P/H2/Note/Why
+/// blocks ONLY (Runnable/Exercise elements are removed first — their fidelity is checked via example-extract,
+/// and their attrs/code aren't reader prose). JSX-ish: unwrap `{`…`}`/`{" "}`, drop fragment tokens + tags,
+/// collapse whitespace, decode &amp;. Both the OLD hand .tsx and the codegen'd .tsx normalize to the same
+/// string iff the converter preserved the reader-visible prose.
+function inlineVisible(s) {
+  return s
+    .replace(/\{`([\s\S]*?)`\}/g, (_, b) => cookTemplate(b)) // {`code`} → cooked code (as the browser renders)
+    .replace(/\{" "\}/g, " ") // {" "} → space
+    .replace(/\{("(?:[^"\\]|\\.)*")\}/g, (_, j) => { try { return JSON.parse(j); } catch { return j; } }) // {"…"} (escape_text) → decoded text
+    .replace(/<\/?>/g, "") // <> and </> fragment tokens
+    .replace(/[{}]/g, "") // stray fragment braces
+    .replace(/<[^>]+>/g, "") // all tags
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/// The reader-visible PROSE text of a chapter .tsx: POSITIVELY extract each prose block (H1/Lede/P/H2/Note/
+/// Why) + each Exercise prompt/hint fragment, in document order, and concatenate their visible text. Positive
+/// extraction (vs removing Runnable/Exercise) avoids the self-closing-`/>` / inner-`<br />` removal hazard and
+/// still covers the exercise teaching prose (prompt/hint). Runnable/Exercise CODE is checked via example-extract.
+function proseText(tsx) {
+  const a = /<article>([\s\S]*)<\/article>/.exec(tsx)?.[1] ?? tsx;
+  const parts = [];
+  for (const tag of ["H1", "Lede", "P", "H2", "Note"]) {
+    for (const m of a.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"))) parts.push([m.index, inlineVisible(m[1])]);
+  }
+  for (const m of a.matchAll(/<Why[^>]*>([\s\S]*?)<\/Why>/g)) parts.push([m.index, inlineVisible(m[1])]);
+  for (const m of a.matchAll(/(?:prompt|hint)=\{\s*<>([\s\S]*?)<\/>\s*\}/g)) parts.push([m.index, inlineVisible(m[1])]);
+  return parts.sort((x, y) => x[0] - y[0]).map((p) => p[1]).join(" ");
+}
+
+/// Extract example (source/expected) fidelity fields for a chapter body.
+function exampleFields(tsx, label, extractExamples) {
+  const body = /<article>([\s\S]*)<\/article>/.exec(tsx)?.[1] ?? tsx;
+  return JSON.stringify(extractExamples(body, label).map((e) => ({ k: e.kind, s: e.snippet, x: e.expected })));
+}
+
+async function verifyChapter(tsxPath) {
+  const { extractExamples } = await import("./example-extract.mjs");
+  const oldTsx = readFileSync(tsxPath, "utf8");
+  const sexp = convertChapter(tsxPath);
+  // Render the .sexp back to TSX via the built emit-xtask binary directly (no cargo-shim; #5606 gotcha).
+  const bin = join(HERE, "../../target/debug/xtask-codegen-guide");
+  const tmp = join("/tmp", basename(tsxPath, ".tsx") + ".verify.sexp");
+  writeFileSync(tmp, sexp);
+  const genTsx = execFileSync(bin, [tmp], { encoding: "utf8" });
+
+  const proseOk = proseText(oldTsx) === proseText(genTsx);
+  const oldEx = exampleFields(oldTsx, tsxPath, extractExamples);
+  const genEx = exampleFields(genTsx, tsxPath, extractExamples);
+  const exOk = oldEx === genEx;
+  console.log(`${proseOk ? "✓" : "✗"} prose visible text  (${basename(tsxPath)})`);
+  console.log(`${exOk ? "✓" : "✗"} example source/expected fidelity`);
+  if (!proseOk) {
+    const o = proseText(oldTsx), g = proseText(genTsx);
+    for (let i = 0; i < Math.max(o.length, g.length); i++)
+      if (o[i] !== g[i]) { console.log(`  prose diff @${i}\n   old:…${JSON.stringify(o.slice(i - 40, i + 40))}\n   gen:…${JSON.stringify(g.slice(i - 40, i + 40))}`); break; }
+  }
+  if (!exOk) console.log(`  old ex: ${oldEx}\n  gen ex: ${genEx}`);
+  process.exit(proseOk && exOk ? 0 : 1);
+}
+
+// ---- CLI: convert a chapter .tsx → .sexp on stdout; --verify round-trips + compares ----
+const cliArg = process.argv.find((x) => x.endsWith(".tsx"));
+if (process.argv.includes("--verify") && cliArg) {
+  await verifyChapter(cliArg);
+} else if (cliArg) {
   process.stdout.write(convertChapter(cliArg));
   process.exit(0);
 }
