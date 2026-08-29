@@ -5949,7 +5949,6 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 baseline: None,
                 compile_status: 0,
                 compile_diag: None,
-                diagnostics: None,
                 component_name: None,
                 report_live_objects: false,
                 core_module: None,
