@@ -188,6 +188,20 @@ pub fn compile_and_run(
             cmd.arg("--extern")
                 .arg(format!("num_bigint={}", rlib.display()));
         }
+        // Same rationale for `unicode_normalization` — the native `Core::NfcNormalize` emit (String.concat /
+        // from-bytes NFC canonicalization, FINDING #23 rust parity) calls `unicode_normalization::…::nfc(…)`, so
+        // it must be a NAMABLE extern. It is a `std`-feature dep of `cadenza_ast` (like `num_bigint`), hash-named
+        // in `<dir>/deps`; glob for it and `--extern unicode_normalization=` it (harmless when unreferenced).
+        if let Ok(entries) = std::fs::read_dir(dir.join("deps"))
+            && let Some(rlib) = entries.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
+                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    n.starts_with("libunicode_normalization-") && n.ends_with(".rlib")
+                })
+            })
+        {
+            cmd.arg("--extern")
+                .arg(format!("unicode_normalization={}", rlib.display()));
+        }
     }
     let compiled = match cmd.output() {
         Ok(o) => o,

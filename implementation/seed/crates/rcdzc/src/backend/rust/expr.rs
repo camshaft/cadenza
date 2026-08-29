@@ -3489,17 +3489,23 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Ok(s)
             }
         }
-        // `str-nfc-normalize` (FINDING #23) — canonicalize a String value to NFC. The wasm backend calls the
-        // `str-nfc-normalize` runtime op; the native rust rep of a String is `String`, so the equivalent is
-        // `.nfc().collect::<String>()` (unicode-normalization). INTERIM: the emitted rust crate does not yet
-        // carry the unicode-normalization dep (adding a rust-TARGET dependency + the emit is v-rust-backend's
-        // lane — coordinated), so emit the IDENTITY here: this preserves `String.concat` on rust exactly as it
-        // works today (NO regression) while the wasm backend gets the real NFC fix. Rust stays at its
-        // pre-existing (un-normalized) String behavior — the SAME status quo, not a new defect; the rust-NFC
-        // parity arm lands separately (corpus-bugfix's pin gates x3, so the rust faces show as todo until then,
-        // never a fail). NOT a workaround of the bug — an explicit lane split (wasm = mine now, rust = v-rust-
-        // backend's dep+emit), tracked in FINDING #23. When rust gains the dep: `Ok(format!("{s}.nfc().collect::<String>()"))`.
-        Core::NfcNormalize { string } => emit(db, string, env, ctx),
+        // `str-nfc-normalize` (FINDING #23) — canonicalize a String value to NFC, matching the wasm backend's
+        // `str-nfc-normalize` runtime op. The native rust rep of a String is `String`, so the equivalent is
+        // `.nfc().collect::<String>()` via `unicode-normalization` (the same crate cdz-nfc uses for the wasm NFC
+        // component). That crate is ALREADY in the emitted-program link closure — it is a `std`-feature dep of
+        // `cadenza_ast` (beside `num_bigint`), staged in the `<cadenza_ast>/deps` dir the rust-exec harness passes
+        // and `--extern unicode_normalization=`-linked there (cdz-rust-run/src/run.rs, mirroring `num_bigint`), so
+        // no NEW rust-target dependency is added. Emit a UFCS call (not a `use`) — matching the house style of
+        // fully-qualified paths (`::std::boxed::Box::new`) — so no trait import is required in the driver: the
+        // operand is an owned `String`, `&(…)[..]` yields the `&str` the `UnicodeNormalization` impl is on. This
+        // fixes the wasm-vs-rust divergence breaker reported (`String.concat`/`from-bytes` skipped NFC on rust →
+        // `=`/set-membership/byte-len all disagreed with wasm); the 3-way NFC pins now agree across both backends.
+        Core::NfcNormalize { string } => {
+            let s = emit(db, string, env, ctx)?;
+            Ok(format!(
+                "unicode_normalization::UnicodeNormalization::nfc(&({s})[..]).collect::<String>()"
+            ))
+        }
         // A SUM VALUE CONSTRUCTION → the Rust enum variant `<Enum>::<Variant>(payloads…)`. The enum +
         // variant names come from the node's solved `Ty::Sum` declaration at the disc's index (the
         // discriminant IS the variant's declaration-order position). A nullary variant is the bare
