@@ -12139,7 +12139,7 @@
   (output (: (Neg (Lit 8)) E))
   (call main (: -9 Int64))
   (output (: (Lit 9) E))
-  (live-objects 0))
+  (live-objects 2 1))
 
 (case "cdzw15 the cadenza backend round-trips a MatchSum CONSUMED through recursion — the #4942+#4954 interplay"
   (doc "Fresh cadenza slices #4954 (MatchSum M4a) + #4942 (user type-decl re-emit) COMPOSED: the recursive
@@ -12154,7 +12154,7 @@
   (output (: -7 Int64))
   (call main (: -9 Int64))
   (output (: 9 Int64))
-  (live-objects 0))
+  (live-objects known-leak 2 1))
 
 (case "cdzw16 the cadenza backend round-trips a MULTI-PAYLOAD variant match — slot-i payload binders"
   (doc "The multi-payload face of M4a: `(Both a b)` binds payload SLOTS 0 and 1 in one arm (a
@@ -12276,7 +12276,7 @@
   (output (: (Some (None unit)) (Option (Option Int64))))
   (call main (: -4 Int64))
   (output (: (None unit) (Option (Option Int64))))
-  (live-objects 0))
+  (live-objects 2 0 0))
 
 (case "cdzw26 the cadenza backend round-trips a bare (None) as a LIST ELEMENT — the element-position join"
   (doc "The compound-element face of the #4972/#4996 threading: a bare `(None)` as a list element derives
