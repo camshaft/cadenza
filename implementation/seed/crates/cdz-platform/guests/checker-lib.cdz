@@ -42,7 +42,7 @@ def verdict-req(verdict-contract, payload) =
 // decoded records to the checker's `judge` (records -> verdict-payload Bytes), and Report the verdict on the
 // harness-provided verdict contract. A log that doesn't decode Reports a fixed-diagnostic fail; a non-check
 // message Closes. The guest maps this Decision onto its own reducer Outcome.
-def interpret(msg, judge) =
+def interpret(msg: Record(contract: Bytes, payload: Bytes, sender: Record(host: Bytes, reducer: Bytes), token: Bytes), judge) =
   match (Value.decode(msg.payload) : Option(Envelope)) with
   | Some(Envelope.Check(c)) =>
       (match (Value.decode(c.log) : Option(List(LogRecord))) with
@@ -53,10 +53,18 @@ def interpret(msg, judge) =
 
 // The FULL reducer step a checker's on-message returns: run `interpret`, then map its Decision onto the reducer
 // Outcome (lib-owned). A checker's on-message is now one line: `def on-message(msg) = respond(msg, verdict-payload)`.
-def respond(msg, judge) =
+def respond(msg: Record(contract: Bytes, payload: Bytes, sender: Record(host: Bytes, reducer: Bytes), token: Bytes), judge) =
   match interpret(msg, judge) with
-  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
-  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
+  | Decision.Report(r) =>
+      // Ascribe `r` to the `Decision.Report` record shape: the world-export boundary can leave a local-sum
+      // variant payload's field-access inference under-constrained (it collapses `r` to `Bytes` in some
+      // checker guests → CDZ0201 "a Bytes value has no field payload"), the same parameter-synthesis
+      // fragility reducer-lib's annotated `on-response`/`on-notification` remedy — so pin the type here.
+      let rr = (r : Record(contract: Bytes, payload: Bytes)) in
+      { requests = [verdict-req(rr.contract, rr.payload)], outcome = Outcome.Continue }
+  | Decision.NotCheck(cl) =>
+      let cc = (cl : Record(schema: Bytes, reason: Bytes)) in
+      { requests = [], outcome = Outcome.Close({ schema = cc.schema, reason = cc.reason }) }
 
 
 // ── Log-iteration combinators — make a checker DECLARATIVE: it says WHAT to find in the observation log, the
