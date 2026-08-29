@@ -222,6 +222,10 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOut
       | none => .cannotProve "symeval: non-scalar leaf"
     | none => .cannotProve "symeval: leaf index out of range"
   | some (Node.list children) =>
+    -- CONSTRUCTION first: a head resolving to a declared sum constructor (bare `C` or qualified `(. T C)`).
+    match symCtorConstruct m senv fuel children with
+    | some o => o
+    | none =>
     match m.headName? (Node.list children) with
     | some h =>
       if h == "if".toUTF8 then
@@ -382,6 +386,41 @@ partial def symLet (m : Module) (senv : SymEnv) (fuel : Nat) (ps : List Nat) (bo
         | none => .cannotProve "symeval: let binding missing name"
       | _, _ => .cannotProve "symeval: malformed let binding"
     | _ => .cannotProve "symeval: let binding not a (name value) pair"
+
+/-- Try to construct a user/prelude SUM value from `(C arg…)` / `((. T C) arg…)`. `some outcome` if the
+head resolves to a DECLARED constructor (MIRRORING `evalVariantCtor`'s erasure so the symbolic value matches
+the concrete one); `none` if it is not a ctor (fall through to the operator/call dispatch), or if a local
+binding shadows the name. Erasure (identical to the concrete evaluator, via the same helpers): a NEWTYPE
+ctor → its payload (no tag); a STRUCT-NEWTYPE → the bare tuple of fields; a SOLE-NULLARY ctor → `unit`; any
+other declared ctor → a tagged `.ctor` (arity 1 → single payload; arity ≥2 → a tuple payload). An
+unmodelable arg or an arity mismatch (partial application) → `cannotProve`. -/
+partial def symCtorConstruct (m : Module) (senv : SymEnv) (fuel : Nat) (children : Array Nat) : Option SymOutcome :=
+  match ctorAppName? m children with
+  | none => none
+  | some cname =>
+    if (senv.find? (fun p => p.1 == cname)).isSome then none
+    -- newtype/struct-newtype/sole-nullary are checked INDEPENDENTLY of `variantCtorArity?` (which returns
+    -- `none` for an erasing ctor) — mirror `evalNode`'s ctorConstruct order. If none of these AND
+    -- `variantCtorArity?` is `none`, the head is NOT a declared ctor → fall through (`none`).
+    else if !(newtypeCtor? m cname || structNewtypeCtor? m cname || soleNullaryCtor? m cname || (variantCtorArity? m cname).isSome) then none
+    else
+      let argsOpt := (children.extract 1 children.size).foldl (fun (acc : Option (Array SymExpr)) aid =>
+        match acc with
+        | none => none
+        | some arr => (match symEval m senv fuel aid with | .sym e => some (arr.push e) | .cannotProve _ => none)) (some #[])
+      some (match argsOpt with
+        | none => .cannotProve "symeval: user-ctor argument is unmodelable"
+        | some args =>
+          if newtypeCtor? m cname then (match args[0]? with | some e => .sym e | none => .cannotProve "symeval: newtype ctor missing payload")
+          else if structNewtypeCtor? m cname then .sym (.tuple args)
+          else if soleNullaryCtor? m cname then .sym (.const .unit)
+          else match variantCtorArity? m cname with
+            | some ar =>
+              if args.size != ar then .cannotProve "symeval: constructor arity mismatch (partial application?)"
+              else if ar == 0 then .sym (.ctor cname #[])
+              else if ar == 1 then .sym (.ctor cname args)
+              else .sym (.ctor cname #[.tuple args])
+            | none => .cannotProve "symeval: erasing-ctor arity resolution failed")
 end
 
 /-- The equivalence VERDICT. `cannotProve` carries a reason: `"boundary"` (hit the incompleteness limit —
@@ -549,5 +588,26 @@ private def _matchExpr : Module :=
                .atom 4, .atom 5, .list #[8, 9], .atom 0, .list #[11, 2, 7, 10]],
     root := 12 }
 #guard symEval _matchExpr [] symDefaultFuel 12 == SymOutcome.sym (.const (.int 5))
+
+-- user-sum construction. NEWTYPE erases: `(type Cached (Mk Int64))` + `(main)=(Mk 7)` → the payload 7 (no tag).
+private def _newtypeProg : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "type".toUTF8, Leaf.name "Cached".toUTF8, Leaf.name "Mk".toUTF8,
+                Leaf.name "Int64".toUTF8, Leaf.name "def".toUTF8, Leaf.name "main".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[7]), Leaf.name "export".toUTF8],
+    nodes := #[.atom 1, .atom 2, .atom 3, .atom 4, .list #[2, 3], .list #[0, 1, 4],
+               .atom 5, .atom 6, .list #[7], .atom 3, .atom 7, .list #[9, 10], .list #[6, 8, 11],
+               .atom 8, .atom 6, .list #[13, 14], .atom 0, .list #[16, 5, 12, 15]],
+    root := 17 }
+#guard symEvalMain _newtypeProg == SymOutcome.sym (.const (.int 7))
+-- generic TAGGED variant: `(type E (Num Int64)(Wrap Int64))` (multi-variant) + `(main)=(Num 5)` → .ctor "Num" [5].
+private def _userSumProg : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "type".toUTF8, Leaf.name "E".toUTF8, Leaf.name "Num".toUTF8,
+                Leaf.name "Int64".toUTF8, Leaf.name "Wrap".toUTF8, Leaf.name "def".toUTF8, Leaf.name "main".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[5]), Leaf.name "export".toUTF8],
+    nodes := #[.atom 1, .atom 2, .atom 3, .atom 4, .list #[2, 3], .atom 5, .atom 4, .list #[5, 6], .list #[0, 1, 4, 7],
+               .atom 6, .atom 7, .list #[10], .atom 3, .atom 8, .list #[12, 13], .list #[9, 11, 14],
+               .atom 9, .atom 7, .list #[16, 17], .atom 0, .list #[19, 8, 15, 18]],
+    root := 20 }
+#guard symEvalMain _userSumProg == SymOutcome.sym (.ctor "Num".toUTF8 #[.const (.int 5)])
 
 end Oracle
