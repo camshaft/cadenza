@@ -24159,6 +24159,45 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak / no double-free");
     }
 
+    /// CO-VERIFY (v-core-opt TWO-SUM reclaim arc, 19-sets:546): the RUNTIME does NOT scale-leak a Set
+    /// accumulator across a `contains`-then-`insert` loop, and a completed `Set.contains` BORROW does NOT
+    /// block the next `set-insert`'s in-place FBIP reuse. `set_insert_h` gates reuse purely on
+    /// `node_rc(s) == 1` at the call, and `op_set_contains` BORROWS (no dup/retain) — so a contains that
+    /// COMPLETES before the insert leaves the accumulator at rc==1, and the insert refits in place with no
+    /// orphaned prior version. This isolates the observed TWO-SUM scaling leak to the COMPILER emit (a live
+    /// dup of `seen` held ACROSS the insert — the contains-borrow dup or the loop-param preservation dup —
+    /// which raises rc to ≥2 at the insert and forces the copy path). The runtime is liveness-precise; no
+    /// runtime change is warranted. If this ever regresses (final drop doesn't reclaim), the runtime WOULD
+    /// be the culprit.
+    #[test]
+    fn set_contains_borrow_does_not_block_insert_inplace_reuse_no_scaling_leak() {
+        reset();
+        let before = live_nodes();
+        // A uniquely-owned (rc==1) accumulator, like a fresh loop-carried `seen`.
+        let mut seen = sinsert_int(op_set_empty(), 0);
+        assert_eq!(node_rc(seen), 1, "fresh accumulator is exclusively owned");
+        // Model TWO-SUM's per-iteration shape: BORROW (contains) an already-present element, then INSERT a
+        // new one — repeatedly. If a completed borrow blocked reuse, each insert would path-copy and orphan
+        // the old `seen`, so the live count would scale and the final drop would not return to baseline.
+        for i in 1..24i64 {
+            let _present = scontains_int(seen, i - 1); // BORROW that completes before the insert
+            assert_eq!(
+                node_rc(seen),
+                1,
+                "a completed Set.contains borrow leaves the accumulator at rc==1 (does not block reuse)"
+            );
+            seen = sinsert_int(seen, i); // rc==1 ⇒ in-place FBIP refit, no orphaned prior version
+            assert_eq!(node_rc(seen), 1, "the reused accumulator stays uniquely owned");
+        }
+        assert_eq!(op_set_size(seen) as i64, 24, "all distinct elements inserted");
+        op_drop(seen);
+        assert_eq!(
+            live_nodes(),
+            before,
+            "NO scaling leak — in-place reuse orphaned nothing; the final drop reclaims everything"
+        );
+    }
+
     #[test]
     fn set_remove_fbip_shared_version_unaffected() {
         reset();
