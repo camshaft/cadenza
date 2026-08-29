@@ -13649,3 +13649,17 @@
   (call main (: 7 Int64)) (output (: 57 Int64))
   (call main (: -3 Int64)) (output (: 47 Int64))
   (live-objects known-leak 6))
+
+(case "cdzw85 SUM values as set elements — Option dedup by payload + membership probe — through the cadenza hop"
+  (doc "The sum sibling of the compound-key family: a #set of Options dedups a runtime-selected
+        payload-equal Some (n=1 → Some 1 twice → len 2), None participates as a distinct element, and
+        Set.contains probes with a runtime-branch-built Some. n=7 → 30+1 = 31; n=1 → 20+1 = 21;
+        n=-2 → 30+0 = 30. Dual-path verified, byte-idempotent.")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 10 (Set.len #set((Some 1) (None) (Some n))))
+         (if (Set.contains #set((Some 1) (None)) (if (> n 0) (Some 1) (Some 2))) 1 0)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 31 Int64))
+  (call main (: 1 Int64)) (output (: 21 Int64))
+  (call main (: -2 Int64)) (output (: 30 Int64)))
