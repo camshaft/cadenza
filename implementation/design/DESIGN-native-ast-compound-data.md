@@ -650,3 +650,24 @@ legacy spelling breaks), coordinated by the concierge.
 All-or-nothing (per §12.8 M2 pattern): pinned `rcdzc --lib` + `cargo test -p cadenza-syntax` (corpus_roundtrip)
 + cadenza-ast + `--target platform` + `xtask roundtrip` (ML fixed-point) + clippy `--all-targets -D warnings`
 + `cargo fmt --all --check`, across all corpus files. Concierge lands the single atomic `--ref`.
+
+### 13.4 Corpus-input tool = `cdz-nativize` (NOT `cdz rewrite`); validated (2026-08-29)
+The corpus-input nativization tool is **`cdz-nativize`** (`cadenza_syntax_sexpr::nativize_compound_source`) —
+the same span-based whole-text codemod used for the guide. It is COMPLETE + crash-safe for all value-compound
+spellings: native `#word(…)` (no-op), name-head `(word …)` (shadow-guarded), string-primitive head
+`("word" …)` (unshadowable, #5514), map/record 2-element entry field-pairify, nested compounds (recursion),
+effect op-handler arm heads exempted (#5475), and empty list `()` (#5520, `ch.first()` not `ch[0]`).
+- **NOT `cdz rewrite`:** §12.2's "resolve-aware `cdz rewrite`" mechanism does not exist — `cdz rewrite`
+  (cadenza-syntax) is a generic PATTERN→TEMPLATE structural rewriter (query-engine Rung 2) with no
+  compound-nativize transform. `cdz-nativize` supersedes it for this job.
+- **Validated (2026-08-29):** ran `cdz-nativize` over the whole `05-compound-types.sexp` (1436 cases,
+  24 217 lines) → the nativized file round-trips clean (`xtask roundtrip`: 1436 programs ok, 0 failures).
+  So cdz-nativize's native output is reader-valid + printer-fixed-point across a real compound-heavy corpus.
+- 🪤 **Invocation gotcha:** `nix develop -c cargo run --bin cdz-nativize` prints the nix-shell BANNER to
+  STDOUT (~10 lines) BEFORE the codemod output — it pollutes a `> file` redirect into an "unterminated list"
+  corpus parse error. The Phase-2 migration must strip it (`awk 'f||/^[;(]/{f=1;print}'`) or run the built
+  binary directly, and run the whole corpus in ONE `nix develop -c bash -c '<loop>'` (banner prints once).
+- **Input-vs-output scoping:** `nativize_compound_source` nativizes compound literals ANYWHERE in the text —
+  both `(input …)` programs AND `(output …)` expected values. That ALIGNS with v-corpus-harness's
+  (output)→#ctor render re-pin (both sides become native), but overlaps their file edits → COORDINATE the
+  sequencing (their render re-pin vs this nativization) so the two passes compose, not clobber.
