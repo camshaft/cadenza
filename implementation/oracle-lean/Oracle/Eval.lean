@@ -382,8 +382,17 @@ partial def operandTyEnv? (m : Module) (env : Env) (i : Nat) : Option IntTy :=
     | none =>
       match (cs[0]?).bind (fun hid => m.nodes[hid]?) with
       | some (Node.list hc) =>
-        if m.headName? (Node.list hc) == some ".".toUTF8 && (hc[1]?).bind (nameOf? m) == some "BigInt".toUTF8
-        then some { signed := true, width := .big } else none
+        if m.headName? (Node.list hc) == some ".".toUTF8 then
+          match (hc[1]?).bind (nameOf? m), (hc[2]?).bind (nameOf? m) with
+          -- a qualified `((. BigInt …) …)` call is BigInt (unbounded); a fixed-width conversion
+          -- `((. <IntTy> wrap|of) …)` yields a value OF that IntTy, so a checked op over it guards at that
+          -- (narrow) width — `(+ (UInt8.wrap a) (UInt8.wrap b))` guards at 8 (06-numeric wrapped-byte add).
+          | some q, some mem =>
+            if q == "BigInt".toUTF8 then some { signed := true, width := .big }
+            else if mem == "wrap".toUTF8 || mem == "of".toUTF8 then parseIntTyName? q
+            else none
+          | _, _ => none
+        else none
       | _ => none
   | _ => none
 
@@ -1274,7 +1283,7 @@ partial def evalCall (m : Module) (env : Env) (fuel : Nat) (paramSpecs : Array N
   | Nat.succ fuel' =>
     let args := children.extract 1 children.size
     let bindings := (paramSpecs.zip args).filterMap (fun (specId, argId) =>
-      (paramSpec? m specId).map (fun (nm, ty) => (nm, (Thunk.mk (fun _ => evalNode m env defaultIntTy fuel' argId)), ty)))
+      (paramSpec? m specId).map (fun (nm, ty) => (nm, (Thunk.mk (fun _ => evalNode m env (ty.getD defaultIntTy) fuel' argId)), ty)))
     if bindings.size == paramSpecs.size then
       -- FUNCTION BOUNDARY: a `?`/`try` short-circuit (errReturn) from the body becomes this call's value.
       (match evalNode m bindings.toList defaultIntTy fuel' bodyId with
@@ -1305,7 +1314,7 @@ partial def applyClosure (m : Module) (env : Env) (fuel : Nat) (params : Array N
     if params.size != args.size then .unsupported "eval: closure arity mismatch (partial application not modeled)"
     else
       let argBindings : Env := (params.zip args).toList.filterMap (fun (specId, argId) =>
-        (paramSpec? m specId).map (fun (nm, ty) => (nm, (Thunk.mk (fun _ => evalNode m env defaultIntTy fuel' argId)), ty)))
+        (paramSpec? m specId).map (fun (nm, ty) => (nm, (Thunk.mk (fun _ => evalNode m env (ty.getD defaultIntTy) fuel' argId)), ty)))
       let capBindings : Env := cap.map (fun (nm, v) => (nm, (Thunk.mk (fun _ => observeShallow v)), Option.none))
       if argBindings.length == params.size then
         -- FUNCTION BOUNDARY: a `?`/`try` short-circuit from the closure body becomes the application's value.
