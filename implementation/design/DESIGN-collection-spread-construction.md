@@ -11,6 +11,41 @@ would be really nice to have."*
 **Subsystem:** spans `cadenza-syntax` (surface — already parses), `rcdzc` (`resolve` CDZ0201 guard +
 `lower` construction) and typing (`v-inference`).
 
+## 0a. ⚠ ARENA-SHAPE CORRECTION (operator, 2026-08-29): the spread is `(.. v)` EVERYWHERE
+
+**Operator, verbatim:** *"for the spread operator i want it to be `(.. v)` in sexpr. so like
+`#record((= k v) (.. other-record))`"* and *"i want the `(.. v)` operator to be everywhere. patterns
+and constructors. it's a lot more consistent imo. otherwise we're putting an infix operator in sexpr
+and it just feels wrong."*
+
+So the arena marker for a spread/rest is a **self-contained wrapped node `(.. operand)`** (a `List`
+whose head is the `..` `Name`), in **BOTH construction AND pattern** position — NOT the legacy **flat**
+`Name("..")` + next-sibling marker. Repo-wide shape:
+
+| | legacy flat (being replaced) | NEW `(.. v)` (operator) |
+|---|---|---|
+| list ctor | `(list a .. c)` | `(list a (.. c))` |
+| record ctor | — | `(record (= k v) (.. r))` |
+| map ctor | — | `(map (= k v) (.. m))` |
+| set ctor | — | `(set x (.. s))` |
+| list pattern | `(list a .. rest)` | `(list a (.. rest))` |
+| map pattern | `(map (= k v) .. rest)` | `(map (= k v) (.. rest))` |
+
+This supersedes §1's "flat `Name("..")` marker" description and the flat shape landed in PR #5826.
+
+**Staged migration (M2/M3-style, no flag-day / broken window):**
+- **Phase 1 (`v-inference`/`rcdzc`, ADDITIVE, lands alone):** every rest-marker scan
+  (`position(|e| as_name(e) == Some(".."))` in `resolve.rs` list/map pattern destructuring, `compile.rs`
+  cover, `accum.rs`, `db.rs`, `eval_ast.rs`) recognizes a `(.. operand)` **child** in ADDITION to the
+  flat marker. No behavior change (flat still works). A helper `spread_operand(a, child) -> Option`
+  (`Some` iff `child` is a `(.. x)` node) at each site, wrapped-first then flat-fallback.
+- **Phase 2 (`v-syntax`, after Phase 1):** the surface PRODUCES `(.. operand)` — parser `rest_marker`
+  wraps; ML printer renders `(.. operand)` as `..operand`; the sexpr reader NORMALIZES a read flat
+  `.. x` → `(.. x)` (back-compat, so old corpus text still reads); printers emit `(.. v)`. The arena is
+  now always wrapped; Phase-1 recognition handles it. Corpus text may stay flat (reader normalizes).
+- **Phase 3 (cleanup):** migrate corpus text `.. rest` → `(.. rest)` (cosmetic); drop the flat
+  recognition + the reader normalize.
+
 ## 0. The ask, and where we are — READ FIRST
 
 **Operator (verbatim, via concierge):** "Do we have the ability to concat lists with `..` patterns?
