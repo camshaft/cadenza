@@ -71,7 +71,7 @@
             (effect R (op touch (-> Int64 Int64)))
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main (: n Int64))
-              (+ (handle R (map (= 1 10))
+              (+ (handle R #map((= 1 10))
                    ((touch (k) s (resume (Map.len s) (Map.insert s k k))))
                    (+ (R.touch 5)
                       (handle Bail 0
@@ -841,7 +841,7 @@
   (input  (do
             (effect St (op next (-> Int64)))
             (def (main (: n Int64))
-              (let ((m (map (= 1 (handle St n
+              (let ((m #map((= 1 (handle St n
                                  ((next () s (resume s (+ s 3))))
                                  (+ (St.next) (St.next))))
                             (= 2 50))))
@@ -1139,7 +1139,7 @@
   (input  (do
             (effect Db (op put (-> Int64 Int64)) (op dump (-> (List (Tuple Int64 Int64)))))
             (def (main (: n Int64))
-              (handle Db (map (= 1 10))
+              (handle Db #map((= 1 10))
                 ((put (k) m (resume (Map.len m) (Map.insert m k (* k 2))))
                  (dump () m (resume (Map.to-list m) m)))
                 (let ((before (List.len (Db.dump))))
@@ -1178,7 +1178,7 @@
                 ((Some p) (match p (#tuple(k v) (+ v (sum-snd xs (+ i 1))))))
                 ((None) 0)))
             (def (main (: n Int64))
-              (handle Db (map (= 1 100))
+              (handle Db #map((= 1 100))
                 ((put (k) m (resume (Map.len m) (Map.insert m k k)))
                  (total () m (resume (sum-snd (Map.to-list m) 0) m)))
                 (do
@@ -1266,7 +1266,7 @@
             (effect St (op adv (-> Int64)))
             (def (main (: n Int64))
               (handle St "a"
-                ((adv () s (resume (match (Map.lookup (map (= "a" 10) (= "ab" 20) (= "abb" 30)) s)
+                ((adv () s (resume (match (Map.lookup #map((= "a" 10) (= "ab" 20) (= "abb" 30)) s)
                                      ((Some v) v)
                                      ((None) -1))
                                    (String.concat s "b"))))
@@ -1532,7 +1532,7 @@
             (effect R (op route (-> Int64)))
             (def (main (: n Int64))
               (handle R #"a"
-                ((route () s (resume (match (Map.lookup (map (= #"a" 10) (= #"b" 20)) s)
+                ((route () s (resume (match (Map.lookup #map((= #"a" 10) (= #"b" 20)) s)
                                        ((Some v) v)
                                        ((None) -1))
                                      (if (= s #"a") #"b" #"c"))))
@@ -2960,7 +2960,7 @@
                 ((next () s (resume s (+ s 1))))
                 (let ((k1 (+ (% (E.next) 3) 1)))
                   (let ((k2 (+ (% (E.next) 4) 1)))
-                    (let ((m (Map.insert (Map.insert (Map.insert (Map.insert (map) 1 10) 2 20) 3 30) k1 77)))
+                    (let ((m (Map.insert (Map.insert (Map.insert (Map.insert #map() 1 10) 2 20) 3 30) k1 77)))
                       (+ (* 100 (match (Map.lookup m k2)
                                   ((Some v) v)
                                   ((None) -5)))
@@ -2978,7 +2978,7 @@
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (+ s 5))))
-                (let ((m (Map.insert (Map.insert (Map.insert (map) 1 (E.next)) 2 (E.next)) 3 (E.next))))
+                (let ((m (Map.insert (Map.insert (Map.insert #map() 1 (E.next)) 2 (E.next)) 3 (E.next))))
                   (+ (* 100 (get m 1)) (+ (* 10 (get m 2)) (get m 3))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 60 Int64))
@@ -2994,7 +2994,7 @@
               (handle E n
                 ((next () s (resume s (+ s 1))))
                 (let ((k (+ (% (E.next) 3) 1)))
-                  (let ((m (Map.remove (Map.insert (Map.insert (Map.insert (map) 1 10) 2 20) 3 30) k)))
+                  (let ((m (Map.remove (Map.insert (Map.insert (Map.insert #map() 1 10) 2 20) 3 30) k)))
                     (+ (* 100 (get m 1)) (+ (* 10 (get m 2)) (get m 3)))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 130 Int64))
@@ -5224,7 +5224,7 @@
                 ((next () s (resume s (+ s 2))))
                 (let ((k (+ (% (E.next) 3) 1)))
                   (let ((v1 (E.next)))
-                    (let ((m (Map.insert (Map.insert (Map.insert (Map.insert (map) 1 #tuple(10 20)) 2 #tuple(30 40)) 3 #tuple(50 60)) k #tuple(v1 (* 2 v1)))))
+                    (let ((m (Map.insert (Map.insert (Map.insert (Map.insert #map() 1 #tuple(10 20)) 2 #tuple(30 40)) 3 #tuple(50 60)) k #tuple(v1 (* 2 v1)))))
                       (match (get2 m k)
                         (#tuple(a b)
                           (match (get2 m (if (= k 1) 2 1))
@@ -11275,7 +11275,7 @@
               (op obs (-> Int64 Int64))
               (op kinds (-> Int64)))
             (def (main (: n Int64))
-              (handle D (: (map) (Map Int64 Int64))
+              (handle D (: #map() (Map Int64 Int64))
                 ((obs (v) m
                   (match (Map.lookup m v)
                     ((Some c)
@@ -11661,7 +11661,7 @@
                   (tailof xs (+ i 1) (List.push acc (match (List.at xs i) ((Some v) v) ((None u) 0))))
                   acc))
             (def (main (: n Int64))
-              (handle C #tuple((: #list() (List Int64)) (: (map) (Map Int64 Int64)))
+              (handle C #tuple((: #list() (List Int64)) (: #map() (Map Int64 Int64)))
                 ((put (k v) st
                   (match st
                     (#tuple(rec m)
@@ -17844,7 +17844,7 @@
     (effect M (op snap (-> (Map Int64 Int64))))
     (def (main (: n Int64))
       (handle M n
-        ((snap () s (resume (Map.insert (Map.insert (map) s (* s 10)) (+ s 1) 0) (+ s 1))))
+        ((snap () s (resume (Map.insert (Map.insert #map() s (* s 10)) (+ s 1) 0) (+ s 1))))
         (match (Map.lookup (M.snap) n)
           ((Option.Some v) v)
           ((Option.None) -1))))
@@ -17884,7 +17884,7 @@
       (handle M 0
         ((feed (m) s (resume unit (+ s (match (Map.lookup m n) ((Option.Some v) v) ((Option.None) -100)))))
          (get () s (resume s s)))
-        (do (M.feed (Map.insert (map) 4 70)) (M.feed (Map.insert (Map.insert (map) 4 2) 9 900)) (M.get))))
+        (do (M.feed (Map.insert #map() 4 70)) (M.feed (Map.insert (Map.insert #map() 4 2) 9 900)) (M.get))))
     (export main)))
   (call main (: 4 Int64))
   (output (: 72 Int64)))

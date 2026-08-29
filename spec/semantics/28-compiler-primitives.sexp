@@ -964,7 +964,7 @@
 (case "a const Map.to-list folds its length under a const demand"
   (doc    "`Map.to-list` over a constant map folds to a key-sorted list of `(k v)` tuples, so `(const (List.len
            (Map.to-list …)))` folds to 2 — no longer a REJECT. The Map twin of the Set.to-list fold.")
-  (input  (do (def (main) (const (List.len (Map.to-list (Map.insert (Map.insert (map) 2 20) 1 10))))) (export main)))
+  (input  (do (def (main) (const (List.len (Map.to-list (Map.insert (Map.insert #map() 2 20) 1 10))))) (export main)))
   (output (: 2 Int64)))
 
 (case "a const Map.to-list enumerates key-sorted — the head entry is the smallest key"
@@ -972,7 +972,7 @@
            `{3↦30,1↦10,2↦20}` is `(tuple 1 10)`: `(+ (* 100 k) v)` = 110. Pins the (k v) tuple element shape +
            the key-sorted order.")
   (input  (do (def (main)
-                (const (match (List.at (Map.to-list (Map.insert (Map.insert (Map.insert (map) 3 30) 1 10) 2 20)) 0)
+                (const (match (List.at (Map.to-list (Map.insert (Map.insert (Map.insert #map() 3 30) 1 10) 2 20)) 0)
                          ((Option.Some #tuple(k v)) (+ (* 100 k) v))
                          ((Option.None) -1))))
               (export main)))
@@ -982,7 +982,7 @@
   (doc    "The value rides with its key at every position: index 1 of `{5↦50,2↦20}` (key-sorted) is
            `(tuple 5 50)`, `(+ k v)` = 55.")
   (input  (do (def (main)
-                (const (match (List.at (Map.to-list (Map.insert (Map.insert (map) 5 50) 2 20)) 1)
+                (const (match (List.at (Map.to-list (Map.insert (Map.insert #map() 5 50) 2 20)) 1)
                          ((Option.Some #tuple(k v)) (+ k v))
                          ((Option.None) -1))))
               (export main)))
@@ -992,7 +992,7 @@
   (doc    "String keys sort lexicographically (`\"ab\" < \"bb\"`), so the head of `{\"bb\"↦2,\"ab\"↦1}` is
            `(tuple \"ab\" 1)` — value 1. Pins the String-key canonical order for the Map fold.")
   (input  (do (def (main)
-                (const (match (List.at (Map.to-list (Map.insert (Map.insert (map) "bb" 2) "ab" 1)) 0)
+                (const (match (List.at (Map.to-list (Map.insert (Map.insert #map() "bb" 2) "ab" 1)) 0)
                          ((Option.Some #tuple(k v)) v)
                          ((Option.None) -1))))
               (export main)))
@@ -1004,8 +1004,8 @@
            `(k v)` tuples as the COMPILE-TIME fold — both key-sorted. Pins that `const_key_order` (compile) and
            `value_cmp_shaped` (runtime) agree for Map keys, catching any drift between the two impls.")
   (input  (do (def (run (: n Int64))
-                (= #tuple(1 (Map.to-list (Map.insert (Map.insert (map) n 10) (+ n 1) 20)))
-                   #tuple(1 (const (Map.to-list (Map.insert (Map.insert (map) 3 10) 4 20))))))
+                (= #tuple(1 (Map.to-list (Map.insert (Map.insert #map() n 10) (+ n 1) 20)))
+                   #tuple(1 (const (Map.to-list (Map.insert (Map.insert #map() 3 10) 4 20))))))
               (export run)))
   (call   run 3)
   (output (: true Bool)))
@@ -1481,7 +1481,7 @@
             (def (grow (const (: m (Map Int64 Int64))) (const (: k Int64)))
               (if (= k 0) m (grow (Map.insert m k (* k 10)) (- k 1))))
             (def (main)
-              (const (match (Map.lookup (grow (map) 3) 2) ((Option.Some v) v) ((Option.None) -1))))
+              (const (match (Map.lookup (grow #map() 3) 2) ((Option.Some v) v) ((Option.None) -1))))
             (export main)))
   (output (: 20 Int64)))
 
@@ -1797,7 +1797,7 @@
         ((Option.None) -1)))
     (def (main)
       (const
-        (handle E (Map.insert (map) 0 5)
+        (handle E (Map.insert #map() 0 5)
           ((tick () s (resume (rd s) (Map.insert s 0 (+ (rd s) 1)))))
           (+ (E.tick) (E.tick)))))
     (export main)))
@@ -1891,7 +1891,7 @@
 (case "dc06 Map insert+lookup inside a const fn folds under Ast.encode"
   (input  (do
             (def (f (const (: n Int64)))
-              (match (Map.lookup (Map.insert (map) n "found") n)
+              (match (Map.lookup (Map.insert #map() n "found") n)
                 ((Option.Some s) s)
                 ((Option.None) "absent")))
             (def (run) (= (Ast.encode (Ast.Name (f 4))) (Ast.encode (Ast.Name "found"))))
@@ -2180,7 +2180,7 @@
 (case "le3 a single-entry const Map.to-list reads its lone (k v)"
   (input (do
     (def (main)
-      (const (match (List.at (Map.to-list (Map.insert (map) 7 70)) 0)
+      (const (match (List.at (Map.to-list (Map.insert #map() 7 70)) 0)
                ((Option.Some #tuple(k v)) (+ k v))
                ((Option.None) -1))))
     (export main)))
@@ -2203,7 +2203,7 @@
 (case "lnr2 a const Map.to-list with a LONE non-orderable KEY still declines"
   (doc "The Map-key twin: a lone tuple KEY carrying a FLOAT is non-orderable, so the per-element pre-check
         keeps the runtime op and the const demand REJECTS.")
-  (input (do (def (main) (const (List.len (Map.to-list (Map.insert (map) #tuple(1.5 2) 10))))) (export main)))
+  (input (do (def (main) (const (List.len (Map.to-list (Map.insert #map() #tuple(1.5 2) 10))))) (export main)))
   (error CDZ0201 (message "compile-time constant")))
 
 (case "lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0"
@@ -2273,7 +2273,7 @@
 (case "bk4 a Map keyed by a runtime digest is findable by a fresh recompute"
   (input (do
     (def (main (: n Int64))
-      (match (Map.lookup (Map.insert (map) (Blake3.of (Bytes.of #list((UInt8.wrap n)))) 42) (Blake3.of (Bytes.of #list((UInt8.wrap n)))))
+      (match (Map.lookup (Map.insert #map() (Blake3.of (Bytes.of #list((UInt8.wrap n)))) 42) (Blake3.of (Bytes.of #list((UInt8.wrap n)))))
         ((Option.Some v) v)
         ((Option.None) -1)))
     (export main)))
@@ -2410,7 +2410,7 @@
 (case "chm1 a const Map with CHAR keys to-lists key-sorted"
   (input (do
     (def (main)
-      (const (match (List.at (Map.to-list (Map.insert (Map.insert (map) #\c 3) #\a 1)) 0)
+      (const (match (List.at (Map.to-list (Map.insert (Map.insert #map() #\c 3) #\a 1)) 0)
                ((Option.Some #tuple(k v)) (if (= k #\a) v -2))
                ((Option.None) -1))))
     (export main)))

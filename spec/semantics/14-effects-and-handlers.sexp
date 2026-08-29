@@ -2312,7 +2312,7 @@
             (effect ask (op ask (-> Unit Int64)))
             (def (main)
               (host (ask)
-                (Map.len (Map.insert (map (= 1 10)) (ask.ask) 20)))) (export main)))
+                (Map.len (Map.insert #map((= 1 10)) (ask.ask) 20)))) (export main)))
   (host-responses (respond ask.ask (: 2 Int64)))
   (host-calls (call ask.ask))
   (output (: 2 Int64)))
