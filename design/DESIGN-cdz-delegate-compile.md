@@ -167,6 +167,53 @@ code landing, else the nix build breaks. Also: the `delegate.rs` unit tests only
 (Each slice keeps the DEFAULT (`standalone`) build byte-identical to today, so `main` stays green
 throughout; the `!standalone` build is progressively made rcdzc-free, culminating in slice 6.)
 
+## Shared boundary types — the `cadenza-compile-abi` extraction (approach B, operator-approved 2026-08-29)
+
+Slices 2–6 need the `!standalone` cdz arms to build the sidecar request + read the compile result
+WITHOUT referencing `rcdzc` types (so slice 6's `rcdzc = { optional = true }` flip drops `rcdzc` from
+the closure). Two ways to get there were weighed:
+
+- **(A)** cdz keeps its own cdz-local MIRROR of each boundary type (`Artifact`/`Request`/`Query`/
+  `OptLevel`/`Target`/spans/codec), duplicating ~7 types + ~100 use-sites. No new rcdzc dep, but the
+  contract now lives in two places that can drift.
+- **(B, CHOSEN)** EXTRACT the boundary types into a new dependency-light crate **`cadenza-compile-abi`**
+  that BOTH `rcdzc` and `cdz` depend on — ONE source of truth for the sidecar/compile wire. This is the
+  compile-boundary analogue of `cadenza-ast` (one source of truth for a cross-process wire format).
+
+The operator approved (B) on 2026-08-29 ("I'm fine to have a compile abi crate"), which makes
+`rcdzc → cadenza-compile-abi` the **SECOND sanctioned exception** to rcdzc's COPY-DON'T-DEPEND rule
+(the first being `cadenza-ast`), on the same cross-process-wire-contract rationale. v-inference
+concurred after auditing the abi/sidecar lane.
+
+**What extracts (v-inference-audited clean-extract set):** `abi.rs` {`Artifact` + `KIND_*` consts,
+`CompileOutput`, `Severity`, `FixKind`, `WRAP_HOLE`}; `sidecar.rs` {`Request`, `Query`, the encode/
+decode codec (builds on `cadenza_ast::Builder` only)}; `backend::Target`; `opt::OptLevel`; `spans`
+{`SpanData`/`SpanTable` + codec}. The compiler IMPLEMENTATIONS behind the boundary — `run_query` (a
+query over a live `Db`), `compile`, the backends — STAY in `rcdzc`, which `pub use`s what moves so its
+public API (`rcdzc::Target`, `rcdzc::Request`, …) is byte-stable and every consumer path keeps
+resolving. The DEFAULT (`standalone`) build stays byte-identical.
+
+**The one orphan-rule snag (v-inference OWNS it):** `abi.rs`'s `Diagnostic`/`DiagnosticFix` carry
+conversion methods that couple to rcdzc-internal `diag::Reject`/`diag::Fix` (`Diagnostic::from_reject`,
+`DiagnosticFix::from_fix`, `Diagnostic::with_fix(Fix)`). Once those types move to the light crate, the
+orphan rule forbids those staying as INHERENT impls in `rcdzc` → they become FREE FUNCTIONS (or a small
+`ToAbi` trait) in `rcdzc` (~12 `compile.rs` sites). cdz is UNAFFECTED (it only reads `Diagnostic`
+fields, never converts).
+
+**Extraction slice order + ownership:**
+- **E1 (LANDED-path):** create `cadenza-compile-abi` with the two pure-std leaf enums `Target` +
+  `OptLevel` (zero deps). Registered STANDALONE/inert first — **v-nix owns the flake wiring** (a new
+  root workspace member needs a `rootWorkspaceCrates` entry PLUS `test-`/`clippy-` crane entries + a
+  `crateClosureAssert` leaf — the xtask-bench pattern; a bare map-line edit REDs the flake eval), so
+  v-nix registers the crate; then the `rcdzc → cadenza-compile-abi` dep + re-exports land on top.
+- **E2 (solo):** move the Diagnostic-FREE remainder — `Artifact` + `KIND_*`, `Request`/`Query` + codec
+  (takes the single `cadenza-ast` dep), `spans` — into the crate (no new flake registration needed once
+  E1 is in; extend the `crateClosureAssert` leaf for the `cadenza-ast` dep with v-nix).
+- **E3 (with v-inference):** move `CompileOutput` + `Diagnostic`/`DiagnosticFix` + `Severity`/`FixKind`
+  + `WRAP_HOLE`, paired with v-inference's orphan-rule refactor.
+- Then slices 3–6 above point cdz's `!standalone` arms at `cadenza-compile-abi` and flip `rcdzc`
+  optional.
+
 ## Invariants to pin in the gate
 
 - Feature-off `cdz compile` output == feature-on `cdz compile` output == `cdz-compile` output, for

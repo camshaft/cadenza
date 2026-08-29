@@ -45,6 +45,20 @@ path = "src/lib.rs"
 path = "../cadenza-ast"
 default-features = false
 
+[dependencies.cadenza-compile-abi]
+# The SECOND sanctioned exception to COPY-DON'T-DEPEND, on the same rationale as `cadenza-ast`: the
+# compile-BOUNDARY contract types (`Target`, `OptLevel`, and — later slices — the kinded `Artifact`
+# list, the sidecar `Request`/`Query` codec, the `spans` side-table) are the wire vocabulary the build
+# tool speaks across the compiler seam, and BOTH sides of that boundary must agree on ONE definition:
+# `rcdzc` PRODUCES them, and `cdz` (in a `!standalone` build) DELEGATES to `cdz-compile` and must build
+# the identical request + read the identical result. Extracting them to one shared crate that both
+# depend on is the compile-boundary analogue of `cadenza-ast` (one source of truth for a cross-process
+# wire format), which is why the same operator carve-out applies. `rcdzc` `pub use`s what moves here so
+# its public API (`rcdzc::Target`, `rcdzc::OptLevel`, …) is byte-stable and every consumer path keeps
+# resolving; the compiler IMPLEMENTATIONS (query eval over a live `Db`, `compile`, the backends) stay
+# here. Dependency-light: no deps for the leaf-enum slice; one `cadenza-ast` dep when the codec moves.
+path = "../cadenza-compile-abi"
+
 [dependencies.blake3]
 # The ONE exception to COPY-DON'T-DEPEND, waived by the operator (2026-08-25) specifically for blake3:
 # the compile-time `Blake3.of` fold calls `blake3::hash` so its 32-byte digest is BYTE-IDENTICAL to the
