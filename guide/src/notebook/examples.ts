@@ -32,7 +32,7 @@ The balance after one year on a 1000 principal (rate is a whole-percent; \`rate 
 A short growth schedule (year, factor):
 
 ~~~cadenza table
-(def (main) (list (tuple 1 (+ 1 (/ rate 100))) (tuple 2 (* (+ 1 (/ rate 100)) (+ 1 (/ rate 100))))))
+(def (main) #list(#tuple(1 (+ 1 (/ rate 100))) #tuple(2 (* (+ 1 (/ rate 100)) (+ 1 (/ rate 100))))))
 ~~~`;
 
 /// A table-focused example: structured rows render as an HTML table.
@@ -41,7 +41,7 @@ const TABLE_DEMO = `# Tables
 A **table** cell renders a List of tuples (positional columns) or records (named columns).
 
 ~~~cadenza table
-(def (main) (list (tuple 1 100) (tuple 2 121) (tuple 3 133)))
+(def (main) #list(#tuple(1 100) #tuple(2 121) #tuple(3 133)))
 ~~~`;
 
 /// A chart-focused example: a List of points renders as a hand-rolled SVG line chart.
@@ -50,7 +50,7 @@ const CHART_DEMO = `# Charts
 A **chart:line** cell plots a List of (x, y) points.
 
 ~~~cadenza chart:line
-(def (main) (list (tuple 1 10) (tuple 2 20) (tuple 3 15) (tuple 4 25)))
+(def (main) #list(#tuple(1 10) #tuple(2 20) #tuple(3 15) #tuple(4 25)))
 ~~~`;
 
 /// A chart-TYPES showcase: the newer `area` (filled line) + `stacked` (bars accumulated per x) renderers,
@@ -69,14 +69,14 @@ boost : Int64 = slider(0, 20, default: 5)
 An **area** chart fills the region under the curve:
 
 ~~~cadenza chart:area
-(def (main) (list (tuple 1 (+ 10 boost)) (tuple 2 (+ 20 boost)) (tuple 3 (+ 15 boost)) (tuple 4 (+ 25 boost))))
+(def (main) #list(#tuple(1 (+ 10 boost)) #tuple(2 (+ 20 boost)) #tuple(3 (+ 15 boost)) #tuple(4 (+ 25 boost))))
 ~~~
 
 A **stacked** chart accumulates each series per x, so the column total is the sum. Each row is \`(x y0 y1)\`, so
 two series stack:
 
 ~~~cadenza chart:stacked
-(def (main) (list (tuple 1 (+ 5 boost) 3) (tuple 2 (+ 8 boost) 6) (tuple 3 (+ 6 boost) 4)))
+(def (main) #list(#tuple(1 (+ 5 boost) 3) #tuple(2 (+ 8 boost) 6) #tuple(3 (+ 6 boost) 4)))
 ~~~`;
 
 /// A RECORDS showcase: build a record with named fields and read one back with field access `(. r field)`.
@@ -95,7 +95,7 @@ width : Int64 = slider(1, 20, default: 4)
 Build a rectangle record, then read its fields with \`(. r field)\`:
 
 ~~~cadenza
-(def (rect) (record (w width) (h 3)))
+(def (rect) #record((= w width) (= h 3)))
 (def (main) (* (. (rect) w) (. (rect) h)))
 ~~~`;
 
@@ -136,7 +136,7 @@ is exact), minus the payment:
 The balance over three years, drag a control and the curve moves:
 
 ~~~cadenza chart:line
-(def (main) (list (tuple 0 principal) (tuple 1 year1) (tuple 2 year2) (tuple 3 year3)))
+(def (main) #list(#tuple(0 principal) #tuple(1 year1) #tuple(2 year2) #tuple(3 year3)))
 ~~~`;
 
 /// A projectile-motion showcase: two sliders (upward velocity + gravity) drive a live height-vs-time
@@ -165,7 +165,7 @@ Height at a few times \`t\` (height = velocity·t − ½·gravity·t·t; ½ is t
 The trajectory over time, drag velocity or gravity and the arc moves:
 
 ~~~cadenza chart:line
-(def (main) (list (tuple 0 0) (tuple 1 h1) (tuple 2 h2) (tuple 3 h3) (tuple 4 h4)))
+(def (main) #list(#tuple(0 0) #tuple(1 h1) #tuple(2 h2) #tuple(3 h3) #tuple(4 h4)))
 ~~~`;
 
 /// A quadratic-explorer showcase: three Int64 sliders (a, b, c) reshape the parabola y = a·x² + b·x + c live.
@@ -193,9 +193,9 @@ rational-by-default coefficients:
 The parabola from x = −3 to 3, drag a, b, or c to reshape it:
 
 ~~~cadenza chart:line
-(def (main) (list
-  (tuple -3 (y-at -3)) (tuple -2 (y-at -2)) (tuple -1 (y-at -1))
-  (tuple 0 (y-at 0)) (tuple 1 (y-at 1)) (tuple 2 (y-at 2)) (tuple 3 (y-at 3))))
+(def (main) #list(
+  #tuple(-3 (y-at -3)) #tuple(-2 (y-at -2)) #tuple(-1 (y-at -1))
+  #tuple(0 (y-at 0)) #tuple(1 (y-at 1)) #tuple(2 (y-at 2)) #tuple(3 (y-at 3))))
 ~~~`;
 
 /// A formula-focused example: the `formula` directive typesets a scalar / exact fraction / quantity.
