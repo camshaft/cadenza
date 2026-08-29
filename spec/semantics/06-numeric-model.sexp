@@ -12985,3 +12985,17 @@
   (call main (: 7 Int64)) (output (: 5 BigInt))
   (call main (: -3 Int64)) (output (: -5 BigInt))
   (live-objects 1))
+
+(case "cdzw60 runtime Float64 arithmetic, comparison, and a NaN self-equality all round-trip the cadenza hop"
+  (doc "Float hop census (breaker): runtime float widen+multiply returning a Float64 (n=7 → 17.5),
+        a float comparison branching (7 → 1, 2 → 0), and the value-equality doctrine face — Cadenza `=`
+        compares floats by CANONICAL BYTES, so (= Float64.nan Float64.nan) is TRUE (not IEEE NaN≠NaN;
+        matches the recursive-walk float-leaf pins) — all dual-path equal and byte-idempotent through
+        the hop. f = arith+compare combined; g = the NaN face gated on the runtime arg.")
+  (input (do
+    (def (f (: n Int64)) (if (> (* (Float64.of-int n) 2.5) 5.0) 1 0))
+    (def (g (: n Int64)) (if (= Float64.nan Float64.nan) n 0))
+    (def (main (: n Int64)) (+ (* 10 (f n)) (g n)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 17 Int64))
+  (call main (: 2 Int64)) (output (: 2 Int64)))

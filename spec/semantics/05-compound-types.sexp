@@ -5360,7 +5360,7 @@
   (doc    "The tag does NOT swallow the closed-record check: `.z` on a newtype over `(Record (x …))` rejects
            CDZ0212 (absent-record-field) exactly as it would on the bare record — seeing through the tag
            reaches the SAME field-set validation.")
-  (input  (do (type UserId (Mk (Record (x Int64)))) (def (main) (. (UserId.Mk (record (x 1))) z)) (export main)))
+  (input  (do (type UserId (Mk (Record (: x Int64)))) (def (main) (. (UserId.Mk (record (= x 1))) z)) (export main)))
   (error  CDZ0212))
 
 (case "a wrong-constructor pattern over a newtype scrutinee is a type error"
