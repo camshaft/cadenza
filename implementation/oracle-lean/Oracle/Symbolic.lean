@@ -114,6 +114,69 @@ partial def normalize : SymExpr → SymExpr
 /-- A symbolic environment: each program parameter name bound to its symbolic variable. -/
 abbrev SymEnv := List (ByteArray × SymExpr)
 
+/-- Match a pattern against a CONCRETE symbolic value. Result: `some (some env)` = the pattern matches,
+binding `env`; `some none` = it definitely does NOT match (try the next arm); `none` = CANNOT DECIDE (the
+scrutinee is symbolic — a `var`/`app`/`ite`, not a concrete `ctor`/`tuple`/`const`), so the caller must
+`cannotProve` the whole match. Handles: `_` wildcard, a bare-name binder, `None`/`(Some|Ok|Err p)` ctor
+patterns, `(tuple p…)`, and integer-literal patterns. Any other pattern (guard, qualified ctor, record
+pattern) → `none` (undecidable, boundary). SOUND: only decides against a concrete value. -/
+partial def symMatchPat (m : Module) (patId : Nat) (v : SymExpr) : Option (Option SymEnv) :=
+  match m.nodes[patId]? with
+  | some (Node.atom lid) =>
+    match m.leaves[lid]? with
+    | some (Leaf.name b) =>
+      if b == "_".toUTF8 then some (some [])
+      else if b == "None".toUTF8 then
+        match v with
+        | .ctor t _ => if t == "None".toUTF8 then some (some []) else some none
+        | .const _ => some none
+        | .tuple _ => some none
+        | .record _ => some none
+        | _ => none
+      else some (some [(b, v)])
+    | some l =>
+      (match Value.ofLeaf l with
+       | some lit => (match v with
+                      | .const cv => if Value.valueEqSpec cv lit then some (some []) else some none
+                      | .ctor _ _ => some none
+                      | .tuple _ => some none
+                      | .record _ => some none
+                      | _ => none)
+       | none => none)
+    | none => none
+  | some (Node.list pc) =>
+    match m.headName? (Node.list pc) with
+    | some h =>
+      if h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then
+        match v with
+        | .ctor t args => if t == h then (match pc[1]?, args[0]? with
+                                          | some sp, some payload => symMatchPat m sp payload
+                                          | _, _ => some none)
+                          else some none
+        | .const _ => some none
+        | .tuple _ => some none
+        | .record _ => some none
+        | _ => none
+      else if h == "tuple".toUTF8 then
+        match v with
+        | .tuple es =>
+          let sps := pc.extract 1 pc.size
+          if sps.size != es.size then some none
+          else (sps.zip es).foldl (fun (acc : Option (Option SymEnv)) p =>
+            match acc with
+            | some (some env) => (match symMatchPat m p.1 p.2 with
+                                  | some (some e2) => some (some (e2 ++ env))
+                                  | some none => some none
+                                  | none => none)
+            | other => other) (some (some []))
+        | .const _ => some none
+        | .ctor _ _ => some none
+        | .record _ => some none
+        | _ => none
+      else none
+    | none => none
+  | none => none
+
 /-- Call-inlining depth bound. A non-recursive call chain inlines within this; a recursive function
 exhausts it → `cannotProve` (sound — proving a recursive function's equivalence needs induction, which the
 symbolic evaluator does not do). 64 comfortably covers realistic non-recursive helper nesting. -/
@@ -179,6 +242,32 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOut
         | some aId => (match symEval m senv fuel aId with | .sym e => .sym (.ctor h #[e]) | .cannotProve r => .cannotProve r)
         | none => .cannotProve "symeval: constructor missing payload"
       else if h == "None".toUTF8 then .sym (.ctor "None".toUTF8 #[])
+      else if h == "match".toUTF8 then
+        -- `(match scrut (pat body)…)`: decidable ONLY when the scrutinee is a CONCRETE ctor/tuple/const.
+        -- Try arms in order — a definite match takes its body (bindings extend senv); a definite non-match
+        -- falls through; an UNDECIDABLE arm (symbolic scrutinee vs a value-inspecting pattern) → cannotProve.
+        match children[1]? with
+        | some scrutId =>
+          (match symEval m senv fuel scrutId with
+           | .cannotProve r => .cannotProve r
+           | .sym v =>
+             let decided := (children.extract 2 children.size).foldl (fun (acc : Option SymOutcome) armId =>
+               match acc with
+               | some o => some o
+               | none =>
+                 match (m.nodes[armId]?).bind (fun n => match n with | .list ac => some ac | _ => none) with
+                 | some ac => (match ac[0]?, ac[1]? with
+                               | some patId, some bodyId =>
+                                 (match symMatchPat m patId v with
+                                  | some (some ext) => some (symEval m (ext ++ senv) fuel bodyId)
+                                  | some none => none
+                                  | none => some (.cannotProve "symeval: match arm undecidable (symbolic scrutinee / unmodeled pattern)"))
+                               | _, _ => some (.cannotProve "symeval: malformed match arm"))
+                 | none => some (.cannotProve "symeval: malformed match arm")) none
+             match decided with
+             | some o => o
+             | none => .cannotProve "symeval: no match arm matched (non-exhaustive?)")
+        | none => .cannotProve "symeval: malformed match (no scrutinee)"
       else if h == "record".toUTF8 then
         -- a record value: (record (f1 v1) (f2 v2)…), fields sorted by key (matching evalRecord's canonical
         -- form + catching a field-reorder). An unmodelable field value sinks the record (conservative).
@@ -427,5 +516,15 @@ private def _callProg : Module :=
                .atom 6, .atom 4, .list #[13, 14], .atom 0, .list #[16, 5, 12, 15]],
     root := 17 }
 #guard symEvalMain _callProg == SymOutcome.sym (.const (.int 42))
+
+-- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
+-- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
+private def _matchExpr : Module :=
+  { leaves := #[Leaf.name "match".toUTF8, Leaf.name "Some".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[5]),
+                Leaf.name "x".toUTF8, Leaf.name "None".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[0])],
+    nodes := #[.atom 1, .atom 2, .list #[0, 1], .atom 1, .atom 3, .list #[3, 4], .atom 3, .list #[5, 6],
+               .atom 4, .atom 5, .list #[8, 9], .atom 0, .list #[11, 2, 7, 10]],
+    root := 12 }
+#guard symEval _matchExpr [] symDefaultFuel 12 == SymOutcome.sym (.const (.int 5))
 
 end Oracle
