@@ -42040,25 +42040,26 @@ mod sidecar_driven {
             .as_form(root, "shred-manifest")
             .expect("root is (shred-manifest …)");
         assert_eq!(entries.len(), 2, "one manifest entry per emitted test");
-        // Collect (name, is_property, export, target, main-iface) per entry; assert the fields for t-a/t-b.
-        let mut seen: std::collections::HashMap<String, (bool, String, String, String)> =
+        // Collect (is_property, export, target, main-iface, main-file) per entry; assert the fields for t-a/t-b.
+        let mut seen: std::collections::HashMap<String, (bool, String, String, String, String)> =
             std::collections::HashMap::new();
         for &e in entries {
             let fields = arena.as_form(e, "entry").expect("each child is (entry …)");
             assert_eq!(
                 fields.len(),
-                6,
-                "entry = name is-property file export target main-iface"
+                7,
+                "entry = name is-property file export target main-iface main-file"
             );
             let name = arena.as_str(fields[0]).expect("name Str").to_string();
             let is_property = arena.as_bool(fields[1]).expect("is-property Bool");
             let export = arena.as_str(fields[3]).expect("export Str").to_string();
             let target = arena.as_str(fields[4]).expect("target Str").to_string();
             let iface = arena.as_str(fields[5]).expect("main-iface Str").to_string();
-            seen.insert(name, (is_property, export, target, iface));
+            let main_file = arena.as_str(fields[6]).expect("main-file Str").to_string();
+            seen.insert(name, (is_property, export, target, iface, main_file));
         }
         for t in ["t-a", "t-b"] {
-            let (is_prop, export, target, iface) = seen
+            let (is_prop, export, target, iface, main_file) = seen
                 .get(t)
                 .unwrap_or_else(|| panic!("manifest has an entry for {t}"));
             assert!(!is_prop, "{t} is a nullary unit test (is-property=false)");
@@ -42074,6 +42075,87 @@ mod sidecar_driven {
             assert_eq!(
                 iface, "cadenza:closure/api",
                 "main-iface = the --peer interface"
+            );
+            // This suite HAS a shared library (the recursive `tri` helper), so main-file = main.wasm.
+            assert_eq!(
+                main_file, "main.wasm",
+                "main-file = the main this test --peers"
+            );
+        }
+    }
+
+    /// `EmitTestsShred` on a STANDALONE suite (no emitted shared library — the `@test`s call only prims /
+    /// inlined defs, so `library_edges` is empty): emit NO main, each `@test` a SELF-CONTAINED component, and
+    /// the manifest `main-file` = "" (v-test-shred's exec then runs the target with NO `--peer`). This pins the
+    /// independent-file case (e.g. `iterators`, whose files declare no imports) — the shred must still produce
+    /// runnable per-test targets + a manifest, not decline.
+    #[test]
+    fn emit_tests_shred_standalone_suite_has_no_main_and_empty_main_file() {
+        // Two @tests that call NO user def (only prim `=`/`+`), so nothing lands in the library edge set.
+        let src = crate::codec::encode(&parse(
+            "(do \
+             (@ test (def (s-a) (if (= (+ 1 1) 2) unit (trap \"x\")))) \
+             (@ test (def (s-b) (if (= (+ 2 2) 4) unit (trap \"x\")))))",
+        ));
+        let out = crate::host::run_with_compiler_stack(|| {
+            crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "suite", src.clone()),
+                    Artifact::new(
+                        sidecar::KIND_SIDECAR,
+                        "drive",
+                        sidecar::encode(&[Request::EmitTestsShred]),
+                    ),
+                ],
+                &[],
+            )
+        });
+        assert!(
+            !out.has_error(),
+            "standalone shred does not error: {:?}",
+            out.diagnostics
+        );
+        // NO main provider (empty library).
+        assert!(
+            out.artifacts.iter().all(|a| a.kind != "component-provider"),
+            "a standalone suite emits NO main provider"
+        );
+        // Two self-contained per-test components (test-s-a / test-s-b), all valid.
+        let consumer_names: Vec<&str> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == crate::backend::Target::Wasm.artifact_kind())
+            .map(|a| a.name.as_str())
+            .collect();
+        assert!(
+            consumer_names.contains(&"test-s-a") && consumer_names.contains(&"test-s-b"),
+            "self-contained per-test components: {consumer_names:?}"
+        );
+        for a in &out.artifacts {
+            if a.kind == crate::backend::Target::Wasm.artifact_kind() {
+                let mut v =
+                    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+                v.validate_all(&a.bytes)
+                    .unwrap_or_else(|e| panic!("standalone shred `{}` validates: {e}", a.name));
+            }
+        }
+        // The manifest lists both, with main-file "" (→ the runner runs them with NO --peer).
+        let manifest = out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == crate::sidecar::KIND_SHRED_MANIFEST)
+            .expect("a shred-manifest artifact");
+        let arena = crate::codec::decode(&manifest.bytes).expect("manifest decodes");
+        let entries = arena
+            .as_form(arena.root, "shred-manifest")
+            .expect("(shred-manifest …)");
+        assert_eq!(entries.len(), 2, "both standalone tests listed");
+        for &e in entries {
+            let f = arena.as_form(e, "entry").expect("(entry …)");
+            assert_eq!(
+                arena.as_str(f[6]).expect("main-file Str"),
+                "",
+                "standalone test has empty main-file (run with no --peer)"
             );
         }
     }

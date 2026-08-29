@@ -795,105 +795,122 @@ fn compile_with_opt_inner(
             .copied()
             .filter(|d| !test_set.contains(d) && db.defs[*d].body.is_some())
             .collect();
-        // MAIN: the whole-library provider. `component_name` = `CLOSURE_IFACE` for the provider emit only,
-        // restored after (so the per-test consumer emits stay non-provider), exactly as the composed branch does.
-        let saved_component_name = db.component_name.take();
-        db.component_name = Some(CLOSURE_IFACE.to_string());
-        let main_result = layout::compute_provider_for_edges(&mut db, &library_edges)
-            .and_then(|pl| backend::emit(Target::Wasm, &mut db, &pl, span_data.as_ref(), None));
-        db.component_name = saved_component_name;
-        match main_result {
-            Ok(main_bytes) => {
-                // MAIN artifact NAMED "main" (not the iface) so `cdz-compile -o D` writes it as `main.wasm`
-                // (via the `component-provider`→`wasm` ext) — the fixed shred output-file contract v-test-shred
-                // links against (`--peer <iface>=main.wasm`). Its INTERFACE identity stays `CLOSURE_IFACE` (set
-                // as `db.component_name` for the emit above + carried per-entry in the manifest's `main-iface`);
-                // the artifact NAME is just the file key. NO `component-name` sidecar in the shred output — the
-                // manifest carries the iface, and a `cadenza:closure/api.component-name` file name is nonsense.
-                artifacts.push(Artifact::new("component-provider", "main", main_bytes));
-                // One thin CONSUMER per `@test` — artifact NAMED `test-<def-name>` so `-o D` writes
-                // `test-<name>.wasm` (matching the manifest's `target`). Each imports the whole library from main
-                // and exports just its own test. Track the SUCCESSFULLY-emitted tests so the manifest lists only
-                // runnable targets (a compound-param test that declines pre-#4031 has no target.wasm → omit it,
-                // never list a missing component).
-                let mut emitted: Vec<usize> = Vec::new();
-                for &def in &test_defs {
-                    let name = db.defs[def].name.clone();
-                    let target_name = format!("test-{name}");
-                    match layout::compute_tests_consumer(
-                        &mut db,
-                        &[def],
-                        &library_edges,
-                        CLOSURE_IFACE,
-                    )
-                    .and_then(|cl| {
-                        backend::emit(Target::Wasm, &mut db, &cl, span_data.as_ref(), None)
-                    }) {
-                        Ok(bytes) => {
-                            artifacts.push(Artifact::new(
-                                Target::Wasm.artifact_kind(),
-                                &target_name,
-                                bytes,
-                            ));
-                            emitted.push(def);
-                        }
-                        Err(mut r) => {
-                            trace!(target: "rcdzc::compile", test = %name, reason = %r.message, "shred consumer emit declined");
-                            sanitize_origin(&db, &mut r);
-                            diagnostics.push(Diagnostic::from_reject(&r));
-                        }
+        // TWO shapes, chosen by whether this program HAS an emitted shared library:
+        //  • HAS-MAIN (`library_edges` non-empty — a package/group whose @tests call emitted library defs):
+        //    emit ONE MAIN provider (the library, under `CLOSURE_IFACE`) + one CONSUMER per @test importing it.
+        //    `main-file` = "main.wasm"; the runner `--peer <iface>=main.wasm`.
+        //  • STANDALONE (`library_edges` empty — an independent file whose @tests call no emitted user def, all
+        //    inlined/prims): emit NO main; each @test is a SELF-CONTAINED component (`compute_tests_for`), run
+        //    with NO `--peer`. `main-file` = "" (v-test-shred's exec conditionally adds `--peer` on a non-empty
+        //    main-file, keeping enumeration uniform without betting on `--peer`-ing an empty provider).
+        // The cdz-side `cdz test --emit-shred` groups a multi-file project by shared closure + drives this per
+        // group, renaming each `main` → `main-<group>.wasm` + merging manifests (§S6b / v-test-shred layout).
+        let has_main = !library_edges.is_empty();
+        let mut main_file = String::new();
+        let mut main_ok = true;
+        if has_main {
+            // MAIN artifact NAMED "main" (not the iface) so `cdz-compile -o D` writes `main.wasm` (via the
+            // `component-provider`→`wasm` ext). Its INTERFACE identity stays `CLOSURE_IFACE` (set as
+            // `db.component_name` for this emit + carried per-entry as `main-iface`); the artifact NAME is the
+            // file key. `component_name` restored after so the per-test consumer emits stay non-provider.
+            let saved_component_name = db.component_name.take();
+            db.component_name = Some(CLOSURE_IFACE.to_string());
+            let main_result = layout::compute_provider_for_edges(&mut db, &library_edges)
+                .and_then(|pl| backend::emit(Target::Wasm, &mut db, &pl, span_data.as_ref(), None));
+            db.component_name = saved_component_name;
+            match main_result {
+                Ok(main_bytes) => {
+                    artifacts.push(Artifact::new("component-provider", "main", main_bytes));
+                    main_file = "main.wasm".to_string();
+                }
+                Err(mut r) => {
+                    // A group WITH a shared library whose provider won't lay out/emit (e.g. a compound-param
+                    // library fn, deferred #4031) — decline the whole shred for this program (no partial main;
+                    // the consumers would hit the same boundary limit). The caller falls back.
+                    trace!(target: "rcdzc::compile", reason = %r.message, "shred main (library provider) emit declined");
+                    sanitize_origin(&db, &mut r);
+                    diagnostics.push(Diagnostic::from_reject(&r));
+                    main_ok = false;
+                }
+            }
+        }
+        if main_ok {
+            // One CONSUMER per `@test` — artifact NAMED `test-<def-name>` so `-o D` writes `test-<name>.wasm`
+            // (matching the manifest's `target`). HAS-MAIN → a thin consumer importing the library from main;
+            // STANDALONE → a self-contained component. Track SUCCESSFULLY-emitted tests so the manifest lists
+            // only runnable targets (a compound-param test that declines pre-#4031 has no target → omitted).
+            let mut emitted: Vec<usize> = Vec::new();
+            for &def in &test_defs {
+                let name = db.defs[def].name.clone();
+                let target_name = format!("test-{name}");
+                let layout_result = if has_main {
+                    layout::compute_tests_consumer(&mut db, &[def], &library_edges, CLOSURE_IFACE)
+                } else {
+                    layout::compute_tests_for(&mut db, &[def])
+                };
+                match layout_result.and_then(|cl| {
+                    backend::emit(Target::Wasm, &mut db, &cl, span_data.as_ref(), None)
+                }) {
+                    Ok(bytes) => {
+                        artifacts.push(Artifact::new(
+                            Target::Wasm.artifact_kind(),
+                            &target_name,
+                            bytes,
+                        ));
+                        emitted.push(def);
+                    }
+                    Err(mut r) => {
+                        trace!(target: "rcdzc::compile", test = %name, reason = %r.message, "shred consumer emit declined");
+                        sanitize_origin(&db, &mut r);
+                        diagnostics.push(Diagnostic::from_reject(&r));
                     }
                 }
-                // The MANIFEST — a cadenza-ast VALUE (mirroring `Query::TestList`'s shape + the exec fields),
-                // `codec::encode`d so `cdz test --emit-shred` forwards it verbatim + v-test-shred's `mkTestExec`
-                // decodes it with the ONE shared codec (NOT a bespoke blob — the operator directive). One
-                // `(entry <name> <is-property> <file> <export> <target> <main-iface>)` per emitted test.
-                let mut b = crate::ast::Builder::new();
-                let atom_str = |b: &mut crate::ast::Builder, s: &str| {
-                    b.atom_leaf(crate::ast::Leaf::Str(s.into()))
-                };
-                let mut entries: Vec<crate::ast::StructId> = Vec::with_capacity(emitted.len());
-                for &def in &emitted {
-                    let d = &db.defs[def];
-                    let is_property = !d.params.is_empty() || d.name.ends_with("-gen");
-                    let file = db
-                        .file_of(d.sig_occ)
-                        .and_then(|fi| db.file_path(fi))
-                        .unwrap_or("")
-                        .to_string();
-                    // `export` = the wasm symbol the runner `--call`s. `compute_tests_consumer` exports a
-                    // `@test` under its raw def name (a plain nullary def carries no transform suffix), so for a
-                    // `@test` the export equals `name`; the field is explicit for generality + so a consumer
-                    // never has to re-derive it.
-                    let export = d.name.clone();
-                    let target = format!("test-{}.wasm", d.name);
-                    let head = b.name("entry");
-                    let name_n = atom_str(&mut b, &d.name);
-                    let isprop_n = b.atom_leaf(crate::ast::Leaf::Bool(is_property));
-                    let file_n = atom_str(&mut b, &file);
-                    let export_n = atom_str(&mut b, &export);
-                    let target_n = atom_str(&mut b, &target);
-                    let iface_n = atom_str(&mut b, CLOSURE_IFACE);
-                    entries.push(b.list(vec![
-                        head, name_n, isprop_n, file_n, export_n, target_n, iface_n,
-                    ]));
-                }
-                let manifest_head = b.name("shred-manifest");
-                let mut children = Vec::with_capacity(entries.len() + 1);
-                children.push(manifest_head);
-                children.extend(entries);
-                let root = b.list(children);
-                artifacts.push(Artifact::new(
-                    sidecar::KIND_SHRED_MANIFEST,
-                    "manifest",
-                    crate::codec::encode(&b.finish(root)),
-                ));
             }
-            Err(mut r) => {
-                trace!(target: "rcdzc::compile", reason = %r.message, "shred main (whole-library provider) emit declined");
-                sanitize_origin(&db, &mut r);
-                diagnostics.push(Diagnostic::from_reject(&r));
+            // The MANIFEST — a cadenza-ast VALUE (mirroring `Query::TestList`'s shape + the exec fields),
+            // `codec::encode`d so `cdz test --emit-shred` forwards it + v-test-shred's `mkTestExec` decodes it
+            // with the ONE shared codec. One `(entry <name> <is-property> <file> <export> <target> <main-iface>
+            // <main-file>)` per emitted test — POSITIONAL, 7 fields. `main-file` is "" for a STANDALONE program
+            // (run with no `--peer`) or "main.wasm" here; the cdz side rewrites it to `main-<group>.wasm` when it
+            // merges per-group manifests.
+            let mut b = crate::ast::Builder::new();
+            let atom_str =
+                |b: &mut crate::ast::Builder, s: &str| b.atom_leaf(crate::ast::Leaf::Str(s.into()));
+            let mut entries: Vec<crate::ast::StructId> = Vec::with_capacity(emitted.len());
+            for &def in &emitted {
+                let d = &db.defs[def];
+                let is_property = !d.params.is_empty() || d.name.ends_with("-gen");
+                let file = db
+                    .file_of(d.sig_occ)
+                    .and_then(|fi| db.file_path(fi))
+                    .unwrap_or("")
+                    .to_string();
+                // `export` = the wasm symbol the runner `--call`s — the `@test`'s raw def name (a plain nullary
+                // def carries no transform suffix, so both `compute_tests_consumer` and `compute_tests_for`
+                // export it under that name); explicit so a consumer never re-derives it.
+                let export = d.name.clone();
+                let target = format!("test-{}.wasm", d.name);
+                let head = b.name("entry");
+                let name_n = atom_str(&mut b, &d.name);
+                let isprop_n = b.atom_leaf(crate::ast::Leaf::Bool(is_property));
+                let file_n = atom_str(&mut b, &file);
+                let export_n = atom_str(&mut b, &export);
+                let target_n = atom_str(&mut b, &target);
+                let iface_n = atom_str(&mut b, CLOSURE_IFACE);
+                let mainfile_n = atom_str(&mut b, &main_file);
+                entries.push(b.list(vec![
+                    head, name_n, isprop_n, file_n, export_n, target_n, iface_n, mainfile_n,
+                ]));
             }
+            let manifest_head = b.name("shred-manifest");
+            let mut children = Vec::with_capacity(entries.len() + 1);
+            children.push(manifest_head);
+            children.extend(entries);
+            let root = b.list(children);
+            artifacts.push(Artifact::new(
+                sidecar::KIND_SHRED_MANIFEST,
+                "manifest",
+                crate::codec::encode(&b.finish(root)),
+            ));
         }
     }
 
