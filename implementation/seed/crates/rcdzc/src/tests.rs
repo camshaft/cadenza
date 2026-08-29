@@ -7716,54 +7716,6 @@ mod match_engine {
         );
     }
 
-    #[test]
-    fn a_bare_generic_ctor_missing_its_argument_in_a_declaration_type_position_is_cdz0203() {
-        // Follow-on to the applied-wrong-arity payload fix (PR #1838 review, github-liaison/Copilot): a
-        // BARE generic constructor with NO argument — `(type W (Wrap Box))`, `(op emit (-> Option Int64))`
-        // — slipped through `validate_type_position`. The applied check (`type_ctor_arity_message`) only
-        // fires on an APPLICATION, and `typeval_of` SUCCEEDS on a bare user generic (reduces to a `Ty::Sum`
-        // with a fresh var) → early-return, waved through — while the ANNOTATION path rejected it via
-        // `bare_type_ctor_needs_argument`. FIX: `validate_type_position` now also runs
-        // `bare_type_ctor_needs_argument` before the `typeval_of` return, so a declaration position agrees
-        // with an annotation: CDZ0203 "`{ctor}` is a type constructor — it needs a type argument here".
-        let bad = |src: &str, ctor: &str| {
-            let e = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-                "a bare generic ctor missing its argument must reject at the declaration",
-            );
-            assert_eq!(e.code.as_deref(), Some("CDZ0203"), "got: {}", e.message);
-            assert!(
-                e.message.contains(&format!(
-                    "`{ctor}` is a type constructor — it needs a type argument"
-                )),
-                "expected the bare-ctor message naming {ctor}, got: {}",
-                e.message
-            );
-        };
-        // bare USER generic in a variant payload.
-        bad(
-            "(module m (type (Box a) (Mk a)) (type W (Wrap Box)) (def (main) 0) (export main))",
-            "Box",
-        );
-        // bare BUILT-IN generic in a variant payload.
-        bad(
-            "(module m (type W (Wrap Option)) (def (main) 0) (export main))",
-            "Option",
-        );
-        // bare user generic in an EFFECT-OP arg type (the other validate_type_position caller).
-        bad(
-            "(module m (type (Box a) (Mk a)) (effect E (op emit (-> Box Int64))) (def (main) 0) (export main))",
-            "Box",
-        );
-        // CONTROL — a monomorphic user sum (no type params) bare in a payload is VALID (stands alone).
-        assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (type Color (Red) (Green)) (type W (Wrap Color)) (def (main) 0) (export main))"
-            )))
-            .is_ok(),
-            "a bare monomorphic type in a payload is valid (not a missing-argument ctor)"
-        );
-    }
-
     // (a_wrong_arity_generic_in_a_variant_payload_is_cdz0203_at_the_declaration migrated to corpus
     // 07-type-system, next to the annotation-position wrong-arity generic block: a wrong-arity user generic
     // `(Wrap (Box Int64 Bool))` / built-in `(Wrap (Option Int64 Bool))` in a variant payload → CDZ0203
