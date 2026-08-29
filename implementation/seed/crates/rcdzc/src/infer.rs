@@ -1305,12 +1305,23 @@ fn nested_literal_width_faults_against(
                     if crate::eval::meta_apply_of(db, head)
                         == Some(crate::resolved::Prim::MapNew) =>
                 {
+                    // Each `MapNew` arg is a map ENTRY. Read `(key, value)` from the native `(= k v)`
+                    // FieldPair leaf (M2, what the reader emits for a `#map`/`(map (= k v))` entry), the
+                    // transitional name-head `(= k v)`, OR the legacy 2-element `(k v)` pair. Before this
+                    // only the 2-element pair was read, so a native FieldPair entry `(map (= 1 999))` fed
+                    // through the name-alias `MapNew` path was skipped → its out-of-range value/key literal
+                    // escaped CDZ0302 and silently truncated (the map face of the native-leaf descent gap).
                     args.iter()
-                        .filter_map(|&entry| match db.ast.get(entry) {
-                            crate::ast::Struct::List(items) if items.len() == 2 => {
-                                Some((items[0], items[1]))
-                            }
-                            _ => None,
+                        .filter_map(|&entry| {
+                            db.ast
+                                .field_pair_parts(entry)
+                                .or_else(|| db.ast.field_pair(entry))
+                                .or_else(|| match db.ast.get(entry) {
+                                    crate::ast::Struct::List(items) if items.len() == 2 => {
+                                        Some((items[0], items[1]))
+                                    }
+                                    _ => None,
+                                })
                         })
                         .collect::<Vec<_>>()
                         .iter()
@@ -1341,6 +1352,15 @@ fn nested_literal_width_faults_against(
         Ty::Set(elem_ty) => {
             let elem_ty = (**elem_ty).clone();
             match resolved_of(db, value) {
+                // A native `#set(e…)` / `("set" e…)` LITERAL resolves to `Resolved::Set { elems }` (the
+                // first-class set ctor). Before this arm it fell through to `_ => None`, so an out-of-range
+                // set-literal element `(: #set(200) (Set Int8))` escaped CDZ0302 and silently truncated
+                // (the set-literal face of the native-leaf descent gap; the `Set.of`/`Set.insert` builder
+                // chains below were already covered).
+                Resolved::Set { elems } => elems
+                    .to_vec()
+                    .iter()
+                    .find_map(|&e| width_fault_against_ty(db, e, &elem_ty)),
                 Resolved::Apply { head, args }
                     if crate::eval::meta_apply_of(db, head)
                         == Some(crate::resolved::Prim::SetOf)
@@ -1592,12 +1612,20 @@ fn nested_width_fault_by_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<R
                     if crate::eval::meta_apply_of(db, head)
                         == Some(crate::resolved::Prim::MapNew) =>
                 {
+                    // Read `(key, value)` from a native `(= k v)` FieldPair entry (M2) as well as the legacy
+                    // 2-element `(k v)` pair — see the `ty_expr`-driven twin in
+                    // `nested_literal_width_faults_against`.
                     args.iter()
-                        .filter_map(|&entry| match db.ast.get(entry) {
-                            crate::ast::Struct::List(items) if items.len() == 2 => {
-                                Some((items[0], items[1]))
-                            }
-                            _ => None,
+                        .filter_map(|&entry| {
+                            db.ast
+                                .field_pair_parts(entry)
+                                .or_else(|| db.ast.field_pair(entry))
+                                .or_else(|| match db.ast.get(entry) {
+                                    crate::ast::Struct::List(items) if items.len() == 2 => {
+                                        Some((items[0], items[1]))
+                                    }
+                                    _ => None,
+                                })
                         })
                         .collect::<Vec<_>>()
                         .iter()
@@ -1605,6 +1633,29 @@ fn nested_width_fault_by_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<R
                             width_fault_against_ty(db, k, &key_ty)
                                 .or_else(|| width_fault_against_ty(db, v, &val_ty))
                         })
+                }
+                _ => None,
+            }
+        }
+        // A SET value against a `(Set E)` expected type — each element literal against `E`. The `Ty`-driven
+        // twin of the `ty_expr` Set arm; without it a native `#set(e…)` literal (`Resolved::Set`) fed through
+        // a compound-op ARGUMENT with an out-of-range element escaped the fit-check (the set face of the
+        // compound-op-argument narrow-width soundness gap, mirroring the Map/Record arms above).
+        Ty::Set(elem_ty) => {
+            let elem_ty = (**elem_ty).clone();
+            match resolved_of(db, value) {
+                Resolved::Set { elems } => elems
+                    .to_vec()
+                    .iter()
+                    .find_map(|&e| width_fault_against_ty(db, e, &elem_ty)),
+                Resolved::Apply { head, args }
+                    if crate::eval::meta_apply_of(db, head)
+                        == Some(crate::resolved::Prim::SetOf)
+                        && args.len() == 1 =>
+                {
+                    positional_value_nodes(db, args[0], crate::resolved::Prim::ListNew)?
+                        .iter()
+                        .find_map(|&e| width_fault_against_ty(db, e, &elem_ty))
                 }
                 _ => None,
             }
