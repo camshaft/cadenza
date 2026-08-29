@@ -9299,6 +9299,20 @@ mod tests {
             assert_roundtrip("#{ 1 = 10, .. rest }", 80),
             "#{ 1 = 10, .. rest }"
         );
+        // MULTIPLE + INTERIOR spreads in ONE construction — the operator's `[a, b, ..c, d, ..e]` shape.
+        // `rest_marker` runs per element in `list_literal`, so a spread may appear at ANY position and more
+        // than once (unlike a PATTERN rest, which is tail-only); the surface round-trips all of them. (The
+        // COMPILER lowering of a construction spread is a separate slice — this pins the surface alone.)
+        assert_eq!(
+            assert_roundtrip("[a, b, .. c, d, .. e]", 80),
+            "[a, b, .. c, d, .. e]"
+        );
+        assert_eq!(assert_roundtrip("[.. a, .. b]", 80), "[.. a, .. b]");
+        // A spread of a nested list literal.
+        assert_eq!(
+            assert_roundtrip("[1, .. [2, 3], 4]", 80),
+            "[1, .. [2, 3], 4]"
+        );
 
         // --- pattern (list) ---
         assert_eq!(
@@ -9333,6 +9347,9 @@ mod tests {
         );
         let a = sexpr::read("(list 1 2 .. rest)").unwrap();
         assert_eq!(print(&a, 80), "[1, 2, .. rest]");
+        // multiple/interior construction spreads via the flat s-expr oracle.
+        let a = sexpr::read("(list a b .. c d .. e)").unwrap();
+        assert_eq!(print(&a, 80), "[a, b, .. c, d, .. e]");
     }
 
     #[test]
