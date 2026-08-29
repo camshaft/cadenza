@@ -12648,6 +12648,33 @@
   (input (do (def (f (: b Bool)) (: b Int64)) (export f)))
   (error CDZ0203 (no-fix)))
 
+; ── float-PRECISION coercion FIX (migrated from rcdzc a_float_precision_mismatch_names_floats_and_offers_an_of_conversion_fix) ──
+; A Float32/Float64 mismatch is CDZ0301 like the integer-width case, but its message must name the FLOAT
+; domain ("floating-point precisions differ … a float"), NOT "integer". It carries the same `(<Float>.of …)`
+; WRAP coercion — but float `.of` is TOTAL (no trap), so the fix is a plain widen/narrow (still heuristic:
+; a coercion is an intent guess). The applied wrap RECOMPILES AND RUNS clean (unlike the integer `.of`
+; narrowing, which type-checks but still declines at emit) — pinned by the two round-trip value cases below.
+(case "a float precision mismatch under an operator names floats and offers an of-conversion wrap fix"
+  (input (do (def (f (: a Float32) (: b Float64)) (+ a b)) (export f)))
+  (error CDZ0301 (message "floating-point precisions differ") (message "a float")
+                 (fix (kind wrap) (replacement "(Float32.of …)") (unverified))))
+
+(case "a float annotation to a wider precision offers an of-conversion wrap fix"
+  (input (do (def (f (: n Float32)) (: n Float64)) (export f)))
+  (error CDZ0203 (fix (kind wrap) (replacement "(Float64.of …)") (unverified))))
+
+(case "applying the operator float coercion wrap recompiles and runs"
+  (doc "ROUND TRIP: applying the `(Float32.of …)` fix — `(+ a (Float32.of b))`, both Float32 — clears the
+        CDZ0301 the fix targeted and, because float `.of` is total, RUNS: 1.5 + Float32.of(2.5) = 4.0.")
+  (input (do (def (main (: a Float32) (: b Float64)) (+ a (Float32.of b))) (export main)))
+  (call main (: 1.5 Float32) (: 2.5 Float64)) (output (: 4.0 Float32)))
+
+(case "applying the annotation float coercion wrap recompiles and runs"
+  (doc "ROUND TRIP: applying the `(Float64.of …)` annotation fix — `(: (Float64.of n) Float64)` — recompiles
+        clean and RUNS: Float64.of(1.5 : Float32) = 1.5.")
+  (input (do (def (main (: n Float32)) (: (Float64.of n) Float64)) (export main)))
+  (call main (: 1.5 Float32)) (output (: 1.5 Float64)))
+
 (case "cdzw49 a def whose TAIL is a computed-magnitude Qty re-emits ((. Qty of) mag unit) through the cadenza hop"
   (doc "The #5282 fence (the q3 auto-flip witness): `q` has a concrete Qty result type and a DIRECT Arith
         body — the exact def-tail Qty-return face #5282 re-emits as ((. Qty of) <mag> <unit>); pre-#5282
