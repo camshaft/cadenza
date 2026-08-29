@@ -3306,7 +3306,7 @@
   (input  (do
             (def (g (: x Int64)) (+ x 1))
             (def (main) (match g (v v))) (export main)))
-  (error  CDZ0203))
+  (error  CDZ0203 (message "function value cannot be matched")))
 
 (case "matching on a partial application is a type error"
   (doc    "`(match (add 1) (v 0))` where `add` is binary — `(add 1)` is a PARTIAL application, still a
@@ -3316,7 +3316,7 @@
   (input  (do
             (def (add (: a Int64) (: b Int64)) (+ a b))
             (def (main) (match (add 1) (v 0))) (export main)))
-  (error  CDZ0203))
+  (error  CDZ0203 (message "function value cannot be matched")))
 
 (case "a recursive def computes over its argument"
   (doc    "Witnesses core-semantics.md §Applying A Function Binds Its Parameters To Its Arguments:
