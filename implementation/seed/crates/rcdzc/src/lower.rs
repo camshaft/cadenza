@@ -16281,6 +16281,14 @@ enum ShapeNode {
     /// so the runtime formats it), matching the constant-Rational value form (`(: 1/2 Rational)`).
     Rational,
     Bool,
+    /// A `Char` — an i32 Unicode code-point at run time (NO distinct runtime rep: char is an int, exactly
+    /// like `Bool` is an i32 0/1). This is a pure RENDER tag, the bool-analog: the runtime (descriptor tag
+    /// 19) reads the i32 code-point and renders it as a `#\c` char literal (via the codec's `KIND_CHAR`
+    /// leaf), the SAME mechanism by which `Bool` (tag 1) renders `true`/`false`. value-EQ/-CMP/hash treat a
+    /// Char IDENTICALLY to `Int` (by code-point) — only the render differs — so a compound carrying a Char
+    /// leaf orders/compares as before; the tag change is render-only. (Was `ShapeNode::Int` until the
+    /// char-as-bool ruling; the render tag makes a runtime `String.scalar-at` char display as `#\c`.)
+    Char,
     Float,
     Float32,
     Str,
@@ -16457,16 +16465,18 @@ impl ShapeTableBuilder {
             // Symbol element/key declined while both rust targets computed the content-byte order. The
             // value form renders `(: … Symbol)` via `type_node_of`'s `Ty::Symbol` leaf.
             Ty::Symbol => self.push(ShapeNode::Str),
-            // A CHAR is a scalar — an i32 Unicode code-point slot at run time (Char-rep; see the value-eq
-            // note at `lower.rs`'s Char scalar handling). Its value-op descriptor is `ShapeNode::Int`: the
-            // runtime value-eq/-cmp walk compares two chars by their code-point (chars are equal iff their
-            // code-points are, and order by code-point), and value-encode writes the code-point scalar.
-            // This closes the ONLY gap that made a compound carrying a `Char` leaf (notably the built-in
-            // `Ast` sum's new `Ast.Char` variant) DECLINE its whole-value `=`/`<`; a bare-`Char` scalar
-            // compare never reaches here (it takes the scalar path). Additive — a Char-in-a-compound value
-            // op previously declined outright. (Faithful `Ast.encode`/`decode` of a char rides the cdzast
-            // CODEC's `KIND_CHAR`, not this value-form descriptor, so char reflection stays exact.)
-            Ty::Char => self.push(ShapeNode::Int),
+            // A CHAR is a scalar — an i32 Unicode code-point slot at run time (Char-rep). Its value-op
+            // descriptor is `ShapeNode::Char` (the bool-analog RENDER tag, descriptor tag 19): the runtime
+            // reads the i32 code-point and RENDERS it as a `#\c` char literal (via the codec's KIND_CHAR),
+            // exactly as `ShapeNode::Bool` renders an i32 0/1 as `true`/`false`. It is a RENDER tag only, NOT
+            // a distinct runtime rep — value-EQ/-CMP/hash treat a Char IDENTICALLY to Int (chars equal iff
+            // code-points equal, order by code-point), so a compound carrying a `Char` leaf (e.g. the `Ast`
+            // sum's `Ast.Char` variant) compares/orders exactly as before; only the RENDER changed from a
+            // bare code-point number to a char literal (char-as-bool ruling, seq-247 — supersedes the prior
+            // `ShapeNode::Int` mapping + the runtime-Char WONTFIX). Requires the runtime's tag-19 arm in
+            // decode_shape/value-encode/value_cmp_shaped/value_eq/hash (v-runtime flag-day). A bare-`Char`
+            // scalar compare never reaches here (scalar path). (Ast.encode/decode still ride KIND_CHAR too.)
+            Ty::Char => self.push(ShapeNode::Char),
             Ty::Bytes => self.push(ShapeNode::Bytes),
             Ty::Unit => self.push(ShapeNode::Unit),
             Ty::Tuple(elems) => {
@@ -16616,6 +16626,7 @@ impl ShapeTableBuilder {
                 ShapeNode::BigInt => d.push(17), // matches the runtime `decode_shape` tag 17 = BigInt
                 ShapeNode::Rational => d.push(18), // matches the runtime `decode_shape` tag 18 = Rational
                 ShapeNode::Bool => d.push(1),
+                ShapeNode::Char => d.push(19), // matches the runtime `decode_shape` tag 19 = Char (render-only; value = i32 code-point, cmp/eq/hash as Int)
                 ShapeNode::Float => d.push(2), // matches the runtime `decode_shape` tag 2 = Float
                 ShapeNode::Float32 => d.push(14), // matches the runtime `decode_shape` tag 14 = Float32
                 ShapeNode::Str => d.push(3),      // matches the runtime `decode_shape` tag 3 = Str
@@ -28008,22 +28019,19 @@ fn lower_str_scalar_at(db: &mut Db, id: StructId, string: StructId, index: Struc
                 }
             }
         }
-        // A runtime string/index: `String.scalar-at` yields a bare `Char`. At runtime a char IS just its
-        // integer code-point — there is NO distinct runtime char representation (operator WONTFIX, the
-        // char-rep decision): runtime char COMPUTE works (`Char.from-int`/`to-int`, char `=`/`<`/match all
-        // execute on the i32 code-point slot), but the value BOUNDARY renders a char as its code-point NUMBER,
-        // not a `#\c` literal. So a runtime `String.scalar-at` is INTENTIONALLY not provided — it is
-        // implementable (its `(Option Char)` builds like any sum) but would hand back a `Char` that renders as
-        // a number; steer to the alternatives that render. NOT a "String is constant-only" limit
-        // (`String.at`/`String.slice` walk a runtime string fine). (rustc-gold "say how to fix it".)
-        _ => Core::Poison(Reject::decline(
-            "`String.scalar-at` over a runtime string is intentionally not provided: it yields a bare `Char`, \
-             and at runtime a char is just its integer code-point, so it would render as the code-point number \
-             rather than a `#\\c` char literal (there is no distinct runtime char representation, by design). \
-             Use `String.at` (a runtime `(Option String)` one-scalar read, which renders as text) for a runtime \
-             char-scan, or `Bytes.at` on `String.to-bytes` for byte scanning; `String.scalar-at` folds when the \
-             string and index are compile-time constants",
-        )),
+        // A runtime string/index: emit `Core::StrScalarAt` — the backend calls the runtime
+        // `bytes-scalar-at(buf, scalar_index) -> u32` op (#5516), boxes the returned codepoint into a `Char`
+        // (#5252 rep), and maps `u32::MAX -> None`, building the `(Option Char)`. The resulting runtime `Char`
+        // is an i32 code-point (NO distinct runtime rep — char is int at runtime, like bool) and renders as a
+        // `#\c` char literal via its `ShapeNode::Char` render tag (the bool-analog: bool is an i32 rendered
+        // `true`/`false` via `ShapeNode::Bool`). The constant string+index case folds to a
+        // `Some(Leaf::Char)`/`None` above and never reaches here.
+        _ => Core::StrScalarAt {
+            operand: string,
+            index,
+            disc_some,
+            disc_none,
+        },
     }
 }
 

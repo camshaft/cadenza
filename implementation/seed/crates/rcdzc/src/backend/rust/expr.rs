@@ -3358,6 +3358,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 "{{ let __s = {s}; let __i = ({i}) as usize; __s.chars().nth(__i).map(|__c| __c.to_string()) }}"
             ))
         }
+        // STUB (v-rust-backend #5516 to wire the real emit): runtime String.scalar-at yields (Option Char)
+        // via the bytes-scalar-at codepoint op + Char box. Declines cleanly until wired (front-lands-first
+        // per the coordinated split; 13-strings:3218 stays `declines`, not a red).
+        Core::StrScalarAt { .. } => Err(Reject::decline(
+            "Core::StrScalarAt rust emit not yet wired (v-rust-backend, #5516 bytes-scalar-at)",
+        )),
         // `String.slice` on a RUNTIME string → the half-open SCALAR sub-range `[start, end)`, fallibly, as a
         // native `Option<String>`. `.chars()` iterates by Unicode scalar (matching the spec's scalar-value
         // addressing, NOT byte), collected once into a `Vec<char>` so the two bounds index the same scalar
