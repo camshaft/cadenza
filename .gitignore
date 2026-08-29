@@ -57,3 +57,6 @@ implementation/design/wasm-opt-gaps.sexp
 # per the operator codegen→build-time-nix directive. NOT committed — regenerable/advisory; the nix build
 # emits them. Ignore so a local `xtask codegen`/stray run can't re-commit them.
 /implementation/seed/crates/cdz-platform/src/contracts/
+
+# fleet prune-cron liveness heartbeats (runtime artifact, never tracked)
+fleet/*.last-run
