@@ -1,0 +1,47 @@
+# nix-heavy-attrs.tsv — v-nix OWNS this content; v-fleet-tooling's nix-shim reads it (git-toplevel/fleet/).
+# Purpose: close the check-lease ESCAPE hole (all-nix mandate; the load-108 daemon incident 2026-08-29).
+# A BARE `nix build` of a heavy check attr run by an agent OUTSIDE the leased gate-local path escapes the
+# concurrency cap and can starve the shared daemon. The shim WARNS on two classes (WARN-only, never blocks;
+# fail-open; CDZ_NO_NIX_SHIM=1 kill-switch — see v-ft's design):
+#
+#   RECURSION EXEMPTION (critical): the SANCTIONED leased builds (run_gate_local / with_lease / the cargo-shim
+#   `nix run` routes for .#build/.#test) set CDZ_LEASED_NIX=1 before exec-ing nix. The shim MUST exempt when
+#   that marker is set — else it warns on gate-local's own inner `nix build` of local-gate (infinite/false).
+#   So the shim only ever warns on an UNMARKED bare agent invocation.
+#
+# FORMAT: KEY<TAB>VALUE.
+#   KEY=heavy-attr  → VALUE is a glob pattern (globs * ? ok) matched against the check attr NAME (the part
+#                     after `.#checks.<system>.`). A bare unmarked `nix build … .#checks.<sys>.<name>` whose
+#                     <name> matches ANY pattern → print warn:heavy.
+#   KEY=warn:heavy  → the message the shim prints for a matched heavy-attr escape.
+#   KEY=warn:substitute-false → the message printed for ANY nix cmd carrying `--option substitute false`
+#                     (independent of attr — it forces a wasteful from-source rebuild that monopolizes slots).
+#
+# v-nix maintains the patterns as checks are added/renamed; PR edits freely (v-ft does not gate this content).
+
+heavy-attr	local-gate
+heavy-attr	gate-check
+heavy-attr	gate-check-rust
+heavy-attr	gate-check-verify
+heavy-attr	corpus
+heavy-attr	corpus-[0-9]*
+heavy-attr	corpus-cadenza*
+heavy-attr	corpus-rust*
+heavy-attr	corpus-rust-async*
+heavy-attr	corpus-vanished
+heavy-attr	wasm-opt-gaps
+heavy-attr	wasm-opt-gaps-*
+heavy-attr	guide-examples
+heavy-attr	guide-examples-shredded*
+heavy-attr	guide-shred-check
+heavy-attr	cad-tests
+heavy-attr	cad-test-*
+heavy-attr	test-shred-*
+heavy-attr	test-crane-aggregate
+heavy-attr	flake-repro-backstop
+heavy-attr	example-project-tests
+heavy-attr	codegen-check
+
+warn:heavy	This is a HEAVY leased-gate build. Run it through the lease: `cargo xtask fleet gate-local` (the authoritative full gate) or the scoped `nix run .#fast-gate` for touched crates — both acquire the check-lease and count against the concurrency cap. A BARE `nix build` of a heavy check escapes the lease and can starve the shared daemon (the load-108 incident, 2026-08-29). If you must build one check directly, wrap it: `cargo xtask fleet with-lease -- nix build …`.
+
+warn:substitute-false	You passed `--option substitute false`, which DISABLES the binary cache and forces a wasteful FROM-SOURCE rebuild (every corpus case, the runtime, …) — this monopolizes the daemon build-slots (a top driver of the load-108 incident). The checks are content-addressed + cached, so DROP the flag to cache-HIT. If you genuinely need a fresh from-source build (an adversarial cache-mask check), run it OFF-PEAK and leased: `cargo xtask fleet with-lease -- nix build …`.
