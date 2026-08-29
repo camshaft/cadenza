@@ -4420,7 +4420,15 @@ fn pattern_implied_ty(db: &mut Db, pat: StructId, fresh: &mut Fresh) -> Option<T
     // bail). Shaping it `List <elem>` gives the param its list structure; the element is read from the
     // leading POSITIONAL element sub-pattern (a `..` rest marker and its following rest binder bind the
     // tail LIST, not an element, so they are skipped), else a fresh var the surrounding solve pins.
-    if let Some(items) = db.ast.as_form(pat, "list").map(<[StructId]>::to_vec) {
+    if let Some(items) = db
+        .ast
+        .compound_form_of(pat, CompoundCtor::List)
+        .map(<[StructId]>::to_vec)
+    {
+        // `compound_form_of` recognizes the native `#list(…)` ctor-leaf head too (not only the name/string
+        // alias) — so a native `#list` match pattern SHAPES its (untyped) scrutinee `List <elem>` exactly like
+        // the alias; without this a native-list recursive consumer left its param a free var → grounded Any →
+        // the scheme declined (undetermined-param) while the alias compiled (M3 native-recognition parity).
         // Collect the leading positional element sub-patterns (up to the `..` rest marker), dropping the
         // `db.ast` borrow before the recursive `pattern_implied_ty` calls take `db`.
         let positional: Vec<StructId> = items
@@ -6972,9 +6980,14 @@ fn record_field_entry_occ(db: &Db, expr: StructId, field: &str) -> Option<Struct
 /// record literal in the RAW AST — the node an `InsertArms` fix appends new `(field value)` entries to.
 /// `None` for a name-bound / call-result record (no source form to edit).
 fn record_literal_form(db: &Db, expr: StructId) -> Option<StructId> {
-    // Both the reserved-symbol head `(record …)` and the bare `record` name-alias spell the same list; the
-    // form node we append to is `expr` itself when either parse recognizes it.
-    if db.ast.as_ctor_form(expr, "record").is_some() || db.ast.as_form(expr, "record").is_some() {
+    // The native `#record(…)` ctor-leaf head, the reserved-symbol head `("record" …)`, and the bare `record`
+    // name-alias all spell the same record form; `compound_form_of` recognizes all three, so the add-missing-
+    // fields fix appends to a native record literal too (M3 native-recognition parity).
+    if db
+        .ast
+        .compound_form_of(expr, CompoundCtor::Record)
+        .is_some()
+    {
         Some(expr)
     } else {
         None

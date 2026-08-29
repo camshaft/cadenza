@@ -9928,6 +9928,32 @@ mod match_engine {
     }
 
     #[test]
+    fn a_native_list_pattern_shapes_its_scrutinee_type_like_the_alias() {
+        // M3 native-recognition parity (infer.rs pattern_implied_ty): a native `#list` MATCH pattern must
+        // SHAPE an otherwise-untyped scrutinee `List <elem>` exactly like the `(list …)` alias — so a recursive
+        // list consumer whose param type is implied ONLY by the list pattern (no call-site type/annotation)
+        // solves its scheme. `pattern_implied_ty`'s list arm read `as_form` (name-alias only), so a native
+        // `#list` recursive consumer left its param a free var → grounded Any → the scheme DECLINED (CDZ0201)
+        // while the alias compiled. Now reads `compound_form_of`. Native ≡ alias:
+        for (label, src) in [
+            (
+                "native #list recursive consumer (type only from pattern)",
+                "(module m (def (sum (: acc Int64) xs) (match xs (#list() acc) (#list(h .. t) (sum (+ acc h) t)))) (export sum))",
+            ),
+            (
+                "name-alias list recursive consumer (control)",
+                "(module m (def (sum (: acc Int64) xs) (match xs ((list) acc) ((list h .. t) (sum (+ acc h) t)))) (export sum))",
+            ),
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "{label}: a native list-pattern must shape its scrutinee type like the alias, got {:?}",
+                reject_code(src)
+            );
+        }
+    }
+
+    #[test]
     fn a_native_structural_pattern_over_a_wrong_kind_scrutinee_is_cdz0203() {
         // SOUNDNESS guard (05-compound-types "a tuple pattern over a non-tuple scrutinee is a type error",
         // and its list/map siblings): the match scrutinee-KIND check (lower_match) reads a pattern's
