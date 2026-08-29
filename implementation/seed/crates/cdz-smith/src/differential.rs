@@ -69,6 +69,13 @@ pub enum Side {
     /// ALWAYS surfaced (never swallowed by a trap-vs-trap agreement) — see [`compare`]. Only the Rust
     /// side can produce it; the wasm side's structurally-invalid output is the invalid-wasm oracle's job.
     ArtifactError(String),
+    /// The rust backend's build ENVIRONMENT is broken for THIS run — the emitted `.rs` is fine but the
+    /// staging externs (`cdz_num`/`cdz_rt` rlibs) are not on the rustc link path, so EVERY program reds
+    /// with the same `E0433: cannot find crate/module cdz_num`. That is an env/harness failure, NOT a
+    /// compiler outcome, so it must NOT file a differential finding — it maps to [`Diff::Unavailable`] so
+    /// a campaign with a broken link env fails LOUD (counted "unavailable") rather than silently agreeing
+    /// (hiding the broken env) or filing false `Artifact` buckets (the S79/breaker false-positive class).
+    Unavailable(String),
 }
 
 /// The verdict of comparing the two sides.
@@ -115,6 +122,12 @@ impl MismatchKind {
 /// compiler or a subprocess.
 pub fn compare(wasm: &Side, rust: &Side) -> Diff {
     match (wasm, rust) {
+        // An ENV/link failure (staging externs missing → E0433 cdz_num/cdz_rt) is NOT a compiler outcome
+        // and makes the comparison MEANINGLESS for this program — surface it as `Unavailable` (counted,
+        // never filed) so a broken link env fails loud instead of filing false Artifact buckets. Checked
+        // FIRST, before the ArtifactError arm, so an env red is never mis-classified as a miscompile.
+        // (Only the rust side yields `Unavailable`; the wasm side never does.)
+        (Side::Unavailable(e), _) | (_, Side::Unavailable(e)) => Diff::Unavailable(e.clone()),
         // An ArtifactError (un-compilable emitted source) is a build-blocking MISCOMPILE that must be
         // surfaced NO MATTER what the other side did — even a trap-vs-artifact-error, which the
         // Trap-vs-Trap agreement arm below would otherwise swallow (PR#552 soundness). Checked FIRST,
@@ -169,6 +182,7 @@ fn describe_side(s: &Side) -> String {
         Side::Trap(t) => format!("trap {t}"),
         Side::Declined(d) => format!("declined {d}"),
         Side::ArtifactError(e) => format!("artifact-error {e}"),
+        Side::Unavailable(e) => format!("unavailable {e}"),
     }
 }
 
@@ -454,6 +468,15 @@ pub fn run_rust(cdz: &std::path::Path, source: &str) -> Result<Side, String> {
     Ok(parse_rust_verdict(verdict))
 }
 
+/// True if a `cdz run-rust` `error …` verdict is the known staging-extern LINK failure: rustc `E0433`
+/// (cannot find crate/module) naming the `cdz_num`/`cdz_rt` runtime rlibs that must be co-located on the
+/// link path (a per-worktree build-env condition, not the emitted source). Such a verdict is an ENV
+/// failure, not a compiler miscompile — see [`Side::Unavailable`]. Every program reds identically when the
+/// rlibs are absent, so misclassifying it as `ArtifactError` files N false `Artifact` findings per campaign.
+fn is_staging_extern_link_failure(err: &str) -> bool {
+    err.contains("E0433") && (err.contains("cdz_num") || err.contains("cdz_rt"))
+}
+
 /// The first non-empty line of `s`, trimmed (for a concise `Declined` reason from multi-line stderr).
 fn first_line(s: &str) -> String {
     s.lines()
@@ -473,10 +496,19 @@ pub fn parse_rust_verdict(verdict: &str) -> Side {
     } else if let Some(t) = verdict.strip_prefix("trap ") {
         Side::Trap(t.trim().to_string())
     } else if let Some(e) = verdict.strip_prefix("error ") {
-        // A non-compiling emitted artifact (rustc rejected the emitted `.rs`) — a build-blocking
-        // MISCOMPILE. Its own `Side::ArtifactError` so `compare` ALWAYS surfaces it, even against a
-        // wasm trap (a `Side::Trap` here would be swallowed by the trap-vs-trap agreement — PR#552).
-        Side::ArtifactError(e.trim().to_string())
+        let e = e.trim();
+        if is_staging_extern_link_failure(e) {
+            // NOT a miscompile: the emitted `.rs` is fine but the staging externs (`cdz_num`/`cdz_rt`
+            // rlibs) are absent from the rustc link path, so EVERY program reds identically. An env
+            // failure → `Unavailable` (never a finding) so a broken link env fails LOUD, not as false
+            // Artifact buckets (breaker's + the S79 false-positive class).
+            Side::Unavailable(e.to_string())
+        } else {
+            // A non-compiling emitted artifact (rustc rejected the emitted `.rs`) — a build-blocking
+            // MISCOMPILE. Its own `Side::ArtifactError` so `compare` ALWAYS surfaces it, even against a
+            // wasm trap (a `Side::Trap` here would be swallowed by the trap-vs-trap agreement — PR#552).
+            Side::ArtifactError(e.to_string())
+        }
     } else {
         // An unrecognized line — treat conservatively as declined (not comparable), never a mismatch.
         Side::Declined(format!("unrecognized run-rust verdict: {verdict}"))
@@ -518,7 +550,11 @@ pub fn run_ast_corpus_sweep(
         match run_wasm_ast(&bytes, store) {
             Side::Value(_) => stats.values += 1,
             Side::Trap(_) => stats.traps += 1,
-            Side::Declined(_) | Side::ArtifactError(_) => stats.declined += 1,
+            // The wasm side never yields `Unavailable` (an env/link failure is rust-side only), but the
+            // match must stay exhaustive — fold it in with the other non-value outcomes.
+            Side::Declined(_) | Side::ArtifactError(_) | Side::Unavailable(_) => {
+                stats.declined += 1
+            }
         }
     }
     Ok(stats)
@@ -540,7 +576,8 @@ fn side_to_rcdzc_output(side: Side) -> Option<crate::lean::RcdzcOutput> {
     match side {
         Side::Value(v) => crate::lean::RcdzcOutput::value_from_render(&v),
         Side::Trap(t) => Some(crate::lean::RcdzcOutput::Trap(t)),
-        Side::Declined(_) | Side::ArtifactError(_) => None,
+        // `Unavailable` is rust-side only (this bridges the wasm side), but keep the match exhaustive.
+        Side::Declined(_) | Side::ArtifactError(_) | Side::Unavailable(_) => None,
     }
 }
 
@@ -968,6 +1005,46 @@ mod tests {
                 kind: MismatchKind::Artifact,
                 ..
             }
+        ));
+    }
+
+    /// The staging-extern LINK failure (E0433 cdz_num/cdz_rt) is an ENV condition, not a miscompile:
+    /// `parse_rust_verdict` classifies it `Unavailable` (not `ArtifactError`), and `compare` maps it to
+    /// `Diff::Unavailable` (never a finding), while a GENUINE artifact error still surfaces as a mismatch.
+    /// Guards the S121 fix (breaker's env-red-masquerading-as-findings class).
+    #[test]
+    fn staging_extern_link_failure_is_unavailable_not_a_finding() {
+        // The known env red — every program reds identically with it when the rlibs aren't staged.
+        let env_verdict = "error error[E0433]: cannot find module or crate `cdz_num` in this scope";
+        assert!(
+            matches!(parse_rust_verdict(env_verdict), Side::Unavailable(_)),
+            "E0433 cdz_num link failure must be Unavailable, not ArtifactError"
+        );
+        assert!(is_staging_extern_link_failure(
+            "error[E0433]: cannot find crate `cdz_rt`"
+        ));
+        // A GENUINE emit miscompile (a type error in the emitted source) stays an ArtifactError.
+        assert!(matches!(
+            parse_rust_verdict("error error[E0308]: mismatched types"),
+            Side::ArtifactError(_)
+        ));
+        assert!(!is_staging_extern_link_failure(
+            "error[E0308]: mismatched types"
+        ));
+        // compare: an env-Unavailable rust side (against any wasm outcome) is NEVER a finding.
+        assert!(matches!(
+            compare(
+                &Side::Value("3".into()),
+                &Side::Unavailable("E0433 cdz_num".into())
+            ),
+            Diff::Unavailable(_)
+        ));
+        assert!(matches!(
+            compare(
+                &Side::Trap("t".into()),
+                &Side::Unavailable("E0433 cdz_num".into())
+            ),
+            Diff::Unavailable(_)
         ));
     }
 
