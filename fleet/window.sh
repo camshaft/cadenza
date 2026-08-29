@@ -46,13 +46,18 @@ if [ -z "${CARGO_BUILD_JOBS:-}" ]; then
   export CARGO_BUILD_JOBS="$_jobs"
 fi
 
-# Concurrent-heavy-check cap in the MATERIALIZED env (concierge 2026-08-29, load-108 acute relief). The
-# #5611 default is already 2, but that only takes effect when an agent REBUILDS its xtask binary; exporting
-# it here makes the CURRENT binary honor cap-2 at runtime (acquire_check_lease reads the env each call) the
-# moment a window (re)launches — no rebuild wait. Every agent agreeing on the same max keeps the shared
-# lease consistent. Respect an explicit operator override if already set.
+# Concurrent-heavy-check cap in the MATERIALIZED env. Exporting it here makes the CURRENT binary honor the
+# cap at runtime (acquire_check_lease reads the env each call) the moment a window (re)launches — no rebuild
+# wait — and every agent agreeing on the same max keeps the shared lease consistent. Value 5 (operator
+# seq-208 2026-08-29, concierge-authorized): the earlier cap-2 was a load-108 SATURATION stopgap, but with
+# the box measured ~91% IDLE (loadavg ~5.6/64) and agents lock-GATED not CPU-bound, cap-2 needlessly
+# serialized them. 5 is CPUQuota-safe: each leased build self-caps to ~nproc/(2·(max+1)) cores, so 5 holders
+# × ~10 cores = ~50 < the 56-core nix-daemon CPUQuota (the real overload governor, the hard backstop).
+# INTERIM stopgap: the durable fix is a LOAD-ADAPTIVE compiled default (floor 2 / hw-derived ceil ~5) —
+# once that lands this pin is DROPPED so windows pick up the adaptive default gradually on relaunch, and
+# CDZ_CHECK_LEASE_MAX stays only as an explicit operator override. Respect an override already set.
 if [ -z "${CDZ_CHECK_LEASE_MAX:-}" ]; then
-  export CDZ_CHECK_LEASE_MAX=2
+  export CDZ_CHECK_LEASE_MAX=5
 fi
 
 # Resolve the agent's config from the registry. The hub is BARE (no Cargo workspace), so run the
