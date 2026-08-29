@@ -32,9 +32,9 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use xshell::{Shell, cmd};
 use xtask_support::{
-    BaselineMergeErr, Call, CorpusRecord, Verdict, content_address, convert_bytes,
-    default_corpus_files, first_line, hash_tree, launch_fail, merge_baseline_union, read_corpus,
-    serialize_baseline, split_message_clause,
+    BaselineMergeErr, Call, CorpusRecord, Verdict, content_address, default_corpus_files,
+    first_line, hash_tree, launch_fail, merge_baseline_union, read_corpus, serialize_baseline,
+    split_message_clause,
 };
 
 /// The one interface for driving the Cadenza seed workspace. Every knob is a typed flag; there are
@@ -183,17 +183,6 @@ enum Cmd {
     PruneBaselines {
         /// Don't write; LIST what would be pruned and exit non-zero if any unreferenced entry exists (for
         /// a CI/preview pass). Without it, DELETE the unreferenced entries in place.
-        #[arg(long)]
-        check: bool,
-    },
-    /// Format Cadenza program file(s) through the printer, rewriting them in place.
-    Fmt {
-        /// The `.cdz`/`.sexp` files to format.
-        files: Vec<PathBuf>,
-        /// The surface to format to. [default: sexpr]
-        #[arg(long, default_value = "sexpr")]
-        to: String,
-        /// Don't write; exit non-zero if any file is not already formatted (for CI).
         #[arg(long)]
         check: bool,
     },
@@ -360,7 +349,6 @@ fn main() {
         Cmd::Test => test_guardrail(),
         Cmd::MergeBaseline { ours, theirs } => merge_baseline(&ours, &theirs),
         Cmd::PruneBaselines { check } => prune_baselines(&paths, profile, check),
-        Cmd::Fmt { files, to, check } => fmt(&paths, profile, files, &to, check),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
         Cmd::Codegen { check } => codegen::run(&paths, check),
         Cmd::WorldArtifact { out, wit, world } => world_artifact::run(&paths, out, wit, world),
@@ -7808,63 +7796,6 @@ impl CachedStep {
 // ============================================================================================
 // roundtrip — the syntax surfaces round-trip on every corpus program.
 // ============================================================================================
-
-// ============================================================================================
-// fmt — format program files through the printer.
-// ============================================================================================
-
-/// Format each file through the printer (round-trip its own surface to canonical form). `--check`
-/// writes nothing and exits non-zero if any file is not already canonical.
-fn fmt(paths: &Paths, profile: &str, files: Vec<PathBuf>, to: &str, check: bool) {
-    if files.is_empty() {
-        eprintln!("xtask fmt: name at least one file");
-        std::process::exit(1);
-    }
-    let tools = build_tools(paths, profile);
-    let mut unformatted: Vec<String> = Vec::new();
-
-    for file in &files {
-        let original = match std::fs::read(file) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("xtask fmt: {}: {e}", file.display());
-                std::process::exit(1);
-            }
-        };
-        // Format = parse the surface and re-print it canonically (same surface in and out).
-        let formatted = match convert_bytes(&tools.syntax, &original, to, to) {
-            Some(b) => b,
-            None => {
-                eprintln!("xtask fmt: {}: does not parse as {to}", file.display());
-                std::process::exit(1);
-            }
-        };
-        // The printer emits no trailing newline; keep files newline-terminated.
-        let mut formatted = formatted;
-        if !formatted.ends_with(b"\n") {
-            formatted.push(b'\n');
-        }
-        if formatted == original {
-            continue;
-        }
-        if check {
-            unformatted.push(file.display().to_string());
-        } else if let Err(e) = std::fs::write(file, &formatted) {
-            eprintln!("xtask fmt: writing {}: {e}", file.display());
-            std::process::exit(1);
-        } else {
-            println!("formatted {}", file.display());
-        }
-    }
-
-    if check && !unformatted.is_empty() {
-        println!("not formatted ({}):", unformatted.len());
-        for f in &unformatted {
-            println!("  {f}");
-        }
-        std::process::exit(1);
-    }
-}
 
 // ============================================================================================
 // emit — compile a program to a component and write it out (the compile-only half of `run`).
