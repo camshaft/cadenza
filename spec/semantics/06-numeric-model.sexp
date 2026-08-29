@@ -12679,3 +12679,15 @@
   (call main (: 7 Int64)) (output (: 703 Int64))
   (call main (: 2 Int64)) (output (: 3 Int64))
   (call main (: -5 Int64)) (output (: -1 Int64)))
+
+(case "cdzw45 a #map pattern matches by KEY — binds present keys order-free, falls through on an absent key"
+  (doc "The #5229 map-pattern semantics fence (parked twice on the ML pattern surface; unblocked by #5310
+        FACE 2): `#map((= k v))` selects by key. Arm 1 requires key 5 — ABSENT, so the match falls through
+        to arm 2, which binds keys 2 and 1 in the OPPOSITE order of construction (key-selected, not
+        positional): n=7 → 27. The absent-key fall-through is the load-bearing half (a positional read
+        would mis-bind instead of falling through).")
+  (input (do
+    (def (main (: n Int64)) (match #map((= 1 n) (= 2 20)) (#map((= 5 v)) v) (#map((= 2 v) (= 1 w)) (+ v w)) (_ -1)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 27 Int64))
+  (call main (: 2 Int64)) (output (: 22 Int64)))
