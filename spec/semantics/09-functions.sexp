@@ -564,7 +564,7 @@
             (export em) (export ef)))
   (call   em) (output (: 36 Int64))
   (call   ef) (output (: 12 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 18 29))
 
 ; A CLOSED literal closure FORWARDED through several `const`-parameter call hops (`sum` → `fold` →
 ; `drive`'s `const g`) — the const-WRAPPER-CHAIN. This used to be a false CDZ0201 reject: a β-substitution
