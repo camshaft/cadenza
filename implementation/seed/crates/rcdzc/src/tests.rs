@@ -1115,13 +1115,15 @@ fn an_in_source_world_reducer_derives_its_component_name_and_emits() {
     );
 }
 
-/// The KIND_WIT_WORLD reader is LEAF-INTERN-ORDER-INDEPENDENT. `codec::encode` is NOT canonical — the
-/// leaf table reflects BUILD order, so the SAME world tree built bottom-up by the in-crate `Builder`
-/// (`option_result_world_bytes`) vs top-down by the sexpr PARSER front-end (the `cdz convert` path) encodes
-/// to DIFFERENT bytes. But `parse_target_world`/`parse_wit_type` walk STRUCTURALLY (`head_name`/`head_ctor`/
-/// indexed children — never by leaf-intern order), so both decode to the SAME `TargetWorld`. Pins that a
-/// world artifact's export member types derive identically regardless of which tool encoded it — disproving
-/// a reported "the reader mis-derives on cdz-convert bytes" hypothesis: the reader is order-agnostic.
+/// The KIND_WIT_WORLD reader derives the SAME `TargetWorld` whether the world tree was built bottom-up by
+/// the in-crate `Builder` (`option_result_world_bytes`) or top-down by the sexpr PARSER front-end (the `cdz
+/// convert` path). Since the ast-consolidation (#5158) `crate::{ast,codec}` ARE the single `cadenza-ast`
+/// crate, BOTH paths now go through the ONE Builder+codec, so they encode to IDENTICAL bytes (one source of
+/// truth — previously the two SEPARATE builder impls interned in different order and produced different
+/// bytes, which this test used to exploit). The reader stays STRUCTURAL regardless: `parse_target_world`/
+/// `parse_wit_type` walk by `head_name`/`head_ctor`/indexed children, never by leaf-intern order — so the
+/// export member types derive identically (disproving a reported "the reader mis-derives on cdz-convert
+/// bytes" hypothesis).
 #[test]
 fn the_world_reader_is_leaf_intern_order_independent() {
     let builder_bytes = option_result_world_bytes();
@@ -1130,11 +1132,12 @@ fn the_world_reader_is_leaf_intern_order_independent() {
            (func (param m (\"record\" (x (s64)))) \
                  (result (\"record\" (d (\"option\" (s64)))))))))",
     ));
-    // The two builders intern leaves in different order → different bytes (encode is not canonical). This is
-    // exactly the reporter's premise; the point is the READER survives it.
-    assert_ne!(
+    // Post ast-consolidation (#5158) both paths share the ONE cadenza-ast Builder+codec → identical bytes
+    // (the single-source-of-truth win; the pre-consolidation two-builder byte divergence this once pinned is
+    // gone). The reader's order-agnosticism is proven below by both decoding to the same `TargetWorld`.
+    assert_eq!(
         builder_bytes, parser_bytes,
-        "bottom-up (Builder) vs top-down (parser) intern → different bytes (encode reflects build order)"
+        "post-consolidation, the Builder and parser paths share the one cadenza-ast codec → identical bytes"
     );
     let ba = crate::codec::decode(&builder_bytes).expect("builder decodes");
     let pa = crate::codec::decode(&parser_bytes).expect("parser decodes");
