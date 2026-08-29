@@ -181,7 +181,7 @@ export default function Lists() {
             that slot back with <C>List.at</C>. The answer is <C>50</C>.
           </>
         }
-        starter={`(match (List.at (List.update (list 5 6 7) 0 ?) 0)
+        starter={`(match (List.at (List.update #list(5 6 7) 0 ?) 0)
   ((Some x) x)
   ((None _) 0))`}
         solution={`(match (List.at (List.update #list(5 6 7) 0 50) 0)
@@ -205,7 +205,7 @@ export default function Lists() {
             <C>push</C> or <C>concat</C>? Fill in the blank.
           </>
         }
-        starter={`(List.len (List.? (list 10 20 30) 99))`}
+        starter={`(List.len (List.? #list(10 20 30) 99))`}
         solution={`(List.len (List.push #list(10 20 30) 99))`}
         expected="4"
         hint={
@@ -227,9 +227,9 @@ export default function Lists() {
         }
         starter={`(def (prod xs)
   (match xs
-    ((list) ?)
-    ((list x .. rest) (* x (prod rest)))))
-(def (main) (prod (list 1 2 3 4)))`}
+    (#list() ?)
+    (#list(x .. rest) (* x (prod rest)))))
+(def (main) (prod #list(1 2 3 4)))`}
         solution={`(def (prod xs)
   (match xs
     (#list() 1)
@@ -254,7 +254,7 @@ export default function Lists() {
             <C>prepend</C>? Fill in the blank.
           </>
         }
-        starter={`(match (List.at (List.? (list 1 2 3) 0) 0)
+        starter={`(match (List.at (List.? #list(1 2 3) 0) 0)
   ((Some x) x)
   ((None _) -1))`}
         solution={`(match (List.at (List.prepend #list(1 2 3) 0) 0)

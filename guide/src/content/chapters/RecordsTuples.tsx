@@ -145,7 +145,7 @@ export default function RecordsTuples() {
         prompt={<>Finish <C>perimeter</C> so a 4×5 rectangle gives <C>18</C> (two widths plus two heights).</>}
         starter={`(def (perimeter r)
   (+ (* 2 (. r w)) ?))
-(def (main) (perimeter (record (w 4) (h 5))))`}
+(def (main) (perimeter #record((= w 4) (= h 5))))`}
         solution={`(def (perimeter r)
   (+ (* 2 (. r w)) (* 2 (. r h))))
 (def (main) (perimeter #record((= w 4) (= h 5))))`}
@@ -162,7 +162,7 @@ export default function RecordsTuples() {
             its index in the joined tuple. Which index is it?
           </>
         }
-        starter={`(. (Tuple.concat (tuple 1 2) (tuple 3 4 5)) ?)`}
+        starter={`(. (Tuple.concat #tuple(1 2) #tuple(3 4 5)) ?)`}
         solution={`(. (Tuple.concat #tuple(1 2) #tuple(3 4 5)) 4)`}
         expected="5"
         hint={
@@ -183,7 +183,7 @@ export default function RecordsTuples() {
             <C>extend</C>? Fill in the blank.
           </>
         }
-        starter={`(. (Record.? (record (x 10) (y 20)) #"z" 30) z)`}
+        starter={`(. (Record.? #record((= x 10) (= y 20)) #"z" 30) z)`}
         solution={`(. (Record.extend #record((= x 10) (= y 20)) #"z" 30) z)`}
         expected="30"
         hint={

@@ -204,7 +204,7 @@ export default function MapsSets() {
           </>
         }
         starter={`(Set.len
-  (Set.? (Set.of (list 1 2 3)) (Set.of (list 2 3 4))))`}
+  (Set.? (Set.of #list(1 2 3)) (Set.of #list(2 3 4))))`}
         solution={`(Set.len
   (Set.intersection (Set.of #list(1 2 3)) (Set.of #list(2 3 4))))`}
         expected="2"
@@ -227,7 +227,7 @@ export default function MapsSets() {
         }
         starter={`(def (main)
   (Map.len
-    (Map.? (map (1 10) (2 20)) 1)))`}
+    (Map.? #map((= 1 10) (= 2 20)) 1)))`}
         solution={`(def (main)
   (Map.len
     (Map.remove #map((= 1 10) (= 2 20)) 1)))`}
