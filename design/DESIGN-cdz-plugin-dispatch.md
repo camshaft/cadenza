@@ -223,6 +223,36 @@ Slice order (roughly cheapest-dep-drop first; each is one merge-request):
 Order S2→S6 is chosen so each dep leaves the closure as soon as its last in-process user is gone;
 S4/S6 are the two that actually delete the heavy transitive graph.
 
+### S6a — `@test` enumeration via a cdz-compile SIDECAR QUERY (operator refinement 2026-08-29)
+Operator (verbatim, linking PR #5182): *"we really shouldn't be depending on the rcdzc crate in the cdz
+binary either… ideally this would just call the cdz-compile and pass a sidecar query that returned the
+list of tests."* + *"we should not be using json. use the cadenza-ast binary format everywhere."* So the
+`cdz test --list` I landed in #5182 (JSON, rcdzc-LINKED `db.test_defs()`) is superseded — rework it to:
+1. **rcdzc (v-inference's sidecar surface):** add a `Query::TestList` that enumerates `@test` defs from the
+   `Db` and answers a **cadenza-ast BINARY** value — a list, one record per test: `name` (raw def name =
+   the drift-guard identity), `is_property` (the CANONICAL `compile_tests` formula: `!def.params.is_empty()
+   || def.name.ends_with("-gen")` — the `-gen` suffix is v-property-testing's synthesized Test.gen compound
+   wrapper; my #5182 JSON `--list` used only `!params.is_empty()`, MISSING `-gen`), and (for the package
+   case) the def's FILE. Encode like the existing `ExportedTypes`/`KIND_EXPORT_TYPES` query (a `codec::encode`
+   arena blob) — the sidecar wire is ALREADY binary-AST (#3440), so this fits the surface with no new codec.
+   The EXPORT symbol (`layout::compute_tests` kebab, for `--call`) belongs to the emit-shred manifest, not
+   this enumeration query.
+2. **cdz (my lane):** `cdz test --list` builds the `TestList` query + **spawns `cdz-compile`** (the existing
+   delegate machinery — `$CDZ_COMPILE_BIN`→sibling→PATH, the SAME spawn path `cdz compile`/the delegate
+   already use to send a sidecar query + decode a binary-AST result), receives the cadenza-ast binary, and
+   writes/forwards it. **No rcdzc-linked enumeration in cdz.** This is the concrete first slice of S6 — it
+   severs the `@test`-enumeration rcdzc use; the remaining rcdzc uses in cdz (the `cdz test` runner's
+   `precompile_group`, `emit_and_run_module`, the query/LSP arms) must ALSO move to spawn-cdz-compile before
+   the `rcdzc` dep can actually drop (the full S6 / the closure assert).
+3. **Format/read-path coordination:** v-test-shred CONSUMES the binary manifest (fields unchanged:
+   name/consumer/export/peers/is_property) — it reads at BUILD time inside a derivation (a cdz decode helper
+   can run there). The open piece is EVAL-time nix enumeration (nix can't decode cadenza-ast binary at eval +
+   IFD is banned): v-test-shred + v-nix are resolving it (a tiny committed TEXT name-index for eval, or
+   v-nix's guide-manifest approach). So `--list`'s FINAL output shape (pure binary, or binary + a committed
+   text name-index) is gated on that resolution — do NOT finalize the cdz-side emit until they land it.
+   emit-shred likewise writes the binary manifest; its wasm-emit half may also route through cdz-compile
+   (reversing the earlier "in-process, no CDZ_COMPILE_BIN" answer — flagged to v-test-shred, closure TBD).
+
 **Stdio-AST protocol (runs through S5/S6).** As the syntax + compiler surfaces are carved out, wire them
 on the operator's `cadenza-ast`-over-stdio contract rather than bespoke artifact temp-files where a pipe
 suffices: a tool reads a serialized `cadenza-ast` value from stdin, does its one job, writes the result
