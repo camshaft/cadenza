@@ -5954,6 +5954,12 @@ fn lease_nix_config(existing: Option<&str>, budget: usize) -> String {
 /// 45min gives margin. A SIGKILL'd check's lease is reclaimed after this instead of leaking a slot.
 const CHECK_LEASE_TTL_SECS: u64 = 45 * 60;
 
+/// A waiting vertical becomes AGED after blocking this long for a check slot — past here it may take one
+/// over-cap slot so a slow-build cap (cap-2 + 30-40min gate builds) can't starve it indefinitely behind a
+/// churn of newer waiters. 20min: shorter than the observed heavy-build durations, so a starved agent
+/// forces in mid-way rather than waiting the full build; long enough that normal contention resolves first.
+const CHECK_LEASE_AGING_SECS: u64 = 20 * 60;
+
 /// An acquired check-lease; releasing (removing the lease file) happens on drop, so a normal `check`
 /// exit — or an early `return`/panic — frees the slot without an explicit release call.
 pub struct CheckLease {
@@ -6113,12 +6119,24 @@ fn scan_check_leases_with(
 /// slot NOW given its class and the live counts? PRIORITY (pr-sync's merge gate) always may — it never
 /// waits behind vertical checks. A VERTICAL may only when NO priority lease is held (yield to the merge
 /// queue) AND the vertical count is under the cap.
-fn check_lease_go(priority: bool, prio_live: usize, vert_live: usize, max: usize) -> bool {
+fn check_lease_go(
+    priority: bool,
+    prio_live: usize,
+    vert_live: usize,
+    max: usize,
+    aged: bool,
+) -> bool {
     if priority {
-        true
-    } else {
-        prio_live == 0 && vert_live < max
+        return true;
     }
+    // A vertical yields to any held priority lease. Under the cap it goes; and an AGED vertical — one that
+    // has been WAITING past the starvation threshold (v-core-opt starved 4x under cap-2, 2026-08-29) — may
+    // take ONE over-cap slot (`max + 1`), so a slow-build cap can't starve it INDEFINITELY behind a churn of
+    // newer waiters winning the 3s poll race. Bounded to a single extra holder: a SECOND aged waiter sees
+    // `vert_live == max + 1` and keeps waiting, and the nix-daemon CPUQuota caps total build CPU regardless,
+    // so the brief over-cap can't oversubscribe the box. Aged still yields to priority (never jumps pr-sync).
+    let cap = if aged { max + 1 } else { max };
+    prio_live == 0 && vert_live < cap
 }
 
 /// Acquire a check-lease for `cargo xtask check`, blocking (with a poll loop) until it's this process's
@@ -6138,13 +6156,26 @@ pub fn acquire_check_lease(repo: &Path, priority: bool) -> CheckLease {
     let file = dir.join(format!("{pid}-{class}.lease"));
     let max = check_lease_max();
 
-    // Poll until it's our turn. A priority acquirer skips the wait entirely.
+    // Poll until it's our turn. A priority acquirer skips the wait entirely. A vertical that WAITS past
+    // CHECK_LEASE_AGING_SECS becomes AGED and may take one over-cap slot (fairness — see `check_lease_go`),
+    // so a slow-build cap can't starve it indefinitely. The wait is measured from THIS loop's start (no
+    // persistent waiter state needed — the blocking loop already knows how long it has waited).
+    let wait_start = now_unix();
     let mut waited_notice = false;
+    let mut aged_notice = false;
     loop {
         let now = now_unix();
+        let aged = now.saturating_sub(wait_start) >= CHECK_LEASE_AGING_SECS;
         let (prio_live, vert_live) = scan_check_leases(&dir, now);
-        let go = check_lease_go(priority, prio_live, vert_live, max);
+        let go = check_lease_go(priority, prio_live, vert_live, max, aged);
         if go {
+            if aged && !priority {
+                println!(
+                    "check-lease: AGED in after waiting {}s — taking one over-cap slot (was {vert_live}/{max}) \
+                     so a slow-build cap can't starve this vertical.",
+                    now.saturating_sub(wait_start)
+                );
+            }
             // Create the lease; its mtime marks acquisition (and is our liveness stamp).
             if std::fs::write(&file, format!("{}\t{}", now, class)).is_err() {
                 eprintln!("check-lease: could not write lease (failing OPEN — unthrottled).");
@@ -6158,6 +6189,13 @@ pub fn acquire_check_lease(repo: &Path, priority: bool) -> CheckLease {
                  {prio_live} priority) — yielding to the merge queue…"
             );
             waited_notice = true;
+        } else if !aged_notice && now.saturating_sub(wait_start) >= CHECK_LEASE_AGING_SECS / 2 {
+            println!(
+                "check-lease: still waiting ({}s) — will AGE into an over-cap slot at {}s if still starved.",
+                now.saturating_sub(wait_start),
+                CHECK_LEASE_AGING_SECS
+            );
+            aged_notice = true;
         }
         std::thread::sleep(std::time::Duration::from_secs(3));
     }
@@ -20556,20 +20594,42 @@ branch refs/heads/fleet/trunk-tools
     #[test]
     fn check_lease_go_priority_wins_and_vertical_yields() {
         // PRIORITY (pr-sync merge gate) always goes — even at/over the cap and with priority peers.
-        assert!(check_lease_go(true, 0, 0, 3));
+        assert!(check_lease_go(true, 0, 0, 3, false));
         assert!(
-            check_lease_go(true, 2, 99, 3),
+            check_lease_go(true, 2, 99, 3, false),
             "priority never waits behind vertical or the cap"
         );
 
-        // VERTICAL goes only when no priority is held AND under the cap.
-        assert!(check_lease_go(false, 0, 0, 3));
-        assert!(check_lease_go(false, 0, 2, 3), "under the cap → go");
-        assert!(!check_lease_go(false, 0, 3, 3), "at the cap → wait");
-        assert!(!check_lease_go(false, 0, 4, 3), "over the cap → wait");
+        // VERTICAL (not aged) goes only when no priority is held AND under the cap.
+        assert!(check_lease_go(false, 0, 0, 3, false));
+        assert!(check_lease_go(false, 0, 2, 3, false), "under the cap → go");
+        assert!(!check_lease_go(false, 0, 3, 3, false), "at the cap → wait");
         assert!(
-            !check_lease_go(false, 1, 0, 3),
+            !check_lease_go(false, 0, 4, 3, false),
+            "over the cap → wait"
+        );
+        assert!(
+            !check_lease_go(false, 1, 0, 3, false),
             "a held priority lease makes vertical yield even with free slots"
+        );
+
+        // AGED vertical (starved past the threshold) takes ONE over-cap slot — bounded, and still yields
+        // to priority.
+        assert!(
+            check_lease_go(false, 0, 3, 3, true),
+            "aged → may take the +1 over-cap slot (at the cap)"
+        );
+        assert!(
+            !check_lease_go(false, 0, 4, 3, true),
+            "aged is bounded at max+1 — a SECOND over-cap waiter still waits"
+        );
+        assert!(
+            !check_lease_go(false, 1, 3, 3, true),
+            "aged still yields to a held priority lease (never jumps pr-sync)"
+        );
+        assert!(
+            check_lease_go(false, 0, 2, 3, true),
+            "aged under the cap goes (aging only adds headroom, never blocks)"
         );
     }
 
