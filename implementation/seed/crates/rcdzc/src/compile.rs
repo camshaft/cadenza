@@ -5143,10 +5143,6 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
             collect_reached_poisons(db, string, out);
             collect_reached_poisons(db, index, out);
         }
-        Core::StrScalarAt { operand, index, .. } => {
-            collect_reached_poisons(db, operand, out);
-            collect_reached_poisons(db, index, out);
-        }
         Core::StrSlice {
             string, start, end, ..
         } => {

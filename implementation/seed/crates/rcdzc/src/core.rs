@@ -495,20 +495,6 @@ pub enum Core {
         disc_some: u32,
         disc_none: u32,
     },
-    /// `String.scalar-at` on a RUNTIME string — the fallible indexed read yielding a `(Option Char)` (a
-    /// constant string + index FOLDS to a `Some(Leaf::Char)`/`None` `SumNew` in `lower`, so this reaches the
-    /// backend only for a runtime string/index). The Char-payload TWIN of `StrAt` (which yields a byte-slice
-    /// `(Option String)`): the backend calls the runtime `bytes-scalar-at(buf, scalar_index) -> u32` op
-    /// (#5516), which returns the Unicode scalar CODEPOINT or `u32::MAX` (0xFFFFFFFF) for out-of-range /
-    /// ill-formed; then BOXES the i32 codepoint into a `Char` (the #5252 Char i32 rep) and maps `u32::MAX ->
-    /// None`, building `Some(char)` / `None` on the built-in Option (`disc_some`/`disc_none`). This is why a
-    /// runtime `scalar-at` (unlike `StrAt`) needs the runtime-Char rep + the dedicated codepoint op.
-    StrScalarAt {
-        operand: StructId,
-        index: StructId,
-        disc_some: u32,
-        disc_none: u32,
-    },
     /// `String.slice string start end` — the fallible SCALAR sub-range read, half-open `[start, end)`.
     /// FOLDS in `lower` (`chars()` collect + slice) when all three are constant, so this reaches the
     /// backend only for a runtime string (or a runtime bound over a constant string). A String is a flat
