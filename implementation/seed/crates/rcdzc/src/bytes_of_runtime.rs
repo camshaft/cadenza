@@ -64,7 +64,10 @@ fn is_bytes_of_head(ast: &Arenas, id: StructId) -> bool {
 /// rewritten into the runtime fold (which broke compiler-ml self-host — `Bytes.of([…])`'s list arrives
 /// string-headed).
 fn is_list_literal(ast: &Arenas, id: StructId) -> bool {
-    ast.compound_ctor_either(id) == Some(CompoundCtor::List)
+    // Native ctor-leaf head (`#list(…)`, what read_ml emits) as well as the name/string heads — the
+    // fold gate must see a native list literal too, or a const `Set.of`/`Bytes.of #list(…)` wrongly falls to
+    // the runtime fold (the recognition-completeness the doc warns broke compiler-ml self-host for string-head).
+    ast.compound_form_of(id, CompoundCtor::List).is_some()
 }
 
 /// A `(Bytes.of ARG)` application whose ARG is not a `(list …)` literal — a runtime-list construction this

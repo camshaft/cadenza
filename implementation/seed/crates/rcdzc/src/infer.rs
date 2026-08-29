@@ -7036,7 +7036,7 @@ fn record_field_delete_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructI
 /// name-bound / call-result tuple (no source form to edit). Mirrors [`record_literal_form`]; a tuple is
 /// spelled by either the `tuple` NAME alias or the `"tuple"` string-literal primitive head.
 fn tuple_literal_form(db: &Db, expr: StructId) -> Option<StructId> {
-    if db.ast.compound_ctor_either(expr) == Some(CompoundCtor::Tuple) {
+    if db.ast.compound_form_of(expr, CompoundCtor::Tuple).is_some() {
         Some(expr)
     } else {
         None
