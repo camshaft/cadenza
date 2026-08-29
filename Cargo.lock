@@ -3452,6 +3452,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask-install-lsp"
+version = "0.0.0"
+dependencies = [
+ "xshell",
+]
+
+[[package]]
 name = "xtask-lint-emoji"
 version = "0.0.0"
 dependencies = [
