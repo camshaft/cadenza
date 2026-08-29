@@ -297,6 +297,10 @@ pub fn build_sidecar_request(requests: &[rcdzc::Request]) -> Vec<u8> {
                 let h = b.name("emit-tests-consumer-only");
                 b.list(vec![h])
             }
+            rcdzc::Request::EmitTestsShred => {
+                let h = b.name("emit-tests-shred");
+                b.list(vec![h])
+            }
             rcdzc::Request::Query(q) => {
                 use rcdzc::sidecar::Query;
                 let (selector, arg): (&str, Option<_>) = match q {
@@ -325,6 +329,10 @@ pub fn build_sidecar_request(requests: &[rcdzc::Request]) -> Vec<u8> {
                     Query::ParamManifest => ("param-manifest", None),
                     Query::FuncLayout => ("func-layout", None),
                     Query::ClosureHash => ("closure-hash", None),
+                    // The `@test` enumeration for `cdz test --list` (v-inference's Query::TestList) — nullary,
+                    // selector "test-list", matching `sidecar::encode_query`. Its result is a cadenza-ast VALUE
+                    // (KIND_TEST_LIST) `cdz --list` forwards verbatim.
+                    Query::TestList => ("test-list", None),
                 };
                 let head = b.name("query");
                 let sel = b.name(selector);
@@ -371,6 +379,7 @@ fn query_result_kind(request: &rcdzc::Request) -> Option<&'static str> {
         Query::ParamManifest => sidecar::KIND_PARAM_MANIFEST,
         Query::FuncLayout => sidecar::KIND_FUNC_LAYOUT,
         Query::ClosureHash => sidecar::KIND_CLOSURE_HASH,
+        Query::TestList => sidecar::KIND_TEST_LIST,
     })
 }
 
