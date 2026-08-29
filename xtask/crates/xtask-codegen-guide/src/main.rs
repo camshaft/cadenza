@@ -258,7 +258,7 @@ fn render_runnable(a: &Arenas, node: StructId) -> String {
             ));
             out.push_str(&format!(
                 "            source: `{}`,\n",
-                named_attr(a, file, "source").unwrap_or("")
+                tmpl(named_attr(a, file, "source").unwrap_or(""))
             ));
             out.push_str(&format!(
                 "            surface: {},\n",
@@ -270,12 +270,11 @@ fn render_runnable(a: &Arenas, node: StructId) -> String {
             out.push_str("          },\n");
         }
         out.push_str("        ]}\n");
-        out.push_str("      />\n");
-        return out;
+    } else {
+        let src = tmpl(named_attr(a, node, "source").unwrap_or(""));
+        out.push_str(&format!("        source={{`{src}`}}\n"));
     }
-    let src = named_attr(a, node, "source").unwrap_or("");
-    out.push_str(&format!("        source={{`{src}`}}\n"));
-    // Optional scalar props, fixed order. authored-in → authoredIn; wrap "false" → wrap={false}.
+    // Optional scalar props (BOTH single-source + multi-file), fixed order. authored-in → authoredIn; wrap "false" → wrap={false}.
     for (sexp_key, tsx_key) in [
         ("expected", "expected"),
         ("expect", "expect"),
@@ -307,10 +306,10 @@ fn render_exercise(a: &Arenas, node: StructId) -> String {
         ));
     }
     if let Some(s) = named_attr(a, node, "starter") {
-        out.push_str(&format!("        starter={{`{s}`}}\n"));
+        out.push_str(&format!("        starter={{`{}`}}\n", tmpl(s)));
     }
     if let Some(s) = named_attr(a, node, "solution") {
-        out.push_str(&format!("        solution={{`{s}`}}\n"));
+        out.push_str(&format!("        solution={{`{}`}}\n", tmpl(s)));
     }
     if let Some(e) = named_attr(a, node, "expected") {
         out.push_str(&format!("        expected={}\n", jsx_attr(e)));
@@ -331,11 +330,22 @@ fn render_why(a: &Arenas, node: StructId) -> String {
     )
 }
 
-/// A JSX string-valued attribute: `="value"` when the value is plain, else `={"…"}` (JS-escaped) when it
-/// holds a `"`/`{`/`}`/`<`/`>` that a bare `="…"` couldn't carry.
+/// Template-literal escape for a code payload emitted into `` {`…`} `` — so a `\`, backtick, or `${` in the
+/// (cooked) source round-trips: JS template cooking of the emitted `` `…` `` yields the original code back.
+/// Backslash first (so the `\` this adds for backtick/`${` isn't re-escaped).
+fn tmpl(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('`', "\\`")
+        .replace("${", "\\${")
+}
+
+/// A JSX string-valued attribute: `="value"` when the value is plain, else a TEMPLATE literal `` ={`…`} ``
+/// (template-escaped) when it holds a `"`/`{`/`}`/`<`/`>` a bare `="…"` couldn't carry. A template (not
+/// `={"…"}`) so it matches the hand-written form AND the check:examples extractor's `name={`…`}` grab
+/// (which does NOT recognize `{"…"}`) — e.g. a Runnable `expected` of `(: "…" String)`.
 fn jsx_attr(v: &str) -> String {
     if v.contains(['"', '{', '}', '<', '>']) {
-        format!("{{{}}}", json_string(v))
+        format!("{{`{}`}}", tmpl(v))
     } else {
         format!("\"{v}\"")
     }
