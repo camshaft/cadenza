@@ -16,7 +16,12 @@ name = "xtask-codegen-wasm-abi"
 path = "src/main.rs"
 
 [dependencies]
-# The spec byte encoder — the ORACLE the table is extracted from. Same version family as xtask's codegen.
+# The language's AST + binary codec — the codegen-sexpr producer reads wasm-abi.sexp's cadenza-ast BINARY
+# (codec::decode + Arenas walk) to build the table (operator: sexpr is the source, via a cadenza-ast-binary
+# derivation). No-json: cadenza-ast IS the codegen IR.
+cadenza-ast = { path = "../../../implementation/seed/crates/cadenza-ast" }
+# The spec byte encoder — now the cross-check ORACLE (the `--oracle-check` mode asserts each named op's
+# wasm-encoder const matches the sexpr byte), inverted from the old extract-from-encoder. Same version family.
 wasm-encoder = "0.239"
 # The render stack: build the table as a token tree (`quote!`), pretty-print (prettyplease) + rustfmt.
 prettyplease = "0.2"
