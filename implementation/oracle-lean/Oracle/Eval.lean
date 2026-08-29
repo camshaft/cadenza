@@ -891,7 +891,17 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         <|> ((m.headName? (Node.list children)).bind (fun h =>
                if (env.lookup? h).isSome then none                     -- a local binding shadows: not a top-level call
                else (defTable m).find? (fun d => d.1 == h) |>.bind (fun d =>
-                 if d.2.1.size == children.size - 1 then some (evalCall m env fuel d.2.1 d.2.2 children) else none)))
+                 let params := d.2.1; let nargs := children.size - 1
+                 if params.size == nargs then some (evalCall m env fuel params d.2.2 children)
+                 -- PARTIAL application `(f a)` (f has more params than args given): a closure over the
+                 -- REMAINING params, CAPTURING the given args (as values, evaluated now) under their param
+                 -- names. Applied later (`((f a) b)`), applyClosure binds the rest + this cap.
+                 else if 0 < nargs && nargs < params.size then
+                   let cap := ((params.extract 0 nargs).zip (children.extract 1 children.size)).toList.filterMap
+                     (fun (sp, aid) => (paramSpec? m sp).map (fun (nm, _) =>
+                       (nm, outcomeToValue (evalNode m env defaultIntTy fuel aid))))
+                   some (.value (.closure (params.extract nargs params.size) d.2.2 cap))
+                 else none)))
       match ctorConstruct with
       | some o => o
       | none =>
@@ -1386,7 +1396,13 @@ partial def applyClosure (m : Module) (env : Env) (fuel : Nat) (params : Array N
   | 0 => .diverges
   | Nat.succ fuel' =>
     let args := children.extract 1 children.size
-    if params.size != args.size then .unsupported "eval: closure arity mismatch (partial application not modeled)"
+    if args.size < params.size && 0 < args.size then
+      -- PARTIAL application of a closure: capture the given args (values) under their param names, plus the
+      -- existing cap, into a NEW closure over the remaining params (currying — `((add3 1) 2)` → a 1-ary).
+      let newCap := cap ++ ((params.extract 0 args.size).zip args).toList.filterMap (fun (sp, aid) =>
+        (paramSpec? m sp).map (fun (nm, _) => (nm, outcomeToValue (evalNode m env defaultIntTy fuel' aid))))
+      .value (.closure (params.extract args.size params.size) body newCap)
+    else if params.size != args.size then .unsupported "eval: closure arity mismatch (over-application not modeled)"
     else
       let argBindings : Env := (params.zip args).toList.filterMap (fun (specId, argId) =>
         (paramSpec? m specId).map (fun (nm, ty) => (nm, (Thunk.mk (fun _ => evalNode m env (ty.getD defaultIntTy) fuel' argId)), ty)))
