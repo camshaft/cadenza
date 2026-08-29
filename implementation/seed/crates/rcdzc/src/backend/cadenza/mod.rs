@@ -2410,9 +2410,34 @@ fn emit_nested_switch_chain(
     }
     for inner in inner_arms {
         let Some(inner_disc) = inner.disc else {
-            return Err(Reject::decline(
-                "the Cadenza backend does not yet lower a nested-switch default arm".to_string(),
-            ));
+            // DEFAULT (wildcard) inner arm — matches ANY inner variant not covered by an explicit arm above.
+            // Bind the SWITCHED value (the whole inner sum at `path`) to a fresh binder and wrap it with the
+            // outer heads → `(<V0> ivar)`; the body reads the switched value whole via `SumPayload{root, path}`
+            // (it cannot read a specific variant's slot — the variant is unknown here). Emitted AFTER the
+            // explicit variant arms (inner-arm order preserved), so the surface matcher takes an explicit arm
+            // first and this catches the rest — exhaustiveness holds. A GUARDED/nested default cont declines.
+            let SumCont::Leaf(default_body) = &inner.cont else {
+                return Err(Reject::decline(
+                    "the Cadenza backend does not yet lower a guarded / nested nested-switch default arm"
+                        .to_string(),
+                ));
+            };
+            let ivar = synth_payload_name(env.next_payload);
+            env.next_payload += 1;
+            env.payloads
+                .insert((root_scrutinee, path.to_vec()), ivar.clone());
+            let mut pat = b.name(ivar.clone());
+            for (wd, wdisc) in wrap.iter().rev() {
+                let wh = crate::lower::variant_head_ast(db, b, *wd, *wdisc).ok_or_else(|| {
+                    Reject::decline(
+                        "the Cadenza backend could not recover an outer variant name".to_string(),
+                    )
+                })?;
+                pat = b.list(vec![wh, pat]);
+            }
+            let body_node = emit_expr(db, b, *default_body, expected.clone(), env, emitted)?;
+            children.push(b.list(vec![pat, body_node]));
+            continue;
         };
         let inner_arity = db
             .type_decl_by_occ(decl)
