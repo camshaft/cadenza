@@ -616,13 +616,22 @@ fn nat_walk(
             exempt.insert(arm);
         }
     }
-    if let Some(name) = a.head_name(id)
+    // The compound ctor at the head: a NAME head `(list …)` (shadowable — a bound `list` suppresses it) OR
+    // the STRING-primitive head `("list" …)` (the unshadowable "strings are the symbols" escape form, used
+    // in the corpus where a local binding shadows the name alias, e.g. `(let ((tuple …)) ("tuple" 7 8))`).
+    // BOTH must nativize to `#word(…)` for M3 — the native ctor-leaf is likewise unshadowable, so
+    // `("tuple" …)` → `#tuple(…)` preserves the unshadowable ctor identity. head_name is None for a string
+    // head, so fall back to the head atom's string value.
+    let name_head = a.head_name(id);
+    let ctor_name = name_head.or_else(|| a.as_str(ch[0]));
+    if let Some(name) = ctor_name
         && nat_is_ctor_name(name)
-        && shadow.get(name).copied().unwrap_or(0) == 0
+        // A NAME head is suppressed by a shadowing binding; a STRING head is unshadowable (always the ctor).
+        && (name_head.is_none() || shadow.get(name).copied().unwrap_or(0) == 0)
         && !exempt.contains(&id)
         && (name != "map" || nat_map_eligible(a, &ch))
     {
-        // Head-nativize `(name` → `#name(`, consuming the head→first-child HORIZONTAL whitespace.
+        // Head-nativize `(name`/`("name"` → `#name(`, consuming the head→first-child HORIZONTAL whitespace.
         let ls = spans.get(id).expect("list span");
         let hs = spans.get(ch[0]).expect("head span");
         let mut end = hs.end;
@@ -1498,6 +1507,32 @@ mod tests {
         );
         // A `set` LITERAL outside any handler arm still nativizes (the exemption is arm-head-scoped).
         assert_eq!(n("(do (set 1 2))"), "(do #set(1 2))");
+    }
+
+    #[test]
+    fn nativize_compound_source_nativizes_string_primitive_heads() {
+        // The STRING-primitive compound head `("word" …)` — the unshadowable "strings are the symbols"
+        // escape form the corpus uses where a local binding shadows the name alias — must nativize to
+        // `#word(…)` for M3, exactly like the name head. The native ctor-leaf is likewise unshadowable, so
+        // the mapping preserves the ctor identity. A string head has no `head_name`, so the codemod fell
+        // through and left `("tuple" …)` un-nativized → it would break at the Phase-2 reader flip.
+        let n = |s: &str| super::nativize_compound_source(s).unwrap();
+        assert_eq!(n("(\"tuple\" 7 8)"), "#tuple(7 8)");
+        assert_eq!(n("(\"list\" 1 2)"), "#list(1 2)");
+        assert_eq!(n("(\"set\" 1 2 3)"), "#set(1 2 3)");
+        // A string-head map/record field-pairifies its 2-element positional entries, like the name head.
+        assert_eq!(n("(\"map\" (1 2) (3 4))"), "#map((= 1 2) (= 3 4))");
+        assert_eq!(n("(\"record\" (x 1))"), "#record((= x 1))");
+        // Empty string-head form.
+        assert_eq!(n("(\"tuple\")"), "#tuple()");
+        // A string head is UNSHADOWABLE: even with a local `tuple` binding, `("tuple" …)` nativizes (it is
+        // the ctor, not the shadowed value) — while the shadowed NAME head `(tuple …)` stays a value ref.
+        assert_eq!(
+            n("(let ((tuple (fn (a b) a))) (. (\"tuple\" 7 8) 0))"),
+            "(let ((tuple (fn (a b) a))) (. #tuple(7 8) 0))"
+        );
+        // A string in a NON-head position (a value) is untouched — only a head-position string nativizes.
+        assert_eq!(n("(f \"tuple\")"), "(f \"tuple\")");
     }
 
     // `#word(…)` collection literals (DESIGN-native-ast-compound-data.md §D-SURFACE / M2). The `#word(`
