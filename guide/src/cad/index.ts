@@ -81,6 +81,12 @@ type Solid =
 type Tok = "(" | ")" | { atom: string };
 
 function tokenize(text: string): Tok[] {
+  // M2 native-compound render (#5112): render_value emits compound values head-first as `#tuple(…)`,
+  // `#list(…)`, `#record(…)`, etc. This twin-of-cdz-cad parser was written for the legacy `(tuple …)`
+  // form (a Vec3 coord renders `(tuple 50/1 30/1 5/1)` → now `#tuple(50/1 30/1 5/1)`), so normalize the
+  // M2 `#head(` spelling back to `(head ` before tokenizing — nested + balanced by construction. Guarded
+  // to a name+`(` so it never touches a `#"hashword"` string or `#\c` char literal.
+  text = text.replace(/#([A-Za-z][\w-]*)\(/g, "($1 ");
   const toks: Tok[] = [];
   let cur = "";
   const flush = () => {
