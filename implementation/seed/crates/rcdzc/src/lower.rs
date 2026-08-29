@@ -23758,7 +23758,30 @@ pub(crate) fn refined_comparison_const(
 /// range from `unsigned_value_bits` (a nonnegative value with a known significant-bit count `B` →
 /// `[0, 2^B − 1]`, tighter than its type) and falls back to the value's declared-type bounds. Feeds the
 /// range-vs-constant comparison fold.
+/// The value range of `id`, MEMOIZED when refinement-free. `value_range_uncached` recurses `LocalRef →
+/// initializer`, so over a sequential-dependency chain (`(x_i (+ x_{i-1} p))`) it re-walked every
+/// predecessor per node — O(N²) compile-time (a `--warm-only` probe measured near-quadratic growth). The
+/// analysis is a PURE function of the node's core EXCEPT when a flow-sensitive refinement frame is active
+/// (`db.range_refinements` non-empty), where a refined binder narrows the range for the branch being
+/// emitted. So: cache/serve ONLY when the refinement stack is empty (the const-fold callers + the common
+/// top-level emit path); when a frame is pushed (inside a guard branch), compute FRESH and never touch the
+/// cache — the cache therefore only ever holds refinement-free results and is only served refinement-free.
+/// Sound: with no frame the result depends only on the (memoized, stable) node core + type, so a cached
+/// entry stays valid across every subsequent refinement-free query. O(N²) → O(N), behavior-identical.
 fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
+    if db.range_refinements.is_empty()
+        && let Some(&cached) = db.value_range_memo.get(&id)
+    {
+        return cached;
+    }
+    let r = value_range_uncached(db, id);
+    if db.range_refinements.is_empty() {
+        db.value_range_memo.insert(id, r);
+    }
+    r
+}
+
+fn value_range_uncached(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
     // A CONSTANT's range is exactly itself — `[v, v]` (the tightest possible).
     if let Core::ConstInt(v) = core_of(db, id)
         && let Some(v) = v.to_i64()
@@ -23770,9 +23793,10 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
     // the else-branch of `(< n 2)`). When present, INTERSECT it with the declared-type bounds — the
     // tightest sound range — so a guard-elision check sees the narrowed range and drops a dead overflow
     // guard (`(- n 1)` under `n ≥ 2` cannot underflow). Refinements are EMIT-ONLY (the const-fold callers
-    // run with the stack empty, so this is a no-op there) and `value_range` is never memoized, so a
-    // transient refinement cannot poison any cached result. When no refinement applies, falls through to
-    // the ordinary arith/type range below.
+    // run with the stack empty, so this is a no-op there); the `value_range` WRAPPER only memoizes when the
+    // refinement stack is EMPTY, so this refinement-active path is never cached and a transient refinement
+    // cannot poison any cached result. When no refinement applies, falls through to the ordinary arith/type
+    // range below.
     if let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, id)
         && let Some((rlo, rhi)) = db.refined_range(binder)
     {
