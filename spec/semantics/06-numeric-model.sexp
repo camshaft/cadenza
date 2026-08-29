@@ -941,6 +941,38 @@
   (input  (: #set(200) (Set Int8)))
   (error  CDZ0302))
 
+(case "an out-of-range literal in a TUPLE nested inside a set element is rejected — the descent recurses"
+  (doc    "The nested-compound face of the #5217 descent (breaker matrix w4): `#set(#tuple(200))` under
+           `(Set (Tuple Int8))` — the overflowing literal sits one compound level DOWN, inside the tuple
+           inside the set element. Pre-#5217 this COMPILED (silent-truncate class); the descent must
+           recurse into element compounds, not just check the element's own leaf.")
+  (input  (: #set(#tuple(200)) (Set (Tuple Int8))))
+  (error  CDZ0302))
+
+(case "an out-of-range literal in a RECORD nested inside a map VALUE is rejected — the descent recurses"
+  (doc    "The record-in-map-value face of the nested descent (breaker matrix w5): `#map((= 1 #record((= a 200))))`
+           under `(Map Int8 (Record (: a Int8)))` — the overflow is in a record field of the map's value
+           compound. Pins the descent grounds nested record fields against the annotated value type.")
+  (input  (: #map((= 1 #record((= a 200)))) (Map Int8 (Record (: a Int8)))))
+  (error  CDZ0302))
+
+(case "an out-of-range literal in a SET nested inside a set element is rejected — depth generality"
+  (doc    "The depth face (breaker matrix w6): `#set(#set(200))` under `(Set (Set Int8))` — a collection
+           inside a collection. Pre-#5217 this COMPILED; pins the descent is collection-kind-recursive,
+           not a single-level special case.")
+  (input  (: #set(#set(200)) (Set (Set Int8))))
+  (error  CDZ0302))
+
+(case "an IN-RANGE literal in a tuple nested inside a set element still compiles — the nested check is not over-broad"
+  (doc    "The must-hold control for the nested-descent fences above: `#set(#tuple(100))` under
+           `(Set (Tuple Int8))` fits (100 ≤ 127) and must compile and evaluate — a descent that rejected
+           in-range nested literals would be over-broad. Observed via Set.len = 1.")
+  (input (do
+    (def (main) (Set.len (: #set(#tuple(100)) (Set (Tuple Int8)))))
+    (export main)))
+  (call main)
+  (output (: 1 Int64)))
+
 (case "an out-of-range literal SET element via Set.insert is rejected"
   (doc    "The builder-chain Set twin: `Set.insert Set.empty 200` under `(Set Int8)` grounds the inserted
            element `200` to `Int8` → overflow → CDZ0302. Pins the descent reaches a Set.insert element, the
