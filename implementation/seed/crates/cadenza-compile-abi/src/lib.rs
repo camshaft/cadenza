@@ -11,11 +11,13 @@
 //! compiler IMPLEMENTATIONS behind the boundary (query eval over a live `Db`, `compile`, the backends)
 //! stay in `rcdzc`.
 
+pub mod abi;
 pub mod opt;
 pub mod sidecar;
 pub mod spans;
 pub mod target;
 
+pub use abi::Artifact;
 pub use opt::OptLevel;
 pub use sidecar::{Query, Request, decode, encode};
 pub use target::Target;
