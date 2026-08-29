@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(24) {
+    match c.variant(25) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -436,6 +436,9 @@ fn gen_main_body<C: Choice>(
         // A WIDER-ARITY compound body: a 3-/4-tuple, a 3-/4-field record, or a projection out of one —
         // wider construction + projection layouts than the 2-field tuple/record arms.
         23 => gen_wide_compound_body(c, out),
+        // A BOOLEAN-LOGIC body: `and` / `or` / `not` over integer comparisons (→ Bool) — short-circuit
+        // boolean combinators the `gen_cond` arm (bare comparisons) never composed.
+        24 => gen_bool_logic_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1359,6 +1362,32 @@ fn gen_wide_compound_body<C: Choice>(c: &mut C, out: &mut String) {
         3 => write!(out, "(. (tuple {a} {b} {x}) 2)").ok(),
         // Project field `c` of a 3-field record → a scalar.
         _ => write!(out, "(. (record (= a {a}) (= b {b}) (= c {x})) c)").ok(),
+    };
+}
+
+/// A BOOLEAN-LOGIC body: `and` / `or` / `not` composed over integer comparisons `(<rel> a b)` — a Bool
+/// result exercising the short-circuit boolean combinator lowering (the `gen_cond` arm only emitted bare
+/// comparisons, never `and`/`or`/`not` over them). Includes a nested `(and (or …) (not …))` form.
+fn gen_bool_logic_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the FORM + comparison relations before the operands (variant-ordering).
+    let form = c.variant(4);
+    let rels = ["<", ">", "<=", ">=", "="];
+    let (r1, r2, r3) = (c.variant(5), c.variant(5), c.variant(5));
+    let (a1, b1) = (c.int_bounded(0, 20), c.int_bounded(0, 20));
+    let (a2, b2) = (c.int_bounded(0, 20), c.int_bounded(0, 20));
+    let (a3, b3) = (c.int_bounded(0, 20), c.int_bounded(0, 20));
+    let c1 = format!("({} {a1} {b1})", rels[r1]);
+    let c2 = format!("({} {a2} {b2})", rels[r2]);
+    let c3 = format!("({} {a3} {b3})", rels[r3]);
+    match form {
+        // Conjunction of two comparisons.
+        0 => write!(out, "(and {c1} {c2})").ok(),
+        // Disjunction of two comparisons.
+        1 => write!(out, "(or {c1} {c2})").ok(),
+        // Negation of a comparison.
+        2 => write!(out, "(not {c1})").ok(),
+        // Nested: `(and (or c1 c2) (not c3))`.
+        _ => write!(out, "(and (or {c1} {c2}) (not {c3}))").ok(),
     };
 }
 
@@ -2711,6 +2740,37 @@ mod tests {
         assert!(saw_r3, "should reach a 3-field record");
         assert!(saw_pt, "should reach a tuple projection");
         assert!(saw_pr, "should reach a record projection");
+    }
+
+    /// `gen_bool_logic_body` REACHES all four forms (and, or, not, nested) and every body COMPILES
+    /// (S174: short-circuit boolean combinators over comparisons).
+    #[test]
+    fn gen_bool_logic_body_reaches_all_forms_and_compiles() {
+        let (mut saw_and, mut saw_or, mut saw_not, mut saw_nested) = (false, false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(2417);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_bool_logic_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_nested |= body.starts_with("(and (or ");
+            saw_and |= body.starts_with("(and (") && !body.starts_with("(and (or ");
+            saw_or |= body.starts_with("(or ");
+            saw_not |= body.starts_with("(not ");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "bool-logic body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_and, "should reach an `and`");
+        assert!(saw_or, "should reach an `or`");
+        assert!(saw_not, "should reach a `not`");
+        assert!(saw_nested, "should reach a nested `(and (or …) (not …))`");
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
