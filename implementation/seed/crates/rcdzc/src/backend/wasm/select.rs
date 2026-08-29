@@ -8894,8 +8894,41 @@ fn emit_tail(
             }
             Ok(())
         }
-        // Everything else in tail position is an ordinary value (no tail call inside it) — emit normally.
-        _ => emit(db, id, slots, base, high, scratch_ty, layout, out),
+        // Everything else in tail position is an ordinary value (no tail call inside it) — emit normally,
+        // then COERCE its valtype to the function's result valtype if they differ (S141). `emit` leaves the
+        // value at `valtype_of(type_of(id))` — its OWN natural width — but the function's IMPLICIT return
+        // (wasm returns the stack top) needs `fn_ret_vt`. A tail value whose type is NARROWER/WIDER than the
+        // fn result (a `UInt8` arith arm — i32 — tail-returned from an `Int64`-result fn, or a `(: … UInt32)`
+        // ascription narrowing an i64 value) otherwise leaves the wrong width on the stack → invalid wasm or
+        // a wrong result (fuzzer S141). The tail-`Call` arm above already coerces its callee result; this is
+        // the same coercion for a non-call tail value. Unlike the Call case (whose `type_of` is masked by the
+        // call-site ascription to the fn result), `type_of(id)` HERE is the value's own type, so the compare
+        // is exact. Only the four scalar width pairs are coercible; a matching width (the common case) or a
+        // non-scalar handle is emitted UNCHANGED (byte-identical), so this changes only genuine mismatches.
+        _ => {
+            emit(db, id, slots, base, high, scratch_ty, layout, out)?;
+            let value_ty = type_of(db, id);
+            match (valtype_of(&value_ty), out.fn_ret_vt) {
+                (Some(ValType::I64), Some(ValType::I32)) => out.push(Lir::I32WrapI64),
+                (Some(ValType::I32), Some(ValType::I64)) => {
+                    // Widen using the value int's signedness (the narrow int on the stack).
+                    let signed = matches!(
+                        value_ty.strip_nominal(),
+                        Ty::Int(it) if it.ground_signed()
+                    );
+                    out.push(if signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                (Some(ValType::F64), Some(ValType::F32)) => out.push(Lir::F32DemoteF64),
+                (Some(ValType::F32), Some(ValType::F64)) => out.push(Lir::F64PromoteF32),
+                // Matching widths (byte-identical to before) or a non-scalar/Unit/Never result: emit as-is.
+                _ => {}
+            }
+            Ok(())
+        }
     }
 }
 
