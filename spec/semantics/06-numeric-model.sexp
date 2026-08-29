@@ -12345,18 +12345,18 @@
   (doc "Set membership face of the hop coverage: a literal-built set probed with the runtime arg on
         both the hit and miss sides. 1→member, 2→member, 7→not.")
   (input (do
-    (def (main (: n Int64)) (if (Set.contains (Set.of (list 1 2 3)) n) 1 0))
+    (def (main (: n Int64)) (if (Set.contains #set(1 2 3) n) 1 0))
     (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
   (call main (: 7 Int64)) (output (: 0 Int64)))
 
 (case "cdzw42 Set.of DUP-COLLAPSE observed through to-list length survives the cadenza hop"
-  (doc "The semantic face: (Set.of (list n 2 3)) at n=2 collapses the duplicate → len 2, at n=1/n=7 the
+  (doc "The semantic face: #set(n 2 3) at n=2 collapses the duplicate → len 2, at n=1/n=7 the
         three elements are distinct → len 3. Pins that the hop preserves set-construction dedup, not just
         the container plumbing.")
   (input (do
-    (def (main (: n Int64)) (List.len (Set.to-list (Set.of (list n 2 3)))))
+    (def (main (: n Int64)) (List.len (Set.to-list #set(n 2 3))))
     (export main)))
   (call main (: 1 Int64)) (output (: 3 Int64))
   (call main (: 2 Int64)) (output (: 2 Int64))
