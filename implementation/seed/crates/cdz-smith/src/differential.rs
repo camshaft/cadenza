@@ -623,13 +623,26 @@ pub struct LeanDiffStats {
 /// checks the identical call on both sides; per-program value variety is a possible refinement.
 const RUNTIME_N_ARG: &str = "7";
 
-/// True if `src` is a runtime-`n` main — `(def (main (: n Int64)) …)`, the exact form the coercing
-/// generator emits (`build_program`'s runtime-`n` entry). Such a main takes ONE `Int64` arg; supplying it
-/// lets the value differential check it instead of failing the 0-arg call → not-comparable. A heap-param
-/// `(def (main (: v0 …)))` (its arg is a heap value — deferred) and a param-less `(def (main) …)` (needs
-/// none) are NOT matched.
-fn is_runtime_n_main(src: &str) -> bool {
-    src.contains("(def (main (: n Int64))")
+/// The call args to supply for `src`'s exported `main`, so a PARAM'd main is VALUE-checkable instead of
+/// failing the 0-arg call → not-comparable. Matches the exact main-param forms `build_program` emits:
+/// runtime-`n` → one `Int64`; a heap param (`v0`, left UNUSED in the body, so ANY valid arg of the type
+/// lets the call succeed and the result depends only on the body) → one `String`/`(List Int64)`/
+/// `(Option Int64)` value. A param-less main → none. `Bytes` is OMITTED (no `cdz-run` `coerce_one` arg
+/// form) so a Bytes-param main stays 0-arg / not-comparable exactly as before (no regression). The arg
+/// here (a string) and the Lean trial's `(args …)` (the same value as a value-AST) must denote the SAME
+/// value so both sides run the identical call.
+fn main_call_args(src: &str) -> Vec<String> {
+    if src.contains("(def (main (: n Int64))") {
+        vec![RUNTIME_N_ARG.to_string()]
+    } else if src.contains("(def (main (: v0 String))") {
+        vec!["\"x\"".to_string()]
+    } else if src.contains("(def (main (: v0 (List Int64)))") {
+        vec!["(list 1 2)".to_string()]
+    } else if src.contains("(def (main (: v0 (Option Int64)))") {
+        vec!["(Some 1)".to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 pub fn lean_differential_sweep(
@@ -646,16 +659,10 @@ pub fn lean_differential_sweep(
     let batch_size = batch_size.max(1);
 
     for src in sources {
-        // A runtime-`n` main takes one `Int64` arg — supply it so the program is VALUE-checkable (both the
-        // wasm call and the Lean trial use the SAME value); a param-less main gets none (the old 0-arg
-        // path); a heap-param main is left 0-arg (its arg is a heap value — deferred) so it stays
-        // not-comparable exactly as before. This recovers the runtime-`n` mains (~¼ of the grammar) that
-        // were not-comparable purely because we never passed their arg.
-        let call_args: Vec<String> = if is_runtime_n_main(src) {
-            vec![RUNTIME_N_ARG.to_string()]
-        } else {
-            Vec::new()
-        };
+        // Supply main's call args (runtime-`n` Int64 / heap String/List/Option; empty for param-less) so a
+        // PARAM'd main is VALUE-checkable — both the wasm call and the Lean trial use the SAME value. A
+        // param-less (or unsupported Bytes-param) main gets none = the old 0-arg path. See [`main_call_args`].
+        let call_args = main_call_args(src);
         let side = run_wasm_with_args(src, store, &call_args);
         // Capture DECLINES — a shape the front-end/backend does not compile yet — for the breaker
         // decline→corpus gap hand-off (operator directive). A decline is EXPECTED output (never a bug),
@@ -1380,19 +1387,6 @@ mod tests {
         assert!(mismatches.is_empty());
     }
 
-    /// `is_runtime_n_main` matches ONLY the generator's runtime-`n` entry `(def (main (: n Int64)) …)` —
-    /// not a param-less `(def (main) …)` nor a heap-param `(def (main (: v0 String)) …)`. Version-independent.
-    #[test]
-    fn is_runtime_n_main_matches_only_the_int64_param_entry() {
-        assert!(is_runtime_n_main(
-            "(do (def (main (: n Int64)) (+ n 1)) (export main))"
-        ));
-        assert!(!is_runtime_n_main("(do (def (main) 42) (export main))"));
-        assert!(!is_runtime_n_main(
-            "(do (def (main (: v0 String)) 0) (export main))"
-        ));
-    }
-
     /// SWEEP INTEGRATION (S125): a runtime-`n` main — which was NOT-COMPARABLE (the 0-arg call fails) — is
     /// now VALUE-CHECKED because the sweep supplies its `Int64` arg on both sides. `(+ n 1)` @ n=7 → 8 on
     /// both → 1 trial, 1 hold, 0 mismatch, 0 not-comparable. Skips unless the real oracle is discoverable.
@@ -1419,6 +1413,31 @@ mod tests {
             stats.not_comparable, 0,
             "no longer not-comparable now that the arg is supplied"
         );
+    }
+
+    /// `main_call_args` supplies the right arg per entry shape (validated at scale by a campaign — a
+    /// heap-param main needs the staged runtime store, so this is a pure-string-mapping unit test only).
+    #[test]
+    fn main_call_args_supplies_one_arg_per_param_shape() {
+        assert_eq!(
+            main_call_args("(do (def (main (: n Int64)) (+ n 1)) (export main))"),
+            vec![RUNTIME_N_ARG.to_string()]
+        );
+        assert_eq!(
+            main_call_args("(do (def (main (: v0 String)) 0) (export main))"),
+            vec!["\"x\"".to_string()]
+        );
+        assert_eq!(
+            main_call_args("(do (def (main (: v0 (List Int64))) 0) (export main))"),
+            vec!["(list 1 2)".to_string()]
+        );
+        assert_eq!(
+            main_call_args("(do (def (main (: v0 (Option Int64))) 0) (export main))"),
+            vec!["(Some 1)".to_string()]
+        );
+        // Param-less → none; an unsupported Bytes param → none (stays 0-arg / not-comparable, no regression).
+        assert!(main_call_args("(do (def (main) 42) (export main))").is_empty());
+        assert!(main_call_args("(do (def (main (: v0 Bytes)) 0) (export main))").is_empty());
     }
 
     /// FEASIBILITY (S124): a PARAM'd main can be VALUE-checked by SUPPLYING an arg — `run_wasm_with_args`
