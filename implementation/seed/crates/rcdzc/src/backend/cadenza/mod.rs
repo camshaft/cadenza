@@ -1449,6 +1449,27 @@ fn emit_expr_viewed(
             let head = member_access(b, "Bytes", "of");
             Ok(b.list(vec![head, inner_list]))
         }
+        // A runtime BINARY CONSTRUCTION `(bin (u16 v) (u8 v) (u16 v le) …)` — each `Core::BinSeg` is a
+        // fixed-width integer segment: surface head `u<bits>`/`i<bits>` (bits = 8·width; `u`/`i` by
+        // `signed`), the runtime value, and a trailing `le` name atom when `little_endian` (big-endian is
+        // the modifier-free default). A constant `bin` folds to a `Core::ConstBytes` in `lower`, so a
+        // surviving `BinBuild` is genuinely runtime. (BN4b carries INT segments only — a bits/`(bytes …)`
+        // splice with a runtime value declines at `lower`, so it never reaches here.)
+        Core::BinBuild { segs } => {
+            let mut children = Vec::with_capacity(1 + segs.len());
+            children.push(b.name("bin"));
+            for seg in segs.iter() {
+                let bits = u32::from(seg.width) * 8;
+                let ty = b.name(format!("{}{bits}", if seg.signed { "i" } else { "u" }));
+                let val = emit_expr(db, b, seg.value, None, env, emitted)?;
+                let mut seg_children = vec![ty, val];
+                if seg.little_endian {
+                    seg_children.push(b.name("le"));
+                }
+                children.push(b.list(seg_children));
+            }
+            Ok(b.list(children))
+        }
         Core::BytesLen { operand } => {
             let head = member_access(b, "Bytes", "len");
             let x = emit_expr(db, b, operand, None, env, emitted)?;
