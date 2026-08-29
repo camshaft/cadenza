@@ -192,6 +192,27 @@
   (input  (do (pragma overflow (signed wrap)) (def (main) (+ 2 3)) (export main)))
   (output (: 5 Int64)))
 
+(case "under (pragma overflow (signed wrap)) a RUNTIME signed + overflow WRAPS (stage-2c runtime codegen)"
+  (doc    "The RUNTIME complement of the const-fold wrap witnesses above: with a runtime operand — `(main (: x
+           Int64))`, so the `+` executes as a real instruction, not a const fold — a signed-wrap module's overflow
+           WRAPS two's-complement at runtime instead of trapping. The backend emits WrappingAdd honoring
+           infer::overflow_mode_of=Wrap, the SAME resolved mode const-fold reads, so a wrap module's constant and
+           runtime overflow agree (numeric-model.md §Overflow Behavior Is Configurable By Policy + §A Wrapping
+           Operation Has A Defined Modular Outcome). `(+ x 1)` at x=Int64.max wraps to Int64.min; a
+           non-overflowing x is unchanged. The default (no pragma) runtime overflow still traps (the fold case below).")
+  (input  (do (pragma overflow (signed wrap)) (def (main (: x Int64)) (+ x 1)) (export main)))
+  (call   main (: 9223372036854775807 Int64)) (output (: -9223372036854775808 Int64))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
+
+(case "under (pragma overflow (unsigned wrap)) a RUNTIME unsigned + overflow WRAPS to 0"
+  (doc    "The unsigned runtime path: `(pragma overflow (unsigned wrap))` makes a RUNTIME unsigned `+` overflow
+           wrap modulo 2^width — `(+ x 1)` over UInt64 at x=UInt64.max wraps to 0 (WrappingAdd, no trap). Contrast
+           the trapping default, where an unsigned runtime overflow/underflow traps (27-discrete-event-simulation
+           UInt64 subtraction). Pins the signedness-independent runtime wrap.")
+  (input  (do (pragma overflow (unsigned wrap)) (def (main (: x UInt64)) (+ x 1)) (export main)))
+  (call   main (: 18446744073709551615 UInt64)) (output (: 0 UInt64))
+  (call   main (: 5 UInt64)) (output (: 6 UInt64)))
+
 (case "an ordinary-+ fold whose EXACT result overflows traps under any reassociation"
   (doc    "The runtime, reassociation-STABLE face of the overflow trap (numeric-model.md #A Reassociating
            Optimization May Reorder Or Avoid An Overflow Trap, operator ruling 2026-08-29): an optimizer MAY
