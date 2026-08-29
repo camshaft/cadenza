@@ -5053,6 +5053,51 @@ fn expected_value(payload: &str) -> String {
             }
         }
         rest.to_string()
+    } else if bytes.first() == Some(&b'#') {
+        // An M2 NATIVE-CTOR value: `#tuple(…)`, `#list(…)`, `#record((= a 1) …)`, `#set(…)`, `#map((= k v) …)`
+        // — the `#head` is immediately followed by a BALANCED `(…)` whose interior has TOP-LEVEL SPACES, so the
+        // bare-atom "up to next space" split would cut it wrong (`#tuple(127` from `#tuple(127 -128)`), failing
+        // EVERY compound value on the Rust ABI (which crosses the bare value, no `(: … type)` wrapper — unlike
+        // the wasm ABI's full-form escape matched by `expected_full`). Take the `#head(…)` span via balanced
+        // parens. A `#"…"` bytes literal (may hold interior spaces) is taken to its closing quote; a paren-less
+        // `#`-value (`#\a`, `#\space`) falls to the bare-atom arm.
+        if bytes.get(1) == Some(&b'"') {
+            let mut escaped = false;
+            for (i, &b) in bytes.iter().enumerate().skip(2) {
+                if escaped {
+                    escaped = false;
+                } else if b == b'\\' {
+                    escaped = true;
+                } else if b == b'"' {
+                    return rest[..=i].to_string();
+                }
+            }
+            return rest.to_string();
+        }
+        let lp = rest.find('(');
+        let ws = rest.find(char::is_whitespace);
+        if let Some(lp) = lp
+            && ws.is_none_or(|w| lp < w)
+        {
+            let mut depth = 0i32;
+            for (i, &b) in bytes.iter().enumerate().skip(lp) {
+                match b {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return rest[..=i].to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // A `#`-value with no parens before the next space (`#\a`) — bare atom.
+        match rest.find(char::is_whitespace) {
+            Some(idx) => rest[..idx].to_string(),
+            None => rest.trim_end_matches(')').to_string(),
+        }
     } else {
         // A bare atom — up to the next space.
         match rest.find(char::is_whitespace) {
