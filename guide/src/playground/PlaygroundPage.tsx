@@ -13,7 +13,7 @@ import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { decodeShareHash, encodeShareHash } from "./share.ts";
 import { readExampleParam, writeExampleParam } from "../components/exampleParam.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
-import { compile, renderSyntax, emitRust, coreModule, replEval, definedNames, type Diag, type Surface } from "../compiler/client.ts";
+import { compile, renderSyntax, emitRust, emitCadenza, coreModule, replEval, definedNames, type Diag, type Surface } from "../compiler/client.ts";
 import type { ReplEntry } from "./ReplPanel.tsx";
 import { toWat } from "./wat.ts";
 import { applyFix } from "./applyFix.ts";
@@ -169,6 +169,7 @@ export default function PlaygroundPage() {
       wat: null,
       rustSync: null,
       rustAsync: null,
+      cadenza: null,
     });
     const r = await runComponent(out.component, shownSurface.current);
     switch (r.kind) {
@@ -210,6 +211,11 @@ export default function PlaygroundPage() {
       } else if (view === "rustAsync") {
         const rustAsync = await emitRust(src, srf, true).catch((e) => `// error: ${e}`);
         setCompiled((c) => (c ? { ...c, rustAsync } : c));
+      } else if (view === "cadenza") {
+        // The lowered-optimized Cadenza (`--target cadenza`), printed as sexpr. A declined program comes
+        // back as a `; declined: …` note (not an error) — shown verbatim.
+        const cadenza = await emitCadenza(src, srf, "sexpr").catch((e) => `; error: ${e}`);
+        setCompiled((c) => (c ? { ...c, cadenza } : c));
       }
     },
     [],
