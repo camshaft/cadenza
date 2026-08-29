@@ -51,3 +51,9 @@ implementation/compiler-ml/src/zz-run-emitted-driver-*.cdz
 # advisory artifact; the VALUE is the analysis/report (near-optimal %, outliers) v-wasm-opt delivers from
 # it, not the raw dump. Ignore the generated path so a future run's output can't be accidentally committed.
 implementation/design/wasm-opt-gaps.sexp
+
+# cdz-platform contract schemas are now BUILD-TIME-generated (v-xtask-decompose xtask-codegen-contracts
+# #5209 → the cdzPlatformContracts nix derivation → overlay-staged into cdz-platform's compile sites),
+# per the operator codegen→build-time-nix directive. NOT committed — regenerable/advisory; the nix build
+# emits them. Ignore so a local `xtask codegen`/stray run can't re-commit them.
+/implementation/seed/crates/cdz-platform/src/contracts/
