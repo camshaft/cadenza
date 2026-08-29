@@ -23,26 +23,26 @@
   (p "You can watch a whole turn happen as one fold, and it's worth splitting into two files so the boundary is explicit. " (c "events") " is the turn's history: the messages that arrived, as plain data, a task coming in, the model replying that it wants a tool, the tool's result, the model ending the turn. " (c "reducer") " is the behavior: the fold that consumes that history and decides what to do, here just accumulating a trace of each step. Fixtures stand in for the live model and tools, so the whole thing runs in your browser with no network, and the split is the same one a real agent lives by: its history is one thing, the program that folds it is another.")
   (runnable
     (files
-      (file (name "events") (source "(do
-  (def turn #list(#record((= kind #\"task\")  (= val \"count files\"))
-                  #record((= kind #\"model\") (= val \"shell\"))
-                  #record((= kind #\"tool\")  (= val \"3\"))
-                  #record((= kind #\"done\")  (= val \"there are 3\"))))
-  (export turn))") (surface "sexpr"))
-      (file (name "reducer") (source "(do
-  (import \"events\" (turn))
+      (file (name "events") (source (do
+  (def turn #list(#record((= kind #"task")  (= val "count files"))
+                  #record((= kind #"model") (= val "shell"))
+                  #record((= kind #"tool")  (= val "3"))
+                  #record((= kind #"done")  (= val "there are 3"))))
+  (export turn))) (surface "sexpr"))
+      (file (name "reducer") (source (do
+  (import "events" (turn))
   (def (step acc e)
     (let ((k (. e kind)) (v (. e val)))
-      (if (= k #\"task\")  (String.concat acc \"asked-model; \")
-      (if (= k #\"model\") (String.concat acc (String.concat \"run-tool:\" (String.concat v \"; \")))
-      (if (= k #\"tool\")  (String.concat acc (String.concat \"folded-result:\" (String.concat v \"; \")))
-      (String.concat acc (String.concat \"done:\" v)))))))
+      (if (= k #"task")  (String.concat acc "asked-model; ")
+      (if (= k #"model") (String.concat acc (String.concat "run-tool:" (String.concat v "; ")))
+      (if (= k #"tool")  (String.concat acc (String.concat "folded-result:" (String.concat v "; ")))
+      (String.concat acc (String.concat "done:" v)))))))
   (def (run xs acc)
     (match xs
       (#list() acc)
       (#list(e .. rest) (run rest (step acc e)))))
-  (def (main) (run turn \"\"))
-  (export main))") (surface "sexpr") (entry "true")))
+  (def (main) (run turn ""))
+  (export main))) (surface "sexpr") (entry "true")))
     (expected "(: \"asked-model; run-tool:shell; folded-result:3; done:there are 3\" String)")
     (expect "value"))
   (p "Because the turn is nothing but recorded events, everything the platform promised comes along for free here too. The agent replays deterministically (the model's replies and tool results are facts on the log, not re-run), you can fork a conversation from any point, and a crash mid-turn resumes from the last recorded event without re-calling the model or re-running a tool. An agent's entire existence, its whole reasoning history, is an ordinary value you can inspect, branch, and hand to the next generation of itself.")

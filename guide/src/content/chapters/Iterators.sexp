@@ -9,7 +9,7 @@
   (h2 "An iterator is a value you step")
   (p "Rather than a function that hides its state, we make the iterator an ordinary " (em "value") ", a small sum type naming each kind of iterator, and " (c "next") " interprets one step of it. A " (c "Range") " yields " (c "lo") ", then the range starting at " (c "lo + 1") ", until it reaches " (c "hi") ". Summing a range by stepping it to exhaustion, 1 through 4, gives " (c "10") ":")
   (runnable
-    (source "(type Iter
+    (source (type Iter
   (Range (Tuple Int64 Int64)))
 (def (next it)
   (match it
@@ -22,12 +22,12 @@
   (match (next it)
     ((None _) 0)
     ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
-(def (main) (sum-it (Iter.Range #tuple(1 5))))"))
+(def (main) (sum-it (Iter.Range #tuple(1 5))))))
   (p (c "next") " is an ordinary recursive function over a plain sum, with no hidden mutable cursor. Exhaustion isn't a special error; it's just the " (c "None") " case, so stepping is " (em "total") " and never traps, whatever the range.")
   (h2 "Lazy: only what you pull")
   (p "Laziness is the point. Add a " (c "Take") " iterator that wraps another and yields at most " (c "n") " of it, and you can put a bound in front of an " (em "enormous") " range of a million elements, yet only the first three are ever produced. Summing them is " (c "0 + 1 + 2 = 3") ", computed without walking the other 999,997:")
   (runnable
-    (source "(type Iter
+    (source (type Iter
   (Range (Tuple Int64 Int64))
   (Take (Tuple Int64 Iter)))
 (def (next it)
@@ -47,12 +47,12 @@
     ((None _) 0)
     ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
 (def (main)
-  (sum-it (Iter.Take #tuple(3 (Iter.Range #tuple(0 1000000))))))"))
+  (sum-it (Iter.Take #tuple(3 (Iter.Range #tuple(0 1000000))))))))
   (p "The " (c "Take") " stops asking after three, so " (c "Range") " is only ever stepped three times. Nothing forces the whole sequence into existence, since each element is computed exactly when the consumer pulls it.")
   (h2 "Transformers compose")
   (p "Because each iterator kind wraps another, they stack. Add a " (c "Double") " that doubles whatever its inner iterator yields, and you can layer " (c "Double") " over " (c "Take") " over " (c "Range") ", a pipeline that doubles the first three of a huge range: " (c "0, 2, 4") ", summing to " (c "6") ":")
   (runnable
-    (source "(type Iter
+    (source (type Iter
   (Range (Tuple Int64 Int64))
   (Take (Tuple Int64 Iter))
   (Double Iter))
@@ -79,7 +79,7 @@
     ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
 (def (main)
   (sum-it
-    (Iter.Double (Iter.Take #tuple(3 (Iter.Range #tuple(0 1000000)))))))"))
+    (Iter.Double (Iter.Take #tuple(3 (Iter.Range #tuple(0 1000000)))))))))
   (p "Each layer only asks its inner iterator for the next element and transforms it, so the whole pipeline stays lazy, and you assemble complex sequences from small, independent pieces.")
   (note "This " (em "reified") " encoding, an iterator as a sum of step-shapes with " (c "next") " a plain recursive function, is what the standard iterator library uses today, and it's why: the more obvious \"an iterator is a function returning the next element and a new function\" needs a recursive function " (em "type") " the inference won't tie without a nominal constructor to break the cycle. The sum form " (em "is") " that constructor, so it sidesteps the problem and reads just as clearly. A real library adds " (c "map") ", " (c "filter") ", " (c "zip") ", and friends the same way, one more variant each.")
   (why (tenet "Describe the sequence, produce only what's used") "A list commits to every element up front; an iterator commits to none until asked. That's what lets a range be effectively infinite, a transformer be free (it does nothing until pulled), and a pipeline cost only what the consumer actually reads. And because the iterator is a plain value that " (c "next") " steps, not a hidden one-shot cursor, the same iterator is re-steppable and there's no \"already consumed\" trap: laziness without the usual footguns.")
@@ -88,7 +88,7 @@
   (exercise
     (id "iterators:1")
     (prompt "Step a range to exhaustion. " (c "next") " and " (c "sum-it") " are written; fill in the range's " (em "upper") " bound so summing " (c "Range(2, ?)") ", the half-open " (c "2, 3, 4") ", gives " (c "9") ".")
-    (starter "(type Iter (Range (Tuple Int64 Int64)))
+    (starter (type Iter (Range (Tuple Int64 Int64)))
 (def (next it)
   (match it
     ((Iter.Range r)
@@ -98,8 +98,8 @@
   (match (next it)
     ((None _) 0)
     ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
-(def (main) (sum-it (Iter.Range #tuple(2 ?))))")
-    (solution "(type Iter (Range (Tuple Int64 Int64)))
+(def (main) (sum-it (Iter.Range #tuple(2 ?)))))
+    (solution (type Iter (Range (Tuple Int64 Int64)))
 (def (next it)
   (match it
     ((Iter.Range r)
@@ -109,13 +109,13 @@
   (match (next it)
     ((None _) 0)
     ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
-(def (main) (sum-it (Iter.Range #tuple(2 5))))")
+(def (main) (sum-it (Iter.Range #tuple(2 5)))))
     (expected "9")
     (hint "The range is half-open " (c "[lo, hi)") ", so " (c "hi") " is excluded. To yield " (c "2, 3, 4") " (which sum to " (c "9") "), stop before " (c "5") ", so the upper bound is " (c "5") "."))
   (exercise
     (id "iterators:2")
     (prompt "Bound an endless range with " (c "Take") ". Fill in how many elements to take from " (c "Range(0, 1000000)") " so the sum of what's pulled, " (c "0 + 1 + 2 + 3") ", is " (c "6") ".")
-    (starter "(type Iter
+    (starter (type Iter
   (Range (Tuple Int64 Int64))
   (Take (Tuple Int64 Iter)))
 (def (next it)
@@ -134,8 +134,8 @@
   (match (next it)
     ((None _) 0)
     ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
-(def (main) (sum-it (Iter.Take #tuple(? (Iter.Range #tuple(0 1000000))))))")
-    (solution "(type Iter
+(def (main) (sum-it (Iter.Take #tuple(? (Iter.Range #tuple(0 1000000)))))))
+    (solution (type Iter
   (Range (Tuple Int64 Int64))
   (Take (Tuple Int64 Iter)))
 (def (next it)
@@ -154,6 +154,6 @@
   (match (next it)
     ((None _) 0)
     ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
-(def (main) (sum-it (Iter.Take #tuple(4 (Iter.Range #tuple(0 1000000))))))")
+(def (main) (sum-it (Iter.Take #tuple(4 (Iter.Range #tuple(0 1000000)))))))
     (expected "6")
     (hint (c "0 + 1 + 2 + 3 = 6") ", so you pull the first " (c "4") " elements. The range is effectively infinite; " (c "Take") " is what makes summing it terminate.")))

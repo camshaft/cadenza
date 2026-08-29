@@ -8,7 +8,7 @@
   (h2 "The fold, concretely")
   (p "Before the practicalities, it's worth seeing the fold as a real program, because the whole platform is built on it and it's smaller than you'd expect. Picture an agent driving an account. Every action it takes is appended to a log as an event, a " (c "Deposit") " or a " (c "Withdraw") ", and the current balance isn't stored separately: it's what you get by " (em "replaying") " the log from the start. Replaying is a fold, written as a plain recursion over the events:")
   (runnable
-    (source "(type Event (Deposit Int64) (Withdraw Int64))
+    (source (type Event (Deposit Int64) (Withdraw Int64))
 (def (replay log acc)
   (match log
     (#list() acc)
@@ -17,7 +17,7 @@
         ((Deposit n) (replay rest (+ acc n)))
         ((Withdraw n) (replay rest (- acc n)))))))
 (def (main)
-  (replay #list((Deposit 100) (Withdraw 30) (Deposit 5)) 0))"))
+  (replay #list((Deposit 100) (Withdraw 30) (Deposit 5)) 0))))
   (p "The balance is " (c "75") ", computed straight from the history, since the log " (em "is") " the state and there's nothing separate to keep in sync with it. And because that history is an ordinary list, the three moves the overview promised fall out as ordinary things you do with the fold. " (em "Replay") " is the fold above. " (em "Fork") " is folding a " (em "prefix") ": replay only the first two events and you get the balance as it stood before the last deposit, a divergent timeline you carry forward without touching the original. " (em "Recover") " is folding from a " (em "cursor") ": record how far the agent got plus the balance there, and on restart replay only the events after that point to arrive at the same answer, so a crashed agent resumes exactly where it left off and never performs an action twice. All three are the same fold, applied to a value that happens to be a program's whole past.")
   (note "replay = fold the whole log · fork = fold a prefix · recover = fold from a saved cursor " (br) " no snapshot format, no checkpoint machinery, just three things you do with one recursion over a list")
   (p "The miniature above is the model exactly. In production the same fold runs over a real, durable log on disk whose events aren't toy deposits but genuine host actions the agent performed, a message received, a file written, a tool invoked, and recovering or replaying the agent is this exact fold over that history. The rest of this chapter is how the platform keeps that fold " (em "practical") " at scale.")

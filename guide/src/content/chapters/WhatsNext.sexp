@@ -12,10 +12,10 @@
   (h2 "One last program")
   (p "A little of everything: a recursive helper, a comparison, and a record, computing the larger coordinate of a point, doubled.")
   (runnable
-    (source "(def (max a b) (if (> a b) a b))
+    (source (def (max a b) (if (> a b) a b))
 (def (main)
   (let ((p #record((= x 3) (= y 8))))
-    (* 2 (max (. p x) (. p y)))))"))
+    (* 2 (max (. p x) (. p y)))))))
   (p "Edit it, changing the point or the factor, or swapping " (c "max") " for " (c "min") ", and Run. Then flip the syntax toggle in the header and watch the very same program re-appear in the other surface.")
   (h2 "Keep exploring")
   (p "The best way forward is to keep an example open and change it. Every code block in this guide is a scratchpad, so break it, fix it, and press Run. That loop, with the compiler answering instantly, is the fastest way to build a feel for the language.")
