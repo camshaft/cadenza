@@ -3,7 +3,8 @@
 //! of `xtask/src/codegen.rs` (v-xtask-decompose, the codegen→build-time-nix directive).
 //!
 //! The operator's CODEGEN-SEXPR model (ruled 2026-08-29): the flow is SEXPR → RUST, never rust → sexpr.
-//! `wasm-abi.sexp` is the HAND-AUTHORED, committed, human-editable SOURCE OF TRUTH — NOTHING generates it.
+//! `data/wasm-abi.sexp` (top-level, OUTSIDE the rust compiler tree — language-independent, operator seq-173)
+//! is the HAND-AUTHORED, committed, human-editable SOURCE OF TRUTH — NOTHING generates it.
 //! `wasm-encoder` is ONLY the cross-check ORACLE the derived rust asserts against (a transcription typo in
 //! the authored sexpr is caught by that assertion, NOT by re-extracting bytes from the encoder).
 //! Modes:
@@ -31,7 +32,10 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let sexpr = repo.join("implementation/seed/crates/rcdzc/src/backend/wasm/wasm-abi.sexp");
+    // The authored source of truth lives OUTSIDE the rust compiler tree — a language-independent
+    // top-level `data/` location (operator seq-173): the sexpr is the single source, the derived rust is
+    // just one consumer, so it must not live under `implementation/seed/crates/rcdzc/…`.
+    let sexpr = repo.join("data/wasm-abi.sexp");
 
     // ORACLE-CHECK (`--oracle-check`): assert the committed sexpr's BYTES match the wasm-encoder oracle
     // (the operator's inverted guarantee — a derived test catches a transcription typo). v-nix wires this
