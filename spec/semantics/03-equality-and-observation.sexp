@@ -20,8 +20,8 @@
                 (+ (if (= (Some 1) (Some 1)) 1 0)
                 (+ (if (= (Some 1) (Some 2)) 0 2)
                 (+ (if (= None None) 4 0)
-                (+ (if (= (tuple 1 2) (tuple 1 2)) 8 0)
-                (+ (if (= (tuple 1 2) (tuple 1 3)) 0 16)
+                (+ (if (= #tuple(1 2) #tuple(1 2)) 8 0)
+                (+ (if (= #tuple(1 2) #tuple(1 3)) 0 16)
                    (if (= (Some (Some 1)) (Some (Some 1))) 32 0)))))))
               (export main)))
   (call   main)
@@ -109,12 +109,12 @@
   (input (do
         (def (max-f (: xs (List Float64)) (: best Float64))
           (match xs
-            ((list) best)
-            ((list h .. t) (max-f t (if (< best h) h best)))))
+            (#list() best)
+            (#list(h .. t) (max-f t (if (< best h) h best)))))
         (def (main (: mode Int64))
           (do
             (def nan Float64.nan)
-            (def xs (if (= mode 1) (list 3.0 nan 7.0) (list 3.0 7.0 nan)))
+            (def xs (if (= mode 1) #list(3.0 nan 7.0) #list(3.0 7.0 nan)))
             (def m (max-f xs 0.0))
             (if (= m 7.0) 1 0)))
         (export main)))
@@ -183,7 +183,7 @@
   (doc    "The nan-vs-finite inequality recurses through a compound: `(tuple Float64.nan)` and `(tuple
            1.0)` differ at their sole leaf (NaN's canonical byte form vs the finite float's), so the
            tuples are unequal — the compound companion of the scalar case above, folded structurally.")
-  (input  (= (tuple Float64.nan) (tuple 1.0)))
+  (input  (= #tuple(Float64.nan) #tuple(1.0)))
   (output (: false Bool)))
 
 ; --- COMPOUND value-equality over a runtime FLOAT LEAF (a float inside a tuple/sum) -------------------
@@ -199,7 +199,7 @@
   (doc    "`(= (tuple x 1) (tuple y 1))` over runtime Float64 params `x=y=3.5` — the float leaf is compared
            by the runtime value-eq heap-walk (its canonical byte form), so equal floats in a compound are
            equal → true. Pins runtime compound float equality (was a decline).")
-  (input  (do (def (eq (: x Float64) (: y Float64)) (= (tuple x 1) (tuple y 1)))
+  (input  (do (def (eq (: x Float64) (: y Float64)) (= #tuple(x 1) #tuple(y 1)))
               (def (main) (eq 3.5 3.5)) (export main)))
   (call   main)
   (output (: true Bool)))
@@ -207,7 +207,7 @@
 (case "compound equality over a runtime float leaf: different floats compare unequal"
   (doc    "The negative companion: `(= (tuple x) (tuple y))` with `x=3.5`, `y=2.5` — distinct canonical
            byte forms → false. Confirms the compound float walk is genuinely structural, not always-true.")
-  (input  (do (def (eq (: x Float64) (: y Float64)) (= (tuple x) (tuple y)))
+  (input  (do (def (eq (: x Float64) (: y Float64)) (= #tuple(x) #tuple(y)))
               (def (main) (eq 3.5 2.5)) (export main)))
   (call   main)
   (output (: false Bool)))
@@ -216,7 +216,7 @@
   (doc    "A runtime NaN leaf in a compound compares EQUAL to another NaN (`box-float` canonicalizes every
            NaN to the one quiet-NaN, so `champ_eq` sees identical bytes) — the compound analogue of the
            scalar `nan == nan` case. `(= (tuple x 1) (tuple Float64.nan 1))` with `x = Float64.nan` → true.")
-  (input  (do (def (eq (: x Float64)) (= (tuple x 1) (tuple Float64.nan 1)))
+  (input  (do (def (eq (: x Float64)) (= #tuple(x 1) #tuple(Float64.nan 1)))
               (def (main) (eq Float64.nan)) (export main)))
   (call   main)
   (output (: true Bool)))
@@ -225,7 +225,7 @@
   (doc    "`-0.0` and `+0.0` have distinct canonical byte forms (the box keeps the sign bit of a zero), so
            a compound holding `-0.0` is NOT equal to one holding `+0.0` — the compound analogue of the
            scalar `-0.0 != 0.0` case. `(= (tuple x) (tuple y))` with `x = -0.0`, `y = 0.0` → false.")
-  (input  (do (def (eq (: x Float64) (: y Float64)) (= (tuple x) (tuple y)))
+  (input  (do (def (eq (: x Float64) (: y Float64)) (= #tuple(x) #tuple(y)))
               (def (main) (eq -0.0 0.0)) (export main)))
   (call   main)
   (output (: false Bool)))
@@ -252,7 +252,7 @@
            EQUAL to another (`box-float` canonicalizes a NaN at the 32-bit width, so `champ_eq` sees
            identical bytes). `(= (tuple x 1) (tuple Float32.nan 1))` with `x = Float32.nan` → true. Pins
            that the value-eq walk canonicalizes a Float32 leaf at f32 width, not only f64.")
-  (input  (do (def (eq (: x Float32)) (= (tuple x 1) (tuple Float32.nan 1)))
+  (input  (do (def (eq (: x Float32)) (= #tuple(x 1) #tuple(Float32.nan 1)))
               (def (main) (eq Float32.nan)) (export main)))
   (call   main)
   (output (: true Bool)))
@@ -262,7 +262,7 @@
            keeps the zero's sign bit at 32-bit width too), so a tuple holding a Float32 `-0.0` is NOT equal
            to one holding `+0.0`. `(= (tuple x) (tuple y))` with `x = (: -0.0 Float32)`, `y = (: 0.0
            Float32)` → false. Pins signed-zero discrimination at f32 width in the compound walk.")
-  (input  (do (def (eq (: x Float32) (: y Float32)) (= (tuple x) (tuple y)))
+  (input  (do (def (eq (: x Float32) (: y Float32)) (= #tuple(x) #tuple(y)))
               (def (main) (eq (: -0.0 Float32) (: 0.0 Float32))) (export main)))
   (call   main)
   (output (: false Bool)))
@@ -274,7 +274,7 @@
            Float32.nan Float64.nan))` with `a = Float32.nan : Float32`, `b = Float64.nan : Float64` → true.
            Pins the per-leaf-width dispatch — a walk that canonicalized every float leaf at one fixed width
            would misread one of the two leaves.")
-  (input  (do (def (eq (: a Float32) (: b Float64)) (= (tuple a b) (tuple Float32.nan Float64.nan)))
+  (input  (do (def (eq (: a Float32) (: b Float64)) (= #tuple(a b) #tuple(Float32.nan Float64.nan)))
               (def (main) (eq Float32.nan Float64.nan)) (export main)))
   (call   main)
   (output (: true Bool)))
@@ -285,7 +285,7 @@
            genuinely structural per leaf (it does not stop at the first matching leaf, and the f64 leaf is
            compared at its own width). `(= (tuple a b) (tuple Float32.nan (: 2.5 Float64)))` with `a =
            Float32.nan`, `b = (: 1.5 Float64)` → false.")
-  (input  (do (def (eq (: a Float32) (: b Float64)) (= (tuple a b) (tuple Float32.nan (: 2.5 Float64))))
+  (input  (do (def (eq (: a Float32) (: b Float64)) (= #tuple(a b) #tuple(Float32.nan (: 2.5 Float64))))
               (def (main) (eq Float32.nan (: 1.5 Float64))) (export main)))
   (call   main)
   (output (: false Bool)))
@@ -304,7 +304,7 @@
   (doc    "`(= (tuple (BigInt.of a) 1) (tuple (BigInt.of b) 1))` over runtime BigInts — the BigInt leaf is
            compared by its canonical sign-magnitude bytes through the value-eq walk. a=b=7 → true; a=7,b=8
            → false. Pins the runtime BigInt compound-`=` face (was a decline).")
-  (input  (do (def (eq (: a Int64) (: b Int64)) (= (tuple (BigInt.of a) 1) (tuple (BigInt.of b) 1)))
+  (input  (do (def (eq (: a Int64) (: b Int64)) (= #tuple((BigInt.of a) 1) #tuple((BigInt.of b) 1)))
               (def (main) (eq 7 7)) (export main)))
   (call   main)
   (output (: true Bool)))
@@ -312,7 +312,7 @@
 (case "compound equality over a runtime BigInt leaf distinguishes different values"
   (doc    "The negative companion: different BigInts in the tuple → false (a=7, b=8). Confirms the BigInt
            compound walk is genuinely structural, not always-true.")
-  (input  (do (def (eq (: a Int64) (: b Int64)) (= (tuple (BigInt.of a) 1) (tuple (BigInt.of b) 1)))
+  (input  (do (def (eq (: a Int64) (: b Int64)) (= #tuple((BigInt.of a) 1) #tuple((BigInt.of b) 1)))
               (def (main) (eq 7 8)) (export main)))
   (call   main)
   (output (: false Bool)))
@@ -321,7 +321,7 @@
   (doc    "`(= (tuple (Rational.of a 2) 1) (tuple (Rational.of b 2) 1))` — the Rational leaf (a normalized
            2-BigInt-handle node) is compared by `champ_eq` descending its canonical children. a=b=3 → true;
            a=3,b=5 → false. Pins the runtime Rational compound-`=` face.")
-  (input  (do (def (eq (: a Int64) (: b Int64)) (= (tuple (Rational.of a 2) 1) (tuple (Rational.of b 2) 1)))
+  (input  (do (def (eq (: a Int64) (: b Int64)) (= #tuple((Rational.of a 2) 1) #tuple((Rational.of b 2) 1)))
               (def (main) (eq 3 3)) (export main)))
   (call   main)
   (output (: true Bool)))
@@ -331,7 +331,7 @@
            terms `1/2` — the SAME canonical node — so a compound holding one equals a compound holding the
            other → true. Confirms the Rational leaf's canonical form (gcd-reduced) is what `champ_eq` walks,
            not the as-written numerator/denominator.")
-  (input  (do (def (main) (= (tuple (Rational.of 1 2) 1) (tuple (Rational.of 2 4) 1))) (export main)))
+  (input  (do (def (main) (= #tuple((Rational.of 1 2) 1) #tuple((Rational.of 2 4) 1))) (export main)))
   (call   main)
   (output (: true Bool)))
 
@@ -359,7 +359,7 @@
   (input  (do
             (def (main (: c Int64))
               (let ((half (Rational.of (if (> c 0) 1 1) 2)))
-                (tuple
+                #tuple(
                   (match (Map.lookup (Map.insert (Map.empty) half 42) (Rational.of 2 4)) ((Some v) v) ((None u) -1))
                   (match (Map.lookup (Map.insert (Map.empty) half 42) (Rational.of 1 3)) ((Some v) v) ((None u) -1))
                   (if (Set.contains (Set.insert #set() half) (Rational.of 2 4)) 1 0))))
@@ -380,8 +380,8 @@
                 (fill (- i 1) (Map.insert m (Rational.of i (+ i 1)) i))))
             (def (inc (: ps (List (Tuple Rational Int64))) (: prev Rational) (: cnt Int64))
               (match ps
-                ((list) cnt)
-                ((list h .. t) (match h ((tuple k _v) (if (< prev k) (inc t k (+ cnt 1)) -100000))))))
+                (#list() cnt)
+                (#list(h .. t) (match h (#tuple(k _v) (if (< prev k) (inc t k (+ cnt 1)) -100000))))))
             (def (main (: n Int64))
               (inc (Map.to-list (fill n Map.empty)) (Rational.of 0 1) 0))
             (export main)))
@@ -418,7 +418,7 @@
            the same 1/2 node, so `champ_hash`/`champ_eq` descend into the compound, canonicalize the leaf,
            and find the same slot → 42. A key path that canonicalized a bare Rational but NOT one nested in
            a tuple would false-miss here. The compound-key companion of the bare-Rational-key case.")
-  (input  (do (def (main) (Option.expect (Map.lookup (Map.insert (Map.empty) (tuple (Rational.of 1 2) 5) 42) (tuple (Rational.of 2 4) 5)) "found")) (export main)))
+  (input  (do (def (main) (Option.expect (Map.lookup (Map.insert (Map.empty) #tuple((Rational.of 1 2) 5) 42) #tuple((Rational.of 2 4) 5)) "found")) (export main)))
   (call   main)
   (output (: 42 Int64)))
 
@@ -432,8 +432,8 @@
   (input  (do
             (def (main (: n Int64))
               (do
-                (def stored (list (Rational.of 1 2) (Rational.of n 3) (Rational.of 3 4)))
-                (def probe (list (Rational.of 2 4) (Rational.of (* n 2) 6) (Rational.of 9 12)))
+                (def stored #list((Rational.of 1 2) (Rational.of n 3) (Rational.of 3 4)))
+                (def probe #list((Rational.of 2 4) (Rational.of (* n 2) 6) (Rational.of 9 12)))
                 (match (Map.lookup (Map.insert Map.empty stored 42) probe)
                   ((Some v) v) ((None _u) -1))))
             (export main)))
@@ -528,9 +528,9 @@
            Both leaves compare by their canonical byte form → true. Pins that admitting Float AND Bytes in
            `ty_heap_walkable` composes — a mixed-leaf compound walks correctly, not just single-type ones.")
   (input  (do
-            (def (rep (: b Bytes) (: n Int64)) (if (= n 0) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
-            (def (eq (: f Float64) (: b Bytes)) (= (tuple f b) (tuple f (rep b 0))))
-            (def (main) (eq 1.5 (Bytes.of (list 104)))) (export main)))
+            (def (rep (: b Bytes) (: n Int64)) (if (= n 0) b (rep (Bytes.concat b (Bytes.of #list(120))) (- n 1))))
+            (def (eq (: f Float64) (: b Bytes)) (= #tuple(f b) #tuple(f (rep b 0))))
+            (def (main) (eq 1.5 (Bytes.of #list(104)))) (export main)))
   (call   main)
   (output (: true Bool)))
 
@@ -544,11 +544,11 @@
            is the arm that already canonicalizes; these pins keep it that way through the #16 fix.)")
   (input  (do
             (def (main (: a Int64))
-              (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+              (match (Bytes.slice (Bytes.of #list(9 20 30 8)) a 2)
                 ((Some s)
-                  (+ (+ (* 100 (if (= (tuple 1 s) (tuple 1 (Bytes.of (list 20 30)))) 1 0))
-                        (* 10 (if (= (Some s) (Some (Bytes.of (list 20 30)))) 1 0)))
-                     (if (= (list s) (list (Bytes.of (list 20 30)))) 1 0)))
+                  (+ (+ (* 100 (if (= #tuple(1 s) #tuple(1 (Bytes.of #list(20 30)))) 1 0))
+                        (* 10 (if (= (Some s) (Some (Bytes.of #list(20 30)))) 1 0)))
+                     (if (= #list(s) #list((Bytes.of #list(20 30)))) 1 0)))
                 ((None u) -1)))
             (export main)))
   (call   main (: 1 Int64))
@@ -565,9 +565,9 @@
            bare arm should share, pinned here so the #16 fix aligns to it rather than regressing it.")
   (input  (do
             (def (main (: a Int64))
-              (let ((m (Map.insert Map.empty (tuple 1 (Bytes.of (list 20 30))) 42)))
-                (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
-                  ((Some s) (match (Map.lookup m (tuple 1 s)) ((Some v) v) ((None u) -1)))
+              (let ((m (Map.insert Map.empty #tuple(1 (Bytes.of #list(20 30))) 42)))
+                (match (Bytes.slice (Bytes.of #list(9 20 30 8)) a 2)
+                  ((Some s) (match (Map.lookup m #tuple(1 s)) ((Some v) v) ((None u) -1)))
                   ((None u) -2))))
             (export main)))
   (call   main (: 1 Int64))
@@ -591,7 +591,7 @@
            runtime `value-cmp` heap walk on wasm, native `Vec` `Ord` on rust, both agreeing. Was a uniform
            decline before the order was blessed.")
   (input  (do
-            (def (mk (: n Int64)) (list 1 n))
+            (def (mk (: n Int64)) #list(1 n))
             (def (main) (if (< (mk 2) (mk 3)) 1 0))
             (export main)))
   (output (: 1 Int64)))
@@ -602,7 +602,7 @@
            `(mk false)` = `(list 1 2)`; `[1] < [1,2]` → true → 1. Pins the length tiebreak of the runtime
            list-ordering walk, distinct from the first-differing-element case above.")
   (input  (do
-            (def (mk (: short Bool)) (if short (list 1) (list 1 2)))
+            (def (mk (: short Bool)) (if short #list(1) #list(1 2)))
             (def (main) (if (< (mk true) (mk false)) 1 0))
             (export main)))
   (output (: 1 Int64)))
@@ -612,7 +612,7 @@
            true → 1. Pins runtime TUPLE ordering (the blessed lexicographic order over a fixed-arity product),
            the `value-cmp` walk on wasm + native tuple `Ord` on rust.")
   (input  (do
-            (def (mk (: n Int64)) (tuple 1 n))
+            (def (mk (: n Int64)) #tuple(1 n))
             (def (main) (if (< (mk 2) (mk 3)) 1 0))
             (export main)))
   (output (: 1 Int64)))
@@ -636,8 +636,8 @@
   (input (do
         (def (main (: mode Int64))
           (do
-            (def t1 (tuple 3 (String.concat "ab" "c") 2.5))
-            (def t2 (if (= mode 1) (tuple 3 "abc" 2.5) (tuple 3 "abc" 2.6)))
+            (def t1 #tuple(3 (String.concat "ab" "c") 2.5))
+            (def t2 (if (= mode 1) #tuple(3 "abc" 2.5) #tuple(3 "abc" 2.6)))
             (if (= t1 t2) 1 0)))
         (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
@@ -650,8 +650,8 @@
   (input (do
         (def (main (: mode Int64))
           (do
-            (def m (Map.insert Map.empty (tuple 3 (String.concat "ab" "c") 2.5) 42))
-            (match (Map.lookup m (if (= mode 1) (tuple 3 "abc" 2.5) (tuple 3 "abc" 2.6)))
+            (def m (Map.insert Map.empty #tuple(3 (String.concat "ab" "c") 2.5) 42))
+            (match (Map.lookup m (if (= mode 1) #tuple(3 "abc" 2.5) #tuple(3 "abc" 2.6)))
               ((Some v) v)
               ((None _u) -1))))
         (export main)))
@@ -681,14 +681,14 @@
   (input  (do
             (def (insort (: t (Tuple Int64 Int64)) (: q (List (Tuple Int64 Int64))))
               (match q
-                ((list) (list t))
-                ((list h .. rest)
-                  (if (< t h) (List.concat (list t) q)
-                    (List.concat (list h) (insort t rest))))))
+                (#list() #list(t))
+                (#list(h .. rest)
+                  (if (< t h) (List.concat #list(t) q)
+                    (List.concat #list(h) (insort t rest))))))
             (def (main (: a Int64))
-              (let ((sorted (insort (tuple 2 a) (insort (tuple 2 5) (insort (tuple 1 9) (list))))))
+              (let ((sorted (insort #tuple(2 a) (insort #tuple(2 5) (insort #tuple(1 9) #list())))))
                 (match (List.at sorted 1)
-                  ((Some (tuple x y)) (+ (* 10 x) y))
+                  ((Some #tuple(x y)) (+ (* 10 x) y))
                   ((None u) -1))))
             (export main)))
   (call   main (: 3 Int64))
@@ -708,12 +708,12 @@
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
             (def (insort (: t String) (: q (List String)))
               (match q
-                ((list) (list t))
-                ((list h .. rest)
-                  (if (< t h) (List.concat (list t) q)
-                    (List.concat (list h) (insort t rest))))))
+                (#list() #list(t))
+                (#list(h .. rest)
+                  (if (< t h) (List.concat #list(t) q)
+                    (List.concat #list(h) (insort t rest))))))
             (def (main (: n Int64))
-              (let ((sorted (insort (rep "m" n) (insort (rep "z" n) (insort (rep "a" n) (list))))))
+              (let ((sorted (insort (rep "m" n) (insort (rep "z" n) (insort (rep "a" n) #list())))))
                 (match (List.at sorted 1)
                   ((Some s) (if (= s (rep "m" n)) 1 0))
                   ((None u) -1))))
@@ -737,7 +737,7 @@
            native Ord agrees) — the String-leaf companion of the Int-leaf tuple ordering; contrast Bytes,
            whose order is NOT blessed and declines.")
   (input  (do
-            (def (mk (: s String)) (tuple 1 s))
+            (def (mk (: s String)) #tuple(1 s))
             (def (main) (if (< (mk "ab") (mk "ac")) 1 0))
             (export main)))
   (output (: 1 Int64)))
@@ -753,7 +753,7 @@
            lexicographic order is the right approach') — Bytes now joins Int/Float/Symbol/String as an orderable
            leaf that also composes soundly inside a compound (unlike a float, whose order is IEEE-partial).")
   (input  (do
-            (def (mk (: n Int64)) (Bytes.of (list (UInt8.wrap n) 2)))
+            (def (mk (: n Int64)) (Bytes.of #list((UInt8.wrap n) 2)))
             (def (main) (if (< (mk 2) (mk 3)) 1 0))
             (export main)))
   (output (: 1 Int64)))
@@ -773,7 +773,7 @@
            disagree with the float relational ops. The float-axis companion of the Bytes-ordering decline;
            contrast the tuple/list/sum ordering cases above (all-ordered-component compounds compute).")
   (input  (do
-            (def (mk (: n Int64)) (tuple 1 (Float64.of n)))
+            (def (mk (: n Int64)) #tuple(1 (Float64.of n)))
             (def (main) (if (< (mk 2) (mk 3)) 1 0))
             (export main)))
   (declines))
@@ -819,7 +819,7 @@
            three backends (wasm res+1; rust/rust-async a nested-if over the derived-Ord compound → Ordering ctor).")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (match (Ordering.of (tuple a 1) (tuple b 1))
+              (match (Ordering.of #tuple(a 1) #tuple(b 1))
                 ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
             (export main)))
   (call main (: 1 Int64) (: 2 Int64)) (output (: 1 Int64)))
@@ -835,7 +835,7 @@
            no total order). Pins that float EQUALITY (total, canonical byte form) and float ORDERING (IEEE
            partial, not offered) are DISTINCT capabilities — a float-compound is eq-comparable but not
            orderable.")
-  (input  (do (def (main (: x Float64) (: y Float64)) (if (= (tuple 1 x) (tuple 1 y)) 1 0)) (export main)))
+  (input  (do (def (main (: x Float64) (: y Float64)) (if (= #tuple(1 x) #tuple(1 y)) 1 0)) (export main)))
   (call   main (: 3.5 Float64) (: 3.5 Float64))
   (output (: 1 Int64)))
 
@@ -1121,7 +1121,7 @@
            canonical-byte-form rule where every NaN equals every NaN — exactly as the scalar
            `(= Float64.nan Float64.nan)` does. A recursion using wasm's f64.eq would answer false (nan ≠
            nan); this pins the canonical-byte-form rule holds for a float INSIDE a compound.")
-  (input  (= (tuple Float64.nan) (tuple Float64.nan)))
+  (input  (= #tuple(Float64.nan) #tuple(Float64.nan)))
   (output (: true Bool)))
 
 (case "a negative zero nested in a tuple is distinct from positive zero"
@@ -1129,7 +1129,7 @@
            canonical byte forms, so the tuples are unequal — the compound companion of the scalar
            `(= -0.0 0.0)` = false. A recursion using wasm's f64.eq would answer true (-0.0 = 0.0),
            silently collapsing the distinction the canonical byte form preserves.")
-  (input  (= (tuple -0.0) (tuple 0.0)))
+  (input  (= #tuple(-0.0) #tuple(0.0)))
   (output (: false Bool)))
 
 (case "identical negative zeros nested in a tuple compare equal"
@@ -1137,7 +1137,7 @@
            components share one canonical byte form, so the tuples are equal. Confirms the nested
            comparison is a genuine value test (true for matching -0.0, false against 0.0), not a
            blanket answer.")
-  (input  (= (tuple -0.0) (tuple -0.0)))
+  (input  (= #tuple(-0.0) #tuple(-0.0)))
   (output (: true Bool)))
 
 ; The nested-equality cases above compare CONSTANT compounds (they fold). These pin the RUNTIME heap-walk
@@ -1152,7 +1152,7 @@
            whose field `x` is the runtime `n`. n=3 → the records (hence tuples) are equal → true; n=9 →
            `x` differs → false. Pins that the structural-equality walk recurses through a RECORD nested in a
            TUPLE at run time (a heap value inside a heap value), comparing the runtime leaf.")
-  (input  (do (def (main (: n Int64)) (= (tuple (record (= x n) (= y 2)) 5) (tuple (record (= x 3) (= y 2)) 5))) (export main)))
+  (input  (do (def (main (: n Int64)) (= #tuple(#record((= x n) (= y 2)) 5) #tuple(#record((= x 3) (= y 2)) 5))) (export main)))
   (call   main (: 3 Int64)) (output (: true Bool))
   (call   main (: 9 Int64)) (output (: false Bool)))
 
@@ -1161,7 +1161,7 @@
            with `n` a parameter. The `value-eq` walk descends all three levels to reach `n` — n=3 → equal
            at every level → true; n=9 → the innermost element differs → false. Pins that the deep structural
            walk reaches a leaf several nesting levels down at run time, not only one level.")
-  (input  (do (def (main (: n Int64)) (= (tuple 1 (tuple 2 (tuple n 4))) (tuple 1 (tuple 2 (tuple 3 4))))) (export main)))
+  (input  (do (def (main (: n Int64)) (= #tuple(1 #tuple(2 #tuple(n 4))) #tuple(1 #tuple(2 #tuple(3 4))))) (export main)))
   (call   main (: 3 Int64)) (output (: true Bool))
   (call   main (: 9 Int64)) (output (: false Bool)))
 
@@ -1181,7 +1181,7 @@
            `value-eq` heap walk compares the boxed float leaves. Equal floats → the tuples are equal (1);
            unequal → 0. Pins that a runtime float leaf in a compound is walkable (was a decline), the
            compound companion of runtime scalar float equality.")
-  (input  (do (def (main (: a Float64) (: b Float64)) (if (= (tuple a) (tuple b)) 1 0)) (export main)))
+  (input  (do (def (main (: a Float64) (: b Float64)) (if (= #tuple(a) #tuple(b)) 1 0)) (export main)))
   (call   main (: 1.5 Float64) (: 1.5 Float64)) (output (: 1 Int64))
   (call   main (: 1.5 Float64) (: 2.5 Float64)) (output (: 0 Int64)))
 
@@ -1192,7 +1192,7 @@
            stays UNEQUAL (0), their sign bits preserved. A heap walk using a raw IEEE compare would answer
            the OPPOSITE for both. Pins the nested-runtime float rule agrees with the scalar `FloatCompare`
            and the constant fold.")
-  (input  (do (def (main (: a Float64) (: b Float64)) (if (= (tuple a) (tuple b)) 1 0)) (export main)))
+  (input  (do (def (main (: a Float64) (: b Float64)) (if (= #tuple(a) #tuple(b)) 1 0)) (export main)))
   (call   main (: nan Float64) (: nan Float64)) (output (: 1 Int64))
   (call   main (: -0.0 Float64) (: 0.0 Float64)) (output (: 0 Int64)))
 
@@ -1201,7 +1201,7 @@
            equality compares nan against nan (equal, canonical byte form) and 1.0 against 1.0 (equal), so the
            lists are equal. Pins that the canonical-byte-form float rule recurses through list elements
            too, alongside an ordinary equal float element.")
-  (input  (= (list Float64.nan 1.0) (list Float64.nan 1.0)))
+  (input  (= #list(Float64.nan 1.0) #list(Float64.nan 1.0)))
   (output (: true Bool)))
 
 (case "a NaN nested in a sum payload compares equal under the canonical byte form"
@@ -1219,7 +1219,7 @@
            to the descriptor-guided `value-eq-shaped` element-wise walk: `(list x x) = (list x x)` compares each
            float element by canonical byte form → true. Built via `(list x x)` on a runtime param so no operand
            folds. Expected: true.")
-  (input  (do (def (main (: x Float64)) (= (list x x) (list x x))) (export main)))
+  (input  (do (def (main (: x Float64)) (= #list(x x) #list(x x))) (export main)))
   (call   main (: 3.5 Float64))
   (output (: true Bool)))
 
@@ -1229,7 +1229,7 @@
            the value-eq-shaped walk canonicalizes each float leaf (`nan == nan`), NOT a raw `f64.eq` (which
            would answer false). Distinguishes the shaped walk's float handling from a bit compare. Expected:
            true.")
-  (input  (do (def (main (: x Float64)) (= (list (- x Float64.nan)) (list (- x Float64.nan)))) (export main)))
+  (input  (do (def (main (: x Float64)) (= #list((- x Float64.nan)) #list((- x Float64.nan)))) (export main)))
   (call   main (: 1.0 Float64))
   (output (: true Bool)))
 
@@ -1238,7 +1238,7 @@
            DIFFERENT boundary params differ in their sole element, so the element-wise walk finds the mismatch
            → false. Guards that the walk actually compares elements (a blanket true would pass the equal cases).
            Expected: false.")
-  (input  (do (def (main (: a Float64) (: b Float64)) (= (list a) (list b))) (export main)))
+  (input  (do (def (main (: a Float64) (: b Float64)) (= #list(a) #list(b))) (export main)))
   (call   main (: 3.5 Float64) (: 2.5 Float64))
   (output (: false Bool)))
 
@@ -1282,7 +1282,7 @@
   (input  (do
             (type FV (I Int64) (F Float64))
             (def (main (: n Int64))
-              (tuple (if (= (FV.I n) (FV.I 3)) 1 0)
+              #tuple((if (= (FV.I n) (FV.I 3)) 1 0)
                      (if (= (FV.F 2.5) (FV.F 2.5)) 1 0)
                      (if (= (FV.I n) (FV.F 2.5)) 1 0)))
             (export main)))
@@ -1300,7 +1300,7 @@
   (input  (do
             (type Ast (Lit Int64) (Node (List Ast)))
             (def (mk (: n Int64))
-              (Node (list (Lit n) (Lit (+ n 1)))))
+              (Node #list((Lit n) (Lit (+ n 1)))))
             (def (main (: a Int64))
               (= (mk a) (mk 5)))
             (export main)))
@@ -1317,7 +1317,7 @@
   (input  (do
             (type Tree (Leaf) (Branch (Record (: v Int64) (: kids (Tuple Tree Tree)))))
             (def (mk (: n Int64))
-              (Branch (record (= v n) (= kids (tuple (Leaf) (Leaf))))))
+              (Branch #record((= v n) (= kids #tuple((Leaf) (Leaf))))))
             (def (main (: a Int64))
               (= (mk a) (mk 5)))
             (export main)))
@@ -1346,7 +1346,7 @@
            false — the field `x` holds -0.0 in one record and 0.0 in the other, distinct canonical byte
            forms, so the records are unequal. Pins the canonical-byte-form float distinction through a
            record field, the field-access analogue of the tuple-element case.")
-  (input  (= (record (= x -0.0)) (record (= x 0.0))))
+  (input  (= #record((= x -0.0)) #record((= x 0.0))))
   (output (: false Bool)))
 
 ; The runtime float-leaf cases above are ONE level deep (a float directly in a tuple/list/sum/record). These
@@ -1361,7 +1361,7 @@
            boundary Float parameter forced to NaN via `(- x Float64.nan)` so the compound is runtime-built
            (no fold). Pins the heap walk canonicalizes a float leaf at depth 2, not only depth 1 — a walk
            that raw-compared a nested float would answer false (nan != nan under a bit compare).")
-  (input  (do (def (main (: x Float64)) (= (record (= t (tuple (- x Float64.nan) 3))) (record (= t (tuple (- x Float64.nan) 3))))) (export main)))
+  (input  (do (def (main (: x Float64)) (= #record((= t #tuple((- x Float64.nan) 3))) #record((= t #tuple((- x Float64.nan) 3))))) (export main)))
   (call   main (: 1.0 Float64))
   (output (: true Bool)))
 
@@ -1371,7 +1371,7 @@
            Float parameter (`(* z -0.0)` yields -0.0 at runtime, no fold). Pins the canonical byte distinction
            for signed zero holds at depth 2 — a walk that stopped distinguishing signed zero below the top
            level would wrongly answer true.")
-  (input  (do (def (main (: z Float64)) (= (record (= t (tuple (* z -0.0) 3))) (record (= t (tuple 0.0 3))))) (export main)))
+  (input  (do (def (main (: z Float64)) (= #record((= t #tuple((* z -0.0) 3))) #record((= t #tuple(0.0 3))))) (export main)))
   (call   main (: 0.0 Float64))
   (output (: false Bool)))
 
@@ -1546,7 +1546,7 @@
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (build n) (if (< n 1) (IntList.Nil ())
-                               (IntList.Cons (tuple n (build (- n 1))))))
+                               (IntList.Cons #tuple(n (build (- n 1))))))
             (def (main) (if (= (build 3) (build 3)) 1 0)) (export main)))
   (output (: 1 Int64)))
 
@@ -1558,7 +1558,7 @@
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (build n) (if (< n 1) (IntList.Nil ())
-                               (IntList.Cons (tuple n (build (- n 1))))))
+                               (IntList.Cons #tuple(n (build (- n 1))))))
             (def (main) (if (= (build 3) (build 2)) 1 0)) (export main)))
   (output (: 0 Int64)))
 
@@ -1600,7 +1600,7 @@
            `(/ 5 d)` at d=0 is a divide-by-zero. The trapping element is UNOBSERVED (its value cannot change the
            already-decided result), so it is NOT forced and its trap does NOT occur (core-semantics.md #A Trap
            Occurs Only Where Its Computation Is Observed). At d=0 the comparison is false, NOT a trap.")
-  (input  (do (def (main (: d Int64)) (= (tuple 1 (/ 5 d)) (tuple 9 9))) (export main)))
+  (input  (do (def (main (: d Int64)) (= #tuple(1 (/ 5 d)) #tuple(9 9))) (export main)))
   (call   main (: 0 Int64))
   (output (: false Bool)))
 
@@ -1609,7 +1609,7 @@
            so the comparison must continue to element 1 to decide, forcing `(/ 5 d)`; at d=0 that is a
            divide-by-zero, so the comparison TRAPS. Pins that short-circuit stops at the first DIFFERENCE only —
            an equal prefix is forced through, and the first not-yet-decided element IS observed.")
-  (input  (do (def (main (: d Int64)) (= (tuple 9 (/ 5 d)) (tuple 9 9))) (export main)))
+  (input  (do (def (main (: d Int64)) (= #tuple(9 (/ 5 d)) #tuple(9 9))) (export main)))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
@@ -1626,7 +1626,7 @@
            may still short-circuit WHICH already-evaluated values it inspects, but that does not defer a constructed
            operand's argument evaluation. Contrast a tuple (`(= (tuple 1 (/ 5 d)) (tuple 9 9))` @d=0 → false, above):
            tuple/record construction is lazy in an unprojected element, a heap-collection constructor is not.")
-  (input  (do (def (main (: d Int64)) (= (list 9 (/ 5 d)) (list 9 9))) (export main)))
+  (input  (do (def (main (: d Int64)) (= #list(9 (/ 5 d)) #list(9 9))) (export main)))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
@@ -1641,7 +1641,7 @@
            that the eq short-circuit governs only WHICH already-evaluated values are inspected, never whether a
            constructed operand's arguments are evaluated. Contrast the tuple short-circuit case above, which stays
            false — tuple/record construction is lazy in an unprojected element, a heap-collection constructor is not.")
-  (input  (do (def (main (: d Int64)) (= (list 1 (/ 5 d)) (list 9 9))) (export main)))
+  (input  (do (def (main (: d Int64)) (= #list(1 (/ 5 d)) #list(9 9))) (export main)))
   (call   main (: 0 Int64)) (trap   "divide by zero")
   (call   main (: 1 Int64)) (output (: false Bool)))
 
@@ -1651,7 +1651,7 @@
            object may be elided (operator ruling — strict list construction; core-semantics.md #A Trap Occurs Only
            Where Its Computation Is Observed). The list analog of 19-sets `(Set.len (Set.of (list (/ 5 d) 2 3)))`:
            same construction, ANY consumer — the trapping argument traps.")
-  (input  (do (def (main (: d Int64)) (List.len (list 1 (/ 5 d)))) (export main)))
+  (input  (do (def (main (: d Int64)) (List.len #list(1 (/ 5 d)))) (export main)))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
@@ -1667,7 +1667,7 @@
   (input  (do (effect P (op acc (-> Int64 Int64)) (op rd (-> Int64)))
               (def (main) (handle P (: 0 Int64)
                             ((acc (v) s (resume v (+ s v))) (rd () s (resume s s)))
-                            (let ((x (list 1 ((. P acc) 5)))) ((. P rd)))))
+                            (let ((x #list(1 ((. P acc) 5)))) ((. P rd)))))
               (export main)))
   (output (: 5 Int64)))
 
@@ -1682,7 +1682,7 @@
   (input  (do (effect P (op acc (-> Int64 Int64)) (op rd (-> Int64)))
               (def (main) (handle P (: 0 Int64)
                             ((acc (v) s (resume v (+ s v))) (rd () s (resume s s)))
-                            (let ((b (= (list 1 ((. P acc) 5)) (list 9 9)))) ((. P rd)))))
+                            (let ((b (= #list(1 ((. P acc) 5)) #list(9 9)))) ((. P rd)))))
               (export main)))
   (output (: 5 Int64)))
 
@@ -1725,7 +1725,7 @@
            `value-eq` handles a runtime tuple (a positional product) the same as a sum — the structural
            equality is over ANY compound, not sum-specific.")
   (input  (do
-            (def (mk n) (tuple n (+ n 1)))
+            (def (mk n) #tuple(n (+ n 1)))
             (def (main) (if (= (mk 3) (mk 3)) 1 0)) (export main)))
   (output (: 1 Int64)))
 
@@ -1737,7 +1737,7 @@
            Together with the tuple and sum cases this pins runtime `value-eq` across every scalar-leaf
            compound shape.")
   (input  (do
-            (def (mk n) (record (= x n) (= y (+ n 1))))
+            (def (mk n) #record((= x n) (= y (+ n 1))))
             (def (main) (if (= (mk 3) (mk 3)) 1 0)) (export main)))
   (output (: 1 Int64)))
 
@@ -1931,7 +1931,7 @@
            Has One Canonical Byte Form). Pins that the equality fold normalizes field order before
            comparing, so the same record written two ways is one value — not a position-wise comparison
            that would call these unequal.")
-  (input  (= (record (= x 1) (= y 2)) (record (= y 2) (= x 1))))
+  (input  (= #record((= x 1) (= y 2)) #record((= y 2) (= x 1))))
   (output (: true Bool)))
 
 (case "a runtime compound structural equality is expressible as a hand-written recursive comparator"
@@ -2346,7 +2346,7 @@
            left to right, observable through the ordered host calls.")
   (input  (do
             (effect log (op emit (-> String Int64)))
-            (def (main) (host (log) (let ((t (tuple (log.emit "a") (log.emit "b")))) (- (. t 0) (. t 1))))) (export main)))
+            (def (main) (host (log) (let ((t #tuple((log.emit "a") (log.emit "b")))) (- (. t 0) (. t 1))))) (export main)))
   (host-responses (respond log.emit (: 10 Int64)) (respond log.emit (: 4 Int64)))
   (output (: 6 Int64))
   (host-calls (call log.emit (: "a" String)) (call log.emit (: "b" String))))
@@ -2498,7 +2498,7 @@
            s=4 → the tuples differ → `false`.")
   (input  (do
             (def (main (: s Int64))
-              (= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 2) 0))))
+              (= #tuple(5 (= (% s 2) 0)) #tuple(5 (= (% s 2) 0))))
             (export main)))
   (call   main (: 4 Int64)) (output (: true Bool))
   (call   main (: 5 Int64)) (output (: true Bool)))
@@ -2510,7 +2510,7 @@
            degenerate always-equal), and that the two distinct `%` subexpressions each emit valid wasm.")
   (input  (do
             (def (main (: s Int64))
-              (= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 3) 0))))
+              (= #tuple(5 (= (% s 2) 0)) #tuple(5 (= (% s 3) 0))))
             (export main)))
   (call   main (: 4 Int64)) (output (: false Bool)))
 
@@ -2591,8 +2591,8 @@
   (input  (do
         (def (main (: mode Int64))
           (do
-            (def a (list (Option.expect (String.slice "xkeyz" 1 4) "in") "b"))
-            (def b (list (String.concat "ke" (if (> mode 0) "y" "x")) "c"))
+            (def a #list((Option.expect (String.slice "xkeyz" 1 4) "in") "b"))
+            (def b #list((String.concat "ke" (if (> mode 0) "y" "x")) "c"))
             (if (< a b) 1 0)))
         (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
@@ -2631,7 +2631,7 @@
 
 (case "a tuple containing an Option leaf orders by the declared Some-below-None"
   (input  (do
-            (def (mk (: k Int64)) (tuple 7 (if (= k 0) (: (None unit) (Option Int64)) (Some k))))
+            (def (mk (: k Int64)) #tuple(7 (if (= k 0) (: (None unit) (Option Int64)) (Some k))))
             (def (main (: a Int64) (: b Int64))
               (match (Ordering.of (mk a) (mk b))
                 ((Ordering.Less _u) 1)
@@ -2643,7 +2643,7 @@
 
 (case "a list of Options orders its elements by the declared Some-below-None"
   (input  (do
-            (def (mk (: k Int64)) (list (if (= k 0) (: (None unit) (Option Int64)) (Some k))))
+            (def (mk (: k Int64)) #list((if (= k 0) (: (None unit) (Option Int64)) (Some k))))
             (def (main (: a Int64) (: b Int64))
               (if (< (mk a) (mk b)) 1 0))
             (export main)))
@@ -2754,7 +2754,7 @@
   (output (: 110 Int64)))
 
 (case "a nested all-nullary sum renders the correct variant across the boundary (render half, v-runtime f9f8717c)"
-  (input  (do (type Tri (Lo) (Mid) (Hi)) (def (main) (tuple (Tri.Hi unit) 5)) (export main)))
+  (input  (do (type Tri (Lo) (Mid) (Hi)) (def (main) #tuple((Tri.Hi unit) 5)) (export main)))
   (call main) (output (: (tuple (Hi unit) 5) (Tuple Tri Int64))))
 
 
@@ -2768,9 +2768,9 @@
   (input  (do
         (def (main (: x Float64))
           (do
-            (def m (Map.insert Map.empty (tuple (/ x x) 1) 42))
-            (+ (* 10 (match (Map.lookup m (tuple Float64.nan 1)) ((Some v) 1) ((None _u) 0)))
-               (match (Map.lookup m (tuple Float64.nan 2)) ((Some v) 1) ((None _u) 0)))))
+            (def m (Map.insert Map.empty #tuple((/ x x) 1) 42))
+            (+ (* 10 (match (Map.lookup m #tuple(Float64.nan 1)) ((Some v) 1) ((None _u) 0)))
+               (match (Map.lookup m #tuple(Float64.nan 2)) ((Some v) 1) ((None _u) 0)))))
         (export main)))
   (call   main (: 0.0 Float64)) (output (: 10 Int64)))
 
@@ -2860,7 +2860,7 @@
 (case "record ordering compares in canonical sorted field order, not written order"
   (doc    "The RECORD face of the compound order (core-semantics.md:341 — 'the same canonical order its equality and canonical byte form use'): fields written (zebra, apple) compare in SORTED order, so apple decides FIRST — (z1,a9) vs (z2,a0) is Greater (3) by apple 9>0, though written-order zebra 1<2 would say Less. Runtime k blocks the fold.")
   (input  (do
-            (def (mk (: z Int64) (: a Int64)) (record (= zebra z) (= apple a)))
+            (def (mk (: z Int64) (: a Int64)) #record((= zebra z) (= apple a)))
             (def (main (: k Int64))
               (match (Ordering.of (mk 1 9) (mk (+ 2 k) 0))
                 ((Ordering.Less _u) 1)
@@ -2873,7 +2873,7 @@
 (case "record ordering falls to the later canonical field when the earlier ties"
   (doc    "The tie face: apple 5 = 5, so zebra (canonically SECOND) decides — 1 < 4 → Less (1). With the decisive face above it pins both directions of the sorted-field walk.")
   (input  (do
-            (def (mk (: z Int64) (: a Int64)) (record (= zebra z) (= apple a)))
+            (def (mk (: z Int64) (: a Int64)) #record((= zebra z) (= apple a)))
             (def (main (: k Int64))
               (match (Ordering.of (mk 1 5) (mk (+ 4 k) 5))
                 ((Ordering.Less _u) 1)
@@ -2891,7 +2891,7 @@
 (case "a Symbol leaf in a tuple orders content-lexicographically and decisively before later fields"
   (doc    "The SYMBOL row of the compound-order heap-leaf matrix (String/rope, Rational, BigInt are the siblings): runtime-interned Symbols inside tuples — sym decisive before the numeric field ((alpha,9)<(beta,0) → 1), sym TIE falling to the number (Ordering.of Equal-path → Less at k=5), and an eq control. A walk comparing Symbols by intern handle/allocation order instead of content breaks the first face.")
   (input  (do
-            (def (mk (: s String) (: n Int64)) (tuple (Symbol.of (String.concat s "")) n))
+            (def (mk (: s String) (: n Int64)) #tuple((Symbol.of (String.concat s "")) n))
             (def (main (: k Int64))
               (+ (* 100 (if (< (mk "alpha" 9) (mk "beta" 0)) 1 0))
                  (+ (* 10 (match (Ordering.of (mk "beta" 1) (mk "beta" (+ 1 k))) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
@@ -2903,7 +2903,7 @@
 (case "a Rational leaf in a tuple orders by exact value with canonical-form ties falling through"
   (doc    "The RATIONAL row of the heap-leaf matrix: (a) exact cross-multiply decisive mid-walk (1/3 < 3/6); (b) the CANONICAL tie — compare (1/2,5) vs (3/6,5) must see the rationals EQUAL (an unreduced num/den compare orders them) and fall to the tied scalar → Equal; (c) canonical tie via 2/6=1/3 falling to the second field. Runtime a blocks the fold.")
   (input  (do
-            (def (mk (: n Int64) (: d Int64) (: t Int64)) (tuple (Rational.of n d) t))
+            (def (mk (: n Int64) (: d Int64) (: t Int64)) #tuple((Rational.of n d) t))
             (def (main (: a Int64))
               (+ (* 100 (if (< (mk 1 3 9) (mk a 6 0)) 1 0))
                  (+ (* 10 (match (Ordering.of (mk 1 2 5) (mk a 6 5)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
@@ -2918,7 +2918,7 @@
             (def (mk (: h Int64) (: t Int64))
               (do
                 (def b64 (* (BigInt.of 4294967296) (BigInt.of 4294967296)))
-                (tuple (+ (* b64 (BigInt.of h)) (BigInt.of 5)) t)))
+                #tuple((+ (* b64 (BigInt.of h)) (BigInt.of 5)) t)))
             (def (main (: a Int64))
               (+ (* 100 (if (< (mk 3 9) (mk a 0)) 1 0))
                  (+ (* 10 (match (Ordering.of (mk 5 1) (mk a 1)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
@@ -2963,8 +2963,8 @@
             (type BP (T Bytes) (U))
             (def (main (: k Int64))
               (do
-                (def a (BP.T (Bytes.of (list 1 (UInt8.wrap k)))))
-                (def b (BP.T (Bytes.of (list 1 3))))
+                (def a (BP.T (Bytes.of #list(1 (UInt8.wrap k)))))
+                (def b (BP.T (Bytes.of #list(1 3))))
                 (match (Ordering.of a b) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 3 Int64)))
@@ -2987,8 +2987,8 @@
             (def (main (: k Int64))
               (do
                 (def f (fn ((: x Int64)) (+ x k)))
-                (def t1 (tuple 1 f))
-                (def t2 (tuple 1 f))
+                (def t1 #tuple(1 f))
+                (def t2 #tuple(1 f))
                 (if (= t1 t2) 1 0)))
             (export main)))
   (declines))
@@ -3005,7 +3005,7 @@
            backends (the runtime `value_cmp_shaped` orders a Char-in-compound as its codepoint `Shape::Int`
            — no runtime change was needed to bless it, only the `is_orderable_compound` guard).")
   (input  (do
-            (def (mk (: c Char)) (tuple 1 c))
+            (def (mk (: c Char)) #tuple(1 c))
             (def (main) (if (< (mk #\a) (mk #\b)) 1 0))
             (export main)))
   (call   main) (output (: 1 Int64)))
@@ -3021,7 +3021,7 @@
            representation, so the Char is a compile-time constant SELECTED at run time — the only way the
            runtime Char-in-compound path is reachable.)")
   (input  (do
-            (def (main (: b Bool)) (if (< (tuple (if b #\a #\🦀) 0) (tuple #\m 0)) 1 0))
+            (def (main (: b Bool)) (if (< #tuple((if b #\a #\🦀) 0) #tuple(#\m 0)) 1 0))
             (export main)))
   (call   main (: true Bool))  (output (: 1 Int64))
   (call   main (: false Bool)) (output (: 0 Int64)))
@@ -3041,9 +3041,9 @@
   (input  (do
             (type W (Leaf Int64) (Node (List Int64)))
             (def (main (: k Int64))
-              (+ (* 100 (if (< (list (Node (list 1 k))) (list (Node (list 1 3)))) 1 0))
-                 (+ (* 10 (if (< (list (Leaf 5)) (list (Node (list 0)))) 1 0))
-                    (if (< (list (Node (list 1))) (list (Node (list 1 k)))) 1 0))))
+              (+ (* 100 (if (< #list((Node #list(1 k))) #list((Node #list(1 3)))) 1 0))
+                 (+ (* 10 (if (< #list((Leaf 5)) #list((Node #list(0)))) 1 0))
+                    (if (< #list((Node #list(1))) #list((Node #list(1 k)))) 1 0))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 111 Int64)))
 
@@ -3068,7 +3068,7 @@
            is 0: the fresh operand reclaimed by `=`, `xs` by the `let`, neither leaked nor double-freed.")
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
-            (def (build n) (if (< n 1) (IntList.Nil ()) (IntList.Cons (tuple n (build (- n 1))))))
+            (def (build n) (if (< n 1) (IntList.Nil ()) (IntList.Cons #tuple(n (build (- n 1))))))
             (def (main) (let ((xs (build 3))) (if (= xs (build 3)) 1 0)))
             (export main)))
   (call   main) (output (: 1 Int64))
@@ -3091,8 +3091,8 @@
            `(= rope (Bytes.of (list 104 105 120)))` is true (the direct-Bytes value-eq compaction) -> 1. The
            owned rope operand + its compacted flat leaf net to 0 live cells after the borrowing compare.")
   (input  (do
-            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
-            (def (main) (if (= (rep (Bytes.of (list 104 105)) 1) (Bytes.of (list 104 105 120))) 1 0))
+            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of #list(120))) (- n 1))))
+            (def (main) (if (= (rep (Bytes.of #list(104 105)) 1) (Bytes.of #list(104 105 120))) 1 0))
             (export main)))
   (call   main) (output (: 1 Int64))
   (live-objects 0))
@@ -3126,7 +3126,7 @@
            main returns 1, and both whole lists must be reclaimed -- net 0 live cells.")
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
-            (def (build n) (if (< n 1) (IntList.Nil ()) (IntList.Cons (tuple n (build (- n 1))))))
+            (def (build n) (if (< n 1) (IntList.Nil ()) (IntList.Cons #tuple(n (build (- n 1))))))
             (def (main) (if (= (build 3) (build 3)) 1 0))
             (export main)))
   (call   main) (output (: 1 Int64))
@@ -3138,7 +3138,7 @@
            (value-eq-shaped) which borrows both and drops each owned temporary -> equal -> main returns 1;
            both built lists must be reclaimed -- net 0 live cells.")
   (input  (do
-            (def (build (: n Int64) (: x Float64)) (if (< n 0) (build (+ n 1) x) (list x)))
+            (def (build (: n Int64) (: x Float64)) (if (< n 0) (build (+ n 1) x) #list(x)))
             (def (main) (if (= (build 0 Float64.nan) (build 0 Float64.nan)) 1 0))
             (export main)))
   (call   main) (output (: 1 Int64))
@@ -3151,7 +3151,7 @@
            consumes each rope + stores a flat leaf, so the two tuples the borrowing value-eq drops net to 0.")
   (input  (do
             (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (if (= (tuple (rep "hi" 3) 1) (tuple "hixxx" 1)) 1 0))
+            (def (main) (if (= #tuple((rep "hi" 3) 1) #tuple("hixxx" 1)) 1 0))
             (export main)))
   (call   main) (output (: 1 Int64))
   (live-objects 0))
@@ -3163,7 +3163,7 @@
            compact, hashing the uncompacted rope into a different slot).")
   (input  (do
             (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (match (Map.lookup (Map.insert Map.empty (tuple (rep "hi" 3) 1) 42) (tuple "hixxx" 1)) ((Some v) v) ((None) (- 0 1))))
+            (def (main) (match (Map.lookup (Map.insert Map.empty #tuple((rep "hi" 3) 1) 42) #tuple("hixxx" 1)) ((Some v) v) ((None) (- 0 1))))
             (export main)))
   (call   main) (output (: 42 Int64)))
 
@@ -3175,7 +3175,7 @@
 
 (case "bfl1 bare equality over flat Bytes.of runtime twins"
   (input (do
-    (def (mk (: n Int64)) (Bytes.of (list (UInt8.wrap n) 2)))
+    (def (mk (: n Int64)) (Bytes.of #list((UInt8.wrap n) 2)))
     (def (f (: n Int64)) (if (= (mk n) (mk n)) 1 0))
     (export f)))
   (call f (: 2 Int64))
@@ -3184,7 +3184,7 @@
 (case "bfl2 bare equality across Bytes.concat vs Bytes.of flat twins"
   (input (do
     (def (f (: n Int64))
-      (if (= (Bytes.concat (Bytes.of (list (UInt8.wrap n))) (Bytes.of (list 2))) (Bytes.of (list (UInt8.wrap n) 2))) 1 0))
+      (if (= (Bytes.concat (Bytes.of #list((UInt8.wrap n))) (Bytes.of #list(2))) (Bytes.of #list((UInt8.wrap n) 2))) 1 0))
     (export f)))
   (call f (: 5 Int64))
   (output (: 1 Int64)))
@@ -3207,7 +3207,7 @@
 (case "bo2 tuple-walk equality over two identical runtime encodes agrees"
   (input (do
     (def (f (: n Int64))
-      (if (= (tuple 1 (Ast.encode (Ast.Int (BigInt.of n)))) (tuple 1 (Ast.encode (Ast.Int (BigInt.of n))))) 1 0))
+      (if (= #tuple(1 (Ast.encode (Ast.Int (BigInt.of n)))) #tuple(1 (Ast.encode (Ast.Int (BigInt.of n))))) 1 0))
     (export f)))
   (call f (: 7 Int64))
   (output (: 1 Int64)))
@@ -3227,7 +3227,7 @@
   (output (: true Bool)))
 
 (case "ce10 equality of RUNTIME lists of records"
-  (input  (do (def (f (: n Int64)) (= (list (record (= a n))) (list (record (= a n))))) (export f)))
+  (input  (do (def (f (: n Int64)) (= #list(#record((= a n))) #list(#record((= a n))))) (export f)))
   (call   f 4)
   (output (: true Bool)))
 
@@ -3267,8 +3267,8 @@
 (case "aeq4 a slice VIEW bare-compares equal to its flat twin"
   (input (do
     (def (f (: n Int64))
-      (if (= (Option.expect (Bytes.slice (Bytes.of (list 9 (UInt8.wrap n) 2 7)) 1 2) "in bounds")
-             (Bytes.of (list (UInt8.wrap n) 2))) 1 0))
+      (if (= (Option.expect (Bytes.slice (Bytes.of #list(9 (UInt8.wrap n) 2 7)) 1 2) "in bounds")
+             (Bytes.of #list((UInt8.wrap n) 2))) 1 0))
     (export f)))
   (call f (: 5 Int64))
   (output (: 1 Int64))
@@ -3332,8 +3332,8 @@
 
 (case "dqe1 FLAT tuple dual-use (projections + runtime equality) reclaims clean — the control the nested cells contrast"
   (input (do (def (main (: n Int64))
-  (let ((a (tuple n 2))
-        (b (tuple n 2)))
+  (let ((a #tuple(n 2))
+        (b #tuple(n 2)))
     (+ (. a 0) (+ (. b 1) (if (= a b) 100000 0)))))
 (export main)))
   (call main (: 1 Int64))
@@ -3342,8 +3342,8 @@
 
 (case "dqe2 nested runtime tuples under equality ALONE (two walks, no projections) reclaim clean"
   (input (do (def (main (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n n)))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n n)))))
     (+ (if (= a b) 100000 0) (if (= b a) 10000 0))))
 (export main)))
   (call main (: 1 Int64))
@@ -3352,8 +3352,8 @@
 
 (case "dqe3 nested runtime tuples with an UNEQUAL leaf under equality reclaim clean"
   (input (do (def (main (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n (+ n 1))))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n (+ n 1))))))
     (if (= a b) 100000 1)))
 (export main)))
   (call main (: 1 Int64))
@@ -3362,8 +3362,8 @@
 
 (case "dqe4 ONE nested operand dual-used (deep projection + equality) leaks that side's full node tree"
   (input (do (def (main (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n n)))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n n)))))
     (+ (* 1000 (. (. (. a 1) 1) 1)) (if (= a b) 100000 0))))
 (export main)))
   (call main (: 1 Int64))
@@ -3372,8 +3372,8 @@
 
 (case "dqe5 BOTH nested operands dual-used (projections + equality) leak both node trees"
   (input (do (def (main (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n n)))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n n)))))
     (+ (* 1000 (. (. (. a 1) 1) 1)) (+ (. (. b 1) 0) (if (= a b) 100000 0)))))
 (export main)))
   (call main (: 1 Int64))
@@ -3387,8 +3387,8 @@
 
 (case "dqe6 a nested operand dual-used by projection + ORDERING walk leaks its tree (order-only is clean)"
   (input (do (def (main (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n n)))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n n)))))
     (+ (* 1000 (. (. (. a 1) 1) 1)) (if (< a b) 100000 1))))
 (export main)))
   (call main (: 1 Int64))
@@ -3397,8 +3397,8 @@
 
 (case "dqe7 a nested operand dual-used by projection + CHAMP-key descent (insert one, look up by the equal twin) leaks its tree"
   (input (do (def (main (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n n)))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n n)))))
     (+ (* 1000 (. (. (. a 1) 1) 1))
        (match (Map.lookup (Map.insert (Map.empty) a 42) b) ((Some v) v) ((None u) -1)))))
 (export main)))
@@ -3408,8 +3408,8 @@
 
 (case "dqe8 a nested operand dual-used by projection + Set membership descent leaks its tree"
   (input (do (def (main (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n n)))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n n)))))
     (+ (* 1000 (. (. (. a 1) 1) 1)) (if (Set.contains #set(a) b) 100 0))))
 (export main)))
   (call main (: 1 Int64))
@@ -3418,8 +3418,8 @@
 
 (case "dqe9 TWO walkers (equality AND ordering) on the same nested operands with no projection reclaim clean"
   (input (do (def (main (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n n)))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n n)))))
     (+ (if (= a b) 100000 0) (if (< a b) 10000 1))))
 (export main)))
   (call main (: 1 Int64))
@@ -3435,9 +3435,9 @@
 (case "dqe10 an eq'd nested operand ESCAPING whole through the branch arm leaks both sides today (escapee must survive the coming end-of-scope drop)"
   (input (do
 (def (f (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n n)))))
-    (if (= a b) a (tuple 9 (tuple 9 (tuple 9 9))))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n n)))))
+    (if (= a b) a #tuple(9 #tuple(9 #tuple(9 9))))))
 (def (main (: n Int64))
   (let ((r (f n)))
     (+ (* 1000 (. (. (. r 1) 1) 1)) (. r 0))))
@@ -3449,9 +3449,9 @@
 (case "dqe11 an eq'd nested operand whose COMPONENT escapes through the branch arm leaks both sides today (partial escape)"
   (input (do
 (def (h (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n n)))))
-    (if (= a b) (. a 1) (tuple 9 (tuple 9 9)))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n n)))))
+    (if (= a b) (. a 1) #tuple(9 #tuple(9 9)))))
 (def (main (: n Int64))
   (let ((r (h n)))
     (+ (* 1000 (. (. r 1) 1)) (. r 0))))
@@ -3463,8 +3463,8 @@
 (case "dqe12 eq-only nested operands confined to a callee scope (nothing escapes) reclaim clean"
   (input (do
 (def (g (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n n)))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n n)))))
     (+ (* 100000 (if (= a b) 1 0)) 0)))
 (def (main (: n Int64)) (g n))
 (export main)))
@@ -3480,9 +3480,9 @@
 
 (case "dqe13 the dqe4 shape with MATCH-destructure instead of tuple projection reclaims clean (the leak is projection-specific)"
   (input (do (def (main (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n n)))))
-    (+ (* 1000 (match a ((tuple p q) (match q ((tuple r s) (match s ((tuple t u) u)))))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n n)))))
+    (+ (* 1000 (match a (#tuple(p q) (match q (#tuple(r s) (match s (#tuple(t u) u)))))))
        (if (= a b) 100000 0))))
 (export main)))
   (call main (: 1 Int64))
@@ -3491,8 +3491,8 @@
 
 (case "dqe14 a RECORD with a heap (list) field dual-used by field-read + equality reclaims clean (named-field access releases its dup)"
   (input (do (def (main (: n Int64))
-  (let ((a (record (= x n) (= y (list n 5))))
-        (b (record (= x n) (= y (list n 5)))))
+  (let ((a #record((= x n) (= y #list(n 5))))
+        (b #record((= x n) (= y #list(n 5)))))
     (+ (* 1000 (List.len (. a y))) (if (= a b) 100000 0))))
 (export main)))
   (call main (: 1 Int64))
@@ -3501,8 +3501,8 @@
 
 (case "dqe15 an Option with a heap (list) payload dual-used by match-extract + equality reclaims clean"
   (input (do (def (main (: n Int64))
-  (let ((a (Option.Some (list n 5)))
-        (b (Option.Some (list n 5))))
+  (let ((a (Option.Some #list(n 5)))
+        (b (Option.Some #list(n 5))))
     (+ (* 1000 (match a ((Option.Some t) (List.len t)) ((Option.None) -1)))
        (if (= a b) 100000 0))))
 (export main)))
@@ -3519,10 +3519,10 @@
 (case "dqe16 a walker-conditioned branch escaping a NON-operand heap binding leaks the escapee's tree once"
   (input (do
 (def (f (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple n (tuple n (tuple n n))))
-        (c (tuple n (tuple n n))))
-    (if (= a b) c (tuple 9 (tuple 9 9)))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple(n #tuple(n #tuple(n n))))
+        (c #tuple(n #tuple(n n))))
+    (if (= a b) c #tuple(9 #tuple(9 9)))))
 (def (main (: n Int64))
   (let ((r (f n)))
     (+ (* 1000 (. (. r 1) 1)) (. r 0))))
@@ -3534,9 +3534,9 @@
 (case "dqe17 a walker-conditioned escape arm left UNTAKEN (operands unequal) reclaims clean — the dup is minted on the taken path only"
   (input (do
 (def (f (: n Int64))
-  (let ((a (tuple n (tuple n (tuple n n))))
-        (b (tuple (+ n 1) (tuple n (tuple n n)))))
-    (if (= a b) a (tuple 9 (tuple 9 (tuple 9 9))))))
+  (let ((a #tuple(n #tuple(n #tuple(n n))))
+        (b #tuple((+ n 1) #tuple(n #tuple(n n)))))
+    (if (= a b) a #tuple(9 #tuple(9 #tuple(9 9))))))
 (def (main (: n Int64))
   (let ((r (f n)))
     (+ (* 1000 (. (. (. r 1) 1) 1)) (. r 0))))
@@ -3548,8 +3548,8 @@
 (case "dqe18 a SCALAR-conditioned branch escaping a heap value reclaims clean — leg-2 requires the walker condition"
   (input (do
 (def (f (: n Int64))
-  (let ((a (tuple n (list n 5)))
-        (b (tuple (+ n 1) (list n 6))))
+  (let ((a #tuple(n #list(n 5)))
+        (b #tuple((+ n 1) #list(n 6))))
     (if (> n 0) a b)))
 (def (main (: n Int64))
   (let ((r (f n)))
@@ -3562,12 +3562,12 @@
 (case "dqe19 leg-1 cross-scope: projection + walker on a RETURNED binding leaks its tree in the caller"
   (input (do
 (def (f (: n Int64))
-  (let ((a (tuple n (list n 5)))
-        (b (tuple (+ n 1) (list n 6))))
+  (let ((a #tuple(n #list(n 5)))
+        (b #tuple((+ n 1) #list(n 6))))
     (if (> n 0) a b)))
 (def (main (: n Int64))
   (let ((r (f n)))
-    (+ (* 1000 (List.len (. r 1))) (+ (. r 0) (if (= r (tuple n (list n 5))) 100000 0)))))
+    (+ (* 1000 (List.len (. r 1))) (+ (. r 0) (if (= r #tuple(n #list(n 5))) 100000 0)))))
 (export main)))
   (call main (: 1 Int64))
   (output (: 102001 Int64))
@@ -3611,11 +3611,11 @@
 
 (case "od1 lexicographic order through an immortal 33-trie discriminates at the last element (both directions + shorter-prefix)"
   (input (do
-(def (bldx (: i Int64) (: x Int64)) (if (= i 0) (list) (List.push (bldx (- i 1) x) (if (= i 33) x i))))
+(def (bldx (: i Int64) (: x Int64)) (if (= i 0) #list() (List.push (bldx (- i 1) x) (if (= i 33) x i))))
 (def (main (: n Int64))
-  (+ (if (< (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (bldx 33 (+ n 33))) 1 0)
-     (+ (if (< (bldx 33 (+ n 33)) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) 10 0)
-        (if (< (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) 100 0))))
+  (+ (if (< #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (bldx 33 (+ n 33))) 1 0)
+     (+ (if (< (bldx 33 (+ n 33)) #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) 10 0)
+        (if (< #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) 100 0))))
 (export main)))
   (call main (: 1 Int64))
   (output (: 101 Int64))

@@ -114,12 +114,12 @@
   (input  (do
             (def (join (: parts (List String)) (: sep String) (: acc String) (: first Bool))
               (match parts
-                ((list) acc)
-                ((list h .. t)
+                (#list() acc)
+                (#list(h .. t)
                   (join t sep (if first h (String.concat acc (String.concat sep h))) false))))
             (def (main (: n Int64))
-              (+ (* 100 (String.byte-len (join (list "alpha" (String.concat "be" "ta") "gamma") "," "" true)))
-                 (+ (String.byte-len (join (list) "," "" true)) n)))
+              (+ (* 100 (String.byte-len (join #list("alpha" (String.concat "be" "ta") "gamma") "," "" true)))
+                 (+ (String.byte-len (join #list() "," "" true)) n)))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 1600 Int64))
@@ -141,9 +141,9 @@
   (input  (do
             (def (scan (: s String) (: i Int64) (: len Int64) (: depth Int64) (: maxd Int64))
               (if (< depth 0)
-                  (tuple -1 maxd)
+                  #tuple(-1 maxd)
                   (if (>= i len)
-                      (tuple (if (= depth 0) 1 0) maxd)
+                      #tuple((if (= depth 0) 1 0) maxd)
                       (match (String.at s i)
                         ((Some c)
                           (if (= c "(")
@@ -151,10 +151,10 @@
                               (if (= c ")")
                                   (scan s (+ i 1) len (- depth 1) maxd)
                                   (scan s (+ i 1) len depth maxd))))
-                        ((None _u) (tuple -9 maxd))))))
+                        ((None _u) #tuple(-9 maxd))))))
             (def (run (: s String))
               (match (scan s 0 (String.scalar-len s) 0 0)
-                ((tuple ok maxd) (+ (* ok 10) maxd))))
+                (#tuple(ok maxd) (+ (* ok 10) maxd))))
             (def (main (: n Int64))
               (do
                 (def open (if (> n 0) "(" ")"))
@@ -182,24 +182,24 @@
               (if (= c "(") 1 (if (= c "[") 1 (if (= c "{") 1 0))))
             (def (go (: s String) (: i Int64) (: len Int64) (: st (List String)))
               (if (>= i len)
-                  (match st ((list) 1) (_ 0))
+                  (match st (#list() 1) (_ 0))
                   (match (String.at s i)
                     ((Some c)
                       (if (= (is-open c) 1)
-                          (go s (+ i 1) len (List.concat (list c) st))
+                          (go s (+ i 1) len (List.concat #list(c) st))
                           (do
                             (def want (closer-of c))
                             (if (= want "")
                                 (go s (+ i 1) len st)
                                 (match st
-                                  ((list) -1)
-                                  ((list top .. rest)
+                                  (#list() -1)
+                                  (#list(top .. rest)
                                     (if (= top want)
                                         (go s (+ i 1) len rest)
                                         -1)))))))
                     ((None _u) 0))))
             (def (bal (: s String))
-              (go s 0 (String.byte-len s) (list)))
+              (go s 0 (String.byte-len s) #list()))
             (def (main (: mode Int64))
               (do
                 (def s (if (= mode 1) "([]{})" (if (= mode 2) "([)]" (if (= mode 3) "((" ""))))
@@ -235,11 +235,11 @@
                           (split-go s (+ i 1) len start acc)))
                     ((None _u) acc))))
             (def (split (: s String))
-              (split-go s 0 (String.scalar-len s) 0 (list)))
+              (split-go s 0 (String.scalar-len s) 0 #list()))
             (def (join (: parts (List String)) (: sep String) (: acc String) (: first Bool))
               (match parts
-                ((list) acc)
-                ((list h .. t)
+                (#list() acc)
+                (#list(h .. t)
                   (join t sep (if first h (String.concat acc (String.concat sep h))) false))))
             (def (main (: n Int64))
               (do
@@ -275,7 +275,7 @@
                           (split-go s (+ i 1) len start acc)))
                     ((None _u) acc))))
             (def (split (: s String))
-              (split-go s 0 (String.scalar-len s) 0 (list)))
+              (split-go s 0 (String.scalar-len s) 0 #list()))
             (def (main)
               (do
                 (def s (String.concat "a," (String.concat "é" ",b")))
@@ -531,12 +531,12 @@
                   prev
                   (do
                     (def ca (Option.expect (String.at a (- i 1)) "ca"))
-                    (rows a b (+ i 1) la lb (row-go b 1 lb ca prev (list i))))))
+                    (rows a b (+ i 1) la lb (row-go b 1 lb ca prev #list(i))))))
             (def (lev (: a String) (: b String))
               (do
                 (def la (String.scalar-len a))
                 (def lb (String.scalar-len b))
-                (def final (rows a b 1 la lb (seed 0 lb (list))))
+                (def final (rows a b 1 la lb (seed 0 lb #list())))
                 (at0 final lb)))
             (def (main (: mode Int64))
               (if (= mode 1) (lev "kitten" "sitting")
@@ -712,7 +712,7 @@
               (if (>= c "a") (if (<= c "z") 1 0) 0))
             (def (go (: s String) (: i Int64) (: len Int64) (: v Int64) (: k Int64) (: o Int64))
               (if (>= i len)
-                  (tuple v k o)
+                  #tuple(v k o)
                   (match (String.at s i)
                     ((Some c)
                       (if (= (is-vowel c) 1)
@@ -720,14 +720,14 @@
                           (if (= (is-lower c) 1)
                               (go s (+ i 1) len v (+ k 1) o)
                               (go s (+ i 1) len v k (+ o 1)))))
-                    ((None _u) (tuple v k o)))))
+                    ((None _u) #tuple(v k o)))))
             (def (classify (: s String))
               (go s 0 (String.byte-len s) 0 0 0))
             (def (main (: mode Int64))
               (do
                 (def s (if (= mode 1) "hello world" (if (= mode 2) "aeiou" "xyz 123")))
                 (match (classify s)
-                  ((tuple v k o) (+ (* v 100) (+ (* k 10) o))))))
+                  (#tuple(v k o) (+ (* v 100) (+ (* k 10) o))))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 371 Int64))
   (call   main (: 2 Int64)) (output (: 500 Int64))
@@ -816,19 +816,19 @@
   (input  (do
             (def (emit (: n Int64) (: v Int64) (: s String) (: acc String))
               (if (< n v)
-                  (tuple n acc)
+                  #tuple(n acc)
                   (emit (- n v) v s (String.concat acc s))))
             (def (walk (: n Int64) (: vs (List (Tuple Int64 String))) (: acc String))
               (match vs
-                ((list) acc)
-                ((list (tuple v s) .. t)
+                (#list() acc)
+                (#list(#tuple(v s) .. t)
                   (match (emit n v s acc)
-                    ((tuple n2 acc2) (walk n2 t acc2))))))
+                    (#tuple(n2 acc2) (walk n2 t acc2))))))
             (def (roman (: n Int64))
               (walk n
-                (list (tuple 1000 "M") (tuple 900 "CM") (tuple 500 "D") (tuple 400 "CD")
-                      (tuple 100 "C") (tuple 90 "XC") (tuple 50 "L") (tuple 40 "XL")
-                      (tuple 10 "X") (tuple 9 "IX") (tuple 5 "V") (tuple 4 "IV") (tuple 1 "I"))
+                #list(#tuple(1000 "M") #tuple(900 "CM") #tuple(500 "D") #tuple(400 "CD")
+                      #tuple(100 "C") #tuple(90 "XC") #tuple(50 "L") #tuple(40 "XL")
+                      #tuple(10 "X") #tuple(9 "IX") #tuple(5 "V") #tuple(4 "IV") #tuple(1 "I"))
                 ""))
             (def (main (: n Int64))
               (do
@@ -873,19 +873,19 @@
               (dec-go s 0 (String.scalar-len s) 0))
             (def (emit (: n Int64) (: v Int64) (: s String) (: acc String))
               (if (< n v)
-                  (tuple n acc)
+                  #tuple(n acc)
                   (emit (- n v) v s (String.concat acc s))))
             (def (walk (: n Int64) (: vs (List (Tuple Int64 String))) (: acc String))
               (match vs
-                ((list) acc)
-                ((list (tuple v s) .. t)
+                (#list() acc)
+                (#list(#tuple(v s) .. t)
                   (match (emit n v s acc)
-                    ((tuple n2 acc2) (walk n2 t acc2))))))
+                    (#tuple(n2 acc2) (walk n2 t acc2))))))
             (def (roman (: n Int64))
               (walk n
-                (list (tuple 1000 "M") (tuple 900 "CM") (tuple 500 "D") (tuple 400 "CD")
-                      (tuple 100 "C") (tuple 90 "XC") (tuple 50 "L") (tuple 40 "XL")
-                      (tuple 10 "X") (tuple 9 "IX") (tuple 5 "V") (tuple 4 "IV") (tuple 1 "I"))
+                #list(#tuple(1000 "M") #tuple(900 "CM") #tuple(500 "D") #tuple(400 "CD")
+                      #tuple(100 "C") #tuple(90 "XC") #tuple(50 "L") #tuple(40 "XL")
+                      #tuple(10 "X") #tuple(9 "IX") #tuple(5 "V") #tuple(4 "IV") #tuple(1 "I"))
                 ""))
             (def (main (: n Int64))
               (+ (* (fromroman (roman n)) 10)
@@ -1280,10 +1280,10 @@
                 (def r1 (if (= mode 1) (rep "ab" 3 "") (if (= mode 2) (rep "x" 1 "") (rep "a" 0 ""))))
                 (def r2 (rep "z" (if (= mode 1) 2 (if (= mode 2) 4 1)) ""))
                 (def packed (if (< (String.byte-len r1) (String.byte-len r2))
-                                (tuple r1 r2)
-                                (tuple r2 r1)))
+                                #tuple(r1 r2)
+                                #tuple(r2 r1)))
                 (match packed
-                  ((tuple a b)
+                  (#tuple(a b)
                     (+ (* (String.byte-len a) 100)
                        (+ (* (String.byte-len b) 10)
                           (String.byte-len r1)))))))
@@ -1681,7 +1681,7 @@
            169 240 159 152 128))` — the 2-byte then 4-byte sequences concatenated. Pins the byte-level
            correctness of the UTF-8 encoder across the 2-byte and 4-byte forms (the boundaries a naive
            encoder gets wrong), the value companion of the byte-count cases above.")
-  (input  (= (String.to-bytes "é😀") (Bytes.of (list 195 169 240 159 152 128))))
+  (input  (= (String.to-bytes "é😀") (Bytes.of #list(195 169 240 159 152 128))))
   (output (: true Bool)))
 
 (case "string equality"
@@ -2490,7 +2490,7 @@
            compiler-ml codec's encode.cdz takes (a Name's UTF-8 written via String.to-bytes), the round-trip
            blocker this op removes.")
   (input   (do
-             (def (b1 x)        (Bytes.of (list (UInt8.wrap x))))
+             (def (b1 x)        (Bytes.of #list((UInt8.wrap x))))
              (def (str-payload s) (Bytes.concat (b1 (String.byte-len s)) (String.to-bytes s)))
              (def (main)        (Bytes.len (Bytes.concat (b1 2) (str-payload (String.concat "foo" ""))))) (export main)))
   (output  (: 5 Int64)))
@@ -2516,8 +2516,8 @@
            Pins the DIRECT-operand runtime Bytes `=` — was declined 'comparison of a compound value needs a
            heap walk'.")
   (input   (do
-             (def (rope)   (Bytes.concat (Bytes.of (list 104)) (Bytes.of (list 105))))
-             (def (main)   (= (rope) (Bytes.of (list 104 105)))) (export main)))
+             (def (rope)   (Bytes.concat (Bytes.of #list(104)) (Bytes.of #list(105))))
+             (def (main)   (= (rope) (Bytes.of #list(104 105)))) (export main)))
   (output  (: true Bool)))
 
 (case "runtime Bytes value-equality distinguishes different content"
@@ -2526,8 +2526,8 @@
            Confirms the `value-eq` compare is genuinely structural over the flattened bytes, not a trivial
            always-true / handle-identity compare.")
   (input   (do
-             (def (rope)   (Bytes.concat (Bytes.of (list 104)) (Bytes.of (list 105))))
-             (def (main)   (= (rope) (Bytes.of (list 104 106)))) (export main)))
+             (def (rope)   (Bytes.concat (Bytes.of #list(104)) (Bytes.of #list(105))))
+             (def (main)   (= (rope) (Bytes.of #list(104 106)))) (export main)))
   (output  (: false Bool)))
 
 (case "the runtime UTF-8 encoding of a string equals its exact byte literal"
@@ -2538,7 +2538,7 @@
            structural compare is exact → true. This is the case that DECLINED before direct-Bytes `=`.")
   (input   (do
              (def (enc s)  (String.to-bytes (String.concat s "")))
-             (def (main)   (= (enc "é😀") (Bytes.of (list 195 169 240 159 152 128)))) (export main)))
+             (def (main)   (= (enc "é😀") (Bytes.of #list(195 169 240 159 152 128)))) (export main)))
   (output  (: true Bool)))
 
 (case "the scalar length of a runtime multi-byte string counts scalars, not bytes"
@@ -2679,7 +2679,7 @@
            the value-oracle gate now checks independently (re-reading the rendered text): a rendered
            string MUST read back to the same value, so the renderer emits ONLY the closed escapes.")
   (input   (do
-             (def (main) (Option.expect (String.from-bytes (Bytes.of (list 97 7 98))) "well-formed")) (export main)))
+             (def (main) (Option.expect (String.from-bytes (Bytes.of #list(97 7 98))) "well-formed")) (export main)))
   (output  (: "ab" String)))
 
 ; --- Decoding bytes to a string is TOTAL, never trapping ---------------------------------------
@@ -2701,7 +2701,7 @@
            (c a f, then é as the two bytes 0xC3 0xA9 = 195 169) to `(Some \"café\")`. Pins that a
            well-formed byte sequence decodes to `(Some s)` — the success arm of the total decode
            (collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping).")
-  (input  (= (String.from-bytes (Bytes.of (list 99 97 102 195 169))) (Some "café")))
+  (input  (= (String.from-bytes (Bytes.of #list(99 97 102 195 169))) (Some "café")))
   (output (: true Bool)))
 
 (case "decoding an EMPTY byte sequence yields Some of the empty string"
@@ -2711,7 +2711,7 @@
            state-machine decoder with an off-by-one on the input length, or one that treated "consumed no
            bytes / produced no scalar" as a decode failure, would wrongly return None for empty input. Pins
            that empty is a valid decode (collections-and-text.md #Decoding Bytes To A String Is Total).")
-  (input  (= (String.from-bytes (Bytes.of (list))) (Some "")))
+  (input  (= (String.from-bytes (Bytes.of #list())) (Some "")))
   (output (: true Bool)))
 
 (case "a runtime String.from-bytes result is read twice and both reads see the decoded string"
@@ -2727,9 +2727,9 @@
            read would see a freed/garbled leaf. Expected: 6.")
   (input  (do
             (def (rep (: acc Bytes) (: n Int64))
-              (if (< n 1) acc (rep (Bytes.concat acc (Bytes.of (list 65))) (- n 1))))
+              (if (< n 1) acc (rep (Bytes.concat acc (Bytes.of #list(65))) (- n 1))))
             (def (main (: k Int64))
-              (match (String.from-bytes (rep (Bytes.of (list)) 3))
+              (match (String.from-bytes (rep (Bytes.of #list()) 3))
                 ((Some s) (+ (String.byte-len s) (String.scalar-len s)))
                 ((None u) -1)))
             (export main)))
@@ -2813,7 +2813,7 @@
            an unspecified string with a replacement character. Pins the failure arm as an ordinary value
            the program handles (collections-and-text.md #Decoding Bytes To A String Is Total, Not
            Trapping). This is the whole point of the total decode: ill-formed input is data, not a halt.")
-  (input  (= (String.from-bytes (Bytes.of (list 255))) None))
+  (input  (= (String.from-bytes (Bytes.of #list(255))) None))
   (output (: true Bool)))
 
 (case "decoding an overlong UTF-8 encoding yields none"
@@ -2826,7 +2826,7 @@
            distinction (overlong encodings have been used to smuggle forbidden bytes past naive
            validators). This is a requirement on the runtime's UTF-8 validator the reader relies on:
            the byte sequence, not the code point, must be canonical.")
-  (input  (= (String.from-bytes (Bytes.of (list 192 128))) None))
+  (input  (= (String.from-bytes (Bytes.of #list(192 128))) None))
   (output (: true Bool)))
 
 (case "decoding a lone continuation byte yields none"
@@ -2836,7 +2836,7 @@
            case (structurally-paired but non-canonical): here the byte is a valid CONTINUATION shape but
            appears with no lead to continue — the STATE-MACHINE failure mode a decoder that only rejected
            `0xFF`/overlong could miss. Pins that a stray continuation is rejected.")
-  (input  (= (String.from-bytes (Bytes.of (list 128))) None))
+  (input  (= (String.from-bytes (Bytes.of #list(128))) None))
   (output (: true Bool)))
 
 (case "decoding a truncated multi-byte sequence yields none"
@@ -2846,7 +2846,7 @@
            continuation that never arrives (a decode that ran off the end of the input). Together they pin
            BOTH state-machine failure faces — a continuation with no lead, and a lead with no continuation —
            beyond the byte-value (`0xFF`) and shortest-form (overlong) rejections above.")
-  (input  (= (String.from-bytes (Bytes.of (list 195))) None))
+  (input  (= (String.from-bytes (Bytes.of #list(195))) None))
   (output (: true Bool)))
 
 (case "decoding a surrogate code point encoded as UTF-8 yields none"
@@ -2859,7 +2859,7 @@
            encoding a surrogate is not a well-formed String. Pins that the runtime validator rejects
            surrogate encodings, not only structurally-broken bytes — the same Unicode-scalar boundary
            the char surface enforces, now on the byte-decode path the reader uses.")
-  (input  (= (String.from-bytes (Bytes.of (list 237 160 128))) None))
+  (input  (= (String.from-bytes (Bytes.of #list(237 160 128))) None))
   (output (: true Bool)))
 
 (case "decoding a four-byte sequence for a code point above U+10FFFF yields none"
@@ -2871,7 +2871,7 @@
            encodings, and surrogates — a byte sequence whose STRUCTURE is valid but whose CODE POINT is out
            of range (the decode companion of the `Char.from-int 1114112` = U+110000 rejection). Pins that
            the validator checks the decoded scalar's range, not only the byte structure.")
-  (input  (= (String.from-bytes (Bytes.of (list 244 144 128 128))) None))
+  (input  (= (String.from-bytes (Bytes.of #list(244 144 128 128))) None))
   (output (: true Bool)))
 
 ; The invalid-UTF8 cases above decode CONSTANT `(Bytes.of (list …))` literals, which the fold can validate at
@@ -2895,8 +2895,8 @@
             (def (pickb (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
             (def (validq (: b Bytes)) (match (String.from-bytes b) ((Some _s) 1) ((None) 0)))
             (def (main (: sel Int64))
-              (validq (Bytes.concat (Bytes.of (list 99 195))
-                                    (pickb sel (Bytes.of (list 169)) (Bytes.of (list 99))))))
+              (validq (Bytes.concat (Bytes.of #list(99 195))
+                                    (pickb sel (Bytes.of #list(169)) (Bytes.of #list(99))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64)) (output (: 0 Int64))
@@ -2907,8 +2907,8 @@
            `(String.from-bytes b)` and taking `(String.to-bytes s)` gives back the original UTF-8 bytes.
            Pins encode as the inverse of decode-of-well-formed (collections-and-text.md #Decoding Bytes To
            A String Is Total, Not Trapping, 3rd sentence).")
-  (input  (match (String.from-bytes (Bytes.of (list 99 97 102 195 169)))
-            ((Some s) (= (String.to-bytes s) (Bytes.of (list 99 97 102 195 169))))
+  (input  (match (String.from-bytes (Bytes.of #list(99 97 102 195 169)))
+            ((Some s) (= (String.to-bytes s) (Bytes.of #list(99 97 102 195 169))))
             ((None _) false)))
   (output (: true Bool)))
 
@@ -2921,7 +2921,7 @@
            bijection in the other direction from the decode-then-encode case above), the shape the compiler
            takes encoding an export name to UTF-8 and reading it back.")
   (input  (match (String.from-bytes (String.to-bytes "café"))
-            ((Some s) (= (String.to-bytes s) (Bytes.of (list 99 97 102 195 169))))
+            ((Some s) (= (String.to-bytes s) (Bytes.of #list(99 97 102 195 169))))
             ((None _) false)))
   (output (: true Bool)))
 
@@ -2953,7 +2953,7 @@
            is FALSE. Contrast the well-formed-decode case above (composed bytes → Some \"café\", which DOES
            equal the literal because those bytes are already NFC). Flips only when NFC is carried into the
            core; a from-bytes-raw hatch is moot while the default preserves bytes.")
-  (input  (= (String.from-bytes (Bytes.of (list 99 97 102 101 204 129))) (Some "café")))
+  (input  (= (String.from-bytes (Bytes.of #list(99 97 102 101 204 129))) (Some "café")))
   (output (: false Bool)))
 
 (case "an encode-decode round-trip preserves an ASCII string's byte length"
@@ -3055,7 +3055,7 @@
             (def (dec b) (match (String.from-bytes b)
                            ((Some s) (String.byte-len s))
                            ((None _) -1)))
-            (def (main) (dec (Bytes.of (list 104 105)))) (export main)))
+            (def (main) (dec (Bytes.of #list(104 105)))) (export main)))
   (output (: 2 Int64)))
 
 (case "decoding ill-formed bytes through a helper takes the None arm"
@@ -3070,7 +3070,7 @@
             (def (dec b) (match (String.from-bytes b)
                            ((Some s) (String.byte-len s))
                            ((None _) -1)))
-            (def (main) (dec (Bytes.of (list 255)))) (export main)))
+            (def (main) (dec (Bytes.of #list(255)))) (export main)))
   (output (: -1 Int64)))
 
 ; The helper cases above decode a FLAT byte leaf (`Bytes.of (list …)`). A `String.from-bytes` over a
@@ -3084,7 +3084,7 @@
            are well-formed UTF-8 → `(Some s)`, byte-len 3. Pins that a rope input decodes by CONTENT, not by
            its concat-node header bytes (which `bytes_flatten` materializes first).")
   (input  (do
-            (def (mk (: n Int64)) (Bytes.concat (Bytes.of (list (UInt8.wrap 104) (UInt8.wrap 105))) (Bytes.of (list (UInt8.wrap n)))))
+            (def (mk (: n Int64)) (Bytes.concat (Bytes.of #list((UInt8.wrap 104) (UInt8.wrap 105))) (Bytes.of #list((UInt8.wrap n)))))
             (def (main (: n Int64))
               (match (String.from-bytes (mk n)) ((Some s) (String.byte-len s)) ((None _) (- 0 1))))
             (export main)))
@@ -3096,7 +3096,7 @@
            is `0xFF` (an invalid UTF-8 lead) → `None` → -1. The rope/runtime-element form of the total
            decode's failure arm; the flatten-then-validate path rejects malformed content, never traps.")
   (input  (do
-            (def (mk (: n Int64)) (Bytes.of (list (UInt8.wrap n) (UInt8.wrap 255))))
+            (def (mk (: n Int64)) (Bytes.of #list((UInt8.wrap n) (UInt8.wrap 255))))
             (def (main (: n Int64))
               (match (String.from-bytes (mk n)) ((Some s) (String.byte-len s)) ((None _) (- 0 1))))
             (export main)))
@@ -3108,7 +3108,7 @@
            next n bytes as UTF-8 into `name : String`. Against `(list 3 102 111 111)` — n=3, then the
            ASCII bytes of \"foo\" — the `utf8` segment matches and binds name = \"foo\". Pins the
            string-typed binary segment (options/binary-syntax/), the decode built into pattern matching.")
-  (input  (match (Bytes.of (list 3 102 111 111))
+  (input  (match (Bytes.of #list(3 102 111 111))
             ((bin (u8 n) (utf8 name n)) name)
             (_ "invalid")))
   (output (: "foo" String)))
@@ -3120,7 +3120,7 @@
            match must be exhaustive (CDZ0210), a catch-all is required, so the ill-formed case is
            necessarily handled (collections-and-text.md #Decoding Bytes To A String Is Total, Not
            Trapping — the exhaustiveness clause). This is how binary matching absorbs invalid UTF-8.")
-  (input  (match (Bytes.of (list 1 255))
+  (input  (match (Bytes.of #list(1 255))
             ((bin (u8 n) (utf8 name n)) name)
             (_ "invalid")))
   (output (: "invalid" String)))
@@ -3132,7 +3132,7 @@
            itself is a source of non-match. Pins that the ill-formed-UTF-8 case cannot be silently
            dropped: the compiler forces a branch for it (collections-and-text.md #Decoding Bytes To A
            String Is Total, Not Trapping).")
-  (input  (match (Bytes.of (list 3 102 111 111))
+  (input  (match (Bytes.of #list(3 102 111 111))
             ((bin (u8 n) (utf8 name n)) name)))
   (error  CDZ0210))
 
@@ -3145,7 +3145,7 @@
            Extends the single-dependent `(bin (u8 n) (utf8 name n))` case to a MULTI-segment pattern where a
            later segment's length depends on a value the pattern read earlier, pinning that the decode cursor
            threads correctly across segments (options/binary-syntax/).")
-  (input  (match (Bytes.of (list 2 65 66 1 67))
+  (input  (match (Bytes.of #list(2 65 66 1 67))
             ((bin (u8 a) (utf8 s1 a) (u8 b) (utf8 s2 b)) (String.concat s1 s2))
             (_ "x")))
   (output (: "ABC" String)))
@@ -3158,7 +3158,7 @@
            handled by the same exhaustiveness-required catch-all every `bin` match obeys (the length-overrun
            companion of the ill-formed-UTF-8 non-match; collections-and-text.md #Decoding Bytes To A String
            Is Total, Not Trapping).")
-  (input  (match (Bytes.of (list 5 102 111))
+  (input  (match (Bytes.of #list(5 102 111))
             ((bin (u8 n) (utf8 name n)) name)
             (_ "invalid")))
   (output (: "invalid" String)))
@@ -3832,7 +3832,7 @@
   (input  (do
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (if (= (tuple (rep "hi" 1) 1) (tuple "hix" 1)) 1 0))
+            (def (main) (if (= #tuple((rep "hi" 1) 1) #tuple("hix" 1)) 1 0))
             (export main)))
   (output (: 1 Int64)))
 
@@ -3855,7 +3855,7 @@
   (input  (do
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (if (= (record (= f (rep "hi" 3)) (= g 1)) (record (= f "hixxx") (= g 1))) 1 0))
+            (def (main) (if (= #record((= f (rep "hi" 3)) (= g 1)) #record((= f "hixxx") (= g 1))) 1 0))
             (export main)))
   (output (: 1 Int64)))
 
@@ -3870,7 +3870,7 @@
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
             (def (main)
-              (match (Map.lookup (Map.insert Map.empty (tuple (rep "hi" 3) 1) 42) (tuple "hixxx" 1))
+              (match (Map.lookup (Map.insert Map.empty #tuple((rep "hi" 3) 1) 42) #tuple("hixxx" 1))
                 ((Some v) v)
                 ((None) (- 0 1))))
             (export main)))
@@ -3888,7 +3888,7 @@
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
             (def (main)
-              (match (Map.lookup (Map.insert Map.empty (list (rep "hi" 3)) 42) (list "hixxx"))
+              (match (Map.lookup (Map.insert Map.empty #list((rep "hi" 3)) 42) #list("hixxx"))
                 ((Some v) v)
                 ((None) (- 0 1))))
             (export main)))
@@ -3901,7 +3901,7 @@
   (input  (do
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (if (= (tuple (rep "hi" 0) 1) (tuple "hi" 1)) 1 0))
+            (def (main) (if (= #tuple((rep "hi" 0) 1) #tuple("hi" 1)) 1 0))
             (export main)))
   (output (: 1 Int64)))
 
@@ -3913,7 +3913,7 @@
   (input  (do
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (if (= (tuple (rep "hi" 3) 1) (tuple (rep "hi" 3) 1)) 1 0))
+            (def (main) (if (= #tuple((rep "hi" 3) 1) #tuple((rep "hi" 3) 1)) 1 0))
             (export main)))
   (output (: 1 Int64)))
 
@@ -3931,7 +3931,7 @@
   (input  (do
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (if (= (tuple (tuple (rep "hi" 3) 1) 2) (tuple (tuple "hixxx" 1) 2)) 1 0))
+            (def (main) (if (= #tuple(#tuple((rep "hi" 3) 1) 2) #tuple(#tuple("hixxx" 1) 2)) 1 0))
             (export main)))
   (output (: 1 Int64)))
 
@@ -3944,7 +3944,7 @@
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
             (def (main)
-              (if (= (record (= f (Option.Some (rep "hi" 3))) (= g 1)) (record (= f (Option.Some "hixxx")) (= g 1))) 1 0))
+              (if (= #record((= f (Option.Some (rep "hi" 3))) (= g 1)) #record((= f (Option.Some "hixxx")) (= g 1))) 1 0))
             (export main)))
   (output (: 1 Int64)))
 
@@ -3957,7 +3957,7 @@
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
             (def (main)
-              (match (Map.lookup (Map.insert Map.empty (tuple (tuple (rep "hi" 3) 1) 2) 42) (tuple (tuple "hixxx" 1) 2))
+              (match (Map.lookup (Map.insert Map.empty #tuple(#tuple((rep "hi" 3) 1) 2) 42) #tuple(#tuple("hixxx" 1) 2))
                 ((Some v) v)
                 ((None) (- 0 1))))
             (export main)))
@@ -3976,7 +3976,7 @@
            only rejected never-valid bytes (0xFE/0xFF) accepts it.")
   (input  (do
             (def (main (: a Int64))
-              (match (String.from-bytes (Bytes.of (list (UInt8.wrap a))))
+              (match (String.from-bytes (Bytes.of #list((UInt8.wrap a))))
                 ((Some s) (String.byte-len s))
                 ((None _) -1)))
             (export main)))
@@ -3992,7 +3992,7 @@
            None → -1. The classic smuggling vector for security filters — worth its own pin.")
   (input  (do
             (def (main (: a Int64))
-              (match (String.from-bytes (Bytes.of (list (UInt8.wrap a) (UInt8.wrap 128))))
+              (match (String.from-bytes (Bytes.of #list((UInt8.wrap a) (UInt8.wrap 128))))
                 ((Some s) (String.byte-len s))
                 ((None _) -1)))
             (export main)))
@@ -4008,7 +4008,7 @@
            the other and wrongly rejects a well-formed string).")
   (input  (do
             (def (main (: a Int64))
-              (match (String.from-bytes (Bytes.concat (Bytes.of (list (UInt8.wrap a))) (Bytes.of (list (UInt8.wrap 169)))))
+              (match (String.from-bytes (Bytes.concat (Bytes.of #list((UInt8.wrap a))) (Bytes.of #list((UInt8.wrap 169)))))
                 ((Some s) (String.byte-len s))
                 ((None _) -1)))
             (export main)))
@@ -4056,7 +4056,7 @@
             (def (at (: s String) (: i Int64)) (match (String.at s i) ((Some c) c) ((None _u) "X")))
             (def (main (: n Int64))
               (let ((r (build 20 "")))
-                (tuple
+                #tuple(
                   (String.scalar-len r)
                   (at r 0) (at r 1) (at r 38) (at r 39)
                   (if (= r "abababababababababababababababababababab") 1 0)
@@ -4085,8 +4085,8 @@
                   (match (List.at xs i) ((Some s) (sfold xs (+ i 1) (String.concat acc s))) ((None _u) acc))
                   acc))
             (def (main (: n Int64))
-              (let ((r (sfold (list "ab" "c" "de") 0 "")))
-                (tuple
+              (let ((r (sfold #list("ab" "c" "de") 0 "")))
+                #tuple(
                   (String.scalar-len r)
                   (match (String.slice r 3 4) ((Some sub) (if (= sub "d") 1 0)) ((None _u) 0))
                   (if (= r "abcde") 1 0))))
@@ -4651,7 +4651,7 @@
                 ((Option.None _u) acc)))
             (def (main (: k Int64))
               (do
-                (def s (join-ints (list 3 5 (* k 7) 15 1) 0 ""))
+                (def s (join-ints #list(3 5 (* k 7) 15 1) 0 ""))
                 (+ (* 100 (String.byte-len s))
                    (if (= s "FBnFn") 1 0))))
             (export main)))
@@ -4708,9 +4708,9 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def a (Bytes.of (list (UInt8.wrap (+ 225 k)))))
-                (def b (Bytes.of (list 152)))
-                (def c (Bytes.of (list 143)))
+                (def a (Bytes.of #list((UInt8.wrap (+ 225 k)))))
+                (def b (Bytes.of #list(152)))
+                (def c (Bytes.of #list(143)))
                 (match (String.from-bytes (Bytes.concat (Bytes.concat a b) c))
                   ((Some s) (+ (* 10 (String.scalar-len s)) (String.byte-len s)))
                   ((None _u) -1))))
@@ -4728,8 +4728,8 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def left (Bytes.of (list 226 152)))
-                (def right (Bytes.of (list (UInt8.wrap (+ 65 k)))))
+                (def left (Bytes.of #list(226 152)))
+                (def right (Bytes.of #list((UInt8.wrap (+ 65 k)))))
                 (match (String.from-bytes (Bytes.concat left right))
                   ((Some _s) 1)
                   ((None _u) 0))))
@@ -4872,23 +4872,23 @@
 ; scalar list element, matching only a list whose element at that position equals the literal.
 
 (case "a char-literal list-element pattern matches a runtime list whose head is that char"
-  (input (do (def (classify (: xs (List Char))) (match xs ((list #\a .. r) 1) (_ 0)))
-             (def (main) (classify (list (Option.expect (Char.from-int 97) "a") (Option.expect (Char.from-int 98) "b")))) (export main)))
+  (input (do (def (classify (: xs (List Char))) (match xs (#list(#\a .. r) 1) (_ 0)))
+             (def (main) (classify #list((Option.expect (Char.from-int 97) "a") (Option.expect (Char.from-int 98) "b")))) (export main)))
   (call main) (output (: 1 Int64)))
 
 (case "a char-literal list-element pattern misses when the head differs"
-  (input (do (def (classify (: xs (List Char))) (match xs ((list #\a .. r) 1) (_ 0)))
-             (def (main) (classify (list (Option.expect (Char.from-int 122) "z")))) (export main)))
+  (input (do (def (classify (: xs (List Char))) (match xs (#list(#\a .. r) 1) (_ 0)))
+             (def (main) (classify #list((Option.expect (Char.from-int 122) "z")))) (export main)))
   (call main) (output (: 0 Int64)))
 
 (case "a symbol-literal list-element pattern matches a list whose head is that symbol"
-  (input (do (def (f (: xs (List Symbol))) (match xs ((list #"go" .. r) 1) (_ 0)))
-             (def (main) (f (list (Symbol.of "go")))) (export main)))
+  (input (do (def (f (: xs (List Symbol))) (match xs (#list(#"go" .. r) 1) (_ 0)))
+             (def (main) (f #list((Symbol.of "go")))) (export main)))
   (call main) (output (: 1 Int64)))
 
 (case "a char literal at a non-head fixed-arity list position matches by value"
-  (input (do (def (f (: xs (List Char))) (match xs ((list a #\x) 1) (_ 0)))
-             (def (main) (f (list #\p #\x))) (export main)))
+  (input (do (def (f (: xs (List Char))) (match xs (#list(a #\x) 1) (_ 0)))
+             (def (main) (f #list(#\p #\x))) (export main)))
   (call main) (output (: 1 Int64)))
 
 ; ── breaker batch 537: slice-dup residue calibration (post-#4425, operator-accepted
@@ -4918,8 +4918,8 @@
 
 (case "slc3 a slice inside a DUAL-USED tuple (projection + walker) stacks the dqe leg-1 leak on the slice residue"
   (input (do (def (main (: n Int64))
-  (let ((a (tuple n (Option.expect (String.slice (String.concat "abcdef" (if (> n 0) "XY" "Z")) 1 4) "in-range")))
-        (b (tuple n (Option.expect (String.slice (String.concat "abcdef" (if (> n 0) "XY" "Z")) 1 4) "in-range"))))
+  (let ((a #tuple(n (Option.expect (String.slice (String.concat "abcdef" (if (> n 0) "XY" "Z")) 1 4) "in-range")))
+        (b #tuple(n (Option.expect (String.slice (String.concat "abcdef" (if (> n 0) "XY" "Z")) 1 4) "in-range"))))
     (+ (* 100 (String.byte-len (. a 1))) (+ (. b 0) (if (= a b) 10000 0)))))
 (export main)))
   (call main (: 1 Int64))

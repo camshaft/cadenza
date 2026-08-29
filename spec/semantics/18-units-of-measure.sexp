@@ -223,7 +223,7 @@
            tuple's positional segment to reach the Qty leaf; the whole-LIST and whole-MAP faces are pinned
            by the direct cases — this pins that the note-path descent NESTS (a scale-path machinery that
            handled only a top-level collection element would render the tuple-nested Qty raw at 5.0).")
-  (input  (list (tuple 1 (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))))
+  (input  #list(#tuple(1 (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))))
   (output (: (list (tuple 1 (Qty.of 5000.0 (Unit.base #"meter"))))
              (List (Tuple Int64 (Qty Float64 (Unit.base #"meter")))))))
 
@@ -456,10 +456,10 @@
   (input  (do
             (def (sum-q (: xs (List (Qty Int64 (Unit.base #"meter")))) (: acc (Qty Int64 (Unit.base #"meter"))))
               (match xs
-                ((list) acc)
-                ((list h .. t) (sum-q t (+ acc h)))))
+                (#list() acc)
+                (#list(h .. t) (sum-q t (+ acc h)))))
             (def (main (: n Int64))
-              (Qty.value (sum-q (list (Qty.of n (Unit.base #"meter")) (Qty.of 2 (Unit.base #"meter")) (Qty.of 30 (Unit.base #"meter"))) (Qty.of 0 (Unit.base #"meter")))))
+              (Qty.value (sum-q #list((Qty.of n (Unit.base #"meter")) (Qty.of 2 (Unit.base #"meter")) (Qty.of 30 (Unit.base #"meter"))) (Qty.of 0 (Unit.base #"meter")))))
             (export main)))
   (call   main (: 10 Int64))
   (output (: 42 Int64))
@@ -474,10 +474,10 @@
   (input  (do
             (def (max-q (: xs (List (Qty Int64 (Unit.base #"meter")))) (: best (Qty Int64 (Unit.base #"meter"))))
               (match xs
-                ((list) best)
-                ((list h .. t) (max-q t (if (> h best) h best)))))
+                (#list() best)
+                (#list(h .. t) (max-q t (if (> h best) h best)))))
             (def (main (: n Int64))
-              (Qty.value (max-q (list (Qty.of 5 (Unit.base #"meter")) (Qty.of n (Unit.base #"meter")) (Qty.of 7 (Unit.base #"meter"))) (Qty.of 0 (Unit.base #"meter")))))
+              (Qty.value (max-q #list((Qty.of 5 (Unit.base #"meter")) (Qty.of n (Unit.base #"meter")) (Qty.of 7 (Unit.base #"meter"))) (Qty.of 0 (Unit.base #"meter")))))
             (export main)))
   (call   main (: 42 Int64))
   (output (: 42 Int64))
@@ -563,7 +563,7 @@
   (input  (do
             (def (main)
               (Qty.value (+ (Qty.of 5 (Unit.base #"meter"))
-                            (List.at (list (Qty.of 1 (Unit.base #"meter"))) 0))))
+                            (List.at #list((Qty.of 1 (Unit.base #"meter"))) 0))))
             (export main)))
   (error  CDZ0203))
 
@@ -673,7 +673,7 @@
            (those DECODE a quantity from a heap collection): this pins the const/value-form bake of a compound
            LITERAL of quantities, confirming the per-element scale-fold recurses into a tuple's holes and
            respects each element's inner type. Number and unit AGREE in every element.")
-  (input  (tuple (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))
+  (input  #tuple((Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))
                  (Qty.of (Rational.of 5 1) (Unit.of #"mile"))))
   (output (: (tuple (Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 201168/25 (Unit.base #"meter")))
              (Tuple (Qty Float64 (Unit.base #"meter")) (Qty Rational (Unit.base #"meter"))))))
@@ -695,8 +695,8 @@
            reference: `((5.0 km,), (2.0 m,))` → `((5000.0 meter,), (2.0 meter,))`. Pins that the value-form
            scale-fold recurses through nested compound holes to arbitrary depth, not just the outermost
            tuple's direct elements — every Qty leaf, however deep, is normalized to its reference.")
-  (input  (tuple (tuple (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))
-                 (tuple (Qty.of 2.0 (Unit.base #"meter")))))
+  (input  #tuple(#tuple((Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))
+                 #tuple((Qty.of 2.0 (Unit.base #"meter")))))
   (output (: (tuple (tuple (Qty.of 5000.0 (Unit.base #"meter"))) (tuple (Qty.of 2.0 (Unit.base #"meter"))))
              (Tuple (Tuple (Qty Float64 (Unit.base #"meter"))) (Tuple (Qty Float64 (Unit.base #"meter")))))))
 
@@ -708,7 +708,7 @@
            meter)) Int64)`. Pins that the value-form scale-fold is per-LEAF and shape-directed — it descends
            an Option nested inside a tuple to reach the Qty, and does not touch a sibling non-quantity element
            (no spurious scaling of the Int).")
-  (input  (tuple (Some (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))) 7))
+  (input  #tuple((Some (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))) 7))
   (output (: (tuple (Some (Qty.of 5000.0 (Unit.base #"meter"))) 7)
              (Tuple (Option (Qty Float64 (Unit.base #"meter"))) Int64))))
 
@@ -1345,7 +1345,7 @@
            (Qty … meter)' — two identical-looking types. Pins the list-element join to fix-parity with the
            if/match join sites (qty_scale_mismatch_hint routed through peer_type_delta_hint).")
   (input  (do (def (main)
-                (Qty.value (List.at (list (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))
+                (Qty.value (List.at #list((Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))
                                           (Qty.of 2.0 (Unit.base #"meter"))) 0))) (export main)))
   (error  CDZ0201))
 
@@ -2499,8 +2499,8 @@
   (input  (do
             (def (main (: v Int64))
               (do
-                (def m (Map.insert Map.empty (tuple (Qty.of v (Unit.base #"meter")) 3) 42))
-                (match (Map.lookup m (tuple (Qty.of 10 (Unit.base #"meter")) 3))
+                (def m (Map.insert Map.empty #tuple((Qty.of v (Unit.base #"meter")) 3) 42))
+                (match (Map.lookup m #tuple((Qty.of 10 (Unit.base #"meter")) 3))
                   ((Some x) x)
                   ((None _u) -1))))
             (export main)))
@@ -2787,7 +2787,7 @@
            which folds); the magnitude is a runtime parameter so the list decode runs, not a constant fold.")
   (input  (do
             (def (main (: v Int64))
-              (match (List.at (list (Qty.of v (Unit.prefix kilo (Unit.base #"meter")))
+              (match (List.at #list((Qty.of v (Unit.prefix kilo (Unit.base #"meter")))
                                     (Qty.of (+ v 1) (Unit.prefix kilo (Unit.base #"meter")))) 1)
                 ((Some q) (Qty.value q))
                 ((None) 0)))
@@ -2805,7 +2805,7 @@
   (input  (do
             (def (main)
               (Qty.value
-                (match (List.at (list (Qty.of (Int8.of 100) (Unit.base #"meter"))
+                (match (List.at #list((Qty.of (Int8.of 100) (Unit.base #"meter"))
                                       (Qty.of (Int8.of 50) (Unit.base #"meter"))) 0)
                   ((Some q) q)
                   ((None) (Qty.of (Int8.of 0) (Unit.base #"meter"))))))
@@ -2856,7 +2856,7 @@
            heap-numeric quantity List element round-trips through the list decode with its handle intact.")
   (input  (do
             (def (main (: v Int64))
-              (match (List.at (list (Qty.of (BigInt.of v) (Unit.base #"meter"))
+              (match (List.at #list((Qty.of (BigInt.of v) (Unit.base #"meter"))
                                     (Qty.of (BigInt.of (+ v 1)) (Unit.base #"meter"))) 1)
                 ((Some q) (Qty.value q))
                 ((None) (BigInt.of 0))))
@@ -2872,7 +2872,7 @@
            List element decode (the canonical value survives the round-trip).")
   (input  (do
             (def (main (: v Int64))
-              (match (List.at (list (Qty.of (Rational.of v 2) (Unit.base #"meter"))
+              (match (List.at #list((Qty.of (Rational.of v 2) (Unit.base #"meter"))
                                     (Qty.of (Rational.of (+ v 1) 2) (Unit.base #"meter"))) 0)
                 ((Some q) (Qty.value q))
                 ((None) (Rational.of 0 1))))
@@ -2897,12 +2897,12 @@
            the peel this DECLINED at compile time).")
   (input  (do
             (def (main (: v Int64))
-              (let ((k (list (Qty.of v (Unit.base #"meter")) (Qty.of (+ v 1) (Unit.base #"meter"))))
+              (let ((k #list((Qty.of v (Unit.base #"meter")) (Qty.of (+ v 1) (Unit.base #"meter"))))
                     (m (Map.insert (Map.empty) k 42)))
-                (+ (match (Map.lookup m (list (Qty.of v (Unit.base #"meter"))
+                (+ (match (Map.lookup m #list((Qty.of v (Unit.base #"meter"))
                                               (Qty.of (+ v 1) (Unit.base #"meter"))))
                      ((Some found) found) ((None) 0))
-                   (match (Map.lookup m (list (Qty.of v (Unit.base #"meter"))
+                   (match (Map.lookup m #list((Qty.of v (Unit.base #"meter"))
                                               (Qty.of (+ v 2) (Unit.base #"meter"))))
                      ((Some found) found) ((None) 0)))))
             (export main)))
@@ -2916,10 +2916,10 @@
            quantity-element peel through Set canonicalization.")
   (input  (do
             (def (main (: v Int64))
-              (+ (Set.len #set((list (Qty.of v (Unit.base #"meter")))
-                                        (list (Qty.of v (Unit.base #"meter")))))
-                 (* 10 (Set.len #set((list (Qty.of v (Unit.base #"meter")))
-                                              (list (Qty.of (+ v 1) (Unit.base #"meter"))))))))
+              (+ (Set.len #set(#list((Qty.of v (Unit.base #"meter")))
+                                        #list((Qty.of v (Unit.base #"meter")))))
+                 (* 10 (Set.len #set(#list((Qty.of v (Unit.base #"meter")))
+                                              #list((Qty.of (+ v 1) (Unit.base #"meter"))))))))
             (export main)))
   (call   main (: 5 Int64))
   (output (: 21 Int64)))
@@ -2932,11 +2932,11 @@
            list-of-Qty key).")
   (input  (do
             (def (main (: v Int64))
-              (let ((k (list (list (Qty.of v (Unit.base #"meter")))))
+              (let ((k #list(#list((Qty.of v (Unit.base #"meter")))))
                     (m (Map.insert (Map.empty) k 42)))
-                (+ (match (Map.lookup m (list (list (Qty.of v (Unit.base #"meter")))))
+                (+ (match (Map.lookup m #list(#list((Qty.of v (Unit.base #"meter")))))
                      ((Some x) x) ((None) 0))
-                   (match (Map.lookup m (list (list (Qty.of (+ v 1) (Unit.base #"meter")))))
+                   (match (Map.lookup m #list(#list((Qty.of (+ v 1) (Unit.base #"meter")))))
                      ((Some x) x) ((None) 0)))))
             (export main)))
   (call   main (: 5 Int64))
@@ -2949,10 +2949,10 @@
            `dedup + 10*distinct` = 21. Pins the quantity-element peel through a TUPLE (not list) compound key.")
   (input  (do
             (def (main (: v Int64))
-              (+ (Set.len #set((tuple (Qty.of v (Unit.base #"meter")) v)
-                                        (tuple (Qty.of v (Unit.base #"meter")) v)))
-                 (* 10 (Set.len #set((tuple (Qty.of v (Unit.base #"meter")) v)
-                                              (tuple (Qty.of (+ v 1) (Unit.base #"meter")) v))))))
+              (+ (Set.len #set(#tuple((Qty.of v (Unit.base #"meter")) v)
+                                        #tuple((Qty.of v (Unit.base #"meter")) v)))
+                 (* 10 (Set.len #set(#tuple((Qty.of v (Unit.base #"meter")) v)
+                                              #tuple((Qty.of (+ v 1) (Unit.base #"meter")) v))))))
             (export main)))
   (call   main (: 5 Int64))
   (output (: 21 Int64)))
@@ -2964,7 +2964,7 @@
            list-index path (the value-side complement of the compound-KEY cases above).")
   (input  (do
             (def (main (: v Int64))
-              (let ((m (Map.insert (Map.empty) 1 (list (Qty.of v (Unit.base #"meter"))
+              (let ((m (Map.insert (Map.empty) 1 #list((Qty.of v (Unit.base #"meter"))
                                                        (Qty.of (+ v 1) (Unit.base #"meter"))))))
                 (match (Map.lookup m 1)
                   ((Some xs) (match (List.at xs 1) ((Some q) (Qty.value q)) ((None) 0)))
@@ -2992,7 +2992,7 @@
            per-element reference scale-fold recursing into a LIST's elements in the whole-collection value
            form, not only when a single element is decoded via `List.at` + `Qty.value`. Companion of the
            whole-Map-value render above — both exercise a quantity inside a heap collection's element slot.")
-  (input  (list (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))
+  (input  #list((Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))
                 (Qty.of 2.0 (Unit.prefix kilo (Unit.base #"meter")))))
   (output (: (list (Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 2000.0 (Unit.base #"meter")))
              (List (Qty Float64 (Unit.base #"meter"))))))
@@ -3045,11 +3045,11 @@
   (input  (do
             (type Len (Q (Qty Int64 (Unit.base #"meter"))))
             (def (main (: v Int64))
-              (let ((k (list (Len.Q (Qty.of v (Unit.base #"meter")))))
+              (let ((k #list((Len.Q (Qty.of v (Unit.base #"meter")))))
                     (m (Map.insert (Map.empty) k 42)))
-                (+ (match (Map.lookup m (list (Len.Q (Qty.of v (Unit.base #"meter")))))
+                (+ (match (Map.lookup m #list((Len.Q (Qty.of v (Unit.base #"meter")))))
                      ((Some x) x) ((None) 0))
-                   (match (Map.lookup m (list (Len.Q (Qty.of (+ v 1) (Unit.base #"meter")))))
+                   (match (Map.lookup m #list((Len.Q (Qty.of (+ v 1) (Unit.base #"meter")))))
                      ((Some x) x) ((None) 0)))))
             (export main)))
   (call   main (: 5 Int64))

@@ -70,7 +70,7 @@
            many calls, proven in the unit test), and the returned tuple is value-form-encoded out.
            `pair(100)` → a handle → `call(handle, 5)` = `(: (tuple 5 105) (Tuple Int64 Int64))`. Pins the
            borrow<t> repeatable `call` on a value-form (compound) result end-to-end.")
-  (input  (do (def (pair (: k Int64)) (fn ((: x Int64)) (tuple x (+ x k)))) (export pair)))
+  (input  (do (def (pair (: k Int64)) (fn ((: x Int64)) #tuple(x (+ x k)))) (export pair)))
   (call   pair (: 100 Int64) (: 5 Int64))
   (output (: (tuple 5 105) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
@@ -234,7 +234,7 @@
             (effect ask (op ask (-> Unit Int64)))
             (def (main)
               (host (ask)
-                (tuple 1 (fn ((: x Int64)) (+ x (ask.ask)))))) (export main)))
+                #tuple(1 (fn ((: x Int64)) (+ x (ask.ask)))))) (export main)))
   (error  CDZ0406))
 
 (case "a LET-bound escaping-effect closure returned from a host block cannot cross the host boundary"
@@ -953,7 +953,7 @@
            x)` and `(tuple x (x*2))`. `app(handle, 5)` → `g((tuple 5 5), (tuple 5 10))` = 5 + 10 = 15.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
               (def (app (: g (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Int64)) (: x Int64))
-                (g (tuple x x) (tuple x (* x 2))))
+                (g #tuple(x x) #tuple(x (* x 2))))
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: 15 Int64))
@@ -963,7 +963,7 @@
   (doc    "A flat two-arg arrow with a compound RESULT: `g : (-> Int64 Int64 (Tuple Int64 Int64))` pairs its
            two args; `app` applies it to `x` and `x+10` and returns the tuple. `app(handle, 5)` → `g(5, 15)` =
            `(: (tuple 5 15) (Tuple Int64 Int64))`, value-form-encoded out.")
-  (input  (do (def (mk) (fn ((: a Int64) (: b Int64)) (tuple a b)))
+  (input  (do (def (mk) (fn ((: a Int64) (: b Int64)) #tuple(a b)))
               (def (app (: g (-> Int64 Int64 (Tuple Int64 Int64))) (: x Int64)) (g x (+ x 10)))
               (export mk) (export app)))
   (call   app (: 5 Int64))
@@ -1912,7 +1912,7 @@
   (doc    "`mk : () -> (-> Int64 (Tuple Int64 Int64))` returns `(tuple n n+1)`. `call(handle, 5)` walks the
            returned tuple handle, writes the value form, and the host decodes it to `(: (tuple 5 6) (Tuple
            Int64 Int64))` — the FULL typed document, not a bare byte list.")
-  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (+ n 1)))) (export mk)))
+  (input  (do (def (mk) (fn ((: n Int64)) #tuple(n (+ n 1)))) (export mk)))
   (call   mk (: 5 Int64))
   (output (: (tuple 5 6) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
@@ -1920,7 +1920,7 @@
 (case "a closure returning a record crosses as the typed value form"
   (doc    "A record result — `(record (x n) (y n+10))` → `(: (record (x 3) (y 13)) (Record (: x Int64) (: y Int64)))`. Field names + the record type node are baked in the template; only the leaf values are
            walked at run time.")
-  (input  (do (def (mk) (fn ((: n Int64)) (record (= x n) (= y (+ n 10))))) (export mk)))
+  (input  (do (def (mk) (fn ((: n Int64)) #record((= x n) (= y (+ n 10))))) (export mk)))
   (call   mk (: 3 Int64))
   (output (: (record (= x 3) (= y 13)) (Record (: x Int64) (: y Int64))))
   (live-objects known-leak 1))
@@ -1928,7 +1928,7 @@
 (case "a closure returning a tuple with a Bool leaf"
   (doc    "A mixed-leaf compound — `(tuple n (< n 5))` → `(: (tuple 2 true) (Tuple Int64 Bool))`. The Bool
            leaf's hole is filled via `get-bool` (its kind byte flipped true/false), the int via `get-int`.")
-  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (< n 5)))) (export mk)))
+  (input  (do (def (mk) (fn ((: n Int64)) #tuple(n (< n 5)))) (export mk)))
   (call   mk (: 2 Int64))
   (output (: (tuple 2 true) (Tuple Int64 Bool)))
   (live-objects known-leak 1))
@@ -1936,7 +1936,7 @@
 (case "a closure returning a NESTED tuple"
   (doc    "`(tuple n (tuple n+1 n+2))` → `(: (tuple 7 (tuple 8 9)) (Tuple Int64 (Tuple Int64 Int64)))`. The
            walker descends nested `arr-get` paths (the inner tuple is a boxed handle inside the outer).")
-  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (tuple (+ n 1) (+ n 2))))) (export mk)))
+  (input  (do (def (mk) (fn ((: n Int64)) #tuple(n #tuple((+ n 1) (+ n 2))))) (export mk)))
   (call   mk (: 7 Int64))
   (output (: (tuple 7 (tuple 8 9)) (Tuple Int64 (Tuple Int64 Int64))))
   (live-objects known-leak 1))
@@ -1945,7 +1945,7 @@
   (doc    "`mk : (Int64) -> (-> Int64 (Tuple Int64 Int64))` — `make(100)` captures `k=100`, then
            `call(handle, 5)` → `(: (tuple 100 5) (Tuple Int64 Int64))`. Confirms a captured value flows into
            the compound result across the boundary.")
-  (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) (tuple k n))) (export mk)))
+  (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) #tuple(k n))) (export mk)))
   (call   mk (: 100 Int64) (: 5 Int64))
   (output (: (tuple 100 5) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
@@ -1953,7 +1953,7 @@
 (case "a closure returning a tuple with a negative int leaf"
   (doc    "`(tuple n (- 0 n))` → `(: (tuple 5 -5) (Tuple Int64 Int64))`. The negative leaf flips the value
            form's kind byte to INT_NEG_DEC and writes the absolute magnitude (the escape's neg-int path).")
-  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (- 0 n)))) (export mk)))
+  (input  (do (def (mk) (fn ((: n Int64)) #tuple(n (- 0 n)))) (export mk)))
   (call   mk (: 5 Int64))
   (output (: (tuple 5 -5) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
@@ -1965,7 +1965,7 @@
 (case "a closure returning a NESTED record crosses as the typed value form"
   (doc    "`(record (a n) (b (record (c n+1) (d n+2))))` → the walker descends the nested record handle.
            `call(handle, 100)` → `(: (record (a 100) (b (record (c 101) (d 102)))) …)`.")
-  (input  (do (def (mk) (fn ((: n Int64)) (record (= a n) (= b (record (= c (+ n 1)) (= d (+ n 2)))))))
+  (input  (do (def (mk) (fn ((: n Int64)) #record((= a n) (= b #record((= c (+ n 1)) (= d (+ n 2)))))))
               (export mk)))
   (call   mk (: 100 Int64))
   (output (: (record (= a 100) (= b (record (= c 101) (= d 102))))
@@ -1977,7 +1977,7 @@
            in-guest) feeding a nested-tuple RESULT (value-form-walked out). `call(handle, (10, 3))` → `(tuple
            10 (tuple 3 13))`.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
-                         (tuple (. p 0) (tuple (. p 1) (+ (. p 0) (. p 1))))))
+                         #tuple((. p 0) #tuple((. p 1) (+ (. p 0) (. p 1))))))
               (export mk)))
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (tuple 10 (tuple 3 13)) (Tuple Int64 (Tuple Int64 Int64))))
@@ -1987,7 +1987,7 @@
   (doc    "`mk : (-> Int64 (Tuple Int64 (List Int64)))` — a fixed-shape tuple with a VARIABLE-LENGTH list
            element. The value-encode walker (not a static template) renders it: `call(handle, 100)` → `(tuple
            100 (list 100 101))`.")
-  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (list n (+ n 1)))))
+  (input  (do (def (mk) (fn ((: n Int64)) #tuple(n #list(n (+ n 1)))))
               (export mk)))
   (call   mk (: 100 Int64))
   (output (: (tuple 100 (list 100 101)) (Tuple Int64 (List Int64))))
@@ -1998,7 +1998,7 @@
            (recursively rebuilt) AND a nested result (value-form-walked). `call(handle, (100, (10, 3)))` →
            `(tuple 100 (tuple 10 3))`.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
-                         (tuple (. p 0) (tuple (. (. p 1) 0) (. (. p 1) 1)))))
+                         #tuple((. p 0) #tuple((. (. p 1) 0) (. (. p 1) 1)))))
               (export mk)))
   (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
@@ -2007,7 +2007,7 @@
 (case "a closure returning a SUM of a tuple (direct-call)"
   (doc    "`mk : (-> Int64 (Option (Tuple Int64 Int64)))` — a sum whose payload is a compound. The value-encode
            walker renders the discriminant + the payload tuple. `call(handle, 100)` → `(Some (tuple 100 101))`.")
-  (input  (do (def (mk) (fn ((: n Int64)) (if (> n 0) (Some (tuple n (+ n 1))) None)))
+  (input  (do (def (mk) (fn ((: n Int64)) (if (> n 0) (Some #tuple(n (+ n 1))) None)))
               (export mk)))
   (call   mk (: 100 Int64))
   (output (: (: (Some (tuple 100 101)) (Option (Tuple Int64 Int64))) (Option (Tuple Int64 Int64))))
@@ -2016,7 +2016,7 @@
 (case "a closure returning a LIST of tuples (direct-call)"
   (doc    "`mk : (-> Int64 (List (Tuple Int64 Int64)))` — a collection whose element is a compound. `call(handle,
            100)` → `(list (tuple 100 101) (tuple 102 103))`.")
-  (input  (do (def (mk) (fn ((: n Int64)) (list (tuple n (+ n 1)) (tuple (+ n 2) (+ n 3)))))
+  (input  (do (def (mk) (fn ((: n Int64)) #list(#tuple(n (+ n 1)) #tuple((+ n 2) (+ n 3)))))
               (export mk)))
   (call   mk (: 100 Int64))
   (output (: (list (tuple 100 101) (tuple 102 103)) (List (Tuple Int64 Int64))))
@@ -2034,8 +2034,8 @@
            n+1)`, `mkdbl` returns `(tuple n 2n)`. `call(mkpair-handle, 5)` walks its returned tuple → `(:
            (tuple 5 6) (Tuple Int64 Int64))`. Pins the compound value-form result on the shared-`call`
            multi-export path.")
-  (input  (do (def (mkpair) (fn ((: n Int64)) (tuple n (+ n 1))))
-              (def (mkdbl) (fn ((: n Int64)) (tuple n (* n 2))))
+  (input  (do (def (mkpair) (fn ((: n Int64)) #tuple(n (+ n 1))))
+              (def (mkdbl) (fn ((: n Int64)) #tuple(n (* n 2))))
               (export mkpair) (export mkdbl)))
   (call   mkpair (: 5 Int64))
   (output (: (tuple 5 6) (Tuple Int64 Int64)))
@@ -2045,8 +2045,8 @@
   (doc    "The SAME two-closure program, driving the OTHER export: `call(mkdbl-handle, 5)` → `(tuple 5 10)`.
            Confirms the shared `call` dispatches whichever closure a handle names and walks ITS distinct
            result (the code slot rides in the rep, the value form is shared since the type is).")
-  (input  (do (def (mkpair) (fn ((: n Int64)) (tuple n (+ n 1))))
-              (def (mkdbl) (fn ((: n Int64)) (tuple n (* n 2))))
+  (input  (do (def (mkpair) (fn ((: n Int64)) #tuple(n (+ n 1))))
+              (def (mkdbl) (fn ((: n Int64)) #tuple(n (* n 2))))
               (export mkpair) (export mkdbl)))
   (call   mkdbl (: 5 Int64))
   (output (: (tuple 5 10) (Tuple Int64 Int64)))
@@ -2063,8 +2063,8 @@
            → a handle the host keeps, the shared list-`call(5)` → `(: (tuple 5 6) (Tuple Int64 Int64))`. `call`
            borrows the handle (does NOT consume it), so the same handle serves repeated value-form calls
            (proven twice-over in the unit test).")
-  (input  (do (def (mkpair) (fn ((: n Int64)) (tuple n (+ n 1))))
-              (def (mkdbl) (fn ((: n Int64)) (tuple n (* n 2))))
+  (input  (do (def (mkpair) (fn ((: n Int64)) #tuple(n (+ n 1))))
+              (def (mkdbl) (fn ((: n Int64)) #tuple(n (* n 2))))
               (export mkpair) (export mkdbl)))
   (call   mkpair (: 5 Int64))
   (output (: (tuple 5 6) (Tuple Int64 Int64)))
@@ -2073,8 +2073,8 @@
 (case "multi-export record result — canonical field order"
   (doc    "Two closures returning a `(Record (: lo Int64) (: hi Int64))`. `call(mka-handle, 3)` → `(record (lo 3)
            (hi 103))`, rendered in CANONICAL sorted-name order `(record (hi 103) (lo 3))`.")
-  (input  (do (def (mka) (fn ((: n Int64)) (record (= lo n) (= hi (+ n 100)))))
-              (def (mkb) (fn ((: n Int64)) (record (= lo (- 0 n)) (= hi n))))
+  (input  (do (def (mka) (fn ((: n Int64)) #record((= lo n) (= hi (+ n 100)))))
+              (def (mkb) (fn ((: n Int64)) #record((= lo (- 0 n)) (= hi n))))
               (export mka) (export mkb)))
   (call   mka (: 3 Int64))
   (output (: (record (= hi 103) (= lo 3)) (Record (: hi Int64) (: lo Int64))))
@@ -2083,8 +2083,8 @@
 (case "multi-export record result — the second closure, with a negative leaf"
   (doc    "The SAME program's other export: `call(mkb-handle, 3)` → `(record (lo -3) (hi 3))` → canonical
            `(record (hi 3) (lo -3))`. The negative `lo` leaf flips its value form's kind byte.")
-  (input  (do (def (mka) (fn ((: n Int64)) (record (= lo n) (= hi (+ n 100)))))
-              (def (mkb) (fn ((: n Int64)) (record (= lo (- 0 n)) (= hi n))))
+  (input  (do (def (mka) (fn ((: n Int64)) #record((= lo n) (= hi (+ n 100)))))
+              (def (mkb) (fn ((: n Int64)) #record((= lo (- 0 n)) (= hi n))))
               (export mka) (export mkb)))
   (call   mkb (: 3 Int64))
   (output (: (record (= hi 3) (= lo -3)) (Record (: hi Int64) (: lo Int64))))
@@ -2094,9 +2094,9 @@
   (doc    "THREE same-signature closures (two capturing `k`, one not) each returning `(Tuple Int64 Int64)`.
            `b(7)` captures `k=7`; `call(b-handle, 2)` → `(tuple 2 7)`. Pins the shared value-form `call`
            dispatching among 3 closures, with captured values flowing into the compound result.")
-  (input  (do (def (a (: k Int64)) (fn ((: n Int64)) (tuple k n)))
-              (def (b (: k Int64)) (fn ((: n Int64)) (tuple n k)))
-              (def (c) (fn ((: n Int64)) (tuple n n)))
+  (input  (do (def (a (: k Int64)) (fn ((: n Int64)) #tuple(k n)))
+              (def (b (: k Int64)) (fn ((: n Int64)) #tuple(n k)))
+              (def (c) (fn ((: n Int64)) #tuple(n n)))
               (export a) (export b) (export c)))
   (call   b (: 7 Int64) (: 2 Int64))
   (output (: (tuple 2 7) (Tuple Int64 Int64)))
@@ -2112,7 +2112,7 @@
   (doc    "`mk : () -> (-> Int64 (Tuple Int64 Int64))` returns `(tuple n n+1)`, alongside a plain `two : ()
            -> 2`. `call(mk-handle, 5)` walks the returned tuple → `(: (tuple 5 6) (Tuple Int64 Int64))`. Pins
            the compound value-form result on the MIXED path (closure + plain export).")
-  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (+ n 1))))
+  (input  (do (def (mk) (fn ((: n Int64)) #tuple(n (+ n 1))))
               (def (two) 2)
               (export mk) (export two)))
   (call   mk (: 5 Int64))
@@ -2123,7 +2123,7 @@
   (doc    "The SAME mixed program, calling the plain `two` → 2 (a bare scalar, rendered directly — NOT a
            value-form document). Confirms the plain top-level export is reachable when a compound-result
            closure shares the component.")
-  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (+ n 1))))
+  (input  (do (def (mk) (fn ((: n Int64)) #tuple(n (+ n 1))))
               (def (two) 2)
               (export mk) (export two)))
   (call   two)
@@ -2133,7 +2133,7 @@
   (doc    "`mk : () -> (-> Int64 (Record (: a Int64) (: b Int64)))` returns `(record (a n) (b 2n))`, beside a
            parameterized plain `inc : (Int64) -> Int64`. `call(mk-handle, 4)` → `(: (record (a 4) (b 8))
            (Record (: a Int64) (: b Int64)))`.")
-  (input  (do (def (mk) (fn ((: n Int64)) (record (= a n) (= b (* n 2)))))
+  (input  (do (def (mk) (fn ((: n Int64)) #record((= a n) (= b (* n 2)))))
               (def (inc (: x Int64)) (+ x 1))
               (export mk) (export inc)))
   (call   mk (: 4 Int64))
@@ -2143,7 +2143,7 @@
 (case "a record-returning closure alongside a parameterized plain export — the plain"
   (doc    "The SAME program, calling `inc(41)` = 42. Pins the parameterized plain export reachable beside a
            record-result closure.")
-  (input  (do (def (mk) (fn ((: n Int64)) (record (= a n) (= b (* n 2)))))
+  (input  (do (def (mk) (fn ((: n Int64)) #record((= a n) (= b (* n 2)))))
               (def (inc (: x Int64)) (+ x 1))
               (export mk) (export inc)))
   (call   inc (: 41 Int64))
@@ -2160,8 +2160,8 @@
   (doc    "`mki : () -> (-> Int64 (Tuple Int64 Int64))` and `mkb : () -> (-> Bool (Tuple Bool Int64))` are
            distinct signatures WITH distinct RESULT types → two resource types, each with its own value-form
            template. `call(mki-handle, 5)` walks its tuple → `(: (tuple 5 6) (Tuple Int64 Int64))`.")
-  (input  (do (def (mki) (fn ((: n Int64)) (tuple n (+ n 1))))
-              (def (mkb) (fn ((: b Bool)) (tuple b (if b 1 0))))
+  (input  (do (def (mki) (fn ((: n Int64)) #tuple(n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) #tuple(b (if b 1 0))))
               (export mki) (export mkb)))
   (call   mki (: 5 Int64))
   (output (: (tuple 5 6) (Tuple Int64 Int64)))
@@ -2170,8 +2170,8 @@
 (case "distinct-sig compound result — the Bool→(Tuple Bool Int64) closure"
   (doc    "The SAME program's OTHER group, whose result type differs: `call(mkb-handle, true)` → `(: (tuple
            true 1) (Tuple Bool Int64))`. Confirms each distinct-sig group walks its OWN per-group template.")
-  (input  (do (def (mki) (fn ((: n Int64)) (tuple n (+ n 1))))
-              (def (mkb) (fn ((: b Bool)) (tuple b (if b 1 0))))
+  (input  (do (def (mki) (fn ((: n Int64)) #tuple(n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) #tuple(b (if b 1 0))))
               (export mki) (export mkb)))
   (call   mkb (: true Bool))
   (output (: (tuple true 1) (Tuple Bool Int64)))
@@ -2182,7 +2182,7 @@
            form), `mkb` a `Bytes` (raw byte-rope), `inc` an Int64 (by value). `call(mkt-handle, 9)` → `(:
            (tuple 9 10) (Tuple Int64 Int64))`. Pins the disjoint-memory layout (compound template + byte-rope
            payload + scalar all coexisting).")
-  (input  (do (def (mkt) (fn ((: n Int64)) (tuple n (+ n 1))))
+  (input  (do (def (mkt) (fn ((: n Int64)) #tuple(n (+ n 1))))
               (def (mkb) (fn ((: b Bool)) (bin (u8 (if b 7 8)))))
               (def (inc) (fn ((: x Int64)) (+ x 1)))
               (export mkt) (export mkb) (export inc)))
@@ -2194,7 +2194,7 @@
   (doc    "The SAME 3-mode program, driving the byte-rope group: `call(mkb-handle, false)` → `(8)` (a raw
            byte list, rendered bare — NOT a value-form document). Its payload is written PAST the compound
            template region.")
-  (input  (do (def (mkt) (fn ((: n Int64)) (tuple n (+ n 1))))
+  (input  (do (def (mkt) (fn ((: n Int64)) #tuple(n (+ n 1))))
               (def (mkb) (fn ((: b Bool)) (bin (u8 (if b 7 8)))))
               (def (inc) (fn ((: x Int64)) (+ x 1)))
               (export mkt) (export mkb) (export inc)))
@@ -2205,7 +2205,7 @@
 (case "distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar"
   (doc    "The SAME program's scalar group: `call(inc-handle, 41)` → 42 (returned by value, NOT list<u8>).
            Confirms the scalar `call-<g>` is unaffected by the sibling list-returning groups' memory.")
-  (input  (do (def (mkt) (fn ((: n Int64)) (tuple n (+ n 1))))
+  (input  (do (def (mkt) (fn ((: n Int64)) #tuple(n (+ n 1))))
               (def (mkb) (fn ((: b Bool)) (bin (u8 (if b 7 8)))))
               (def (inc) (fn ((: x Int64)) (+ x 1)))
               (export mkt) (export mkb) (export inc)))
@@ -2226,7 +2226,7 @@
            yields 6, so the tuple is `(5, 6)`, decoded to `(: (tuple 5 6) (Tuple Int64 Int64))`. Pins the
            compound value-form result on the round-trip path.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
-              (def (app (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) #tuple(x (g x)))
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: (tuple 5 6) (Tuple Int64 Int64))))
@@ -2235,7 +2235,7 @@
   (doc    "`mk` doubles; `app : (own<t>, Int64) -> (Record (: inp Int64) (: out Int64))` = `(record (inp x) (out
            (g x)))`. `app(handle, 10)` → `(: (record (inp 10) (out 20)) …)`.")
   (input  (do (def (mk) (fn ((: n Int64)) (* n 2)))
-              (def (app (: g (-> Int64 Int64)) (: x Int64)) (record (= inp x) (= out (g x))))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) #record((= inp x) (= out (g x))))
               (export mk) (export app)))
   (call   app (: 10 Int64))
   (output (: (record (= inp 10) (= out 20)) (Record (: inp Int64) (: out Int64)))))
@@ -2246,7 +2246,7 @@
            compound (value-form) consumer of the same resource coexisting.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
               (def (asnum (: g (-> Int64 Int64)) (: x Int64)) (g x))
-              (def (aspair (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (aspair (: g (-> Int64 Int64)) (: x Int64)) #tuple(x (g x)))
               (export mk) (export asnum) (export aspair)))
   (call   aspair (: 8 Int64))
   (output (: (tuple 8 9) (Tuple Int64 Int64))))
@@ -2257,7 +2257,7 @@
            consumer's memory/template.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
               (def (asnum (: g (-> Int64 Int64)) (: x Int64)) (g x))
-              (def (aspair (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (aspair (: g (-> Int64 Int64)) (: x Int64)) #tuple(x (g x)))
               (export mk) (export asnum) (export aspair)))
   (call   asnum (: 8 Int64))
   (output (: 9 Int64)))
@@ -2267,7 +2267,7 @@
            (`asbytes` → raw `list<u8>`). `aspair(handle, 3)` → `(: (tuple 3 4) …)`. Pins disjoint memory: the
            compound template region vs the byte-rope payload written past it.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
-              (def (aspair (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (aspair (: g (-> Int64 Int64)) (: x Int64)) #tuple(x (g x)))
               (def (asbytes (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
               (export mk) (export aspair) (export asbytes)))
   (call   aspair (: 3 Int64))
@@ -2277,7 +2277,7 @@
   (doc    "The SAME program, driving the byte-rope consumer: `asbytes(handle, 40)` → `(41)` (a raw byte
            list, its payload written PAST the compound template region — the two never collide).")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
-              (def (aspair (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (aspair (: g (-> Int64 Int64)) (: x Int64)) #tuple(x (g x)))
               (def (asbytes (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
               (export mk) (export aspair) (export asbytes)))
   (call   asbytes (: 40 Int64))
@@ -2287,7 +2287,7 @@
   (doc    "A tuple-returning consumer `app` beside a plain `five : () -> 5`. Calling `five` → 5. Confirms a
            plain top-level export is reachable when a compound round-trip consumer shares the component.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
-              (def (app (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) #tuple(x (g x)))
               (def (five) 5)
               (export mk) (export app) (export five)))
   (call   five)
@@ -2307,7 +2307,7 @@
            consumer result on the distinct-sig round-trip path.")
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
-              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) #tuple(x (g x)))
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 5 Int64))
@@ -2319,7 +2319,7 @@
            unaffected by the sibling compound consumer's memory/template.")
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
-              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) #tuple(x (g x)))
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: true Bool))
@@ -2331,8 +2331,8 @@
            per-consumer value-form template.")
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
-              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
-              (def (appb (: h (-> Bool Int64)) (: y Bool)) (record (= flag y) (= val (h y))))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) #tuple(x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) #record((= flag y) (= val (h y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 40 Int64))
   (output (: (tuple 40 41) (Tuple Int64 Int64))))
@@ -2342,8 +2342,8 @@
            (Record (: flag Bool) (: val Int64)))`. Confirms each distinct-sig consumer decodes its own template.")
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
-              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
-              (def (appb (: h (-> Bool Int64)) (: y Bool)) (record (= flag y) (= val (h y))))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) #tuple(x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) #record((= flag y) (= val (h y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: true Bool))
   (output (: (record (= flag true) (= val 7)) (Record (: flag Bool) (: val Int64)))))
@@ -2354,7 +2354,7 @@
            template region (disjoint memory).")
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
-              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) #tuple(x (g x)))
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (bin (u8 (UInt8.wrap (h y)))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: false Bool))
@@ -2372,7 +2372,7 @@
   (doc    "`mk : () -> (-> Int64 (List Int64))` returns `(list n n+1 n+2)`. `call(handle, 10)` dispatches the
            closure → the list handle, then `value-encode` renders `(: (list 10 11 12) (List Int64))`. Pins a
            VARIABLE-LENGTH collection result (no static template — the runtime walks the handle).")
-  (input  (do (def (mk) (fn ((: n Int64)) (list n (+ n 1) (+ n 2)))) (export mk)))
+  (input  (do (def (mk) (fn ((: n Int64)) #list(n (+ n 1) (+ n 2)))) (export mk)))
   (call   mk (: 10 Int64))
   (output (: (list 10 11 12) (List Int64)))
   (live-objects known-leak 1))
@@ -2397,7 +2397,7 @@
   (doc    "`(list (list n) (list n+1 n+2))` → `(: (list (list 7) (list 8 9)) (List (List Int64)))`. The shape
            descriptor's type node is recursive, so a nested collection element crosses; `value-encode`
            recurses over the inner lists.")
-  (input  (do (def (mk) (fn ((: n Int64)) (list (list n) (list (+ n 1) (+ n 2))))) (export mk)))
+  (input  (do (def (mk) (fn ((: n Int64)) #list(#list(n) #list((+ n 1) (+ n 2))))) (export mk)))
   (call   mk (: 7 Int64))
   (output (: (list (list 7) (list 8 9)) (List (List Int64))))
   (live-objects known-leak 1))
@@ -2405,7 +2405,7 @@
 (case "a CAPTURING closure returning a List"
   (doc    "`mk : (Int64) -> (-> Int64 (List Int64))` — `make(100)` captures `k=100`, then `call(handle, 5)` →
            `(: (list 100 5 105) (List Int64))`. Confirms a captured value flows into the collection result.")
-  (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) (list k n (+ k n)))) (export mk)))
+  (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) #list(k n (+ k n)))) (export mk)))
   (call   mk (: 100 Int64) (: 5 Int64))
   (output (: (list 100 5 105) (List Int64)))
   (live-objects known-leak 1))
@@ -2413,7 +2413,7 @@
 (case "a closure returning an EMPTY List"
   (doc    "`(: (list) (List Int64))` → `call(handle, 0)` → `(: (list) (List Int64))` — the value-encode
            walker handles a zero-length collection (the empty document).")
-  (input  (do (def (mk) (fn ((: n Int64)) (: (list) (List Int64)))) (export mk)))
+  (input  (do (def (mk) (fn ((: n Int64)) (: #list() (List Int64)))) (export mk)))
   (call   mk (: 0 Int64))
   (output (: (list) (List Int64)))
   (live-objects known-leak 1))
@@ -2437,7 +2437,7 @@
             (def (build (: n Int64) (: acc (List Int64)))
               (if (= n 0) acc (build (- n 1) (List.push acc n))))
             (def (mk (: n Int64))
-              (let ((xs (build n (list))))
+              (let ((xs (build n #list())))
                 (fn ((: i Int64)) (Option.expect (List.at xs i) "oob"))))
             (export mk)))
   (call   mk (: 3 Int64) (: 0 Int64))
@@ -2468,7 +2468,7 @@
            heap-capture-crosses-the-boundary shape.")
   (input  (do
             (def (make (: k Int64))
-              (let ((xs (list k (+ k 1) (+ k 2))))
+              (let ((xs #list(k (+ k 1) (+ k 2))))
                 (fn ((: i Int64))
                   (match (List.at xs i) ((Some v) v) ((None _u) -1)))))
             (export make)))
@@ -2513,9 +2513,9 @@
             (def (main (: k Int64))
               (host (io)
                 (let ((v (io.get unit)))
-                  (match (tuple (fn ((: x Int64)) (+ v x))
+                  (match #tuple((fn ((: x Int64)) (+ v x))
                                 (fn ((: x Int64)) (* v x)))
-                    ((tuple f g) (+ (f k) (* 100 (g k))))))))
+                    (#tuple(f g) (+ (f k) (* 100 (g k))))))))
             (export main)))
   (host-responses (respond io.get (: 7 Int64)))
   (host-calls (call io.get))
@@ -2534,8 +2534,8 @@
   (input  (do
             (effect io (op get (-> Unit Int64)))
             (def (mk) (host (io) (let ((v (io.get unit)))
-              (tuple (fn ((: x Int64)) (+ v x)) (fn ((: x Int64)) (* v x))))))
-            (def (main) (match (mk) ((tuple f g) (+ (f 10) (g 100)))))
+              #tuple((fn ((: x Int64)) (+ v x)) (fn ((: x Int64)) (* v x))))))
+            (def (main) (match (mk) (#tuple(f g) (+ (f 10) (g 100)))))
             (export main)))
   (host-responses (respond io.get (: 21 Int64)))
   (host-calls (call io.get))
@@ -2552,7 +2552,7 @@
   (input  (do
             (effect io (op get (-> Unit Int64)))
             (def (mk) (host (io) (let ((v (io.get unit)))
-              (record (= f (fn ((: x Int64)) (+ v x))) (= g (fn ((: x Int64)) (* v x)))))))
+              #record((= f (fn ((: x Int64)) (+ v x))) (= g (fn ((: x Int64)) (* v x)))))))
             (def (main) (let ((r (mk))) (+ ((. r f) 10) ((. r g) 100))))
             (export main)))
   (host-responses (respond io.get (: 21 Int64)))
@@ -2582,8 +2582,8 @@
   (doc    "Two same-signature closures — `up : () -> (-> Int64 (List Int64))` returns `(list n n+1)`, `dn`
            returns `(list n n-1)`. `call(up-handle, 5)` dispatches then value-encodes → `(: (list 5 6) (List
            Int64))`. Pins the variable-length collection result on the shared-`call` multi-export path.")
-  (input  (do (def (up) (fn ((: n Int64)) (list n (+ n 1))))
-              (def (dn) (fn ((: n Int64)) (list n (- n 1))))
+  (input  (do (def (up) (fn ((: n Int64)) #list(n (+ n 1))))
+              (def (dn) (fn ((: n Int64)) #list(n (- n 1))))
               (export up) (export dn)))
   (call   up (: 5 Int64))
   (output (: (list 5 6) (List Int64)))
@@ -2593,8 +2593,8 @@
   (doc    "The SAME two-closure program, driving the OTHER export: `call(dn-handle, 5)` → `(: (list 5 4)
            (List Int64))`. Confirms the shared `call` value-encodes whichever closure a handle names (the
            code slot rides in the rep, the descriptor is shared since the type is).")
-  (input  (do (def (up) (fn ((: n Int64)) (list n (+ n 1))))
-              (def (dn) (fn ((: n Int64)) (list n (- n 1))))
+  (input  (do (def (up) (fn ((: n Int64)) #list(n (+ n 1))))
+              (def (dn) (fn ((: n Int64)) #list(n (- n 1))))
               (export up) (export dn)))
   (call   dn (: 5 Int64))
   (output (: (list 5 4) (List Int64)))
@@ -2632,7 +2632,7 @@
   (doc    "`mk : () -> (-> Int64 (List Int64))` returns `(list n n+1)`, alongside a plain `two : () -> 2`.
            `call(mk-handle, 5)` value-encodes the returned list → `(: (list 5 6) (List Int64))`. Pins the
            variable-length collection result on the MIXED path (closure + plain export).")
-  (input  (do (def (mk) (fn ((: n Int64)) (list n (+ n 1))))
+  (input  (do (def (mk) (fn ((: n Int64)) #list(n (+ n 1))))
               (def (two) 2)
               (export mk) (export two)))
   (call   mk (: 5 Int64))
@@ -2643,7 +2643,7 @@
   (doc    "The SAME mixed program, calling the plain `two` → 2 (a bare scalar, NOT a value-form document).
            Confirms the plain top-level export is reachable when a collection-result closure shares the
            component.")
-  (input  (do (def (mk) (fn ((: n Int64)) (list n (+ n 1))))
+  (input  (do (def (mk) (fn ((: n Int64)) #list(n (+ n 1))))
               (def (two) 2)
               (export mk) (export two)))
   (call   two)
@@ -2679,8 +2679,8 @@
   (doc    "`mki : () -> (-> Int64 (List Int64))` returns `(list n n+1)`, `mkb : () -> (-> Bool (List Int64))`
            returns `(list (if b 1 0))` — distinct arg types → two resource types, each `call-g<n>` value-
            encoding its own result. `call(mki-handle, 5)` → `(: (list 5 6) (List Int64))`.")
-  (input  (do (def (mki) (fn ((: n Int64)) (list n (+ n 1))))
-              (def (mkb) (fn ((: b Bool)) (list (if b 1 0))))
+  (input  (do (def (mki) (fn ((: n Int64)) #list(n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) #list((if b 1 0))))
               (export mki) (export mkb)))
   (call   mki (: 5 Int64))
   (output (: (list 5 6) (List Int64)))
@@ -2689,8 +2689,8 @@
 (case "distinct-sig collection result — the Bool→List closure"
   (doc    "The SAME two-resource program, driving the OTHER signature: `call(mkb-handle, true)` → `(: (list
            1) (List Int64))`. Confirms each distinct-sig group value-encodes its own result.")
-  (input  (do (def (mki) (fn ((: n Int64)) (list n (+ n 1))))
-              (def (mkb) (fn ((: b Bool)) (list (if b 1 0))))
+  (input  (do (def (mki) (fn ((: n Int64)) #list(n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) #list((if b 1 0))))
               (export mki) (export mkb)))
   (call   mkb (: true Bool))
   (output (: (list 1) (List Int64)))
@@ -2701,8 +2701,8 @@
            tuple (fixed template), `byt` a Bytes (raw byte-rope), `inc` an Int64 (by value). `call(lst-handle,
            7)` → `(: (list 7 8) (List Int64))`. Pins the full disjoint-memory layout (compound template region
            + value-encode/byte-rope payloads past it + scalar-by-value all coexisting).")
-  (input  (do (def (lst) (fn ((: n Int64)) (list n (+ n 1))))
-              (def (pr) (fn ((: b Bool)) (tuple b (if b 1 0))))
+  (input  (do (def (lst) (fn ((: n Int64)) #list(n (+ n 1))))
+              (def (pr) (fn ((: b Bool)) #tuple(b (if b 1 0))))
               (def (byt) (fn ((: x Int64)) (bin (u8 (UInt8.wrap x)))))
               (def (inc) (fn ((: y Int64)) (+ y 1)))
               (export lst) (export pr) (export byt) (export inc)))
@@ -2713,8 +2713,8 @@
 (case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound"
   (doc    "The SAME 4-mode program, driving the COMPOUND group: `call(pr-handle, false)` → `(: (tuple false
            0) (Tuple Bool Int64))` (a fixed-shape template, distinct from the value-encoded collection).")
-  (input  (do (def (lst) (fn ((: n Int64)) (list n (+ n 1))))
-              (def (pr) (fn ((: b Bool)) (tuple b (if b 1 0))))
+  (input  (do (def (lst) (fn ((: n Int64)) #list(n (+ n 1))))
+              (def (pr) (fn ((: b Bool)) #tuple(b (if b 1 0))))
               (def (byt) (fn ((: x Int64)) (bin (u8 (UInt8.wrap x)))))
               (def (inc) (fn ((: y Int64)) (+ y 1)))
               (export lst) (export pr) (export byt) (export inc)))
@@ -2725,8 +2725,8 @@
 (case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the byte-rope"
   (doc    "The SAME program's byte-rope group: `call(byt-handle, 65)` → `(65)` (a raw byte list, written past
            the compound template region).")
-  (input  (do (def (lst) (fn ((: n Int64)) (list n (+ n 1))))
-              (def (pr) (fn ((: b Bool)) (tuple b (if b 1 0))))
+  (input  (do (def (lst) (fn ((: n Int64)) #list(n (+ n 1))))
+              (def (pr) (fn ((: b Bool)) #tuple(b (if b 1 0))))
               (def (byt) (fn ((: x Int64)) (bin (u8 (UInt8.wrap x)))))
               (def (inc) (fn ((: y Int64)) (+ y 1)))
               (export lst) (export pr) (export byt) (export inc)))
@@ -2737,8 +2737,8 @@
 (case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the scalar"
   (doc    "The SAME program's scalar group: `call(inc-handle, 41)` → 42 (by value, NOT list<u8>). Confirms
            the scalar `call-<g>` is unaffected by the three sibling list-returning groups.")
-  (input  (do (def (lst) (fn ((: n Int64)) (list n (+ n 1))))
-              (def (pr) (fn ((: b Bool)) (tuple b (if b 1 0))))
+  (input  (do (def (lst) (fn ((: n Int64)) #list(n (+ n 1))))
+              (def (pr) (fn ((: b Bool)) #tuple(b (if b 1 0))))
               (def (byt) (fn ((: x Int64)) (bin (u8 (UInt8.wrap x)))))
               (def (inc) (fn ((: y Int64)) (+ y 1)))
               (export lst) (export pr) (export byt) (export inc)))
@@ -2757,7 +2757,7 @@
            renders `(: (list 5 6) (List Int64))`. Pins the variable-length collection result on the round-trip
            path.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
-              (def (app (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) #list(x (g x)))
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: (list 5 6) (List Int64))))
@@ -2786,7 +2786,7 @@
            (value-encode) consumer of the same resource coexisting.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
               (def (asnum (: g (-> Int64 Int64)) (: x Int64)) (g x))
-              (def (aslist (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (aslist (: g (-> Int64 Int64)) (: x Int64)) #list(x (g x)))
               (export mk) (export asnum) (export aslist)))
   (call   aslist (: 8 Int64))
   (output (: (list 8 9) (List Int64))))
@@ -2797,7 +2797,7 @@
            consumer's value-encode.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
               (def (asnum (: g (-> Int64 Int64)) (: x Int64)) (g x))
-              (def (aslist (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (aslist (: g (-> Int64 Int64)) (: x Int64)) #list(x (g x)))
               (export mk) (export asnum) (export aslist)))
   (call   asnum (: 8 Int64))
   (output (: 9 Int64)))
@@ -2816,7 +2816,7 @@
            Int64))`. Pins the variable-length collection consumer result on the distinct-sig round-trip path.")
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
-              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) #list(x (g x)))
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 5 Int64))
@@ -2828,7 +2828,7 @@
            Confirms the scalar consumer is unaffected by the sibling collection consumer's memory/value-encode.")
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
-              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) #list(x (g x)))
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: true Bool))
@@ -2840,7 +2840,7 @@
            OWN per-consumer shape descriptor.")
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
-              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) #list(x (g x)))
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (map (= 0 (h y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 40 Int64))
@@ -2851,7 +2851,7 @@
            Confirms each distinct-sig consumer value-encodes its own descriptor.")
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
-              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) #list(x (g x)))
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (map (= 0 (h y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: true Bool))
@@ -2863,8 +2863,8 @@
            Int64))` — its value-encoded doc written PAST the sibling's compound template (disjoint memory).")
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
-              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
-              (def (appb (: h (-> Bool Int64)) (: y Bool)) (tuple y (h y)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) #list(x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) #tuple(y (h y)))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 3 Int64))
   (output (: (list 3 4) (List Int64))))
@@ -2875,8 +2875,8 @@
            value-encodes — three result-assembly mechanisms coexisting across two resource types.")
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
-              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
-              (def (appb (: h (-> Bool Int64)) (: y Bool)) (tuple y (h y)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) #list(x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) #tuple(y (h y)))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: false Bool))
   (output (: (tuple false 8) (Tuple Bool Int64))))
@@ -2896,7 +2896,7 @@
            Pins a COMPOUND (Tuple) closure argument crossing the round trip (built in-guest, never over the
            boundary).")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
-              (def (app (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g (tuple x x)))
+              (def (app (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g #tuple(x x)))
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: 10 Int64))
@@ -2909,7 +2909,7 @@
            heap handle in-guest).")
   (input  (do (def (mk) (fn ((: r (Record (: a Int64) (: b Int64)))) (* (. r a) (. r b))))
               (def (app (: g (-> (Record (: a Int64) (: b Int64)) Int64)) (: x Int64))
-                (g (record (= a x) (= b (+ x 1)))))
+                (g #record((= a x) (= b (+ x 1)))))
               (export mk) (export app)))
   (call   app (: 6 Int64))
   (output (: 42 Int64))
@@ -2920,7 +2920,7 @@
            `(list x x x)`. `app(handle, 9)` → `g((list 9 9 9))` = `(. List len)` = 3. A VARIABLE-LENGTH
            collection closure argument crosses the round trip (an i32 persistent-vector handle in-guest).")
   (input  (do (def (mk) (fn ((: xs (List Int64))) ((. List len) xs)))
-              (def (app (: g (-> (List Int64) Int64)) (: x Int64)) (g (list x x x)))
+              (def (app (: g (-> (List Int64) Int64)) (: x Int64)) (g #list(x x x)))
               (export mk) (export app)))
   (call   app (: 9 Int64))
   (output (: 3 Int64))
@@ -2933,7 +2933,7 @@
            compound arg feeds the closure, and the consumer's own compound result is value-form-encoded out.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (. p 0)))
               (def (app (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64))
-                (tuple x (g (tuple (+ x 1) x))))
+                #tuple(x (g #tuple((+ x 1) x))))
               (export mk) (export app)))
   (call   app (: 7 Int64))
   (output (: (tuple 7 8) (Tuple Int64 Int64)))
@@ -2951,7 +2951,7 @@
            distinct-sig round-trip path (built in-guest, one of two resource types).")
   (input  (do (def (mka) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
               (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
-              (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g (tuple x x)))
+              (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g #tuple(x x)))
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 5 Int64))
@@ -2964,7 +2964,7 @@
            unaffected by the sibling compound-arg group.")
   (input  (do (def (mka) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
               (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
-              (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g (tuple x x)))
+              (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g #tuple(x x)))
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: true Bool))
@@ -2976,9 +2976,9 @@
            `g((tuple 8 7))` = 8-7 = 1. Each group's closure takes its own compound argument built in-guest.")
   (input  (do (def (mka) (fn ((: p (Tuple Int64 Int64))) (- (. p 0) (. p 1))))
               (def (mkb) (fn ((: r (Record (: a Int64) (: b Int64)))) (* (. r a) (. r b))))
-              (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g (tuple (+ x 1) x)))
+              (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g #tuple((+ x 1) x)))
               (def (appb (: h (-> (Record (: a Int64) (: b Int64)) Int64)) (: y Int64))
-                (h (record (= a y) (= b y))))
+                (h #record((= a y) (= b y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 7 Int64))
   (output (: 1 Int64))
@@ -2990,9 +2990,9 @@
            signature threads its own compound argument through its own resource type.")
   (input  (do (def (mka) (fn ((: p (Tuple Int64 Int64))) (- (. p 0) (. p 1))))
               (def (mkb) (fn ((: r (Record (: a Int64) (: b Int64)))) (* (. r a) (. r b))))
-              (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g (tuple (+ x 1) x)))
+              (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g #tuple((+ x 1) x)))
               (def (appb (: h (-> (Record (: a Int64) (: b Int64)) Int64)) (: y Int64))
-                (h (record (= a y) (= b y))))
+                (h #record((= a y) (= b y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: 6 Int64))
   (output (: 36 Int64))
@@ -3022,7 +3022,7 @@
            compound argument crosses (still one i32 handle at the top).")
   (input  (do (def (mk) (fn ((: p (Tuple (Tuple Int64 Int64) Int64))) (+ (. (. p 0) 0) (. p 1))))
               (def (app (: g (-> (Tuple (Tuple Int64 Int64) Int64) Int64)) (: x Int64))
-                (g (tuple (tuple x x) x)))
+                (g #tuple(#tuple(x x) x)))
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: 10 Int64))
@@ -3276,8 +3276,8 @@
            Int64))` — a scalar then a tuple, DIFFERENT sigs, each its own resource type + list-returning
            `call-g<n>` that interleaves the scalar around the rebuilt tuple then value-encodes the returned
            List. `make-a()` → handle, `call(handle, 100, (10, 3))` → `(list 100 10 3)`.")
-  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
-              (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) (list (. q 0) n)))
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) #list((. q 0) n)))
               (export mk-a) (export mk-b)))
   (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (list 100 10 3) (List Int64)))
@@ -3287,8 +3287,8 @@
   (doc    "The SAME distinct-sig List component, driving `mk-b` — the tuple field FIRST then the suffix scalar
            `n`: `call(handle, 100, (7, true))` → `(list (. q 0) n)` = `(list 7 100)`. Confirms the interleaving
            handles a Bool field + a suffix scalar per distinct-sig group's list-`call-g`.")
-  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
-              (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) (list (. q 0) n)))
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) #list((. q 0) n)))
               (export mk-a) (export mk-b)))
   (call   mk-b (: 100 Int64) (: (tuple 7 true) (Tuple Int64 Bool)))
   (output (: (list 7 100) (List Int64)))
@@ -3325,7 +3325,7 @@
            `(tuple 13 7)`. Proves the tuple-arg rebuild threads through the value-form (fixed compound) result
            core + envelope.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
-                         (tuple (+ (. p 0) (. p 1)) (- (. p 0) (. p 1)))))
+                         #tuple((+ (. p 0) (. p 1)) (- (. p 0) (. p 1)))))
               (export mk)))
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (tuple 13 7) (Tuple Int64 Int64)))
@@ -3337,7 +3337,7 @@
            `call(handle, (10, 3))` → `(record (diff 7) (sum 13))`. Confirms a record result rides the same
            value-form tuple-arg path.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
-                         (record (= sum (+ (. p 0) (. p 1))) (= diff (- (. p 0) (. p 1))))))
+                         #record((= sum (+ (. p 0) (. p 1))) (= diff (- (. p 0) (. p 1))))))
               (export mk)))
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (record (= diff 7) (= sum 13)) (Record (: diff Int64) (: sum Int64))))
@@ -3356,7 +3356,7 @@
            List renders at run time via `value-encode(rep, desc)`, crossing as `list<u8>`. `make()` → handle,
            `call(handle, (10, 3))` → `(list 10 3)`. The last single-export list-result core threaded — a
            tuple-arg closure now composes with EVERY result shape.")
-  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))))
               (export mk)))
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (list 10 3) (List Int64)))
@@ -3405,8 +3405,8 @@
            value-encode `call` that rebuilds the flattened tuple arg. Driving `mk-rev`: `make-rev()` → handle,
            `call(handle, (10, 3))` → `(list 3 10)`. The multi value-encode core + the shared multi list<u8>
            envelope thread the tuple rebuild.")
-  (input  (do (def (mk-fwd) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
-              (def (mk-rev) (fn ((: p (Tuple Int64 Int64))) (list (. p 1) (. p 0))))
+  (input  (do (def (mk-fwd) (fn ((: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))))
+              (def (mk-rev) (fn ((: p (Tuple Int64 Int64))) #list((. p 1) (. p 0))))
               (export mk-fwd) (export mk-rev)))
   (call   mk-rev (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (list 3 10) (List Int64)))
@@ -3417,9 +3417,9 @@
            Int64) (Tuple Int64 Int64))`. Driving `mk-sum`: `call(handle, (10, 3))` → `(tuple 13 7)`. The multi
            value-form core threads the tuple-arg rebuild.")
   (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64)))
-                          (tuple (+ (. p 0) (. p 1)) (- (. p 0) (. p 1)))))
+                          #tuple((+ (. p 0) (. p 1)) (- (. p 0) (. p 1)))))
               (def (mk-prod) (fn ((: p (Tuple Int64 Int64)))
-                           (tuple (* (. p 0) (. p 1)) (. p 0))))
+                           #tuple((* (. p 0) (. p 1)) (. p 0))))
               (export mk-sum) (export mk-prod)))
   (call   mk-sum (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (tuple 13 7) (Tuple Int64 Int64)))
@@ -3434,7 +3434,7 @@
            via make + shared value-encode `call` that rebuilds the flattened tuple arg, WHILE a plain `twice`
            rides alongside as a top-level func. Driving the closure: `make()` → handle, `call(handle, (10, 3))`
            → `(list 10 3)`.")
-  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))))
               (def (twice (: n Int64)) (* n 2))
               (export mk) (export twice)))
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
@@ -3444,7 +3444,7 @@
 (case "MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure"
   (doc    "The SAME mixed component, driving the plain `twice` — proving it coexists with the tuple-arg
            list-returning closure interface. `twice(21)` → 42.")
-  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))))
               (def (twice (: n Int64)) (* n 2))
               (export mk) (export twice)))
   (call   twice (: 21 Int64))
@@ -3478,7 +3478,7 @@
   (doc    "`mk : (-> Int64 (Tuple Int64 Int64) (List Int64))` — a scalar then a tuple, returning a List, beside
            a plain `two`. The shared value-encode `call` interleaves `n` around the rebuilt tuple, value-encodes
            the returned List. `call(handle, 100, (10, 3))` → `(list 100 10 3)`.")
-  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
               (def (two) 2)
               (export mk) (export two)))
   (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
@@ -3490,7 +3490,7 @@
            fixed-shape tuple, beside a plain `two`. The shared value-form `call` interleaves `n` around the
            rebuilt arg tuple, walks the returned handle into the template. `call(handle, 100, (10, 3))` →
            `(tuple 100 10 3)`.")
-  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (tuple n (. p 0) (. p 1))))
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #tuple(n (. p 0) (. p 1))))
               (def (two) 2)
               (export mk) (export two)))
   (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
@@ -3508,8 +3508,8 @@
            DIFFERENT tuple-arg signatures, each returning a collection. They cross as TWO resource types, each
            `call-g<n>` rebuilding its own flattened tuple arg then value-encoding the returned List. Driving
            the Int64-tuple group: `make-a()` → handle, `call(handle, (10, 3))` → `(list 10 3)`.")
-  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
-              (def (mk-b) (fn ((: p (Tuple Int64 Bool))) (list (. p 0))))
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Bool))) #list((. p 0))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (list 10 3) (List Int64)))
@@ -3520,8 +3520,8 @@
            tuple has a NARROW Bool field (boxed via `box-bool` in the rebuild). `make-b()` → handle,
            `call(handle, (7, true))` → `(list 7)`. Exercises a distinct tuple-arg shape per group + a Bool
            field in the flattened-tuple rebuild.")
-  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
-              (def (mk-b) (fn ((: p (Tuple Int64 Bool))) (list (. p 0))))
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Bool))) #list((. p 0))))
               (export mk-a) (export mk-b)))
   (call   mk-b (: (tuple 7 true) (Tuple Int64 Bool)))
   (output (: (list 7) (List Int64)))
@@ -3572,7 +3572,7 @@
            returning a variable-length List. The list-result `call` rebuilds the tuple from params 2..4, pushes
            `n` before it, dispatches, then value-encodes the returned List handle. `call(handle, 100, (10, 3))`
            → `(list 100 10 3)`. The among-scalars interleaving now reaches the list-result cores.")
-  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
               (export mk)))
   (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (list 100 10 3) (List Int64)))
@@ -3593,7 +3593,7 @@
            tuple, returning a fixed-shape tuple. The value-form `call` interleaves `n` around the rebuilt arg
            tuple, dispatches, walks the returned handle into the value-form template. `call(handle, 100, (10,
            3))` → `(tuple 100 10 3)`, decoded by the host to the typed document.")
-  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (tuple n (. p 0) (. p 1))))
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #tuple(n (. p 0) (. p 1))))
               (export mk)))
   (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64)))
@@ -3604,7 +3604,7 @@
            SUFFIX scalar, returning a List. The list-result `call` rebuilds the tuple from params 1..3, pushes
            the suffix scalar `n` (param 3), dispatches. `call(handle, (10, 3), 100)` → `(list 10 3 100)`.
            Confirms the interleaving handles a suffix scalar on the list-result path too.")
-  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: n Int64)) (list (. p 0) (. p 1) n)))
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: n Int64)) #list((. p 0) (. p 1) n)))
               (export mk)))
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
   (output (: (list 10 3 100) (List Int64)))
@@ -3655,7 +3655,7 @@
   (doc    "`mk : (-> Int64 (Record (: x Int64) (: y Int64)) (List Int64))` — a record arg composes with a
            collection result: the list-`call` rebuilds the record cell, dispatches, value-encodes the List.
            `call(handle, 100, (record (x 10) (y 3)))` → `(list 100 10 3)`.")
-  (input  (do (def (mk) (fn ((: n Int64) (: r (Record (: x Int64) (: y Int64)))) (list n (. r x) (. r y))))
+  (input  (do (def (mk) (fn ((: n Int64) (: r (Record (: x Int64) (: y Int64)))) #list(n (. r x) (. r y))))
               (export mk)))
   (call   mk (: 100 Int64) (: (record (= x 10) (= y 3)) (Record (: x Int64) (: y Int64))))
   (output (: (list 100 10 3) (List Int64)))
@@ -3791,7 +3791,7 @@
            nested cell, dispatches, value-encodes. `call(handle, 1000, (100, (10, 3)))` → `(list 1000 100 10
            3)`.")
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 (Tuple Int64 Int64))))
-                         (list n (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+                         #list(n (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (export mk)))
   (call   mk (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (list 1000 100 10 3) (List Int64)))
@@ -3807,7 +3807,7 @@
            result. The value-encode `call` rebuilds the nested cell recursively, dispatches, then value-encodes
            the returned List. `call(handle, (100, (10, 3)))` → `(list p.0 p.1.0 p.1.1)` = `(list 100 10 3)`.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
-                         (list (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+                         #list((. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (export mk)))
   (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (list 100 10 3) (List Int64)))
@@ -3829,7 +3829,7 @@
            fixed-shape compound result. The value-form `call` rebuilds the nested arg cell, dispatches, walks
            the returned handle into the template. `call(handle, (100, (10, 3)))` → `(tuple 100 10 3)`.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
-                         (tuple (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+                         #tuple((. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (export mk)))
   (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64)))
@@ -3840,7 +3840,7 @@
            arg + a collection result (both the nested-record rebuild + the value-encode result compose).
            `call(handle, (record (n 100) (inner (record (x 10) (y 3)))))` → `(list 100 10 3)`.")
   (input  (do (def (mk) (fn ((: r (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
-                         (list (. r n) (. (. r inner) x) (. (. r inner) y))))
+                         #list((. r n) (. (. r inner) x) (. (. r inner) y))))
               (export mk)))
   (call   mk (: (record (= n 100) (= inner (record (= x 10) (= y 3))))
                 (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
@@ -3883,9 +3883,9 @@
            collection result, shared `call`. The value-encode `call` rebuilds the nested cell, dispatches,
            value-encodes the returned List. `call(handle, (100, (10, 3)))` → `(list 100 10 3)`.")
   (input  (do (def (mk-a) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
-                           (list (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+                           #list((. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (def (mk-b) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
-                           (list (. (. p 1) 1) (. (. p 1) 0) (. p 0))))
+                           #list((. (. p 1) 1) (. (. p 1) 0) (. p 0))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (list 100 10 3) (List Int64)))
@@ -3923,7 +3923,7 @@
            `call` rebuilds the nested cell, dispatches, value-encodes the returned List. `call(handle, (100,
            (10, 3)))` → `(list 100 10 3)`.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
-                         (list (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+                         #list((. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (def (two) 2)
               (export mk) (export two)))
   (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
@@ -3966,7 +3966,7 @@
            value-encode `call` interleaves the prefix scalar around the recursively-rebuilt nested cell, then
            value-encodes the returned List. `call(handle, 1000, (100, (10, 3)))` → `(list 1000 100 10 3)`.")
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 (Tuple Int64 Int64))))
-                         (list n (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+                         #list(n (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
               (def (two) 2)
               (export mk) (export two)))
   (call   mk (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
@@ -4012,8 +4012,8 @@
            cell then value-encoding the List. Driving `mk-a`: `call(handle, (100, (10, 3)))` → `(list 100 10
            3)`.")
   (input  (do (def (mk-a) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
-                           (list (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
-              (def (mk-b) (fn ((: q (Tuple Int64 (Tuple Int64 Bool)))) (list (. q 0))))
+                           #list((. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+              (def (mk-b) (fn ((: q (Tuple Int64 (Tuple Int64 Bool)))) #list((. q 0))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (list 100 10 3) (List Int64)))
@@ -4057,8 +4057,8 @@
            The list-returning `call-g<n>` interleaves `n` around the recursively-rebuilt nested cell then
            value-encodes. Driving `mk-a`: `call(handle, 1000, (100, (10, 3)))` → `(list 1000 100 10 3)`.")
   (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 (Tuple Int64 Int64))))
-                           (list n (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
-              (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 (Tuple Int64 Bool)))) (list n (. q 0))))
+                           #list(n (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+              (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 (Tuple Int64 Bool)))) #list(n (. q 0))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (list 1000 100 10 3) (List Int64)))
@@ -4156,8 +4156,8 @@
            ONE list-returning `call`. The shared value-encode `call` interleaves `n` around the rebuilt tuple,
            dispatches, then value-encodes the returned List. Driving `mk-a`: `call(handle, 100, (10, 3))` →
            `(list 100 10 3)`. The among-scalars interleaving now reaches the multi-export list-result core.")
-  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
-              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list (. p 0) (. p 1) n)))
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list((. p 0) (. p 1) n)))
               (export mk-a) (export mk-b)))
   (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (list 100 10 3) (List Int64)))
@@ -4167,8 +4167,8 @@
   (doc    "The SAME multi-export List component, driving `mk-b` — the tuple fields FIRST then the suffix scalar
            `n`: `call(handle, 100, (10, 3))` → `(list p.0 p.1 n)` = `(list 10 3 100)`. Confirms both same-sig
            among-scalars List closures share the one interleaving list-`call`, prefix AND suffix.")
-  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
-              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list (. p 0) (. p 1) n)))
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list(n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #list((. p 0) (. p 1) n)))
               (export mk-a) (export mk-b)))
   (call   mk-b (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (list 10 3 100) (List Int64)))
@@ -4190,8 +4190,8 @@
            `call`. The shared `call` interleaves `n` around the rebuilt arg tuple, dispatches, walks the
            returned handle into the value-form template. Driving `mk-a`: `call(handle, 100, (10, 3))` →
            `(tuple 100 10 3)`, decoded by the host to the typed document.")
-  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (tuple n (. p 0) (. p 1))))
-              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (tuple (. p 0) n (. p 1))))
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #tuple(n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) #tuple((. p 0) n (. p 1))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64)))
@@ -4285,7 +4285,7 @@
            Both tuple args cross as native `tuple<s64,s64>` (rebuilt in-guest); the value-encode `call`
            dispatches then renders the returned List as the value-form document. `call(handle, (5,5), (5,10))`
            → `(list 5 10)`. The N-compound-args path now reaches the collection-result core.")
-  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. q 1))))
               (export mk)))
   (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
   (output (: (list 5 10) (List Int64)))
@@ -4295,7 +4295,7 @@
   (doc    "`mk : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) (Tuple Int64 Int64))` re-pairs `p.0` and `q.1`.
            The value-form `call` rebuilds both arg tuples, dispatches, and walks the returned tuple handle into
            the value-form template. `call(handle, (5,5), (5,10))` → `(tuple 5 10)`, decoded to the typed doc.")
-  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (tuple (. p 0) (. q 1))))
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #tuple((. p 0) (. q 1))))
               (export mk)))
   (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
   (output (: (tuple 5 10) (Tuple Int64 Int64)))
@@ -4318,7 +4318,7 @@
            scalar core params, are rebuilt, and the returned List is value-encoded. `call(handle, (1,2), (3,4),
            (100,200))` → `(list 1 4 100)`.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)) (: r (Tuple Int64 Int64)))
-                (list (. p 0) (. q 1) (. r 0))))
+                #list((. p 0) (. q 1) (. r 0))))
               (export mk)))
   (call   mk (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64))
              (: (tuple 100 200) (Tuple Int64 Int64)))
@@ -4331,7 +4331,7 @@
            tuple, pushes the scalar, rebuilds the second, dispatches, value-encodes the List. `call(handle,
            (5,5), 10, (1,20))` → `(list 5 10 20)`.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: n Int64) (: q (Tuple Int64 Int64)))
-                (list (. p 0) n (. q 1))))
+                #list((. p 0) n (. q 1))))
               (export mk)))
   (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: 10 Int64) (: (tuple 1 20) (Tuple Int64 Int64)))
   (output (: (list 5 10 20) (List Int64)))
@@ -4343,7 +4343,7 @@
            `call(handle, (5,5), (5,10))` → `(list 5 10 100)`. The forwarded capture cell + both rebuilt arg
            cells coexist, and the returned List is value-encoded out.")
   (input  (do (def (mk (: k Int64)) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
-                (list (. p 0) (. q 1) k)))
+                #list((. p 0) (. q 1) k)))
               (export mk)))
   (call   mk (: 100 Int64) (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
   (output (: (list 5 10 100) (List Int64)))
@@ -4464,8 +4464,8 @@
            rebuilt in-guest; the returned List is value-encoded out. Driving `mk-a`: `call(handle, (5,5),
            (5,10))` → `(list p.0 q.1)` = `(list 5 10)`. The N-compound-args path reaches the multi-export
            collection-result core.")
-  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
-              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. q 1) (. p 0))))
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. q 1) (. p 0))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
   (output (: (list 5 10) (List Int64)))
@@ -4475,8 +4475,8 @@
   (doc    "The SAME multi-export List component, driving `mk-b` (reversed): `call(handle, (5,5), (5,10))` →
            `(list q.1 p.0)` = `(list 10 5)`. Confirms both same-sig two-tuple-arg List closures share the one
            value-encode `call`.")
-  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
-              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. q 1) (. p 0))))
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. q 1) (. p 0))))
               (export mk-a) (export mk-b)))
   (call   mk-b (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
   (output (: (list 10 5) (List Int64)))
@@ -4486,8 +4486,8 @@
   (doc    "`mk-a`/`mk-b : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) (Tuple Int64 Int64))` sharing one
            value-form `call`. Both arg tuples are rebuilt; the returned tuple is walked into the value-form
            template. Driving `mk-a`: `call(handle, (5,5), (5,10))` → `(tuple p.0 q.1)` = `(tuple 5 10)`.")
-  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (tuple (. p 0) (. q 1))))
-              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (tuple (. q 1) (. p 0))))
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #tuple((. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #tuple((. q 1) (. p 0))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
   (output (: (tuple 5 10) (Tuple Int64 Int64)))
@@ -4511,9 +4511,9 @@
            rebuilt cells, one shared value-encode `call`. Driving `mk-a`: `call(handle, (1,2), (3,4),
            (100,200))` → `(list p.0 q.1 r.0)` = `(list 1 4 100)`.")
   (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)) (: r (Tuple Int64 Int64)))
-                (list (. p 0) (. q 1) (. r 0))))
+                #list((. p 0) (. q 1) (. r 0))))
               (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)) (: r (Tuple Int64 Int64)))
-                (list (. r 1))))
+                #list((. r 1))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64))
              (: (tuple 100 200) (Tuple Int64 Int64)))
@@ -4525,7 +4525,7 @@
            Int64) (Tuple Int64 Int64) (List Int64))` crosses via `make` + a shared value-encode `call` (both
            arg tuples rebuilt) WHILE a plain `twice` rides alongside. Driving the CLOSURE: `call(handle, (5,5),
            (5,10))` → `(list 5 10)`.")
-  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. q 1))))
               (def (twice (: n Int64)) (* n 2))
               (export mk) (export twice)))
   (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
@@ -4535,7 +4535,7 @@
 (case "MIXED: driving the PLAIN export alongside a two-Tuple-arg LIST closure"
   (doc    "The SAME mixed List component, driving the PLAIN export `twice` — proving it coexists with the
            two-tuple-arg list-returning closure interface. `twice(21)` → 42.")
-  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. q 1))))
               (def (twice (: n Int64)) (* n 2))
               (export mk) (export twice)))
   (call   twice (: 21 Int64))
@@ -4590,7 +4590,7 @@
            (Tuple Int64 Int64) (List Int64))` returns a list, alongside a scalar-result Int32 group `mk-b`. The
            group's value-encode `call-g0` rebuilds both arg tuples then renders the returned List. Driving
            `mk-i`: `call-g0(handle, (5,5), (5,10))` → `(list 5 10)`.")
-  (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
+  (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) #list((. p 0) (. q 1))))
               (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
               (export mk-i) (export mk-b)))
   (call   mk-i (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
@@ -5092,7 +5092,7 @@
            rebuilds — so the compiler DECLINES (a `todo`) rather than emit an invalid component. Was a
            MISCOMPILE (an unparseable module); the fix makes it an honest decline. Intended value when the
            list-cores thread sums: `Some(5)` → `(list 5 5)`.")
-  (input  (do (def (mk) (fn ((: o (Option Int64))) (match o ((Some x) (list x x)) (None (list)))))
+  (input  (do (def (mk) (fn ((: o (Option Int64))) (match o ((Some x) #list(x x)) (None #list()))))
               (export mk)))
   (call   mk (: (Some 5) (Option Int64)))
   (output (: (list 5 5) (List Int64))))
@@ -5110,7 +5110,7 @@
            `app(handle, 10)` → `g((fn p -> p.0+p.1+10))` applied to `(tuple 3 4)` = 3+4+10 = 17. Without the
            context recovery the inner param solved `Any` and declined `a closure's parameter type has no
            machine representation`; now it matches the explicit `(: p (Tuple Int64 Int64))` form.")
-  (input  (do (def (mk) (fn ((: f (-> (Tuple Int64 Int64) Int64))) (f (tuple 3 4))))
+  (input  (do (def (mk) (fn ((: f (-> (Tuple Int64 Int64) Int64))) (f #tuple(3 4))))
               (def (app (: g (-> (-> (Tuple Int64 Int64) Int64) Int64)) (: x Int64))
                 (g (fn (p) (+ (+ (. p 0) (. p 1)) x))))
               (export mk) (export app)))
@@ -5123,7 +5123,7 @@
            function arg to `(list 1 2 3)`; `app` hands `g` a guest-built `(fn (xs) (+ ((. List len) xs) x))`
            whose param `xs` is UNANNOTATED, recovered as `(List Int64)` from `g`'s arrow. `app(handle, 100)` →
            `g((fn xs -> len(xs)+100))` applied to `(list 1 2 3)` = 3 + 100 = 103.")
-  (input  (do (def (mk) (fn ((: f (-> (List Int64) Int64))) (f (list 1 2 3))))
+  (input  (do (def (mk) (fn ((: f (-> (List Int64) Int64))) (f #list(1 2 3))))
               (def (app (: g (-> (-> (List Int64) Int64) Int64)) (: x Int64))
                 (g (fn (xs) (+ ((. List len) xs) x))))
               (export mk) (export app)))
@@ -5173,7 +5173,7 @@
            the value-encode descriptor too: `mk`'s closure returns `(tuple (list n n+1) n)`. `call(handle, 5)`
            → `(: (tuple (list 5 6) 5) (Tuple (List Int64) Int64))`. The descriptor's Tuple node recurses into
            the List element.")
-  (input  (do (def (mk) (fn ((: n Int64)) (tuple (list n (+ n 1)) n)))
+  (input  (do (def (mk) (fn ((: n Int64)) #tuple(#list(n (+ n 1)) n)))
               (export mk)))
   (call   mk (: 5 Int64))
   (output (: (tuple (list 5 6) 5) (Tuple (List Int64) Int64)))
@@ -5215,7 +5215,7 @@
            List element crosses via the same value-encode descriptor (no static template for a variable
            element).")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
-              (def (app (: g (-> Int64 Int64)) (: x Int64)) (tuple (list x (g x)) x))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) #tuple(#list(x (g x)) x))
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: (tuple (list 5 6) 5) (Tuple (List Int64) Int64))))
@@ -5231,7 +5231,7 @@
            `(map (0 (list x (g x))) (1 (list x)))`. `app(handle, 5)` → `(: (map (0 (list 5 6)) (1 (list 5)))
            (Map Int64 (List Int64)))` in canonical key order.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
-              (def (app (: g (-> Int64 Int64)) (: x Int64)) (map (= 0 (list x (g x))) (= 1 (list x))))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (map (= 0 #list(x (g x))) (= 1 #list(x))))
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: (map (= 0 (list 5 6)) (= 1 (list 5))) (Map Int64 (List Int64)))))
@@ -5241,7 +5241,7 @@
            `app(handle, 5)` → `(: (Some (tuple 5 6)) (Option (Tuple Int64 Int64)))`. The value-encode walker
            switches on the disc, then renders the tuple payload.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
-              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Some (tuple x (g x))))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Some #tuple(x (g x))))
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: (Some (tuple 5 6)) (Option (Tuple Int64 Int64)))))
@@ -5252,7 +5252,7 @@
            `(: (list (tuple 3 6) (tuple 4 8)) (List (Tuple Int64 Int64)))`.")
   (input  (do (def (mk) (fn ((: n Int64)) (* n 2)))
               (def (app (: g (-> Int64 Int64)) (: x Int64))
-                (list (tuple x (g x)) (tuple (+ x 1) (g (+ x 1)))))
+                #list(#tuple(x (g x)) #tuple((+ x 1) (g (+ x 1)))))
               (export mk) (export app)))
   (call   app (: 3 Int64))
   (output (: (list (tuple 3 6) (tuple 4 8)) (List (Tuple Int64 Int64)))))
@@ -5277,7 +5277,7 @@
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 1 0) Int64)))
               (def (appa (: g (-> Int64 Int64)) (: x Int64)) (Some (g x)))
-              (def (appb (: h (-> Bool Int64)) (: y Bool)) (list (h y) (h y)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) #list((h y) (h y)))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 5 Int64))
   (output (: (Some 6) (Option Int64))))
@@ -5289,7 +5289,7 @@
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 1 0) Int64)))
               (def (appa (: g (-> Int64 Int64)) (: x Int64)) (Some (g x)))
-              (def (appb (: h (-> Bool Int64)) (: y Bool)) (list (h y) (h y)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) #list((h y) (h y)))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: true Bool))
   (output (: (list 1 1) (List Int64))))
@@ -5365,7 +5365,7 @@
            (Option (List Int64)))`, value-encoded through the nested descriptor (disc switch → List render).
            Pins a sum-of-collection result form.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
-              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Some (list x (g x))))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Some #list(x (g x))))
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: (Some (list 5 6)) (Option (List Int64)))))
@@ -5457,7 +5457,7 @@
           (if (= i 3) acc (build (+ i 1) (List.push acc (fn ((: y Int64)) (+ (* 10 i) y))))))
         (def (main (: y Int64))
           (do
-            (def fs (build 0 (list)))
+            (def fs (build 0 #list()))
             (def (app (: j Int64)) (match (List.at fs j) ((Some f) (f y)) ((None _u) -1)))
             (+ (* 100 (app 0)) (+ (* 10 (app 1)) (app 2)))))
         (export main)))
@@ -5480,7 +5480,7 @@
                      (List.push acc (fn ((: y Int64)) (+ (List.len xs) y))))))
         (def (main (: y Int64))
           (do
-            (def fs (build 0 (list) (list)))
+            (def fs (build 0 #list() #list()))
             (def (app (: j Int64)) (match (List.at fs j) ((Some f) (f y)) ((None _u) -1)))
             (+ (* 100 (app 0)) (+ (* 10 (app 1)) (app 2)))))
         (export main)))
@@ -5560,7 +5560,7 @@
             (effect io (op get (-> Unit Int64)))
             (def (main (: k Int64))
               (host (io)
-                (let ((pair (tuple 99 (fn ((: x Int64)) (+ x (io.get))))))
+                (let ((pair #tuple(99 (fn ((: x Int64)) (+ x (io.get))))))
                   ((. pair 1) k))))
             (export main)))
   (host-responses (respond io.get (: 3 Int64)))
@@ -5578,7 +5578,7 @@
   (doc    "`pair(100)` captures k=100; the closure `(fn (x) (tuple x (+ x k)))` returns a COMPOUND. make(100)
            once, then call(5) TWICE on the SAME borrowed handle -> each yields (tuple 5 105); repeatability
            renders (tuple (tuple 5 105) (tuple 5 105)). An own<t> cell would be consumed on the first call.")
-  (input  (do (def (pair (: k Int64)) (fn ((: x Int64)) (tuple x (+ x k)))) (export pair)))
+  (input  (do (def (pair (: k Int64)) (fn ((: x Int64)) #tuple(x (+ x k)))) (export pair)))
   (call   pair (: 100 Int64) (: 5 Int64))
   (then   (: 5 Int64))
   (output (: (tuple (tuple 5 105) (tuple 5 105)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64))))
@@ -5598,7 +5598,7 @@
   (doc    "Two same-signature tuple-returning exports `lo`/`hi` share one value-form list-call. make-lo()
            once, then the shared call(5) TWICE -> each (tuple 5 6); repeatability renders (tuple (tuple 5 6)
            (tuple 5 6)).")
-  (input  (do (def (lo) (fn ((: x Int64)) (tuple x (+ x 1)))) (def (hi) (fn ((: x Int64)) (tuple x (* x 10)))) (export lo) (export hi)))
+  (input  (do (def (lo) (fn ((: x Int64)) #tuple(x (+ x 1)))) (def (hi) (fn ((: x Int64)) #tuple(x (* x 10)))) (export lo) (export hi)))
   (call   lo (: 5 Int64))
   (then   (: 5 Int64))
   (output (: (tuple (tuple 5 6) (tuple 5 6)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64))))
@@ -5628,8 +5628,8 @@
            METHOD ABI (a named member besides encode), driven by (call-method len) + (then).")
   (input  (do (def (uleb (: n UInt64))
                 (if (< n 128)
-                    ((. Bytes of) (list ((. UInt8 wrap) n)))
-                    ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
+                    ((. Bytes of) #list(((. UInt8 wrap) n)))
+                    ((. Bytes concat) ((. Bytes of) #list(((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
               (def (main) (uleb 624485)) (export main)))
   (call-method len)
   (then)
@@ -5641,8 +5641,8 @@
            -> false (a non-empty Bytes). A scalar borrow method besides len.")
   (input  (do (def (uleb (: n UInt64))
                 (if (< n 128)
-                    ((. Bytes of) (list ((. UInt8 wrap) n)))
-                    ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
+                    ((. Bytes of) #list(((. UInt8 wrap) n)))
+                    ((. Bytes concat) ((. Bytes of) #list(((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
               (def (main) (uleb 624485)) (export main)))
   (call-method is-empty)
   (output (: false Bool))
@@ -5653,8 +5653,8 @@
            `(uleb 624485)` = E5 8E 26.")
   (input  (do (def (uleb (: n UInt64))
                 (if (< n 128)
-                    ((. Bytes of) (list ((. UInt8 wrap) n)))
-                    ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
+                    ((. Bytes of) #list(((. UInt8 wrap) n)))
+                    ((. Bytes concat) ((. Bytes of) #list(((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
               (def (main) (uleb 624485)) (export main)))
   (call-method to-bytes)
   (output (229 142 38))
@@ -5665,8 +5665,8 @@
            = E5 8E 26 -> `(: b\"\\xe5\\x8e&\" Bytes)`.")
   (input  (do (def (uleb (: n UInt64))
                 (if (< n 128)
-                    ((. Bytes of) (list ((. UInt8 wrap) n)))
-                    ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
+                    ((. Bytes of) #list(((. UInt8 wrap) n)))
+                    ((. Bytes concat) ((. Bytes of) #list(((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
               (def (main) (uleb 624485)) (export main)))
   (call-method encode)
   (output (: b"\xe5\x8e&" Bytes))
@@ -5682,8 +5682,8 @@
            `is-empty` member -> false (non-empty). Pins a value-resource member with a Bool result.")
   (input  (do (def (uleb (: n UInt64))
                 (if (< n 128)
-                    ((. Bytes of) (list ((. UInt8 wrap) n)))
-                    ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
+                    ((. Bytes of) #list(((. UInt8 wrap) n)))
+                    ((. Bytes concat) ((. Bytes of) #list(((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
               (def (main) (uleb 624485)) (export main)))
   (call-method is-empty)
   (output (: false Bool))
@@ -5695,8 +5695,8 @@
            list<u8> result (rendered as the bare byte list, not a decoded value-form).")
   (input  (do (def (uleb (: n UInt64))
                 (if (< n 128)
-                    ((. Bytes of) (list ((. UInt8 wrap) n)))
-                    ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
+                    ((. Bytes of) #list(((. UInt8 wrap) n)))
+                    ((. Bytes concat) ((. Bytes of) #list(((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
               (def (main) (uleb 624485)) (export main)))
   (call-method to-bytes)
   (output (: (229 142 38) (List UInt8)))
@@ -5717,32 +5717,32 @@
 ; the same dup makes hcz1 (the (drop) twin) reclaim to 0. The compiler cannot condition the dup on a
 ; runtime drop the guest code does not encode, so the escape dup is unconditional (leak-beats-UAF).
 (case "hcp1 a captured tuple returned WHOLE from a host-called closure works (projection is the ICE, not the capture)"
-  (input (do (def (f (: n Int64)) (let ((a (tuple n 7))) (fn ((: q Int64)) a))) (export f)))
+  (input (do (def (f (: n Int64)) (let ((a #tuple(n 7))) (fn ((: q Int64)) a))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (output (: (tuple 1 7) (Tuple Int64 Int64)))
   (live-objects known-leak 2))
 
 (case "hcp2 a closure capturing an IMMORTAL 33-trie plus a runtime scalar crosses and reads through the immortal"
-  (input (do (def (reader (: n Int64)) (let ((c (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (fn ((: i Int64)) (+ n (match (List.at c i) ((Option.Some v) v) ((Option.None) -1)))))) (export reader)))
+  (input (do (def (reader (: n Int64)) (let ((c #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (fn ((: i Int64)) (+ n (match (List.at c i) ((Option.Some v) v) ((Option.None) -1)))))) (export reader)))
   (call reader (: 100 Int64) (: 5 Int64))
   (output (: 106 Int64))
   (live-objects known-leak 5))
 
 (case "hcp3 a closure capturing a runtime-BUILT list crosses and reads it (mortal capture retained by the host-held handle)"
-  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
              (def (holder (: n Int64)) (let ((xs (bld n))) (fn ((: i Int64)) (+ (List.len xs) (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))))) (export holder)))
   (call holder (: 4 Int64) (: 1 Int64))
   (output (: 6 Int64))
   (live-objects known-leak 3))
 
 (case "hcx1 tuple-index projection of a captured tuple in a host-called closure body FOLDS — the projection reads the captured tuple env cell, not the inlined element (was the chr1 ICE's effects-free face: no-local-slot)"
-  (input (do (def (f (: n Int64)) (let ((a (tuple n 7))) (fn ((: q Int64)) (+ q (. a 0))))) (export f)))
+  (input (do (def (f (: n Int64)) (let ((a #tuple(n 7))) (fn ((: q Int64)) (+ q (. a 0))))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (output (: 6 Int64))
   (live-objects known-leak 2))
 
 (case "hcx2 a NESTED tuple-index projection of a captured tuple in a host-called closure body FOLDS — the projection chain stays runtime over the captured env cell (the nested face of the hcx1 no-local-slot ICE)"
-  (input (do (def (f (: n Int64)) (let ((a (tuple (tuple n 1) 7))) (fn ((: q Int64)) (+ q (. (. a 0) 0))))) (export f)))
+  (input (do (def (f (: n Int64)) (let ((a #tuple(#tuple(n 1) 7))) (fn ((: q Int64)) (+ q (. (. a 0) 0))))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (output (: 6 Int64))
   (live-objects known-leak 3))
@@ -5757,7 +5757,7 @@
 ; compound capture is a tracked residual — needs per-occurrence marking; not yet exercised.)
 
 (case "hcd1 dropping a closure whose capture is a runtime-BUILT list cascades the reclaim"
-  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
              (def (holder (: n Int64)) (let ((xs (bld n))) (fn ((: i Int64)) (+ (List.len xs) (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))))) (export holder)))
   (call holder (: 4 Int64) (: 1 Int64))
   (drop)
@@ -5765,21 +5765,21 @@
   (live-objects 0))
 
 (case "hcd2 dropping a closure capturing an IMMORTAL trie + scalar reclaims the mortal env and no-ops the immortal"
-  (input (do (def (reader (: n Int64)) (let ((c (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (fn ((: i Int64)) (+ n (match (List.at c i) ((Option.Some v) v) ((Option.None) -1)))))) (export reader)))
+  (input (do (def (reader (: n Int64)) (let ((c #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (fn ((: i Int64)) (+ n (match (List.at c i) ((Option.Some v) v) ((Option.None) -1)))))) (export reader)))
   (call reader (: 100 Int64) (: 5 Int64))
   (drop)
   (output (: 106 Int64))
   (live-objects 0))
 
 (case "hcz1 dropping a closure whose body RETURNED its captured TUPLE reclaims cleanly (read-site dup balances the env-cell drop)"
-  (input (do (def (f (: n Int64)) (let ((a (tuple n 7))) (fn ((: q Int64)) a))) (export f)))
+  (input (do (def (f (: n Int64)) (let ((a #tuple(n 7))) (fn ((: q Int64)) a))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (drop)
   (output (: (tuple 1 7) (Tuple Int64 Int64)))
   (live-objects 0))
 
 (case "hcz2 dropping a closure whose body RETURNED its captured LIST reclaims cleanly (read-site dup balances the env-cell drop)"
-  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
              (def (h (: n Int64)) (let ((xs (bld n))) (fn ((: q Int64)) xs))) (export h)))
   (call h (: 3 Int64) (: 5 Int64))
   (drop)
@@ -5809,7 +5809,7 @@
         and the drop cascade must balance through the nesting (a single-level dup would double-release the
         inner tuple). Completes the hcz escape-then-drop faces except STRING (a returned captured String
         currently mis-renders as a bare byte tuple — routed to v-rust-backend; pin it on that fix).")
-  (input (do (def (f (: n Int64)) (let ((r (record (= t (tuple n 7))))) (fn ((: q Int64)) r))) (export f)))
+  (input (do (def (f (: n Int64)) (let ((r #record((= t #tuple(n 7))))) (fn ((: q Int64)) r))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (drop)
   (output (: (record (= t (tuple 1 7))) (Record (: t (Tuple Int64 Int64)))))
@@ -5849,12 +5849,12 @@
 ; ownership-proof gap, a todo auto-flip witness.
 
 (case "hce1 tuple-index projection of a captured tuple in a closure body folds and runs (dqe leg-1 through closure conversion)"
-  (input (do (def (f (: n Int64)) (let ((a (tuple n (tuple n 9)))) (fn ((: q Int64)) (+ q (. (. a 1) 1))))) (export f)))
+  (input (do (def (f (: n Int64)) (let ((a #tuple(n #tuple(n 9)))) (fn ((: q Int64)) (+ q (. (. a 1) 1))))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (output (: 14 Int64))
   (live-objects known-leak 3))
 
 (case "hce2 a borrowing op (=) over a captured value in a closure body declines pending the ownership proof (todo)"
-  (input (do (def (f (: n Int64)) (let ((a (tuple n n))) (fn ((: q Int64)) (+ q (if (= a a) 100 0))))) (export f)))
+  (input (do (def (f (: n Int64)) (let ((a #tuple(n n))) (fn ((: q Int64)) (+ q (if (= a a) 100 0))))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (output (: 105 Int64)))

@@ -81,7 +81,7 @@
            tuple/list/record/map elements and sum-variant payloads — so the nested contradiction is caught.
            A non-fn element mismatch and a fn RESULT mismatch through a compound were already caught (the
            element/result types are concrete); only the nested un-annotated DOMAIN slipped. CDZ0203.")
-  (input  (do (def (h x) (+ x 1)) (def (main) (: (tuple h 0) (Tuple (-> Bool Int64) Int64))) (export main)))
+  (input  (do (def (h x) (+ x 1)) (def (main) (: #tuple(h 0) (Tuple (-> Bool Int64) Int64))) (export main)))
   (error  CDZ0203))
 
 (case "a contradictory arrow annotation on a function in a SUM payload is rejected"
@@ -409,7 +409,7 @@
            instantiates `a = Int64` and `(match … ((Mk xs) (List.len xs)))` reads the list back = 2.")
   (input  (do
             (type (Box a) (Mk (List a)))
-            (def (main) (match (Mk (list 1 2)) ((Mk xs) (List.len xs))))
+            (def (main) (match (Mk #list(1 2)) ((Mk xs) (List.len xs))))
             (export main)))
   (call   main) (output (: 2 Int64)))
 
@@ -427,7 +427,7 @@
            instantiates `a = Int64` and `(match … ((W t) (+ (. t 0) (. t 1))))` projects both = 3.")
   (input  (do
             (type (T a) (W (Tuple a a)))
-            (def (main) (match (W (tuple 1 2)) ((W t) (+ (. t 0) (. t 1)))))
+            (def (main) (match (W #tuple(1 2)) ((W t) (+ (. t 0) (. t 1)))))
             (export main)))
   (call   main) (output (: 3 Int64)))
 
@@ -576,7 +576,7 @@
            of bare `None`'s free-variable payload). The escaped value has no defined serialization and is
            rejected (CDZ0203, annotate — e.g. `(: (list) (List Int64))`). Pins that the undetermined-escape
            reject catches the `Any` grounding, not only a free `Var`; a `Set.of (list)` is the same fault.")
-  (input  (do (def (main) (list)) (export main)))
+  (input  (do (def (main) #list()) (export main)))
   (error  CDZ0203))
 
 (case "an annotated empty list escapes fine (the undetermined-empty-list control)"
@@ -585,7 +585,7 @@
            single nullary export returning a list) as the rejected case — the annotation resolves the
            element. Pins the escape path works once the element type is known, mirroring the annotated-None
            control.")
-  (input  (do (def (main) (: (list) (List Int64))) (export main)))
+  (input  (do (def (main) (: #list() (List Int64))) (export main)))
   (output (: (list) (List Int64))))
 
 (case "a consumed empty list type-checks without annotation (ambiguity is escape-only)"
@@ -593,7 +593,7 @@
            determined scalar, not the undetermined `(List Any)`, so no annotation is needed. Pins that the
            undetermined-`Any` rejection is specific to an unannotated ESCAPE of the collection itself — a
            consumed empty list is fine — the collection analogue of the consumed-bare-None case.")
-  (input  (do (def (main) (List.len (list))) (export main)))
+  (input  (do (def (main) (List.len #list())) (export main)))
   (output (: 0 Int64)))
 
 ; The annotation-contradiction check must hold for a COMPOUND value too, not only a scalar. A tuple /
@@ -605,7 +605,7 @@
   (doc    "`(: (tuple 1 2) Int64)` annotates a tuple with the scalar type Int64 — a contradiction (a
            tuple is not an Int64), so the compiler rejects it (CDZ0203), or declines if it does not yet
            cover the compound-vs-scalar annotation rule (reject-don't-miscompile).")
-  (input  (: (tuple 1 2) Int64))
+  (input  (: #tuple(1 2) Int64))
   (error  CDZ0203))
 
 (case "a sum value annotated as a scalar type is rejected"
@@ -705,7 +705,7 @@
            list's element type, not only a sum's payload — a checker that stops at the head `List` silently
            accepts the ill-typed program and runs it. A generation that does not yet check the element
            parameter declines rather than accepting (reject-don't-miscompile).")
-  (input  (: (list 1 2) (List Bool)))
+  (input  (: #list(1 2) (List Bool)))
   (error  CDZ0203))
 
 ; The parameter check applies to a RECORD's field type too, not only a sum's payload or a list's
@@ -731,7 +731,7 @@
            `(Record (: a Bool))` (type-system.md #Annotations Constrain, Never Contradict). A generation
            that does not yet check a record field's type declines rather than accepting
            (reject-don't-miscompile).")
-  (input  (: (record (= a 1)) (Record (: a Bool))))
+  (input  (: #record((= a 1)) (Record (: a Bool))))
   (error  CDZ0203))
 
 ; --- A record's field SET must match the annotation, not only each field's type ------------
@@ -750,7 +750,7 @@
            missing `b`). A record type is not satisfied by a value carrying a subset of its fields — field
            presence is static (the row-poly widening that would accept this is a separate opt-in). The
            field-SET companion of the wrong-field-TYPE case above.")
-  (input  (: (record (= a 1)) (Record (: a Int64) (: b Int64))))
+  (input  (: #record((= a 1)) (Record (: a Int64) (: b Int64))))
   (error  CDZ0203))
 
 (case "a record carrying a field the annotation does not name is rejected"
@@ -759,7 +759,7 @@
            field `c` on the expected record'). A record value is not accepted against a type with FEWER
            fields — the extra field is not silently dropped. Pins the superset direction of the field-set
            check (the value has more fields than the type).")
-  (input  (: (record (= a 1) (= b 2) (= c 3)) (Record (: a Int64) (: b Int64))))
+  (input  (: #record((= a 1) (= b 2) (= c 3)) (Record (: a Int64) (: b Int64))))
   (error  CDZ0203))
 
 (case "a record whose field is misnamed is both missing and extra"
@@ -768,7 +768,7 @@
            and carrying an EXTRA `x`. Rejected (CDZ0203) with both faults named ('missing field `b`; no
            such field `x`'). Pins that a single misnamed field surfaces as the combined field-set
            mismatch, the shape a field-name typo takes.")
-  (input  (: (record (= a 1) (= x 2)) (Record (: a Int64) (: b Int64))))
+  (input  (: #record((= a 1) (= x 2)) (Record (: a Int64) (: b Int64))))
   (error  CDZ0203))
 
 ; The variant-payload TYPE check must fire wherever the constructor appears — including as the direct
@@ -828,7 +828,7 @@
            element type. The element-type check already fires (`(: (tuple 1 2) (Tuple Int64 Bool))` is
            rejected), so the arity check must reach the same annotation. A generation that does not yet
            check tuple arity declines rather than accepting (reject-don't-miscompile).")
-  (input  (: (tuple 1 2) (Tuple Int64 Int64 Int64)))
+  (input  (: #tuple(1 2) (Tuple Int64 Int64 Int64)))
   (error  CDZ0203))
 
 (case "a tuple annotated with too many elements is rejected"
@@ -838,7 +838,7 @@
            too-few case above. Pins that the arity check catches a surplus element as well as a missing
            one (the tuple analog of the record extra-field case), so a tuple's length must match exactly in
            both directions — not merely be at-least or at-most the annotation's.")
-  (input  (: (tuple 1 2 3) (Tuple Int64 Int64)))
+  (input  (: #tuple(1 2 3) (Tuple Int64 Int64)))
   (error  CDZ0203))
 
 (case "an unannotated program with a valid typing type-checks and runs"
@@ -887,7 +887,7 @@
            List (CDZ0201). Both operands share the type `(List Int64)`, so this is the same-type path, not
            a cross-kind mismatch. Pins that a compound collection is not silently a number — the author
            who meant concatenation is offered the `List.concat` rewrite, not an implicit `+`.")
-  (input  (+ (list 1 2) (list 3 4)))
+  (input  (+ #list(1 2) #list(3 4)))
   (error  CDZ0201))
 
 (case "addition of two records is rejected — a record is not a number"
@@ -898,7 +898,7 @@
            so the fault is the operator's, not a fold.")
   (input  (do
             (def (f (: r (Record (: a Int64))) (: q (Record (: a Int64)))) (+ r q))
-            (def (main) (f (record (= a 1)) (record (= a 2)))) (export main)))
+            (def (main) (f #record((= a 1)) #record((= a 2)))) (export main)))
   (error  CDZ0201))
 
 (case "addition of two sets is rejected — a set is not a number"
@@ -954,7 +954,7 @@
            `Int64` for one side; neither operand is a number, so the operator's numeric requirement is
            what fails. Pins the mismatched-pair diagnostic (distinct from the same-type cases and from the
            `(+ 1 \"two\")` cross-kind case, which has a numeric side).")
-  (input  (+ "ab" (list 1 2)))
+  (input  (+ "ab" #list(1 2)))
   (error  CDZ0201))
 
 (case "the mismatched-pair rejection is order-independent"
@@ -962,7 +962,7 @@
            (CDZ0201). The diagnostic lists the operands as written (List then String), but the fault does
            not depend on which non-numeric type is on which side. Pins that the mismatched-non-numeric-pair
            check is symmetric.")
-  (input  (+ (list 1 2) "ab"))
+  (input  (+ #list(1 2) "ab"))
   (error  CDZ0201))
 
 ; A cross-kind arithmetic operand that is a COMPOUND (a tuple) against a numeric operand — `(* (tuple) 0)`
@@ -979,7 +979,7 @@
            `(Tuple)` and an `Int64`). Regression pin for a cdz-smith invalid-wasm finding (the operation
            used to slip past check and emit an invalid component with a type mismatch); now caught at check,
            the compound-operand sibling of the `(+ 1 \"two\")` cross-kind arithmetic reject.")
-  (input  (* (tuple) 0))
+  (input  (* #tuple() 0))
   (error  CDZ0201))
 
 (case "addition of a string and a byte sequence names both text types"
@@ -987,7 +987,7 @@
            both non-numeric, rejected (CDZ0201) naming both. Pins that the mismatched-pair diagnostic
            covers a text/text pair (String vs Bytes) as well as a text/collection pair, so no non-numeric
            combination is silently treated as arithmetic.")
-  (input  (+ "ab" (Bytes.of (list 1))))
+  (input  (+ "ab" (Bytes.of #list(1))))
   (error  CDZ0201))
 
 ; --- Equality type-checks its operands: no cross-type comparison ---------------------------
@@ -1045,7 +1045,7 @@
            field set). Rejected CDZ0203, the diagnostic naming the delta (missing `x`; no such field `y`).
            Pins that `=` requires matching field sets, not merely that both operands are records — the
            structural companion of the cross-kind `(= 1 \"x\")` case.")
-  (input  (= (record (= x 1)) (record (= y 2))))
+  (input  (= #record((= x 1)) #record((= y 2))))
   (error  CDZ0203))
 
 (case "equality of two tuples of different arity is a type error"
@@ -1053,7 +1053,7 @@
            so different types (a tuple's arity is part of its type). Rejected CDZ0203, naming the arity
            delta (expected 2 elements, has 3). Pins that `=` over tuples requires equal arity, the tuple
            companion of the record-field-set case.")
-  (input  (= (tuple 1 2) (tuple 1 2 3)))
+  (input  (= #tuple(1 2) #tuple(1 2 3)))
   (error  CDZ0203))
 
 (case "equality of a record with a subset of another's fields is a type error"
@@ -1062,7 +1062,7 @@
            separate opt-in — 15-rows-and-open-sums). Rejected CDZ0203 (no such field `y` on the smaller
            record's type). Pins that `=` is not silently widened to ignore the extra field, the subset
            facet of the field-set check.")
-  (input  (= (record (= x 1)) (record (= x 1) (= y 2))))
+  (input  (= #record((= x 1)) #record((= x 1) (= y 2))))
   (error  CDZ0203))
 
 ; --- The comparison operators type-check their operands exactly as = and + do -------------
@@ -1300,7 +1300,7 @@
            — a record entry is a `(name value)` pair. The compiler rejects it (CDZ0201), never
            panicking reaching for the absent value node. Same never-crash class as the `(let ((x)) x)`
            binding-with-no-value case above, for a record entry.")
-  (input  (record (= = a)))
+  (input  #record((= = a)))
   (error  CDZ0201))
 
 (case "a map entry with no value expression is rejected, not a crash"
@@ -1688,8 +1688,8 @@
   (doc    "FACE B of the same-name-ctor helper case above, with a COMPOUND (tuple) payload rather than a scalar: `(type Pair (Pair (Tuple Int64 Int64)))` names the constructor after the type, and `(def (mk a) (Pair (tuple a a)))` builds it in a helper `main` CALLS. The β-copied `(Pair (tuple a a))` synth node must fire the head-position ctor rule for a monomorphic same-name sum whose payload is a Tuple — not only for a scalar payload like `(Meters a)` above. `mk 5` builds `(Pair (tuple 5 5))`; the pop destructures the boxed tuple → 5 + 5 = 10.")
   (input  (do
             (type Pair (Pair (Tuple Int64 Int64)))
-            (def (mk (: a Int64)) (Pair (tuple a a)))
-            (def (main (: a Int64)) (match (mk a) ((Pair t) (match t ((tuple x y) (+ x y))))))
+            (def (mk (: a Int64)) (Pair #tuple(a a)))
+            (def (main (: a Int64)) (match (mk a) ((Pair t) (match t (#tuple(x y) (+ x y))))))
             (export main)))
   (call   main (: 5 Int64))
   (output (: 10 Int64)))
@@ -1814,7 +1814,7 @@
            Int64`, so `Type.eq` is false. Pins that reflection over an empty polymorphic collection sees the
            element as undetermined, exactly as a bare nullary variant does — the collection form of the
            inferred-not-eagerly-grounded rule.")
-  (input  (do (def (main) (if (Type.eq (Type.of (list)) (Type.of (list 1))) 1 0)) (export main)))
+  (input  (do (def (main) (if (Type.eq (Type.of #list()) (Type.of #list(1))) 1 0)) (export main)))
   (output (: 0 Int64)))
 
 (case "Type.eq compares a TUPLE type-value structurally, by element types"
@@ -1824,8 +1824,8 @@
            element type → false). `1 + 0 = 1`. Pins that type equality over a tuple type-value is by the
            element TYPES, not the values — the tuple analogue of the record/sum structural comparison.")
   (input  (do
-            (def (main) (+ (if (Type.eq (Type.of (tuple 1 "a")) (Type.of (tuple 2 "b"))) 1 0)
-                           (if (Type.eq (Type.of (tuple 1 "a")) (Type.of (tuple 1 2))) 10 0)))
+            (def (main) (+ (if (Type.eq (Type.of #tuple(1 "a")) (Type.of #tuple(2 "b"))) 1 0)
+                           (if (Type.eq (Type.of #tuple(1 "a")) (Type.of #tuple(1 2))) 10 0)))
             (export main)))
   (output (: 1 Int64)))
 
@@ -1836,10 +1836,10 @@
            field's TYPE differs — `(y String)` vs `(y Int64)` → false. `1 + 0 = 1`. Pins that a record
            type-value's equality carries each field's type (the record analogue of the tuple case above).")
   (input  (do
-            (def (main) (+ (if (Type.eq (Type.of (record (= x 1) (= y "a")))
-                                        (Type.of (record (= x 2) (= y "b")))) 1 0)
-                           (if (Type.eq (Type.of (record (= x 1) (= y "a")))
-                                        (Type.of (record (= x 1) (= y 2)))) 10 0)))
+            (def (main) (+ (if (Type.eq (Type.of #record((= x 1) (= y "a")))
+                                        (Type.of #record((= x 2) (= y "b")))) 1 0)
+                           (if (Type.eq (Type.of #record((= x 1) (= y "a")))
+                                        (Type.of #record((= x 1) (= y 2)))) 10 0)))
             (export main)))
   (output (: 1 Int64)))
 
@@ -1947,8 +1947,8 @@
             (def (f x) (+ x 1))
             (def (f2 z) (+ z 9))
             (def (g b) (if b 0 1))
-            (def (main) (+ (if (Type.eq (Type.of (tuple f 0)) (Type.of (tuple g 0))) 1 0)
-                           (if (Type.eq (Type.of (list f)) (Type.of (list f2))) 100 0)))
+            (def (main) (+ (if (Type.eq (Type.of #tuple(f 0)) (Type.of #tuple(g 0))) 1 0)
+                           (if (Type.eq (Type.of #list(f)) (Type.of #list(f2))) 100 0)))
             (export main)))
   (output (: 100 Int64)))
 
@@ -1984,8 +1984,8 @@
             (def (f x) (+ x 1))
             (def (f2 z) (+ z 9))
             (def (g b) (if b 0 1))
-            (def (main) (+ (if (Type.eq (Type.of (list (Some f))) (Type.of (list (Some g)))) 1 0)
-                           (if (Type.eq (Type.of (list (Some f))) (Type.of (list (Some f2)))) 100 0)))
+            (def (main) (+ (if (Type.eq (Type.of #list((Some f))) (Type.of #list((Some g)))) 1 0)
+                           (if (Type.eq (Type.of #list((Some f))) (Type.of #list((Some f2)))) 100 0)))
             (export main)))
   (output (: 100 Int64)))
 
@@ -2000,8 +2000,8 @@
             (def (f x) (+ x 1))
             (def (f2 z) (+ z 9))
             (def (g b) (if b 0 1))
-            (def (main) (+ (if (Type.eq (Type.of (Some (tuple f 0))) (Type.of (Some (tuple g 0)))) 1 0)
-                           (if (Type.eq (Type.of (Some (tuple f 0))) (Type.of (Some (tuple f2 0)))) 100 0)))
+            (def (main) (+ (if (Type.eq (Type.of (Some #tuple(f 0))) (Type.of (Some #tuple(g 0)))) 1 0)
+                           (if (Type.eq (Type.of (Some #tuple(f 0))) (Type.of (Some #tuple(f2 0)))) 100 0)))
             (export main)))
   (output (: 100 Int64)))
 
@@ -2032,8 +2032,8 @@
             (def (f x) (+ x 1))
             (def (f2 z) (+ z 9))
             (def (g b) (if b 0 1))
-            (def (main) (+ (if (Type.eq (Type.of (record (= fld f))) (Type.of (record (= fld g)))) 1 0)
-                           (if (Type.eq (Type.of (record (= fld f))) (Type.of (record (= fld f2)))) 100 0)))
+            (def (main) (+ (if (Type.eq (Type.of #record((= fld f))) (Type.of #record((= fld g)))) 1 0)
+                           (if (Type.eq (Type.of #record((= fld f))) (Type.of #record((= fld f2)))) 100 0)))
             (export main)))
   (output (: 100 Int64)))
 
@@ -2141,7 +2141,7 @@
             (def (main (: n Int64))
               (do
                 (def f (fn ((: x Int64)) (+ x n)))
-                (Map.len (Map.insert Map.empty (tuple 1 f) 42))))
+                (Map.len (Map.insert Map.empty #tuple(1 f) 42))))
             (export main)))
   (error  CDZ0216))
 
@@ -2156,7 +2156,7 @@
             (def (main (: n Int64))
               (do
                 (def f (fn ((: x Int64)) (+ x n)))
-                (Map.len (Map.insert Map.empty (record (= id 1) (= cb f)) 42))))
+                (Map.len (Map.insert Map.empty #record((= id 1) (= cb f)) 42))))
             (export main)))
   (error  CDZ0216))
 
@@ -2169,7 +2169,7 @@
            at any nesting).")
   (input  (do
             (def (main (: n Int64))
-              (Set.len #set((list (fn ((: x Int64)) (+ x n))))))
+              (Set.len #set(#list((fn ((: x Int64)) (+ x n))))))
             (export main)))
   (error  CDZ0216))
 
@@ -2184,10 +2184,10 @@
             (def (f x) (+ x 1))
             (def (f2 z) (+ z 9))
             (def (g b) (if b 0 1))
-            (def (main) (+ (if (Type.eq (Type.of (tuple (Map.insert Map.empty 1 f) 0))
-                                        (Type.of (tuple (Map.insert Map.empty 1 g) 0))) 1 0)
-                           (if (Type.eq (Type.of (tuple (Map.insert Map.empty 1 f) 0))
-                                        (Type.of (tuple (Map.insert Map.empty 1 f2) 0))) 100 0)))
+            (def (main) (+ (if (Type.eq (Type.of #tuple((Map.insert Map.empty 1 f) 0))
+                                        (Type.of #tuple((Map.insert Map.empty 1 g) 0))) 1 0)
+                           (if (Type.eq (Type.of #tuple((Map.insert Map.empty 1 f) 0))
+                                        (Type.of #tuple((Map.insert Map.empty 1 f2) 0))) 100 0)))
             (export main)))
   (output (: 100 Int64)))
 
@@ -2321,7 +2321,7 @@
            carrying one cannot cross the component boundary. The compiler reports ONE coded CDZ0201 naming
            the compound (not the four uncoded no-runtime-form declines the emit path would otherwise leak).
            The rejection is the program's outcome; there is no value.")
-  (input  (do (def (main) (tuple Int64 5)) (export main)))
+  (input  (do (def (main) #tuple(Int64 5)) (export main)))
   (error  CDZ0201))
 
 ; A GENERIC newtype whose single variant's payload is a STRUCTURAL RECORD mentioning the type PARAMETER —
@@ -2338,7 +2338,7 @@
 (case "a generic newtype with a structural-record payload mentioning the type parameter constructs"
   (input  (do
             (type Box (Box (Record (: v a) (: tag Int64))))
-            (def (main) (match (Box (record (= v 42) (= tag 7))) ((Box r) (. r tag))))
+            (def (main) (match (Box #record((= v 42) (= tag 7))) ((Box r) (. r tag))))
             (export main)))
   (output (: 7 Int64)))
 
@@ -2373,8 +2373,8 @@
             (effect E (op get (-> Unit (List Int64))))
             (def (main (: k Int64))
               (handle E k
-                ((get (_u) s (resume (list s (+ s 1)) s)))
-                (if (Type.eq (Type.of (E.get)) (Type.of (list 1 2))) 1 0)))
+                ((get (_u) s (resume #list(s (+ s 1)) s)))
+                (if (Type.eq (Type.of (E.get)) (Type.of #list(1 2))) 1 0)))
             (export main)))
   (call   main (: 5 Int64))
   (output (: 1 Int64)))
@@ -2450,7 +2450,7 @@
            but skipped the record group as nested — until the one-level record descent (1d4aaee7d);
            pinned so the descent doesn't regress.")
   (input  (do
-            (type R (record (= : field NoSuchField)))
+            (type R #record((= : field NoSuchField)))
             (def (main) 42)
             (export main)))
   (error  CDZ0101))
@@ -2504,9 +2504,9 @@
            (def (nsome)    (match (Mk (Some 5)) ((Mk (Some v)) v) ((Mk (None)) 0)))
            (def (nnone)    (match (Mk (None)) ((Mk (Some v)) v) ((Mk (None)) 99)))
            (def (selfnest) (match (Mk (Mk 7)) ((Mk (Mk v)) v)))
-           (def (recfield) (match (. (record (= b (Mk 7))) b) ((Mk v) v)))
-           (def (recsome)  (match (. (record (= b (Mk (Some 5)))) b) ((Mk (Some v)) v) ((Mk (None)) 0)))
-           (def (recnone)  (match (. (record (= b (Mk (None)))) b) ((Mk (Some v)) v) ((Mk (None)) 0)))
+           (def (recfield) (match (. #record((= b (Mk 7))) b) ((Mk v) v)))
+           (def (recsome)  (match (. #record((= b (Mk (Some 5)))) b) ((Mk (Some v)) v) ((Mk (None)) 0)))
+           (def (recnone)  (match (. #record((= b (Mk (None)))) b) ((Mk (Some v)) v) ((Mk (None)) 0)))
            (export nsome) (export nnone) (export selfnest) (export recfield) (export recsome) (export recnone)))
   (call nsome)    (output (: 5 Int64))
   (call nnone)    (output (: 99 Int64))
@@ -2525,7 +2525,7 @@
   (input (do
 (type Box (Box a))
 (def (unbox (: b (Box a))) (match b ((Box.Box v) v)))
-(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (frames (: k Int64))
   (if (= k 0) 0
       (+ (match (unbox (Box.Box (Option.Some (bld (% k 4))))) ((Option.Some xs) (List.len xs)) ((Option.None) -1))
@@ -2547,7 +2547,7 @@
   (input (do
 (type Box (Box a))
 (def (unbox (: b (Box a))) (match b ((Box.Box v) v)))
-(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (main (: n Int64))
   (+ (* 1000 (List.len (unbox (Box.Box (bld n)))))
      (String.byte-len (unbox (Box.Box (String.concat "ab" (if (> n 0) "c" "")))))))
@@ -2566,11 +2566,11 @@
 (type Box (Box a))
 (type Pair (Pair (Tuple a b)))
 (def (unbox (: x (Box a))) (match x ((Box.Box v) v)))
-(def (fst (: p (Pair a b))) (match p ((Pair.Pair (tuple x y)) x)))
-(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (fst (: p (Pair a b))) (match p ((Pair.Pair #tuple(x y)) x)))
+(def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (frames (: k Int64))
   (if (= k 0) 0
-      (+ (List.len (fst (unbox (Box.Box (Pair.Pair (tuple (bld (% k 4)) k))))))
+      (+ (List.len (fst (unbox (Box.Box (Pair.Pair #tuple((bld (% k 4)) k))))))
          (frames (- k 1)))))
 (def (main (: n Int64)) (frames n))
 (export main)))
@@ -2590,7 +2590,7 @@
 (type Wrap (Wrap a))
 (def (rewrap (: w (Wrap a))) (match w ((Wrap.Wrap v) (Wrap.Wrap v))))
 (def (peek (: w (Wrap a))) (match w ((Wrap.Wrap _) 1)))
-(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
 (def (main (: n Int64))
   (+ (peek (rewrap (Wrap.Wrap (bld n))))
      (peek (rewrap (Wrap.Wrap (String.concat "x" (if (> n 0) "y" "z")))))))
@@ -2633,7 +2633,7 @@
   (error CDZ0101 (message "Nonesuch")))
 
 (case "an unknown type nested in a let-binder List annotation is rejected"
-  (input (do (def (main) (let (((: x (List Nonesuch)) (list 1))) x)) (export main)))
+  (input (do (def (main) (let (((: x (List Nonesuch)) #list(1))) x)) (export main)))
   (error CDZ0101 (message "Nonesuch")))
 
 (case "a well-formed non-type in a let-binder annotation is rejected"
@@ -2651,5 +2651,5 @@
 (case "a wrong-typed Option field in a direct record arg still rejects"
   (input (do (type Outcome (Ok Int64) (Err Int64))
              (def (apply (: evt (Record (: b (Option Outcome)) (: c Int64)))) (. evt c))
-             (def (main) (apply (record (= b (Some 5)) (= c 9)))) (export main)))
+             (def (main) (apply #record((= b (Some 5)) (= c 9)))) (export main)))
   (error CDZ0203))

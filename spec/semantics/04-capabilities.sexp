@@ -250,7 +250,7 @@
               (effect trace (op mark (-> Int64 Unit)))
               (def (a) (host (log) (log.emit "hi")))
               (def (b) (host (trace) (trace.mark 1))))
-            (= (. m (meta capabilities)) (list "log" "trace"))))
+            (= (. m (meta capabilities)) #list("log" "trace"))))
   (output (: true Bool)))
 
 (case "the manifest is DERIVED from what entrypoints delegate, not from effect declarations"
@@ -267,7 +267,7 @@
               (effect Used (op u (-> Unit Int64)))
               (effect Unused (op x (-> Unit Int64)))
               (def (main) (host (Used) (Used.u))))
-            (= (. m (meta capabilities)) (list "Used"))))
+            (= (. m (meta capabilities)) #list("Used"))))
   (output (: true Bool)))
 
 (case "one entrypoint's host authority is not reachable by another that does not delegate it"
@@ -323,13 +323,13 @@
           (if (> i n) acc (build (+ i 1) n (List.push acc i))))
         (def (sum-l (: xs (List Int64)) (: acc Int64))
           (match xs
-            ((list) acc)
-            ((list h .. t) (sum-l t (+ acc h)))))
+            (#list() acc)
+            (#list(h .. t) (sum-l t (+ acc h)))))
         (def (main)
           (host (ask)
             (do
               (def n (ask.size))
-              (def xs (build 1 n (list)))
+              (def xs (build 1 n #list()))
               (def m (Map.insert Map.empty n (sum-l xs 0)))
               (match (Map.lookup m n)
                 ((Some v) (+ (* v 10) n))
@@ -409,7 +409,7 @@
   (input  (do
             (effect Note (op note (-> String Unit)))
             (def (build (: n Int64))
-              (if (= n 0) (list) ((. List push) (build (- n 1)) n)))
+              (if (= n 0) #list() ((. List push) (build (- n 1)) n)))
             (def (main)
               (host (Note)
                 (let ((xs (build 3)))
@@ -429,7 +429,7 @@
         (effect Net (op fetch (-> Int64 Int64)))
         (def (main (: k Int64))
           (do
-            (def fs (list (fn ((: x Int64)) (Net.fetch x))))
+            (def fs #list((fn ((: x Int64)) (Net.fetch x))))
             (match (List.at fs 0)
               ((Some f) (f k))
               ((None _u) -1))))
@@ -442,7 +442,7 @@
 
 (case "a runtime Bytes host arg crosses as list<u8> and the host call returns its response"
   (input (do (effect hb (op h (-> Bytes Int64)))
-             (def (main (: n Int64)) (host (hb) (hb.h (Bytes.of (list ((UInt 8).wrap n) ((UInt 8).wrap 66))))))
+             (def (main (: n Int64)) (host (hb) (hb.h (Bytes.of #list(((UInt 8).wrap n) ((UInt 8).wrap 66))))))
              (export main)))
   (call main (: 65 Int64))
   (host-responses (respond hb.h (: 7 Int64)))
@@ -452,48 +452,48 @@
 
 (case "a runtime String host arg is marshaled into shared memory and the host call returns its response"
   (input (do (effect hs (op h (-> String Int64)))
-             (def (main (: n Int64)) (match (String.from-bytes (Bytes.of (list ((UInt 8).wrap n)))) ((Some s) (host (hs) (hs.h s))) (None 0)))
+             (def (main (: n Int64)) (match (String.from-bytes (Bytes.of #list(((UInt 8).wrap n)))) ((Some s) (host (hs) (hs.h s))) (None 0)))
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond hs.h (: 42 Int64))) (host-calls (call hs.h)) (output (: 42 Int64))
   (live-objects known-leak 2))
 
 (case "a host op with two runtime Bytes args marshals each to a disjoint region"
   (input (do (effect io (op sink2 (-> Bytes Bytes Int64)))
-             (def (main (: k Int64)) (host (io) (io.sink2 (Bytes.of (list ((UInt 8).wrap k))) (Bytes.of (list ((UInt 8).wrap (+ k 1)))))))
+             (def (main (: k Int64)) (host (io) (io.sink2 (Bytes.of #list(((UInt 8).wrap k))) (Bytes.of #list(((UInt 8).wrap (+ k 1)))))))
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond io.sink2 (: 9 Int64))) (host-calls (call io.sink2)) (output (: 9 Int64))
   (live-objects known-leak 2))
 
 (case "a host op with three runtime Bytes args marshals each to a disjoint region"
   (input (do (effect io (op sink3 (-> Bytes Bytes Bytes Int64)))
-             (def (main (: k Int64)) (host (io) (io.sink3 (Bytes.of (list ((UInt 8).wrap k))) (Bytes.of (list ((UInt 8).wrap (+ k 1)))) (Bytes.of (list ((UInt 8).wrap (+ k 2)))))))
+             (def (main (: k Int64)) (host (io) (io.sink3 (Bytes.of #list(((UInt 8).wrap k))) (Bytes.of #list(((UInt 8).wrap (+ k 1)))) (Bytes.of #list(((UInt 8).wrap (+ k 2)))))))
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond io.sink3 (: 11 Int64))) (host-calls (call io.sink3)) (output (: 11 Int64))
   (live-objects known-leak 3))
 
 (case "a host op interleaving runtime Bytes and scalar args keeps regions and slots distinct"
   (input (do (effect io (op mix (-> Bytes Int64 Bytes Int64)))
-             (def (main (: k Int64)) (host (io) (io.mix (Bytes.of (list ((UInt 8).wrap k))) (+ k 7) (Bytes.of (list ((UInt 8).wrap (+ k 1)))))))
+             (def (main (: k Int64)) (host (io) (io.mix (Bytes.of #list(((UInt 8).wrap k))) (+ k 7) (Bytes.of #list(((UInt 8).wrap (+ k 1)))))))
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond io.mix (: 3 Int64))) (host-calls (call io.mix)) (output (: 3 Int64))
   (live-objects known-leak 2))
 
 (case "a host op mixing a const String and a runtime Bytes arg routes each to its own path"
   (input (do (effect io (op mix2 (-> String Bytes Int64)))
-             (def (main (: k Int64)) (host (io) (io.mix2 "const-key" (Bytes.of (list ((UInt 8).wrap k))))))
+             (def (main (: k Int64)) (host (io) (io.mix2 "const-key" (Bytes.of #list(((UInt 8).wrap k))))))
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond io.mix2 (: 4 Int64))) (host-calls (call io.mix2)) (output (: 4 Int64))
   (live-objects known-leak 1))
 
 (case "an empty runtime String host arg marshals as a zero-length buffer"
   (input (do (effect hs (op h (-> String Int64)))
-             (def (main) (match (String.from-bytes (Bytes.of (list))) ((Some s) (host (hs) (hs.h s))) (None 0)))
+             (def (main) (match (String.from-bytes (Bytes.of #list())) ((Some s) (host (hs) (hs.h s))) (None 0)))
              (export main)))
   (call main) (host-responses (respond hs.h (: 99 Int64))) (host-calls (call hs.h)) (output (: 99 Int64)))
 
 (case "a multibyte-length runtime String host arg copies the full length"
   (input (do (effect hs (op h (-> String Int64)))
-             (def (main (: a Int64)) (match (String.from-bytes (Bytes.of (list ((UInt 8).wrap a) ((UInt 8).wrap a) ((UInt 8).wrap a)))) ((Some s) (host (hs) (hs.h s))) (None 0)))
+             (def (main (: a Int64)) (match (String.from-bytes (Bytes.of #list(((UInt 8).wrap a) ((UInt 8).wrap a) ((UInt 8).wrap a)))) ((Some s) (host (hs) (hs.h s))) (None 0)))
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond hs.h (: 99 Int64))) (host-calls (call hs.h)) (output (: 99 Int64))
   (live-objects known-leak 2))
@@ -504,7 +504,7 @@
 
 (case "a host op result escapes as a single-byte Bytes resource"
   (input (do (effect hr (op h (-> Int64 UInt8)))
-             (def (main (: x Int64)) (host (hr) (Bytes.of (list (hr.h x)))))
+             (def (main (: x Int64)) (host (hr) (Bytes.of #list((hr.h x)))))
              (export main)))
   (call main (: 9 Int64))
   (host-responses (respond hr.h (: 7 UInt8)))

@@ -23,7 +23,7 @@
            opening `(quote 42)` / `(quote false)` examples (`Ast.Int` is already pinned standalone
            elsewhere). A compiler that folded a quote or mis-tagged a leaf variant would render a wrong
            node here.")
-  (input  (tuple (quote foo) (quote "hi") (quote true) (quote 2.5)))
+  (input  #tuple((quote foo) (quote "hi") (quote true) (quote 2.5)))
   (output (: (tuple (Ast.Name "foo") (Ast.Str "hi") (Ast.Bool true) (Ast.Float 2.5))
              (Tuple Ast Ast Ast Ast))))
 
@@ -313,7 +313,7 @@
            quote. Hit + miss faces.")
   (input (do
         (def (main (: a Int64))
-          (if (= (Ast.List (list (Ast.Name "+") (Ast.Int (BigInt.of a)) (Ast.Int 2)))
+          (if (= (Ast.List #list((Ast.Name "+") (Ast.Int (BigInt.of a)) (Ast.Int 2)))
                  (quote (+ 5 2)))
               1 0))
         (export main)))
@@ -345,13 +345,13 @@
   (input (do
         (def (main (: a Int64))
           (do
-            (def t (Ast.List (list (Ast.Name "g")
-                     (Ast.List (list (Ast.Name "h")
-                       (Ast.List (list (Ast.Name "i") (Ast.Int (BigInt.of a)))))))))
+            (def t (Ast.List #list((Ast.Name "g")
+                     (Ast.List #list((Ast.Name "h")
+                       (Ast.List #list((Ast.Name "i") (Ast.Int (BigInt.of a)))))))))
             (match t
-              ((Ast.List (list (Ast.Name _g)
-                 (Ast.List (list (Ast.Name _h)
-                   (Ast.List (list (Ast.Name _i) (Ast.Int n)))))))
+              ((Ast.List #list((Ast.Name _g)
+                 (Ast.List #list((Ast.Name _h)
+                   (Ast.List #list((Ast.Name _i) (Ast.Int n)))))))
                 (Int64.of n))
               (_ -1))))
         (export main)))
@@ -364,7 +364,7 @@
            silent promotion). Zero-crossing face at a=-3.")
   (input (do
         (def (main (: a Int64))
-          (let ((v (eval (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2))))))
+          (let ((v (eval (Ast.List #list((Ast.Name "+") (Ast.Int 1) (Ast.Int 2))))))
             (+ a (Int64.of v))))
         (export main)))
   (call main (: 39 Int64)) (output (: 42 Int64))
@@ -445,14 +445,14 @@
   (doc    "`(let ((x 10)) (eval `(match (tuple 1 2) ((tuple x y) (+ ,x y)))))` = 12: the `,x`=enclosing 10,
            the tuple pattern's `x` binder (= 1) must not capture it → `(+ 10 2)` = 12, not the captured
            `(+ 1 2)` = 3. Pins the recursion into a `tuple` compound pattern.")
-  (input  (let ((x 10)) (eval (quasiquote (match (tuple 1 2) ((tuple x y) (+ (unquote x) y)))))))
+  (input  (let ((x 10)) (eval (quasiquote (match #tuple(1 2) (#tuple(x y) (+ (unquote x) y)))))))
   (output (: 12 Int64)))
 
 (case "an unquoted variable is not captured by a list-rest-pattern binder"
   (doc    "`(let ((x 10)) (eval `(match (list 1 2) ((list x .. rest) ,x) (_ 0))))` = 10: the `list` pattern's
            head-element binder `x` (= 1) must not capture the spliced enclosing x=10. Pins the recursion into
            a `(list … .. rest)` pattern — the `..` rest marker is skipped, its binder neighbors are renamed.")
-  (input  (let ((x 10)) (eval (quasiquote (match (list 1 2) ((list x .. rest) (unquote x)) (_ 0))))))
+  (input  (let ((x 10)) (eval (quasiquote (match #list(1 2) (#list(x .. rest) (unquote x)) (_ 0))))))
   (output (: 10 Int64)))
 
 (case "an unquoted variable is not captured by a map-pattern value binder"
@@ -471,7 +471,7 @@
            12. The `x` binder is TWO compound levels deep (`Some` payload, then `tuple` element), and the
            rename still reaches it, so `,x`=10 gives `(+ 10 2)` = 12. Pins that `collect_pattern_binders`
            recurses to arbitrary compound-pattern depth.")
-  (input  (let ((x 10)) (eval (quasiquote (match (Some (tuple 1 2)) ((Some (tuple x y)) (+ (unquote x) y)) (_ 0))))))
+  (input  (let ((x 10)) (eval (quasiquote (match (Some #tuple(1 2)) ((Some #tuple(x y)) (+ (unquote x) y)) (_ 0))))))
   (output (: 12 Int64)))
 ; The hygiene cases above pin one unquote colliding with one binder (per kind) + the no-over-reach control.
 ; These push the capture-avoiding alpha-rename harder: TWO distinct unquotes each colliding with a DIFFERENT
@@ -533,7 +533,7 @@
   (doc    "`print (Ast.List (list))` is exactly `\"()\"` — the zero-element list rendering (open then close
            with nothing between). Pins the empty-list edge of the printer, which the non-empty compound
            cases never reach.")
-  (input  (= (Ast.print (Ast.List (list))) "()"))
+  (input  (= (Ast.print (Ast.List #list())) "()"))
   (output (: true Bool)))
 
 (case "print renders a single-element Ast.List as one parenthesized element"
@@ -651,8 +651,8 @@
   (doc    "Composition: an `Ast.Bytes` as a child of an `Ast.List` (`(f b\"hi\")`) round-trips through the
            value codec — the list arm recurses into the bytes arm and back. Pins that the bytes node
            composes inside a compound, not only standalone.")
-  (input  (match (Ast.decode (Ast.encode (Ast.List (list (Ast.Name "f") (Ast.Bytes b"hi")))))
-            ((Ok a)  (= a (Ast.List (list (Ast.Name "f") (Ast.Bytes b"hi")))))
+  (input  (match (Ast.decode (Ast.encode (Ast.List #list((Ast.Name "f") (Ast.Bytes b"hi")))))
+            ((Ok a)  (= a (Ast.List #list((Ast.Name "f") (Ast.Bytes b"hi")))))
             ((Err _) false)))
   (output (: true Bool)))
 
@@ -826,7 +826,7 @@
            the outer switch would read the wrong level — the miscompile v-patterns fixed). The AST-walk shape
            every macro that inspects nested structure relies on.")
   (input  (match (quote (f (g 7)))
-            ((Ast.List (list _ (Ast.List (list _ (Ast.Int n))))) n)
+            ((Ast.List #list(_ (Ast.List #list(_ (Ast.Int n))))) n)
             (_                                                    -1N)))
   (output (: 7 BigInt)))
 
@@ -837,7 +837,7 @@
            fire on a depth-correct but variant-wrong inner leaf) — the negative face guarding the known-disc
            fold.")
   (input  (match (quote (f (g 7)))
-            ((Ast.List (list _ (Ast.List (list _ (Ast.Str s))))) 1)
+            ((Ast.List #list(_ (Ast.List #list(_ (Ast.Str s))))) 1)
             (_                                                    0)))
   (output (: 0 Int64)))
 
@@ -852,7 +852,7 @@
            classifies the actual reason, and `Core::Trap` carries no string through either backend, so
            the observable kind is `unreachable`, matching the explicit-`trap` lowering pinned by the
            runtime expect-on-absent case in 02-binding-and-control.sexp).")
-  (input  (eval (Ast.List (list))))
+  (input  (eval (Ast.List #list())))
   (trap   "unreachable"))
 
 ; MALFORMED-AST FAMILY (companions to the empty-list case above): the eval desugar FAITHFULLY reconstructs the
@@ -869,7 +869,7 @@
            type Int64 — it is not a function), exactly as hand-written `(1 2)` is. Pins that a malformed
            (non-operator-headed) constructed AST surfaces the ORDINARY application type error via faithful
            reconstruction, not a silent success or a bespoke eval-only failure.")
-  (input  (eval (Ast.List (list (Ast.Int 1) (Ast.Int 2)))))
+  (input  (eval (Ast.List #list((Ast.Int 1) (Ast.Int 2)))))
   (error  CDZ0201))
 
 (case "eval of a constructor-built Ast.List with a valid operator head computes its value"
@@ -881,7 +881,7 @@
            faithfully rejects a bad head). This proves it faithfully SUCCEEDS on a good one — catching a
            reconstruct regression that broke constructor-built operator application while leaving the
            quote path intact. Expected: 3.")
-  (input  (eval (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))))
+  (input  (eval (Ast.List #list((Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))))
   (output (: 3 Int64)))
 
 (case "eval of a bare Ast.Name for an unbound name is the ordinary unbound-name error"
@@ -938,7 +938,7 @@
            (Ast.Bool true)))` (metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            the unquote inserts its result). The boolean companion of the integer embed case above.")
   (input  (= (quasiquote (f (unquote true)))
-             (Ast.List (list (Ast.Name "f") (Ast.Bool true)))))
+             (Ast.List #list((Ast.Name "f") (Ast.Bool true)))))
   (output (: true Bool)))
 
 (case "an active unquote of a string literal lifts to an Ast.Str node"
@@ -947,7 +947,7 @@
            The string companion; pins that the active-unquote lift dispatches on the operand's value kind
            (a string literal → `Ast.Str`, not the `Ast.Int` the integer/runtime path uses).")
   (input  (= (quasiquote (f (unquote "x")))
-             (Ast.List (list (Ast.Name "f") (Ast.Str "x")))))
+             (Ast.List #list((Ast.Name "f") (Ast.Str "x")))))
   (output (: true Bool)))
 
 (case "an active-unquoted boolean literal equals the quoted form"
@@ -1095,7 +1095,7 @@
            runtime-Bool lift (the literal case is above; this exercises the inferred-type path at lower).")
   (input  (let ((b true))
             (= (quasiquote (f (unquote b)))
-               (Ast.List (list (Ast.Name "f") (Ast.Bool true))))))
+               (Ast.List #list((Ast.Name "f") (Ast.Bool true))))))
   (output (: true Bool)))
 
 (case "an active unquote of a let-bound string lifts to Ast.Str by inferred type"
@@ -1103,7 +1103,7 @@
            `(Ast.List (list (Ast.Name \"f\") (Ast.Str \"hi\")))`. Pins the runtime-String inferred-type lift.")
   (input  (let ((s "hi"))
             (= (quasiquote (f (unquote s)))
-               (Ast.List (list (Ast.Name "f") (Ast.Str "hi"))))))
+               (Ast.List #list((Ast.Name "f") (Ast.Str "hi"))))))
   (output (: true Bool)))
 
 (case "an active unquote of a let-bound integer still lifts to Ast.Int"
@@ -1112,7 +1112,7 @@
            `(Ast.List (list (Ast.Name \"op-const\") (Ast.Int 42)))`.")
   (input  (let ((n 42))
             (= (quasiquote (op-const (unquote n)))
-               (Ast.List (list (Ast.Name "op-const") (Ast.Int 42))))))
+               (Ast.List #list((Ast.Name "op-const") (Ast.Int 42))))))
   (output (: true Bool)))
 
 (case "an active unquote of a BigInt lifts to Ast.Int (the payload type, no widen)"
@@ -1123,7 +1123,7 @@
            `Ty::BigInt` arm — without it a BigInt unquote fell through to decline even though `Ast.Int`
            is the right leaf (the splice-surface gap the Int64→BigInt payload flip introduced).")
   (input  (= (quasiquote (op-const (unquote 42N)))
-             (Ast.List (list (Ast.Name "op-const") (Ast.Int 42N)))))
+             (Ast.List #list((Ast.Name "op-const") (Ast.Int 42N)))))
   (output (: true Bool)))
 
 (case "an active unquote of a RUNTIME BigInt (from arithmetic) lifts to Ast.Int"
@@ -1137,7 +1137,7 @@
            lift — so the runtime BigInt here comes from internal arithmetic.)")
   (input  (let ((x (+ 20N 22N)))
             (match (quasiquote (f (unquote x)))
-              ((Ast.List (list _ (Ast.Int n))) (Int64.of n))
+              ((Ast.List #list(_ (Ast.Int n))) (Int64.of n))
               (_ -1))))
   (output (: 42 Int64)))
 
@@ -1146,7 +1146,7 @@
            `Ast.Bool`. `` `(f ,(= 1 1)) `` builds `(Ast.List (list (Ast.Name \"f\") (Ast.Bool true)))`.
            Pins that the inferred-type lift covers a computed expression, not only a bound name.")
   (input  (= (quasiquote (f (unquote (= 1 1))))
-             (Ast.List (list (Ast.Name "f") (Ast.Bool true)))))
+             (Ast.List #list((Ast.Name "f") (Ast.Bool true)))))
   (output (: true Bool)))
 
 ; An unquote MUST EVALUATE its expression (metaprogramming.md #Quasiquote Constructs AST With Selective
@@ -1270,7 +1270,7 @@
            integer reifies as `Ast.Int`. `(quote (f true))` is `(Ast.List (list (Ast.Name \"f\") (Ast.Bool
            true)))`, so comparing it against that hand-built node MUST be true — the leaf reification is
            structural and covers the boolean form.")
-  (input  (= (quote (f true)) (Ast.List (list (Ast.Name "f") (Ast.Bool true)))))
+  (input  (= (quote (f true)) (Ast.List #list((Ast.Name "f") (Ast.Bool true)))))
   (output (: true Bool)))
 
 (case "eval of a quoted boolean executes it to the boolean value"
@@ -1347,7 +1347,7 @@
            `(Ast.List (list (Ast.Name \"f\") (Ast.Str \"x\")))` — the head `f` is a name, the argument
            `\"x\"` a string literal — so comparing it against that hand-built node MUST be true. Pins that
            the string leaf reifies structurally inside a list, distinct from the head name.")
-  (input  (= (quote (f "x")) (Ast.List (list (Ast.Name "f") (Ast.Str "x")))))
+  (input  (= (quote (f "x")) (Ast.List #list((Ast.Name "f") (Ast.Str "x")))))
   (output (: true Bool)))
 
 (case "eval of a quoted string executes it to the string value"
@@ -1556,8 +1556,8 @@
            true) (Ast.Float 1.5) (Ast.List (Ast.Int 1)))` — round-trips through encode/decode to an equal
            value. Pins that Str/Bool/Float/Int/Name/List interleave correctly in one tree (each tag is
            self-delimiting), not just as standalone leaves.")
-  (input  (match (Ast.decode (Ast.encode (Ast.List (list (Ast.Name "f") (Ast.Str "x") (Ast.Bool true) (Ast.Float 1.5) (Ast.List (list (Ast.Int 1)))))))
-            ((Ok a)  (= a (Ast.List (list (Ast.Name "f") (Ast.Str "x") (Ast.Bool true) (Ast.Float 1.5) (Ast.List (list (Ast.Int 1)))))))
+  (input  (match (Ast.decode (Ast.encode (Ast.List #list((Ast.Name "f") (Ast.Str "x") (Ast.Bool true) (Ast.Float 1.5) (Ast.List #list((Ast.Int 1)))))))
+            ((Ok a)  (= a (Ast.List #list((Ast.Name "f") (Ast.Str "x") (Ast.Bool true) (Ast.Float 1.5) (Ast.List #list((Ast.Int 1)))))))
             ((Err _) false)))
   (output (: true Bool)))
 
@@ -1863,9 +1863,9 @@
            the digit-run at `)`, would pass every bare-scalar bignum case yet drop the payload here. The
            head `f` re-reads as a name and the payload as an `Ast.Int` — so the extracted second element's
            value pins the full round-trip.")
-  (input  (match (Ast.read (Ast.print (Ast.List (list (Ast.Name "f") (Ast.Int (: 99999999999999999999999999 BigInt))))))
+  (input  (match (Ast.read (Ast.print (Ast.List #list((Ast.Name "f") (Ast.Int (: 99999999999999999999999999 BigInt))))))
             ((Ast.List xs) (match xs
-                             ((list _ (Ast.Int n)) n)
+                             (#list(_ (Ast.Int n)) n)
                              (_                     0N)))
             (_             0N)))
   (output (: 99999999999999999999999999 BigInt)))
@@ -2000,7 +2000,7 @@
   (doc    "`` `(f ,2.5) `` embeds the float literal `2.5` as the `Ast.Float` leaf its value denotes — the
            same node `(quote (f 2.5))` builds. The float companion of the literal Int/Bool/Str cases.")
   (input  (= (quasiquote (f (unquote 2.5)))
-             (Ast.List (list (Ast.Name "f") (Ast.Float 2.5)))))
+             (Ast.List #list((Ast.Name "f") (Ast.Float 2.5)))))
   (output (: true Bool)))
 
 (case "an active unquote of a let-bound float lifts to Ast.Float by inferred type"
@@ -2008,7 +2008,7 @@
            `(f ,x))` builds `(Ast.List (list (Ast.Name \"f\") (Ast.Float 4.5)))` — the `ast-lift` path.")
   (input  (let ((x 4.5))
             (= (quasiquote (f (unquote x)))
-               (Ast.List (list (Ast.Name "f") (Ast.Float 4.5))))))
+               (Ast.List #list((Ast.Name "f") (Ast.Float 4.5))))))
   (output (: true Bool)))
 
 (case "a quoted compound form equals the same AST built by the Ast.List constructor"
@@ -2018,7 +2018,7 @@
            hand-built Ast.List MUST be true (core-semantics.md #Equality Is Structural), because they
            are the same sum value. This equality is the compiler's own idiom: it builds an instruction
            AST by quasiquote and compares it against an expected AST built by constructors.")
-  (input  (= (quote (+ 1 2)) (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))))
+  (input  (= (quote (+ 1 2)) (Ast.List #list((Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))))
   (output (: true Bool)))
 
 ; The built-in `Ast` is an ordinary sum type — "a variant per syntactic form (an integer, a float, a
@@ -2076,8 +2076,8 @@
            (list (Ast.Int 1) (Ast.Int 2)))` vs `(Ast.List (list (Ast.Int 2) (Ast.Int 1)))` → `=` is
            false. Pins that the list-equality walk compares elements POSITIONALLY (per the encoding's
            canonical byte form), so a `=` that compared list contents order-insensitively is caught.")
-  (input  (= (Ast.List (list (Ast.Int 1) (Ast.Int 2)))
-             (Ast.List (list (Ast.Int 2) (Ast.Int 1)))))
+  (input  (= (Ast.List #list((Ast.Int 1) (Ast.Int 2)))
+             (Ast.List #list((Ast.Int 2) (Ast.Int 1)))))
   (output (: false Bool)))
 
 (case "structural equality on an Ast.List is element-COUNT sensitive"
@@ -2085,8 +2085,8 @@
            the longer: `(Ast.List (list (Ast.Int 1)))` vs `(Ast.List (list (Ast.Int 1) (Ast.Int 2)))` →
            `=` is false. Pins that list equality is length-sensitive (a prefix is not a match), so a `=`
            that ignored the trailing elements is caught.")
-  (input  (= (Ast.List (list (Ast.Int 1)))
-             (Ast.List (list (Ast.Int 1) (Ast.Int 2)))))
+  (input  (= (Ast.List #list((Ast.Int 1)))
+             (Ast.List #list((Ast.Int 1) (Ast.Int 2)))))
   (output (: false Bool)))
 
 (case "an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value"
@@ -2105,7 +2105,7 @@
            principle fold, so this pins the structural walk as residual code over a runtime-built Ast.")
   (input  (do
             (def (main (: n Int64))
-              (if (= (Ast.List (list (Ast.Name "+") (Ast.Int (BigInt.of n)) (Ast.Int (BigInt.of 2)))) (quote (+ 5 2))) 1 0))
+              (if (= (Ast.List #list((Ast.Name "+") (Ast.Int (BigInt.of n)) (Ast.Int (BigInt.of 2)))) (quote (+ 5 2))) 1 0))
             (export main)))
   (call   main (: 5 Int64))
   (output (: 1 Int64))
@@ -2227,8 +2227,8 @@
            encode and decode back to an equal AST, exactly as a quote-built list does. Pins that the
            bijection round-trip reaches a constructor-built compound AST, not only a leaf node. `Ast.decode`
            is total (`Bytes → Result<Ast, _>`), so the round-trip matches the `Ok` arm.")
-  (input  (match (Ast.decode (Ast.encode (Ast.List (list (Ast.Name "g") (Ast.Int 5)))))
-            ((Ok a)  (= a (Ast.List (list (Ast.Name "g") (Ast.Int 5)))))
+  (input  (match (Ast.decode (Ast.encode (Ast.List #list((Ast.Name "g") (Ast.Int 5)))))
+            ((Ok a)  (= a (Ast.List #list((Ast.Name "g") (Ast.Int 5)))))
             ((Err _) false)))
   (output (: true Bool)))
 
@@ -2270,14 +2270,14 @@
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            ,@<list-expr> evaluates <list-expr> to a list and splices its elements into the parent,
            not nested. `(+ ,@args) with args=(list 1 2 3) produces AST for (+ 1 2 3), not (+ (1 2 3)).")
-  (input  (let ((args (list 1 2 3))) `(+ ,@args)))
+  (input  (let ((args #list(1 2 3))) `(+ ,@args)))
   (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2) (Ast.Int 3))) Ast)))
 
 (case "splice flattens where unquote nests"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            , nests the value; ,@ splices it. `(f ,x) embeds x as one element; `(f ,@x) with
            x=(list 1 2) splices to produce (f 1 2).")
-  (input  (let ((x (list 1 2)))
+  (input  (let ((x #list(1 2)))
             (= `(f ,@x) `(f 1 2))))
   (output (: true Bool)))
 
@@ -2295,21 +2295,21 @@
            element to an `Ast.Float` node (not `Ast.Int`), so `(f ,@xs)` with xs=(list 1.5 2.5)
            reifies to `(Ast.List (Ast.Name f) (Ast.Float 1.5) (Ast.Float 2.5))`. Pins the type-directed
            splice-lift over Float64 — this declined before the lift dispatched by element kind.")
-  (input  (let ((xs (list 1.5 2.5))) `(f ,@xs)))
+  (input  (let ((xs #list(1.5 2.5))) `(f ,@xs)))
   (output (: (Ast.List (list (Ast.Name "f") (Ast.Float 1.5) (Ast.Float 2.5))) Ast)))
 
 (case "unquote-splicing lifts a boolean list to Ast.Bool leaves"
   (doc    "The boolean companion: `,@` of a constant `(List Bool)` lifts each element to an `Ast.Bool`
            node, so `(f ,@xs)` with xs=(list true false) reifies to `(Ast.List (Ast.Name f)
            (Ast.Bool true) (Ast.Bool false))`. Pins the Bool arm of the type-directed splice-lift.")
-  (input  (let ((xs (list true false))) `(f ,@xs)))
+  (input  (let ((xs #list(true false))) `(f ,@xs)))
   (output (: (Ast.List (list (Ast.Name "f") (Ast.Bool true) (Ast.Bool false))) Ast)))
 
 (case "unquote-splicing lifts a string list to Ast.Str leaves"
   (doc    "The string companion: `,@` of a constant `(List String)` lifts each element to an `Ast.Str`
            node (a string LITERAL leaf, distinct from a Name), so `(f ,@xs)` with xs=(list \"a\" \"bb\")
            reifies to `(Ast.List (Ast.Name f) (Ast.Str \"a\") (Ast.Str \"bb\"))`. Pins the Str arm.")
-  (input  (let ((xs (list "a" "bb"))) `(f ,@xs)))
+  (input  (let ((xs #list("a" "bb"))) `(f ,@xs)))
   (output (: (Ast.List (list (Ast.Name "f") (Ast.Str "a") (Ast.Str "bb"))) Ast)))
 
 (case "unquote-splicing a list of Ast values splices by identity"
@@ -2318,7 +2318,7 @@
            PRE-BUILT AST fragments `(list (Ast.Int 7) (Ast.Int 8))` into `(f ,@xs)` reifies to
            `(Ast.List (Ast.Name f) (Ast.Int 7) (Ast.Int 8))` — the fragments appear unchanged, not
            re-wrapped in another leaf. Pins the `(List Ast)` identity arm of the splice-lift.")
-  (input  (let ((xs (list (Ast.Int 7) (Ast.Int 8)))) `(f ,@xs)))
+  (input  (let ((xs #list((Ast.Int 7) (Ast.Int 8)))) `(f ,@xs)))
   (output (: (Ast.List (list (Ast.Name "f") (Ast.Int 7) (Ast.Int 8))) Ast)))
 
 (case "the element list of an Ast.List escapes as a (List Ast) value and renders its structure"
@@ -2333,7 +2333,7 @@
            wildcard makes the match exhaustive over the `Ast` sum (a non-`List` head returns the empty
            `(List Ast)`); a match returning an `Ast`/`(List Ast)` value MUST cover Int/Float/Bool/Str/Name
            or it is CDZ0210 non-exhaustive.")
-  (input  (match (quote (+ 1 2)) ((Ast.List elems) elems) (_ (list))))
+  (input  (match (quote (+ 1 2)) ((Ast.List elems) elems) (_ #list())))
   (output (: (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)) (List Ast))))
 
 (case "unquote-splicing a list with a RUNTIME Ast element splices it by identity at runtime"
@@ -2345,7 +2345,7 @@
            that the `(List Ast)` identity does not require compile-time-constant elements.")
   (input  (do
             (def (main (: n Int64))
-              (match (quasiquote (f (unquote-splicing (list (Ast.Int (BigInt.of n)) (Ast.Int 8)))))
+              (match (quasiquote (f (unquote-splicing #list((Ast.Int (BigInt.of n)) (Ast.Int 8)))))
                 ((Ast.List ys) (match (List.at ys 1)
                                  ((Option.Some (Ast.Int v)) v)
                                  (_ 0N)))
@@ -2361,7 +2361,7 @@
            (the runtime splice map is not yet built) rather than building a wrong-typed node —
            reject-don't-miscompile. `(f ,@xs)` with xs=(list (list 1) (list 2)) is a `(List (List
            Int64))`, outside the liftable set.")
-  (input  (let ((xs (list (list 1) (list 2)))) `(f ,@xs)))
+  (input  (let ((xs #list(#list(1) #list(2)))) `(f ,@xs)))
   (declines))
 
 ; --- Splicing requires a list --------------------------------------------------------------
@@ -2510,15 +2510,15 @@
               (if (= (head-name x) "comment") (peel (child x 2)) x))
             (def (collect (const (: xs (List Ast))))
               (match xs
-                ((list) (: (list) (List Ast)))
-                ((list h .. t)
+                (#list() (: #list() (List Ast)))
+                (#list(h .. t)
                   (let ((g (peel h)) (tail (collect t)))
                     (if (= (head-name g) "type") (List.prepend tail g) tail)))))
             (def (main)
-              (> (Bytes.len (Ast.encode (Ast.List (collect (list
-                   (Ast.List (list (Ast.Name "comment") (Ast.Str "c")
-                                   (Ast.List (list (Ast.Name "type") (Ast.Name "A")))))
-                   (Ast.List (list (Ast.Name "type") (Ast.Name "B")))))))) 0))
+              (> (Bytes.len (Ast.encode (Ast.List (collect #list(
+                   (Ast.List #list((Ast.Name "comment") (Ast.Str "c")
+                                   (Ast.List #list((Ast.Name "type") (Ast.Name "A")))))
+                   (Ast.List #list((Ast.Name "type") (Ast.Name "B")))))))) 0))
             (export main)))
   (output (: true Bool)))
 
@@ -2542,17 +2542,17 @@
               (if (= (head-name x) "comment") (peel (child x 2)) x))
             (def (collect (const (: xs (List Ast))))
               (match xs
-                ((list) (: (list) (List Ast)))
-                ((list h .. t)
+                (#list() (: #list() (List Ast)))
+                (#list(h .. t)
                   (let ((g (peel h)) (tail (collect t)))
                     (if (= (head-name g) "type") (List.prepend tail g) tail)))))
             (def (build (const (: xs (List Ast))))
               #record((= types (Ast.List (collect xs))) (= count 7)))
             (def (main)
-              (> (Bytes.len (Ast.encode (. (build (list
-                   (Ast.List (list (Ast.Name "comment") (Ast.Str "c")
-                                   (Ast.List (list (Ast.Name "type") (Ast.Name "A")))))
-                   (Ast.List (list (Ast.Name "type") (Ast.Name "B"))))) types))) 0))
+              (> (Bytes.len (Ast.encode (. (build #list(
+                   (Ast.List #list((Ast.Name "comment") (Ast.Str "c")
+                                   (Ast.List #list((Ast.Name "type") (Ast.Name "A")))))
+                   (Ast.List #list((Ast.Name "type") (Ast.Name "B"))))) types))) 0))
             (export main)))
   (output (: true Bool)))
 
@@ -2574,8 +2574,8 @@
   (input  (do
             (def (f (: b Bool))
               (let ((r (if b
-                          (record (= name "a") (= input (Ast.Name "i")))
-                          (record (= name "b") (= input (Ast.List (list)))))))
+                          #record((= name "a") (= input (Ast.Name "i")))
+                          #record((= name "b") (= input (Ast.List #list()))))))
                 (match (. r input)
                   ((Ast.Name _) 1)
                   (_ 0))))
@@ -2597,10 +2597,10 @@
   (input  (do
             (def (desc (: b Bool))
               (if b
-                  (record (= id b"idA") (= name "nameA")
-                          (= input (Ast.Name "i")) (= output (Ast.Name "o")) (= types (Ast.List (list))))
-                  (record (= id b"idBB") (= name "nameBB")
-                          (= input (Ast.Name "j")) (= output (Ast.Name "p")) (= types (Ast.List (list (Ast.Name "z")))))))
+                  #record((= id b"idA") (= name "nameA")
+                          (= input (Ast.Name "i")) (= output (Ast.Name "o")) (= types (Ast.List #list())))
+                  #record((= id b"idBB") (= name "nameBB")
+                          (= input (Ast.Name "j")) (= output (Ast.Name "p")) (= types (Ast.List #list((Ast.Name "z")))))))
             (def (main (: b Bool))
               (let ((r (desc b)))
                 (+ (Bytes.len (. r id)) (String.byte-len (. r name)))))
@@ -2622,12 +2622,12 @@
            uniform-descriptor redesign depends on.")
   (input  (do
             (def (descriptor)
-              (record (= id b"\x01ID")
+              #record((= id b"\x01ID")
                       (= name "temp.celsius")
-                      (= encodedInput (Ast.encode (Ast.List (list (Ast.Name "input") (Ast.Name "Temp")))))
+                      (= encodedInput (Ast.encode (Ast.List #list((Ast.Name "input") (Ast.Name "Temp")))))
                       (= encodedAst (Ast.encode Ast.module))))
             (def (stub)
-              (record (= id b"") (= name "") (= encodedInput b"") (= encodedAst b"")))
+              #record((= id b"") (= name "") (= encodedInput b"") (= encodedAst b"")))
             (def (main (: b Bool))
               (let ((r (if b (descriptor) (stub))))
                 (> (+ (+ (Bytes.len (. r id)) (String.byte-len (. r name)))
@@ -2662,12 +2662,12 @@
               (if (= (head-name x) "comment") (peel (child x 2)) x))
             (def (collect (const (: xs (List Ast))))
               (match xs
-                ((list) (: (list) (List Ast)))
-                ((list h .. t)
+                (#list() (: #list() (List Ast)))
+                (#list(h .. t)
                   (let ((g (peel h)) (tail (collect t)))
                     (if (= (head-name g) "type") (List.prepend tail g) tail)))))
             (def (forms-of (const (: mm Ast)))
-              (match mm ((Ast.List fs) fs) (_ (: (list) (List Ast)))))
+              (match mm ((Ast.List fs) fs) (_ (: #list() (List Ast)))))
             (def (main)
               (> (Bytes.len (Ast.encode (Ast.List (collect (forms-of Ast.module))))) (- 0 1)))
             (export main)))
@@ -2695,15 +2695,15 @@
               (if (= (head-name x) "comment") (peel (child x 2)) x))
             (def (unwrap-all (const (: xs (List Ast))))
               (match xs
-                ((list) (: (list) (List Ast)))
-                ((list h .. t) (List.prepend (unwrap-all t) (peel h)))))
+                (#list() (: #list() (List Ast)))
+                (#list(h .. t) (List.prepend (unwrap-all t) (peel h)))))
             (def (keep-types (const (: xs (List Ast))))
               (match xs
-                ((list) (: (list) (List Ast)))
-                ((list h .. t)
+                (#list() (: #list() (List Ast)))
+                (#list(h .. t)
                   (if (= (head-name h) "type") (List.prepend (keep-types t) h) (keep-types t)))))
             (def (forms-of (const (: mm Ast)))
-              (match mm ((Ast.List fs) fs) (_ (: (list) (List Ast)))))
+              (match mm ((Ast.List fs) fs) (_ (: #list() (List Ast)))))
             (def (main)
               (> (Bytes.len (Ast.encode (Ast.List (keep-types (unwrap-all (forms-of Ast.module)))))) (- 0 1)))
             (export main)))
@@ -2717,7 +2717,7 @@
            decode returns `Err` and the program handles it as an ordinary value. This is the fallible-reader
            discipline (like `String.from-bytes`), not reject-don't-miscompile: malformed EXTERNAL input is a
            handleable condition, not a program bug that traps.")
-  (input  (match (Ast.decode (Bytes.of (list 255 255 255)))
+  (input  (match (Ast.decode (Bytes.of #list(255 255 255)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2729,7 +2729,7 @@
            `Ast.decode` of `(encode (Ast.Int 7)) ++ [99]` yields `Err`, not `Ok (Ast.Int 7)`. The total-decode
            companion of the round-trip cases: decode consumes the WHOLE input or reports an error, so a
            truncated or concatenated external input is caught rather than half-read.")
-  (input  (match (Ast.decode (Bytes.concat (Ast.encode (Ast.Int 7)) (Bytes.of (list 99))))
+  (input  (match (Ast.decode (Bytes.concat (Ast.encode (Ast.Int 7)) (Bytes.of #list(99))))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2747,7 +2747,7 @@
   (doc    "The Float decode arm reads 8 bytes after tag 0x05; a truncated payload (tag + only 3 bytes) is
            not a canonical encoding, so `Ast.decode` returns `Err` (value-interchange.md #A Decode Over
            External Bytes Is Total). Pins the length check on the Float arm — never a partial read or trap.")
-  (input  (match (Ast.decode (Bytes.of (list 5 1 2 3)))
+  (input  (match (Ast.decode (Bytes.of #list(5 1 2 3)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2756,7 +2756,7 @@
   (doc    "A Float payload whose 8 bytes are a NaN bit pattern (`7ff8…0001`) has no finite `Decimal` value
            form, so the decode reports `Err` rather than fabricating a non-finite `Ast.Float` — the decode
            arm rejects a non-finite double. Pins that the byte→Decimal step stays total on NaN/inf.")
-  (input  (match (Ast.decode (Bytes.of (list 5 1 0 0 0 0 0 248 127)))
+  (input  (match (Ast.decode (Bytes.of #list(5 1 0 0 0 0 0 248 127)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2765,7 +2765,7 @@
   (doc    "The Str decode arm reads a 4-byte length then that many UTF-8 bytes; a length (255) exceeding
            the bytes present is not a canonical encoding, so `Ast.decode` returns `Err`. Pins the Str arm's
            bounds check — never reads past the input.")
-  (input  (match (Ast.decode (Bytes.of (list 4 255 0 0 0)))
+  (input  (match (Ast.decode (Bytes.of #list(4 255 0 0 0)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2774,7 +2774,7 @@
   (doc    "A leading tag byte the encoding does not assign (0x09 — beyond Int/Name/List/Bool/Str/Float =
            0x00..0x05) is not a canonical AST, so `Ast.decode` returns `Err`. Pins that the tag dispatch's
            fallthrough is a clean decline, not a trap — total over ANY external byte.")
-  (input  (match (Ast.decode (Bytes.of (list 9 0 0 0 0)))
+  (input  (match (Ast.decode (Bytes.of #list(9 0 0 0 0)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2785,7 +2785,7 @@
            companion of the Str-oversized-length case for the LIST arm (tag 0x02): pins that the count is
            bounds-checked against the remaining input — never an over-read past the end. A decode that
            trusted the count would read past the buffer (trap) or half-build a list.")
-  (input  (match (Ast.decode (Bytes.of (list 2 255 0 0 0)))
+  (input  (match (Ast.decode (Bytes.of #list(2 255 0 0 0)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2795,7 +2795,7 @@
            bounds check and reported `Err`, NOT drive a 4-billion-iteration build or an out-of-memory trap.
            Pins that the List arm validates the count against the ACTUAL remaining bytes before allocating
            or looping — total over an adversarial count, not merely a small-count truncation.")
-  (input  (match (Ast.decode (Bytes.of (list 2 255 255 255 255)))
+  (input  (match (Ast.decode (Bytes.of #list(2 255 255 255 255)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2810,7 +2810,7 @@
            byte (1) then only TWO of the four length bytes, so the length prefix is truncated and
            `Ast.decode` returns `Err`. The variable-length successor of the old fixed-8-byte truncation
            case: pins that the length prefix itself is bounds-checked, never partial-read.")
-  (input  (match (Ast.decode (Bytes.of (list 0 1 2 3)))
+  (input  (match (Ast.decode (Bytes.of #list(0 1 2 3)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2822,7 +2822,7 @@
            the never-panic-on-untrusted-input contract; a `checked_add` returns `Err` instead. Pins that
            the length arithmetic is overflow-safe on the adversarial maximal length, not merely
            bounds-checked against present bytes (github-liaison/Copilot PR#747).")
-  (input  (match (Ast.decode (Bytes.of (list 0 0 255 255 255 255)))
+  (input  (match (Ast.decode (Bytes.of #list(0 0 255 255 255 255)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2832,7 +2832,7 @@
            2-byte magnitude but supplies ZERO magnitude bytes, so `Ast.decode` returns `Err`. The
            magnitude-side companion of the truncated-length case — pins the bounds check on the magnitude
            read, mirroring the Str/List length-vs-present cases.")
-  (input  (match (Ast.decode (Bytes.of (list 0 0 2 0 0 0)))
+  (input  (match (Ast.decode (Bytes.of #list(0 0 2 0 0 0)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2843,7 +2843,7 @@
            magnitude `00 01`) has a leading zero byte — a non-canonical encoding of the value 1 — so
            `Ast.decode` returns `Err` rather than accepting a second spelling of the same value. Pins that
            decode rejects a non-minimal magnitude, keeping encode/decode a bijection.")
-  (input  (match (Ast.decode (Bytes.of (list 0 0 2 0 0 0 0 1)))
+  (input  (match (Ast.decode (Bytes.of #list(0 0 2 0 0 0 0 1)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2853,7 +2853,7 @@
            zero. `(0 1 0 0 0 0)` marks the sign NEGATIVE with a zero-length magnitude — a negative zero,
            not canonical — so `Ast.decode` returns `Err`. Pins the signed-zero canonicalization on the
            decode side, the byte-codec companion of the text-path negative-zero float cases.")
-  (input  (match (Ast.decode (Bytes.of (list 0 1 0 0 0 0)))
+  (input  (match (Ast.decode (Bytes.of #list(0 1 0 0 0 0)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2863,7 +2863,7 @@
            rather than trapping on an empty read — the total-decode contract holds at the degenerate
            boundary (value-interchange.md #A Decode Over External Bytes Is Total). Pins that the tag read
            itself is bounds-checked, not just the per-arm payloads.")
-  (input  (match (Ast.decode (Bytes.of (list)))
+  (input  (match (Ast.decode (Bytes.of #list()))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
@@ -2913,7 +2913,7 @@
            same `(quote (+ 1 2))` both bind a=`(Ast.Int 1)`; comparing the two bound values is true. Pins
            the equivalence the form rests on — the pattern adds a surface, not a second mechanism.")
   (input  (= (match (quote (+ 1 2)) (`(+ ,a ,b) a) (_ (Ast.Int 0)))
-             (match (quote (+ 1 2)) ((Ast.List (list (Ast.Name "+") a b)) a) (_ (Ast.Int 0)))))
+             (match (quote (+ 1 2)) ((Ast.List #list((Ast.Name "+") a b)) a) (_ (Ast.Int 0)))))
   (output (: true Bool)))
 
 (case "a literal subterm in a quote pattern matches by equality"
@@ -3165,8 +3165,8 @@
   (input  (do
             (def (sum-args (: xs (List Ast)))
               (match xs
-                ((list) 0N)
-                ((list h .. t) (+ (match h ((Ast.Int n) n) (_ 0N)) (sum-args t)))))
+                (#list() 0N)
+                (#list(h .. t) (+ (match h ((Ast.Int n) n) (_ 0N)) (sum-args t)))))
             (def (sum-form (: a Ast))
               (match a
                 ((quasiquote (f (unquote-splicing rest))) (sum-args rest))
@@ -3319,7 +3319,7 @@
            beside this is quote-const; this pins the spliced template flowing into the value heap.")
   (input  (do
             (def (main (: k Int64))
-              (match (eval (quasiquote (list (unquote k) (* (unquote k) 2))))
+              (match (eval (quasiquote #list((unquote k) (* (unquote k) 2))))
                 (xs (+ (List.len xs)
                        (* 10 (match (List.at xs 1) ((Some v) v) ((None _u) -1)))))))
             (export main)))
@@ -3344,15 +3344,15 @@
            runtime three-element list, so `List.len` reads 3. Pins that eval handles a COLLECTION
            construction form (not only scalars/control) — the reconstructed `(list …)` produces a
            first-class runtime list, the data-construction companion of the arithmetic/control cases.")
-  (input  (List.len (eval (quote (list 1 2 3)))))
+  (input  (List.len (eval (quote #list(1 2 3)))))
   (output (: 3 Int64)))
 
 (case "eval of a quoted tuple-construction form folds to the runtime tuple"
   (doc    "`(eval (quote (tuple 7 5)))` reconstructs the `tuple` constructor and folds it to the runtime
            2-tuple, destructured by `(tuple a b)` to `7 + 5 = 12`. Pins that eval builds a runtime tuple
            from a quoted tuple form — the fixed-arity-product companion of the list-construction case.")
-  (input  (match (eval (quote (tuple 7 5)))
-            ((tuple a b) (+ a b))))
+  (input  (match (eval (quote #tuple(7 5)))
+            (#tuple(a b) (+ a b))))
   (output (: 12 Int64)))
 
 ; The construction cases above build a collection; these eval a quoted OPERATION that CONSUMES one — a
@@ -3375,7 +3375,7 @@
            a quoted operation whose result is an Option (a bounds-checked accessor), reconstructing both
            the operation and its collection argument. The consuming-operation companion of the
            list-construction case.")
-  (input  (match (eval (quote (List.at (list 10 20 30) 1)))
+  (input  (match (eval (quote (List.at #list(10 20 30) 1)))
             ((Option.Some v) v)
             (_               0)))
   (output (: 20 Int64)))
@@ -3402,8 +3402,8 @@
   (input  (do
             (def (main (: d Int64))
               (match (quote (f "s"))
-                ((Ast.List (list (Ast.Str _) .. _)) 1)
-                ((Ast.List (list (Ast.Name _) .. _)) 2)
+                ((Ast.List #list((Ast.Str _) .. _)) 1)
+                ((Ast.List #list((Ast.Name _) .. _)) 2)
                 (_ 0)))
             (export main)))
   (call   main (: 0 Int64))
@@ -3424,7 +3424,7 @@
            not semantic): a keyword head reifies exactly as an ordinary identifier head does, so no grammar
            meaning leaks into the AST value.")
   (input  (match (quote (if a b c))
-            ((Ast.List (list (Ast.Name h) .. _)) (String.byte-len h))
+            ((Ast.List #list((Ast.Name h) .. _)) (String.byte-len h))
             (_                                    -1)))
   (output (: 2 Int64)))
 
@@ -3441,7 +3441,7 @@
            companion of the `if` head-agnostic case: a quote that interpreted `let` would risk scoping the
            body's names, so this pins that no binding happens.")
   (input  (match (quote (let ((x 1)) x))
-            ((Ast.List (list (Ast.Name h) .. _)) h)
+            ((Ast.List #list((Ast.Name h) .. _)) h)
             (_                                    "?")))
   (output (: "let" String)))
 
@@ -3451,7 +3451,7 @@
            inert structure. Matching the head binds the Name (= \"fn\"). The lambda-form companion of the
            `let` case: a quote that interpreted `fn` would bind the parameter, so this pins it does not.")
   (input  (match (quote (fn (x) x))
-            ((Ast.List (list (Ast.Name h) .. _)) h)
+            ((Ast.List #list((Ast.Name h) .. _)) h)
             (_                                    "?")))
   (output (: "fn" String)))
 
@@ -3463,7 +3463,7 @@
            that a plain quote evaluates NOTHING in its body (core-semantics.md — quote produces the AST
            without evaluating), even when the body is itself quote/metaprogramming syntax.")
   (input  (match (quote (quote x))
-            ((Ast.List (list (Ast.Name h) (Ast.Name inner)))
+            ((Ast.List #list((Ast.Name h) (Ast.Name inner)))
              (if (= h "quote") (String.byte-len inner) -2))
             (_ -1)))
   (output (: 1 Int64)))
@@ -3480,7 +3480,7 @@
            round-trips it to an equal AST. The construction companion of the `eval (quote (let …))` fold:
            `quote` builds a control-form AST without interpreting it, and the codec preserves it whole.")
   (input  (match (Ast.decode (Ast.encode (quote (let ((x 1)) x))))
-            ((Ok (Ast.List (list (Ast.Name h) .. _))) (String.byte-len h))
+            ((Ok (Ast.List #list((Ast.Name h) .. _))) (String.byte-len h))
             ((Ok _)  -2)
             ((Err _) -1)))
   (output (: 3 Int64)))
@@ -3497,7 +3497,7 @@
               (match a ((Ast.Str _) 1) ((Ast.Int _) 2) ((Ast.Bool _) 3) (_ 9)))
             (def (main (: d Int64))
               (match (quote ("s" 5 true))
-                ((Ast.List (list a b c)) (+ (+ (* 100 (kind a)) (* 10 (kind b))) (kind c)))
+                ((Ast.List #list(a b c)) (+ (+ (* 100 (kind a)) (* 10 (kind b))) (kind c)))
                 (_ -1)))
             (export main)))
   (call   main (: 0 Int64))
@@ -3640,7 +3640,7 @@
               (match a ((Ast.Str _) 1) ((Ast.Int _) 2) ((Ast.Bool _) 3) ((Ast.Float _) 4) (_ 9)))
             (def (main (: d Int64))
               (match (quote ("s" 5 true 2.5))
-                ((Ast.List (list a b c e)) (+ (+ (+ (* 1000 (kind a)) (* 100 (kind b))) (* 10 (kind c))) (kind e)))
+                ((Ast.List #list(a b c e)) (+ (+ (+ (* 1000 (kind a)) (* 100 (kind b))) (* 10 (kind c))) (kind e)))
                 (_ -1)))
             (export main)))
   (call   main (: 0 Int64))
@@ -3667,7 +3667,7 @@
            are byte-EQUAL, not merely decode-equivalent. A codec with construction-dependent framing
            (or the non-minimal varints just rejected) breaks exactly this equality.")
   (input  (= (Ast.encode (quote (f 1)))
-             (Ast.encode (Ast.List (list (Ast.Name "f") (Ast.Int 1))))))
+             (Ast.encode (Ast.List #list((Ast.Name "f") (Ast.Int 1))))))
   (output (: true Bool)))
 
 (case "one encode-decode cycle is byte-stable"
@@ -3732,7 +3732,7 @@
   (input  (do
             (def (main (: n Int64))
               (+ (* 10 (if (= (Ast.Int (BigInt.of n)) (Ast.Int 3)) 1 0))
-                 (if (= (Ast.List (list (Ast.Int (BigInt.of n)))) (Ast.List (list (Ast.Int 3)))) 1 0)))
+                 (if (= (Ast.List #list((Ast.Int (BigInt.of n)))) (Ast.List #list((Ast.Int 3)))) 1 0)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 11 Int64))
   (call   main (: 5 Int64)) (output (: 0 Int64)))
@@ -3748,36 +3748,36 @@
         (def (fold node)
           (match node
             ((Ast.List xs)
-              (match (fold-list xs (list) 0)
-                ((tuple xs2 k)
+              (match (fold-list xs #list() 0)
+                (#tuple(xs2 k)
                   (match xs2
-                    ((list (Ast.Name op) (Ast.Int a) (Ast.Int b))
+                    (#list((Ast.Name op) (Ast.Int a) (Ast.Int b))
                       (if (= op "+")
-                          (tuple (Ast.Int (+ a b)) (+ k 1))
-                          (tuple (Ast.List xs2) k)))
-                    (_ (tuple (Ast.List xs2) k))))))
-            (other (tuple other 0))))
+                          #tuple((Ast.Int (+ a b)) (+ k 1))
+                          #tuple((Ast.List xs2) k)))
+                    (_ #tuple((Ast.List xs2) k))))))
+            (other #tuple(other 0))))
         (def (fold-list (: xs (List Ast)) (: acc (List Ast)) (: k Int64))
           (match xs
-            ((list) (tuple acc k))
-            ((list h .. t)
+            (#list() #tuple(acc k))
+            (#list(h .. t)
               (match (fold h)
-                ((tuple h2 k2) (fold-list t (List.push acc h2) (+ k k2)))))))
+                (#tuple(h2 k2) (fold-list t (List.push acc h2) (+ k k2)))))))
         (def (main (: mode Int64))
           (do
             (def t (if (= mode 1)
-                       (Ast.List (list (Ast.Name "f")
-                         (Ast.List (list (Ast.Name "+") (Ast.Int 2) (Ast.Int 3)))
-                         (Ast.List (list (Ast.Name "g")
-                           (Ast.List (list (Ast.Name "+") (Ast.Int 4) (Ast.Int 5)))))))
-                       (Ast.List (list (Ast.Name "f") (Ast.Int 7)))))
+                       (Ast.List #list((Ast.Name "f")
+                         (Ast.List #list((Ast.Name "+") (Ast.Int 2) (Ast.Int 3)))
+                         (Ast.List #list((Ast.Name "g")
+                           (Ast.List #list((Ast.Name "+") (Ast.Int 4) (Ast.Int 5)))))))
+                       (Ast.List #list((Ast.Name "f") (Ast.Int 7)))))
             (match (fold t)
-              ((tuple t2 k)
+              (#tuple(t2 k)
                 (+ (* k 10)
                    (if (= t2 (if (= mode 1)
-                                 (Ast.List (list (Ast.Name "f") (Ast.Int 5)
-                                   (Ast.List (list (Ast.Name "g") (Ast.Int 9)))))
-                                 (Ast.List (list (Ast.Name "f") (Ast.Int 7)))))
+                                 (Ast.List #list((Ast.Name "f") (Ast.Int 5)
+                                   (Ast.List #list((Ast.Name "g") (Ast.Int 9)))))
+                                 (Ast.List #list((Ast.Name "f") (Ast.Int 7)))))
                        1 0))))))
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
@@ -3808,7 +3808,7 @@
   (input  (do
         (def (main (: k Int64))
           (do
-            (def xs (eval (quasiquote (list 1 (unquote k) 3))))
+            (def xs (eval (quasiquote #list(1 (unquote k) 3))))
             (+ (* 100 (List.len xs))
                (match (List.at xs 1) ((Some v) v) ((None _u) -1)))))
         (export main)))
@@ -3843,7 +3843,7 @@
   (input  (do
         (def (main)
           (do
-            (def asts (list (quasiquote (+ 1 2)) (quasiquote (* 3 4))))
+            (def asts #list((quasiquote (+ 1 2)) (quasiquote (* 3 4))))
             (Int64.of (eval (Option.expect (List.at asts 1) "present")))))
         (export main)))
   (error  CDZ0101))
@@ -3899,7 +3899,7 @@
           (match (Ast.read "(defn add 1)")
             ((Ast.List parts)
               (match parts
-                ((list (Ast.Name _kw) rest .. more)
+                (#list((Ast.Name _kw) rest .. more)
                   (if (= (Ast.List (List.prepend (List.prepend more rest)
                                                  (Ast.Name (if (= mode 1) "defx" "defy"))))
                          (Ast.read "(defx add 1)"))
@@ -3937,7 +3937,7 @@
           (match (Ast.read "(defn add (a b) (+ a b))")
             ((Ast.List parts)
               (match parts
-                ((list (Ast.Name kw) (Ast.Name fname) (Ast.List params) (Ast.List body))
+                (#list((Ast.Name kw) (Ast.Name fname) (Ast.List params) (Ast.List body))
                   (+ (* 100 (List.len params))
                      (+ (* 10 (List.len body))
                         (if (= kw "defn") 1 0))))
@@ -3955,9 +3955,9 @@
            guards the reps that already agree from a fix that unified in the wrong direction.")
   (input  (do
         (def (main (: k Int64))
-          (+ (* 10 (if (= (quote (f 42)) (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of k))))) 1 0))
-             (if (= (Ast.List (list (Ast.Name "g") (Ast.Int (BigInt.of k))))
-                    (Ast.List (list (Ast.Name "g") (Ast.Int 42))))
+          (+ (* 10 (if (= (quote (f 42)) (Ast.List #list((Ast.Name "f") (Ast.Int (BigInt.of k))))) 1 0))
+             (if (= (Ast.List #list((Ast.Name "g") (Ast.Int (BigInt.of k))))
+                    (Ast.List #list((Ast.Name "g") (Ast.Int 42))))
                  1 0)))
         (export main)))
   (call   main (: 42 Int64)) (output (: 11 Int64))
@@ -3973,8 +3973,8 @@
            wrong way).")
   (input  (do
         (def (main (: mode Int64))
-          (match (Map.lookup (Map.insert Map.empty (Ast.List (list (Ast.Name "f") (Ast.Int 1))) 42)
-                             (if (= mode 1) (Ast.List (list (Ast.Name "f") (Ast.Int 1)))
+          (match (Map.lookup (Map.insert Map.empty (Ast.List #list((Ast.Name "f") (Ast.Int 1))) 42)
+                             (if (= mode 1) (Ast.List #list((Ast.Name "f") (Ast.Int 1)))
                                  (quote (f 1))))
             ((Some v) v) ((None _u) -1)))
         (export main)))
@@ -3987,9 +3987,9 @@
   (doc    "The POSITION faces of ,@ (the existing splice pins are tail-position, non-empty): an EMPTY splice MID-list must close the gap (`(f 1 ,@() 2)` = `(f 1 2)` — an off-by-one keeps a hole or eats the 2); a singleton fills the same slot; and TWO splices around a literal name (`(f ,@xs mid ,@ys)`) exercise the index bookkeeping after the first splice shifts positions. Structural = against directly-written quasiquotes.")
   (input  (do
             (def (main)
-              (+ (* 100 (if (= (let ((xs (list))) `(f 1 ,@xs 2)) `(f 1 2)) 1 0))
-                 (+ (* 10 (if (= (let ((xs (list 7))) `(f 1 ,@xs 2)) `(f 1 7 2)) 1 0))
-                    (if (= (let ((xs (list 7)) (ys (list 8 9))) `(f ,@xs mid ,@ys)) `(f 7 mid 8 9)) 1 0))))
+              (+ (* 100 (if (= (let ((xs #list())) `(f 1 ,@xs 2)) `(f 1 2)) 1 0))
+                 (+ (* 10 (if (= (let ((xs #list(7))) `(f 1 ,@xs 2)) `(f 1 7 2)) 1 0))
+                    (if (= (let ((xs #list(7)) (ys #list(8 9))) `(f ,@xs mid ,@ys)) `(f 7 mid 8 9)) 1 0))))
             (export main)))
   (output (: 111 Int64)))
 
@@ -4023,7 +4023,7 @@
   (input  (do
             (def (main (: a Int64))
               (match (Map.lookup (Map.insert Map.empty (quote (+ 5 2)) 42)
-                                 (Ast.List (list (Ast.Name "+") (Ast.Int (BigInt.of a)) (Ast.Int 2))))
+                                 (Ast.List #list((Ast.Name "+") (Ast.Int (BigInt.of a)) (Ast.Int 2))))
                 ((Some v) v) ((None _u) -1)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 42 Int64))
@@ -4039,11 +4039,11 @@
   (input  (do
             (def (mk chunks holes)
               (match holes
-                ((list h) (Ast.List (list (Ast.Name "+") h (Ast.Int 2))))
+                (#list(h) (Ast.List #list((Ast.Name "+") h (Ast.Int 2))))
                 (_other (Ast.Int 0))))
             (def (main (: a Int64))
               (match (Map.lookup
-                       (Map.insert Map.empty (Ast.List (list (Ast.Name "+") (Ast.Int (BigInt.of a)) (Ast.Int 2))) 42)
+                       (Map.insert Map.empty (Ast.List #list((Ast.Name "+") (Ast.Int (BigInt.of a)) (Ast.Int 2))) 42)
                        (tagged-template mk (chunks "" "") (holes (Ast.Int (BigInt.of a)))))
                 ((Some v) v) ((None _u) -1)))
             (export main)))
@@ -4099,7 +4099,7 @@
 (case "cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text"
   (input (do
     (def (main (: k Int64))
-      (String.byte-len (Ast.print (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of k)))))))
+      (String.byte-len (Ast.print (Ast.List #list((Ast.Name "f") (Ast.Int (BigInt.of k)))))))
     (export main)))
   (call main (: 7 Int64))
   (output (: 5 Int64)))
@@ -4163,7 +4163,7 @@
 (case "nfe3 tuple-walk equality says +inf and -inf encodes DIFFER (distinct tags)"
   (input (do
     (def (f (: x Float64))
-      (if (= (tuple 1 (Ast.encode (Ast.Float (/ x 0.0)))) (tuple 1 (Ast.encode (Ast.Float (/ (- 0.0 x) 0.0))))) 0 1))
+      (if (= #tuple(1 (Ast.encode (Ast.Float (/ x 0.0)))) #tuple(1 (Ast.encode (Ast.Float (/ (- 0.0 x) 0.0))))) 0 1))
     (export f)))
   (call f (: 1.0 Float64))
   (output (: 1 Int64)))
@@ -4171,8 +4171,8 @@
 (case "nfe4 two runtime NaN encodes are byte-identical via the tuple walk (canonical NaN form)"
   (input (do
     (def (f (: x Float64))
-      (if (= (tuple 1 (Ast.encode (Ast.Float (- (/ x 0.0) (/ x 0.0)))))
-             (tuple 1 (Ast.encode (Ast.Float (- (/ (* x 2.0) 0.0) (/ (* x 2.0) 0.0)))))) 1 0))
+      (if (= #tuple(1 (Ast.encode (Ast.Float (- (/ x 0.0) (/ x 0.0)))))
+             #tuple(1 (Ast.encode (Ast.Float (- (/ (* x 2.0) 0.0) (/ (* x 2.0) 0.0)))))) 1 0))
     (export f)))
   (call f (: 1.0 Float64))
   (output (: 1 Int64)))
@@ -4216,7 +4216,7 @@
 (case "nfp3 Ast.print renders a -inf leaf inside a list as -inf.0"
   (input (do
     (def (main (: x Float64))
-      (Ast.print (Ast.List (list (Ast.Name "f") (Ast.Float (/ (- 0.0 x) 0.0))))))
+      (Ast.print (Ast.List #list((Ast.Name "f") (Ast.Float (/ (- 0.0 x) 0.0))))))
     (export main)))
   (call main (: 1.0 Float64))
   (output (: "(f -inf.0)" String))
@@ -4231,7 +4231,7 @@
                ((quasiquote (+ (unquote x) (unquote y))) 100)
                ((quasiquote (* (unquote x) (unquote y))) 200)
                (_ 0)))
-             (def (main) (op (Ast.List (list (Ast.Name (String.concat "+" "")) (Ast.Int 1) (Ast.Int 2)))))
+             (def (main) (op (Ast.List #list((Ast.Name (String.concat "+" "")) (Ast.Int 1) (Ast.Int 2)))))
              (export main)))
   (call main) (output (: 100 Int64)))
 
@@ -4242,7 +4242,7 @@
 (case "eva1 eval of a hand-built Ast.List reconstructs and executes it identically to a quoted form"
   (doc    "`(eval (Ast.List (list (Ast.Name \"+\") (Ast.Int 4) (Ast.Int 5))))` = 9 — a hand-built AST value
            (not via quote) reconstructs to `(+ 4 5)` and folds, the same path a quoted argument takes.")
-  (input  (eval (Ast.List (list (Ast.Name "+") (Ast.Int 4) (Ast.Int 5)))))
+  (input  (eval (Ast.List #list((Ast.Name "+") (Ast.Int 4) (Ast.Int 5)))))
   (output (: 9 Int64)))
 
 (case "eva2 eval of a nested quoted form reconstructs the compound and folds"
@@ -4277,7 +4277,7 @@
 (case "qqb1 fifty quasiquote-spliced runtime-Ast trees are value-exact and leak linearly (the splice-build face)"
   (input (do
 (def (depth (: node Ast)) (match node
-  ((Ast.List es) (match es ((list) 1) ((list h .. rest) (+ 1 (depth h)))))
+  ((Ast.List es) (match es (#list() 1) (#list(h .. rest) (+ 1 (depth h)))))
   (_ 1)))
 (def (frames (: k Int64))
   (if (= k 0) 0
