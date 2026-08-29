@@ -35,6 +35,7 @@ inductive SymExpr where
   | app (op : String) (args : Array SymExpr) -- a modeled operator (`+ - * / % < > <= >= = and or not`)
   | ite (c t e : SymExpr)                    -- a conditional on a (possibly symbolic) condition
   | tuple (elems : Array SymExpr)            -- a tuple value (lazy elements); positional projection reads one
+  | record (fields : Array (ByteArray × SymExpr)) -- a record value, fields sorted by key; field projection reads one
   deriving BEq, Inhabited
 
 /-- The symbolic OUTCOME of evaluating a program with symbolic inputs. `cannotProve` records WHY so the
@@ -78,6 +79,7 @@ partial def mayTrap : SymExpr → Bool
   | .app op args => arithOps.contains op || bitwiseOps.contains op || args.any mayTrap
   | .ite c t e => mayTrap c || mayTrap t || mayTrap e
   | .tuple es => es.any mayTrap
+  | .record fs => fs.any (fun kv => mayTrap kv.2)
 
 /-- Canonicalize a symbolic expression by SOUND rewrites only: recurse into subterms; SOUND constant
 folding of comparison/boolean ops (`foldConst?`); an `if` on a (now possibly-folded) constant boolean
@@ -94,6 +96,7 @@ partial def normalize : SymExpr → SymExpr
     | some v => .const v
     | none => .app op args'
   | .tuple es => .tuple (es.map normalize)
+  | .record fs => .record (fs.map (fun kv => (kv.1, normalize kv.2)))
   | .ite c t e =>
     match normalize c with
     | .const (.bool true) => normalize t
@@ -161,11 +164,32 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
         match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
         | some r => .cannotProve r
         | none => .sym (.tuple (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
+      else if h == "record".toUTF8 then
+        -- a record value: (record (f1 v1) (f2 v2)…), fields sorted by key (matching evalRecord's canonical
+        -- form + catching a field-reorder). An unmodelable field value sinks the record (conservative).
+        let acc := (children.extract 1 children.size).foldl (fun (acc : Option (Array (ByteArray × SymExpr))) j =>
+          match acc with
+          | none => none
+          | some arr =>
+            match recordField? m j with
+            | some (k, vId) => (match symEval m senv vId with | .sym e => some (arr.push (k, e)) | .cannotProve _ => none)
+            | none => none) (some #[])
+        match acc with
+        | some arr => .sym (.record (arr.qsort (fun a b => cmpBytes a.1 b.1 == .lt)))
+        | none => .cannotProve "symeval: record has an unmodelable field or a malformed field"
       else if h == ".".toUTF8 && children.size == 3 then
-        -- POSITIONAL tuple projection `(. t i)` with `i` an integer literal (record/member `.` = boundary).
+        -- projection `(. base index)`: a NAME index → record field access; an INT index → positional tuple
+        -- access; anything else (member/module) → boundary.
         match children[1]?, children[2]? with
         | some tId, some iId =>
           match (m.nodes[iId]?).bind (fun n => match n with | .atom lid => m.leaves[lid]? | _ => none) with
+          | some (Leaf.name fld) =>
+            (match symEval m senv tId with
+             | .sym (.record fs) => (match fs.find? (fun kv => kv.1 == fld) with
+                                     | some (_, e) => .sym e
+                                     | none => .cannotProve "symeval: record field not found")
+             | .sym _ => .cannotProve "symeval: field projection of a non-record"
+             | .cannotProve r => .cannotProve r)
           | some l =>
             (match Value.ofLeaf l with
              | some (.int n) =>
@@ -176,7 +200,7 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
                                             | none => .cannotProve "symeval: tuple index out of range")
                      | .sym _ => .cannotProve "symeval: positional projection of a non-tuple"
                      | .cannotProve r => .cannotProve r)
-             | _ => .cannotProve "symeval: non-positional projection (record field / member not modeled)")
+             | _ => .cannotProve "symeval: non-positional projection (member not modeled)")
           | none => .cannotProve "symeval: malformed projection index"
         | _, _ => .cannotProve "symeval: malformed projection"
       else match String.fromUTF8? h with
@@ -328,5 +352,18 @@ private def _projExpr : Module :=
 #guard symEval _projExpr [] 3 == SymOutcome.sym (.tuple #[.const (.int 7), .const (.int 8)])
 -- projecting element 1 of `(tuple 7 8)` → `const 8`.
 #guard symEval _projExpr [] 6 == SymOutcome.sym (.const (.int 8))
+
+-- records + field projection: `(. (record (a 1) (b 2)) b)`. leaves 0:record 1:a 2:(1) 3:b 4:(2) 5:.
+-- nodes: 2:(a 1), 5:(b 2), 7:(record …), 10:(. (record …) b) [field leaf 3 reused].
+private def _recExpr : Module :=
+  { leaves := #[Leaf.name "record".toUTF8, Leaf.name "a".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.name "b".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.name ".".toUTF8],
+    nodes := #[.atom 1, .atom 2, .list #[0, 1], .atom 3, .atom 4, .list #[3, 4],
+               .atom 0, .list #[6, 2, 5], .atom 5, .atom 3, .list #[8, 7, 9]],
+    root := 10 }
+-- constructing `(record (a 1) (b 2))` → fields sorted by key `[(a,1),(b,2)]` (node 7).
+#guard symEval _recExpr [] 7 == SymOutcome.sym (.record #[("a".toUTF8, .const (.int 1)), ("b".toUTF8, .const (.int 2))])
+-- projecting field `b` → `const 2`.
+#guard symEval _recExpr [] 10 == SymOutcome.sym (.const (.int 2))
 
 end Oracle
