@@ -7388,6 +7388,41 @@ mod match_engine {
         );
     }
 
+    #[test]
+    fn a_recursive_match_binder_materializes_its_scrutinee_once_not_per_use() {
+        // REGRESSION (perf, S2-twin) — WHITE-BOX emit-count: a match/pattern BINDER used more than once must
+        // NOT re-emit its whole scrutinee per use. When the scrutinee is a RECURSIVE CALL, a binder used K
+        // times re-runs that call K times per recursion level → 2^depth runtime recompute (the pattern-binder
+        // twin of the inline-tuple fall-through exponential). `f` recurses to `(Mk 1 1)` at n=0; each recursive
+        // arm matches `(f (+ n 987654321))`, binds `a`, and uses it TWICE in `(Mk a a)`. FIX
+        // (`scrutinee_reaches_recursive_call`, lower.rs): the single-arm `Leaf` fold keeps the `Core::MatchSum`
+        // wrapper (materializing the scrutinee into ONE slot) when the scrutinee reaches a recursive call, so
+        // it runs once per level — LINEAR. Without the wrapper the fold drops it and each payload binder (`a`)
+        // resolves to a `Core::SumPayload` EMBEDDING the scrutinee, re-emitting the whole recursive call per
+        // use → 2^depth. This pins the fix STRUCTURALLY: the recursive call's DISTINCTIVE argument constant
+        // `987654321` (which lands at the scrutinee's emit site) must appear EXACTLY ONCE in the emitted module
+        // — the recursive scrutinee is materialized once, not re-emitted per binder use. (Restores the perf
+        // catch of the old run-based `..._is_materialized_once` deadline-trap guard, retired with the wasmtime
+        // dev-dep during delanguaging; the run VALUE stays corpus-covered @09-functions. Verified this catches
+        // the regression: neutralizing `scrutinee_reaches_recursive_call` → false makes the count 2 → fails.
+        // wasm target; the Rust backend's `emit_sum_match` twin still re-emits — tracked separately.)
+        let bytes = component(
+            "(module m (type P (Mk Int64 Int64)) \
+               (def (f (: n Int64)) (if (= n 0) (Mk 1 1) (match (f (+ n 987654321)) ((Mk a _) (Mk a a))))) \
+               (def (main) (match (f -60) ((Mk x _) x))) (export main))",
+        );
+        let occurrences = super::count_opcode(
+            &bytes,
+            |op| matches!(op, wasmparser::Operator::I64Const { value } if *value == 987_654_321),
+        );
+        assert_eq!(
+            occurrences, 1,
+            "a recursive match binder used twice must materialize its recursive-call scrutinee ONCE, not \
+             re-emit it per use (2^depth) — the scrutinee's distinctive constant 987654321 must emit exactly \
+             once (found {occurrences}); a regression to per-use re-emission would duplicate it"
+        );
+    }
+
     // (a_char_literal_pattern_type_mismatch_and_non_exhaustion_reject migrated to corpus 13-strings, the
     // Char-LITERAL patterns section: "a char-literal pattern over an Int scrutinee is a shape error" (CDZ0201)
     // + "a wildcard-less char match is non-exhaustive (Char is an open type)" (CDZ0210) — the two rejects the
