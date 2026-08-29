@@ -9709,6 +9709,39 @@ mod match_engine {
     }
 
     #[test]
+    fn a_refutable_list_element_dead_arm_with_a_runtime_leaf_compiles_across_the_family() {
+        // Hazard-class boundary for #5450/#5472: a REFUTABLE list-arm element desugars to a guard + a body
+        // re-match, and over a const-STRUCTURED scrutinee carrying a RUNTIME leaf a mismatching (dead) arm's
+        // body binder is lowered EAGERLY. The MAP element was vulnerable — `desugar_runtime_map_match` routes
+        // on WHOLE-map constness, so a runtime VALUE made the presence guard runtime → the dead arm was kept
+        // and its value-binder folded through to the const-keyed `MapNew` and hard-Poisoned on the absent key
+        // (#5472 lowers it to `Core::Trap` instead). The CTOR-element and NESTED-LIST-element siblings are NOT
+        // vulnerable: their guards fold on the DISCRIMINANT / LENGTH, which is const here independently of the
+        // runtime payload/elements, so the dead arm is PRUNED (never eagerly lowered). Pin the whole family +
+        // the map REST-binder companion so a future desugar change can't reintroduce the class:
+        for (label, src) in [
+            (
+                "ctor element, wrong-variant dead arm, runtime payload",
+                "(module m (def (f xs) (match xs (#list((None) .. r) 0) (#list((Some x) .. r) x) (_ (- 0 1)))) (def (main (: n Int64)) (f #list((Some n) (Some 2)))) (export main))",
+            ),
+            (
+                "nested-list element, wrong-length dead arm, runtime element",
+                "(module m (def (f xs) (match xs (#list(#list(a b) .. r) a) (#list(#list(a) .. r) a) (_ (- 0 1)))) (def (main (: n Int64)) (f #list(#list(n) #list(9)))) (export main))",
+            ),
+            (
+                "map REST binder, absent-key dead arm, runtime value",
+                "(module m (def (f xs) (match xs (#list(#map((= 5 v) .. rest) _r) v) (_ (- 0 1)))) (def (main (: n Int64)) (f #list(#map((= 1 n)) #map((= 2 20))))) (export main))",
+            ),
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "{label}: a dead refutable-element arm with a runtime leaf must compile (fall through), got {:?}",
+                reject_code(src)
+            );
+        }
+    }
+
+    #[test]
     fn a_native_structural_pattern_over_a_wrong_kind_scrutinee_is_cdz0203() {
         // SOUNDNESS guard (05-compound-types "a tuple pattern over a non-tuple scrutinee is a type error",
         // and its list/map siblings): the match scrutinee-KIND check (lower_match) reads a pattern's
