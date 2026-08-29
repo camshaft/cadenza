@@ -61,10 +61,28 @@ function titleMentionsOnLine(line: string): string[] {
 /// ("next", "later", "you'll see") is never flagged.
 const RETROSPECTIVE = /\b(you (saw|met|learned|already)|chapter (covered|showed|introduced)|shape from|made interactive|from the previous|as you)\b/i;
 
-/// Every `<Ch to="/slug">` on a line, with its slug.
+/// A `<Ch to="/slug">` presented as a forward TEASER ("Next, <Ch>Modules</Ch> gather…", "the <Ch>next
+/// chapter</Ch> turns…") is explicitly allowed by this invariant (see docstring — a forward teaser is fine;
+/// only RETROSPECTIVE recall of a later chapter is the defect). The chapter `.tsx` are now `@generated` ONE
+/// LINE PER BLOCK by the guide sexp→TSX codegen, so a retrospective phrase and an UNRELATED teaser link that
+/// the hand-written source wrapped onto separate physical lines now share a single line; a purely line-granular
+/// pairing would falsely flag them (e.g. "…something you already assumed… Next, <Ch>Modules</Ch>" — the recall
+/// is about the contract, the link is a forward preview). Teaser-framing — a forward marker in the link's own
+/// text or the few characters immediately before it — is the line-structure-independent signal that the link
+/// points forward, so it is NOT counted as a retrospective reference. "next" is unambiguously forward (you
+/// cannot retrospectively call something "next"); "later" is deliberately excluded (it reads both ways).
+const TEASER = /\b(next|upcoming|you'?ll|we'?ll|soon)\b|coming up/i;
+
+/// Every `<Ch to="/slug">` on a line that is a retrospective reference (NOT a forward teaser), with its slug.
 function chLinksOnLine(line: string): string[] {
   const out: string[] = [];
-  for (const m of line.matchAll(/<Ch\s+to="\/([a-z0-9-]+)"/g)) out.push(m[1]);
+  for (const m of line.matchAll(/<Ch\s+to="\/([a-z0-9-]+)"[^>]*>/g)) {
+    const open = m.index ?? 0;
+    const before = line.slice(Math.max(0, open - 24), open);
+    const textWindow = line.slice(open + m[0].length, open + m[0].length + 30);
+    if (TEASER.test(before) || TEASER.test(textWindow)) continue; // forward teaser — not retrospective recall
+    out.push(m[1]);
+  }
   return out;
 }
 
@@ -112,5 +130,22 @@ test("the forward-ref scan resolves slugs + reads chapters (guards a vacuous pas
     titleMentionsOnLine('a record whose fields are <strong>functions</strong>'),
     [],
     "a generic <strong> emphasis that is not a chapter title must NOT resolve",
+  );
+  // Teaser exemption (guards the @generated one-line-per-block codegen format): a forward-framed <Ch> is not a
+  // retrospective reference, but a plainly-referenced <Ch> still counts — so the invariant keeps its teeth.
+  assert.deepEqual(
+    chLinksOnLine('something you already assumed… Next, <Ch to="/modules"> Modules </Ch> gather definitions'),
+    [],
+    "a 'Next, <Ch>…' forward teaser must NOT be counted as a retrospective reference",
+  );
+  assert.deepEqual(
+    chLinksOnLine('the <Ch to="/writing-a-reducer"> next chapter </Ch> turns the model concrete'),
+    [],
+    "a '<Ch>next chapter</Ch>' forward teaser must NOT be counted",
+  );
+  assert.deepEqual(
+    chLinksOnLine('the shape from <Ch to="/records"> records </Ch>'),
+    ["records"],
+    "a plainly-referenced <Ch> (no forward framing) is still detected, so the check keeps its teeth",
   );
 });
