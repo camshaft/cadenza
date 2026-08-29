@@ -6104,7 +6104,24 @@ fn sink_ctor_through_match_arms(
         if all_same {
             out_vals.push(field_vals[0]);
         } else {
-            let field_ty = crate::infer::type_of(db, field_vals[0]);
+            // Type the sunk per-position match from the JOIN of ALL arms' field types, not `field_vals[0]`
+            // alone: a bare literal arm carries a DEFERRED width that inference leaves un-ground when a
+            // SIBLING arm pins the concrete width (`(match n (9 (Some 2.0)) (_ (Some v0:Float32)))` — the
+            // `2.0` stays `Float(Deferred)`, it does NOT conflict, unlike a two-CONCRETE-width mix which is
+            // a CDZ0201 fault caught before lowering). Typing from the first arm alone stamps that Deferred
+            // onto the sunk node → the emit branchless-select then defaults a deferred float to `f64` and
+            // pushes it beside the concrete `f32` sibling → an INVALID `select` (validation: "select
+            // operands have different types"). `Ty::join` adopts the fixed width from whichever arm pinned
+            // it — the SAME join the if/match branch-type uses — so the sunk match types to the resolved
+            // width and both arms ground to it.
+            let field_ty = {
+                let mut acc = crate::infer::type_of(db, field_vals[0]);
+                for &v in &field_vals[1..] {
+                    let t = crate::infer::type_of(db, v);
+                    acc = acc.join(&t);
+                }
+                acc
+            };
             let arms: Vec<crate::core::MatchArm> = probes
                 .iter()
                 .zip(field_vals.iter())
@@ -30200,7 +30217,15 @@ fn synth_if(db: &mut Db, cond: StructId, then_: StructId, else_: StructId) -> St
 /// current arms), so the mutual recursion (synth_if_hoisted → hoist_common_* → synth_if_hoisted) bottoms
 /// out. The result type is unchanged (a hoist rewrites the head, not the type).
 fn synth_if_hoisted(db: &mut Db, cond: StructId, then_: StructId, else_: StructId) -> StructId {
-    let ty = crate::infer::type_of(db, then_);
+    // JOIN the two branch types, not just `then_`: a bare literal branch carries a DEFERRED width that
+    // inference leaves un-ground when the sibling branch pins the concrete width (`(if b (Some 2.0) (Some
+    // v0:Float32))` hoists the `Some` out, leaving the payload `(if b 2.0 v0)` — the `2.0` stays
+    // `Float(Deferred)`). Typing the hoisted inner node from `then_` alone stamps that Deferred → the emit
+    // branchless-select defaults a deferred float to `f64` beside the concrete `f32` sibling → an INVALID
+    // `select`. `Ty::join` adopts the fixed width from whichever branch pinned it — the same fix the match
+    // `sink_ctor_through_match_arms` payload-typing applies (a genuine two-fixed-width mix is CDZ0201, caught
+    // before lowering).
+    let ty = crate::infer::type_of(db, then_).join(&crate::infer::type_of(db, else_));
     if let Some(core) = hoist_common_ctor(db, cond, then_, else_)
         .or_else(|| hoist_common_arith(db, cond, then_, else_))
     {
