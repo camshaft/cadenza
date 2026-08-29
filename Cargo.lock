@@ -3481,6 +3481,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask-merge-baseline"
+version = "0.0.0"
+dependencies = [
+ "xtask-support",
+]
+
+[[package]]
 name = "xtask-prune-baselines"
 version = "0.0.0"
 dependencies = [
