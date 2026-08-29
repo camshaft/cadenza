@@ -9,10 +9,10 @@
 
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use cdz_corpus_grade::{
-    GTrial, Grade, Outcome as GradeOutcome, check_live_objects, decode_test_run, exec_exit,
-    grade_run,
+    GTrial, Grade, Outcome as GradeOutcome, Verdict, check_live_objects, decode_test_run,
+    exec_exit, grade_run,
 };
 
 use crate::{
@@ -38,6 +38,10 @@ pub fn grade(
     // when uncaptured (diagnostic-QUALITY grading OFF; the code+message checks still run from `compile_diag`).
     diag_wire: Option<&str>,
     baseline: Option<&str>,
+    // CLASSIFY mode (`--emit-verdict PATH`, gate-delete `--save` replacement): when set, write this case's
+    // current verdict (`<tag>\t<description>`) to PATH and return success WITHOUT the baseline regression
+    // check — the per-case half of the nix `.#corpus-verdicts` harvest. Takes precedence over `baseline`.
+    emit_verdict: Option<&std::path::Path>,
     // Cross-component PROVIDER peers (`--peer <iface>=<wasm>`) the CONSUMER imports. A `(peer …)` corpus
     // case MUST be graded with its peers COMPOSED — the consumer's imported interface is bound by
     // forwarding the peer's exported funcs over the shared runtime instance (`run_with_peers`). Empty for a
@@ -164,5 +168,18 @@ pub fn grade(
     // The exit reproduces `xtask gate --check` when a baseline is supplied (fail ONLY on a pass→not-pass
     // regression; a baseline-todo/absent case that is now todo/fail is not a --check failure), else fails on
     // any outright Fail (the miscompile check).
+    // CLASSIFY mode: emit `<tag>\t<description>` (tag from `Grade::verdict` — the coarse pass/todo/fail
+    // vocab `.gate-baseline` records) + exit 0, skipping the baseline regression check. Precedence over
+    // `--baseline`: a save/harvest run classifies the CURRENT state, it never regression-fails.
+    if let Some(path) = emit_verdict {
+        let tag = match result.grade.verdict() {
+            Verdict::Pass => "pass",
+            Verdict::Todo => "todo",
+            Verdict::Fail => "fail",
+        };
+        std::fs::write(path, format!("{tag}\t{}\n", test_run.description))
+            .with_context(|| format!("writing verdict to {}", path.display()))?;
+        return Ok(ExitCode::SUCCESS);
+    }
     Ok(exec_exit(&result, &test_run.description, baseline))
 }

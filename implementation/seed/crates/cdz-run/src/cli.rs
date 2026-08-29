@@ -180,6 +180,16 @@ pub struct RunArgs {
     #[arg(long, value_name = "PATH")]
     pub baseline: Option<PathBuf>,
 
+    /// CLASSIFY mode (gate-delete `--save` replacement, v-xtask-decompose): instead of the pass/fail exit +
+    /// baseline regression check, write this case's CURRENT baseline verdict as `<tag>\t<description>`
+    /// (tag ∈ pass/todo/fail — from `Grade::verdict`, the same coarse vocab `.gate-baseline` records) to
+    /// `<PATH>` and ALWAYS exit 0. The nix `.#corpus-verdicts` harvest runs this per case + aggregates the
+    /// lines; `xtask-save-baseline` feeds them through `serialize_baseline` to (re)write `.gate-baseline*`
+    /// — the nix analogue of the in-process `gate --save`. Independent of `--baseline` (no compare) and
+    /// takes precedence over it (a save run classifies; it never regression-fails).
+    #[arg(long = "emit-verdict", value_name = "PATH")]
+    pub emit_verdict: Option<PathBuf>,
+
     /// CORE-MODULE mode (the thin-`cdz` seam, `design/DESIGN-cdz-plugin-dispatch.md`): instead of running a
     /// value-heap COMPONENT, run a bare CORE wasm module at `<PATH>` — instantiate it with no imports, call
     /// its `() -> i64` export (`--core-export`, default `main`), and print one verdict line: `value <n>` (it
@@ -313,6 +323,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             &compile_diag,
             diag_wire.as_deref(),
             baseline.as_deref(),
+            cli.emit_verdict.as_deref(),
             &peers,
         );
     }
