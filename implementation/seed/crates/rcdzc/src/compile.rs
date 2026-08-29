@@ -804,23 +804,22 @@ fn compile_with_opt_inner(
         db.component_name = saved_component_name;
         match main_result {
             Ok(main_bytes) => {
-                artifacts.push(Artifact::new(
-                    "component-provider",
-                    CLOSURE_IFACE,
-                    main_bytes,
-                ));
-                artifacts.push(Artifact::new(
-                    link::KIND_COMPONENT_NAME,
-                    CLOSURE_IFACE,
-                    CLOSURE_IFACE.as_bytes().to_vec(),
-                ));
-                // One thin CONSUMER per `@test` — NAMED by the test's def name (unique; the runner/manifest
-                // demux key). Each imports the whole library from main and exports just its own test. Track the
-                // SUCCESSFULLY-emitted tests so the manifest lists only runnable targets (a compound-param test
-                // that declines pre-#4031 has no target.wasm → omit it, never list a missing component).
+                // MAIN artifact NAMED "main" (not the iface) so `cdz-compile -o D` writes it as `main.wasm`
+                // (via the `component-provider`→`wasm` ext) — the fixed shred output-file contract v-test-shred
+                // links against (`--peer <iface>=main.wasm`). Its INTERFACE identity stays `CLOSURE_IFACE` (set
+                // as `db.component_name` for the emit above + carried per-entry in the manifest's `main-iface`);
+                // the artifact NAME is just the file key. NO `component-name` sidecar in the shred output — the
+                // manifest carries the iface, and a `cadenza:closure/api.component-name` file name is nonsense.
+                artifacts.push(Artifact::new("component-provider", "main", main_bytes));
+                // One thin CONSUMER per `@test` — artifact NAMED `test-<def-name>` so `-o D` writes
+                // `test-<name>.wasm` (matching the manifest's `target`). Each imports the whole library from main
+                // and exports just its own test. Track the SUCCESSFULLY-emitted tests so the manifest lists only
+                // runnable targets (a compound-param test that declines pre-#4031 has no target.wasm → omit it,
+                // never list a missing component).
                 let mut emitted: Vec<usize> = Vec::new();
                 for &def in &test_defs {
                     let name = db.defs[def].name.clone();
+                    let target_name = format!("test-{name}");
                     match layout::compute_tests_consumer(
                         &mut db,
                         &[def],
@@ -833,7 +832,7 @@ fn compile_with_opt_inner(
                         Ok(bytes) => {
                             artifacts.push(Artifact::new(
                                 Target::Wasm.artifact_kind(),
-                                &name,
+                                &target_name,
                                 bytes,
                             ));
                             emitted.push(def);
@@ -886,7 +885,7 @@ fn compile_with_opt_inner(
                 let root = b.list(children);
                 artifacts.push(Artifact::new(
                     sidecar::KIND_SHRED_MANIFEST,
-                    "shred-manifest",
+                    "manifest",
                     crate::codec::encode(&b.finish(root)),
                 ));
             }
