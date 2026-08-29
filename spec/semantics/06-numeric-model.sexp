@@ -12953,3 +12953,16 @@
   (call main)
   (output (: 99999999999999999999 BigInt))
   (live-objects 1))
+
+(case "cdzw57 a runtime BIN construction (mixed widths + endianness) round-trips the cadenza hop"
+  (doc "The #5376 fence (Core::BinBuild → (bin (u<bits> v [le])…) emit; was declining): a runtime bin of
+        u16-BE + u8 + u16-LE from a wrapped runtime value. Observed via Bytes.len + Option-matched
+        Bytes.at reads so the expectation stays scalar: n=300 → bytes [1,44,44,44,1] → 501484;
+        n=7 → [0,7,7,7,0] → 500077 (hand-derived). Dual-path verified; hop byte-idempotent.")
+  (input (do
+    (def (b (: n Int64)) (bin (u16 (UInt16.wrap n)) (u8 (UInt8.wrap n)) (u16 (UInt16.wrap n) le)))
+    (def (at (: x Bytes) (: i Int64)) (match (Bytes.at x i) ((Some v) v) ((None _u) -1)))
+    (def (main (: n Int64)) (do (def x (b n)) (+ (* 100000 (Bytes.len x)) (+ (* 1000 (at x 0)) (+ (* 10 (at x 1)) (at x 3))))))
+    (export main)))
+  (call main (: 300 Int64)) (output (: 501484 Int64))
+  (call main (: 7 Int64)) (output (: 500077 Int64)))
