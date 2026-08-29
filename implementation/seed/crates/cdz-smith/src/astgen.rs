@@ -141,8 +141,48 @@ struct Caps {
 
 /// Build a `(do [helpers] (def (main) <body>) (export main))` program by making choices via `c`. Shared
 /// by [`generate_coerced`] (byte cursor) and the bolero `ValueGenerator` (a `Driver`→`Choice` adapter).
+/// Build a USER-DEFINED SUM program: a TOP-LEVEL `(type …)` declaration + a param-less `main` that
+/// CONSTRUCTS one variant and MATCHES it. Two shapes (#5456): a MULTI-variant tagged sum
+/// `(type Shape (Circle Int64) (Rect Int64 Int64))` (construct `(Circle a)` / `(Rect a b)`, match both
+/// arms), or a SINGLE-variant struct-newtype `(type Pt (Mk Int64 Int64))` that ERASES to its field tuple
+/// (construct `(Pt.Mk a b)`, match `(Mk x y)`). Int64 fields + arms returning Int64 keep it type-correct.
+/// The type decl MUST be top-level — a local/in-body `(type …)` SKIPs in the oracle; top-level GRADES.
+/// Returns `(type_decl, main_body)`.
+fn gen_usersum<C: Choice>(c: &mut C) -> (String, String) {
+    let (a, b) = (c.int_bounded(0, 9), c.int_bounded(0, 9));
+    if c.variant(2) == 0 {
+        // MULTI-variant tagged sum — construct Circle OR Rect, match both arms (each returns Int64).
+        let ctor = if c.variant(2) == 0 {
+            format!("(Circle {a})")
+        } else {
+            format!("(Rect {a} {b})")
+        };
+        (
+            "(type Shape (Circle Int64) (Rect Int64 Int64))".to_string(),
+            format!("(match {ctor} ((Circle x) x) ((Rect p q) (+ p q)))"),
+        )
+    } else {
+        // SINGLE-variant struct-newtype (erases to a field tuple) — construct + destructure.
+        (
+            "(type Pt (Mk Int64 Int64))".to_string(),
+            format!("(match (Pt.Mk {a} {b}) ((Mk x y) (+ x y)))"),
+        )
+    }
+}
+
 fn build_program<C: Choice>(c: &mut C) -> Program {
     let mut source = String::from("(do ");
+    // ~1/6: a USER-DEFINED SUM program — a TOP-LEVEL `(type …)` + a param-less `main` constructing +
+    // matching it (a whole numeric-independent construct family: tagged variants + newtype erasure +
+    // variant patterns, oracle-modelled #5456). Emitted as its OWN top-level shape (bypasses the
+    // helper/param/`gen_main_body` path) because the type decl must be top-level to GRADE (an in-body
+    // `(type …)` SKIPs). Gated on a NON-ZERO variant so an EXHAUSTED cursor (variant → 0) falls through to
+    // the base-case path (a bare-literal main), preserving the base-case invariant.
+    if c.variant(6) == 3 {
+        let (type_decl, body) = gen_usersum(c);
+        write!(source, "{type_decl} (def (main) {body}) (export main))").ok();
+        return Program { source };
+    }
     let mut fresh = 0usize;
     let caps = Caps {
         f: c.variant(2) == 1,
@@ -1773,6 +1813,47 @@ mod tests {
         }
         assert!(saw_set, "should reach a #set literal");
         assert!(saw_map, "should reach a #map literal");
+    }
+
+    /// `build_program` REACHES the USER-SUM shape (S140) — a top-level `(type …)` + a construct/match main
+    /// — for BOTH the multi-variant tagged sum (`type Shape`) and the single-variant newtype (`type Pt`),
+    /// and every such program COMPILES. Guards the user-sum arm (a malformed decl/ctor/pattern would
+    /// decline here). Top-level `(type …)` is required to GRADE (a local one SKIPs) — this pins it top-level.
+    #[test]
+    fn build_program_reaches_user_sum_shapes_and_compiles() {
+        let (mut saw_multi, mut saw_newtype) = (false, false);
+        for seed in 0u64..1024 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(719);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let src = build_program(&mut ByteCursorChoice::new(&bytes)).source;
+            if !src.contains("(type ") {
+                continue; // not the user-sum shape this seed
+            }
+            // The top-level type decl must precede `(def (main)` (pins it top-level, not in-body).
+            assert!(
+                src.find("(type ").unwrap() < src.find("(def (main)").unwrap(),
+                "the `(type …)` must be a TOP-LEVEL decl (before main), else it SKIPs: {src}"
+            );
+            saw_multi |= src.contains("(type Shape ");
+            saw_newtype |= src.contains("(type Pt ");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "user-sum program must COMPILE: {src}"
+            );
+        }
+        assert!(
+            saw_multi,
+            "should reach a multi-variant tagged sum (type Shape)"
+        );
+        assert!(
+            saw_newtype,
+            "should reach a single-variant newtype (type Pt)"
+        );
     }
 
     /// `gen_bignum_body` REACHES both BigInt (`N`) and Rational (`R`) forms and every body COMPILES (S132:
