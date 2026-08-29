@@ -22977,54 +22977,13 @@ mod diagnostics {
         );
     }
 
-    #[test]
-    fn a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix() {
-        // The remaining duplicate-name family members (siblings of dup-field/dup-export D32) now carry a
-        // DELETE fix removing the redundant clause: a repeated sum VARIANT (payload form), a repeated
-        // effect OPERATION, and a repeated literal MAP KEY. Search ALL diagnostics for the target fault
-        // (a program may carry other, unrelated diagnostics ahead of it — `first_error` is order-dependent).
-        let find = |src: &str, needle: &str| -> crate::abi::Diagnostic {
-            crate::diagnostics(&mut Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.message.contains(needle))
-                .unwrap_or_else(|| panic!("no diagnostic containing {needle:?} for {src}"))
-        };
-        let variant = find(
-            "(module m (type C (Mk Int64) (Mk Int64) (Other)) (def (main) 0) (export main))",
-            "variant `Mk`",
-        );
-        assert_eq!(
-            variant.fix.as_ref().map(|f| f.kind),
-            Some(crate::abi::FixKind::Delete),
-            "dup variant carries a delete fix: {:?}",
-            variant.fix
-        );
-        let op = find(
-            "(module m (effect E (op a (-> Int64 Unit)) (op a (-> Int64 Unit))) (def (main) 5) (export main))",
-            "operation `a`",
-        );
-        assert_eq!(
-            op.fix.as_ref().map(|f| f.kind),
-            Some(crate::abi::FixKind::Delete),
-            "dup op carries a delete fix: {:?}",
-            op.fix
-        );
-        let map = find(
-            "(module m (def (f) (Map.len (map (1 10) (1 20) (2 30)))) (def (main) 0) (export main))",
-            "map contains each key",
-        );
-        assert_eq!(
-            map.fix.as_ref().map(|f| f.kind),
-            Some(crate::abi::FixKind::Delete),
-            "dup map key carries a delete fix: {:?}",
-            map.fix
-        );
-    }
+    // (a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix migrated to corpus: dup variant + dup op
+    //  → 11-modules "a duplicate sum variant declaration carries a delete fix" / "…effect operation…";
+    //  dup map key → 05-compound-types "a duplicate literal map key carries a delete fix". All CDZ0201 (fix (kind delete)).)
 
     // (a_duplicate_type_declaration_is_rejected_and_carries_a_delete_fix migrated to corpus 11-modules
     //  "a duplicate type declaration is rejected with a delete fix" (CDZ0201 + (fix (kind delete))) + the
     //  no-overreach twin "two distinct type names are not a duplicate" — fix-quality graded via C1 #5255.)
-
     #[test]
     fn a_malformed_variant_position_in_a_type_declaration_is_rejected() {
         // A `(type …)` tail element is a VARIANT: a bare NAME (`Red`) or a `(Name payload…)` form.
@@ -23238,19 +23197,8 @@ mod diagnostics {
         );
     }
 
-    #[test]
-    fn a_non_numeric_mismatch_to_a_float_operator_carries_no_coercion_fix() {
-        // The coercion fix fires ONLY for an Int→Float mismatch — a Bool operand mixed with a float under
-        // the ONE arithmetic operator (`(+ x 2.0)`, `x : Bool`) is a plain CDZ0203/CDZ0301 with no
-        // `of-int` repair (converting a Bool to a float is not the fix).
-        let d = first_error("(module m (def (f (: x Bool)) (+ x 2.0)) (export f))");
-        assert!(
-            d.fix.is_none(),
-            "no coercion fix for a non-integer operand: {:?}",
-            d.fix
-        );
-    }
-
+    // (a_non_numeric_mismatch_to_a_float_operator_carries_no_coercion_fix migrated to corpus 06-numeric-model
+    //  "a non-numeric operand mixed with a float operator carries NO coercion fix" (CDZ0203 (no-fix)).)
     #[test]
     fn an_integer_width_mismatch_offers_an_of_conversion_fix() {
         // The integer-width coercion (sibling of the D7 float case): `(+ a b)` with `a:Int32`, `b:Int64`
@@ -23575,41 +23523,9 @@ mod diagnostics {
     //  the add-fraction Replace cases (Float64 "3.0" / Float32 "5.0") + the no-fix half (Bool annotated
     //  Float → CDZ0203 (no-fix)).)
 
-    #[test]
-    fn a_non_literal_integer_annotated_a_float_offers_an_of_int_wrap() {
-        // A NON-literal integer EXPRESSION annotated a float — `(: n Float64)` with `n : Int64` — has no
-        // float literal spelling (the retype above is literal-only), so it converts with `(<Float>.of-int
-        // …)`, the annotation-position twin of the argument-site `of-int` coercion. Before this the
-        // annotation site offered NO int→float wrap for a non-literal (only the literal retype), while the
-        // ARGUMENT site did — so `(: n Float64)` declined a fix `(g n)` to a `Float64` param gave.
-        fn fix_of(src: &str) -> Option<String> {
-            first_error(src).fix.map(|f| f.replacement)
-        }
-        // Int64 source → a bare `of-int`.
-        assert_eq!(
-            fix_of("(module m (def (f (: n Int64)) (: n Float64)) (export f))"),
-            Some(format!("(Float64.of-int {})", crate::abi::WRAP_HOLE)),
-            "non-literal Int64→Float64 wraps in of-int"
-        );
-        // NARROWER int source → widen to Int64 first (`of-int : Int64 → Float`).
-        assert_eq!(
-            fix_of("(module m (def (f (: n Int32)) (: n Float64)) (export f))"),
-            Some(format!(
-                "(Float64.of-int (Int64.of {}))",
-                crate::abi::WRAP_HOLE
-            )),
-            "non-literal Int32→Float64 nests the Int64 widening"
-        );
-        // A LITERAL still takes the cleaner retype (`3` → `3.0`), NOT the wrap.
-        assert_eq!(
-            first_error("(module m (def (f) (: 3 Float64)) (export f))")
-                .fix
-                .map(|f| f.replacement),
-            Some("3.0".to_string()),
-            "an int literal still retypes to a float literal, not an of-int wrap"
-        );
-    }
-
+    // (a_non_literal_integer_annotated_a_float_offers_an_of_int_wrap migrated to corpus 06-numeric-model:
+    //  Int64→Float64 (replacement "(Float64.of-int …)"), Int32→Float64 nested "(Float64.of-int (Int64.of …))",
+    //  and the literal control (: 3 Float64) → (replacement "3.0"). All CDZ0203.)
     #[test]
     fn a_record_type_renders_capitalized_matching_its_annotation_spelling() {
         // `Ty::render_name` spells a RECORD type `(Record (: a Int64))` — CAPITALIZED, the type-constructor

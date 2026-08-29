@@ -2464,3 +2464,16 @@
     (def (main) (sub 50 8))
     (export main)))
   (output (: 42 Int64)))
+
+(case "a duplicate sum variant declaration carries a delete fix"
+  (doc "A repeated sum VARIANT (payload form) in a type declaration is the same fixed-name-set collision as a
+        duplicate def/export/type (CDZ0201), carrying a DELETE fix on the redundant variant. From rcdzc
+        a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix.")
+  (input (do (type C (Mk Int64) (Mk Int64) (Other)) (def (main) 0) (export main)))
+  (error CDZ0201 (fix (kind delete))))
+
+(case "a duplicate effect operation declaration carries a delete fix"
+  (doc "A repeated effect OPERATION is a fixed-name-set collision (CDZ0201) with a DELETE fix on the redundant
+        op. From rcdzc a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix.")
+  (input (do (effect E (op a (-> Int64 Unit)) (op a (-> Int64 Unit))) (def (main) 5) (export main)))
+  (error CDZ0201 (fix (kind delete))))
