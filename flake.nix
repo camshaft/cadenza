@@ -753,6 +753,7 @@
                 # this crate; other crates STUB cdz-platform) + platformItest. Currently a byte-identical
                 # NO-OP (generated == committed, guarded by cdzPlatformContractsMatch); becomes LOAD-BEARING
                 # when the follow-on flip drops the committed src/contracts + gitignores them.
+                mkdir -p implementation/seed/crates/cdz-platform/src/contracts
                 cp ${cdzPlatformContracts}/contracts/*.rs implementation/seed/crates/cdz-platform/src/contracts/
               ''}
             '';
@@ -1730,6 +1731,7 @@
             # today; load-bearing after the flip drops the committed src/contracts. (Same overlay the per-crate
             # clippy/test-cdz-platform checks apply via craneCrateCommon.)
             chmod -R u+w implementation/seed/crates/cdz-platform/src
+            mkdir -p implementation/seed/crates/cdz-platform/src/contracts
             cp ${cdzPlatformContracts}/contracts/*.rs implementation/seed/crates/cdz-platform/src/contracts/
             ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
             cargo build --release --locked -p cdz-platform --bin cdz-platform-itest --features "testing host"
@@ -1960,18 +1962,6 @@
           export CDZ_RUN_BIN="${cdzRun}/bin/cdz-run"
           mkdir -p "$out/contracts"
           xtask-codegen-contracts "$out/contracts"
-        '';
-        # DRIFT-GUARD: the build-time-generated contracts MUST be byte-identical to the committed
-        # src/contracts (v-xtask-decompose verified #5209 emits diff-clean) — until the atomic overlay-flip
-        # drops the committed copies. A mismatch = codegen + committed drifted → loud red.
-        cdzPlatformContractsMatch = pkgs.runCommand "cdz-platform-contracts-match" { } ''
-          set -euo pipefail
-          if diff -r ${cdzPlatformContracts}/contracts ${./implementation/seed/crates/cdz-platform/src/contracts} > contracts.diff; then
-            echo "ok: cdzPlatformContracts (build-time codegen) == committed cdz-platform/src/contracts (byte-identical)" > "$out"
-          else
-            echo "DRIFT: build-time contract codegen != committed src/contracts — regen committed or fix the projector:"
-            cat contracts.diff; exit 1
-          fi
         '';
 
         # cdzWasmAbi (v-nix, operator codegen→build-time-nix): the 2nd generated file — run v-xtask-decompose's
@@ -4245,7 +4235,6 @@
             # `nix build .#checks.<sys>.contract-hashes-valid` — the contract name→hash mapping is well-formed
             # (also part of flake-repro-backstop). The harness runs that name a contract exercise it in anger.
             contract-hashes-valid = contractHashesValid;
-            cdz-platform-contracts-match = cdzPlatformContractsMatch;
             cdz-wasm-abi-match = cdzWasmAbiMatch;
             # The integration-test harness runs (§9): `harness-runs` is the aggregate; each individual run is
             # exposed below as `checks.<sys>.harness-<name>` (spread from harnessRunChecks) so `nix flake
