@@ -53,8 +53,8 @@ export default function ConstParameters() {
         source={`(def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
   (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
 (def (main)
-  (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0)
-     (fold-n (record (op (fn (x) (* x 2)))) 3 1)))`}
+  (+ (fold-n #record((= op (fn (x) (+ x 10)))) 3 0)
+     (fold-n #record((= op (fn (x) (* x 2)))) 3 1)))`}
       />
       <P>
         The first fold adds 10 three times from <C>0</C> to reach <C>30</C>, the second doubles three times
@@ -141,7 +141,7 @@ export default function ConstParameters() {
 (def (main) (fold-n (record (op (fn (x) (+ x ?)))) 3 0))`}
         solution={`(def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
   (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
-(def (main) (fold-n (record (op (fn (x) (+ x 5)))) 3 0))`}
+(def (main) (fold-n #record((= op (fn (x) (+ x 5)))) 3 0))`}
         expected="15"
         hint={
           <>

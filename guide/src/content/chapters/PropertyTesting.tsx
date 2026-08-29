@@ -65,7 +65,7 @@ export default function PropertyTesting() {
 (@ test (def (double-then-halve-round-trips)
   (assert-eq (/ (double 21) 2) 21 "double then halve should return the original")))
 (@ test (def (list-length-is-nonneg)
-  (assert (>= (List.len (list 1 2 3)) 0) "length can't be negative")))`}
+  (assert (>= (List.len #list(1 2 3)) 0) "length can't be negative")))`}
       />
       <P>
         There's nothing special about a test beyond the <C>@test</C> mark; it's a function the runner knows
@@ -201,7 +201,7 @@ export default function PropertyTesting() {
         starter={`(def (len-is xs n) (= (List.len xs) n))
 (def (main) (len-is (list 10 20 30) ?))`}
         solution={`(def (len-is xs n) (= (List.len xs) n))
-(def (main) (len-is (list 10 20 30) 3))`}
+(def (main) (len-is #list(10 20 30) 3))`}
         expected="true"
         hint={
           <>
