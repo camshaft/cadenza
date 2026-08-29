@@ -1104,6 +1104,19 @@
   (input  (do (def (f (: c Bool)) (Option.expect (if c (Some 10000) None) "x")) (export f)))
   (call   f (: true Bool)) (output (: 10000 Int64)))
 
+; ── the CONTEXTUAL arith-spine face (no annotation to blame → CDZ0201, not CDZ0302): `(+ a 1.0e300)` over
+; `(: a Float32)` — the `+` unifies operand widths, grounding `1.0e300` to Float32 where it saturates to `inf`
+; (a value with no written form). This formerly COMPILED + materialized inf (no check); now the float-arith
+; spine climb rejects CDZ0201, matching the INT arith-spine verdict (the `(+ a 10000)` over UInt8 analogue).
+; Migrated from rcdzc cdz_check_rejects_a_float_literal_grounded_to_float32_through_an_arith_spine.
+(case "a float literal grounded to Float32 through an arith spine that overflows f32 is rejected"
+  (input  (do (def (f (: a Float32)) (+ a 1.0e300)) (export f)))
+  (error  CDZ0201))
+
+(case "a fitting float literal grounded to Float32 through an arith spine runs (no over-rejection)"
+  (input  (do (def (f (: a Float32)) (+ a 1.5)) (export f)))
+  (call   f (: 2.0 Float32)) (output (: 3.5 Float32)))
+
 (case "a literal MAP VALUE that overflows the annotated value width is rejected"
   (doc    "`(: (map (1 999)) (Map Int64 Int8))` — the map type's declared value `Int8` grounds the entry's
            value literal `999`, which overflows Int8 → CDZ0302. The width fit-check must descend into a map's
