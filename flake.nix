@@ -1959,6 +1959,31 @@
           fi
         '';
 
+        # cdzWasmAbi (v-nix, operator codegen→build-time-nix): the 2nd generated file — run v-xtask-decompose's
+        # xtask-codegen-wasm-abi bin (#5219) to EMIT rcdzc/src/backend/wasm/wasm_abi.rs at build time. PURE:
+        # the bin encodes one-off values with wasm-encoder + reads the opcode/tag bytes back (no cdz, no store,
+        # no runtime hash, no WIT read) — so this derivation needs NO seedCompiler/CDZ_* env, just the bin +
+        # rustfmt on PATH (it renders prettyplease then `rustfmt --edition 2024`, falling back to raw if rustfmt
+        # is absent → would diverge from the cargo-fmt'd committed). Out-file passed explicitly (the default is
+        # the committed path via CDZ_REPO_ROOT, unneeded here).
+        cdzWasmAbi = pkgs.runCommand "cdz-wasm-abi"
+          { nativeBuildInputs = [ xtaskCodegenWasmAbiBin rustToolchain ]; } ''
+          set -euo pipefail
+          mkdir -p "$out"
+          xtask-codegen-wasm-abi "$out/wasm_abi.rs"
+        '';
+        # DRIFT-GUARD: build-time-generated wasm_abi.rs MUST be byte-identical to the committed one, until the
+        # atomic overlay-flip drops the committed copy (v-xtask-decompose verified #5219 emits diff-clean).
+        cdzWasmAbiMatch = pkgs.runCommand "cdz-wasm-abi-match" { } ''
+          set -euo pipefail
+          if diff ${cdzWasmAbi}/wasm_abi.rs ${./implementation/seed/crates/rcdzc/src/backend/wasm/wasm_abi.rs} > wasmabi.diff; then
+            echo "ok: cdzWasmAbi (build-time codegen) == committed rcdzc/.../wasm_abi.rs (byte-identical)" > "$out"
+          else
+            echo "DRIFT: build-time wasm-abi codegen != committed wasm_abi.rs — regen committed or fix the extractor:"
+            cat wasmabi.diff; exit 1
+          fi
+        '';
+
         # The program names a run references — every `program = "<name>"` field in the ML spec. This is
         # DEPENDENCY DISCOVERY for the nix graph (which programs a run's derivation depends on, so caching is
         # per-program); the actual name→path substitution is an AST-validated `cdz rewrite` at build time
@@ -3741,6 +3766,8 @@
         # result/contracts/{<name>.rs,mod.rs}. The atomic overlay-flip will stage these into cdz-platform's
         # compile in place of the (to-be-dropped) committed src/contracts.
         packages.cdz-platform-contracts = cdzPlatformContracts;
+        # The build-time-generated wasm ABI byte-table (v-nix). `nix build .#cdz-wasm-abi` → result/wasm_abi.rs.
+        packages.cdz-wasm-abi = cdzWasmAbi;
 
         # The wasm/component byte-table extractor bin (v-xtask-decompose, codegen→build-time-nix). `nix build
         # .#xtask-codegen-wasm-abi` → result/bin/xtask-codegen-wasm-abi. A `cdzWasmAbi` derivation runs it to
@@ -4204,6 +4231,7 @@
             # (also part of flake-repro-backstop). The harness runs that name a contract exercise it in anger.
             contract-hashes-valid = contractHashesValid;
             cdz-platform-contracts-match = cdzPlatformContractsMatch;
+            cdz-wasm-abi-match = cdzWasmAbiMatch;
             # The integration-test harness runs (§9): `harness-runs` is the aggregate; each individual run is
             # exposed below as `checks.<sys>.harness-<name>` (spread from harnessRunChecks) so `nix flake
             # check` runs them all AND CI can build/cache one run in isolation. `.#packages.cdz-platform-itest`
