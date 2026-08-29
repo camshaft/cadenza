@@ -13924,3 +13924,20 @@
   (call main (: 7 Int64)) (output (: 31 Int64))
   (call main (: 0 Int64)) (output (: 22 Int64))
   (call main (: 3 Int64)) (output (: 32 Int64)))
+
+(case "cc1 CHAR unit values in collections — scalar-value set dedup, ordering, literal match arms"
+  (doc "Char as a first-class scalar value in compound positions: a #set of chars dedups by Unicode
+        scalar value ({a,b,a,sel} → 3 when sel=c, 2 when sel=a), `<` orders chars by scalar value, and
+        literal char match arms select on a runtime-branch-built scrutinee (x→1 y→2 _→9). n=7 →
+        300+10+1 = 311; n=0 → 200+0+2 = 202; n=3 → 300+10+2 = 312. Both targets agree; live-0.
+        (The cadenza hop DECLINES the char-literal match — 'non-scalar match probe' — while
+        STRING-literal arms re-emit (cdzw71): the Char arm is the actual gap, routed v-c-b; flip-watch.)")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 100 (Set.len #set(#\a #\b #\a (if (> n 0) #\c #\a))))
+         (+ (* 10 (if (< #\a (if (> n 0) #\b #\a)) 1 0))
+            (match (if (> n 5) #\x #\y) (#\x 1) (#\y 2) (_c 9)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 311 Int64))
+  (call main (: 0 Int64)) (output (: 202 Int64))
+  (call main (: 3 Int64)) (output (: 312 Int64)))
