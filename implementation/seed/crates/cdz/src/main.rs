@@ -1778,6 +1778,24 @@ fn resolve_deps_dir(lib_dir: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
+/// The `run-rust` backend-rlib search ROOTS, in priority order: the `CDZ_RUST_RLIB_DIR` override (when
+/// set) FIRST, then the exe-relative `lib_dir`. The nix `cdz` package sets the override because its
+/// `bin/` ships NO rlibs beside the exe (so the exe-relative search alone finds none → `E0433 cannot
+/// find crate cdz_num` on every `run-rust`); a plain `cargo build`/`cargo xtask build` leaves it unset
+/// and keeps the exe-relative behavior (the rlibs sit beside the `cdz` bin). Pure (the override is
+/// passed in, not read from the env) so the precedence is unit-testable.
+fn rust_rlib_search_roots(
+    lib_dir: &std::path::Path,
+    override_dir: Option<std::path::PathBuf>,
+) -> Vec<std::path::PathBuf> {
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(d) = override_dir {
+        roots.push(d);
+    }
+    roots.push(lib_dir.to_path_buf());
+    roots
+}
+
 /// Locate a backend dependency rlib (`cdz_rt`/`cdz_num`) for the `run-rust` link. Prefer the PLAIN
 /// top-level `lib<crate>.rlib` in `lib_dir` (a `cargo build`-built workspace has it beside the `cdz` bin);
 /// else fall back to the NEWEST hashed `lib<crate>-<hash>.rlib` in `deps_dir` (what `cargo test` produces —
@@ -1835,30 +1853,41 @@ fn compile_and_run_rust_driver(exe: &std::path::Path, driver: &str) -> Result<St
         .arg(&src)
         .arg("-o")
         .arg(&bin);
-    cmd.arg("-L")
-        .arg(format!("dependency={}", lib_dir.display()));
-    // Also search `deps/` (cargo's hashed-rlib directory) — a `cargo test`-built `cdz` bin sits in
-    // `target/<profile>/deps/` OR `target/<profile>/`, and the dependency rlibs it links against live in
-    // `deps/` under HASHED names (`libcdz_num-<hash>.rlib`), NOT as the plain top-level `libcdz_num.rlib`.
-    // CRITICAL: when `lib_dir` (= exe.parent()) is ITSELF `.../deps` (a `cargo test`-located bin), the deps
-    // dir IS `lib_dir` — a blind `lib_dir.join("deps")` would be `.../deps/deps` (nonexistent), skipping the
-    // search dir + the hashed rlib and reintroducing `E0433 cannot find crate cdz_num` (PR#772 review).
-    let deps_dir = resolve_deps_dir(lib_dir);
-    if deps_dir.is_dir() && deps_dir != lib_dir {
-        cmd.arg("-L")
-            .arg(format!("dependency={}", deps_dir.display()));
+    // rlib search ROOTS, in priority order. `CDZ_RUST_RLIB_DIR` (set by the nix `cdz` package — whose
+    // `bin/` ships NO rlibs beside the exe, so the exe-relative search alone finds none and every
+    // `run-rust` fails `E0433 cannot find crate cdz_num`) is searched FIRST when present; the exe-relative
+    // `lib_dir` (a `cargo build` / `cargo xtask build` workspace has the rlibs beside the `cdz` bin) is the
+    // fallback, so a plain cargo build is unaffected. Each root also contributes its resolved `deps/`
+    // (cargo's hashed-rlib dir); deduped, `-L`'d for every existing dir.
+    let roots = rust_rlib_search_roots(
+        lib_dir,
+        std::env::var_os("CDZ_RUST_RLIB_DIR").map(std::path::PathBuf::from),
+    );
+    // The `-L dependency=` search path: each root + its `deps/`. `resolve_deps_dir` handles a root that is
+    // ITSELF `.../deps` (a `cargo test`-located bin): it stays `deps`, never `deps/deps` (PR#772 review).
+    let mut search_dirs: Vec<std::path::PathBuf> = Vec::new();
+    for root in &roots {
+        for d in [root.clone(), resolve_deps_dir(root)] {
+            if d.is_dir() && !search_dirs.contains(&d) {
+                search_dirs.push(d);
+            }
+        }
     }
-    // Locate each backend rlib ROBUSTLY: the plain top-level `lib<crate>.rlib` (a `cargo build`-built
-    // workspace has these) OR the newest `deps/lib<crate>-<hash>.rlib` (what `cargo test` produces — the
-    // plain name may be ABSENT there). Before the built-in `Ast` enum began referencing `cdz_num::Big`
-    // (v-metaprogramming's Ast.Int Int64->BigInt), a program that used neither rlib linked fine when both
-    // were skipped — but now EVERY emitted program references `cdz_num` (the always-emitted `Ast` enum), so
-    // silently skipping the `--extern` on a missing plain rlib produced a cryptic `E0433 cannot find crate
-    // cdz_num` in CI (which lacked the plain-named rlib at `exe.parent()`). Find-either fixes it wherever
-    // cargo put the artifact. `--extern` only MAKES a crate available (not force-linked), so naming one the
-    // program doesn't reference stays harmless.
+    for d in &search_dirs {
+        cmd.arg("-L").arg(format!("dependency={}", d.display()));
+    }
+    // Locate each backend rlib ROBUSTLY across the roots (override first, then exe-relative): the plain
+    // top-level `lib<crate>.rlib` (a `cargo build` workspace) OR the newest `deps/lib<crate>-<hash>.rlib`
+    // (what `cargo test` produces — the plain name may be ABSENT there). EVERY emitted program references
+    // `cdz_num` (the always-emitted `Ast` enum, since Ast.Int carries a `cdz_num::Big`), so a missing
+    // rlib means a cryptic `E0433 cannot find crate cdz_num` — find-either-anywhere fixes it wherever the
+    // artifact lives. `--extern` only MAKES a crate available (not force-linked), so naming an unused one
+    // stays harmless.
     for crate_name in ["cdz_rt", "cdz_num"] {
-        if let Some(rlib) = find_backend_rlib(lib_dir, &deps_dir, crate_name) {
+        if let Some(rlib) = roots
+            .iter()
+            .find_map(|root| find_backend_rlib(root, &resolve_deps_dir(root), crate_name))
+        {
             cmd.arg("--extern")
                 .arg(format!("{crate_name}={}", rlib.display()));
         }
@@ -11225,6 +11254,31 @@ mod tests {
             resolve_deps_dir(Path::new("/a/b/c/deps")),
             Path::new("/a/b/c/deps"),
             "any dir named `deps` is the deps dir"
+        );
+    }
+
+    #[test]
+    fn rust_rlib_search_roots_prefers_the_env_override_then_falls_back_to_exe_relative() {
+        use std::path::{Path, PathBuf};
+        // No CDZ_RUST_RLIB_DIR → search ONLY the exe-relative dir (a `cargo build` workspace has the
+        // rlibs beside the `cdz` bin — the historical behavior, unchanged).
+        assert_eq!(
+            rust_rlib_search_roots(Path::new("/w/target/release"), None),
+            vec![PathBuf::from("/w/target/release")],
+            "no override → just the exe-relative root"
+        );
+        // Override set (the nix `cdz` package, whose bin/ has no rlibs) → the override is searched FIRST,
+        // with the exe-relative dir kept as the fallback (so a cargo build with the env set still works).
+        assert_eq!(
+            rust_rlib_search_roots(
+                Path::new("/nix/store/x-cdz/bin"),
+                Some(PathBuf::from("/nix/store/y-cdz-rlibs/lib"))
+            ),
+            vec![
+                PathBuf::from("/nix/store/y-cdz-rlibs/lib"),
+                PathBuf::from("/nix/store/x-cdz/bin"),
+            ],
+            "override is searched first, exe-relative is the fallback"
         );
     }
 
