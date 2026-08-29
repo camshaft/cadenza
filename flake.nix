@@ -920,8 +920,9 @@
               # the default-true closure walk counts it) — each deps only cadenza-ast + cadenza-syntax-core, so
               # rcdzc reaches all five transitively through cadenza-syntax.
               # rcdzc gained a `cadenza-compile-abi` dep (v-cdz-crate-split slice-1b #5638 — the compile-boundary
-              # Target/OptLevel types; slice-1b re-exports them from rcdzc). cadenza-compile-abi's own closure at
-              # slice-1b is just itself (a zero-workspace-dep leaf), so it adds only itself to rcdzc's closure.
+              # Target/OptLevel types; slice-1b re-exports them from rcdzc; E2b adds the Request/Query codec).
+              # cadenza-compile-abi's own closure is [cadenza-ast cadenza-compile-abi], but rcdzc already reaches
+              # cadenza-ast (via cadenza-syntax), so it adds only cadenza-compile-abi itself to rcdzc's closure.
               rcdzc = [ "cadenza-ast" "cadenza-compile-abi" "cadenza-syntax" "cadenza-syntax-cedar" "cadenza-syntax-core" "cadenza-syntax-json" "cadenza-syntax-sexpr" "cadenza-syntax-toml" "cdz-num" "cdz-rt" "rcdzc" ];
               cadenza-syntax = [ "cadenza-ast" "cadenza-syntax" "cadenza-syntax-cedar" "cadenza-syntax-core" "cadenza-syntax-json" "cadenza-syntax-sexpr" "cadenza-syntax-toml" ];
               cadenza-syntax-core = [ "cadenza-ast" "cadenza-syntax-core" ];
@@ -930,8 +931,10 @@
               cadenza-syntax-sexpr = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-sexpr" ];
               cadenza-syntax-toml = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-toml" ];
               cdz-num = [ "cdz-num" ];
-              # cadenza-compile-abi slice-1 is a pure-std LEAF (zero workspace deps) — closure is just itself.
-              cadenza-compile-abi = [ "cadenza-compile-abi" ];
+              # cadenza-compile-abi deps cadenza-ast (default-features=false = the no_std core: the sidecar
+              # Request/Query encode/decode codec builds on cadenza_ast::Builder + cadenza_ast::codec).
+              # cadenza-ast is a foundational leaf (no workspace path-deps), so the closure is the two.
+              cadenza-compile-abi = [ "cadenza-ast" "cadenza-compile-abi" ];
               # cdz-world-artifact deps only cadenza-ast (the language's binary-AST builders/codec) + the
               # external wit-parser; xtask still deps cadenza-ast via codegen.rs, so its closure is unchanged.
               cdz-world-artifact = [ "cadenza-ast" "cdz-world-artifact" ];
