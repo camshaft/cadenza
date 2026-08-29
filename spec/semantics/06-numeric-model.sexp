@@ -13084,3 +13084,16 @@
   (call main (: 7 Int64)) (output (: 39 Int64))
   (call main (: -1 Int64)) (output (: 39 Int64))
   (live-objects 2))
+
+(case "cdzw65 a @requires contract ERASES through the cadenza hop to its inlined guard — enforcement identical"
+  (doc "Contract-hop census (breaker): (@ (requires (> x 0)) (def (f …) …)) lowers to an explicit
+        precondition check BEFORE the backend, so the hop re-emits the inlined guard
+        (if (> n 0) <body> (trap …)) — a passing call returns (70) and a violating call traps
+        IDENTICALLY on both paths; byte-idempotent. The annotation surface never reaches the backend
+        (the effects-erasure pattern, cdzw55/56).")
+  (input (do
+    (@ (requires (> x 0)) (def (f (: x Int64)) (* x 10)))
+    (def (main (: n Int64)) (f n))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 70 Int64))
+  (call main (: -3 Int64)) (trap "unreachable"))
