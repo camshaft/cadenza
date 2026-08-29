@@ -13343,3 +13343,18 @@
   (call main (: 7 Int64)) (output (: 12 Int64))
   (call main (: -4 Int64)) (output (: 1 Int64))
   (live-objects known-leak 3))
+
+(case "cdzw70 a MULTI-EXPORT program round-trips the cadenza hop with every export callable"
+  (doc "Multi-export hop face (breaker): three exports — a composite main and its two helpers exported
+        directly — must all survive the hop and stay individually callable with identical results.
+        main(7) = double(shift 7) = 214; double(7) = 14; shift(7) = 107. Byte-idempotent.")
+  (input (do
+    (def (double (: n Int64)) (* n 2))
+    (def (shift (: n Int64)) (+ n 100))
+    (def (main (: n Int64)) (double (shift n)))
+    (export main)
+    (export double)
+    (export shift)))
+  (call main (: 7 Int64)) (output (: 214 Int64))
+  (call double (: 7 Int64)) (output (: 14 Int64))
+  (call shift (: 7 Int64)) (output (: 107 Int64)))
