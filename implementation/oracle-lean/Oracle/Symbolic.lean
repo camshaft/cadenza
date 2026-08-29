@@ -62,6 +62,18 @@ def foldConst? (op : String) (args : Array SymExpr) : Option Value :=
     | ">",  #[.int x, .int y] => some (.bool (decide (x > y)))
     | "<=", #[.int x, .int y] => some (.bool (decide (x ≤ y)))
     | ">=", #[.int x, .int y] => some (.bool (decide (x ≥ y)))
+    -- FLOAT arithmetic + comparison: IEEE is TOTAL (overflow → inf/nan, never a trap), so folding float
+    -- constants is SOUND with no width/trap tracking (unlike integer arith, which is left deferred). Both
+    -- operands must be floats — `asF64?` is `none` for an int, so int arith/comparison is NOT folded here
+    -- (int `<` etc. are the `.int`-pattern arms above; int `+ - * /` stay symbolic pending trap-conditions).
+    | "+",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.f64 (x + y)) | _, _ => none)
+    | "-",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.f64 (x - y)) | _, _ => none)
+    | "*",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.f64 (x * y)) | _, _ => none)
+    | "/",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.f64 (x / y)) | _, _ => none)
+    | "<",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x < y)) | _, _ => none)
+    | ">",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x > y)) | _, _ => none)
+    | "<=", #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≤ y)) | _, _ => none)
+    | ">=", #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≥ y)) | _, _ => none)
     | "not", #[.bool b] => some (.bool (!b))
     | "and", vs => if vs.all (· == .bool true) then some (.bool true)
                    else if vs.any (· == .bool false) then some (.bool false) else none
@@ -91,7 +103,10 @@ reassociate ARITHMETIC (needs width/overflow-trap-aware semantics — T2.0d; an 
 optimizer's branch-elimination rewrites. -/
 partial def normalize : SymExpr → SymExpr
   | .var n => .var n
-  | .const v => .const v
+  -- canonicalize a float constant to its `.f64` value so a float LITERAL (`.float`) and a computed/folded
+  -- float (`.f64`) with the same value compare structurally equal (else a folded `(+ 475.0 514.0)`=.f64
+  -- would not match the literal `989.0`=.float). A non-float const (int/bool/…) is unchanged.
+  | .const v => .const (match Value.asF64? v with | some f => .f64 f | none => v)
   | .app op args =>
     let args' := args.map normalize
     match foldConst? op args' with
@@ -435,8 +450,16 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 #guard normalize (.ite (.app "<" #[.const (.int 1), .const (.int 2)]) (.var 0) (.var 1)) == SymExpr.var 0
 -- a comparison with a NON-constant operand is left symbolic (not folded).
 #guard normalize (.app "<" #[.var 0, .const (.int 5)]) == SymExpr.app "<" #[.var 0, .const (.int 5)]
--- SOUNDNESS: ARITHMETIC is NOT folded (needs width/overflow-trap semantics) — left symbolic.
+-- SOUNDNESS: INTEGER arithmetic is NOT folded (needs width/overflow-trap semantics) — left symbolic.
 #guard normalize (.app "+" #[.const (.int 2), .const (.int 3)]) == SymExpr.app "+" #[.const (.int 2), .const (.int 3)]
+-- FLOAT arithmetic IS folded (IEEE total, no trap → sound): mirrors v-cdz-smith's fp-1/fp-2 false-positives.
+#guard normalize (.app "+" #[.const (.f64 475.0), .const (.f64 514.0)]) == SymExpr.const (.f64 989.0)
+#guard normalize (.app "*" #[.const (.f64 6.0), .const (.f64 7.0)]) == SymExpr.const (.f64 42.0)
+-- FLOAT comparison folds (mirrors fp-0 `(< 681.0 302.0)` → false).
+#guard normalize (.app "<" #[.const (.f64 681.0), .const (.f64 302.0)]) == SymExpr.const (.bool false)
+-- a nested float-arith chain folds so it matches the backend's folded literal (fp-1's (+ (+ 475 514) 718)=1707).
+#guard symEquiv (.sym (.app "+" #[.app "+" #[.const (.f64 475.0), .const (.f64 514.0)], .const (.f64 718.0)]))
+                (.sym (.const (.f64 1707.0))) == EquivVerdict.proven
 -- two structurally-identical symbolic forms are PROVEN equivalent for all inputs.
 #guard symEquiv (.sym (.app "+" #[.var 0, .const (.int 1)])) (.sym (.app "+" #[.var 0, .const (.int 1)])) == EquivVerdict.proven
 -- an optimizer that turned `if true then (x+1) else y` into `x+1` is PROVEN equivalent (const-cond select).
