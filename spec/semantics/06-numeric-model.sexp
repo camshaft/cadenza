@@ -12060,29 +12060,31 @@
   (doc "The recursive-payload face of cdzw12: `(type E (Lit Int64) (Neg E))` is self-referential, and the
         n=8 value is the NESTED `(Neg (Lit 8))` — the decl re-emit must handle the recursive payload type
         and the value emit must recurse into the variant payload (a SumNew inside a SumNew, each carrying
-        its ascription through the hop). `(live-objects 2)` = the two live sum cells of the nested value on
-        the FIRST (asserted) call. Dual-path verified; the evl def keeps the sum consumed too (match arms
-        over both variants).")
+        its ascription through the hop). `(live-objects 0)`: post-M2 the runtime reclaims the nested sum
+        cells by the reported point (was 2 pre-M2); the cadenza hop reclaims IDENTICALLY to the direct path
+        (both 0, measured), so this is a benign reclaim-count re-pin, not a divergence. Dual-path verified;
+        the evl def keeps the sum consumed too (match arms over both variants).")
   (input (do (type E (Lit Int64) (Neg E)) (def (evl (: e E)) (match e ((Lit v) v) ((Neg x) (- 0 (evl x))))) (def (main (: n Int64)) (if (> n 0) (Neg (Lit n)) (Lit (- 0 n)))) (export main)))
   (call main (: 8 Int64))
   (output (: (Neg (Lit 8)) E))
   (call main (: -9 Int64))
   (output (: (Lit 9) E))
-  (live-objects 2))
+  (live-objects 0))
 
 (case "cdzw15 the cadenza backend round-trips a MatchSum CONSUMED through recursion — the #4942+#4954 interplay"
   (doc "Fresh cadenza slices #4954 (MatchSum M4a) + #4942 (user type-decl re-emit) COMPOSED: the recursive
         sum `(type E (Lit Int64) (Neg E))` is built at runtime AND matched back down by the recursive
         `evl` — the hop must re-emit the type decl, the SumNew values, AND the sum match (payload binders
         on both arms, recursion through the Neg payload). n=7 → evl(Neg(Lit 7)) = -7; n=-9 → evl(Lit 9)
-        = 9. Dual-path verified. The scalar-return residue (2 cells at the nested arm) is the tracked
-        recursion-crossing reclaim class, not a divergence.")
+        = 9. Dual-path verified. `(live-objects 0)`: post-M2 the recursion-crossing residue is fully
+        reclaimed (was a known-leak of 2 pre-M2 — M2 genuinely fixed it); the cadenza hop reclaims
+        IDENTICALLY to the direct path (both 0, measured), so this is a benign re-pin, not a divergence.")
   (input (do (type E (Lit Int64) (Neg E)) (def (evl (: e E)) (match e ((Lit v) v) ((Neg x) (- 0 (evl x))))) (def (main (: n Int64)) (evl (if (> n 0) (Neg (Lit n)) (Lit (- 0 n))))) (export main)))
   (call main (: 7 Int64))
   (output (: -7 Int64))
   (call main (: -9 Int64))
   (output (: 9 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "cdzw16 the cadenza backend round-trips a MULTI-PAYLOAD variant match — slot-i payload binders"
   (doc "The multi-payload face of M4a: `(Both a b)` binds payload SLOTS 0 and 1 in one arm (a
@@ -12194,8 +12196,9 @@
         PAYLOAD — `(Some (None))` typed `Option (Option Int64)` — recovers `Option Int64` via
         payload-type instantiation at the concrete sum (the outer if-join solves only the OUTER type;
         the inner None's type must derive from the variant's instantiated payload). All three arms
-        exercised: nested-Some, Some-of-bare-None, bare outer None. `(live-objects 2)` = the reachable
-        nested value on the first (asserted) call.")
+        exercised: nested-Some, Some-of-bare-None, bare outer None. `(live-objects 0)`: post-M2 the nested
+        value is reclaimed by the reported point (was 2 pre-M2); the cadenza hop reclaims IDENTICALLY to the
+        direct path (both 0, measured), so this is a benign reclaim-count re-pin, not a divergence.")
   (input (do (def (main (: n Int64)) (if (> n 5) (Some (Some n)) (if (> n 0) (Some (None)) (None)))) (export main)))
   (call main (: 9 Int64))
   (output (: (Some (Some 9)) (Option (Option Int64))))
@@ -12203,7 +12206,7 @@
   (output (: (Some (None unit)) (Option (Option Int64))))
   (call main (: -4 Int64))
   (output (: (None unit) (Option (Option Int64))))
-  (live-objects 2))
+  (live-objects 0))
 
 (case "cdzw26 the cadenza backend round-trips a bare (None) as a LIST ELEMENT — the element-position join"
   (doc "The compound-element face of the #4972/#4996 threading: a bare `(None)` as a list element derives
