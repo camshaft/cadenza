@@ -13647,4 +13647,5 @@
     (def (main (: n Int64)) (unwrap (Wrap (Wrap (Wrap (Wrap (Wrap (End n))))))))
     (export main)))
   (call main (: 7 Int64)) (output (: 57 Int64))
-  (call main (: -3 Int64)) (output (: 47 Int64)))
+  (call main (: -3 Int64)) (output (: 47 Int64))
+  (live-objects known-leak 6))
