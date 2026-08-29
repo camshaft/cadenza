@@ -72,12 +72,19 @@ fn main() {
             .get(i + 1)
             .map(PathBuf::from)
             .expect("--crate-lib needs an output path");
+        // Constants from the AUTHORITATIVE sexpr (source of truth); the baked-in oracle tests re-derive
+        // each byte from `wasm-encoder` (`collect`, which carries the constructor expressions) and assert
+        // the sexpr-derived constants match. Both keyed by name, so the asserts reference the emitted consts.
         let tables = wasm_abi::read_sexpr_tables(&sexpr_to_arenas(&cdz_bin(&repo), &sexpr));
-        let source = format!(
+        let body = format!(
             "{}{}",
-            crate_lib_banner(),
-            format_tokens(wasm_abi::render(&tables))
+            format_tokens(wasm_abi::render(&tables)),
+            wasm_abi::render_oracle_tests(&wasm_abi::collect())
         );
+        // Canonicalize the whole body (constants + hand-emitted oracle module) through the pinned rustfmt
+        // so the generated crate is fmt-clean; format_tokens already required rustfmt for the constants.
+        let body = rustfmt_stdin(&body).unwrap_or(body);
+        let source = format!("{}{}", crate_lib_banner(), body);
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -242,6 +249,10 @@ mod wasm_abi {
         pub ident: &'static str,
         /// The opcode byte, read back from encoding the `Instruction`.
         pub byte: u8,
+        /// The Rust EXPRESSION (as source tokens) that re-derives this byte from `wasm-encoder`, for the
+        /// derived crate's baked-in oracle test (e.g. `byte0(Instruction::I32Const(0))`). Empty for a
+        /// table read back from the sexpr (no constructor) — those aren't the oracle-emission source.
+        pub oracle_src: &'static str,
     }
 
     /// One generated named single-byte constant — a valtype, section id, export-kind, or functype
@@ -250,6 +261,10 @@ mod wasm_abi {
         pub ident: &'static str,
         pub byte: u8,
         pub doc: &'static str,
+        /// The Rust expression re-deriving this byte from `wasm-encoder` for the oracle test (e.g.
+        /// `byte0(ValType::I32)` or `u8::from(SectionId::Type)`). Empty = not oracle-emitted (a sexpr
+        /// read-back, or a special like the functype-form tags covered by the nix oracle check).
+        pub oracle_src: &'static str,
     }
 
     /// One generated magic-header constant (`&[u8]`) — the 8-byte core-module / component preamble.
@@ -362,139 +377,198 @@ mod wasm_abi {
     /// Extract every backend byte from `wasm-encoder`. The opcode list is in the backend's own
     /// declaration order (matching the frozen `op` module for a readable, stable diff); the singles
     /// and magics follow.
+    // The table constructors are MACROS (not fns) so each row captures, alongside its extracted byte, the
+    // Rust EXPRESSION that re-derives that byte from `wasm-encoder` (`stringify!`) — the `oracle_src` the
+    // derived crate's baked-in test emits (`assert_eq!(CONST, <oracle_src>)`). The byte is still computed by
+    // the same `opcode_of`/`one_byte`/`u8::from` as before, so `collect()`'s output is byte-identical.
+    /// An opcode row: byte from encoding `$insn`; oracle re-derives via `byte0($insn)`.
+    macro_rules! op {
+        ($id:expr, $insn:expr $(,)?) => {
+            Opcode {
+                ident: $id,
+                byte: opcode_of($id, $insn),
+                oracle_src: stringify!(byte0($insn)),
+            }
+        };
+    }
+    /// A core-valtype single: byte from encoding the `ValType`; oracle via `byte0($vt)`.
+    macro_rules! valtype {
+        ($id:expr, $doc:expr, $vt:expr $(,)?) => {
+            Single {
+                ident: $id,
+                byte: one_byte($id, $vt),
+                doc: $doc,
+                oracle_src: stringify!(byte0($vt)),
+            }
+        };
+    }
+    /// A component-primitive single: byte from encoding the `PrimitiveValType`; oracle via `byte0($p)`.
+    macro_rules! prim {
+        ($id:expr, $doc:expr, $p:expr $(,)?) => {
+            Single {
+                ident: $id,
+                byte: one_byte($id, $p),
+                doc: $doc,
+                oracle_src: stringify!(byte0($p)),
+            }
+        };
+    }
+    /// A core-section-id single (the id is the enum's `u8` repr); oracle via `u8::from($id)`.
+    macro_rules! core_sec {
+        ($id:expr, $doc:expr, $sid:expr $(,)?) => {
+            Single {
+                ident: $id,
+                byte: u8::from($sid),
+                doc: $doc,
+                oracle_src: stringify!(u8::from($sid)),
+            }
+        };
+    }
+    /// A component-section-id single; oracle via `u8::from($id)`.
+    macro_rules! comp_sec {
+        ($id:expr, $doc:expr, $sid:expr $(,)?) => {
+            Single {
+                ident: $id,
+                byte: u8::from($sid),
+                doc: $doc,
+                oracle_src: stringify!(u8::from($sid)),
+            }
+        };
+    }
+
     pub fn collect() -> Tables {
         // The opcode table: each backend `op::` constant paired with the `Instruction` whose encoding
         // yields its byte. One row per instruction the serializer emits (Lir → bytes).
         let opcodes = vec![
-            op("I32_CONST", Instruction::I32Const(0)),
-            op("I64_CONST", Instruction::I64Const(0)),
-            op("F64_CONST", Instruction::F64Const(0.0f64.into())),
-            op("F32_CONST", Instruction::F32Const(0.0f32.into())),
+            op!("I32_CONST", Instruction::I32Const(0)),
+            op!("I64_CONST", Instruction::I64Const(0)),
+            op!("F64_CONST", Instruction::F64Const(0.0f64.into())),
+            op!("F32_CONST", Instruction::F32Const(0.0f32.into())),
             // Float ARITHMETIC (f64/f32) — the machine ops a runtime `+.`/`-.`/`*.`/`/.` selects.
             // IEEE, never trapping (overflow → inf, x/0 → ±inf/NaN), so no overflow guard (unlike the
             // integer arith). Round-to-nearest-even is the hardware default the determinism contract pins.
-            op("F64_ADD", Instruction::F64Add),
-            op("F64_SUB", Instruction::F64Sub),
-            op("F64_MUL", Instruction::F64Mul),
-            op("F64_DIV", Instruction::F64Div),
-            op("F32_ADD", Instruction::F32Add),
-            op("F32_SUB", Instruction::F32Sub),
-            op("F32_MUL", Instruction::F32Mul),
-            op("F32_DIV", Instruction::F32Div),
+            op!("F64_ADD", Instruction::F64Add),
+            op!("F64_SUB", Instruction::F64Sub),
+            op!("F64_MUL", Instruction::F64Mul),
+            op!("F64_DIV", Instruction::F64Div),
+            op!("F32_ADD", Instruction::F32Add),
+            op!("F32_SUB", Instruction::F32Sub),
+            op!("F32_MUL", Instruction::F32Mul),
+            op!("F32_DIV", Instruction::F32Div),
             // Float EQUALITY (f64/f32) — a runtime float `=` (IEEE compare: -0.0 == 0.0, NaN ≠ NaN).
-            op("F64_EQ", Instruction::F64Eq),
-            op("F64_NE", Instruction::F64Ne),
-            op("F32_EQ", Instruction::F32Eq),
-            op("F32_NE", Instruction::F32Ne),
+            op!("F64_EQ", Instruction::F64Eq),
+            op!("F64_NE", Instruction::F64Ne),
+            op!("F32_EQ", Instruction::F32Eq),
+            op!("F32_NE", Instruction::F32Ne),
             // Float ORDERING (f64/f32) — runtime `< <= > >=` under IEEE PARTIAL order (operator ruling):
             // a NaN operand yields false (unordered — NaN is neither <, >, nor = anything), and -0.0
             // compares equal-under-ordering to +0.0 (`f64.le -0.0 0.0` = true). These are the RAW IEEE
             // compares, DISTINCT from the canonical-byte equality above (which the two relations disagree
             // with on NaN + signed zero — inherent to float).
-            op("F64_LT", Instruction::F64Lt),
-            op("F64_GT", Instruction::F64Gt),
-            op("F64_LE", Instruction::F64Le),
-            op("F64_GE", Instruction::F64Ge),
-            op("F32_LT", Instruction::F32Lt),
-            op("F32_GT", Instruction::F32Gt),
-            op("F32_LE", Instruction::F32Le),
-            op("F32_GE", Instruction::F32Ge),
+            op!("F64_LT", Instruction::F64Lt),
+            op!("F64_GT", Instruction::F64Gt),
+            op!("F64_LE", Instruction::F64Le),
+            op!("F64_GE", Instruction::F64Ge),
+            op!("F32_LT", Instruction::F32Lt),
+            op!("F32_GT", Instruction::F32Gt),
+            op!("F32_LE", Instruction::F32Le),
+            op!("F32_GE", Instruction::F32Ge),
             // Float width conversion (F5): `f32.demote_f64` narrows Float64→Float32 (rounds),
             // `f64.promote_f32` widens Float32→Float64 (exact). Int↔float conversions land with `of-int`.
-            op("F32_DEMOTE_F64", Instruction::F32DemoteF64),
-            op("F64_PROMOTE_F32", Instruction::F64PromoteF32),
+            op!("F32_DEMOTE_F64", Instruction::F32DemoteF64),
+            op!("F64_PROMOTE_F32", Instruction::F64PromoteF32),
             // INT→FLOAT conversion (`Float N.of-int`): signed i64 → f64/f32, round-to-nearest-even.
-            op("F64_CONVERT_I64_S", Instruction::F64ConvertI64S),
-            op("F32_CONVERT_I64_S", Instruction::F32ConvertI64S),
+            op!("F64_CONVERT_I64_S", Instruction::F64ConvertI64S),
+            op!("F32_CONVERT_I64_S", Instruction::F32ConvertI64S),
             // FLOAT→INT bit reinterpret (no value change) — the canonical-byte float `=` reinterprets
             // the bits to an integer to compare (NaN-canonicalizing bit compare, IEEE `f*.eq` won't do).
-            op("I32_REINTERPRET_F32", Instruction::I32ReinterpretF32),
-            op("I64_REINTERPRET_F64", Instruction::I64ReinterpretF64),
-            op("IF", Instruction::If(wasm_encoder::BlockType::Empty)),
-            op("ELSE", Instruction::Else),
-            op("END", Instruction::End),
-            op("SELECT", Instruction::Select),
-            op("DROP", Instruction::Drop),
-            op("BLOCK", Instruction::Block(wasm_encoder::BlockType::Empty)),
-            op("LOOP", Instruction::Loop(wasm_encoder::BlockType::Empty)),
-            op("BR", Instruction::Br(0)),
-            op("BR_IF", Instruction::BrIf(0)),
-            op(
+            op!("I32_REINTERPRET_F32", Instruction::I32ReinterpretF32),
+            op!("I64_REINTERPRET_F64", Instruction::I64ReinterpretF64),
+            op!("IF", Instruction::If(wasm_encoder::BlockType::Empty)),
+            op!("ELSE", Instruction::Else),
+            op!("END", Instruction::End),
+            op!("SELECT", Instruction::Select),
+            op!("DROP", Instruction::Drop),
+            op!("BLOCK", Instruction::Block(wasm_encoder::BlockType::Empty)),
+            op!("LOOP", Instruction::Loop(wasm_encoder::BlockType::Empty)),
+            op!("BR", Instruction::Br(0)),
+            op!("BR_IF", Instruction::BrIf(0)),
+            op!(
                 "BR_TABLE",
                 Instruction::BrTable(std::borrow::Cow::Borrowed(&[]), 0),
             ),
-            op("LOCAL_GET", Instruction::LocalGet(0)),
-            op("LOCAL_SET", Instruction::LocalSet(0)),
-            op("LOCAL_TEE", Instruction::LocalTee(0)),
-            op("GLOBAL_GET", Instruction::GlobalGet(0)),
-            op("GLOBAL_SET", Instruction::GlobalSet(0)),
-            op("CALL", Instruction::Call(0)),
-            op(
+            op!("LOCAL_GET", Instruction::LocalGet(0)),
+            op!("LOCAL_SET", Instruction::LocalSet(0)),
+            op!("LOCAL_TEE", Instruction::LocalTee(0)),
+            op!("GLOBAL_GET", Instruction::GlobalGet(0)),
+            op!("GLOBAL_SET", Instruction::GlobalSet(0)),
+            op!("CALL", Instruction::Call(0)),
+            op!(
                 "CALL_INDIRECT",
                 Instruction::CallIndirect {
                     type_index: 0,
                     table_index: 0,
                 },
             ),
-            op("RETURN_CALL", Instruction::ReturnCall(0)),
-            op("RETURN", Instruction::Return),
-            op("UNREACHABLE", Instruction::Unreachable),
-            op("I32_ADD", Instruction::I32Add),
-            op("I32_SUB", Instruction::I32Sub),
-            op("I32_MUL", Instruction::I32Mul),
-            op("I32_DIV_S", Instruction::I32DivS),
-            op("I32_DIV_U", Instruction::I32DivU),
-            op("I32_REM_S", Instruction::I32RemS),
-            op("I32_REM_U", Instruction::I32RemU),
-            op("I32_AND", Instruction::I32And),
-            op("I32_OR", Instruction::I32Or),
-            op("I32_XOR", Instruction::I32Xor),
-            op("I32_SHL", Instruction::I32Shl),
-            op("I32_SHR_S", Instruction::I32ShrS),
-            op("I32_SHR_U", Instruction::I32ShrU),
-            op("I32_EQ", Instruction::I32Eq),
-            op("I32_EQZ", Instruction::I32Eqz),
-            op("I32_NE", Instruction::I32Ne),
-            op("I32_LT_S", Instruction::I32LtS),
-            op("I32_LT_U", Instruction::I32LtU),
-            op("I32_GT_S", Instruction::I32GtS),
-            op("I32_GT_U", Instruction::I32GtU),
-            op("I32_LE_S", Instruction::I32LeS),
-            op("I32_LE_U", Instruction::I32LeU),
-            op("I32_GE_S", Instruction::I32GeS),
-            op("I32_GE_U", Instruction::I32GeU),
-            op("I64_ADD", Instruction::I64Add),
-            op("I64_SUB", Instruction::I64Sub),
-            op("I64_MUL", Instruction::I64Mul),
-            op("I64_DIV_S", Instruction::I64DivS),
-            op("I64_DIV_U", Instruction::I64DivU),
-            op("I64_REM_S", Instruction::I64RemS),
-            op("I64_REM_U", Instruction::I64RemU),
-            op("I64_AND", Instruction::I64And),
-            op("I64_OR", Instruction::I64Or),
-            op("I64_XOR", Instruction::I64Xor),
-            op("I64_SHL", Instruction::I64Shl),
-            op("I64_SHR_S", Instruction::I64ShrS),
-            op("I64_SHR_U", Instruction::I64ShrU),
-            op("I64_EQ", Instruction::I64Eq),
-            op("I64_EQZ", Instruction::I64Eqz),
-            op("I64_NE", Instruction::I64Ne),
-            op("I64_LT_S", Instruction::I64LtS),
-            op("I64_LT_U", Instruction::I64LtU),
-            op("I64_GT_S", Instruction::I64GtS),
-            op("I64_GT_U", Instruction::I64GtU),
-            op("I64_LE_S", Instruction::I64LeS),
-            op("I64_LE_U", Instruction::I64LeU),
-            op("I64_GE_S", Instruction::I64GeS),
-            op("I64_GE_U", Instruction::I64GeU),
-            op("I32_WRAP_I64", Instruction::I32WrapI64),
-            op("I64_EXTEND_I32_S", Instruction::I64ExtendI32S),
-            op("I64_EXTEND_I32_U", Instruction::I64ExtendI32U),
+            op!("RETURN_CALL", Instruction::ReturnCall(0)),
+            op!("RETURN", Instruction::Return),
+            op!("UNREACHABLE", Instruction::Unreachable),
+            op!("I32_ADD", Instruction::I32Add),
+            op!("I32_SUB", Instruction::I32Sub),
+            op!("I32_MUL", Instruction::I32Mul),
+            op!("I32_DIV_S", Instruction::I32DivS),
+            op!("I32_DIV_U", Instruction::I32DivU),
+            op!("I32_REM_S", Instruction::I32RemS),
+            op!("I32_REM_U", Instruction::I32RemU),
+            op!("I32_AND", Instruction::I32And),
+            op!("I32_OR", Instruction::I32Or),
+            op!("I32_XOR", Instruction::I32Xor),
+            op!("I32_SHL", Instruction::I32Shl),
+            op!("I32_SHR_S", Instruction::I32ShrS),
+            op!("I32_SHR_U", Instruction::I32ShrU),
+            op!("I32_EQ", Instruction::I32Eq),
+            op!("I32_EQZ", Instruction::I32Eqz),
+            op!("I32_NE", Instruction::I32Ne),
+            op!("I32_LT_S", Instruction::I32LtS),
+            op!("I32_LT_U", Instruction::I32LtU),
+            op!("I32_GT_S", Instruction::I32GtS),
+            op!("I32_GT_U", Instruction::I32GtU),
+            op!("I32_LE_S", Instruction::I32LeS),
+            op!("I32_LE_U", Instruction::I32LeU),
+            op!("I32_GE_S", Instruction::I32GeS),
+            op!("I32_GE_U", Instruction::I32GeU),
+            op!("I64_ADD", Instruction::I64Add),
+            op!("I64_SUB", Instruction::I64Sub),
+            op!("I64_MUL", Instruction::I64Mul),
+            op!("I64_DIV_S", Instruction::I64DivS),
+            op!("I64_DIV_U", Instruction::I64DivU),
+            op!("I64_REM_S", Instruction::I64RemS),
+            op!("I64_REM_U", Instruction::I64RemU),
+            op!("I64_AND", Instruction::I64And),
+            op!("I64_OR", Instruction::I64Or),
+            op!("I64_XOR", Instruction::I64Xor),
+            op!("I64_SHL", Instruction::I64Shl),
+            op!("I64_SHR_S", Instruction::I64ShrS),
+            op!("I64_SHR_U", Instruction::I64ShrU),
+            op!("I64_EQ", Instruction::I64Eq),
+            op!("I64_EQZ", Instruction::I64Eqz),
+            op!("I64_NE", Instruction::I64Ne),
+            op!("I64_LT_S", Instruction::I64LtS),
+            op!("I64_LT_U", Instruction::I64LtU),
+            op!("I64_GT_S", Instruction::I64GtS),
+            op!("I64_GT_U", Instruction::I64GtU),
+            op!("I64_LE_S", Instruction::I64LeS),
+            op!("I64_LE_U", Instruction::I64LeU),
+            op!("I64_GE_S", Instruction::I64GeS),
+            op!("I64_GE_U", Instruction::I64GeU),
+            op!("I32_WRAP_I64", Instruction::I32WrapI64),
+            op!("I64_EXTEND_I32_S", Instruction::I64ExtendI32S),
+            op!("I64_EXTEND_I32_U", Instruction::I64ExtendI32U),
             // Memory stores — the `list<u8>`/`string` return path writes the payload bytes and the
             // canonical-ABI return area (`[data-ptr, data-len]`) into linear memory. `MemArg` is
             // irrelevant to the opcode byte (the extraction reads byte 0; the serializer emits the
             // align/offset LEB operands itself), so a zero memarg suffices to recover the opcode.
-            op(
+            op!(
                 "I32_STORE",
                 Instruction::I32Store(wasm_encoder::MemArg {
                     offset: 0,
@@ -502,7 +576,7 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
-            op(
+            op!(
                 "I32_STORE8",
                 Instruction::I32Store8(wasm_encoder::MemArg {
                     offset: 0,
@@ -512,7 +586,7 @@ mod wasm_abi {
             ),
             // The wider stores the reducer RESULT-lower (W4c-b canonical writer) needs: an `i64`/`f64`/`f32`
             // scalar field, and the 2-byte `i32.store16` for a `u16`/`s16` slot. Same MemArg-irrelevant note.
-            op(
+            op!(
                 "I64_STORE",
                 Instruction::I64Store(wasm_encoder::MemArg {
                     offset: 0,
@@ -520,7 +594,7 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
-            op(
+            op!(
                 "F32_STORE",
                 Instruction::F32Store(wasm_encoder::MemArg {
                     offset: 0,
@@ -528,7 +602,7 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
-            op(
+            op!(
                 "F64_STORE",
                 Instruction::F64Store(wasm_encoder::MemArg {
                     offset: 0,
@@ -536,7 +610,7 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
-            op(
+            op!(
                 "I32_STORE16",
                 Instruction::I32Store16(wasm_encoder::MemArg {
                     offset: 0,
@@ -549,7 +623,7 @@ mod wasm_abi {
             // `(ptr, len)` pair with the bytes at `ptr`) to copy them into a heap `Bytes` before
             // `value-decode`. `I32_LOAD8_U` reads one unsigned byte; `I32_LOAD` reads the 4-byte
             // `(ptr, len)` fields where needed. Same `MemArg`-irrelevant-to-opcode-byte note as the stores.
-            op(
+            op!(
                 "I32_LOAD",
                 Instruction::I32Load(wasm_encoder::MemArg {
                     offset: 0,
@@ -557,7 +631,7 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
-            op(
+            op!(
                 "I32_LOAD8_U",
                 Instruction::I32Load8U(wasm_encoder::MemArg {
                     offset: 0,
@@ -567,7 +641,7 @@ mod wasm_abi {
             ),
             // Width-specific loads for reading a scalar leaf a spilled compound result stored at its natural
             // width (the general result-lift's scalar-leaf boxing). MemArg is opcode-byte-irrelevant here too.
-            op(
+            op!(
                 "I64_LOAD",
                 Instruction::I64Load(wasm_encoder::MemArg {
                     offset: 0,
@@ -575,7 +649,7 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
-            op(
+            op!(
                 "F32_LOAD",
                 Instruction::F32Load(wasm_encoder::MemArg {
                     offset: 0,
@@ -583,7 +657,7 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
-            op(
+            op!(
                 "F64_LOAD",
                 Instruction::F64Load(wasm_encoder::MemArg {
                     offset: 0,
@@ -591,7 +665,7 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
-            op(
+            op!(
                 "I32_LOAD8_S",
                 Instruction::I32Load8S(wasm_encoder::MemArg {
                     offset: 0,
@@ -599,7 +673,7 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
-            op(
+            op!(
                 "I32_LOAD16_S",
                 Instruction::I32Load16S(wasm_encoder::MemArg {
                     offset: 0,
@@ -607,7 +681,7 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
-            op(
+            op!(
                 "I32_LOAD16_U",
                 Instruction::I32Load16U(wasm_encoder::MemArg {
                     offset: 0,
@@ -621,122 +695,123 @@ mod wasm_abi {
         // valtypes, the core + component section ids the envelope uses, the func export kind, and the
         // two functype form bytes.
         let singles = vec![
-            valtype(
+            valtype!(
                 "CORE_I32",
                 "core valtype `i32` — a ≤32-bit scalar's machine slot.",
                 ValType::I32,
             ),
-            valtype(
+            valtype!(
                 "CORE_I64",
                 "core valtype `i64` — a 64-bit scalar's machine slot.",
                 ValType::I64,
             ),
-            valtype("CORE_F32", "core valtype `f32`.", ValType::F32),
-            valtype("CORE_F64", "core valtype `f64`.", ValType::F64),
+            valtype!("CORE_F32", "core valtype `f32`.", ValType::F32),
+            valtype!("CORE_F64", "core valtype `f64`.", ValType::F64),
             Single {
                 ident: "BLOCK_EMPTY",
                 byte: one_byte("empty block type", wasm_encoder::BlockType::Empty),
                 doc: "empty block type — a structured block (`if`/`block`) that leaves no value.",
+                oracle_src: stringify!(byte0(wasm_encoder::BlockType::Empty)),
             },
-            prim("COMP_BOOL", "component `bool`.", PrimitiveValType::Bool),
-            prim("COMP_S8", "component `s8`.", PrimitiveValType::S8),
-            prim("COMP_U8", "component `u8`.", PrimitiveValType::U8),
-            prim("COMP_S16", "component `s16`.", PrimitiveValType::S16),
-            prim("COMP_U16", "component `u16`.", PrimitiveValType::U16),
-            prim("COMP_S32", "component `s32`.", PrimitiveValType::S32),
-            prim("COMP_U32", "component `u32`.", PrimitiveValType::U32),
-            prim("COMP_S64", "component `s64`.", PrimitiveValType::S64),
-            prim("COMP_U64", "component `u64`.", PrimitiveValType::U64),
-            prim("COMP_F32", "component `f32`.", PrimitiveValType::F32),
-            prim("COMP_F64", "component `f64`.", PrimitiveValType::F64),
-            prim(
+            prim!("COMP_BOOL", "component `bool`.", PrimitiveValType::Bool),
+            prim!("COMP_S8", "component `s8`.", PrimitiveValType::S8),
+            prim!("COMP_U8", "component `u8`.", PrimitiveValType::U8),
+            prim!("COMP_S16", "component `s16`.", PrimitiveValType::S16),
+            prim!("COMP_U16", "component `u16`.", PrimitiveValType::U16),
+            prim!("COMP_S32", "component `s32`.", PrimitiveValType::S32),
+            prim!("COMP_U32", "component `u32`.", PrimitiveValType::U32),
+            prim!("COMP_S64", "component `s64`.", PrimitiveValType::S64),
+            prim!("COMP_U64", "component `u64`.", PrimitiveValType::U64),
+            prim!("COMP_F32", "component `f32`.", PrimitiveValType::F32),
+            prim!("COMP_F64", "component `f64`.", PrimitiveValType::F64),
+            prim!(
                 "COMP_STRING",
                 "component `string`.",
                 PrimitiveValType::String,
             ),
-            core_sec("CORE_SEC_TYPE", "core TYPE section id.", SectionId::Type),
-            core_sec(
+            core_sec!("CORE_SEC_TYPE", "core TYPE section id.", SectionId::Type),
+            core_sec!(
                 "CORE_SEC_FUNCTION",
                 "core FUNCTION section id.",
                 SectionId::Function,
             ),
-            core_sec(
+            core_sec!(
                 "CORE_SEC_TABLE",
                 "core TABLE section id (the funcref table a closure's `call_indirect` dispatches through — one entry per lambda-lifted closure function).",
                 SectionId::Table,
             ),
-            core_sec(
+            core_sec!(
                 "CORE_SEC_ELEMENT",
                 "core ELEMENT section id (the active segment filling the funcref table with the lifted closure functions' indices, so a closure's stored table slot names its code).",
                 SectionId::Element,
             ),
-            core_sec(
+            core_sec!(
                 "CORE_SEC_MEMORY",
                 "core MEMORY section id (the linear memory a `list<u8>`/`string` return lifts through).",
                 SectionId::Memory,
             ),
-            core_sec(
+            core_sec!(
                 "CORE_SEC_GLOBAL",
                 "core GLOBAL section id (a build-once static compound's handle global; the bump-allocator cursor).",
                 SectionId::Global,
             ),
-            core_sec(
+            core_sec!(
                 "CORE_SEC_EXPORT",
                 "core EXPORT section id.",
                 SectionId::Export,
             ),
-            core_sec(
+            core_sec!(
                 "CORE_SEC_START",
                 "core START section id (the init function that builds each static compound once).",
                 SectionId::Start,
             ),
-            core_sec("CORE_SEC_CODE", "core CODE section id.", SectionId::Code),
-            core_sec(
+            core_sec!("CORE_SEC_CODE", "core CODE section id.", SectionId::Code),
+            core_sec!(
                 "CORE_SEC_DATA",
                 "core DATA section id (an active segment initializing linear memory — the constant value form + return area of a resource escape).",
                 SectionId::Data,
             ),
-            comp_sec(
+            comp_sec!(
                 "COMP_SEC_CORE_MODULE",
                 "component CORE-MODULE section id.",
                 ComponentSectionId::CoreModule,
             ),
-            comp_sec(
+            comp_sec!(
                 "COMP_SEC_CORE_INSTANCE",
                 "component CORE-INSTANCE section id.",
                 ComponentSectionId::CoreInstance,
             ),
-            comp_sec(
+            comp_sec!(
                 "COMP_SEC_ALIAS",
                 "component ALIAS section id.",
                 ComponentSectionId::Alias,
             ),
-            comp_sec(
+            comp_sec!(
                 "COMP_SEC_TYPE",
                 "component TYPE section id.",
                 ComponentSectionId::Type,
             ),
-            comp_sec(
+            comp_sec!(
                 "COMP_SEC_CANONICAL",
                 "component CANONICAL-FUNCTION section id.",
                 ComponentSectionId::CanonicalFunction,
             ),
-            comp_sec(
+            comp_sec!(
                 "COMP_SEC_IMPORT",
                 "component IMPORT section id.",
                 ComponentSectionId::Import,
             ),
-            comp_sec(
+            comp_sec!(
                 "COMP_SEC_EXPORT",
                 "component EXPORT section id.",
                 ComponentSectionId::Export,
             ),
-            comp_sec(
+            comp_sec!(
                 "COMP_SEC_COMPONENT",
                 "component COMPONENT section id (a nested component definition).",
                 ComponentSectionId::Component,
             ),
-            comp_sec(
+            comp_sec!(
                 "COMP_SEC_INSTANCE",
                 "component INSTANCE section id (instantiate a component).",
                 ComponentSectionId::Instance,
@@ -745,21 +820,28 @@ mod wasm_abi {
                 ident: "EXPORT_KIND_FUNC",
                 byte: one_byte("export kind func", ExportKind::Func),
                 doc: "core export kind `func` — the export-descriptor byte for a function export.",
+                oracle_src: stringify!(byte0(wasm_encoder::ExportKind::Func)),
             },
             Single {
                 ident: "EXPORT_KIND_MEMORY",
                 byte: one_byte("export kind memory", ExportKind::Memory),
                 doc: "core export kind `memory` — the export-descriptor byte for a memory export (the resource escape's `memory`).",
+                oracle_src: stringify!(byte0(wasm_encoder::ExportKind::Memory)),
             },
+            // The two functype FORM tags are read off a one-entry type section (see `core_functype_form`),
+            // not a plain `.encode()` byte, so they carry no uniform `oracle_src` — the emitted oracle
+            // module asserts them with a bespoke helper; the nix `wasm-abi-oracle` check also covers them.
             Single {
                 ident: "CORE_FUNCTYPE_FORM",
                 byte: core_functype_form(),
                 doc: "core functype form tag — opens a core `func` type before its param/result vecs.",
+                oracle_src: "",
             },
             Single {
                 ident: "COMP_FUNCTYPE_FORM",
                 byte: component_functype_form(),
                 doc: "component functype form tag — opens a component function type.",
+                oracle_src: "",
             },
         ];
 
@@ -780,50 +862,6 @@ mod wasm_abi {
             opcodes,
             singles,
             magics,
-        }
-    }
-
-    /// An opcode row: extract the byte from encoding `insn`.
-    fn op(ident: &'static str, insn: Instruction) -> Opcode {
-        Opcode {
-            ident,
-            byte: opcode_of(ident, insn),
-        }
-    }
-
-    /// A core-valtype single: extract the byte from encoding the `ValType`.
-    fn valtype(ident: &'static str, doc: &'static str, vt: ValType) -> Single {
-        Single {
-            ident,
-            byte: one_byte(ident, vt),
-            doc,
-        }
-    }
-
-    /// A component-primitive single: extract the byte from encoding the `PrimitiveValType`.
-    fn prim(ident: &'static str, doc: &'static str, p: PrimitiveValType) -> Single {
-        Single {
-            ident,
-            byte: one_byte(ident, p),
-            doc,
-        }
-    }
-
-    /// A core-section-id single (the id is the enum's `u8` repr).
-    fn core_sec(ident: &'static str, doc: &'static str, id: SectionId) -> Single {
-        Single {
-            ident,
-            byte: u8::from(id),
-            doc,
-        }
-    }
-
-    /// A component-section-id single.
-    fn comp_sec(ident: &'static str, doc: &'static str, id: ComponentSectionId) -> Single {
-        Single {
-            ident,
-            byte: u8::from(id),
-            doc,
         }
     }
 
@@ -863,14 +901,18 @@ mod wasm_abi {
                 panic!("wasm-abi entry `{head}` is not a list");
             };
             match head {
+                // A sexpr-read table carries no wasm-encoder constructor → `oracle_src` is empty (it is the
+                // CONSTANTS source, not the oracle-emission source; the oracle module emits from `collect`).
                 "opcode" => opcodes.push(Opcode {
                     ident: name(a, f[1]),
                     byte: byte(a, f[2]),
+                    oracle_src: "",
                 }),
                 "single" => singles.push(Single {
                     ident: name(a, f[1]),
                     byte: byte(a, f[2]),
                     doc: doc(a, f[3]),
+                    oracle_src: "",
                 }),
                 "magic" => {
                     let mut bytes = [0u8; 8];
@@ -997,6 +1039,70 @@ mod wasm_abi {
         }
     }
 
+    /// Render the DERIVED CRATE's baked-in `#[cfg(test)] mod oracle` — the operator's inverted guarantee
+    /// as UNIT TESTS INSIDE the generated crate: each generated constant is asserted against the byte
+    /// `wasm-encoder` (the spec oracle) produces for its named constructor. `wasm-encoder` is referenced
+    /// only here, under `#[cfg(test)]`, so the derived crate carries it as a DEV-dependency only and its
+    /// consumers (rcdzc) stay `wasm-encoder`-free. Emitted as source text (the per-entry `oracle_src`
+    /// re-derivation expression is a token string). Entries with an empty `oracle_src` (the two functype
+    /// form tags, read off a type section rather than a plain `.encode()`) are covered by the nix
+    /// `wasm-abi-oracle` check instead of a per-entry assert here.
+    pub fn render_oracle_tests(t: &Tables) -> String {
+        let mut s = String::new();
+        s.push_str(
+            "\n#[cfg(test)]\nmod oracle {\n    //! @generated — the operator's inverted guarantee: every \
+             constant above matches the `wasm-encoder` spec\n    //! oracle. A hand-edit to `wasm-abi.sexp` \
+             that transcribes a wrong byte fails these tests. `wasm-encoder`\n    //! is a DEV-dependency of \
+             this crate ONLY (its consumers do not carry it).\n    #![allow(unused_imports)]\n    use \
+             wasm_encoder::{\n        BlockType, Component, ComponentSectionId, Encode, ExportKind, \
+             Instruction, Module, PrimitiveValType,\n        SectionId, ValType,\n    };\n\n    /// The first \
+             byte `wasm-encoder` emits for a value — the opcode / tag byte the backend constant should equal.\n    \
+             fn byte0<E: Encode>(v: E) -> u8 {\n        let mut b = Vec::new();\n        v.encode(&mut b);\n        \
+             assert!(!b.is_empty(), \"wasm-encoder emitted no bytes\");\n        b[0]\n    }\n",
+        );
+        // Opcodes: `super::op::NAME == byte0(Instruction::…)`.
+        s.push_str("\n    #[test]\n    fn opcodes_match_wasm_encoder() {\n");
+        for o in &t.opcodes {
+            if o.oracle_src.is_empty() {
+                continue;
+            }
+            s.push_str(&format!(
+                "        assert_eq!(super::op::{}, {}, \"{}\");\n",
+                o.ident, o.oracle_src, o.ident
+            ));
+        }
+        s.push_str("    }\n");
+        // Singles: `super::NAME == byte0(ValType::…)` or `== u8::from(SectionId::…)`.
+        s.push_str("\n    #[test]\n    fn singles_match_wasm_encoder() {\n");
+        for si in &t.singles {
+            if si.oracle_src.is_empty() {
+                continue;
+            }
+            s.push_str(&format!(
+                "        assert_eq!(super::{}, {}, \"{}\");\n",
+                si.ident, si.oracle_src, si.ident
+            ));
+        }
+        s.push_str("    }\n");
+        // Magics: the 8-byte core / component preamble headers.
+        s.push_str("\n    #[test]\n    fn magics_match_wasm_encoder() {\n");
+        for m in &t.magics {
+            let header = match m.ident {
+                "CORE_MAGIC" => "Module::HEADER",
+                "COMPONENT_MAGIC" => "Component::HEADER",
+                other => panic!(
+                    "unknown magic `{other}` — add its wasm-encoder header to render_oracle_tests"
+                ),
+            };
+            s.push_str(&format!(
+                "        assert_eq!(super::{}, &{}, \"{}\");\n",
+                m.ident, header, m.ident
+            ));
+        }
+        s.push_str("    }\n}\n");
+        s
+    }
+
     /// A hex `u8` literal token (`0x6a`) — matches the spec/wasm convention the frozen source used, so
     /// the generated file reads like an opcode table rather than decimal noise. The const's own `: u8`
     /// / `&[u8]` annotation types it, so the literal is unsuffixed; a raw token keeps the `0x` form
@@ -1027,6 +1133,7 @@ mod tests {
                 .map(|o| Opcode {
                     ident: o.ident,
                     byte: o.byte,
+                    oracle_src: o.oracle_src,
                 })
                 .collect(),
             singles: t
@@ -1036,6 +1143,7 @@ mod tests {
                     ident: s.ident,
                     byte: s.byte,
                     doc: s.doc,
+                    oracle_src: s.oracle_src,
                 })
                 .collect(),
             magics: t
@@ -1108,6 +1216,7 @@ mod tests {
         extra.opcodes.push(Opcode {
             ident: "NOT_A_REAL_OPCODE",
             byte: 0xff,
+            oracle_src: "",
         });
         let m = wasm_abi::oracle_mismatches(&oracle, &extra);
         assert!(
@@ -1136,6 +1245,41 @@ mod tests {
         assert!(
             rust.contains("0x41"),
             "render is not emitting hex opcode bytes"
+        );
+    }
+
+    /// `render_oracle_tests` emits a self-contained `#[cfg(test)] mod oracle` that asserts each generated
+    /// constant against its `wasm-encoder` re-derivation (the operator's inverted guarantee, baked into the
+    /// derived crate). Pin the module shape + the `byte0`/`u8::from`/magic assert forms for known entries.
+    #[test]
+    fn render_oracle_tests_emits_encoder_asserts() {
+        let src = wasm_abi::render_oracle_tests(&wasm_abi::collect());
+        assert!(src.contains("mod oracle"), "no oracle module: {src}");
+        assert!(src.contains("fn byte0"), "no byte0 helper");
+        // Flatten whitespace so the checks are robust to `stringify!`'s `::`/paren spacing (rustfmt
+        // normalizes it in the emitted file, but this is the raw pre-format output).
+        let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+        // opcode: encode-byte0 form; a valtype single: encode-byte0; a section: u8::from; a magic: HEADER.
+        assert!(
+            flat.contains("assert_eq!(super::op::I32_CONST,byte0(Instruction::I32Const(0)),"),
+            "{src}"
+        );
+        assert!(
+            flat.contains("assert_eq!(super::CORE_I32,byte0(ValType::I32),"),
+            "{src}"
+        );
+        assert!(
+            flat.contains("assert_eq!(super::CORE_SEC_TYPE,u8::from(SectionId::Type),"),
+            "{src}"
+        );
+        assert!(
+            flat.contains("assert_eq!(super::CORE_MAGIC,&Module::HEADER,"),
+            "{src}"
+        );
+        // the two functype-form tags carry no uniform oracle_src → not per-entry asserted here.
+        assert!(
+            !src.contains("CORE_FUNCTYPE_FORM"),
+            "functype form should be skipped, not emitted"
         );
     }
 
