@@ -13429,3 +13429,16 @@
   (call main (: 5 Int64)) (output (: 15 Int64))
   (call main (: -3 Int64)) (output (: -3 Int64))
   (call main (: -99 Int64)) (output (: -1 Int64)))
+
+(case "cdzw74 Result with heterogeneous payloads + Result-nested-in-Option round-trip the cadenza hop"
+  (doc "Result hop faces: Ok/Err with DIFFERENT payload types (Int64 / String — the Err arm consumes the
+        string's byte length), plus the Some(Ok …)/Some(Err …)/None nesting. n=9 → 9+90 = 99;
+        n=3 → 3+(-100) = -97; n=-2 → -4+0 = -4 (Err \"boom\" → -4). Dual-path verified, byte-idempotent.")
+  (input (do
+    (def (f (: r (Result Int64 String))) (match r ((Ok v) v) ((Err e) (- 0 (String.byte-len e)))))
+    (def (g (: o (Option (Result Int64 String)))) (match o ((Some (Ok v)) (* v 10)) ((Some (Err _e)) -100) ((None _u) 0)))
+    (def (main (: n Int64)) (+ (f (if (> n 0) (Ok n) (Err "boom"))) (g (if (> n 5) (Some (Ok n)) (if (> n 0) (Some (Err "x")) (None))))))
+    (export main)))
+  (call main (: 9 Int64)) (output (: 99 Int64))
+  (call main (: 3 Int64)) (output (: -97 Int64))
+  (call main (: -2 Int64)) (output (: -4 Int64)))
