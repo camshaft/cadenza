@@ -13454,3 +13454,18 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 29 Int64))
   (call main (: -3 Int64)) (output (: 9 Int64)))
+
+(case "cdzw76 PARTIAL APPLICATIONS stored in a list and runtime-selected round-trip the cadenza hop"
+  (doc "The composite of cdzw66 (closures in data) × cdzw75 (currying): residuals of two DIFFERENT
+        two-arg defs, partially applied with distinct firsts, stored in a #list, runtime-indexed and
+        applied. n=7 → (add 100) 7 = 107; n=-4 → (mul 3) -4 = -12. Dual-path verified, byte-idempotent.")
+  (input (do
+    (def (add (: a Int64) (: b Int64)) (+ a b))
+    (def (mul (: a Int64) (: b Int64)) (* a b))
+    (def (main (: n Int64))
+      (do (def fs (list (add 100) (mul 3)))
+          (match (List.at fs (if (> n 0) 0 1)) ((Some f) (f n)) ((None _u) -999))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 107 Int64))
+  (call main (: -4 Int64)) (output (: -12 Int64))
+  (live-objects 1))
