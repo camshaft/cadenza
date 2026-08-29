@@ -5,15 +5,15 @@
 # content-addressed store (<store>/<hash>.wasm). The runtime is derived first and keyed by its hash,
 # which is what the host resolves a program's required runtime against (reproducible-derivation.md).
 #
-# `codegen` generates TWO tables the wasm backend consumes, both DERIVED from an authoritative oracle
-# rather than hand-listed:
+# `codegen` generates the runtime ABI table the wasm backend consumes, DERIVED from an authoritative
+# oracle rather than hand-listed:
 #   - `runtime_abi.rs` — the value-heap runtime's WIT (`wit-parser`): op name → core signature; the
 #     compiler builds its per-program import section from that data, not opaque envelope blobs.
-#   - `wasm_abi.rs` — every wasm/component-model byte the backend emits (opcodes, valtypes, section
-#     ids, magic headers, functype form bytes), extracted from `wasm-encoder` (the spec byte encoder)
-#     by encoding a one-off value and reading the byte back — so no magic number is hand-transcribed.
-# `wit-parser` and `wasm-encoder` are DEV-DESK deps here in xtask only — never in the shipped compiler,
-# whose generated tables are plain dep-free data.
+# `wit-parser` is a DEV-DESK dep here in xtask only — never in the shipped compiler, whose generated
+# table is plain dep-free data. (The `wasm_abi.rs` byte table + the built-in contract schemas USED to be
+# generated here too — from `wasm-encoder` + `cadenza-ast`/`cdz-contract` — but were carved out into the
+# standalone `xtask-codegen-wasm-abi` / `xtask-codegen-contracts` bins + their nix derivations, the
+# operator codegen→build-time-nix directive, so those deps left xtask with them.)
 [package]
 name = "xtask"
 version = "0.0.0"
@@ -24,21 +24,16 @@ publish = false
 # The Rust-backend boundary-value render + descriptor-parse logic, shared with the `cdz run-rust`
 # subcommand so the gate's `--target rust` render and the CLI's can't drift (extracted from xtask).
 cdz-rust-render = { path = "../implementation/seed/crates/cdz-rust-render" }
-# `codegen` reads the platform's built-in-contract SOURCES (`cdz-platform/contracts/*.cdz`) — real
-# Cadenza. It VALIDATES and PARSES them by delegating to the `cdz` binary (`cdz test` runs the source's
-# `@test` conformance proofs + typechecks; `cdz convert --to binary` yields the canonical AST), so xtask
-# does NOT depend on the compiler. It uses only `cadenza-ast` — the LANGUAGE's value model + binary codec,
-# the same crate `cdz-platform` itself depends on, NOT the compiler (rcdzc) — to decode that AST and
-# re-project each contract's type declarations into `src/contracts/<name>.rs` as builder calls.
+# `cadenza-ast` — the LANGUAGE's value model + binary codec (the crate `cdz-platform` depends on, NOT the
+# compiler rcdzc). xtask does not `use` it in code anymore (the contract codegen that decoded ASTs with it
+# moved to `xtask-codegen-contracts`); it stays because the `--target rust` gate passes the built
+# `libcadenza_ast.rlib` to rustc via `--extern cadenza_ast=…` when an emitted program uses the native R2
+# value codec, so xtask must dep it to guarantee the rlib is built alongside.
 cadenza-ast = { path = "../implementation/seed/crates/cadenza-ast" }
 # The shared xtask foundation lib (v-xtask-decompose): content_address + hash_tree (build-cache
-# fingerprint) live here now; it owns sha2 + cdz-contract. Per-command crates share it too.
+# fingerprint) live here now; it owns sha2 + cdz-contract (xtask reaches them through this, so xtask no
+# longer deps cdz-contract directly). Per-command crates share it too.
 xtask-support = { path = "crates/xtask-support" }
-# The platform's content-address primitive: `content_address` delegates to
-# `Hash::of(HashTag::Blob, bytes).to_string()` (a Blob-tagged blake3 digest rendered base62, design §8),
-# so the store address == blob key == compose-dep `+hash` == `REQUIRED_RUNTIME_HASH` are a single string
-# across the fleet, byte-identical to `cdz-run`'s `content_address` and the store's own `put()`.
-cdz-contract = { path = "../implementation/seed/crates/cdz-contract" }
 # The fleet orchestrator (`fleet` subcommand) serializes its durable manifest + inbox messages as
 # JSON. Dev-desk only, like the rest of xtask's deps — never enters the shipped compiler.
 serde = { version = "1", features = ["derive"] }
@@ -53,12 +48,6 @@ xshell = "0.2"
 # Reads the value-heap runtime's `wit/runtime.wit` — the ABI's source of truth — so `codegen` DERIVES
 # the runtime-op table (name + signature) rather than hand-listing it. Dev-desk only (never shipped).
 wit-parser = "0.239"
-# The AUTHORITATIVE wasm/component-model byte encoder — `codegen` extracts each opcode, valtype,
-# section id, magic header, and functype form byte from it (encode a one-off value and read the byte
-# back) so the wasm backend's `wasm_abi.rs` is DERIVED from the spec encoder rather than hand-listed.
-# Same crate the rcdzc byte-identity oracle test uses; dev-desk only (the generated table is plain
-# dep-free data, so `wasm-encoder` never enters the shipped compiler).
-wasm-encoder = "0.239"
 # Reads the RAW runtime build's `cdz-abi` custom section (by name, statically — no execution) so
 # `codegen` DERIVES the ABI immediate encodings (the inline-unit handle bits) into `runtime_abi.rs`,
 # letting the compiler push those constants instead of a runtime `arr-alloc(0)` call. Read BEFORE the
