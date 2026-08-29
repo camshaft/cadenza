@@ -12623,3 +12623,17 @@
 (case "a bool value annotated an integer type carries NO coercion fix"
   (input (do (def (f (: b Bool)) (: b Int64)) (export f)))
   (error CDZ0203 (no-fix)))
+
+(case "cdzw49 a def whose TAIL is a computed-magnitude Qty re-emits ((. Qty of) mag unit) through the cadenza hop"
+  (doc "The #5282 fence (the q3 auto-flip witness): `q` has a concrete Qty result type and a DIRECT Arith
+        body — the exact def-tail Qty-return face #5282 re-emits as ((. Qty of) <mag> <unit>); pre-#5282
+        this declined ('ambiguous magnitude-vs-quantity position'). main peels via Qty.value so the
+        expectation stays scalar (a raw Qty return renders as its encode envelope — unpinnable). Scope:
+        DIRECT Arith bodies only; nested match-arm/element positions still decline (the 0225
+        arm-inconsistency guard), and the erased Qty.value-of-arith face stays a CORRECT decline.")
+  (input (do
+    (def (q (: n Int64)) (Qty.of (* n 2) (Unit.base #"meter")))
+    (def (main (: n Int64)) (Qty.value (q n)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 14 Int64))
+  (call main (: -4 Int64)) (output (: -8 Int64)))
