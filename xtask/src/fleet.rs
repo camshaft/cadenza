@@ -9621,7 +9621,17 @@ const NIX_GATE_MAX_JOBS: &str = "4";
 /// it reports the complete set. Cost is bounded: only a RED gate does the extra work (a GREEN gate builds
 /// every constituent anyway), and `--max-jobs 4` already caps that extra work to 4-wide. Kept consistent
 /// with v-nix's `apps.gate` (`nix run .#gate`, #5303), which added `--keep-going` on the convenience surface.
-fn nix_gate_argv(target: &str) -> [String; 7] {
+/// `--option eval-cache false` (concierge+v-nix stale-nix fix 2026-08-29): `/etc/nix/nix.conf` runs
+/// `lazy-trees = true` + `eval-cache = true`, and on a DIRTY worktree the lazy tree-fingerprint
+/// UNDER-invalidates the per-user eval-cache (`~/.cache/nix/eval-cache-v6`) — so nix serves a STALE
+/// derivation graph for un-recomputed attrs (v-corpus-harness saw the pre-#5678 68-drop corpus result
+/// despite a fresh source + "221 derivations built"), silently defeating LOCAL corpus gating and forcing
+/// agents to CI-verify. Disabling the eval-cache for the gate build forces a fresh evaluation so the gate
+/// reflects the working tree. SCOPED to this leased local-gate argv (both `run_gate_local` +
+/// `run_gate_local_bounded`) — eval-cache speed is untouched for every other nix invocation. v-nix owns
+/// the nix side + verifies; if the standalone corpus checks outside local-gate also need it, that is a
+/// system `nix.conf` question surfaced to the operator, not this wrapper.
+fn nix_gate_argv(target: &str) -> [String; 10] {
     [
         "build".into(),
         target.into(),
@@ -9630,6 +9640,9 @@ fn nix_gate_argv(target: &str) -> [String; 7] {
         "--keep-going".into(),
         "--max-jobs".into(),
         NIX_GATE_MAX_JOBS.into(),
+        "--option".into(),
+        "eval-cache".into(),
+        "false".into(),
     ]
 }
 
@@ -16143,6 +16156,21 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             argv.get(mj + 1).map(String::as_str),
             Some(NIX_GATE_MAX_JOBS),
             "--max-jobs must be immediately followed by NIX_GATE_MAX_JOBS"
+        );
+        // --option eval-cache false (stale-nix fix): the gate must FORCE a fresh evaluation, or a dirty
+        // tree's under-invalidated eval-cache serves a stale derivation graph → the local corpus gate
+        // silently passes on stale results. The three tokens MUST stay adjacent + in order (nix parses
+        // `--option <name> <value>`).
+        let opt = argv.iter().position(|a| a == "--option").expect(
+            "gate-local must disable the eval-cache (dirty-tree stale-derivation fix) via --option",
+        );
+        assert_eq!(
+            (
+                argv.get(opt + 1).map(String::as_str),
+                argv.get(opt + 2).map(String::as_str)
+            ),
+            (Some("eval-cache"), Some("false")),
+            "--option must be immediately followed by `eval-cache false`"
         );
     }
 
