@@ -2096,6 +2096,60 @@ fn rustc_roundtrip_bytes_build_read_and_string_concat_run() {
 }
 
 #[test]
+fn rustc_roundtrip_string_concat_nfc_normalizes_matching_wasm() {
+    // FINDING #23 rust-parity regression (breaker report: wasm-vs-rust value divergence). The String TYPE's
+    // doctrine (`collections-and-text.md`) makes NFC an invariant — every String constructor normalizes before
+    // the value exists — so `String.concat "e" <U+0301 combining acute>` MUST equal the precomposed "é"
+    // (U+00E9, 2 UTF-8 bytes), NOT the 3-byte decomposed "e"+combining sequence. The wasm backend calls the
+    // `str-nfc-normalize` runtime op; the rust backend's `Core::NfcNormalize` used to be a NO-OP (pass-through),
+    // so a rust-target concat kept the un-normalized 3-byte form and disagreed with wasm on `=` / byte-len /
+    // set-membership. Operands are threaded through a runtime identity (`id … 1` recurses once) so the concat is
+    // a RUNTIME value, NOT a const-fold — this exercises the emitted `unicode_normalization::…::nfc(…)` at run.
+    let blen = compile_rust(&format!(
+        "(module m (def (id (: s String) (: n Int64)) (if (< n 1) s (id s (- n 1)))) \
+           (def (g) (String.byte-len (String.concat (id \"e\" 1) (id \"{}\" 1)))) (export g))",
+        '\u{301}'
+    ));
+    // The emit must carry the real NFC call (not the old identity pass-through).
+    assert!(
+        blen.contains("unicode_normalization::UnicodeNormalization::nfc("),
+        "String.concat emits the NFC canonicalization:\n{blen}"
+    );
+    if let Some(out) = rustc_run(&blen, "g()") {
+        assert_eq!(
+            out, "2",
+            "runtime concat of 'e' + combining-acute NFC-normalizes to the 2-byte precomposed 'é' (matches wasm)"
+        );
+    }
+    // …and the normalized concat is EQUAL to the precomposed literal (the divergence breaker saw on `=`).
+    let eq = compile_rust(&format!(
+        "(module m (def (id (: s String) (: n Int64)) (if (< n 1) s (id s (- n 1)))) \
+           (def (g) (if (= (String.concat (id \"e\" 1) (id \"{}\" 1)) (id \"{}\" 1)) 1 0)) (export g))",
+        '\u{301}', '\u{e9}'
+    ));
+    if let Some(out) = rustc_run(&eq, "g()") {
+        assert_eq!(
+            out, "1",
+            "the NFC-normalized concat equals the precomposed 'é' literal by content (matches wasm)"
+        );
+    }
+    // ADVERSARIAL (breaker's co-verify cell #4): NFC must NOT over-normalize. `q` + U+0301 (combining acute)
+    // has NO precomposed form, so NFC leaves it as the 2-scalar / 3-byte sequence — it must stay 3 bytes and
+    // equal ITSELF, guarding against an emit that maps to some *other* codepoint. Both backends agree here.
+    let noncompose = compile_rust(&format!(
+        "(module m (def (id (: s String) (: n Int64)) (if (< n 1) s (id s (- n 1)))) \
+           (def (g) (String.byte-len (String.concat (id \"q\" 1) (id \"{}\" 1)))) (export g))",
+        '\u{301}'
+    ));
+    if let Some(out) = rustc_run(&noncompose, "g()") {
+        assert_eq!(
+            out, "3",
+            "a non-composing combining sequence (q + U+0301) is NOT over-normalized: stays 3 bytes (matches wasm)"
+        );
+    }
+}
+
+#[test]
 fn runtime_string_ops_emit_native_str_operations() {
     // StrAt → scalar-indexed `.chars().nth(i).map(to_string)`; StrFromBytes → `from_utf8().ok()`;
     // StrToBytes → `.into_bytes()`.
@@ -3003,6 +3057,9 @@ fn rustc_run(module: &str, call: &str) -> Option<String> {
     // A BigInt program emits `cdz_num::Big`; link the `cdz-num` dev-dep rlib (harmless when unused —
     // `--extern` only makes the crate available). Mirrors the async runner's `cdz_rt` linking.
     let cdz_num = cdz_num_link();
+    // A String.concat / from-bytes program emits a `unicode_normalization::…::nfc(…)` NFC canonicalization
+    // (FINDING #23 rust parity); link its rlib (a workspace dep, in the test binary's `deps/`) like `cdz_num`.
+    let unicode_norm = dep_rlib_link("libunicode_normalization");
     let compile = || {
         let mut cmd = Command::new("rustc");
         cmd.args(["-O", "--edition", "2021"])
@@ -3014,6 +3071,12 @@ fn rustc_run(module: &str, call: &str) -> Option<String> {
                 .arg(format!("dependency={}", dep_dir.display()))
                 .arg("--extern")
                 .arg(format!("cdz_num={}", rlib.display()));
+        }
+        if let Some((dep_dir, rlib)) = &unicode_norm {
+            cmd.arg("-L")
+                .arg(format!("dependency={}", dep_dir.display()))
+                .arg("--extern")
+                .arg(format!("unicode_normalization={}", rlib.display()));
         }
         cmd.output().expect("run rustc")
     };
@@ -3072,6 +3135,9 @@ fn rustc_run_traps(module: &str, call: &str) -> TrapRun {
     let full = format!("{module}\nfn main() {{ println!(\"{{}}\", {call}); }}\n");
     std::fs::write(&src_path, full).expect("write rust source");
     let cdz_num = cdz_num_link();
+    // A String.concat / from-bytes program emits a `unicode_normalization::…::nfc(…)` NFC canonicalization
+    // (FINDING #23 rust parity); link its rlib (a workspace dep, in the test binary's `deps/`) like `cdz_num`.
+    let unicode_norm = dep_rlib_link("libunicode_normalization");
     let compile = || {
         let mut cmd = Command::new("rustc");
         cmd.args(["-O", "--edition", "2021"])
@@ -3083,6 +3149,12 @@ fn rustc_run_traps(module: &str, call: &str) -> TrapRun {
                 .arg(format!("dependency={}", dep_dir.display()))
                 .arg("--extern")
                 .arg(format!("cdz_num={}", rlib.display()));
+        }
+        if let Some((dep_dir, rlib)) = &unicode_norm {
+            cmd.arg("-L")
+                .arg(format!("dependency={}", dep_dir.display()))
+                .arg("--extern")
+                .arg(format!("unicode_normalization={}", rlib.display()));
         }
         cmd.output().expect("run rustc")
     };
@@ -3146,6 +3218,14 @@ fn rustc_run_driver(module: &str, driver: &str) -> Option<String> {
             .arg(format!("dependency={}", dep_dir.display()))
             .arg("--extern")
             .arg(format!("cdz_num={}", rlib.display()));
+    }
+    // A String.concat / from-bytes program emits `unicode_normalization::…::nfc(…)` (FINDING #23 rust NFC
+    // parity); link its rlib (a workspace dep in the test binary's `deps/`), mirroring the sync runners.
+    if let Some((dep_dir, rlib)) = dep_rlib_link("libunicode_normalization") {
+        cmd.arg("-L")
+            .arg(format!("dependency={}", dep_dir.display()))
+            .arg("--extern")
+            .arg(format!("unicode_normalization={}", rlib.display()));
     }
     let status = cmd.output().expect("run rustc");
     assert!(
