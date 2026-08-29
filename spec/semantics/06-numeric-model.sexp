@@ -908,6 +908,19 @@
   (input  (do (type P (P Int8 Int8)) (def (main) (match (: (P 999 5) P) ((P u _v) u))) (export main)))
   (error  CDZ0302))
 
+(case "a literal in a MULTI-VARIANT user sum payload that overflows the annotated width is rejected"
+  (doc    "The multi-VARIANT face (a `Ty::Sum`, not the single-variant `Ty::Nominal` newtype above): `(type E
+           (A Int8) (B Int64))` then `(: (E.A 999) E)` — the `A` variant's declared payload Int8 grounds `999`,
+           which overflows → CDZ0302, exactly as the newtype `(W 999)` and multi-payload `(P 999 5)`. Pins the
+           width-fit descent reaches a MULTI-variant sum's per-variant payload, not only a single-variant
+           nominal. From rcdzc cdz_check_rejects_a_narrow_width_overflow_in_a_user_sum_or_nominal_payload.")
+  (input  (do (type E (A Int8) (B Int64)) (def (f) (: (E.A 999) E)) (export f)))
+  (error  CDZ0302))
+
+(case "a FITTING multi-variant user sum payload compiles and matches back (no over-rejection)"
+  (input  (do (type E (A Int8) (B Int64)) (def (main) (match (: (E.A 100) E) ((E.A v) 0) ((E.B w) 1))) (export main)))
+  (call   main) (output (: 0 Int64)))
+
 (case "a literal in a RECORD FIELD that overflows the annotated field width is rejected"
   (doc    "`(: (record (x 999)) (Record (: x Int8)))` — the record type's declared field `x : Int8` grounds
            the field literal `999`, which overflows Int8 → CDZ0302, exactly as the Option/user-sum payloads.

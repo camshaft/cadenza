@@ -6152,86 +6152,18 @@ mod runtime_ops {
     // Migrated as 2 CDZ0302 rejects + 3 running no-over-rejection controls (fitting payload → 100, Int64 result
     // fits → 10000, no narrow annotation → 10000). --case grades the reject codes + run values (all 5 PASS).)
 
-    #[test]
-    fn cdz_check_rejects_a_narrow_width_overflow_in_a_record_field_or_map_position() {
-        // Width-fit descent coverage audit (operator/pr-sync-directed): the descent covered Option/Result/
-        // Tuple/List but MISSED record fields and BOTH map positions (key + value) — a bare over-range
-        // literal escaped the fit-check → wasm SILENTLY TRUNCATED it (999 → -25, a backend-divergent
-        // miscompile; rust E0308). Now `nested_literal_width_faults` has Ty::Record + Ty::Map arms that
-        // descend each field value / entry key+value against its declared narrow type, rejecting CDZ0302 as
-        // the Option/Tuple arms already do.
-        let check_rejects = |src: &str| {
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            let d = diags
-                .iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
-                .unwrap_or_else(|| panic!("expected a check-level reject for: {src}"));
-            assert_eq!(
-                d.code.as_deref(),
-                Some("CDZ0302"),
-                "expected CDZ0302 for {src}, got: {}",
-                d.message
-            );
-        };
-        // Record field, map value, map key — each an over-range literal at a narrow declared type.
-        check_rejects("(module m (def (f) (: (record (x 999)) (Record (: x Int8)))) (export f))");
-        check_rejects("(module m (def (f) (: (map (1 999)) (Map Int64 Int8))) (export f))");
-        check_rejects("(module m (def (f) (: (map (999 1)) (Map Int8 Int64))) (export f))");
+    // (cdz_check_rejects_a_narrow_width_overflow_in_a_record_field_or_map_position was already fully covered
+    // by the existing 06-numeric-model width-fit descent group — record field `(: #record((= x 999)) (Record
+    // (: x Int8)))`, map VALUE `(: #map((= 1 999)) (Map Int64 Int8))`, and map KEY `(: #map((= 999 1)) (Map
+    // Int8 Int64))` are all pinned there (+ the fitting record-field control), so this rust test is redundant
+    // and removed. Fitting map literals are broadly exercised by the corpus at large.)
 
-        // NO OVER-REJECTION: fitting values at the narrow type pass.
-        let check_clean = |src: &str| {
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            assert!(
-                diags
-                    .iter()
-                    .all(|d| d.severity != crate::abi::Severity::Error),
-                "expected NO check reject for: {src}\ngot: {diags:?}"
-            );
-        };
-        check_clean("(module m (def (f) (: (record (x 100)) (Record (: x Int8)))) (export f))");
-        check_clean("(module m (def (f) (: (map (1 100)) (Map Int64 Int8))) (export f))");
-        check_clean("(module m (def (f) (: (map (100 1)) (Map Int8 Int64))) (export f))");
-    }
-
-    #[test]
-    fn cdz_check_rejects_a_narrow_width_overflow_in_a_user_sum_or_nominal_payload() {
-        // Width-fit descent audit, part 2: a USER-DECLARED nominal/sum payload. A newtype `(type W (W
-        // Int8))` is `Ty::Nominal { inner: Int8 }`, a multi-payload `(type P (P Int8 Int64))` is
-        // `Ty::Nominal { inner: Tuple([Int8, Int64]) }`, and a multi-VARIANT `(type E (A Int8) (B Int64))`
-        // is `Ty::Sum`. A bare over-range payload literal escaped the fit-check → wasm SILENTLY TRUNCATED it
-        // (999 → -25; rust E0308). The new `Ty::Nominal` arm descends each ctor arg against `inner` (a Tuple
-        // inner zips positionally; else the single arg), rejecting CDZ0302 like the Option/Record arms.
-        let check_rejects = |src: &str| {
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            let d = diags
-                .iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
-                .unwrap_or_else(|| panic!("expected a check-level reject for: {src}"));
-            assert_eq!(
-                d.code.as_deref(),
-                Some("CDZ0302"),
-                "expected CDZ0302 for {src}, got: {}",
-                d.message
-            );
-        };
-        check_rejects("(module m (type W (W Int8)) (def (f) (: (W 999) W)) (export f))");
-        check_rejects("(module m (type P (P Int8 Int64)) (def (f) (: (P 999 5) P)) (export f))");
-        check_rejects(
-            "(module m (type E (A Int8) (B Int64)) (def (f) (: (E.A 999) E)) (export f))",
-        );
-
-        let check_clean = |src: &str| {
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            assert!(
-                diags
-                    .iter()
-                    .all(|d| d.severity != crate::abi::Severity::Error),
-                "expected NO check reject for: {src}\ngot: {diags:?}"
-            );
-        };
-        check_clean("(module m (type W (W Int8)) (def (f) (: (W 100) W)) (export f))");
-        check_clean("(module m (type P (P Int8 Int64)) (def (f) (: (P 100 5) P)) (export f))");
-    }
+    // (cdz_check_rejects_a_narrow_width_overflow_in_a_user_sum_or_nominal_payload migrated to corpus
+    // 06-numeric-model: the newtype `(: (W 999) W)` and multi-payload `(: (P 999 5) P)` payload-overflow
+    // rejects were already pinned in the descent group; this batch ADDED the one uncovered face — the
+    // multi-VARIANT sum "a literal in a MULTI-VARIANT user sum payload that overflows the annotated width is
+    // rejected" ((type E (A Int8) (B Int64)), (: (E.A 999) E) → CDZ0302, a Ty::Sum vs the Ty::Nominal newtype)
+    // + a fitting multi-variant control that runs. --case grades the reject code + the run value.)
 
     #[test]
     fn cdz_check_rejects_a_float_literal_grounded_to_float32_through_an_arith_spine() {
