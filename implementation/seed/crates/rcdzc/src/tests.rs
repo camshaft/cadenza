@@ -18696,58 +18696,12 @@ mod match_engine {
         // list-arm map element binds both of two named keys"; this test keeps the compile (CDZ0201-gone) pin.
     }
 
-    #[test]
-    fn a_map_pattern_key_of_the_wrong_type_is_a_type_error() {
-        // A `(map ("x" v))` pattern on a `(Map Int64 Int64)` writes a String key where an Int64 is
-        // required. Before, `const_compound_eq` of a String vs an Int returned `None` (not equal), so the
-        // arm silently never matched and fell through to the catch-all — a mistyped key accepted as dead
-        // code. It is now a CDZ0201 naming both types, anchored at the offending key (the map twin of the
-        // scalar-match "pattern type … does not match scrutinee type …").
-        let d = reject_full(
-            "(module m (def (main) (match (map (1 10) (2 20)) ((map (\"x\" v)) v) (_ 0))) (export main))",
-        )
-        .expect("must reject");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("map-pattern key is String")
-                && d.message.contains("the map's keys are Int64"),
-            "names both key types: {}",
-            d.message
-        );
-        // The symmetric case (an Int pattern on String keys) is likewise rejected.
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (match (map (\"a\" 10)) ((map (5 v)) v) (_ 0))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0201")
-        );
-        // NO OVER-REJECTION: a correctly-typed key pattern COMPILES (Int key on an Int-keyed map). Its RUN
-        // (key 1 present binds v=10) is corpus case 05-compound-types "a map pattern matches a present key
-        // and binds its value".
-        assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (def (main) (match (map (1 10) (2 20)) ((map (1 v)) v) (_ 0))) (export main))"
-            )))
-            .is_ok(),
-            "a well-typed map-pattern key compiles (no over-rejection)"
-        );
-        // A RUNTIME map (built by a conditional, not a constant `MapNew`) is matched through
-        // `desugar_runtime_map_match`, a SEPARATE path from the const matcher. A wrong-type key there used
-        // to slip past the const-path key check (the runtime desugar returned first); the key check now
-        // runs at the TOP of `lower_match_map`, before the desugar, so a runtime map's wrong-type key is
-        // rejected too.
-        let runtime_bad = "(module m \
-            (def (pick (: b Bool)) \
-              (if b (Map.insert (Map.empty) 1 10) (Map.insert (Map.empty) 2 20))) \
-            (def (look (: m (Map Int64 Int64))) (match m ((map (\"x\" v) .. rest) v) (_ -1))) \
-            (def (main (: b Bool)) (look (pick b))) (export main))";
-        assert_eq!(
-            reject_code(runtime_bad).as_deref(),
-            Some("CDZ0201"),
-            "a RUNTIME map's wrong-type key pattern is rejected too, not silently dead"
-        );
-    }
+    // (a_map_pattern_key_of_the_wrong_type_is_a_type_error migrated to corpus 05-compound-types, in the
+    // map-pattern section: a wrong-type key pattern on a typed map → CDZ0201 (message "map-pattern key is
+    // String")(message "the map's keys are Int64") + the symmetric Int-on-String reject + a RUNTIME-map
+    // wrong-key reject (separate desugar path) + a well-typed-key control that compiles + runs (→ 10). The
+    // diagnostic also anchors the squiggle at the offending key — a node-position refinement the corpus
+    // (error …) surface does not pin. --case grades the codes + messages + run value.)
 
     #[test]
     fn a_tail_recursive_sum_consumer_compiles_to_a_constant_stack_loop() {

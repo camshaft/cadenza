@@ -15994,6 +15994,35 @@
                 (_           99))) (export main)))
   (output (: 99 Int64)))
 
+; A map pattern's KEY must have the map's key TYPE: a `(map ("x" v))` pattern on a `(Map Int64 …)` writes a
+; String key where an Int64 is required — CDZ0201 naming both types, NOT silently a dead never-matching arm
+; (before, const_compound_eq of String-vs-Int returned not-equal, so the mistyped arm fell through as dead
+; code). The check runs on BOTH a constant map and a RUNTIME map (the key check is at the top of
+; lower_match_map, before the runtime-map desugar). Migrated from rcdzc
+; a_map_pattern_key_of_the_wrong_type_is_a_type_error (code + both key-type message halves + the symmetric,
+; runtime, and no-over-rejection cases; the diagnostic also anchors the squiggle at the offending key — a
+; node-position refinement the corpus (error …) surface does not pin).
+(case "a map pattern with a wrong-type (String) key on an Int-keyed map is a type error"
+  (input  (do (def (main) (match (map (1 10) (2 20)) ((map ("x" v)) v) (_ 0))) (export main)))
+  (error  CDZ0201 (message "map-pattern key is String") (message "the map's keys are Int64")))
+
+(case "a map pattern with a wrong-type (Int) key on a String-keyed map is a type error (symmetric)"
+  (input  (do (def (main) (match (map ("a" 10)) ((map (5 v)) v) (_ 0))) (export main)))
+  (error  CDZ0201))
+
+(case "a correctly-typed map-pattern key compiles and matches (no over-rejection)"
+  (input  (do (def (main) (match (map (1 10) (2 20)) ((map (1 v)) v) (_ 0))) (export main)))
+  (call   main) (output (: 10 Int64)))
+
+(case "a RUNTIME map's wrong-type key pattern is rejected too, not silently dead"
+  (doc    "A runtime map (built by a conditional, not a constant MapNew) is matched through a SEPARATE
+           desugar path; a wrong-type key there once slipped the const-path key check. The key check now runs
+           at the top of lower_match_map, before the desugar, so a runtime map's wrong-type key rejects too.")
+  (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.empty) 1 10) (Map.insert (Map.empty) 2 20)))
+              (def (look (: m (Map Int64 Int64))) (match m ((map ("x" v) .. rest) v) (_ -1)))
+              (def (main (: b Bool)) (look (pick b))) (export main)))
+  (error  CDZ0201))
+
 (case "a map pattern binds the rest of the map after the named key"
   (doc    "`(map (1 v) .. rest)` binds `v` to key 1's value AND `rest` to the map with key 1 removed
            (the operand minus the named keys — the map analogue of the list `.. rest`, ask-61). Here
