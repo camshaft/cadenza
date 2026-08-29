@@ -199,6 +199,27 @@
   (input  (do (def (main) (let ((w 8)) (: 5 (UInt w)))) (export main)))
   (call   main) (output (: 5 UInt8)))
 
+; An integer type MUST be indexed by a COMPILE-TIME NATURAL width in 1..=64. A NON-NATURAL width —
+; negative, or a bool/float/type-value in width position — and a RUNTIME-valued width (a function
+; parameter) are both rejected CDZ0302 at `cdz check`, NOT silently dropped so the literal keeps its
+; default Int64 (the drop-instead-of-reject bug that let `(: 5 (Int -8))` run to 5). (migrated from rcdzc
+; a_malformed_integer_width_is_rejected_not_dropped / a_runtime_integer_width_is_rejected_not_dropped.)
+(case "a negative integer width is rejected as non-natural"
+  (input  (do (def (main) (: 5 (Int -8))) (export main)))
+  (error  CDZ0302 (message "width must be a compile-time natural number")))
+
+(case "a boolean in integer-width position is rejected as non-natural"
+  (input  (do (def (main) (: 300 (Int true))) (export main)))
+  (error  CDZ0302))
+
+(case "a type-value in integer-width position is rejected as non-natural"
+  (input  (do (def (main) (: 300 (Int Int64))) (export main)))
+  (error  CDZ0302))
+
+(case "a runtime-valued integer width is rejected, not dropped to the default Int64"
+  (input  (do (def (mk n) (: 5 (UInt n))) (def (main) (mk 8)) (export main)))
+  (error  CDZ0302))
+
 (case "a checked integer conversion at the signed boundary fits and converts unchanged"
   (doc    "`(Int8.of (: 127 Int32))` = 127 — the largest value that fits Int8 (Int8.max) converts unchanged.
            Pins the inclusive upper boundary of the checked conversion.")
