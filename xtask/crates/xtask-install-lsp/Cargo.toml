@@ -1,0 +1,22 @@
+# xtask-install-lsp — `install-lsp` as its OWN standalone crate (v-xtask-decompose: the decompose-the-
+# monolith directive). Carved out of xtask/src/install_lsp.rs verbatim. Builds the `cdz` LSP server
+# (release) and symlinks `integrations/vscode` into every local VS Code / fork extensions dir, baking the
+# built binary's absolute path so the client needs zero config. `--uninstall` removes the symlinks.
+#
+# LEAF crate: only `xshell` (the `cmd!` process runner xtask already uses) + std. No xtask / xtask-support
+# dep (the operator's independent-caching rule). Repo root from `CDZ_REPO_ROOT` (else cwd); the seed
+# toolchain root is `<repo>/implementation/seed`, matching xtask's `Paths::resolve`.
+[package]
+name = "xtask-install-lsp"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-install-lsp"
+path = "src/main.rs"
+
+[dependencies]
+# Ergonomic process/dir handling — `cmd!` runs a child in a pushed working dir and fails on a non-zero
+# exit. The same shell crate xtask uses; the only dep this leaf needs.
+xshell = "0.2"
