@@ -1352,6 +1352,12 @@ pub(crate) enum EscapeTarget {
     Binder(StructId),
     /// A closure capture, matched by its `Core::Captured { index }` slot index.
     Capture(usize),
+    /// A specific EXTRACTION NODE (a `Core::SumPayload`/`Core::Proj` occurrence), matched by its own
+    /// `StructId`. Unlike a binder/capture (referenced by later occurrences), an extraction node is used
+    /// in-place; the query asks whether THAT node's value flows out (escapes) vs is borrowed — the
+    /// SumPayload-escape twin of [`EscapeTarget::Capture`], driving [`collect_sumpayload_escape_dup_sites`]
+    /// (the boundary-owned-scrutinee escape-retain, snowflake UAF).
+    Node(StructId),
 }
 
 fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: bool) -> bool {
@@ -1403,6 +1409,15 @@ fn binding_escapes_dup_aware(
     tail_borrowed: bool,
     dup_sites: Option<&HashSet<StructId>>,
 ) -> bool {
+    // NODE target: THIS extraction node's value escapes iff the walk reached it in a CONSUMING position
+    // (`!tail_borrowed` — a parent `Proj`/borrow-op relaxes to `tail_borrowed`, a ctor-child/result/call-arg
+    // keeps it consuming). Checked BEFORE the node-kind match so a `SumPayload`/`Proj` target is classified
+    // by its OWN position (not descended into its scrutinee). Inert for `Binder`/`Capture` targets.
+    if let EscapeTarget::Node(t) = binder
+        && id == t
+    {
+        return !tail_borrowed && !dup_sites.is_some_and(|s| s.contains(&id));
+    }
     match core_of(db, id) {
         // A reference to the binding: it escapes UNLESS this occurrence is a borrow (the operand of a
         // `Proj`, which `arr-get`-borrows). `tail_borrowed` is set by the `Proj` arm below for its
@@ -2698,6 +2713,67 @@ fn collect_captured_occurrences(
     }
     for child in core_child_ids(db, id) {
         collect_captured_occurrences(db, child, by_index);
+    }
+}
+
+/// SumPayload-ESCAPE dup sites — the BOUNDARY-OWNED twin of [`collect_captured_escape_dup_sites`] (hcz). In a
+/// LIFTED body (`db.lifted` — boundary-owned params the direct-call boundary BUILT + `drop_after`s), a
+/// `SumPayload`/`Proj` extraction of a boundary-owned PARAM scrutinee whose HEAP payload ESCAPES the fn via a
+/// result ctor MUST be `dup`'d: else the caller's boundary `drop_after` of the arg cascades into the escaped
+/// payload, freeing it while the returned ctor still holds an uncounted ref (the snowflake
+/// `lower(six-fold(ball))` rc-underflow — lower's `Sphere` arm `sum-payload(r) -> sum-new(OSphere(r))` moves
+/// `r` out un-dup'd, and lower being lifted, the CALLER drops the arg). ORTHOGONAL to the shell-reclaim /
+/// boundary-owned drop fence: `nontail_spine_param` EXCLUDES boundary-owned (`top_is_lifted`, the "40 corpus
+/// traps" double-free fence — correctly, the caller drops). This ADDS a `dup` for the escaping payload, NEVER
+/// a shell-drop, so that fence stays clean. Only fires on ESCAPE (`binding_escapes_dup_aware`) — a matched-
+/// then-discarded payload does not escape → no dup → no over-retain. Gated on `db.lifted` ONLY (the exclusion
+/// complement): the fn-OWNED case already dups its escaping payload via `nontail_spine_param`, so no double-
+/// dup. `db.lifted` is checkable in BOTH `select_function_of` (emit) and `collect_used_ops` (import) → the
+/// dup emit + `OP_DUP` import agree exactly. Empty + no-op for a non-lifted body.
+fn collect_sumpayload_escape_dup_sites(db: &mut Db, body: StructId, sites: &mut HashSet<StructId>) {
+    if !db.lifted.iter().any(|l| l.body == body) {
+        return;
+    }
+    let mut nodes = Vec::new();
+    collect_payload_extraction_nodes(db, body, &mut nodes);
+    for node in nodes {
+        // HEAP payload only — a scalar unboxes/copies out (no rc handle, no dup).
+        if !is_heap_type(&type_of(db, node)) {
+            continue;
+        }
+        // Rooted at a boundary-owned PARAM (the caller `drop_after`s it) — NOT a fresh owned local (that
+        // case is the owned-scrutinee shell-reclaim's child-dup, not this boundary-owned complement).
+        if !payload_extraction_roots_at_param(db, node) {
+            continue;
+        }
+        // The extracted payload ESCAPES via a result ctor / the return (not borrow-only).
+        if binding_escapes_dup_aware(db, body, EscapeTarget::Node(node), false, None) {
+            sites.insert(node);
+        }
+    }
+}
+
+/// Collect every `Core::SumPayload` / heap `Core::Proj` extraction node in `body` (the sites
+/// [`collect_sumpayload_escape_dup_sites`] considers). Uniform `core_child_ids` walk.
+fn collect_payload_extraction_nodes(db: &mut Db, id: StructId, out: &mut Vec<StructId>) {
+    if matches!(core_of(db, id), Core::SumPayload { .. } | Core::Proj { .. }) {
+        out.push(id);
+    }
+    for child in core_child_ids(db, id) {
+        collect_payload_extraction_nodes(db, child, out);
+    }
+}
+
+/// Whether a `Core::SumPayload`/`Core::Proj` extraction's scrutinee/operand CHAIN bottoms at a `Core::Param`
+/// (a boundary-owned arg in a lifted body), vs a fresh owned local / computed value.
+fn payload_extraction_roots_at_param(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::Param { .. } => true,
+        Core::SumPayload { scrutinee, .. }
+        | Core::Proj {
+            operand: scrutinee, ..
+        } => payload_extraction_roots_at_param(db, scrutinee),
+        _ => false,
     }
 }
 
@@ -4472,6 +4548,9 @@ pub fn collect_used_ops(
     // Also the wrapper-scrutinee shell-reclaim's consumed-child dups (must match the emit's set so the
     // `dup` import is present iff the emit dups a consumed shell child) — see `collect_shell_reclaim_child_dups`.
     collect_shell_reclaim_child_dups(db, id, &mut sites);
+    // SumPayload-ESCAPE dups: mirror `select_function_of` so `OP_DUP` is imported iff the emit dups an
+    // escaping boundary-owned-param payload (the snowflake lower UAF fix). Same set → import ⟺ emit.
+    collect_sumpayload_escape_dup_sites(db, id, &mut sites);
     // Also the runtime row-op field-copy dups (breaker #45) — same set as the emit's `collect_row_op_field_dups`
     // so the `dup` import is present iff the emit dups a borrowed heap field before the operand's drop.
     collect_row_op_field_dups(db, id, &mut sites);
@@ -6504,6 +6583,11 @@ pub fn select_function_of(
         // emit's child-dup + the `dup` import agree. Also fires (self-contained, relaxed) for a NON-TAIL
         // SPINE param scrutinee — dups the consumed spine payload so the param-slot shell-drop nets correctly.
         collect_shell_reclaim_child_dups(db, body, &mut code.dup_sites);
+        // SumPayload-ESCAPE dups (boundary-owned twin of collect_captured_escape_dup_sites): in a LIFTED body
+        // a payload of a boundary-owned param that ESCAPES via a result ctor is dup'd so the caller's boundary
+        // drop_after of the arg does not free the still-referenced escaped payload (snowflake lower UAF). Into
+        // dup_sites so the SumPayload emit's existing child-dup fires; import agrees via the same call below.
+        collect_sumpayload_escape_dup_sites(db, body, &mut code.dup_sites);
         // The runtime row-op field-copy dups (breaker #45): a heap-handle field projected off a
         // materialize-`Let` row-op operand must be `dup`'d before the operand's drop, else the built record
         // holds a dangling field (a borrow outliving the operand's owned-node drop). Computed here (upfront)
