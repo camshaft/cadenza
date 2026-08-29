@@ -12609,6 +12609,7 @@ mod tests {
             component_name: None,
             report_live_objects: true,
             baseline: None,
+            emit_verdict: None,
             core_module: None,
             core_export: None,
         };
@@ -12664,6 +12665,7 @@ mod tests {
             component_name: None,
             report_live_objects: false,
             baseline: None,
+            emit_verdict: None,
             core_module: None,
             core_export: None,
         };
