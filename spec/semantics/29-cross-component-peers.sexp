@@ -358,7 +358,7 @@
   (input  (do (effect L (op mklist (-> Int64 (List Int64)))) (bind L "cadenza:l/api")
               (def (main (: x Int64)) (host (L) (L.mklist x))) (export main)))
   (call   main (: 7 Int64))
-  (output (: (list 8 9) (List Int64)))
+  (output (: #list(8 9) (List Int64)))
   (live-objects known-leak 2))
 
 ; ── peer RESULT crossings read down to a scalar (no entrypoint escape): a BIGINT handle and a NESTED
