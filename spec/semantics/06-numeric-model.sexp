@@ -928,6 +928,36 @@
   (input  (do (def (get (: r (Record (: x Int8)))) (. r x)) (def (main) (get #record((= x 100)))) (export main)))
   (output (: 100 Int8)))
 
+; ── the CONTROL-FLOW-OPERAND face of the narrow-width fit-check: when an `if`/`match`/`let` is an OPERAND of
+; a narrow op, its branches emit at the node's own deferred→i64 width, so a compile-time-constant branch value
+; that overflows the narrow op width must be range-checked at the wrap site (CDZ0302), matching the DIRECT
+; `(: (if c 2^40 2) Int8)` form — NOT a silent i32.wrap_i64 truncation. `2^40 = 1099511627776` overflows every
+; ≤32-bit width. Migrated from rcdzc an_oversize_constant_in_a_narrowed_control_flow_operand_is_rejected (every
+; operand route: +, & , nested +, through a let, via a match arm; plus a fits-i32-not-Int16 value).
+(case "an oversize constant if-branch consumed by a narrow + is rejected"
+  (input  (do (def (f (: c Bool)) (: (+ (if c 1099511627776 2) 5) Int8)) (export f)))
+  (error  CDZ0302))
+
+(case "an oversize constant if-branch consumed by a narrow bitand is rejected"
+  (input  (do (def (f (: c Bool)) (: (& (if c 1099511627776 2) 7) Int8)) (export f)))
+  (error  CDZ0302))
+
+(case "an oversize constant if-branch inside a NESTED narrow + is rejected"
+  (input  (do (def (f (: c Bool) (: d Bool)) (: (+ (+ (if c 1099511627776 2) (if d 3 4)) 5) Int8)) (export f)))
+  (error  CDZ0302))
+
+(case "an oversize constant if-branch threaded through a let into a narrow + is rejected"
+  (input  (do (def (f (: c Bool)) (: (+ (let ((y (if c 1099511627776 2))) y) 5) Int8)) (export f)))
+  (error  CDZ0302))
+
+(case "an oversize constant match-arm body consumed by a narrow + is rejected"
+  (input  (do (def (f (: x Int8)) (: (+ (match x (0 1099511627776) (_ 2)) 5) Int8)) (export f)))
+  (error  CDZ0302))
+
+(case "a branch value fitting i32 but overflowing the sub-i32 Int16 target is rejected"
+  (input  (do (def (f (: c Bool)) (: (+ (if c 40000 2) 5) Int16)) (export f)))
+  (error  CDZ0302))
+
 (case "a literal MAP VALUE that overflows the annotated value width is rejected"
   (doc    "`(: (map (1 999)) (Map Int64 Int8))` — the map type's declared value `Int8` grounds the entry's
            value literal `999`, which overflows Int8 → CDZ0302. The width fit-check must descend into a map's
