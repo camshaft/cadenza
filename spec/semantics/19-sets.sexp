@@ -736,7 +736,15 @@
                       (if (Set.contains keep 4) 1 0)))))
             (export main)))
   (call main (: 1 Int64)) (output (: 310 Int64))
-  (call main (: 2 Int64)) (output (: 411 Int64)))
+  (call main (: 2 Int64)) (output (: 411 Int64))
+  ;; The SET member of the generation-sharing reclaim family (the ROPE member is 13-strings:980, the
+  ;; MAP/LIST members in 05-compound). mode 1 (keep=s1 base, drop derivative) reclaims clean (0); mode 2
+  ;; (keep=s2 the derivative sharing s1's CHAMP nodes, s1's binding dead-after) leaks ONE shared node —
+  ;; the if-join-shared-child residual (same root as 980/D1/glb1). PRE-EXISTING (verified identical on
+  ;; pre- and post-coalescing #5285 cdz — NOT a coalescing regression); UAF-CLEAN (a leak, not a trap).
+  ;; Pinned honest per-call like the ROPE member 980; the if-join-shared FAMILY fix (v-memory-safety →
+  ;; v-core-opt) flips this + the map/list/rope siblings to 0 together.
+  (live-objects known-leak 0 1))
 
 (case "a TOPOLOGICAL sort drains min-ready nodes and verifies every edge points forward"
   (doc    "The dependency-ordering sibling of the reachability pin above (same Map-adjacency shape,
