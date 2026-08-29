@@ -471,6 +471,17 @@ fn pick_scalar_ty<C: Choice>(c: &mut C) -> ScalarTy {
     }
 }
 
+/// Pick a HASHABLE scalar type for a `#set` element / `#map` key — `Int64`, a sized-int, or `Bool`.
+/// EXCLUDES floats (NaN / float-equality make them unsuitable set members + map keys). A map VALUE may be
+/// any scalar (no hashing), so it uses [`pick_scalar_ty`] instead.
+fn pick_hashable_ty<C: Choice>(c: &mut C) -> ScalarTy {
+    match c.variant(3) {
+        0 => ScalarTy::Int64,
+        1 => ScalarTy::Bool,
+        _ => ScalarTy::Sized(SIZED_INT_TYPES[c.variant(SIZED_INT_TYPES.len())]),
+    }
+}
+
 /// Append a LEAF value of a given scalar type — type-correct by construction (a Float32/sized leaf is
 /// ascribed; a bare int/float literal is Int64/Float64). The type-directed building block: it lets a
 /// compound hold elements of ARBITRARY (independently-chosen) scalar types, not just Int64.
@@ -855,22 +866,45 @@ fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
         // so the literals always COMPILE. Map values value-GRADE (oracle #5164/#5176); Set values + `.len`
         // currently SKIP in the oracle (a modelled gap, not a bug) but still exercise native set/map
         // construction + codec + emit (and the crash / InvalidWasm oracle).
-        _ => {
-            // Pick the sub-variant BEFORE consuming element choices — otherwise a short entropy seed
-            // exhausts the cursor on the elements and `variant` always defaults to 0 (never reaching map).
-            let form = c.variant(4);
-            let (x, y, z) = (
-                c.int_bounded(0, 9),
-                c.int_bounded(10, 19),
-                c.int_bounded(20, 29),
-            );
-            match form {
-                0 => write!(out, "#set({x} {y} {z})").ok(),
-                1 => write!(out, "(Set.len #set({x} {y} {z}))").ok(),
-                2 => write!(out, "#map((= {x} {y}) (= {z} {y}))").ok(),
-                _ => write!(out, "(Map.len #map((= {x} {y}) (= {z} {y})))").ok(),
-            };
-        }
+        // Pick the sub-variant BEFORE consuming element choices — otherwise a short entropy seed exhausts
+        // the cursor on the elements and `variant` always defaults to 0 (never reaching map).
+        _ => match c.variant(4) {
+            // `#set(…)` value or `(Set.len …)` over a homogeneous HASHABLE-typed element list (Int64 /
+            // sized-int / Bool; floats excluded). Dedup-safe, so the 3 leaves need not be distinct.
+            f @ (0 | 1) => {
+                let h = pick_hashable_ty(c);
+                if f == 1 {
+                    out.push_str("(Set.len ");
+                }
+                out.push_str("#set(");
+                gen_scalar_leaf(c, h, out);
+                out.push(' ');
+                gen_scalar_leaf(c, h, out);
+                out.push(' ');
+                gen_scalar_leaf(c, h, out);
+                out.push(')');
+                if f == 1 {
+                    out.push(')');
+                }
+            }
+            // `#map(…)` value or `(Map.len …)` — DISTINCT Int64 keys (disjoint ranges) + a homogeneous
+            // value of ANY scalar type (values need no hashing, so `pick_scalar_ty` incl floats/bool).
+            f => {
+                let (k1, k2) = (c.int_bounded(0, 9), c.int_bounded(20, 29));
+                let v = pick_scalar_ty(c);
+                if f == 3 {
+                    out.push_str("(Map.len ");
+                }
+                write!(out, "#map((= {k1} ").ok();
+                gen_scalar_leaf(c, v, out);
+                write!(out, ") (= {k2} ").ok();
+                gen_scalar_leaf(c, v, out);
+                out.push_str("))");
+                if f == 3 {
+                    out.push(')');
+                }
+            }
+        },
     }
 }
 
