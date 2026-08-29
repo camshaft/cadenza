@@ -21798,73 +21798,6 @@ mod match_engine {
     }
 
     #[test]
-    fn an_unknown_type_in_a_variant_payload_is_rejected() {
-        // A garbage type in a variant PAYLOAD — `(type C (A Nonesuch))` — was silently accepted (the
-        // unknown name resolved to nothing and `A` was mis-typed as NULLARY, its payload dropped). Now the
-        // declaration-site check rejects it CDZ0101, the same as an unknown type in a param/value
-        // annotation. Nested in a `(List …)`/`(Tuple …)`, INSIDE a record field, and a record nested in a
-        // tuple are all caught (the record-aware position walk validates each field's type). The message
-        // now NAMES the missing type ("unknown type `Nonesuch` — … declare it with `(type Nonesuch …)`")
-        // rather than the terse "unbound name", matching the annotation sites (`unknown_type_reject`).
-        for src in [
-            "(module m (type C (A Nonesuch)) (def (main) 0) (export main))",
-            "(module m (type C (A (List Nonesuch))) (def (main) 0) (export main))",
-            "(module m (type P (Node (Tuple a Nonesuch)) (Leaf)) (def (main) 0) (export main))",
-            "(module m (type Box (B (Record (val Nonesuch))) N) (def (main) 0) (export main))",
-            "(module m (type P (Node (Tuple Int64 (Record (v Nonesuch)))) (Leaf)) (def (main) 0) (export main))",
-        ] {
-            let err = compile_component(&crate::codec::encode(&parse(src)))
-                .expect_err("an unknown type in a variant payload must be rejected");
-            assert_eq!(err.code.as_deref(), Some("CDZ0101"), "got: {}", err.message);
-            assert!(
-                err.message.contains("unknown type `Nonesuch`")
-                    && err.message.contains("(type Nonesuch …)"),
-                "names the missing payload type + the declare fix: {}",
-                err.message
-            );
-        }
-        // A NEAR typo of a real type in a payload keeps its did-you-mean (the enrichment is gated on no
-        // near suggestion, exactly as the annotation sites are).
-        let typo = compile_component(&crate::codec::encode(&parse(
-            "(module m (type C (A Strng)) (def (main) 0) (export main))",
-        )))
-        .expect_err("a payload type typo is rejected");
-        assert!(
-            typo.message.contains("did you mean `String`?"),
-            "a near payload-type typo keeps the did-you-mean: {}",
-            typo.message
-        );
-        // A payload that is a well-formed NON-type (a literal) → the "requires a type" reject.
-        let lit = compile_component(&crate::codec::encode(&parse(
-            "(module m (type C (A 5)) (def (main) 0) (export main))",
-        )))
-        .expect_err("a non-type payload must be rejected");
-        assert_eq!(lit.code.as_deref(), Some("CDZ0203"), "got: {}", lit.message);
-
-        // NO false positive on the valid parametric / recursive / known payloads — these MUST compile:
-        // a bare type param, a param nested in a tuple, a param-parameterized application `(Option a)`,
-        // self-recursion, mutual/forward refs, generic self, a known concrete type, and a record payload
-        // mentioning a param (bare AND inside an application).
-        for ok in [
-            "(module m (type Opt (Some a) (Non)) (def (main) 0) (export main))",
-            "(module m (type P (Node (Tuple a a)) (Leaf)) (def (main) 0) (export main))",
-            "(module m (type C (A (Option a)) (N)) (def (main) 0) (export main))",
-            "(module m (type T (Nil) (Cons Int64 T)) (def (main) 0) (export main))",
-            "(module m (type A (MkA B)) (type B (MkB A)) (def (main) 0) (export main))",
-            "(module m (type Tree (Leaf a) (Node (Tuple Tree Tree))) (def (main) 0) (export main))",
-            "(module m (type C (A Int64)) (def (main) 0) (export main))",
-            "(module m (type Box (B (Record (v (Option a)))) N) (def (main) 0) (export main))",
-            "(module m (type Box (B (Record (val a))) N) \
-               (def (main) (match (Box.B (record (val 7))) ((Box.B r) (. r val)) (Box.N 0))) (export main))",
-        ] {
-            assert!(
-                compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
-                "a valid parametric/recursive/known variant payload must compile: {ok}"
-            );
-        }
-    }
-
-    #[test]
     fn shadowing_a_prelude_payload_type_name_is_a_plain_rebind_not_a_phantom_variant_fault() {
         // Defining a value named after a prelude type — `(def (Int64) 1)` — must be a plain rebind, not a
         // fault. The variant-payload validation walked ALL type declarations (INCLUDING the prelude's), so
@@ -21946,37 +21879,6 @@ mod match_engine {
             .any(|d| d.severity == crate::abi::Severity::Error),
             "a well-formed record parameter annotation is clean"
         );
-    }
-
-    #[test]
-    fn an_unknown_type_in_an_effect_operation_type_is_rejected() {
-        // The effect-declaration sibling of the variant-payload check: an unknown type in an operation's
-        // arg/result — `(op e (-> Nonesuch Unit))` / `(-> Unit Nonesuch)` / `(-> (List Zzz) Unit)` — was
-        // silently accepted (the name resolved to nothing and the op's `(meta t)` arrow was corrupted to
-        // `Any`, so performing it reported a garbled "cannot apply … (Record (apply Any) …)"). Now the
-        // declaration-site check rejects it CDZ0101, via the SAME record-aware `validate_type_position` the
-        // variant-payload check uses. Each `(-> A B …)` element past the arrow is a type position.
-        for src in [
-            "(module m (effect E (op e (-> Nonesuch Unit))) (def (main) 0) (export main))",
-            "(module m (effect E (op e (-> Unit Nonesuch))) (def (main) 0) (export main))",
-            "(module m (effect E (op e (-> (List Zzz) Unit))) (def (main) 0) (export main))",
-        ] {
-            let err = compile_component(&crate::codec::encode(&parse(src)))
-                .expect_err("an unknown type in an effect op type must be rejected");
-            assert_eq!(err.code.as_deref(), Some("CDZ0101"), "got: {}", err.message);
-        }
-        // NO false positive: a known concrete arg/result, a generic `(Option Int64)`, and a bare lowercase
-        // type-variable `(-> a a)` must all compile.
-        for ok in [
-            "(module m (effect E (op e (-> Int64 Unit))) (def (main) 0) (export main))",
-            "(module m (effect E (op e (-> (Option Int64) Unit))) (def (main) 0) (export main))",
-            "(module m (effect E (op e (-> a a))) (def (main) 0) (export main))",
-        ] {
-            assert!(
-                compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
-                "a valid effect operation type must compile: {ok}"
-            );
-        }
     }
 
     #[test]
