@@ -1417,8 +1417,13 @@ fn classify_highlight(db: &mut Db, id: StructId) -> Option<HighlightKind> {
         // A `BadEscape` marker rides inside a string literal — colour it as a string.
         crate::ast::Leaf::BadEscape(_) => return Some(HighlightKind::Str),
         // A native-compound-data CTOR-HEAD leaf (a `#list`/`#record`/… collection head, the `=` field-pair,
-        // the `.` member) is a reserved structural constructor head — paint it as a keyword.
-        crate::ast::Leaf::Ctor(_) | crate::ast::Leaf::FieldPair | crate::ast::Leaf::Member => {
+        // the `.` member) is a reserved structural constructor head — paint it as a keyword. The
+        // `Leaf::Rational` TAG is the same reserved structural head; its num/den value leaves paint as
+        // `Number` via the literal arm above, so the `3r2` glyph colours as a number where its span lands.
+        crate::ast::Leaf::Ctor(_)
+        | crate::ast::Leaf::FieldPair
+        | crate::ast::Leaf::Member
+        | crate::ast::Leaf::Rational => {
             return Some(HighlightKind::Keyword);
         }
         // A name leaf — classified below by what it denotes.

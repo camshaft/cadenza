@@ -109,8 +109,8 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::string::String;
 // `ToString` for `&Rc<str> -> String` in the `ast-decode` leaf rebuild (no_std has no std prelude).
-use alloc::string::ToString;
 use alloc::rc::Rc;
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 // `format!` is used by `DocBuilder::float_leaf` (the f64 → exact-decimal conversion for a `KIND_FLOAT`
@@ -152,14 +152,14 @@ mod bigint;
 // `ast.rs`/`codec.rs`/`leb128.rs` are the `no_std`+alloc CORE (canon/fxhash/std behind `cfg(feature =
 // "std")`), so they include standalone here exactly as rcdzc's copies did, byte-identically.
 #[allow(dead_code)]
-#[path = "../../cadenza-ast/src/leb128.rs"]
-mod leb128;
-#[allow(dead_code)]
 #[path = "../../cadenza-ast/src/ast.rs"]
 mod ast;
 #[allow(dead_code)]
 #[path = "../../cadenza-ast/src/codec.rs"]
 mod codec;
+#[allow(dead_code)]
+#[path = "../../cadenza-ast/src/leb128.rs"]
+mod leb128;
 
 /// A single-threaded stand-in for `std::thread_local!`, so the two scratch/counter cells work under
 /// `no_std` (the shipped wasm build) without pulling in `std`. A component instance is
@@ -271,7 +271,9 @@ fn assert_node_live(ptr: *const Node, guard: u32, ctx: &str) {
     if guard == freed_guard(ptr) {
         panic!("use-after-free: {ctx} touched a freed heap node");
     }
-    panic!("invalid heap handle: {ctx} touched a pointer that is not a live node (fabricated/uninitialized)");
+    panic!(
+        "invalid heap handle: {ctx} touched a pointer that is not a live node (fabricated/uninitialized)"
+    );
 }
 
 /// The inline capacity of a `Raw`'s payload. Sized to `CHAMP_HEADER_SIZE` (12) — the largest raw a hot
@@ -1052,7 +1054,11 @@ fn op_box_float(v: f64) -> Handle {
     //# Two values that are equal under the language's structural equality MUST have identical canonical byte encodings.
     //= spec/contracts/deterministic-value-form.md#a-value-has-one-canonical-byte-form
     //# Two values that are not equal under the language's structural equality MUST have distinct canonical byte encodings.
-    let bits = if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() };
+    let bits = if v.is_nan() {
+        f64::NAN.to_bits()
+    } else {
+        v.to_bits()
+    };
     alloc_raw(Vec::new(), Raw::inline(&bits.to_le_bytes())) // 8-byte scalar: inline, no heap raw
 }
 fn op_get_float(h: Handle) -> f64 {
@@ -1067,7 +1073,11 @@ fn op_get_float(h: Handle) -> f64 {
 /// one canonical quiet `f32::NAN.to_bits()`, so two NaN Float32s are the same map/set key. Non-NaN
 /// (incl. ±0.0/±inf) keeps its bits, so `-0.0f32` stays distinct from `0.0f32`.
 fn op_box_float32(v: f32) -> Handle {
-    let bits = if v.is_nan() { f32::NAN.to_bits() } else { v.to_bits() };
+    let bits = if v.is_nan() {
+        f32::NAN.to_bits()
+    } else {
+        v.to_bits()
+    };
     alloc_raw(Vec::new(), Raw::inline(&bits.to_le_bytes())) // 4-byte scalar: inline, no heap raw
 }
 fn op_get_float32(h: Handle) -> f32 {
@@ -1341,7 +1351,10 @@ fn rational_from_i128_pair(mut num: i128, mut den: i128) -> Option<Handle> {
         b = t;
     }
     let g = a as i128; // g > 0 (den != 0)
-    Some(box_rational_node(box_bigint_i128(num / g), box_bigint_i128(den / g)))
+    Some(box_rational_node(
+        box_bigint_i128(num / g),
+        box_bigint_i128(den / g),
+    ))
 }
 
 /// Box two already-BigInt-handle children as a Rational node (the shared node-build for both the `Big` and
@@ -1980,7 +1993,11 @@ enum DocLeaf {
     // source node), so the pooled leaf stays `'static`. `finish` reads `.as_slice()` — storage-transparent.
     Str(Raw),   // UTF-8 body verbatim (the runtime String's raw bytes)
     Bytes(Raw), // raw byte payload verbatim (the runtime Bytes value, rope flattened)
-    Float { negative: bool, exponent: i64, significand: Vec<u8> }, // exact decimal (from f64), big-endian mag
+    Float {
+        negative: bool,
+        exponent: i64,
+        significand: Vec<u8>,
+    }, // exact decimal (from f64), big-endian mag
     /// A payloadless M2 ctor-head leaf — stores its `doc::KIND_*_CTOR`/`KIND_FIELD_PAIR`/`KIND_MEMBER` byte
     /// (20-26). Wire form is that single kind byte (no body), like `Bool`. The head-first list-head atom for
     /// a native compound value; DEDUPED by `ctor_leaf` (matching cadenza-ast `Builder::leaf`'s general dedup).
@@ -1990,7 +2007,10 @@ enum DocStruct {
     Atom(u32),
     /// A list struct: its children are `child_pool[start .. start + len]` (a RANGE into the builder's
     /// shared arena, not an owned Vec).
-    List { start: u32, len: u32 },
+    List {
+        start: u32,
+        len: u32,
+    },
 }
 
 /// The canonical big-endian magnitude of a scalar `i64`, leading zeros stripped (empty for zero), into a
@@ -2204,7 +2224,11 @@ impl DocBuilder {
             mag.pop();
         }
         mag.reverse();
-        self.leaves.push(DocLeaf::Float { negative, exponent, significand: mag });
+        self.leaves.push(DocLeaf::Float {
+            negative,
+            exponent,
+            significand: mag,
+        });
         Some((self.leaves.len() - 1) as u32)
     }
     fn atom(&mut self, leaf: u32) -> u32 {
@@ -2217,7 +2241,10 @@ impl DocBuilder {
     fn list(&mut self, children: &[u32]) -> u32 {
         let start = self.child_pool.len() as u32;
         self.child_pool.extend_from_slice(children);
-        self.structs.push(DocStruct::List { start, len: children.len() as u32 });
+        self.structs.push(DocStruct::List {
+            start,
+            len: children.len() as u32,
+        });
         (self.structs.len() - 1) as u32
     }
     /// Record a `List` whose first child is `head` and remaining children are `tail` — the assembler
@@ -2227,7 +2254,10 @@ impl DocBuilder {
         let start = self.child_pool.len() as u32;
         self.child_pool.push(head);
         self.child_pool.extend_from_slice(tail);
-        self.structs.push(DocStruct::List { start, len: 1 + tail.len() as u32 });
+        self.structs.push(DocStruct::List {
+            start,
+            len: 1 + tail.len() as u32,
+        });
         (self.structs.len() - 1) as u32
     }
     /// Render a [`TypeNode`] to a struct index (recursive): a LEAF type (no children) → the bare name
@@ -2240,8 +2270,11 @@ impl DocBuilder {
         if tn.children.is_empty() {
             head_atom
         } else {
-            let child_structs: Vec<u32> =
-                tn.children.iter().map(|c| self.render_type_node(c)).collect();
+            let child_structs: Vec<u32> = tn
+                .children
+                .iter()
+                .map(|c| self.render_type_node(c))
+                .collect();
             self.list_head_tail(head_atom, &child_structs)
         }
     }
@@ -2324,7 +2357,11 @@ impl DocBuilder {
                     doc_leb(&mut out, bytes.len() as u64);
                     out.extend_from_slice(bytes.as_slice());
                 }
-                DocLeaf::Float { negative, exponent, significand } => {
+                DocLeaf::Float {
+                    negative,
+                    exponent,
+                    significand,
+                } => {
                     // KIND_FLOAT + negative(u8) + exponent(FIXED 8-byte big-endian i64, NOT LEB) +
                     // LEB significand length + big-endian magnitude bytes. Matches the codec's Float write.
                     out.push(doc::KIND_FLOAT);
@@ -2369,7 +2406,6 @@ fn resolve_shape(desc: &Descriptor, mut shape_ix: u32) -> Option<&Shape> {
     }
     None
 }
-
 
 /// Collect a SET's elements into a Vec of (borrowed) element handles, SORTED into canonical key-VALUE
 /// order under the element shape `elem_ix` (resolved through `Named`/`Ref`). The CHAMP iterates hash
@@ -2419,7 +2455,11 @@ fn set_elements_canonical(desc: &Descriptor, set: Handle, elem_ix: u32) -> Optio
 /// As Its Entries In Canonical Key Order`). `None` (the encode declines) when the KEY shape is not a
 /// canonically-orderable SCALAR — matching the compiler's `const_key_order`. The VALUE may be any
 /// encodable shape (the walk recurses on it). Handles are BORROWED (the map owns them); no dup/drop.
-fn map_entries_canonical(desc: &Descriptor, map: Handle, key_ix: u32) -> Option<Vec<(Handle, Handle)>> {
+fn map_entries_canonical(
+    desc: &Descriptor,
+    map: Handle,
+    key_ix: u32,
+) -> Option<Vec<(Handle, Handle)>> {
     // The KEY must offer a total order — a blessed scalar leaf OR an orderable COMPOUND (tuple/list/record/
     // sum of orderable leaves). `value_cmp_shaped` supplies that order for BOTH (the same total order the
     // runtime `<`/value-encode use), so we probe orderability once and reuse the walk for the sort. A
@@ -2578,7 +2618,12 @@ enum EncodeWork {
     /// A MAP entry (M2): build the FieldPair ctor-head atom PRE-order (before the k/v subtrees, for canon
     /// first-encounter — the FieldPair leaf dedups), then queue the value + key visits and a `MapPair`
     /// assembler. Mirrors `VisitField` (a map key is a VALUE, so it is Visited, not a pre-built name atom).
-    VisitMapEntry { k: Handle, v: Handle, key_shape: u32, val_shape: u32 },
+    VisitMapEntry {
+        k: Handle,
+        v: Handle,
+        key_shape: u32,
+        val_shape: u32,
+    },
     /// Assemble one MAP entry `(FieldPair key value)`: the key result is directly below the value result on
     /// `out` (key Visited before value). Pop value then key, build `list([fp_s, key, value])`. `fp_s` is the
     /// FieldPair ctor-head atom built PRE-order in `VisitMapEntry`.
@@ -2878,11 +2923,18 @@ fn encode_value(
                         let sorted = set_elements_canonical(desc, h, elem)?;
                         let head = b.ctor_leaf(doc::KIND_SET_CTOR);
                         let head_s = b.atom(head);
-                        work.push(EncodeWork::List { head_s, nkids: sorted.len() });
+                        work.push(EncodeWork::List {
+                            head_s,
+                            nkids: sorted.len(),
+                        });
                         // Push in REVERSE so the LIFO stack encodes them in canonical order onto `out`. Each
                         // element is a DISTINCT heap node (a set member) → progress → reset `refs`.
                         for &e in sorted.iter().rev() {
-                            work.push(EncodeWork::Visit { h: e, shape_ix: elem, refs: 0 });
+                            work.push(EncodeWork::Visit {
+                                h: e,
+                                shape_ix: elem,
+                                refs: 0,
+                            });
                         }
                     }
                     Shape::Map(key, val) => {
@@ -2896,11 +2948,19 @@ fn encode_value(
                         let entries = map_entries_canonical(desc, h, key)?;
                         let map_head = b.ctor_leaf(doc::KIND_MAP_CTOR);
                         let head_s = b.atom(map_head);
-                        work.push(EncodeWork::MapOf { head_s, nentries: entries.len() });
+                        work.push(EncodeWork::MapOf {
+                            head_s,
+                            nentries: entries.len(),
+                        });
                         // Push entries in REVERSE (so `VisitMapEntry` pops in canonical order); each entry's
                         // handler builds its FieldPair head + visits key then value.
                         for &(k, v) in entries.iter().rev() {
-                            work.push(EncodeWork::VisitMapEntry { k, v, key_shape: key, val_shape: val });
+                            work.push(EncodeWork::VisitMapEntry {
+                                k,
+                                v,
+                                key_shape: key,
+                                val_shape: val,
+                            });
                         }
                     }
                     Shape::Spread(elems) => {
@@ -2940,9 +3000,7 @@ fn encode_value(
                 // field value is a fresh child node (arr-get already applied) → a new walk, `refs` 0.
                 // Re-derive the key from the owning `Shape::Record` at `field_ix` (no borrow on the stack).
                 let key = match desc.table.get(rec_ix as usize) {
-                    Some(Shape::Record(fields)) => {
-                        fields.get(field_ix as usize).map(|(k, _)| &**k)
-                    }
+                    Some(Shape::Record(fields)) => fields.get(field_ix as usize).map(|(k, _)| &**k),
                     _ => None,
                 }?;
                 // CANON CONVERGENCE: emit the `=` head atom, THEN the key atom, BOTH before descending into
@@ -3001,7 +3059,12 @@ fn encode_value(
                 let fval = out.pop()?;
                 out.push(b.list(&[eq, katom, fval]));
             }
-            EncodeWork::VisitMapEntry { k, v, key_shape, val_shape } => {
+            EncodeWork::VisitMapEntry {
+                k,
+                v,
+                key_shape,
+                val_shape,
+            } => {
                 // M2 map entry `(FieldPair key value)`: intern the FieldPair ctor-head atom PRE-order (before
                 // the k/v subtrees, so the leaf/struct pool matches canon first-encounter — the FieldPair leaf
                 // dedups across entries), then visit key BEFORE value (key below value on `out`, as `MapPair`
@@ -3009,8 +3072,16 @@ fn encode_value(
                 let fp = b.ctor_leaf(doc::KIND_FIELD_PAIR);
                 let fp_s = b.atom(fp);
                 work.push(EncodeWork::MapPair { fp_s });
-                work.push(EncodeWork::Visit { h: v, shape_ix: val_shape, refs: 0 });
-                work.push(EncodeWork::Visit { h: k, shape_ix: key_shape, refs: 0 });
+                work.push(EncodeWork::Visit {
+                    h: v,
+                    shape_ix: val_shape,
+                    refs: 0,
+                });
+                work.push(EncodeWork::Visit {
+                    h: k,
+                    shape_ix: key_shape,
+                    refs: 0,
+                });
             }
             EncodeWork::MapPair { fp_s } => {
                 // Key was Visited before value, so on `out` the value is on top, key directly below.
@@ -3099,8 +3170,8 @@ enum ParsedLeaf {
 /// A parsed document struct — the read-side mirror of `DocStruct`. A `List`'s children are struct indices
 /// (owned Vec here rather than a pooled range, since the reader has no shared child pool).
 enum ParsedStruct {
-    Atom(u32),        // → leaves[leaf_id]
-    List(Vec<u32>),   // → child struct indices
+    Atom(u32),      // → leaves[leaf_id]
+    List(Vec<u32>), // → child struct indices
 }
 
 /// The parsed document: leaves + structs + the root struct index. `decode_value` walks it from `root`.
@@ -3228,7 +3299,11 @@ fn parse_doc(d: &[u8]) -> Option<ParsedDoc> {
     if root as usize >= structs.len() {
         return None; // dangling root
     }
-    Some(ParsedDoc { leaves, structs, root })
+    Some(ParsedDoc {
+        leaves,
+        structs,
+        root,
+    })
 }
 
 /// The single Atom leaf of a struct index, or `None` if that struct is a List (a shape/document mismatch
@@ -3355,7 +3430,13 @@ fn big_from_be_mag(neg: bool, be_mag: &[u8]) -> bigint::Big {
 /// The descriptor-guided construction walk: read the doc node at `struct_ix` as a value of shape
 /// `shape_ix`, building a fresh OWNED heap handle. `Handle::NULL` on ANY mismatch (never traps). `depth`
 /// bounds recursion (malformed-cycle backstop).
-fn decode_value(desc: &Descriptor, doc: &ParsedDoc, struct_ix: u32, shape_ix: u32, depth: u32) -> Handle {
+fn decode_value(
+    desc: &Descriptor,
+    doc: &ParsedDoc,
+    struct_ix: u32,
+    shape_ix: u32,
+    depth: u32,
+) -> Handle {
     decode_value_opt(desc, doc, struct_ix, shape_ix, depth).unwrap_or(Handle::NULL)
 }
 
@@ -3545,8 +3626,10 @@ fn decode_value_opt(
                 return None;
             }
             let head = doc_atom_name(doc, kids[0])?;
-            let (disc, (_, payload_shape)) =
-                variants.iter().enumerate().find(|(_, (name, _))| &**name == head)?;
+            let (disc, (_, payload_shape)) = variants
+                .iter()
+                .enumerate()
+                .find(|(_, (name, _))| &**name == head)?;
             let payload_shape = *payload_shape;
             // A MULTI-payload variant's payload is a `Spread`: its elements are the variant's children
             // (flattened) — build the payload arr from `kids[1..]` directly. A single/nullary payload
@@ -4378,7 +4461,7 @@ fn op_drop(root: Handle) {
     assert_node_live(root.0, node.guard, "drop (double-free)");
     if node.rc == IMMORTAL {
         return; // an IMMORTAL node is never freed (a module global holds it) — drop is a no-op. MUST come
-                // before the `rc > 1` decrement, else the sentinel would erode toward 1 and free the static.
+        // before the `rc > 1` decrement, else the sentinel would erode toward 1 and free the static.
     }
     if node.rc > 1 {
         node.rc -= 1; // shared: cheapest path, no reclamation
@@ -4448,7 +4531,7 @@ fn op_drop(root: Handle) {
         assert_node_live(cur.0, n.guard, "drop-cascade (dangling child)");
         if n.rc == IMMORTAL {
             continue; // an IMMORTAL child (e.g. a shared build-once static nested in a dying compound) is
-                      // never freed and its count is untouched — skip it, do not decrement toward freeing.
+            // never freed and its count is untouched — skip it, do not decrement toward freeing.
         }
         if n.rc > 1 {
             n.rc -= 1; // shared child survives; freed only when its last owner drops it
@@ -6199,7 +6282,11 @@ fn render_ast(h: Handle, d: &AstDiscs, out: &mut String) {
             out.push_str(".0");
         }
     } else if disc == d.boolv {
-        out.push_str(if op_get_bool(payload) { "true" } else { "false" });
+        out.push_str(if op_get_bool(payload) {
+            "true"
+        } else {
+            "false"
+        });
     } else if disc == d.strv {
         out.push('"');
         push_escaped_ast_str(out, &op_str_get(payload));
@@ -6537,10 +6624,13 @@ fn decode_arenas_to_ast(
                 // 20-26) is NEVER a bare atom — it only ever appears as the HEAD of a `Struct::List` (handled
                 // in the List arm below, dispatched to the DISTINCT reflected ctor). Reached as a standalone
                 // atom it is a malformed document; decode is TOTAL (op94 → NULL on bad bytes, never a trap),
-                // so fail cleanly.
+                // so fail cleanly. The rational-literal HEAD leaf (`Leaf::Rational`, seq-204, codec kind 27)
+                // is the same shape — a LIST head (its `(RationalTag <num> <den>)` node rebuilds in the List
+                // arm below, v-runtime's rational-value lane); a stray bare atom is likewise malformed.
                 crate::ast::Leaf::Ctor(_)
                 | crate::ast::Leaf::FieldPair
-                | crate::ast::Leaf::Member => return None,
+                | crate::ast::Leaf::Member
+                | crate::ast::Leaf::Rational => return None,
                 crate::ast::Leaf::BadEscape(_) | crate::ast::Leaf::BadChar(_) => return None,
                 // A type-suffixed numeric literal (`100N`/`0.5R`) is decoded to a plain Int/Float by the
                 // codec, so it never appears in a decoded document; a stray occurrence fails cleanly
@@ -6554,7 +6644,8 @@ fn decode_arenas_to_ast(
             // reflected Ast ctor (native collections — no string head), built from the REMAINING children; a
             // generic name-headed (or empty) list stays `Ast.List`.
             if let Some(&head_sid) = children.first()
-                && let Some(crate::ast::Struct::Atom(lid)) = arenas.structure.get(head_sid.0 as usize)
+                && let Some(crate::ast::Struct::Atom(lid)) =
+                    arenas.structure.get(head_sid.0 as usize)
                 && let Some(head_leaf) = arenas.leaves.get(lid.0 as usize)
             {
                 match head_leaf {
@@ -7629,7 +7720,11 @@ fn compare_scalar_leaf(
         // enumeration, a float Set/Map key sort); float `<` remains the IEEE partial order (NaN unordered),
         // decided at compile time — the compiler routes numeric `<` away from this walk.
         Shape::Float => Some(op_get_float(a).to_bits().cmp(&op_get_float(b).to_bits())),
-        Shape::Float32 => Some(op_get_float32(a).to_bits().cmp(&op_get_float32(b).to_bits())),
+        Shape::Float32 => Some(
+            op_get_float32(a)
+                .to_bits()
+                .cmp(&op_get_float32(b).to_bits()),
+        ),
         // Bytes has a blessed TOTAL order (§order): content-lexicographic over its UNSIGNED byte values —
         // the SAME machinery as `Shape::Str` above (both are byte leaves; a Bytes value may be a rope, so
         // flatten both to a leaf first — content-preserving/unobservable — then compare the borrowed `raw`
@@ -7679,7 +7774,11 @@ fn value_cmp_shaped(
     if let Some(ord) = compare_scalar_leaf(desc, a, b, root_shape) {
         return ord;
     }
-    let mut work: Vec<CmpTask> = vec![CmpTask::Pair { a, b, shape_ix: root_shape }];
+    let mut work: Vec<CmpTask> = vec![CmpTask::Pair {
+        a,
+        b,
+        shape_ix: root_shape,
+    }];
     while let Some(task) = work.pop() {
         match task {
             CmpTask::LenTie { la, lb } => match la.cmp(&lb) {
@@ -7844,7 +7943,11 @@ fn value_cmp_shaped(
                     // followed by `resolve_shape` (which only chases `Ref`/`Named`), so descend it here.
                     Shape::Framed(_type_node, inner) => {
                         let inner = *inner;
-                        work.push(CmpTask::Pair { a, b, shape_ix: inner });
+                        work.push(CmpTask::Pair {
+                            a,
+                            b,
+                            shape_ix: inner,
+                        });
                     }
                     // `Ref`/`Named` were resolved by `resolve_shape` above and never reach here.
                     Shape::Ref(_) | Shape::Named(..) => return None,
@@ -7891,7 +7994,11 @@ fn value_eq_shaped(desc: &Descriptor, a: Handle, b: Handle, root_shape: u32) -> 
         let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
         as_ == bs
     }
-    let mut work: Vec<EqTask> = vec![EqTask::Pair { a, b, shape_ix: root_shape }];
+    let mut work: Vec<EqTask> = vec![EqTask::Pair {
+        a,
+        b,
+        shape_ix: root_shape,
+    }];
     while let Some(EqTask::Pair { a, b, shape_ix }) = work.pop() {
         let shape = resolve_shape(desc, shape_ix)?;
         match shape {
@@ -7932,7 +8039,8 @@ fn value_eq_shaped(desc: &Descriptor, a: Handle, b: Handle, root_shape: u32) -> 
             }
             Shape::Tuple(elems) => {
                 let elems = elems.clone();
-                if (op_arr_len(a) as usize) < elems.len() || (op_arr_len(b) as usize) < elems.len() {
+                if (op_arr_len(a) as usize) < elems.len() || (op_arr_len(b) as usize) < elems.len()
+                {
                     return None;
                 }
                 for (i, &es) in elems.iter().enumerate() {
@@ -7945,7 +8053,9 @@ fn value_eq_shaped(desc: &Descriptor, a: Handle, b: Handle, root_shape: u32) -> 
             }
             Shape::Record(fields) => {
                 let fields: Vec<u32> = fields.iter().map(|(_, ix)| *ix).collect();
-                if (op_arr_len(a) as usize) < fields.len() || (op_arr_len(b) as usize) < fields.len() {
+                if (op_arr_len(a) as usize) < fields.len()
+                    || (op_arr_len(b) as usize) < fields.len()
+                {
                     return None;
                 }
                 for (i, &fs) in fields.iter().enumerate() {
@@ -7987,7 +8097,8 @@ fn value_eq_shaped(desc: &Descriptor, a: Handle, b: Handle, root_shape: u32) -> 
             }
             Shape::Spread(elems) => {
                 let elems = elems.clone();
-                if (op_arr_len(a) as usize) < elems.len() || (op_arr_len(b) as usize) < elems.len() {
+                if (op_arr_len(a) as usize) < elems.len() || (op_arr_len(b) as usize) < elems.len()
+                {
                     return None;
                 }
                 for (i, &es) in elems.iter().enumerate() {
@@ -8000,7 +8111,11 @@ fn value_eq_shaped(desc: &Descriptor, a: Handle, b: Handle, root_shape: u32) -> 
             }
             Shape::Framed(_type_node, inner) => {
                 let inner = *inner;
-                work.push(EqTask::Pair { a, b, shape_ix: inner });
+                work.push(EqTask::Pair {
+                    a,
+                    b,
+                    shape_ix: inner,
+                });
             }
             Shape::Ref(_) | Shape::Named(..) => return None,
         }
@@ -8013,15 +8128,25 @@ fn value_eq_shaped(desc: &Descriptor, a: Handle, b: Handle, root_shape: u32) -> 
 /// results stack and assembles the canonical parent. A single explicit stack → no native recursion over
 /// deep data (wasm-safe, like `champ_key_cmp`/`encode_value`).
 enum CanonTask {
-    Visit { h: Handle, shape_ix: u32, refs: u32 },
+    Visit {
+        h: Handle,
+        shape_ix: u32,
+        refs: u32,
+    },
     /// Pop `n` canonical elements (in child order) → a fresh `arr`, then `op_vec_of_arr` → the canonical
     /// STRICT left-full RRB vec (the unique push-shape). This is what makes a concat-built list key
     /// byte-identical to a push-built one.
-    BuildList { n: usize },
+    BuildList {
+        n: usize,
+    },
     /// Pop `n` canonical elements → a fresh `arr` (the runtime rep of a tuple/record/spread).
-    BuildArr { n: usize },
+    BuildArr {
+        n: usize,
+    },
     /// Pop ONE canonical payload → `op_sum_new(disc, payload)`.
-    BuildSum { disc: u32 },
+    BuildSum {
+        disc: u32,
+    },
 }
 
 /// Build a fresh `arr` from the LAST `n` handles on `results` (in child order), which are MOVED in (each
@@ -10491,13 +10616,23 @@ mod tests {
         let root = encode_value_recursive(&descriptor, &mut b, pair, descriptor.root, 0)
             .expect("recursive encode");
         let rec_doc = b.finish(root);
-        assert_eq!(got, rec_doc, "iterative and recursive framed-tuple encode disagree");
+        assert_eq!(
+            got, rec_doc,
+            "iterative and recursive framed-tuple encode disagree"
+        );
 
         // (2) decode ∘ encode == id (the doc round-trips back to the same value form).
         let back = op_value_decode(&got, &desc);
-        assert_ne!(back, Handle::NULL, "framed-tuple doc must decode (round-trip)");
+        assert_ne!(
+            back,
+            Handle::NULL,
+            "framed-tuple doc must decode (round-trip)"
+        );
         let reencoded = op_value_encode_form(back, &desc).expect("re-encode decoded framed tuple");
-        assert_eq!(got, reencoded, "decode∘encode is not the identity on the framed tuple");
+        assert_eq!(
+            got, reencoded,
+            "decode∘encode is not the identity on the framed tuple"
+        );
         op_drop(back);
 
         // (3) exact golden bytes — the FULL colon-framed typed document (leaf pool + struct spine).
@@ -10515,12 +10650,18 @@ mod tests {
             0x0a, 0x05, 0x54, 0x75, 0x70, 0x6c, 0x65, // NAME 'Tuple'
             0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // NAME 'Int64'
             // struct spine (post-order structs; TAG_ATOM=0/TAG_LIST=1 + child refs):
-            0x0a, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03, 0x00,
-            0x04, 0x00, 0x05, 0x00, 0x05, 0x01, 0x03, 0x05, 0x06, 0x07, 0x01, 0x03, 0x00, 0x04, 0x08,
-            0x09,
+            0x0a, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03,
+            0x00, 0x04, 0x00, 0x05, 0x00, 0x05, 0x01, 0x03, 0x05, 0x06, 0x07, 0x01, 0x03, 0x00,
+            0x04, 0x08, 0x09,
         ];
-        assert_eq!(got, expect, "framed int-tuple must be the full colon-framed golden document");
-        assert_eq!(got[8], 0x06, "leaf count 6 (framed) not 3 (bare) — the divergence guard");
+        assert_eq!(
+            got, expect,
+            "framed int-tuple must be the full colon-framed golden document"
+        );
+        assert_eq!(
+            got[8], 0x06,
+            "leaf count 6 (framed) not 3 (bare) — the divergence guard"
+        );
 
         op_drop(pair);
         assert_eq!(live_nodes(), 0, "no leak");
@@ -10597,13 +10738,24 @@ mod tests {
         let mut b = DocBuilder::default();
         let root = encode_value_recursive(&descriptor, &mut b, rec, descriptor.root, 0)
             .expect("recursive encode");
-        assert_eq!(got, b.finish(root), "iterative and recursive framed-record encode disagree");
+        assert_eq!(
+            got,
+            b.finish(root),
+            "iterative and recursive framed-record encode disagree"
+        );
 
         // (2) decode ∘ encode == id.
         let back = op_value_decode(&got, &desc);
-        assert_ne!(back, Handle::NULL, "framed-record doc must decode (round-trip)");
+        assert_ne!(
+            back,
+            Handle::NULL,
+            "framed-record doc must decode (round-trip)"
+        );
         let reencoded = op_value_encode_form(back, &desc).expect("re-encode decoded framed record");
-        assert_eq!(got, reencoded, "decode∘encode is not the identity on the framed record");
+        assert_eq!(
+            got, reencoded,
+            "decode∘encode is not the identity on the framed record"
+        );
         op_drop(back);
 
         // (3) exact leaf pool — the deduped leaves in canon pre-order first-encounter: ':' , 'record',
@@ -10617,18 +10769,23 @@ mod tests {
         // FieldPair head=0x19; the value+type 'record' head is NO LONGER shared (value is a ctor leaf, the
         // type node keeps NAME 'record'), so the pool is 9 leaves (was 8 deduped) and the spine refs shift.
         let expect: &[u8] = &[
-            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x09, 0x0a, 0x01, 0x3a,
-            0x16, 0x19, 0x0a, 0x01, 0x61, 0x00, 0x01, 0x05, 0x0a, 0x01, 0x62, 0x00,
-            0x01, 0x69, 0x0a, 0x06, 0x72, 0x65, 0x63, 0x6f, 0x72, 0x64, 0x0a, 0x05,
-            0x49, 0x6e, 0x74, 0x36, 0x34, 0x14, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02,
-            0x00, 0x03, 0x00, 0x04, 0x01, 0x03, 0x02, 0x03, 0x04, 0x00, 0x02, 0x00,
-            0x05, 0x00, 0x06, 0x01, 0x03, 0x06, 0x07, 0x08, 0x01, 0x03, 0x01, 0x05,
-            0x09, 0x00, 0x07, 0x00, 0x03, 0x00, 0x08, 0x01, 0x02, 0x0c, 0x0d, 0x00,
-            0x05, 0x00, 0x08, 0x01, 0x02, 0x0f, 0x10, 0x01, 0x03, 0x0b, 0x0e, 0x11,
-            0x01, 0x03, 0x00, 0x0a, 0x12, 0x13,
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x09, 0x0a, 0x01, 0x3a, 0x16, 0x19,
+            0x0a, 0x01, 0x61, 0x00, 0x01, 0x05, 0x0a, 0x01, 0x62, 0x00, 0x01, 0x69, 0x0a, 0x06,
+            0x72, 0x65, 0x63, 0x6f, 0x72, 0x64, 0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, 0x14,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x01, 0x03, 0x02, 0x03,
+            0x04, 0x00, 0x02, 0x00, 0x05, 0x00, 0x06, 0x01, 0x03, 0x06, 0x07, 0x08, 0x01, 0x03,
+            0x01, 0x05, 0x09, 0x00, 0x07, 0x00, 0x03, 0x00, 0x08, 0x01, 0x02, 0x0c, 0x0d, 0x00,
+            0x05, 0x00, 0x08, 0x01, 0x02, 0x0f, 0x10, 0x01, 0x03, 0x0b, 0x0e, 0x11, 0x01, 0x03,
+            0x00, 0x0a, 0x12, 0x13,
         ];
-        assert_eq!(got, expect, "framed int-record must be the full colon-framed golden document");
-        assert_eq!(got[8], 0x09, "leaf count 9 (M2 framed record — value head un-shared from the type head)");
+        assert_eq!(
+            got, expect,
+            "framed int-record must be the full colon-framed golden document"
+        );
+        assert_eq!(
+            got[8], 0x09,
+            "leaf count 9 (M2 framed record — value head un-shared from the type head)"
+        );
 
         op_drop(rec);
         assert_eq!(live_nodes(), 0, "no leak");
@@ -10696,7 +10853,11 @@ mod tests {
         let mut b = DocBuilder::default();
         let root = encode_value_recursive(&descriptor, &mut b, some, descriptor.root, 0)
             .expect("recursive encode Some");
-        assert_eq!(got_some, b.finish(root), "iterative/recursive disagree on Some");
+        assert_eq!(
+            got_some,
+            b.finish(root),
+            "iterative/recursive disagree on Some"
+        );
         let back = op_value_decode(&got_some, &desc);
         assert_ne!(back, Handle::NULL, "Some doc must decode");
         assert_eq!(
@@ -10715,11 +10876,17 @@ mod tests {
             0x0a, 0x06, 0x4f, 0x70, 0x74, 0x69, 0x6f, 0x6e, // 'Option'
             0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
             // struct spine:
-            0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x02, 0x01, 0x02, 0x00, 0x03, 0x00, 0x04,
-            0x01, 0x02, 0x04, 0x05, 0x01, 0x03, 0x00, 0x03, 0x06, 0x07,
+            0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x02, 0x01, 0x02, 0x00, 0x03, 0x00,
+            0x04, 0x01, 0x02, 0x04, 0x05, 0x01, 0x03, 0x00, 0x03, 0x06, 0x07,
         ];
-        assert_eq!(got_some, expect_some, "Some must be the full colon-framed golden document");
-        assert_eq!(got_some[8], 0x05, "Some leaf count = 5 (framed generic sum)");
+        assert_eq!(
+            got_some, expect_some,
+            "Some must be the full colon-framed golden document"
+        );
+        assert_eq!(
+            got_some[8], 0x05,
+            "Some leaf count = 5 (framed generic sum)"
+        );
         op_drop(some);
 
         // None: disc 1, nullary (unit) payload → renders (None unit).
@@ -10728,7 +10895,11 @@ mod tests {
         let mut b2 = DocBuilder::default();
         let root2 = encode_value_recursive(&descriptor, &mut b2, none, descriptor.root, 0)
             .expect("recursive encode None");
-        assert_eq!(got_none, b2.finish(root2), "iterative/recursive disagree on None");
+        assert_eq!(
+            got_none,
+            b2.finish(root2),
+            "iterative/recursive disagree on None"
+        );
         let back2 = op_value_decode(&got_none, &desc);
         assert_ne!(back2, Handle::NULL, "None doc must decode");
         assert_eq!(
@@ -10747,11 +10918,17 @@ mod tests {
             0x0a, 0x06, 0x4f, 0x70, 0x74, 0x69, 0x6f, 0x6e, // 'Option'
             0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
             // struct spine:
-            0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x02, 0x01, 0x02, 0x00, 0x03, 0x00, 0x04,
-            0x01, 0x02, 0x04, 0x05, 0x01, 0x03, 0x00, 0x03, 0x06, 0x07,
+            0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x02, 0x01, 0x02, 0x00, 0x03, 0x00,
+            0x04, 0x01, 0x02, 0x04, 0x05, 0x01, 0x03, 0x00, 0x03, 0x06, 0x07,
         ];
-        assert_eq!(got_none, expect_none, "None must be the full colon-framed golden document");
-        assert_eq!(got_none[8], 0x05, "None leaf count = 5 (framed generic sum)");
+        assert_eq!(
+            got_none, expect_none,
+            "None must be the full colon-framed golden document"
+        );
+        assert_eq!(
+            got_none[8], 0x05,
+            "None leaf count = 5 (framed generic sum)"
+        );
         op_drop(none);
 
         assert_eq!(live_nodes(), 0, "no leak");
@@ -10828,11 +11005,17 @@ mod tests {
             0x00, 0x01, 0x06, // INT 6
             0x0a, 0x05, 0x53, 0x68, 0x61, 0x70, 0x65, // 'Shape'
             // struct spine:
-            0x07, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03, 0x00,
-            0x04, 0x01, 0x03, 0x00, 0x04, 0x05, 0x06,
+            0x07, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03,
+            0x00, 0x04, 0x01, 0x03, 0x00, 0x04, 0x05, 0x06,
         ];
-        assert_eq!(got, expect, "Rect must be the full colon-framed golden document (Named root)");
-        assert_eq!(got[8], 0x05, "Rect leaf count = 5 (Named mono sum, flat payloads)");
+        assert_eq!(
+            got, expect,
+            "Rect must be the full colon-framed golden document (Named root)"
+        );
+        assert_eq!(
+            got[8], 0x05,
+            "Rect leaf count = 5 (Named mono sum, flat payloads)"
+        );
 
         op_drop(rect);
         assert_eq!(live_nodes(), 0, "no leak");
@@ -10882,7 +11065,11 @@ mod tests {
         let mut b = DocBuilder::default();
         let root = encode_value_recursive(&descriptor, &mut b, pair, descriptor.root, 0)
             .expect("recursive encode");
-        assert_eq!(got, b.finish(root), "iterative/recursive disagree on int/float tuple");
+        assert_eq!(
+            got,
+            b.finish(root),
+            "iterative/recursive disagree on int/float tuple"
+        );
 
         let back = op_value_decode(&got, &desc);
         assert_ne!(back, Handle::NULL, "int/float tuple doc must decode");
@@ -10902,16 +11089,20 @@ mod tests {
             0x0a, 0x01, 0x3a, // ':'
             0x15, // M2 Ctor(Tuple) value head (kind 21) — was NAME 'tuple'
             0x00, 0x01, 0x05, // INT 5
-            0x06, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0x19, // FLOAT 2.5 (exp -1, sig 25)
+            0x06, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+            0x19, // FLOAT 2.5 (exp -1, sig 25)
             0x0a, 0x05, 0x54, 0x75, 0x70, 0x6c, 0x65, // 'Tuple'
             0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
             0x0a, 0x07, 0x46, 0x6c, 0x6f, 0x61, 0x74, 0x36, 0x34, // 'Float64'
             // struct spine:
-            0x0a, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03, 0x00,
-            0x04, 0x00, 0x05, 0x00, 0x06, 0x01, 0x03, 0x05, 0x06, 0x07, 0x01, 0x03, 0x00, 0x04, 0x08,
-            0x09,
+            0x0a, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03,
+            0x00, 0x04, 0x00, 0x05, 0x00, 0x06, 0x01, 0x03, 0x05, 0x06, 0x07, 0x01, 0x03, 0x00,
+            0x04, 0x08, 0x09,
         ];
-        assert_eq!(got, expect, "framed int/float tuple must be the full colon-framed golden document");
+        assert_eq!(
+            got, expect,
+            "framed int/float tuple must be the full colon-framed golden document"
+        );
         assert_eq!(got[8], 0x07, "leaf count = 7 (framed int/float tuple)");
 
         op_drop(pair);
@@ -11000,17 +11191,22 @@ mod tests {
         // M2 head-first golden: value head Ctor(Map)=0x17; each entry is (FieldPair k v) with FieldPair
         // head=0x19 (was a bare `(k v)` pair). 9 leaves (was 8 — the FieldPair ctor leaf is added).
         let expect: &[u8] = &[
-            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x09, 0x0a, 0x01, 0x3a,
-            0x17, 0x19, 0x00, 0x01, 0x07, 0x00, 0x01, 0x46, 0x00, 0x01, 0x08, 0x00,
-            0x01, 0x63, 0x0a, 0x03, 0x4d, 0x61, 0x70, 0x0a, 0x05, 0x49, 0x6e, 0x74,
-            0x36, 0x34, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00,
-            0x04, 0x01, 0x03, 0x02, 0x03, 0x04, 0x00, 0x02, 0x00, 0x05, 0x00, 0x06,
-            0x01, 0x03, 0x06, 0x07, 0x08, 0x01, 0x03, 0x01, 0x05, 0x09, 0x00, 0x07,
-            0x00, 0x08, 0x00, 0x08, 0x01, 0x03, 0x0b, 0x0c, 0x0d, 0x01, 0x03, 0x00,
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x09, 0x0a, 0x01, 0x3a, 0x17, 0x19,
+            0x00, 0x01, 0x07, 0x00, 0x01, 0x46, 0x00, 0x01, 0x08, 0x00, 0x01, 0x63, 0x0a, 0x03,
+            0x4d, 0x61, 0x70, 0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, 0x10, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x01, 0x03, 0x02, 0x03, 0x04, 0x00, 0x02,
+            0x00, 0x05, 0x00, 0x06, 0x01, 0x03, 0x06, 0x07, 0x08, 0x01, 0x03, 0x01, 0x05, 0x09,
+            0x00, 0x07, 0x00, 0x08, 0x00, 0x08, 0x01, 0x03, 0x0b, 0x0c, 0x0d, 0x01, 0x03, 0x00,
             0x0a, 0x0e, 0x0f,
         ];
-        assert_eq!(got, expect, "framed int map must be the full colon-framed golden document");
-        assert_eq!(got[8], 0x09, "map leaf count = 9 (M2: + the FieldPair ctor leaf)");
+        assert_eq!(
+            got, expect,
+            "framed int map must be the full colon-framed golden document"
+        );
+        assert_eq!(
+            got[8], 0x09,
+            "map leaf count = 9 (M2: + the FieldPair ctor leaf)"
+        );
 
         op_drop(m);
         assert_eq!(live_nodes(), 0, "no leak");
@@ -11052,15 +11248,20 @@ mod tests {
         // elements directly (was `((. Set of) (list e…))`). 7 leaves (was 9 — dropped `.`/`of`/`list`
         // names, added the Set ctor leaf).
         let expect: &[u8] = &[
-            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x07, 0x0a, 0x01, 0x3a,
-            0x18, 0x00, 0x01, 0x07, 0x00, 0x01, 0x0c, 0x00, 0x01, 0x11, 0x0a, 0x03,
-            0x53, 0x65, 0x74, 0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, 0x0a, 0x00,
-            0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x01, 0x04, 0x01,
-            0x02, 0x03, 0x04, 0x00, 0x05, 0x00, 0x06, 0x01, 0x02, 0x06, 0x07, 0x01,
-            0x03, 0x00, 0x05, 0x08, 0x09,
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x07, 0x0a, 0x01, 0x3a, 0x18, 0x00,
+            0x01, 0x07, 0x00, 0x01, 0x0c, 0x00, 0x01, 0x11, 0x0a, 0x03, 0x53, 0x65, 0x74, 0x0a,
+            0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, 0x0a, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00,
+            0x03, 0x00, 0x04, 0x01, 0x04, 0x01, 0x02, 0x03, 0x04, 0x00, 0x05, 0x00, 0x06, 0x01,
+            0x02, 0x06, 0x07, 0x01, 0x03, 0x00, 0x05, 0x08, 0x09,
         ];
-        assert_eq!(got, expect, "framed int set must be the full colon-framed golden document");
-        assert_eq!(got[8], 0x07, "set leaf count = 7 (M2 flat Ctor(Set) — dropped the (.Set of)/list wrapper)");
+        assert_eq!(
+            got, expect,
+            "framed int set must be the full colon-framed golden document"
+        );
+        assert_eq!(
+            got[8], 0x07,
+            "set leaf count = 7 (M2 flat Ctor(Set) — dropped the (.Set of)/list wrapper)"
+        );
 
         op_drop(s);
         assert_eq!(live_nodes(), 0, "no leak");
@@ -11096,7 +11297,11 @@ mod tests {
         let mut b = DocBuilder::default();
         let root = encode_value_recursive(&descriptor, &mut b, n, descriptor.root, 0)
             .expect("recursive encode");
-        assert_eq!(got, b.finish(root), "iterative/recursive disagree on bigint");
+        assert_eq!(
+            got,
+            b.finish(root),
+            "iterative/recursive disagree on bigint"
+        );
 
         let back = op_value_decode(&got, &desc);
         assert_ne!(back, Handle::NULL, "bigint doc must decode");
@@ -11117,7 +11322,10 @@ mod tests {
             // struct spine:
             0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x03, 0x00, 0x01, 0x02, 0x03,
         ];
-        assert_eq!(got, expect, "framed bigint must be the full colon-framed golden document");
+        assert_eq!(
+            got, expect,
+            "framed bigint must be the full colon-framed golden document"
+        );
         assert_eq!(got[8], 0x03, "bigint leaf count = 3");
 
         op_drop(n);
@@ -11159,7 +11367,11 @@ mod tests {
         let mut b = DocBuilder::default();
         let root = encode_value_recursive(&descriptor, &mut b, r, descriptor.root, 0)
             .expect("recursive encode");
-        assert_eq!(got, b.finish(root), "iterative/recursive disagree on rational");
+        assert_eq!(
+            got,
+            b.finish(root),
+            "iterative/recursive disagree on rational"
+        );
 
         let back = op_value_decode(&got, &desc);
         assert_ne!(back, Handle::NULL, "rational doc must decode");
@@ -11181,7 +11393,10 @@ mod tests {
             // struct spine:
             0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x03, 0x00, 0x01, 0x02, 0x03,
         ];
-        assert_eq!(got, expect, "framed rational must be the full colon-framed golden document");
+        assert_eq!(
+            got, expect,
+            "framed rational must be the full colon-framed golden document"
+        );
         assert_eq!(got[8], 0x03, "rational leaf count = 3");
 
         op_drop(r);
@@ -11216,7 +11431,8 @@ mod tests {
         let got = op_value_encode_form(cons, &desc).expect("encode Cons");
         let expect_cons: &[u8] = &[
             0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x07, 0x0a, 0x01, 0x3a, 0x0a, 0x04,
-            0x43, 0x6f, 0x6e, 0x73, 0x15, 0x00, 0x01, 0x01, // Cons, M2 Ctor(Tuple)=0x15, INT 1
+            0x43, 0x6f, 0x6e, 0x73, 0x15, 0x00, 0x01,
+            0x01, // Cons, M2 Ctor(Tuple)=0x15, INT 1
             0x0a, 0x03, 0x4e, 0x69, 0x6c, 0x0a, 0x04, 0x75, 0x6e, 0x69, 0x74, 0x0a, 0x02, 0x49,
             0x4c, 0x0b, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05,
             0x01, 0x02, 0x04, 0x05, 0x01, 0x03, 0x02, 0x03, 0x06, 0x01, 0x02, 0x01, 0x07, 0x00,
@@ -11327,7 +11543,13 @@ mod tests {
                 let head_s = b.atom(head);
                 let mut children = vec![head_s];
                 for i in 0..n {
-                    children.push(encode_value_recursive(desc, b, op_vec_get(h, i), elem, depth + 1)?);
+                    children.push(encode_value_recursive(
+                        desc,
+                        b,
+                        op_vec_get(h, i),
+                        elem,
+                        depth + 1,
+                    )?);
                 }
                 b.list(&children)
             }
@@ -11523,23 +11745,45 @@ mod tests {
         let rec = op_arr_alloc(1);
         op_arr_set(rec, 0, op_str_new(String::from("hi")));
         let v = op_sum_new(1, rec); // B(record …)
-        let doc_bytes = op_value_encode_form(v, desc).expect("encode Sum-arm-Record must not decline");
+        let doc_bytes =
+            op_value_encode_form(v, desc).expect("encode Sum-arm-Record must not decline");
         let doc = parse_doc(&doc_bytes).expect("parse the value-form document");
         // The record must actually be rendered: the "B" head, "record"/"x" names, and the "hi" str leaf
         // must all be present. The reported bug drops the record → these leaves are absent.
         let has_name = |want: &str| {
-            doc.leaves.iter().any(|l| matches!(l, ParsedLeaf::Name(n) if n == want.as_bytes()))
+            doc.leaves
+                .iter()
+                .any(|l| matches!(l, ParsedLeaf::Name(n) if n == want.as_bytes()))
         };
         let has_str = |want: &str| {
-            doc.leaves.iter().any(|l| matches!(l, ParsedLeaf::Str(b) if b == want.as_bytes()))
+            doc.leaves
+                .iter()
+                .any(|l| matches!(l, ParsedLeaf::Str(b) if b == want.as_bytes()))
         };
-        let has_ctor = |k: u8| doc.leaves.iter().any(|l| matches!(l, ParsedLeaf::Ctor(c) if *c == k));
+        let has_ctor = |k: u8| {
+            doc.leaves
+                .iter()
+                .any(|l| matches!(l, ParsedLeaf::Ctor(c) if *c == k))
+        };
         assert!(has_name("B"), "the B variant head must be rendered");
-        assert!(has_ctor(doc::KIND_RECORD_CTOR), "the M2 Record ctor head must be rendered (bug: record dropped)");
-        assert!(has_name("x"), "the record field name x must be rendered (bug: record dropped)");
-        assert!(has_str("hi"), "the record field value \"hi\" must be rendered (bug: empty leaf)");
+        assert!(
+            has_ctor(doc::KIND_RECORD_CTOR),
+            "the M2 Record ctor head must be rendered (bug: record dropped)"
+        );
+        assert!(
+            has_name("x"),
+            "the record field name x must be rendered (bug: record dropped)"
+        );
+        assert!(
+            has_str("hi"),
+            "the record field value \"hi\" must be rendered (bug: empty leaf)"
+        );
         op_drop(v);
-        assert_eq!(live_nodes(), before, "no leak encoding the Sum-arm-Record value");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak encoding the Sum-arm-Record value"
+        );
     }
 
     /// A rendered-text gate CANNOT catch a regression here: emitting the record-field `=` or the Set
@@ -11601,9 +11845,19 @@ mod tests {
         );
         // Sanity: the fixture actually exercised both convergence sites (M2: a FieldPair ctor head for the
         // record field + a Set ctor head), so a future refactor can't accidentally make this gate vacuous.
-        let has_ctor = |k: u8| doc.leaves.iter().any(|l| matches!(l, ParsedLeaf::Ctor(c) if *c == k));
-        assert!(has_ctor(doc::KIND_FIELD_PAIR), "fixture must contain a record-field FieldPair ctor leaf");
-        assert!(has_ctor(doc::KIND_SET_CTOR), "fixture must contain a Set ctor head leaf");
+        let has_ctor = |k: u8| {
+            doc.leaves
+                .iter()
+                .any(|l| matches!(l, ParsedLeaf::Ctor(c) if *c == k))
+        };
+        assert!(
+            has_ctor(doc::KIND_FIELD_PAIR),
+            "fixture must contain a record-field FieldPair ctor leaf"
+        );
+        assert!(
+            has_ctor(doc::KIND_SET_CTOR),
+            "fixture must contain a Set ctor head leaf"
+        );
 
         op_drop(rec);
         assert_eq!(live_nodes(), 0, "no leak: the record (and its set) dropped");
@@ -11762,7 +12016,11 @@ mod tests {
             );
             op_drop(s);
         }
-        assert_eq!(live_nodes(), before, "no leak across the inline/heap boundary");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across the inline/heap boundary"
+        );
     }
 
     /// The single-entry `DESCRIPTOR_CACHE` must never cross-contaminate: two DIFFERENT descriptors, whether
@@ -11785,15 +12043,31 @@ mod tests {
         // ALTERNATING A,B,A,B — every call is a cache MISS (bytes differ from the prior entry). Each must
         // still equal its canonical doc: a stale-entry bug would return the other value's shape.
         for _ in 0..4 {
-            assert_eq!(op_value_encode_form(iv, desc_int).expect("int alt"), want_int, "Int under alternation");
-            assert_eq!(op_value_encode_form(sv, desc_str).expect("str alt"), want_str, "Str under alternation");
+            assert_eq!(
+                op_value_encode_form(iv, desc_int).expect("int alt"),
+                want_int,
+                "Int under alternation"
+            );
+            assert_eq!(
+                op_value_encode_form(sv, desc_str).expect("str alt"),
+                want_str,
+                "Str under alternation"
+            );
         }
         // REPEATED A,A,A then B,B,B — cache HITS after the first; must still be correct.
         for _ in 0..3 {
-            assert_eq!(op_value_encode_form(iv, desc_int).expect("int rep"), want_int, "Int under repetition");
+            assert_eq!(
+                op_value_encode_form(iv, desc_int).expect("int rep"),
+                want_int,
+                "Int under repetition"
+            );
         }
         for _ in 0..3 {
-            assert_eq!(op_value_encode_form(sv, desc_str).expect("str rep"), want_str, "Str under repetition");
+            assert_eq!(
+                op_value_encode_form(sv, desc_str).expect("str rep"),
+                want_str,
+                "Str under repetition"
+            );
         }
         op_drop(iv);
         op_drop(sv);
@@ -11837,7 +12111,11 @@ mod tests {
         );
         // And byte-exact: KIND_STR(7), len 7 (café=5 bytes + XY=2), body "caféXY".
         let expect_body: &[u8] = &[0x07, 0x07, b'c', b'a', b'f', 0xC3, 0xA9, b'X', b'Y'];
-        assert_eq!(&got_rope[9..9 + expect_body.len()], expect_body, "KIND_STR with the flattened UTF-8 body");
+        assert_eq!(
+            &got_rope[9..9 + expect_body.len()],
+            expect_body,
+            "KIND_STR with the flattened UTF-8 body"
+        );
 
         op_drop(rope);
         op_drop(flat);
@@ -11876,13 +12154,21 @@ mod tests {
         };
         // (value, expected kind, expected big-endian magnitude with leading zeros stripped)
         let cases: &[(i64, u8, &[u8])] = &[
-            (0, 0, &[]),                                              // zero → empty magnitude, POSITIVE
+            (0, 0, &[]), // zero → empty magnitude, POSITIVE
             (1, 0, &[0x01]),
-            (-1, 3, &[0x01]),                                        // negative one
+            (-1, 3, &[0x01]), // negative one
             (255, 0, &[0xff]),
-            (256, 0, &[0x01, 0x00]),                                 // two-byte magnitude, no stray leading zero
-            (i64::MAX, 0, &[0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
-            (i64::MIN, 3, &[0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), // unsigned_abs = 2^63
+            (256, 0, &[0x01, 0x00]), // two-byte magnitude, no stray leading zero
+            (
+                i64::MAX,
+                0,
+                &[0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            ),
+            (
+                i64::MIN,
+                3,
+                &[0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            ), // unsigned_abs = 2^63
         ];
         for &(v, kind, mag) in cases {
             let h = op_box_int(v);
@@ -11915,14 +12201,20 @@ mod tests {
         let d1 = op_value_encode_form(small, &desc).expect("encode #1");
         let d2 = op_value_encode_form(small, &desc).expect("encode #2");
         let d3 = op_value_encode_form(small, &desc).expect("encode #3");
-        assert_eq!(d1, d2, "repeated encode #2 identical — reused builder carries no state");
+        assert_eq!(
+            d1, d2,
+            "repeated encode #2 identical — reused builder carries no state"
+        );
         assert_eq!(d1, d3, "repeated encode #3 identical");
 
         // (2) A LARGE encode between two SMALL ones must not bleed the large value's leaves/structs into
         // the small document — `reset` clears the pools, so the small doc equals its standalone encoding.
         let big = build_intlist(200);
         let dbig = op_value_encode_form(big, &desc).expect("encode a large list");
-        assert!(dbig.len() > d1.len(), "the large value produces a larger document");
+        assert!(
+            dbig.len() > d1.len(),
+            "the large value produces a larger document"
+        );
         let d_after = op_value_encode_form(small, &desc).expect("encode small again after large");
         assert_eq!(
             d1, d_after,
@@ -11931,7 +12223,11 @@ mod tests {
 
         op_drop(small);
         op_drop(big);
-        assert_eq!(live_nodes(), before, "no leak: the reused builder retains capacity, not owned nodes");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak: the reused builder retains capacity, not owned nodes"
+        );
     }
 
     // ─── value-decode (idx 90) round-trip: value-decode ∘ value-encode ≅ id ────────────────────
@@ -11944,10 +12240,18 @@ mod tests {
     fn assert_value_roundtrips(v: Handle, desc: &[u8]) {
         let doc = op_value_encode_form(v, desc).expect("encode");
         let decoded = op_value_decode(&doc, desc);
-        assert_ne!(decoded, Handle::NULL, "value-decode returned NULL (mismatch)");
+        assert_ne!(
+            decoded,
+            Handle::NULL,
+            "value-decode returned NULL (mismatch)"
+        );
         let descriptor = decode_descriptor(desc).expect("descriptor");
         let eq = value_eq_shaped(&descriptor, decoded, v, descriptor.root);
-        assert_eq!(eq, Some(true), "decoded value must be structurally equal to the original");
+        assert_eq!(
+            eq,
+            Some(true),
+            "decoded value must be structurally equal to the original"
+        );
         op_drop(decoded);
     }
 
@@ -11958,7 +12262,7 @@ mod tests {
         // Each original is dropped after its round-trip so the leak assertion is exact (an immediate like a
         // small int/bool is not a heap node; a boxed float / string leaf is, so drop them all uniformly).
         let cases: &[(Handle, &[u8])] = &[
-            (op_box_int(42), &[0x01, 0x00, 0x00]),   // Int (tag 0)
+            (op_box_int(42), &[0x01, 0x00, 0x00]), // Int (tag 0)
             (op_box_int(-7), &[0x01, 0x00, 0x00]),
             (op_box_int(0), &[0x01, 0x00, 0x00]),
             (op_box_bool(true), &[0x01, 0x01, 0x00]), // Bool (tag 1)
@@ -12054,7 +12358,8 @@ mod tests {
             0x03, // table_len
             0x00, // [0] Int
             0x05, // [1] Unit
-            0x09, 0x02, 0x04, b'N', b'o', b'n', b'e', 0x01, 0x04, b'S', b'o', b'm', b'e', 0x00, // [2] Sum
+            0x09, 0x02, 0x04, b'N', b'o', b'n', b'e', 0x01, 0x04, b'S', b'o', b'm', b'e',
+            0x00, // [2] Sum
             0x02, // root = 2
         ];
         // Some(9): disc 1, payload Int.
@@ -12077,11 +12382,23 @@ mod tests {
         let int_desc: &[u8] = &[0x01, 0x00, 0x00];
         let str_desc: &[u8] = &[0x01, 0x03, 0x00];
         let doc = op_value_encode_form(v, int_desc).expect("encode");
-        assert_eq!(op_value_decode(&doc, str_desc), Handle::NULL, "shape mismatch → NULL");
+        assert_eq!(
+            op_value_decode(&doc, str_desc),
+            Handle::NULL,
+            "shape mismatch → NULL"
+        );
         // A garbage document → NULL (bad header).
-        assert_eq!(op_value_decode(&[0, 1, 2, 3], int_desc), Handle::NULL, "bad header → NULL");
+        assert_eq!(
+            op_value_decode(&[0, 1, 2, 3], int_desc),
+            Handle::NULL,
+            "bad header → NULL"
+        );
         // A malformed descriptor → NULL.
-        assert_eq!(op_value_decode(&doc, &[0xff]), Handle::NULL, "bad descriptor → NULL");
+        assert_eq!(
+            op_value_decode(&doc, &[0xff]),
+            Handle::NULL,
+            "bad descriptor → NULL"
+        );
         op_drop(v);
         assert_eq!(live_nodes(), before, "no leak (NULL is not a heap node)");
     }
@@ -12180,8 +12497,13 @@ mod tests {
         // hypothetical scan-dedup agree) must produce byte-identical output.
         let descriptor = decode_descriptor(&d).expect("descriptor");
         let mut b = DocBuilder::default();
-        let root = encode_value_recursive(&descriptor, &mut b, rec, descriptor.root, 0).expect("recursive");
-        assert_eq!(iter_doc, b.finish(root), "wide-record iterative and recursive encode must agree");
+        let root = encode_value_recursive(&descriptor, &mut b, rec, descriptor.root, 0)
+            .expect("recursive");
+        assert_eq!(
+            iter_doc,
+            b.finish(root),
+            "wide-record iterative and recursive encode must agree"
+        );
         op_drop(rec);
         assert_eq!(live_nodes(), before, "no leak");
     }
@@ -12437,7 +12759,10 @@ mod tests {
             0x00, 0x00, // TAG_ATOM, leaf 0
             0x00, // root
         ];
-        assert_eq!(got, expect, "1.5 → KIND_FLOAT decimal 15×10^-1, byte-identical to the codec");
+        assert_eq!(
+            got, expect,
+            "1.5 → KIND_FLOAT decimal 15×10^-1, byte-identical to the codec"
+        );
         op_drop(f);
 
         // 0.0 → zero: exponent 0 (8 zero bytes), siglen 0 (empty magnitude).
@@ -12445,7 +12770,9 @@ mod tests {
         let got_z = op_value_encode_form(z, desc).expect("encode 0.0");
         assert_eq!(
             &got_z[9..20],
-            &[0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            &[
+                0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            ],
             "0.0 → KIND_FLOAT, negative=0, exponent=0, siglen=0 (empty magnitude)"
         );
         op_drop(z);
@@ -12459,7 +12786,10 @@ mod tests {
 
         // A NON-FINITE float declines (nan/inf have no exact-decimal form → whole encode is None).
         let nan = op_box_float(f64::NAN);
-        assert!(op_value_encode_form(nan, desc).is_none(), "nan declines (no exact decimal)");
+        assert!(
+            op_value_encode_form(nan, desc).is_none(),
+            "nan declines (no exact decimal)"
+        );
         op_drop(nan);
         let inf = op_box_float(f64::INFINITY);
         assert!(op_value_encode_form(inf, desc).is_none(), "inf declines");
@@ -12501,14 +12831,25 @@ mod tests {
         assert_eq!(got_g[10], 0, "0.1f32 is positive");
         let mut eb = [0u8; 8];
         eb.copy_from_slice(&got_g[11..19]);
-        assert_eq!(i64::from_be_bytes(eb), -1, "0.1f32 exponent is -1 (→ 0.1), NOT the f64-promotion's -17");
+        assert_eq!(
+            i64::from_be_bytes(eb),
+            -1,
+            "0.1f32 exponent is -1 (→ 0.1), NOT the f64-promotion's -17"
+        );
         assert_eq!(got_g[19], 1, "siglen 1");
-        assert_eq!(&got_g[20..21], &[0x01], "magnitude [1] → 1×10^-1 = 0.1, NOT 10000000149011612×10^-17");
+        assert_eq!(
+            &got_g[20..21],
+            &[0x01],
+            "magnitude [1] → 1×10^-1 = 0.1, NOT 10000000149011612×10^-17"
+        );
         op_drop(g);
 
         // A non-finite f32 declines.
         let nan = op_box_float32(f32::NAN);
-        assert!(op_value_encode_form(nan, desc).is_none(), "f32 nan declines");
+        assert!(
+            op_value_encode_form(nan, desc).is_none(),
+            "f32 nan declines"
+        );
         op_drop(nan);
 
         // Differential: the iterative walk matches the recursive oracle byte-for-byte for a Float32.
@@ -12516,8 +12857,13 @@ mod tests {
         let iter_doc = op_value_encode_form(h, desc).expect("iterative");
         let descriptor = decode_descriptor(desc).expect("descriptor");
         let mut bld = DocBuilder::default();
-        let root = encode_value_recursive(&descriptor, &mut bld, h, descriptor.root, 0).expect("recursive");
-        assert_eq!(iter_doc, bld.finish(root), "iterative and recursive Float32 encode must agree");
+        let root = encode_value_recursive(&descriptor, &mut bld, h, descriptor.root, 0)
+            .expect("recursive");
+        assert_eq!(
+            iter_doc,
+            bld.finish(root),
+            "iterative and recursive Float32 encode must agree"
+        );
         op_drop(h);
 
         assert_eq!(live_nodes(), before, "no leak: every float32 value dropped");
@@ -12531,7 +12877,20 @@ mod tests {
     fn value_encode_float_decimal_round_trips_to_the_same_f64() {
         reset();
         let desc: &[u8] = &[0x01, 0x02, 0x00];
-        for &v in &[1.5f64, 0.0, -2.0, 3.14159, 1e10, -1e-10, 123456.789, 0.1, -0.0, f64::MAX, f64::MIN, 5e-324] {
+        for &v in &[
+            1.5f64,
+            0.0,
+            -2.0,
+            3.14159,
+            1e10,
+            -1e-10,
+            123456.789,
+            0.1,
+            -0.0,
+            f64::MAX,
+            f64::MIN,
+            5e-324,
+        ] {
             let h = op_box_float(v);
             let doc = op_value_encode_form(h, desc).expect("finite float encodes");
             // Use the limb-based, LEB-length-aware reader — a WHOLE float's FULL exact expansion (e.g.
@@ -12618,7 +12977,8 @@ mod tests {
             if v.is_finite() {
                 let doc = doc.expect("a finite float must encode");
                 let decimal = float_doc_to_decimal(&doc);
-                let reconstructed: f64 = decimal.parse().expect("the KIND_FLOAT decimal must parse");
+                let reconstructed: f64 =
+                    decimal.parse().expect("the KIND_FLOAT decimal must parse");
                 assert_eq!(
                     reconstructed.to_bits(),
                     v.to_bits(),
@@ -12627,7 +12987,10 @@ mod tests {
             } else {
                 // nan/inf have no exact-decimal form → the walker declines (they cross by dedicated forms).
                 // (`op_box_float` canonicalizes NaN, but the encode of a non-finite still declines.)
-                assert!(doc.is_none(), "a non-finite float must DECLINE the value-encode, not emit garbage");
+                assert!(
+                    doc.is_none(),
+                    "a non-finite float must DECLINE the value-encode, not emit garbage"
+                );
             }
             op_drop(h);
             assert_eq!(live_nodes(), 0, "no leak for bits {bits:#018x}");
@@ -12652,14 +13015,19 @@ mod tests {
                 let decimal = float_doc_to_decimal(&doc);
                 // Parse the decimal back AS AN f32 — the value form is the f32's own shortest decimal, so
                 // it must reconstruct the exact f32 bits (a promoted-f64 decimal would NOT).
-                let reconstructed: f32 = decimal.parse().expect("the KIND_FLOAT decimal must parse as f32");
+                let reconstructed: f32 = decimal
+                    .parse()
+                    .expect("the KIND_FLOAT decimal must parse as f32");
                 assert_eq!(
                     reconstructed.to_bits(),
                     v.to_bits(),
                     "f32 {v} (bits {bits:#010x}) must round-trip through its decimal {decimal}"
                 );
             } else {
-                assert!(doc.is_none(), "a non-finite f32 must DECLINE the value-encode");
+                assert!(
+                    doc.is_none(),
+                    "a non-finite f32 must DECLINE the value-encode"
+                );
             }
             op_drop(h);
             assert_eq!(live_nodes(), 0, "no leak for f32 bits {bits:#010x}");
@@ -12681,7 +13049,11 @@ mod tests {
         let nan_a = f64::from_bits(0x7ff8_0000_0000_0001); // quiet NaN, payload 1
         let nan_b = f64::from_bits(0xfff8_0000_dead_beef); // sign bit + different payload
         assert!(nan_a.is_nan() && nan_b.is_nan());
-        assert_ne!(nan_a.to_bits(), nan_b.to_bits(), "the two source NaNs differ in raw bits");
+        assert_ne!(
+            nan_a.to_bits(),
+            nan_b.to_bits(),
+            "the two source NaNs differ in raw bits"
+        );
 
         let a = op_box_float(nan_a);
         let b = op_box_float(nan_b);
@@ -12692,8 +13064,15 @@ mod tests {
             "a boxed NaN reads back as the canonical quiet NaN"
         );
         assert_eq!(op_get_float(b).to_bits(), f64::NAN.to_bits());
-        assert!(champ_eq(a, b), "two NaN values are structurally EQUAL (one canonical form)");
-        assert_eq!(champ_hash(a), champ_hash(b), "…and hash identically (so they are the SAME map key)");
+        assert!(
+            champ_eq(a, b),
+            "two NaN values are structurally EQUAL (one canonical form)"
+        );
+        assert_eq!(
+            champ_hash(a),
+            champ_hash(b),
+            "…and hash identically (so they are the SAME map key)"
+        );
         // A NaN also equals the canonical `f64::NAN` produced the ordinary way.
         let c = op_box_float(f64::NAN);
         assert!(champ_eq(a, c) && champ_hash(a) == champ_hash(c));
@@ -12704,15 +13083,26 @@ mod tests {
         // -0.0 and 0.0 keep their DISTINCT byte forms (only NaN is collapsed): NOT equal, NOT same key.
         let zpos = op_box_float(0.0);
         let zneg = op_box_float(-0.0);
-        assert_eq!(op_get_float(zneg).to_bits(), (-0.0f64).to_bits(), "-0.0 keeps its sign bit");
-        assert!(!champ_eq(zpos, zneg), "-0.0 ≠ 0.0 (distinct canonical byte forms)");
+        assert_eq!(
+            op_get_float(zneg).to_bits(),
+            (-0.0f64).to_bits(),
+            "-0.0 keeps its sign bit"
+        );
+        assert!(
+            !champ_eq(zpos, zneg),
+            "-0.0 ≠ 0.0 (distinct canonical byte forms)"
+        );
         op_drop(zpos);
         op_drop(zneg);
 
         // ±inf keep their bits too (finite-check is is_nan, not is_finite).
         let inf = op_box_float(f64::INFINITY);
         let ninf = op_box_float(f64::NEG_INFINITY);
-        assert_eq!(op_get_float(inf).to_bits(), f64::INFINITY.to_bits(), "inf unchanged");
+        assert_eq!(
+            op_get_float(inf).to_bits(),
+            f64::INFINITY.to_bits(),
+            "inf unchanged"
+        );
         assert!(!champ_eq(inf, ninf), "+inf ≠ -inf");
         op_drop(inf);
         op_drop(ninf);
@@ -12741,8 +13131,15 @@ mod tests {
         };
         let ta = mk(nan_a);
         let tb = mk(nan_b);
-        assert!(champ_eq(ta, tb), "two tuples carrying a NaN are value-eq (canonical NaN byte form)");
-        assert_eq!(champ_hash(ta), champ_hash(tb), "…and hash identically (same compound map key)");
+        assert!(
+            champ_eq(ta, tb),
+            "two tuples carrying a NaN are value-eq (canonical NaN byte form)"
+        );
+        assert_eq!(
+            champ_hash(ta),
+            champ_hash(tb),
+            "…and hash identically (same compound map key)"
+        );
         op_drop(ta);
         op_drop(tb);
 
@@ -12755,7 +13152,10 @@ mod tests {
         };
         let tzp = mkz(0.0);
         let tzn = mkz(-0.0);
-        assert!(!champ_eq(tzp, tzn), "(−0.0, 5) ≠ (0.0, 5) — distinct canonical byte forms");
+        assert!(
+            !champ_eq(tzp, tzn),
+            "(−0.0, 5) ≠ (0.0, 5) — distinct canonical byte forms"
+        );
         op_drop(tzp);
         op_drop(tzn);
 
@@ -12784,9 +13184,13 @@ mod tests {
         // Differential: the recursive oracle must produce byte-identical output.
         let descriptor = decode_descriptor(desc).expect("descriptor");
         let mut b = DocBuilder::default();
-        let root = encode_value_recursive(&descriptor, &mut b, s, descriptor.root, 0).expect("recursive");
+        let root =
+            encode_value_recursive(&descriptor, &mut b, s, descriptor.root, 0).expect("recursive");
         let rec_doc = b.finish(root);
-        assert_eq!(doc, rec_doc, "iterative and recursive Set encode must agree");
+        assert_eq!(
+            doc, rec_doc,
+            "iterative and recursive Set encode must agree"
+        );
 
         // The document must decode to `(Set.of (list 1 2 3 256))` — the ints in NUMERIC order. Rather than
         // hand-derive every byte, assert the int magnitudes appear in ascending order in the leaf pool: the
@@ -12917,9 +13321,13 @@ mod tests {
         // Differential: the recursive oracle must produce byte-identical output.
         let descriptor = decode_descriptor(desc).expect("descriptor");
         let mut b = DocBuilder::default();
-        let root = encode_value_recursive(&descriptor, &mut b, m, descriptor.root, 0).expect("recursive");
+        let root =
+            encode_value_recursive(&descriptor, &mut b, m, descriptor.root, 0).expect("recursive");
         let rec_doc = b.finish(root);
-        assert_eq!(doc, rec_doc, "iterative and recursive Map encode must agree");
+        assert_eq!(
+            doc, rec_doc,
+            "iterative and recursive Map encode must agree"
+        );
 
         // Collect the int-leaf magnitudes in emission order — they are the keys+values interleaved in
         // canonical KEY order: k1 v1 k2 v2 … = 1 10 2 20 3 30 256 2560.
@@ -12947,10 +13355,14 @@ mod tests {
         assert_eq!(
             mags,
             vec![
-                vec![1u8], vec![0x0au8],       // (1 10)
-                vec![2u8], vec![0x14u8],       // (2 20)
-                vec![3u8], vec![0x1eu8],       // (3 30)
-                vec![1u8, 0u8], vec![0x0au8, 0u8], // (256 2560)
+                vec![1u8],
+                vec![0x0au8], // (1 10)
+                vec![2u8],
+                vec![0x14u8], // (2 20)
+                vec![3u8],
+                vec![0x1eu8], // (3 30)
+                vec![1u8, 0u8],
+                vec![0x0au8, 0u8], // (256 2560)
             ],
             "entries appear in NUMERIC KEY order 1,2,3,256 (256=big-endian [1,0]); each key paired with \
              its value (key*10) — NOT the CHAMP hash order the keys were inserted in"
@@ -13002,7 +13414,7 @@ mod tests {
                         i += 1 + len;
                     }
                     20..=26 => {} // M2 payloadless ctor-head leaf (20-26)
-                other => panic!("unexpected leaf kind {other} in an int document"),
+                    other => panic!("unexpected leaf kind {other} in an int document"),
                 }
             }
             vals
@@ -13103,8 +13515,13 @@ mod tests {
         // Differential: the recursive oracle (its S::Map recurses the value shape) must agree byte-for-byte.
         let descriptor = decode_descriptor(desc).expect("descriptor");
         let mut b = DocBuilder::default();
-        let root = encode_value_recursive(&descriptor, &mut b, m, descriptor.root, 0).expect("recursive");
-        assert_eq!(doc, b.finish(root), "iterative and recursive Map-of-Lists encode must agree");
+        let root =
+            encode_value_recursive(&descriptor, &mut b, m, descriptor.root, 0).expect("recursive");
+        assert_eq!(
+            doc,
+            b.finish(root),
+            "iterative and recursive Map-of-Lists encode must agree"
+        );
 
         // The int leaves, in emission order, are the keys+values interleaved in canonical KEY order:
         // (1 [10]) (2 [20 21]) (3 []) → 1, 10, 2, 20, 21, 3. (Empty list contributes no int leaf.)
@@ -13156,8 +13573,13 @@ mod tests {
             let doc = op_value_encode_form(v, d).expect("encode empty collection");
             let descriptor = decode_descriptor(d).expect("descriptor");
             let mut b = DocBuilder::default();
-            let root = encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0).expect("recursive");
-            assert_eq!(doc, b.finish(root), "iterative and recursive empty-collection encode must agree");
+            let root = encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0)
+                .expect("recursive");
+            assert_eq!(
+                doc,
+                b.finish(root),
+                "iterative and recursive empty-collection encode must agree"
+            );
             doc
         };
 
@@ -13166,27 +13588,52 @@ mod tests {
         let sd: &[u8] = &[0x02, 0x00, 0x0c, 0x00, 0x01];
         let sdoc = check(es, sd);
         // ONE leaf — the payloadless Set ctor head (kind 24); no `list`/`Set` name leaves anymore.
-        assert_eq!(sdoc[8], 1, "empty set document has ONE leaf (the Set ctor head)");
-        assert_eq!(sdoc[9], doc::KIND_SET_CTOR, "empty set renders the bare Ctor(Set) head");
+        assert_eq!(
+            sdoc[8], 1,
+            "empty set document has ONE leaf (the Set ctor head)"
+        );
+        assert_eq!(
+            sdoc[9],
+            doc::KIND_SET_CTOR,
+            "empty set renders the bare Ctor(Set) head"
+        );
         op_drop(es);
 
         // Empty MAP → M2 `(Ctor(Map))`. desc: [0]=Int, [1]=Int, [2]=Map(→0,→1), root=2.
         let em = op_map_empty();
         let md: &[u8] = &[0x03, 0x00, 0x00, 0x0d, 0x00, 0x01, 0x02];
         let mdoc = check(em, md);
-        assert_eq!(mdoc[8], 1, "empty map document has ONE leaf (the Map ctor head)");
-        assert_eq!(mdoc[9], doc::KIND_MAP_CTOR, "empty map renders the bare Ctor(Map) head");
+        assert_eq!(
+            mdoc[8], 1,
+            "empty map document has ONE leaf (the Map ctor head)"
+        );
+        assert_eq!(
+            mdoc[9],
+            doc::KIND_MAP_CTOR,
+            "empty map renders the bare Ctor(Map) head"
+        );
         op_drop(em);
 
         // Empty LIST → M2 `(Ctor(List))`. desc: [0]=Int, [1]=List(→0), root=1.
         let el = op_vec_empty();
         let ld: &[u8] = &[0x02, 0x00, 0x07, 0x00, 0x01];
         let ldoc = check(el, ld);
-        assert_eq!(ldoc[8], 1, "empty list document has ONE leaf (the List ctor head)");
-        assert_eq!(ldoc[9], doc::KIND_LIST_CTOR, "empty list renders the bare Ctor(List) head");
+        assert_eq!(
+            ldoc[8], 1,
+            "empty list document has ONE leaf (the List ctor head)"
+        );
+        assert_eq!(
+            ldoc[9],
+            doc::KIND_LIST_CTOR,
+            "empty list renders the bare Ctor(List) head"
+        );
         op_drop(el);
 
-        assert_eq!(live_nodes(), before, "no leak: every empty collection dropped");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak: every empty collection dropped"
+        );
     }
 
     /// `value-encode` renders a MULTI-payload recursive variant via `Shape::Spread` (descriptor tag 16):
@@ -13261,8 +13708,13 @@ mod tests {
         // Differential: iterative == recursive oracle byte-for-byte.
         let descriptor = decode_descriptor(&d).expect("descriptor");
         let mut b = DocBuilder::default();
-        let root = encode_value_recursive(&descriptor, &mut b, node, descriptor.root, 0).expect("recursive");
-        assert_eq!(doc, b.finish(root), "iterative and recursive Spread encode must agree");
+        let root = encode_value_recursive(&descriptor, &mut b, node, descriptor.root, 0)
+            .expect("recursive");
+        assert_eq!(
+            doc,
+            b.finish(root),
+            "iterative and recursive Spread encode must agree"
+        );
 
         // FLAT structure: the name leaves in walk order are `Node`, then `Leaf`, `Leaf` (the two children;
         // `unit` for each Leaf's payload). Crucially NO `tuple` name — the Int + two Trees are spliced
@@ -13288,10 +13740,16 @@ mod tests {
                 k => panic!("unexpected leaf kind {k} in a Spread document"),
             }
         }
-        assert!(!names.iter().any(|n| n == "tuple"), "multi-payload variant is FLAT — no `tuple` wrapper, got {names:?}");
+        assert!(
+            !names.iter().any(|n| n == "tuple"),
+            "multi-payload variant is FLAT — no `tuple` wrapper, got {names:?}"
+        );
         assert!(names.iter().any(|n| n == "Node"), "`Node` head present");
         assert!(names.iter().any(|n| n == "Leaf"), "`Leaf` children present");
-        assert!(names.iter().any(|n| n == "unit"), "each Leaf's unit payload present");
+        assert!(
+            names.iter().any(|n| n == "unit"),
+            "each Leaf's unit payload present"
+        );
         op_drop(node);
         assert_eq!(live_nodes(), before, "no leak");
     }
@@ -13365,8 +13823,13 @@ mod tests {
         // Differential: the recursive oracle must produce byte-identical output.
         let descriptor = decode_descriptor(&d).expect("descriptor");
         let mut b = DocBuilder::default();
-        let root = encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0).expect("recursive");
-        assert_eq!(doc, b.finish(root), "iterative and recursive Framed encode must agree");
+        let root =
+            encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0).expect("recursive");
+        assert_eq!(
+            doc,
+            b.finish(root),
+            "iterative and recursive Framed encode must agree"
+        );
 
         // The document's NAME leaves — the `(: (list 1 2 3) (List Int64))` frame emits, in walk order,
         // the names `:`, `list`, then the type head/args `List`, `Int64` (ints are KIND_INT leaves, not
@@ -13398,8 +13861,11 @@ mod tests {
         // type node, emitted AFTER the value). The value's list head is now the M2 Ctor(List) LEAF (not the
         // `list` name), so it no longer appears among the name leaves.
         let names_ref: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-        assert_eq!(names_ref, alloc::vec![":", "List", "Int64"],
-            "Framed frame emits `:`, then the type head `List` + arg `Int64` (value list head is a ctor leaf)");
+        assert_eq!(
+            names_ref,
+            alloc::vec![":", "List", "Int64"],
+            "Framed frame emits `:`, then the type head `List` + arg `Int64` (value list head is a ctor leaf)"
+        );
         op_drop(v);
         assert_eq!(live_nodes(), before, "no leak");
     }
@@ -13490,7 +13956,7 @@ mod tests {
                         i += 1 + len;
                     }
                     20..=26 => {} // M2 payloadless ctor-head leaf (20-26)
-                k => panic!("n={n}: unexpected leaf kind {k} in a (List Int) document"),
+                    k => panic!("n={n}: unexpected leaf kind {k} in a (List Int) document"),
                 }
             }
             let want: Vec<u8> = (1..=n as u8).collect();
@@ -14987,12 +15453,27 @@ mod tests {
     #[test]
     fn node_layout_sizes_are_pinned_native() {
         use core::mem::size_of;
-        assert_eq!(size_of::<Node>(), 64, "Node size changed — a bloat is paid by every heap value");
-        assert_eq!(size_of::<Handles>(), 32, "Handles size changed (inline [Handle;2] arm + tag, or Vec)");
-        assert_eq!(size_of::<Raw>(), 24, "Raw size changed (inline [u8;12]+len arm, or Vec)");
+        assert_eq!(
+            size_of::<Node>(),
+            64,
+            "Node size changed — a bloat is paid by every heap value"
+        );
+        assert_eq!(
+            size_of::<Handles>(),
+            32,
+            "Handles size changed (inline [Handle;2] arm + tag, or Vec)"
+        );
+        assert_eq!(
+            size_of::<Raw>(),
+            24,
+            "Raw size changed (inline [u8;12]+len arm, or Vec)"
+        );
         assert_eq!(size_of::<Handle>(), 8, "Handle is a single native pointer");
         // The inline-raw cap is the CHAMP header size — the largest hot raw that must stay inline.
-        assert_eq!(INLINE_RAW_CAP, 12, "INLINE_RAW_CAP must fit a CHAMP header inline");
+        assert_eq!(
+            INLINE_RAW_CAP, 12,
+            "INLINE_RAW_CAP must fit a CHAMP header inline"
+        );
     }
 
     /// `read_u32_at` has two paths — a fast in-bounds 4-byte window read and a zero-padded fallback for
@@ -15281,7 +15762,10 @@ mod tests {
         // empty_arr_is_unit).
         assert_eq!(render(op_box_bool(true), &Shape::Bool), "true");
         assert_eq!(render(op_box_bool(false), &Shape::Bool), "false");
-        assert_eq!(render(op_arr_alloc(0), &Shape::Tuple(vec![].into())), "unit");
+        assert_eq!(
+            render(op_arr_alloc(0), &Shape::Tuple(vec![].into())),
+            "unit"
+        );
     }
 
     #[test]
@@ -15358,7 +15842,10 @@ mod tests {
         // Every value here fits i64 for a readable round-trip, but the rep is the unbounded limb leaf.
         for v in [0i64, 1, -1, 42, -42, 1_000_000, i64::MAX, i64::MIN] {
             let h = op_bigint_of_i64(v);
-            assert!(!is_immediate(h), "a BigInt leaf is always heap, never an immediate ({v})");
+            assert!(
+                !is_immediate(h),
+                "a BigInt leaf is always heap, never an immediate ({v})"
+            );
             assert_eq!(
                 op_bigint_to_i64_checked(h),
                 v,
@@ -15394,7 +15881,10 @@ mod tests {
         // A product that OVERFLOWS i64 is a valid BigInt (never traps) but does NOT narrow back.
         let (ha, hb) = (op_bigint_of_i64(i64::MAX), op_bigint_of_i64(2));
         let big = op_bigint_mul(ha, hb);
-        assert!(!is_immediate(big), "the overflowing product is a heap BigInt");
+        assert!(
+            !is_immediate(big),
+            "the overflowing product is a heap BigInt"
+        );
         // (No trap on the mul itself — magnitude grows. Narrowing THAT back would trap; not exercised
         // here to keep the test panic-free — the trap path is a compiler/gate concern.)
         op_drop(ha);
@@ -15424,7 +15914,18 @@ mod tests {
             r
         };
         // Truncation toward zero (Rust `/` on i64 is the reference): all four sign combos.
-        for &(a, b) in &[(7, 2), (-7, 2), (7, -2), (-7, -2), (1, 3), (-1, 3), (1, -3), (-1, -3), (100, 7), (-100, 7)] {
+        for &(a, b) in &[
+            (7, 2),
+            (-7, 2),
+            (7, -2),
+            (-7, -2),
+            (1, 3),
+            (-1, 3),
+            (1, -3),
+            (-1, -3),
+            (100, 7),
+            (-100, 7),
+        ] {
             assert_eq!(
                 div(a, b),
                 a / b,
@@ -15435,7 +15936,11 @@ mod tests {
         assert_eq!(div(6, 3), 2);
         assert_eq!(div(-6, 3), -2);
         assert_eq!(div(2, 5), 0, "|dividend| < |divisor| → 0");
-        assert_eq!(div(-2, 5), 0, "…and stays 0, not -1 (toward zero, not floor)");
+        assert_eq!(
+            div(-2, 5),
+            0,
+            "…and stays 0, not -1 (toward zero, not floor)"
+        );
         // bigint-cmp orders negatives correctly: -5 < -3 < 0 < 3 < 5.
         let cmp = |a: i64, b: i64| -> i64 {
             let (ha, hb) = (op_bigint_of_i64(a), op_bigint_of_i64(b));
@@ -15514,7 +16019,17 @@ mod tests {
             r
         };
         // Remainder matches Rust i64 `%` (dividend's sign) across all four sign combos + exact/zero cases.
-        for &(a, b) in &[(17, 5), (-17, 5), (17, -5), (-17, -5), (6, 3), (-6, 3), (2, 5), (-2, 5), (0, 7)] {
+        for &(a, b) in &[
+            (17, 5),
+            (-17, 5),
+            (17, -5),
+            (-17, -5),
+            (6, 3),
+            (-6, 3),
+            (2, 5),
+            (-2, 5),
+            (0, 7),
+        ] {
             assert_eq!(rem(a, b), a % b, "bigint-rem {a} % {b} == i64 %");
             // And the division identity: a == (a/b)*b + (a%b). The bigint ops BORROW their operands, so
             // each intermediate handle must be dropped explicitly (no consuming chain).
@@ -15523,7 +16038,11 @@ mod tests {
             let hr = op_bigint_rem(ha, hb);
             let qb = op_bigint_mul(hq, hb);
             let sum = op_bigint_add(qb, hr);
-            assert_eq!(op_bigint_to_i64_checked(sum), a, "a == (a/b)*b + (a%b) for {a},{b}");
+            assert_eq!(
+                op_bigint_to_i64_checked(sum),
+                a,
+                "a == (a/b)*b + (a%b) for {a},{b}"
+            );
             op_drop(ha);
             op_drop(hb);
             op_drop(hq);
@@ -15602,7 +16121,11 @@ mod tests {
             op_drop(r);
         }
         // ARITHMETIC (exact): 1/3 + 1/6 = 1/2; 1/2 - 3/4 = -1/4; (2/3)*(3/4) = 1/2; (1/2)/(3/4) = 2/3.
-        let check = |op: fn(Handle, Handle) -> Handle, a: (i64, i64), b: (i64, i64), want: (i64, i64), name: &str| {
+        let check = |op: fn(Handle, Handle) -> Handle,
+                     a: (i64, i64),
+                     b: (i64, i64),
+                     want: (i64, i64),
+                     name: &str| {
             let (ra, rb) = (rat(a.0, a.1), rat(b.0, b.1));
             let r = op(ra, rb);
             assert_eq!(read(r), want, "rational {name}");
@@ -15627,7 +16150,10 @@ mod tests {
         assert_eq!(cmp((3, 4), (1, 2)), 1);
         // Two EQUAL rationals reached differently are byte-identical (champ_eq basis): 2/4 and 1/2.
         let (r1, r2) = (rat(2, 4), rat(1, 2));
-        assert!(champ_eq(r1, r2), "2/4 and 1/2 are the same normalized rational");
+        assert!(
+            champ_eq(r1, r2),
+            "2/4 and 1/2 are the same normalized rational"
+        );
         op_drop(r1);
         op_drop(r2);
         assert_eq!(live_object_count(), 0, "no Rational leak");
@@ -15677,40 +16203,66 @@ mod tests {
         }
         let rat = |n: i64, d: i64| op_rational_of(op_bigint_of_i64(n), op_bigint_of_i64(d));
         // Two bytes → a (num in −128..127, den in 1..64) pair; den forced nonzero.
-        bolero::check!().with_type::<(i8, u8, i8, u8)>().for_each(|&(an, ad, bn, bd)| {
-            let before = live_object_count();
-            let (a_n, a_d) = (an as i64, (ad % 63 + 1) as i64); // den ∈ 1..=63, never 0
-            let (b_n, b_d) = (bn as i64, (bd % 63 + 1) as i64);
-            let (ra, rb) = (rat(a_n, a_d), rat(b_n, b_d));
-            // Construction normalizes — must match the reference.
-            assert_eq!(read(ra), norm(a_n as i128, a_d as i128), "of {a_n}/{a_d}");
-            assert_eq!(read(rb), norm(b_n as i128, b_d as i128), "of {b_n}/{b_d}");
-            let (ran, rad) = norm(a_n as i128, a_d as i128);
-            let (rbn, rbd) = norm(b_n as i128, b_d as i128);
-            // add/sub/mul: cross-multiply over the NORMALIZED reference components, then renormalize.
-            let add = op_rational_add(ra, rb);
-            assert_eq!(read(add), norm(ran * rbd + rbn * rad, rad * rbd), "add {a_n}/{a_d} {b_n}/{b_d}");
-            let sub = op_rational_sub(ra, rb);
-            assert_eq!(read(sub), norm(ran * rbd - rbn * rad, rad * rbd), "sub {a_n}/{a_d} {b_n}/{b_d}");
-            let mul = op_rational_mul(ra, rb);
-            assert_eq!(read(mul), norm(ran * rbn, rad * rbd), "mul {a_n}/{a_d} {b_n}/{b_d}");
-            // cmp: cross-multiply (both dens > 0). Sign of (ran*rbd − rbn*rad).
-            let want_cmp = (ran * rbd - rbn * rad).signum() as i64;
-            assert_eq!(op_rational_cmp(ra, rb), want_cmp, "cmp {a_n}/{a_d} {b_n}/{b_d}");
-            let mut live = alloc::vec![add, sub, mul];
-            // div: only when b ≠ 0 (else it TRAPS — the fixed test covers that path).
-            if rbn != 0 {
-                let div = op_rational_div(ra, rb);
-                assert_eq!(read(div), norm(ran * rbd, rad * rbn), "div {a_n}/{a_d} {b_n}/{b_d}");
-                live.push(div);
-            }
-            for h in live {
-                op_drop(h);
-            }
-            op_drop(ra);
-            op_drop(rb);
-            assert_eq!(live_object_count(), before, "no leak across the random rational ops");
-        });
+        bolero::check!()
+            .with_type::<(i8, u8, i8, u8)>()
+            .for_each(|&(an, ad, bn, bd)| {
+                let before = live_object_count();
+                let (a_n, a_d) = (an as i64, (ad % 63 + 1) as i64); // den ∈ 1..=63, never 0
+                let (b_n, b_d) = (bn as i64, (bd % 63 + 1) as i64);
+                let (ra, rb) = (rat(a_n, a_d), rat(b_n, b_d));
+                // Construction normalizes — must match the reference.
+                assert_eq!(read(ra), norm(a_n as i128, a_d as i128), "of {a_n}/{a_d}");
+                assert_eq!(read(rb), norm(b_n as i128, b_d as i128), "of {b_n}/{b_d}");
+                let (ran, rad) = norm(a_n as i128, a_d as i128);
+                let (rbn, rbd) = norm(b_n as i128, b_d as i128);
+                // add/sub/mul: cross-multiply over the NORMALIZED reference components, then renormalize.
+                let add = op_rational_add(ra, rb);
+                assert_eq!(
+                    read(add),
+                    norm(ran * rbd + rbn * rad, rad * rbd),
+                    "add {a_n}/{a_d} {b_n}/{b_d}"
+                );
+                let sub = op_rational_sub(ra, rb);
+                assert_eq!(
+                    read(sub),
+                    norm(ran * rbd - rbn * rad, rad * rbd),
+                    "sub {a_n}/{a_d} {b_n}/{b_d}"
+                );
+                let mul = op_rational_mul(ra, rb);
+                assert_eq!(
+                    read(mul),
+                    norm(ran * rbn, rad * rbd),
+                    "mul {a_n}/{a_d} {b_n}/{b_d}"
+                );
+                // cmp: cross-multiply (both dens > 0). Sign of (ran*rbd − rbn*rad).
+                let want_cmp = (ran * rbd - rbn * rad).signum() as i64;
+                assert_eq!(
+                    op_rational_cmp(ra, rb),
+                    want_cmp,
+                    "cmp {a_n}/{a_d} {b_n}/{b_d}"
+                );
+                let mut live = alloc::vec![add, sub, mul];
+                // div: only when b ≠ 0 (else it TRAPS — the fixed test covers that path).
+                if rbn != 0 {
+                    let div = op_rational_div(ra, rb);
+                    assert_eq!(
+                        read(div),
+                        norm(ran * rbd, rad * rbn),
+                        "div {a_n}/{a_d} {b_n}/{b_d}"
+                    );
+                    live.push(div);
+                }
+                for h in live {
+                    op_drop(h);
+                }
+                op_drop(ra);
+                op_drop(rb);
+                assert_eq!(
+                    live_object_count(),
+                    before,
+                    "no leak across the random rational ops"
+                );
+            });
     }
 
     /// A BigInt is a RAW-ONLY leaf compared by its `raw` bytes (`champ_eq`) and hashed over them
@@ -15747,8 +16299,15 @@ mod tests {
             r
         };
         for (name, h) in [("add", via_add), ("sub", via_sub), ("mul", via_mul)] {
-            assert!(champ_eq(direct, h), "8-via-{name} is champ_eq to of(8) (same map key)");
-            assert_eq!(champ_hash(direct), champ_hash(h), "8-via-{name} hashes identically");
+            assert!(
+                champ_eq(direct, h),
+                "8-via-{name} is champ_eq to of(8) (same map key)"
+            );
+            assert_eq!(
+                champ_hash(direct),
+                champ_hash(h),
+                "8-via-{name} hashes identically"
+            );
             assert_eq!(op_bigint_cmp(direct, h), 0, "…and cmp == 0");
             op_drop(h);
         }
@@ -15770,14 +16329,28 @@ mod tests {
             op_drop(z);
             r
         };
-        assert!(champ_eq(zero_of, zero_sub), "x - x is the canonical zero (no -0)");
+        assert!(
+            champ_eq(zero_of, zero_sub),
+            "x - x is the canonical zero (no -0)"
+        );
         assert!(champ_eq(zero_of, zero_mul), "0 * x is the canonical zero");
-        assert_eq!(champ_hash(zero_of), champ_hash(zero_sub), "zero hashes identically (sub)");
-        assert_eq!(champ_hash(zero_of), champ_hash(zero_mul), "zero hashes identically (mul)");
+        assert_eq!(
+            champ_hash(zero_of),
+            champ_hash(zero_sub),
+            "zero hashes identically (sub)"
+        );
+        assert_eq!(
+            champ_hash(zero_of),
+            champ_hash(zero_mul),
+            "zero hashes identically (mul)"
+        );
         // A negative and its positive counterpart must DIFFER (sign is part of the canonical form).
         let neg = op_bigint_of_i64(-7);
         let pos = op_bigint_of_i64(7);
-        assert!(!champ_eq(neg, pos), "-7 and 7 are distinct leaves (sign in the canonical bytes)");
+        assert!(
+            !champ_eq(neg, pos),
+            "-7 and 7 are distinct leaves (sign in the canonical bytes)"
+        );
         op_drop(zero_of);
         op_drop(x);
         op_drop(zero_sub);
@@ -15809,7 +16382,10 @@ mod tests {
             r
         };
         let result = std::panic::catch_unwind(|| op_bigint_to_i64_checked(over));
-        assert!(result.is_err(), "i64::MAX + 1 must TRAP the checked narrow, not wrap");
+        assert!(
+            result.is_err(),
+            "i64::MAX + 1 must TRAP the checked narrow, not wrap"
+        );
         op_drop(over);
         // i64::MIN - 1 (the other side).
         let under = {
@@ -15845,17 +16421,32 @@ mod tests {
         for b in [&p, &neg_p, &q, &bigint::Big::from_i64(0)] {
             let h = box_bigint(b);
             assert!(!is_immediate(h), "a large BigInt is a heap leaf");
-            assert_eq!(unbox_bigint(h).cmp(b), core::cmp::Ordering::Equal, "box/unbox round-trip");
+            assert_eq!(
+                unbox_bigint(h).cmp(b),
+                core::cmp::Ordering::Equal,
+                "box/unbox round-trip"
+            );
             op_drop(h);
         }
         // Each WIT op on boxed large operands must unbox to the library's direct result (canonical bytes).
-        let check = |op: fn(Handle, Handle) -> Handle, a: &bigint::Big, b: &bigint::Big, want: &bigint::Big, name: &str| {
+        let check = |op: fn(Handle, Handle) -> Handle,
+                     a: &bigint::Big,
+                     b: &bigint::Big,
+                     want: &bigint::Big,
+                     name: &str| {
             let (ha, hb) = (box_bigint(a), box_bigint(b));
             let hr = op(ha, hb);
-            assert_eq!(unbox_bigint(hr).cmp(want), core::cmp::Ordering::Equal, "large bigint {name}");
+            assert_eq!(
+                unbox_bigint(hr).cmp(want),
+                core::cmp::Ordering::Equal,
+                "large bigint {name}"
+            );
             // canonical: the op result's leaf bytes equal a freshly-boxed `want`'s (champ_eq / same key).
             let hw = box_bigint(want);
-            assert!(champ_eq(hr, hw), "large bigint {name} leaf is canonical (champ_eq to a fresh box)");
+            assert!(
+                champ_eq(hr, hw),
+                "large bigint {name} leaf is canonical (champ_eq to a fresh box)"
+            );
             op_drop(ha);
             op_drop(hb);
             op_drop(hr);
@@ -15897,7 +16488,11 @@ mod tests {
         op_drop(hq);
         op_drop(hp2);
         op_drop(hp3);
-        assert_eq!(live_object_count(), before, "no leak across the large-value ops");
+        assert_eq!(
+            live_object_count(),
+            before,
+            "no leak across the large-value ops"
+        );
     }
 
     /// The `i128` arithmetic FAST PATH (add/sub/mul when both operands fit i128 and the result doesn't
@@ -15978,7 +16573,11 @@ mod tests {
             check(op_bigint_add, add, &huge, &small, "add op>i128");
             check(op_bigint_mul, mul, &huge, &small, "mul op>i128");
         }
-        assert_eq!(live_object_count(), before, "no leak across the boundary ops");
+        assert_eq!(
+            live_object_count(),
+            before,
+            "no leak across the boundary ops"
+        );
     }
 
     /// `bigint-div`/`-rem` i128 FAST PATH ↔ `Big` slow path at the boundary — the div/rem analogue of the
@@ -16093,10 +16692,18 @@ mod tests {
         // Decode the leaf back: header(8) · leaf_count(1) · [KIND · LEB(len) · mag]. KIND 0 = pos, 3 = neg.
         assert_eq!(doc[8], 1, "one leaf");
         let kind = doc[9];
-        assert_eq!(kind, if neg { 3 } else { 0 }, "KIND_INT sign matches (0 pos / 3 neg)");
+        assert_eq!(
+            kind,
+            if neg { 3 } else { 0 },
+            "KIND_INT sign matches (0 pos / 3 neg)"
+        );
         let len = doc[10] as usize;
         let decoded_mag = &doc[11..11 + len];
-        assert_eq!(decoded_mag, &be_mag[..], "the >i64 magnitude round-trips through KIND_INT verbatim");
+        assert_eq!(
+            decoded_mag,
+            &be_mag[..],
+            "the >i64 magnitude round-trips through KIND_INT verbatim"
+        );
         // Reconstruct the value from the decoded (sign, BE magnitude) and confirm it equals `big`.
         let mut recon = bigint::Big::zero();
         let base = bigint::Big::from_i64(256);
@@ -16106,7 +16713,11 @@ mod tests {
         if neg {
             recon = bigint::Big::zero().sub(&recon);
         }
-        assert_eq!(recon.cmp(&big), core::cmp::Ordering::Equal, "KIND_INT leaf reconstructs the exact BigInt");
+        assert_eq!(
+            recon.cmp(&big),
+            core::cmp::Ordering::Equal,
+            "KIND_INT leaf reconstructs the exact BigInt"
+        );
     }
 
     /// The `Shape::BigInt` value-encode arm (B3c, descriptor tag 17): a boxed runtime BigInt escapes via
@@ -16126,8 +16737,13 @@ mod tests {
             // Differential vs the recursive oracle (its S::BigInt arm).
             let descriptor = decode_descriptor(desc).expect("descriptor");
             let mut b = DocBuilder::default();
-            let root = encode_value_recursive(&descriptor, &mut b, h, descriptor.root, 0).expect("recursive");
-            assert_eq!(doc, b.finish(root), "iterative and recursive BigInt encode agree ({note})");
+            let root = encode_value_recursive(&descriptor, &mut b, h, descriptor.root, 0)
+                .expect("recursive");
+            assert_eq!(
+                doc,
+                b.finish(root),
+                "iterative and recursive BigInt encode agree ({note})"
+            );
             op_drop(h);
             doc
         };
@@ -16151,8 +16767,15 @@ mod tests {
         for &byte in be_mag {
             recon = recon.mul(&base).add(&bigint::Big::from_i64(byte as i64));
         }
-        assert_eq!(recon.cmp(&big), core::cmp::Ordering::Equal, "the escaped KIND_INT leaf is the exact 2^126 value");
-        assert!(len > 8, "the magnitude exceeds 8 bytes — a genuinely >i64 BigInt crossed the boundary");
+        assert_eq!(
+            recon.cmp(&big),
+            core::cmp::Ordering::Equal,
+            "the escaped KIND_INT leaf is the exact 2^126 value"
+        );
+        assert!(
+            len > 8,
+            "the magnitude exceeds 8 bytes — a genuinely >i64 BigInt crossed the boundary"
+        );
         assert_eq!(live_object_count(), before, "no leak");
     }
 
@@ -16327,7 +16950,10 @@ mod tests {
         use core::cmp::Ordering;
         reset();
         // Int: NUMERIC order, incl. negatives (raw little-endian bytes would sort -1 as huge).
-        let desc_int = Descriptor { table: vec![Shape::Int], root: 0 };
+        let desc_int = Descriptor {
+            table: vec![Shape::Int],
+            root: 0,
+        };
         assert_eq!(
             value_cmp_shaped(&desc_int, op_box_int(-5), op_box_int(3), 0),
             Some(Ordering::Less),
@@ -16343,7 +16969,10 @@ mod tests {
             "10 > -10 (signed; a raw-byte compare would sort -10 as larger)"
         );
         // Tuple(Int,Int): lexicographic by field — first decides, then second.
-        let desc_tup = Descriptor { table: vec![Shape::Int, Shape::Tuple(vec![0, 0].into())], root: 1 };
+        let desc_tup = Descriptor {
+            table: vec![Shape::Int, Shape::Tuple(vec![0, 0].into())],
+            root: 1,
+        };
         let mk_pair = |x: i64, y: i64| {
             let t = op_arr_alloc(2);
             op_arr_set(t, 0, op_box_int(x));
@@ -16365,7 +16994,10 @@ mod tests {
             Some(Ordering::Equal)
         );
         // List(Int): lexicographic; a proper prefix is LESS than its extension.
-        let desc_list = Descriptor { table: vec![Shape::Int, Shape::List(0)], root: 1 };
+        let desc_list = Descriptor {
+            table: vec![Shape::Int, Shape::List(0)],
+            root: 1,
+        };
         let mk_list = |xs: &[i64]| {
             let mut v = op_vec_empty();
             for &x in xs {
@@ -16391,7 +17023,10 @@ mod tests {
         // A Float leaf orders by its CANONICAL BIT PATTERN as an UNSIGNED integer (NOT numeric order) — the
         // element-derived deterministic order to-list enumeration uses, matching the Rust `__CdzF64` wrapper.
         // (Numeric float `<` stays the IEEE partial order, declined at compile time — a different path.)
-        let desc_float = Descriptor { table: vec![Shape::Float], root: 0 };
+        let desc_float = Descriptor {
+            table: vec![Shape::Float],
+            root: 0,
+        };
         assert_eq!(
             value_cmp_shaped(&desc_float, op_box_float(1.0), op_box_float(2.0), 0),
             Some(Ordering::Less),
@@ -16414,14 +17049,22 @@ mod tests {
         // Every NaN collapses to one canonical quiet NaN on construction → two NaNs compare Equal (a total
         // order has no unordered pair; the to-list sort treats them as one position).
         assert_eq!(
-            value_cmp_shaped(&desc_float, op_box_float(f64::NAN), op_box_float(f64::NAN), 0),
+            value_cmp_shaped(
+                &desc_float,
+                op_box_float(f64::NAN),
+                op_box_float(f64::NAN),
+                0
+            ),
             Some(Ordering::Equal),
             "canonical NaN == canonical NaN (NaN collapsed on box; a total order)"
         );
         // A Bytes leaf has a BLESSED TOTAL order (§order): content-lexicographic over its UNSIGNED byte
         // values — the same `raw`-slice compare as Str, unlike Float (bare-bits-only). Build Bytes values and
         // pin the ordering rules, INCLUDING a byte >= 128 (the case a SIGNED-byte compare gets wrong).
-        let desc_bytes = Descriptor { table: vec![Shape::Bytes], root: 0 };
+        let desc_bytes = Descriptor {
+            table: vec![Shape::Bytes],
+            root: 0,
+        };
         let mk_bytes = |bs: &[u8]| {
             let b = op_bytes_alloc(bs.len() as u32);
             let mut h = b;
@@ -16478,7 +17121,10 @@ mod tests {
         assert!(champ_eq(p, q), "cmp Equal agrees with champ_eq");
         let bx = mk_bytes(&[7, 8]);
         let by = mk_bytes(&[7, 8]);
-        assert_eq!(value_cmp_shaped(&desc_bytes, bx, by, 0), Some(Ordering::Equal));
+        assert_eq!(
+            value_cmp_shaped(&desc_bytes, bx, by, 0),
+            Some(Ordering::Equal)
+        );
         assert!(champ_eq(bx, by), "Bytes cmp Equal agrees with champ_eq");
     }
 
@@ -16510,7 +17156,10 @@ mod tests {
             Some(Ordering::Less),
             "A(5) < A(9): same discriminant → payload 5<9 decides"
         );
-        assert_eq!(value_cmp_shaped(&desc_sum, a5, a5, 1), Some(Ordering::Equal));
+        assert_eq!(
+            value_cmp_shaped(&desc_sum, a5, a5, 1),
+            Some(Ordering::Equal)
+        );
         // Record {x:Int, y:Int} — a tuple arr in field order; compare by field.
         let desc_rec = Descriptor {
             table: vec![
@@ -16564,7 +17213,10 @@ mod tests {
         use super::{Descriptor, Shape};
         reset();
         // desc: [0]=Float, [1]=List(0).
-        let desc = Descriptor { table: vec![Shape::Float, Shape::List(0)], root: 1 };
+        let desc = Descriptor {
+            table: vec![Shape::Float, Shape::List(0)],
+            root: 1,
+        };
         let push_flist = |xs: &[f64]| {
             let mut v = op_vec_empty();
             for &x in xs {
@@ -16572,29 +17224,42 @@ mod tests {
             }
             v
         };
-        let concat_flist = |lo: &[f64], hi: &[f64]| {
-            op_vec_concat(push_flist(lo), push_flist(hi))
-        };
+        let concat_flist = |lo: &[f64], hi: &[f64]| op_vec_concat(push_flist(lo), push_flist(hi));
         // (1) concat-built vs push-built List<Float> with the same elements → EQUAL (element-wise, spine-indep).
         // Use n=40 elements so the concat leaves a RELAXED (non-shape-canonical) node — champ_eq would MISS.
         let xs: Vec<f64> = (0..40).map(|i| i as f64 * 0.5).collect();
         let a = concat_flist(&xs[..20], &xs[20..]);
         let b = push_flist(&xs);
-        assert_eq!(value_eq_shaped(&desc, a, b, 1), Some(true), "concat-vs-push List<Float> equal (element-wise)");
+        assert_eq!(
+            value_eq_shaped(&desc, a, b, 1),
+            Some(true),
+            "concat-vs-push List<Float> equal (element-wise)"
+        );
         op_drop(a);
         op_drop(b);
         // (2) a differing float element → NOT equal.
         let c = push_flist(&[1.0, 2.0, 3.0]);
         let d = push_flist(&[1.0, 2.5, 3.0]);
-        assert_eq!(value_eq_shaped(&desc, c, d, 1), Some(false), "a differing float element → not equal");
+        assert_eq!(
+            value_eq_shaped(&desc, c, d, 1),
+            Some(false),
+            "a differing float element → not equal"
+        );
         // (3) different length → not equal.
         let e = push_flist(&[1.0, 2.0]);
-        assert_eq!(value_eq_shaped(&desc, c, e, 1), Some(false), "different length → not equal");
+        assert_eq!(
+            value_eq_shaped(&desc, c, e, 1),
+            Some(false),
+            "different length → not equal"
+        );
         op_drop(c);
         op_drop(d);
         op_drop(e);
         // (4) NaN == NaN (canonical byte form), and -0.0 ≠ +0.0, at the LEAF (bare Float shape).
-        let desc_f = Descriptor { table: vec![Shape::Float], root: 0 };
+        let desc_f = Descriptor {
+            table: vec![Shape::Float],
+            root: 0,
+        };
         assert_eq!(
             value_eq_shaped(&desc_f, op_box_float(f64::NAN), op_box_float(f64::NAN), 0),
             Some(true),
@@ -16623,7 +17288,11 @@ mod tests {
         };
         let da = build_deep(3.5);
         let db = build_deep(3.5);
-        assert_eq!(value_eq_shaped(&desc_deep, da, db, cur), Some(true), "200-deep list<float> equal, no overflow");
+        assert_eq!(
+            value_eq_shaped(&desc_deep, da, db, cur),
+            Some(true),
+            "200-deep list<float> equal, no overflow"
+        );
         op_drop(da);
         op_drop(db);
     }
@@ -16637,7 +17306,10 @@ mod tests {
         use core::cmp::Ordering;
         reset();
         // desc: [0]=Bytes, [1]=List(0).
-        let desc = Descriptor { table: vec![Shape::Bytes, Shape::List(0)], root: 1 };
+        let desc = Descriptor {
+            table: vec![Shape::Bytes, Shape::List(0)],
+            root: 1,
+        };
         let mk_bytes = |bs: &[u8]| {
             let b = op_bytes_alloc(bs.len() as u32);
             let mut h = b;
@@ -16672,7 +17344,10 @@ mod tests {
         use super::{Descriptor, Shape};
         reset();
         // desc: [0]=Int, [1]=List(0). A concat-built and a push-built [0..n) canonicalize byte-identical.
-        let desc_list = Descriptor { table: vec![Shape::Int, Shape::List(0)], root: 1 };
+        let desc_list = Descriptor {
+            table: vec![Shape::Int, Shape::List(0)],
+            root: 1,
+        };
         let push_list = |n: i64| {
             let mut v = op_vec_empty();
             for i in 0..n {
@@ -16709,7 +17384,11 @@ mod tests {
             let q = value_canonicalize_shaped(&desc_list, raw_q, 1).expect("canon query");
             op_drop(raw_q);
             let hit = op_map_lookup(m, q);
-            assert_ne!(hit, Handle::NULL, "n={n}: canonicalized concat-key must be found by push-key");
+            assert_ne!(
+                hit,
+                Handle::NULL,
+                "n={n}: canonicalized concat-key must be found by push-key"
+            );
             assert_eq!(op_get_int(hit), 999, "n={n}: and yield the stored value");
             op_drop(q);
             // A genuinely different list ([0..n) with the last element bumped) must still MISS.
@@ -16722,7 +17401,11 @@ mod tests {
             };
             let diff = value_canonicalize_shaped(&desc_list, raw_diff, 1).expect("canon diff");
             op_drop(raw_diff);
-            assert_eq!(op_map_lookup(m, diff), Handle::NULL, "n={n}: a different list must still miss");
+            assert_eq!(
+                op_map_lookup(m, diff),
+                Handle::NULL,
+                "n={n}: a different list must still miss"
+            );
             op_drop(diff);
             op_drop(m);
         }
@@ -16745,12 +17428,20 @@ mod tests {
         let qn = value_canonicalize_shaped(&desc_nested, raw_qn, 2).expect("canon nested query");
         op_drop(raw_qn);
         let hit = op_map_lookup(m, qn);
-        assert_ne!(hit, Handle::NULL, "nested (concat-list, tag) key found by (push-list, tag)");
+        assert_ne!(
+            hit,
+            Handle::NULL,
+            "nested (concat-list, tag) key found by (push-list, tag)"
+        );
         assert_eq!(op_get_int(hit), 555);
         op_drop(qn);
         op_drop(m);
         #[cfg(any(test, feature = "debug-counters"))]
-        assert_eq!(live_object_count(), 0, "canonicalize is borrow-and-copy: no leaked cells");
+        assert_eq!(
+            live_object_count(),
+            0,
+            "canonicalize is borrow-and-copy: no leaked cells"
+        );
     }
 
     /// `value_canonicalize_shaped` is ITERATIVE (wasm-safe): a 200-deep nested list canonicalizes without
@@ -16779,7 +17470,11 @@ mod tests {
             assert_eq!(op_vec_len(cursor), 1);
             cursor = op_vec_get(cursor, 0);
         }
-        assert_eq!(op_get_int(cursor), 42, "deep canonicalized list preserves its innermost leaf");
+        assert_eq!(
+            op_get_int(cursor),
+            42,
+            "deep canonicalized list preserves its innermost leaf"
+        );
         op_drop(canon);
     }
 
@@ -17038,7 +17733,10 @@ mod tests {
         let outer = op_arr_alloc(2);
         op_arr_set(outer, 0, op_box_int(1));
         op_arr_set(outer, 1, inner);
-        let shape = Shape::Tuple(vec![Shape::Int, Shape::Tuple(vec![Shape::Int, Shape::Int].into())]);
+        let shape = Shape::Tuple(vec![
+            Shape::Int,
+            Shape::Tuple(vec![Shape::Int, Shape::Int].into()),
+        ]);
         assert_eq!(render(outer, &shape), "(tuple 1 (tuple 2 3))");
     }
 
@@ -17063,7 +17761,12 @@ mod tests {
         assert_eq!(op_sum_payload(some), payload);
         assert_eq!(op_get_int(op_sum_payload(some)), 7);
 
-        let variants = || Shape::Sum(vec![("None", Shape::Tuple(vec![].into())), ("Some", Shape::Int)]);
+        let variants = || {
+            Shape::Sum(vec![
+                ("None", Shape::Tuple(vec![].into())),
+                ("Some", Shape::Int),
+            ])
+        };
         assert_eq!(render(some, &variants()), "(Some 7)");
 
         // disc 0 with an empty-arr payload = a nullary variant carrying unit.
@@ -17222,7 +17925,11 @@ mod tests {
         // "caf" + "é" (é = 0xC3 0xA9, spanning the seam) + "XY" — the `String.concat` shape → "caféXY".
         let rope = op_bytes_concat(leaf("caf"), leaf("é"));
         let rope = op_bytes_concat(rope, leaf("XY"));
-        assert_eq!(op_str_get(rope), "caféXY", "a rope String reads back its logical content, not header bytes");
+        assert_eq!(
+            op_str_get(rope),
+            "caféXY",
+            "a rope String reads back its logical content, not header bytes"
+        );
         // Identical to the flat twin (the whole point of the flatten).
         let flat = op_str_new(String::from("caféXY"));
         assert_eq!(op_str_get(rope), op_str_get(flat));
@@ -17489,7 +18196,10 @@ mod tests {
             ("xs", Shape::List(Box::new(Shape::Int))),
             (
                 "tag",
-                Shape::Sum(vec![("None", Shape::Tuple(vec![].into())), ("Some", Shape::Int)]),
+                Shape::Sum(vec![
+                    ("None", Shape::Tuple(vec![].into())),
+                    ("Some", Shape::Int),
+                ]),
             ),
             ("raw", Shape::Bytes),
             ("name", Shape::Str),
@@ -19268,7 +19978,11 @@ mod tests {
             let v = vec_range(1500);
             let tail = vec_drop_impl(v, idx);
             let clamped = idx.min(1500);
-            assert_eq!(op_vec_len(tail), 1500 - clamped, "vec-drop({idx}) tail length");
+            assert_eq!(
+                op_vec_len(tail),
+                1500 - clamped,
+                "vec-drop({idx}) tail length"
+            );
             assert_eq!(
                 vec_to_ints(tail),
                 (clamped as i64..1500).collect::<Vec<_>>(),
@@ -20260,11 +20974,11 @@ mod tests {
             (0usize, 5usize),
             (5, 0),
             (1, 1),
-            (16, 16),   // fits one leaf → leaf-merge path
-            (20, 20),   // > 32 → overflow-split into two packed leaves
+            (16, 16), // fits one leaf → leaf-merge path
+            (20, 20), // > 32 → overflow-split into two packed leaves
             (31, 33),
             (32, 32),
-            (100, 50),  // multi-level relaxed join, boundary leaves packed
+            (100, 50), // multi-level relaxed join, boundary leaves packed
             (33, 100),
         ] {
             let ba = bool_pattern(na, 0x11 ^ na as u64);
@@ -20296,8 +21010,16 @@ mod tests {
                 let (l, r) = op_vec_split(v, idx as u32); // consumes v
                 assert_eq!(op_vec_len(l) as usize, idx, "left len n={n} idx={idx}");
                 assert_eq!(op_vec_len(r) as usize, n - idx, "right len n={n} idx={idx}");
-                assert_eq!(vec_to_bools(l), bs[..idx].to_vec(), "left elems n={n} idx={idx}");
-                assert_eq!(vec_to_bools(r), bs[idx..].to_vec(), "right elems n={n} idx={idx}");
+                assert_eq!(
+                    vec_to_bools(l),
+                    bs[..idx].to_vec(),
+                    "left elems n={n} idx={idx}"
+                );
+                assert_eq!(
+                    vec_to_bools(r),
+                    bs[idx..].to_vec(),
+                    "right elems n={n} idx={idx}"
+                );
                 assert_vec_invariants(l);
                 assert_vec_invariants(r);
                 assert_all_bool_leaves_packed(l);
@@ -20319,7 +21041,11 @@ mod tests {
             let v = vec_of_bools(&bs);
             let (l, r) = op_vec_split(v, idx as u32);
             let back = op_vec_concat(l, r); // consumes both halves
-            assert_eq!(vec_to_bools(back), bs, "split/reconcat identity at idx={idx}");
+            assert_eq!(
+                vec_to_bools(back),
+                bs,
+                "split/reconcat identity at idx={idx}"
+            );
             assert_vec_invariants(back);
             assert_all_bool_leaves_packed(back);
             op_drop(back);
@@ -20405,9 +21131,17 @@ mod tests {
         );
         assert_eq!(node_rc(s), IMMORTAL, "rc is the IMMORTAL sentinel");
         op_dup(s);
-        assert_eq!(node_rc(s), IMMORTAL, "dup is a no-op on an immortal (never retained)");
+        assert_eq!(
+            node_rc(s),
+            IMMORTAL,
+            "dup is a no-op on an immortal (never retained)"
+        );
         op_drop(s);
-        assert_eq!(node_rc(s), IMMORTAL, "drop is a no-op on an immortal (never freed)");
+        assert_eq!(
+            node_rc(s),
+            IMMORTAL,
+            "drop is a no-op on an immortal (never freed)"
+        );
         assert_eq!(
             LIVE_NODES.with(|n| n.get()),
             base,
@@ -20480,7 +21214,10 @@ mod tests {
         for i in 0..40u32 {
             xs = op_vec_push(xs, bytes_leaf(&[i as u8]));
         }
-        assert!(LIVE_NODES.with(|n| n.get()) > base, "the built list holds live nodes");
+        assert!(
+            LIVE_NODES.with(|n| n.get()) > base,
+            "the built list holds live nodes"
+        );
         let xs = op_mark_immortal_deep(xs);
         assert_eq!(
             LIVE_NODES.with(|n| n.get()),
@@ -20496,7 +21233,11 @@ mod tests {
         );
         op_dup(xs);
         op_drop(xs);
-        assert_eq!(node_rc(xs), IMMORTAL, "dup/drop no-op on the immortal list root");
+        assert_eq!(
+            node_rc(xs),
+            IMMORTAL,
+            "dup/drop no-op on the immortal list root"
+        );
         assert_eq!(
             LIVE_NODES.with(|n| n.get()),
             base,
@@ -20508,9 +21249,16 @@ mod tests {
         let base2 = LIVE_NODES.with(|n| n.get());
         let mut m = op_map_empty();
         for i in 0..8u32 {
-            m = op_map_insert(m, bytes_leaf(&[i as u8, 0xAA]), bytes_leaf(&[i as u8, 0xBB]));
+            m = op_map_insert(
+                m,
+                bytes_leaf(&[i as u8, 0xAA]),
+                bytes_leaf(&[i as u8, 0xBB]),
+            );
         }
-        assert!(LIVE_NODES.with(|n| n.get()) > base2, "the built map holds live nodes");
+        assert!(
+            LIVE_NODES.with(|n| n.get()) > base2,
+            "the built map holds live nodes"
+        );
         let m = op_mark_immortal_deep(m);
         assert_eq!(
             LIVE_NODES.with(|n| n.get()),
@@ -20549,7 +21297,10 @@ mod tests {
         let tup = op_arr_alloc(2);
         op_arr_set(tup, 0, xs); // both owned by the tuple (moved into slots, rc untouched)
         op_arr_set(tup, 1, ys);
-        assert!(LIVE_NODES.with(|n| n.get()) > base, "the DAG holds live nodes");
+        assert!(
+            LIVE_NODES.with(|n| n.get()) > base,
+            "the DAG holds live nodes"
+        );
 
         let tup = op_mark_immortal_deep(tup);
         assert_eq!(
@@ -20558,12 +21309,28 @@ mod tests {
             "census nets to base — every DISTINCT node (incl. the SHARED leaves) marked EXACTLY once, no double-decrement"
         );
         assert_eq!(node_rc(tup), IMMORTAL, "the tuple root is immortal");
-        assert_eq!(node_rc(op_arr_get(tup, 0)), IMMORTAL, "the xs child is immortal");
-        assert_eq!(node_rc(op_arr_get(tup, 1)), IMMORTAL, "the ys child is immortal");
+        assert_eq!(
+            node_rc(op_arr_get(tup, 0)),
+            IMMORTAL,
+            "the xs child is immortal"
+        );
+        assert_eq!(
+            node_rc(op_arr_get(tup, 1)),
+            IMMORTAL,
+            "the ys child is immortal"
+        );
         // Both lists stay readable THROUGH the shared, now-immortal leaves; a shared element (index < 40,
         // present in both) is itself immortal.
-        assert_eq!(op_vec_len(op_arr_get(tup, 0)), 40, "xs readable via the shared immortal nodes");
-        assert_eq!(op_vec_len(op_arr_get(tup, 1)), 41, "ys readable via the shared immortal nodes");
+        assert_eq!(
+            op_vec_len(op_arr_get(tup, 0)),
+            40,
+            "xs readable via the shared immortal nodes"
+        );
+        assert_eq!(
+            op_vec_len(op_arr_get(tup, 1)),
+            41,
+            "ys readable via the shared immortal nodes"
+        );
         assert_eq!(
             node_rc(op_vec_get(op_arr_get(tup, 1), 17)),
             IMMORTAL,
@@ -20584,10 +21351,18 @@ mod tests {
             xs = op_vec_push(xs, bytes_leaf(&[i as u8]));
         }
         let xs = op_mark_immortal_deep(xs);
-        assert_eq!(LIVE_NODES.with(|n| n.get()), base, "the deep-immortal list is census-excluded");
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base,
+            "the deep-immortal list is census-excluded"
+        );
         // A MORTAL tuple wrapping the immortal list (+ a scalar sibling). The shell is one live node.
         let tup = op_arr_alloc(2);
-        assert_eq!(LIVE_NODES.with(|n| n.get()), base + 1, "the mortal tuple shell is one live node");
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base + 1,
+            "the mortal tuple shell is one live node"
+        );
         op_arr_set(tup, 0, xs); // embed the immortal (moved in, rc untouched)
         op_arr_set(tup, 1, op_box_int(7)); // an immediate scalar sibling (no node)
         op_drop(tup); // cascade drops the shell; the immortal child is skipped, not recursed/freed
@@ -20596,9 +21371,21 @@ mod tests {
             base,
             "only the shell is freed (census back to base); the whole immortal list survives untouched"
         );
-        assert_eq!(node_rc(xs), IMMORTAL, "the immortal list root survived the shell drop");
-        assert_eq!(op_vec_len(xs), 40, "the immortal list is still fully readable after the shell drop");
-        assert_eq!(node_rc(op_vec_get(xs, 23)), IMMORTAL, "an element leaf survived (not freed under the shell)");
+        assert_eq!(
+            node_rc(xs),
+            IMMORTAL,
+            "the immortal list root survived the shell drop"
+        );
+        assert_eq!(
+            op_vec_len(xs),
+            40,
+            "the immortal list is still fully readable after the shell drop"
+        );
+        assert_eq!(
+            node_rc(op_vec_get(xs, 23)),
+            IMMORTAL,
+            "an element leaf survived (not freed under the shell)"
+        );
     }
 
     /// The DEBUG-build USE-AFTER-FREE detector (operator safety net for the leak-reclaim work: "UAF is
@@ -20663,7 +21450,10 @@ mod tests {
         // ---- (A) borrow-only reads → single cascading drop frees both boxes ----
         let base = live_nodes();
         let head_a = op_box_int(7);
-        assert!(is_immediate(head_a), "small int is an immediate — no head box in this shape");
+        assert!(
+            is_immediate(head_a),
+            "small int is an immediate — no head box in this shape"
+        );
         let tail_a = bytes_leaf(&[1, 2, 3]); // +1 node (the carried tail, standing in for IntList)
         let tup_a = op_arr_alloc(2); // +1 node (tuple box)
         op_arr_set(tup_a, 0, head_a);
@@ -20729,13 +21519,20 @@ mod tests {
         // (1) unique boxed head → cascade-freed with the tuple box.
         let base = live_nodes();
         let head = op_box_int(BIG);
-        assert!(!is_immediate(head), "a large int must be a boxed node (a real head cell)");
+        assert!(
+            !is_immediate(head),
+            "a large int must be a boxed node (a real head cell)"
+        );
         let tail = bytes_leaf(&[1, 2, 3]);
         let tup = op_arr_alloc(2);
         op_arr_set(tup, 0, head);
         op_arr_set(tup, 1, tail);
         let cons = op_sum_new(0, tup);
-        assert_eq!(live_nodes() - base, 4, "Cons + tuple box + boxed head + tail");
+        assert_eq!(
+            live_nodes() - base,
+            4,
+            "Cons + tuple box + boxed head + tail"
+        );
         op_dup(op_sum_payload(cons)); // materialize the tuple box (rc 2), mirroring the arm
         let t = op_arr_get(op_sum_payload(cons), 1);
         op_dup(t); // carry the tail
@@ -20770,7 +21567,11 @@ mod tests {
         );
         op_drop(escaped_head); // release the escapee → head freed
         op_drop(t2);
-        assert_eq!(live_nodes() - base2, 0, "(2) balanced — no premature free, no leak");
+        assert_eq!(
+            live_nodes() - base2,
+            0,
+            "(2) balanced — no premature free, no leak"
+        );
     }
 
     /// The empty-vec is a SHARED IMMORTAL SINGLETON (the `IMM_UNIT` analog for lists): `op_vec_empty`
@@ -20786,23 +21587,61 @@ mod tests {
         assert_eq!(e1.0, e2.0, "op_vec_empty returns the SAME shared singleton");
         assert_eq!(op_vec_len(e1), 0, "the singleton is empty");
         // Immortal → census-EXCLUDED: minting it did not raise the live count.
-        assert_eq!(live_nodes() - base, 0, "the immortal empty-vec is not counted as live");
+        assert_eq!(
+            live_nodes() - base,
+            0,
+            "the immortal empty-vec is not counted as live"
+        );
         // Push takes the COPY path (rc = IMMORTAL != 1): a FRESH vec, the singleton untouched.
         let pushed = op_vec_push(e1, op_box_int(7));
-        assert_ne!(pushed.0, e1.0, "push on the immortal empty builds a FRESH vec, not in-place");
-        assert_eq!(op_vec_len(pushed), 1, "the fresh vec carries the pushed element");
+        assert_ne!(
+            pushed.0, e1.0,
+            "push on the immortal empty builds a FRESH vec, not in-place"
+        );
+        assert_eq!(
+            op_vec_len(pushed),
+            1,
+            "the fresh vec carries the pushed element"
+        );
         // The singleton is UNCHANGED — still the same node, still empty (no shared corruption).
-        assert_eq!(op_vec_empty().0, e1.0, "the singleton is still the same node");
-        assert_eq!(op_vec_len(e1), 0, "the singleton is still EMPTY (the push did not mutate it)");
+        assert_eq!(
+            op_vec_empty().0,
+            e1.0,
+            "the singleton is still the same node"
+        );
+        assert_eq!(
+            op_vec_len(e1),
+            0,
+            "the singleton is still EMPTY (the push did not mutate it)"
+        );
         // TWO INDEPENDENT pushes off the SAME shared empty must NOT alias — the flag-day soundness
         // witness: a mutated-shared-immortal would make the second push see the first's element (or the
         // two results alias). Each push path-copies off the immortal, so the results are distinct vecs.
         let pushed2 = op_vec_push(op_vec_empty(), op_box_int(9));
-        assert_ne!(pushed2.0, pushed.0, "two independent pushes off the shared empty do NOT alias");
-        assert_eq!(op_vec_len(pushed2), 1, "the second result is its own 1-element vec");
-        assert_eq!(op_get_int(op_vec_get(pushed, 0)), 7, "first result still carries 7 (not clobbered)");
-        assert_eq!(op_get_int(op_vec_get(pushed2, 0)), 9, "second result carries 9");
-        assert_eq!(op_vec_len(op_vec_empty()), 0, "the shared empty is STILL empty after both pushes");
+        assert_ne!(
+            pushed2.0, pushed.0,
+            "two independent pushes off the shared empty do NOT alias"
+        );
+        assert_eq!(
+            op_vec_len(pushed2),
+            1,
+            "the second result is its own 1-element vec"
+        );
+        assert_eq!(
+            op_get_int(op_vec_get(pushed, 0)),
+            7,
+            "first result still carries 7 (not clobbered)"
+        );
+        assert_eq!(
+            op_get_int(op_vec_get(pushed2, 0)),
+            9,
+            "second result carries 9"
+        );
+        assert_eq!(
+            op_vec_len(op_vec_empty()),
+            0,
+            "the shared empty is STILL empty after both pushes"
+        );
         op_drop(pushed); // frees the fresh vecs; any drop of the immortal is a no-op
         op_drop(pushed2);
         assert_eq!(
@@ -20819,9 +21658,21 @@ mod tests {
     #[test]
     fn empty_collection_constructors_are_shared_immortal_singletons() {
         let base = live_nodes();
-        assert_eq!(op_map_empty().0, op_map_empty().0, "empty map is a shared singleton");
-        assert_eq!(op_set_empty().0, op_set_empty().0, "empty set is a shared singleton");
-        assert_eq!(op_bytes_alloc(0).0, op_bytes_alloc(0).0, "empty bytes is a shared singleton");
+        assert_eq!(
+            op_map_empty().0,
+            op_map_empty().0,
+            "empty map is a shared singleton"
+        );
+        assert_eq!(
+            op_set_empty().0,
+            op_set_empty().0,
+            "empty set is a shared singleton"
+        );
+        assert_eq!(
+            op_bytes_alloc(0).0,
+            op_bytes_alloc(0).0,
+            "empty bytes is a shared singleton"
+        );
         assert_eq!(
             op_str_new(String::new()).0,
             op_str_new(String::new()).0,
@@ -20835,14 +21686,34 @@ mod tests {
         // Insert onto the immortal empty map/set path-copies (rc=IMMORTAL != 1): a FRESH node, and the
         // shared empty singleton is left untouched.
         let m = op_map_insert(op_map_empty(), op_box_int(1), op_box_int(2));
-        assert_ne!(m.0, op_map_empty().0, "map insert builds a FRESH map off the immortal empty");
+        assert_ne!(
+            m.0,
+            op_map_empty().0,
+            "map insert builds a FRESH map off the immortal empty"
+        );
         assert_eq!(op_map_size(m), 1, "the fresh map carries the entry");
-        assert_eq!(op_map_size(op_map_empty()), 0, "the immortal empty map is STILL empty (not mutated)");
+        assert_eq!(
+            op_map_size(op_map_empty()),
+            0,
+            "the immortal empty map is STILL empty (not mutated)"
+        );
         let s = op_set_insert(op_set_empty(), op_box_int(7));
-        assert_ne!(s.0, op_set_empty().0, "set insert builds a FRESH set off the immortal empty");
+        assert_ne!(
+            s.0,
+            op_set_empty().0,
+            "set insert builds a FRESH set off the immortal empty"
+        );
         assert_eq!(op_set_size(s), 1, "the fresh set carries the element");
-        assert_eq!(op_set_size(op_set_empty()), 0, "the immortal empty set is STILL empty");
-        assert_eq!(op_bytes_len(op_bytes_alloc(0)), 0, "the empty bytes singleton stays empty");
+        assert_eq!(
+            op_set_size(op_set_empty()),
+            0,
+            "the immortal empty set is STILL empty"
+        );
+        assert_eq!(
+            op_bytes_len(op_bytes_alloc(0)),
+            0,
+            "the empty bytes singleton stays empty"
+        );
         op_drop(m);
         op_drop(s);
         assert_eq!(
@@ -20867,7 +21738,11 @@ mod tests {
         }
         assert_eq!(op_vec_len(v) as i64, n, "prepend built an n-element list");
         // Prepend puts the last-added element at index 0, the first at index n-1.
-        assert_eq!(op_get_int(op_vec_get(v, 0)), n - 1, "index 0 = the last-prepended element");
+        assert_eq!(
+            op_get_int(op_vec_get(v, 0)),
+            n - 1,
+            "index 0 = the last-prepended element"
+        );
         assert_eq!(
             op_get_int(op_vec_get(v, (n - 1) as u32)),
             0,
@@ -20877,7 +21752,11 @@ mod tests {
         for idx in 0..n {
             sum += op_get_int(op_vec_get(v, idx as u32));
         }
-        assert_eq!(sum, (0..n).sum(), "every element is present + readable (sum matches)");
+        assert_eq!(
+            sum,
+            (0..n).sum(),
+            "every element is present + readable (sum matches)"
+        );
         op_drop(v);
         assert_eq!(
             live_nodes() - base,
@@ -20961,7 +21840,11 @@ mod tests {
         vec = op_vec_push(vec, i2);
         let list = op_sum_new(6, vec);
         let out = op_ast_print(list, discs);
-        assert_eq!(op_str_get(out), "(+ 1 2)", "List of Name + two Ints → (+ 1 2)");
+        assert_eq!(
+            op_str_get(out),
+            "(+ 1 2)",
+            "List of Name + two Ints → (+ 1 2)"
+        );
         op_drop(list);
         op_drop(out);
 
@@ -20970,7 +21853,11 @@ mod tests {
         let v1 = op_vec_push(op_vec_empty(), op_sum_new(0, op_bigint_of_i64(5)));
         let single = op_sum_new(6, v1);
         let o = op_ast_print(single, discs);
-        assert_eq!(op_str_get(o), "(5)", "single-element list reads its element via vec-get, not arr-get");
+        assert_eq!(
+            op_str_get(o),
+            "(5)",
+            "single-element list reads its element via vec-get, not arr-get"
+        );
         op_drop(single);
         op_drop(o);
 
@@ -20981,7 +21868,11 @@ mod tests {
         let outer = op_vec_push(op_vec_empty(), op_sum_new(6, inner));
         let nested = op_sum_new(6, outer);
         let o = op_ast_print(nested, discs);
-        assert_eq!(op_str_get(o), "((f 2))", "nested list recurses and reads each element via vec-get");
+        assert_eq!(
+            op_str_get(o),
+            "((f 2))",
+            "nested list recurses and reads each element via vec-get"
+        );
         op_drop(nested);
         op_drop(o);
 
@@ -21002,7 +21893,11 @@ mod tests {
         // Ast.Str with a quote + newline → the escaped `"…"` literal (closed set \n \t \r \\ \").
         let st = op_sum_new(3, op_str_new("a\"b\nc".to_string()));
         let o = op_ast_print(st, discs);
-        assert_eq!(op_str_get(o), "\"a\\\"b\\nc\"", "Str renders as an escaped double-quoted literal");
+        assert_eq!(
+            op_str_get(o),
+            "\"a\\\"b\\nc\"",
+            "Str renders as an escaped double-quoted literal"
+        );
         op_drop(st);
         op_drop(o);
 
@@ -21165,7 +22060,10 @@ mod tests {
         let listc = op_sum_new(9, vecof(&[int(1), int(2)]));
         let rec = op_sum_new(
             11,
-            vecof(&[pair(14, name("a"), int(7)), pair(14, name("b"), op_sum_new(2, op_box_bool(true)))]),
+            vecof(&[
+                pair(14, name("a"), int(7)),
+                pair(14, name("b"), op_sum_new(2, op_box_bool(true))),
+            ]),
         );
         let mp = op_sum_new(12, vecof(&[pair(14, int(3), strv("x"))]));
         let setc = op_sum_new(13, vecof(&[int(5), int(9)]));
@@ -21216,7 +22114,11 @@ mod tests {
 
         // (2) round-trips through op94 decode.
         let decoded = op_ast_decode(enc1, discs);
-        assert_ne!(decoded, Handle::NULL, "a compound-ctor cdzast document decodes to an Ast, not NULL");
+        assert_ne!(
+            decoded,
+            Handle::NULL,
+            "a compound-ctor cdzast document decodes to an Ast, not NULL"
+        );
         let enc2 = op_ast_encode(decoded, discs);
         assert_eq!(
             bytes_to_vec(enc2),
@@ -21247,7 +22149,11 @@ mod tests {
             let mut b = crate::ast::Builder::new();
             let root = b.atom_leaf(leaf);
             let want = crate::codec::encode(&b.finish(root));
-            assert_eq!(bytes_to_vec(enc), want, "op93 non-finite encode == compile-fold codec bytes");
+            assert_eq!(
+                bytes_to_vec(enc),
+                want,
+                "op93 non-finite encode == compile-fold codec bytes"
+            );
             // decode back → Ast.Float with the SAME non-finite value
             let dec = op_ast_decode(enc, discs);
             assert_ne!(dec, Handle::NULL);
@@ -21262,8 +22168,14 @@ mod tests {
             op_drop(dec);
         };
         check(f64::NAN, crate::ast::Leaf::FloatNan);
-        check(f64::INFINITY, crate::ast::Leaf::FloatInf { negative: false });
-        check(f64::NEG_INFINITY, crate::ast::Leaf::FloatInf { negative: true });
+        check(
+            f64::INFINITY,
+            crate::ast::Leaf::FloatInf { negative: false },
+        );
+        check(
+            f64::NEG_INFINITY,
+            crate::ast::Leaf::FloatInf { negative: true },
+        );
         op_drop(discs);
     }
 
@@ -21552,7 +22464,11 @@ mod tests {
         );
         // And the two are interchangeable as a SET element: inserting both dedups to size 1.
         let s = op_set_insert(op_set_insert(op_set_empty(), compacted), flat);
-        assert_eq!(op_set_size(s), 1, "a compacted rope and its flat twin are the SAME set element");
+        assert_eq!(
+            op_set_size(s),
+            1,
+            "a compacted rope and its flat twin are the SAME set element"
+        );
         op_drop(s);
         assert_eq!(live_nodes(), before, "no leak");
     }
@@ -21628,10 +22544,17 @@ mod tests {
         let t1 = op_bytes_compact(sl); // compact #1: flattens the now-SHARED view in place
         let t2 = op_bytes_compact(sl); // compact #2: sl is a flat leaf now → no-op, same handle
         let b = op_bytes_concat(t1, t2); // consumes BOTH refs of sl (rc 2 → 0, freed once)
-        assert_eq!(op_bytes_len(b), 4, "concat of [20,30] ++ [20,30] is 4 bytes");
+        assert_eq!(
+            op_bytes_len(b),
+            4,
+            "concat of [20,30] ++ [20,30] is 4 bytes"
+        );
         let b_flat = op_bytes_compact(b);
         let expected = bytes_leaf(&[20, 30, 20, 30]);
-        assert!(champ_eq(b_flat, expected), "content is [20,30,20,30] — value correct");
+        assert!(
+            champ_eq(b_flat, expected),
+            "content is [20,30,20,30] — value correct"
+        );
         op_drop(b_flat);
         op_drop(expected);
         assert_eq!(
@@ -22081,7 +23004,10 @@ mod tests {
         // A boxed Int (outside the fixnum window → a real heap leaf with 8 LE raw bytes, zero handles).
         let n: i64 = 0x0102_0304_0506_0708;
         let int_leaf = op_box_int(n);
-        assert!(!is_immediate(int_leaf), "the value is boxed (heap leaf), not an inline fixnum");
+        assert!(
+            !is_immediate(int_leaf),
+            "the value is boxed (heap leaf), not an inline fixnum"
+        );
         // A Bytes leaf holding those exact 8 little-endian bytes — same raw, same (zero) arity, DIFFERENT
         // type. The runtime has no tag, so it is indistinguishable from the Int leaf.
         let bytes_leaf = op_bytes_alloc(8);
@@ -24189,9 +25115,17 @@ mod tests {
                 "a completed Set.contains borrow leaves the accumulator at rc==1 (does not block reuse)"
             );
             seen = sinsert_int(seen, i); // rc==1 ⇒ in-place FBIP refit, no orphaned prior version
-            assert_eq!(node_rc(seen), 1, "the reused accumulator stays uniquely owned");
+            assert_eq!(
+                node_rc(seen),
+                1,
+                "the reused accumulator stays uniquely owned"
+            );
         }
-        assert_eq!(op_set_size(seen) as i64, 24, "all distinct elements inserted");
+        assert_eq!(
+            op_set_size(seen) as i64,
+            24,
+            "all distinct elements inserted"
+        );
         op_drop(seen);
         assert_eq!(
             live_nodes(),
@@ -24222,7 +25156,11 @@ mod tests {
             }
             assert_eq!(node_rc(base), 1, "vec: base uniquely owned after dup-skip");
             let result = op_vec_push(base, op_box_int(999)); // else-arm consumes the rc1 base in place
-            assert_eq!(node_rc(result), 1, "vec: result is the subsumed rc1 base, uniquely owned");
+            assert_eq!(
+                node_rc(result),
+                1,
+                "vec: result is the subsumed rc1 base, uniquely owned"
+            );
             op_drop(result); // the single post-if drop
             assert_eq!(
                 live_nodes(),
@@ -24285,12 +25223,19 @@ mod tests {
         reset();
         let before = live_nodes();
         // A uniquely-owned (rc1) multi-node rope base.
-        let base = op_bytes_concat(op_str_new(String::from("caf")), op_str_new(String::from("é")));
+        let base = op_bytes_concat(
+            op_str_new(String::from("caf")),
+            op_str_new(String::from("é")),
+        );
         assert_eq!(node_rc(base), 1, "rope: base uniquely owned after dup-skip");
         let x = op_str_new(String::from("XY"));
         let result = op_bytes_concat(base, x); // else-arm: consumes the rc1 base into a new concat node
         assert_eq!(node_rc(result), 1, "rope: result uniquely owned");
-        assert_eq!(op_str_get(result), "caféXY", "rope: correct concatenated content");
+        assert_eq!(
+            op_str_get(result),
+            "caféXY",
+            "rope: correct concatenated content"
+        );
         op_drop(result); // the single post-if drop reclaims the base (now the node's child) + x
         assert_eq!(
             live_nodes(),
@@ -25820,7 +26765,11 @@ mod tests {
                 snap.len(),
                 "forked vector snapshot length intact"
             );
-            assert_eq!(vec_to_ints(*h), *snap, "forked vector snapshot elements intact");
+            assert_eq!(
+                vec_to_ints(*h),
+                *snap,
+                "forked vector snapshot elements intact"
+            );
             assert_vec_invariants(*h);
         }
         // no leak / no double-free: release everything, live count returns to baseline.
@@ -25922,8 +26871,16 @@ mod tests {
             assert_all_bool_leaves_packed(v);
         }
         // (1) element equivalence + length.
-        assert_eq!(op_vec_len(v) as usize, reference.len(), "bool vector length matches reference");
-        assert_eq!(vec_to_bools(v), reference, "bool vector elements match reference");
+        assert_eq!(
+            op_vec_len(v) as usize,
+            reference.len(),
+            "bool vector length matches reference"
+        );
+        assert_eq!(
+            vec_to_bools(v),
+            reference,
+            "bool vector elements match reference"
+        );
         // (2) RRB structural invariants.
         assert_vec_invariants(v);
         // (3) value-encode equals a fresh push-built twin — packing is unobservable at the boundary.
@@ -25939,8 +26896,16 @@ mod tests {
         op_drop(twin);
         // (4) forks undisturbed + no leak.
         for (h, snap) in &forks {
-            assert_eq!(op_vec_len(*h) as usize, snap.len(), "forked bool snapshot length intact");
-            assert_eq!(vec_to_bools(*h), *snap, "forked bool snapshot elements intact");
+            assert_eq!(
+                op_vec_len(*h) as usize,
+                snap.len(),
+                "forked bool snapshot length intact"
+            );
+            assert_eq!(
+                vec_to_bools(*h),
+                *snap,
+                "forked bool snapshot elements intact"
+            );
             assert_vec_invariants(*h);
         }
         op_drop(v);
@@ -25979,8 +26944,8 @@ mod tests {
         // in range; a 0-len or full slice is a valid edge, never a trap). Exercises slice + seam-cross +
         // the slice-of-slice collapse when applied to an already-sliced rope.
         Slice { start: u8, len: u8 },
-        Compact,   // materialize to an independent leaf (releases any pinned parent) — content-preserving
-        ReadOne,   // read a single byte (flattens a rope in place) — must not change observable content
+        Compact, // materialize to an independent leaf (releases any pinned parent) — content-preserving
+        ReadOne, // read a single byte (flattens a rope in place) — must not change observable content
         Fork,
         DropForked,
     }
@@ -25994,7 +26959,9 @@ mod tests {
             match *op {
                 BytesOp::ConcatRange { n } => {
                     let count = (n as usize) % 40 + 1;
-                    let tail: Vec<u8> = (0..count).map(|j| (j as u8).wrapping_mul(7).wrapping_add(1)).collect();
+                    let tail: Vec<u8> = (0..count)
+                        .map(|j| (j as u8).wrapping_mul(7).wrapping_add(1))
+                        .collect();
                     let tv = bytes_leaf(&tail);
                     v = op_bytes_concat(v, tv);
                     reference.extend_from_slice(&tail);
@@ -26002,9 +26969,17 @@ mod tests {
                 BytesOp::Slice { start, len } => {
                     let blen = reference.len();
                     // start ∈ [0, blen]; len ∈ [0, blen-start] — always a valid (possibly empty) range.
-                    let s = if blen == 0 { 0 } else { (start as usize) % (blen + 1) };
+                    let s = if blen == 0 {
+                        0
+                    } else {
+                        (start as usize) % (blen + 1)
+                    };
                     let max_len = blen - s;
-                    let l = if max_len == 0 { 0 } else { (len as usize) % (max_len + 1) };
+                    let l = if max_len == 0 {
+                        0
+                    } else {
+                        (len as usize) % (max_len + 1)
+                    };
                     v = op_bytes_slice(v, s as u32, l as u32);
                     reference = reference[s..s + l].to_vec();
                 }
@@ -26032,7 +27007,10 @@ mod tests {
                     if !reference.is_empty() {
                         // Reading byte 0 flattens `v` in place; the value read must match the reference.
                         let got = op_bytes_get(v, 0) as u8;
-                        assert_eq!(got, reference[0], "bytes-get(0) matches reference (flatten-safe)");
+                        assert_eq!(
+                            got, reference[0],
+                            "bytes-get(0) matches reference (flatten-safe)"
+                        );
                     }
                 }
                 BytesOp::Fork => {
@@ -26048,20 +27026,40 @@ mod tests {
         }
         // (1) length + full content vs the reference. `bytes_to_vec` flattens `v` in place — fine, it is
         // content-preserving and this is the last read of `v`'s shape we depend on.
-        assert_eq!(op_bytes_len(v) as usize, reference.len(), "bytes length matches reference");
-        assert_eq!(bytes_to_vec(v), reference, "bytes content matches reference");
+        assert_eq!(
+            op_bytes_len(v) as usize,
+            reference.len(),
+            "bytes length matches reference"
+        );
+        assert_eq!(
+            bytes_to_vec(v),
+            reference,
+            "bytes content matches reference"
+        );
         // (2) forked snapshots undisturbed by later mutation of `v` (aliasing safety over shared leaves).
         // Each fork reads its OWN content (flattening that snapshot, independent of `v`).
         for (h, snap) in &forks {
-            assert_eq!(op_bytes_len(*h) as usize, snap.len(), "forked bytes snapshot length intact");
-            assert_eq!(bytes_to_vec(*h), *snap, "forked bytes snapshot content intact");
+            assert_eq!(
+                op_bytes_len(*h) as usize,
+                snap.len(),
+                "forked bytes snapshot length intact"
+            );
+            assert_eq!(
+                bytes_to_vec(*h),
+                *snap,
+                "forked bytes snapshot content intact"
+            );
         }
         // (3) no leak / no double-free across the whole rope of shared slices/concats.
         op_drop(v);
         for (h, _) in forks {
             op_drop(h);
         }
-        assert_eq!(live_nodes(), before, "no leak / no double-free across the whole bytes sequence");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free across the whole bytes sequence"
+        );
     }
 
     #[test]
@@ -26161,9 +27159,9 @@ mod tests {
         let allow_compound = *budget > 2 && depth < 5;
         *budget = budget.saturating_sub(1);
         match tag % if allow_compound { 9 } else { 6 } {
-            0 => op_box_int(p as i64 - 128),        // small signed int (incl. negatives)
+            0 => op_box_int(p as i64 - 128), // small signed int (incl. negatives)
             1 => op_box_bool(p & 1 == 0),
-            2 => op_arr_alloc(0),                   // unit (inline)
+            2 => op_arr_alloc(0),                          // unit (inline)
             3 => op_str_new(alloc::format!("s{}", p % 7)), // one of a few strings (dedup/collision)
             4 => {
                 // a small bytes leaf
@@ -26214,8 +27212,16 @@ mod tests {
             let b = build_rand_value(bytes, &mut cb, &mut bb, 0);
             // (1) structurally-equal distinct-node twins: eq, hash-equal, cmp Equal.
             assert!(champ_eq(a, b), "structurally-identical twins are champ_eq");
-            assert_eq!(champ_hash(a), champ_hash(b), "…and hash identically (the map-key contract)");
-            assert_eq!(champ_key_cmp(a, b), core::cmp::Ordering::Equal, "…and champ_key_cmp Equal");
+            assert_eq!(
+                champ_hash(a),
+                champ_hash(b),
+                "…and hash identically (the map-key contract)"
+            );
+            assert_eq!(
+                champ_key_cmp(a, b),
+                core::cmp::Ordering::Equal,
+                "…and champ_key_cmp Equal"
+            );
             // self-consistency: a value equals itself, hashes stably, cmp Equal to itself.
             assert!(champ_eq(a, a));
             assert_eq!(champ_hash(a), champ_hash(a));
@@ -26239,14 +27245,26 @@ mod tests {
             );
             if eq_ac {
                 // if they did come out equal, the hash contract still holds.
-                assert_eq!(champ_hash(a), champ_hash(c), "eq ⟹ hash-equal (perturbed tree)");
+                assert_eq!(
+                    champ_hash(a),
+                    champ_hash(c),
+                    "eq ⟹ hash-equal (perturbed tree)"
+                );
             }
             // antisymmetry: cmp(a,c) is the reverse of cmp(c,a).
-            assert_eq!(cmp_ac.reverse(), champ_key_cmp(c, a), "champ_key_cmp is antisymmetric");
+            assert_eq!(
+                cmp_ac.reverse(),
+                champ_key_cmp(c, a),
+                "champ_key_cmp is antisymmetric"
+            );
             op_drop(a);
             op_drop(b);
             op_drop(c);
-            assert_eq!(live_nodes(), before, "no leak building/comparing random trees");
+            assert_eq!(
+                live_nodes(),
+                before,
+                "no leak building/comparing random trees"
+            );
         });
     }
 
@@ -26338,8 +27356,9 @@ mod tests {
                 let ix = emit(table, S::Sum(vec![].into()));
                 let (payload, sp) =
                     build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
-                let variants: Vec<(Rc<str>, u32)> =
-                    (0..=disc).map(|d| (alloc::format!("V{d}").into(), sp)).collect();
+                let variants: Vec<(Rc<str>, u32)> = (0..=disc)
+                    .map(|d| (alloc::format!("V{d}").into(), sp))
+                    .collect();
                 table[ix as usize] = S::Sum(variants.into());
                 (op_sum_new(disc as u32, payload), ix)
             }
@@ -26349,8 +27368,7 @@ mod tests {
                 let ix = emit(table, S::Record(vec![].into()));
                 let (a, sa) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
                 let (bch, sb) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
-                table[ix as usize] =
-                    S::Record(vec![("f0".into(), sa), ("f1".into(), sb)].into());
+                table[ix as usize] = S::Record(vec![("f0".into(), sa), ("f1".into(), sb)].into());
                 let r = op_arr_alloc(2);
                 op_arr_set(r, 0, a);
                 op_arr_set(r, 1, bch);
@@ -26485,11 +27503,13 @@ mod tests {
                 descriptor.root,
             ) {
                 let doc_bytes = b.finish(r);
-                let doc = parse_doc(&doc_bytes).expect("a document value-encode produced must parse");
+                let doc =
+                    parse_doc(&doc_bytes).expect("a document value-encode produced must parse");
                 // Re-walk the struct tree PRE-order LTR; each leaf's FIRST reference must have the next
                 // id under canon first-encounter numbering (0, 1, 2, …). Any jump means the leaf pool
                 // diverges from codec::encode(canon(tree)) — a post-order-emission regression.
-                let mut seen: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
+                let mut seen: alloc::collections::BTreeSet<u32> =
+                    alloc::collections::BTreeSet::new();
                 let mut expected_next: u32 = 0;
                 let mut stack: Vec<u32> = vec![doc.root];
                 while let Some(struct_ix) = stack.pop() {
@@ -26813,8 +27833,10 @@ mod tests {
         // LARGER than i64 (1e20 = 10000000000² > i64::MAX ~9.2e18) into a Bytes leaf, build the BigInt, and
         // confirm it equals the SAME value computed by runtime arithmetic. Also confirms it CONSUMES buf.
         reset();
-        let expected =
-            op_bigint_mul(op_bigint_of_i64(10_000_000_000), op_bigint_of_i64(10_000_000_000));
+        let expected = op_bigint_mul(
+            op_bigint_of_i64(10_000_000_000),
+            op_bigint_of_i64(10_000_000_000),
+        );
         // The canonical sign-magnitude bytes of a beyond-i64 value (what the compiler would bake).
         let sm_bytes = |v: i128| -> alloc::vec::Vec<u8> {
             let mut buf = [0u8; 32];
@@ -26864,10 +27886,16 @@ mod tests {
         let before = live_object_count();
         // Sign-magnitude bytes of a beyond-i64 value (1e20). `[sign][LE magnitude]` — several bytes.
         let mut buf = [0u8; 32];
-        let n = bigint::Big::i128_to_sign_magnitude_bytes_into(100_000_000_000_000_000_000i128, &mut buf)
-            .expect("fits 32");
+        let n = bigint::Big::i128_to_sign_magnitude_bytes_into(
+            100_000_000_000_000_000_000i128,
+            &mut buf,
+        )
+        .expect("fits 32");
         let sm = &buf[..n];
-        assert!(sm.len() >= 4, "the value needs a multi-byte magnitude to span a rope seam");
+        assert!(
+            sm.len() >= 4,
+            "the value needs a multi-byte magnitude to span a rope seam"
+        );
         // A leaf carrying a byte slice.
         let leaf = |bytes: &[u8]| -> Handle {
             let h = op_bytes_alloc(bytes.len() as u32);
@@ -26888,10 +27916,17 @@ mod tests {
             "bigint-of-bytes of a ROPE equals the flat leaf — the bytes_flatten materialized it before decoding"
         );
         // And byte-identical leaves (the champ-key / canonical property).
-        assert!(champ_eq(flat_big, rope_big), "the two BigInt leaves are byte-identical (canonical)");
+        assert!(
+            champ_eq(flat_big, rope_big),
+            "the two BigInt leaves are byte-identical (canonical)"
+        );
         op_drop(flat_big);
         op_drop(rope_big);
-        assert_eq!(live_object_count(), before, "no leak (both byte leaves consumed, both BigInts dropped)");
+        assert_eq!(
+            live_object_count(),
+            before,
+            "no leak (both byte leaves consumed, both BigInts dropped)"
+        );
     }
 
     #[test]
