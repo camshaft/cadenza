@@ -4496,6 +4496,14 @@ pub fn collect_used_ops(
         out.insert(OP_DUP);
         out.insert(OP_DROP);
     }
+    // MatchSum OWNED-VIEW shell reclaim (the `matchsum_view_shell_reclaim_ok` emit at the tail + non-tail
+    // MatchSum sites): a `String.at`/`Bytes.slice` scrutinee whose whole-match payload-safety holds gets its
+    // Some shell `drop`ed (post-match fall-through and/or before a loop back-edge). Import `drop` iff the
+    // body has such a match — the precise import/emit companion (mirrors the SumExpect view block above; NO
+    // dup, this reclaim only drops the shell). Purely Core-structural (no slots), so decidable here.
+    if body_reclaims_view_shell(db, id) {
+        out.insert(OP_DROP);
+    }
     collect_used_ops_into(db, id, out);
     // NOTE: the owned-heap-param DROP epilogue (`select_body`, looped functions) also needs `drop` imported,
     // but only when it ACTUALLY fires (looping + a dead-at-exit invariant heap param) — which needs the
@@ -4503,6 +4511,41 @@ pub fn collect_used_ops(
     // (which has the def index) via `looped_owned_param_drops`, NOT here — importing `drop` for every
     // heap-param body would over-declare it (violating the drop-import-minimization discipline the
     // `str_at_does_not_over_declare_drop` test pins).
+}
+
+/// Whether `id`'s body contains a `MatchSum` the emit will VIEW-shell-reclaim (`matchsum_view_shell_reclaim_ok`
+/// at the tail/non-tail MatchSum sites) — an owned-single-view (`String.at`/`Bytes.slice`) scrutinee whose
+/// whole-match payload-safety holds. The import-side companion of that emit: `collect_used_ops` imports `drop`
+/// iff this is true (precise, no over-declaration — a payload-CONSUMING arm fails `sum_shell_reclaim_payload_ok`
+/// and is excluded). Purely Core-structural: an owned-single-view scrutinee is a `StrAt`/`BytesSlice` NODE (a
+/// computed producer, always stashed into an I32 slot at emit — never a reusable handle), so the stashed-I32
+/// gate holds by construction and needs no slot context. `never_diverges` mirrors the emit's `body_diverges`.
+fn body_reclaims_view_shell(db: &mut Db, id: StructId) -> bool {
+    fn go(db: &mut Db, id: StructId, seen: &mut HashSet<StructId>) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if let Core::MatchSum { scrutinee, root } = core_of(db, id) {
+            let scrut_ty = type_of(db, scrutinee);
+            let never_diverges = body_diverges(db, id);
+            // Call the SAME gate the emit uses (single source of truth → exact import/emit agreement). A
+            // StrAt/BytesSlice scrutinee is always a computed producer → stashed I32, so the stand-in
+            // `Some((0, I32))` matches the emit's real stashed slot for the gate's purposes.
+            if matchsum_view_shell_reclaim_ok(
+                db,
+                scrutinee,
+                &scrut_ty,
+                Some((0, ValType::I32)),
+                never_diverges,
+                &root,
+            ) {
+                return true;
+            }
+        }
+        core_child_ids(db, id).into_iter().any(|c| go(db, c, seen))
+    }
+    let mut seen = HashSet::new();
+    go(db, id, &mut seen)
 }
 
 /// The parameter SLOTS the owned-heap-param drop epilogue (`select_body`) will reclaim at the loop exit for
@@ -6538,6 +6581,7 @@ pub fn select_function_of(
         param_slots: &param_slots,
         which: mutual.then_some(which_slot),
         depth: 0,
+        scrut_shell_reclaim: None,
     });
     // Initialize `which` to this function's OWN discriminant BEFORE the loop opens — it selects which
     // member body runs on the FIRST iteration (this function's own). A member cross-call updates `which`
@@ -8154,6 +8198,15 @@ struct TailLoop<'a> {
     param_slots: &'a [u32],
     which: Option<u32>,
     depth: u32,
+    /// A scratch slot holding an enclosing match's OWNED scrutinee SHELL that is DEAD on this loop's
+    /// back-edge and must be `drop`ed BEFORE the `br` to the loop top — else it leaks one heap cell per
+    /// iteration. Set by the tail `MatchSum` emit ONLY for an owned-single-view (`String.at`/`Bytes.slice`)
+    /// scrutinee whose whole-match payload-safety holds (`matchsum_view_shell_reclaim_ok`): the payload is
+    /// borrowed/dead on every arm (never consumed into the tail-call args), so freeing the shell (which
+    /// cascades into the dead payload) before the back-edge is sound. The post-match fall-through drop
+    /// handles the value-returning arms; this handles the looping arms the post-match drop `br`s past — the
+    /// codec `find-at`/`fromcol` String.at scan leak. `None` on every ordinary loop (the common case).
+    scrut_shell_reclaim: Option<u32>,
 }
 
 impl TailLoop<'_> {
@@ -8848,15 +8901,49 @@ fn emit_tail(
                 && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder }
                     if out.nontail_match_reclaim_binders.contains(&binder))
                 && nontail_param_payload_ok(db, scrutinee, &scrut_ty, never_diverges, &root);
-            let reclaim_shell = !arms_tail_call
-                && (sum_shell_reclaim_ok(
-                    db,
-                    scrutinee,
-                    &scrut_ty,
-                    stashed_slot,
-                    never_diverges,
-                    &root,
-                ) || param_reclaim);
+            // OWNED-SINGLE-VIEW (String.at / Bytes.slice) local reclaim: its Some shell leaks because the
+            // scrutinee is not globally `Owned` (`matchsum_view_shell_reclaim_ok`). UNLIKE the general
+            // owned/param reclaim it fires EVEN WHEN `arms_tail_call` — a tail-recursive String.at scan
+            // (codec `find-at`) is the very shape that leaks per iteration. The reclaim then splits across
+            // BOTH exit kinds: (a) the post-match fall-through drop below handles the VALUE-returning arms
+            // (`find-at`'s found `i` / `None` `-1`); (b) the LOOPING arms `br` past that drop, so the shell
+            // slot is threaded into the arms' `TailLoop` and dropped before each back-edge `br`
+            // (`emit_loop_iteration`). Payload-safety (`sum_shell_reclaim_payload_ok`, whole-match) proves
+            // the view is borrowed/dead on every arm, so freeing the shell on any exit is sound;
+            // `fromcol`'s view-into-`Call` arm fails it → no reclaim (defined leak, never a double-free).
+            let view_reclaim = matchsum_view_shell_reclaim_ok(
+                db,
+                scrutinee,
+                &scrut_ty,
+                stashed_slot,
+                never_diverges,
+                &root,
+            );
+            let reclaim_shell = view_reclaim
+                || (!arms_tail_call
+                    && (sum_shell_reclaim_ok(
+                        db,
+                        scrutinee,
+                        &scrut_ty,
+                        stashed_slot,
+                        never_diverges,
+                        &root,
+                    ) || param_reclaim));
+            // Thread the owned-view shell slot into the arms' loop context so a member tail-call in an arm
+            // (`find-at`'s recursive branch) drops the dead shell before its back-edge `br`. Only when the
+            // match actually loops (`arms_tail_call`) and the view reclaim holds; else the arms' `tl` is
+            // unchanged (the common case never touches this).
+            let arm_tp = if view_reclaim && arms_tail_call {
+                let shell_slot = stashed_slot
+                    .expect("matchsum_view_shell_reclaim_ok implies a stashed I32 slot")
+                    .0;
+                TailPos::Tail(tl.map(|t| TailLoop {
+                    scrut_shell_reclaim: Some(shell_slot),
+                    ..t
+                }))
+            } else {
+                TailPos::Tail(tl)
+            };
             emit_sum_cont(
                 db,
                 scrutinee,
@@ -8869,7 +8956,7 @@ fn emit_tail(
                 scratch_ty,
                 layout,
                 out,
-                TailPos::Tail(tl),
+                arm_tp,
             )?;
             if reclaim_shell {
                 // The stashed temp's slot, OR (non-tail-spine param path) the PARAM scrutinee's own slot.
@@ -9360,6 +9447,16 @@ fn emit_loop_iteration(
         out.push(Lir::CallImport(OP_DROP)); // free the dead old accumulator → []
     }
     out.loop_reassign_no_dup = saved_no_dup;
+    // OWNED-VIEW SHELL back-edge reclaim: an enclosing owned-single-view (String.at/Bytes.slice) MatchSum
+    // set `scrut_shell_reclaim` to its Some-shell scratch slot (dead on this back-edge — the whole-match
+    // payload-safety proved the view is borrowed/dead on every arm, so it is NOT among the args just
+    // evaluated/stored). Free it now, before the `br`, else it leaks one cell per loop iteration (the codec
+    // find-at/fromcol scan). op_drop is DEEP + rc-aware; the dead payload cascades to 0. AFTER the arg
+    // stores (the args never reference the view — that IS the borrow-clean gate), so no arg handle dangles.
+    if let Some(sc) = tl.scrut_shell_reclaim {
+        out.push(Lir::LocalGet(sc)); // [shell]
+        out.push(Lir::CallImport(OP_DROP)); // free the dead owned-view shell → []
+    }
     // For a mutual group, set the `which` state so the next iteration dispatches into the callee's body.
     // (A plain self-loop has one member, `which = None`, and skips this.)
     if let Some(w) = tl.which {
@@ -10157,6 +10254,59 @@ fn sum_shell_reclaim_ok(
             heap_operand_ownership(db, scrutinee),
             Ok(HandleOwnership::Owned)
         )
+}
+
+/// The owned-single-view-producer twin of [`sum_shell_reclaim_ok`] for `MatchSum` (the `SumExpect`
+/// `sumexpect_shell_reclaim` analogue): a `String.at`/`Bytes.slice` scrutinee returns a fresh `Some(one
+/// view)` — owned + single-heap-payload BY CONSTRUCTION ([`is_owned_single_view_producer`]) — but is
+/// deliberately NOT globally `Owned` (`heap_operand_ownership` — the Stage-B `String.concat` note at
+/// select.rs's StrAt comment), so `sum_shell_reclaim_ok`'s `Owned` gate MISSES it and its `Some` shell
+/// LEAKS one cell per match (the corpus-06 codec `find-at`/`fromcol` per-`String.at`-iteration leak). Treat
+/// it as owned LOCALLY here (the local>global discipline the SumExpect reclaim already uses).
+///
+/// CRITICAL — the STRICT BORROW-CLEAN floor, NOT the full [`sum_shell_reclaim_payload_ok`]. This view path
+/// emits NO compensating child-`dup` (`collect_shell_reclaim_child_dups` keys on a globally-`Owned` scrutinee,
+/// which a StrAt is NOT), so it is sound ONLY when the view is purely BORROWED — never consumed/escaped and
+/// never FBIP-rebuilt. `sum_shell_reclaim_payload_ok`'s consume-into-builder (disjunct 4,
+/// `sum_cont_extraction_consume_allowlisted`) + extraction-borrowed (disjunct 5) branches ASSUME that
+/// child-dup, so admitting them here DOUBLE-FREES a consumed view (`rev-go`'s `(String.concat acc c)` — c
+/// consumed by the allowlisted `String.concat` AND freed again by the shell-drop cascade → an rc-underflow
+/// trap; caught by the corpus enum). So gate on the borrow-clean disjunct-(3) conditions DIRECTLY:
+/// `!arm_borrows_heap_subvalue` (the view is only READ — `value-eq`/`Bytes.at`/probe, per the relax set — never
+/// materialized out in a consuming position) AND `!arm_constructs_compound` (no rebuild reusing the view cell),
+/// plus the shared non-diverging / heap / non-enum / not-re-matched (Class-B) safety gates. `find-at`,
+/// `balanced-paren`, the multibyte-rope `(match (String.at …) ((Some c) (if (= c …) …)))` cases qualify (value-eq
+/// borrow); `rev-go`/`fromcol` (consume the view) are correctly EXCLUDED (leak beats a double-free). Stage-B /
+/// value-eq StrAt consumers are UNCHANGED — a `MatchSum`-emit-LOCAL override, no global reclassification.
+fn matchsum_view_shell_reclaim_ok(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    stashed_slot: Option<(u32, ValType)>,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> bool {
+    if !is_owned_single_view_producer(db, scrutinee)
+        || !matches!(stashed_slot, Some((_, ValType::I32)))
+        || never_diverges
+        || !is_heap_type(scrut_ty)
+        || ty_is_enum_disc(db, scrut_ty)
+        // Class-B: a scrutinee re-matched by a nested MatchSum is reclaimed by the inner drop already.
+        || cont_rematches_scrutinee(db, scrutinee, root)
+    {
+        return false;
+    }
+    // The PRECISE soundness condition for this NO-CHILD-DUP path: the view must have ZERO CONSUMING sites —
+    // it is only BORROWED (a `value-eq`/probe read), never moved into a builder/Call NOR returned as the
+    // arm result. A consuming site would transfer ownership of the view to that consumer, so the shell-drop
+    // cascade freeing the same view = a DOUBLE-FREE (the owned-scrutinee path compensates with a child-`dup`
+    // that this local view path does NOT emit — `rev-go`'s `(String.concat acc c)` consume, `fromcol`'s
+    // `find-at … c` consume, and an escape-as-result all register a consuming site → excluded, leak beats
+    // UAF). `find-at`/`balanced-paren`/the multibyte-rope cases consume nothing (value-eq only) → empty set →
+    // reclaimed. Uses the SAME consume/borrow classifier as the owned-scrutinee dup-site collection.
+    let mut consuming = HashSet::new();
+    collect_consuming_payload_sites_cont(db, root, scrutinee, &mut consuming);
+    consuming.is_empty()
 }
 
 /// The scrutinee-shell-reclaim gates that are INDEPENDENT of how the scrutinee's handle is held (stashed
@@ -16042,7 +16192,19 @@ fn emit(
             // shells, value-correct/non-OOB, tracked as the reclaim-the-compound-shell increment) rather than
             // risk the UAF. The `collect_shell_reclaim_child_dups` dup-injection is now a no-op (empty for a
             // scalar sum) — retained but never fires here.
+            // Also reclaim an owned-single-view (String.at/Bytes.slice) shell the global `Owned` gate misses
+            // (the local>global discipline — see `matchsum_view_shell_reclaim_ok`). Non-tail here, so no
+            // back-edge: the post-match drop below covers the fall-through result. A non-recursive
+            // `(match (String.at …) …)` with a borrow-clean arm reclaims its Some shell (else a per-call
+            // leak); a view-consuming arm fails the payload gate and stays a defined leak.
             let reclaim_shell = sum_shell_reclaim_ok(
+                db,
+                scrutinee,
+                &scrut_ty,
+                stashed_slot,
+                never_diverges,
+                &root,
+            ) || matchsum_view_shell_reclaim_ok(
                 db,
                 scrutinee,
                 &scrut_ty,
