@@ -13371,3 +13371,15 @@
   (call main (: 7 Int64)) (output (: 214 Int64))
   (call double (: 7 Int64)) (output (: 14 Int64))
   (call shift (: 7 Int64)) (output (: 107 Int64)))
+
+(case "cdzw71 STRING-LITERAL match arms round-trip the cadenza hop"
+  (doc "String-pattern hop face (breaker): literal string arms with a runtime-selected scrutinee — hit
+        arm 1 (alpha → 1), hit arm 2 (beta → 2), fall to the wildcard (gamma → 0) — identical on both
+        paths, byte-idempotent.")
+  (input (do
+    (def (f (: s String)) (match s ("alpha" 1) ("beta" 2) (_ 0)))
+    (def (main (: n Int64)) (f (if (> n 0) "alpha" (if (< n -5) "beta" "gamma"))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 1 Int64))
+  (call main (: -9 Int64)) (output (: 2 Int64))
+  (call main (: -2 Int64)) (output (: 0 Int64)))
