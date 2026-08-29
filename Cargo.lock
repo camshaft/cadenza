@@ -3438,6 +3438,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask-prune-baselines"
+version = "0.0.0"
+dependencies = [
+ "xtask-support",
+]
+
+[[package]]
 name = "xtask-roundtrip"
 version = "0.0.0"
 dependencies = [

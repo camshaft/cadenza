@@ -1,0 +1,19 @@
+# xtask-prune-baselines — prune UNREFERENCED entries from the `.gate-baseline*` files as its OWN
+# minimal-dep crate (v-xtask-decompose: per-command crate split). Reads the corpus's current title set
+# (via the nix-built cdz-corpus from CDZ_SEED_BIN_DIR — no cargo build) and drops any `verdict\ttitle`
+# baseline line whose title is no longer in the corpus. Depends ONLY on xtask-support (the shared corpus
+# reader default_corpus_files/read_corpus); no dep on xtask itself, so editing this command rebuilds only
+# this crate + xtask-support. `cargo xtask prune-baselines` forwards to `nix run .#prune-baselines` via
+# v-fleet-tooling's cargo->nix redirect.
+[package]
+name = "xtask-prune-baselines"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-prune-baselines"
+path = "src/main.rs"
+
+[dependencies]
+xtask-support = { path = "../xtask-support" }
