@@ -1546,7 +1546,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         }
         Core::Proj { operand, .. } => collect_closure_codes(db, operand, out),
         Core::SumNew { payloads, .. } => {
-            for p in payloads {
+            for &p in payloads.iter() {
                 collect_closure_codes(db, p, out);
             }
         }
@@ -1867,7 +1867,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         | crate::core::Core::StrScalarLen { operand } => collect_call_callees(db, operand, out),
         // A sum construction's payloads are unconditionally evaluated — descend for their calls.
         crate::core::Core::SumNew { payloads, .. } => {
-            for p in payloads {
+            for &p in payloads.iter() {
                 collect_call_callees(db, p, out);
             }
         }

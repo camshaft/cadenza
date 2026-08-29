@@ -5176,7 +5176,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         }
         // A sum construction's payloads are all unconditionally part of the value — descend into each.
         Core::SumNew { payloads, .. } => {
-            for p in payloads {
+            for &p in payloads.iter() {
                 collect_reached_poisons(db, p, out);
             }
         }

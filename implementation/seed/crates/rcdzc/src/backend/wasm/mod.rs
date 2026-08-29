@@ -1851,7 +1851,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         }
         Core::Proj { operand, .. } => collect_host_arg_strings(db, operand, out),
         Core::SumNew { payloads, .. } => {
-            for p in payloads {
+            for &p in payloads.iter() {
                 collect_host_arg_strings(db, p, out);
             }
         }
