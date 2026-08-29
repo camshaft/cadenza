@@ -800,6 +800,19 @@ pub fn compute_provider_for_edges(db: &mut Db, edges: &[usize]) -> Result<Layout
     finish_layout(db, exports)
 }
 
+/// The EMPTY-library provider — a valid component with ZERO exports (no boundary funcs). The
+/// whole-library-provider analogue of [`compute_provider_for_edges`] for a FULLY-INLINED suite: when every
+/// reachable non-`@test` def inlines away, the library edge set is empty and `compute_provider_for_edges`
+/// DECLINES ("no shared closure"). But the per-test-shred exec model is UNIFORM — every `@test` component
+/// `--peer`s a "main" — so a fully-inlined suite still wants a (trivial) main to link, and its per-test
+/// consumers simply import NOTHING from it (a harmless no-op peer). This emits exactly that: `finish_layout`
+/// over an empty export set → an empty-but-valid component. (`finish_layout` is private to layout; this is
+/// the pub seam the shred emit calls for the empty-`library_edges` case — emitting each test STANDALONE
+/// instead would re-introduce the has-main bifurcation the whole-library model removes. v-cdz-crate-split.)
+pub fn compute_empty_provider(db: &mut Db) -> Result<Layout, Reject> {
+    finish_layout(db, Vec::new())
+}
+
 /// OPTION C increment (c) — the CONSUMER (per-file `@test`) layout: like [`compute_tests_for`] but with the
 /// cross-component edges as a BOUNDARY (excluded from `order`, recorded as extern imports). Each per-file
 /// `@test` component EXCLUDES the shared cross-edge defs (they live in the shared-closure PROVIDER component,
@@ -2331,6 +2344,28 @@ pub fn export_params(db: &mut Db, def: usize, name: &str) -> Result<Vec<(StructI
 mod tests {
     use super::*;
     use crate::testkit::scalar_program;
+
+    #[test]
+    fn empty_provider_is_a_valid_zero_export_component() {
+        // `compute_empty_provider` yields a valid component with ZERO exports — the empty-library provider
+        // for a FULLY-INLINED shred suite (its per-test consumers import nothing from it, a no-op peer, so
+        // the exec model stays uniform). Where `compute_provider_for_edges(&[])` DECLINES ("no shared
+        // closure"), this succeeds with an empty layout (no exports, no reached defs).
+        let (ast, _) = scalar_program();
+        let mut db = Db::load(ast);
+        let layout =
+            compute_empty_provider(&mut db).expect("empty provider is a valid empty component");
+        assert!(layout.exports.is_empty(), "empty provider has zero exports");
+        assert!(
+            layout.order.is_empty(),
+            "empty provider reaches no defs (empty order)"
+        );
+        // Contrast: the edge-list provider DECLINES on an empty edge set — the case this fills.
+        assert!(
+            compute_provider_for_edges(&mut db, &[]).is_err(),
+            "compute_provider_for_edges declines an empty edge set"
+        );
+    }
 
     #[test]
     fn one_export_by_signature() {
