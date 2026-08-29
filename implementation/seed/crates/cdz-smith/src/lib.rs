@@ -32,6 +32,12 @@
 //! Differential miscompiles (two backends disagreeing on a program's value) are a planned second
 //! oracle; see [`oracle`].
 
+/// The CADENZA-BACKEND equivalence oracle dimension (operator seq-184): for each program, compare the
+/// DIRECT wasm value against the value after a `--target cadenza` round-trip (re-emit the optimized program
+/// as Cadenza binary AST, then recompile to wasm). A divergence is a real cadenza-backend miscompile.
+/// Behind `differential` (shells out to the `cdz` binary), like [`differential`].
+#[cfg(feature = "differential")]
+pub mod cadenza_diff;
 /// The wasm-vs-rust differential oracle. Behind the off-by-default `differential` feature because it
 /// depends on `cdz-run` (wasmtime), which must not link into the instrumented libFuzzer target — see
 /// the crate's `[features]` in Cargo.toml.

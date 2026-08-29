@@ -38,6 +38,16 @@ fn main() -> ExitCode {
             );
             ExitCode::from(2)
         }
+        #[cfg(feature = "differential")]
+        "cadenza-differential" => cmd_cadenza_differential(&args[1..]),
+        #[cfg(not(feature = "differential"))]
+        "cadenza-differential" => {
+            eprintln!(
+                "cdz-smith: the `cadenza-differential` subcommand needs the `differential` feature \
+                 (rebuild: `cargo run --features differential -- cadenza-differential …`)."
+            );
+            ExitCode::from(2)
+        }
         "seed-corpus" => cmd_seed_corpus(&args[1..]),
         #[cfg(feature = "differential")]
         "lean-differential" => cmd_lean_differential(&args[1..]),
@@ -778,6 +788,90 @@ fn cmd_differential(args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("cdz-smith: differential sweep failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The CADENZA-BACKEND equivalence dimension (operator seq-184): compare each program's DIRECT wasm value
+/// against its `--target cadenza` round-trip value; divergences are cadenza-backend miscompiles.
+#[cfg(feature = "differential")]
+fn cmd_cadenza_differential(args: &[String]) -> ExitCode {
+    let mut count: u64 = 1000;
+    let mut seed: Option<u64> = None;
+    let mut findings: Option<PathBuf> = None;
+    let mut store: Option<PathBuf> = None;
+    let mut cdz: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
+            "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
+            "--findings" => findings = it.next().map(PathBuf::from),
+            "--store" => store = it.next().map(PathBuf::from),
+            "--cdz" => cdz = it.next().map(PathBuf::from),
+            other => {
+                eprintln!("cdz-smith cadenza-differential: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let cdz = match cdz
+        .filter(|p| p.is_file())
+        .or_else(cdz_smith::differential::discover_cdz)
+    {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "cdz-smith cadenza-differential: no `cdz` binary found (build it — \
+                 `cargo build --release --bin cdz` — or set CDZ_SMITH_CDZ / pass --cdz PATH)."
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let store = store.unwrap_or_else(|| {
+        cdz.parent()
+            .and_then(|p| p.parent())
+            .map(|t| t.join("cadenza-store"))
+            .unwrap_or_else(|| PathBuf::from("target/cadenza-store"))
+    });
+    let findings_dir = match resolve_findings_dir(findings) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    let cfg = Config {
+        iterations: Some(count),
+        run_seed: seed.unwrap_or_else(driver::wallclock_seed),
+        timeout: Duration::from_secs(10),
+        findings_dir: findings_dir.clone(),
+        commit: driver::detect_commit(),
+        progress_every: 100,
+    };
+    eprintln!(
+        "[cdz-smith] cadenza-differential @{} | seed {} | count {} | store {} | cdz {} | findings → {}",
+        cfg.commit,
+        cfg.run_seed,
+        count,
+        store.display(),
+        cdz.display(),
+        findings_dir.display()
+    );
+    match driver::cadenza_differential_sweep(&cfg, &store, &cdz, count) {
+        Ok(stats) => {
+            eprintln!(
+                "[cdz-smith] cadenza-differential done: {} agreed, {} mismatched ({} new buckets, {} dup hits)",
+                stats.agreed, stats.mismatched, stats.new_buckets, stats.duplicate_hits
+            );
+            if stats.new_buckets > 0 {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => {
+            eprintln!("cdz-smith: cadenza-differential sweep failed: {e}");
             ExitCode::FAILURE
         }
     }
