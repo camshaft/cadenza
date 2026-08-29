@@ -21,3 +21,8 @@ path = "src/main.rs"
 # chapters parse via the SAME reader Cadenza programs use; guide-doc heads are just generic Name-head lists.
 cadenza-syntax-sexpr = { path = "../../../implementation/seed/crates/cadenza-syntax-sexpr" }
 cadenza-ast = { path = "../../../implementation/seed/crates/cadenza-ast" }
+# The span side-table (StructId → source byte-range). Embedded runnable/exercise code is authored as nested
+# AST forms (seq-213/214), NOT a string; to DISPLAY it we SPAN-SLICE the original .sexp text at the form's
+# extent (the canonical printer flattens/reformats — unusable for the guide). Closure-neutral: this crate's
+# crane closure (flake xtaskCodegenGuideBin) already includes cadenza-syntax-core transitively via -sexpr.
+cadenza-syntax-core = { path = "../../../implementation/seed/crates/cadenza-syntax-core" }
