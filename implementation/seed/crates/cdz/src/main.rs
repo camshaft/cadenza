@@ -11894,6 +11894,76 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// `cdz test --emit-shred --two-stage` (§S6b stage-2) writes cadenza-ast FRAGMENTS to the out-dir: one
+    /// shared `closure-<group>.cdzb` (the reachable non-`@test` library), one per-`@test` `test-<name>.cdzb`,
+    /// and a merged `manifest.cdzb` whose per-entry `main-file` is the group closure fragment, `target` the
+    /// per-test fragment, and `export` the test symbol — the two fragments and symbol the fan-out
+    /// splice-compiles via `rcdzc <main-file> <target> --export <export>`. Pins the surface's file-naming and
+    /// manifest rewrite; the wasm peer/standalone paths write components, whereas this is the FRAGMENT shape.
+    #[test]
+    fn emit_shred_two_stage_writes_closure_and_per_test_fragments_and_manifest() {
+        let dir = tmp("emit-shred-two-stage");
+        let suite = dir.join("suite.sexp");
+        // A recursive helper `tri` (emitted standalone, so it lands in the shared closure) + two `@test`s.
+        std::fs::write(
+            &suite,
+            "(do \
+             (def (tri (: n Int64)) (if (= n 0) 0 (+ n (tri (- n 1))))) \
+             (@ test (def (t-a) (if (= (tri 3) 6) unit (trap \"x\")))) \
+             (@ test (def (t-b) (if (= (tri 4) 10) unit (trap \"x\")))))",
+        )
+        .unwrap();
+        let out = dir.join("out");
+        // The written artifacts ARE the behavior contract (`ExitCode` is not `PartialEq`); a failed emit
+        // would not produce the fragment set + manifest asserted below.
+        let _ = run_emit_shred(
+            &[suite.to_string_lossy().into_owned()],
+            &out,
+            /*standalone*/ false,
+            /*two_stage*/ true,
+        );
+        // The shared closure fragment (group 0) + one per-test fragment each, all `.cdzb`, NO `.wasm`.
+        assert!(
+            out.join("closure-0.cdzb").is_file(),
+            "closure-0.cdzb written"
+        );
+        assert!(out.join("test-t-a.cdzb").is_file(), "test-t-a.cdzb written");
+        assert!(out.join("test-t-b.cdzb").is_file(), "test-t-b.cdzb written");
+        let wasm: Vec<_> = std::fs::read_dir(&out)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "wasm"))
+            .collect();
+        assert!(
+            wasm.is_empty(),
+            "two-stage writes fragments, no wasm: {wasm:?}"
+        );
+        // The manifest: per-entry target=test-<name>.cdzb, main-file=closure-0.cdzb, export=<name>.
+        let mbytes = std::fs::read(out.join("manifest.cdzb")).expect("manifest.cdzb");
+        let a = cadenza_syntax::codec::decode(&mbytes).expect("manifest decodes as cadenza-ast");
+        let entries = a
+            .as_form(a.root, "shred-manifest")
+            .expect("(shred-manifest …)");
+        assert_eq!(entries.len(), 2, "one entry per @test");
+        for &e in entries {
+            let f = a.as_form(e, "entry").expect("(entry …)");
+            // [0]name [1]isprop [2]file [3]export [4]target [5]iface [6]main-file
+            let name = a.as_str(f[0]).unwrap_or("");
+            assert_eq!(a.as_str(f[3]), Some(name), "export = the test name");
+            assert_eq!(
+                a.as_str(f[4]),
+                Some(format!("test-{name}.cdzb").as_str()),
+                "target = the per-test fragment"
+            );
+            assert_eq!(
+                a.as_str(f[6]),
+                Some("closure-0.cdzb"),
+                "main-file = the group's shared closure fragment"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn emitted_pub_fn_names_lists_each_top_level_export() {
         // `cdz run-rust` picks the sole `pub fn` as the default export; several → require --call. The
