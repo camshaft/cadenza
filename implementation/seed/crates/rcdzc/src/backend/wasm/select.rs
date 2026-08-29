@@ -2876,21 +2876,14 @@ fn binder_has_dup_site_in(
 /// Used by `collect_heap_let_binders` to find nested `let`s; positions do not matter here. Also drives
 /// `layout::collect_closure_call_sigs` (the extra closure-application functype collection) — hence `pub`.
 pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
-    // Read the child occurrence ids WITHOUT cloning the whole `Core` node. During emit the tree is fully
-    // lowered/memoized, so the common path BORROWS the memoized `Core` from the column and extracts its
-    // Copy `StructId` children by reference (`child_ids_of`) — eliminating the per-node `core_of` clone
-    // that dominated the compiler-ml provider emit (a `cdz test compiler-ml` perf profile showed
-    // `Core::clone` + its malloc/free churn as the top self-time, driven by `core_of` under this walk and
-    // its siblings). Falls back to the cloning `core_of` only when a `core_override` is installed (the O2+
-    // pass seam, which `core_of` itself prefers) or the node is not yet in the column — so the child set is
-    // byte-identical to the prior `match core_of(db, id)`.
+    // REVERTED the #5600 memoized-column BORROW fast path: it caused a 68-case host-import-drop regression
+    // on 28-wit-abi (bisected — reading `db.core.get(id)` directly diverged from `core_of(db, id)` for the
+    // layout callee/closure walks that seed `layout.order`, so callees were missed and their host imports
+    // dropped). Always go through `core_of` (the authoritative read — override → memo → captured-ref →
+    // lower-on-demand), matching by reference via `child_ids_of` so the split still avoids re-cloning inside
+    // the match. Behaviorally the exact pre-#5600 `match core_of(db, id)`. (A correct borrow fast path can be
+    // re-derived once the divergence is understood + gated against the 28-wit-abi corpus.)
     let mut cs: Vec<StructId> = Vec::new();
-    if db.core_override.is_empty()
-        && let crate::arena::Slot::Filled(c) = db.core.get(id)
-    {
-        child_ids_of(c, &mut cs);
-        return cs;
-    }
     let c = core_of(db, id);
     child_ids_of(&c, &mut cs);
     cs
