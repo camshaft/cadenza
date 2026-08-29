@@ -6965,7 +6965,8 @@
 ; The `@tag(<string>)` annotation takes EXACTLY ONE STRING argument — a non-string (number / bare name),
 ; zero args, or two args is CDZ0201 naming the contract; a valid `@tag("string")` is accepted silently and
 ; transparently unwraps to its def. Migrated from rcdzc a_malformed_tag_annotation_is_rejected_not_silently_dropped
-; (the four malformed shapes + the valid control; the no-double dedup on a @tag over a NON-def stays in rust).
+; (the four malformed shapes + the valid control; the no-double dedup on a @tag over a NON-def is the
+;  `(count 1) (no-other-errors)` case below).
 (case "a @tag annotation over a non-string number is rejected"
   (input  (do (@ (tag 5) (def (c) 3)) (export c)))
   (error  CDZ0201 (message "`@tag` annotation takes exactly one STRING")))
@@ -6986,18 +6987,29 @@
   (input  (do (@ (tag "slow") (def (c) 3)) (export c)))
   (call   c) (output (: 3 Int64)))
 
+; A malformed @tag wrapping a NON-def — `(@ (tag 5) 5)` — is ONE mistake: "annotation wraps no definition".
+; The `@tag` contract applies only to a def, and `strip_annotations` records the malformed-tag AFTER the
+; def check, so a @tag on a non-def must NOT ALSO record the "takes exactly one STRING" malformed-tag fault
+; (no double diagnostic). `(count 1)` pins exactly ONE CDZ0201 (the wraps-no-definition one), so a regressed
+; second CDZ0201 would fail. (migrated from rcdzc a_malformed_tag_annotation_on_a_non_def_is_not_a_double_diagnostic.)
+(case "a malformed @tag wrapping a non-def is one wraps-no-definition error, not a double"
+  (input  (do (@ (tag 5) 5) (def (main) 0) (export main)))
+  (error  CDZ0201 (count 1) (message "annotation wraps no definition")) (no-other-errors))
+
 ; A NESTED `(@ …)` in EXPRESSION position (inside a `do`-block / an `(: … T)` annotation), NOT wrapping a
 ; top-level def, is a MISPLACED annotation: `strip_annotations` unwraps only def-wrapping annotations, so a
 ; nested survivor is CDZ0201 "annotation cannot appear here" — general to all annotation names (@param, @tag).
-; Migrated from rcdzc a_nested_annotation_reports_one_clean_reject_not_an_unbound_name_cascade (the reject +
-; message; its NO-cascade invariant — no spurious unbound-name for `@`/the internal tokens — stays in rust).
+; Migrated from rcdzc a_nested_annotation_reports_no_unbound_name_cascade (reject + message + the NO-cascade
+; invariant): the misplacement must NOT also spuriously report `unbound name @` or the annotation's internal
+; tokens (`param`/`widget`/`slider`, `tag`/`foo`) as unbound-name errors. `(no-other-errors)` pins that no
+; OTHER coded error (the CDZ0101 unbound-name cascade) accompanies the single CDZ0201.
 (case "a nested @param annotation in expression position cannot appear here"
   (input  (do (def (main) (do (: (@ (param (: widget slider)) width) Int64) 1)) (export main)))
-  (error  CDZ0201 (message "annotation cannot appear here")))
+  (error  CDZ0201 (message "annotation cannot appear here")) (no-other-errors))
 
 (case "a nested @tag annotation in expression position cannot appear here"
   (input  (do (def (main) (do (: (@ (tag x) foo) Int64) 1)) (export main)))
-  (error  CDZ0201 (message "annotation cannot appear here")))
+  (error  CDZ0201 (message "annotation cannot appear here")) (no-other-errors))
 
 ; COST HEURISTIC (Addendum 4). The UNANNOTATED default is always-inline, but a LARGE, MULTIPLY-CALLED def
 ; whose call has a runtime-dependent argument is emitted ONCE and called instead of duplicated at each site.
