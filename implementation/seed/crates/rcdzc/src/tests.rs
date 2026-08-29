@@ -17508,50 +17508,11 @@ mod match_engine {
     }
 
     #[test]
-    fn an_ill_formed_bin_form_is_rejected_cdz0220() {
-        // Well-formedness is a compile-time check decidable from the segment list: bit-fields must close
-        // to whole bytes, a non-final unsized `(bytes …)` is ill-formed, and a bits width must be a const.
-        for src in [
-            // bit-fields sum to 4 bits — not byte-aligned
-            "(module m (def (main) (bin (bits 1 1) (bits 0 3))) (export main))",
-            // an unsized bytes segment that is not the final segment
-            "(module m (def (main) (bin (bytes (Bytes.of (list 1))) (u8 2))) (export main))",
-        ] {
-            assert_eq!(reject_code(src).as_deref(), Some("CDZ0220"), "src: {src}");
-        }
-        // The byte-alignment message names the CONCRETE bit total and how far it is from a byte boundary
-        // (rustc-gold "add N more bits to reach K bytes"), not just the rule. `(bits 1 1) (bits 0 3)` = 4
-        // bits → 4 short of 1 byte.
-        let d = reject_full("(module m (def (main) (bin (bits 1 1) (bits 0 3))) (export main))")
-            .expect("a 4-bit bin is ill-formed");
-        assert_eq!(d.code.as_deref(), Some("CDZ0220"), "got: {}", d.message);
-        assert!(
-            d.message.contains("total 4 bits")
-                && d.message.contains("add 4 more bits to reach 1 byte"),
-            "names the bit total + the padding to the next byte: {}",
-            d.message
-        );
-        // A NON-NATURAL bit-field width (`(bits v -1)`, `(bits v abc)`) makes the whole `(bin …)` resolve
-        // to a coded Poison, not a `Bin { segs }`. `cdz check` (the Diagnostics query) used to MISS it in
-        // a parameterized/non-exported body — the poison arm surfaced only `Unbound`, not `IllFormedBinary`
-        // — while `compile` rejected it. Now it surfaces in EVERY body.
-        for src in [
-            "(module m (def (g (: v Int64)) (bin (bits v -1))) (export g))",
-            "(module m (def (g (: v Int64)) (bin (bits v abc))) (export g))",
-        ] {
-            let dq = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.code.as_deref() == Some("CDZ0220"))
-                .unwrap_or_else(|| panic!("check misses the non-natural bits width for {src}"));
-            assert!(
-                dq.message
-                    .contains("bit-field width must be a compile-time constant natural"),
-                "names the bad width: {}",
-                dq.message
-            );
-        }
-    }
-
+    // (an_ill_formed_bin_form_is_rejected_cdz0220 migrated to corpus 16-binary-matching, the structural
+    // well-formedness reject block after the CDZ0304 value-fit case: bit-fields not closing to a whole byte
+    // → CDZ0220 (message "total 4 bits")(message "add 4 more bits to reach 1 byte"); a non-final unsized
+    // bytes segment → CDZ0220; a bit-field width that is negative / non-constant → CDZ0220 (message
+    // "bit-field width must be a compile-time constant natural"). --case grades codes + messages (all 4 PASS).)
     #[test]
     fn a_bin_segment_value_must_match_its_kind() {
         // A `bin` segment's VALUE must match its KIND: an `int`/`bits` segment takes an integer, a `utf8`
