@@ -2570,6 +2570,21 @@
   (input (do (def (main) (do (quote (def foo)) 0)) (export main)))
   (call main) (output (: 0 Int64)))
 
+; Further def-signature well-formedness: a module is a record of its defs (a FIXED field set), so defining
+; the same name twice is CDZ0201 "defined more than once" (with a delete-the-redundant-def fix), not an
+; implicit first/last-wins. A parameter list is a linear BINDER position: a repeated param name is CDZ0102
+; (nonlinear). (migrated from rcdzc a_duplicate_definition_is_rejected /
+; a_duplicate_parameter_name_is_rejected_as_nonlinear. The literal-parameter reject
+; `(def (f 5) …)` stays a rcdzc test: a bare literal in a param position is not ML-surface-parseable, so it
+; has no corpus round-trippable form.)
+(case "a duplicate definition is rejected with a delete-the-redundant-def fix"
+  (input (do (def (f) 1) (def (f) 2) (def (main) (f)) (export main)))
+  (error CDZ0201 (message "defined more than once") (fix (kind delete))))
+
+(case "a duplicate parameter name is rejected as a nonlinear binder"
+  (input (do (def (f x x) x) (def (main) (f 1 2)) (export main)))
+  (error CDZ0102))
+
 ; An export clause names a DEFINITION: `(export <name>)` / `(export <name>…)`. An argument that is not a
 ; bare name — `(export (g x))` / `(export 5)` / `(export)` / a non-name element of a multi-name export — was
 ; SILENTLY DROPPED (the scan only recorded an Export when the argument `as_name`s), so the program compiled
