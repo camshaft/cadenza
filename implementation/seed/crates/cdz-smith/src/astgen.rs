@@ -742,13 +742,14 @@ fn gen_compound_ty<C: Choice>(c: &mut C) -> (String, String) {
 }
 
 /// A body that BUILDS a compound and immediately CONSUMES it — tuple/record projection (`(. c i/field)`),
-/// `(List.len …)`, an Option `match`, a `Result` `match`, or a sum-match over a COMPOUND payload consumed
-/// in-arm. The generator builds compounds elsewhere but rarely CONSUMES them; this exercises the distinct
-/// extract / project / list-len / sum-match consumption emit (where the S52 closure buckets lived).
-/// Self-contained + type-correct (payload types drive the leaves; every match arm is the same type).
-/// Reaches consumption lowering the construction arms never hit.
+/// `(List.len …)`, an Option `match`, a `Result` `match`, a sum-match over a COMPOUND payload consumed
+/// in-arm, or a native `#set`/`#map` literal + its `.len`. The generator builds compounds elsewhere but
+/// rarely CONSUMES them; this exercises the distinct extract / project / list-len / sum-match / set-map
+/// consumption emit (where the S52 closure buckets lived). Self-contained + type-correct (payload types
+/// drive the leaves; every match arm is the same type). Reaches consumption lowering the construction
+/// arms never hit.
 fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
-    match c.variant(6) {
+    match c.variant(7) {
         // Tuple projection: (. (tuple <a> <b>) <0|1>).
         0 => {
             let (a, b) = (pick_scalar_ty(c), pick_scalar_ty(c));
@@ -808,7 +809,7 @@ fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
         // element, or `List.len`); None returns a same-typed scalar default so the arms join. Exercises
         // binding a native compound FROM a sum-match arm + in-arm consumption (tuple-in-Some, record-in-Some,
         // list-in-Some) — the fresh M2 native ctor-leaf codegen the scalar-payload matches never reach.
-        _ => match c.variant(3) {
+        5 => match c.variant(3) {
             // (match (Some (tuple <a> <b>)) ((Some x) (. x i)) ((None) <default : elt-ty>))
             0 => {
                 let (a, b) = (pick_scalar_ty(c), pick_scalar_ty(c));
@@ -848,6 +849,28 @@ fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
                 out.push_str("))");
             }
         },
+        // A native M2 `#set(…)` / `#map(…)` literal (value) or its `.len` (consume to Int64). Fills the
+        // Set/Map codegen gap (leaf kinds 23/24): the generator built tuple/record/list/Option/Result but
+        // never a Set or Map. Keys/elements are distinct Int64 literals (hashable, no dup-key/NaN hazard),
+        // so the literals always COMPILE. Map values value-GRADE (oracle #5164/#5176); Set values + `.len`
+        // currently SKIP in the oracle (a modelled gap, not a bug) but still exercise native set/map
+        // construction + codec + emit (and the crash / InvalidWasm oracle).
+        _ => {
+            // Pick the sub-variant BEFORE consuming element choices — otherwise a short entropy seed
+            // exhausts the cursor on the elements and `variant` always defaults to 0 (never reaching map).
+            let form = c.variant(4);
+            let (x, y, z) = (
+                c.int_bounded(0, 9),
+                c.int_bounded(10, 19),
+                c.int_bounded(20, 29),
+            );
+            match form {
+                0 => write!(out, "#set({x} {y} {z})").ok(),
+                1 => write!(out, "(Set.len #set({x} {y} {z}))").ok(),
+                2 => write!(out, "#map((= {x} {y}) (= {z} {y}))").ok(),
+                _ => write!(out, "(Map.len #map((= {x} {y}) (= {z} {y})))").ok(),
+            };
+        }
     }
 }
 
@@ -1561,6 +1584,37 @@ mod tests {
             saw_list,
             "compound-payload match should reach a list payload"
         );
+    }
+
+    /// `gen_compound_consume` REACHES native `#set`/`#map` literals (S110: fills the Set/Map codegen gap),
+    /// and every such body COMPILES — guards the set/map arm (native leaf kinds 23/24: `#set(…)`, its
+    /// `Set.len`, `#map((= k v) …)`, its `Map.len`). A malformed literal / removed op surfaces here.
+    #[test]
+    fn set_map_literals_are_reached_and_compile() {
+        let (mut saw_set, mut saw_map) = (false, false);
+        for seed in 0u64..1024 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(211);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_compound_consume(&mut ByteCursorChoice::new(&bytes), &mut body);
+            if !(body.contains("#set(") || body.contains("#map(")) {
+                continue;
+            }
+            saw_set |= body.contains("#set(");
+            saw_map |= body.contains("#map(");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "set/map literal body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_set, "should reach a #set literal");
+        assert!(saw_map, "should reach a #map literal");
     }
 
     /// Every operator the generator can emit is a valid Int64→Int64→Int64 op the compiler CLEANLY
