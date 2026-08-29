@@ -370,7 +370,17 @@ pub fn cadenza_differential_sweep(
     let _ = std::fs::create_dir_all(&tmp);
     for i in 0..count {
         let seed = rng.next();
-        let source = program_for_seed(seed);
+        // Use the COERCING generator (astgen), NOT `program_for_seed` (the text MUTATOR): the mutator
+        // produces many compiler-HANGING / declining programs (each then hits the per-cdz-call timeout,
+        // making the sweep glacial + mostly non-comparable). The coercing grammar produces clean,
+        // TERMINATING, value-comparable programs — the same shapes the lean-differential grades — so the
+        // cadenza value-eq check runs fast + actually compares. Derive 64 entropy bytes from the seed.
+        let mut ent = Vec::with_capacity(64);
+        let mut r = SplitMix64::new(seed);
+        for _ in 0..8 {
+            ent.extend_from_slice(&r.next().to_le_bytes());
+        }
+        let source = crate::astgen::generate_coerced(&ent).source;
         // Fresh scratch for this program (avoid a stale artifact leaking across iterations).
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::create_dir_all(&tmp);
