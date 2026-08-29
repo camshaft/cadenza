@@ -660,13 +660,14 @@ effect op-handler arm heads exempted (#5475), and empty list `()` (#5520, `ch.fi
 - **NOT `cdz rewrite`:** §12.2's "resolve-aware `cdz rewrite`" mechanism does not exist — `cdz rewrite`
   (cadenza-syntax) is a generic PATTERN→TEMPLATE structural rewriter (query-engine Rung 2) with no
   compound-nativize transform. `cdz-nativize` supersedes it for this job.
-- **Validated (2026-08-29):** ran `cdz-nativize` over four whole corpus files spanning every tricky
-  construct, then `xtask roundtrip` on each nativized result — all reader-valid + printer-fixed-point:
-  `05-compound-types` 1436 ok, `14c-effects-and-handlers` 939 ok (handler-arm `(set …)` op heads +
-  string-head shadow-escapes), `17-symbols` 72 ok (nested sets-of-tuples with `#"sym"`),
-  `06-numeric-model` 1225 ok (nested `#set(#tuple …)`) — ~3672 cases, 0 failures. So cdz-nativize's native
-  output is reader-valid + printer-fixed-point across real corpora covering name/string/native heads, entry
-  field-pairify, nesting, handler-arm exemption, and empty lists.
+- **Validated — FULL CORPUS (2026-08-29):** ran `cdz-nativize` over ALL 34 `spec/semantics/*.sexp` files
+  (no line-count drift on any), then `xtask roundtrip` on every nativized result → **9637 programs ok, 0
+  failures**. So cdz-nativize's native output is reader-valid + printer-fixed-point across the ENTIRE corpus,
+  covering every construct — name/string/native heads, entry field-pairify, nesting, handler-arm `(set …)`
+  op-head exemption, string-head shadow-escapes, and empty lists. The M3 corpus-input pass is nativization-
+  ready end-to-end. (Re-run before the window: `for f in spec/semantics/*.sexp; do cdz-nativize <$f | awk
+  'f||/^[;(]/{f=1;print}' >nat-$f; done; xtask roundtrip nat-*` in ONE `nix develop -c bash -c` — see the
+  banner gotcha above.)
 - 🪤 **Invocation gotcha:** `nix develop -c cargo run --bin cdz-nativize` prints the nix-shell BANNER to
   STDOUT (~10 lines) BEFORE the codemod output — it pollutes a `> file` redirect into an "unterminated list"
   corpus parse error. The Phase-2 migration must strip it (`awk 'f||/^[;(]/{f=1;print}'`) or run the built
