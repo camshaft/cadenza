@@ -193,6 +193,16 @@ carry the gate summary (fail-set diff, test count) so pr-sync can trust it fast.
 state the concrete options so the human can decide in one line — the concierge is a router, not an
 investigator.
 
+**🔴 NEVER put command output or environment into a `--subject`/`--body` — same leak class as PR bodies**
+(operator P0 seq-198: a `fleet send` leaked a 48KB env-dump SUBJECT). A markdown-backtick or `$()` span
+inside an INLINE double-quoted `--subject "…"`/`--body "…"` command-substitutes in YOUR shell BEFORE the
+arg reaches the tool — one span wrapping `set`/`env` dumps the whole environment into the message. So:
+build the body as a LITERAL heredoc file and pass **`--body-file <file>`** (never an inline double-quoted
+`--body` with backticks/`$()`); keep the `--subject` short + single-quoted (no backticks/`$()`). `fleet
+send` now SCANS `--subject`+`--body` and REFUSES an env-dump/secret (a hard error, not a delivered leak) —
+but the substitution already fired in your shell, so the refusal only CONTAINS it; the `--body-file`
+literal path is what PREVENTS it. Same discipline as the PR path below.
+
 **`--urgency <low|normal|high|urgent>` (default `normal`) tells the recipient how to PRIORITIZE.** An
 elevated (`high`/`urgent`) message is TAGGED in the recipient's `cargo xtask fleet inbox` listing
 (`<high>` / `<<URGENT>>`) with a "prioritize reading these" summary line, so it stands out while you
