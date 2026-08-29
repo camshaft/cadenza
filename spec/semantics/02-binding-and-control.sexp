@@ -751,6 +751,27 @@
   (call main (: 3 Int64)) (output (: 0 Int64))
   (live-objects 0))
 
+(case "a match guard reads a NESTED record-field binder (a record inside the matched Some)"
+  (doc    "A guard cond reads a binder bound by a `(record …)` sub-pattern NESTED inside the matched
+           variant: `((guard (Some (record (= x a) (= y b))) (> a 5)) …)` — the guard `(> a 5)` reads `a`,
+           the record field `x` destructured from the `Some` payload. The guard-cond twin of the body's
+           nested-record binder read (Case 6rec-nested): a guard reads EVERY binder its pattern binds,
+           including one nested in a record inside a variant, exactly as the arm body does. Was a spurious
+           CDZ0101 `unbound name a` AT THE GUARD COND (guard-cond scope only reached TOP-LEVEL pattern
+           binders + a top-level record, not a record NESTED in a variant), while the identical binder read
+           in an arm BODY compiled. Faces: n=7 → guard `7>5` true → `7*100 + 3` = 703; n=3 → guard `3>5`
+           false → falls to the bare `(Some r)` arm → `r.y` = 3; n=-1 → `None` → -1.")
+  (input (do
+        (def (main (: n Int64))
+          (match (if (> n 0) (Some (record (= x n) (= y 3))) (None))
+            ((guard (Some (record (= x a) (= y b))) (> a 5)) (+ (* a 100) b))
+            ((Some r) (. r y))
+            ((None u) -1)))
+        (export main)))
+  (call main (: 7 Int64)) (output (: 703 Int64))
+  (call main (: 3 Int64)) (output (: 3 Int64))
+  (call main (: -1 Int64)) (output (: -1 Int64)))
+
 (case "THREE stacked guards on one constructor classify a heap payload into bands in order"
   (doc    "The stacked face: three guards on ONE constructor classify by length bands (>4/>2/>0 →
            3/2/1, bare (Some _) → 0). Each failing guard must RE-borrow xs for the next guard's
