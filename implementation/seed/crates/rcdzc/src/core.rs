@@ -1262,7 +1262,11 @@ pub enum Core {
     //# The compiler MUST NOT emit a construct that forms a cycle among heap values, so that a reference-count reclamation discipline leaves no value uncollected.
     Call {
         callee: usize,
-        args: Vec<StructId>,
+        // Build-once-immutable arg list. `Rc<[StructId]>` (not `Vec`) so the `core_of` memo-read clone +
+        // every recursive Core walk is a refcount bump, not an O(args) copy — `Call` is one of the most
+        // cloned Core nodes (every function application). Same cheap-clone rationale as the `elems`
+        // families and `Let.bindings`.
+        args: std::rc::Rc<[StructId]>,
     },
     /// A reference to a FUNCTION PARAMETER — the `binder` is the parameter's name occurrence (its
     /// identity, matching what `resolve` binds a reference to). The backend maps it to a `local.get` of
@@ -1321,7 +1325,8 @@ pub enum Core {
     /// `DESIGN-runtime-closures-rcdzc.md` §3.
     CallClosure {
         closure: StructId,
-        args: Vec<StructId>,
+        // Build-once-immutable; `Rc<[StructId]>` for the cheap memo-hit/recursive-walk clone (see `Call`).
+        args: std::rc::Rc<[StructId]>,
     },
     /// A HOST CALL — a perform of an effect operation DELEGATED to the component boundary by an enclosing
     /// `(host (E…) …)` (`capabilities-and-effects.md` §Host-Binding Is A Routing Decision Made At The
@@ -1344,7 +1349,8 @@ pub enum Core {
         // at the cold `HostImport` construction boundary (built once per distinct import, not per node).
         effect: std::rc::Rc<str>,
         op: std::rc::Rc<str>,
-        args: Vec<StructId>,
+        // Build-once-immutable; `Rc<[StructId]>` for the cheap memo-hit/recursive-walk clone (see `Call`).
+        args: std::rc::Rc<[StructId]>,
         result: crate::ty::Ty,
     },
     // (The `Core::ExternCall` variant was REMOVED in U4: cross-component interop is unified with EFFECTS —

@@ -1266,7 +1266,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     return Core::HostCall {
                         effect: effect.into(),
                         op: op.into(),
-                        args: args_vec,
+                        args: args_vec.into(),
                         result,
                     };
                 }
@@ -1450,7 +1450,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 trace!(target: "rcdzc::lower", node = id.0, head = fn_head.0, n_args = all_args.len(), "apply: runtime closure application (spine-flattened) → Core::CallClosure");
                 return Core::CallClosure {
                     closure: fn_head,
-                    args: all_args,
+                    args: all_args.into(),
                 };
             }
             // An `inline-never` def is emitted as ONE real wasm function and CALLED, never β-reduced
@@ -1515,7 +1515,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, head = closure.0, n_args = spine_args.len(), "apply: curried application of a projected lambda → Core::CallClosure on the projected closure");
                     return Core::CallClosure {
                         closure,
-                        args: spine_args,
+                        args: spine_args.into(),
                     };
                 }
             }
@@ -13862,7 +13862,7 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                     .collect();
                 Core::Call {
                     callee: spec,
-                    args: runtime_args,
+                    args: runtime_args.into(),
                 }
             }
             None => {
@@ -14021,7 +14021,7 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
     trace!(target: "rcdzc::lower", head = head.0, callee, args = args.len(), "recursive call → Core::Call");
     Core::Call {
         callee,
-        args: args.to_vec(),
+        args: args.to_vec().into(),
     }
 }
 
@@ -25088,7 +25088,7 @@ fn establish_divert(
     };
     Some(Core::Call {
         callee,
-        args: call_args,
+        args: call_args.into(),
     })
 }
 

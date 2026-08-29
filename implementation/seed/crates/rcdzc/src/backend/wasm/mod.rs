@@ -1633,24 +1633,24 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             // yielding an invalid consumer component.
             let peer_bound = db.effect_bindings.contains_key(&*effect);
             if !peer_bound {
-                for a in &args {
+                for a in args.iter() {
                     if let Core::ConstStr(s) = crate::lower::core_of(db, *a) {
                         out.push(s.to_string());
                     }
                 }
             }
-            for a in args {
+            for &a in args.iter() {
                 collect_host_arg_strings(db, a, out);
             }
         }
         Core::Call { args, .. } => {
-            for a in args {
+            for &a in args.iter() {
                 collect_host_arg_strings(db, a, out);
             }
         }
         Core::CallClosure { closure, args } => {
             collect_host_arg_strings(db, closure, out);
-            for a in args {
+            for &a in args.iter() {
                 collect_host_arg_strings(db, a, out);
             }
         }

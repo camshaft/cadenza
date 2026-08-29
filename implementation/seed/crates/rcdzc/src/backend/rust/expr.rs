@@ -1495,7 +1495,7 @@ fn call_needs_pin(db: &mut Db, callee: usize) -> bool {
             // A call node: its own callee is in tail position HERE (handled by the caller's descent), but
             // its ARGS are non-tail — collect calls inside them.
             Core::Call { args, .. } => {
-                for a in args {
+                for &a in args.iter() {
                     collect_all_calls(db, a, out);
                 }
             }
@@ -3804,7 +3804,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::CallClosure { closure, args } => {
             let c = emit(db, closure, env, ctx)?;
             let mut rendered = Vec::with_capacity(args.len());
-            for &a in &args {
+            for &a in args.iter() {
                 rendered.push(emit(db, a, env, ctx)?);
             }
             if ctx.mode.is_async() {

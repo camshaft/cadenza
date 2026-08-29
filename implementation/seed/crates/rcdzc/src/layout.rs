@@ -1234,7 +1234,7 @@ fn collect_closure_call_sigs(
         let arg_vts: Option<Vec<ValType>> = {
             let mut vts = Vec::new();
             let mut ok = true;
-            for &a in &args {
+            for &a in args.iter() {
                 let ty = type_of(db, a);
                 if matches!(ty.strip_nominal(), Ty::Unit) {
                     continue; // Unit arg → no slot, elided
@@ -1348,7 +1348,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         }
         Core::CallClosure { closure, args } => {
             collect_closure_codes(db, closure, out);
-            for arg in args {
+            for &arg in args.iter() {
                 collect_closure_codes(db, arg, out);
             }
         }
@@ -1478,7 +1478,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         | Core::BytesLen { operand }
         | Core::StrScalarLen { operand } => collect_closure_codes(db, operand, out),
         Core::Call { args, .. } | Core::HostCall { args, .. } => {
-            for a in args {
+            for &a in args.iter() {
                 collect_closure_codes(db, a, out);
             }
         }
@@ -1669,7 +1669,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             if !out.contains(&callee) {
                 out.push(callee);
             }
-            for a in args {
+            for &a in args.iter() {
                 collect_call_callees(db, a, out);
             }
         }
@@ -1900,14 +1900,14 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         // (`call_indirect`), so no static callee to add — the lifted functions are already in the set.
         crate::core::Core::CallClosure { closure, args } => {
             collect_call_callees(db, closure, out);
-            for arg in args {
+            for &arg in args.iter() {
                 collect_call_callees(db, arg, out);
             }
         }
         // A host call OR a cross-component call dispatches to a component IMPORT (not a `db.defs`
         // function), so no static callee to add; its arguments may still reach callees.
         crate::core::Core::HostCall { args, .. } => {
-            for arg in args {
+            for &arg in args.iter() {
                 collect_call_callees(db, arg, out);
             }
         }
