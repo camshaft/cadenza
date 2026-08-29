@@ -13717,3 +13717,19 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 11 Int64))
   (call main (: 20 Int64)) (output (: 10 Int64)))
+
+(case "mm1 a MAP of MAPS chains two runtime-keyed lookups through the cadenza hop"
+  (doc "Nested-collection face: the outer #map's VALUES are maps; both lookup keys are runtime-branch
+        built, and the inner match nests inside the outer Some arm. n=9 → outer 1 → inner 20 → 200;
+        n=3 → outer 1 → inner 10 → 100; n=-2 → outer 2 → inner 10 → 111. Dual-path verified,
+        byte-idempotent.")
+  (input (do
+    (def (main (: n Int64))
+      (match (Map.lookup #map((= 1 #map((= 10 100) (= 20 200))) (= 2 #map((= 10 111)))) (if (> n 0) 1 2))
+        ((Some inner) (match (Map.lookup inner (if (> n 5) 20 10)) ((Some v) v) ((None _u) -1)))
+        ((None _u) -99)))
+    (export main)))
+  (call main (: 9 Int64)) (output (: 200 Int64))
+  (call main (: 3 Int64)) (output (: 100 Int64))
+  (call main (: -2 Int64)) (output (: 111 Int64))
+  (live-objects 1))
