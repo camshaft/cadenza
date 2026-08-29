@@ -121,11 +121,22 @@ jobs:
       # it's a content gap not a key/save miss; v-ft run-log diagnosis 31251120525). Rooting the output via
       # --out-link keeps it live through the pre-save GC so it lands in the saved narinfo set → candidates restore
       # it warm. The .drv-suffixed save key already rotates with the seed-compiler, so a fresh output saves cleanly.
-      - name: warm the aarch64-only nix checks + ROOT the seed-compiler output (cad-tests bearer)
+      - name: warm + ROOT the seed-compiler output (aarch64, essential warm target — fatal)
         if: matrix.arch == 'aarch64'
-        run: |
-          nix build .#packages.aarch64-linux.seed-compiler --out-link seed-compiler-root --print-build-logs
-          nix build .#checks.aarch64-linux.cad-tests --print-build-logs
+        run: nix build .#packages.aarch64-linux.seed-compiler --out-link seed-compiler-root --print-build-logs
+      # cad-tests is a warm-only BEARER, NOT a correctness gate: it builds the cad-tests CHECK (which runs
+      # `cdz test`) so candidates restore that check warm. But it is a full test suite that reds on CODE
+      # regressions unrelated to cache-warming (e.g. the CAD snowflake wasm-OOB trap owned by another lane) —
+      # and cache-warm's JOB is warming the store, not gating correctness (that signal already lives in the
+      # `ci` workflow's advisory `cadenza @test suites` check). By this point the essential warm targets
+      # (cargo-artifacts, component store, seed-compiler) are ALREADY built, so a cad-tests failure does not
+      # leave a partial store. `continue-on-error: true` keeps a cad-tests code-red NON-FATAL: `success()`
+      # stays true, so the save below still fires and the store stays warm; only the cad-tests-check narinfo
+      # is missed (candidates rebuild it — which they must anyway while it is red). v-gha-green 2026-08-29.
+      - name: warm the aarch64-only cad-tests check (bearer; non-fatal — code reds must not red cache-warming)
+        if: matrix.arch == 'aarch64'
+        continue-on-error: true
+        run: nix build .#checks.aarch64-linux.cad-tests --print-build-logs
       # DRV-IN-SAVE-KEY (v-nix+v-ft 2026-08-06): compute the SAVE key with the seed-compiler's OUTPUT drv-hash
       # as a suffix ON AARCH64, so the key rotates WITH the payload. WHY: the seed-compiler drv rotates on every
       # rcdzc/cdz/cdz-run closure commit (~90min cadence, measured), but the c2 key (hashFiles(flake.lock,
