@@ -4398,6 +4398,18 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // call is kept, for its boundary-crossing observable effect. (A perform is a host call at
                 // this tier; a handled perform folded away, so "reaches a host call" is the right test.)
                 if !reaches_host_call(db, s) {
+                    // (A) STRICT heap-collection construction (#5194 CASE2, #5328): a strict-construction
+                    // arg computation `lower_let` decomposed out of a DEAD list/set/map ctor is marked in
+                    // `db.strict_force_eval` and MUST be evaluated (its trap fires) — the (A)-overrides-§283
+                    // rule (v-spec-oracle): a reached heap-collection ctor's args are strict, NOT deferrable.
+                    // These are SCALAR-typed computations, so force-eval + discard (`let _ = …`) runs the
+                    // trap (e.g. `(/ 5 d)` div-by-zero) with no build and no borrowed value touched → no
+                    // reclaim. Mirrors the wasm `Core::Seq` emit's strict-force arm; without this the rust
+                    // backend §283-elided the dead ctor and dropped the trap (breaker: gate-check-rust red).
+                    if db.strict_force_eval.contains(&s) {
+                        let sv = emit(db, s, env, ctx)?;
+                        body.push_str(&format!("let _ = {sv}; "));
+                    }
                     continue;
                 }
                 let sv = emit(db, s, env, ctx)?;
