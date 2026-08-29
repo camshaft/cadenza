@@ -1593,6 +1593,80 @@ fn ensure_prune_crons(fleet: &Fleet) {
     }
 }
 
+/// Pure decision for the checkout-symlink bootstrap: given whether the tracked source dir exists, and the
+/// current state of the `.claude/<name>` path (is-symlink, symlink-target, exists-as-non-symlink), what
+/// should `ensure_claude_symlinks` DO? Split out so the "when do we (re)link vs skip vs refuse" policy is
+/// unit-tested without touching the fs. `want` is the desired relative target (`../<name>`).
+#[derive(Debug, PartialEq, Eq)]
+enum ClaudeLinkAction {
+    SkipNoSource,  // no tracked `<name>/` to link → nothing to do
+    AlreadyLinked, // correct symlink already present → no-op
+    RefuseRealDir, // a REAL directory sits there → never delete the user's content; warn + skip
+    Relink,        // absent, or a stale/wrong symlink → (remove if symlink then) create the link
+}
+fn claude_link_action(
+    source_exists: bool,
+    is_symlink: bool,
+    symlink_target: Option<&Path>,
+    exists: bool,
+    want: &Path,
+) -> ClaudeLinkAction {
+    if !source_exists {
+        return ClaudeLinkAction::SkipNoSource;
+    }
+    if is_symlink && symlink_target == Some(want) {
+        return ClaudeLinkAction::AlreadyLinked;
+    }
+    if exists && !is_symlink {
+        return ClaudeLinkAction::RefuseRealDir;
+    }
+    ClaudeLinkAction::Relink
+}
+
+/// Ensure `.claude/{skills,commands}` are symlinks to the tracked `skills/`+`commands/` at the hub root —
+/// the one-time checkout bootstrap FORMERLY done by the standalone `cargo xtask setup`. Adopted into `fleet
+/// up` (2026-08-29, coord v-xtask-decompose seq-202 xtask-tiny): `up` is already the fleet's checkout-
+/// bootstrap home (materialize + git hooks + crons), so a fresh clone's `fleet up` now wires skills/commands
+/// too, and the separate `xtask setup` command can be deleted. Relative link (`.claude/<name>` → `../<name>`),
+/// idempotent, NEVER clobbers a real directory (only replaces a stale symlink — a symlink owns no content).
+/// FAIL-OPEN + best-effort (a symlink/mkdir hiccup never blocks `fleet up`). Unix-only (skips elsewhere).
+fn ensure_claude_symlinks(fleet: &Fleet) {
+    let claude = fleet.repo.join(".claude");
+    if std::fs::create_dir_all(&claude).is_err() {
+        return;
+    }
+    for name in ["skills", "commands"] {
+        let link = claude.join(name);
+        let want = PathBuf::from("..").join(name);
+        let target = std::fs::read_link(&link).ok();
+        let action = claude_link_action(
+            fleet.repo.join(name).is_dir(),
+            link.is_symlink(),
+            target.as_deref(),
+            link.exists(),
+            &want,
+        );
+        match action {
+            ClaudeLinkAction::SkipNoSource | ClaudeLinkAction::AlreadyLinked => {}
+            ClaudeLinkAction::RefuseRealDir => {
+                eprintln!(
+                    "fleet up: .claude/{name} is a real directory, not a symlink — leaving it (move it \
+                     aside so `fleet up` can link it to `{name}/`)."
+                );
+            }
+            ClaudeLinkAction::Relink => {
+                if link.is_symlink() {
+                    let _ = std::fs::remove_file(&link);
+                }
+                #[cfg(unix)]
+                {
+                    let _ = std::os::unix::fs::symlink(&want, &link);
+                }
+            }
+        }
+    }
+}
+
 fn up(fleet: &Fleet) {
     // Materialize the tracked source (role bodies + contract + window.sh) into the runtime dir so
     // window.sh has a stable hub-anchored path. Then reconcile the tracked ROSTER into the runtime
@@ -1603,6 +1677,10 @@ fn up(fleet: &Fleet) {
     fleet.materialize_source();
     register_merge_drivers(fleet);
     install_git_hooks(fleet);
+    // Wire `.claude/{skills,commands}` → the tracked `skills/`+`commands/` (adopted from the deleted
+    // `xtask setup`; `up` is the fleet's checkout-bootstrap home, so a fresh clone gets skills/commands
+    // wired without a separate command). Idempotent, never clobbers a real dir, fail-open.
+    ensure_claude_symlinks(fleet);
     // Re-arm the CPU-monitor user-crontab (idempotent + drift-heals) so the daemon survives relaunches
     // without a manual host-recipe re-add — same re-arm-on-relaunch discipline as the other self-crons.
     ensure_cpu_monitor_cron(fleet);
@@ -16314,6 +16392,35 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
                 .count(),
             1,
             "exactly one fleet:cpu-monitor line after heal (no duplicates)"
+        );
+    }
+
+    #[test]
+    fn claude_link_action_links_absent_heals_stale_refuses_realdir_and_is_idempotent() {
+        use ClaudeLinkAction::*;
+        let want = PathBuf::from("../skills");
+        let other = PathBuf::from("../OLD-skills");
+        // No tracked source dir → nothing to do, regardless of the link state.
+        assert_eq!(
+            claude_link_action(false, false, None, false, &want),
+            SkipNoSource
+        );
+        // Correct symlink already present → no-op (idempotent; `up` re-runs every relaunch).
+        assert_eq!(
+            claude_link_action(true, true, Some(&want), true, &want),
+            AlreadyLinked
+        );
+        // Absent → create the link.
+        assert_eq!(claude_link_action(true, false, None, false, &want), Relink);
+        // A stale/wrong symlink (old target) → replace it (a symlink owns no content).
+        assert_eq!(
+            claude_link_action(true, true, Some(&other), true, &want),
+            Relink
+        );
+        // A REAL directory sits there → REFUSE (never delete the user's content).
+        assert_eq!(
+            claude_link_action(true, false, None, true, &want),
+            RefuseRealDir
         );
     }
 
