@@ -622,12 +622,13 @@ pub fn equiv_cadenza_sweep(
                                 );
                             }
                             // Sampled values AGREE while the oracle's normal forms differ = a SYMBOLIC
-                            // FALSE-POSITIVE. Collect the (orig, program1) render pair for v-lean-oracle's
-                            // normalizer triage (render the round-trip AST the trial already carries).
+                            // FALSE-POSITIVE. Collect the (orig, program1) pair for v-lean-oracle's
+                            // normalizer triage — render the round-trip AST as S-EXPR (the form the oracle
+                            // consumes + the `.program1.sexp` extension implies), not surface syntax.
                             ConfirmOutcome::ValuesAgree => {
                                 stats.symbolic_false_positives += 1;
                                 let cadenza_render =
-                                    cadenza_syntax::printer::print(&trial.cadenza, 100);
+                                    cadenza_syntax::sexpr::print_pretty_width(&trial.cadenza, 100);
                                 false_positives.push((src.clone(), cadenza_render));
                             }
                             // Sampled net couldn't compare (param'd main / skip / hang) — inherent.
