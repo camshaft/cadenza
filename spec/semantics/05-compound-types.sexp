@@ -5335,6 +5335,38 @@
             (export main)))
   (error  CDZ0203))
 
+; ── newtype NOMINAL-BOUNDARY rejects: the tag is a real boundary, and it does NOT swallow the underlying
+; check (migrated from rcdzc comparing_a_newtype_to_its_underlying_type_is_a_nominal_boundary_error [the
+; comparison rejects], a_newtype_over_a_record_still_rejects_a_missing_field, a_newtype_wrong_constructor_pattern_is_a_type_error) ──
+(case "comparing a newtype to its erased underlying type is a nominal-boundary error"
+  (doc    "`(= (Age 1) 1)` for `(type Age (Age Int64))` compares a nominal newtype to its ERASED inner — the
+           same nominal-boundary violation as Symbol-vs-String, so CDZ0202 (NOT the generic CDZ0203 'type
+           mismatch', which would read as unrelated types).")
+  (input  (do (type Age (Age Int64)) (def (main) (= (Age 1) 1)) (export main)))
+  (error  CDZ0202))
+
+(case "the newtype nominal-boundary comparison error fires regardless of operand order"
+  (input  (do (type Age (Age Int64)) (def (main) (= 1 (Age 1))) (export main)))
+  (error  CDZ0202))
+
+(case "a generic newtype compared to its bare instantiated inner also crosses the nominal boundary"
+  (input  (do (type Box (Mk a)) (def (main) (= (Mk 1) 1)) (export main)))
+  (error  CDZ0202))
+
+(case "a newtype over a record still rejects a missing field through the tag"
+  (doc    "The tag does NOT swallow the closed-record check: `.z` on a newtype over `(Record (x …))` rejects
+           CDZ0212 (absent-record-field) exactly as it would on the bare record — seeing through the tag
+           reaches the SAME field-set validation.")
+  (input  (do (type UserId (Mk (Record (x Int64)))) (def (main) (. (UserId.Mk (record (x 1))) z)) (export main)))
+  (error  CDZ0212))
+
+(case "a wrong-constructor pattern over a newtype scrutinee is a type error"
+  (doc    "A `(Some n)` pattern over a `UserId` scrutinee names a constructor of ANOTHER type — a type
+           confusion the matcher REJECTS CDZ0203, the nominal analogue of the boxed-sum wrong-variant-pattern
+           check (identity is by declaration occurrence).")
+  (input  (do (type UserId (Mk Int64)) (def (main) (match (Mk 1) ((Some n) n))) (export main)))
+  (error  CDZ0203))
+
 (case "a sum-match recursion that accumulates a built-in list returns a list"
   (doc    "The ACCUMULATOR companion of the fold above, and the shape a compiler's per-function
            return-kind table takes: `recompute` recurses by `match`-destructuring a user-sum parameter

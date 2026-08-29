@@ -8122,31 +8122,11 @@ mod match_engine {
 
     #[test]
     fn comparing_a_newtype_to_its_underlying_type_is_a_nominal_boundary_error() {
-        // `(= (Age 1) 1)` for `(type Age (Age Int64))` compares a nominal newtype to its ERASED inner —
-        // the same nominal-boundary violation as Symbol-vs-String, so CDZ0202 (NOT the generic CDZ0203
-        // "type mismatch", which reads as unrelated types). Fires on either operand order; a generic
-        // newtype vs its instantiated inner (`(= (Mk 1) 1)`) is caught too.
-        assert_eq!(
-            reject_code(
-                "(module m (type Age (Age Int64)) (def (main) (= (Age 1) 1)) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0202")
-        );
-        assert_eq!(
-            reject_code(
-                "(module m (type Age (Age Int64)) (def (main) (= 1 (Age 1))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0202"),
-            "the boundary error fires regardless of operand order"
-        );
-        // A generic newtype `(Mk 1) : Box Int64` compared to a bare `Int64` also crosses the boundary.
-        assert_eq!(
-            reject_code("(module m (type Box (Mk a)) (def (main) (= (Mk 1) 1)) (export main))")
-                .as_deref(),
-            Some("CDZ0202")
-        );
+        // The bare CDZ0202 comparison rejects (newtype vs its erased inner, either operand order, and a
+        // generic newtype vs its bare instantiated inner) migrated to corpus 05-compound-types (the newtype
+        // NOMINAL-BOUNDARY reject block). What STAYS here is the ACTIONABLE-FIX half, which carries a novel
+        // unwrap `(match … ((Mk n) n))` Wrap fix + its no-fix negative + a round-trip compile — facets the
+        // corpus (error …) surface grades only via the nix corpus-grade, kept in rust as the fix-quality pin.
         // ACTIONABLE FIX (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix): the
         // message says "unwrap the nominal", and for an ERASABLE SINGLE-VARIANT newtype the unwrap is the
         // total, unambiguous `(match <it> ((<Variant> n) n))` — so it now carries that WRAP fix on the
@@ -8264,35 +8244,11 @@ mod match_engine {
         );
     }
 
-    #[test]
-    fn a_newtype_over_a_record_still_rejects_a_missing_field() {
-        // The tag does NOT swallow the closed-record check: `.z` on a newtype over `(Record (x …))`
-        // rejects (CDZ0212, the absent-record-field code) exactly as it would on the bare record — seeing
-        // through the tag reaches the SAME field-set validation.
-        assert_eq!(
-            reject_code(
-                "(module m (type UserId (Mk (Record (x Int64)))) \
-                   (def (main) (. (UserId.Mk (record (x 1))) z)) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0212")
-        );
-    }
-
-    #[test]
-    fn a_newtype_wrong_constructor_pattern_is_a_type_error() {
-        // A `(Some x)` pattern over a `UserId` scrutinee names a constructor of ANOTHER type — a type
-        // confusion the matcher must REJECT (CDZ0203), the nominal analogue of the boxed-sum
-        // wrong-variant-pattern check (identity is by declaration occurrence).
-        assert_eq!(
-            reject_code(
-                "(module m (type UserId (Mk Int64)) \
-                   (def (main) (match (Mk 1) ((Some n) n))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0203")
-        );
-    }
+    // (a_newtype_over_a_record_still_rejects_a_missing_field + a_newtype_wrong_constructor_pattern_is_a_type_error
+    // migrated to corpus 05-compound-types, the newtype NOMINAL-BOUNDARY reject block: "a newtype over a
+    // record still rejects a missing field through the tag" (`.z` on a newtype over (Record (x …)) → CDZ0212)
+    // + "a wrong-constructor pattern over a newtype scrutinee is a type error" ((Some n) over UserId → CDZ0203).
+    // --case grades the reject codes (both PASS).)
 
     #[test]
     fn a_multi_payload_pattern_of_wrong_arity_is_rejected() {
