@@ -10131,6 +10131,37 @@ mod match_engine {
     }
 
     #[test]
+    fn a_map_rest_pattern_with_an_entry_after_the_rest_is_rejected_cdz0201() {
+        // SOUNDNESS guard (05-compound-types map-rest-shape): a map REST pattern's `.. rest` binds the
+        // remaining map and must be LAST — a keyed entry AFTER the rest (`(map (= 1 v) .. rest (= 2 w))`)
+        // is a malformed rest shape, rejected CDZ0201 (not silently matched). Pinned at the rcdzc RESOLVE
+        // layer in BOTH the native `#map(…)` (Leaf::Ctor(Map) + FieldPair entries, #5229) and name-alias
+        // `(map …)` spellings — the fast-gate mirror of the 05 error-cases, whose ML-surface round-trip is
+        // separately gated (a post-rest entry is a resolve-level reject, independent of any surface).
+        for (label, src) in [
+            (
+                "native #map post-rest entry",
+                "(module m (def (f (: mp (Map Int64 Int64))) (match mp (#map((= 1 v) .. rest (= 2 w)) v) (_ 0))) (export f))",
+            ),
+            (
+                "name-alias map post-rest entry",
+                "(module m (def (f (: mp (Map Int64 Int64))) (match mp ((map (= 1 v) .. rest (= 2 w)) v) (_ 0))) (export f))",
+            ),
+        ] {
+            assert_eq!(
+                reject_code(src).as_deref(),
+                Some("CDZ0201"),
+                "{label}: a map-rest pattern with an entry after the rest must reject CDZ0201"
+            );
+        }
+        // A well-formed rest-LAST map pattern still compiles (no false reject).
+        assert!(
+            reject_code("(module m (def (f (: mp (Map Int64 Int64))) (match mp (#map((= 1 v) .. rest) v) (_ 0))) (export f))").is_none(),
+            "a rest-last map pattern is well-formed and compiles"
+        );
+    }
+
+    #[test]
     fn a_map_literal_with_mixed_types_or_a_duplicate_key_is_rejected_cdz0201() {
         // SOUNDNESS guard (05-compound-types map-type-error cases): a `(map …)` literal with values (or keys)
         // of two different types, or a duplicate literal key, is CDZ0201 — not silently built. The homogeneity
