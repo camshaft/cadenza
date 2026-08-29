@@ -5940,7 +5940,6 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 format: cdz_run::cli::OutputFormat::Sexp,
                 runtime: None,
                 store: store.clone(),
-                diagnostics: None,
                 host_responses: Vec::new(),
                 peers: Vec::new(),
                 release: false,
