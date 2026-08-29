@@ -35,6 +35,14 @@ cadenza-syntax = { path = "../cadenza-syntax" }
 # `num-bigint` version cadenza-syntax's `Leaf::Int { value: BigInt }` uses (already in the workspace lock).
 num-bigint = "0.4"
 rcdzc = { path = "../rcdzc" }
+# The compile-BOUNDARY contract types (`Target`, `OptLevel`, the kinded `Artifact`, the sidecar
+# `Request`/`Query` + its `encode`/`decode` codec + `KIND_*` result kinds, `CompileOutput`) — the wire
+# vocabulary `cdz` and `rcdzc` agree on across the compiler seam (the `cadenza-ast` analogue for the
+# compile boundary). `cdz` depends on it DIRECTLY so a `!standalone` build can speak the boundary WITHOUT
+# linking `rcdzc` (the delegate path builds the sidecar request + reads the result from these shared
+# types). Already in `cdz`'s closure transitively via `rcdzc`, so this direct edge is closure-NEUTRAL
+# (verified with `nix eval .#checks.<sys>.crate-closure-assert`); the rcdzc-optional flip lands later.
+cadenza-compile-abi = { path = "../cadenza-compile-abi" }
 # The Rust-backend boundary-value render (shared with the corpus gate) — `cdz run-rust` compiles a
 # program `--target rust`, runs it, and renders the result to the SAME canonical s-expr the wasm oracle
 # prints, so the fuzzer's rust-vs-wasm differential compares like-for-like. Pure/dep-free.
