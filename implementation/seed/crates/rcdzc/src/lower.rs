@@ -4610,6 +4610,61 @@ fn enclosing_or_collected_region_uses(
     rc
 }
 
+/// Operator ruling (A) STRICT heap-collection construction (#5194): a REACHED list/set/map CONSTRUCTOR MUST
+/// evaluate every element ARGUMENT (its traps + effects occur) even when the resulting collection is dead /
+/// discarded — the optimizer MAY elide the ALLOCATION but MUST preserve argument evaluation. Returns true iff
+/// `init`'s core IS such a ctor holding an element that is NOT `is_trap_free` (a trap-possible OR effectful
+/// arg). Used as the `const_compound_eq` fold-guard — decline the first-differing-element short-circuit for
+/// a list/set/map operand so the runtime value-eq walk MATERIALIZES it (its args evaluate → the trap/effect
+/// occurs). SPECIFIC to heap-COLLECTION ctors: a TUPLE/RECORD stays LAZY (its eq short-circuits at the first
+/// differing element per §283 / 03-equality "a later trapping element is not forced"), so those are EXCLUDED.
+fn is_strict_heap_ctor_with_trappable_arg(db: &mut Db, init: StructId) -> bool {
+    match core_of(db, init) {
+        Core::ListNew { elems } | Core::SetOf { elems, .. } => {
+            let es: Vec<StructId> = elems.iter().copied().collect();
+            es.into_iter().any(|e| value_ctor_can_trap(db, e))
+        }
+        Core::MapNew { entries, .. } => {
+            let ents: Vec<(StructId, StructId)> = entries.iter().copied().collect();
+            ents.into_iter()
+                .any(|(k, v)| value_ctor_can_trap(db, k) || value_ctor_can_trap(db, v))
+        }
+        _ => false,
+    }
+}
+
+/// Whether constructing `id` can TRAP. A refinement of `is_trap_free` that recurses THROUGH the heap-
+/// COLLECTION ctors `is_trap_free` treats conservatively (its `_ => false` arm makes `SetOf`/`MapNew`
+/// "possibly trapping" even when fully constant): a map/set/list/tuple/record/sum is trap-possible iff SOME
+/// element/entry/payload is, recursively; a non-ctor leaf falls back to `!is_trap_free`. Without this,
+/// `is_strict_heap_ctor_with_trappable_arg` spuriously fires on a CONSTANT list-of-maps (each `MapNew`
+/// element reads as `!is_trap_free` = true) and wrongly declines the sound `const_compound_eq` fold →
+/// routing a well-typed constant comparison through the runtime walk (regressed 05-compound-types "a list of
+/// maps with different keys is homogeneous").
+fn value_ctor_can_trap(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::ListNew { elems } | Core::SetOf { elems, .. } | Core::Tuple { elems } => {
+            let es: Vec<StructId> = elems.iter().copied().collect();
+            es.into_iter().any(|e| value_ctor_can_trap(db, e))
+        }
+        Core::MapNew { entries, .. } => {
+            let ents: Vec<(StructId, StructId)> = entries.iter().copied().collect();
+            ents.into_iter()
+                .any(|(k, v)| value_ctor_can_trap(db, k) || value_ctor_can_trap(db, v))
+        }
+        Core::Record { fields } => {
+            let fs: Vec<StructId> = fields.values().copied().collect();
+            fs.into_iter().any(|v| value_ctor_can_trap(db, v))
+        }
+        Core::SumNew { payloads, .. } => {
+            let ps: Vec<StructId> = payloads.iter().copied().collect();
+            ps.into_iter().any(|p| value_ctor_can_trap(db, p))
+        }
+        // A non-collection leaf: trap-possible iff not trap-free.
+        _ => !is_trap_free(db, id),
+    }
+}
+
 fn lower_let(
     db: &mut Db,
     node: StructId,
@@ -22657,7 +22712,22 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
             // `(= (tuple 1 2) (tuple 1 2))` → true. A nested compound compares recursively (a payload/
             // element that is itself a compound). Returns `None` when either side is not a constant
             // compound → falls through to the scalar-runtime / decline below.
+            //
+            // (A) STRICT heap-collection construction (#5194): `const_compound_eq` can decide the result from
+            // an early differing CONSTANT element WITHOUT reading a later one, so a constructed operand whose
+            // element can TRAP could fold to `false` (at element 0) and the trapping arg be DROPPED. This is
+            // SOUND for a TUPLE/RECORD operand — a reached tuple's later element is UNOBSERVED when the eq
+            // short-circuits (§283 laziness; 03-equality "compound equality short-circuits at the first
+            // differing element — a later trapping element is not forced" → false, NOT a trap). But a
+            // LIST/SET/MAP CONSTRUCTOR is STRICT: ruling (A) forces its element args whenever the ctor is
+            // reached (an `=` operand IS reached), independent of any comparison short-circuit (03-equality
+            // "list construction strictly evaluates its element arguments … in an = operand" → trap). So
+            // DECLINE the fold when an operand IS a heap-COLLECTION ctor with a trappable arg (NOT a
+            // tuple/record, which stays lazy) — falling through to the runtime `value-eq` walk that
+            // materializes both operands (their list/set/map ctor args evaluate → the trap occurs).
             if matches!(op, Prim::Eq)
+                && !is_strict_heap_ctor_with_trappable_arg(db, args[0])
+                && !is_strict_heap_ctor_with_trappable_arg(db, args[1])
                 && let Some(eq) = const_compound_eq(db, args[0], args[1])
             {
                 trace!(target: "rcdzc::fold", result = eq, "folded constant compound equality (structural)");
