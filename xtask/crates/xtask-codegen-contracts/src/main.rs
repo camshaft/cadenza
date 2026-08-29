@@ -673,3 +673,53 @@ fn contracts_mod_banner() -> String {
      //! `contracts/<name>.cdz` wires itself in on the next `cargo xtask codegen`.\n\n"
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{render_contracts_mod, to_pascal, to_snake};
+
+    /// The Cadenza-name → PascalCase mapping used for generated type/struct identifiers. A regression
+    /// here silently mis-names a generated struct, so pin the separator handling (both `-` and `_`) and
+    /// idempotence on an already-Pascal name.
+    #[test]
+    fn to_pascal_maps_separators_and_is_idempotent() {
+        assert_eq!(to_pascal("deliver-envelope"), "DeliverEnvelope");
+        assert_eq!(to_pascal("missing_handler"), "MissingHandler");
+        assert_eq!(to_pascal("event"), "Event");
+        assert_eq!(to_pascal("a-b-c"), "ABC");
+        // already-Pascal input round-trips unchanged.
+        assert_eq!(to_pascal("MissingHandler"), "MissingHandler");
+    }
+
+    /// The Cadenza-name → snake_case mapping used for generated `build_*`/`is_*`/`as_*` fn identifiers:
+    /// `-` → `_`, and an underscore before each interior capital (no leading underscore). A regression
+    /// here silently mis-names a generated accessor.
+    #[test]
+    fn to_snake_lowercases_and_splits_interior_capitals() {
+        assert_eq!(to_snake("MissingHandler"), "missing_handler");
+        assert_eq!(to_snake("deliver-envelope"), "deliver_envelope");
+        assert_eq!(to_snake("event"), "event");
+        // a leading capital gets no leading underscore.
+        assert_eq!(to_snake("Envelope"), "envelope");
+    }
+
+    /// `render_contracts_mod` emits one `pub mod <name>;` per contract with `-` folded to `_` (a Rust
+    /// module ident can't hold a hyphen). Preserves the input order it is handed (the caller sorts).
+    #[test]
+    fn render_contracts_mod_emits_valid_module_idents() {
+        let rust = render_contracts_mod(&["deliver-envelope".to_string(), "state".to_string()])
+            .to_string();
+        assert!(
+            rust.contains("pub mod deliver_envelope"),
+            "hyphenated contract name not folded to a valid module ident: {rust}"
+        );
+        assert!(
+            rust.contains("pub mod state"),
+            "missing plain contract mod: {rust}"
+        );
+        assert!(
+            !rust.contains('-'),
+            "a raw hyphen leaked into a module ident: {rust}"
+        );
+    }
+}
