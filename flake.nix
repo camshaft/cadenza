@@ -307,6 +307,18 @@
           doCheck = false;
         });
 
+        # cdzWorldArtifactBin — the WIT-world → KIND_WIT_WORLD binary-AST utility as a relocatable crane bin
+        # (v-xtask-decompose). The cdz-world-artifact crate ALREADY holds the logic (deps just cadenza-ast);
+        # this replaces `cargo xtask world-artifact`'s `cargo build -p cdz-world-artifact` shell-out (a bare
+        # cargo call the operator all-nix mandate forbids) with a warm crane bin `apps.world-artifact` runs.
+        # Output: $out/bin/cdz-world-artifact. (The `worldArtifacts` build derivation is unchanged — it builds
+        # the crate in its own scoped derivation; this bin is just the local-dev convenience entry point.)
+        cdzWorldArtifactBin = craneLib.buildPackage ((craneCrateCommon { crate = "cdz-world-artifact"; }) // {
+          pname = "cdz-world-artifact";
+          cargoExtraArgs = "-p cdz-world-artifact";
+          doCheck = false;
+        });
+
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
         # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
@@ -3637,6 +3649,11 @@
         # result/bin/xtask-fmt. Backs `apps.fmt`; caches independently of xtask.
         packages.xtask-fmt = xtaskFmtBin;
 
+        # The WIT-world artifact utility bin (v-xtask-decompose). `nix build .#world-artifact` →
+        # result/bin/cdz-world-artifact. Backs `apps.world-artifact` (the `cargo xtask world-artifact`
+        # replacement). Distinct from `packages.world-artifacts` (plural = the emitted-artifacts derivation).
+        packages.world-artifact = cdzWorldArtifactBin;
+
         # The standalone mandate-lint binary (v-xtask-decompose). `nix build .#xtask-mandates` →
         # result/bin/xtask-mandates. Backs `apps.lint-mandates` + the mandate gate; caches independently
         # of xtask (its closure is just the crate + syn).
@@ -4710,6 +4727,31 @@
           {
             type = "app";
             program = "${wrapper}/bin/cdz-fmt";
+          };
+
+        # apps.world-artifact — the WIT-world artifact utility as a nix-native app backed by the crane-built
+        # `cdzWorldArtifactBin` (v-xtask-decompose). `nix run .#world-artifact -- [world]`. Replaces the old
+        # `cargo xtask world-artifact` (which cargo-BUILT cdz-world-artifact then shelled out — a bare cargo
+        # call the all-nix mandate forbids); the `Cmd::WorldArtifact` arm is removed so `cargo xtask
+        # world-artifact` forwards here. The wrapper supplies the same defaults xtask did (wit =
+        # cdz-platform/wit/world.wit, out = target/wit-worlds) and passes any trailing arg through as the
+        # optional single-world filter (matches the CLI's positional `<wit> <out> [world]`).
+        apps.world-artifact =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-world-artifact-run";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                exec ${cdzWorldArtifactBin}/bin/cdz-world-artifact \
+                  "$root/implementation/seed/crates/cdz-platform/wit/world.wit" \
+                  "$root/target/wit-worlds" "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-world-artifact-run";
           };
 
         # apps.lint-mandates — the mandate-lint as a nix-native app backed by the STANDALONE
