@@ -310,7 +310,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(11) {
+    match c.variant(12) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -332,6 +332,9 @@ fn gen_main_body<C: Choice>(
         9 => gen_try_body(c, out),
         // A DESTRUCTURING pattern match: `(match (tuple/record …) ((tuple/record …binders…) <binder>))`.
         10 => gen_pattern_match_body(c, out),
+        // A BIGINT / RATIONAL body (`main : BigInt`/`Rational`): arbitrary-precision + exact-rational value
+        // / arith lowering — a numeric family the Int64/Float/sized grammar never reached.
+        11 => gen_bignum_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -910,6 +913,37 @@ fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
             }
         },
     }
+}
+
+/// A BIGINT (`N`-suffixed) / RATIONAL (`R`-suffixed) body — a literal, a binary op, or a beyond-`i64`
+/// BigInt literal. BigInt is arbitrary-precision (`+`/`-`/`*` never overflow → always on the compile
+/// path); Rational operands use `1..=9` (a nonzero denominator, so `/` never `/0`-traps). Reaches the
+/// bignum/rational value + arith lowering (a distinct numeric family from Int64/Float/sized). NOTE: the
+/// Lean oracle does not model BigInt/Rational yet, so these currently SKIP in the value differential —
+/// but they COMPILE cleanly (crash-fuzzed via `cdz_smith_gen_never_panics`) and will grade once modelled.
+fn gen_bignum_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the FORM before consuming the operand choices — else a short entropy seed exhausts the cursor
+    // on `a`/`b` and `variant` always defaults to 0 (never reaching the Rational forms).
+    let form = c.variant(5);
+    let (a, b) = (c.int_bounded(1, 9), c.int_bounded(1, 9));
+    match form {
+        // A BigInt literal `<n>N`.
+        0 => write!(out, "{a}N").ok(),
+        // A BigInt binary op — `+`/`-`/`*` only (arbitrary precision: no overflow, no `/0`).
+        1 => {
+            let op = ["+", "-", "*"][c.variant(3)];
+            write!(out, "({op} {a}N {b}N)").ok()
+        }
+        // A BEYOND-i64 BigInt literal (25 nines > i64::MAX) — exercises the big-magnitude codec + emit.
+        2 => write!(out, "{}N", "9".repeat(25)).ok(),
+        // A Rational literal `<n>R` (= n/1).
+        3 => write!(out, "{a}R").ok(),
+        // A Rational binary op — `b` in `1..=9` so `/` has a nonzero denominator.
+        _ => {
+            let op = ["+", "-", "*", "/"][c.variant(4)];
+            write!(out, "({op} {a}R {b}R)").ok()
+        }
+    };
 }
 
 /// A `?`/`try` body: `main` is a FALLIBLE fn (a `Result`/`Option` boundary, established by the body
@@ -1739,6 +1773,34 @@ mod tests {
         }
         assert!(saw_set, "should reach a #set literal");
         assert!(saw_map, "should reach a #map literal");
+    }
+
+    /// `gen_bignum_body` REACHES both BigInt (`N`) and Rational (`R`) forms and every body COMPILES (S132:
+    /// fills the BigInt/Rational numeric-family gap). BigInt `+`/`-`/`*` never overflow; Rational `/` uses a
+    /// nonzero denominator — so all stay on the compile path (they SKIP in the value oracle for now).
+    #[test]
+    fn gen_bignum_body_reaches_bigint_and_rational_and_compiles() {
+        let (mut saw_n, mut saw_r) = (false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(613);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_bignum_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_n |= body.contains('N');
+            saw_r |= body.contains('R');
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "bignum body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_n, "should reach a BigInt (N) form");
+        assert!(saw_r, "should reach a Rational (R) form");
     }
 
     /// `gen_try_body` REACHES all four `?`/`try` forms (Ok/Err success+short-circuit for Result, Some/None
