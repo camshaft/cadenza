@@ -261,7 +261,7 @@ etc. is a future increment); an arithmetic/comparison/boolean operator → `app`
 value is unmodelable it sinks the whole `let`, since an eager/discarded binding's trap can't be ruled out).
 Everything else — match/sum, collections, calls, recursion — is the incompleteness boundary → `cannotProve`
 (honest; degrade to the sampled differential there). Sound: never invents a value for an unmodeled construct. -/
-partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOutcome :=
+partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : Nat) : SymOutcome :=
   match m.nodes[i]? with
   | some (Node.atom lid) =>
     match m.leaves[lid]? with
@@ -277,7 +277,7 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOut
     | none => .cannotProve "symeval: leaf index out of range"
   | some (Node.list children) =>
     -- CONSTRUCTION first: a head resolving to a declared sum constructor (bare `C` or qualified `(. T C)`).
-    match symCtorConstruct m senv fuel children with
+    match symCtorConstruct m senv fuel ty children with
     | some o => o
     | none =>
     match m.headName? (Node.list children) with
@@ -285,34 +285,37 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOut
       if h == "if".toUTF8 then
         match children[1]?, children[2]?, children[3]? with
         | some cId, some tId, some eId =>
-          match symEval m senv fuel cId, symEval m senv fuel tId, symEval m senv fuel eId with
+          match symEval m senv fuel ty cId, symEval m senv fuel ty tId, symEval m senv fuel ty eId with
           | .sym c, .sym t, .sym e => .sym (.ite c t e)
           | .cannotProve r, _, _ => .cannotProve r
           | _, .cannotProve r, _ => .cannotProve r
           | _, _, .cannotProve r => .cannotProve r
         | _, _, _ => .cannotProve "symeval: malformed if"
       else if h == ":".toUTF8 then
-        match children[1]? with
-        | some vId => symEval m senv fuel vId
-        | none => .cannotProve "symeval: malformed ascription"
+        -- `(: e T)`: evaluate `e` at the ASCRIBED integer width (so arithmetic inside folds/overflows at the
+        -- right width) — a non-integer `T` (Float/Rational/…) leaves the ambient `ty` unchanged.
+        match children[1]?, children[2]? with
+        | some vId, some tyId => symEval m senv fuel ((parseIntTy? m tyId).getD ty) vId
+        | some vId, none => symEval m senv fuel ty vId
+        | _, _ => .cannotProve "symeval: malformed ascription"
       else if h == "let".toUTF8 then
         match children[1]?, children[2]? with
         | some bindingsId, some bodyId =>
           match m.nodes[bindingsId]? with
-          | some (Node.list pairs) => symLet m senv fuel pairs.toList bodyId
+          | some (Node.list pairs) => symLet m senv fuel ty pairs.toList bodyId
           | _ => .cannotProve "symeval: let bindings not a list"
         | _, _ => .cannotProve "symeval: malformed let"
       else if h == "tuple".toUTF8 then
         -- a tuple value (lazy elements). Build `.tuple` of the element SymExprs; an unmodelable element
         -- sinks the whole tuple (conservative — the value can't be fully compared).
-        let outs := (children.extract 1 children.size).map (fun c => symEval m senv fuel c)
+        let outs := (children.extract 1 children.size).map (fun c => symEval m senv fuel ty c)
         match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
         | some r => .cannotProve r
         | none => .sym (.tuple (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
       else if h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then
         -- a built-in unary Option/Result constructor (lazy payload).
         match children[1]? with
-        | some aId => (match symEval m senv fuel aId with | .sym e => .sym (.ctor h #[e]) | .cannotProve r => .cannotProve r)
+        | some aId => (match symEval m senv fuel ty aId with | .sym e => .sym (.ctor h #[e]) | .cannotProve r => .cannotProve r)
         | none => .cannotProve "symeval: constructor missing payload"
       else if h == "None".toUTF8 then .sym (.ctor "None".toUTF8 #[])
       else if h == "match".toUTF8 then
@@ -321,7 +324,7 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOut
         -- falls through; an UNDECIDABLE arm (symbolic scrutinee vs a value-inspecting pattern) → cannotProve.
         match children[1]? with
         | some scrutId =>
-          (match symEval m senv fuel scrutId with
+          (match symEval m senv fuel ty scrutId with
            | .cannotProve r => .cannotProve r
            | .sym v =>
              let decided := (children.extract 2 children.size).foldl (fun (acc : Option SymOutcome) armId =>
@@ -332,7 +335,7 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOut
                  | some ac => (match ac[0]?, ac[1]? with
                                | some patId, some bodyId =>
                                  (match symMatchPat m patId v with
-                                  | some (some ext) => some (symEval m (ext ++ senv) fuel bodyId)
+                                  | some (some ext) => some (symEval m (ext ++ senv) fuel ty bodyId)
                                   | some none => none
                                   | none => some (.cannotProve "symeval: match arm undecidable (symbolic scrutinee / unmodeled pattern)"))
                                | _, _ => some (.cannotProve "symeval: malformed match arm"))
@@ -349,7 +352,7 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOut
           | none => none
           | some arr =>
             match recordField? m j with
-            | some (k, vId) => (match symEval m senv fuel vId with | .sym e => some (arr.push (k, e)) | .cannotProve _ => none)
+            | some (k, vId) => (match symEval m senv fuel ty vId with | .sym e => some (arr.push (k, e)) | .cannotProve _ => none)
             | none => none) (some #[])
         match acc with
         | some arr => .sym (.record (arr.qsort (fun a b => cmpBytes a.1 b.1 == .lt)))
@@ -361,7 +364,7 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOut
         | some tId, some iId =>
           match (m.nodes[iId]?).bind (fun n => match n with | .atom lid => m.leaves[lid]? | _ => none) with
           | some (Leaf.name fld) =>
-            (match symEval m senv fuel tId with
+            (match symEval m senv fuel ty tId with
              | .sym (.record fs) => (match fs.find? (fun kv => kv.1 == fld) with
                                      | some (_, e) => .sym e
                                      | none => .cannotProve "symeval: record field not found")
@@ -371,7 +374,7 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOut
             (match Value.ofLeaf l with
              | some (.int n) =>
                if n < 0 then .cannotProve "symeval: negative tuple index"
-               else (match symEval m senv fuel tId with
+               else (match symEval m senv fuel ty tId with
                      | .sym (.tuple es) => (match es[n.toNat]? with
                                             | some e => .sym e
                                             | none => .cannotProve "symeval: tuple index out of range")
@@ -383,10 +386,24 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOut
       else match String.fromUTF8? h with
         | some hs =>
           if arithOps.contains hs || cmpOps.contains hs || hs == "=" || hs == "and" || hs == "or" || hs == "not" then
-            let outs := (children.extract 1 children.size).map (fun c => symEval m senv fuel c)
+            let outs := (children.extract 1 children.size).map (fun c => symEval m senv fuel ty c)
             match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
             | some r => .cannotProve r
-            | none => .sym (.app hs (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
+            | none =>
+              let args := outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)
+              -- INTEGER const-fold at the ascribed/ambient width `ty`. `evalArithOp` does the width-checked
+              -- overflow trap, so fold ONLY when it yields a VALUE (fits): an overflow / div-by-zero /
+              -- unsupported keeps the op SYMBOLIC — folding an overflowing case to a value would be a FALSE
+              -- 'proven' masking a miscompile (e.g. (+ 200 100) at UInt8 must NOT fold to 300). Comparison /
+              -- boolean / float folding stays in `normalize` (width-independent).
+              match hs, args with
+              | _, #[SymExpr.const (Value.int a), SymExpr.const (Value.int b)] =>
+                if arithOps.contains hs then
+                  (match evalArithOp hs a b ty with
+                   | .value v => .sym (SymExpr.const v)
+                   | _ => .sym (SymExpr.app hs args))
+                else .sym (SymExpr.app hs args)
+              | _, _ => .sym (SymExpr.app hs args)
           else
             -- a call `(f arg…)` to a top-level def `f` (not shadowed by a local): INLINE it — bind each
             -- param to its arg's SymExpr (evaluated in the CALLER env), then symEval the callee body in a
@@ -407,12 +424,12 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (i : Nat) : SymOut
                       | none => none
                       | some env =>
                         match paramSpec? m p.1 with
-                        | some (pnm, _) => (match symEval m senv fuel p.2 with
+                        | some (pnm, _) => (match symEval m senv fuel ty p.2 with
                                             | .sym e => some ((pnm, e) :: env)
                                             | .cannotProve _ => none)
                         | none => none) (some ([] : SymEnv))
                   match callEnv with
-                  | some ce => symEval m ce (fuel - 1) bodyId
+                  | some ce => symEval m ce (fuel - 1) defaultIntTy bodyId
                   | none => .cannotProve "symeval: a call argument is unmodelable or a param spec is malformed"
               | none => .cannotProve s!"symeval: operator/construct '{hs}' not modeled (boundary)"
         | none => .cannotProve "symeval: non-UTF8 head"
@@ -424,9 +441,9 @@ sequentially (each `v` symEval'd in the env extended with the EARLIER bindings �
 the body. A binding whose value is unmodelable (`cannotProve`) sinks the whole `let` — SOUND-conservative:
 that binding could be an eager/discarded one (a strict list/set/map ctor, or a `?`) whose trap we cannot
 rule out, so we must not silently drop it and claim a value. -/
-partial def symLet (m : Module) (senv : SymEnv) (fuel : Nat) (ps : List Nat) (bodyId : Nat) : SymOutcome :=
+partial def symLet (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (ps : List Nat) (bodyId : Nat) : SymOutcome :=
   match ps with
-  | [] => symEval m senv fuel bodyId
+  | [] => symEval m senv fuel ty bodyId
   | pid :: rest =>
     match m.nodes[pid]? with
     | some (Node.list pc) =>
@@ -434,8 +451,8 @@ partial def symLet (m : Module) (senv : SymEnv) (fuel : Nat) (ps : List Nat) (bo
       | some nId, some vId =>
         match nameOf? m nId with
         | some nm =>
-          match symEval m senv fuel vId with
-          | .sym e => symLet m ((nm, e) :: senv) fuel rest bodyId
+          match symEval m senv fuel ty vId with
+          | .sym e => symLet m ((nm, e) :: senv) fuel ty rest bodyId
           | .cannotProve r => .cannotProve r
         | none => .cannotProve "symeval: let binding missing name"
       | _, _ => .cannotProve "symeval: malformed let binding"
@@ -448,7 +465,7 @@ binding shadows the name. Erasure (identical to the concrete evaluator, via the 
 ctor → its payload (no tag); a STRUCT-NEWTYPE → the bare tuple of fields; a SOLE-NULLARY ctor → `unit`; any
 other declared ctor → a tagged `.ctor` (arity 1 → single payload; arity ≥2 → a tuple payload). An
 unmodelable arg or an arity mismatch (partial application) → `cannotProve`. -/
-partial def symCtorConstruct (m : Module) (senv : SymEnv) (fuel : Nat) (children : Array Nat) : Option SymOutcome :=
+partial def symCtorConstruct (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (children : Array Nat) : Option SymOutcome :=
   match ctorAppName? m children with
   | none => none
   | some cname =>
@@ -461,7 +478,7 @@ partial def symCtorConstruct (m : Module) (senv : SymEnv) (fuel : Nat) (children
       let argsOpt := (children.extract 1 children.size).foldl (fun (acc : Option (Array SymExpr)) aid =>
         match acc with
         | none => none
-        | some arr => (match symEval m senv fuel aid with | .sym e => some (arr.push e) | .cannotProve _ => none)) (some #[])
+        | some arr => (match symEval m senv fuel ty aid with | .sym e => some (arr.push e) | .cannotProve _ => none)) (some #[])
       some (match argsOpt with
         | none => .cannotProve "symeval: user-ctor argument is unmodelable"
         | some args =>
@@ -504,7 +521,7 @@ def symEvalExport (m : Module) (exportName : ByteArray) : SymOutcome :=
   | some (specs, bodyId) =>
     let senv : SymEnv := (specs.toList.zip (List.range specs.size)).filterMap (fun (specId, idx) =>
       (Eval.paramSpec? m specId).map (fun (nm, _) => (nm, SymExpr.var idx)))
-    if senv.length == specs.size then symEval m senv symDefaultFuel bodyId
+    if senv.length == specs.size then symEval m senv symDefaultFuel defaultIntTy bodyId
     else .cannotProve "symeval: a parameter spec is malformed"
   | none => .cannotProve "symeval: program has no (def (<export> …) BODY)"
 
@@ -595,7 +612,7 @@ private def _letExpr : Module :=
   { leaves := #[Leaf.name "let".toUTF8, Leaf.name "x".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[5])],
     nodes := #[.atom 1, .atom 2, .list #[0, 1], .list #[2], .atom 1, .atom 0, .list #[5, 3, 4]],
     root := 6 }
-#guard symEval _letExpr [] symDefaultFuel 6 == SymOutcome.sym (.const (.int 5))
+#guard symEval _letExpr [] symDefaultFuel defaultIntTy 6 == SymOutcome.sym (.const (.int 5))
 
 -- tuples + positional projection: `(. (tuple 7 8) 1)`.
 -- leaves 0:tuple 1:(7) 2:(8) 3:. 4:(1); nodes 0-2 atoms, 3:(tuple 7 8), 4:.atom `.`, 5:.atom idx, 6:(. (tuple 7 8) 1).
@@ -606,9 +623,9 @@ private def _projExpr : Module :=
     nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[4, 3, 5]],
     root := 6 }
 -- constructing `(tuple 7 8)` → `.tuple [const 7, const 8]` (node 3).
-#guard symEval _projExpr [] symDefaultFuel 3 == SymOutcome.sym (.tuple #[.const (.int 7), .const (.int 8)])
+#guard symEval _projExpr [] symDefaultFuel defaultIntTy 3 == SymOutcome.sym (.tuple #[.const (.int 7), .const (.int 8)])
 -- projecting element 1 of `(tuple 7 8)` → `const 8`.
-#guard symEval _projExpr [] symDefaultFuel 6 == SymOutcome.sym (.const (.int 8))
+#guard symEval _projExpr [] symDefaultFuel defaultIntTy 6 == SymOutcome.sym (.const (.int 8))
 
 -- records + field projection: `(. (record (a 1) (b 2)) b)`. leaves 0:record 1:a 2:(1) 3:b 4:(2) 5:.
 -- nodes: 2:(a 1), 5:(b 2), 7:(record …), 10:(. (record …) b) [field leaf 3 reused].
@@ -619,18 +636,18 @@ private def _recExpr : Module :=
                .atom 0, .list #[6, 2, 5], .atom 5, .atom 3, .list #[8, 7, 9]],
     root := 10 }
 -- constructing `(record (a 1) (b 2))` → fields sorted by key `[(a,1),(b,2)]` (node 7).
-#guard symEval _recExpr [] symDefaultFuel 7 == SymOutcome.sym (.record #[("a".toUTF8, .const (.int 1)), ("b".toUTF8, .const (.int 2))])
+#guard symEval _recExpr [] symDefaultFuel defaultIntTy 7 == SymOutcome.sym (.record #[("a".toUTF8, .const (.int 1)), ("b".toUTF8, .const (.int 2))])
 -- projecting field `b` → `const 2`.
-#guard symEval _recExpr [] symDefaultFuel 10 == SymOutcome.sym (.const (.int 2))
+#guard symEval _recExpr [] symDefaultFuel defaultIntTy 10 == SymOutcome.sym (.const (.int 2))
 
 -- built-in Option/Result construction: `(Some 5)` → `.ctor "Some" [const 5]`; bare `None` → `.ctor "None" []`.
 private def _someExpr : Module :=
   { leaves := #[Leaf.name "Some".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[5])],
     nodes := #[.atom 0, .atom 1, .list #[0, 1]], root := 2 }
-#guard symEval _someExpr [] symDefaultFuel 2 == SymOutcome.sym (.ctor "Some".toUTF8 #[.const (.int 5)])
+#guard symEval _someExpr [] symDefaultFuel defaultIntTy 2 == SymOutcome.sym (.ctor "Some".toUTF8 #[.const (.int 5)])
 private def _noneExpr : Module :=
   { leaves := #[Leaf.name "None".toUTF8], nodes := #[.atom 0], root := 0 }
-#guard symEval _noneExpr [] symDefaultFuel 0 == SymOutcome.sym (.ctor "None".toUTF8 #[])
+#guard symEval _noneExpr [] symDefaultFuel defaultIntTy 0 == SymOutcome.sym (.ctor "None".toUTF8 #[])
 
 -- non-recursive CALL inlining: `(do (def (id x) x) (def (main) (id 42)) (export main))`. main's body
 -- `(id 42)` inlines the top-level `id` (bind x→const 42, eval body `x`) → const 42.
@@ -651,7 +668,7 @@ private def _matchExpr : Module :=
     nodes := #[.atom 1, .atom 2, .list #[0, 1], .atom 1, .atom 3, .list #[3, 4], .atom 3, .list #[5, 6],
                .atom 4, .atom 5, .list #[8, 9], .atom 0, .list #[11, 2, 7, 10]],
     root := 12 }
-#guard symEval _matchExpr [] symDefaultFuel 12 == SymOutcome.sym (.const (.int 5))
+#guard symEval _matchExpr [] symDefaultFuel defaultIntTy 12 == SymOutcome.sym (.const (.int 5))
 
 -- user-sum construction. NEWTYPE erases: `(type Cached (Mk Int64))` + `(main)=(Mk 7)` → the payload 7 (no tag).
 private def _newtypeProg : Module :=
@@ -684,5 +701,18 @@ private def _matchUserProg : Module :=
                .atom 11, .atom 7, .list #[23, 24], .atom 0, .list #[26, 8, 22, 25]],
     root := 27 }
 #guard symEvalMain _matchUserProg == SymOutcome.sym (.const (.int 5))
+
+-- WIDTH-AWARE integer const-folding. `(+ 100 23)` at the default Int64 fits → folds to 123.
+private def _addProg : Module :=
+  { leaves := #[Leaf.name "+".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[100]), Leaf.intLit false .dec (ByteArray.mk #[23])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
+#guard symEval _addProg [] symDefaultFuel defaultIntTy 3 == SymOutcome.sym (.const (.int 123))
+-- SOUNDNESS: `(: (+ 200 100) UInt8)` overflows UInt8 (300 ∉ [0,255]) → evalArithOp TRAPS → NOT folded to
+-- 300 (folding it would be a false 'proven'); the operation stays symbolic.
+private def _ovfProg : Module :=
+  { leaves := #[Leaf.name ":".toUTF8, Leaf.name "+".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[200]),
+                Leaf.intLit false .dec (ByteArray.mk #[100]), Leaf.name "UInt8".toUTF8],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[0, 1, 2], .atom 0, .atom 4, .list #[4, 3, 5]], root := 6 }
+#guard symEval _ovfProg [] symDefaultFuel defaultIntTy 6 == SymOutcome.sym (.app "+" #[.const (.int 200), .const (.int 100)])
 
 end Oracle
