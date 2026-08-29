@@ -19,6 +19,23 @@
 use std::path::Path;
 use std::process::Command;
 
+/// Per-`cdz`-invocation wall-clock cap (seconds). A generated program can HANG the compiler (deep
+/// recursion) or the runtime; without a cap the blocking `Command::output()` would wedge the whole sweep
+/// (observed at S179). Each compile/run is wrapped with `timeout -s KILL` so a hang is killed + the pair
+/// is treated as non-comparable (Skip), and the sweep continues.
+const CDZ_STEP_TIMEOUT_SECS: &str = "20";
+
+/// A `cdz` command wrapped in `timeout -s KILL <CDZ_STEP_TIMEOUT_SECS>` so a hung step cannot wedge the
+/// sweep. (`timeout` is coreutils, already relied on by the fuzz cycle.)
+fn cdz_cmd(cdz: &Path) -> Command {
+    let mut cmd = Command::new("timeout");
+    cmd.arg("-s")
+        .arg("KILL")
+        .arg(CDZ_STEP_TIMEOUT_SECS)
+        .arg(cdz);
+    cmd
+}
+
 /// The outcome of running one compiled program via `cdz run`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -57,7 +74,7 @@ fn cdz_compile(
     target_cadenza: bool,
     out: &Path,
 ) -> Result<(), String> {
-    let mut cmd = Command::new(cdz);
+    let mut cmd = cdz_cmd(cdz);
     cmd.arg("compile");
     for i in inputs {
         cmd.arg(i);
@@ -77,7 +94,7 @@ fn cdz_compile(
 
 /// Run a compiled wasm component via `cdz run <wasm>` (nullary) and classify the outcome.
 fn cdz_run(cdz: &Path, wasm: &Path, store: &Path) -> Outcome {
-    let output = match Command::new(cdz)
+    let output = match cdz_cmd(cdz)
         .arg("run")
         .arg(wasm)
         .env("CDZ_RUN_STORE", store)
