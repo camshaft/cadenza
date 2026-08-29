@@ -1854,6 +1854,8 @@ fn pre_commit_hook_body() -> String {
 # rcdzc/src/tests.rs — nudge toward a language-agnostic corpus test (the delanguaging lane shrinks it).
 # (4) warn (fail-open) when cdz-run/src/cli.rs (RunArgs) is staged — nudge to also build the downstream cdz
 # bin (dev-gate scopes to cdz-run + misses cdz's WatchCmd::Run E0063; broke the fleet twice).
+# (5) warn (fail-open) on a Cargo.toml path-dep add/remove — nudge to run the nix crate-closure-assert +
+# update the flake.nix expected-leaf (native cargo/dev-gate are blind to a stale leaf; #5638 redded gate-local).
 set -uo pipefail
 
 # (1) TRUNK-GUARD — refuse a direct commit onto `trunk` unless in the pr-sync worktree (the integrator).
@@ -1958,6 +1960,28 @@ if [ "${{FLEET_SKIP_CDZRUN_CDZ_WARN:-}}" != "1" ]; then
     echo "  not the nix shim; --all-targets is REQUIRED — it catches the cdz #[cfg(test)] RunArgs literals)." >&2
     echo "  dev-gate scopes to cdz-run and SKIPS cdz, so a RunArgs field-add breaks cdz's WatchCmd::Run" >&2
     echo "  initializer with E0063 — slipped to main fleet-wide 3x this session. (Silence: FLEET_SKIP_CDZRUN_CDZ_WARN=1.)" >&2
+  fi
+fi
+
+# (5) Cargo.toml PATH-DEP change → crate-closure-assert WARN (fail-open; #5638 redded EVERY gate-local).
+# Adding/removing a workspace `[dependencies]` path-dep GROWS/shrinks a crate's dep-CLOSURE, but the nix
+# per-crate filesets + the `crate-closure-assert` check are keyed on flake.nix's DECLARED expected-leaves.
+# Native cargo (build/clippy/test) AND dev-gate are all GREEN on such a change (the code compiles) — they
+# cannot see the flake's expected-closure, so a STALE leaf slips through native-only verification and reds
+# EVERY agent's gate-local (the assert is a local-gate-aggregate constituent; v-cdz-crate-split's #5638). So
+# when a staged Cargo.toml adds/removes a `path = "…"` dep, WARN to verify via nix + update the matching
+# flake.nix expected-leaf in the SAME slice. Matches a real path-dep +/- line in EITHER form (inline
+# `x = {{ path = ".." }}` OR a `[dependencies.x]` sub-table's own `path = ".."` line); the mandatory `= "`
+# after `path` also excludes the `+++`/`---` diff headers + version/feature edits. Warn-only; FLEET_SKIP_CLOSURE_WARN=1.
+if [ "${{FLEET_SKIP_CLOSURE_WARN:-}}" != "1" ]; then
+  if git diff --cached -U0 --diff-filter=ACM -- '*Cargo.toml' 2>/dev/null \
+       | grep -qE '^[+-].*\bpath[[:space:]]*=[[:space:]]*"'; then
+    echo "⚠ fleet pre-commit: a Cargo.toml PATH-DEP was added/removed — this changes a crate's dep-CLOSURE." >&2
+    echo "  Native cargo + dev-gate are BLIND to it (they don't know the flake's expected-closure leaves), so a" >&2
+    echo "  stale flake.nix leaf slips through GREEN + reds EVERY agent's gate-local (the crate-closure-assert is" >&2
+    echo "  a local-gate constituent; bit the fleet in #5638). Before landing, verify + update the leaf ATOMICALLY:" >&2
+    echo "    nix eval .#checks.aarch64-linux.crate-closure-assert   # throws on a stale leaf (fast, no build)" >&2
+    echo "  then edit the MATCHING flake.nix expected-leaf in THIS slice. (Silence: FLEET_SKIP_CLOSURE_WARN=1.)" >&2
   fi
 fi
 exit 0
