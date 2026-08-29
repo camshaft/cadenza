@@ -2690,6 +2690,75 @@
   (call main)
   (output (: 5 Int64)))
 
+; ── variant-payload + effect-op type-position validation (migrated from rcdzc
+;    an_unknown_type_in_a_variant_payload_is_rejected + an_unknown_type_in_an_effect_operation_type_is_rejected) ──
+; The declaration-site record-aware type-position walk (validate_type_position) also guards sum-variant
+; PAYLOADS and effect-operation arrow types — the same check as the let-binder annotation sites above. An
+; unknown type in a payload/op position is CDZ0101 (naming the missing type + the `(type Nonesuch …)` declare
+; fix); a well-formed non-type payload is CDZ0203. The reject+message halves are backend-agnostic (compile-time),
+; so they live here; the structured did-you-mean enrichment on a NEAR typo stays a white-box rcdzc pin.
+(case "an unknown type in a variant payload is rejected at the declaration"
+  (input (do (type C (A Nonesuch)) (def (main) 0) (export main)))
+  (error CDZ0101 (message "unknown type `Nonesuch`") (message "(type Nonesuch …)")))
+
+(case "an unknown type nested in a List variant payload is rejected"
+  (input (do (type C (A (List Nonesuch))) (def (main) 0) (export main)))
+  (error CDZ0101 (message "Nonesuch")))
+
+(case "an unknown type in a record field inside a variant payload is rejected"
+  (input (do (type Box (B (Record (: val Nonesuch))) N) (def (main) 0) (export main)))
+  (error CDZ0101 (message "Nonesuch")))
+
+(case "a well-formed non-type in a variant payload is rejected CDZ0203"
+  (input (do (type C (A 5)) (def (main) 0) (export main)))
+  (error CDZ0203))
+
+(case "a near typo of a real type in a variant payload keeps its did-you-mean"
+  (input (do (type C (A Strng)) (def (main) 0) (export main)))
+  (error CDZ0101 (message "did you mean `String`?")))
+
+(case "a parametric variant payload does not false-positive as an unknown type"
+  (input (do (type Opt (Some a) (Non)) (def (main) 0) (export main)))
+  (call main)
+  (output (: 0 Int64)))
+
+(case "a self-recursive variant payload does not false-positive as an unknown type"
+  (input (do (type T (Nil) (Cons Int64 T)) (def (main) 0) (export main)))
+  (call main)
+  (output (: 0 Int64)))
+
+(case "mutually-recursive variant payloads do not false-positive as unknown types"
+  (input (do (type A (MkA B)) (type B (MkB A)) (def (main) 0) (export main)))
+  (call main)
+  (output (: 0 Int64)))
+
+(case "a record variant payload mentioning a type param does not false-positive"
+  (input (do (type Box (B (Record (: v (Option a)))) N) (def (main) 0) (export main)))
+  (call main)
+  (output (: 0 Int64)))
+
+(case "an unknown type in an effect operation arg is rejected at the declaration"
+  (input (do (effect E (op e (-> Nonesuch Unit))) (def (main) 0) (export main)))
+  (error CDZ0101 (message "Nonesuch")))
+
+(case "an unknown type in an effect operation result is rejected"
+  (input (do (effect E (op e (-> Unit Nonesuch))) (def (main) 0) (export main)))
+  (error CDZ0101 (message "Nonesuch")))
+
+(case "an unknown type nested in an effect operation List arg is rejected"
+  (input (do (effect E (op e (-> (List Zzz) Unit))) (def (main) 0) (export main)))
+  (error CDZ0101 (message "Zzz")))
+
+(case "a type-variable effect operation type does not false-positive as an unknown type"
+  (input (do (effect E (op e (-> a a))) (def (main) 0) (export main)))
+  (call main)
+  (output (: 0 Int64)))
+
+(case "a known generic effect operation type does not false-positive as an unknown type"
+  (input (do (effect E (op e (-> (Option Int64) Unit))) (def (main) 0) (export main)))
+  (call main)
+  (output (: 0 Int64)))
+
 ; (migrated from rcdzc a_wrong_typed_option_field_in_a_direct_record_arg_still_rejects — a soundness guard:
 ;  direct-arg reflection freshening must stop the shared-unsolved-var false reject WITHOUT masking a genuine
 ;  field-type mismatch. The reject is backend-agnostic; the freshening internals stay in rcdzc.)
