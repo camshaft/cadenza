@@ -2956,6 +2956,77 @@
           echo "ok: corpus — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→build→exec caching graph" > "$out"
         '';
 
+        # ── --save HARVEST (v-xtask-decompose seq-202 gate-delete: the nix replacement for `cargo xtask gate
+        # --save`). The gate `--save` regenerated `.gate-baseline` from the current corpus verdicts; instead of
+        # a heavy in-process re-run, HARVEST the verdicts from the per-case nix graph (cached) + let a thin
+        # `xtask-save-baseline` leaf (v-xtask, WIP) write the baseline. `cdz-run --emit-verdict PATH` (#5746)
+        # writes this case's CURRENT verdict `<tag>\t<description>` (tag ∈ pass/todo/fail — the coarse vocab
+        # `.gate-baseline` records) + ALWAYS exits 0 (it CLASSIFIES, not compares — so a regressed case emits its
+        # new verdict instead of failing the derivation, which the grade path would). `mkCorpusVerdict` mirrors
+        # `mkCorpusExec` (same build/store/runtime/peer inputs) but adds `--emit-verdict "$out"` → $out IS the
+        # one-line verdict; the aggregates concat them. `.#corpus-verdicts` = the whole-corpus harvest file
+        # xtask-save-baseline consumes (verdicts-file → .gate-baseline). WASM baseline here; the rust /
+        # rust-async baselines get the same treatment over the corpus-rust / corpus-rust-async exec variants
+        # (follow-up once the wasm harvest + xtask-save-baseline registration land).
+        mkCorpusVerdict = { name, build, idx }:
+          pkgs.runCommand "corpus-verdict-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzRun ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            export CDZ_STORE="${componentStore}"
+            status=$(cat ${build}/compile.status)
+            # SAME inputs as mkCorpusExec (the classify runs the same grade), plus --emit-verdict.
+            args=(--grade ${build}/test-run.ast --compile-status "$status" --compile-diag ${build}/compile.err
+                  --baseline ${./spec/semantics/.gate-baseline})
+            if [ -e ${build}/diagnostics ]; then args+=(--diagnostics ${build}/diagnostics); fi
+            if [ -e ${build}/emit.wasm ]; then args=(${build}/emit.wasm "''${args[@]}"); fi
+            if [ -e ${build}/component-name ]; then args+=(--component-name "$(cat ${build}/component-name)"); fi
+            for pw in ${build}/peer-*.wasm; do
+              [ -e "$pw" ] || continue
+              pn=$(basename "$pw" .wasm)
+              args+=(--peer "$(cat ${build}/$pn.iface)=$pw")
+            done
+            args+=(--runtime ${runtimeDebug})
+            # CLASSIFY: write `<tag>\t<description>` to $out + exit 0 (takes precedence over --baseline; a
+            # regressed/todo case emits its CURRENT verdict rather than failing the build).
+            args+=(--emit-verdict "$out")
+            cdz-run "''${args[@]}"
+            # $out is written by cdz-run (--emit-verdict). Guard against an empty write (a real bug would leave
+            # it absent → the aggregate `cat` fails loud, catching a broken emit-verdict rather than a silent gap).
+            [ -s "$out" ] || { echo "corpus-verdict ${name} ${idx}: cdz-run --emit-verdict wrote no verdict" >&2; exit 1; }
+          '';
+
+        # Per-FILE verdict harvest: concat every case's one-line verdict into one `<tag>\t<description>` file.
+        # (Order-independent — xtask-save-baseline parses into a description→verdict map + sorts on serialize.)
+        verdictsFileAgg = { name, file }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            n = corpusCaseCount file;
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+            cases = map
+              (idx: mkCorpusVerdict { inherit name idx; build = mkCorpusBuild { inherit name shred idx; }; })
+              idxs;
+          in
+          assert (builtins.length cases) > 0;
+          pkgs.runCommand "corpus-verdicts-${name}" { } ''
+            : > "$out"
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} >> "$out"'') cases}
+          '';
+
+        # `.#corpus-verdicts` — the WHOLE-corpus harvest: every file's verdict lines concatenated. This is the
+        # input `apps.save-baseline` feeds to v-xtask's `xtask-save-baseline` leaf (verdicts-file → .gate-baseline).
+        # Cached through the same per-case shred→build→verdict graph as `corpus`, so re-harvesting an unchanged
+        # corpus is a store cache hit.
+        corpusVerdictsAll = pkgs.runCommand "corpus-verdicts" { } ''
+          : > "$out"
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                ''cat ${verdictsFileAgg { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
+              corpusFileNames}
+        '';
+
         # ── wasm-opt OPTIMALITY-GAP sweep (operator 2026-08-27; design/DESIGN-wasm-opt-gap-analysis-rcdzc.md) ──
         # For every corpus wasm output that COMPILES, measure the gap between our emit and what Binaryen's
         # `wasm-opt` would produce. If wasm-opt shrinks nothing, our module is OPTIMAL on the metrics we track;
@@ -4312,6 +4383,11 @@
         # Pages deploy for the shared cache). `nix build .#guide-site` → result/ = the site the pages.yml
         # deploy uploads as the Pages artifact (cache-hit on unchanged trunk instead of a cold ARM rebuild).
         packages.guide-site = guideSite;
+
+        # `.#corpus-verdicts` — the WASM-corpus verdict harvest (v-xtask-decompose --save gate-delete). One
+        # `<tag>\t<description>` line per case, concatenated across the whole corpus. `apps.save-baseline`
+        # (pending v-xtask's xtask-save-baseline leaf on main) feeds this to the leaf to regenerate .gate-baseline.
+        packages.corpus-verdicts = corpusVerdictsAll;
 
         # The standalone baseline pruner bin (v-xtask-decompose). `nix build .#xtask-prune-baselines` →
         # result/bin/xtask-prune-baselines. Backs `apps.prune-baselines`; caches independently of xtask.
