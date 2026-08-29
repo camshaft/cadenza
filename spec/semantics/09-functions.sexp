@@ -71,6 +71,31 @@
   (call main (: 20 Int64)) (output (: 710 Int64))
   (call main (: 0 Int64)) (output (: 510 Int64)))
 
+(case "a captured lambda applied at two shadowing sites resolves each to its DEF-SITE capture (reduce-cache share soundness)"
+  (doc    "Pins the SOUNDNESS of the β-reduce cache sharing (rcdzc `eval` keys a reduction on the RESOLVED
+           lambda BODY so a fan-out over one shared lambda de-duplicates the reduction — the seq-203
+           handler-fn-per-closure-arg 2^N fix). `g = (fn (q) (+ q a))` captures its DEF-SITE `a = 100`;
+           it is then applied `(g p)` from TWO nested scopes that SHADOW `a` (500, then 900). Both `(g p)`
+           calls carry the SAME `(body, args)` and so SHARE ONE reduced node — but a lambda's capture is
+           lexical to its DEFINITION, so each MUST use `a = 100`: `(p+100) + (p+100) = 2p+200`. If sharing
+           the reduced node RE-PARENTED it under a call site (so its captured `a` resolved through that
+           site's shadow), the value would corrupt to `2p+1000` / `2p+1400` — a miscompile. This is the
+           adversarial witness that the reduce-cache share is sound: β-reduce PINS the captured subtree, so
+           the re-parent-under-site sets only the ROOT parent, which a pinned capture never resolves
+           through. The `(: p …)` boundary parameter keeps it runtime (nothing folds), so the shared
+           runtime reduction is exercised. (Each shadowing `a` is unused BY `g` — that CDZ0306 is expected
+           and is itself the signal that the captures are pinned to the def site, not the call site.)")
+  (input (do
+        (def (main (: p Int64))
+          (let ((a 100) (g (fn (q) (+ q a))))
+            (let ((a 500))
+              (+ (g p)
+                 (let ((a 900))
+                   (g p))))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 202 Int64))
+  (call main (: 50 Int64)) (output (: 300 Int64)))
+
 (case "a partial application captures a runtime parameter in the residual closure"
   (doc    "Partially applying to a VARIABLE reference must CAPTURE it in the residual lambda: `((sub n) 3)`
            curries `(sub a b) = (- a b)` to `(fn (b) (- n b))`, and `n` — a caller-pinned free variable —
