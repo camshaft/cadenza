@@ -28,6 +28,11 @@ export type MidiParse =
 
 /// Tokenize a rendered s-expr value into parens + atoms (atoms are maximal non-paren/whitespace runs).
 function tokenize(s: string): string[] {
+  // M2 native-compound render (#5112): render_value emits compounds head-first as `#list(…)`/`#tuple(…)`/
+  // `#record(…)`; this parser was written for the legacy `(list …)`/`(tuple …)` form, so normalize the
+  // M2 `#head(` spelling back to `(head ` before tokenizing (nested + balanced by construction). Guarded to
+  // a name+`(` so it never touches a `#"hashword"` / `#\c` literal. Fixes both this gate + the live /music page.
+  s = s.replace(/#([A-Za-z][\w-]*)\(/g, "($1 ");
   const toks: string[] = [];
   let i = 0;
   while (i < s.length) {
