@@ -12758,3 +12758,19 @@
     (export main)))
   (call main)
   (output (: 13 Int64)))
+
+(case "cdzw50 a Qty whose magnitude is a CHECKED NARROW round-trips the cadenza hop with the wrapper intact"
+  (doc "The #5341 fence (v-cadenza-backend-found wrapper-drop, breaker-confirmed qn1): (Int32.of n) erases
+        to a control-flow body (range-check If), and pre-#5341 qty_disposition treated control flow as
+        PassThrough — the bare-inner-magnitude leaf emitted bare and the hop returned 300 UNWRAPPED while
+        the direct path returned the Qty (a dual-path VALUE divergence, the highest-severity hop class).
+        #5341 classifies the def-tail control-flow body by its value-leaves. Observed via a Qty.value peel;
+        the out-of-range twin pins the checked-narrow trap surviving the same lowering. Dual-path envelope
+        equality re-verified at land.")
+  (input (do
+    (def (q (: n Int64)) (Qty.of (Int32.of n) (Unit.base #"meter")))
+    (def (main (: n Int64)) (Qty.value (q n)))
+    (export main)))
+  (call main (: 300 Int64)) (output (: 300 Int32))
+  (call main (: -4 Int64)) (output (: -4 Int32))
+  (call main (: 3000000000 Int64)) (trap "unreachable"))
