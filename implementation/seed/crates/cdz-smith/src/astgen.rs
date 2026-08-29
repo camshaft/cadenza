@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(18) {
+    match c.variant(19) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -415,6 +415,10 @@ fn gen_main_body<C: Choice>(
         // consumed via `Set.len` / `Map.len` — the float-carrying keys with canonical-bit order + canonical
         // key equality that #5556 grades (my `pick_hashable_ty` excluded floats as keys).
         17 => gen_float_keyed_collection_body(c, out),
+        // A STRING-op body: `String.byte-len` / `String.scalar-at` (→ scalar) or `String.concat` /
+        // `String.slice` / a bare string literal (→ String value) over small fixed strings — a whole op
+        // family the Int64/compound grammar never reached.
+        18 => gen_string_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1194,6 +1198,28 @@ fn gen_float_keyed_collection_body<C: Choice>(c: &mut C, out: &mut String) {
         2 => write!(out, "(Set.len #set((Float64.nan) {a}.0))").ok(),
         // A Float32-keyed set of two distinct keys → `Set.len` = 2.
         _ => write!(out, "(Set.len #set((: {a}.0 Float32) (: {b}.0 Float32)))").ok(),
+    };
+}
+
+/// A STRING-op body over a small fixed nonempty string: `String.byte-len` (→ Int64) / `String.scalar-at`
+/// at index 0 (→ a scalar) / `String.concat` / `String.slice [0,1)` / a bare string literal (→ String
+/// value). Reaches the String value + String-op lowering (byte-len/scalar-at/concat/slice/literal codec +
+/// emit) — a family the Int64/float/compound grammar never touched. Indices are in-bounds by construction
+/// (every pool string is nonempty), so it stays on the compile path.
+fn gen_string_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the string + FORM before writing (variant-ordering).
+    let s = ["a", "ab", "abc", "hello"][c.variant(4)];
+    match c.variant(5) {
+        // A byte length → Int64.
+        0 => write!(out, "(String.byte-len \"{s}\")").ok(),
+        // A Unicode scalar at index 0 → a scalar.
+        1 => write!(out, "(String.scalar-at \"{s}\" 0)").ok(),
+        // Concatenation → a String value.
+        2 => write!(out, "(String.concat \"{s}\" \"{s}\")").ok(),
+        // A `[0,1)` slice → a String value (valid for any nonempty string).
+        3 => write!(out, "(String.slice \"{s}\" 0 1)").ok(),
+        // A bare string literal value.
+        _ => write!(out, "\"{s}\"").ok(),
     };
 }
 
@@ -2343,6 +2369,40 @@ mod tests {
         assert!(saw_f64_map, "should reach a Float64-keyed map");
         assert!(saw_f32, "should reach a Float32-keyed set");
         assert!(saw_nan, "should reach a NaN-key set");
+    }
+
+    /// `gen_string_body` REACHES all five String-op forms (byte-len, scalar-at, concat, slice, bare literal)
+    /// and every body COMPILES (S166: a String-op family the Int64/float/compound grammar never reached).
+    #[test]
+    fn gen_string_body_reaches_all_forms_and_compiles() {
+        let (mut saw_len, mut saw_at, mut saw_concat, mut saw_slice, mut saw_lit) =
+            (false, false, false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1657);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_string_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_len |= body.contains("String.byte-len");
+            saw_at |= body.contains("String.scalar-at");
+            saw_concat |= body.contains("String.concat");
+            saw_slice |= body.contains("String.slice");
+            saw_lit |= body.starts_with('"');
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "string-op body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_len, "should reach String.byte-len");
+        assert!(saw_at, "should reach String.scalar-at");
+        assert!(saw_concat, "should reach String.concat");
+        assert!(saw_slice, "should reach String.slice");
+        assert!(saw_lit, "should reach a bare string literal");
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
