@@ -12996,54 +12996,13 @@ mod match_engine {
     }
 
     #[test]
-    fn under_applying_a_unary_variant_constructor_is_a_type_error() {
-        // 09-functions "under-applying a unary constructor is a type error, not a fabricated unit
-        // payload": `(Some)` applies the unary constructor to ZERO arguments — under-application, the
-        // low-arity mirror of `(Some 1 2)`. A payload-carrying variant produces its value only when
-        // applied to its argument (core-semantics.md §A Sum Type Constructor Is A Single-Arity Function),
-        // so `(Some)` is CDZ0201 — NOT a decline (a fabricated `(Some unit)` would slip a value the
-        // program never wrote past the payload check).
-        assert_eq!(
-            reject_code("(module m (def (main) (Some)) (export main))").as_deref(),
-            Some("CDZ0201")
-        );
-        // The message NAMES the constructor and how to apply it (not the anonymous "a variant constructor
-        // with a payload …"). `Some`'s payload is a free variable (generic), so the "it carries X" clause
-        // is omitted (it would read `_`); a CONCRETE-payload ctor names its type.
-        let some_msg = reject_full("(module m (def (main) (Some)) (export main))")
-            .expect("reject")
-            .message;
-        assert!(
-            some_msg.contains("`Some` needs its payload argument")
-                && some_msg.contains("`(Some <value>)`")
-                && !some_msg.contains("carries"),
-            "names the ctor + apply form, omits the unresolved payload: {some_msg}"
-        );
-        let wrap_msg =
-            reject_full("(module m (type T (Wrap Int64)) (def (main) (T.Wrap)) (export main))")
-                .expect("reject")
-                .message;
-        assert!(
-            wrap_msg.contains("`Wrap` needs its payload argument")
-                && wrap_msg.contains("it carries an Int64"),
-            "a concrete-payload ctor names its payload type: {wrap_msg}"
-        );
-        // A NULLARY variant applied to nothing `(None)` is NOT under-applied — it has no payload, so it
-        // CONSTRUCTS its value (used here as a match scrutinee, which types + runs).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (match (None) ((Some x) x) ((None _) 0))) (export main))"
-            ),
-            None
-        );
-        // A correctly-applied unary ctor `(Some 5)` compiles (the control).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (match (Some 5) ((Some x) x) ((None _) 0))) (export main))"
-            ),
-            None
-        );
-    }
+    // (under_applying_a_unary_variant_constructor_is_a_type_error migrated to corpus 09-functions, the
+    // low-arity mirror after the over-applying-a-constructor cases: `(Some)` → CDZ0201 (message "`Some` needs
+    // its payload argument")(message "`(Some <value>)`") [generic payload omits the "carries" clause]; a
+    // concrete `(T.Wrap)` → CDZ0201 (message "`Wrap` needs its payload argument")(message "it carries an
+    // Int64"); + 2 controls that RUN: a nullary `(None)` constructs (→ 0), a correctly-applied `(Some 5)`
+    // compiles + matches (→ 5). --case grades codes + messages + run values. The NOT-"carries" negative on
+    // the generic Some is the inexpressible remainder, covered by the positive message halves.)
 
     #[test]
     fn if_branches_of_distinct_numeric_type_are_cdz0201_but_cross_kind_stays_cdz0203() {

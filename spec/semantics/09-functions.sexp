@@ -3218,6 +3218,28 @@
   (input  (Some 1 2 3))
   (error  CDZ0203))
 
+; The LOW-arity mirror: UNDER-applying a unary constructor. A payload-carrying variant produces its value
+; only when applied to its argument (§A Sum Type Constructor Is A Single-Arity Function), so `(Some)` — the
+; constructor applied to ZERO arguments — is CDZ0201, NOT a decline (a fabricated `(Some unit)` would slip a
+; value the program never wrote past the payload check). The message names the constructor + how to apply it;
+; a generic payload omits the "it carries X" clause (it would read `_`), a concrete-payload ctor names its
+; type. Migrated from rcdzc under_applying_a_unary_variant_constructor_is_a_type_error.
+(case "under-applying a unary constructor (Some) is a type error, not a fabricated unit payload"
+  (input  (do (def (main) (Some)) (export main)))
+  (error  CDZ0201 (message "`Some` needs its payload argument") (message "`(Some <value>)`")))
+
+(case "under-applying a concrete-payload constructor names its payload type"
+  (input  (do (type T (Wrap Int64)) (def (main) (T.Wrap)) (export main)))
+  (error  CDZ0201 (message "`Wrap` needs its payload argument") (message "it carries an Int64")))
+
+(case "a NULLARY variant applied to nothing (None) is not under-applied — it constructs its value"
+  (input  (do (def (main) (match (None) ((Some x) x) ((None _) 0))) (export main)))
+  (call   main) (output (: 0 Int64)))
+
+(case "a correctly-applied unary constructor (Some 5) compiles and matches (the control)"
+  (input  (do (def (main) (match (Some 5) ((Some x) x) ((None _) 0))) (export main)))
+  (call   main) (output (: 5 Int64)))
+
 ; Over-applying a USER FUNCTION is arity-checked the SAME way — the case the comment above references
 ; ("an over-applied constructor is arity-checked the same way an over-applied user function is"). A
 ; lambda / named def of arity N applied to more than N arguments applies the fully-consumed result
