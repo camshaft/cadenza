@@ -426,6 +426,30 @@
   (input  (do (def (main) (List.len (list 1 2 3))) (export main)))
   (output (: 3 Int64)))
 
+; --- List.at const-index fold must preserve a DROPPED sibling's trap (strict-construction, ruling A) ----
+; STRICT LIST CONSTRUCTION (operator ruling A, #5194): a list constructor evaluates EVERY element ARG whenever
+; it is REACHED — the optimizer may drop the list OBJECT but MUST preserve arg evaluation. `(List.at (list 1
+; (/ 5 d)) 0)` const-folds the read to element 0, DISCARDING the sibling `(/ 5 d)`; that fold is sound only
+; when every dropped sibling is trap-free, so `lower_list_at` now gates on `is_trap_free` (mirroring List.len)
+; — a runtime `(/ 5 d)` is not, so the const-index fold DECLINES and the runtime `List.at` builds the list
+; (evaluating all args → the ÷0 trap fires at d=0). The selected element's own eval is preserved (it is the
+; result). The trap-free twin below still folds. (Same trap-preservation discipline as the List.len case.)
+(case "List.at const-index over a list with a TRAPPING dropped sibling preserves the trap (does not fold it away)"
+  (doc    "`(List.at (list 1 (/ 5 d)) 0)` selects element 0 (=1) but the sibling `(/ 5 d)` is a runtime checked
+           divide. Strict construction (ruling A): reaching the list ctor evaluates ALL element args, so the
+           dropped sibling must still be forced. At d=2 → Some 1 (=1); at d=0 the sibling's ÷0 traps. Pins that
+           the const-index fold gates on is_trap_free of the dropped elements (declines → runtime build).")
+  (input  (do (def (main (: d Int64)) (match (List.at (list 1 (/ 5 d)) 0) ((Some x) x) (_ -1))) (export main)))
+  (call   main (: 2 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
+(case "List.at const-index over an all-trap-free list still folds to the element"
+  (doc    "The trap-free twin: `(List.at (list 10 20 30) 1)` has only pure-data elements, so the const-index
+           fold still fires → Some 20 (=20), no runtime list build. Pins that the strict-construction guard did
+           NOT over-decline pure-data lists.")
+  (input  (do (def (main) (match (List.at (list 10 20 30) 1) ((Some x) x) (_ -1))) (export main)))
+  (output (: 20 Int64)))
+
 ; --- self-identity fold must preserve a TRAPPING lazy binding's trap (trap-preservation) ----------------
 ; The self-identity simplifications `(< x x)→false`, `(<= x x)→true`, `(> x x)→false`, `(>= x x)→true`,
 ; `(- x x)→0`, `(^ x x)→0` collapse to a constant that DISCARDS the operand. A `let` binding is LAZY (forced
