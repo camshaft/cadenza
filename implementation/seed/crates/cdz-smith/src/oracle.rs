@@ -513,20 +513,50 @@ mod tests {
         }
     }
 
-    /// A guest that does NOT match the world's interface member (exports a differently-named def) is
-    /// CLEANLY HANDLED (Compiled or Declined — never a crash / invalid wasm). The wit-world path stays
-    /// sound on a mismatched guest; the precise decline-triggering shapes are what a wit-world generator
-    /// campaign will discover. (NB: this specific mismatch currently COMPILES — a world-export-enforcement
-    /// observation worth a closer look once the campaign maps the surface.)
+    /// A guest that does NOT match the world's declared interface member — across several mismatch
+    /// SHAPES — is CLEANLY HANDLED: `Compiled` or `Declined`, NEVER a `Crash` or `InvalidWasm`. This
+    /// pins the fuzzer's SOUNDNESS invariant on the wit-world path (a future compiler change that made
+    /// any of these shapes ICE or emit invalid wasm is a regression this catches), independent of the
+    /// still-open world-export-ENFORCEMENT question (should a guest that ignores the declared export's
+    /// name/type DECLINE rather than compile?). A 2026-08-29 probe found rcdzc currently does NOT enforce
+    /// the declared export's name or type — the missing-`f` and wrong-signature-`f` cases COMPILE, and
+    /// only "no exports at all" declines (for a generic "nothing is public" reason). Whether that is a
+    /// soundness gap or deferred-to-downstream-validation is with the operator (an `ask` was sent); this
+    /// test deliberately asserts only the no-crash/no-invalid-wasm floor, so it does not enshrine the
+    /// compile-vs-decline decision either way. Flip the assertion to expect `Declined` on the cases below
+    /// once/if the enforcement is added.
     #[test]
     fn a_mismatched_wit_world_guest_is_cleanly_handled() {
         let _g = slot_guard();
         let world =
             "(world w (export iface (member f (func (param m (record (a s64))) (result s64)))))";
-        let guest = "(module m (def (g (: m (Record (a Int64)))) (. m a)) (export g))";
-        match compile_world_catching(guest, "cadenza:demo/iface", world) {
-            Verdict::Compiled { .. } | Verdict::Declined { .. } => {}
-            other => panic!("a mismatched wit-world guest must be cleanly handled, got {other:?}"),
+        // Each is a guest that FAILS to satisfy the declared `export iface (member f …)` in a distinct
+        // way — none may crash or emit invalid wasm.
+        let mismatched_guests: &[(&str, &str)] = &[
+            // Exports an unrelated `g`; the declared `f` is never implemented.
+            (
+                "unrelated-export",
+                "(module m (def (g (: m (Record (a Int64)))) (. m a)) (export g))",
+            ),
+            // Implements `f` but with a completely different signature than the world's func type.
+            (
+                "wrong-signature-f",
+                "(module m (def (f (: x Int64)) x) (export f))",
+            ),
+            // Implements `f` correctly AND exports an extra unrelated `g`.
+            (
+                "f-plus-extra-g",
+                "(module m (def (f (: m (Record (a Int64)))) (. m a)) (def (g) 1) (export f) (export g))",
+            ),
+        ];
+        for (label, guest) in mismatched_guests {
+            match compile_world_catching(guest, "cadenza:demo/iface", world) {
+                Verdict::Compiled { .. } | Verdict::Declined { .. } => {}
+                other => panic!(
+                    "mismatched wit-world guest ({label}) must be cleanly handled \
+                     (Compiled|Declined, never Crash/InvalidWasm), got {other:?}"
+                ),
+            }
         }
     }
 
