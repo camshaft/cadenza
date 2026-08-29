@@ -2336,6 +2336,21 @@
   (input (do (def (main) #tuple(Int64 5)) (export main)))
   (error CDZ0201 (message "is a TYPE, not a runtime value")) (no-other-errors))
 
+; The effect / closure siblings of the type-value non-runtime-form rejects: exporting a bare EFFECT name
+; leaked a 4-error cascade of internals (unknown intrinsic / effect-op / nullary-lambda-no-closure); an
+; exported closure with an UNANNOTATED param `(fn (x) 1)` : `(-> Any Int64)` cannot cross the boundary and
+; leaked a second "no machine representation" decline at the body. Both now report ONE coded CDZ0201 naming
+; the concrete cause, dedup dropping the leaked internals → `(no-other-errors)`. (migrated from rcdzc
+; an_effect_valued_export_reports_one_clean_error_not_a_leaked_cascade /
+; an_unrepresentable_closure_export_reports_one_error_not_a_shadowing_decline.)
+(case "an effect-valued export is one coded error, not a leaked internal cascade"
+  (input (do (effect E (op f (-> Int64))) (def (main) E) (export main)))
+  (error CDZ0201 (message "is an effect, not a runtime value")) (no-other-errors))
+
+(case "an unrepresentable closure export is one coded boundary error, not a shadowing decline"
+  (input (do (def (main) (fn (x) 1)) (export main)))
+  (error CDZ0201 (message "cannot cross the component boundary")) (no-other-errors))
+
 (case "Type.eq branches on a type-valued parameter, monomorphized per passed type"
   (doc    "`Type.eq` accepts a TYPE-VALUED PARAMETER `t` as an operand: `(def (is-int (: t Type) (: x
            Int64)) (if (Type.eq t Int64) 1 0))`. At each instantiation `t` is a concrete compile-time
