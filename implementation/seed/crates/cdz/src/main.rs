@@ -6413,33 +6413,15 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
             }),
             // `run` in PROJECT mode: `component = the dir` routes through `run_project` (build the entry,
             // then run it), the same path `cdz run <dir>` takes. `store` threads through for a heap run.
+            // A watch `run` sets only the entry + its interactive call/args/store; every other flag takes
+            // its default (no grade, no leak-ceiling, no verdict/diagnostics wire, sexp render). The spread
+            // keeps this site compiling when a new `RunArgs` field is added (the cross-crate E0063 class).
             WatchCmd::Run => run_project(&cdz_run::cli::RunArgs {
                 component: Some(std::path::PathBuf::from(&dir_str)),
                 call: call.clone(),
                 args: run_args.clone(),
-                call_twice: false,
-                then_args: Vec::new(),
-                drop_handle: false,
-                call_member: None,
-                format: cdz_run::cli::OutputFormat::Sexp,
-                runtime: None,
                 store: store.clone(),
-                host_responses: Vec::new(),
-                peers: Vec::new(),
-                release: false,
-                opt_level: None,
-                grade: None,
-                baseline: None,
-                diagnostics: None, // watch `run` doesn't grade diagnostics (a compile-phase grade wire)
-                emit_verdict: None, // watch `run` doesn't classify/emit a verdict file (mirrors `diagnostics: None`)
-                compile_status: 0,
-                compile_diag: None,
-                component_name: None,
-                report_live_objects: false,
-                // Watch `run` is an interactive run, not a `--grade` leak-ceiling context, so no tolerance.
-                tolerate_fewer_live_objects: false,
-                core_module: None,
-                core_export: None,
+                ..Default::default()
             }),
         }
     };
@@ -12601,20 +12583,11 @@ mod tests {
             store: Some(std::path::PathBuf::from("/store")),
             host_responses: vec!["ask.ask=10".into()],
             peers: vec!["cadenza:math/api=math.wasm".into()],
-            // build/grade fields — zero values, must NOT emit any argv:
-            release: false,
-            opt_level: None,
-            grade: None,
-            compile_status: 0,
-            compile_diag: None,
-            diagnostics: None,
-            component_name: None,
             report_live_objects: true,
-            tolerate_fewer_live_objects: false,
-            baseline: None,
-            emit_verdict: None,
-            core_module: None,
-            core_export: None,
+            // Every remaining field (the build/grade wire: release/opt_level/grade/compile_status/
+            // compile_diag/diagnostics/component_name/tolerate_fewer_live_objects/baseline/emit_verdict/
+            // core_*) stays at its zero default and MUST NOT emit any argv — the spread pins exactly that.
+            ..Default::default()
         };
         assert_eq!(
             cdz_run_forward_argv(&full),
@@ -12646,32 +12619,11 @@ mod tests {
             ]
         );
         // Minimal: only a component + the always-emitted default `--format sexp`; nothing else leaks.
+        // Only a component; every other field defaults (format→Sexp), so nothing but the component + the
+        // always-emitted default `--format sexp` leaks into the argv.
         let minimal = RunArgs {
             component: Some(std::path::PathBuf::from("c.wasm")),
-            call: None,
-            args: vec![],
-            call_twice: false,
-            then_args: vec![],
-            drop_handle: false,
-            call_member: None,
-            format: OutputFormat::Sexp,
-            runtime: None,
-            store: None,
-            host_responses: vec![],
-            peers: vec![],
-            release: false,
-            opt_level: None,
-            grade: None,
-            compile_status: 0,
-            compile_diag: None,
-            diagnostics: None,
-            component_name: None,
-            report_live_objects: false,
-            tolerate_fewer_live_objects: false,
-            baseline: None,
-            emit_verdict: None,
-            core_module: None,
-            core_export: None,
+            ..Default::default()
         };
         assert_eq!(
             cdz_run_forward_argv(&minimal),
