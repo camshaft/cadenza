@@ -1059,14 +1059,28 @@ pub fn apply_lambda(
     head: StructId,
     args: &[StructId],
 ) -> Result<Option<StructId>, String> {
-    // MEMOIZE the reduction by `(head, args)`. β-reduction is a pure function of the lambda body and
-    // the argument occurrences (fixed node identities), so a given call site reduces to the same term
-    // every time. Without this, a nested call chain `(f (f (f … 0)))` is EXPONENTIAL: each reduction
-    // builds a FRESH body copy (new `StructId`s no downstream memo can hit), and both `infer` and
-    // `lower` reduce every call and recurse into the reduced term whose nested calls re-reduce. Cached,
-    // each distinct call node reduces once and the per-node memos (`type_of`/`core_of`) then hit — the
-    // chain is linear. (`Ok(None)`/`Err(msg)` are deterministic per head too, so they cache as well.)
-    let key = (head, args.to_vec());
+    // MEMOIZE the reduction by `(reduced-lambda-BODY, args)`. β-reduction is a pure function of the
+    // lambda body and the argument occurrences (fixed node identities), so a given (body, args) reduces
+    // to the same term every time. Without this, a nested call chain `(f (f (f … 0)))` is EXPONENTIAL:
+    // each reduction builds a FRESH body copy (new `StructId`s no downstream memo can hit), and both
+    // `infer` and `lower` reduce every call and recurse into the reduced term whose nested calls re-reduce.
+    //
+    // KEY ON THE RESOLVED BODY, not `head` (seq-203, the handler-fn-per-closure-arg 2^N): `beta_reduce`
+    // COPIES structurally, so a DOUBLING fan-out `(f_i b) = (+ (f_{i-1} b) (f_{i-1} b))` produces two
+    // sibling `(f_{i-1} b)` calls with DISTINCT head-reference `StructId`s — a `head`-keyed cache misses
+    // on the copy and re-reduces each, so the fan-out re-reduces 2^N times (compile-hang; a nullary or
+    // pure callee escapes via `core_of`/const-fold value-memo, a closure-arg callee does not). `lambda_of`
+    // resolves both copies to the SAME shared lambda body, so keying on that body dedups the fan-out (the
+    // 2nd copy hits → reuses the reduced `StructId` → the per-node `core_of`/`type_of` memos then collapse
+    // the whole tree). SOUND: a lambda body `StructId` encodes its scope — a capturing lambda copied into
+    // a different scope is a DISTINCT body node, so keying on the body never shares across distinct
+    // captures; a non-lambda head has no body and falls back to `head` (its `Ok(None)` is head-stable).
+    // (`Ok(None)`/`Err(msg)` are deterministic per body too, so they cache as well.)
+    let cache_head = match lambda_of(db, head) {
+        Some((_, body)) => body,
+        None => head,
+    };
+    let key = (cache_head, args.to_vec());
     if let Some(hit) = db.reduce_cache.get(&key) {
         return match hit {
             Some(reduced) => Ok(Some(*reduced)),
