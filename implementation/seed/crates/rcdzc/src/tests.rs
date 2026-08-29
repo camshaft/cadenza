@@ -17745,7 +17745,6 @@ mod match_engine {
     // → CDZ0203 (message "`(bin …)` pattern matches a Bytes value")(message <scrutinee type>); + the
     // no-false-reject control (bin over a Bytes param is not a type error — it declines only on the
     // non-scalar-param boundary). --case grades the codes + messages + the bare declines.)
-
     #[test]
     // (a_structural_pattern_over_a_mismatched_scrutinee_kind_is_a_type_error migrated to corpus
     // 05-compound-types, next to "a map pattern over a non-map scrutinee is a type error": a list/map/tuple
@@ -17754,7 +17753,6 @@ mod match_engine {
     // 3 no-over-rejection controls that MATCH + RUN (list→1, map→10, tuple→7; the controls build the
     // collection as a constant inside a nullary main, since a collection PARAMETER to an export declines).
     // --case grades the codes + messages + run values.)
-
     #[test]
     fn a_bytes_match_with_only_a_bin_arm_and_no_catch_all_is_non_exhaustive() {
         // A `(bin …)` pattern never covers every byte sequence (empty input, wrong length, an unequal
@@ -20327,7 +20325,6 @@ mod match_engine {
     // whose payload width differs is rejected" (U.A on T.A → CDZ0203), "a same-type sum match is accepted and
     // binds the payload" (→ 5), plus "a runtime Option carrying a user sum is matched by a nested constructor
     // pattern" (the legitimately-nested cross-sum control). Redundant, removed.)
-
     #[test]
     fn a_guard_condition_must_be_bool_and_its_faults_surface() {
         // A guarded arm's guard `(guard <pattern> <cond>)` is a boolean predicate gating the arm, so
