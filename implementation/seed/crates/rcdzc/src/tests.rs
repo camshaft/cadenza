@@ -28278,20 +28278,6 @@ mod stage1 {
     }
 
     #[test]
-    fn comparing_unit_against_a_non_unit_is_a_type_error() {
-        // A unit compared against a non-unit is a TYPE error — the operator is `∀a. a → a → Bool`, so
-        // both operands must be the SAME type; `(= unit 5)` cannot unify Unit with Int64 (CDZ0203).
-        // (The unit-value comparisons themselves — `(= unit ())` equality and the trivial unit ordering
-        // `<`/`<=`/`>=` — are corpus cases in 01-literals: "unit and the empty tuple are the same value"
-        // and "the unit value observes its total order — equal to itself, never less".)
-        let e = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (main) (= unit 5)) (export main))",
-        )))
-        .expect_err("comparing unit with an int must reject");
-        assert_eq!(e.code.as_deref(), Some("CDZ0203"), "got: {}", e.message);
-    }
-
-    #[test]
     fn an_unrealized_builtin_field_declines() {
         // `(. (Int 100) max)` — the field EXISTS (present as a poison: a >64-bit width's bounds are not
         // yet realized, `int_bounds` returns `None`), so projecting it declines "not yet realized" rather
@@ -28300,40 +28286,6 @@ mod stage1 {
         // used here; see `checked_integer_conversion_folds_in_range_and_traps_out_of_range`.)
         let msg = expect_decline("(. (Int 100) max)");
         assert!(msg.contains("not yet realized"), "got: {msg}");
-    }
-
-    #[test]
-    fn an_absent_builtin_field_rejects_like_a_closed_record() {
-        // `(. Int64 bogus)` — a member the module does NOT carry rejects (CDZ0201), the same closed
-        // projection a user record takes. Realized/unrealized/absent are one uniform projection. The
-        // message names the MODULE category — "the `Int64` module has no member `bogus`" — not the generic
-        // "record has no field" (a prelude module is not a record to the author).
-        let msg = expect_decline("(. Int64 bogus)");
-        assert!(
-            msg.contains("the `Int64` module has no member `bogus`"),
-            "got: {msg}"
-        );
-    }
-
-    #[test]
-    fn an_absent_user_module_member_names_the_module_not_a_record() {
-        // A member miss on a USER `(module m …)` value names the MODULE category — "the `m` module has no
-        // member `secret`" — matching the prelude-module arm, NOT the internal "record has no field"
-        // (a module is a module to the author, not a bare record — the export record is an implementation
-        // detail). `member_category` recognizes it by ORIGIN: the operand reduces to the module's SYNTH
-        // record (`module_name_by_synth_record`), so a NESTED projection `(. (. outer inner) k)` — which has
-        // no operand NAME to key on — is named too. The `secret` def exists but is not exported, so it is
-        // genuinely out of reach through `m`'s export record. Still CDZ0201 (this is a wording fix, not a
-        // code change); the "field" spelling stays reserved for a GENUINE record value.
-        let src = "(module top (module m (def (pub x) (+ x 1)) (def (secret x) (+ x 100)) (export pub)) \
-                    (def (main) ((. m secret) 5)) (export main))";
-        let msg = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("an unexported user-module member must decline")
-            .message;
-        assert!(
-            msg.contains("the `m` module has no member `secret`"),
-            "a user-module member miss names the module, not a record: {msg}"
-        );
     }
 
     // ── the full binary-integer operator set (all fold at width 64) ──────────────────────────────

@@ -342,10 +342,18 @@
            are TRUE (reflexive). Folded at compile time — unit carries no data and has no machine slot.
            Weighted so one result pins all three: (if (< unit ()) 100 0) + (if (<= unit ()) 1 0) +
            (if (>= () unit) 10 0) = 0 + 1 + 10 = 11. Relocated from rcdzc two_unit_values_compare_equal
-           (its (= unit ()) equality is the case above; its (= unit 5) cross-type reject stays in rcdzc).")
+           (its (= unit ()) equality is the case above; its (= unit 5) cross-type reject is the case below).")
   (input  (do (def (main) (+ (if (< unit ()) 100 0) (+ (if (<= unit ()) 1 0) (if (>= () unit) 10 0)))) (export main)))
   (call   main)
   (output (: 11 Int64)))
+
+(case "comparing the unit value against a non-unit is a type error"
+  (doc    "The comparison operator is `∀a. a -> a -> Bool`, so both operands must be the SAME type. `(= unit
+           5)` cannot unify Unit with Int64, so it rejects CDZ0203 — a unit compared against a non-unit is a
+           type error, not a runtime `false`. (migrated from rcdzc comparing_unit_against_a_non_unit; the
+           unit-vs-unit equality and total order are the two cases above.)")
+  (input  (do (def (main) (= unit 5)) (export main)))
+  (error  CDZ0203))
 
 (case "a string literal"
   (input  "hello")
