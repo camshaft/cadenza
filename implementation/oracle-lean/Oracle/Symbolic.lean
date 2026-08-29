@@ -66,6 +66,17 @@ def foldConst? (op : String) (args : Array SymExpr) : Option Value :=
                    else if vs.all (· == .bool false) then some (.bool false) else none
     | _, _ => none
 
+/-- Conservatively: could EVALUATING this expression trap (divide-by-zero / overflow / shift-out-of-range)?
+True if it contains ANY arithmetic or bitwise application anywhere (`+ - * / %`, shifts) — those can trap;
+comparisons/booleans do not themselves trap but their operands might, so recurse; `var`/`const` never trap.
+Used to GUARD the equal-branch `if` collapse: dropping a condition is sound ONLY if the condition cannot
+trap (else `(if <trapping-c> a a)` — which traps — would wrongly collapse to `a`, a FALSE "proven"). -/
+partial def mayTrap : SymExpr → Bool
+  | .var _ => false
+  | .const _ => false
+  | .app op args => arithOps.contains op || bitwiseOps.contains op || args.any mayTrap
+  | .ite c t e => mayTrap c || mayTrap t || mayTrap e
+
 /-- Canonicalize a symbolic expression by SOUND rewrites only: recurse into subterms; SOUND constant
 folding of comparison/boolean ops (`foldConst?`); an `if` on a (now possibly-folded) constant boolean
 selects its branch; an `if` whose branches are identical collapses. Deliberately does NOT fold or
@@ -87,7 +98,9 @@ partial def normalize : SymExpr → SymExpr
     | c' =>
       let t' := normalize t
       let e' := normalize e
-      if t' == e' then t' else .ite c' t' e'
+      -- collapse identical branches ONLY when the condition can't trap (dropping a trapping condition
+      -- would unsoundly claim `(if <trapping-c> a a)` — which traps — equal to `a`).
+      if t' == e' && !mayTrap c' then t' else .ite c' t' e'
 
 /-- A symbolic environment: each program parameter name bound to its symbolic variable. -/
 abbrev SymEnv := List (ByteArray × SymExpr)
@@ -188,8 +201,12 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 #guard normalize (.ite (.const (.bool true)) (.var 0) (.var 1)) == SymExpr.var 0
 -- `if false then a else b` normalizes to `b`.
 #guard normalize (.ite (.const (.bool false)) (.var 0) (.var 1)) == SymExpr.var 1
--- `if c then a else a` collapses to `a` (identical branches, condition irrelevant).
+-- `if c then a else a` with a TRAP-FREE condition collapses to `a`.
 #guard normalize (.ite (.var 2) (.var 0) (.var 0)) == SymExpr.var 0
+-- SOUNDNESS: `if <trapping-cond> then a else a` is NOT collapsed (dropping the trapping condition would be
+-- a false "proven" — the original traps, `a` does not). The condition survives in the normal form.
+#guard normalize (.ite (.app "/" #[.var 1, .const (.int 0)]) (.var 0) (.var 0))
+       == SymExpr.ite (.app "/" #[.var 1, .const (.int 0)]) (.var 0) (.var 0)
 -- T2.0c SOUND constant folding of comparison/boolean ops:
 #guard normalize (.app "<" #[.const (.int 2), .const (.int 5)]) == SymExpr.const (.bool true)
 #guard normalize (.app ">=" #[.const (.int 2), .const (.int 5)]) == SymExpr.const (.bool false)
