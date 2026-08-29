@@ -27994,17 +27994,18 @@ fn lower_str_scalar_at(db: &mut Db, id: StructId, string: StructId, index: Struc
                 }
             }
         }
-        // A runtime string/index: emit `Core::StrScalarAt` — the backend calls the runtime
-        // `bytes-scalar-at(buf, scalar_index) -> u32` op (#5516), boxes the returned codepoint into a `Char`
-        // (#5252 rep), and maps `u32::MAX -> None`, building the `(Option Char)`. (Before #5516 there was no
-        // runtime-Char rep + no codepoint op, so this DECLINED; now the runtime half exists.) The constant
-        // string+index case folds to a `Some(Leaf::Char)`/`None` above and never reaches here.
-        _ => Core::StrScalarAt {
-            operand: string,
-            index,
-            disc_some,
-            disc_none,
-        },
+        // A runtime string/index: `String.scalar-at` yields a `Char`, and a RUNTIME `Char` has no machine
+        // representation yet (a `Core::ConstChar` only folds at compile time; there is no runtime Char rep —
+        // the same reason a runtime char PATTERN declines), so the runtime scalar-at path cannot build its
+        // `(Option Char)` result. This is NOT a "String is constant-only" limit (`String.at`/`String.slice`
+        // walk a runtime string fine) — it is the missing runtime-Char rep. Name that + the two working
+        // runtime alternatives so a char-scanner is not stuck (rustc-gold "say how to fix it").
+        _ => Core::Poison(Reject::decline(
+            "String.scalar-at yields a Char, and a runtime Char has no representation yet, so scalar-at over \
+             a runtime string is not computed — use `String.at` (a runtime `(Option String)` one-scalar \
+             read) for a runtime char-scan, or `Bytes.at` on `String.to-bytes` for ASCII byte scanning; \
+             `String.scalar-at` works when the string and index are compile-time constants",
+        )),
     }
 }
 

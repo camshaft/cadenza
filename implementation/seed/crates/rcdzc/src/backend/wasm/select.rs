@@ -1494,12 +1494,6 @@ fn binding_escapes_dup_aware(
             binding_escapes_dup_aware(db, string, binder, true, dup_sites)
                 || binding_escapes_dup_aware(db, index, binder, false, dup_sites)
         }
-        // `String.scalar-at` BORROWS its string operand (bytes-scalar-at reads the buffer, does not consume
-        // it) — same discipline as `String.at`: the string binding does NOT escape, the index is a scalar.
-        Core::StrScalarAt { operand, index, .. } => {
-            binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
-                || binding_escapes_dup_aware(db, index, binder, false, dup_sites)
-        }
         // `String.slice` BORROWS its string operand (the Some branch `dup`s it before the consuming
         // `bytes-slice`, the None branch takes no reference — same discipline as `String.at`), so a binding
         // used as the string does NOT escape (its owner reclaims it). start/end are scalars.
@@ -2964,11 +2958,6 @@ fn child_ids_of(c: &Core, cs: &mut Vec<StructId>) {
             index: b,
             ..
         }
-        | Core::StrScalarAt {
-            operand: a,
-            index: b,
-            ..
-        }
         | Core::BigIntBinOp { lhs: a, rhs: b, .. }
         | Core::BigIntCmp { lhs: a, rhs: b, .. }
         | Core::RationalBinOp { lhs: a, rhs: b, .. }
@@ -3556,9 +3545,6 @@ fn mark_binder_dups_inner(
         // `String.at` CONSUMES its string (the Some branch slices out of it); the index is scalar.
         Core::StrAt { string, index, .. } => {
             seq(db, &[(string, false), (index, false)], live_after, sites)
-        }
-        Core::StrScalarAt { operand, index, .. } => {
-            seq(db, &[(operand, false), (index, false)], live_after, sites)
         }
         // `String.slice` likewise CONSUMES its string (the Some branch `dup`s + slices out of it); the
         // start/end bounds are scalars.
@@ -5406,10 +5392,6 @@ fn collect_used_ops_into_seen(
         // scalar span (`bytes-slice`, which CONSUMES the string handle → the borrowed scan `dup`s first,
         // and the None branch `drop`s the un-consumed handle), and builds `Some`/`None` (`sum-new`,
         // `arr-alloc` for the unit payload).
-        // STUB (v-rust-backend #5516 wires the real emit): runtime String.scalar-at emit DECLINES until
-        // wired, so it imports no runtime ops of its own here (children are walked generically). v-rust-backend
-        // adds OPS.bytes_scalar_at here when they land the emit.
-        Core::StrScalarAt { .. } => {}
         Core::StrAt { string, index, .. } => {
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_GET);
@@ -14474,12 +14456,6 @@ fn emit(
         // scalar's byte span (lead byte + its continuation bytes) and `bytes-slice`s it into `Some`. A
         // negative index or one at/beyond the scalar count → `None`. The string handle is BORROWED for the
         // scan (`bytes-len`/`bytes-get`) and CONSUMED by the final `bytes-slice`; the None branch drops it.
-        // STUB (v-rust-backend #5516 wires the real emit): runtime String.scalar-at → (Option Char) via the
-        // bytes-scalar-at codepoint op + Char box (#5252 rep) + u32::MAX→None. Declines cleanly until wired
-        // (front-lands-first per the coordinated split; 13-strings:3218 stays `declines`, not a red).
-        Core::StrScalarAt { .. } => Err(Reject::decline(
-            "Core::StrScalarAt wasm emit not yet wired (v-rust-backend, #5516 bytes-scalar-at)",
-        )),
         Core::StrAt {
             string,
             index,
