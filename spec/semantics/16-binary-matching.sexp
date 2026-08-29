@@ -137,6 +137,28 @@
   (input  (bin (bits 16 4) (bits 0 4)))
   (error  CDZ0304))
 
+; STRUCTURAL well-formedness (distinct from the CDZ0304 value-fit above): a `bin` must be byte-aligned, a
+; non-final `(bytes …)` (unsized) is ill-formed, and a `bits` width must be a compile-time constant natural —
+; each an ILL-FORMED BINARY FORM rejected CDZ0220 (the intro's rule). Migrated from rcdzc
+; an_ill_formed_bin_form_is_rejected_cdz0220.
+(case "a bin whose bit-fields do not close to a whole byte is ill-formed"
+  (doc    "`(bin (bits 1 1) (bits 0 3))` = 4 bits, not byte-aligned → CDZ0220; the message names the concrete
+           bit total and the padding to the next byte (rustc-gold): 4 bits, 4 short of 1 byte.")
+  (input  (do (def (main) (bin (bits 1 1) (bits 0 3))) (export main)))
+  (error  CDZ0220 (message "total 4 bits") (message "add 4 more bits to reach 1 byte")))
+
+(case "a non-final unsized bytes segment is an ill-formed binary form"
+  (input  (do (def (main) (bin (bytes (Bytes.of (list 1))) (u8 2))) (export main)))
+  (error  CDZ0220))
+
+(case "a bit-field with a negative width is ill-formed (width must be a constant natural)"
+  (input  (do (def (g (: v Int64)) (bin (bits v -1))) (export g)))
+  (error  CDZ0220 (message "bit-field width must be a compile-time constant natural")))
+
+(case "a bit-field with a non-constant width is ill-formed (width must be a constant natural)"
+  (input  (do (def (g (: v Int64)) (bin (bits v abc))) (export g)))
+  (error  CDZ0220 (message "bit-field width must be a compile-time constant natural")))
+
 (case "a length-prefixed frame is built from a size segment and a bytes segment"
   (doc    "`(bin (u16 (UInt16.of (Bytes.len payload))) (bytes payload))` writes payload's length as a
            big-endian u16 prefix, then splices payload — the length-framing idiom that replaces hand-rolled
