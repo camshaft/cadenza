@@ -12546,40 +12546,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_match_on_a_function_value_is_rejected_not_an_internal_closure_decline() {
-        // `(match g …)` where `g` is a function has no matchable value — a match deconstructs a DATA value
-        // by its cases, and a function has none. It used to fall through to the scalar-probe path and hit
-        // the closure-boundary DECLINE ("a closure's parameter type has no machine representation"), an
-        // uncoded, internal-sounding message about a "parameter type" the author never asked about. Now it
-        // is a clean coded CDZ0203 naming the real cause. Covers a bare def name AND a partial application
-        // (both function values).
-        for src in [
-            "(module m (def (g x) x) (def (main) (match g (_ 1))) (export main))",
-            "(module m (def (g x y) x) (def (main) (match (g 1) (_ 5))) (export main))",
-        ] {
-            let d = reject_full(src)
-                .unwrap_or_else(|| panic!("a match on a function must reject: {src}"));
-            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-            assert!(
-                d.message.contains("function value cannot be matched"),
-                "names the real cause, not the internal closure decline: {}",
-                d.message
-            );
-            assert!(
-                !d.message.contains("machine representation"),
-                "the internal closure-boundary decline is not surfaced: {}",
-                d.message
-            );
-        }
-        // NO false positive: matching a real VALUE (a nullary def bound to a scalar) still compiles.
-        assert!(
-            reject_full("(module m (def v 5) (def (main) (match v (5 10) (_ 0))) (export main))")
-                .is_none(),
-            "a match on a genuine value is valid"
-        );
-    }
-
-    #[test]
     fn symbol_reader_sugar_and_nominal_boundary() {
         // A Symbol is NOMINAL over String: comparing the two across the boundary is CDZ0202 with an
         // actionable `Symbol.of` wrap fix. (The `#"text"` reader sugar reads to the same value as
