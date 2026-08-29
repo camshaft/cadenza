@@ -76,6 +76,17 @@ pub struct CompileArgs {
     /// artifact is shaped.
     #[arg(long, value_name = "LEVEL", default_value_t = OptLevelArg::default())]
     opt_level: OptLevelArg,
+
+    /// Write the compiler's DIAGNOSTICS (the well-formedness fault set) to this path as a SIDE ARTIFACT —
+    /// the `KIND_DIAGNOSTICS` wire (one fault per line, 8 TAB columns: severity/code/node/fix-kind/fix-node/
+    /// fix-replacement/fix-verified/message), byte-identical to the `Query::Diagnostics` sidecar result
+    /// (both call `sidecar::diagnostics_wire`, so they never drift). Written UNCONDITIONALLY — even when the
+    /// compile has errors/declines (the fault set is exactly what a caller wants then) — and the process
+    /// still exits with the NORMAL compile status (this flag is a side-channel, never a gate). Powers the
+    /// corpus C1 diagnostic-quality grade (v-corpus-harness): `mkCorpusBuild` runs `--emit-diagnostics
+    /// $out/diagnostics`, and the exec phase grades the captured wire.
+    #[arg(long, value_name = "PATH")]
+    emit_diagnostics: Option<PathBuf>,
 }
 
 /// The `--opt-level` choice, as a clap-parsed value (its own enum so clap validates the spelling and
@@ -297,9 +308,18 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
         inputs.push(component_name_artifact(iface));
     }
 
-    // Read `opt_level` BEFORE moving `cli.out` into the call (a partial move would poison `cli`).
+    // Read `opt_level` + `emit_diagnostics` BEFORE moving `cli.out` into the call (a partial move would
+    // poison `cli`, and the `&Path` must borrow a local, not a moved-from `cli`).
     let opt_level = cli.opt_level();
-    run_prepared(inputs, &cli.targets(), cli.out, opt_level, prog)
+    let emit_diagnostics = cli.emit_diagnostics.clone();
+    run_prepared(
+        inputs,
+        &cli.targets(),
+        cli.out,
+        opt_level,
+        emit_diagnostics.as_deref(),
+        prog,
+    )
 }
 
 /// Build the `KIND_ENTRY` input artifact naming a package's entry file — its bytes are the entry name.
@@ -329,6 +349,7 @@ pub fn run_prepared(
     targets: &[Target],
     out: Option<PathBuf>,
     opt_level: OptLevel,
+    emit_diagnostics: Option<&std::path::Path>,
     prog: &str,
 ) -> ExitCode {
     // Apply the target default here (so both `run` and an external driver get the same rule): explicit
@@ -361,6 +382,21 @@ pub fn run_prepared(
     let out_dest = out;
     let cli_out = &out_dest;
     let out = crate::run_with_compiler_stack(|| compile_with_opt(&inputs, &targets, opt_level));
+
+    // `--emit-diagnostics <path>`: write the DIAGNOSTICS wire as a side artifact BEFORE reporting/writing,
+    // UNCONDITIONALLY (even on an error/decline compile — the fault set is exactly what a caller wants
+    // then), reusing `sidecar::diagnostics_wire` so it is byte-identical to the `Query::Diagnostics` result.
+    // A write failure is a warning, not a compile failure — the flag is a side-channel, so the process
+    // still exits with the NORMAL compile status below (it never gates). Powers the corpus C1 grade.
+    if let Some(path) = emit_diagnostics {
+        let wire = crate::sidecar::diagnostics_wire(&out.diagnostics);
+        if let Err(e) = std::fs::write(path, &wire) {
+            eprintln!(
+                "{prog}: cannot write --emit-diagnostics {}: {e}",
+                path.display()
+            );
+        }
+    }
 
     // Report diagnostics (stderr). When the inputs carry a `spans` side-table (present whenever the run
     // compiled a SOURCE file — `cdz compile foo.cdz`), map each diagnostic's node to a source
