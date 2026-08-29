@@ -603,3 +603,50 @@ Ping v-ast-consolidate (num_bigint→IntValue swap), v-corpus-declines (re-basel
 v-cadenza-backend (ctor-leaf head-first consumer). M3 (delete legacy string/name-head recognition) is a
 separate follow-on: flip the deferred boundary emitters (effect-request record in `lower.rs:16651` +
 `db.push_field_pair`; v-effects' tuple-projection `.` sites in effects.rs) to native then.
+
+## 13. M3 Phase-2 — legacy recognizer DELETION: execution plan + readiness (2026-08-29)
+
+M3 = nativize all remaining name/string-head compound literals to `#word(…)`, then DELETE the legacy
+name/string recognition so `#word(…)` is the sole spelling (native ctor-LEAF heads + `FieldPair`/`Member`).
+This is an ALL-OR-NOTHING flag-day across four verticals (the reader stops emitting aliases → any surviving
+legacy spelling breaks), coordinated by the concierge.
+
+### 13.1 Preconditions
+1. **Guide-ready — MET** (v-guide-infra + v-guide-editor, confirmed @ `edb137ffcc`): guide sources + prose
+   100% native, `check:examples` 410/0, notebook 21/21. Unblocked by the native match-arm fix set
+   (#5429/#5436/#5459) + the op-handler-arm codemod exemption (#5475). v-guide-infra re-verifies post-cut
+   (ping them).
+2. **Corpus (output)→#ctor render re-pin — BLOCKED/in-flight** (v-corpus-harness): rides v-rb's
+   `render_val_typed` (Option 3: rcdzc returns the guest result-Ty as a typed in-process return, gate threads
+   it to cdz-run; no wasm section / guest-bytes / ca-cache change). The render-HALF has already landed
+   (v-runtime `f9f8717c`) AHEAD of the expected-output re-pin, so corpus files with compound-value outputs are
+   TRANSIENTLY RED (e.g. 03-equality case 0203: expected `(tuple …)`, got `#tuple(…)`). v-corpus-harness
+   executes the bulk re-pin atomically when the ref lands, then PINGS v-ast-compound to open the window.
+
+### 13.2 Atomic-land steps by owner (all in ONE flag-day `--ref`)
+- **v-syntax (step-2, reader):** flip `pattern_atom` → native ctor-leaf; stop emitting/recognizing the
+  name/string VALUE compound heads. OPEN QUESTION (asked, on the critical path): does the flip also touch
+  TYPE ctor heads (`(List …)` / `("List" …)`), or VALUE literals only? (v-ast-consolidate's design read =
+  VALUE-only.)
+- **v-ast-consolidate (step-4, cadenza-ast):** delete `compound_ctor` (string-head), flip
+  `compound_ctor_prim`'s string arm → just `compound_ctor_leaf`, delete `as_ctor_form`, drop the resolve
+  string-prim arm + the `as_name` `Member`/`FieldPair` bridge, and drop `compound_form_of`'s alias branch
+  (native-only). `compound_ctor_either` already DELETED (#5498).
+- **v-ast-compound / rcdzc (step-3, MINE) — READY, exactly 2 one-liners:**
+  1. `resolve.rs:463` `compound_ctor_prim(id)` (structural dispatch) → `compound_ctor_leaf(id)`.
+  2. `db.rs:6439` grounds `(List BigInt)`-typed list elems via
+     `as_form(ty_expr,"List").or_else(as_ctor_form(ty_expr,"List"))` — a TYPE ctor, NOT a value literal.
+     Per v-syntax's answer: if TYPE heads persist → INLINE an `as_str` head-check (keep recognition); if the
+     flip drops string TYPE heads → the `.or_else` arm is dead, remove it.
+  All other rcdzc uses are already `compound_form_of` (~130 callers, survive the alias-branch drop) or
+  `compound_ctor_leaf`. The native-recognition audit is COMPLETE across resolve/lower/eval/infer/const-fold +
+  classification (sidecar highlight #5484) + diagnostics + equality (#5491, corpus #5501).
+  - **Corpus-INPUT nativization:** run `cdz-nativize` (`nativize_compound_source`, handler-arm-op exemption
+    #5475) over all `spec/semantics/*.sexp` INPUT programs. Entangled with the output re-pin (same files) →
+    do it in/after the window, not piecemeal. Delete `cdz-nativize` + `nativize_compound_source` after.
+- **v-guide-infra:** re-verify the all-native guide compiles+runs once legacy parsing is gone.
+
+### 13.3 Gate
+All-or-nothing (per §12.8 M2 pattern): pinned `rcdzc --lib` + `cargo test -p cadenza-syntax` (corpus_roundtrip)
++ cadenza-ast + `--target platform` + `xtask roundtrip` (ML fixed-point) + clippy `--all-targets -D warnings`
++ `cargo fmt --all --check`, across all corpus files. Concierge lands the single atomic `--ref`.
