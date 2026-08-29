@@ -21,6 +21,7 @@ RESPONSE = one cdzast blob:  `(verdicts <v1> <v2> …)`  — one child per trial
 import Oracle.Ast
 import Oracle.Eval
 import Oracle.Check
+import Oracle.Symbolic
 
 namespace Oracle
 open Oracle.Ast
@@ -52,10 +53,27 @@ def parseTrialAt (m : Module) (trialId : Nat) : Except String (Module × OTrial)
     | some e => .ok ({ m with root := progId }, { args := args, expect := e })
     | none => .error "batch: trial has no (value …)/(trap …) output"
 
-/-- Judge one trial NODE within the batch module → a `Verdict`. A malformed trial is a `skip` (never
-crashes the batch): a garbled trial is a coverage-gap, not a differential mismatch. -/
+/-- Judge an `(equiv <P-ast> <P'-ast>)` trial — the T2 SYMBOLIC-EQUIVALENCE dimension (operator seq-196):
+prove the input program `P` and its `--target cadenza` round-trip `P'` functionally equivalent FOR ALL
+INPUTS via `Symbolic.equivMain` (symbolic evaluation → canonical normalization → structural equality).
+Maps onto the EXISTING verdict protocol so the fuzzer needs no new decoder: PROVEN → `holds`;
+CANNOT-PROVE → `skip` carrying the reason (`boundary: …` = incompleteness limit; `normalized-but-different`
+= a STRONG suspected cadenza-backend miscompile worth confirming with the sampled differential). Each
+operand is the batch module re-rooted at that program subtree. -/
+def judgeEquivNode (m : Module) (nodeId : Nat) : Verdict :=
+  match (kidsOf m nodeId)[0]?, (kidsOf m nodeId)[1]? with
+  | some pId, some p'Id =>
+    match equivMain { m with root := pId } { m with root := p'Id } with
+    | .proven => .holds
+    | .cannotProve r => .skip s!"equiv: {r}"
+  | _, _ => .skip "equiv: missing program operand"
+
+/-- Judge one trial NODE within the batch module → a `Verdict`. An `(equiv …)` node routes to the
+symbolic-equivalence judge; an `(trial …)` node to the value/trap differential. A malformed trial is a
+`skip` (never crashes the batch): a garbled trial is a coverage-gap, not a differential mismatch. -/
 def judgeTrialNode (m : Module) (trialId : Nat) : Verdict :=
-  match parseTrialAt m trialId with
+  if Check.headStr? m trialId == some "equiv" then judgeEquivNode m trialId
+  else match parseTrialAt m trialId with
   | .error e => .skip s!"batch: {e}"
   | .ok (prog, t) => Check.checkTrial prog m t
 
@@ -160,6 +178,25 @@ private def _batchHolds : Module :=
              | none => false)
           | _ => false
         | _ => false)
+
+-- `(equiv PA PB)` where PA = `(do (def (main) na) (export main))`, PB the same with `nb` — two nullary-main
+-- programs whose bodies are the literals na/nb. The equiv node's args are the two program subtrees (nodes
+-- 9 and 19); the wrapper `(equiv …)` is node 21. Judged by symbolic equivalence: identical bodies → PROVEN
+-- (`holds`); differing constant bodies → CANNOT-PROVE (`skip`).
+private def _equivProg (na nb : UInt8) : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "def".toUTF8, Leaf.name "main".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[na]), Leaf.name "export".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[nb]), Leaf.name "equiv".toUTF8],
+    nodes := #[.atom 1, .atom 2, .list #[1], .atom 3, .list #[0, 2, 3],
+               .atom 4, .atom 2, .list #[5, 6], .atom 0, .list #[8, 4, 7],
+               .atom 1, .atom 2, .list #[11], .atom 5, .list #[10, 12, 13],
+               .atom 4, .atom 2, .list #[15, 16], .atom 0, .list #[18, 14, 17],
+               .atom 6, .list #[20, 9, 19]],
+    root := 21 }
+-- two identical programs are PROVEN equivalent for all inputs → `holds` (routed via judgeTrialNode dispatch).
+#guard (match judgeTrialNode (_equivProg 42 42) 21 with | .holds => true | _ => false)
+-- two programs with different constant bodies are not proven → `skip` (never a false `holds`).
+#guard (match judgeEquivNode (_equivProg 42 43) 21 with | .skip _ => true | _ => false)
 
 end Batch
 end Oracle
