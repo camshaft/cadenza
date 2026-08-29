@@ -12493,3 +12493,51 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 21 Int64))
   (call main (: -4 Int64)) (output (: -12 Int64)))
+
+(case "cdzw43 a NESTED native #tuple pattern destructures and binds through the cadenza hop"
+  (doc "The #5229 M3 native-pattern fence, tuple face: `#tuple(#tuple(a b) c)` destructures a nested
+        runtime tuple — the native spelling must resolve binders at every depth, mirror the classic
+        `(tuple …)` pattern exactly, and re-emit at its fold fixpoint through the hop. n=7 → 723.
+        (Was parked on the ML pattern-position roundtrip gap; unblocked by #5257.)")
+  (input (do
+    (def (main (: n Int64)) (match (tuple (tuple n 2) 3) (#tuple(#tuple(a b) c) (+ (* a 100) (+ (* b 10) c)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 723 Int64))
+  (call main (: 4 Int64)) (output (: 423 Int64)))
+
+(case "cdzw44 native and classic pattern spellings are interchangeable across value spellings"
+  (doc "The mixed-spelling face of #5229: a `#list` pattern over a classic `(list …)` value AND a classic
+        `(tuple …)` pattern over a native `#tuple(…)` value in one program — the spellings are one AST
+        after read, so every pairing must bind identically. f = #list-pattern exact-arity (h t → h*100+t);
+        g = classic pattern on native value (a*10+b). n=7: 705 + 74 = 779.")
+  (input (do
+    (def (f (: xs (List Int64))) (match xs (#list(h t) (+ (* h 100) t)) (_ -1)))
+    (def (g (: n Int64)) (match #tuple(n 4) ((tuple a b) (+ (* a 10) b))))
+    (def (main (: n Int64)) (+ (f (list n 5)) (g n)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 779 Int64))
+  (call main (: 2 Int64)) (output (: 229 Int64)))
+
+(case "cdzw46 a guard condition reads a native #tuple pattern's binders"
+  (doc "The guard face of #5229 (and the top-level-binder complement of the open nested-binder guard gap):
+        `((guard #tuple(a b) (> a 5)) …)` — the guard cond must see the native spelling's binders exactly
+        as it sees classic top-level binders (cdzw20). n=7 → guard true → 100; n=2 → falls to the plain
+        arm → 2+2=4.")
+  (input (do
+    (def (main (: n Int64)) (match (tuple n 2) ((guard #tuple(a b) (> a 5)) 100) (#tuple(a b) (+ a b))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 100 Int64))
+  (call main (: 2 Int64)) (output (: 4 Int64)))
+
+(case "cdzw48 Char.from-int → match → Char.to-int round-trips the cadenza hop on both Option faces"
+  (doc "The #5252 fence (cadenza backend emits runtime Char.to-int/from-int): Char.from-int is FALLIBLE
+        ((Option Char)), so the probe matches both faces — a valid code point (n=7 → 67 → Some → 67) and
+        an invalid one (n=-100 → -40 → None → -1). Hop byte-idempotent; dual-path verified. live 1 = a
+        ONE-TIME runtime singleton on the Char path (constant across repeated round-trips and with a
+        None-face last — probed; NOT a per-op leak or a retained match cell).")
+  (input (do
+    (def (main (: n Int64)) (match (Char.from-int (+ n 60)) ((Some c) (Char.to-int c)) ((None _u) -1)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 67 Int64))
+  (call main (: -100 Int64)) (output (: -1 Int64))
+  (live-objects 1))
