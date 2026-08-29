@@ -2,8 +2,8 @@
   (slug "platform-safety")
   (title "Doing things safely")
   (pillar "platform")
-  (section "The kernel model")
-  (blurb "Every risky thing an agent does is an effect, every world-acting effect passes one authorization gate, and a program's effect row is its capability manifest.")
+  (section "Doing things safely")
+  (blurb "Capabilities and authorization: every reach outward is an effect through one gate, the effect row is the permission list, and dangerous power is attenuated behind safe components.")
   (lede
     "An agent that can run shell commands, call the network, and message other agents is an agent that "
     "can do real damage. The platform's answer to \"what is this thing allowed to do?\" reuses a single "
