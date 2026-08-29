@@ -1,0 +1,27 @@
+# wasm-abi-table — the backend's wasm / component-model byte table as a STANDALONE crate (v-xtask-decompose,
+# operator codegen-sexpr option-B). `src/lib.rs` is GENERATED from the authoritative, hand-authored
+# `data/wasm-abi.sexp` (the language-independent source of truth) by `xtask-codegen-wasm-abi --crate-lib`:
+# the core opcode table, core + component valtype bytes, section ids, magic headers, and functype form bytes.
+#
+# `rcdzc` DEPS this crate for the constants, so the compiler carries NO `wasm-encoder` dependency. The
+# generated `#[cfg(test)] mod oracle` asserts every byte against the `wasm-encoder` spec encoder (the
+# operator's inverted guarantee — a transcription typo in the authored sexpr fails the test); `wasm-encoder`
+# is therefore a DEV-dependency ONLY, isolated to this crate's tests and never pulled into rcdzc.
+#
+# A plain `rlib` in the native seed workspace (leaf: no normal deps). Its committed `src/lib.rs` is
+# byte-identical to `--crate-lib`'s output (the acceptance test), until v-nix's build-time overlay generates
+# it (nothing generated stays committed, matching the contracts/wasm_abi.rs precedent).
+[package]
+name = "wasm-abi-table"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dev-dependencies]
+# The spec byte encoder — the ORACLE the generated `#[cfg(test)] mod oracle` asserts each constant against.
+# DEV-only, so rcdzc (which deps this crate for the constants) never carries it. Same version family as the
+# generator (`xtask-codegen-wasm-abi`).
+wasm-encoder = "0.239"

@@ -2714,6 +2714,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-abi-table"
+version = "0.0.0"
+dependencies = [
+ "wasm-encoder 0.239.0",
+]
+
+[[package]]
 name = "wasm-bindgen"
 version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
