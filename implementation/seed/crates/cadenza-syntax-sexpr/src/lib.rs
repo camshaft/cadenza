@@ -584,6 +584,7 @@ fn nat_map_eligible(a: &Arenas, ch: &[StructId]) -> bool {
 
 /// Recurse `id`, collecting head-nativize + map-entry-field-pairify edits (start, end, replacement) into
 /// `edits`, tracking ctor-name `shadow` scopes.
+#[allow(clippy::too_many_arguments)]
 fn nat_walk(
     a: &Arenas,
     spans: &SpanTable,
@@ -591,12 +592,21 @@ fn nat_walk(
     id: StructId,
     shadow: &mut std::collections::HashMap<String, u32>,
     exempt: &mut std::collections::HashSet<StructId>,
+    skip_outputs: bool,
+    collect: bool,
     edits: &mut Vec<(usize, usize, String)>,
 ) {
     let Struct::List(ch) = a.get(id) else {
         return;
     };
     let ch = ch.clone();
+    // CORPUS inputs-only mode (`skip_outputs`): a corpus case's `(output …)` expected VALUE must match the
+    // GATE RENDER exactly, and the render NORMALIZES (Ast.List→`(. Ast List)`, Qty.of, `#"sym"`, map/set key
+    // order, Bytes `b"…"`) — a text-nativize would NOT reproduce those, so `(output …)` is v-corpus-harness's
+    // grade-driven re-pin, NOT ours. So STOP collecting edits inside an `(output …)` subtree; everything else
+    // — `(input …)` programs, `(call …)` argument values (input-side) — still nativizes. (Whole-program mode
+    // for the guide passes `skip_outputs=false`, so `collect` never flips and every literal nativizes.)
+    let collect = collect && !(skip_outputs && a.head_name(id) == Some("output"));
     let mut introduced = Vec::new();
     nat_collect_binders(a, id, &mut introduced);
     for n in &introduced {
@@ -625,7 +635,8 @@ fn nat_walk(
     let name_head = a.head_name(id);
     // `ch.first()`, NOT `ch[0]` — an EMPTY list `()` has no head (indexing would panic).
     let ctor_name = name_head.or_else(|| ch.first().and_then(|&h| a.as_str(h)));
-    if let Some(name) = ctor_name
+    if collect
+        && let Some(name) = ctor_name
         && nat_is_ctor_name(name)
         // A NAME head is suppressed by a shadowing binding; a STRING head is unshadowable (always the ctor).
         && (name_head.is_none() || shadow.get(name).copied().unwrap_or(0) == 0)
@@ -655,7 +666,17 @@ fn nat_walk(
         }
     }
     for &c in ch.iter() {
-        nat_walk(a, spans, bytes, c, shadow, exempt, edits);
+        nat_walk(
+            a,
+            spans,
+            bytes,
+            c,
+            shadow,
+            exempt,
+            skip_outputs,
+            collect,
+            edits,
+        );
     }
     for n in &introduced {
         if let Some(v) = shadow.get_mut(n) {
@@ -677,6 +698,21 @@ fn alloc_head(name: &str) -> String {
 /// preserving (a native ctor-leaf head is `structurally_eq` to its name-alias) and surface-preserving
 /// (only the target head bytes change). The M3 guide-source migration entry (`cdz-nativize` bin wraps it).
 pub fn nativize_compound_source(src: &str) -> Result<String, ReadError> {
+    nativize_compound_impl(src, false)
+}
+
+/// Like [`nativize_compound_source`] but SKIPS every `(output …)` subtree — the CORPUS inputs-only mode
+/// for the M3 Phase-2 corpus migration. A corpus case's `(output …)` expected value must match the GATE
+/// RENDER exactly (which normalizes `Ast.List`→`(. Ast List)`, `Qty.of`, `#"sym"`, map/set key order,
+/// `Bytes`→`b"…"`), so text-nativizing it would MISMATCH the render — the `(output …)` side is
+/// v-corpus-harness's grade-driven render re-pin, not this codemod's. This nativizes the `(input …)`
+/// programs + `(call …)` argument values (both input-side) and leaves `(output …)` untouched, so the two
+/// passes compose without clobbering (sequence Option A, DESIGN §13.4).
+pub fn nativize_compound_source_skip_outputs(src: &str) -> Result<String, ReadError> {
+    nativize_compound_impl(src, true)
+}
+
+fn nativize_compound_impl(src: &str, skip_outputs: bool) -> Result<String, ReadError> {
     let (arenas, spans) = read_all_spanned(src)?;
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     let mut shadow: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
@@ -688,6 +724,8 @@ pub fn nativize_compound_source(src: &str) -> Result<String, ReadError> {
         arenas.root,
         &mut shadow,
         &mut exempt,
+        skip_outputs,
+        true, // collect edits from the root down (flips off only inside an (output …) when skip_outputs)
         &mut edits,
     );
     edits.sort_by_key(|e| core::cmp::Reverse(e.0)); // descending: apply back-to-front, offsets stay valid
@@ -1508,6 +1546,36 @@ mod tests {
         );
         // A `set` LITERAL outside any handler arm still nativizes (the exemption is arm-head-scoped).
         assert_eq!(n("(do (set 1 2))"), "(do #set(1 2))");
+    }
+
+    #[test]
+    fn nativize_compound_source_skip_outputs_leaves_output_expected_values_untouched() {
+        // CORPUS inputs-only mode (Phase-2 seq A): nativize `(input …)` programs + `(call …)` arg values,
+        // but leave every `(output …)` expected value untouched — v-corpus-harness owns the render re-pin of
+        // outputs (a text-nativize would not match the gate's normalizing render).
+        let s = |x: &str| super::nativize_compound_source_skip_outputs(x).unwrap();
+        // A whole corpus case: the (input …) list literal nativizes; the (output …) tuple is LEFT ALONE.
+        assert_eq!(
+            s(
+                "(case \"c\" (input (do (def (main) (list 1 2)) (export main))) (output (: (tuple 1 2) T)))"
+            ),
+            "(case \"c\" (input (do (def (main) #list(1 2)) (export main))) (output (: (tuple 1 2) T)))"
+        );
+        // A `(call …)` ARGUMENT value is input-side → it nativizes; its sibling (output …) does not.
+        assert_eq!(
+            s("(case \"c\" (input p) (call main (: (list 3) L)) (output (: (record (x 1)) R)))"),
+            "(case \"c\" (input p) (call main (: #list(3) L)) (output (: (record (x 1)) R)))"
+        );
+        // Nested compound INSIDE an (output …) stays legacy even when deep.
+        assert_eq!(
+            s("(output (: (list (tuple 1 2)) T))"),
+            "(output (: (list (tuple 1 2)) T))"
+        );
+        // Whole-program mode (the default, guide) is unchanged — it nativizes everywhere, output or not.
+        assert_eq!(
+            super::nativize_compound_source("(output (: (list 1) T))").unwrap(),
+            "(output (: #list(1) T))"
+        );
     }
 
     #[test]
