@@ -4879,6 +4879,18 @@
   (input  (do (def (f #tuple(0 b)) b) (def (main) (f #tuple(9 5))) (export main)))
   (error  CDZ0210))
 
+; The top-level constructor + non-linear faces of a def-parameter binding (migrated from rcdzc
+; an_ill_formed_def_parameter_pattern_is_rejected): a refutable multi-variant CONSTRUCTOR parameter is
+; CDZ0210 (the None variant is uncovered — the binding position has no fall-through arm); a NON-LINEAR
+; tuple parameter (a binder repeated inside the tuple pattern) is CDZ0102, checked before refutability.
+(case "a refutable constructor def-parameter is rejected"
+  (input  (do (def (f (Some x)) x) (def (main) 0) (export main)))
+  (error  CDZ0210))
+
+(case "a non-linear tuple def-parameter is rejected CDZ0102"
+  (input  (do (def (f #tuple(x x)) x) (def (main) 0) (export main)))
+  (error  CDZ0102))
+
 ; The INLINE-LAMBDA face: a refutable binding inside an INLINE / let-bound lambda's body or parameter is the
 ; same CDZ0210 a def-body binding gets (a lambda parameter desugars to a body `let`). An earlier over-accept
 ; let these through — an inline lambda body was not walked for binding refutability — so these pin that the
