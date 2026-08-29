@@ -23967,3 +23967,10 @@
 (case "a too-few map entry carries NO delete fix"
   (input (do (def (main) (map (1))) (export main)))
   (error CDZ0201 (message "a map entry is a (key value) pair") (no-fix)))
+
+(case "a duplicate literal map key carries a delete fix"
+  (doc "A map literal repeating a literal KEY — (map (1 10) (1 20) (2 30)) — is CDZ0201 (a map contains each key
+        at most once), carrying a DELETE fix on the redundant entry. From rcdzc
+        a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix.")
+  (input (do (def (f) (Map.len (map (1 10) (1 20) (2 30)))) (def (main) 0) (export main)))
+  (error CDZ0201 (message "map contains each key") (fix (kind delete))))

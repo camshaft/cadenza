@@ -12691,3 +12691,30 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 27 Int64))
   (call main (: 2 Int64)) (output (: 22 Int64)))
+
+; ── more numeric coercion-fix boundaries (migrated from rcdzc) ──
+(case "a non-numeric operand mixed with a float operator carries NO coercion fix"
+  (doc "The of-int coercion fires only for an Int operand. A Bool mixed with a float under the ONE arithmetic
+        operator — (+ x 2.0), x:Bool — is CDZ0203 with NO of-int repair (converting a Bool to a float is not
+        the fix). From rcdzc a_non_numeric_mismatch_to_a_float_operator_carries_no_coercion_fix.")
+  (input (do (def (f (: x Bool)) (+ x 2.0)) (export f)))
+  (error CDZ0203 (no-fix)))
+
+(case "a non-literal integer annotated a float offers an of-int wrap fix"
+  (doc "A NON-literal integer expression annotated a float — (: n Float64), n:Int64 — has no float-literal
+        spelling, so it converts with (Float64.of-int …), the annotation-position twin of the argument-site
+        of-int. From rcdzc a_non_literal_integer_annotated_a_float_offers_an_of_int_wrap.")
+  (input (do (def (f (: n Int64)) (: n Float64)) (export f)))
+  (error CDZ0203 (fix (replacement "(Float64.of-int …)"))))
+
+(case "a non-literal NARROWER integer annotated a float nests the Int64 widening in the of-int wrap"
+  (doc "A narrower int source widens to Int64 first (of-int : Int64 → Float): (: n Float64), n:Int32 →
+        (Float64.of-int (Int64.of …)). From rcdzc a_non_literal_integer_annotated_a_float_offers_an_of_int_wrap.")
+  (input (do (def (f (: n Int32)) (: n Float64)) (export f)))
+  (error CDZ0203 (fix (replacement "(Float64.of-int (Int64.of …))"))))
+
+(case "an integer literal annotated a float still retypes to a float literal, not an of-int wrap"
+  (doc "A LITERAL takes the cleaner retype (3 → 3.0), NOT the of-int wrap the non-literal expression gets. From
+        rcdzc a_non_literal_integer_annotated_a_float_offers_an_of_int_wrap (the literal control).")
+  (input (do (def (f) (: 3 Float64)) (export f)))
+  (error CDZ0203 (fix (replacement "3.0"))))
