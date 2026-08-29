@@ -9876,6 +9876,22 @@ pub(crate) fn check_binding_pattern(
         }
         return Ok(());
     }
+    // A `(map …)` binding pattern (native `#map(…)` OR the name/string alias — `compound_form_of` reads all
+    // three). A map pattern tests KEY PRESENCE, so a keyed/empty map pattern is REFUTABLE (the named keys may
+    // be absent), and the only irrefutable form — a bare `(map .. rest)` — binds the whole map, which a plain
+    // name binder already does. So a map is never a useful IRREFUTABLE binding pattern → CDZ0210, with the
+    // actionable repair, rather than the ctor-classifier's generic "not a tuple/record/constructor" (which
+    // does not name maps). This is the map analogue of the fixed-arity/leading-rest list refutability above;
+    // the MATCH-arm path (whose arms cover the missing-key case) is where a map is destructured.
+    if db.ast.compound_form_of(pat, CompoundCtor::Map).is_some() {
+        return Err(Reject::coded(
+            Code::NonExhaustive,
+            "a map binding pattern is refutable — it tests key presence, so it does not match every map and \
+             cannot appear in a binding position; bind the whole map to a name and read keys with \
+             `Map.lookup`, or destructure it in a `match` (whose arms cover the missing-key case)",
+        )
+        .at(pat));
+    }
     // Otherwise a constructor-headed pattern `(Some x)` / `((. Sum V) x)` — classify by variant count.
     classify_binding_ctor(db, pat, value_ty)
 }
