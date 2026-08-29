@@ -246,6 +246,14 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
         oracle.display(),
         findings_dir.display()
     );
+    // Arm the in-process compile-hang watchdog: the wasm RUN is epoch-bounded by cdz_run, but each
+    // in-process `rcdzc::compile_component` is unguarded — a compiler non-termination would wedge this
+    // sweep. The watchdog captures it as a Timeout hang-witness + aborts (the cron relaunches).
+    cdz_smith::compile_guard::install(
+        findings_dir.clone(),
+        commit.clone(),
+        cdz_smith::compile_guard::compile_timeout(),
+    );
     let mut mismatches: Vec<(String, String)> = Vec::new();
     let mut declines: Vec<(String, String)> = Vec::new();
     let stats = match cdz_smith::differential::lean_differential_sweep(
@@ -762,6 +770,13 @@ fn cmd_differential(args: &[String]) -> ExitCode {
         cdz.display(),
         findings_dir.display()
     );
+    // Arm the in-process compile-hang watchdog (the wasm side of this sweep compiles in-process; the
+    // RUN is epoch-bounded but the COMPILE is not — a compiler hang would wedge the sweep otherwise).
+    cdz_smith::compile_guard::install(
+        cfg.findings_dir.clone(),
+        cfg.commit.clone(),
+        cdz_smith::compile_guard::compile_timeout(),
+    );
     match driver::differential_sweep(&cfg, &store, &cdz, count) {
         Ok(stats) => {
             eprintln!(
@@ -1184,6 +1199,16 @@ fn cmd_run_ast_corpus(args: &[String]) -> ExitCode {
             .unwrap_or_else(|| PathBuf::from("target/cadenza-store"))
     });
 
+    // Arm the in-process compile-hang watchdog: this probe compiles every seed in-process via
+    // `run_wasm_ast`, and a compiler non-termination on any seed would wedge the sweep. Best-effort
+    // findings dir (this probe files nothing itself; the watchdog still captures a hang-witness + aborts).
+    if let Ok(dir) = resolve_findings_dir(None) {
+        cdz_smith::compile_guard::install(
+            dir,
+            driver::detect_commit(),
+            cdz_smith::compile_guard::compile_timeout(),
+        );
+    }
     match cdz_smith::differential::run_ast_corpus_sweep(&seeds_dir, &store_dir) {
         Ok(s) => {
             eprintln!(
