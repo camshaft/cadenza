@@ -6629,7 +6629,7 @@ pass	gng1 a NESTED generic Box-of-Pair over a runtime heap payload is value-exac
 pass	gnl1 the nil arm of a multi-payload generic whose other arm nests a list pattern leaks the nil cell
 pass	gp1 a PERFORMING guard on a wildcard pattern is a COMPILE ERROR (guards-side-effect-free, CDZ0407)
 pass	gp1 a match GUARD inside the handler ARM compares the op PAYLOAD against the live STATE binder — the guard routes admit/reject per dispatch
-pass	gp2 TWO guard arms where a guard PERFORMS — declines (multi-guard performing-condition fold gap)
+pass	gp2 TWO guard arms whose conditions PERFORM (`(> (St.next) …)`) — a COMPILE ERROR (CDZ0407), guards-side-effect-free
 pass	gp2e TWO pure guards cascade over a draw, the fallback re-performs — guard misses leave dispatch serviceable
 pass	gp3 the guard condition calls a PURE HELPER over the state binder — purity analysis admits the def call in guard position
 pass	gp4 a guard LADDER in the arm — two guarded arms with different state-derived thresholds classify each payload three ways

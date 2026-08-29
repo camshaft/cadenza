@@ -7463,7 +7463,16 @@
   (call   main (: 20 Int64)) (output (: 222 Int64))
   (call   main (: 3 Int64)) (output (: -6 Int64)))
 
-(case "gp2 TWO guard arms where a guard PERFORMS — declines (multi-guard performing-condition fold gap)"
+(case "gp2 TWO guard arms whose conditions PERFORM (`(> (St.next) …)`) — a COMPILE ERROR (CDZ0407), guards-side-effect-free"
+  (doc    "Reclassified from a `(declines)` fold-gap to `(error CDZ0407)` (v-effects, 2026-08-29): a perform in
+           a guard condition is a COMPILE ERROR under the guards-side-effect-free directive (operator PR #2543),
+           the SAME rule the finding-#9 cases below pin. gp2 is the multi-guard face — a PURE let-bound scrutinee
+           `k` matched by TWO arms whose guard conditions each perform `St.next` — and the compiler emits CDZ0407
+           at the performing guard exactly as it does for the finding-#9 performing-scrutinee shape. It is NOT a
+           fold gap: folding a performing guard is precisely the re-eval MISCOMPILE #2543 banned (a guard MISS
+           would re-draw), so this stays rejected forever. Pinning the CODE (not a bare `(declines)`, which any
+           refusal satisfies) guards that a future change cannot silently start FOLDING it. Workaround: lift each
+           `(St.next)` to a `let` before the match and guard on the bound value.")
   (input  (do
             (effect St (op next (-> Int64)))
             (def (main (: n Int64))
@@ -7475,7 +7484,7 @@
                     ((guard _b (> (St.next) 10)) (+ 200 (St.next)))
                     (_o (- 0 (St.next)))))))
             (export main)))
-  (declines))
+  (error  CDZ0407))
 
 (case "a performing scrutinee matched by a PERFORMING GUARD is a COMPILE ERROR (breaker finding #9, now CDZ0407)"
   (doc    "HISTORY: v-effects finding #9 was a silent 3-backend re-eval MISCOMPILE — `(match (St.next) ((guard x
