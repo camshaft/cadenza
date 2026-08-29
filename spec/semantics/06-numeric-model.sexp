@@ -12860,7 +12860,7 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 67 Int64))
   (call main (: -100 Int64)) (output (: -1 Int64))
-  (live-objects 1))
+  (live-objects 0))
 
 ; ── numeric-literal annotation-mismatch + int-width-mixing FIX-quality (migrated from rcdzc diagnostics) ──
 ; Each carries (or deliberately withholds) a mechanical repair the corpus now grades via the (fix …) facet

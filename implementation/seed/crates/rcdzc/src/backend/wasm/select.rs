@@ -19171,6 +19171,14 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // past typing, then this fired). The Bytes/value analog of the collection-producer arms below.
         | Core::ValueEncode { .. }
         | Core::ValueDecode { .. }
+        // `Char.from-int` (`IntToCharChecked`) wraps the boxed codepoint into a FRESH owned `(Option Char)`
+        // sum (`disc_some`/`disc_none`), exactly like `ValueDecode`'s `sum-new(Some, …)`/`None`. So its result
+        // used as a MatchSum SCRUTINEE — `(match (Char.from-int n) ((Some c) …) ((None _) …))` — is an OWNED
+        // computed boxed-sum whose Option SHELL the shell-reclaim must drop. WITHOUT this it fell to the
+        // `_ => decline` default, so `sum_shell_reclaim_ok` bailed and the Option shell LEAKED one cell per
+        // match (arm- AND payload-independent — the shell, not the boxed Char; v-mem's chfi triage). The Char
+        // twin of the `StrSlice`(Option String) / `ValueDecode`(Option value) fresh-owned-sum producer arms.
+        | Core::IntToCharChecked { .. }
         // A set construction/update/algebra (`set-empty`+inserts, `set-insert`, `set-remove`, union/
         // intersection/difference) returns a fresh owned set handle — the `value-eq` emit drops it.
         | Core::SetOf { .. }

@@ -17215,7 +17215,7 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 98099 Int64))
   (call   main (: 0 Int64)) (output (: 97098 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 (case "pyfl1 probe: a FLOAT64 handler state threaded by half-step increments — tick answers the current float state and threads (+ s 0.5), so three dispatches read s, s+0.5, s+1.0 and their sum is 3s + 1.5; the seed is selected by n mod 3 among 0.0/1.0/2.0 so the float thread varies and exact half-steps stay representable"
   (input (do
   (effect E (op tick (-> Float64)))
