@@ -6156,8 +6156,12 @@ fn tuple_elem_of(db: &mut Db, operand: StructId, index: usize) -> Option<StructI
     // Follow a `Ref` (let-binder → its init) / `Let` (→ body) chain to the tuple construction, bounded.
     let mut cur = operand;
     for _ in 0..=F24_REACH_LIMIT {
-        // A direct `(tuple e0 e1 …)` form — the head is `tuple`, the elements are the tail.
-        if let Some(elems) = db.ast.as_form(cur, "tuple") {
+        // A direct tuple form — `compound_form_of` reads the native `#tuple` ctor-leaf head too (not only the
+        // `("tuple" …)` name/string alias), so M3-nativized tuples are recognized (dc02-class hardening, #5340).
+        if let Some(elems) = db
+            .ast
+            .compound_form_of(cur, crate::ast::CompoundCtor::Tuple)
+        {
             return elems.get(index).copied();
         }
         match resolved_of(db, cur) {
@@ -7181,10 +7185,21 @@ fn thread_bounded(
         // perform there reads/threads state), keeping the label, and rebuild the same `("record" (label
         // rvalue)…)` form. The companion of the tuple/list arm above for the ML record literal `{ a = …, b
         // = … }`, which lowers to this string-headed ctor with `(label value)` pair args. (Matched on the
-        // RAW form via `as_ctor_form` — like the `let` arm — because `Resolved::Record` holds a sorted
-        // BTreeMap that loses the written order the source evaluates in.)
-        _ if db.ast.as_ctor_form(node, "record").is_some() => {
-            let fields: Vec<StructId> = db.ast.as_ctor_form(node, "record").unwrap().to_vec();
+        // RAW form via `compound_form_of` — like the `let` arm — because `Resolved::Record` holds a sorted
+        // BTreeMap that loses the written order the source evaluates in. `compound_form_of` reads the native
+        // `#record` ctor-leaf head too (superset of the name/string alias), so M3-nativized records are
+        // recognized (dc02-class hardening, #5340); the field destructure below already handles a native
+        // FieldPair child (the `=`-marker leaf reads as `(= label value)` via the migration bridge).
+        _ if db
+            .ast
+            .compound_form_of(node, crate::ast::CompoundCtor::Record)
+            .is_some() =>
+        {
+            let fields: Vec<StructId> = db
+                .ast
+                .compound_form_of(node, crate::ast::CompoundCtor::Record)
+                .unwrap()
+                .to_vec();
             let mut cur = states;
             let mut rfields = Vec::with_capacity(fields.len());
             for field in fields {
@@ -7226,9 +7241,19 @@ fn thread_bounded(
         // then the value, per entry, and rebuild the same `("map" (rkey rvalue)…)` form. The map companion
         // of the record arm above (a `(key value)` pair like a record field, but the KEY is a value to
         // thread, not a copied label). Matched on the RAW form (`Resolved::Map`'s `entries` slice is fine
-        // too, but the raw form keeps the written order uniformly with the other ctor arms).
-        _ if db.ast.as_ctor_form(node, "map").is_some() => {
-            let entries: Vec<StructId> = db.ast.as_ctor_form(node, "map").unwrap().to_vec();
+        // too, but the raw form keeps the written order uniformly with the other ctor arms). `compound_form_of`
+        // reads the native `#map` ctor-leaf head too (superset of the name/string alias) → M3-nativized maps
+        // recognized (dc02-class hardening, #5340).
+        _ if db
+            .ast
+            .compound_form_of(node, crate::ast::CompoundCtor::Map)
+            .is_some() =>
+        {
+            let entries: Vec<StructId> = db
+                .ast
+                .compound_form_of(node, crate::ast::CompoundCtor::Map)
+                .unwrap()
+                .to_vec();
             let mut cur = states;
             let mut rentries = Vec::with_capacity(entries.len());
             for entry in entries {
