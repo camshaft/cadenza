@@ -1137,25 +1137,27 @@ fn gen_float_ordering_body<C: Choice>(c: &mut C, out: &mut String) {
 /// used a compound key. The two keys have DISJOINT first elements (0..=9 vs 20..=29), so they are always
 /// distinct compounds → a deterministic `.len` (no dedup ambiguity).
 fn gen_compound_keyed_collection_body<C: Choice>(c: &mut C, out: &mut String) {
-    // Pick the FORM before consuming the operand choices (variant-ordering).
+    // Pick the FORM + key-KIND before consuming the operand choices (variant-ordering).
     let form = c.variant(3);
+    let is_record = c.variant(2) == 1;
     let (a, b) = (c.int_bounded(0, 9), c.int_bounded(0, 9));
     let (cc, d) = (c.int_bounded(20, 29), c.int_bounded(20, 29));
+    // The compound KEY is a `(tuple …)` or a `(record …)` — #5540's structural total order covers both.
+    let key = |x: i64, y: i64| {
+        if is_record {
+            format!("(record (= a {x}) (= b {y}))")
+        } else {
+            format!("(tuple {x} {y})")
+        }
+    };
+    let (k1, k2) = (key(a, b), key(cc, d));
     match form {
-        // A set with two DISTINCT tuple keys → `Set.len` = 2.
-        0 => write!(out, "(Set.len #set((tuple {a} {b}) (tuple {cc} {d})))").ok(),
-        // `Set.insert` a distinct tuple key into a one-key set → `Set.len` = 2.
-        1 => write!(
-            out,
-            "(Set.len (Set.insert #set((tuple {a} {b})) (tuple {cc} {d})))"
-        )
-        .ok(),
-        // A map keyed by two DISTINCT tuple keys → `Map.len` = 2.
-        _ => write!(
-            out,
-            "(Map.len #map((= (tuple {a} {b}) {a}) (= (tuple {cc} {d}) {cc})))"
-        )
-        .ok(),
+        // A set with two DISTINCT compound keys → `Set.len` = 2.
+        0 => write!(out, "(Set.len #set({k1} {k2}))").ok(),
+        // `Set.insert` a distinct compound key into a one-key set → `Set.len` = 2.
+        1 => write!(out, "(Set.len (Set.insert #set({k1}) {k2}))").ok(),
+        // A map keyed by two DISTINCT compound keys → `Map.len` = 2.
+        _ => write!(out, "(Map.len #map((= {k1} {a}) (= {k2} {cc})))").ok(),
     };
 }
 
@@ -2231,6 +2233,7 @@ mod tests {
     #[test]
     fn gen_compound_keyed_collection_body_reaches_all_forms_and_compiles() {
         let (mut saw_set, mut saw_insert, mut saw_map) = (false, false, false);
+        let (mut saw_tuple_key, mut saw_record_key) = (false, false);
         for seed in 0u64..512 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1409);
             let mut bytes = Vec::new();
@@ -2244,6 +2247,8 @@ mod tests {
             saw_insert |= body.contains("Set.insert");
             saw_set |= body.starts_with("(Set.len #set(");
             saw_map |= body.contains("Map.len");
+            saw_tuple_key |= body.contains("(tuple ");
+            saw_record_key |= body.contains("(record ");
             let src = format!("(do (def (main) {body}) (export main))");
             assert!(
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
@@ -2253,6 +2258,8 @@ mod tests {
         assert!(saw_set, "should reach a compound-keyed set (Set.len #set)");
         assert!(saw_insert, "should reach a Set.insert form");
         assert!(saw_map, "should reach a compound-keyed map (Map.len)");
+        assert!(saw_tuple_key, "should reach a tuple-keyed form");
+        assert!(saw_record_key, "should reach a record-keyed form");
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
