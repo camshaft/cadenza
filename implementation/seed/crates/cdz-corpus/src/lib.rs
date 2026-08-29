@@ -108,6 +108,12 @@ pub struct Record {
     /// count cannot (a leak that scales with input size). `live_objects` holds the FIRST count (uniform /
     /// direct-gate path); this carries the whole list for the per-call check (`design/DESIGN-corpus…`).
     pub live_objects_per_call: Option<Vec<u32>>,
+    /// `true` iff the case authored a bare `(no-other-errors)` clause — a CASE-LEVEL no-cascade assertion:
+    /// the compiler must emit NO error-severity diagnostic whose code is not one of the case's own
+    /// `(error CODE …)` codes. Composes with the per-code `(count …)`: `(error CDZ0201) (no-other-errors)`
+    /// pins "exactly this one code, nothing else". ERRORS ONLY (warnings are orthogonal — a separate
+    /// `(no-other-warnings)` would split them if ever needed). `false` for a case without the clause.
+    pub no_other_errors: bool,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -865,6 +871,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut live_objects: Option<u32> = None;
     let mut live_objects_known_leak = false;
     let mut live_objects_per_call: Option<Vec<u32>> = None;
+    let mut no_other_errors = false;
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
     // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
@@ -1131,6 +1138,9 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     warns.push((code, message_clauses(a, tail).into_iter().next()));
                 }
             }
+            // `(no-other-errors)` — a bare CASE-LEVEL no-cascade assertion: no error-severity diagnostic
+            // outside the case's own `(error CODE …)` codes. Errors only (see the `Record` field doc).
+            Some("no-other-errors") => no_other_errors = true,
             // `(wit-world <world-sexpr>)` — an explicit WIT world the export boundary is DECLARED by (the
             // general WIT-ABI shape), vs synthesized from the guest. Store the world subtree as one-line
             // s-expr text; the gate driver converts it to a `wit-world` binary-AST artifact for `cdz compile`.
@@ -1211,6 +1221,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         live_objects,
         live_objects_known_leak,
         live_objects_per_call,
+        no_other_errors,
     })
 }
 

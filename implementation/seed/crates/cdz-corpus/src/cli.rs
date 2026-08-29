@@ -560,6 +560,11 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
         }
         kids.push(form(&mut b, "live-objects", leaves));
     }
+    // `(no-other-errors)` — the case-level no-cascade flag carried verbatim to the grade side (a bare
+    // form, no children); `decode_test_run` sets `TestRun::no_other_errors` from it.
+    if rec.no_other_errors {
+        kids.push(form(&mut b, "no-other-errors", vec![]));
+    }
 
     let root = b.list(kids);
     codec::encode(&b.finish(root))
