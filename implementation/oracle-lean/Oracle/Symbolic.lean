@@ -22,7 +22,10 @@ import Oracle.Value
 import Oracle.Eval
 
 namespace Oracle
-open Oracle.Ast Oracle.Value Eval
+-- NB: do NOT `open Oracle.Value` — its `some`/`none`/`ok`/`err` constructors would make bare `some`/`none`
+-- (Option, used pervasively below) ambiguous. `Value` is in scope (same namespace); `Value.ofLeaf` is
+-- qualified; and Value scalars are built via `.int`/`.bool`/`.unit` anonymous-constructor notation.
+open Oracle.Ast Eval
 
 /-- A SYMBOLIC value: an expression over symbolic input variables (`var n` = the n-th program parameter)
 and concrete constants, plus the modeled scalar operators and conditionals. -/
@@ -110,7 +113,7 @@ partial def symEval (m : Module) (senv : SymEnv) (i : Nat) : SymOutcome :=
 /-- The equivalence VERDICT. `cannotProve` carries a reason: `"boundary"` (hit the incompleteness limit —
 weak lead) vs `"normalized-but-different"` (both sides fully normalized yet differ — a STRONG suspected
 cadenza-backend miscompile, worth escalating to the sampled differential for confirmation). -/
-inductive Verdict where
+inductive EquivVerdict where
   | proven
   | cannotProve (reason : String)
   deriving BEq, Inhabited
@@ -119,11 +122,37 @@ inductive Verdict where
 each evaluated with the SAME symbolic input variables). PROVEN iff both normalize to the identical form
 (a true forall-inputs statement over the analyzable fragment); otherwise `cannotProve`, distinguishing a
 boundary gap from a normalized-but-different strong lead. NEVER a false-divergence claim. -/
-def symEquiv (a b : SymOutcome) : Verdict :=
+def symEquiv (a b : SymOutcome) : EquivVerdict :=
   match a, b with
   | .sym ea, .sym eb => if normalize ea == normalize eb then .proven else .cannotProve "normalized-but-different"
   | .cannotProve r, _ => .cannotProve s!"boundary: {r}"
   | _, .cannotProve r => .cannotProve s!"boundary: {r}"
+
+/-- Symbolically evaluate a program's `exportName` export: bind each parameter to a fresh symbolic input
+variable (`var i`, i = its position in the signature), then `symEval` the body. This is the entry the
+equivalence check runs on BOTH the input program and its cadenza round-trip, with the SAME var numbering
+on each side so a shared input threads through identically. -/
+def symEvalExport (m : Module) (exportName : ByteArray) : SymOutcome :=
+  match Eval.namedParamsBody? m exportName with
+  | some (specs, bodyId) =>
+    let senv : SymEnv := (specs.toList.zip (List.range specs.size)).filterMap (fun (specId, idx) =>
+      (Eval.paramSpec? m specId).map (fun (nm, _) => (nm, SymExpr.var idx)))
+    if senv.length == specs.size then symEval m senv bodyId
+    else .cannotProve "symeval: a parameter spec is malformed"
+  | none => .cannotProve "symeval: program has no (def (<export> …) BODY)"
+
+/-- Symbolically evaluate the default `main` export. -/
+def symEvalMain (m : Module) : SymOutcome := symEvalExport m "main".toUTF8
+
+/-- Prove the input program `mP` and its cadenza round-trip `mP'` functionally equivalent FOR ALL INPUTS
+by symbolically evaluating the named export in each (same symbolic input vars) and comparing normal forms.
+`proven` = a universal (all-inputs) guarantee; `cannotProve` distinguishes an incompleteness-boundary gap
+from a normalized-but-different strong miscompile lead. NEVER a false-divergence claim. -/
+def equivExport (mP mP' : Module) (exportName : ByteArray) : EquivVerdict :=
+  symEquiv (symEvalExport mP exportName) (symEvalExport mP' exportName)
+
+/-- `equivExport` on the default `main`. -/
+def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUTF8
 
 -- ── self-tests (the normalize/equiv pipeline; module-level symEval-of-a-real-program1.ast is T2.0b) ──
 -- `if true then a else b` normalizes to `a`.
@@ -133,13 +162,29 @@ def symEquiv (a b : SymOutcome) : Verdict :=
 -- `if c then a else a` collapses to `a` (identical branches, condition irrelevant).
 #guard normalize (.ite (.var 2) (.var 0) (.var 0)) == SymExpr.var 0
 -- two structurally-identical symbolic forms are PROVEN equivalent for all inputs.
-#guard symEquiv (.sym (.app "+" #[.var 0, .const (.int 1)])) (.sym (.app "+" #[.var 0, .const (.int 1)])) == Verdict.proven
+#guard symEquiv (.sym (.app "+" #[.var 0, .const (.int 1)])) (.sym (.app "+" #[.var 0, .const (.int 1)])) == EquivVerdict.proven
 -- an optimizer that turned `if true then (x+1) else y` into `x+1` is PROVEN equivalent (const-cond select).
 #guard symEquiv (.sym (.ite (.const (.bool true)) (.app "+" #[.var 0, .const (.int 1)]) (.var 1)))
-                (.sym (.app "+" #[.var 0, .const (.int 1)])) == Verdict.proven
+                (.sym (.app "+" #[.var 0, .const (.int 1)])) == EquivVerdict.proven
 -- genuinely different symbolic forms → cannotProve (never a false "proven").
-#guard symEquiv (.sym (.var 0)) (.sym (.var 1)) == Verdict.cannotProve "normalized-but-different"
+#guard symEquiv (.sym (.var 0)) (.sym (.var 1)) == EquivVerdict.cannotProve "normalized-but-different"
 -- an unmodeled operand poisons the whole side → boundary cannotProve.
-#guard symEquiv (.cannotProve "unmodeled") (.sym (.var 0)) == Verdict.cannotProve "boundary: unmodeled"
+#guard symEquiv (.cannotProve "unmodeled") (.sym (.var 0)) == EquivVerdict.cannotProve "boundary: unmodeled"
+
+-- ── T2.0b: symEval over a real program Module (bind params → vars) ──
+-- `(do (def (main) N) (export main))` — a nullary main whose body is the literal N (the proven program
+-- shape from Batch's `_batchHolds`). symEvalMain evaluates the body to `const N`.
+private def _progMain (n : UInt8) : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "def".toUTF8, Leaf.name "main".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[n]), Leaf.name "export".toUTF8],
+    nodes := #[.atom 1, .atom 2, .list #[1], .atom 3, .list #[0, 2, 3],
+               .atom 4, .atom 2, .list #[5, 6], .atom 0, .list #[8, 4, 7]],
+    root := 9 }
+-- symEvalMain reaches the body literal → `const 42`.
+#guard symEvalMain (_progMain 42) == SymOutcome.sym (.const (.int 42))
+-- a program is PROVEN equivalent to itself for all inputs.
+#guard equivMain (_progMain 42) (_progMain 42) == EquivVerdict.proven
+-- two programs with different constant bodies are NOT proven equivalent (never a false "proven").
+#guard equivMain (_progMain 42) (_progMain 43) == EquivVerdict.cannotProve "normalized-but-different"
 
 end Oracle
