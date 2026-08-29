@@ -7810,49 +7810,12 @@ mod match_engine {
         );
     }
 
-    #[test]
-    fn an_absent_record_field_access_is_cdz0212_like_record_project() {
-        // A `.`-access of an absent field on a GENUINE record is CDZ0212 (AbsentField) — the SAME code
-        // `Record.project` onto an absent field gives (`type-system.md` §A Record Is Restricted To A Named
-        // Set Of Its Fields + corpus `15-rows:235`). The two surfaces are the same user error, so they get
-        // the same code (was CDZ0201 for `.`-access — an inconsistency a code-keying tool saw). The flip is
-        // narrow: it fires ONLY on a genuine record (`member_category` → `"field"`); a module MEMBER, effect
-        // OPERATION, and sum-type VARIANT keep CDZ0201 (their own category word), so no module-privacy design
-        // question is touched. Both the infer copy and the emit copy flip off the same `member_word`, so they
-        // dedup to ONE diagnostic (a code mismatch would double-report).
-        assert_eq!(
-            reject_code("(module m (def (main) (. (record (x 1)) z)) (export main))").as_deref(),
-            Some("CDZ0212"),
-            "a `.`-access of an absent record field is CDZ0212, the Record.project twin"
-        );
-        // A let-bound and a function-returned record reach the same check (the field set is statically
-        // known via reduction) — also CDZ0212.
-        assert_eq!(
-            reject_code("(module m (def (main) (let ((p (record (x 1)))) (. p z))) (export main))")
-                .as_deref(),
-            Some("CDZ0212")
-        );
-        // GUARD the narrow scope: the three NON-record categories stay CDZ0201 (Malformed) — a module
-        // member, and a sum-type variant. (A user-module member miss is routed to `"member"` via
-        // `module_name_by_synth_record`, so its export record is NOT mistaken for a bare record.)
-        assert_eq!(
-            reject_code(
-                "(module top (module m (def (pub x) (+ x 1)) (export pub)) \
-                 (def (main) ((. m secret) 5)) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0201"),
-            "a user-module member miss stays CDZ0201 (not a record field)"
-        );
-        assert_eq!(
-            reject_code(
-                "(module m (type T (A Int64) (B Int64)) (def (main) (. T nonesuch)) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0201"),
-            "a sum-type variant miss stays CDZ0201 (not a record field)"
-        );
-    }
+    // (an_absent_record_field_access_is_cdz0212_like_record_project migrated to corpus 15-rows-and-open-sums,
+    // next to "projecting a record onto an absent field is rejected": a `.`-access of an absent field on a
+    // genuine record is CDZ0212 (the Record.project twin — same user error, same code, not the generic
+    // CDZ0201), for both a direct and a let-bound record; the narrow-scope guard is the two contrasts — a
+    // module MEMBER miss and a sum-type VARIANT miss stay CDZ0201 (their own category word). --case grades
+    // all 4 reject codes.)
 
     #[test]
     fn a_generic_newtype_at_two_instantiations_stays_distinct() {

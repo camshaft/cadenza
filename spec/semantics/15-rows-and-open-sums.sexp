@@ -236,6 +236,27 @@
   (input  (Record.project #record((= a 1) (= b 2)) (a z)))
   (error  CDZ0212))
 
+; The `.`-ACCESS twin: a `.`-access of an ABSENT field on a genuine record is the SAME user error as a
+; Record.project onto an absent field, so it gets the SAME code CDZ0212 (AbsentField), not the generic
+; CDZ0201 (a code-keying inconsistency the flip fixed). The flip is NARROW — it fires ONLY on a genuine
+; record (member_category = "field"); a module MEMBER miss and a sum-type VARIANT miss keep CDZ0201 (their
+; own category word). Migrated from rcdzc an_absent_record_field_access_is_cdz0212_like_record_project.
+(case "a dot-access of an absent record field is CDZ0212, the Record.project twin"
+  (input  (do (def (main) (. (record (x 1)) z)) (export main)))
+  (error  CDZ0212))
+
+(case "a dot-access of an absent field on a let-bound record is also CDZ0212"
+  (input  (do (def (main) (let ((p (record (x 1)))) (. p z))) (export main)))
+  (error  CDZ0212))
+
+(case "a user-module member miss stays CDZ0201 (not a record field)"
+  (input  (do (module m (def (pub x) (+ x 1)) (export pub)) (def (main) ((. m secret) 5)) (export main)))
+  (error  CDZ0201))
+
+(case "a sum-type variant miss stays CDZ0201 (not a record field)"
+  (input  (do (type T (A Int64) (B Int64)) (def (main) (. T nonesuch)) (export main)))
+  (error  CDZ0201))
+
 (case "projecting a record with a duplicate label is rejected"
   (doc    "A record's fields are a fixed SET of statically-known names (type-system.md #A Record Is
            Restricted To A Named Set Of Its Fields), so a projection label list that names a field TWICE
