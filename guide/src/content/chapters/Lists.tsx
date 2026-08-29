@@ -10,7 +10,7 @@ export default function Lists() {
       <Lede>Ordered, immutable sequences, built and measured on the value heap.</Lede>
 
       <P>
-        A list is written with <C>list</C>. Lists are <em>persistent</em>: operations like{" "}
+        A list is written with <C>#list</C>. Lists are <em>persistent</em>: operations like{" "}
         <C>List.push</C> and <C>List.concat</C> return a new list and leave the original untouched.
         Ask a list its length with <C>List.len</C>.
       </P>
@@ -19,19 +19,19 @@ export default function Lists() {
       <H2>Building lists</H2>
       <P>
         <C>List.push</C> adds an element to the end; <C>List.concat</C> joins two lists. Each returns a
-        whole new list, so Run this and you'll see the result, <C>(list 1 2 3)</C>, not just a count:
+        whole new list, so Run this and you'll see the result, <C>#list(1 2 3)</C>, not just a count:
       </P>
       <Runnable source={`(List.push #list(1 2) 3)`} />
       <P>
         <C>List.prepend</C> is the mirror of <C>push</C>: it adds an element to the <em>front</em> rather
         than the end. It takes the list first and the new element second, the same receiver-first order as{" "}
-        <C>push</C>, so prepending <C>1</C> to <C>(list 2 3)</C> gives <C>(list 1 2 3)</C>, the new element
+        <C>push</C>, so prepending <C>1</C> to <C>#list(2 3)</C> gives <C>#list(1 2 3)</C>, the new element
         leading:
       </P>
       <Runnable source={`(List.prepend #list(2 3) 1)`} />
       <P>
         <C>List.concat</C> joins two lists into a new one, so Run this and you see the whole joined list,{" "}
-        <C>(list 1 2 3 4 5)</C>, the two inputs laid end to end:
+        <C>#list(1 2 3 4 5)</C>, the two inputs laid end to end:
       </P>
       <Runnable source={`(List.concat #list(1 2) #list(3 4 5))`} />
 
@@ -84,7 +84,7 @@ export default function Lists() {
       </P>
       <P>
         Return the updated list itself and you can see the change in place, one slot different,{" "}
-        <C>(list 10 99 30)</C>, and the input <C>(list 10 20 30)</C> still intact wherever else it's held:
+        <C>#list(10 99 30)</C>, and the input <C>#list(10 20 30)</C> still intact wherever else it's held:
       </P>
       <Runnable source={`(List.update #list(10 20 30) 1 99)`} />
 
@@ -113,7 +113,7 @@ export default function Lists() {
       </P>
       <P>
         To visit <em>every</em> element, match the list by shape. A <C>match</C> on a list has two
-        cases: the empty list <C>(list)</C>, and a non-empty one <C>(list x .. rest)</C>, which binds the
+        cases: the empty list <C>#list()</C>, and a non-empty one <C>#list(x .. rest)</C>, which binds the
         first element to <C>x</C> and the <em>rest</em> of the list to <C>rest</C>. Recurse on <C>rest</C>{" "}
         and you fold over the whole list. Here <C>sum</C> adds the elements:
       </P>
@@ -126,7 +126,7 @@ export default function Lists() {
       />
       <P>
         The empty case is the base case, <C>0</C>, the sum of nothing, and each step peels off one
-        element and sums the rest, so <C>(list 10 20 30)</C> is <C>10 + (20 + (30 + 0))</C> = <C>60</C>.
+        element and sums the rest, so <C>#list(10 20 30)</C> is <C>10 + (20 + (30 + 0))</C> = <C>60</C>.
         Toggle to the ML surface and the pattern reads as <C>[x, .. rest]</C>, the shape spelled out. You
         didn't declare the element type either: it flows from the <C>+</C>, so <C>sum</C> is inferred over
         a list of <C>Int64</C>.
@@ -139,7 +139,7 @@ export default function Lists() {
         compiler stops you:
       </P>
       <Note>
-        This one is <strong>meant to be rejected</strong>: <C>(list b .. r)</C> in the rest position asks to
+        This one is <strong>meant to be rejected</strong>: <C>#list(b .. r)</C> in the rest position asks to
         match the tail against a shape, but the rest binder only ever names the tail. The fix is to bind it,
         then match it.
       </Note>
@@ -152,7 +152,7 @@ export default function Lists() {
       <P>
         To reach the second element, bind the tail to a name and match <em>that</em>, a two-step you'll use
         whenever you need more than the head: peel one layer, then look again. Here <C>rest</C> is{" "}
-        <C>(list 20 30)</C>, and matching it pulls out <C>20</C>:
+        <C>#list(20 30)</C>, and matching it pulls out <C>20</C>:
       </P>
       <Runnable
         source={`(match #list(10 20 30)
@@ -163,7 +163,7 @@ export default function Lists() {
   (#list() 0))`}
       />
       <P>
-        A leading element can still be any pattern, so <C>(list (tuple x y) .. rest)</C> is fine, only the
+        A leading element can still be any pattern, so <C>#list(#tuple(x y) .. rest)</C> is fine, only the
         rest slot is name-only. Reach for the tail by name and match it again when you need to see inside.
       </P>
 
@@ -177,7 +177,7 @@ export default function Lists() {
         id="lists:1"
         prompt={
           <>
-            Use <C>List.update</C> to change index <C>0</C> of <C>(list 5 6 7)</C> to <C>50</C>, then read
+            Use <C>List.update</C> to change index <C>0</C> of <C>#list(5 6 7)</C> to <C>50</C>, then read
             that slot back with <C>List.at</C>. The answer is <C>50</C>.
           </>
         }
@@ -200,7 +200,7 @@ export default function Lists() {
         id="lists:2"
         prompt={
           <>
-            Add the single element <C>99</C> to the end of <C>(list 10 20 30)</C>, then ask its length, so a
+            Add the single element <C>99</C> to the end of <C>#list(10 20 30)</C>, then ask its length, so a
             three-element list grows to <C>4</C>. Which operation appends <em>one element</em>,{" "}
             <C>push</C> or <C>concat</C>? Fill in the blank.
           </>
@@ -222,7 +222,7 @@ export default function Lists() {
           <>
             Here's the same fold shape as <C>sum</C>, but <em>multiplying</em>, and this time the recursive
             step is written for you; the <em>empty</em> case is the hole. What should <C>prod</C> of the
-            empty list be, so that folding <C>(list 1 2 3 4)</C> gives <C>24</C>? Fill in the base case.
+            empty list be, so that folding <C>#list(1 2 3 4)</C> gives <C>24</C>? Fill in the base case.
           </>
         }
         starter={`(def (prod xs)
@@ -249,7 +249,7 @@ export default function Lists() {
         id="lists:4"
         prompt={
           <>
-            Add <C>0</C> to the <em>front</em> of <C>(list 1 2 3)</C>, then read index <C>0</C> back with{" "}
+            Add <C>0</C> to the <em>front</em> of <C>#list(1 2 3)</C>, then read index <C>0</C> back with{" "}
             <C>List.at</C> for the answer <C>0</C>. Which operation adds to the front, <C>push</C> or{" "}
             <C>prepend</C>? Fill in the blank.
           </>

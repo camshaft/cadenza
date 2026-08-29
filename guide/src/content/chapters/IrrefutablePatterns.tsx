@@ -117,7 +117,7 @@ export default function IrrefutablePatterns() {
         prompt={
           <>
             Destructure the tuple right in the <C>let</C> binder, then finish the body so it sums the two
-            parts. With <C>(tuple 10 20)</C> the answer is <C>30</C>.
+            parts. With <C>#tuple(10 20)</C> the answer is <C>30</C>.
           </>
         }
         starter={`(def (main) (let ((#tuple(a b) #tuple(10 20))) ?))`}
@@ -131,7 +131,7 @@ export default function IrrefutablePatterns() {
         prompt={
           <>
             <C>fst</C> destructures its tuple argument in the parameter list. Finish the body so it returns
-            the <em>first</em> part. With <C>(fst (tuple 7 9))</C> the answer is <C>7</C>.
+            the <em>first</em> part. With <C>(fst #tuple(7 9))</C> the answer is <C>7</C>.
           </>
         }
         starter={`(def (fst #tuple(a b)) ?)
