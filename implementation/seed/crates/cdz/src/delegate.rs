@@ -57,6 +57,28 @@ fn opt_cli(o: OptLevel) -> &'static str {
     }
 }
 
+/// The `--overflow-signed`/`--overflow-unsigned` value string for an [`rcdzc::db::OverflowMode`] —
+/// matched to `rcdzc::cli`'s `OverflowModeArg` spelling.
+fn overflow_cli(m: rcdzc::db::OverflowMode) -> &'static str {
+    match m {
+        rcdzc::db::OverflowMode::Trap => "trap",
+        rcdzc::db::OverflowMode::Wrap => "wrap",
+    }
+}
+
+/// Append the GLOBAL overflow policy (`--overflow-signed`/`--overflow-unsigned`) to a `cdz-compile`
+/// command, one flag per present side. An absent side (`None`) emits NOTHING — so `cdz-compile` sees no
+/// flag and applies its own `None` (fall through to the built-in `Trap`), preserving the precedence
+/// (module pragma > this global > trap) exactly as the in-process path does.
+fn append_overflow_flags(cmd: &mut Command, overflow: rcdzc::db::OverflowSpec) {
+    if let Some(m) = overflow.signed {
+        cmd.arg("--overflow-signed").arg(overflow_cli(m));
+    }
+    if let Some(m) = overflow.unsigned {
+        cmd.arg("--overflow-unsigned").arg(overflow_cli(m));
+    }
+}
+
 /// Spawn `cdz-compile` with `input_specs` (each a `path` / `name=path` / `kind:name=path` the compiler
 /// CLI parses), the resolved `targets` (empty ⇒ let `cdz-compile` apply its own `[Wasm]` default),
 /// optional `-o out`, and `--opt-level`. Optional `--entry`/`--component-name` flags for the
@@ -70,6 +92,7 @@ fn spawn(
     entry: Option<&str>,
     component_name: Option<&str>,
     opt_level: OptLevel,
+    overflow: rcdzc::db::OverflowSpec,
     prog: &str,
 ) -> ExitCode {
     let program = locate();
@@ -88,6 +111,7 @@ fn spawn(
         cmd.arg("--component-name").arg(c);
     }
     cmd.arg("--opt-level").arg(opt_cli(opt_level));
+    append_overflow_flags(&mut cmd, overflow);
 
     match cmd.status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
@@ -122,6 +146,7 @@ pub fn delegate_args(args: &rcdzc::cli::CompileArgs, prog: &str) -> ExitCode {
         args.entry(),
         args.component_name(),
         args.opt_level(),
+        args.overflow_spec(),
         prog,
     )
 }
@@ -137,6 +162,7 @@ pub fn delegate_from_artifacts(
     targets: &[Target],
     out: Option<&Path>,
     opt_level: OptLevel,
+    overflow: rcdzc::db::OverflowSpec,
     prog: &str,
 ) -> ExitCode {
     let dir = scratch_dir();
@@ -149,7 +175,7 @@ pub fn delegate_from_artifacts(
     let Some(specs) = materialize_specs(inputs, &dir, prog) else {
         return ExitCode::FAILURE;
     };
-    spawn(&specs, targets, out, None, None, opt_level, prog)
+    spawn(&specs, targets, out, None, None, opt_level, overflow, prog)
 }
 
 /// Delegate an IN-MEMORY project compile-to-BYTES (the quiet `cdz run <project>` / `cdz test` build):
@@ -163,6 +189,7 @@ pub fn delegate_from_artifacts(
 pub fn delegate_project_to_bytes(
     inputs: &[Artifact],
     opt_level: OptLevel,
+    overflow: rcdzc::db::OverflowSpec,
     prog: &str,
 ) -> Result<Option<Vec<u8>>, ()> {
     let dir = scratch_dir();
@@ -189,6 +216,7 @@ pub fn delegate_project_to_bytes(
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .stdin(Stdio::null());
+    append_overflow_flags(&mut cmd, overflow);
 
     let child = match cmd.spawn() {
         Ok(c) => c,
