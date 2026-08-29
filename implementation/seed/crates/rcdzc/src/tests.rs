@@ -7388,25 +7388,10 @@ mod match_engine {
         );
     }
 
-    #[test]
-    fn a_char_literal_pattern_type_mismatch_and_non_exhaustion_reject() {
-        // WELL-FORMEDNESS of char-literal patterns (checked structurally, storeless — no heap run). A char
-        // pattern over an Int scrutinee is a shape error (CDZ0201, the char twin of a bool-over-int probe);
-        // Char is an OPEN type, so a char match with no wildcard is non-exhaustive (CDZ0210), exactly like
-        // an open Int.
-        let mism = reject_full("(module m (def (main) (match 5 (#\\a 1) (_ 0))) (export main))")
-            .expect("a Char pattern over an Int scrutinee must reject");
-        assert_eq!(
-            mism.code.as_deref(),
-            Some("CDZ0201"),
-            "got: {}",
-            mism.message
-        );
-        let ne =
-            reject_full("(module m (def (main) (match #\\a (#\\a 1) (#\\b 2))) (export main))")
-                .expect("a wildcard-less char match must reject as non-exhaustive");
-        assert_eq!(ne.code.as_deref(), Some("CDZ0210"), "got: {}", ne.message);
-    }
+    // (a_char_literal_pattern_type_mismatch_and_non_exhaustion_reject migrated to corpus 13-strings, the
+    // Char-LITERAL patterns section: "a char-literal pattern over an Int scrutinee is a shape error" (CDZ0201)
+    // + "a wildcard-less char match is non-exhaustive (Char is an open type)" (CDZ0210) — the two rejects the
+    // section intro promised. --case grades both reject codes.)
 
     #[test]
     fn a_deeply_nested_option_pattern_lowers_in_bounded_time() {

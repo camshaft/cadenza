@@ -3552,6 +3552,18 @@
   (call   main)
   (output (: 0 Int64)))
 
+; The WELL-FORMEDNESS rejects the section intro promises (migrated from rcdzc
+; a_char_literal_pattern_type_mismatch_and_non_exhaustion_reject): a char pattern over a non-Char scrutinee
+; is a CDZ0201 shape error (the char twin of a bool-over-int probe), and — because Char is an OPEN type — a
+; char match with no wildcard tail is non-exhaustive, CDZ0210 (exactly like an open Int match).
+(case "a char-literal pattern over an Int scrutinee is a shape error"
+  (input  (do (def (main) (match 5 (#\a 1) (_ 0))) (export main)))
+  (error  CDZ0201))
+
+(case "a wildcard-less char match is non-exhaustive (Char is an open type)"
+  (input  (do (def (main) (match #\a (#\a 1) (#\b 2))) (export main)))
+  (error  CDZ0210))
+
 (case "a char-literal pattern nested in a variant payload matches by scalar value"
   (doc    "`(match (Tok.Ch #\\a) ((Tok.Ch #\\a) 97) ((Tok.Ch _) 1) ((Tok.End) 0))` is 97 — the variant
            carries a `Char` payload and the arm `(Tok.Ch #\\a)` matches a `Tok.Ch` whose payload equals
