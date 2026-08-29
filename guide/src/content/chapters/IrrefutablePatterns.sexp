@@ -1,0 +1,63 @@
+(chapter
+  (slug "irrefutable-patterns")
+  (title "Irrefutable patterns")
+  (pillar "language")
+  (section "Fundamentals")
+  (blurb "Destructuring that always matches, in a let and in arguments.")
+  (lede "Destructuring that always matches, so it can bind directly in a let or in a function's arguments, no match needed.")
+  (p "In " (strong "Pattern matching") " a " (c "match") " arm might or might not fire, so the compiler makes you cover every case. But some patterns can never fail: a tuple is always a tuple, and a type with a single constructor has only one shape. A pattern that always matches is " (em "irrefutable") ", and because it can't fail there's nothing to decide, so you can use it to bind a value directly, with no " (c "match") " at all.")
+  (h2 "Destructuring in a let")
+  (p "A " (c "let") " binder doesn't have to be a plain name. Give it a tuple pattern and it takes the pair apart in place, binding each part to its own name. Here " (c "a") " is " (c "3") " and " (c "b") " is " (c "4") ", so the sum is " (c "7") ", with no " (c ".0") " or " (c ".1") " indexing:")
+  (runnable
+    (source "(def (main) (let ((#tuple(a b) #tuple(3 4))) (+ a b)))"))
+  (p "Patterns nest, so one binder can reach several layers deep in a single step. Here the inner tuple is destructured at the same time as the outer one, binding " (c "a") ", " (c "b") ", and " (c "c") " at once:")
+  (runnable
+    (source "(def (main) (let ((#tuple(a #tuple(b c)) #tuple(1 #tuple(2 3)))) (+ a (+ b c))))"))
+  (p "A record binder works the same way, naming fields instead of positions. This one binds " (c "a") " to the " (c "x") " field and " (c "b") " to the " (c "y") " field, so the sum is " (c "7") ":")
+  (runnable
+    (source "(def (main) (let ((#record((= x a) (= y b)) #record((= x 3) (= y 4)))) (+ a b)))"))
+  (p "And a record pattern needn't name every field: bind just the one you want and leave the rest. Since a record is keyed by name, the fields you skip simply don't appear, and the order you write them in doesn't matter. Here only " (c "x") " is bound, reading back " (c "3") ":")
+  (runnable
+    (source "(def (main) (let ((#record((= x a)) #record((= x 3) (= y 4)))) a))"))
+  (h2 "Destructuring in a function's arguments")
+  (p "The same move works right in a parameter position. " (c "add-pair") " takes one tuple argument and names both of its parts in the parameter list, so the body can use " (c "a") " and " (c "b") " directly:")
+  (runnable
+    (source "(def (add-pair #tuple(a b)) (+ a b))
+(def (main) (add-pair #tuple(3 4)))"))
+  (p "A single-constructor type is irrefutable in the same way, since there's no other shape it could be, so a pattern like " (c "(C c)") " on a one-constructor type unwraps its payload directly in the parameter, with no " (c "match") ". Here " (c "Celsius") " wraps an " (c "Int64") ", and " (c "to-f") " names the wrapped value " (c "c") " right in its parameter list:")
+  (runnable
+    (source "(type Celsius (C Int64))
+(def (to-f (C c)) (+ (/ (* c 9) 5) 32))
+(def (main) (to-f (C 100)))"))
+  (p (c "(to-f (C 100))") " is " (c "212") ", unwrapping the " (c "100") " and converting it. One constructor means one shape, so the compiler knows the pattern can't miss.")
+  (p "Records destructure in a parameter too. " (c "mag") " takes one point record and names its " (c "x") " and " (c "y") " fields directly in the parameter list, so the body reads " (c "a") " and " (c "b") " with no accessor. The squared magnitude of " (c "(3, 4)") " is " (c "3² + 4² = 25") ":")
+  (runnable
+    (source "(def (mag #record((= x a) (= y b))) (+ (* a a) (* b b)))
+(def (main) (mag #record((= x 3) (= y 4))))"))
+  (h2 "Where the line is drawn")
+  (p "The moment a pattern " (em "could") " fail, it stops being usable as a binder. A sum with more than one variant is " (em "refutable") ": matching " (c "Some") " leaves " (c "None") " with nowhere to go. So the compiler refuses it in a binding position and tells you to use a " (c "match") " instead:")
+  (note "This one is " (strong "meant to be refused") ". Run it and read the status bar: " (c "CDZ0210") ", \"a multi-variant constructor pattern is refutable ... only in a " (c "match") " arm\". That's the dividing line, the same exhaustiveness guarantee from " (strong "Pattern matching") ", now deciding where a pattern is allowed to bind.")
+  (runnable
+    (source "(type Opt (Some Int64) (None unit))
+(def (unwrap (Some x)) x)
+(def (main) (unwrap (Some 5)))")
+    (expect "error"))
+  (why (tenet "A pattern that always matches can bind anywhere; one that might fail belongs in a match") "Irrefutable destructuring isn't a separate feature, but the same pattern language from " (c "match") ", allowed in the places where the compiler can prove it can't fail: a " (c "let") " binder and a parameter. So there's one consistent way to take a value apart, and the compiler draws the safe line for you. A tuple or single-constructor pattern binds directly, and a refutable one is turned away with " (c "CDZ0210") " rather than silently ignoring a case it didn't handle.")
+  (p "Irrefutable destructuring shows up constantly in the recursive code ahead, binding a list's head and tail or unwrapping a state tuple as it threads through a loop. That's " (em "Iteration without loops") ", next.")
+  (h2 "Your turn")
+  (exercise
+    (id "irrefutable-patterns:1")
+    (prompt "Destructure the tuple right in the " (c "let") " binder, then finish the body so it sums the two parts. With " (c "#tuple(10 20)") " the answer is " (c "30") ".")
+    (starter "(def (main) (let ((#tuple(a b) #tuple(10 20))) ?))")
+    (solution "(def (main) (let ((#tuple(a b) #tuple(10 20))) (+ a b)))")
+    (expected "30")
+    (hint "Both names come from the tuple pattern, so the body is " (c "(+ a b)") "."))
+  (exercise
+    (id "irrefutable-patterns:2")
+    (prompt (c "fst") " destructures its tuple argument in the parameter list. Finish the body so it returns the " (em "first") " part. With " (c "(fst #tuple(7 9))") " the answer is " (c "7") ".")
+    (starter "(def (fst #tuple(a b)) ?)
+(def (main) (fst #tuple(7 9)))")
+    (solution "(def (fst #tuple(a b)) a)
+(def (main) (fst #tuple(7 9)))")
+    (expected "7")
+    (hint "The parameter pattern binds both parts; return the first one, " (c "a") ".")))

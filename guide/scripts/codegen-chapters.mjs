@@ -22,20 +22,33 @@
 /// glob, not a pass). Floor = 1 (the PlatformOverview pilot); raise as chapters convert.
 
 import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const guideRoot = join(here, "..");
+const repoRoot = join(guideRoot, "..");
 const chaptersDir = join(guideRoot, "src/content/chapters");
 
-let parseChapter, renderChapter;
-try {
-  ({ parseChapter, renderChapter } = await import(join(guideRoot, "src/content/codegen/chapterModel.ts")));
-} catch (e) {
-  console.error("codegen-chapters: could not load the codegen core (need Node ≥22 for --experimental-strip-types).");
-  console.error(String(e));
-  process.exit(1);
+// ENGINE (cadenza-docs I5): the guide sexp→TSX codegen is the Rust xtask `xtask-codegen-guide` — the MAIN
+// cadenza-syntax-sexpr parser reads each chapter .sexp into the binary AST + emits the TSX (operator: one
+// parser, no rust+node duplication; the node chapterModel.ts is retired as the engine). Build it here via
+// `cargo build -p …` (the `-p` form falls through the all-nix cargo-shim to real cargo) — the guide-examples
+// nix derivation already has cargo (it runs `cargo xtask guide-wasm`), so this works in the gate too, PROVIDED
+// the crate is in that derivation's src fileset (v-nix).
+// Binary resolution: the build-time nix derivation provides a PREBUILT xtask via $CDZ_XTASK_CODEGEN_GUIDE
+// (v-nix's standalone-derivation, fork-2 — the guide-examples gate has no cargo vendor, so it can't build
+// here). Absent the env (local dev), build it via `cargo build -p …` (the `-p` form falls through the shim).
+let xtaskBin = process.env.CDZ_XTASK_CODEGEN_GUIDE;
+if (!xtaskBin) {
+  try {
+    execFileSync("cargo", ["build", "-p", "xtask-codegen-guide", "--quiet"], { cwd: repoRoot, stdio: "inherit" });
+  } catch (e) {
+    console.error(`codegen-chapters: could not build xtask-codegen-guide — ${String(e.message || e).slice(0, 160)}`);
+    process.exit(1);
+  }
+  xtaskBin = join(repoRoot, "target/debug/xtask-codegen-guide");
 }
 
 const MODE = process.argv.includes("--check") ? "check" : "write";
@@ -48,22 +61,18 @@ if (sexpFiles.length < FLOOR) {
   process.exit(1);
 }
 
-/// The generated .tsx file name for a chapter model: PascalCase slug + .tsx (matches chapters.ts imports).
-function tsxNameFor(model) {
-  const pascal = model.slug.split(/[-_]/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join("");
-  return `${pascal}.tsx`;
-}
-
 let drift = 0;
 for (const sexp of sexpFiles) {
-  const src = readFileSync(join(chaptersDir, sexp), "utf8");
-  const parsed = parseChapter(src);
-  if (!parsed.ok) {
-    console.error(`codegen-chapters: ${sexp} — parse declined: ${parsed.reason}`);
+  const sexpPath = join(chaptersDir, sexp);
+  let tsx;
+  try {
+    tsx = execFileSync(xtaskBin, [sexpPath], { encoding: "utf8" });
+  } catch (e) {
+    console.error(`codegen-chapters: ${sexp} — xtask render failed: ${String(e.message || e).slice(0, 200)}`);
     process.exit(1);
   }
-  const tsx = renderChapter(parsed.model);
-  const outName = tsxNameFor(parsed.model);
+  // The .sexp stem is PascalCase(slug) == the .tsx stem (chapters.ts imports resolve unchanged).
+  const outName = sexp.replace(/\.sexp$/, ".tsx");
   const outPath = join(chaptersDir, outName);
 
   if (MODE === "check") {

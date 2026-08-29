@@ -1,0 +1,50 @@
+(chapter
+  (slug "types-as-values")
+  (title "Types as values")
+  (pillar "language")
+  (section "What makes Cadenza different")
+  (blurb "A type is an ordinary value: reflect it, compare it, branch on it, all at compile time.")
+  (lede "In most languages, types live in a sealed-off world you can't compute with, so you can't pass one to a function or compare two of them. What if a type were just a value? In Cadenza it is: you can bind a type to a name, pass it, return it, compare two of them, and even branch on them. The catch: it's all settled at compile time, and erased before the program runs.")
+  (h2 "A type is a value")
+  (p "Bind " (c "Int64") " to a name and return it. The program's result " (em "is") " that type, so it crosses the boundary as " (c "Int64") ", and its own type is " (c "Type") ", the type of types:")
+  (runnable
+    (source "(let ((t Int64)) t)"))
+  (p "The result reads " (c "Int64 : Type") ". A type-value is fully known at compile time, so it flows out of a program directly, but only a " (em "determined") " type does; a type still waiting on a parameter has no runtime form and is refused.")
+  (h2 "Reflecting a value's type")
+  (p (c "Type.of") " gives you the type-value of any expression, computed by the same inference that checks the rest of the program. You can feed it straight back as an annotation, here reflecting " (c "y") "'s type (" (c "Int64") ") and using it to annotate " (c "100") ", which agrees and is transparent:")
+  (runnable
+    (source "(let ((y 42)) (: 100 (Type.of y)))"))
+  (p "The reflected type is a real type, checked in full: annotate a value it " (em "doesn't") " match and you get the same " (c "CDZ0203") " a written mismatch would. " (c "Type.of") " reads the static type, not a runtime value, so it's decided and erased before anything runs.")
+  (h2 "Comparing types")
+  (p "Two type-values compare with " (c "Type.eq") ", which folds to a constant " (c "Bool") " at compile time. Same type, " (c "true") ":")
+  (runnable
+    (source "(Type.eq (Type.of 5) (Type.of 6))"))
+  (p "Different types, " (c "false") ", because " (c "Int64") " is not " (c "Bool") ":")
+  (runnable
+    (source "(Type.eq (Type.of 5) (Type.of true))"))
+  (p "The comparison is exact and structural, and it carries the " (em "whole") " type. A quantity's unit is part of its type, so a length and a time compare unequal even at the same magnitude:")
+  (runnable
+    (source "(Type.eq (Type.of (Qty.of 1.0 (Unit.base #\"meter\")))
+         (Type.of (Qty.of 1.0 (Unit.base #\"second\"))))"))
+  (h2 "Branching on a type")
+  (p "Because " (c "Type.eq") " produces a compile-time constant, an " (c "if") " over it selects a branch " (em "at compile time") ", so the program branches on types, with no runtime test emitted. Here the condition is " (c "true") ", so the whole expression is " (c "100") ":")
+  (runnable
+    (source "(if (Type.eq (Type.of 5) Int64) 100 200)"))
+  (p "A written type (" (c "Int64") ") and a reflected one (" (c "(Type.of 5)") ") are the same kind of value, so they compare freely. This is the point where inference and first-class types meet: the compiler computes a type, you compare it, and the answer picks the code, all before the program runs.")
+  (note "This is the surface the compiler's own generic machinery is built on: a type passed as a value drives " (em "ad-hoc polymorphism") " (one name, a per-type implementation chosen at compile time), and a " (c "const") " parameter lets a caller fix a compile-time-known argument that's then erased. Both compile to specialized, type-free code, and the observable " (em "value") " is identical to the hand-written monomorphic version, so the abstraction costs nothing at runtime.")
+  (why (tenet "Types are first-class values, decided then erased") "Most languages put types in a separate universe, a grammar you can't compute with, gone by the time anything runs. Cadenza keeps the erasure but drops the separation: a type is a value of type " (c "Type") ", computed and compared with ordinary code, so reflection (" (c "Type.of") "), type equality (" (c "Type.eq") "), and compile-time type branches need no new machinery. And because a type-value never flows from runtime data, all of it settles at compile time and vanishes, so you get the expressiveness of computing with types and the zero cost of erasing them.")
+  (h2 "Your turn")
+  (exercise
+    (id "types-as-values:1")
+    (prompt "Compare two types at compile time. Fill the type to compare against so that " (c "(Type.of true)") " matches, making the comparison " (c "true") ", not " (c "false") ".")
+    (starter "(Type.eq (Type.of true) ?)")
+    (solution "(Type.eq (Type.of true) Bool)")
+    (expected "true")
+    (hint (c "(Type.of true)") " is the type " (c "Bool") ", so comparing it against " (c "Bool") " is " (c "true") ". (Compare against " (c "Int64") " and you'd get " (c "false") ".)"))
+  (exercise
+    (id "types-as-values:2")
+    (prompt "Two type-values are equal only when the types match exactly. Fill the value so its reflected type equals " (c "(Type.of 5)") ", an " (c "Int64") ", making the check " (c "true") ".")
+    (starter "(Type.eq (Type.of 5) (Type.of ?))")
+    (solution "(Type.eq (Type.of 5) (Type.of 99))")
+    (expected "true")
+    (hint (c "(Type.of 5)") " is " (c "Int64") ", so you need another value whose type is " (c "Int64") ", any integer literal, e.g. " (c "99") ". A " (c "true") " or a " (c "1.0") " would be a different type and give " (c "false") ".")))

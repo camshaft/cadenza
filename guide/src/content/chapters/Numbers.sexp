@@ -1,0 +1,66 @@
+(chapter
+  (slug "numbers")
+  (title "The numeric model")
+  (pillar "language")
+  (section "Fundamentals")
+  (blurb "Checked integers and no silent promotion.")
+  (lede "Checked integers, and no silent conversions between numeric types.")
+  (h2 "Checked Int64")
+  (p "Cadenza's core integer type is a checked " (c "Int64") ", a 64-bit signed integer. Ordinary arithmetic works as you'd expect, and the result carries its exact type:")
+  (runnable
+    (source "(* 1000000 1000000)"))
+  (p "That's a trillion, " (c "1000000000000") ", comfortably inside a 64-bit integer's range. Keep pushing, though, and a product eventually won't fit.")
+  (h2 "Overflow is caught, not wrapped")
+  (p "What happens when a result is too big to fit? In many languages it silently " (em "wraps around") " to a wrong (often negative) answer. Cadenza refuses instead. " (c "Int64") "'s largest value times 2 can't fit, and the compiler says so rather than producing garbage:")
+  (note "This example is " (strong "meant to be refused") ". Run it and read the status bar: the result can't fit an " (c "Int64") ", so the compiler declines rather than wrapping to a bogus value.")
+  (runnable
+    (source "(* 9223372036854775807 2)")
+    (expect "error"))
+  (p "Division by zero is the same story, since there's no correct answer, so it's caught, not left to produce a garbage result or a silent zero:")
+  (runnable
+    (source "(/ 5 0)")
+    (expect "error"))
+  (h2 "Division truncates; remainder picks up the rest")
+  (p "When it " (em "can") " divide, integer division keeps the whole part and throws away the fraction, so it truncates toward zero. So " (c "17 / 5") " is " (c "3") ", not " (c "3.4") ":")
+  (runnable
+    (source "(/ 17 5)"))
+  (p "The piece that division discards is exactly what " (c "%") ", the remainder, keeps: " (c "17 % 5") " is " (c "2") ", because " (c "17 = 5 × 3 + 2") ". The two together recover the original.")
+  (runnable
+    (source "(% 17 5)"))
+  (p "\"Truncates toward zero\" matters once a negative is involved: " (c "-17 / 5") " is " (c "-3") ", not " (c "-4") ", because the fraction is dropped, moving the result " (em "toward") " zero rather than down. The remainder follows so the identity still holds (" (c "-17 = 5 × -3 + -2") "), so " (c "-17 % 5") " is " (c "-2") ", so the remainder takes the sign of the dividend.")
+  (runnable
+    (source "(/ -17 5)"))
+  (h2 "Handling an overflow instead of halting")
+  (p "A bare " (c "*") " that overflows " (em "declines") ", so the whole program stops. Sometimes you'd rather " (em "handle") " the possibility: the checked operations do the same arithmetic but hand back an " (c "Option") ", namely " (c "(Some v)") " when it fits and " (c "(None unit)") " when it would overflow, so you decide what happens. Here " (c "Int64.checked-mul") " of two small numbers succeeds:")
+  (runnable
+    (source "(match (Int64.checked-mul 6 7)
+  ((Some v) v)
+  ((None _) -1))"))
+  (p "And the overflow that made the bare " (c "*") " decline instead returns " (c "None") " here, so the " (c "None") " arm runs and the program keeps going, with " (c "-1") " standing in for \"didn't fit\":")
+  (runnable
+    (source "(match (Int64.checked-mul 9223372036854775807 2)
+  ((Some v) v)
+  ((None _) -1))"))
+  (p "Same discipline, your choice of response: let it halt (the bare operator) or fold the failure into a value you handle (the checked operator). The " (c "Option") " shape is the subject of " (strong "Errors &amp; absence") ".")
+  (h2 "Types don't mix by accident")
+  (p "Numeric and boolean values don't silently coerce into one another either. Ask the compiler to add a number and a boolean and it refuses, with a diagnostic pointing right at the mismatch, rather than inventing a conversion you didn't ask for:")
+  (runnable
+    (source "(+ 1 true)")
+    (expect "error"))
+  (why (tenet "Refuse the ambiguity, don't guess") "Many languages would quietly bridge these gaps by wrapping an overflow around, coercing a boolean to a number, or widening one numeric type into another. Cadenza refuses, because each convenience hides a real question: what did you actually mean? A conversion you didn't write, or a wrap you didn't ask for, is a decision the compiler made " (em "for") " you, and the classic source of \"why is this number negative?\" bugs. So an operation that can't produce a correct result " (em "declines") " with a diagnostic instead of guessing, and any conversion is something you write by name.")
+  (p "This is a running theme: an operation the compiler can't carry out correctly declines instead of guessing. When you'd rather " (em "handle") " an overflow than have it halt the program, that's what the checked operations in " (strong "Errors &amp; absence") " are for, since they hand back an " (c "Option") " so you decide. And it's the same discipline that keeps integer widths from blurring, next in " (strong "Sized integers") ".")
+  (h2 "Your turn")
+  (exercise
+    (id "numbers:1")
+    (prompt "Integer division truncates toward zero. Divide " (c "23") " by " (c "4") ", filling in the divisor so the answer is " (c "5") " (23 ÷ 4 is 5 with 3 left over).")
+    (starter "(/ 23 ?)")
+    (solution "(/ 23 4)")
+    (expected "5")
+    (hint "23 ÷ 4 is 5 remainder 3; integer division keeps the whole part, " (c "5") ". The divisor is " (c "4") "."))
+  (exercise
+    (id "numbers:2")
+    (prompt "Now the other half: use the remainder operator " (c "%") " to find what " (c "23 / 4") " left over. Division gave " (c "5") "; the remainder is " (c "3") ".")
+    (starter "(? 23 4)")
+    (solution "(% 23 4)")
+    (expected "3")
+    (hint "The remainder operator is " (c "%") ". Since " (c "23 = 4 × 5 + 3") ", " (c "(% 23 4)") " is " (c "3") ".")))
