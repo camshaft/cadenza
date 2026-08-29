@@ -516,6 +516,14 @@ def newtypeCtor? (m : Module) (name : ByteArray) : Bool :=
   !((defNames m).contains name) &&
   (userSumTypes m).any (fun (_, ctors) => match ctors with | [(cn, 1)] => cn == name | _ => false)
 
+/-- A SOLE NULLARY constructor: a type with exactly ONE ctor which is nullary (`(type T (A))`). Like a
+newtype (single-field → erase to the field), a single-nullary-ctor type carries no information, so its
+value ERASES to `unit` — `(T.A)` = `(: unit T)` — NOT a tagged `variant` (a nullary ctor of a MULTI-ctor
+type, e.g. Option's `None`, stays tagged to distinguish it from its siblings). (corpus 11-modules 0023.) -/
+def soleNullaryCtor? (m : Module) (name : ByteArray) : Bool :=
+  !((defNames m).contains name) &&
+  (userSumTypes m).any (fun (_, ctors) => match ctors with | [(cn, 0)] => cn == name | _ => false)
+
 /-- The constructor NAME an application/pattern head denotes: a bare name head `C`, or a qualified
 member-access head `(. T C)` → `C`. -/
 def ctorAppName? (m : Module) (children : Array Nat) : Option ByteArray :=
@@ -830,7 +838,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
                    if (env.lookup? q).isSome then none
                    else if mem == "None".toUTF8 then some (Outcome.value Value.none)
                    else match variantCtorArity? m mem with
-                        | some 0 => some (Outcome.value (.variant mem .unit))
+                        | some 0 => some (Outcome.value (if soleNullaryCtor? m mem then .unit else .variant mem .unit))
                         | _ => none
                  | _, _ => none
                else none
@@ -1518,7 +1526,9 @@ partial def evalVariantCtor (m : Module) (env : Env) (fuel : Nat) (cname : ByteA
   else if cs == "Ok" && arity == 1 then .value (Value.ok (payload ()))
   else if cs == "Err" && arity == 1 then .value (Value.err (payload ()))
   else match arity with
-       | 0 => .value (.variant cname .unit)
+       -- a SOLE nullary ctor erases to `unit` (single-ctor type carries no info); a nullary ctor of a
+       -- MULTI-ctor type stays a tagged variant (needed to tell it from its siblings).
+       | 0 => .value (if soleNullaryCtor? m cname then .unit else .variant cname .unit)
        | _ => match children[1]? with
               | some pId => .value (.variant cname (outcomeToValue (evalNode m env defaultIntTy fuel pId)))
               | none => .value (.variant cname .unit)
