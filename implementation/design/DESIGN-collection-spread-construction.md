@@ -1,10 +1,13 @@
 # Design — spread in collection CONSTRUCTION: `[a, b, ..c, d, ..e]` / `#list(a b ..c d ..e)`
 
 **Author:** design pass (fleet `v-syntax`), at concierge/operator request.
-**Audience:** the operator (a build-it? + scope decision, below) + the `vertical`s that build it —
-`v-syntax` (surface + reject relaxation, mostly done) and `v-inference`/`rcdzc` (typing + lowering).
-**Status:** DESIGN — PROPOSAL. **Operator decision PENDING** on (1) build it at all, and (2) scope:
-lists-only vs. map/set parity. **The build is HELD** until that go; this note exists to inform it.
+**Audience:** the `vertical`s that build it — `v-syntax` (surface — done; printer pins + corpus/guide)
+and `v-inference`/`rcdzc` (CDZ0201 relaxation + typing + lowering). Build sequenced list → record/map/set.
+**Status:** DESIGN — **APPROVED, BUILD GO** (operator, 2026-08-29, via concierge). **Full scope: all
+four collection types — list + record + map + set** (NOT lists-only). Un-held. Sequenced list-first
+(unblock the exact ask) then record/map/set via the SAME segment-and-fold. Operator, verbatim: *"Yes
+please build literal list construction.. same goes for record, map, and set construction. All of those
+would be really nice to have."*
 **Subsystem:** spans `cadenza-syntax` (surface — already parses), `rcdzc` (`resolve` CDZ0201 guard +
 `lower` construction) and typing (`v-inference`).
 
@@ -60,7 +63,11 @@ For a construction of element type `T`:
   same `List<T>`; an empty literal with only spreads infers `T` from the spreads.
 - **result type** is `List<T>`.
 This is the list analogue of the pattern-rest typing (`(list a .. rest)` already types `rest : List<T>`
-on the binding side), so the unifier work is symmetric and small.
+on the binding side), so the unifier work is symmetric and small. **Per type** (§6): set spread is
+`Set<T>`, map spread is `Map<K,V>`, and **record** spread is the one exception — a `..r` contributes
+`r`'s whole ROW (its field set may be only partially static), so record-merge typing is a row union, not
+a single element type; it touches the `Record.with`/`Record.extend` row-ops neighborhood (coordinate
+with `v-inference`).
 
 ## 4. Lowering (rcdzc — segment then fold)
 
@@ -94,21 +101,46 @@ literal is a *construction expression*, not a value literal, so it never reaches
 it renders as its source `#list(a b ..c d ..e)` (surface round-trip, already handled by the printer's
 flat `..` emit).
 
-## 6. Scope decision for the operator
+## 6. Scope — DECIDED: all four (list + record + map + set)
 
-1. **Build it?** (language feature — operator call.)
-2. **Scope:** **lists-only** (simplest, covers the operator's exact example) **vs. map/set parity**:
-   - map: `#{..m1, k = v, ..m2}` → `Map.union` folds (later key wins — needs a merge-order rule);
-   - set: `#(..s1, x, ..s2)` → `Set.union` folds.
-   Recommendation: **do lists first** (bounded, unblocks the ask), and add map/set parity as a fast
-   follow if wanted — same segment-and-fold mechanism, plus `Map.union`/`Set.union` and (for map) a
-   last-writer-wins rule to pin.
+Operator ruling (2026-08-29): build **all four** collection constructions with spread, sequenced
+list-first then record/map/set (same segment-and-fold, per-type combine op):
 
-## 7. Ownership / build split (on operator go)
+| type | spread surface | combine op | duplicate rule |
+|---|---|---|---|
+| list | `[a, ..c, d]` / `#list(a ..c d)` | `List.concat` | order-preserving, no dedup |
+| set | `#(..s1, x, ..s2)` / `#set(..s1 x ..s2)` | `Set.union` | dedup (set semantics) |
+| map | `#{..m1, k = v, ..m2}` / `#map(..m1 (= k v) ..m2)` | `Map.union` | **last-writer-wins** on key (left→right) |
+| record | `{ ..r1, a = 1, ..r2 }` / `#record(..r1 (= a 1) ..r2)` | record-merge (row) | **last-writer-wins** on field (left→right) |
 
-- `v-syntax` (me): surface is already done; I own the CDZ0201-relaxation (scope it to direct
-  list/map/#list construction children) + the printer round-trip pin + a corpus/guide surface example.
-- `v-inference`/`rcdzc`: the spread-operand typing rule (§3) + the construction lowering fold (§4) +
-  the const-hoist decline (§5).
-Coordinate the split before building; the two halves meet at the arena shape `(list … .. s …)`, which
-is unchanged.
+**Per-type notes:**
+- **list** — §2/§4 as written; `List.concat` fold, order preserved.
+- **set** — `Set.union` fold; result dedups (a spread element already present is absorbed) — that IS set
+  semantics, not a surprise.
+- **map** — `Map.union` fold, **last spread/entry wins** on a duplicate key, matching a left-to-right
+  overwrite reading (`#{..defaults, key = override}`); this is the readable intent.
+- **record** — record-**merge** (a row operation over statically-known + spread fields), **last wins** on
+  a duplicate field name, same left-to-right rule as map. NB: a record spread's field set may be only
+  partially static (a spread `..r` contributes `r`'s row); typing (§3) must handle the row union. This is
+  the one type whose typing is more than "element T" — coordinate closely with `v-inference` (it touches
+  the record row-ops path, `Record.with`/`Record.extend` neighborhood).
+
+Empty-spread, all-spread, single-spread (§4) apply per type. The const-hoist DECLINE (§5) applies to all
+four (a spread-bearing literal of any type is not a constant compound).
+
+## 7. Ownership / build split
+
+- `v-syntax`: surface is already done (all four types parse the flat `.. s` marker); owns the printer
+  round-trip pins + corpus/guide surface examples + this note. Nominally also the CDZ0201-relaxation —
+  but see the coupling below.
+- `v-inference`/`rcdzc`: the per-type spread-operand typing rule (§3, incl. the record row-union) + the
+  segment-and-fold lowering (§4/§6) + the const-hoist decline (§5).
+
+**Coupling — the CDZ0201 relaxation must co-land with the lowering.** The relaxation lives in
+`resolve.rs` and the fold in `lower.rs` (both rcdzc); relaxing the reject WITHOUT the lowering leaves
+`..` accepted at resolve but unhandled at lower (a half-built window). So the rcdzc-side change is ONE
+atomic unit PER TYPE — recommended owner: `v-inference`/`rcdzc` lands {relaxation + typing + lowering +
+hoist-decline} together, `v-syntax` co-lands the surface round-trip pin + corpus example for that type.
+The relaxation scope: allow `..` ONLY as a direct child of a list/record/map/set CONSTRUCTION node (not
+blanket value position — a bare `(.. x)`/`(f ..)` stays CDZ0201). The two halves meet at the unchanged
+flat arena shape `(<ctor> … .. s …)`.
