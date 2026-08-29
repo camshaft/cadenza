@@ -443,6 +443,200 @@ pub fn cadenza_differential_sweep(
     Ok(stats)
 }
 
+// ── the LEAN symbolic-equivalence cadenza sweep (S4b/T2) ────────────────────────────────────────
+//
+// The SYMBOLIC complement to `cadenza_differential_sweep` (the sampled value-eq net): for each program
+// build an `(equiv <orig> <cadenza-roundtrip>)` trial ([`crate::cadenza_diff::equiv_trial_for`]) and let
+// v-lean-oracle's oracle PROVE the cadenza round-trip preserves meaning for ALL inputs. A `(holds)` is a
+// forall-inputs proof (far stronger than a sampled agree); a `(skip "equiv: normalized-but-different")` is
+// a STRONG suspected cadenza-backend miscompile. We do NOT file on the symbolic skip alone — we CONFIRM it
+// with the sampled `cadenza_diff` first (sound: the symbolic oracle's normal form can differ for a reason
+// the runtime values don't), and file only a confirmed divergence.
+
+/// How the oracle judged one `(equiv P P')` trial (see [`classify_equiv_verdict`]).
+#[cfg(feature = "differential")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EquivClass {
+    /// `(holds)` — PROVEN functionally equivalent for all inputs (the cadenza backend preserved meaning).
+    Proven,
+    /// `(skip "equiv: boundary: …")` — the oracle hit its incompleteness limit (let/match/collections/
+    /// calls/recursion); degrade to the sampled cadenza-diff net. Not a bug.
+    Boundary,
+    /// `(skip "equiv: normalized-but-different")` — both sides fully normalized yet differ: a STRONG
+    /// suspected cadenza-backend miscompile, to CONFIRM with a sampled run before filing.
+    SuspectedDivergence,
+    /// `(skip "…not (trial …)")` — the oracle predates the `(equiv …)` node (#5719); it cannot judge
+    /// equiv trials at all. The sweep aborts rather than miscounting every trial as a boundary skip.
+    StaleOracle,
+}
+
+/// Classify an oracle verdict for an `(equiv …)` trial. Pure — the routing brain of [`equiv_cadenza_sweep`],
+/// unit-tested without an oracle. An `(equiv …)` trial should only ever yield `(holds)` / `(skip …)`; a
+/// `Mismatch` is not part of the equiv protocol, so treat it conservatively as a suspected divergence.
+#[cfg(feature = "differential")]
+pub fn classify_equiv_verdict(v: &crate::lean::Verdict) -> EquivClass {
+    use crate::lean::Verdict;
+    match v {
+        Verdict::Holds => EquivClass::Proven,
+        Verdict::Skip(r) if r.contains("not (trial") => EquivClass::StaleOracle,
+        Verdict::Skip(r) if r.contains("normalized-but-different") => {
+            EquivClass::SuspectedDivergence
+        }
+        Verdict::Skip(_) => EquivClass::Boundary,
+        // Not an equiv-protocol verdict — be conservative and treat as suspected (still sampled-confirmed).
+        Verdict::Mismatch(_) => EquivClass::SuspectedDivergence,
+    }
+}
+
+/// Tallies for one symbolic-equivalence cadenza sweep.
+#[cfg(feature = "differential")]
+#[derive(Default, Debug, Clone)]
+pub struct EquivStats {
+    /// Trials the oracle judged (comparable — a clean cadenza round-trip yielded an equiv trial).
+    pub trials: u64,
+    /// PROVEN equivalent for all inputs.
+    pub proven: u64,
+    /// Oracle-incompleteness skips (degrade to the sampled net).
+    pub boundary: u64,
+    /// Suspected divergences the sampled `cadenza_diff` CONFIRMED (filed as findings).
+    pub confirmed_divergences: u64,
+    /// Suspected divergences the sampled run did NOT reproduce (symbolic-only; logged, not filed).
+    pub unconfirmed_suspected: u64,
+    /// Programs with no comparable equiv trial (source unparseable / cadenza round-trip declined or hung).
+    pub not_comparable: u64,
+    /// New finding buckets created this sweep.
+    pub new_buckets: u64,
+    /// Existing buckets re-hit.
+    pub duplicate_hits: u64,
+    /// Set if the oracle cannot judge `(equiv …)` (pre-#5719) — the sweep aborted early. A rebuilt
+    /// `.#oracle-lean` is required.
+    pub stale_oracle: bool,
+}
+
+/// Run the symbolic-equivalence cadenza sweep over `count` coerced programs: build an `(equiv <orig>
+/// <cadenza-roundtrip>)` trial per program, judge in batches via `judge_batch_items`, and route each
+/// verdict. A `SuspectedDivergence` is CONFIRMED with the sampled [`crate::cadenza_diff::cadenza_diff`]
+/// before filing (never file blind on the symbolic skip). `store` is the runtime store (for the sampled
+/// confirm), `cdz` the binary (for the round-trip + confirm), `oracle` the equiv-aware `oracle-check`.
+#[cfg(feature = "differential")]
+pub fn equiv_cadenza_sweep(
+    cfg: &Config,
+    store: &std::path::Path,
+    cdz: &std::path::Path,
+    oracle: &std::path::Path,
+    count: u64,
+) -> std::io::Result<EquivStats> {
+    use crate::cadenza_diff::{CzDiff, cadenza_diff, equiv_trial_for};
+    use crate::lean::{BatchItem, judge_batch_items};
+
+    let fstore = FindingStore::open(&cfg.findings_dir)?;
+    let mut stats = EquivStats::default();
+    let mut rng = SplitMix64::new(cfg.run_seed);
+    let tmp = std::env::temp_dir().join(format!("cdz-smith-equiv-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp);
+
+    const BATCH: usize = 32;
+    let mut batch_items: Vec<BatchItem> = Vec::new();
+    let mut batch_srcs: Vec<String> = Vec::new();
+
+    for i in 0..count {
+        let seed = rng.next();
+        // Coercing generator (same terminating, value-comparable grammar the sampled sweep uses).
+        let mut ent = Vec::with_capacity(64);
+        let mut r = SplitMix64::new(seed);
+        for _ in 0..8 {
+            ent.extend_from_slice(&r.next().to_le_bytes());
+        }
+        let source = crate::astgen::generate_coerced(&ent).source;
+
+        // Fresh scratch per program; the round-trip writes p.sexp/mid.ast here.
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+        match equiv_trial_for(cdz, &source, &tmp) {
+            Some(trial) => {
+                batch_items.push(BatchItem::Equiv(trial));
+                batch_srcs.push(source);
+            }
+            None => stats.not_comparable += 1,
+        }
+
+        let last = i + 1 == count;
+        if batch_items.len() >= BATCH || (last && !batch_items.is_empty()) {
+            let verdicts = judge_batch_items(oracle, &batch_items)?;
+            for (src, v) in batch_srcs.iter().zip(&verdicts) {
+                match classify_equiv_verdict(v) {
+                    EquivClass::StaleOracle => {
+                        stats.stale_oracle = true;
+                        eprintln!(
+                            "[cdz-smith] equiv-cadenza: oracle predates the (equiv …) node (#5719) — \
+                             rebuild `.#oracle-lean`; aborting sweep."
+                        );
+                        let _ = std::fs::remove_dir_all(&tmp);
+                        return Ok(stats);
+                    }
+                    EquivClass::Proven => {
+                        stats.trials += 1;
+                        stats.proven += 1;
+                    }
+                    EquivClass::Boundary => {
+                        stats.trials += 1;
+                        stats.boundary += 1;
+                    }
+                    EquivClass::SuspectedDivergence => {
+                        stats.trials += 1;
+                        // CONFIRM with the sampled net before filing (sound: don't file on the symbolic
+                        // skip alone). A fresh scratch for the confirm run.
+                        let _ = std::fs::remove_dir_all(&tmp);
+                        let _ = std::fs::create_dir_all(&tmp);
+                        match cadenza_diff(cdz, src, store, &tmp) {
+                            CzDiff::Mismatch { direct, cadenza } => {
+                                stats.confirmed_divergences += 1;
+                                let detail = format!(
+                                    "cadenza-equiv (symbolic normalized-but-different, sampled-CONFIRMED): \
+                                     direct={direct} cadenza={cadenza}"
+                                );
+                                let finding = Finding {
+                                    category: Category::Differential,
+                                    program: src.clone(),
+                                    crash: None,
+                                    detail: Some(detail),
+                                    commit: cfg.commit.clone(),
+                                };
+                                file_and_tally(
+                                    &fstore,
+                                    &finding,
+                                    &mut stats.new_buckets,
+                                    &mut stats.duplicate_hits,
+                                    0,
+                                    "cadenza-equiv divergence (symbolic+sampled)",
+                                );
+                            }
+                            // Symbolic suspicion not reproduced by the sampled run — do NOT file.
+                            _ => stats.unconfirmed_suspected += 1,
+                        }
+                    }
+                }
+            }
+            batch_items.clear();
+            batch_srcs.clear();
+        }
+
+        if cfg.progress_every != 0 && (i + 1).is_multiple_of(cfg.progress_every) {
+            eprintln!(
+                "[cdz-smith] equiv-cadenza {}/{count} | {} proven, {} boundary, {} confirmed-div ({} unconfirmed), {} not-comparable",
+                i + 1,
+                stats.proven,
+                stats.boundary,
+                stats.confirmed_divergences,
+                stats.unconfirmed_suspected,
+                stats.not_comparable,
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(stats)
+}
+
 /// The watchdog thread: if the armed deadline passes without the heartbeat advancing, the current
 /// compile has hung — file a timeout finding for its seed and abort the process.
 fn spawn_watchdog(progress: Arc<Progress>, epoch: Instant, cfg: Config) {
@@ -571,6 +765,35 @@ mod tests {
         let ys: Vec<u64> = (0..5).map(|_| b.next()).collect();
         assert_eq!(xs, ys, "same seed → same stream");
         assert!(xs.windows(2).all(|w| w[0] != w[1]), "stream varies");
+    }
+
+    /// The equiv verdict router (pure): `(holds)` → Proven; a boundary skip → Boundary (degrade to the
+    /// sampled net); a `normalized-but-different` skip → SuspectedDivergence (sampled-confirm before
+    /// filing); a stale-oracle `not (trial …)` skip → StaleOracle (abort); a stray `Mismatch` →
+    /// conservatively SuspectedDivergence (still sampled-confirmed, so never a blind file).
+    #[cfg(feature = "differential")]
+    #[test]
+    fn classify_equiv_verdict_routes_each_verdict() {
+        use crate::lean::Verdict;
+        assert_eq!(classify_equiv_verdict(&Verdict::Holds), EquivClass::Proven);
+        assert_eq!(
+            classify_equiv_verdict(&Verdict::Skip(
+                "equiv: boundary: let/match not modeled".into()
+            )),
+            EquivClass::Boundary
+        );
+        assert_eq!(
+            classify_equiv_verdict(&Verdict::Skip("equiv: normalized-but-different".into())),
+            EquivClass::SuspectedDivergence
+        );
+        assert_eq!(
+            classify_equiv_verdict(&Verdict::Skip("batch: node is not (trial …)".into())),
+            EquivClass::StaleOracle
+        );
+        assert_eq!(
+            classify_equiv_verdict(&Verdict::Mismatch("unexpected".into())),
+            EquivClass::SuspectedDivergence
+        );
     }
 
     // `#[ignore]` by default: `run()` arms the watchdog, which calls `process::abort()` on a hang —
