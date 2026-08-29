@@ -13788,3 +13788,81 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 101 Int64))
   (call main (: -3 Int64)) (output (: 11 Int64)))
+
+(case "cdzw87 single-variant sum payload-element reads on an OPAQUE scrutinee round-trip the cadenza hop"
+  (doc "The #5569 inline-match-peel witness: a RECURSIVE def (recursion defeats inlining) takes an
+        erased single-variant sum (: w Pair2) and reads BOTH payload slots — the optimizer lowers the
+        irrefutable match to direct payload-element projections, and the hop must re-emit each as the
+        type-correct single-arm `(match w ((MkP2 b0 b1) b_i))` peel (surface `.` does not type-check on
+        a nominal). a += 2 per step, n steps: n=7 → 15; n=0 → 1; n=-4 → 1 (immediate).
+        Dual-path verified, byte-idempotent. (The arity-1 TUPLE-payload sibling is the OPEN bug
+        adv-newtype-tuple-payload-hop-emits-dot-on-nominal — hop emits `.` on the nominal, HOP-2 red.)")
+  (input (do
+    (type Pair2 (MkP2 Int64 Int64))
+    (def (spin (: w Pair2))
+      (match w ((MkP2 a c)
+        (if (> c 0) (spin (MkP2 (+ a 2) (- c 1))) a))))
+    (def (main (: n Int64)) (spin (MkP2 1 n)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 15 Int64))
+  (call main (: 0 Int64)) (output (: 1 Int64))
+  (call main (: -4 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 8 1 1))
+
+(case "ntk1 NESTED-tuple keys — structural equality one level down, map lookup + set dedup"
+  (doc "The nesting level of the compound-key family (#5564 territory): a #map keyed by tuples whose
+        FIRST slot is itself a tuple, probed with a runtime-branch-built nested key (the inner slot
+        selected by n), and a #set of nested tuples deduping a structural duplicate while a
+        runtime-inner-slot element stays distinct. n=7 → key ((1 2) 3) hits 42, set {((1 2) 3)×2 dedup,
+        ((1 7) 3)} = 2 → 422; n=1 → same key face + still 2 distinct → 422; n=-2 → key ((1 9) 3)
+        misses (-1), set 2 → -8. Dual-path verified, byte-idempotent.")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 10 (match (Map.lookup #map((= #tuple(#tuple(1 2) 3) 42) (= #tuple(#tuple(1 2) 4) 7))
+                                  #tuple(#tuple(1 (if (> n 0) 2 9)) 3))
+                 ((Some v) v) ((None _u) -1)))
+         (Set.len #set(#tuple(#tuple(1 2) 3) #tuple(#tuple(1 2) 3) #tuple(#tuple(1 n) 3)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 422 Int64))
+  (call main (: 1 Int64)) (output (: 422 Int64))
+  (call main (: -2 Int64)) (output (: -8 Int64)))
+
+(case "cdzw88 ARITY-1 TUPLE-payload newtype payload projections round-trip the cadenza hop"
+  (doc "The #5594 acceptance face (breaker adv-newtype-tuple-payload-hop lineage, #5583+#5594): a
+        recursive def takes (: w WrapT) where WrapT wraps a single TUPLE payload; the optimizer folds
+        the irrefutable (MkWT t) match so (. t i) becomes a Core::Proj on the param with binder type
+        NOMINAL but node type the erased inner tuple — the hop must peel via the binder's declared
+        type ((match w ((MkWT t) (. t i)))), never emit '.' on the nominal (was HOP-2 CDZ0201 x3).
+        a += 2 per step, n steps from 1: n=7 → 15; n=0 → 1; n=-4 → 1. Dual-path value-eq,
+        byte-idempotent.")
+  (input (do
+    (type WrapT (MkWT (Tuple Int64 Int64)))
+    (def (spin (: w WrapT))
+      (match w ((MkWT t)
+        (if (> (. t 1) 0) (spin (MkWT #tuple((+ (. t 0) 2) (- (. t 1) 1)))) (. t 0)))))
+    (def (main (: n Int64)) (spin (MkWT #tuple(1 n))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 15 Int64))
+  (call main (: 0 Int64)) (output (: 1 Int64))
+  (call main (: -4 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 8 1 1))
+
+(case "cdzw89 NESTED single-variant sums — payload-slot nominal descent through the cadenza hop"
+  (doc "The Nominal→Nominal slot-type descent of the #5569 peel family (flipped green by
+        #5577/#5583/#5594; was 'newtype value construction site' decline): Outer's slot 0 is ITSELF a
+        single-variant sum, a recursive def forwards the OUTER nominal unchanged and projects through
+        both levels (o → inr → a,b). a=n+1, b=2, k=7 → 100a+10b+k. n=7 → 827; n=0 → 127;
+        n=-4 (t≤0 immediate) → -273. Dual-path value-eq, byte-idempotent.")
+  (input (do
+    (type Inner (MkInner Int64 Int64))
+    (type Outer (MkOuter Inner Int64))
+    (def (walk (: o Outer) (: t Int64))
+      (match o ((MkOuter inr k)
+        (match inr ((MkInner a b)
+          (if (> t 0) (walk o (- t 1)) (+ (* 100 a) (+ (* 10 b) k))))))))
+    (def (main (: n Int64)) (walk (MkOuter (MkInner (+ n 1) 2) 7) n))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 827 Int64))
+  (call main (: 0 Int64)) (output (: 127 Int64))
+  (call main (: -4 Int64)) (output (: -273 Int64))
+  (live-objects known-leak 2))
