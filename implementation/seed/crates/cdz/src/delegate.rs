@@ -305,6 +305,10 @@ pub fn build_sidecar_request(requests: &[rcdzc::Request]) -> Vec<u8> {
                 let h = b.name("emit-tests-shred-standalone");
                 b.list(vec![h])
             }
+            rcdzc::Request::EmitTestsShredTwoStage => {
+                let h = b.name("emit-tests-shred-two-stage");
+                b.list(vec![h])
+            }
             rcdzc::Request::Query(q) => {
                 use rcdzc::sidecar::Query;
                 let (selector, arg): (&str, Option<_>) = match q {
@@ -540,6 +544,7 @@ mod tests {
             Request::EmitTestsConsumerOnly,
             Request::EmitTestsShred,
             Request::EmitTestsShredStandalone,
+            Request::EmitTestsShredTwoStage,
             Request::Query(Query::TestList),
         ];
         // Each request individually (isolates a per-variant mismatch)…
