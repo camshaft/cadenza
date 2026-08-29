@@ -1,0 +1,30 @@
+# cadenza-compile-abi — the compile-BOUNDARY contract types, as a dependency-light shared crate.
+#
+# The boundary vocabulary the build tool speaks across the compiler seam: the kinded `Artifact` list in
+# and out, the sidecar `Request`/`Query` wire, the requested `Target`, the `OptLevel`, the source
+# `spans` side-table, and the `{artifacts, diagnostics}` compile result. Extracted from `rcdzc` so the
+# TWO agreeing sides of that boundary — `rcdzc` (the compiler, which PRODUCES these) and `cdz` (the
+# thin front-door, which in a `!standalone` build DELEGATES to the external `cdz-compile` process and
+# must build the identical request + read the identical result) — share ONE definition of the contract
+# rather than each carrying a parallel copy that drifts. Same rationale as `cadenza-ast` (one source of
+# truth for a wire format shared across a process boundary; operator directive 2026-08-28): this crate
+# is the compile-boundary analogue of that AST-wire crate.
+#
+# `rcdzc` `pub use`s what moves here, so its public API (`rcdzc::Target`, `rcdzc::OptLevel`, …) stays
+# byte-stable and every existing consumer path keeps resolving. The compiler IMPLEMENTATIONS behind the
+# boundary — `run_query` (a query over a live `Db`), `compile`, the backends — STAY in `rcdzc`; only the
+# plain-data boundary TYPES live here. The default (standalone) build is byte-identical.
+#
+# DEP FLOOR is deliberately tiny — the boundary types are plain data. The first slice moves only the two
+# pure-std leaf enums (`Target`, `OptLevel`), so the crate has NO dependencies yet; a later slice that
+# moves the `Request`/`Query` codec + `spans` will take the single `cadenza-ast` dep (the codec builds
+# on `cadenza_ast::Builder`), still dependency-light.
+#
+# A member of the seed workspace (picked up by the `crates/*` glob). Like the rest of the seed, a
+# REFERENCE implementation; the durable artifact is the CONTRACT, not this code.
+[package]
+name = "cadenza-compile-abi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
