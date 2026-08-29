@@ -1,0 +1,18 @@
+# xtask-bench — the runtime allocation benchmark as its OWN standalone crate (v-xtask-decompose: the
+# decompose-the-monolith directive). Carved out of xtask/src/bench.rs. Runs cdz-runtime's
+# `hot_op_allocation_ceilings` test (the single source of the `ALLOC <name>: <count>` measurements),
+# parses the counts, and diffs them against the committed baseline `spec/bench/.alloc-baseline` — a
+# REGRESSION (any op over baseline + tolerance) exits non-zero; `--save` rewrites the baseline.
+#
+# STD-ONLY leaf (no xtask dep — the operator's independent-caching rule; no xtask-support needed). Repo
+# root from CDZ_REPO_ROOT (else cwd). The fleet check-lease is DROPPED vs the old xtask path: nix manages
+# build concurrency (this runs under benchCheck's derivation), and a bare-cargo run is rarely concurrent.
+[package]
+name = "xtask-bench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-bench"
+path = "src/main.rs"

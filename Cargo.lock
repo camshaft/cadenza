@@ -3394,6 +3394,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask-bench"
+version = "0.0.0"
+
+[[package]]
 name = "xtask-canonicalize-baselines"
 version = "0.0.0"
 dependencies = [
