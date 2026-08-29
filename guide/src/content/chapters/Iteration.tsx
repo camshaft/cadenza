@@ -71,11 +71,11 @@ export default function Iteration() {
         so the first element read ends up deepest and the last read ends up first:
       </P>
       <Runnable
-        source={`(def (main) (rev (list 1 2 3) (list)))
+        source={`(def (main) (rev #list(1 2 3) #list()))
 (def (rev xs acc)
   (match xs
-    ((list) acc)
-    ((list x .. rest) (rev rest (List.prepend acc x)))))`}
+    (#list() acc)
+    (#list(x .. rest) (rev rest (List.prepend acc x)))))`}
       />
       <P>
         Prepending is what does the reversing: element <C>1</C> is placed first, then <C>2</C> goes in

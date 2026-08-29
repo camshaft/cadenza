@@ -111,9 +111,9 @@ export const EXAMPLES: Example[] = [
   ; Match destructures the record's fields; a literal field value guards the origin case.
   (def (score p)
     (match p
-      ((record (x 0) (y 0)) 0)
-      ((record (x xv) (y yv)) (+ (* xv xv) (* yv yv)))))
-  (def (main) (score (record (x 3) (y 4))))
+      (#record((= x 0) (= y 0)) 0)
+      (#record((= x xv) (= y yv)) (+ (* xv xv) (* yv yv)))))
+  (def (main) (score #record((= x 3) (= y 4))))
   (export main))`,
     expected: "25",
   },
@@ -131,8 +131,8 @@ export const EXAMPLES: Example[] = [
   ; slot is a point, and (x px) (y py) bind its fields directly; w binds the weight.
   (def (weigh pair)
     (match pair
-      ((tuple (record (x px) (y py)) w) (* w (+ (* px px) (* py py))))))
-  (def (main) (weigh (tuple (record (x 3) (y 4)) 2)))
+      (#tuple(#record((= x px) (= y py)) w) (* w (+ (* px px) (* py py))))))
+  (def (main) (weigh #tuple(#record((= x 3) (= y 4)) 2)))
   (export main))`,
     expected: "50",
   },
@@ -150,9 +150,9 @@ export const EXAMPLES: Example[] = [
   ; the point's fields directly; the None arm handles the empty case.
   (def (dist opt)
     (match opt
-      ((Some (record (x px) (y py))) (+ (* px px) (* py py)))
+      ((Some #record((= x px) (= y py))) (+ (* px px) (* py py)))
       ((None) 0)))
-  (def (main) (dist (Some (record (x 3) (y 4)))))
+  (def (main) (dist (Some #record((= x 3) (= y 4)))))
   (export main))`,
     expected: "25",
   },
