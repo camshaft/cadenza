@@ -24198,6 +24198,74 @@ mod tests {
         );
     }
 
+    /// CO-VERIFY (v-core-opt #5352, if-join-shared-child family fix: 712 SET / MAP / LIST-05-compound /
+    /// ROPE-980). v-mem ruled the fix = SKIP the spurious cross-arm dup of a base collection shared across
+    /// an `if`'s two arms. The LOAD-BEARING runtime fact (which makes dup-skip-ALONE safe — no double-free —
+    /// rather than needing a drop-elide) is: with the dup removed the base is rc==1, so the `else`-arm
+    /// derivative builder (vec-push / set-insert / map-insert) FBIP-CONSUMES it IN PLACE — the base's node
+    /// is SUBSUMED into the result, so the result IS the base and its ONE post-if drop reclaims everything.
+    /// There is no separate live base to double-free. This models that `else`-arm at the primitive level per
+    /// collection: rc1 base → builder consumes-in-place (result stays rc==1) → single drop → balanced. A
+    /// borrow-and-share builder would instead leave the base live after the drop (leak); a non-subsuming
+    /// consume would underflow (double-free). Balance-to-baseline after ONE drop pins neither happens.
+    #[test]
+    fn if_join_shared_rc1_base_subsumed_by_builder_balances_on_single_drop() {
+        // VEC (List family) — 40 elems crosses the 32-leaf boundary into a multi-level spine.
+        {
+            reset();
+            let before = live_nodes();
+            let mut base = op_vec_empty();
+            for i in 0..40 {
+                base = op_vec_push(base, op_box_int(i));
+            }
+            assert_eq!(node_rc(base), 1, "vec: base uniquely owned after dup-skip");
+            let result = op_vec_push(base, op_box_int(999)); // else-arm consumes the rc1 base in place
+            assert_eq!(node_rc(result), 1, "vec: result is the subsumed rc1 base, uniquely owned");
+            op_drop(result); // the single post-if drop
+            assert_eq!(
+                live_nodes(),
+                before,
+                "vec: subsumed base reclaimed by the one drop — no leak, no double-free"
+            );
+        }
+        // SET (CHAMP)
+        {
+            reset();
+            let before = live_nodes();
+            let mut base = op_set_empty();
+            for i in 0..40 {
+                base = sinsert_int(base, i);
+            }
+            assert_eq!(node_rc(base), 1, "set: base uniquely owned after dup-skip");
+            let result = sinsert_int(base, 999);
+            assert_eq!(node_rc(result), 1, "set: result is the subsumed rc1 base");
+            op_drop(result);
+            assert_eq!(
+                live_nodes(),
+                before,
+                "set: subsumed base reclaimed by the one drop — no leak, no double-free"
+            );
+        }
+        // MAP (CHAMP)
+        {
+            reset();
+            let before = live_nodes();
+            let mut base = op_map_empty();
+            for i in 0..40 {
+                base = minsert_int(base, i, i * 2);
+            }
+            assert_eq!(node_rc(base), 1, "map: base uniquely owned after dup-skip");
+            let result = minsert_int(base, 999, 1);
+            assert_eq!(node_rc(result), 1, "map: result is the subsumed rc1 base");
+            op_drop(result);
+            assert_eq!(
+                live_nodes(),
+                before,
+                "map: subsumed base reclaimed by the one drop — no leak, no double-free"
+            );
+        }
+    }
+
     #[test]
     fn set_remove_fbip_shared_version_unaffected() {
         reset();
