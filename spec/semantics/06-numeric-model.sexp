@@ -13046,3 +13046,17 @@
     (def (main) (f (list 1 2 3)))
     (export main)))
   (error CDZ0201))
+
+(case "bsi1 β-substitution discriminates KEYS from VALUES in a NATIVE #record — keys immune, values substituted"
+  (doc "The native-spelling twin of the #5156 field-key immunity class (hardened by #5407's
+        compound_form_of conversion of the lingering native-blind eval recognizers): in
+        `(. #record((= x 5) (= y x)) k)` the field KEYS x/y and the projection KEY are labels — immune
+        to substituting the param x — while the field VALUE x is an ordinary reference and takes the
+        argument. Projecting x gives the literal 5 regardless of the arg; projecting y gives the arg.")
+  (input (do
+    (def (f (: x Int64)) (. #record((= x 5) (= y x)) x))
+    (def (g (: x Int64)) (. #record((= x 5) (= y x)) y))
+    (def (main (: n Int64)) (+ (* 100 (f n)) (g n)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 507 Int64))
+  (call main (: -2 Int64)) (output (: 498 Int64)))
