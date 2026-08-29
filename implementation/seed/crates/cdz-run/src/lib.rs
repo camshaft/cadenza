@@ -3809,7 +3809,29 @@ fn unwrap_named_field(field: &str) -> String {
 /// coerced recursively later). Returns `None` if `s` is not a paren-wrapped group. This is a minimal
 /// scalar-field splitter — sufficient for a fixed-shape SCALAR tuple, where every field is a bare token.
 fn parse_tuple_fields(s: &str) -> Option<Vec<String>> {
-    let inner = s.trim().strip_prefix('(')?.strip_suffix(')')?.trim();
+    // Accept the NATIVE ctor form `#list(…)` / `#tuple(…)` / `#record(…)` / `#map(…)` / `#set(…)` — what the
+    // M3 corpus input-nativization writes — as equivalent to the paren form `(list …)`: strip the leading
+    // `#` so `#head(` becomes `(head `, the EXACT inverse of the nativization. This is a spelling alias on the
+    // OUTERMOST head only (nested #forms in the fields recurse through `coerce_one` → back here), so there is
+    // ONE splitter and no second #-form value parser to drift. Everything below is the existing paren logic.
+    let trimmed = s.trim();
+    let normalized: String;
+    let src: &str = match trimmed.strip_prefix('#') {
+        Some(rest) => match rest.find('(') {
+            Some(p)
+                if !rest[..p].is_empty()
+                    && rest[..p]
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '-' || c == '_') =>
+            {
+                normalized = format!("({} {}", &rest[..p], &rest[p + 1..]);
+                &normalized
+            }
+            _ => trimmed,
+        },
+        None => trimmed,
+    };
+    let inner = src.strip_prefix('(')?.strip_suffix(')')?.trim();
     // Split on whitespace, respecting nested parens (a nested `(…)` field is one token).
     let mut fields = Vec::new();
     let mut depth = 0i32;
@@ -4098,6 +4120,27 @@ mod tests {
             vec!["(x 10)", "(y 3)"]
         );
         assert!(parse_tuple_fields("10").is_none()); // not a paren group
+    }
+
+    #[test]
+    fn tuple_fields_accept_the_native_ctor_head() {
+        // M3 completion: the native #head(…) forms coerce identically to the paren form (the exact inverse
+        // of the corpus input-nativization). Head-only normalization; fields (incl nested #forms) recurse.
+        assert_eq!(parse_tuple_fields("#tuple(10 3)").unwrap(), vec!["10", "3"]);
+        assert_eq!(
+            parse_tuple_fields("#list(1 2 3)").unwrap(),
+            vec!["list", "1", "2", "3"] // the List arm drops the leading `list`, as for `(list …)`
+        );
+        assert_eq!(
+            parse_tuple_fields("#record((= x 42))").unwrap(),
+            vec!["(= x 42)"]
+        );
+        // A nested #form field stays whole (its own coerce_one recursion re-enters here).
+        assert_eq!(
+            parse_tuple_fields("#list(#record((= x 1)) #record((= x 2)))").unwrap(),
+            vec!["list", "#record((= x 1))", "#record((= x 2))"]
+        );
+        assert!(parse_tuple_fields("#nope").is_none()); // `#head` without a paren group is not a ctor form
     }
 
     #[test]
