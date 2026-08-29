@@ -2294,6 +2294,29 @@ fn emit_match_list(
     emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
     use crate::core::{ListArmCond, PathStep};
+    // RECOMPILABILITY FENCE (breaker mfp1/mfp2, #5472 class): a list-match whose scrutinee is a `ListNew`
+    // carrying a RUNTIME-VALUED (non-constant) `MapNew` element does NOT round-trip. The optimizer inlines
+    // the list literal here, but a MAP-KEY sub-pattern into a runtime-valued map element (`(list #map((= 5
+    // v)) _r)`) is desugared to a runtime presence-chain (the #5472 fence). Re-emitting that de-sugared arm
+    // and RECOMPILING it re-fuses into a nested map-key match whose map sits at a nested `[Elem(i), …]` path
+    // inside the (then runtime-treated) list — a shape the lowering itself declines (`lower_map_field`:
+    // "a nested map pattern over a runtime/non-constant scrutinee is not yet matched"). That yields an
+    // UN-compilable `program1` (a corpus-cadenza RED, not a skip). Until the runtime nested-map matcher is
+    // wired (option (a): re-emit the map match against the BOUND element so it round-trips), DECLINE the
+    // shape at emit time so the case skips rather than emitting a program the compiler cannot re-lower. A
+    // CONSTANT map element folds fine (`fold_sum_path`), so only a NON-const map element trips this.
+    if let Core::ListNew { elems } = core_of(db, scrutinee)
+        && elems.iter().any(|&e| {
+            matches!(core_of(db, e), Core::MapNew { .. }) && !crate::lower::is_const_value(db, e)
+        })
+    {
+        return Err(Reject::decline(
+            "the Cadenza backend does not yet re-emit a list match whose scrutinee carries a \
+             runtime-valued map element (a nested map-key sub-pattern over a runtime map does not \
+             round-trip — the #5472 fence)"
+                .to_string(),
+        ));
+    }
     let match_head = b.name("match");
     let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
     let mut children = vec![match_head, scrut_node];

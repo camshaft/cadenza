@@ -27561,7 +27561,7 @@ fn core_is_const_value(db: &mut Db, c: &Core) -> bool {
     }
 }
 
-fn is_const_value(db: &mut Db, id: StructId) -> bool {
+pub(crate) fn is_const_value(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::ConstInt(_)
         | Core::ConstBool(_)
