@@ -242,6 +242,62 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     Ok(crate::codec::encode(&arenas))
 }
 
+/// Emit a NO-EXPORT `(do (def …)…)` FRAGMENT of ONLY the definitions whose source name is in `subset` —
+/// the building block of the two-stage standalone test-shred (v-cdz-crate-split): a shared-closure library
+/// and each per-test body lower to separate content-addressable fragments that a later splice concatenates
+/// (`[closure-defs ++ test-defs ++ (export test-main)]`), so the closure lowers ONCE and each per-test build
+/// pays only its own body.
+///
+/// Unlike [`emit`], this does NOT run the reachable-from-export DCE and emits NO `(export …)`: it emits
+/// EXACTLY the named defs (no transitive expansion — a per-test fragment names just its `@test` def; the
+/// closure it calls is a SEPARATE fragment, referenced by name via the ordinary `Core::Call` surface and
+/// resolved at splice time). The FULL program must still be in scope (`db`/`layout` from a normal compile,
+/// so the subset's bodies name-resolve + type against the closures they call, and `layout.lifted` carries
+/// their lifted lambdas) — the caller passes the whole suite (its `@test`/`export` roots make `layout`
+/// non-empty), and this picks the named subset out of it.
+///
+/// Iterating `layout.order` (not `subset` insertion order) keeps the emit order deterministic, so identical
+/// (program, subset) input → BYTE-IDENTICAL output — the content-stability the CA-cache keys on.
+///
+/// `include_type_decls`: emit the user `(type …)` declarations too. Set it for the ONE fragment that owns
+/// the shared decls (the closure) and clear it for the others, so the spliced program carries each `(type
+/// …)` exactly once (a duplicate decl would re-define on recompile).
+pub fn emit_fragment(
+    db: &mut Db,
+    layout: &Layout,
+    subset: &std::collections::HashSet<String>,
+    include_type_decls: bool,
+) -> Result<Vec<u8>, Reject> {
+    let mut b = Builder::new();
+    let do_head = b.name("do");
+    let mut root_children = vec![do_head];
+
+    let mut emitted: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    if include_type_decls {
+        for i in 0..db.type_decls.len() {
+            let decl = db.type_decls[i].clone();
+            if db.is_user_node(decl.occ)
+                && let Some(node) = emit_type_decl(db, &mut b, &decl)
+            {
+                root_children.push(node);
+                emitted.insert(decl.occ);
+            }
+        }
+    }
+
+    let lifted: std::rc::Rc<[crate::lower::LiftedLambda]> = layout.lifted.clone().into();
+    // ONLY the named subset, in `layout.order` (deterministic) — NO exports (added at splice time).
+    for &def in &layout.order {
+        if subset.contains(&db.defs[def].name) {
+            root_children.push(emit_def(db, &mut b, def, &emitted, &lifted)?);
+        }
+    }
+
+    let root = b.list(root_children);
+    let arenas = b.finish(root);
+    Ok(crate::codec::encode(&arenas))
+}
+
 /// Reconstruct a user sum's `(type <Name> (<Variant> <PayloadTy>…)…)` declaration, or `None` for a sum
 /// this slice does not emit: a GENERIC sum (type parameters — the payload is a type variable) or an OPEN
 /// sum (row-variable tail). A MULTI-variant sum's values are `Ty::Sum`; a SINGLE-variant sum's values are
