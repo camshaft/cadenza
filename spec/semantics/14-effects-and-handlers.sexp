@@ -85,6 +85,18 @@
   (input (do (effect E (op get Nonesuch)) (def (main) 0) (export main)))
   (error CDZ0101))
 
+; An operation declared with NO type at all — `(op get)` — is rejected at the declaration (CDZ0201 "this
+; operation has no type"). Performing such an op used to leak the internal op-record "(effect-op Any)" plus a
+; no-home CDZ0401 consequent; those are deduped so ONE primary decl-site error remains → (no-other-errors).
+; (migrated from rcdzc an_operation_declared_with_no_type_is_rejected_cdz0201.)
+(case "an operation declared with no type is rejected"
+  (input (do (effect E (op get)) (def (main) 1) (export main)))
+  (error CDZ0201 (message "this operation has no type")))
+
+(case "a performed no-type operation reports one decl-site error, deduping the op-record + CDZ0401 leaks"
+  (input (do (effect E (op get)) (def (main) (E.get)) (export main)))
+  (error CDZ0201 (message "this operation has no type")) (no-other-errors))
+
 (case "a branch-dead host-call leaks no import or host-call at any optimization level"
   (doc    "Capability-safety fence at the #4805 (force-lower-all POST-layout) seam: an effectful helper `io`
            that delegates `ask.ask` to the host is referenced ONLY inside a `(if false …)` branch that const-
