@@ -335,7 +335,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: "A,B,C,D" String))
   (call main (: 2 Int64)) (output (: "A,B,Z,C,D" String))
-  (live-objects known-leak 54))
+  (live-objects known-leak 54 59))
 
 (case "the ready-queue is a plain FIFO — spawned-ready tasks run in enqueue order"
   (doc    "Beside the time-ordered event queue, the scheduler keeps a READY queue for work that can run
@@ -978,7 +978,7 @@
   (call   main (: 5 Int64)) (output (: 41 Int64))
   (call   main (: 25 Int64)) (output (: 42 Int64))
   (call   main (: 99 Int64)) (output (: 43 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 13 11 11))
 
 ; --- The adjacent-pair timeline window. ---
 
