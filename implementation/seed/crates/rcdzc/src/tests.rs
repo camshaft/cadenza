@@ -22951,42 +22951,9 @@ mod diagnostics {
         );
     }
 
-    #[test]
-    fn a_duplicate_type_declaration_is_rejected_and_carries_a_delete_fix() {
-        // A module's TYPE names are a fixed set exactly as its def / export / variant / operation names are
-        // (the sixth closed name-set). `(type T (A)) (type T (B))` declared `T` twice — silently accepted,
-        // with `T` resolving to the FIRST so a `T.B` reference failed confusingly ("record has no field
-        // `B`"). Now the second declaration is CDZ0201 with a DELETE fix removing the redundant `(type …)`
-        // form (the same repair the duplicate export/variant/op gets).
-        let d = crate::diagnostics(&mut Db::load(parse(
-            "(module m (type T (A)) (type T (B)) (def (f (: x T)) x) (export f))",
-        )))
-        .into_iter()
-        .find(|d| d.message.contains("type `T`"))
-        .expect("a duplicate type declaration is reported");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("declared more than once"),
-            "names the fault: {}",
-            d.message
-        );
-        assert_eq!(
-            d.fix.as_ref().map(|f| f.kind),
-            Some(crate::abi::FixKind::Delete),
-            "dup type carries a delete fix: {:?}",
-            d.fix
-        );
-        // NO OVERREACH: two DIFFERENT type names are not a duplicate — a clean program stays clean.
-        let clean = crate::diagnostics(&mut Db::load(parse(
-            "(module m (type T (A)) (type U (B)) (def (main) (T.A)) (export main))",
-        )));
-        assert!(
-            !clean
-                .iter()
-                .any(|d| d.message.contains("declared more than once")),
-            "two distinct type names are not a duplicate: {clean:?}"
-        );
-    }
+    // (a_duplicate_type_declaration_is_rejected_and_carries_a_delete_fix migrated to corpus 11-modules
+    //  "a duplicate type declaration is rejected with a delete fix" (CDZ0201 + (fix (kind delete))) + the
+    //  no-overreach twin "two distinct type names are not a duplicate" — fix-quality graded via C1 #5255.)
 
     #[test]
     fn a_malformed_variant_position_in_a_type_declaration_is_rejected() {

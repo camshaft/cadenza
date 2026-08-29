@@ -421,6 +421,24 @@
   (input  (do (def (main) 42) (export main) (export main)))
   (error  CDZ0201))
 
+(case "a duplicate type declaration is rejected with a delete fix"
+  (doc    "A module's TYPE names are a fixed set exactly as its def / export / variant / operation names
+           (the sixth closed name-set). `(type T (A)) (type T (B))` declares `T` twice — the same fixed-
+           name-set collision as a duplicate def or export, CDZ0201 (declared more than once), carrying a
+           DELETE fix on the redundant second `(type …)`. Before, `T` silently resolved to the FIRST so a
+           `T.B` reference failed confusingly. Migrated from rcdzc
+           a_duplicate_type_declaration_is_rejected_and_carries_a_delete_fix (fix-quality now graded via C1).")
+  (input  (do (type T (A)) (type T (B)) (def (f (: x T)) x) (export f)))
+  (error  CDZ0201 (message "declared more than once") (fix (kind delete))))
+
+(case "two distinct type names are not a duplicate"
+  (doc    "NO OVERREACH twin of the duplicate-type reject: two DIFFERENTLY-named types coexist (the closed
+           name-set collision keys on the NAME, not on there being two `(type …)` forms). `(type T (A))`
+           + `(type U (B))` compiles clean and `main` returns `(T.A)` — a nullary variant of `T`.")
+  (input  (do (type T (A)) (type U (B)) (def (main) (T.A)) (export main)))
+  (call   main)
+  (output (: unit T)))
+
 ; --- A non-kebab export name crosses under a normalized kebab-case extern name ------------------------
 ; A Cadenza identifier may contain uppercase letters (`fA`, `Foo`) or underscores (`my_func`) — all valid
 ; source names — but the component model requires an export's extern name to be KEBAB-CASE (lowercase
