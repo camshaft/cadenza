@@ -316,6 +316,31 @@ pub fn check_live_objects(
     None
 }
 
+/// Clamp each observed live-cell count UP to its expected threshold — the LEAK-CEILING tolerance for a
+/// KNOWN-LEAK case graded on a strictly-safer path (the corpus-cadenza cadenza-hop, opted in via the
+/// `--tolerate-fewer-live-objects` flag). A known-leak `N` is a TOLERATED-leak CEILING, so a path that
+/// reclaims MORE (ends at `count <= N`) is strictly safer and must PASS; only EXCEEDING the ceiling
+/// (`count > N`) is a real worse-leak regression. Clamping `n -> max(n, threshold)` makes [`check_live_objects`]
+/// see `== threshold` (pass) for `<=` and still `> threshold` (fail) for an over-count — WITHOUT relaxing the
+/// direct path (which never clamps, so it stays an exact `== N` drift guard). `threshold` is the per-call
+/// count when positional, else the uniform expected. A `None` (no-heap) trial stays `None`.
+pub fn leak_ceiling_clamp(
+    per_trial: &[Option<u32>],
+    uniform: u32,
+    per_call: Option<&[u32]>,
+) -> Vec<Option<u32>> {
+    per_trial
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            c.map(|n| {
+                let threshold = per_call.and_then(|l| l.get(i).copied()).unwrap_or(uniform);
+                n.max(threshold)
+            })
+        })
+        .collect()
+}
+
 /// Grade a whole case: decode is the caller's (it has the bytes); this orchestrates the trials + checks,
 /// calling `run_trial` for each RUNNABLE (output/trap, compiled) trial to obtain its [`Outcome`]. Compile
 /// outcomes (error/declines) + warns are graded from `compile_status`/`compile_diag` (no run). Reproduces
@@ -2281,6 +2306,33 @@ mod tests {
         );
         // Length mismatch (list ≠ trial count) is an authoring Fail, not a silent under-check.
         assert!(check_live_objects(fletcher, Some(3), Some(&[3, 13])).is_some());
+    }
+
+    #[test]
+    fn leak_ceiling_clamp_passes_fewer_and_fails_over() {
+        // The 0023 corpus-cadenza tolerance: a KNOWN-LEAK ceiling N; the cadenza-hop reclaiming FEWER
+        // (count <= N) is strictly safer → clamp-then-check PASSES; an over-count (> N) still FAILS.
+        // uniform ceiling 69: hop-66 (3 fewer, the real 0023 profile) passes; direct-69 passes; over-72 fails.
+        assert_eq!(leak_ceiling_clamp(&[Some(66)], 69, None), vec![Some(69)]); // clamped up to the ceiling
+        assert_eq!(
+            check_live_objects(&leak_ceiling_clamp(&[Some(66)], 69, None), Some(69), None),
+            None
+        );
+        assert_eq!(
+            check_live_objects(&leak_ceiling_clamp(&[Some(69)], 69, None), Some(69), None),
+            None
+        );
+        assert!(
+            check_live_objects(&leak_ceiling_clamp(&[Some(72)], 69, None), Some(69), None)
+                .is_some()
+        );
+        // positional ceilings: each trial clamps to its own list[i]; a no-heap None stays None.
+        let clamped = leak_ceiling_clamp(&[Some(30), None, Some(42)], 0, Some(&[33, 0, 45]));
+        assert_eq!(clamped, vec![Some(33), None, Some(45)]);
+        assert_eq!(
+            check_live_objects(&clamped, Some(33), Some(&[33, 0, 45])),
+            None
+        );
     }
 
     /// `decode_test_run` reads a `(live-objects <N>)` form into `TestRun.live_objects` (and the
