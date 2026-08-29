@@ -18,7 +18,8 @@ pub mod spans;
 pub mod target;
 
 pub use abi::{
-    Artifact, Diagnostic, DiagnosticFix, FixKind, Severity, WRAP_HOLE, wrap_prefix_suffix,
+    Artifact, CompileOutput, Diagnostic, DiagnosticFix, FixKind, Severity, WRAP_HOLE,
+    wrap_prefix_suffix,
 };
 pub use opt::OptLevel;
 pub use sidecar::{Query, Request, decode, encode};

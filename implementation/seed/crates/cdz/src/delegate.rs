@@ -515,6 +515,10 @@ pub fn run_query_over_inputs(
     rcdzc::CompileOutput {
         artifacts: vec![rcdzc::Artifact::new(result_kind, "0", output.stdout)],
         diagnostics: vec![],
+        // A DELEGATED (subprocess) compile ran no in-process CSE partition — the metric is `rcdzc`'s own
+        // test instrumentation, always 0 here (this field is always-present since CompileOutput moved to
+        // the shared crate).
+        cse_partition_core_eq_calls: 0,
     }
 }
 
@@ -524,6 +528,8 @@ fn empty_output() -> rcdzc::CompileOutput {
     rcdzc::CompileOutput {
         artifacts: vec![],
         diagnostics: vec![],
+        // No compile ran (delegated failure shape); the CSE metric is always 0 here.
+        cse_partition_core_eq_calls: 0,
     }
 }
 
