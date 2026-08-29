@@ -117,7 +117,7 @@
             (effect Fresh (op next (-> Int64)))
             (def (main)
               (handle Fresh 0 ((next () s (resume s (+ s 1))))
-                (let ((p ("tuple" (Fresh.next) (Fresh.next)))) (+ (. p 0) (. p 1))))) (export main)))
+                (let ((p #tuple((Fresh.next) (Fresh.next)))) (+ (. p 0) (. p 1))))) (export main)))
   (output (: 1 Int64)))
 
 (case "performs in the FIELD VALUES of a RECORD constructor thread in written order"
@@ -173,7 +173,7 @@
             (effect Fresh (op next (-> Int64)))
             (def (main)
               (handle Fresh 0 ((next () s (resume s (+ s 1))))
-                (match (Some ("tuple" (Fresh.next) (Fresh.next)))
+                (match (Some #tuple((Fresh.next) (Fresh.next)))
                   ((Some p) (+ (. p 0) (. p 1)))
                   (None 99)))) (export main)))
   (output (: 1 Int64)))

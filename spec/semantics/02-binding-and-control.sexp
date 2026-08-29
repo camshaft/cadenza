@@ -763,8 +763,8 @@
            false → falls to the bare `(Some r)` arm → `r.y` = 3; n=-1 → `None` → -1.")
   (input (do
         (def (main (: n Int64))
-          (match (if (> n 0) (Some (record (= x n) (= y 3))) (None))
-            ((guard (Some (record (= x a) (= y b))) (> a 5)) (+ (* a 100) b))
+          (match (if (> n 0) (Some #record((= x n) (= y 3))) (None))
+            ((guard (Some #record((= x a) (= y b))) (> a 5)) (+ (* a 100) b))
             ((Some r) (. r y))
             ((None u) -1)))
         (export main)))
@@ -1280,7 +1280,7 @@
            7 8) 0))` = 7 (the first element of the built tuple), NOT the bound function. A binding shadows
            the alias name, never the string primitive (core-semantics.md §A Compound Value Has A Symbol
            Constructor And A Shadowable Alias — the string spelling reaches the symbol constructor itself).")
-  (input  (do (def (main) (let ((tuple (fn (a b) (+ a b)))) (. ("tuple" 7 8) 0))) (export main)))
+  (input  (do (def (main) (let ((tuple (fn (a b) (+ a b)))) (. #tuple(7 8) 0))) (export main)))
   (output (: 7 Int64)))
 
 (case "a parameter named tuple is applied as the bound function"

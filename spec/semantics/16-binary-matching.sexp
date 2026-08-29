@@ -148,7 +148,7 @@
   (error  CDZ0220 (message "total 4 bits") (message "add 4 more bits to reach 1 byte")))
 
 (case "a non-final unsized bytes segment is an ill-formed binary form"
-  (input  (do (def (main) (bin (bytes (Bytes.of (list 1))) (u8 2))) (export main)))
+  (input  (do (def (main) (bin (bytes (Bytes.of #list(1))) (u8 2))) (export main)))
   (error  CDZ0220))
 
 (case "a bit-field with a negative width is ill-formed (width must be a constant natural)"

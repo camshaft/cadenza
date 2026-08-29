@@ -159,8 +159,8 @@
            x = 4_000_000_000_000_000_000 the exact 3x = 1.2e19 exceeds Int64.max, so it TRAPS (no association
            fits). At x = 1_000_000_000 the exact 3x = 3e9 is in range → 3e9. Pins the stable boundary, NOT the
            implementation-defined net-fits trap point.")
-  (input  (do (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list h .. t) (+ h (sum t)))))
-              (def (main (: x Int64)) (sum (list x x x)))
+  (input  (do (def (sum (: xs (List Int64))) (match xs (#list() 0) (#list(h .. t) (+ h (sum t)))))
+              (def (main (: x Int64)) (sum #list(x x x)))
               (export main)))
   (call   main (: 4000000000000000000 Int64)) (trap   "integer overflow")
   (call   main (: 1000000000 Int64)) (output (: 3000000000 Int64)))
@@ -13029,8 +13029,8 @@
         (The cadenza hop still declines this shape — a named nested-sum-step gap, banked separately.)")
   (input (do
     (def (main (: n Int64))
-      (match (if (> n 0) (Some (record (= x n) (= y 3))) (None))
-        ((guard (Some (record (= x a) (= y b))) (> a 5)) (+ (* a 100) b))
+      (match (if (> n 0) (Some #record((= x n) (= y 3))) (None))
+        ((guard (Some #record((= x a) (= y b))) (> a 5)) (+ (* a 100) b))
         ((Some r) (. r y))
         ((None _u) -1)))
     (export main)))
@@ -13142,9 +13142,9 @@
         Refutable params stay rejected (the #5346 CDZ0210 pins cover those).")
   (input (do
     (def (getn #record((= x a))) a)
-    (def (getc (record (= y b))) b)
+    (def (getc #record((= y b))) b)
     (def (gett #tuple(p q)) (+ p q))
-    (def (main (: n Int64)) (+ (getn #record((= x n))) (+ (getc (record (= y 20))) (gett #tuple(n 4)))))
+    (def (main (: n Int64)) (+ (getn #record((= x n))) (+ (getc #record((= y 20))) (gett #tuple(n 4)))))
     (export main)))
   (call main (: 7 Int64)) (output (: 38 Int64))
   (call main (: -3 Int64)) (output (: 18 Int64)))
@@ -13155,7 +13155,7 @@
         overflow. Strict construction forces the element, so the compare never decides: the program
         TRAPS with the specific 'integer overflow' kind (not a generic unreachable), matching oracle+rust.")
   (input (do (def (r n) (if (<= n 0) -9223372036854775808 (* n (r (- n 1)))))
-             (def (main) (not (= (list 255 (r 4) (if (<= -1000000 -1000000) -1000000 -1000000)) (list -1000000 -1000000 -1000000))))
+             (def (main) (not (= #list(255 (r 4) (if (<= -1000000 -1000000) -1000000 -1000000)) #list(-1000000 -1000000 -1000000))))
              (export main)))
   (call main)
   (trap "integer overflow"))
@@ -13165,7 +13165,7 @@
         reaches (<< 1 -2147483648) — a shift count far out of range; the emitted range guard traps
         via unreachable. Pins strict construction forcing the element AND the shift-guard trap kind.")
   (input (do (def (r n) (if (<= n 0) -2147483648 (<< n (r (- n 1)))))
-             (def (main) (= (list -1 (r 2) 0) (list -1000000 -1000000 -1000000)))
+             (def (main) (= #list(-1 (r 2) 0) #list(-1000000 -1000000 -1000000)))
              (export main)))
   (call main)
   (trap "unreachable"))
@@ -13295,8 +13295,8 @@
         element's own pattern AND at the outer spine — n·100 + len(inner)·10 + len(outer) = n·100+22
         for a [[n,5,6],[7],[8]] input. Dual-path verified, byte-idempotent.")
   (input (do
-    (def (f (: xs (List (List Int64)))) (match xs ((list (list a .. inner) .. outer) (+ (* a 100) (+ (* (List.len inner) 10) (List.len outer)))) (_ -1)))
-    (def (main (: n Int64)) (f (list (list n 5 6) (list 7) (list 8))))
+    (def (f (: xs (List (List Int64)))) (match xs (#list(#list(a .. inner) .. outer) (+ (* a 100) (+ (* (List.len inner) 10) (List.len outer)))) (_ -1)))
+    (def (main (: n Int64)) (f #list(#list(n 5 6) #list(7) #list(8))))
     (export main)))
   (call main (: 3 Int64)) (output (: 322 Int64))
   (call main (: 9 Int64)) (output (: 922 Int64)))
@@ -13306,8 +13306,8 @@
         not a supported shape — exactly one binder follows `..` (rest-to-end). Clear CDZ0201 with the
         rule spelled in the message; identical on both compile paths.")
   (input (do
-    (def (f (: xs (List Int64))) (match xs ((list a .. mid b) (+ a b)) (_ -1)))
-    (def (main) (f (list 1 2 3)))
+    (def (f (: xs (List Int64))) (match xs (#list(a .. mid b) (+ a b)) (_ -1)))
+    (def (main) (f #list(1 2 3)))
     (export main)))
   (error CDZ0201))
 
@@ -13385,7 +13385,7 @@
         byte-idempotent; live 1 = the surviving closure-list cell (the known retained-cell class).")
   (input (do
     (def (main (: n Int64))
-      (do (def fs (list (fn ((: k Int64)) (+ k 1)) (fn ((: k Int64)) (* k 2))))
+      (do (def fs #list((fn ((: k Int64)) (+ k 1)) (fn ((: k Int64)) (* k 2))))
           (match (List.at fs (if (> n 0) 0 1)) ((Some f) (f n)) ((None _u) -1))))
     (export main)))
   (call main (: 7 Int64)) (output (: 8 Int64))
@@ -13410,7 +13410,7 @@
         match residual becomes a disc-folded root and DECLINES (the known named face). This case pins
         the budget's floor — if the fold/inline depth budget silently shrinks, this flips to a decline.
         Value = innermost a + b = n+1.")
-  (input (do (def (main (: n Int64)) (match (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple n 1) 2) 3) 4) 5) 6) 7) 8) 9) 10) 11) 12) 13) 14) 15) 16) 17) 18) 19) 20) 21) 22) 23) 24) (#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(a b) c0) c1) c2) c3) c4) c5) c6) c7) c8) c9) c10) c11) c12) c13) c14) c15) c16) c17) c18) c19) c20) c21) c22) (+ a b)))) (export main)))
+  (input (do (def (main (: n Int64)) (match #tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(n 1) 2) 3) 4) 5) 6) 7) 8) 9) 10) 11) 12) 13) 14) 15) 16) 17) 18) 19) 20) 21) 22) 23) 24) (#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(a b) c0) c1) c2) c3) c4) c5) c6) c7) c8) c9) c10) c11) c12) c13) c14) c15) c16) c17) c18) c19) c20) c21) c22) (+ a b)))) (export main)))
   (call main (: 7 Int64)) (output (: 8 Int64))
   (call main (: -3 Int64)) (output (: -2 Int64)))
 
@@ -13538,7 +13538,7 @@
     (def (add (: a Int64) (: b Int64)) (+ a b))
     (def (mul (: a Int64) (: b Int64)) (* a b))
     (def (main (: n Int64))
-      (do (def fs (list (add 100) (mul 3)))
+      (do (def fs #list((add 100) (mul 3)))
           (match (List.at fs (if (> n 0) 0 1)) ((Some f) (f n)) ((None _u) -999))))
     (export main)))
   (call main (: 7 Int64)) (output (: 107 Int64))
@@ -13566,7 +13566,7 @@
         the SAME ctor dead-LET-bound TRAPS (#5328/#5332, the strict_force_eval set). The boundary is the
         SPELLING: let-binding = reached-and-forced; bare do-item = discarded-and-elided (§283 family).
         42 at both d=0 (trap elided) and d=5.")
-  (input (do (def (main (: d Int64)) (do (list 1 (/ 5 d)) 42)) (export main)))
+  (input (do (def (main (: d Int64)) (do #list(1 (/ 5 d)) 42)) (export main)))
   (call main (: 0 Int64)) (output (: 42 Int64))
   (call main (: 5 Int64)) (output (: 42 Int64)))
 
@@ -13641,8 +13641,8 @@
         byte-idempotent.")
   (input (do
     (def (main (: n Int64))
-      (do (def r (record (= q (Qty.of n (Unit.base #"meter"))) (= k 5)))
-          (def xs (list (Qty.of 1 (Unit.base #"meter")) (Qty.of (* n 2) (Unit.base #"meter"))))
+      (do (def r #record((= q (Qty.of n (Unit.base #"meter"))) (= k 5)))
+          (def xs #list((Qty.of 1 (Unit.base #"meter")) (Qty.of (* n 2) (Unit.base #"meter"))))
           (+ (* 100 (Qty.value (. r q)))
              (+ (* 10 (. r k))
                 (Qty.value (match (List.at xs 1) ((Some v) v) ((None _u) (Qty.of 0 (Unit.base #"meter")))))))))

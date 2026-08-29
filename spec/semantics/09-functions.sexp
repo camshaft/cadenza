@@ -7490,14 +7490,14 @@
            backends accept for a `Bytes` argument (the canonical `(: (list …) Bytes)` spelling, as the ep5
            multi-param case uses); the wasm entry-param lift copies those bytes into a value-heap Bytes.")
   (input  (do (def (main (: b Bytes)) (Bytes.len b)) (export main)))
-  (call   main (: (list 1 2 3) Bytes))
+  (call   main (: #list(1 2 3) Bytes))
   (output (: 3 Int64)))
 
 (case "a List entry argument is marshalled as a vec!"
   (doc    "`(def (main (: xs (List Int64))) (List.len xs))` called with `(list 1 2 3)` → 3. The driver
            marshals it as `vec![1, 2, 3]`, not the bare `(list 1 2 3)` text.")
   (input  (do (def (main (: xs (List Int64))) (List.len xs)) (export main)))
-  (call   main (: (list 1 2 3) (List Int64)))
+  (call   main (: #list(1 2 3) (List Int64)))
   (output (: 3 Int64)))
 
 (case "an Option (sum) entry argument is marshalled as a native Option"
@@ -8190,7 +8190,7 @@
   (input (do
     (def (main (: b Bytes) (: s String)) (+ (* 10 (Bytes.len b)) (String.byte-len s)))
     (export main)))
-  (call main (: (list 1 2 3) Bytes) (: "ab" String))
+  (call main (: #list(1 2 3) Bytes) (: "ab" String))
   (output (: 32 Int64)))
 
 (case "ep6 a String entry param passed THROUGH to a helper"
@@ -8214,21 +8214,21 @@
       (match (List.at xs i) ((Option.Some v) (+ v (suml xs (+ i 1)))) ((Option.None) 0)))
     (def (main (: xs (List Int64))) (suml xs 0))
     (export main)))
-  (call main (: (list 1 2 3) (List Int64)))
+  (call main (: #list(1 2 3) (List Int64)))
   (output (: 6 Int64)))
 
 (case "el2 TWO List entry params measure independently"
   (input (do
     (def (main (: a (List Int64)) (: b (List Int64))) (+ (* 10 (List.len a)) (List.len b)))
     (export main)))
-  (call main (: (list 1 2 3) (List Int64)) (: (list 9) (List Int64)))
+  (call main (: #list(1 2 3) (List Int64)) (: #list(9) (List Int64)))
   (output (: 31 Int64)))
 
 (case "el3 an EMPTY List entry param has length zero"
   (input (do
     (def (main (: xs (List Int64))) (List.len xs))
     (export main)))
-  (call main (: (list) (List Int64)))
+  (call main (: #list() (List Int64)))
   (output (: 0 Int64)))
 
 ; -- breaker batch 444 (2026-08-27): slice-2a boundary witness, cut the hour #3836 landed. A
@@ -8240,7 +8240,7 @@
     (def (main (: xs (List Int64)))
       (match (List.at xs 1) ((Option.Some v) v) ((Option.None) -1)))
     (export main)))
-  (call main (: (list 7 42 9) (List Int64)))
+  (call main (: #list(7 42 9) (List Int64)))
   (output (: 42 Int64)))
 
 ; -- breaker batch 448 (2026-08-27): the slice-2a FOLLOWUP rungs — per-width elements and a
@@ -8255,7 +8255,7 @@
     (def (main (: xs (List UInt8)))
       (+ (* 100 (List.len xs)) (match (List.at xs 1) ((Option.Some v) (Int64.of v)) ((Option.None) -1))))
     (export main)))
-  (call main (: (list 7 9 5) (List UInt8)))
+  (call main (: #list(7 9 5) (List UInt8)))
   (output (: 309 Int64)))
 
 (case "el6 a List-of-Int32 entry param measures and reads an element"
@@ -8263,7 +8263,7 @@
     (def (main (: xs (List Int32)))
       (+ (* 100 (List.len xs)) (match (List.at xs 1) ((Option.Some v) (Int64.of v)) ((Option.None) -1))))
     (export main)))
-  (call main (: (list 4 8) (List Int32)))
+  (call main (: #list(4 8) (List Int32)))
   (output (: 208 Int64)))
 
 (case "el7 a List-of-Float64 entry param measures and compares an element"
@@ -8271,7 +8271,7 @@
     (def (main (: xs (List Float64)))
       (+ (* 100 (List.len xs)) (match (List.at xs 1) ((Option.Some v) (if (> v 2.5) 1 0)) ((Option.None) -1))))
     (export main)))
-  (call main (: (list 1.5 3.5) (List Float64)))
+  (call main (: #list(1.5 3.5) (List Float64)))
   (output (: 201 Int64)))
 
 (case "el8 a nested List-of-List entry param measures both levels"
@@ -8279,7 +8279,7 @@
     (def (main (: xs (List (List Int64))))
       (+ (* 100 (List.len xs)) (match (List.at xs 1) ((Option.Some inner) (List.len inner)) ((Option.None) -1))))
     (export main)))
-  (call main (: (list (list 1) (list 2 3)) (List (List Int64))))
+  (call main (: #list(#list(1) #list(2 3)) (List (List Int64))))
   (output (: 202 Int64)))
 
 ; -- breaker batch 449 (2026-08-27): slice-2a COMPOSITION probes — what the escape-gate admits and
@@ -8295,7 +8295,7 @@
       (let ((f (fn ((: k Int64)) (+ k (List.len xs)))))
         (+ (f 10) (f 100))))
     (export main)))
-  (call main (: (list 1 2 3) (List Int64)))
+  (call main (: #list(1 2 3) (List Int64)))
   (output (: 116 Int64)))
 
 (case "elc5 the capturing closure crosses a higher-order call boundary and answers from both invocations"
@@ -8304,7 +8304,7 @@
     (def (main (: xs (List Int64)))
       (twice (fn ((: k Int64)) (+ k (List.len xs))) 1))
     (export main)))
-  (call main (: (list 1 2 3) (List Int64)))
+  (call main (: #list(1 2 3) (List Int64)))
   (output (: 17 Int64)))
 
 (case "elc6 a MIXED scalar+non-scalar bare export param list still gates B2 off (opt-level equivalent)"
@@ -8322,7 +8322,7 @@
       (let ((f (fn ((: k Int64)) (+ k (List.len xs)))))
         (+ (f base) (f 100))))
     (export main)))
-  (call main (: (list 1 2 3) (List Int64)) (: 10 Int64))
+  (call main (: #list(1 2 3) (List Int64)) (: 10 Int64))
   (output (: 116 Int64)))
 
 (case "elc7 TWO closures capturing the same lifted List entry param keep B2 gated off (opt-level equivalent)"
@@ -8338,7 +8338,7 @@
             (g (fn ((: j Int64)) (* j (List.len xs)))))
         (+ (f 10) (g 3))))
     (export main)))
-  (call main (: (list 1 2 3) (List Int64)))
+  (call main (: #list(1 2 3) (List Int64)))
   (output (: 22 Int64)))
 
 (case "an UNREFERENCED non-scalar-param helper stays opt-level-equivalent under force-lower-all"
@@ -8364,7 +8364,7 @@
       (let ((m (Map.insert (Map.insert Map.empty xs 7) #list(9 9) 5)))
         (match (Map.lookup m xs) ((Option.Some v) v) ((Option.None) -1))))
     (export main)))
-  (call main (: (list 4 5 6) (List Int64)))
+  (call main (: #list(4 5 6) (List Int64)))
   (output (: 7 Int64)))
 
 (case "elc4 List.concat consumes two lifted List entry params into one measured list"
@@ -8372,7 +8372,7 @@
     (def (main (: a (List Int64)) (: b (List Int64)))
       (List.len (List.concat a b)))
     (export main)))
-  (call main (: (list 1 2 3) (List Int64)) (: (list 9 8) (List Int64)))
+  (call main (: #list(1 2 3) (List Int64)) (: #list(9 8) (List Int64)))
   (output (: 5 Int64)))
 
 ; -- breaker batch 450 (2026-08-27): slice-2a × the effects fold. The lifted list param read from
@@ -8387,7 +8387,7 @@
       (handle St 3 ((get (u) s (resume s s)))
         (+ (St.get) (List.len xs))))
     (export main)))
-  (call main (: (list 1 2 3) (List Int64)))
+  (call main (: #list(1 2 3) (List Int64)))
   (output (: 6 Int64)))
 
 (case "ele2 the lifted List entry param is read inside a handler ARM feeding the resume value"
@@ -8397,7 +8397,7 @@
       (handle St 10 ((get (u) s (resume (+ s (List.len xs)) s)))
         (St.get)))
     (export main)))
-  (call main (: (list 1 2 3) (List Int64)))
+  (call main (: #list(1 2 3) (List Int64)))
   (output (: 13 Int64)))
 
 (case "ele3 the lifted List entry param SEEDS the handler state"
@@ -8407,7 +8407,7 @@
       (handle St (List.len xs) ((get (u) s (resume s s)))
         (St.get)))
     (export main)))
-  (call main (: (list 1 2 3) (List Int64)))
+  (call main (: #list(1 2 3) (List Int64)))
   (output (: 3 Int64)))
 
 ; -- breaker batch 451 (2026-08-27): boundary VALUES through #3852's per-width list lift — the
@@ -8421,7 +8421,7 @@
       (+ (* 1000 (match (List.at xs 0) ((Option.Some v) (Int64.of v)) ((Option.None) -1)))
          (match (List.at xs 2) ((Option.Some v) (Int64.of v)) ((Option.None) -1))))
     (export main)))
-  (call main (: (list 255 7 0) (List UInt8)))
+  (call main (: #list(255 7 0) (List UInt8)))
   (output (: 255000 Int64)))
 
 (case "wl2 a List-of-Int32 entry param's negative element sign-extends on read"
@@ -8429,7 +8429,7 @@
     (def (main (: xs (List Int32)))
       (match (List.at xs 0) ((Option.Some v) (Int64.of v)) ((Option.None) 0)))
     (export main)))
-  (call main (: (list -5 3) (List Int32)))
+  (call main (: #list(-5 3) (List Int32)))
   (output (: -5 Int64)))
 
 (case "wl3 three list widths (UInt8, Float64, Int64) coexist as params of one entry wrapper"
@@ -8437,7 +8437,7 @@
     (def (main (: a (List UInt8)) (: b (List Float64)) (: c (List Int64)))
       (+ (* 100 (List.len a)) (+ (* 10 (List.len b)) (List.len c))))
     (export main)))
-  (call main (: (list 1 2 3) (List UInt8)) (: (list 0.5 1.5) (List Float64)) (: (list 9) (List Int64)))
+  (call main (: #list(1 2 3) (List UInt8)) (: #list(0.5 1.5) (List Float64)) (: #list(9) (List Int64)))
   (output (: 321 Int64)))
 
 (case "wl4 a List-of-Float64 entry param's element survives load and return exactly"
@@ -8445,7 +8445,7 @@
     (def (main (: xs (List Float64)))
       (match (List.at xs 1) ((Option.Some v) v) ((Option.None) -1.0)))
     (export main)))
-  (call main (: (list 0.5 2.25 9.0) (List Float64)))
+  (call main (: #list(0.5 2.25 9.0) (List Float64)))
   (output (: 2.25 Float64)))
 
 ; -- breaker batch 452 (2026-08-27): the GENERAL-recursion-gate edge ladder, pre-delivered for the
@@ -8461,7 +8461,7 @@
     (def (relay (: ys (List Int64))) (finish ys))
     (def (main (: xs (List Int64))) (relay xs))
     (export main)))
-  (call main (: (list 1 2 3) (List Int64)))
+  (call main (: #list(1 2 3) (List Int64)))
   (output (: 4 Int64)))
 
 (case "grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param"
@@ -8471,7 +8471,7 @@
       (let ((m (Map.insert Map.empty xs (fact 4))))
         (match (Map.lookup m xs) ((Option.Some v) v) ((Option.None) -1))))
     (export main)))
-  (call main (: (list 1 2 3) (List Int64)))
+  (call main (: #list(1 2 3) (List Int64)))
   (output (: 24 Int64)))
 
 (case "grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)"
@@ -8482,7 +8482,7 @@
       (match (List.at xs i) ((Option.Some v) (+ (* 2 v) (suma xs (+ i 1)))) ((Option.None) 0)))
     (def (main (: xs (List Int64))) (suma xs 0))
     (export main)))
-  (call main (: (list 5 6 7) (List Int64)))
+  (call main (: #list(5 6 7) (List Int64)))
   (output (: 24 Int64)))
 
 (case "grx4 the entry List param reaches a self-recursive summer through a non-recursive relay"
@@ -8492,7 +8492,7 @@
     (def (relay (: ys (List Int64))) (suml ys 0))
     (def (main (: xs (List Int64))) (relay xs))
     (export main)))
-  (call main (: (list 5 6 7) (List Int64)))
+  (call main (: #list(5 6 7) (List Int64)))
   (output (: 18 Int64)))
 
 ; -- breaker batch 453 (2026-08-27): the NESTED-list edge ladder for el8's recursive element lift
@@ -8506,7 +8506,7 @@
     (def (main (: xs (List (List Int64))))
       (List.len xs))
     (export main)))
-  (call main (: (list) (List (List Int64))))
+  (call main (: #list() (List (List Int64))))
   (output (: 0 Int64)))
 
 (case "eln2 a nested-list entry param whose FIRST inner list is empty reads a zero inner length"
@@ -8515,7 +8515,7 @@
       (+ (* 100 (List.len xs))
          (match (List.at xs 0) ((Option.Some inner) (List.len inner)) ((Option.None) -1))))
     (export main)))
-  (call main (: (list (list) (list 5)) (List (List Int64))))
+  (call main (: #list(#list() #list(5)) (List (List Int64))))
   (output (: 200 Int64)))
 
 (case "eln3 a THREE-level nested-list entry param reads a leaf through two descents"
@@ -8531,7 +8531,7 @@
                   ((Option.None) -2))))
            ((Option.None) -3))))
     (export main)))
-  (call main (: (list (list (list 9) (list 42 8))) (List (List (List Int64)))))
+  (call main (: #list(#list(#list(9) #list(42 8))) (List (List (List Int64)))))
   (output (: 162 Int64)))
 
 (case "eo1 an Option entry param delivers its Some payload"
@@ -8750,7 +8750,7 @@
         ((q () st (resume (+ (String.byte-len s) (Bytes.len b)) st)))
         (+ 100 (E.q))))
     (export main)))
-  (call main (: "abc" String) (: (list 1 2) Bytes))
+  (call main (: "abc" String) (: #list(1 2) Bytes))
   (output (: 105 Int64))
   (live-objects 0))
 
@@ -8807,7 +8807,7 @@
     (def (main (: b Bytes))
       (Bytes.len (Option.expect (Bytes.slice b 1 2) "in bounds")))
     (export main)))
-  (call main (: (list 9 1 2 7) Bytes))
+  (call main (: #list(9 1 2 7) Bytes))
   (output (: 2 Int64))
   (live-objects 0))
 
@@ -8905,14 +8905,14 @@
   (input (do
     (def (main (: p0 (List Int64)) (: p1 (List Int64)) (: p2 (List Int64)) (: p3 (List Int64)) (: p4 (List Int64)) (: p5 (List Int64)) (: p6 (List Int64)) (: p7 (List Int64))) (+ (+ (+ (+ (+ (+ (+ (List.len p0) (List.len p1)) (List.len p2)) (List.len p3)) (List.len p4)) (List.len p5)) (List.len p6)) (List.len p7)))
     (export main)))
-  (call main (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)))
+  (call main (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)))
   (output (: 16 Int64)))
 
 (case "wfp3 NINE list entry params are eighteen flat values and decline"
   (input (do
     (def (main (: p0 (List Int64)) (: p1 (List Int64)) (: p2 (List Int64)) (: p3 (List Int64)) (: p4 (List Int64)) (: p5 (List Int64)) (: p6 (List Int64)) (: p7 (List Int64)) (: p8 (List Int64))) (+ (+ (+ (+ (+ (+ (+ (+ (List.len p0) (List.len p1)) (List.len p2)) (List.len p3)) (List.len p4)) (List.len p5)) (List.len p6)) (List.len p7)) (List.len p8)))
     (export main)))
-  (call main (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)))
+  (call main (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)) (: #list(1 2) (List Int64)))
   (output (: 18 Int64)))
 
 ; -- breaker batch 471 (2026-08-27): COMPOUND RETURNS from an export — the formerly un-checkable
@@ -9040,18 +9040,18 @@
 
 (case "phr1 an export returning its lifted List param verbatim declines (ownership-transfer fence)"
   (input (do (def (main (: xs (List Int64))) xs) (export main)))
-  (call main (: (list 4 5 6) (List Int64)))
+  (call main (: #list(4 5 6) (List Int64)))
   (output (: (list 4 5 6) (List Int64))))
 
 (case "phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)"
   (input (do (def (main (: xs (List Int64))) #list((List.len xs) 7)) (export main)))
-  (call main (: (list 4 5 6) (List Int64)))
+  (call main (: #list(4 5 6) (List Int64)))
   (output (: (list 3 7) (List Int64))))
 
 (case "phr3 an export extracting a param element into a fresh returned list declines (copied flow)"
   (input (do (def (main (: xs (List Int64)))
     (match (List.at xs 1) ((Option.Some v) #list(v v)) ((Option.None) #list(-1)))) (export main)))
-  (call main (: (list 4 5 6) (List Int64)))
+  (call main (: #list(4 5 6) (List Int64)))
   (output (: (list 5 5) (List Int64))))
 
 ; -- breaker batch 474 (2026-08-27): SHARING through the return boundary, discriminated by the
@@ -9195,7 +9195,7 @@
 (case "eop2 an Option-of-list entry param measures its Some payload"
   (input (do (def (main (: o (Option (List Int64))))
     (match o ((Option.Some xs) (List.len xs)) ((Option.None) -1))) (export main)))
-  (call main (: (Some (list 4 5 6)) (Option (List Int64))))
+  (call main (: (Some #list(4 5 6)) (Option (List Int64))))
   (output (: 3 Int64)))
 
 ; -- breaker batch 478 (2026-08-27): Option-param COMPOSITIONS (the elc/grx lenses applied to the
@@ -9340,7 +9340,7 @@
     (def (measure (: t (List Int64))) (List.len t))
     (def (main (: xs (List Int64))) (* 2 (measure xs)))
     (export main)))
-  (call main (: (list 4 5 6) (List Int64)))
+  (call main (: #list(4 5 6) (List Int64)))
   (output (: 6 Int64)))
 
 ; -- breaker batch 486 (2026-08-27): the scalar entry-param matrix completed. Bool, UInt64, and
@@ -9419,7 +9419,7 @@
 
 (case "byp1 a Bytes entry param measured by Bytes.len reclaims"
   (input (do (def (main (: b Bytes)) (Bytes.len b)) (export main)))
-  (call main (: (list 104 105) Bytes))
+  (call main (: #list(104 105) Bytes))
   (output (: 2 Int64)))
 
 (case "byp2 a Bytes entry param destructured by a runtime bin match declines"
@@ -9427,7 +9427,7 @@
     (match b
       ((bin (u8 x) (u8 y)) (+ (* 100 (Int64.of x)) (Int64.of y)))
       (_ -1))) (export main)))
-  (call main (: (list 7 9) Bytes))
+  (call main (: #list(7 9) Bytes))
   (output (: 709 Int64)))
 
 (case "byp3 a Bytes entry param sliced declines (extraction past the length borrow)"
@@ -9435,7 +9435,7 @@
     (match (Bytes.slice b 1 2)
       ((Option.Some s) (Bytes.len s))
       ((Option.None) -1))) (export main)))
-  (call main (: (list 5 6 7 8) Bytes))
+  (call main (: #list(5 6 7 8) Bytes))
   (output (: 2 Int64)))
 
 ; -- breaker batch 496→499 (2026-08-27): RECORD/TUPLE entry params — all decline (rungs standing).
@@ -9450,7 +9450,7 @@
 
 (case "rpp1 a scalar-fielded Record entry param projects both fields"
   (input (do (def (main (: r (Record (: x Int64) (: y Int64)))) (+ (* 100 (. r x)) (. r y))) (export main)))
-  (call main (: (record (= x 5) (= y 7)) (Record (: x Int64) (: y Int64))))
+  (call main (: #record((= x 5) (= y 7)) (Record (: x Int64) (: y Int64))))
   (output (: 507 Int64)))
 
 (case "rpp2 an open-row helper projects a field of the boundary Record param"
@@ -9458,17 +9458,17 @@
     (def (get-x r) (. r x))
     (def (main (: r (Record (: x Int64) (: y Int64)))) (* 2 (get-x r)))
     (export main)))
-  (call main (: (record (= x 5) (= y 7)) (Record (: x Int64) (: y Int64))))
+  (call main (: #record((= x 5) (= y 7)) (Record (: x Int64) (: y Int64))))
   (output (: 10 Int64)))
 
 (case "rpp3 a Record entry param with a heap list field measures both"
   (input (do (def (main (: r (Record (: k Int64) (: xs (List Int64))))) (+ (. r k) (List.len (. r xs)))) (export main)))
-  (call main (: (record (= k 5) (= xs (list 1 2 3))) (Record (: k Int64) (: xs (List Int64)))))
+  (call main (: #record((= k 5) (= xs #list(1 2 3))) (Record (: k Int64) (: xs (List Int64)))))
   (output (: 8 Int64)))
 
 (case "rpp4 a scalar Tuple entry param projects both positions"
   (input (do (def (main (: t (Tuple Int64 Int64))) (+ (* 100 (. t 0)) (. t 1))) (export main)))
-  (call main (: (tuple 5 7) (Tuple Int64 Int64)))
+  (call main (: #tuple(5 7) (Tuple Int64 Int64)))
   (output (: 507 Int64)))
 
 (case "a tuple-destructuring lambda parameter binds like a def param"
@@ -9858,7 +9858,7 @@
   (input  (do (def (main (: xs (List Int64)))
                 (do (def (go (: i Int64)) (if (<= i 0) 0 (+ i (go (- i 1))))) (+ (go 3) (List.len xs))))
               (export main)))
-  (call   main (: (list 10 20 30) (List Int64)))
+  (call   main (: #list(10 20 30) (List Int64)))
   (output (: 9 Int64)))
 
 (case "must-hold: a heap-param entry + a NON-recursive nested fn CAPTURING the param compiles and runs"
@@ -9871,7 +9871,7 @@
   (input  (do (def (main (: xs (List Int64)))
                 (do (def (peek) (List.len xs)) (+ (peek) 100)))
               (export main)))
-  (call   main (: (list 10 20 30) (List Int64)))
+  (call   main (: #list(10 20 30) (List Int64)))
   (output (: 103 Int64)))
 
 (case "an UNCALLED stored closure with a type-conflicting param is REJECTED at compile, not miscompiled"

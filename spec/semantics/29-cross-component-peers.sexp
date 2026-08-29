@@ -59,7 +59,7 @@
 (case "pcl1 a peer op returning a list crosses as a handle and its length is read"
   (doc    "PROVIDER `dup` returns a 3-element list; the consumer binds it and reads List.len of the crossed
            list over the shared runtime: dup(7)=[7,7,7] → 3.")
-  (peer   "cadenza:l/api" (do (def (dup (: x Int64)) (list x x x)) (export dup)))
+  (peer   "cadenza:l/api" (do (def (dup (: x Int64)) #list(x x x)) (export dup)))
   (input  (do (effect L (op dup (-> Int64 (List Int64)))) (bind L "cadenza:l/api")
               (def (main (: x Int64)) (host (L) (List.len (L.dup x)))) (export main)))
   (call   main (: 7 Int64))
@@ -69,7 +69,7 @@
   (doc    "PROVIDER `mk` returns `(tuple (list x (+ x 1) (+ x 2)) (* x 10))` — a runtime-built list paired
            with a scalar; the consumer reads BOTH fields of the crossed tuple: mk(4)=([4,5,6],40),
            List.len(field0)=3 + field1=40 = 43 (the dynamic-depth element survived the crossing).")
-  (peer   "cadenza:p/api" (do (def (mk (: x Int64)) (tuple (list x (+ x 1) (+ x 2)) (* x 10))) (export mk)))
+  (peer   "cadenza:p/api" (do (def (mk (: x Int64)) #tuple(#list(x (+ x 1) (+ x 2)) (* x 10))) (export mk)))
   (input  (do (effect P (op mk (-> Int64 (Tuple (List Int64) Int64)))) (bind P "cadenza:p/api")
               (def (main (: x Int64)) (host (P) (+ (List.len (. (P.mk x) 0)) (. (P.mk x) 1)))) (export main)))
   (call   main (: 4 Int64))
@@ -79,7 +79,7 @@
 (case "pcl3 an element of a peer-returned list is read and used"
   (doc    "PROVIDER `mklist(x)` = [x+1, x+2]; the consumer reads element 0 with List.at and unwraps the
            Option to the scalar the entrypoint returns: mklist(7)=[8,9], List.at 0 → Some 8 → 8.")
-  (peer   "cadenza:e/api" (do (def (mklist (: x Int64)) (list (+ x 1) (+ x 2))) (export mklist)))
+  (peer   "cadenza:e/api" (do (def (mklist (: x Int64)) #list((+ x 1) (+ x 2))) (export mklist)))
   (input  (do (effect L (op mklist (-> Int64 (List Int64)))) (bind L "cadenza:e/api")
               (def (main (: x Int64)) (host (L) (match (List.at (L.mklist x) 0) ((Some v) v) (None 0)))) (export main)))
   (call   main (: 7 Int64))
@@ -169,7 +169,7 @@
            (2 ops). The consumer binds it and reads List.len of the crossed list: interpret(1,0) -> len 2.")
   (peer   "cadenza:agent/kernel"
           (do (type HostOp (Append String) (Exec String) (Http String) (Noop Int64))
-              (def (interpret (: kind Int64) (: turn Int64)) (if (= kind 1) (list (Append "a") (Exec "e")) (list (Noop 0))))
+              (def (interpret (: kind Int64) (: turn Int64)) (if (= kind 1) #list((Append "a") (Exec "e")) #list((Noop 0))))
               (export interpret)))
   (input  (do (type HostOp (Append String) (Exec String) (Http String) (Noop Int64))
               (effect K (op interpret (-> Int64 Int64 (List HostOp)))) (bind K "cadenza:agent/kernel")
@@ -216,7 +216,7 @@
            looks up key 1 in the crossed map and reads List.len of the value list: mk(5) = {1:[5,6]},
            Map.lookup 1 → Some [5,6], List.len → 2. Pins that a nested map-of-list crosses with the inner
            list intact (the value's dynamic depth survived the boundary).")
-  (peer   "cadenza:ml/api" (do (def (mk (: x Int64)) (Map.insert (Map.empty) 1 (list x (+ x 1)))) (export mk)))
+  (peer   "cadenza:ml/api" (do (def (mk (: x Int64)) (Map.insert (Map.empty) 1 #list(x (+ x 1)))) (export mk)))
   (input  (do (effect M (op mk (-> Int64 (Map Int64 (List Int64))))) (bind M "cadenza:ml/api")
               (def (main (: x Int64)) (host (M) (match (Map.lookup (M.mk x) 1) ((Some l) (List.len l)) (None 0)))) (export main)))
   (call   main (: 5 Int64))
@@ -330,7 +330,7 @@
            entrypoint's OWN result escapes as a runtime resource while a peer op is reached in the body
            (the component imports both the peer interface and the value-heap runtime). main(9) = (9,10),
            escaping to the host as its canonical value form.")
-  (peer   "cadenza:p/api" (do (def (mkpair (: x Int64)) (tuple x (+ x 1))) (export mkpair)))
+  (peer   "cadenza:p/api" (do (def (mkpair (: x Int64)) #tuple(x (+ x 1))) (export mkpair)))
   (input  (do (effect P (op mkpair (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:p/api")
               (def (main (: x Int64)) (host (P) (P.mkpair x))) (export main)))
   (call   main (: 9 Int64))
@@ -342,7 +342,7 @@
            the raw Option a peer-derived list was indexed into (`List.at` IS the whole body), so the sum
            result escapes as a resource while the peer op `mklist` is reached. mklist(7)=[8,9],
            List.at 0 = Some 8; main RETURNS that Option → escapes as its value form.")
-  (peer   "cadenza:l/api" (do (def (mklist (: x Int64)) (list (+ x 1) (+ x 2))) (export mklist)))
+  (peer   "cadenza:l/api" (do (def (mklist (: x Int64)) #list((+ x 1) (+ x 2))) (export mklist)))
   (input  (do (effect L (op mklist (-> Int64 (List Int64)))) (bind L "cadenza:l/api")
               (def (main (: x Int64)) (host (L) (List.at (L.mklist x) 0))) (export main)))
   (call   main (: 7 Int64))
@@ -354,7 +354,7 @@
            ptr1's flat Tuple and por1's non-recursive Option: main RETURNS the raw List the peer produced,
            so a variable-length collection escapes the entrypoint as a resource. mklist(7)=[8,9]; main
            RETURNS it → escapes as the List's value form.")
-  (peer   "cadenza:l/api" (do (def (mklist (: x Int64)) (list (+ x 1) (+ x 2))) (export mklist)))
+  (peer   "cadenza:l/api" (do (def (mklist (: x Int64)) #list((+ x 1) (+ x 2))) (export mklist)))
   (input  (do (effect L (op mklist (-> Int64 (List Int64)))) (bind L "cadenza:l/api")
               (def (main (: x Int64)) (host (L) (L.mklist x))) (export main)))
   (call   main (: 7 Int64))
@@ -379,7 +379,7 @@
            nesting crosses as a SINGLE handle. The consumer projects element 0 (the nested List), reads its
            List.len, and adds scalar element 1: nest(5)=([5,5,5],6), len 3 + 6 = 9. Pins that a compound
            CONTAINING a collection crosses intact and the inner list is reachable via projection.")
-  (peer   "cadenza:n/api" (do (def (nest (: x Int64)) (tuple (list x x x) (+ x 1))) (export nest)))
+  (peer   "cadenza:n/api" (do (def (nest (: x Int64)) #tuple(#list(x x x) (+ x 1))) (export nest)))
   (input  (do (effect N (op nest (-> Int64 (Tuple (List Int64) Int64)))) (bind N "cadenza:n/api")
               (def (main (: x Int64)) (host (N) (+ (List.len (. (N.nest x) 0)) (. (N.nest x) 1)))) (export main)))
   (call   main (: 5 Int64))
@@ -571,7 +571,7 @@
 ; live-objects clauses verified working on peer cases).
 
 (case "pah1 a heap LIST argument crosses INTO the peer and is consumed by the provider (arg-direction lowering)"
-  (peer "cadenza:a/api" (do (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list h .. t) (+ h (sum t))))) (export sum)))
+  (peer "cadenza:a/api" (do (def (sum (: xs (List Int64))) (match xs (#list() 0) (#list(h .. t) (+ h (sum t))))) (export sum)))
   (input (do (effect A (op sum (-> (List Int64) Int64))) (bind A "cadenza:a/api")
              (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
              (def (main (: n Int64)) (host (A) (A.sum (bld n)))) (export main)))
@@ -582,7 +582,7 @@
   (live-objects 0))
 
 (case "pcc1 fifty peer-returned lists consumed on the consumer side reclaim to zero (cross-boundary census)"
-  (peer "cadenza:a/api" (do (def (dup (: x Int64)) (list x x x)) (export dup)))
+  (peer "cadenza:a/api" (do (def (dup (: x Int64)) #list(x x x)) (export dup)))
   (input (do (effect A (op dup (-> Int64 (List Int64)))) (bind A "cadenza:a/api")
              (def (frames (: k Int64)) (if (= k 0) 0 (host (A) (+ (List.len (A.dup k)) (frames (- k 1))))))
              (def (main (: n Int64)) (frames n)) (export main)))
@@ -597,7 +597,7 @@
            rcdzc u9_a_consumer_binds_two_distinct_peer_interfaces — its white-box both-interfaces-imported +
            both-providers-publish pins stay in rcdzc.")
   (peer   "cadenza:math/api" (do (def (neg (: x Int64)) (- 0 x)) (export neg)))
-  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) (tuple x x)) (export pair)))
+  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) #tuple(x x)) (export pair)))
   (input  (do (effect M (op neg (-> Int64 Int64))) (effect P (op pair (-> Int64 (Tuple Int64 Int64))))
               (bind M "cadenza:math/api") (bind P "cadenza:pairs/api")
               (def (main (: x Int64)) (host (M) (host (P) (M.neg (. (P.pair x) 0))))) (export main)))
@@ -665,7 +665,7 @@
            (A.pair(9)=(9,9)).0 + 1 = 10 — B both consumes A and provides to C over the fused envelope, and
            the harness wires A into B's linker (transitive peer dependency). Relocated from rcdzc
            u11_a_middle_component_is_both_consumer_and_provider — its white-box mid-publishes+imports pin stays.")
-  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) (tuple x x)) (export pair)))
+  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) #tuple(x x)) (export pair)))
   (peer   "cadenza:mid/api" (do (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:pairs/api")
                                  (def (mid (: x Int64)) (host (P) (+ (. (P.pair x) 0) 1))) (export mid)))
   (input  (do (effect M (op mid (-> Int64 Int64))) (bind M "cadenza:mid/api")
@@ -679,7 +679,7 @@
 ; fifty frames, reclaims to ZERO — the leak keys to ESCAPE position, not consumption count.
 
 (case "pkc1 fifty let-bound multi-consumed peer results reclaim to zero (the leak keys to escape, not consumption)"
-  (peer "cadenza:a/api" (do (def (dup (: x Int64)) (list x x x)) (export dup)))
+  (peer "cadenza:a/api" (do (def (dup (: x Int64)) #list(x x x)) (export dup)))
   (input (do (effect A (op dup (-> Int64 (List Int64)))) (bind A "cadenza:a/api")
              (def (frames (: k Int64))
                (if (= k 0) 0
@@ -696,7 +696,7 @@
            cadenza:pairs/api returns a RUNTIME tuple; the consumer binds it, performs `P.pair`, and projects
            element 0. The tuple crosses as a handle over the shared value-heap runtime and `(. (P.pair x) 0)`
            reads it: pair(9) = (9,9), element 0 = 9. The single-interface compound-result-projection pin.")
-  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) (tuple x x)) (export pair)))
+  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) #tuple(x x)) (export pair)))
   (input  (do (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:pairs/api")
               (def (main (: x Int64)) (host (P) (. (P.pair x) 0))) (export main)))
   (call   main (: 9 Int64))
@@ -770,7 +770,7 @@
            into B (cadenza:adder/api) `sum(t) = (. t 0) + (. t 1)` as its argument — the consumer never
            inspects it locally: main(x) = S.sum(P.pair x). main(9) = sum((9,10)) = 19. A peer RESULT handle
            crosses directly into ANOTHER peer's ARG over the shared runtime (peer→peer passthrough).")
-  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) (tuple x (+ x 1))) (export pair)))
+  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) #tuple(x (+ x 1))) (export pair)))
   (peer   "cadenza:adder/api" (do (def (sum (: t (Tuple Int64 Int64))) (+ (. t 0) (. t 1))) (export sum)))
   (input  (do (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) (effect S (op sum (-> (Tuple Int64 Int64) Int64)))
               (bind P "cadenza:pairs/api") (bind S "cadenza:adder/api")
@@ -786,7 +786,7 @@
            the crossed tuple and reads it TWICE — `(+ (. t 0) (. t 1))` — both reads must see a LIVE tuple (no
            premature drop between them), then the dead binding reclaims at scope end. pair(9) = (9,9) →
            9 + 9 = 18.")
-  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) (tuple x x)) (export pair)))
+  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) #tuple(x x)) (export pair)))
   (input  (do (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:pairs/api")
               (def (main (: x Int64)) (host (P) (let ((t (P.pair x))) (+ (. t 0) (. t 1))))) (export main)))
   (call   main (: 9 Int64))
@@ -831,7 +831,7 @@
            `(t.0, t.1 + 100)` that ESCAPES as a resource — while the BORROWED peer handle drops ONCE at scope
            end (not double-counted against the escaping resource). main(5) = (tuple 5 105). A miscount would
            double-free (trap) or read a freed field (wrong result).")
-  (peer   "cadenza:p/api" (do (def (mk (: x Int64)) (tuple x x)) (export mk)))
+  (peer   "cadenza:p/api" (do (def (mk (: x Int64)) #tuple(x x)) (export mk)))
   (input  (do (effect P (op mk (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:p/api")
               (def (main (: x Int64)) (host (P) (let ((t (P.mk x))) #tuple((. t 0) (+ (. t 1) 100))))) (export main)))
   (call   main (: 5 Int64))
@@ -883,7 +883,7 @@
            its INNER tuple, a nested compound, so the inner is dup'd and the outer dropped — then projects
            the inner element 1: `(. (. (P.nest x) 0) 1)`. main(9) = ((9,10),11).0.1 = (9,10).1 = 10.
            Exercises reclaim across a nested-compound projection of a crossed peer handle.")
-  (peer   "cadenza:nest/api" (do (def (nest (: x Int64)) (tuple (tuple x (+ x 1)) (+ x 2))) (export nest)))
+  (peer   "cadenza:nest/api" (do (def (nest (: x Int64)) #tuple(#tuple(x (+ x 1)) (+ x 2))) (export nest)))
   (input  (do (effect P (op nest (-> Int64 (Tuple (Tuple Int64 Int64) Int64)))) (bind P "cadenza:nest/api")
               (def (main (: x Int64)) (host (P) (. (. (P.nest x) 0) 1))) (export main)))
   (call   main (: 9 Int64))
