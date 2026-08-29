@@ -1468,7 +1468,8 @@ fn pre_commit_hook_body() -> String {
 # Fleet pre-commit (installed by `cargo xtask fleet up` -> install_git_hooks; reproducible, self-healing,
 # never clobbers a truly-foreign hook). (1) trunk-guard: single-writer protection for `trunk`.
 # (2) auto-fmt staged-.rs crates: fail-open, auto-runs the pinned rustfmt + re-stages so unformatted rust
-# can't land and re-red the fleet-wide rustfmt gate.
+# can't land and re-red the fleet-wide rustfmt gate. (3) warn (fail-open) on a NET-ADD of #[test] to
+# rcdzc/src/tests.rs — nudge toward a language-agnostic corpus test (the delanguaging lane shrinks it).
 set -uo pipefail
 
 # (1) TRUNK-GUARD — refuse a direct commit onto `trunk` unless in the pr-sync worktree (the integrator).
@@ -1529,6 +1530,29 @@ if [ "${{FLEET_SKIP_FMT_CHECK:-}}" != "1" ]; then
       echo "⚠ fleet pre-commit: some staged .rs are PARTIALLY staged (also have unstaged edits) — NOT" >&2
       echo "  auto-formatted (auto-adding would sweep unstaged hunks into the commit). Run \`cargo fmt\` +" >&2
       echo "  re-stage those files yourself. (Disable auto-fmt with FLEET_SKIP_FMT_CHECK=1.)" >&2
+    fi
+  fi
+fi
+
+# (3) rcdzc/src/tests.rs #[test]-GROWTH WARN (fail-open; v-wasmtime seq-185, operator delanguaging push).
+# rcdzc/src/tests.rs is a ~100k-line/2.8MiB language-SPECIFIC test file the delanguaging lane is shrinking
+# toward language-AGNOSTIC corpus tests. Verticals add #[test]s faster than the migration removes them, so
+# WARN (non-blocking) on a NET ADD at commit time so the adder gets the nudge at the source. A rename/move
+# nets 0 (no warn); a pure deletion nets negative (no warn). `grep -c` prints 0 on no match; a not-in-HEAD
+# new file → `git show HEAD:…` errors to /dev/null → 0. Warn-only (hard-fail is a later operator call).
+if [ "${{FLEET_SKIP_TESTS_RS_WARN:-}}" != "1" ]; then
+  _tf="implementation/seed/crates/rcdzc/src/tests.rs"
+  if git diff --cached --name-only --diff-filter=ACM -- "$_tf" 2>/dev/null | grep -q .; then
+    _idx="$(git show ":$_tf" 2>/dev/null | grep -c '#\[test\]')"
+    _old="$(git show "HEAD:$_tf" 2>/dev/null | grep -c '#\[test\]')"
+    if [ "${{_idx:-0}}" -gt "${{_old:-0}}" ]; then
+      echo "⚠ fleet pre-commit: +$((_idx - _old)) new #[test] in rcdzc/src/tests.rs — a 2.8MiB language-SPECIFIC" >&2
+      echo "  file the delanguaging lane is SHRINKING toward language-AGNOSTIC corpus tests. Prefer a corpus" >&2
+      echo "  test in spec/semantics/*.sexp instead:" >&2
+      echo "    reject: (case \"..\" (input (do ..)) (error CDZ#### (message \"..\")))" >&2
+      echo "    value:  (case \"..\" (input ..) (call main) (output ..))" >&2
+      echo "  See spec/semantics/README.md. If this is a genuine compiler-internal white-box invariant NOT" >&2
+      echo "  expressible in the corpus, proceed — warn-only. (Silence: FLEET_SKIP_TESTS_RS_WARN=1.)" >&2
     fi
   fi
 fi
@@ -18534,10 +18558,16 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             "must not use `cargo fmt --all` (trips on the cdz-platform cfg'd-mod gap) — scope per-crate"
         );
         assert!(b.contains("cdz-platform"));
-        // Fail-open: the script's LAST statement is `exit 0` (the fmt section never blocks a commit).
+        // Section (3): warn (fail-open) on a NET-ADD of #[test] to rcdzc/src/tests.rs, nudging to a corpus
+        // test — targets that specific file, counts #[test], and carries the FLEET_SKIP_TESTS_RS_WARN escape.
+        assert!(b.contains("rcdzc/src/tests.rs"));
+        assert!(b.contains("#[test]") && b.contains(r"grep -c '#\[test\]'"));
+        assert!(b.contains("FLEET_SKIP_TESTS_RS_WARN"));
+        assert!(b.contains("spec/semantics"));
+        // Fail-open: the script's LAST statement is `exit 0` (sections 2+3 never block a commit).
         assert!(
             b.trim_end().ends_with("exit 0"),
-            "the hook must END fail-open (exit 0) so the fmt section never blocks a commit"
+            "the hook must END fail-open (exit 0) so the fmt + tests.rs-warn sections never block a commit"
         );
     }
 
