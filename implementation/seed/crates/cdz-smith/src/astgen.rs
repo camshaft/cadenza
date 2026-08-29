@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(23) {
+    match c.variant(24) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -433,6 +433,9 @@ fn gen_main_body<C: Choice>(
         // types (widen / narrow / cross-sign) — the int-conversion codegen my sized-int arm never reached
         // (it only ascribed literals + `(T.of <Int64>)`).
         22 => gen_int_conversion_body(c, out),
+        // A WIDER-ARITY compound body: a 3-/4-tuple, a 3-/4-field record, or a projection out of one —
+        // wider construction + projection layouts than the 2-field tuple/record arms.
+        23 => gen_wide_compound_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1331,6 +1334,32 @@ fn gen_int_conversion_body<C: Choice>(c: &mut C, out: &mut String) {
     let tgt = SIZED_INT_TYPES[c.variant(SIZED_INT_TYPES.len())];
     let v = c.int_bounded(0, 100);
     write!(out, "({tgt}.of (: {v} {src}))").ok();
+}
+
+/// A WIDER-ARITY compound body: a 3-/4-element tuple, a 3-/4-field record, or a projection of one element
+/// out of a wide tuple/record. Exercises wider construction + projection LAYOUTS (more fields/offsets) than
+/// the 2-field tuple/record arms. All Int64 leaves; the projection index/field is in-bounds.
+fn gen_wide_compound_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the FORM before consuming operand choices (variant-ordering).
+    let form = c.variant(5);
+    let (a, b, x, y) = (
+        c.int_bounded(0, 99),
+        c.int_bounded(0, 99),
+        c.int_bounded(0, 99),
+        c.int_bounded(0, 99),
+    );
+    match form {
+        // A 3-tuple value.
+        0 => write!(out, "(tuple {a} {b} {x})").ok(),
+        // A 4-tuple value.
+        1 => write!(out, "(tuple {a} {b} {x} {y})").ok(),
+        // A 3-field record value.
+        2 => write!(out, "(record (= a {a}) (= b {b}) (= c {x}))").ok(),
+        // Project the 3rd element of a 3-tuple → a scalar.
+        3 => write!(out, "(. (tuple {a} {b} {x}) 2)").ok(),
+        // Project field `c` of a 3-field record → a scalar.
+        _ => write!(out, "(. (record (= a {a}) (= b {b}) (= c {x})) c)").ok(),
+    };
 }
 
 /// A MUTUALLY-RECURSIVE program: two TOP-LEVEL sibling defs that call EACH OTHER, plus a param-less `main`
@@ -2648,6 +2677,40 @@ mod tests {
         }
         assert!(targets.len() >= 4, "should reach >=4 distinct target types");
         assert!(sources.len() >= 4, "should reach >=4 distinct source types");
+    }
+
+    /// `gen_wide_compound_body` REACHES all five wider-arity forms (3-tuple, 4-tuple, 3-record, 3-tuple
+    /// projection, 3-record projection) and every body COMPILES (S171: wider construction/projection).
+    #[test]
+    fn gen_wide_compound_body_reaches_all_forms_and_compiles() {
+        let (mut saw_t3, mut saw_t4, mut saw_r3, mut saw_pt, mut saw_pr) =
+            (false, false, false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(2293);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_wide_compound_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_pt |= body.starts_with("(. (tuple ");
+            saw_pr |= body.starts_with("(. (record ");
+            saw_t4 |= body.starts_with("(tuple ") && body.matches(' ').count() >= 4;
+            saw_t3 |= body.starts_with("(tuple ") && body.matches(' ').count() == 3;
+            saw_r3 |= body.starts_with("(record ");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "wide-compound body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_t3, "should reach a 3-tuple");
+        assert!(saw_t4, "should reach a 4-tuple");
+        assert!(saw_r3, "should reach a 3-field record");
+        assert!(saw_pt, "should reach a tuple projection");
+        assert!(saw_pr, "should reach a record projection");
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
