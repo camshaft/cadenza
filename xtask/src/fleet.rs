@@ -9047,12 +9047,22 @@ const NIX_GATE_MAX_JOBS: &str = "4";
 /// The shared `nix build` argv for a `local-gate` invocation, INCLUDING the [`NIX_GATE_MAX_JOBS`]
 /// concurrency cap — the single source of truth so `run_gate_local` + `run_gate_local_bounded` can never
 /// drift on flags. `--max-jobs N` caps concurrent DERIVATION builds (the saturation source).
-fn nix_gate_argv(target: &str) -> [String; 6] {
+///
+/// `--keep-going` (concierge/breaker gate-hygiene 2026-08-29): on a RED gate, KEEP building the remaining
+/// constituents after one fails instead of aborting at the first failure, so a SINGLE run surfaces the
+/// FULL failing set rather than dripping one sub-check per re-run (a red batch was masking ~18 failures 8
+/// cycles deep behind faster-failing siblings). This also strengthens [`parse_failing_subchecks`], which
+/// names every `builder for '…' failed` line — with `--keep-going` all failing derivations emit one, so
+/// it reports the complete set. Cost is bounded: only a RED gate does the extra work (a GREEN gate builds
+/// every constituent anyway), and `--max-jobs 4` already caps that extra work to 4-wide. Kept consistent
+/// with v-nix's `apps.gate` (`nix run .#gate`, #5303), which added `--keep-going` on the convenience surface.
+fn nix_gate_argv(target: &str) -> [String; 7] {
     [
         "build".into(),
         target.into(),
         "--no-link".into(),
         "--print-out-paths".into(),
+        "--keep-going".into(),
         "--max-jobs".into(),
         NIX_GATE_MAX_JOBS.into(),
     ]
