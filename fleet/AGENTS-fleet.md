@@ -332,6 +332,24 @@ store nix path stays the default for everything except tight iteration; the GATE
 through nix. `cargo build -p` stays WARN-not-fail even at the eventual hard-fail flip — it is the sanctioned
 incremental path.)
 
+**🔎 DEBUG TRACING — instrument with `tracing::trace!`/`debug!` + enable via `RUST_LOG`; do NOT add ad-hoc
+`if std::env::var("SOME_FLAG").is_ok() { eprintln!(…) }` gates** (operator dev-convention seq-210). A
+`tracing` event is structured, level/target-filterable, and STAYS in the codebase — it benefits every future
+debugging session; the env-var-`eprintln` is throwaway (one agent's session, then reverted or left as clutter).
+The compiler is ALREADY richly instrumented (`rcdzc` has hundreds of `trace!`/`debug!` sites across
+`infer`/`lower`/`resolve`/`eval`/…), so you almost never need to ADD wiring — just add a `tracing::trace!(…)`
+where you're debugging (the crate already depends on `tracing`) and turn it on:
+- **Via the `cdz` CLI (the usual witness run):** `RUST_LOG=rcdzc=trace cdz compile …` — the shared `RUST_LOG`
+  knob. Filter to a module to cut noise: `RUST_LOG=rcdzc::infer=trace` (or `=debug`). Unset ⇒ zero overhead
+  (no subscriber installed).
+- **For `rcdzc` running INSIDE the `cargo xtask` pipeline:** use the tool-private **`CDZ_LOG`** (same
+  `EnvFilter` syntax, e.g. `CDZ_LOG=rcdzc=trace`) — the pipeline shells `cdz-syntax | rcdzc | cdz-run`, and a
+  bare `RUST_LOG` would fan out to cargo/wasmtime/etc.; `CDZ_LOG` scopes it to rcdzc only.
+- **NUANCE (not a violation):** the `xtask`/fleet orchestration CLI is NOT `tracing`-instrumented (no
+  subscriber; its `eprintln!` lines are the tool's normal user-facing output, not debug tracing) — so
+  `eprintln!` there is fine. The one gap: if you want *filterable* debug tracing INSIDE `xtask`/`fleet` code,
+  there's no subscriber yet — add one (small setup) or ask, rather than reaching for an env-gated `eprintln`.
+
 **🔒 A HEAVY nix build MUST go through `cargo xtask fleet with-lease` — a RAW `nix build .#…` escapes the
 concurrency cap.** `CDZ_CHECK_LEASE_MAX` (+ `fleet with-lease`) exists so heavy nix builds don't all run
 at once and thrash the single big-nix-lock (the load-deadlock that makes EVERYONE's gates crawl —
