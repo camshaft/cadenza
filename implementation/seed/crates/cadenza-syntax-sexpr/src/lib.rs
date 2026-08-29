@@ -590,6 +590,7 @@ fn nat_walk(
     bytes: &[u8],
     id: StructId,
     shadow: &mut std::collections::HashMap<String, u32>,
+    exempt: &mut std::collections::HashSet<StructId>,
     edits: &mut Vec<(usize, usize, String)>,
 ) {
     let Struct::List(ch) = a.get(id) else {
@@ -601,9 +602,24 @@ fn nat_walk(
     for n in &introduced {
         *shadow.entry(n.clone()).or_insert(0) += 1;
     }
+    // An effect HANDLER's op-handler arm — `(handle <effect> <seed> ((<op> (params…) <state> <body>)…)
+    // <body>)`, the canonical 5-child surface shape — names its operation BARE at each arm's head. When an
+    // op is named after a compound ctor (`set`/`list`/`map`/`tuple`/`record` — a State effect's `set` is the
+    // real case), that head is NOT a compound literal and must NOT be nativized (it would corrupt the arm
+    // into `#set(…)` and break the handler). Exempt each arm CLAUSE node from head-nativize (its body is
+    // still walked, so a genuine literal inside it nativizes). Mirrors the HOF/shadow head guards.
+    if a.head_name(id) == Some("handle")
+        && ch.len() == 5
+        && let Struct::List(arm_nodes) = a.get(ch[3])
+    {
+        for &arm in arm_nodes {
+            exempt.insert(arm);
+        }
+    }
     if let Some(name) = a.head_name(id)
         && nat_is_ctor_name(name)
         && shadow.get(name).copied().unwrap_or(0) == 0
+        && !exempt.contains(&id)
         && (name != "map" || nat_map_eligible(a, &ch))
     {
         // Head-nativize `(name` → `#name(`, consuming the head→first-child HORIZONTAL whitespace.
@@ -629,7 +645,7 @@ fn nat_walk(
         }
     }
     for &c in ch.iter() {
-        nat_walk(a, spans, bytes, c, shadow, edits);
+        nat_walk(a, spans, bytes, c, shadow, exempt, edits);
     }
     for n in &introduced {
         if let Some(v) = shadow.get_mut(n) {
@@ -654,12 +670,14 @@ pub fn nativize_compound_source(src: &str) -> Result<String, ReadError> {
     let (arenas, spans) = read_all_spanned(src)?;
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     let mut shadow: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut exempt: std::collections::HashSet<StructId> = std::collections::HashSet::new();
     nat_walk(
         &arenas,
         &spans,
         src.as_bytes(),
         arenas.root,
         &mut shadow,
+        &mut exempt,
         &mut edits,
     );
     edits.sort_by_key(|e| core::cmp::Reverse(e.0)); // descending: apply back-to-front, offsets stay valid
@@ -1454,6 +1472,32 @@ mod tests {
             n("(def (g) \"(list x) in a string\")"),
             "(def (g) \"(list x) in a string\")"
         );
+    }
+
+    #[test]
+    fn nativize_compound_source_exempts_effect_op_handler_arm_heads() {
+        // An effect op-handler arm names its operation BARE at the arm head. When the op is named after a
+        // compound ctor (`set` is the real case — a State effect's setter; also list/map/tuple/record), that
+        // head is NOT a compound literal and must NOT be nativized into `#set(…)` (which would break the
+        // handler / decline). The arm's BODY is still walked, so a genuine literal there nativizes.
+        let n = |s: &str| super::nativize_compound_source(s).unwrap();
+        // A `set` op arm head is left BARE; a `(tuple …)` literal in the arm body IS nativized.
+        assert_eq!(
+            n("(handle St 0 ((set (v) s (resume unit (tuple v s)))) body)"),
+            "(handle St 0 ((set (v) s (resume unit #tuple(v s)))) body)"
+        );
+        // Multiple arms + a `get` (non-ctor, unaffected) alongside a `set` (ctor-named, exempted).
+        assert_eq!(
+            n("(handle St 0 ((get (u) s (resume s s)) (set (w) s (resume unit w))) body)"),
+            "(handle St 0 ((get (u) s (resume s s)) (set (w) s (resume unit w))) body)"
+        );
+        // The five-part `ctl`-style arm `(op (params) state k body)` — the head is still the arm's ch[0].
+        assert_eq!(
+            n("(handle St 0 ((set (v) s k (resume unit v))) body)"),
+            "(handle St 0 ((set (v) s k (resume unit v))) body)"
+        );
+        // A `set` LITERAL outside any handler arm still nativizes (the exemption is arm-head-scoped).
+        assert_eq!(n("(do (set 1 2))"), "(do #set(1 2))");
     }
 
     // `#word(…)` collection literals (DESIGN-native-ast-compound-data.md §D-SURFACE / M2). The `#word(`
