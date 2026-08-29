@@ -34305,6 +34305,76 @@ mod stage1 {
     }
 
     #[test]
+    fn arm_pattern_name_fast_reject_never_drops_a_real_binding() {
+        // `binder_in`'s per-arm fast-reject (`Db::arm_cannot_bind`) skips the match-arm case cascade when
+        // `name` is not a NAME atom in the arm's pattern region — the O(1) cut for the O(depth)-per-
+        // reference resolve pole on a deeply-nested match. It is SAFE only if the pattern-name set
+        // OVER-approximates the arm's binders: a name the arm CAN bind must never be fast-rejected. This
+        // pins that invariant against a future under-approximation (e.g. excluding a guard's pattern, or
+        // the wrong child) — such a bug would drop a genuine binding and surface as a spurious CDZ0101.
+        use crate::testkit::parse;
+        // Compile on the compiler's deep stack — a deeply-nested match deep-recurses the resolve/lower
+        // passes, which overflows the debug test thread's default stack (the release compiler is fine).
+        let no_errors = |src: &str| {
+            let errs = crate::host::run_with_compiler_stack(|| {
+                crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                    .into_iter()
+                    .filter(|d| d.severity == crate::abi::Severity::Error)
+                    .map(|d| format!("{d:?}"))
+                    .collect::<Vec<_>>()
+            });
+            assert!(
+                errs.is_empty(),
+                "expected no error diagnostics, got: {errs:?}"
+            );
+        };
+        // Deeply-nested Option match: each arm binds `x_i` (a payload binder in its pattern) and the body
+        // references it in the NEXT scrutinee. Every `x_i` must resolve (it is a pattern atom → in the set,
+        // never fast-rejected), while the global `Some`/`None`/`+` (absent from every arm's set) correctly
+        // fall through to the prelude. A wrongly-narrow set would unbind an `x_i`.
+        fn nested_option_match(depth: usize) -> String {
+            fn build(i: usize, depth: usize) -> String {
+                if i >= depth {
+                    return if i > 0 {
+                        format!("x{}", i - 1)
+                    } else {
+                        "p".into()
+                    };
+                }
+                let prev = if i > 0 {
+                    format!("x{}", i - 1)
+                } else {
+                    "p".into()
+                };
+                format!(
+                    "(match (Some (+ {prev} 1)) ((Some x{i}) {}) ((None _) 0))",
+                    build(i + 1, depth)
+                )
+            }
+            format!(
+                "(module m (def (main (: p Int64)) {}) (export main))",
+                build(0, depth)
+            )
+        }
+        no_errors(&nested_option_match(20));
+        // A GUARDED arm: the binder `x` lives inside the guard `(guard (Some x) (> x 0))` (child 0 of the
+        // arm), and BOTH the guard cond and the arm body reference it. The pattern-name set is collected
+        // from all arm children except the body, so it must include the guard's pattern names — else the
+        // body ref `x` (or the guard ref) is dropped. Pins the guarded-arm shape specifically.
+        no_errors(
+            "(module m (def (main (: p Int64)) \
+               (match (Some p) ((guard (Some x) (> x 0)) x) ((Some y) y) ((None _) 0))) \
+             (export main))",
+        );
+        // A nested variant/tuple pattern binder must also survive (a deeper pattern atom).
+        no_errors(
+            "(module m (def (main (: p Int64)) \
+               (match (Some (tuple p 1)) ((Some (tuple a b)) (+ a b)) ((None _) 0))) \
+             (export main))",
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
