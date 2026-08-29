@@ -418,6 +418,21 @@
             nativeBuildInputs = [ rustToolchain ] ++ extraInputs;
             buildPhase = ''
               runHook preBuild
+              # #5250 flip: cdz-platform/src/contracts is build-time-generated (dropped from the committed
+              # tree). ANY workspace-src check that COMPILES or FORMATS cdz-platform must see it or `mod
+              # contracts;` (cdz-platform/src/lib.rs) fails to resolve — `cargo fmt --all` (fmtCheck) and
+              # `cargo build --workspace` (crateCdzCheck) / `cargo test --workspace` (testCheck) all hit it.
+              # The per-crate crane checks + platformItest already stage this overlay in their own preBuild;
+              # the workspace-src checks were the missed sites (breaker gate-blocker: local-gate red at
+              # cargo-fmt, masked earlier by an aborted-sibling clippy red). Stage the generated files here
+              # too — they are cargo-fmt-clean (rendered via `rustfmt --edition 2024`, cdz-platform is
+              # edition 2024, no rustfmt.toml), so `fmt --all --check` sees no diff. Guarded so a tree
+              # without cdz-platform is a no-op.
+              if [ -d implementation/seed/crates/cdz-platform/src ]; then
+                chmod -R u+w implementation/seed/crates/cdz-platform/src
+                mkdir -p implementation/seed/crates/cdz-platform/src/contracts
+                cp ${cdzPlatformContracts}/contracts/*.rs implementation/seed/crates/cdz-platform/src/contracts/
+              fi
               # Network is blocked by CARGO_NET_OFFLINE (set by mkCargoVendorEnv, belt-and-suspenders with
               # the vendored source) so if cargo's source resolution ever changes the lint fails LOUDLY
               # offline instead of attempting a fetch (github-liaison #1982). seedCargoVendor is a single
