@@ -282,6 +282,8 @@ pub struct DiffStats {
     pub duplicate_hits: u64,
     /// Programs the oracle could not evaluate (e.g. `cdz run-rust` harness failure) — logged, skipped.
     pub unavailable: u64,
+    /// Programs where a compile/run HUNG (hit the per-call timeout) — captured as a hang-witness (seq-203).
+    pub hangs: u64,
 }
 
 /// Run the differential oracle over `count` seeds drawn from `run_seed`, filing any mismatch. `store`
@@ -405,13 +407,34 @@ pub fn cadenza_differential_sweep(
                     "cadenza-equiv mismatch",
                 );
             }
+            // A HANG: the compiler/runtime hit the per-call timeout on this program (seq-203). CAPTURE it as
+            // a hang-witness (persisted, deduped by bucket) so it is investigated, never silently skipped.
+            CzDiff::Hang { at } => {
+                stats.hangs += 1;
+                let finding = Finding {
+                    category: Category::Timeout,
+                    program: source.clone(),
+                    crash: None,
+                    detail: Some(format!("cadenza-sweep HANG at {at} (per-call timeout)")),
+                    commit: cfg.commit.clone(),
+                };
+                file_and_tally(
+                    &fstore,
+                    &finding,
+                    &mut stats.new_buckets,
+                    &mut stats.duplicate_hits,
+                    seed,
+                    "compiler HANG (hang-witness)",
+                );
+            }
         }
         if cfg.progress_every != 0 && (i + 1).is_multiple_of(cfg.progress_every) {
             eprintln!(
-                "[cdz-smith] cadenza-differential {}/{count} | {} agreed, {} mismatched ({} buckets)",
+                "[cdz-smith] cadenza-differential {}/{count} | {} agreed, {} mismatched, {} hangs ({} buckets)",
                 i + 1,
                 stats.agreed,
                 stats.mismatched,
+                stats.hangs,
                 stats.new_buckets,
             );
         }

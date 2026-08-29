@@ -861,8 +861,12 @@ fn cmd_cadenza_differential(args: &[String]) -> ExitCode {
     match driver::cadenza_differential_sweep(&cfg, &store, &cdz, count) {
         Ok(stats) => {
             eprintln!(
-                "[cdz-smith] cadenza-differential done: {} agreed, {} mismatched ({} new buckets, {} dup hits)",
-                stats.agreed, stats.mismatched, stats.new_buckets, stats.duplicate_hits
+                "[cdz-smith] cadenza-differential done: {} agreed, {} mismatched, {} hangs ({} new buckets, {} dup hits)",
+                stats.agreed,
+                stats.mismatched,
+                stats.hangs,
+                stats.new_buckets,
+                stats.duplicate_hits
             );
             if stats.new_buckets > 0 {
                 ExitCode::from(1)
