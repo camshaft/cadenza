@@ -40,6 +40,8 @@ fn main() -> ExitCode {
         }
         #[cfg(feature = "differential")]
         "cadenza-differential" => cmd_cadenza_differential(&args[1..]),
+        #[cfg(feature = "differential")]
+        "cadenza-equiv" => cmd_cadenza_equiv(&args[1..]),
         #[cfg(not(feature = "differential"))]
         "cadenza-differential" => {
             eprintln!(
@@ -891,6 +893,120 @@ fn cmd_cadenza_differential(args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("cdz-smith: cadenza-differential sweep failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The SYMBOLIC-equivalence cadenza sweep (S4b/T2): for each program build an `(equiv <orig>
+/// <cadenza-roundtrip>)` trial and let v-lean-oracle's oracle PROVE the cadenza backend preserved meaning
+/// for ALL inputs. A suspected divergence (`normalized-but-different`) is sampled-CONFIRMED via the value
+/// `cadenza_diff` before filing. Needs both `cdz` (round-trip + confirm) and an equiv-aware `oracle-check`.
+#[cfg(feature = "differential")]
+fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
+    let mut count: u64 = 1000;
+    let mut seed: Option<u64> = None;
+    let mut findings: Option<PathBuf> = None;
+    let mut store: Option<PathBuf> = None;
+    let mut cdz: Option<PathBuf> = None;
+    let mut oracle: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
+            "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
+            "--findings" => findings = it.next().map(PathBuf::from),
+            "--store" => store = it.next().map(PathBuf::from),
+            "--cdz" => cdz = it.next().map(PathBuf::from),
+            "--oracle" => oracle = it.next().map(PathBuf::from),
+            other => {
+                eprintln!("cdz-smith cadenza-equiv: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let cdz = match cdz
+        .filter(|p| p.is_file())
+        .or_else(cdz_smith::differential::discover_cdz)
+    {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "cdz-smith cadenza-equiv: no `cdz` binary found (build it — \
+                 `cargo build --release --bin cdz` — or set CDZ_SMITH_CDZ / pass --cdz PATH)."
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let oracle = match oracle
+        .filter(|p| p.is_file())
+        .or_else(cdz_smith::lean::discover_oracle_check)
+    {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "cdz-smith cadenza-equiv: no `oracle-check` found (build it — `nix build .#oracle-lean` \
+                 → result/bin/oracle-check — and set CDZ_SMITH_ORACLE_CHECK or pass --oracle PATH)."
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let store = store.unwrap_or_else(|| {
+        cdz.parent()
+            .and_then(|p| p.parent())
+            .map(|t| t.join("cadenza-store"))
+            .unwrap_or_else(|| PathBuf::from("target/cadenza-store"))
+    });
+    let findings_dir = match resolve_findings_dir(findings) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    let cfg = Config {
+        iterations: Some(count),
+        run_seed: seed.unwrap_or_else(driver::wallclock_seed),
+        timeout: Duration::from_secs(10),
+        findings_dir: findings_dir.clone(),
+        commit: driver::detect_commit(),
+        progress_every: 100,
+    };
+    eprintln!(
+        "[cdz-smith] cadenza-equiv @{} | seed {} | count {} | store {} | cdz {} | oracle {} | findings → {}",
+        cfg.commit,
+        cfg.run_seed,
+        count,
+        store.display(),
+        cdz.display(),
+        oracle.display(),
+        findings_dir.display()
+    );
+    match driver::equiv_cadenza_sweep(&cfg, &store, &cdz, &oracle, count) {
+        Ok(stats) => {
+            eprintln!(
+                "[cdz-smith] cadenza-equiv done: {} trials | {} proven, {} boundary, {} confirmed-divergence ({} unconfirmed), {} not-comparable ({} new buckets)",
+                stats.trials,
+                stats.proven,
+                stats.boundary,
+                stats.confirmed_divergences,
+                stats.unconfirmed_suspected,
+                stats.not_comparable,
+                stats.new_buckets,
+            );
+            if stats.stale_oracle {
+                eprintln!(
+                    "cdz-smith cadenza-equiv: the oracle predates the (equiv …) node (#5719) — rebuild `.#oracle-lean`."
+                );
+                return ExitCode::FAILURE;
+            }
+            if stats.confirmed_divergences > 0 {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => {
+            eprintln!("cdz-smith: cadenza-equiv sweep failed: {e}");
             ExitCode::FAILURE
         }
     }
