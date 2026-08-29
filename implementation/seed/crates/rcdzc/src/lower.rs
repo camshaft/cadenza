@@ -4737,11 +4737,25 @@ fn collect_trap_scalar_args(db: &mut Db, id: StructId, out: &mut Vec<StructId>) 
             }
         }
         _ => {
-            if !is_trap_free(db, id)
-                && !subtree_reaches_host_call(db, id)
-                && is_machine_scalar_ty(&crate::infer::type_of(db, id))
-            {
-                out.push(id);
+            // A trap-possible, PURE (non-host) leaf. Two admissible shapes:
+            //  - a MACHINE SCALAR computation (`(/ 5 d)`, checked arith): its discarded result is a bare
+            //    scalar (a plain stack drop, no refcount).
+            //  - a HEAP-PRODUCING trap computation that is a genuine PRODUCER — `resolved_of` is a
+            //    `Resolved::Apply` (a call/op like `Rational.of` / a checked BigInt op), so its result is a
+            //    FRESH OWNED value the Seq emit rc-reclaims via `OP_DROP`. Gated on `Resolved::Apply` to
+            //    EXCLUDE a borrowed heap leaf — a `LocalRef`/`Param`/projection can be `!is_trap_free` (it
+            //    follows a trapping init) yet is BORROWED (owned by its slot); `OP_DROP`-ing it would
+            //    double-free. A producer transfers ownership out, so its standalone force + `OP_DROP` is
+            //    sound. (Closes the ruling-A interim gap: a dead-discarded ctor with a `Rational.of`/BigInt
+            //    trap arg now traps too, not just scalar args.)
+            if !is_trap_free(db, id) && !subtree_reaches_host_call(db, id) {
+                let ty = crate::infer::type_of(db, id);
+                let admit = is_machine_scalar_ty(&ty)
+                    || (crate::core_analysis::is_heap_type(&ty)
+                        && matches!(resolved_of(db, id), Resolved::Apply { .. }));
+                if admit {
+                    out.push(id);
+                }
             }
         }
     }

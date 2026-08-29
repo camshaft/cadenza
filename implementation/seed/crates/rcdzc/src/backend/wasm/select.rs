@@ -5569,6 +5569,14 @@ fn collect_used_ops_into_seen(
         }
         Core::Seq { stmts, tail } => {
             for s in stmts {
+                // (A) CASE2 heap-arg: a marked HEAP-typed strict-force stmt is rc-reclaimed at emit with
+                // `OP_DROP` (a fresh owned producer result) — import `drop` so that call resolves (emit/
+                // import agreement, mirroring the Seq emit's condition exactly).
+                if db.strict_force_eval.contains(&s)
+                    && crate::core_analysis::is_heap_type(&crate::infer::type_of(db, s))
+                {
+                    out.insert(OP_DROP);
+                }
                 collect_used_ops_into_seen(db, s, out, visited);
             }
             collect_used_ops_into_seen(db, tail, out, visited);
@@ -17296,11 +17304,16 @@ fn emit(
                     // computation `lower_let` decomposed out of a DEAD list/set/map ctor is marked in
                     // `db.strict_force_eval` and MUST be evaluated (its trap fires) — the (A)-overrides-§283
                     // rule (v-spec-oracle): a reached heap-collection ctor's args are strict, NOT deferrable.
-                    // These are SCALAR-typed computations, so the discarded result is popped with a bare
-                    // `drop` (no refcount). Nothing is built and no borrowed value is touched → no reclaim.
+                    // A SCALAR-typed marked arg's discarded result is popped with a bare `drop` (no refcount).
+                    // A HEAP-typed one (a `Rational.of` / checked-BigInt PRODUCER — `lower_let` admits only
+                    // owned producers here, never a borrowed leaf) leaves a FRESH OWNED handle → rc-reclaim it
+                    // with `OP_DROP` (NOT a bare stack `Lir::Drop`, which would leak the fresh allocation).
                     if db.strict_force_eval.contains(s) {
                         emit(db, *s, slots, base, high, scratch_ty, layout, out)?;
-                        if valtype_of(&crate::infer::type_of(db, *s)).is_some() {
+                        let ty = crate::infer::type_of(db, *s);
+                        if crate::core_analysis::is_heap_type(&ty) {
+                            out.push(Lir::CallImport(OP_DROP));
+                        } else if valtype_of(&ty).is_some() {
                             out.push(Lir::Drop);
                         }
                         continue;
