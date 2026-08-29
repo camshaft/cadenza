@@ -72,6 +72,19 @@
   (input  (do (def (main (: n Int64)) (Bytes.len (bin (bits n 4) (bits 5 4)))) (export main)))
   (error  CDZ0203 (message "UInt4") (message "(. (UInt 4) wrap) to truncate")))
 
+; Beyond WIDTH (CDZ0203 above), a segment's value must match its KIND: an int/bits segment takes an integer,
+; a utf8 segment a String. A kind mismatch — `(bin (u8 "x"))` (a String into an int segment), `(bin (utf8 n
+; 3))` (an integer into a utf8 segment) — was accepted at build (the segment lowering never type-checked its
+; slot) and emitted garbage bytes. Now CDZ0220 names the required KIND + the offending type. (migrated from
+; rcdzc a_bin_segment_value_must_match_its_kind; no-false-positive is the valid construction cases below.)
+(case "a String value in an integer bin segment is a kind mismatch"
+  (input  (do (def (main) (bin (u8 "x"))) (export main)))
+  (error  CDZ0220 (message "integer segment takes an integer") (message "String")))
+
+(case "an integer value in a utf8 bin segment is a kind mismatch"
+  (input  (do (def (g (: n Int64)) (bin (utf8 n 3))) (export g)))
+  (error  CDZ0220 (message "utf8 segment takes a String")))
+
 (case "a u16 segment encodes an integer big-endian by default"
   (doc    "`(bin (u16 258))` encodes 258 (0x0102) as two bytes, most-significant first — big-endian is
            the default byte order, so the result is `(Bytes.of (list 1 2))`. Pins the default-endianness

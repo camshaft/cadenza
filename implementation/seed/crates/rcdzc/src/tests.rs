@@ -17111,52 +17111,6 @@ mod match_engine {
     // bytes segment → CDZ0220; a bit-field width that is negative / non-constant → CDZ0220 (message
     // "bit-field width must be a compile-time constant natural"). --case grades codes + messages (all 4 PASS).)
     #[test]
-    fn a_bin_segment_value_must_match_its_kind() {
-        // A `bin` segment's VALUE must match its KIND: an `int`/`bits` segment takes an integer, a `utf8`
-        // segment a String. An int segment fed a String — `(bin (u8 "x"))` — was accepted at BUILD (the
-        // int-segment lowering never type-checked its slot) and emitted garbage bytes; check missed it
-        // entirely. Now CDZ0220 names the required kind + the offending type, in every body.
-        let d = |src: &str| {
-            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.message.contains("segment takes"))
-                .unwrap_or_else(|| panic!("no segment-kind fault for {src}"))
-        };
-        let int_str = d("(module m (def (main) (bin (u8 \"x\"))) (export main))");
-        assert_eq!(
-            int_str.code.as_deref(),
-            Some("CDZ0220"),
-            "got: {}",
-            int_str.message
-        );
-        assert!(
-            int_str.message.contains("integer segment takes an integer")
-                && int_str.message.contains("String"),
-            "names the required kind + the offending type: {}",
-            int_str.message
-        );
-        assert!(
-            d("(module m (def (g (: n Int64)) (bin (utf8 n 3))) (export g))")
-                .message
-                .contains("utf8 segment takes a String"),
-        );
-        // NO false positive: a valid construction, and a bin PATTERN whose binder types as the decoded
-        // value (not a definite conflict), stay clean.
-        for ok in [
-            "(module m (def (main) (bin (u8 120))) (export main))",
-            "(module m (def (g (: s String)) (bin (utf8 s 3))) (export g))",
-            "(module m (def (g (: b Bytes)) (match b ((bin (u8 x)) x) (_ 0))) (export g))",
-        ] {
-            assert!(
-                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                    .iter()
-                    .any(|d| d.message.contains("segment takes")),
-                "a valid bin segment is not flagged: {ok}"
-            );
-        }
-    }
-
-    #[test]
     fn a_non_byte_aligned_int_bin_segment_names_the_supported_widths() {
         // A fixed-width integer bin segment is one of the byte-aligned widths — `u8/u16/u32/u64` or
         // `i8/i16/i32/i64`. A `uNN`/`iNN` head with any OTHER width (`u24`, `u7`, `u128`, `i0`) IS the
