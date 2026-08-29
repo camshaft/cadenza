@@ -24117,3 +24117,21 @@
   (call main (: 7 Int64)) (output (: 1 Int64))
   (call main (: -3 Int64)) (output (: 1 Int64))
   (live-objects known-leak 8))
+
+(case "csg2 a binding shared TWICE into one node, both children recursed, re-read after — the double-share fold guard"
+  (doc "csg1's two-recursion sibling (proactive fence for the accumulator-drop class): base is shared into
+        BOTH payloads of (Both base base), the fold recurses into both children, and base is re-read after
+        the fold. Sum = base+base+base = 3n/2; numerator 21 (n=7) / -9 (n=-3). An over-drop of either
+        shared child corrupts one of the three reads. known-leak 6 = the conservative shared-child
+        retention (drops with a sound accumulator fix, like csg1's 8).")
+  (input (do
+    (type (S a) (Leaf a) (Both (S a) (S a)))
+    (def (bb (: s (S Rational))) (match s ((Leaf r) r) ((Both l r) (+ (bb l) (bb r)))))
+    (def (main (: n Int64))
+      (do (def base (Leaf (Rational.of n 2)))
+          (def d (Both base base))
+          (Rational.numerator (+ (bb d) (bb base)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 21 BigInt))
+  (call main (: -3 Int64)) (output (: -9 BigInt))
+  (live-objects known-leak 6))
