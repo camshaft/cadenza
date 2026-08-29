@@ -131,6 +131,20 @@ pub const KIND_FUNC_LAYOUT: &str = "func-layout";
 /// (I emit the fact; the `cdz doc` CLI merges it into the I1 doc-module).
 pub const KIND_EXPORT_TYPES: &str = "export-types";
 
+/// The output artifact kind for a `TestList` query result — the `@test`-marked definitions the runner
+/// would run, so `cdz test --list` gets them from a SIDECAR QUERY (no rcdzc link in `cdz`). The bytes are
+/// a CADENZA-AST VALUE (`codec::encode`d — the universal tooling exchange format, per the operator
+/// cadenza-ast-binary-everywhere directive), NOT a bespoke blob: `cdz --list` FORWARDS them verbatim and
+/// consumers (v-test-shred/v-nix) decode with the ONE shared `codec`. Shape: `(test-list (test <name>
+/// <is-property> <file>)…)` — a `test-list`-headed form, one `(test …)` child per test, POSITIONAL: `name`
+/// (a `Str` leaf, the raw def name = the drift-guard identity), `is-property` (a `Bool` leaf — true when
+/// the test takes arguments OR its name ends `-gen`, i.e. `!params.is_empty() || name.ends_with("-gen")`,
+/// the canonical `compile_tests` classification incl the `-gen` `Test.gen` wrapper), `file` (a `Str` leaf,
+/// the def's source path; empty if none). Enumeration is `db.test_defs()` (already package-linkage-scoped
+/// by the linked closure the db is loaded from). Deterministic (`test_defs` order). Operator
+/// no-rcdzc-in-`cdz` step (v-cdz-crate-split); its emit-shred manifest mirrors this shape + extra fields.
+pub const KIND_TEST_LIST: &str = "test-list";
+
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
 /// not modeled here yet.
@@ -287,6 +301,12 @@ pub enum Query {
     /// with an ill-typed annotation, an effect with no resolvable op — is OMITTED (graceful-degrade: the
     /// doc-item's `(ty …)` is optional). Deterministic (export order). Co-owned with v-syntax.
     ExportedTypes,
+    /// The `@test`-marked definitions the test runner would run — name + property-vs-nullary flag + source
+    /// file, so `cdz test --list` reads them from THIS binary query (no rcdzc link in `cdz`; operator
+    /// no-rcdzc-in-`cdz` step, v-cdz-crate-split). Answered as the [`KIND_TEST_LIST`] blob. Enumerated from
+    /// `db.test_defs()` (already package-scoped by the linked closure); `is_property` = `!params.is_empty()
+    /// || name.ends_with("-gen")` (canonical `compile_tests`). Bulk (no args) — one round-trip.
+    TestList,
     /// The DOCUMENTATION of a definition or built-in, BY NAME — the doc companion of `TypeOf`. Answered
     /// from an ordered fallback, all reads of columns the compiler already fills:
     ///   1. a user definition's `(doc "…")` text (`db.doc_of_def`, keyed by the def's signature — the
@@ -459,6 +479,7 @@ fn decode_query(a: &Arenas, selector: &str, args: &[StructId]) -> Option<Query> 
         "highlight" => Query::Highlight,
         "exports" => Query::Exports,
         "exported-types" => Query::ExportedTypes,
+        "test-list" => Query::TestList,
         "symbols" => Query::Symbols,
         "param-manifest" => Query::ParamManifest,
         "func-layout" => Query::FuncLayout,
@@ -545,6 +566,7 @@ fn encode_query(b: &mut Builder, q: &Query) -> StructId {
         Query::Highlight => ("highlight", None),
         Query::Exports => ("exports", None),
         Query::ExportedTypes => ("exported-types", None),
+        Query::TestList => ("test-list", None),
         Query::Symbols => ("symbols", None),
         Query::ParamManifest => ("param-manifest", None),
         Query::FuncLayout => ("func-layout", None),
@@ -861,6 +883,45 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 kind: KIND_EXPORT_TYPES,
                 name: "export-types".to_string(),
                 bytes,
+            }
+        }
+        Query::TestList => {
+            // The `@test`-marked defs the runner would run, for `cdz test --list` (binary, no rcdzc link in
+            // `cdz`). Answered as a CADENZA-AST VALUE (`codec::encode`d), NOT a bespoke blob — the operator
+            // directive is cadenza-ast-binary as the universal tooling exchange format, so `cdz --list`
+            // FORWARDS these bytes verbatim (no re-encode) and every consumer (v-test-shred/v-nix) decodes
+            // with the ONE shared codec. Shape: `(test-list (test <name> <is-property> <file>)…)` — a
+            // `test-list`-headed form, one `(test …)` child per test, POSITIONAL: name (`Str`), is-property
+            // (`Bool`), file (`Str`). Enumerate `db.test_defs()` (already package-linkage-scoped by the linked
+            // closure the db was loaded from — the same walk the runner + test-manifest use). is-property =
+            // `!params.is_empty() || name.ends_with("-gen")` (canonical `compile_tests`, incl the `-gen`
+            // `Test.gen` wrapper). Deterministic (`test_defs` order); a fileless test emits an empty `file`
+            // Str (never omitted — its name is the drift-guard identity).
+            let mut b = Builder::new();
+            let mut tests: Vec<StructId> = Vec::new();
+            for def in db.test_defs() {
+                let d = &db.defs[def];
+                let is_property = !d.params.is_empty() || d.name.ends_with("-gen");
+                let file = db
+                    .file_of(d.sig_occ)
+                    .and_then(|fi| db.file_path(fi))
+                    .unwrap_or("")
+                    .to_string();
+                let head = b.name("test");
+                let name = atom_str(&mut b, &d.name);
+                let isprop = b.atom_leaf(crate::ast::Leaf::Bool(is_property));
+                let file_node = atom_str(&mut b, &file);
+                tests.push(b.list(vec![head, name, isprop, file_node]));
+            }
+            let list_head = b.name("test-list");
+            let mut children = Vec::with_capacity(tests.len() + 1);
+            children.push(list_head);
+            children.extend(tests);
+            let root = b.list(children);
+            QueryResult {
+                kind: KIND_TEST_LIST,
+                name: "test-list".to_string(),
+                bytes: crate::codec::encode(&b.finish(root)),
             }
         }
         Query::Highlight => {
@@ -2654,7 +2715,8 @@ mod tests {
                     | Query::ParamManifest
                     | Query::FuncLayout
                     | Query::ClosureHash
-                    | Query::ExportedTypes,
+                    | Query::ExportedTypes
+                    | Query::TestList,
                 ) => {}
             }
         }
@@ -2795,6 +2857,69 @@ mod tests {
             out.push((name, arena));
         }
         out
+    }
+
+    #[test]
+    fn test_list_enumerates_tests_with_property_flag() {
+        // `Query::TestList` answers the `@test` defs the runner would run, as a CADENZA-AST VALUE
+        // `(test-list (test <name-Str> <is-property-Bool> <file-Str>)…)` (codec-encoded — the operator
+        // exchange format; `cdz --list` forwards it verbatim). is_property = `!params.is_empty() ||
+        // name.ends_with("-gen")`. A nullary test is a plain unit test (false); a PARAMETERIZED test is a
+        // property test (true); a `-gen` wrapper is a property test by name-suffix (true) even nullary. A
+        // non-`@test` def is omitted.
+        let src = "(do \
+            (@ test (def (t_unit) unit)) \
+            (@ test (def (t_prop (: n Int64)) unit)) \
+            (@ test (def (t_shrink-gen) unit)) \
+            (def (helper) unit) \
+            (export helper))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let result = run_query(&mut db, &Query::TestList);
+        assert_eq!(result.kind, KIND_TEST_LIST);
+        // Decode the cadenza-ast value with the shared codec + walk `(test-list (test name isprop file)…)`.
+        let arena = crate::codec::decode(&result.bytes).expect("decode test-list value");
+        let Struct::List(kids) = arena.get(arena.root) else {
+            panic!("test-list root should be a `(test-list …)` list");
+        };
+        assert_eq!(
+            arena.as_name(kids[0]),
+            Some("test-list"),
+            "root head is `test-list`"
+        );
+        let mut by_name: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+        for &rec in &kids[1..] {
+            let Struct::List(f) = arena.get(rec) else {
+                panic!("each test is a `(test …)` list");
+            };
+            assert_eq!(arena.as_name(f[0]), Some("test"), "record head is `test`");
+            let name = arena.as_str(f[1]).expect("name is a Str leaf").to_string();
+            let is_property = arena.as_bool(f[2]).expect("is-property is a Bool leaf");
+            by_name.insert(name, is_property);
+        }
+        assert_eq!(
+            by_name.len(),
+            3,
+            "three @test defs (helper is not a test): {by_name:?}"
+        );
+        assert_eq!(
+            by_name.get("t_unit"),
+            Some(&false),
+            "a nullary test is a plain unit test (not a property test)"
+        );
+        assert_eq!(
+            by_name.get("t_prop"),
+            Some(&true),
+            "a parameterized test IS a property test"
+        );
+        assert_eq!(
+            by_name.get("t_shrink-gen"),
+            Some(&true),
+            "a `-gen` wrapper is a property test by name-suffix (even nullary)"
+        );
+        assert!(
+            !by_name.contains_key("helper"),
+            "a non-`@test` def is not listed"
+        );
     }
 
     #[test]
