@@ -1190,12 +1190,25 @@
         # Keyed by (file-STEM, name): a @test name can repeat across a suite's files, and the stem matches
         # the manifest's `file` field, so the exec resolves the RIGHT per-@test target (standalone emits a
         # UNIQUE target per (stem,name), so no collision even for same-named tests across files).
-        testShredIndexEntries = proj:
+        # DISCOVERY — compiler-informed test enumeration via a SCOPED, CACHED IFD (operator OK'd IFD seq-168;
+        # concierge greenlit scoped-cached-IFD as the discovery mechanism 2026-08-29; pure dyn-drv is R&D-blocked
+        # in nix 2.34.8). A derivation runs `cdz test --list --format nix <proj>` (#5461) → $out = a SORTED, PURE,
+        # importable nix list `[{name;is_property;file}...]` (verified: works in the --no-default-features
+        # seedCompiler). The flake `import`s $out AT EVAL to fan out per-@test derivations — compiler-authoritative
+        # (db.test_defs), NO committed index. IFD is SCOPED to THIS discovery ONLY (the global no-IFD convention
+        # stays); nix caches the drv output, so eval re-reads only when the suite src changes (rotates the drv) —
+        # not on every eval. Reversible to pure dyn-drv on a nix upgrade. Replaces the retired committed
+        # tests-shred-index.txt. Keyed by (file-STEM, name): a @test name can repeat across a suite's files, so
+        # the stem (baseNameOf file, ext stripped) disambiguates + matches the manifest's `file` field.
+        testDiscovery = { proj, dir }:
+          pkgs.runCommand "test-discovery-${proj}" { nativeBuildInputs = [ seedCompiler ]; } ''
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            cdz test --list --format nix ${pkgs.lib.fileset.toSource { root = ./.; fileset = dir; }}/implementation/${proj} > "$out"
+          '';
+        testShredIndexEntries = proj: dir:
           map
-            (l: let fs = pkgs.lib.splitString "\t" l; in { stem = builtins.elemAt fs 0; name = builtins.elemAt fs 1; })
-            (builtins.filter (l: l != "")
-              (pkgs.lib.splitString "\n"
-                (builtins.readFile (./implementation + "/${proj}/tests-shred-index.txt"))));
+            (e: { stem = pkgs.lib.head (pkgs.lib.splitString "." (baseNameOf e.file)); name = e.name; })
+            (import (testDiscovery { inherit proj dir; }));
         # SHRED (content-addressed) — compile the project's @tests to per-@test wasm + `manifest.cdzb` ONCE.
         # Closure = the `cdz` binary (emit-shred drives rcdzc IN-PROCESS; wasmtime-free; NO store — compile
         # only). CA so a compiler change that re-emits identical wasm cache-hits every exec.
@@ -1215,9 +1228,9 @@
             # SKIPS in its exec, and testCadenzaProject still covers it — this matrix is ADDITIVE). So tolerate
             # the non-zero exit but guard on a MISSING manifest, which IS a real emit failure. (Standalone-all
             # emit — the operator's pick, v-cdz building — has no declines → exit 0 → this branch is inert.)
-            if ! cdz test --emit-shred --standalone ${pkgs.lib.fileset.toSource { root = ./.; fileset = dir; }}/implementation/${proj} --out-dir "$out"; then
-              [ -f "$out/manifest.cdzb" ] || { echo "test-shred: emit-shred produced no manifest for ${proj} (real emit failure)" >&2; exit 1; }
-              echo "test-shred: emit-shred for ${proj} exited non-zero (expected — some @tests declined #4031); manifest present, proceeding with the shreddable subset" >&2
+            if ! cdz test --emit-shred --two-stage ${pkgs.lib.fileset.toSource { root = ./.; fileset = dir; }}/implementation/${proj} --out-dir "$out"; then
+              [ -f "$out/manifest.cdzb" ] || { echo "test-shred: --two-stage produced no manifest for ${proj} (real emit failure)" >&2; exit 1; }
+              echo "test-shred: --two-stage for ${proj} exited non-zero (expected — some @tests declined, e.g. user-sum re-emit gap); manifest present, proceeding with the shreddable subset" >&2
             fi
           '';
         # EXEC — grade ONE @test. Closure = the COMPILER-FREE `cdz-run` + the `cdz` binary (for the `cdz
@@ -1225,10 +1238,17 @@
         # sexpr` renders it as (multi-line, pretty-printed) s-expression, which a gawk `RS="(entry"` pass
         # tokenizes per entry (7 positional fields: name is-property file export target main-iface main-file;
         # strings quoted, bool true/false). A @test not present in the manifest (a decliner) SKIPS.
+        # EXEC (TWO-STAGE) — grade ONE @test. Decode the manifest by (fileStem, name) → export/target/main-file,
+        # then SPLICE+COMPILE the SHARED closure fragment (main-file, compiled once per suite in the shred) + this
+        # test's fragment (target) via cdz-compile multi-input + --export → a standalone wasm, then cdz-run it
+        # (exit 0 = PASS, trap = FAIL — a @test has no expected value). The manifest is a cadenza-ast VALUE; `cdz
+        # convert --to sexpr` renders it, a gawk RS="(entry" pass tokenizes the 7 positional fields (name
+        # is-property file export target main-iface main-file; main-iface is "" for two-stage, main-file is the
+        # closure fragment). A @test absent from the manifest (a decliner, e.g. user-sum re-emit gap) SKIPS.
         mkTestExec = { proj, shred, fileStem, testName }:
           pkgs.runCommand "test-shred-exec-${proj}-${fileStem}-${testName}"
             {
-              nativeBuildInputs = [ seedCompiler cdzRun pkgs.gawk ];
+              nativeBuildInputs = [ seedCompiler cdzCompile cdzRun pkgs.gawk ];
             } ''
             set -euo pipefail
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
@@ -1238,16 +1258,17 @@
                   c = 0; nf = split($0, t, /[ \t\n]+/);
                   for (i = 1; i <= nf; i++) { if (t[i] != "") { c++; f[c] = t[i]; if (c == 7) break } }
                   for (k = 1; k <= 7; k++) { gsub(/^"/, "", f[k]); gsub(/"?\)+$/, "", f[k]); gsub(/"$/, "", f[k]) }
-                  if (f[1] == n && f[3] == fs) { print f[4] "\t" f[5] "\t" f[6] "\t" f[7] }
+                  if (f[1] == n && f[3] == fs) { print f[4] "\t" f[5] "\t" f[7] }
                 }')
             if [ -z "$line" ]; then
-              echo "skip: @test ${fileStem}::${testName} not in shred manifest (declined — #4031 compound-param)" > "$out"
+              echo "skip: @test ${fileStem}::${testName} not in shred manifest (declined)" > "$out"
               exit 0
             fi
-            IFS=$'\t' read -r texport ttarget tiface tmain <<< "$line"
-            args=("${shred}/$ttarget" --call "$texport" --store "${componentStore}" --runtime ${runtimeDebug})
-            if [ -n "$tmain" ]; then args+=(--peer "$tiface=${shred}/$tmain"); fi
-            cdz-run "''${args[@]}"
+            IFS=$'\t' read -r texport ttarget tclosure <<< "$line"
+            # SPLICE+COMPILE: shared closure fragment (built once, cache-HIT across the suite) + this test's
+            # fragment → standalone wasm (cdz-compile multi-input + --export, the operator option-b splice).
+            cdz-compile ${shred}/"$tclosure" ${shred}/"$ttarget" --export "$texport" -o test.wasm
+            cdz-run test.wasm --call "$texport" --store "${componentStore}" --runtime ${runtimeDebug}
             echo "ok: @test ${proj}/${testName} PASS" > "$out"
           '';
         # Per-suite check MAP `{ "<name>" = execDrv }` — shred once, one exec per @test (parallel, CA-cached).
@@ -1255,7 +1276,7 @@
           let shred = mkTestShred { inherit proj dir; };
           in builtins.listToAttrs (map
             (e: { name = "${e.stem}::${e.name}"; value = mkTestExec { inherit proj shred; fileStem = e.stem; testName = e.name; }; })
-            (testShredIndexEntries proj));
+            (testShredIndexEntries proj dir));
         # Per-suite AGGREGATE — every @test's exec marker (a skip is exit 0). Non-vacuity guarded.
         mkTestShredSuiteAgg = { proj, dir }:
           let cases = testShredSuiteChecks { inherit proj dir; };
