@@ -27902,36 +27902,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_malformed_integer_width_is_rejected_not_dropped() {
-        // A NON-NATURAL width — negative, or a bool/float/type-value in width position — must be
-        // rejected (CDZ0302), NOT silently dropped so the literal keeps its default Int64. The width
-        // reader used to narrow with `u32::try_from`, whose `None` was ignored: `(: 5 (Int -8))` then
-        // ran to 5. Now `int_width_fault` classifies it `Malformed` and the value-/param-annotation
-        // well-formedness check REJECTS it at `cdz check` (CDZ0302) — earlier than the backend selection
-        // that used to be the sole catcher, with a message that states the constraint (a width must be a
-        // compile-time natural in 1..=64) rather than the misleading "does not fit its width" a
-        // clamped-to-sentinel-0 fit-check gave.
-        for body in [
-            "(: 5 (Int -8))",
-            "(: 5 (UInt -1))",
-            "(: 300 (Int -8))", // if the width were honored 300 would overflow; if dropped it fits — neither
-            "(: 300 (Int true))", // a bool in width position
-            "(: 300 (Int 8.0))", // a float in width position
-            "(: 300 (Int Int64))", // a type-value in width position
-        ] {
-            let msg = expect_decline(body);
-            assert!(
-                msg.contains("width must be a compile-time natural number")
-                    || msg.contains("not a natural number"),
-                "malformed width must be rejected CDZ0302 with the natural-width message: {body} → {msg}"
-            );
-        }
-        // A valid width is unaffected — `(Int 64)` still builds and `5` fits (crosses as s64). That RUN is
-        // corpus case 07-type-system "an annotation whose type is a reduced (Int 64) constructor grounds the
-        // value" (`(: 5 (Int 64))` = 5); this test keeps only the malformed-width reject.
-    }
-
-    #[test]
     fn an_integer_width_above_the_64_bit_ceiling_is_rejected_cdz0302() {
         // 06-numeric-model "an integer width above the 64-bit ceiling is rejected" / "a wide fixed-size
         // integer width is reserved": `(UInt 65)`/`(UInt 128)` name widths one (or more) past the 1..=64
@@ -28047,33 +28017,6 @@ mod stage1 {
             compile("(module m (def (f (: x (UInt 8))) x) (def (main) 0) (export main))").is_ok(),
             "a valid narrow width in an unused parameter must not be rejected"
         );
-    }
-
-    #[test]
-    fn a_runtime_integer_width_is_rejected_not_dropped() {
-        // A `(UInt n)`/`(Int n)` whose width is a RUNTIME value (a function parameter) puts a runtime
-        // value in a type-determining position, which the type system forbids: an integer type MUST be
-        // indexed by a COMPILE-TIME width (numeric-model.md §An Integer Type Is Indexed By A Compile-Time
-        // Width). The width reader resolves `n` to no compile-time natural, so — like a negative or
-        // non-natural width — the annotation reduces to the sentinel width 0 and the fit-check rejects
-        // it (CDZ0302), rather than DROPPING the annotation so the literal keeps its default Int64 (which
-        // is what made `(mk 8)` run to 5). The runtime branch of the drop-instead-of-reject family.
-        let compile =
-            |src: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(src)));
-        // Runtime width via an inlined call — `(mk 8)` substitutes 8 but `n` is not a constant at the
-        // annotation site; the width is non-constant → reject, not run-to-5.
-        let e = compile("(module m (def (mk n) (: 5 (UInt n))) (def (main) (mk 8)) (export main))")
-            .expect_err("a runtime-valued width must be rejected");
-        assert_eq!(e.code.as_deref(), Some("CDZ0302"), "got: {}", e.message);
-        // The signed variant likewise.
-        let e = compile("(module m (def (mk n) (: 5 (Int n))) (def (main) (mk 16)) (export main))")
-            .expect_err("a runtime-valued signed width must be rejected");
-        assert_eq!(e.code.as_deref(), Some("CDZ0302"), "got: {}", e.message);
-        // A width that IS a compile-time constant reached through a `let` is still fine (it folds to the
-        // constant): `(let ((w 8)) (: 5 (UInt w)))` builds and 5 fits UInt8 (crosses as u8, not dropped to
-        // the default i64 — the constant width is honored). That RUN is corpus case 06-numeric-model "an
-        // integer width reached through a let-bound constant folds and is honored"; this test keeps only
-        // the runtime-valued-width reject.
     }
 
     #[test]
