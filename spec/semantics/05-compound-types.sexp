@@ -373,6 +373,47 @@
   (input  (do (def (main) (match 5 (#map((= 1 v)) v) (_ 0))) (export main)))
   (error  CDZ0203))
 
+; The GENERALIZATION: a `(list …)` / `(map …)` / `(tuple …)` pattern matches a value of a SPECIFIC kind
+; (List/Map/Tuple), so over a definite scrutinee of a DIFFERENT kind it is a type error CDZ0203 naming BOTH
+; the pattern kind and the real scrutinee type — not the misleading generic "not a scalar literal or `_`" /
+; "not an element pattern" decline it once gave. Migrated from rcdzc
+; a_structural_pattern_over_a_mismatched_scrutinee_kind_is_a_type_error.
+(case "a list pattern over an Int64 scrutinee is a type error naming both kinds"
+  (input  (do (def (f (: n Int64)) (match n ((list a b) 0) (_ 0))) (export f)))
+  (error  CDZ0203 (message "a List value") (message "Int64")))
+
+(case "a list pattern over a String scrutinee is a type error"
+  (input  (do (def (f (: s String)) (match s ((list a b) 0) (_ 0))) (export f)))
+  (error  CDZ0203 (message "a List value")))
+
+(case "a map pattern over an Int64 scrutinee (definite) is a type error"
+  (input  (do (def (f (: n Int64)) (match n ((map (1 v)) v) (_ 0))) (export f)))
+  (error  CDZ0203 (message "a Map value")))
+
+(case "a tuple pattern over an Int64 scrutinee is a type error"
+  (input  (do (def (f (: n Int64)) (match n ((tuple a b) 0) (_ 0))) (export f)))
+  (error  CDZ0203 (message "a Tuple value")))
+
+(case "a tuple pattern over a Map scrutinee is a type error"
+  (input  (do (def (f (: mm (Map Int64 Int64))) (match mm ((tuple a b) 0) (_ 0))) (export f)))
+  (error  CDZ0203 (message "a Tuple value")))
+
+(case "a list pattern over a Map scrutinee is a type error"
+  (input  (do (def (f (: mm (Map Int64 Int64))) (match mm ((list a b) 0) (_ 0))) (export f)))
+  (error  CDZ0203 (message "a List value")))
+
+(case "a list pattern over its matching List scrutinee kind is valid and matches (no over-rejection)"
+  (input  (do (def (main) (match (list 1 2) ((list a b) a) (_ 0))) (export main)))
+  (call   main) (output (: 1 Int64)))
+
+(case "a map pattern over its matching Map scrutinee kind is valid and matches (no over-rejection)"
+  (input  (do (def (main) (match (map (1 10)) ((map (1 v)) v) (_ 0))) (export main)))
+  (call   main) (output (: 10 Int64)))
+
+(case "a tuple pattern over its matching Tuple scrutinee kind is valid and matches (no over-rejection)"
+  (input  (do (def (main) (match (tuple 3 4) ((tuple a b) (+ a b)))) (export main)))
+  (call   main) (output (: 7 Int64)))
+
 ; A `(map (k v)…)` pattern tests only that the NAMED keys are PRESENT (it is refutable on key-presence, not
 ; an exact key-set match — see the list-arm map-element cases below). With ZERO named keys, `(map)` is that
 ; presence test made VACUOUS, so it matches ANY map — empty OR non-empty. This is the opposite of `(list)`,
