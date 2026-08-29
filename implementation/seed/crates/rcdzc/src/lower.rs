@@ -5566,15 +5566,41 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         crate::ty::Ty::Tuple(_) => Some("tuple"),
         _ => None,
     };
-    if !matches!(scrut_ty, crate::ty::Ty::Any | crate::ty::Ty::Var(_))
-        && let Some(&(bad_pat, _)) = arms.iter().find(|&&(pat, _)| {
-            matches!(
-                db.ast.head_name(pat),
-                Some("bin" | "list" | "map" | "tuple")
-            ) && db.ast.head_name(pat) != scrutinee_kind_word(&scrut_ty)
+    // The pattern's structural KIND word — recognized via `compound_form_of` for the compound ctors
+    // (native `#list`/`#tuple`/`#map` ctor-leaf head + the name/string alias, M2/M3) so a NATIVE pattern is
+    // checked here just like the name-head alias; `bin` is the binary-matching head (not a compound ctor),
+    // read by name. Was `head_name(pat)` (name-alias only) — so a native `#tuple(a b)` pattern over a
+    // non-Tuple scrutinee slipped this CDZ0203 kind-check and fell through to a misleading generic CDZ0201.
+    let scrut_kind = scrutinee_kind_word(&scrut_ty);
+    let bad = {
+        let ast = &db.ast;
+        arms.iter().find_map(|&(pat, _)| {
+            let k = if ast
+                .compound_form_of(pat, crate::ast::CompoundCtor::List)
+                .is_some()
+            {
+                Some("list")
+            } else if ast
+                .compound_form_of(pat, crate::ast::CompoundCtor::Tuple)
+                .is_some()
+            {
+                Some("tuple")
+            } else if ast
+                .compound_form_of(pat, crate::ast::CompoundCtor::Map)
+                .is_some()
+            {
+                Some("map")
+            } else if ast.head_name(pat) == Some("bin") {
+                Some("bin")
+            } else {
+                None
+            };
+            k.filter(|w| Some(*w) != scrut_kind).map(|w| (pat, w))
         })
+    };
+    if !matches!(scrut_ty, crate::ty::Ty::Any | crate::ty::Ty::Var(_))
+        && let Some((bad_pat, pat_head)) = bad
     {
-        let pat_head = db.ast.head_name(bad_pat).unwrap_or("");
         let expects = match pat_head {
             "bin" => "a Bytes value (binary matching)",
             "list" => "a List value",
