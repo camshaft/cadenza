@@ -34,8 +34,8 @@ export default function AdHocPolymorphism() {
         source={`(def (describe-int n) (+ n 100))
 (def (describe-bool b) (if b 1 0))
 (def (show-with dict x) ((. dict describe) x))
-(def (int-show) (record (describe describe-int)))
-(def (bool-show) (record (describe describe-bool)))
+(def (int-show) #record((= describe describe-int)))
+(def (bool-show) #record((= describe describe-bool)))
 (def (main)
   (+ (show-with (int-show) 5)
      (show-with (bool-show) true)))`}
@@ -64,8 +64,8 @@ export default function AdHocPolymorphism() {
 (def (describe-bool b) (if b 999 0))
 (def (show-with (const dict) x) ((. dict describe) x))
 (def (main)
-  (+ (show-with (record (describe describe-int)) 5)
-     (show-with (record (describe describe-bool)) true)))`}
+  (+ (show-with #record((= describe describe-int)) 5)
+     (show-with #record((= describe describe-bool)) true)))`}
       />
       <P>
         The very same two instances as before, one for <C>Int64</C> and one for <C>Bool</C>, now dispatch
@@ -101,8 +101,8 @@ export default function AdHocPolymorphism() {
 (def (show-with (: t Type) (: dict (Record (: describe (-> t Int64)))) (: x t))
   ((. dict describe) x))
 (def (main)
-  (+ (show-with Int64 (record (describe describe-int)) 5)
-     (show-with Bool (record (describe describe-bool)) true)))`}
+  (+ (show-with Int64 #record((= describe describe-int)) 5)
+     (show-with Bool #record((= describe describe-bool)) true)))`}
       />
       <P>
         Same <C>1104</C>, now with a fully written-out signature: <C>show-with</C> declares that its element
@@ -189,7 +189,7 @@ export default function AdHocPolymorphism() {
 (def (main) (apply-op (record (op ?)) 5))`}
         solution={`(def (triple n) (* 3 n))
 (def (apply-op dict x) ((. dict op) x))
-(def (main) (apply-op (record (op triple)) 5))`}
+(def (main) (apply-op #record((= op triple)) 5))`}
         expected="15"
         hint={
           <>

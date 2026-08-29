@@ -57,11 +57,11 @@ export default function Iteration() {
         the remainder to <C>rest</C>, and thread the accumulator through:
       </P>
       <Runnable
-        source={`(def (main) (sum-list (list 10 20 30) 0))
+        source={`(def (main) (sum-list #list(10 20 30) 0))
 (def (sum-list xs acc)
   (match xs
-    ((list) acc)
-    ((list x .. rest) (sum-list rest (+ acc x)))))`}
+    (#list() acc)
+    (#list(x .. rest) (sum-list rest (+ acc x)))))`}
       />
       <P>
         The empty list is the base case (return the accumulator); the non-empty case adds the head to the

@@ -19,7 +19,7 @@ export default function Bytes() {
         <C>b"…"</C> literal with non-printable bytes shown as <C>\x</C> escapes, so here the numbers{" "}
         <C>10</C>, <C>20</C>, <C>30</C> become the three octets <C>{`b"\\n\\x14\\x1e"`}</C>:
       </P>
-      <Runnable source={`(Bytes.of (list 10 20 30))`} />
+      <Runnable source={`(Bytes.of #list(10 20 30))`} />
       <P>
         <C>Bytes.len</C> counts those octets, so <C>b"hi!"</C> is the three bytes <C>h</C>, <C>i</C>,{" "}
         <C>!</C>, and its length is <C>3</C>:
@@ -31,7 +31,7 @@ export default function Bytes() {
         A literal and a built sequence are just two spellings of one value, and Cadenza compares them by
         value, so they're <em>equal</em> when their bytes match. <C>b"AB"</C> is the two bytes 65 and 66:
       </P>
-      <Runnable source={`(= b"AB" (Bytes.of (list 65 66)))`} />
+      <Runnable source={`(= b"AB" (Bytes.of #list(65 66)))`} />
 
       <H2>Reaching in safely</H2>
       <P>
@@ -41,7 +41,7 @@ export default function Bytes() {
       </P>
       <Runnable
         source={`(def (main)
-  (match (Bytes.at (Bytes.of (list 10 20 30)) 1)
+  (match (Bytes.at (Bytes.of #list(10 20 30)) 1)
     ((Some b) b)
     ((None _) -1)))`}
       />
@@ -53,7 +53,7 @@ export default function Bytes() {
         index and a <em>length</em>, and because that window might run off the end it returns an{" "}
         <C>Option</C>. Both return new values, leaving the originals untouched:
       </P>
-      <Runnable source={`(Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4 5)))`} />
+      <Runnable source={`(Bytes.concat (Bytes.of #list(1 2)) (Bytes.of #list(3 4 5)))`} />
       <P>
         Joining a 2-byte sequence with a 3-byte one gives the 5-byte{" "}
         <C>{`b"\\x01\\x02\\x03\\x04\\x05"`}</C>, the two originals laid end to end, both untouched.
@@ -61,7 +61,7 @@ export default function Bytes() {
       <Runnable
         source={`(def (main)
   (Bytes.len
-    (Option.expect (Bytes.slice (Bytes.of (list 1 2 3 4 5)) 1 3) "out of range")))`}
+    (Option.expect (Bytes.slice (Bytes.of #list(1 2 3 4 5)) 1 3) "out of range")))`}
       />
       <P>
         <C>(Bytes.slice bs 1 3)</C> takes 3 bytes starting at index 1, so its length is <C>3</C>. Ask

@@ -24,16 +24,16 @@ export default function MapsSets() {
         one and you'll see the collapse directly: the two <C>2</C>s in the input become a single{" "}
         <C>2</C>, so the set holds <C>1 2 3</C>:
       </P>
-      <Runnable source={`(Set.of (list 1 2 2 3))`} />
+      <Runnable source={`(Set.of #list(1 2 2 3))`} />
       <P>
         Because those duplicates are gone, <C>Set.len</C> counts <em>distinct</em> elements: <C>3</C>
         here, not the four you passed in:
       </P>
-      <Runnable source={`(Set.len (Set.of (list 1 2 2 3)))`} />
+      <Runnable source={`(Set.len (Set.of #list(1 2 2 3)))`} />
       <P>
         <C>Set.contains</C> answers membership directly:
       </P>
-      <Runnable source={`(Set.contains (Set.of (list 1 2 3)) 2)`} />
+      <Runnable source={`(Set.contains (Set.of #list(1 2 3)) 2)`} />
 
       <H2>Set algebra</H2>
       <P>
@@ -41,7 +41,7 @@ export default function MapsSets() {
         both), <C>Set.difference</C> (in the first but not the second). Each returns a new set; Run it and
         you see the set itself:
       </P>
-      <Runnable source={`(Set.union (Set.of (list 1 2)) (Set.of (list 2 3 4)))`} />
+      <Runnable source={`(Set.union (Set.of #list(1 2)) (Set.of #list(2 3 4)))`} />
       <P>
         <C>{`{1,2}`}</C> ∪ <C>{`{2,3,4}`}</C> = <C>{`{1,2,3,4}`}</C>: the duplicate <C>2</C> collapses, so
         four distinct elements. Put <C>Set.intersection</C> in its place and Run again: only the shared{" "}
@@ -52,7 +52,7 @@ export default function MapsSets() {
         not the second. Return the set itself and you can see it: <C>{`{1,2,3}`}</C> minus{" "}
         <C>{`{2,3,4}`}</C> leaves just <C>{`{1}`}</C>:
       </P>
-      <Runnable source={`(Set.difference (Set.of (list 1 2 3)) (Set.of (list 2 3 4)))`} />
+      <Runnable source={`(Set.difference (Set.of #list(1 2 3)) (Set.of #list(2 3 4)))`} />
       <P>
         Swap the two sets and Run again: <C>{`{2,3,4}`}</C> minus <C>{`{1,2,3}`}</C> is <C>{`{4}`}</C>{" "}
         instead, a different answer, because "in the first but not the second" isn't symmetric. Union and
@@ -93,21 +93,21 @@ export default function MapsSets() {
         <C>Set.of</C> call from the top of the chapter, and it still collapses the duplicate to the set{" "}
         <C>{`{1, 2, 3}`}</C>:
       </P>
-      <Runnable source={`(Set.of (list 1 2 2 3))`} />
+      <Runnable source={`(Set.of #list(1 2 2 3))`} />
       <P>
         Toggle to the conventional surface and that reads <C>#(1, 2, 2, 3)</C>, and in fact every{" "}
         <C>Set.of (list …)</C> earlier in this chapter has been showing as <C>#(…)</C> whenever the toggle
         was on. A map literal spells each entry <C>key = value</C> inside <C>{"#{…}"}</C>; here two entries,
         and returning it shows both:
       </P>
-      <Runnable source={`(map (1 10) (2 20))`} />
+      <Runnable source={`#map((= 1 10) (= 2 20))`} />
       <P>
         And it's an ordinary map, so <C>Map.lookup</C> works on it just the same: the value under key{" "}
         <C>2</C> is <C>20</C>:
       </P>
       <Runnable
         source={`(def (main)
-  (Option.expect (Map.lookup (map (1 10) (2 20)) 2) "missing"))`}
+  (Option.expect (Map.lookup #map((= 1 10) (= 2 20)) 2) "missing"))`}
       />
       <Note>
         These are the same three collections, not new ones: <C>#(…)</C> desugars to <C>Set.of</C> and{" "}
@@ -154,7 +154,7 @@ export default function MapsSets() {
       </P>
       <Runnable
         source={`(def (main)
-  (match (. (Map.take (map (1 10) (2 20)) 1) 0)
+  (match (. (Map.take #map((= 1 10) (= 2 20)) 1) 0)
     ((Some v) v)
     ((None _) -1)))`}
       />
@@ -164,7 +164,7 @@ export default function MapsSets() {
       </P>
       <Runnable
         source={`(def (main)
-  (. (Map.take (map (1 10) (2 20)) 1) 1))`}
+  (. (Map.take #map((= 1 10) (= 2 20)) 1) 1))`}
       />
       <P>
         Take a key that isn't there and <C>.0</C> is <C>(None unit)</C> while <C>.1</C> equals the original:
@@ -178,7 +178,7 @@ export default function MapsSets() {
       </P>
       <Runnable
         source={`(def (main)
-  (match (. (Map.swap (map (1 10)) 1 99) 0)
+  (match (. (Map.swap #map((= 1 10)) 1 99) 0)
     ((Some old) old)
     ((None _) -1)))`}
       />
@@ -206,7 +206,7 @@ export default function MapsSets() {
         starter={`(Set.len
   (Set.? (Set.of (list 1 2 3)) (Set.of (list 2 3 4))))`}
         solution={`(Set.len
-  (Set.intersection (Set.of (list 1 2 3)) (Set.of (list 2 3 4))))`}
+  (Set.intersection (Set.of #list(1 2 3)) (Set.of #list(2 3 4))))`}
         expected="2"
         hint={
           <>
@@ -230,7 +230,7 @@ export default function MapsSets() {
     (Map.? (map (1 10) (2 20)) 1)))`}
         solution={`(def (main)
   (Map.len
-    (Map.remove (map (1 10) (2 20)) 1)))`}
+    (Map.remove #map((= 1 10) (= 2 20)) 1)))`}
         expected="1"
         hint={
           <>
