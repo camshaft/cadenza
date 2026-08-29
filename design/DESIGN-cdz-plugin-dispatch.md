@@ -224,6 +224,21 @@ Order S2→S6 is chosen so each dep leaves the closure as soon as its last in-pr
 S4/S6 are the two that actually delete the heavy transitive graph.
 
 ### S6a — `@test` enumeration via a cdz-compile SIDECAR QUERY (operator refinement 2026-08-29)
+
+> **✅ UPDATE (2026-08-29 — LANDED + FINALIZED; the detail below is retained for history):**
+> - `cdz test --list` now emits the cadenza-ast-binary `(test-list (test <name> <is-property> <file>)…)`
+>   value in BOTH paths — the delegate `Query::TestList`/`KIND_TEST_LIST` (v-inference, #5218) AND the
+>   standalone in-process `list_tests` (flipped from JSON → the identical value, #5360). `is-property` =
+>   `!params.is_empty() || name.ends_with("-gen")` (the `-gen` fix landed in #5360). The encoding open-Q is
+>   RESOLVED: `KIND_TEST_LIST` is a cadenza-ast VALUE, forwarded verbatim.
+> - The EVAL-time nix-enumeration "open piece" (a committed text name-index vs …) is CLOSED. Operator
+>   FINALIZED discovery as nix **DYNAMIC-DERIVATIONS**: compiler-informed via `cdz test --list` at BUILD time,
+>   **NO committed index, NO IFD** (v-nix vetoed literal IFD — it triggers a compiler build per eval; operator
+>   seq 171). The eval source-scan v-test-shred briefly considered was vetoed ("want the compiler to tell
+>   us"). So `--list`'s final shape is pure cadenza-ast-binary — already landed, no text-index needed.
+> - `standalone` still links rcdzc for `list_tests` (in-process); the delegate build spawns cdz-compile. The
+>   rcdzc-free-cdz end-state is the full S6 (runner + query arms all spawn-cdz-compile), not this slice.
+
 Operator (verbatim, linking PR #5182): *"we really shouldn't be depending on the rcdzc crate in the cdz
 binary either… ideally this would just call the cdz-compile and pass a sidecar query that returned the
 list of tests."* + *"we should not be using json. use the cadenza-ast binary format everywhere."* So the
@@ -264,6 +279,28 @@ queries still need the `spans` side-channel; those stay artifact-based or carry 
 settle with v-ast-consolidate + v-cdz-delegate at S6.)
 
 ### S6b — COMPILER-DRIVEN test SHRED emit (operator refinement 2026-08-29, 3rd)
+
+> **🔀 SUPERSEDED (2026-08-29 operator pivot — STANDALONE-EVERYWHERE; below kept for history):**
+> The PEER-composition model in this section (`main.wasm` provider + `test-<k>.wasm --peer main=main.wasm`
+> consumers, `compute_tests_consumer`/`compute_shared_closure_provider`, the "main = whole library" gap) is
+> DROPPED. The operator ruled **STANDALONE per-test components everywhere** (self-contained, single-entry)
+> "for maximal caching" (seq 169) — no peer, no shared provider. `cdz test --emit-shred --standalone`
+> (landed) is the shipping model; iterators (360 @tests) landed standalone #5298.
+> - **Heavy-suite blowup** (standalone = O(tests×closure); compiler-ml 854 × ~1360-fn closure) is solved by
+>   the **TWO-STAGE closure-emit CA-cache**, NOT peer/shared-provider: cheap-DCE shred per test → lower the
+>   suite's shared closure ONCE via v-cadenza-backend `--target cadenza` → v-nix CA-caches it (content-hash
+>   keyed) → each per-test build cache-HITS the closure + pays only its own body ⇒ O(closure_once +
+>   tests×body). NOT shared-closure GROUPING (that WAS the peer/shared-module idea). Split: I own the shred
+>   emit (stage-1 DCE split + per-test linking); v-cadenza-backend owns content-stable closure lowering;
+>   v-nix owns the CA-keyed shared-closure dyn-drv.
+> - **HARD-BLOCKED** on v-cadenza-backend closure lowering (`rcdzc/src/backend/cadenza/mod.rs:129` still
+>   DECLINES Closure/Captured/CallClosure) + its content-stability, and v-nix's shared-closure dyn-drv —
+>   grounded interface asks sent 2026-08-29. Build stage-1 once the artifact shape is locked.
+> - **X5b PAUSED**: the peer value-crossing op (compound/closure params across the component boundary, #4031)
+>   was the peer-model's compound-param enabler; its test-shred driver vanished with the peer drop. May revive
+>   as GENERAL cross-component interop (real dep compositions) pending concierge's priority confirm.
+> - Discovery is dyn-drv (see S6a update). The `--list`/manifest are cadenza-ast values (landed).
+
 Operator (verbatim): *"the compiler did the shredding with a query. you give it a file and it emits an
 artifact for the MAIN target and then a TARGET PER TEST. the test links against the main target and calls
 the function."* Ownership (concierge): **v-cdz-crate-split owns the cdz-compile query/subcommand surface**
