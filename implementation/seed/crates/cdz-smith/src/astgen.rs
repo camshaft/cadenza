@@ -452,22 +452,38 @@ fn gen_main_body<C: Choice>(
 /// literal `(: <n> T)`; a checked conversion `(T.of <n>)` from a small in-range Int64 literal; or a
 /// width-SAFE binary op `(<op> (: a T) (: b T))` over two `0..=9` operands (see [`SIZED_INT_OPS`] — the
 /// result stays in range for every width, so it COMPILES). Reaches narrow-width arith/conversion emit.
+/// Max recursion depth for [`gen_sized_expr`]. Bounded at 2 so a nested `*` stays small: with leaves
+/// 0..=3, a depth-2 `*`-tree peaks at `(* (* 3 3) (* 3 3))` = 81 < 127 (`Int8`, the tightest width) — so
+/// NO sized arithmetic overflows (avoids the pending signed-overflow-wrap 22-0024 divergence) and, with
+/// only `+ * & | ^` and non-negative leaves, nothing underflows an unsigned width either.
+const SIZED_DEPTH: usize = 2;
+
+/// A RECURSIVE sized-int expression of ONE type `T`: at depth 0 (or ~1/3 above) a leaf — an ascribed
+/// literal `(: n T)` or a checked `(T.of n)` — otherwise `(op <sized-expr> <sized-expr>)` for `op` in
+/// [`SIZED_INT_OPS`] (`+ * & | ^`), each operand recursing at `depth-1`. Both operands share type `T` so
+/// the whole expression is `T` and type-checks. Reaches NESTED narrow-width arithmetic (seq-190: int
+/// operators must recurse over sub-expressions, not just leaf literals).
+fn gen_sized_expr<C: Choice>(c: &mut C, depth: usize, t: &str, out: &mut String) {
+    if depth == 0 || c.variant(3) == 2 {
+        if c.variant(2) == 0 {
+            write!(out, "(: {} {t})", c.int_bounded(0, 3)).ok();
+        } else {
+            write!(out, "({t}.of {})", c.int_bounded(0, 3)).ok();
+        }
+        return;
+    }
+    // Pick the op BEFORE recursing (variant-ordering).
+    let op = SIZED_INT_OPS[c.variant(SIZED_INT_OPS.len())];
+    write!(out, "({op} ").ok();
+    gen_sized_expr(c, depth - 1, t, out);
+    out.push(' ');
+    gen_sized_expr(c, depth - 1, t, out);
+    out.push(')');
+}
+
 fn gen_sized_int_body<C: Choice>(c: &mut C, out: &mut String) {
     let t = SIZED_INT_TYPES[c.variant(SIZED_INT_TYPES.len())];
-    match c.variant(3) {
-        0 => write!(out, "(: {} {t})", c.int_bounded(0, 9)).ok(),
-        1 => write!(out, "({t}.of {})", c.int_bounded(0, 9)).ok(),
-        _ => {
-            let op = SIZED_INT_OPS[c.variant(SIZED_INT_OPS.len())];
-            write!(
-                out,
-                "({op} (: {} {t}) (: {} {t}))",
-                c.int_bounded(0, 9),
-                c.int_bounded(0, 9)
-            )
-            .ok()
-        }
-    };
+    gen_sized_expr(c, SIZED_DEPTH, t, out);
 }
 
 /// Float binary operators — all TOTAL on floats (a `/ 0.0` is `inf`/`nan`, never a trap), so a generated
@@ -1966,6 +1982,36 @@ mod tests {
     /// cleanly handled) for EVERY `T` in `SIZED_INT_TYPES`: the arm is deliberately kept on the compile
     /// path (small 0..=9 operands + no-overflow ops) so the coverage actually reaches narrow-width emit.
     /// Guards `SIZED_INT_TYPES`/`SIZED_INT_OPS` (a bad type/op name would decline/parse-error here).
+    #[test]
+    fn gen_sized_int_body_reaches_nested_and_compiles() {
+        let mut saw_nested = false;
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(2671);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_sized_int_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            // A NESTED sized expr = a sized op whose operand is itself an op (recursion working): >= 2 of
+            // the sized ops present.
+            let ops = ["(+ ", "(* ", "(& ", "(| ", "(^ "];
+            let n: usize = ops.iter().map(|o| body.matches(o).count()).sum();
+            saw_nested |= n >= 2;
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "recursive sized-int body must COMPILE: {src}"
+            );
+        }
+        assert!(
+            saw_nested,
+            "recursive sized-int body should reach a NESTED (>=2-op) expression"
+        );
+    }
+
     #[test]
     fn every_sized_int_body_form_compiles() {
         for t in SIZED_INT_TYPES {
