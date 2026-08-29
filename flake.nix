@@ -2193,7 +2193,7 @@
         # whole-workspace snapshot (the old `platformItestSrc`) would rotate every bin on any edit and defeat
         # the exec/build decoupling (the emitted-wasm-unchanged ⇒ exec-cache-hit win).
         mkPhaseBin = { pname, crate, bin ? pname, closure, injectRuntimeHash ? false }:
-          pkgs.stdenvNoCC.mkDerivation {
+          craneLib.buildPackage {
             inherit pname;
             version = "0.0.0";
             src = pkgs.lib.fileset.toSource {
@@ -2203,14 +2203,20 @@
                 ++ nonClosureManifests closure
                 ++ [ ./xtask/Cargo.toml ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]);
             };
-            nativeBuildInputs = [ rustToolchain ];
-            buildPhase = ''
-              runHook preBuild
-              chmod -R u+w .
-              ${stubNonClosure closure}
-              [ -f xtask/src/main.rs ] || { mkdir -p xtask/src; echo "fn main(){}" > xtask/src/main.rs; }
-              [ -f xtask/src/lib.rs ] || echo "" > xtask/src/lib.rs
-              ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+            # WARM RELEASE DEP-CACHE (v-nix, operator 2026-08-29 "stop recompiling wasmtime over and over"):
+            # consume the shared `cargoArtifactsRelease` deps layer so crane RESTORES the pre-compiled
+            # dependency closure (wasmtime/cranelift are ~the bulk, and cdz-run/cdz-rust-run pull them in)
+            # instead of recompiling it from scratch. Previously this was a RAW `pkgs.stdenvNoCC` +
+            # `cargo build --release` with NO dep-cache, so every scoped-src rotation — any cdz-run edit
+            # (grade.rs/cli.rs/main.rs, edited constantly) or any Cargo.lock churn (the ongoing crate splits)
+            # — recompiled the ENTIRE closure INCLUDING wasmtime, fleet-wide, on the critical path of every
+            # corpus/guide exec (cdz-run feeds them all). crane restores the release deps target/ (matching
+            # profile — cargoArtifactsRelease is CARGO_PROFILE=release), then builds only first-party. Mirrors
+            # `seedCompiler`'s crane shape (scoped src + stubNonClosure + seedCargoVendor + hash inject).
+            cargoArtifacts = cargoArtifactsRelease;
+            cargoVendorDir = seedCargoVendor;
+            # preBuild (crane's hook — runs AFTER crane restores cargoArtifactsRelease' target/, before build).
+            preBuild = ''
               ${pkgs.lib.optionalString injectRuntimeHash ''
                 # Same nix-built-hash injection as `seedCompiler`: this compiler stamps the runtime/nfc content
                 # hash of the components in THIS closure into the wasm it emits, so a program built here imports
@@ -2224,14 +2230,15 @@
                 export CDZ_DEBUG_RUNTIME_HASH="$(cat ${runtimeDebugHash})"
                 export CDZ_NFC_HASH="$(cat ${nfcHash})"
               ''}
-              cargo build --release --locked -p ${crate} --bin ${bin}
-              runHook postBuild
+              chmod -R u+w .
+              ${stubNonClosure closure}
+              [ -f xtask/src/main.rs ] || { mkdir -p xtask/src; echo "fn main(){}" > xtask/src/main.rs; }
+              [ -f xtask/src/lib.rs ] || echo "" > xtask/src/lib.rs
             '';
-            installPhase = ''
-              runHook preInstall
-              install -Dm755 target/release/${bin} "$out/bin/${bin}"
-              runHook postInstall
-            '';
+            # crane injects --locked + --release; scope to just this phase bin (its equivalent of the raw
+            # `cargo build -p <crate> --bin <bin>`). Build only — no tests (the gate/CI run those).
+            cargoExtraArgs = "-p ${crate} --bin ${bin}";
+            doCheck = false;
           };
         # shred (parser closure — excludes rcdzc), build (compiler closure = rcdzc), exec (runtime closure —
         # cdz-run deps wasmtime/cadenza-syntax/cdz-contract/cdz-rt, NO rcdzc, so COMPILER-FREE by construction).
