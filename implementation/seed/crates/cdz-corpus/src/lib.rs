@@ -234,16 +234,18 @@ pub enum Expect {
     Output(String),
     /// `(error <CODE>)` (or a `(compiler (error <CODE>))` for a provable-at-compile-time trap) — the
     /// diagnostic code the compiler must reject with.
-    /// The optional second field is a load-bearing SUBSTRING of the diagnostic MESSAGE the corpus pins
-    /// (`(error <CODE> (message "phrase"))`), the portable-diagnostic-test capability (operator seq353):
-    /// the gate additionally requires the emitted diagnostic to CONTAIN that phrase. `None` = code-only.
-    Error(String, Option<String>),
+    /// The second field is a list of load-bearing SUBSTRINGS of the diagnostic MESSAGE the corpus pins —
+    /// one per `(message "phrase")` clause, REPEATABLE (`(error <CODE> (message "a") (message "b"))`): the
+    /// gate requires the emitted diagnostic to contain EVERY one (AND). Empty = code-only (historical). This
+    /// captures multi-part messages that name the rule AND each operand without shed (operator seq353 +
+    /// capture-max-coverage).
+    Error(String, Vec<String>),
     /// `(warning <CODE>)` (or `(warning <CODE> (message "phrase"))`) — a NON-DENYING diagnostic: the
     /// compiler COMPILES the program (produces an artifact) AND emits a WARNING with this code. The
     /// severity companion of `Error` (which is a REJECTION — no artifact); a warning accompanies a produced
     /// component (e.g. a dead-trap or unused-binding lint). Pairs with a `(count N)` for the exact-warning-
-    /// count tests. The optional second field pins a message substring, as with `Error`.
-    Warning(String, Option<String>),
+    /// count tests. The second field pins message substrings (repeatable `(message …)`, ALL required), as with `Error`.
+    Warning(String, Vec<String>),
     /// `(trap "<reason>")` — the run halts with this reason.
     Trap(String),
     /// `(declines)` — the compiler DECLINES to emit a component for this program: a well-formed program
@@ -256,9 +258,9 @@ pub enum Expect {
     /// Defined Boundary Representation Must Not Appear In An Exported Or Imported Signature). Grades Pass
     /// when the compiler declines, Fail when it emits (the "declines rather than miscompiles" property).
     /// The optional field is a load-bearing SUBSTRING of the decline's diagnostic MESSAGE the corpus pins
-    /// (`(declines (message "phrase"))`) — the gate additionally requires the decline diagnostic to
-    /// CONTAIN that phrase (operator seq353). `None` = any decline passes (the historical behavior).
-    Declines(Option<String>),
+    /// (`(declines (message "phrase"))`, repeatable — ALL required) — the gate additionally requires the
+    /// decline diagnostic to CONTAIN every phrase (operator seq353). Empty = any decline passes (historical).
+    Declines(Vec<String>),
 }
 
 /// A platform-conformance case (`(platform-case "title" …)`) — the runtime/platform analog of a
@@ -370,14 +372,17 @@ pub struct ExpectMessage {
 }
 
 /// Extract a `(message "phrase")` sibling clause's string from a clause's tail, if present — the
-/// diagnostic-message pin (operator seq353) shared by `(error …)` and `(declines …)`. `None` when no
-/// well-formed `(message STR)` child is present.
-fn message_clause(a: &Arenas, tail: &[StructId]) -> Option<String> {
-    tail.iter().find_map(|&child| {
-        a.as_form(child, "message")
-            .and_then(|t| t.first().copied())
-            .and_then(|id| string_leaf(a, id))
-    })
+/// EVERY diagnostic-message substring pin (operator seq353) shared by `(error …)`/`(warning …)`/
+/// `(declines …)` — one per `(message STR)` child, in order, REPEATABLE (all AND-required at grade). Empty
+/// when no well-formed `(message STR)` child is present (code-only).
+fn message_clauses(a: &Arenas, tail: &[StructId]) -> Vec<String> {
+    tail.iter()
+        .filter_map(|&child| {
+            a.as_form(child, "message")
+                .and_then(|t| t.first().copied())
+                .and_then(|id| string_leaf(a, id))
+        })
+        .collect()
 }
 
 /// Parse the DIAGNOSTIC-QUALITY facets NESTED inside a `(error …)` / `(warning …)` clause's `tail` —
@@ -567,7 +572,7 @@ pub fn render(records: &[Record]) -> String {
                 Expect::Error(code, message) => {
                     out.push_str("error ");
                     out.push_str(code);
-                    if let Some(m) = message {
+                    for m in message {
                         out.push_str(" (message \"");
                         out.push_str(m);
                         out.push_str("\")");
@@ -579,7 +584,7 @@ pub fn render(records: &[Record]) -> String {
                 Expect::Warning(code, message) => {
                     out.push_str("warning ");
                     out.push_str(code);
-                    if let Some(m) = message {
+                    for m in message {
                         out.push_str(" (message \"");
                         out.push_str(m);
                         out.push_str("\")");
@@ -593,7 +598,7 @@ pub fn render(records: &[Record]) -> String {
                 // bare `declines` (byte-identical to before) when it does not.
                 Expect::Declines(message) => {
                     out.push_str("declines");
-                    if let Some(m) = message {
+                    for m in message {
                         out.push_str(" (message \"");
                         out.push_str(m);
                         out.push_str("\")");
@@ -996,7 +1001,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                         .copied()
                         .and_then(|id| a.as_name(id).map(str::to_string))
                 {
-                    let message = message_clause(a, tail);
+                    let message = message_clauses(a, tail);
                     trials.push(Trial {
                         call: pending_call.take(),
                         expect: Expect::Error(code, message),
@@ -1014,7 +1019,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                         .copied()
                         .and_then(|id| a.as_name(id).map(str::to_string))
                 {
-                    let message = message_clause(a, tail);
+                    let message = message_clauses(a, tail);
                     trials.push(Trial {
                         call: pending_call.take(),
                         expect: Expect::Warning(code, message),
@@ -1042,7 +1047,8 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                 // the decline's diagnostic prose (so it must NAME the actionable reason, not just refuse).
                 let message = a
                     .as_form(clause, "declines")
-                    .and_then(|tail| message_clause(a, tail));
+                    .map(|tail| message_clauses(a, tail))
+                    .unwrap_or_default();
                 trials.push(Trial {
                     call: pending_call.take(),
                     expect: Expect::Declines(message),
@@ -1064,7 +1070,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                         .copied()
                         .and_then(|id| a.as_name(id).map(str::to_string))
                 {
-                    let message = message_clause(a, inner_tail);
+                    let message = message_clauses(a, inner_tail);
                     let diag = diag_clause(a, inner_tail);
                     if let Some(last) = trials.last_mut() {
                         last.expect = Expect::Error(code, message);
@@ -1122,7 +1128,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                         .copied()
                         .and_then(|id| a.as_name(id).map(str::to_string))
                 {
-                    warns.push((code, message_clause(a, tail)));
+                    warns.push((code, message_clauses(a, tail).into_iter().next()));
                 }
             }
             // `(wit-world <world-sexpr>)` — an explicit WIT world the export boundary is DECLARED by (the
@@ -1704,6 +1710,27 @@ mod tests {
 
     /// An `(error CODE (message …) (fix …) (count N))` case parses the NESTED diagnostic-quality facets
     /// into `Trial.diag`; a `(warning CODE …)` parses to `Expect::Warning` (+ its facets). This is the
+    /// REPEATED `(message …)` clauses collect into the Vec (ALL required substrings, AND) — the multi-part
+    /// diagnostic form (e.g. a coercion error naming the rule AND both operand types); a single clause keeps
+    /// the historical one-element form; none = code-only.
+    #[test]
+    fn repeated_message_clauses_collect_all() {
+        let recs = read(
+            r#"(case "multi" (input 1_)
+                 (error CDZ0301 (message "no implicit conversion") (message "Float64") (message "Int64")))
+               (case "single" (input 1_) (error CDZ0201 (message "sep")))
+               (case "none" (input 1_) (error CDZ0201))"#,
+        )
+        .unwrap();
+        assert!(matches!(&recs[0].trials[0].expect, Expect::Error(c, ms)
+            if c == "CDZ0301" && ms.as_slice() == ["no implicit conversion", "Float64", "Int64"]));
+        assert!(matches!(&recs[1].trials[0].expect, Expect::Error(c, ms)
+            if c == "CDZ0201" && ms.as_slice() == ["sep"]));
+        assert!(
+            matches!(&recs[2].trials[0].expect, Expect::Error(c, ms) if c == "CDZ0201" && ms.is_empty())
+        );
+    }
+
     /// authoring end of C1 — the counterpart to `cdz_corpus_grade`'s decode of the shredded clauses.
     #[test]
     fn diagnostic_quality_facets_parse_from_error_and_warning() {
@@ -1738,7 +1765,7 @@ mod tests {
 
         // (3) warning result kind + substring fix + unverified.
         assert!(matches!(&recs[2].trials[0].expect, Expect::Warning(c, m)
-            if c == "CDZ0305" && m.as_deref() == Some("dead")));
+            if c == "CDZ0305" && m.as_slice() == ["dead"]));
         let fx = recs[2].trials[0]
             .diag
             .as_ref()
