@@ -272,6 +272,30 @@ partial def mentionsTry? (m : Module) (i : Nat) : Bool :=
     | none => cs.any (mentionsTry? m)
   | _ => false
 
+/-- Is the expression at `i` (through an ascription) a heap-collection CONSTRUCTION — a `(list …)` /
+`(set …)` / `(map …)` literal or a `Set.of` / `Map.insert`? Such a construction is STRICT in its element
+arguments (operator ruling A, #5194/#5332): the args are forced whenever it is reached, EVEN when the
+result is bound-and-discarded — so a `let` binding to one must be evaluated EAGERLY (a trapping arg traps
+though the collection is never observed), not deferred as a lazy thunk. -/
+partial def rhsIsStrictCtor? (m : Module) (i : Nat) : Bool :=
+  match m.nodes[i]? with
+  | some (Node.list cs) =>
+    match m.headName? (Node.list cs) with
+    | some h =>
+      if h == ":".toUTF8 && cs.size ≥ 2 then (match cs[1]? with | some j => rhsIsStrictCtor? m j | none => false)
+      else h == "list".toUTF8 || h == "set".toUTF8 || h == "map".toUTF8
+    | none =>
+      -- a member-headed construction `((. Set of) …)` / `((. Map insert) …)` (qualHead? is defined later)
+      match (cs[0]?).bind (fun hid => m.nodes[hid]?) with
+      | some (Node.list hc) =>
+        if m.headName? (Node.list hc) == some ".".toUTF8 then
+          match (hc[1]?).bind (nameOf? m), (hc[2]?).bind (nameOf? m) with
+          | some q, some mem => (q == "Set".toUTF8 && mem == "of".toUTF8) || (q == "Map".toUTF8 && mem == "insert".toUTF8)
+          | _, _ => false
+        else false
+      | _ => false
+  | _ => false
+
 /-- The recognized binary arithmetic operator heads. -/
 def arithOps : List String := ["+", "-", "*", "/", "%"]
 
@@ -1101,7 +1125,16 @@ partial def evalLet (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children
                 -- infers BigInt — the chain that fixes the multi-limb division identity (06-numeric 0215/0255).
                 let bindTy := (operandTyEnv? m env vId).filter (fun t => t.width == .big)
                 let lazyThunk := Thunk.mk (fun _ => evalNode m captured defaultIntTy fuel vId)
-                if mentionsTry? m vId then
+                if rhsIsStrictCtor? m vId then
+                  -- a list/set/map CONSTRUCTION binding is STRICT (ruling A, #5194/#5332): its element args
+                  -- are forced at construction even when the binding is DISCARDED. Eager-eval and PROPAGATE
+                  -- the outcome — a value binds; a trap/diverges/unsupported/errReturn propagates (the
+                  -- construction WAS reached). Never fall back to lazy: that could return a wrong value for
+                  -- a discarded ctor whose arg traps. A PURE clean ctor just binds the (unused) value.
+                  match evalNode m captured defaultIntTy fuel vId with
+                  | .value v => extend ((nm, (Thunk.mk (fun _ => .value v)), bindTy) :: env) rest
+                  | other => .error other
+                else if mentionsTry? m vId then
                   -- EAGER: fire the `?`. errReturn → short-circuit the let; a value → bind it (already
                   -- forced); a trap/diverges/unsupported → fall back to a LAZY thunk (do NOT force a pure
                   -- trap for an unused binding — only the `?` control flow needs eagerness).
