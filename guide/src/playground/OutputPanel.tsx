@@ -26,10 +26,12 @@ export interface CompiledInfo {
   wat: string | null;
   rustSync: string | null;
   rustAsync: string | null;
+  /** The lowered-optimized Cadenza source (`--target cadenza`), sexpr — the cadenza-backend's output view. */
+  cadenza: string | null;
 }
 
 /// Which sub-view of the Compiled tab is shown; the page fills the corresponding field on demand.
-export type CompiledView = "summary" | "wat" | "rust" | "rustAsync";
+export type CompiledView = "summary" | "wat" | "rust" | "rustAsync" | "cadenza";
 
 interface Props {
   run: RunView;
@@ -169,12 +171,14 @@ function CompiledBody({
     if (v === "wat" && compiled!.wat == null) onNeed("wat");
     if (v === "rust" && compiled!.rustSync == null) onNeed("rust");
     if (v === "rustAsync" && compiled!.rustAsync == null) onNeed("rustAsync");
+    if (v === "cadenza" && compiled!.cadenza == null) onNeed("cadenza");
   }
   const pending = (s: string | null) => (s == null ? "// computing…" : s);
   return (
     <div className="flex h-full flex-col">
       <div className="mb-2 flex gap-1 text-[11px]">
         <SubTab active={view === "summary"} onClick={() => open("summary")}>Summary</SubTab>
+        <SubTab active={view === "cadenza"} onClick={() => open("cadenza")}>Cadenza</SubTab>
         <SubTab active={view === "wat"} onClick={() => open("wat")}>WAT</SubTab>
         <SubTab active={view === "rust"} onClick={() => open("rust")}>Rust</SubTab>
         <SubTab active={view === "rustAsync"} onClick={() => open("rustAsync")}>Rust (async)</SubTab>
@@ -209,6 +213,15 @@ function CompiledBody({
       )}
       {view === "rust" && <pre className="whitespace-pre text-slate-400">{pending(compiled.rustSync)}</pre>}
       {view === "rustAsync" && <pre className="whitespace-pre text-slate-400">{pending(compiled.rustAsync)}</pre>}
+      {view === "cadenza" && (
+        <>
+          <p className="mb-2 text-[11px] text-slate-500">
+            The program lowered + optimized back to Cadenza (the <code>--target cadenza</code> backend): the
+            same optimizations the WebAssembly and Rust targets get, printed as Cadenza source.
+          </p>
+          <pre className="whitespace-pre text-slate-400">{pending(compiled.cadenza)}</pre>
+        </>
+      )}
     </div>
   );
 }

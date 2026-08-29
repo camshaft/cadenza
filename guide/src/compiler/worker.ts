@@ -21,6 +21,7 @@ import init, {
   semantic_tokens_with_preloaded as wasmSemanticTokensWithPreloaded,
   disposition as wasmDisposition,
   emit_rust as wasmEmitRust,
+  emit_cadenza as wasmEmitCadenza,
   core_module as wasmCoreModule,
   repl_eval as wasmReplEval,
   defined_names as wasmDefinedNames,
@@ -455,6 +456,13 @@ const api = {
   async emitRust(text: string, from: Surface, isAsync: boolean): Promise<string> {
     await ensureReady();
     return wasmEmitRust(text, from, isAsync);
+  },
+
+  /// Emit the program's lowered-optimized CADENZA source (`--target cadenza`) in `syntax` (sexpr/ml) — for
+  /// the "Compiled" output views. A program the backend declines returns a `; declined: …` note verbatim.
+  async emitCadenza(text: string, from: Surface, syntax: Surface): Promise<string> {
+    await ensureReady();
+    return wasmEmitCadenza(text, from, syntax);
   },
 
   /// The program's embedded CORE MODULE bytes (DWARF-free, unwrapped from the component) — for the WAT

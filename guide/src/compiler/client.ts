@@ -134,6 +134,12 @@ export function emitRust(text: string, from: Surface, isAsync: boolean): Promise
   return client().emitRust(text, from, isAsync);
 }
 
+/// Emit the program's lowered-optimized CADENZA source (`--target cadenza`) in `syntax` — for the playground's
+/// output views. Returns a `; declined: …` note verbatim when the cadenza backend declines the program.
+export function emitCadenza(text: string, from: Surface, syntax: Surface): Promise<string> {
+  return client().emitCadenza(text, from, syntax);
+}
+
 /// The program's DWARF-free core module bytes, unwrapped from the component — for the WAT view. Null
 /// if the program declines.
 export function coreModule(text: string, from: Surface): Promise<Uint8Array | null> {
