@@ -147,6 +147,52 @@ pub struct Trial {
     pub call: Option<Call>,
     /// The recorded oracle result for this trial: `Output(value-form)`, `Error(code)`, or `Trap(reason)`.
     pub expect: Expect,
+    /// The DIAGNOSTIC-QUALITY assertions a `(error …)` / `(warning …)` case pins BEYOND the code + message
+    /// — a structural `(fix …)` / `(no-fix)` and an exact fault `(count N)` / `(once)`, authored NESTED
+    /// inside the diagnostic clause (per-diagnostic attribution) and lifted to trial-level clauses in the
+    /// shredded `test-run.ast`. `None` for the common code+message-only case (the vast majority). The
+    /// grade side decodes the same clauses into `cdz_corpus_grade::DiagExpect` and grades them.
+    pub diag: Option<DiagQuality>,
+}
+
+/// The DIAGNOSTIC-QUALITY facets a corpus `(error …)` / `(warning …)` clause pins — the authoring-side
+/// mirror of `cdz_corpus_grade::DiagExpect` (the two crates share the sexp WIRE, not the type). All optional
+/// so a case asserts only what it checks; an all-absent `DiagQuality` is never constructed (`None` instead).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DiagQuality {
+    /// A required structural fix on the diagnostic (`(fix …)`), or `None` to not constrain the fix.
+    pub fix: Option<FixQuality>,
+    /// The diagnostic must carry NO fix (`(no-fix)`); mutually exclusive with `fix`.
+    pub no_fix: bool,
+    /// The exact number of faults with this `(severity, code)` (`(count N)`, or `(once)` == `1`).
+    pub count: Option<u32>,
+}
+
+impl DiagQuality {
+    /// Whether this pins anything at all (else it is not emitted — the trial stays clause-free).
+    pub fn is_empty(&self) -> bool {
+        self.fix.is_none() && !self.no_fix && self.count.is_none()
+    }
+}
+
+/// The asserted structural FIX a `(fix …)` clause pins — mirror of `cdz_corpus_grade::FixExpect`. Each
+/// field optional (constrains only what the case cares about).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FixQuality {
+    /// The structural edit kind (`(kind replace|insert|wrap|delete)`), or `None` to not constrain it.
+    pub kind: Option<String>,
+    /// How the fix's replacement text must match, or `None` to not constrain it.
+    pub replacement: Option<ReplMatch>,
+    /// The verified flag the fix must have (`(verified)` / `(unverified)`), or `None` to not constrain it.
+    pub verified: Option<bool>,
+}
+
+/// How a `(fix …)` clause matches the fix's replacement text: `(replacement "r")` = exact, and
+/// `(replacement-contains "s")` = substring. Mirror of `cdz_corpus_grade::ReplMatch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplMatch {
+    Exact(String),
+    Contains(String),
 }
 
 /// A `(call <export> <arg>…)` clause: run the named export with the given runtime arguments. This is
@@ -192,6 +238,12 @@ pub enum Expect {
     /// (`(error <CODE> (message "phrase"))`), the portable-diagnostic-test capability (operator seq353):
     /// the gate additionally requires the emitted diagnostic to CONTAIN that phrase. `None` = code-only.
     Error(String, Option<String>),
+    /// `(warning <CODE>)` (or `(warning <CODE> (message "phrase"))`) — a NON-DENYING diagnostic: the
+    /// compiler COMPILES the program (produces an artifact) AND emits a WARNING with this code. The
+    /// severity companion of `Error` (which is a REJECTION — no artifact); a warning accompanies a produced
+    /// component (e.g. a dead-trap or unused-binding lint). Pairs with a `(count N)` for the exact-warning-
+    /// count tests. The optional second field pins a message substring, as with `Error`.
+    Warning(String, Option<String>),
     /// `(trap "<reason>")` — the run halts with this reason.
     Trap(String),
     /// `(declines)` — the compiler DECLINES to emit a component for this program: a well-formed program
@@ -328,6 +380,69 @@ fn message_clause(a: &Arenas, tail: &[StructId]) -> Option<String> {
     })
 }
 
+/// Parse the DIAGNOSTIC-QUALITY facets NESTED inside a `(error …)` / `(warning …)` clause's `tail` —
+/// `(fix …)`, `(no-fix)`, `(count N)`, `(once)` (== `count 1`) — into a [`DiagQuality`], or `None` when the
+/// clause pins none (the common code+message-only form). Nesting (not bare case-level siblings) is required
+/// so each facet attributes to ITS diagnostic in a multi-diagnostic case.
+fn diag_clause(a: &Arenas, tail: &[StructId]) -> Option<DiagQuality> {
+    let mut d = DiagQuality::default();
+    for &child in tail {
+        match a.head_name(child) {
+            Some("fix") => d.fix = Some(fix_clause(a, child)),
+            Some("no-fix") => d.no_fix = true,
+            Some("count") => {
+                // `2` parses as a NUMBER leaf (not a name/string), so render it to text before parsing.
+                d.count = a
+                    .as_form(child, "count")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| sexpr::print_from(a, id).trim().parse::<u32>().ok());
+            }
+            Some("once") => d.count = Some(1),
+            _ => {}
+        }
+    }
+    (!d.is_empty()).then_some(d)
+}
+
+/// Parse a `(fix (kind K)? (replacement "r")|(replacement-contains "s")? (verified|unverified)?)` clause
+/// into a [`FixQuality`]. Each sub-clause optional; `(replacement …)` is EXACT, `(replacement-contains …)`
+/// SUBSTRING (the later wins if both appear — an authoring slip).
+fn fix_clause(a: &Arenas, id: StructId) -> FixQuality {
+    let mut fx = FixQuality::default();
+    for &child in a.as_form(id, "fix").unwrap_or(&[]) {
+        match a.head_name(child) {
+            Some("kind") => {
+                fx.kind = a
+                    .as_form(child, "kind")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|cid| {
+                        a.as_name(cid)
+                            .map(str::to_string)
+                            .or_else(|| string_leaf(a, cid))
+                    });
+            }
+            Some("replacement") => {
+                fx.replacement = a
+                    .as_form(child, "replacement")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|cid| string_leaf(a, cid))
+                    .map(ReplMatch::Exact);
+            }
+            Some("replacement-contains") => {
+                fx.replacement = a
+                    .as_form(child, "replacement-contains")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|cid| string_leaf(a, cid))
+                    .map(ReplMatch::Contains);
+            }
+            Some("verified") => fx.verified = Some(true),
+            Some("unverified") => fx.verified = Some(false),
+            _ => {}
+        }
+    }
+    fx
+}
+
 /// Parse a corpus file's `text` into records. Returns an error only if the file itself does not
 /// parse as s-expressions; a malformed individual case is reported as an error record inline.
 pub fn read(text: &str) -> Result<Vec<Record>, String> {
@@ -451,6 +566,18 @@ pub fn render(records: &[Record]) -> String {
                 // identical to the historical `error CODE` line (back-compat).
                 Expect::Error(code, message) => {
                     out.push_str("error ");
+                    out.push_str(code);
+                    if let Some(m) = message {
+                        out.push_str(" (message \"");
+                        out.push_str(m);
+                        out.push_str("\")");
+                    }
+                }
+                // `warning CODE`, plus ` (message "phrase")` — mirrors `error` (the non-denying severity
+                // companion). The diagnostic-quality facets ride the sexp `test-run.ast` grade path, not this
+                // flat direct-gate manifest (which grades only code + message today).
+                Expect::Warning(code, message) => {
+                    out.push_str("warning ");
                     out.push_str(code);
                     if let Some(m) = message {
                         out.push_str(" (message \"");
@@ -855,12 +982,14 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     trials.push(Trial {
                         call: pending_call.take(),
                         expect: Expect::Output(v),
+                        diag: None,
                     });
                 }
             }
             Some("error") => {
-                // `(error <CODE>)` or `(error <CODE> (message "phrase"))` — closes a trial with a
-                // compile-time rejection code, optionally pinning a substring of the diagnostic message.
+                // `(error <CODE>)` or `(error <CODE> (message "phrase") (fix …)? (no-fix)? (count N)?)` —
+                // closes a trial with a compile-time rejection code, optionally pinning a message substring
+                // + the diagnostic-quality facets (nested inside the clause).
                 if let Some(tail) = a.as_form(clause, "error")
                     && let Some(code) = tail
                         .first()
@@ -871,6 +1000,25 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     trials.push(Trial {
                         call: pending_call.take(),
                         expect: Expect::Error(code, message),
+                        diag: diag_clause(a, tail),
+                    });
+                }
+            }
+            Some("warning") => {
+                // `(warning <CODE>)` / `(warning <CODE> (message "phrase") (fix …)? (count N)?)` — a
+                // NON-DENYING diagnostic: the compiler COMPILES + emits a warning with this code. Same
+                // facet grammar as `(error …)`.
+                if let Some(tail) = a.as_form(clause, "warning")
+                    && let Some(code) = tail
+                        .first()
+                        .copied()
+                        .and_then(|id| a.as_name(id).map(str::to_string))
+                {
+                    let message = message_clause(a, tail);
+                    trials.push(Trial {
+                        call: pending_call.take(),
+                        expect: Expect::Warning(code, message),
+                        diag: diag_clause(a, tail),
                     });
                 }
             }
@@ -884,6 +1032,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     trials.push(Trial {
                         call: pending_call.take(),
                         expect: Expect::Trap(reason),
+                        diag: None,
                     });
                 }
             }
@@ -897,6 +1046,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                 trials.push(Trial {
                     call: pending_call.take(),
                     expect: Expect::Declines(message),
+                    diag: None,
                 });
             }
             Some("compiler") => {
@@ -915,12 +1065,17 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                         .and_then(|id| a.as_name(id).map(str::to_string))
                 {
                     let message = message_clause(a, inner_tail);
+                    let diag = diag_clause(a, inner_tail);
                     if let Some(last) = trials.last_mut() {
                         last.expect = Expect::Error(code, message);
+                        if diag.is_some() {
+                            last.diag = diag;
+                        }
                     } else {
                         trials.push(Trial {
                             call: pending_call.take(),
                             expect: Expect::Error(code, message),
+                            diag,
                         });
                     }
                 }
@@ -1545,6 +1700,59 @@ mod tests {
         assert_eq!(recs[0].trials.len(), 1);
         assert!(recs[0].trials[0].call.is_none());
         assert!(matches!(&recs[0].trials[0].expect, Expect::Output(v) if v == "(: 5 Int64)"));
+    }
+
+    /// An `(error CODE (message …) (fix …) (count N))` case parses the NESTED diagnostic-quality facets
+    /// into `Trial.diag`; a `(warning CODE …)` parses to `Expect::Warning` (+ its facets). This is the
+    /// authoring end of C1 — the counterpart to `cdz_corpus_grade`'s decode of the shredded clauses.
+    #[test]
+    fn diagnostic_quality_facets_parse_from_error_and_warning() {
+        let recs = read(
+            r#"(case "fix" (input 1_)
+                 (error CDZ0201 (message "sep") (fix (kind replace) (replacement "1") (verified)) (count 2)))
+               (case "no-fix" (input 1_)
+                 (error CDZ0201 (no-fix) (once)))
+               (case "warn" (input (do (def (main) 0) (export main)))
+                 (warning CDZ0305 (message "dead") (fix (replacement-contains "unreachable") (unverified))))"#,
+        )
+        .unwrap();
+        assert_eq!(recs.len(), 3);
+
+        // (1) error + full fix + count.
+        let d = recs[0].trials[0].diag.as_ref().expect("fix case has diag");
+        assert_eq!(d.count, Some(2));
+        assert!(!d.no_fix);
+        let fx = d.fix.as_ref().expect("fix present");
+        assert_eq!(fx.kind.as_deref(), Some("replace"));
+        assert_eq!(fx.replacement, Some(ReplMatch::Exact("1".into())));
+        assert_eq!(fx.verified, Some(true));
+
+        // (2) no-fix + once (== count 1).
+        let d = recs[1].trials[0]
+            .diag
+            .as_ref()
+            .expect("no-fix case has diag");
+        assert!(d.no_fix);
+        assert_eq!(d.count, Some(1));
+        assert!(d.fix.is_none());
+
+        // (3) warning result kind + substring fix + unverified.
+        assert!(matches!(&recs[2].trials[0].expect, Expect::Warning(c, m)
+            if c == "CDZ0305" && m.as_deref() == Some("dead")));
+        let fx = recs[2].trials[0]
+            .diag
+            .as_ref()
+            .and_then(|d| d.fix.as_ref())
+            .expect("warning fix present");
+        assert_eq!(
+            fx.replacement,
+            Some(ReplMatch::Contains("unreachable".into()))
+        );
+        assert_eq!(fx.verified, Some(false));
+
+        // A plain code+message case pins NO diag (the common form stays clause-free).
+        let plain = read(r#"(case "p" (input 1_) (error CDZ0201 (message "sep")))"#).unwrap();
+        assert!(plain[0].trials[0].diag.is_none());
     }
 
     /// A `(platform-case …)` parses the session/kickoff/end-state shape and RENDERS the flat fixed-arity
