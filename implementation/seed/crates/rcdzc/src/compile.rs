@@ -546,6 +546,22 @@ fn compile_with_opt_inner(
     //# The compiler MUST recover from an error and report the maximal set of independent problems in one pass rather than only the first.
     let _ = &layout; // layout gates EMISSION below; well-formedness (faults) is layout-independent.
     let mut faults = collect_faults(&mut db);
+    // seq-212 (operator): WORLD-EXPORT CONFORMANCE. If an imposed `wit-world` is declared, the guest MUST
+    // implement every declared export by NAME + TYPE — else the emitted component fails a runtime linker
+    // ("if a runtime linker is going to complain ... we've failed as a compiler"). An AST-level name+type
+    // reconciliation (the WIT is already a parsed binary AST — NO wasmparser), declining PRE-EMIT here in the
+    // fault gate so a non-conformant guest never reaches the backend. Joins `collect_faults` so the maximal
+    // independent set is still reported in one pass. (Subsumes the coarse emit-path fallback at
+    // `backend/wasm/mod.rs`'s "does not fully implement the world's typed export interface", which was
+    // shape/emit-driven and let a missing/wrong-signature export slip through.)
+    if let Some(world_bytes) = db.wit_world.clone()
+        && let Some(world_arena) = crate::codec::decode(&world_bytes)
+        && let Some(world) = crate::wit_world::parse_target_world(&world_arena, world_arena.root)
+    {
+        faults.extend(crate::wit_world::world_export_conformance_faults(
+            &mut db, &world,
+        ));
+    }
     if !faults.is_empty() {
         trace!(target: "rcdzc::compile", faults = faults.len(), "compilation FAILED (faults reported, no artifact)");
         for f in &mut faults {

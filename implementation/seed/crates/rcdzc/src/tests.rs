@@ -704,11 +704,107 @@ fn a_partial_guest_of_any_multi_member_interface_declines_cleanly() {
         "no wasm artifact — no silent heap-handle mis-emit"
     );
     assert!(
-        out.diagnostics.iter().any(|d| d
-            .message
-            .contains("does not fully implement the world's typed export interface")),
+        out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("provides no matching definition")),
         "the generic decline names the missing-export-member cause: {:?}",
         out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// seq-212 world-export CONFORMANCE — NAME half (v-inference `world_export_conformance_faults`): a guest
+/// that does NOT provide a definition for a declared world export must DECLINE pre-emit, naming the missing
+/// export — never emit a component a runtime linker would reject. v-cdz-smith's CASE 1 (declared `f`
+/// unimplemented, only `g` exported) COMPILED before. (The TYPE half — CASE 2, `f` present but wrong
+/// signature — is deferred: a correct comparison must match the emit's typed-export reconciliation, not a
+/// naive `ty_natural_wit` equality; tracked separately with v-rust-backend.) World: `export iface { f:
+/// func(m: record{a: s64}) -> s64 }`.
+#[test]
+fn a_guest_missing_a_declared_world_export_by_name_declines_pre_emit() {
+    use crate::ast::{Builder, Leaf};
+    // export iface { f: func(m: record{a: s64}) -> s64 }
+    fn world_bytes() -> Vec<u8> {
+        let mut b = Builder::new();
+        let s64 = |b: &mut Builder| {
+            let h = b.name("s64");
+            b.list(vec![h])
+        };
+        let f_member = {
+            let fty = s64(&mut b);
+            let fname = b.name("a");
+            let f_field = b.list(vec![fname, fty]);
+            let rec_head = b.atom_leaf(Leaf::Str("record".into()));
+            let rec = b.list(vec![rec_head, f_field]);
+            let func_h = b.name("func");
+            let param_h = b.name("param");
+            let pn = b.name("m");
+            let param_node = b.list(vec![param_h, pn, rec]);
+            let result_h = b.name("result");
+            let res_ty = s64(&mut b);
+            let result_node = b.list(vec![result_h, res_ty]);
+            let func = b.list(vec![func_h, param_node, result_node]);
+            let member_h = b.name("member");
+            let mn = b.name("f");
+            b.list(vec![member_h, mn, func])
+        };
+        let exp_h = b.name("export");
+        let iname = b.name("iface");
+        let export = b.list(vec![exp_h, iname, f_member]);
+        let world_h = b.name("world");
+        let wn = b.name("w");
+        let world = b.list(vec![world_h, wn, export]);
+        let a = b.finish(world);
+        crate::codec::encode(&a)
+    }
+    let compile_guest = |src: &str| {
+        crate::host::run_with_compiler_stack(|| {
+            crate::compile::compile(
+                &[
+                    crate::abi::Artifact::new(
+                        crate::abi::Artifact::KIND_AST,
+                        "main",
+                        crate::codec::encode(&crate::testkit::parse(src)),
+                    ),
+                    crate::cli::component_name_artifact("cadenza:demo/iface"),
+                    crate::abi::Artifact::new(
+                        crate::link::KIND_WIT_WORLD,
+                        "wit-world",
+                        world_bytes(),
+                    ),
+                ],
+                &[crate::backend::Target::Wasm],
+            )
+        })
+    };
+    // CASE 1 — declared export `f` UNIMPLEMENTED (only an unrelated `g` exported): must decline (missing f).
+    let c1 = compile_guest("(module m (def (g (: m (Record (a Int64)))) (. m a)) (export g))");
+    assert!(
+        c1.has_error()
+            && c1
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("declares an export `f`")),
+        "CASE 1 (declared f unimplemented) must decline naming the missing export: {:?}",
+        c1.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        c1.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "no component emitted for a guest missing a declared export"
+    );
+    // (CASE 2 — `f` present but wrong signature — is the deferred TYPE half; not asserted here.)
+    // The CONFORMANT guest compiles (f present at the declared record->s64 type).
+    let ok = compile_guest("(module m (def (f (: m (Record (a Int64)))) (. m a)) (export f))");
+    assert!(
+        !ok.has_error(),
+        "the conformant guest (f: record{{a}} -> s64) must compile: {:?}",
+        ok.diagnostics
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
@@ -893,9 +989,9 @@ fn a_partial_guest_missing_world_export_members_declines_cleanly() {
         "no wasm artifact — no silent heap-handle mis-emit"
     );
     assert!(
-        out.diagnostics.iter().any(|d| d
-            .message
-            .contains("does not fully implement the world's typed export interface")),
+        out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("provides no matching definition")),
         "the decline names the missing-export-member cause: {:?}",
         out.diagnostics
             .iter()
