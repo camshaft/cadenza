@@ -13608,3 +13608,17 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 764 Int64))
   (call main (: -3 Int64)) (output (: -256 Int64)))
+
+(case "cdzw82 COMPOUND KEYS — a set of tuples dedups structurally and a tuple-keyed map looks up — through the cadenza hop"
+  (doc "The compound-key face (the #5540 structural-total-order territory, compiler side): a #set of
+        tuples collapses a runtime-selected structural duplicate (n=1 → (1,2) twice → len 2), and a
+        #map keyed BY TUPLES looks up a runtime-branch-built tuple key. n=7 → 300+10 = 310; n=1 →
+        200+10 = 210 (the dedup face); n=-2 → 300+20 = 320. Dual-path verified, byte-idempotent.")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 100 (Set.len #set(#tuple(1 2) #tuple(n 2) #tuple(1 3))))
+         (match (Map.lookup #map((= #tuple(1 2) 10) (= #tuple(3 4) 20)) #tuple((if (> n 0) 1 3) (if (> n 0) 2 4))) ((Some v) v) ((None _u) -1))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 310 Int64))
+  (call main (: 1 Int64)) (output (: 210 Int64))
+  (call main (: -2 Int64)) (output (: 320 Int64)))
