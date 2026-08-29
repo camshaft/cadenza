@@ -618,10 +618,25 @@ pub struct LeanDiffStats {
 /// the async unit the operator's pipeline overlaps (a fresh `oracle-check` per batch judges while the
 /// next batch compiles). `sources` should be TERMINATING programs (e.g. `generator::generate`'s
 /// structurally-terminating grammar) — the in-process wasm run has no hang guard.
-/// The concrete `Int64` argument supplied to a runtime-`n` main so it becomes VALUE-checkable (used by
-/// BOTH the wasm call and the Lean trial's `(args …)`). A single representative value — the differential
-/// checks the identical call on both sides; per-program value variety is a possible refinement.
-const RUNTIME_N_ARG: &str = "7";
+/// The `Int64` arguments a runtime-`n` main may be given — chosen PER-PROGRAM (by a stable hash of `src`)
+/// to spread across BOUNDARY values: base cases (0, 1), a mid value (7), a max in-range shift (63), an
+/// OUT-OF-RANGE shift (64 — now TRAPS at construction post strict-arg-eval, so it agrees rather than
+/// false-mismatching), an overflow-inducing magnitude (1000000), and a negative (-1). Spreading `n` this
+/// way exercises the shift/overflow/base-case boundaries of the runtime-`n` grammar instead of a single
+/// mid-range value. Both the wasm call and the Lean trial use the SAME picked value.
+const RUNTIME_N_ARGS: &[&str] = &["0", "1", "7", "63", "64", "1000000", "-1"];
+
+/// Pick a runtime-`n` arg for `src`: a stable per-source index into [`RUNTIME_N_ARGS`] (FNV-1a of the
+/// bytes) so different programs get different boundary values while each program stays deterministic
+/// (the wasm side and the Lean trial must agree on which `n` was used).
+fn runtime_n_arg(src: &str) -> &'static str {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in src.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    RUNTIME_N_ARGS[(h % RUNTIME_N_ARGS.len() as u64) as usize]
+}
 
 /// The call args to supply for `src`'s exported `main`, so a PARAM'd main is VALUE-checkable instead of
 /// failing the 0-arg call → not-comparable. Matches the exact main-param forms `build_program` emits:
@@ -633,7 +648,7 @@ const RUNTIME_N_ARG: &str = "7";
 /// value so both sides run the identical call.
 fn main_call_args(src: &str) -> Vec<String> {
     if src.contains("(def (main (: n Int64))") {
-        vec![RUNTIME_N_ARG.to_string()]
+        vec![runtime_n_arg(src).to_string()]
     } else if src.contains("(def (main (: v0 String))") {
         vec!["\"x\"".to_string()]
     } else if src.contains("(def (main (: v0 (List Int64)))") {
@@ -1419,9 +1434,12 @@ mod tests {
     /// heap-param main needs the staged runtime store, so this is a pure-string-mapping unit test only).
     #[test]
     fn main_call_args_supplies_one_arg_per_param_shape() {
-        assert_eq!(
-            main_call_args("(do (def (main (: n Int64)) (+ n 1)) (export main))"),
-            vec![RUNTIME_N_ARG.to_string()]
+        // runtime-n → exactly ONE Int64 arg, drawn from the boundary set (per-source pick).
+        let n_args = main_call_args("(do (def (main (: n Int64)) (+ n 1)) (export main))");
+        assert_eq!(n_args.len(), 1);
+        assert!(
+            RUNTIME_N_ARGS.contains(&n_args[0].as_str()),
+            "runtime-n arg {n_args:?} must be one of the boundary values"
         );
         assert_eq!(
             main_call_args("(do (def (main (: v0 String)) 0) (export main))"),
