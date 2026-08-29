@@ -45,7 +45,7 @@ A conversion between two integer types MUST be written explicitly, as either a r
 
 An integer operation that overflows its type MUST have a defined, deterministic outcome fixed by the numeric model, whether that outcome is a value or a trap.
 
-The unqualified arithmetic operator — `+`, `-`, and `*` — MUST trap on overflow for every integer type, signed and unsigned alike, so that overflow is never silently wrapped, and the named wrapping and overflow-fallible forms below are the only non-trapping outcomes an operation may take and MUST each be selected by name at the operation.
+The unqualified arithmetic operator — `+`, `-`, and `*` — MUST trap on overflow for every integer type, signed and unsigned alike, except where an overflow policy selects the wrapping outcome for the operation (§"Overflow Behavior Is Configurable By Policy"); absent such a policy overflow is never silently wrapped, the trapping outcome is the default, and the named wrapping and overflow-fallible forms below are the only non-trapping outcomes an operation may take, each selected by name at the operation.
 
 The compiler MUST NOT emit an integer operation whose overflow behavior is undefined.
 
