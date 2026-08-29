@@ -8,7 +8,8 @@
   },
   "scripts": {
     "dev": "vite",
-    "codegen": "node scripts/codegen-chapters.mjs",
+    "codegen": "node scripts/codegen-chapters.mjs && node scripts/codegen-registry.mjs",
+    "codegen:registry": "node scripts/codegen-registry.mjs",
     "build": "npm run codegen && tsc -b && vite build",
     "preview": "vite preview",
     "wasm": "cd ../implementation/seed/crates/cdz-wasm && wasm-pack build --target web --release && node ../../../../guide/scripts/stage-wasm.mjs",
@@ -26,6 +27,7 @@
     "check:registry-derive": "node scripts/check-registry-derive.mjs",
     "check:codegen": "node scripts/check-codegen.mjs",
     "check:codegen-sync": "node scripts/codegen-chapters.mjs --check",
+    "check:registry-sync": "node scripts/codegen-registry.mjs --check",
     "check:bundle": "node scripts/check-bundle.mjs",
     "check:visual": "LD_PRELOAD=/usr/lib64/libstdc++.so.6 LD_LIBRARY_PATH=/usr/lib64:/lib64 node scripts/check-visual.mjs",
     "check:notebook": "LD_PRELOAD=/usr/lib64/libstdc++.so.6 LD_LIBRARY_PATH=/usr/lib64:/lib64 node scripts/notebook-verify.mjs",
