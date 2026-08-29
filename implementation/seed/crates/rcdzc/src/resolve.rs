@@ -3224,9 +3224,10 @@ fn find_leading_binder_in_list_pattern(
     // nested-element list arm declines at lowering anyway): the exact element-by-element descent.
     let elems = db.ast.compound_form_of(list_pat, CompoundCtor::List)?;
     // The LEADING positions are those before a `..` marker (all of them for a fixed-arity pattern).
-    let lead = elems
-        .iter()
-        .position(|&e| db.ast.as_name(e) == Some(".."))
+    let lead = db
+        .ast
+        .rest_marker(elems)
+        .map(|(i, _, _)| i)
         .unwrap_or(elems.len());
     for (i, &elem) in elems[..lead].iter().enumerate() {
         #[cfg(test)]
@@ -3290,8 +3291,8 @@ fn build_simple_list_binders(
     list_pat: StructId,
 ) -> Option<std::rc::Rc<crate::db::SimpleListBinders>> {
     let elems = db.ast.compound_form_of(list_pat, CompoundCtor::List)?;
-    let dd = elems.iter().position(|&e| db.ast.as_name(e) == Some(".."));
-    let lead = dd.unwrap_or(elems.len());
+    let marker = db.ast.rest_marker(elems);
+    let lead = marker.map(|(i, _, _)| i).unwrap_or(elems.len());
     let mut by_name: crate::fxhash::FxHashMap<String, Vec<crate::core::PathStep>> =
         crate::fxhash::FxHashMap::default();
     for (i, &elem) in elems[..lead].iter().enumerate() {
@@ -3317,10 +3318,13 @@ fn build_simple_list_binders(
     // A trailing `.. rest` binds the tail sublist from `lead` onward (`_` after `..` binds nothing). A
     // LEADING binder of the same name takes precedence (the callers try leading before rest), so only
     // record the rest binder if no leading position already claimed the name (`or_insert`).
-    if let Some(dd) = dd
-        && let Some(&rest_occ) = elems.get(dd + 1)
+    if let Some((_, rest_occ, _)) = marker
         && let Some(rest_name) = db.ast.as_name(rest_occ)
         && rest_name != "_"
+        // `!= ".."` guards the helper's malformed-flat fallback (a bare `..` with no operand sibling
+        // returns the marker atom itself; `..` is never a real rest-binder name) — byte-identical to the
+        // old `elems.get(dd + 1)` None-skip, and harmless for a well-formed operand (a real name).
+        && rest_name != ".."
     {
         by_name
             .entry(rest_name.to_string())
