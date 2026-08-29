@@ -5002,3 +5002,30 @@
   (call main (: 1 Int64))
   (output (: 3401 Int64))
   (live-objects known-leak 4))
+
+(case "D1 an if-joined dual-used rope sharing a pre-if concat child in BOTH arms is a TRACKED KNOWN double-free (980-residual, latent) fenced"
+  (doc    "The 980-family sibling the narrowed cross-arm (a) gate does NOT reach. `keep = (if mode r2a r2b)`
+           where r2a=(String.concat r1 x) and r2b=(String.concat r1 y) BOTH consume the SAME pre-if rope r1,
+           and `keep` is DUAL-used (byte-len + a value-eq compare). All three conditions are required (each
+           alone is clean: single-use keep / two-concat-without-if / independent-ropes-dual-use). r1 is freed
+           TWICE — via the kept arm's post-join drop AND the unkept arm's drop — a double-free SILENT and
+           value-correct on the shipped runtime (output 80) but TRAPPING on the debug-counters runtime. The
+           `(live-objects …)` clause FORCES the debug run where the UAF fires, so this is a TRACKED KNOWN-FAIL
+           FENCE (v-memory-safety + v-corpus-harness, the #4547 mechanism): an emit change making this shape
+           corpus-reachable cannot ship the double-free silently, and the fix (v-core-opt reclaim arc, tracked
+           behind glb1 — confirm over-drop vs under-retain by rc-count first) flips it to PASS = surfaces the
+           land. Hand-built witness (not yet cdz-smith-reachable); r1 is consumed PRE-`if` so narrowed (a)
+           [consume-in-an-if-arm + borrow-as-result-in-the-other] cannot reach it.")
+  (input (do
+    (def (rep (: s String) (: n Int64) (: acc String)) (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
+    (def (main (: mode Int64))
+      (do
+        (def r1 (rep "ab" 3 ""))
+        (def r2a (String.concat r1 (rep "x" 2 "")))
+        (def r2b (String.concat r1 (rep "y" 2 "")))
+        (def keep (if (= mode 1) r2a r2b))
+        (+ (* (String.byte-len keep) 10) (if (= keep (if (= mode 1) "ababababxx" "ababababyy")) 1 0))))
+    (export main)))
+  (call main (: 1 Int64)) (output (: 80 Int64))
+  (call main (: 2 Int64)) (output (: 80 Int64))
+  (live-objects 0))
