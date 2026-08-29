@@ -6230,7 +6230,7 @@ pass	gld1 a GOLD-PANNING yield decay — pan answers the current yield then deca
 pass	gnd1 a GONDOLA on a reflecting cable — move advances the car by the signed direction held in state binding the new position ONCE in a let consumed by the terminus test both answers and both next-states, REFLECTS at either terminus by negating the direction and counting the trip, answers pack the let-bound position an arithmetic direction bit and the trip count, span reads position and trips without advancing, and the seed places the start so one run reflects mid-sequence while the other reaches the far terminus one move later
 pass	gp1 a PERFORMING guard on a wildcard pattern is a COMPILE ERROR (guards-side-effect-free, CDZ0407)
 pass	gp1 a match GUARD inside the handler ARM compares the op PAYLOAD against the live STATE binder — the guard routes admit/reject per dispatch
-pass	gp2 TWO guard arms where a guard PERFORMS — declines (multi-guard performing-condition fold gap)
+pass	gp2 TWO guard arms whose conditions PERFORM (`(> (St.next) …)`) — a COMPILE ERROR (CDZ0407), guards-side-effect-free
 pass	gp2e TWO pure guards cascade over a draw, the fallback re-performs — guard misses leave dispatch serviceable
 pass	gp3 the guard condition calls a PURE HELPER over the state binder — purity analysis admits the def call in guard position
 pass	gp4 a guard LADDER in the arm — two guarded arms with different state-derived thresholds classify each payload three ways
