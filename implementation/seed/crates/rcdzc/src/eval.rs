@@ -2545,7 +2545,11 @@ pub fn fold_ctor_match(db: &mut Db, node: StructId) -> Option<StructId> {
         // else leave it a runtime match (a payload behind an opaque runtime binding declines to `None`).
         // This is v-DES's real pqueue shape `(PQCons (tuple wake kb rest))`; once the tuple binders
         // substitute, the caller's loop folds an inner single-payload `(KBox k)` match via slice 1.
-        if db.ast.head_name(binder) == Some("tuple") {
+        if db
+            .ast
+            .compound_form_of(binder, CompoundCtor::Tuple)
+            .is_some()
+        {
             let elems = reduce_to_tuple_elems(db, payload)?;
             let folded = rewrite_sum_payload(db, *body, scrutinee, payload, Some(&elems));
             return Some(folded);
