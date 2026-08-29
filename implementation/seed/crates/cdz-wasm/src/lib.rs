@@ -2544,4 +2544,73 @@ mod tests {
         // The literal-text fields are still present alongside.
         assert_eq!(t.default.as_deref(), Some("5"), "literal-text default kept");
     }
+
+    /// The playground's "Cadenza" Compiled sub-view is backed by [`emit_cadenza`], which lowers the
+    /// program through `Target::Cadenza` and RENDERS the resulting binary AST to the requested text
+    /// surface. This pins the browser-facing contract the guide relies on:
+    ///
+    ///   - a well-formed, lowerable program yields a NON-declined rendering (not `; declined:` / `; error`);
+    ///   - the `syntax` toggle is actually threaded — the `"sexpr"` and `"ml"` renderings of the SAME
+    ///     program differ in surface;
+    ///   - the input `from` surface is honored — an `"ml"`-source program lowers to the identical rendering.
+    ///
+    /// A regression that made the backend decline a basic scalar program or dropped the surface toggle
+    /// would fail here — protecting the guide feature across the fleet. (The ERROR paths cannot be
+    /// exercised natively: `JsError::new` is a wasm-bindgen import that panics off-wasm, so this pins only
+    /// the Ok-returning success surface, which is what the guide actually renders.)
+    #[test]
+    fn emit_cadenza_lowers_a_basic_program_and_honors_the_surface_toggle() {
+        // A scalar-returning program with a parameter (so it does not fully const-fold away) — squarely
+        // inside the cadenza backend's comprehensive scalar-construction coverage. The `match` arms report
+        // an unexpected `Err` without formatting the (native-unformattable) `JsError`.
+        let src = "(def (main (: x Int64)) (+ x 1)) (export main)";
+        let sexpr = match emit_cadenza(src, "sexpr", "sexpr") {
+            Ok(s) => s,
+            Err(_) => panic!("emit_cadenza returned Err (JsError) on the sexpr surface"),
+        };
+        assert!(!sexpr.is_empty(), "produced a non-empty rendering");
+        assert!(
+            !sexpr.starts_with("; declined") && !sexpr.starts_with("; error"),
+            "a basic scalar program must LOWER, not decline: {sexpr}"
+        );
+        // The exported entry survives lowering + re-render — the rendering is real Cadenza source, not a
+        // note. (`(+ x 1)` does not const-fold: `x` is a parameter.)
+        assert!(
+            sexpr.contains("main"),
+            "the exported `main` def survives the round-trip: {sexpr}"
+        );
+
+        // The `syntax` toggle re-renders the SAME lowered AST in the ML surface — it must differ from the
+        // s-expr rendering, proving the arg is threaded to `convert` rather than ignored.
+        let ml = match emit_cadenza(src, "sexpr", "ml") {
+            Ok(s) => s,
+            Err(_) => panic!("emit_cadenza returned Err (JsError) on the ml render surface"),
+        };
+        assert!(
+            !ml.starts_with("; declined") && !ml.starts_with("; error"),
+            "the ML rendering must also lower: {ml}"
+        );
+        assert_ne!(
+            sexpr, ml,
+            "the sexpr and ml renderings of the same program must differ in surface"
+        );
+
+        // The input `from` surface is honored: the same program written in ML lowers just the same (the
+        // s-expr reader never gets in the way of an ML-source program).
+        let ml_src = "def main(x: Int64) = x + 1\nexport { main }";
+        let from_ml = match emit_cadenza(ml_src, "ml", "sexpr") {
+            Ok(s) => s,
+            Err(_) => panic!("emit_cadenza returned Err (JsError) on the ml INPUT surface"),
+        };
+        assert!(
+            !from_ml.starts_with("; declined") && !from_ml.starts_with("; error"),
+            "the ML-sourced program must lower too: {from_ml}"
+        );
+        // An identical program via either input surface lowers to the identical s-expr rendering — the
+        // front-end surface is fully normalized away before the cadenza backend.
+        assert_eq!(
+            sexpr, from_ml,
+            "the same program lowers identically regardless of input surface"
+        );
+    }
 }
