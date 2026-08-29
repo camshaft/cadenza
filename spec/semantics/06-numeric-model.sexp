@@ -13635,3 +13635,16 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 21 Int64))
   (call main (: 1 Int64)) (output (: 21 Int64)))
+
+(case "cdzw84 a DEPTH-5 linear single-payload chain unwraps through the cadenza hop — the #5546 un-flatten"
+  (doc "The deep nested-variant face (#5546: depth-N un-flatten of linear single-payload chains): a
+        recursive wrapper sum built 5 deep, unwrapped by the exhaustive two-arm recursive match —
+        5·10 + n = 57 / 47. The multi-depth-pattern + WILDCARD spelling still declines (named:
+        'nested-switch default arm' — dn2 witness banked). Dual-path verified, byte-idempotent.")
+  (input (do
+    (type (W a) (Wrap (W a)) (End a))
+    (def (unwrap (: w (W Int64))) (match w ((End x) x) ((Wrap inner) (+ 10 (unwrap inner)))))
+    (def (main (: n Int64)) (unwrap (Wrap (Wrap (Wrap (Wrap (Wrap (End n))))))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 57 Int64))
+  (call main (: -3 Int64)) (output (: 47 Int64)))
