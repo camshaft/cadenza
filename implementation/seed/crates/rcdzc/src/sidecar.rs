@@ -2084,16 +2084,33 @@ fn is_label_position(db: &Db, id: StructId) -> bool {
     {
         return true;
     }
-    // Record field name: `id` is the FIRST child of a two-element pair `(field value)` whose grandparent
-    // is a `("record" …)` form. (The pair itself is a headless list; `read_record_fields` reads its
-    // first child as the field label.)
-    if let Struct::List(pair) = db.ast.get(parent)
-        && pair.len() == 2
-        && pair[0] == id
-        && let Some(grand) = db.parent_of(parent)
-        && db.ast.compound_ctor(grand) == Some(CompoundCtor::Record)
+    // Record field name: `id` is a record field entry's LABEL, and the entry's enclosing form is a record
+    // (the native `#record` ctor-leaf head OR the `("record" …)` alias — `compound_form_of` reads both).
+    // Two entry spellings: the legacy 2-element POSITIONAL `(field value)` (label = child[0], read as the
+    // field label by `read_record_fields`) and the native FieldPair `(= field value)` (label = the key).
+    // A `#map`'s FieldPair KEY is a VALUE, not a label — restricting the grandparent to Record excludes it.
+    if let Some(grand) = db.parent_of(parent)
+        && db
+            .ast
+            .compound_form_of(grand, CompoundCtor::Record)
+            .is_some()
     {
-        return true;
+        // Native `(= field value)` FieldPair (or the name-head `=` alias) — the KEY is the field label.
+        let fieldpair_label = db
+            .ast
+            .field_pair_parts(parent)
+            .or_else(|| db.ast.field_pair(parent))
+            .map(|(k, _)| k);
+        if fieldpair_label == Some(id) {
+            return true;
+        }
+        // Legacy 2-element positional `(field value)` — the first child is the field label.
+        if let Struct::List(pair) = db.ast.get(parent)
+            && pair.len() == 2
+            && pair[0] == id
+        {
+            return true;
+        }
     }
     false
 }

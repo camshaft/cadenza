@@ -44484,6 +44484,25 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn highlight_treats_a_native_record_field_label_like_the_alias() {
+        // M3 parity (native-recognition, token classification): a NATIVE `#record((= x 1))` field name is a
+        // DATA label exactly like the `(record (x 1))` alias. `is_label_position` recognized the field label
+        // only via `compound_ctor` (string head) + a 2-element positional entry, so a native record's field
+        // name — sitting at the KEY of a 3-element FieldPair `(= x 1)` under a native ctor-leaf head — was
+        // matched by NEITHER, and painted a spurious `unbound` instead of `label`. Now the grandparent is
+        // recognized via `compound_form_of` and the FieldPair key is read as the label. Native ≡ alias:
+        let native = "(module m (def (main) (. #record((= x 1) (= y 2)) x)) (export main))";
+        let legacy = "(module m (def (main) (. (record (x 1) (y 2)) x)) (export main))";
+        for (label, src) in [("native #record", native), ("alias record", legacy)] {
+            let kinds = highlight_kinds_of(src, "x");
+            assert!(
+                !kinds.is_empty() && kinds.iter().all(|k| k == "label"),
+                "{label}: a record field name (and member key) are labels, not unbound: {kinds:?}"
+            );
+        }
+    }
+
+    #[test]
     fn highlight_treats_a_record_field_and_member_key_as_labels() {
         // A record field name and a member-access key are DATA (symbols), never resolved to a value — so
         // they are `label`, not a spurious unbound name.
