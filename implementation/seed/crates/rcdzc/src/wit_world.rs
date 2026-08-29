@@ -114,18 +114,25 @@ pub fn parse_wit_type(a: &Arenas, id: StructId) -> Option<WitType> {
             let elem = *items.get(1)?;
             Some(WitType::List(Box::new(parse_wit_type(a, elem)?)))
         }
-        // ("record" (fieldname <ty>)…) — each field a (name, type) 2-list, declaration order.
+        // (record (= fieldname <ty>)…) — each field in declaration order. The reader emits a native
+        // FieldPair `(= name ty)` (the migrated `(record (= a (s64)) …)` corpus form, mirroring the
+        // value-model record's `(= k v)` fields); a plain 2-list `(name ty)` is also accepted (the
+        // hand-built descriptor form the unit tests use). Read the (name, ty) nodes either way.
         "record" => {
             let mut fields = Vec::with_capacity(items.len().saturating_sub(1));
             for &entry in &items[1..] {
-                let Struct::List(pair) = a.get(entry) else {
+                let (name_id, ty_id) = if let Some((k, v)) = a.field_pair_parts(entry) {
+                    (k, v)
+                } else if let Struct::List(pair) = a.get(entry) {
+                    if pair.len() != 2 {
+                        return None;
+                    }
+                    (pair[0], pair[1])
+                } else {
                     return None;
                 };
-                if pair.len() != 2 {
-                    return None;
-                }
-                let name = a.as_name(pair[0])?.to_string();
-                let ty = parse_wit_type(a, pair[1])?;
+                let name = a.as_name(name_id)?.to_string();
+                let ty = parse_wit_type(a, ty_id)?;
                 fields.push((name, ty));
             }
             Some(WitType::Record(fields))
@@ -1342,6 +1349,52 @@ mod tests {
     }
     fn str_head(b: &mut Builder, s: &str) -> StructId {
         b.atom_leaf(Leaf::Str(s.into()))
+    }
+
+    #[test]
+    fn a_migrated_record_field_pair_world_parses_through_the_real_reader() {
+        // Regression: the 28-wit-abi record-result worlds (sp1/sp3/sp3n/sp6) reach the reader as
+        // `(record (= a (s64)) …)` — name-head `record` (seq-206) with native FieldPair `(= name ty)` field
+        // entries (the reader's compound form, mirroring a value-model record's fields). parse_wit_type's
+        // record arm read a 2-list `(name ty)` and rejected the 3-element FieldPair → parse_target_world
+        // returned None → the whole world silently dropped → `record_interface_export` bailed before its body
+        // and every record-result export declined. Read through the REAL front-end reader (testkit::parse) so
+        // the field entries are the ACTUAL FieldPair nodes the corpus produces, not hand-built 2-lists.
+        for (label, src) in [
+            (
+                "sp1",
+                "(world w (export iface (member f (func (param x (s64)) (result (record (= b1 (s64)) (= b2 (s64))))))))",
+            ),
+            (
+                "sp3",
+                "(world w (export iface (member f (func (param x (s64)) (result (record (= a (s64)) (= d (option (s64)))))))))",
+            ),
+            (
+                "sp6",
+                "(world w (export iface (member f (func (param x (s64)) (param y (s64)) (result (record (= b1 (s64)) (= b2 (s64))))))))",
+            ),
+        ] {
+            let a = crate::testkit::parse(src);
+            assert!(
+                parse_target_world(&a, a.root).is_some(),
+                "{label} record-result world must parse; got None (world drops → export declines)"
+            );
+        }
+        // Pin the nested shape too (sp3): the result decodes to a record whose second field is an option —
+        // proves the FieldPair read recurses into a nested name-head `(option (s64))`, declaration order kept.
+        let a = crate::testkit::parse(
+            "(world w (export iface (member f (func (param x (s64)) (result (record (= a (s64)) (= d (option (s64)))))))))",
+        );
+        let tw = parse_target_world(&a, a.root).expect("sp3 world parses");
+        let result = &tw.exports[0].members[0].func.result;
+        assert_eq!(
+            result,
+            &WitType::Record(vec![
+                ("a".to_string(), WitType::S64),
+                ("d".to_string(), WitType::Option(Box::new(WitType::S64))),
+            ]),
+            "sp3 result: record {{ a: s64, d: option<s64> }} in declaration order"
+        );
     }
 
     #[test]
