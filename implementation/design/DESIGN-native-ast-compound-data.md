@@ -629,15 +629,18 @@ legacy spelling breaks), coordinated by the concierge.
   TYPE ctor heads (`(List …)` / `("List" …)`), or VALUE literals only? (v-ast-consolidate's design read =
   VALUE-only.)
 - **v-ast-consolidate (step-4, cadenza-ast):** delete `compound_ctor` (string-head), flip
-  `compound_ctor_prim`'s string arm → just `compound_ctor_leaf`, delete `as_ctor_form`, drop the resolve
-  string-prim arm + the `as_name` `Member`/`FieldPair` bridge, and drop `compound_form_of`'s alias branch
-  (native-only). `compound_ctor_either` already DELETED (#5498).
-- **v-ast-compound / rcdzc (step-3, MINE) — READY, exactly 2 one-liners:**
-  1. `resolve.rs:463` `compound_ctor_prim(id)` (structural dispatch) → `compound_ctor_leaf(id)`.
-  2. `db.rs:6439` grounds `(List BigInt)`-typed list elems via
-     `as_form(ty_expr,"List").or_else(as_ctor_form(ty_expr,"List"))` — a TYPE ctor, NOT a value literal.
-     Per v-syntax's answer: if TYPE heads persist → INLINE an `as_str` head-check (keep recognition); if the
-     flip drops string TYPE heads → the `.or_else` arm is dead, remove it.
+  `compound_ctor_prim`'s string arm → just `compound_ctor_leaf`, drop the resolve string-prim arm + the
+  `as_name` `Member`/`FieldPair` bridge, and drop `compound_form_of`'s alias branch (native-only). EARLY
+  free-win deletions already landed (decoupled from this window): `compound_ctor_either` (#5498) +
+  `as_ctor_form` (#5582, after v-ast-compound made it caller-free via #5509).
+- **v-ast-compound / rcdzc (step-3, MINE) — READY, now exactly ONE one-liner:**
+  1. `resolve.rs:463` `compound_ctor_prim(id)` (structural dispatch — the last live `compound_ctor_prim`
+     caller; strictly atomic since the string-head VALUE form `("list" …)` is still live in the corpus's
+     unshadowable shadow-escape cases) → `compound_ctor_leaf(id)`, in lockstep with v-ast-consolidate
+     dropping the string arm.
+  2. ✅ DONE (#5509): `db.rs:6439`'s reader-dead `.or_else(as_ctor_form(ty_expr,"List"))` string-head TYPE
+     arm removed (kept the live `as_form` name-head arm) — which made `as_ctor_form` caller-free → deletable
+     early. No longer part of the atomic window.
   All other rcdzc uses are already `compound_form_of` (~130 callers, survive the alias-branch drop) or
   `compound_ctor_leaf`. The native-recognition audit is COMPLETE across resolve/lower/eval/infer/const-fold +
   classification (sidecar highlight #5484) + diagnostics + equality (#5491, corpus #5501).
