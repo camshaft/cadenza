@@ -685,3 +685,21 @@ effect op-handler arm heads exempted (#5475), and empty list `()` (#5520, `ch.fi
   result = **9652 programs ok, 0 failures**. The exact seq-A input step is proven end-to-end. (Window re-run:
   `for f in spec/semantics/[0-9]*.sexp; do cdz-nativize --skip-outputs <$f | awk 'f||/^[;(]/{f=1;print}'
   >$f.nat; mv $f.nat $f; done` in ONE `nix develop -c bash -c` — banner gotcha above.)
+
+### 13.5 rcdzc TEST-SUITE alias migration — a pinned-gate risk the atomic window must handle (2026-08-29)
+§13.3 requires the pinned `rcdzc --lib` gate GREEN after the reader flip. But the reader flip drops name/
+string VALUE + PATTERN recognition, so every alias-spelled compound in a TEST-PROGRAM input breaks (`(list
+…)`/`("list" …)` → an unbound `list` call). Scope in `rcdzc/src/tests.rs`: **~421 lines** carry a compound
+alias INSIDE a Rust string literal (actual test inputs; a further ~256 alias mentions are in COMMENTS and do
+NOT break), plus **32 native≡alias PARITY controls** whose whole point is asserting the alias compiles.
+`proptest_gen.rs` has ~25 more (it GENERATES alias-spelled programs → must generate native).
+- **Must migrate IN the atomic window** (can't pre-migrate: the parity controls need the alias working until
+  the flip; and tests.rs is a shared file all rcdzc verticals edit — pre-nativizing risks conflict).
+- **Approach:** (1) the ~421 ordinary test inputs → nativize the embedded sexpr (a Rust-string-aware pass, or
+  hand-migrate — cdz-nativize can't run on Rust source directly since the sexpr is escaped inside `"…"`); (2)
+  the 32 parity controls → DROP the alias arm (native-only is the new reality — they served their
+  transition purpose, catching e.g. #5484); (3) proptest_gen.rs → emit `#word(…)`. (4) other rcdzc-touching
+  verticals own their own added test inputs — this is a FLEET-WIDE tests.rs migration, coordinate.
+- **Owner:** unassigned — NOT purely v-ast-compound (tests.rs is shared). Flagged to concierge/v-syntax so the
+  window plan includes it; else the pinned `rcdzc --lib` gate reds mid-flag-day. (Same concern applies to any
+  OTHER crate's tests that embed alias-spelled programs — audit before the flip.)
