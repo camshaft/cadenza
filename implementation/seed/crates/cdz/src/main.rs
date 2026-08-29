@@ -6436,6 +6436,8 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 compile_diag: None,
                 component_name: None,
                 report_live_objects: false,
+                // Watch `run` is an interactive run, not a `--grade` leak-ceiling context, so no tolerance.
+                tolerate_fewer_live_objects: false,
                 core_module: None,
                 core_export: None,
             }),
