@@ -1404,8 +1404,8 @@
         # (guide examples). Both carry the same closure minus/plus their own crate. `cdz-run cdz-rt cdz-num`
         # are kept as a harmless superset (leftover from rcdzc's pre-#5000 dev-deps — unused-but-present
         # source never breaks a build; the assert only requires COVERAGE, not exactness).
-        rcdzcWasmCrateDirs = [ "rcdzc-wasm" "rcdzc" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num" ] ++ cadenzaSyntaxCrateDirs;
-        cdzWasmCrateDirs = [ "cdz-wasm" "rcdzc" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num" ] ++ cadenzaSyntaxCrateDirs;
+        rcdzcWasmCrateDirs = [ "rcdzc-wasm" "rcdzc" "cadenza-ast" "cadenza-compile-abi" "cdz-run" "cdz-rt" "cdz-num" ] ++ cadenzaSyntaxCrateDirs;
+        cdzWasmCrateDirs = [ "cdz-wasm" "rcdzc" "cadenza-ast" "cadenza-compile-abi" "cdz-run" "cdz-rt" "cdz-num" ] ++ cadenzaSyntaxCrateDirs;
         # DURABLE DRIFT-GUARD (v-fleet-tooling +1, 2026-08-28): the standalone rcdzc-wasm / cdz-wasm
         # workspaces have their OWN leaf Cargo.lock and are NOT covered by rootWorkspaceCrates' crane
         # closure machinery, so a crate split/add that changes what they resolve silently omits the new
