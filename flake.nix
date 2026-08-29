@@ -899,7 +899,8 @@
               xtask-codegen-contracts = [ "cadenza-ast" "cdz-contract" "xtask-codegen-contracts" ];
               # xtask-codegen-wasm-abi deps only external crates (wasm-encoder/syn/quote/prettyplease) — its
               # workspace closure is just itself.
-              xtask-codegen-wasm-abi = [ "xtask-codegen-wasm-abi" ];
+              # now deps cadenza-ast (reads wasm-abi.sexp's cadenza-ast binary in the --from-sexpr producer).
+              xtask-codegen-wasm-abi = [ "cadenza-ast" "xtask-codegen-wasm-abi" ];
               xtask-mandates = [ "xtask-mandates" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})

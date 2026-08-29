@@ -1,50 +1,86 @@
-//! `xtask-codegen-wasm-abi` — extract the backend's wasm / component-model byte table from `wasm-encoder`
-//! (the core opcode table, core+component valtype bytes, section ids, magic headers, functype form bytes)
-//! and render it as `wasm_abi.rs`. Carved out of `xtask/src/codegen.rs`'s `generate_wasm_abi` + its
-//! `wasm_abi` module (v-xtask-decompose, the codegen→build-time-nix directive).
+//! `xtask-codegen-wasm-abi` — the backend's wasm / component-model byte table (`wasm_abi.rs`): the core
+//! opcode table, core+component valtype bytes, section ids, magic headers, functype form bytes. Carved out
+//! of `xtask/src/codegen.rs` (v-xtask-decompose, the codegen→build-time-nix directive).
 //!
-//! Pure data extraction: it encodes a one-off value with `wasm-encoder` for each entry and reads the
-//! emitted byte back — nothing hand-transcribed, no compiler dep, no cdz, no runtime store. The `wasm_abi`
-//! module below is copied VERBATIM from codegen.rs (only the `use super::{…}` resolves to this crate's root
-//! imports) so the emitted file is byte-identical to the committed `rcdzc/src/backend/wasm/wasm_abi.rs`.
+//! The operator's CODEGEN-SEXPR model (greenlit): `wasm-abi.sexp` is the AUTHORITATIVE, human-editable
+//! source of truth; `wasm-encoder` is the cross-check ORACLE (inverted from the old extract-from-encoder).
+//! Modes:
+//!   - (default) — produce `wasm_abi.rs` by EXTRACTING each byte from `wasm-encoder` (the historical path,
+//!     kept until v-nix's `cdzWasmAbi` derivation flips to `--from-sexpr`, so it stays green meanwhile).
+//!   - `--from-sexpr` — produce `wasm_abi.rs` from the authoritative `wasm-abi.sexp`: `cdz convert` it to
+//!     cadenza-ast BINARY (dogfoods cadenza-ast as the codegen IR, no-json), decode + walk (`read_sexpr_tables`),
+//!     render. BYTE-IDENTICAL to the default (the acceptance test). Needs `cdz` from `CDZ_SEED_BIN_DIR`.
+//!   - `--oracle-check` — assert every opcode/valtype/section/magic byte in `wasm-abi.sexp` matches the
+//!     wasm-encoder oracle (the operator's guarantee, inverted: catches a sexpr transcription typo). v-nix
+//!     wires it as a required nix check.
+//!   - `--emit-sexpr` — re-derive `wasm-abi.sexp` from the oracle (bootstrap / after a wasm-encoder bump).
 //!
-//! A `cdzWasmAbi` nix derivation runs this bin to produce the generated source at build time (a build-phase
-//! overlay then copies it into rcdzc's src), so nothing generated is committed.
-//!
-//! Usage: `xtask-codegen-wasm-abi [<out-file>]` — `out-file` defaults to the committed
-//! `rcdzc/src/backend/wasm/wasm_abi.rs` (for local parity); the derivation passes its target path. Repo
-//! root from `CDZ_REPO_ROOT` (else cwd).
+//! A `cdzWasmAbi` nix derivation runs this bin to produce `wasm_abi.rs` at build time (a build-phase overlay
+//! copies it into rcdzc's src, so nothing generated is committed). Repo root from `CDZ_REPO_ROOT` (else cwd);
+//! the first non-flag arg is the output path (the derivation passes it; default = the committed wasm_abi.rs).
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let repo = std::env::var_os("CDZ_REPO_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let sexpr = repo.join("implementation/seed/crates/rcdzc/src/backend/wasm/wasm-abi.sexp");
 
-    // BOOTSTRAP (`--emit-sexpr`): derive the AUTHORITATIVE Cadenza sexpr source (wasm-abi.sexp) from the
-    // wasm-encoder oracle, correct-by-construction. This seeds the operator's codegen-sexpr model (sexpr =
-    // source of truth); thereafter the committed sexpr is hand-editable + wasm-encoder is only the
-    // cross-check oracle, and this stays a re-derive-from-oracle convenience.
+    // BOOTSTRAP (`--emit-sexpr`): re-derive the authoritative wasm-abi.sexp from the wasm-encoder oracle
+    // (correct-by-construction). A convenience — the committed sexpr is the hand-editable source of truth;
+    // this re-seeds it from the spec encoder (e.g. after a wasm-encoder bump adds an op).
     if args.iter().any(|a| a == "--emit-sexpr") {
-        let out = repo.join("implementation/seed/crates/rcdzc/src/backend/wasm/wasm-abi.sexp");
-        let tables = wasm_abi::collect();
-        if let Some(parent) = out.parent() {
+        if let Some(parent) = sexpr.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        std::fs::write(&out, wasm_abi::render_sexpr(&tables)).unwrap_or_else(|e| {
-            eprintln!("xtask codegen: writing {}: {e}", out.display());
+        std::fs::write(&sexpr, wasm_abi::render_sexpr(&wasm_abi::collect())).unwrap_or_else(|e| {
+            eprintln!("xtask codegen: writing {}: {e}", sexpr.display());
             std::process::exit(1);
         });
-        println!("xtask codegen: wrote {}", out.display());
+        println!("xtask codegen: wrote {}", sexpr.display());
         return;
     }
 
-    // Default: emit wasm_abi.rs (the byte table the backend consumes). Today still from wasm-encoder; the
-    // producer pivots to reading wasm-abi.sexp (byte-identical output) in the next increment.
+    // ORACLE-CHECK (`--oracle-check`): assert the committed sexpr's BYTES match the wasm-encoder oracle
+    // (the operator's inverted guarantee — a derived test catches a transcription typo). v-nix wires this
+    // as a required nix check.
+    if args.iter().any(|a| a == "--oracle-check") {
+        let sexpr_tables = wasm_abi::read_sexpr_tables(&sexpr_to_arenas(&cdz_bin(&repo), &sexpr));
+        let mismatches = wasm_abi::oracle_mismatches(&wasm_abi::collect(), &sexpr_tables);
+        if !mismatches.is_empty() {
+            eprintln!(
+                "wasm-abi oracle-check FAILED — {} of the committed wasm-abi.sexp bytes do not match the \
+                 wasm-encoder spec oracle (fix the sexpr):\n  {}",
+                mismatches.len(),
+                mismatches.join("\n  ")
+            );
+            std::process::exit(1);
+        }
+        println!(
+            "wasm-abi oracle-check: ok — every opcode/valtype/section/magic byte in wasm-abi.sexp matches \
+             the wasm-encoder oracle ({} opcodes, {} singles, {} magics).",
+            sexpr_tables.opcodes.len(),
+            sexpr_tables.singles.len(),
+            sexpr_tables.magics.len()
+        );
+        return;
+    }
+
+    // Produce wasm_abi.rs (the byte table the backend consumes). Two producers, BYTE-IDENTICAL output:
+    //   default        — extract from the wasm-encoder crate (the historical path; keeps v-nix's cdzWasmAbi
+    //                     derivation green until it flips).
+    //   `--from-sexpr` — read the AUTHORITATIVE wasm-abi.sexp → cadenza-ast binary → walk → render (the
+    //                     operator's codegen-sexpr model). v-nix flips cdzWasmAbi to this + cdz in its window;
+    //                     then the sexpr is the sole source (wasm-encoder stays only as `--oracle-check`).
+    let tables = if args.iter().any(|a| a == "--from-sexpr") {
+        wasm_abi::read_sexpr_tables(&sexpr_to_arenas(&cdz_bin(&repo), &sexpr))
+    } else {
+        wasm_abi::collect()
+    };
     let out = args
         .iter()
         .find(|a| !a.starts_with("--"))
@@ -52,7 +88,6 @@ fn main() {
         .unwrap_or_else(|| {
             repo.join("implementation/seed/crates/rcdzc/src/backend/wasm/wasm_abi.rs")
         });
-    let tables = wasm_abi::collect();
     let source = format!(
         "{}{}",
         wasm_abi_banner(),
@@ -66,6 +101,46 @@ fn main() {
         std::process::exit(1);
     }
     println!("xtask codegen: wrote {}", out.display());
+}
+
+/// The `cdz` that converts wasm-abi.sexp → cadenza-ast binary (the sexpr→binary pipeline step). From
+/// `CDZ_SEED_BIN_DIR` (the nix-built cdz the derivation injects), else `<repo>/target/debug` for dev.
+fn cdz_bin(repo: &Path) -> PathBuf {
+    std::env::var_os("CDZ_SEED_BIN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo.join("target/debug"))
+        .join("cdz")
+}
+
+/// Convert `sexpr` (the authoritative wasm-abi source) to its cadenza-ast BINARY via `cdz convert` and
+/// decode it — the sexpr→binary pipeline step (dogfoods cadenza-ast as the codegen IR, no-json).
+fn sexpr_to_arenas(cdz: &Path, sexpr: &Path) -> cadenza_ast::ast::Arenas {
+    let out = std::process::Command::new(cdz)
+        .args(["convert", "--from", "sexpr", "--to", "binary"])
+        .arg(sexpr)
+        .output()
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "xtask codegen: could not run `cdz convert` on {}: {e}",
+                sexpr.display()
+            );
+            std::process::exit(1);
+        });
+    if !out.status.success() {
+        eprintln!(
+            "xtask codegen: `cdz convert --to binary {}` failed:\n{}",
+            sexpr.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::process::exit(1);
+    }
+    cadenza_ast::codec::decode(&out.stdout).unwrap_or_else(|| {
+        eprintln!(
+            "xtask codegen: `cdz convert {} --to binary` did not produce a decodable cadenza-ast",
+            sexpr.display()
+        );
+        std::process::exit(1);
+    })
 }
 
 /// Pretty-print a generated token tree to formatted Rust source (prettyplease, then rustfmt if available).
@@ -754,6 +829,132 @@ mod wasm_abi {
             out.push_str(&format!("  (magic {} {} {})\n", m.ident, bytes, lit(m.doc)));
         }
         out.push_str(")\n");
+        out
+    }
+
+    /// Read the tables back from the AUTHORITATIVE wasm-abi.sexp's decoded cadenza-ast (the producer path,
+    /// operator's model). Walks the root `(do …)`: each child is `(opcode NAME byte)` /
+    /// `(single NAME byte "doc")` / `(magic NAME b0 … b7 "doc")` — head via `head_name`, NAME via `as_name`,
+    /// bytes via `as_int_usize`, doc via `as_str`. Panics on a malformed entry (the sexpr is the committed
+    /// source of truth + the `--oracle-check` guards its bytes, so a shape break is a hard bug). Strings are
+    /// interned to `'static` (the bin runs once + exits) so the `Tables` shape matches `collect`'s.
+    pub fn read_sexpr_tables(a: &cadenza_ast::ast::Arenas) -> Tables {
+        use cadenza_ast::ast::Struct;
+        fn intern(s: &str) -> &'static str {
+            Box::leak(s.to_owned().into_boxed_str())
+        }
+        let name = |a: &cadenza_ast::ast::Arenas, id| {
+            intern(a.as_name(id).expect("wasm-abi entry: expected a NAME"))
+        };
+        let byte = |a: &cadenza_ast::ast::Arenas, id| {
+            u8::try_from(
+                a.as_int_usize(id)
+                    .expect("wasm-abi entry: expected an integer byte"),
+            )
+            .expect("wasm-abi byte does not fit in u8")
+        };
+        let doc = |a: &cadenza_ast::ast::Arenas, id| {
+            intern(a.as_str(id).expect("wasm-abi entry: expected a doc string"))
+        };
+
+        let Struct::List(items) = a.get(a.root) else {
+            panic!("wasm-abi.sexp root is not a `(do …)` list");
+        };
+        let (mut opcodes, mut singles, mut magics) = (Vec::new(), Vec::new(), Vec::new());
+        // Skip the `do` head; each remaining child is one table entry.
+        for &child in items.iter().skip(1) {
+            let head = a.head_name(child).expect("wasm-abi entry has no head name");
+            let Struct::List(f) = a.get(child) else {
+                panic!("wasm-abi entry `{head}` is not a list");
+            };
+            match head {
+                "opcode" => opcodes.push(Opcode {
+                    ident: name(a, f[1]),
+                    byte: byte(a, f[2]),
+                }),
+                "single" => singles.push(Single {
+                    ident: name(a, f[1]),
+                    byte: byte(a, f[2]),
+                    doc: doc(a, f[3]),
+                }),
+                "magic" => {
+                    let mut bytes = [0u8; 8];
+                    for (i, b) in bytes.iter_mut().enumerate() {
+                        *b = byte(a, f[2 + i]);
+                    }
+                    magics.push(Magic {
+                        ident: name(a, f[1]),
+                        bytes,
+                        doc: doc(a, f[10]),
+                    });
+                }
+                other => {
+                    panic!("unknown wasm-abi entry head `{other}` (expected opcode/single/magic)")
+                }
+            }
+        }
+        Tables {
+            opcodes,
+            singles,
+            magics,
+        }
+    }
+
+    /// Cross-check the sexpr's BYTES against the wasm-encoder ORACLE (the operator's inverted guarantee):
+    /// every named opcode/single byte + magic byte-seq in `sexpr` must equal what `wasm-encoder` emits in
+    /// `oracle`. Returns human-readable mismatch lines (empty = the sexpr matches the spec encoder). Docs are
+    /// NOT checked — they are human-authored prose the encoder has no opinion on. Catches a transcription typo
+    /// in the committed sexpr at build time.
+    pub fn oracle_mismatches(oracle: &Tables, sexpr: &Tables) -> Vec<String> {
+        use std::collections::BTreeMap;
+        let mut out = Vec::new();
+        let o_ops: BTreeMap<&str, u8> = oracle.opcodes.iter().map(|o| (o.ident, o.byte)).collect();
+        let s_ops: BTreeMap<&str, u8> = sexpr.opcodes.iter().map(|o| (o.ident, o.byte)).collect();
+        let o_singles: BTreeMap<&str, u8> =
+            oracle.singles.iter().map(|s| (s.ident, s.byte)).collect();
+        let s_singles: BTreeMap<&str, u8> =
+            sexpr.singles.iter().map(|s| (s.ident, s.byte)).collect();
+        let o_magics: BTreeMap<&str, [u8; 8]> =
+            oracle.magics.iter().map(|m| (m.ident, m.bytes)).collect();
+        let s_magics: BTreeMap<&str, [u8; 8]> =
+            sexpr.magics.iter().map(|m| (m.ident, m.bytes)).collect();
+        let cmp_u8 =
+            |kind: &str, o: &BTreeMap<&str, u8>, s: &BTreeMap<&str, u8>, out: &mut Vec<String>| {
+                for (name, ob) in o {
+                    match s.get(name) {
+                        Some(sb) if sb == ob => {}
+                        Some(sb) => out.push(format!(
+                            "{kind} {name}: sexpr 0x{sb:02x} != wasm-encoder 0x{ob:02x}"
+                        )),
+                        None => out.push(format!(
+                            "{kind} {name}: MISSING from sexpr (wasm-encoder 0x{ob:02x})"
+                        )),
+                    }
+                }
+                for name in s.keys() {
+                    if !o.contains_key(name) {
+                        out.push(format!(
+                            "{kind} {name}: in sexpr but NOT in the wasm-encoder oracle"
+                        ));
+                    }
+                }
+            };
+        cmp_u8("opcode", &o_ops, &s_ops, &mut out);
+        cmp_u8("single", &o_singles, &s_singles, &mut out);
+        for (name, ob) in &o_magics {
+            match s_magics.get(name) {
+                Some(sb) if sb == ob => {}
+                Some(sb) => out.push(format!("magic {name}: sexpr {sb:?} != wasm-encoder {ob:?}")),
+                None => out.push(format!("magic {name}: MISSING from sexpr")),
+            }
+        }
+        for name in s_magics.keys() {
+            if !o_magics.contains_key(name) {
+                out.push(format!(
+                    "magic {name}: in sexpr but NOT in the wasm-encoder oracle"
+                ));
+            }
+        }
         out
     }
 
