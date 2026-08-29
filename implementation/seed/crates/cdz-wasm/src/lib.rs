@@ -1604,6 +1604,57 @@ pub fn emit_rust(text: &str, from: &str, is_async: bool) -> Result<String, JsErr
     }
 }
 
+/// Emit the program as lowered-optimized CADENZA SOURCE — the compiler's third backend (`Target::Cadenza`),
+/// which lowers the OPTIMIZED core IR back to Cadenza surface AST (AFTER type-resolution / const-fold /
+/// optimization). Unlike the wat/rust views (which are text), this target emits the canonical BINARY AST,
+/// so we RENDER it to a text surface for display: `syntax` is `"sexpr"` or `"ml"` (the view's toggle). Lets
+/// the playground show what lowering + the optimizer did to the program — the same source, in its own
+/// language, post-optimization. Returns the rendered text, or a `; declined: …` note (a program the Cadenza
+/// backend does not yet lower emits nothing). Mirrors [`emit_rust`] + the binary→text render [`render_value`] uses.
+#[wasm_bindgen]
+pub fn emit_cadenza(text: &str, from: &str, syntax: &str) -> Result<String, JsError> {
+    let from = parse_format(from)?;
+    let to = match parse_format(syntax)? {
+        f @ (Format::Sexpr | Format::Ml) => f,
+        other => {
+            return Err(JsError::new(&format!(
+                "emit_cadenza display syntax must be \"sexpr\" or \"ml\", not {other:?}"
+            )));
+        }
+    };
+    let (ast_bytes, _spans) = parse_spanned(text, from).map_err(|m| JsError::new(&m))?;
+    let target = rcdzc::Target::Cadenza;
+    let out = rcdzc::compile(
+        &[rcdzc::Artifact::new(
+            rcdzc::Artifact::KIND_AST,
+            "main",
+            ast_bytes,
+        )],
+        &[target],
+    );
+    match out.artifact(target.artifact_kind()) {
+        // `Target::Cadenza` emits the BINARY AST; render it to the requested text surface for display.
+        Some(bytes) => {
+            let rendered = convert::convert(bytes, Format::Binary, to)
+                .map_err(|e| JsError::new(&format!("render cadenza output: {}", e.0)))?;
+            String::from_utf8(rendered)
+                .map_err(|_| JsError::new("cadenza output was not valid UTF-8"))
+        }
+        None => {
+            let msg = out
+                .diagnostics
+                .iter()
+                .find(|d| d.severity == rcdzc::Severity::Error)
+                .map(|d| match &d.code {
+                    Some(c) => format!("{c}: {}", d.message),
+                    None => d.message.clone(),
+                })
+                .unwrap_or_else(|| "this program does not emit Cadenza".to_string());
+            Ok(format!("; declined:\n; {msg}"))
+        }
+    }
+}
+
 /// The program's embedded CORE MODULE bytes — for the playground's "WAT" view. Compiles `text` to a
 /// PLAIN `Target::Wasm` component (NO `spans` artifact, so NO DWARF `.debug_*` sections at all — the
 /// debug info is only wanted in the browser debugger, not the human-readable WAT), then unwraps the
