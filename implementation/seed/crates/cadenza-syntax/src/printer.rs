@@ -6461,6 +6461,39 @@ mod tests {
     }
 
     #[test]
+    fn attr_renders_on_its_own_line_above_the_def_operator_16() {
+        // OPERATOR #16 (ATTR-ABOVE): a `@test` / `@tag("…")` annotation on a def renders on its OWN LINE
+        // ABOVE the def (the Rust `#[attr]\nfn …` convention), NEVER inline. This absorbs the invariant the
+        // guide's `check-examples.mjs` pinned as a safety net — that check is being removed (operator: guide
+        // off node checks), and ATTR-ABOVE is THIS ML printer's contract, so it belongs in the printer suite.
+        // The general shape is also covered by `annotation_sigil_round_trips` /
+        // `parameterized_annotation_round_trips`; this pins the guide's EXACT `@test`/`@tag` cases + the
+        // never-inline anti-case under the operator-numbered name so the contract is unmistakable.
+        // Bare `@test`.
+        assert_eq!(
+            assert_roundtrip("@test def f() = 1", 80),
+            "@test\ndef f() = 1"
+        );
+        // Parameterized `@tag("slow")`.
+        assert_eq!(
+            assert_roundtrip("@tag(\"slow\") def f() = 1", 80),
+            "@tag(\"slow\")\ndef f() = 1"
+        );
+        // Already-canonical (own-line) input is idempotent — the `@` line stays immediately above `def`.
+        assert_eq!(
+            assert_roundtrip("@test\ndef f() = 1", 80),
+            "@test\ndef f() = 1"
+        );
+        // The never-inline anti-case, explicit: the printed form STARTS with `@test\n` and never renders
+        // `@test def` on one line (the exact regression the guide's check guarded).
+        let out = assert_roundtrip("@test def f() = 1", 80);
+        assert!(
+            out.starts_with("@test\n") && !out.contains("@test def"),
+            "a @-annotation must render on its own line above the def (OPERATOR #16), got {out:?}"
+        );
+    }
+
+    #[test]
     fn the_test_annotation_example_round_trips_both_directions_and_never_prints_the_backtick_at_form()
      {
         // REGRESSION for the operator's thrice-reported high-viz `@test` bug (concierge issue): a
