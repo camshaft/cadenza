@@ -9715,6 +9715,41 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nested_map_list_element_with_an_absent_const_key_over_a_runtime_value_map_compiles() {
+        // breaker mf3 (the const-path sibling of #5450's runtime top-level fall-through): a nested `#map`
+        // list-arm element `(list (map (5 v)) _r)` whose head map has a CONSTANT KEY but a RUNTIME VALUE
+        // (`(map (1 n))`, `n` a param). The refutable-map-element desugar builds a key-PRESENCE guard; because
+        // the map value is runtime the guard is a runtime `Map.lookup` test, so the guarded arm's body is kept
+        // in the `MatchList` and its value-binder Core is lowered EAGERLY. That binder read folded through the
+        // const-structured list to the const-keyed `MapNew`, found the pattern key PROVABLY absent, and emitted
+        // a HARD Poison ("a map pattern value binder's key is absent from the constant map (arm mis-selected)")
+        // — a compile failure on a valid program (plus a Poison→cadenza-backend cascade). The arm is DEAD (the
+        // runtime presence guard gates it false), so the read now lowers to a divergent `Core::Trap` instead of
+        // a Poison. Both the native `#map` and name-alias `(map …)` spellings, both single- and two-map-arm
+        // shapes, must COMPILE (behavioral fall-through/binding pinned by the corpus grade):
+        for (label, src) in [
+            (
+                "native #map, one map arm, absent key, runtime value",
+                "(module m (def (f xs) (match xs (#list(#map((= 5 v)) _r) v) (_ (- 0 1)))) (def (main (: n Int64)) (f #list(#map((= 1 n)) #map((= 2 20))))) (export main))",
+            ),
+            (
+                "name-alias (list (map …)), one map arm, absent key, runtime value",
+                "(module m (def (f xs) (match xs ((list #map((= 5 v)) _r) v) (_ (- 0 1)))) (def (main (: n Int64)) (f (list #map((= 1 n)) #map((= 2 20))))) (export main))",
+            ),
+            (
+                "two map arms, first absent + second present key, runtime value",
+                "(module m (def (f xs) (match xs (#list(#map((= 5 v)) _r) v) (#list(#map((= 1 w)) _r) (* w 10)) (_ (- 0 1)))) (def (main (: n Int64)) (f #list(#map((= 1 n)) #map((= 2 20))))) (export main))",
+            ),
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "{label}: a nested map list-element with an absent const key over a runtime-value map must compile, got {:?}",
+                reject_code(src)
+            );
+        }
+    }
+
+    #[test]
     fn a_native_structural_pattern_over_a_wrong_kind_scrutinee_is_cdz0203() {
         // SOUNDNESS guard (05-compound-types "a tuple pattern over a non-tuple scrutinee is a type error",
         // and its list/map siblings): the match scrutinee-KIND check (lower_match) reads a pattern's
