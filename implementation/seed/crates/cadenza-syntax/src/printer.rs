@@ -3531,7 +3531,16 @@ impl<'a> Printer<'a> {
             .iter()
             .position(|&a| self.head_name(a).as_deref() == Some(".."))
         {
-            Some(i) => i + 2 == items.len() && self.is_pairs(&items[..i]),
+            // `..` at index i binds the rest at i+1; ALL other entries (before AND after the rest) are
+            // `(key sub)` / `(= key sub)` pairs. A well-formed map rest is LAST (`i + 2 == len`), but a
+            // MALFORMED post-rest entry (`#{ 1 = v, .. rest, 2 = w }`, a CDZ0201 rest-shape error case) is
+            // STILL a map PATTERN for printing — render it via `#{ … }` so it re-parses (parse-ok) and the
+            // CDZ0201 fires at RESOLVE as before, rather than falling to the generic `map(…)` arm, which
+            // prints a `FieldPair` entry as the un-reparseable `=(k, v)` application. `print_pattern_seq`
+            // emits post-rest entries in order and read_ml parses them back to the same shape.
+            Some(i) => {
+                i + 1 < items.len() && self.is_pairs(&items[..i]) && self.is_pairs(&items[i + 2..])
+            }
             None => self.is_pairs(items),
         }
     }
@@ -5199,7 +5208,7 @@ mod tests {
             // reader `field_pairify`s a `(= k v)` DIRECT entry under a bare-name `record`/`map` alias head
             // (not only under `#record(…)`), so this authored form matches `read_ml`'s pattern arena.
             3 => format!("(record (= f {}) (= g {}))", sub(rng), sub(rng)),
-            4 => format!("(map ({} {}))", "k", sub(rng)),
+            4 => format!("(map (= k {}))", sub(rng)),
             // ctor application `Ctor(p, …)` (name head, so it prints as an application, not a literal).
             5 => format!("(C {} {})", sub(rng), sub(rng)),
             // quote / quasiquote PATTERN — inner is itself a pattern, so a quote OVER an empty compound
@@ -5211,11 +5220,12 @@ mod tests {
             // sugar as the name-alias heads above (`(a, b)`/`[a, b]`/`#{ k = p }`) — without the pattern
             // printer recognizing the native ctor head they fell to the generic `Ctor(p, …)` arm and printed
             // the classic `tuple(…)`/`list(…)`/`map(…)` call form, breaking idempotence (the ML compound-
-            // PATTERN round-trip gap). Map entries stay the 2-element `(key sub)` pair (rcdzc's native
-            // map-pattern shape), NOT the value-record `FieldPair`.
+            // PATTERN round-trip gap). Map entries are the canonical `FieldPair (= key sub)` triple —
+            // symmetric with map VALUES and record-pattern fields (operator M3 ruling), which the reader
+            // now emits for `#{ k = p }` patterns.
             8 => format!("#tuple({} {})", sub(rng), sub(rng)),
             9 => format!("#list({} {})", sub(rng), sub(rng)),
-            _ => format!("#map((k {}))", sub(rng)),
+            _ => format!("#map((= k {}))", sub(rng)),
         }
     }
 
