@@ -4985,10 +4985,16 @@ fn run_emit_shred(files: &[String], out_dir: &std::path::Path, standalone: bool)
         ));
         inputs.push(compiler_cli::entry_artifact(&closure[0].name));
         let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+        // A per-`@test` DECLINE (a compound/closure-param test that can't cross the peer boundary — the
+        // deferred #4031 limit) is error-severity, but it is INFORMATIONAL for the shred, NOT a failure: the
+        // compile still emits the SHREDDABLE tests + a manifest listing them (the runner runs what shredded +
+        // skips the rest). So report the diagnostics (so a decline is visible) but do NOT fail the run or SKIP
+        // the file — proceed to take its shreddable output (a file with 3 ok + 2 declined tests still
+        // contributes its 3, rather than being dropped whole). `--emit-shred` exits 0 whenever it writes a
+        // manifest; only a HARD I/O failure (below) fails it. (`--standalone` has no peer boundary → no
+        // declines → this is a clean full shred.)
         if out.has_error() {
             report_errors(&out);
-            any_fail = true;
-            continue;
         }
         // ENTRY-SCOPE by the manifest `file` field. A PACKAGE's linked program enumerates EVERY linked file's
         // `@test`s (not just the entry's) — so without this, each file re-emits the WHOLE package's tests
