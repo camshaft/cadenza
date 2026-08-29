@@ -24266,6 +24266,32 @@ mod tests {
         }
     }
 
+    /// CO-VERIFY (v-core-opt #5352 ROPE member, 980) — completes the family co-verify (#5357 did vec/set/map)
+    /// for the ONE member whose builder does NOT refit in place: `String.concat` → `bytes-concat` allocates a
+    /// NEW concat node with the base as a CHILD (the base's rc1 ref MOVES into the node) rather than subsuming
+    /// the base's own node. Same net contract: the rc1 base is CONSUMED into the result, so the result's
+    /// single post-if drop reclaims it (the base survives as the concat node's child), no leak, no double-free.
+    /// Distinct from `rope_dup_retained_operand_survives_being_consumed_by_concat` (the rc==2 SHARED case);
+    /// this is the rc==1 dup-skipped if-join-shared else-arm.
+    #[test]
+    fn if_join_shared_rc1_rope_base_consumed_by_concat_balances_on_single_drop() {
+        reset();
+        let before = live_nodes();
+        // A uniquely-owned (rc1) multi-node rope base.
+        let base = op_bytes_concat(op_str_new(String::from("caf")), op_str_new(String::from("é")));
+        assert_eq!(node_rc(base), 1, "rope: base uniquely owned after dup-skip");
+        let x = op_str_new(String::from("XY"));
+        let result = op_bytes_concat(base, x); // else-arm: consumes the rc1 base into a new concat node
+        assert_eq!(node_rc(result), 1, "rope: result uniquely owned");
+        assert_eq!(op_str_get(result), "caféXY", "rope: correct concatenated content");
+        op_drop(result); // the single post-if drop reclaims the base (now the node's child) + x
+        assert_eq!(
+            live_nodes(),
+            before,
+            "rope: base reclaimed by the one drop — no leak, no double-free"
+        );
+    }
+
     #[test]
     fn set_remove_fbip_shared_version_unaffected() {
         reset();
