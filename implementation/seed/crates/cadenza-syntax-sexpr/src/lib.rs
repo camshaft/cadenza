@@ -219,6 +219,16 @@ fn print_node(a: &Arenas, id: StructId, out: &mut String) {
                         stack.push(Work::Node(obj));
                         continue;
                     }
+                    // A native RATIONAL node `(RationalTag <num> <den>)` (seq-204) → the scalar literal
+                    // `<num>r<den>` (`3r2`), the sexpr twin of the ML rational literal + Builder::rational;
+                    // re-reads STRAIGHT back to the tag. NO `#rational` wrapper (that is only the bare-atom
+                    // fallback marker), no `/`-string. Push reverse: den, "r", num → pops num, "r", den.
+                    if let Some((num, den)) = a.rational_parts(id) {
+                        stack.push(Work::Node(den));
+                        stack.push(Work::Str("r"));
+                        stack.push(Work::Node(num));
+                        continue;
+                    }
                     out.push('(');
                     // Push in reverse: closing paren first (popped last), then children interleaved with
                     // single-space separators so they pop child_0, " ", child_1, …, ")".
@@ -390,6 +400,17 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
                                 stack.push(Work::OpenSpace);
                             }
                         }
+                        continue;
+                    }
+                    // A native rational `(RationalTag num den)` (seq-204) → the FLAT scalar literal
+                    // `<num>r<den>` (`3r2`), the sexpr twin of the ML rational literal; re-reads straight to
+                    // the tag. Always short (two int leaves), so emit it as one word (num/den via the
+                    // single-line `print_node`), never broken — mirrors `print_node`'s rational arm.
+                    if let Some((num, den)) = a.rational_parts(id) {
+                        let (mut ns, mut ds) = (String::new(), String::new());
+                        print_node(a, num, &mut ns);
+                        print_node(a, den, &mut ds);
+                        doc.word(format!("{ns}r{ds}"));
                         continue;
                     }
                     // A consistent box: `(head child…)` stays flat when it fits `width`, else EVERY inter-
@@ -1528,6 +1549,17 @@ impl<'a, 'b> Reader<'a, 'b> {
             return node;
         }
         let span = Span::new(start, start + tok.len());
+        // A native RATIONAL literal `<int>r<int>` (`3r2`; seq-204) — the sexpr twin of the ML `3r2` literal
+        // and `Builder::rational`. Recognized BEFORE `classify_word` (which would classify `3r2` as a
+        // Name). Split on the `r` marker → an integer numerator (optional leading `-`) + integer
+        // denominator → the node `(RationalTag <num-int> <den-int>)` (two Int leaves). `/` is never a
+        // rational here either — the sexpr surface mirrors the ML `<num>r<den>` glyph exactly.
+        if let Some((num_s, den_s)) = split_rational_literal(tok) {
+            let num = self.mk_atom_leaf(cadenza_syntax_core::literal::classify_word(num_s), span);
+            let den = self.mk_atom_leaf(cadenza_syntax_core::literal::classify_word(den_s), span);
+            let tag = self.mk_atom_leaf(Leaf::Rational, span);
+            return self.mk_list(vec![tag, num, den], span);
+        }
         // Classify the word. A NUMBER/BOOL is a non-Name leaf (interned by value); a NAME is interned
         // by its `&str` slice via `leaf_name` — allocating an owned `String` only on a dedup MISS, not
         // for every occurrence (`classify_word` would `to_string()` the name eagerly and discard it on
@@ -1557,6 +1589,18 @@ impl<'a, 'b> Reader<'a, 'b> {
 /// True for an `a.b`(`.c…`) segmented identifier: at least one dot, every segment non-empty and
 /// starting with a letter or `_` (so a float like `3.5` never reaches here — its segments are
 /// digit-led).
+/// Split a native rational literal token `<int>r<int>` (`3r2`, `-3r2`; seq-204) into its
+/// `(numerator, denominator)` decimal strings, or `None` if `tok` is not exactly that shape. The
+/// numerator may carry a leading `-` (the sign rides the numerator); both sides must be NON-EMPTY,
+/// all-decimal digits. Mirrors the ML lexer's `<digits>r<digits>` rule so `3r2` reads identically on
+/// both surfaces to the same `(RationalTag <num> <den>)` node.
+fn split_rational_literal(tok: &str) -> Option<(&str, &str)> {
+    let (num, den) = tok.split_once('r')?;
+    let num_digits = num.strip_prefix('-').unwrap_or(num);
+    let all_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    (all_digits(num_digits) && all_digits(den)).then_some((num, den))
+}
+
 fn is_dotted_name(tok: &str) -> bool {
     if !tok.contains('.') {
         return false;
@@ -2851,6 +2895,32 @@ mod tests {
         assert_eq!(leaf_of("#\\u+D800"), Leaf::BadChar("u+D800".into()));
         // A code point past U+10FFFF is likewise a BadChar.
         assert_eq!(leaf_of("#\\u+110000"), Leaf::BadChar("u+110000".into()));
+    }
+
+    #[test]
+    fn native_rational_literal_round_trips_and_recognizes() {
+        // seq-204: a native rational is the scalar literal `<num>r<den>` (`3r2`) — reads to the
+        // `(RationalTag <num-int> <den-int>)` node (NOT a Name, NOT a `/`-split) and prints back byte-exact.
+        // The `r` marker mirrors the ML surface; `rational_parts` recognizes the node.
+        for src in ["3r2", "-3r2", "22r7", "1r3"] {
+            let a = read(src).unwrap();
+            let (num, den) = a
+                .rational_parts(a.root)
+                .expect("reads to a native rational node");
+            // children are ordinary Int leaves
+            assert!(matches!(a.get(num), Struct::Atom(_)));
+            assert!(matches!(a.get(den), Struct::Atom(_)));
+            assert_eq!(print(&a), src, "rational prints back byte-exact");
+            assert_eq!(print_pretty(&a), src, "pretty printer agrees");
+            // codec round-trip
+            let bytes = cadenza_ast::codec::encode(&a);
+            let b = cadenza_ast::codec::decode(&bytes).expect("decode");
+            assert!(a.structurally_eq(&b), "codec round-trip changed {src}");
+        }
+        // A NAME containing `r` is NOT a rational (strict `<digits>r<digits>`): these stay plain names.
+        for name in ["err", "foo-bar", "list"] {
+            assert_eq!(print(&read(name).unwrap()), name, "{name} stays a name");
+        }
     }
 
     #[test]
