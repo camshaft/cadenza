@@ -618,6 +618,20 @@ pub struct LeanDiffStats {
 /// the async unit the operator's pipeline overlaps (a fresh `oracle-check` per batch judges while the
 /// next batch compiles). `sources` should be TERMINATING programs (e.g. `generator::generate`'s
 /// structurally-terminating grammar) — the in-process wasm run has no hang guard.
+/// The concrete `Int64` argument supplied to a runtime-`n` main so it becomes VALUE-checkable (used by
+/// BOTH the wasm call and the Lean trial's `(args …)`). A single representative value — the differential
+/// checks the identical call on both sides; per-program value variety is a possible refinement.
+const RUNTIME_N_ARG: &str = "7";
+
+/// True if `src` is a runtime-`n` main — `(def (main (: n Int64)) …)`, the exact form the coercing
+/// generator emits (`build_program`'s runtime-`n` entry). Such a main takes ONE `Int64` arg; supplying it
+/// lets the value differential check it instead of failing the 0-arg call → not-comparable. A heap-param
+/// `(def (main (: v0 …)))` (its arg is a heap value — deferred) and a param-less `(def (main) …)` (needs
+/// none) are NOT matched.
+fn is_runtime_n_main(src: &str) -> bool {
+    src.contains("(def (main (: n Int64))")
+}
+
 pub fn lean_differential_sweep(
     sources: &[String],
     store: &std::path::Path,
@@ -632,7 +646,17 @@ pub fn lean_differential_sweep(
     let batch_size = batch_size.max(1);
 
     for src in sources {
-        let side = run_wasm(src, store);
+        // A runtime-`n` main takes one `Int64` arg — supply it so the program is VALUE-checkable (both the
+        // wasm call and the Lean trial use the SAME value); a param-less main gets none (the old 0-arg
+        // path); a heap-param main is left 0-arg (its arg is a heap value — deferred) so it stays
+        // not-comparable exactly as before. This recovers the runtime-`n` mains (~¼ of the grammar) that
+        // were not-comparable purely because we never passed their arg.
+        let call_args: Vec<String> = if is_runtime_n_main(src) {
+            vec![RUNTIME_N_ARG.to_string()]
+        } else {
+            Vec::new()
+        };
+        let side = run_wasm_with_args(src, store, &call_args);
         // Capture DECLINES — a shape the front-end/backend does not compile yet — for the breaker
         // decline→corpus gap hand-off (operator directive). A decline is EXPECTED output (never a bug),
         // but it is a coverage GAP worth pinning; `(source, reason)` is deduped by signature at the CLI.
@@ -646,13 +670,26 @@ pub fn lean_differential_sweep(
                 continue;
             }
         };
-        // The trial carries the FULL program (the oracle re-roots + executes it with empty args).
+        // The trial carries the FULL program + the SAME call args (as value-ASTs) so the oracle runs the
+        // IDENTICAL call the wasm side did (empty args = the oracle's 0-arg re-root, i.e. `main_0`).
         let Ok(program) = cadenza_syntax::sexpr::read(src) else {
             stats.not_comparable += 1;
             continue;
         };
+        let arg_asts: Result<Vec<_>, _> = call_args
+            .iter()
+            .map(|a| cadenza_syntax::sexpr::read(a))
+            .collect();
+        let Ok(args) = arg_asts else {
+            stats.not_comparable += 1;
+            continue;
+        };
         batch_srcs.push(src.clone());
-        batch_trials.push(crate::lean::Trial::main_0(program, output));
+        batch_trials.push(crate::lean::Trial {
+            program,
+            args,
+            output,
+        });
         if batch_trials.len() >= batch_size {
             judge_and_tally(
                 oracle_bin,
@@ -1341,6 +1378,47 @@ mod tests {
             "benign scalars must not mismatch: {mismatches:?}"
         );
         assert!(mismatches.is_empty());
+    }
+
+    /// `is_runtime_n_main` matches ONLY the generator's runtime-`n` entry `(def (main (: n Int64)) …)` —
+    /// not a param-less `(def (main) …)` nor a heap-param `(def (main (: v0 String)) …)`. Version-independent.
+    #[test]
+    fn is_runtime_n_main_matches_only_the_int64_param_entry() {
+        assert!(is_runtime_n_main(
+            "(do (def (main (: n Int64)) (+ n 1)) (export main))"
+        ));
+        assert!(!is_runtime_n_main("(do (def (main) 42) (export main))"));
+        assert!(!is_runtime_n_main(
+            "(do (def (main (: v0 String)) 0) (export main))"
+        ));
+    }
+
+    /// SWEEP INTEGRATION (S125): a runtime-`n` main — which was NOT-COMPARABLE (the 0-arg call fails) — is
+    /// now VALUE-CHECKED because the sweep supplies its `Int64` arg on both sides. `(+ n 1)` @ n=7 → 8 on
+    /// both → 1 trial, 1 hold, 0 mismatch, 0 not-comparable. Skips unless the real oracle is discoverable.
+    #[test]
+    fn a_runtime_n_main_is_value_checked_by_the_sweep() {
+        let Some(oracle) = crate::lean::discover_oracle_check() else {
+            eprintln!("skipping: no oracle-check (nix build .#oracle-lean)");
+            return;
+        };
+        let sources = vec!["(do (def (main (: n Int64)) (+ n 1)) (export main))".to_string()];
+        let store = std::path::Path::new("/nonexistent-store"); // pure Int64 arith needs no runtime
+        let mut mismatches = Vec::new();
+        let mut declines = Vec::new();
+        let stats =
+            lean_differential_sweep(&sources, store, &oracle, 8, &mut mismatches, &mut declines)
+                .expect("sweep runs");
+        assert_eq!(
+            stats.trials, 1,
+            "the runtime-n main is now comparable (arg supplied), not skipped"
+        );
+        assert_eq!(stats.holds, 1, "(+ n 1) @ n=7 = 8 must HOLD");
+        assert_eq!(stats.mismatches, 0);
+        assert_eq!(
+            stats.not_comparable, 0,
+            "no longer not-comparable now that the arg is supplied"
+        );
     }
 
     /// FEASIBILITY (S124): a PARAM'd main can be VALUE-checked by SUPPLYING an arg — `run_wasm_with_args`
