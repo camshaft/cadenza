@@ -2477,3 +2477,20 @@
         op. From rcdzc a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix.")
   (input (do (effect E (op a (-> Int64 Unit)) (op a (-> Int64 Unit))) (def (main) 5) (export main)))
   (error CDZ0201 (fix (kind delete))))
+
+; ── bare zero-operand declaration keyword forms declare NOTHING → rejected, naming the form (migrated from
+; rcdzc a_bare_declaration_keyword_form_declares_nothing_is_rejected) ──
+; A bare `(def)` / `(type)` / `(effect)` has no name and no body/variants/ops — it declares nothing. It used
+; to be SILENTLY ACCEPTED (it registers no Def/TypeDecl/EffectDecl, so the per-declaration walks never see it
+; and `unknown_top_forms` skips it — its head IS a known keyword). Now each is CDZ0201 naming the bare form.
+(case "a bare def declaration keyword form declares nothing and is rejected"
+  (input (do (def) (def (main) 0) (export main)))
+  (error CDZ0201 (message "declares nothing") (message "`(def)`")))
+
+(case "a bare type declaration keyword form declares nothing and is rejected"
+  (input (do (type) (def (main) 0) (export main)))
+  (error CDZ0201 (message "declares nothing") (message "`(type)`")))
+
+(case "a bare effect declaration keyword form declares nothing and is rejected"
+  (input (do (effect) (def (main) 0) (export main)))
+  (error CDZ0201 (message "declares nothing") (message "`(effect)`")))

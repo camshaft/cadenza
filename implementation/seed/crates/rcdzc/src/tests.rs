@@ -8938,42 +8938,11 @@ mod match_engine {
         }
     }
 
-    #[test]
-    fn a_bare_declaration_keyword_form_declares_nothing_is_rejected() {
-        // A bare zero-operand declaration form — `(def)` / `(type)` / `(effect)` — declares nothing (no
-        // name, no body/variants/ops) and was SILENTLY ACCEPTED (it registers no Def/TypeDecl/EffectDecl,
-        // so the per-declaration walks never see it, and `unknown_top_forms` skips it — its head IS a known
-        // keyword). The `(export)` empty case has its own reject; this is the def/type/effect sibling.
-        for (src, kw) in [
-            ("(module m (def) (def (main) 0) (export main))", "def"),
-            ("(module m (type) (def (main) 0) (export main))", "type"),
-            ("(module m (effect) (def (main) 0) (export main))", "effect"),
-        ] {
-            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.message.contains("declares nothing"))
-                .unwrap_or_else(|| panic!("a bare `({kw})` must be rejected: {src}"));
-            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-            assert!(
-                d.message.contains(&format!("`({kw})`")),
-                "the message names the bare form `({kw})`: {}",
-                d.message
-            );
-        }
-        // NO false positive: a well-formed def / type / effect declares something and is not flagged.
-        for ok in [
-            "(module m (def answer 42) (def (main) answer) (export main))",
-            "(module m (type C (A) (B)) (def (f (: c C)) 0) (export f))",
-            "(module m (effect E (op get (-> Int64))) (def (main) 0) (export main))",
-        ] {
-            assert!(
-                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                    .iter()
-                    .any(|d| d.message.contains("declares nothing")),
-                "a well-formed declaration is not flagged: {ok}"
-            );
-        }
-    }
+    // (a_bare_declaration_keyword_form_declares_nothing_is_rejected migrated to corpus 11-modules: "a bare
+    // {def,type,effect} declaration keyword form declares nothing and is rejected" — each bare (def)/(type)/
+    // (effect) → CDZ0201 (message "declares nothing")(message "`(<kw>)`"). --case grades the code + both
+    // message substrings (all 3 PASS). The no-false-positive controls (a well-formed def/type/effect is not
+    // flagged) are covered vacuously by the corpus at large — every case carries well-formed declarations.)
 
     /// A MALFORMED top-level `@`-annotation — one that wraps no well-formed definition — must name the
     /// annotation SHAPE, not resolve as the misleading "unbound name `@` at the top level". `@` is the
