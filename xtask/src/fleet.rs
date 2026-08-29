@@ -2206,10 +2206,23 @@ fn register_merge_drivers(fleet: &Fleet) {
 }
 
 /// The git merge-driver command for `.gate-baseline*` (registered as `merge.fleet-baseline.driver`).
-/// `%A` = ours/dest, `%B` = theirs; `merge-baseline` unions + verdict-aware-dedups them into `%A`.
-/// Mirrors `maxfloor_driver_command`.
+/// `%A` = ours/dest, `%B` = theirs; the binary unions + verdict-aware-dedups them into `%A` (writes ours
+/// in place on a clean union; refuses on conflict leaving `%A` byte-untouched).
+///
+/// Repointed (v-xtask-decompose #5828, 2026-08-29) from the `cargo xtask merge-baseline` subcommand to the
+/// carved-out `xtask-merge-baseline` bin (the monolith's `Cmd::MergeBaseline` is being arm-removed). CHOICE
+/// of invocation: `cargo run -q -p xtask-merge-baseline` (NOT a nix app — git needs a fast LOCAL binary, not
+/// a `nix run` cold build mid-merge, which the crate is explicitly built to avoid; NOT a hardcoded
+/// target/<profile> path either — worktrees share `.git/config`, so an absolute path would break the instant
+/// that one worktree's `target/` is cleaned, e.g. by `prune-stale-targets`). `cargo run -p` self-resolves
+/// the local bin from the workspace on each invocation; the crate is tiny (~0.3s cold, instant when built),
+/// so the "cold build mid-merge" hazard (real for a minutes-long nix build) does not apply. Same cargo/
+/// workspace-CWD profile as the old `cargo xtask` driver (no regression), just a smaller/faster crate.
+/// `CDZ_NO_CARGO_SHIM=1` bypasses the cargo-nix shim so it never prints a `cargo run` deprecation warning
+/// mid-merge nor risks a shim route. `-q` suppresses cargo's Compiling/Finished noise. Mirrors
+/// `maxfloor_driver_command`.
 fn baseline_driver_command() -> &'static str {
-    "cargo xtask merge-baseline %A %B"
+    "CDZ_NO_CARGO_SHIM=1 cargo run -q -p xtask-merge-baseline -- %A %B"
 }
 
 /// Does a HUMAN sit directly at this role's terminal window, typing into an interactive Claude prompt?
