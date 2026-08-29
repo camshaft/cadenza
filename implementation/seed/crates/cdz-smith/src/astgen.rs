@@ -172,16 +172,27 @@ fn gen_usersum<C: Choice>(c: &mut C) -> (String, String) {
 
 fn build_program<C: Choice>(c: &mut C) -> Program {
     let mut source = String::from("(do ");
-    // ~1/6: a USER-DEFINED SUM program — a TOP-LEVEL `(type …)` + a param-less `main` constructing +
-    // matching it (a whole numeric-independent construct family: tagged variants + newtype erasure +
-    // variant patterns, oracle-modelled #5456). Emitted as its OWN top-level shape (bypasses the
-    // helper/param/`gen_main_body` path) because the type decl must be top-level to GRADE (an in-body
-    // `(type …)` SKIPs). Gated on a NON-ZERO variant so an EXHAUSTED cursor (variant → 0) falls through to
-    // the base-case path (a bare-literal main), preserving the base-case invariant.
-    if c.variant(6) == 3 {
-        let (type_decl, body) = gen_usersum(c);
-        write!(source, "{type_decl} (def (main) {body}) (export main))").ok();
-        return Program { source };
+    // Two TOP-LEVEL special shapes, chosen by a SINGLE `variant(6)` (one choice consumed, so the fall-through
+    // path's cursor is unchanged). Both are emitted as their OWN top-level shape (bypassing the
+    // helper/param/`gen_main_body` path) because they only GRADE when TOP-LEVEL: a `(type …)` decl SKIPs
+    // in-body, and the oracle captures a LOCAL fn def's env EAGERLY (excluding itself/later siblings) so a
+    // local recursive/mutual call is unbound → SKIP. Gated on NON-ZERO values so an EXHAUSTED cursor
+    // (variant → 0) falls through to the base-case path (a bare-literal main), preserving that invariant.
+    match c.variant(6) {
+        // ~1/6: a USER-DEFINED SUM program — tagged variants + newtype erasure + variant patterns (#5456).
+        3 => {
+            let (type_decl, body) = gen_usersum(c);
+            write!(source, "{type_decl} (def (main) {body}) (export main))").ok();
+            return Program { source };
+        }
+        // ~1/6: a MUTUALLY-RECURSIVE program — two top-level defs that call each other + a param-less `main`
+        // calling one (a mutual call graph no single self-recursive helper reaches).
+        5 => {
+            let (defs, body) = gen_mutual_recursion_body(c);
+            write!(source, "{defs} (def (main) {body}) (export main))").ok();
+            return Program { source };
+        }
+        _ => {}
     }
     let mut fresh = 0usize;
     let caps = Caps {
@@ -1062,6 +1073,34 @@ fn gen_higher_order_body<C: Choice>(c: &mut C, out: &mut String) {
         )
         .ok(),
     };
+}
+
+/// A MUTUALLY-RECURSIVE program: two TOP-LEVEL sibling defs that call EACH OTHER, plus a param-less `main`
+/// that calls one of them. Returns `(defs, main_body)`. Emitted TOP-LEVEL (via [`build_program`]) — NOT as a
+/// nested-`do` body — because the oracle captures a LOCAL fn def's closure env EAGERLY (excluding itself and
+/// later siblings), so a local self-/mutually-recursive call is unbound → SKIP (Eval.lean); only TOP-LEVEL
+/// defs are name-resolved for recursion, so the mutual call graph GRADES. Both recursions decrement to a
+/// `(<= n 0)` base so they terminate. Reaches a mutual call graph no single self-recursive helper produces.
+fn gen_mutual_recursion_body<C: Choice>(c: &mut C) -> (String, String) {
+    // Pick the FORM before consuming the operand choice (variant-ordering).
+    let form = c.variant(2);
+    let n = c.int_bounded(0, 12);
+    match form {
+        // even/odd parity — a Bool result: `ev` calls `od` and vice-versa.
+        0 => (
+            "(def (ev n) (if (<= n 0) true (od (- n 1)))) \
+             (def (od n) (if (<= n 0) false (ev (- n 1))))"
+                .to_string(),
+            format!("(ev {n})"),
+        ),
+        // ping/pong with an accumulator — an Int64 result: each hop adds a different amount.
+        _ => (
+            "(def (pinga n acc) (if (<= n 0) acc (pongb (- n 1) (+ acc 1)))) \
+             (def (pongb n acc) (if (<= n 0) acc (pinga (- n 1) (+ acc 2))))"
+                .to_string(),
+            format!("(pinga {n} 0)"),
+        ),
+    }
 }
 
 /// A `?`/`try` body: `main` is a FALLIBLE fn (a `Result`/`Option` boundary, established by the body
@@ -2020,6 +2059,43 @@ mod tests {
         assert!(saw_once, "should reach a lambda-applied-once form");
         assert!(saw_twice, "should reach a lambda-applied-twice form");
         assert!(saw_named, "should reach a named-def-as-value form");
+    }
+
+    /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
+    /// defs are TOP-LEVEL (assembled before `main`, so they GRADE — a local recursive def SKIPs), and every
+    /// program COMPILES (S147: two top-level defs calling each other — a mutual call graph no single
+    /// self-recursive helper reaches).
+    #[test]
+    fn gen_mutual_recursion_body_reaches_both_forms_and_compiles() {
+        let (mut saw_parity, mut saw_pingpong) = (false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1063);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let (defs, body) = gen_mutual_recursion_body(&mut ByteCursorChoice::new(&bytes));
+            saw_parity |= defs.contains("(def (ev n)");
+            saw_pingpong |= defs.contains("(def (pinga n acc)");
+            let src = format!("(do {defs} (def (main) {body}) (export main))");
+            // The mutually-recursive defs must precede `(def (main)` (top-level, so they resolve + GRADE).
+            assert!(
+                src.find("(def (main)").unwrap()
+                    > src
+                        .find("(def (ev n)")
+                        .or_else(|| src.find("(def (pinga n acc)"))
+                        .unwrap(),
+                "mutual-recursion defs must be TOP-LEVEL (before main): {src}"
+            );
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "mutual-recursion program must COMPILE: {src}"
+            );
+        }
+        assert!(saw_parity, "should reach the even/odd parity form");
+        assert!(saw_pingpong, "should reach the ping/pong accumulator form");
     }
 
     /// `gen_try_body` REACHES all four `?`/`try` forms (Ok/Err success+short-circuit for Result, Some/None
