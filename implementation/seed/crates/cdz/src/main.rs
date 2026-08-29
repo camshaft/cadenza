@@ -2768,6 +2768,22 @@ fn resolve_project_manifest(
                     mpath.display()
                 );
             }
+            // An invalid `overflow-signed`/`overflow-unsigned` (wrong type or a value outside {trap, wrap})
+            // was dropped to None; it has a safe default (`trap`), so WARN the declared policy is ignored.
+            if m.overflow_signed_malformed {
+                eprintln!(
+                    "{PROG}: warning: {}: `overflow-signed` is not one of \"trap\"/\"wrap\" (e.g. \
+                     `def overflow-signed = \"wrap\"`) — ignoring it and using the default `trap`",
+                    mpath.display()
+                );
+            }
+            if m.overflow_unsigned_malformed {
+                eprintln!(
+                    "{PROG}: warning: {}: `overflow-unsigned` is not one of \"trap\"/\"wrap\" (e.g. \
+                     `def overflow-unsigned = \"wrap\"`) — ignoring it and using the default `trap`",
+                    mpath.display()
+                );
+            }
             if !m.duplicate_keys.is_empty() {
                 // Last-wins silently discards the earlier `def` — warn so a duplicated `entry`/`opt-level`/…
                 // (which can quietly change what builds) isn't a surprise.
@@ -3063,6 +3079,17 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
         Some(o) => obj.string("opt_level", o),
         None => obj.raw("opt_level", "null"),
     }
+    // The GLOBAL integer-overflow policy (signed + unsigned) — `"trap"`/`"wrap"`, or `null` when the
+    // manifest sets none (the compiler's default `trap` applies). A malformed/unknown value reads `null`
+    // here with the reason surfaced in `warnings` (matching how `opt_level` reports a dropped value).
+    match &m.overflow_signed {
+        Some(p) => obj.string("overflow_signed", p),
+        None => obj.raw("overflow_signed", "null"),
+    }
+    match &m.overflow_unsigned {
+        Some(p) => obj.string("overflow_unsigned", p),
+        None => obj.raw("overflow_unsigned", "null"),
+    }
     // The pattern lists PLUS their resolved, glob-expanded, exclude-filtered, existence-checked file sets.
     obj.raw("modules", &str_array(&m.modules));
     obj.raw(
@@ -3124,6 +3151,18 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
     if m.opt_level_malformed {
         warnings
             .push("`opt-level` is not a string (expected one of O0/O1/O2/O3) — ignored, using the default tier".to_string());
+    }
+    if m.overflow_signed_malformed {
+        warnings.push(
+            "`overflow-signed` is not one of \"trap\"/\"wrap\" — ignored, using the default `trap`"
+                .to_string(),
+        );
+    }
+    if m.overflow_unsigned_malformed {
+        warnings.push(
+            "`overflow-unsigned` is not one of \"trap\"/\"wrap\" — ignored, using the default `trap`"
+                .to_string(),
+        );
     }
     if !m.duplicate_keys.is_empty() {
         warnings.push(format!(
@@ -4817,17 +4856,22 @@ fn provider_cache_dir() -> Option<std::path::PathBuf> {
     Some(default_store().join("providers"))
 }
 
-/// Enumerate the resolved suite's `@test` definitions as JSON and return — the body of `cdz test --list`.
-/// WASMTIME-FREE by construction: it loads each file's import closure, builds the compiler `Db`, and reads
-/// `db.test_defs()` — the same front-half `cdz test` runs BEFORE any wasm emit/JIT (`run_test_file`'s
-/// 5172-5285 enumeration head), stopping there. It compiles nothing and links no runtime, so a
+/// Enumerate the resolved suite's `@test` definitions as a CADENZA-AST-BINARY value and return — the body
+/// of `cdz test --list`. WASMTIME-FREE by construction: it loads each file's import closure, builds the
+/// compiler `Db`, and reads `db.test_defs()` — the same front-half `cdz test` runs BEFORE any wasm emit/JIT
+/// (`run_test_file`'s enumeration head), stopping there. It compiles nothing and links no runtime, so a
 /// `--no-default-features` `cdz` (no `cdz-run`) still produces it.
 ///
-/// Output: `{ "project": <target>, "tests": [ { "name", "file", "is_property" }, … ] }`. The names come
+/// Output: the SAME `(test-list (test <name> <is-property> <file>)…)` cadenza-ast value the DELEGATE path
+/// (`rcdzc::sidecar` `Query::TestList`, `KIND_TEST_LIST`) emits — one `(test …)` child per test, POSITIONAL:
+/// `name` (`Str`), `is-property` (`Bool`), `file` (`Str`) — `codec::encode`d and written verbatim to stdout.
+/// This is the operator cadenza-ast-binary-everywhere directive (NO JSON) and keeps `--list` FORMAT-IDENTICAL
+/// across the `standalone` (this in-process path) and delegate builds, so v-nix's dynamic-derivations
+/// discovery decodes ONE format with the shared `codec` regardless of which `cdz` it invokes. The names come
 /// from the `Db`, NOT a regex (the compiler's own source carries `@test` as a parsed token — a regex would
-/// massively over-count, per v-test-shred). `is_property` is `!def.params.is_empty()` — a `@test` that
-/// takes parameters is a property test (run over generated inputs); a nullary `@test` is a plain unit test.
-/// (The gate suites carry no property tests, so the field is uniformly `false` there — kept for the future.)
+/// massively over-count, per v-test-shred). `is-property` is `!def.params.is_empty() || name.ends_with("-gen")`
+/// — a `@test` taking parameters (or the `Test.gen` property wrapper) is a property test; a nullary one is a
+/// plain unit test (matches the delegate path's `compile_tests` classification exactly).
 ///
 /// Enumeration mirrors `run_test_file` exactly: a PACKAGE (a file that declares imports) links its whole
 /// closure and keeps only the ENTRY file's own `@test`s (an imported library's tests belong to THAT file,
@@ -4835,9 +4879,33 @@ fn provider_cache_dir() -> Option<std::path::PathBuf> {
 /// is PER FILE (`seen`), matching the run. Order is the resolved-`files` order (path-sorted / manifest
 /// order) then declaration order — deterministic, so a drift-guard comparing a fresh `--list` to a
 /// committed one is stable. Ignores `--filter`/`--tag`: a manifest must enumerate the WHOLE suite.
-fn list_tests(target: &str, files: &[String]) -> ExitCode {
-    // One JSON record per test. Built with `serde_json` so quoting/escaping of a test name is correct.
-    let mut records: Vec<serde_json::Value> = Vec::new();
+fn list_tests(files: &[String]) -> ExitCode {
+    match list_test_bytes(files) {
+        Ok(bytes) => {
+            // Write the `(test-list …)` cadenza-ast-binary value VERBATIM to stdout (the delegate path's
+            // `Query::TestList` bytes are likewise forwarded raw; consumers decode with the shared `codec`).
+            use std::io::Write as _;
+            match std::io::stdout().write_all(&bytes) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{PROG}: --list: could not write the test-list: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Err(code) => code,
+    }
+}
+
+/// Enumerate the resolved suite's `@test`s and return the `codec::encode`d `(test-list (test <name>
+/// <is-property> <file>)…)` cadenza-ast value (the enumeration half of [`list_tests`], factored out so it
+/// is unit-testable without capturing stdout). `Err(ExitCode::FAILURE)` on a load/decode/link fault (a
+/// broken project cannot be honestly enumerated — failing red is what the drift-guard wants).
+fn list_test_bytes(files: &[String]) -> Result<Vec<u8>, ExitCode> {
+    // Accumulate one `(test <name> <is-property> <file>)` child per test into ONE `(test-list …)` value —
+    // the cadenza-ast-binary tooling format (mirrors the delegate `Query::TestList` shape byte-for-byte).
+    let mut b = cadenza_syntax::Builder::new();
+    let mut test_nodes: Vec<cadenza_syntax::StructId> = Vec::new();
     for file in files {
         // Follow the file's import closure — the SAME linked program `cdz test`/`cdz check` sees, so a test
         // in a module that imports a sibling enumerates against the same package. A load error is FATAL for
@@ -4846,7 +4914,7 @@ fn list_tests(target: &str, files: &[String]) -> ExitCode {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("{PROG}: {e}");
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
         };
         let is_package = !declared_import_paths(&closure[0].arenas).is_empty();
@@ -4868,7 +4936,7 @@ fn list_tests(target: &str, files: &[String]) -> ExitCode {
             for art in &ast_arts {
                 let Some(a) = rcdzc::codec::decode(&art.bytes) else {
                     eprintln!("{PROG}: {file}: could not decode `{}`'s AST", art.name);
-                    return ExitCode::FAILURE;
+                    return Err(ExitCode::FAILURE);
                 };
                 rcdzc_files.push((art.name.clone(), a));
             }
@@ -4876,7 +4944,7 @@ fn list_tests(target: &str, files: &[String]) -> ExitCode {
                 Ok(p) => p,
                 Err(r) => {
                     eprintln!("{PROG}: {file}: {}", r.message);
-                    return ExitCode::FAILURE;
+                    return Err(ExitCode::FAILURE);
                 }
             };
             let linkage = program.linkage();
@@ -4886,7 +4954,7 @@ fn list_tests(target: &str, files: &[String]) -> ExitCode {
         } else {
             let Some(rcdzc_arenas) = rcdzc::codec::decode(&ast_arts[0].bytes) else {
                 eprintln!("{PROG}: {file}: could not decode the program's AST");
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             };
             (rcdzc::db::Db::load(rcdzc_arenas), None)
         };
@@ -4905,27 +4973,25 @@ fn list_tests(target: &str, files: &[String]) -> ExitCode {
             if !seen.insert(name.clone()) {
                 continue;
             }
-            // A `@test` taking parameters is a PROPERTY test (run over generated inputs); a nullary one is a
-            // plain unit test. `params` is empty for a nullary def (`db::Def`), the cheap wasmtime-free signal.
-            let is_property = !db.defs[i].params.is_empty();
-            records.push(serde_json::json!({
-                "name": name,
-                "file": file,
-                "is_property": is_property,
-            }));
+            // A `@test` taking parameters (or the `Test.gen` `-gen` property wrapper) is a PROPERTY test (run
+            // over generated inputs); a nullary one is a plain unit test. This matches the delegate path's
+            // `compile_tests` classification EXACTLY, so `--list` agrees across both builds.
+            let is_property = !db.defs[i].params.is_empty() || name.ends_with("-gen");
+            let head = b.name("test");
+            let name_n = b.atom_leaf(cadenza_syntax::Leaf::Str(name.as_str().into()));
+            let isprop_n = b.atom_leaf(cadenza_syntax::Leaf::Bool(is_property));
+            let file_n = b.atom_leaf(cadenza_syntax::Leaf::Str(file.as_str().into()));
+            test_nodes.push(b.list(vec![head, name_n, isprop_n, file_n]));
         }
     }
-    let doc = serde_json::json!({ "project": target, "tests": records });
-    match serde_json::to_string_pretty(&doc) {
-        Ok(s) => {
-            println!("{s}");
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("{PROG}: --list: could not serialize the test manifest: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    // Wrap the per-test children in the `(test-list …)` root and return its `codec::encode`d bytes — the same
+    // cadenza-ast-binary value the delegate `Query::TestList` produces (consumers decode with the shared
+    // `codec` / `cdz convert --from binary`).
+    let mut children: Vec<cadenza_syntax::StructId> = Vec::with_capacity(test_nodes.len() + 1);
+    children.push(b.name("test-list"));
+    children.extend(test_nodes);
+    let root = b.list(children);
+    Ok(cadenza_syntax::codec::encode(&b.finish(root)))
 }
 
 /// `cdz test --emit-shred` — the compiler-driven test SHRED (the operator model), the body behind the flag.
@@ -5227,13 +5293,13 @@ fn run_test(args: &TestArgs) -> ExitCode {
         vec![target.clone()]
     };
 
-    // `--list`: ENUMERATE the resolved suite's `@test` names as JSON and EXIT — no check-gate, no emit, no
-    // JIT, no wasmtime. This is the eval-time enumeration the test-shred nix matrix reads from a committed
-    // file; it must be cheap and touch NONE of the run machinery below. Short-circuit here, right after
-    // resolving `files`, so it shares the exact file-resolution `cdz test` uses (manifest / dir walk / one
-    // file) but nothing after it.
+    // `--list`: ENUMERATE the resolved suite's `@test` names as a cadenza-ast-binary `(test-list …)` value
+    // and EXIT — no check-gate, no emit, no JIT, no wasmtime. This is the compiler-informed discovery source
+    // v-nix's dynamic-derivations fan-out reads (no committed index, no IFD); it must be cheap and touch NONE
+    // of the run machinery below. Short-circuit here, right after resolving `files`, so it shares the exact
+    // file-resolution `cdz test` uses (manifest / dir walk / one file) but nothing after it.
     if args.list {
-        return list_tests(&target, &files);
+        return list_tests(&files);
     }
     // `--emit-shred`: shred the suite into per-@test wasm + a manifest (compile-only), then EXIT. Shares the
     // exact file-resolution above; the per-group emit + write is `run_emit_shred`.
@@ -7695,17 +7761,20 @@ struct TestArgs {
     /// suite fails RED, same as a normal run). Exit 0 iff the check passed and the providers were warmed.
     #[arg(long)]
     warm_only: bool,
-    /// ENUMERATE the resolved suite's `@test` definitions as JSON and EXIT — compile NOTHING, run nothing,
-    /// link no wasmtime. Prints `{ "project": <target>, "tests": [ { "name", "file", "is_property" }, … ] }`
-    /// where the names come from the compiler `Db` (`db.test_defs`), NOT a source regex (the compiler's own
-    /// source contains `@test` as a parsed token, so a regex massively over-counts). `is_property` is true
-    /// for a `@test` that takes parameters (a nullary test is a plain unit test). This is the EVAL-time
-    /// enumeration the test-shred nix matrix reads from a COMMITTED file to fan out one derivation per test
-    /// (no IFD) + drift-guard against (fresh `--list` ≠ committed ⇒ loud red). Wasmtime-free by construction:
-    /// it loads the import closure, builds the `Db`, and enumerates — the same front-half `cdz test` runs
-    /// BEFORE any emit/JIT — so a `--no-default-features` `cdz` (no `cdz-run` link) can still produce it.
-    /// Ignores `--filter`/`--tag` (a manifest must list the WHOLE suite). Peer of `--emit-shred` (which adds
-    /// the per-test wasm + the full manifest as a BUILD output); `--list` is the eval-time NAMES-only half.
+    /// ENUMERATE the resolved suite's `@test` definitions as a cadenza-ast-binary value and EXIT — compile
+    /// NOTHING, run nothing, link no wasmtime. Writes the `(test-list (test <name> <is-property> <file>)…)`
+    /// value (`codec::encode`d, POSITIONAL fields) verbatim to stdout — the SAME shape the delegate compiler
+    /// query (`Query::TestList`) emits, so `--list` is format-identical across the standalone + delegate
+    /// builds (operator cadenza-ast-binary-everywhere directive, NO JSON; decode with `cdz convert --from
+    /// binary` / the shared `codec`). The names come from the compiler `Db` (`db.test_defs`), NOT a source
+    /// regex (the compiler's own source contains `@test` as a parsed token, so a regex massively over-counts).
+    /// `is-property` is true for a `@test` that takes parameters or the `Test.gen` `-gen` wrapper (a nullary
+    /// test is a plain unit test). This is the compiler-informed discovery source v-nix's DYNAMIC-DERIVATIONS
+    /// fan-out reads to build one CA-derivation per test (no committed index, no IFD). Wasmtime-free by
+    /// construction: it loads the import closure, builds the `Db`, and enumerates — the same front-half `cdz
+    /// test` runs BEFORE any emit/JIT — so a `--no-default-features` `cdz` (no `cdz-run` link) can still
+    /// produce it. Ignores `--filter`/`--tag` (a manifest must list the WHOLE suite). Peer of `--emit-shred`
+    /// (which adds the per-test wasm + the full manifest as a BUILD output); `--list` is the NAMES-only half.
     #[arg(long)]
     list: bool,
     /// SHRED the resolved suite into per-`@test` wasm COMPONENTS + a manifest, into `--out-dir`, and EXIT
@@ -10111,6 +10180,10 @@ fn is_ml_source(file: &str) -> bool {
 ///   demo/fixture a wildcard would otherwise sweep up).
 /// - `def deps = ["../lib", …]`   — PATH dependencies: sibling project dirs `cdz run` builds + peer-binds
 ///   across the component boundary (each published as `cadenza:<dep>/api`).
+/// - `def overflow-signed = "trap"` / `def overflow-unsigned = "trap"` — the project's GLOBAL integer
+///   overflow policy for signed/unsigned arithmetic, one of `"trap"` (fault on overflow) or `"wrap"`
+///   (two's-complement). Absent → the compiler default `trap`. This is the global default a module
+///   `#[overflow(...)]` pragma overrides; the effective policy enters the reproducible build hash (v-nix).
 #[derive(Default, Debug)]
 struct Manifest {
     name: Option<String>,
@@ -10139,6 +10212,29 @@ struct Manifest {
     /// `entry` (required → hard error), `opt-level` has a safe default, so a consumer WARNS (the setting
     /// was silently dropped) and continues rather than failing. `false` when absent OR a valid string.
     opt_level_malformed: bool,
+    /// The project's GLOBAL integer-overflow policy for SIGNED arithmetic (`def overflow-signed =
+    /// "trap"`), as the raw string — one of `"trap"` (a checked op that faults on overflow) or `"wrap"`
+    /// (two's-complement wraparound). `None` = no manifest setting, so the compiler's DEFAULT applies
+    /// (`trap`, the 2026-08-29 ruling). This is the GLOBAL default in the per-node overflow resolution a
+    /// module `#[overflow(...)]` pragma OVERRIDES (precedence: module pragma > this global > default trap).
+    /// The effective policy MUST enter the reproducible build hash (a program's meaning is fixed by
+    /// source+manifest, never an ambient flag) — that hash folding is v-nix's lane; this field is the
+    /// source of truth it reads.
+    overflow_signed: Option<String>,
+    /// Set when the manifest HAS a `def overflow-signed` but its value is NOT a valid policy string — the
+    /// wrong TYPE (e.g. `def overflow-signed = 42`) OR a string outside `{trap, wrap}` (e.g. `"saturate"`,
+    /// not yet supported). `overflow_signed` resolves to `None` (the default `trap` applies) yet the field
+    /// is PRESENT. Like `opt-level`, this has a safe default, so a consumer WARNS (the declared policy was
+    /// ignored) and continues rather than failing. `false` when absent OR a valid `"trap"`/`"wrap"`.
+    overflow_signed_malformed: bool,
+    /// The project's GLOBAL integer-overflow policy for UNSIGNED arithmetic (`def overflow-unsigned =
+    /// "wrap"`), the unsigned twin of [`Manifest::overflow_signed`] — `"trap"`/`"wrap"`, `None` → default
+    /// `trap`. Signed + unsigned are configured SEPARATELY (a project may want checked signed but wrapping
+    /// unsigned, or vice versa). Same precedence + build-hash contract as the signed field.
+    overflow_unsigned: Option<String>,
+    /// Set when the manifest HAS a `def overflow-unsigned` but its value is not a valid `{trap, wrap}`
+    /// string — the unsigned twin of [`Manifest::overflow_signed_malformed`]. `false` when absent OR valid.
+    overflow_unsigned_malformed: bool,
     /// Known manifest keys declared MORE THAN ONCE (e.g. two `def entry` lines). The parser is last-wins
     /// (each arm overwrites), so a duplicate silently discards the earlier value — a `def entry = "a.cdz"`
     /// followed by `def entry = "b.cdz"` builds `b.cdz` with no hint the first was dropped. A consumer WARNS
@@ -10212,6 +10308,28 @@ fn manifest_strings(
             .collect();
     }
     Vec::new()
+}
+
+/// The values a `def overflow-signed`/`def overflow-unsigned` manifest field accepts — the closed policy
+/// alphabet. `trap` = a checked op that faults on overflow; `wrap` = two's-complement wraparound.
+/// (`saturate` is a plausible future member, deliberately NOT accepted yet — an unknown value is rejected,
+/// not silently treated as the default.)
+const OVERFLOW_POLICY_VALUES: [&str; 2] = ["trap", "wrap"];
+
+/// Parse a `def overflow-signed`/`overflow-unsigned` value into `(policy, malformed)`. A valid `"trap"`/
+/// `"wrap"` string → `(Some(policy), false)`. A wrong TYPE (non-string) OR a string outside the closed
+/// `{trap, wrap}` alphabet → `(None, true)` — the field is present but unusable, so the default `trap`
+/// applies and the consumer WARNS (mirrors `opt-level`'s safe-default-with-warning handling). This keeps
+/// the effective policy well-defined: a project never silently compiles under a mis-typed policy string.
+fn resolve_overflow_field(
+    arenas: &cadenza_syntax::Arenas,
+    value_id: cadenza_syntax::StructId,
+) -> (Option<String>, bool) {
+    match manifest_strings(arenas, value_id).into_iter().next() {
+        Some(s) if OVERFLOW_POLICY_VALUES.contains(&s.as_str()) => (Some(s), false),
+        // A string outside {trap, wrap}, OR a non-string value → malformed (present but ignored).
+        _ => (None, true),
+    }
 }
 
 /// Whether `pat` is a GLOB (contains a wildcard metacharacter) rather than a literal file name. A
@@ -10383,7 +10501,15 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
         // A KNOWN key seen before is a duplicate (last-wins); record it once so a consumer can warn.
         if matches!(
             name,
-            "name" | "entry" | "modules" | "tests" | "exclude" | "opt-level" | "deps"
+            "name"
+                | "entry"
+                | "modules"
+                | "tests"
+                | "exclude"
+                | "opt-level"
+                | "overflow-signed"
+                | "overflow-unsigned"
+                | "deps"
         ) {
             if seen.contains(&name) {
                 if !m.duplicate_keys.iter().any(|k| k == name) {
@@ -10416,6 +10542,17 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
                 // `def opt-level` present but no string extracted → wrong TYPE (not `"O2"`). Record it so a
                 // consumer can WARN the setting was ignored rather than silently building at the default.
                 m.opt_level_malformed = m.opt_level.is_none();
+            }
+            "overflow-signed" => {
+                // Accept only a valid policy string `"trap"`/`"wrap"`; a wrong TYPE (non-string) OR an
+                // unknown value (e.g. `"saturate"`, not yet supported) resolves to None + malformed, so the
+                // default `trap` applies and a consumer warns rather than silently honoring a bad setting.
+                (m.overflow_signed, m.overflow_signed_malformed) =
+                    resolve_overflow_field(arenas, value_id);
+            }
+            "overflow-unsigned" => {
+                (m.overflow_unsigned, m.overflow_unsigned_malformed) =
+                    resolve_overflow_field(arenas, value_id);
             }
             "deps" => {
                 m.deps = manifest_strings(arenas, value_id)
@@ -11607,6 +11744,104 @@ mod tests {
             m.tests,
             vec!["src/a.cdz", "src/b.cdz"],
             "def tests reads the native `List`-compound literal (regression: `declares no tests`)"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The GLOBAL overflow-policy manifest fields (`def overflow-signed`/`overflow-unsigned`, #5290):
+    /// a valid `"trap"`/`"wrap"` reads through; a value outside `{trap, wrap}` (or a wrong type) resolves
+    /// to `None` + `malformed` (the default `trap` applies, a warning fires); an ABSENT field is `None`
+    /// but NOT malformed. Signed + unsigned are independent. Guards the closed-alphabet resolution the
+    /// numeric-model spec + v-inference's per-node resolution + v-nix's build-hash all read.
+    #[test]
+    fn parse_manifest_reads_overflow_policy_fields() {
+        // Valid + independent: signed wrap, unsigned trap.
+        let dir = tmp("manifest-overflow-valid");
+        let file = dir.join("Project.cdz");
+        std::fs::write(
+            &file,
+            "def name = \"demo\"\ndef entry = \"main.cdz\"\ndef overflow-signed = \"wrap\"\ndef overflow-unsigned = \"trap\"\n",
+        )
+        .unwrap();
+        let (_s, arenas, _sp) = load_program_spanned(&file.to_string_lossy()).expect("loads");
+        let m = parse_manifest(&arenas);
+        assert_eq!(m.overflow_signed.as_deref(), Some("wrap"), "signed reads");
+        assert!(!m.overflow_signed_malformed);
+        assert_eq!(
+            m.overflow_unsigned.as_deref(),
+            Some("trap"),
+            "unsigned reads"
+        );
+        assert!(!m.overflow_unsigned_malformed);
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Unknown value (`saturate` not yet supported) → None + malformed on signed; a valid unsigned
+        // alongside is unaffected.
+        let dir = tmp("manifest-overflow-unknown");
+        let file = dir.join("Project.cdz");
+        std::fs::write(
+            &file,
+            "def entry = \"main.cdz\"\ndef overflow-signed = \"saturate\"\ndef overflow-unsigned = \"wrap\"\n",
+        )
+        .unwrap();
+        let (_s, arenas, _sp) = load_program_spanned(&file.to_string_lossy()).expect("loads");
+        let m = parse_manifest(&arenas);
+        assert_eq!(m.overflow_signed, None, "unknown value drops to None");
+        assert!(m.overflow_signed_malformed, "unknown value is malformed");
+        assert_eq!(m.overflow_unsigned.as_deref(), Some("wrap"));
+        assert!(!m.overflow_unsigned_malformed);
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Absent → None but NOT malformed (the default `trap` applies silently, no warning).
+        let dir = tmp("manifest-overflow-absent");
+        let file = dir.join("Project.cdz");
+        std::fs::write(&file, "def entry = \"main.cdz\"\n").unwrap();
+        let (_s, arenas, _sp) = load_program_spanned(&file.to_string_lossy()).expect("loads");
+        let m = parse_manifest(&arenas);
+        assert_eq!(m.overflow_signed, None);
+        assert!(!m.overflow_signed_malformed, "absent is not malformed");
+        assert_eq!(m.overflow_unsigned, None);
+        assert!(!m.overflow_unsigned_malformed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `cdz test --list` emits the cadenza-ast-binary `(test-list (test <name> <is-property> <file>)…)`
+    /// value (NOT JSON) — the operator cadenza-ast-binary-everywhere directive + format-identical to the
+    /// delegate `Query::TestList` path, so v-nix's dynamic-derivations discovery decodes ONE format. Pins:
+    /// the bytes DECODE as cadenza-ast (a JSON regression would fail `codec::decode`), the root is a
+    /// `(test-list …)` form, and each `@test` appears once as a positional `(test name is-property file)`.
+    #[test]
+    fn list_tests_emits_cadenza_ast_binary_test_list() {
+        let dir = tmp("list-tests-binary");
+        let f = dir.join("suite.cdz");
+        // Two nullary @tests: a plain unit test + a `-gen` name (the `Test.gen` property wrapper the delegate
+        // path flags is-property, exercised here without needing a param so the file loads trivially).
+        std::fs::write(
+            &f,
+            "@test\ndef alpha-passes() = unit\n\n@test\ndef beta-gen() = unit\n",
+        )
+        .unwrap();
+        let bytes =
+            list_test_bytes(&[f.to_string_lossy().into_owned()]).expect("enumerates the suite");
+        // Must DECODE as a cadenza-ast value — a JSON regression (serde bytes) would not.
+        let a = cadenza_syntax::codec::decode(&bytes)
+            .expect("--list output is cadenza-ast binary, not JSON");
+        let children = a
+            .as_form(a.root, "test-list")
+            .expect("root is a `(test-list …)` form");
+        assert_eq!(children.len(), 2, "both @tests enumerated once");
+        let mut names: Vec<String> = Vec::new();
+        for &c in children {
+            let fields = a
+                .as_form(c, "test")
+                .expect("each child is a `(test …)` form");
+            assert_eq!(fields.len(), 3, "positional name / is-property / file");
+            names.push(a.as_str(fields[0]).expect("name is a Str").to_string());
+        }
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["alpha-passes".to_string(), "beta-gen".to_string()]
         );
         std::fs::remove_dir_all(&dir).ok();
     }
