@@ -623,7 +623,8 @@ fn nat_walk(
     // `("tuple" …)` → `#tuple(…)` preserves the unshadowable ctor identity. head_name is None for a string
     // head, so fall back to the head atom's string value.
     let name_head = a.head_name(id);
-    let ctor_name = name_head.or_else(|| a.as_str(ch[0]));
+    // `ch.first()`, NOT `ch[0]` — an EMPTY list `()` has no head (indexing would panic).
+    let ctor_name = name_head.or_else(|| ch.first().and_then(|&h| a.as_str(h)));
     if let Some(name) = ctor_name
         && nat_is_ctor_name(name)
         // A NAME head is suppressed by a shadowing binding; a STRING head is unshadowable (always the ctor).
@@ -1533,6 +1534,12 @@ mod tests {
         );
         // A string in a NON-head position (a value) is untouched — only a head-position string nativizes.
         assert_eq!(n("(f \"tuple\")"), "(f \"tuple\")");
+        // An EMPTY list `()` has NO head — the string-head fallback must use `ch.first()`, not `ch[0]`
+        // (which panicked: "index out of bounds: len is 0 but index is 0", crashing on any `()` in the
+        // corpus). The `()` is left untouched; a sibling compound still nativizes.
+        assert_eq!(n("()"), "()");
+        assert_eq!(n("(do () (list 1 2))"), "(do () #list(1 2))");
+        assert_eq!(n("(f () (\"tuple\" 3 4))"), "(f () #tuple(3 4))");
     }
 
     // `#word(…)` collection literals (DESIGN-native-ast-compound-data.md §D-SURFACE / M2). The `#word(`
