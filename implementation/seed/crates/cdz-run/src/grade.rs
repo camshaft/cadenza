@@ -48,6 +48,11 @@ pub fn grade(
     // plain single-component case (the common path). Without this, a peer case's imported interface falls
     // through to an unbound host-call and grades "no recorded response" (the corpus-29 nix reds).
     peers: &[Peer],
+    // LEAK-CEILING tolerance (the `--tolerate-fewer-live-objects` flag): on a KNOWN-LEAK case, a live-cell
+    // count <= the pinned ceiling PASSES (the path reclaimed more — strictly safer). Opted into ONLY by the
+    // corpus-cadenza cadenza-hop exec (the direct wasm exec leaves it false → exact `== N` drift guard). See
+    // [`leak_ceiling_clamp`]. `false` for the normal single-path grade.
+    tolerate_fewer_live_objects: bool,
 ) -> Result<ExitCode> {
     let test_run = decode_test_run(test_run_ast)?;
     // The recorded host-response tape, shared across every trial's run.
@@ -157,8 +162,21 @@ pub fn grade(
     // meaningful only on the DEBUG-COUNTERS runtime the exec passes via `--runtime` (→ `runtime` here); the
     // shipped runtime reports 0 vacuously.
     let mut result = result;
+    // On a KNOWN-LEAK case with the leak-ceiling tolerance (corpus-cadenza hop), clamp each observed count up
+    // to its ceiling so `count <= N` passes (strictly-safer reclaim) while `count > N` still fails. The direct
+    // path passes `tolerate_fewer_live_objects=false` → no clamp → exact `== N`. Non-known-leak pins are never
+    // clamped (an exact balance assertion, not a ceiling).
+    let balance_counts = if tolerate_fewer_live_objects && test_run.live_objects_known_leak {
+        cdz_corpus_grade::leak_ceiling_clamp(
+            &per_trial_live,
+            test_run.live_objects.unwrap_or(0),
+            test_run.live_objects_per_call.as_deref(),
+        )
+    } else {
+        per_trial_live.clone()
+    };
     if let Some(msg) = check_live_objects(
-        &per_trial_live,
+        &balance_counts,
         test_run.live_objects,
         test_run.live_objects_per_call.as_deref(),
     ) {

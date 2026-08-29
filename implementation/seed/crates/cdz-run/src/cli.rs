@@ -173,6 +173,15 @@ pub struct RunArgs {
     #[arg(long)]
     pub report_live_objects: bool,
 
+    /// LEAK-CEILING tolerance for `--grade`: on a `(live-objects known-leak N)` case, a live-cell count
+    /// `<= N` PASSES (the path reclaimed MORE than the tolerated-leak ceiling — strictly safer); only a count
+    /// `> N` fails. For the corpus-cadenza dual-path check: the cadenza-hop reclaims fewer objects than the
+    /// direct baseline on a known-leak case (a benign, constant retention diff), which must not red. The
+    /// DIRECT wasm exec does NOT pass this (stays exact `== N`, a drift guard). No effect off `--grade` or on
+    /// a plain `(live-objects N)` pin (an exact balance, not a ceiling).
+    #[arg(long)]
+    pub tolerate_fewer_live_objects: bool,
+
     /// GRADE mode: the committed per-backend baseline (`spec/semantics/.gate-baseline`), a
     /// `<verdict>\t<description>` snapshot. When given, a REGRESSION — a case the baseline recorded as
     /// `pass` that no longer passes — fails the grade (exit 1), the per-case analogue of `xtask gate
@@ -325,6 +334,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             baseline.as_deref(),
             cli.emit_verdict.as_deref(),
             &peers,
+            cli.tolerate_fewer_live_objects,
         );
     }
 
