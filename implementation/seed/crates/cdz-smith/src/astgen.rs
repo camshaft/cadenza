@@ -361,7 +361,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(14) {
+    match c.variant(15) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -393,6 +393,9 @@ fn gen_main_body<C: Choice>(
         // A HIGHER-ORDER body: a fn value (a `(fn …)` lambda or a named def) passed as an ARGUMENT to
         // another def and applied inside it — the applyClosure over a closure-valued parameter.
         13 => gen_higher_order_body(c, out),
+        // A DISCARD body: a non-def LEADING do-statement whose value is computed then DISCARDED, followed
+        // by the tail that is the block's value — the sequencing/dead-value drop lowering that #5507 grades.
+        14 => gen_discard_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -1072,6 +1075,29 @@ fn gen_higher_order_body<C: Choice>(c: &mut C, out: &mut String) {
             "(do (def (inc y) (+ y {a})) (def (apply f x) (f x)) (apply inc {b}))"
         )
         .ok(),
+    };
+}
+
+/// A DISCARD body: `(do <stmt> <tail>)` where `<stmt>` is a non-def LEADING statement whose value is
+/// COMPUTED then DISCARDED (CDZ0307 — a non-final block form is evaluated only for effect), and `<tail>`
+/// is the block's value. Reaches the sequencing / dead-value drop lowering that #5507 grades (a non-def
+/// do-statement is discarded, its trap elided, continue to the tail). Varies the discarded value KIND — a
+/// scalar, a heap compound (tuple/list, exercising build-then-drop), a bool — so the drop covers multiple
+/// reprs. All discards are NON-trapping constants (a const trapping discard is CDZ0304, a decline), so it
+/// stays on the graded compile path; the tail is a small Int64 arithmetic.
+fn gen_discard_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the discarded-value FORM before consuming the operand choices (variant-ordering).
+    let form = c.variant(4);
+    let (a, b) = (c.int_bounded(0, 99), c.int_bounded(0, 99));
+    match form {
+        // Discard a scalar literal.
+        0 => write!(out, "(do {a} (+ {a} {b}))").ok(),
+        // Discard a heap TUPLE (build-then-drop).
+        1 => write!(out, "(do (tuple {a} {b}) (+ {a} {b}))").ok(),
+        // Discard a heap LIST (build-then-drop).
+        2 => write!(out, "(do (list {a} {b}) (+ {a} {b}))").ok(),
+        // Discard a BOOL comparison.
+        _ => write!(out, "(do (< {a} {b}) (+ {a} {b}))").ok(),
     };
 }
 
@@ -2059,6 +2085,42 @@ mod tests {
         assert!(saw_once, "should reach a lambda-applied-once form");
         assert!(saw_twice, "should reach a lambda-applied-twice form");
         assert!(saw_named, "should reach a named-def-as-value form");
+    }
+
+    /// `gen_discard_body` REACHES all four discarded-value kinds (scalar, tuple, list, bool) and every body
+    /// COMPILES (S148: a non-def leading do-statement is computed then discarded — the sequencing/dead-value
+    /// drop lowering #5507 grades).
+    #[test]
+    fn gen_discard_body_reaches_all_kinds_and_compiles() {
+        let (mut saw_scalar, mut saw_tuple, mut saw_list, mut saw_bool) =
+            (false, false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1187);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_discard_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_tuple |= body.contains("(do (tuple ");
+            saw_list |= body.contains("(do (list ");
+            saw_bool |= body.contains("(do (< ");
+            saw_scalar |= body.starts_with("(do ")
+                && !body.contains("(do (tuple ")
+                && !body.contains("(do (list ")
+                && !body.contains("(do (< ");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "discard body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_scalar, "should reach a discarded-scalar form");
+        assert!(saw_tuple, "should reach a discarded-tuple form");
+        assert!(saw_list, "should reach a discarded-list form");
+        assert!(saw_bool, "should reach a discarded-bool form");
     }
 
     /// `gen_mutual_recursion_body` REACHES both forms (even/odd Bool parity, ping/pong Int accumulator), the
