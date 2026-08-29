@@ -16,13 +16,26 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let check = args.iter().any(|a| a == "--check");
     let migrate = args.iter().any(|a| a == "--migrate");
+    let registry = args.iter().any(|a| a == "--registry");
     let path = match args.iter().find(|a| !a.starts_with("--")) {
         Some(p) => p.clone(),
         None => {
-            eprintln!("usage: xtask-codegen-guide [--check] <chapter.sexp>");
+            eprintln!(
+                "usage: xtask-codegen-guide [--check] <chapter.sexp>  |  --registry [--check] <chapters.ts>"
+            );
             std::process::exit(2);
         }
     };
+
+    // --registry: derive the chapter registry (chapters.ts CHAPTERS[]) from the .sexp set + chapter-order.txt,
+    // replacing the `// <generated:chapters>` region in place (or --check). The positional arg is chapters.ts,
+    // NOT a chapter .sexp — so this branches before the single-chapter read below. (Ported from the retired
+    // node codegen-registry.mjs — operator: no codegen in JavaScript, keep it in the xtask.)
+    if registry {
+        run_registry(&path, check);
+        return;
+    }
+
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         eprintln!("xtask-codegen-guide: read {path}: {e}");
         std::process::exit(1);
@@ -705,6 +718,136 @@ fn pascal(slug: &str) -> String {
             }
         })
         .collect()
+}
+
+// ---- --registry: derive chapters.ts CHAPTERS[] from chapter-order.txt + each chapter's .sexp ----
+
+/// One `CHAPTERS[]` entry, derived from a chapter's `.sexp` (title = `nav-title` ?? `title`; pillar emitted
+/// only when non-`"language"`; exercises = count of `(exercise …)` blocks, emitted only when > 0; Component
+/// is a lazy import of the file `<stem>.tsx`). Formatting matches the hand registry exactly (2/4-space indent,
+/// `JSON.stringify`-equivalent string quoting via `json_string`).
+fn derive_entry(a: &Arenas, chapter: StructId, stem: &str) -> String {
+    let slug = named_attr(a, chapter, "slug").unwrap_or("");
+    let title = named_attr(a, chapter, "nav-title")
+        .or_else(|| named_attr(a, chapter, "title"))
+        .unwrap_or("");
+    let blurb = named_attr(a, chapter, "blurb").unwrap_or("");
+    let section = named_attr(a, chapter, "section").unwrap_or("");
+    let pillar = named_attr(a, chapter, "pillar").filter(|&p| p != "language");
+    let exercises = children(a, chapter)
+        .iter()
+        .filter(|&&f| a.head_name(f) == Some("exercise"))
+        .count();
+
+    let mut out = String::from("  {\n");
+    out.push_str(&format!("    slug: {},\n", json_string(slug)));
+    out.push_str(&format!("    title: {},\n", json_string(title)));
+    out.push_str(&format!("    blurb: {},\n", json_string(blurb)));
+    if let Some(p) = pillar {
+        out.push_str(&format!("    pillar: {},\n", json_string(p)));
+    }
+    out.push_str(&format!("    section: {},\n", json_string(section)));
+    if exercises > 0 {
+        out.push_str(&format!("    exercises: {exercises},\n"));
+    }
+    out.push_str(&format!(
+        "    Component: lazy(() => import({})),\n",
+        json_string(&format!("./chapters/{stem}.tsx"))
+    ));
+    out.push_str("  },");
+    out
+}
+
+/// Regenerate (or `--check`) the `CHAPTERS[]` array region of `chapters.ts` from `chapter-order.txt` (the
+/// reading-order stem list, one per line, `#`/blank ignored) + each `<stem>.sexp`. Replaces only the region
+/// between the `// <generated:chapters>` and `// </generated:chapters>` markers; the hand-written rest of the
+/// file is left untouched.
+fn run_registry(chapters_ts: &str, check: bool) {
+    let ts_path = std::path::Path::new(chapters_ts);
+    let content_dir = ts_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let chapters_dir = content_dir.join("chapters");
+    let order_path = content_dir.join("chapter-order.txt");
+
+    let order_text = read_or_die(&order_path.to_string_lossy());
+    let stems: Vec<&str> = order_text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+
+    let entries: Vec<String> = stems
+        .iter()
+        .map(|stem| {
+            let sexp = chapters_dir.join(format!("{stem}.sexp"));
+            let t = read_or_die(&sexp.to_string_lossy());
+            let a = cadenza_syntax_sexpr::read_all(&t).unwrap_or_else(|e| {
+                eprintln!(
+                    "xtask-codegen-guide --registry: parse {}: {e:?}",
+                    sexp.display()
+                );
+                std::process::exit(1);
+            });
+            let ch = locate_chapter(&a).unwrap_or_else(|| {
+                eprintln!(
+                    "xtask-codegen-guide --registry: no (chapter …) in {}",
+                    sexp.display()
+                );
+                std::process::exit(1);
+            });
+            derive_entry(&a, ch, stem)
+        })
+        .collect();
+
+    // Marker ANCHORS (stable prefixes); the BEGIN line carries a DO-NOT-EDIT note that we (re)write in full.
+    const BEGIN: &str = "  // <generated:chapters>";
+    const END: &str = "  // </generated:chapters>";
+    let begin_line = format!(
+        "{BEGIN} — DO NOT EDIT; regenerated by `xtask-codegen-guide --registry` (from chapter-order.txt + each chapter's .sexp)"
+    );
+    let block = format!("{begin_line}\n{}\n{END}", entries.join("\n"));
+
+    let src = read_or_die(chapters_ts);
+    let (bi, ei) = match (src.find(BEGIN), src.find(END)) {
+        (Some(b), Some(e)) if e >= b => (b, e),
+        _ => {
+            eprintln!(
+                "xtask-codegen-guide --registry: generated-region markers not found in {chapters_ts}"
+            );
+            std::process::exit(1);
+        }
+    };
+    let next = format!("{}{}{}", &src[..bi], block, &src[ei + END.len()..]);
+
+    if check {
+        if next != src {
+            eprintln!(
+                "✗ xtask-codegen-guide --registry --check: {chapters_ts} CHAPTERS[] is OUT OF SYNC with chapter-order.txt + the .sexp — regenerate and commit."
+            );
+            std::process::exit(1);
+        }
+        println!(
+            "✓ xtask-codegen-guide --registry --check: chapters.ts CHAPTERS[] ({}) in sync",
+            stems.len()
+        );
+    } else {
+        std::fs::write(chapters_ts, &next).unwrap_or_else(|e| {
+            eprintln!("xtask-codegen-guide --registry: write {chapters_ts}: {e}");
+            std::process::exit(1);
+        });
+        println!(
+            "✓ xtask-codegen-guide --registry: regenerated {} chapter entries in {chapters_ts}",
+            stems.len()
+        );
+    }
+}
+
+fn read_or_die(path: &str) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("xtask-codegen-guide: read {path}: {e}");
+        std::process::exit(1);
+    })
 }
 
 #[cfg(test)]

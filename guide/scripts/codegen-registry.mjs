@@ -1,80 +1,46 @@
-/// Generate the chapter registry entries (chapters.ts CHAPTERS[]) from the .sexp set + the editorial order
-/// (v-guide-editor's #1 ask — kill the title/blurb/section/pillar duplication that could drift). The reading
-/// ORDER comes from `chapter-order.mjs` (the sole editorial order lever); every other field is DERIVED from
-/// each chapter's `<stem>.sexp`:
-///   slug = (slug …)                       title = (nav-title …) ?? (title …)   [sidebar label]
-///   blurb = (blurb …)                     pillar = (pillar …), emitted only when "platform"
-///   section = (section …)                 exercises = count of (exercise …) blocks, emitted only when > 0
-///   Component = lazy(() => import("./chapters/<Stem>.tsx"))
+/// Thin wrapper: regenerate (or `--check`) the chapter registry (chapters.ts CHAPTERS[]) by invoking the Rust
+/// xtask `xtask-codegen-guide --registry`. ALL derivation logic lives in the xtask (operator: no codegen in
+/// JavaScript — keep it in small self-contained xtask scripts); this only resolves the binary and calls it,
+/// exactly like codegen-chapters.mjs does for the .tsx codegen. The xtask reads chapter-order.txt (the
+/// editorial reading-order stem list) + each chapter's .sexp and rewrites the `// <generated:chapters>` region.
 ///
-/// It replaces ONLY the region between the `// <generated:chapters>` … `// </generated:chapters>` markers in
-/// chapters.ts; the hand-written parts (types, PILLARS, pillarOf, NON_TEACHING_SECTIONS, chapterAt) are left
-/// untouched. `check-registry-derive.mjs` is the drift-gate that this generation makes trivially hold.
-///
-/// MODES: default = rewrite the region in place; `--check` = diff in memory, non-zero exit on drift (CI gate).
-/// Run: `node scripts/codegen-registry.mjs [--check]` (plain .mjs; no .ts type-strip needed).
-import { readFileSync, writeFileSync } from "node:fs";
+/// MODES: default = regenerate in place; `--check` = verify committed chapters.ts is in sync (CI gate).
+/// Run: `node scripts/codegen-registry.mjs [--check]`.
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-import { CHAPTER_ORDER } from "../src/content/chapter-order.mjs";
+import { dirname, join, delimiter } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const contentDir = join(here, "..", "src", "content");
-const chaptersDir = join(contentDir, "chapters");
-const registryPath = join(contentDir, "chapters.ts");
+const guideRoot = join(here, "..");
+const repoRoot = join(guideRoot, "..");
+const chaptersTs = join(guideRoot, "src/content/chapters.ts");
 
-const BEGIN = "  // <generated:chapters> — DO NOT EDIT; `npm run codegen:registry` (from chapter-order.mjs + each chapter's .sexp)";
-const END = "  // </generated:chapters>";
-
-const sx = (text, head) => {
-  const m = text.match(new RegExp(`\\(${head}\\s+"((?:[^"\\\\]|\\\\.)*)"\\)`));
-  return m ? m[1] : null;
-};
-
-// Derive one chapter's registry entry TEXT from its .sexp, matching the hand-written entry format exactly.
-function entry(stem) {
-  const text = readFileSync(join(chaptersDir, `${stem}.sexp`), "utf8");
-  const slug = sx(text, "slug");
-  if (!slug) throw new Error(`${stem}.sexp: no (slug …)`);
-  const title = sx(text, "nav-title") ?? sx(text, "title");
-  const blurb = sx(text, "blurb");
-  const section = sx(text, "section");
-  const pillar = sx(text, "pillar"); // emit only when platform
-  const exercises = (text.match(/\(exercise\b/g) ?? []).length; // emit only when > 0
-  const lines = [
-    "  {",
-    `    slug: ${JSON.stringify(slug)},`,
-    `    title: ${JSON.stringify(title)},`,
-    `    blurb: ${JSON.stringify(blurb)},`,
-  ];
-  if (pillar && pillar !== "language") lines.push(`    pillar: ${JSON.stringify(pillar)},`);
-  lines.push(`    section: ${JSON.stringify(section)},`);
-  if (exercises > 0) lines.push(`    exercises: ${exercises},`);
-  lines.push(`    Component: lazy(() => import(${JSON.stringify(`./chapters/${stem}.tsx`)})),`);
-  lines.push("  },");
-  return lines.join("\n");
+// Find `name` on $PATH (pure node, no `which` dependency — the nix sandbox may lack one).
+function resolveOnPath(name) {
+  for (const d of (process.env.PATH || "").split(delimiter)) {
+    if (d && existsSync(join(d, name))) return join(d, name);
+  }
+  return null;
 }
 
-const generated = CHAPTER_ORDER.map(entry).join("\n");
-const block = `${BEGIN}\n${generated}\n${END}`;
-
-const src = readFileSync(registryPath, "utf8");
-const bi = src.indexOf(BEGIN);
-const ei = src.indexOf(END);
-if (bi < 0 || ei < 0 || ei < bi) {
-  console.error(`codegen-registry: could not find the generated-region markers in chapters.ts — expected:\n${BEGIN}\n…\n${END}`);
-  process.exit(1);
-}
-const next = src.slice(0, bi) + block + src.slice(ei + END.length);
-
-const CHECK = process.argv.includes("--check");
-if (CHECK) {
-  if (next !== src) {
-    console.error("✗ codegen-registry --check: chapters.ts CHAPTERS[] is OUT OF SYNC with chapter-order.mjs + the .sexp — run `npm run codegen:registry` and commit.");
+// Binary resolution mirrors codegen-chapters.mjs: (1) $CDZ_XTASK_CODEGEN_GUIDE override; (2) on $PATH (v-nix's
+// nativeBuildInputs injection — the guide-examples nix gate has no cargo vendor); (3) `cargo build -p` for
+// native dev (the `-p` form falls through the all-nix cargo-shim).
+let xtaskBin = process.env.CDZ_XTASK_CODEGEN_GUIDE || resolveOnPath("xtask-codegen-guide");
+if (!xtaskBin) {
+  try {
+    execFileSync("cargo", ["build", "-p", "xtask-codegen-guide", "--quiet"], { cwd: repoRoot, stdio: "inherit" });
+  } catch (e) {
+    console.error(`codegen-registry: could not build xtask-codegen-guide — ${String(e.message || e).slice(0, 160)}`);
     process.exit(1);
   }
-  console.log(`✓ codegen-registry --check: chapters.ts CHAPTERS[] (${CHAPTER_ORDER.length}) is in sync with the .sexp.`);
-} else {
-  writeFileSync(registryPath, next);
-  console.log(`✓ codegen-registry: regenerated ${CHAPTER_ORDER.length} chapter entries in chapters.ts.`);
+  xtaskBin = join(repoRoot, "target/debug/xtask-codegen-guide");
+}
+
+const args = ["--registry", ...(process.argv.includes("--check") ? ["--check"] : []), chaptersTs];
+try {
+  execFileSync(xtaskBin, args, { stdio: "inherit" });
+} catch {
+  process.exit(1); // the xtask already printed the reason
 }

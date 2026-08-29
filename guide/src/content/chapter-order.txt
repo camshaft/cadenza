@@ -1,0 +1,45 @@
+# The guide's reading ORDER — one chapter file stem per line, in reading order. The sole editorial
+# order source for the @generated chapters.ts CHAPTERS[] (xtask-codegen-guide --registry derives every
+# other field from each <stem>.sexp). Reorder lines to reorder the guide. Blank lines + # comments ignored.
+Welcome
+Philosophy
+Basics
+Functions
+ControlFlow
+Ordering
+Data
+RecordsTuples
+PatternMatching
+IrrefutablePatterns
+Iteration
+Lists
+Iterators
+MapsSets
+Strings
+Bytes
+BinaryMatching
+Symbols
+Numbers
+SizedIntegers
+Floats
+Rationals
+Errors
+Effects
+DesignByContract
+Modules
+OpaqueTypes
+Units
+TypesAsValues
+ConstParameters
+AdHocPolymorphism
+Metaprogramming
+PropertyTesting
+ExampleApps
+Playground
+CdzToolchain
+WhatsNext
+PlatformOverview
+PlatformState
+PlatformSafety
+PlatformExecution
+WritingAReducer
