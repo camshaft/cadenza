@@ -2093,6 +2093,228 @@ fn emit_expr_viewed(
     }
 }
 
+/// Build ONE surface arm PATTERN over the value of type `ty` at `path` (from the root scrutinee), given the
+/// per-path variant `choices` a decision-tree leaf-path fixed (v-wasm-opt review #4 — the general un-flatten).
+/// `choices[P] = Some(disc)` = the value at P was switched to variant `disc` (refutable → `(<V> <sub-pats>)`);
+/// `choices[P] = None` = the DEFAULT arm at that switch (any other variant → `_`). No entry at `path` = no
+/// switch here: if a DEEPER choice exists under `path`, destructure the IRREFUTABLE structure to reach it (a
+/// single-variant sum/newtype → its ctor; a tuple → `#tuple(…)`; a record → `#record(…)`) — the recipe's
+/// irrefutable-in-pattern step; else it is a LEAF, bound to a fresh name (keyed at the FULL `path` — the exact
+/// `Core::SumPayload` key the body reads). A payload slot `k` of variant `disc` sits at `path ++ [Payload {,
+/// Elem(k)}]` — the same keying `emit_match_sum` / `emit_nested_switch_chain` use.
+#[allow(clippy::too_many_arguments)]
+fn build_arm_pat(
+    db: &mut Db,
+    b: &mut Builder,
+    root_scrut: StructId,
+    ty: &Ty,
+    // `path` = the SWITCH path (keys the `choices` map + the `Core::Switch` paths — a `Payload` into a
+    // single-variant sum IS kept here, matching the decision tree). `read_path` = the BODY-read path (keys
+    // `env.payloads` + `Core::SumPayload` reads — a `Payload` into a single-variant sum is ELIDED here, because
+    // the newtype box erases at runtime, so a body reads its payload directly). The two DIFFER by exactly the
+    // erased-newtype `Payload` steps — keying a leaf under the wrong one = a missed binder → a false decline.
+    path: &[crate::core::PathStep],
+    read_path: &[crate::core::PathStep],
+    choices: &std::collections::HashMap<Vec<crate::core::PathStep>, Option<u32>>,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Result<StructId, Reject> {
+    use crate::core::PathStep;
+    // Emit `(<Ctor of decl@disc> <slot0-pat> … )`, recursing each payload slot. SWITCH path always adds `[Payload
+    // {,Elem(k)}]`; READ path adds `[Payload {,Elem(k)}]` for a MULTI-variant sum but ELIDES the `Payload` for a
+    // SINGLE-variant sum (erased newtype — the body reads the payload without a sum-payload step).
+    #[allow(clippy::too_many_arguments)]
+    fn ctor_pat(
+        db: &mut Db,
+        b: &mut Builder,
+        root_scrut: StructId,
+        parent_ty: &Ty,
+        decl: StructId,
+        disc: u32,
+        path: &[PathStep],
+        read_path: &[PathStep],
+        choices: &std::collections::HashMap<Vec<PathStep>, Option<u32>>,
+        env: &mut BinderEnv,
+        emitted: &std::collections::HashSet<StructId>,
+    ) -> Result<StructId, Reject> {
+        if db.is_user_node(decl) && !emitted.contains(&decl) {
+            return Err(Reject::decline(
+                "the Cadenza backend does not re-emit a deep nested match over an un-emitted user sum"
+                    .to_string(),
+            ));
+        }
+        let single = db
+            .type_decl_by_occ(decl)
+            .is_some_and(|t| t.variants.len() == 1);
+        let arity = db
+            .type_decl_by_occ(decl)
+            .and_then(|t| t.variants.get(disc as usize))
+            .map(|v| v.payloads.len())
+            .ok_or_else(|| {
+                Reject::decline("the Cadenza backend could not recover a variant arity".to_string())
+            })?;
+        // Payload types: `sum_payload_expected` returns a `Tuple` of the slots (multi) / the sole type (arity 1).
+        let pay = sum_payload_expected(db, decl, disc, parent_ty);
+        let head = crate::lower::variant_head_ast(db, b, decl, disc).ok_or_else(|| {
+            Reject::decline("the Cadenza backend could not recover a variant name".to_string())
+        })?;
+        let mut children = vec![head];
+        for k in 0..arity {
+            let mut kpath = path.to_vec();
+            kpath.push(PathStep::Payload);
+            if arity > 1 {
+                kpath.push(PathStep::Elem(k));
+            }
+            let mut kread = read_path.to_vec();
+            if !single {
+                kread.push(PathStep::Payload);
+            }
+            if arity > 1 {
+                kread.push(PathStep::Elem(k));
+            }
+            let kty = match (&pay, arity) {
+                (Some(Ty::Tuple(ts)), n) if n > 1 => ts.get(k).cloned().unwrap_or(Ty::Any),
+                (Some(t), 1) => t.clone(),
+                _ => Ty::Any,
+            };
+            children.push(build_arm_pat(
+                db, b, root_scrut, &kty, &kpath, &kread, choices, env, emitted,
+            )?);
+        }
+        Ok(b.list(children))
+    }
+
+    if let Some(choice) = choices.get(path) {
+        return match choice {
+            None => Ok(b.name("_")),
+            Some(disc) => {
+                let decl = match ty {
+                    Ty::Sum { decl, .. } | Ty::Nominal { decl, .. } => *decl,
+                    _ => {
+                        return Err(Reject::decline(
+                            "the Cadenza backend deep-match choice is over a non-sum value"
+                                .to_string(),
+                        ));
+                    }
+                };
+                ctor_pat(
+                    db, b, root_scrut, ty, decl, *disc, path, read_path, choices, env, emitted,
+                )
+            }
+        };
+    }
+    // No switch at THIS path. Reach a deeper choice by destructuring the irrefutable structure, else bind a leaf.
+    let has_deeper = choices
+        .keys()
+        .any(|k| k.len() > path.len() && k.starts_with(path));
+    if has_deeper {
+        match ty {
+            // A SINGLE-VARIANT sum / newtype is irrefutable — its ctor crosses to the payload (no branch).
+            Ty::Nominal { decl, .. } => {
+                let decl = *decl;
+                return ctor_pat(
+                    db, b, root_scrut, ty, decl, 0, path, read_path, choices, env, emitted,
+                );
+            }
+            Ty::Sum { decl, .. }
+                if db
+                    .type_decl_by_occ(*decl)
+                    .is_some_and(|t| t.variants.len() == 1) =>
+            {
+                let decl = *decl;
+                return ctor_pat(
+                    db, b, root_scrut, ty, decl, 0, path, read_path, choices, env, emitted,
+                );
+            }
+            Ty::Tuple(ts) => {
+                let ts = ts.clone();
+                let mut children = Vec::with_capacity(ts.len());
+                for (i, et) in ts.iter().enumerate() {
+                    let mut ep = path.to_vec();
+                    ep.push(PathStep::Elem(i));
+                    let mut er = read_path.to_vec();
+                    er.push(PathStep::Elem(i));
+                    children.push(build_arm_pat(
+                        db, b, root_scrut, et, &ep, &er, choices, env, emitted,
+                    )?);
+                }
+                return Ok(b.compound(crate::ast::CompoundCtor::Tuple, &children));
+            }
+            Ty::Record(fields) => {
+                let items: Vec<(String, Ty)> = fields
+                    .iter()
+                    .map(|(k, v)| (k.name.to_string(), v.clone()))
+                    .collect();
+                let mut children = Vec::with_capacity(items.len());
+                for (i, (fname, fty)) in items.iter().enumerate() {
+                    let mut ep = path.to_vec();
+                    ep.push(PathStep::Elem(i));
+                    let mut er = read_path.to_vec();
+                    er.push(PathStep::Elem(i));
+                    let vpat =
+                        build_arm_pat(db, b, root_scrut, fty, &ep, &er, choices, env, emitted)?;
+                    let kn = b.name(fname.as_str());
+                    children.push(b.field_pair(kn, vpat));
+                }
+                return Ok(b.compound(crate::ast::CompoundCtor::Record, &children));
+            }
+            _ => {
+                return Err(Reject::decline(
+                    "the Cadenza backend cannot destructure this value to reach a deep-match constraint"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    // A LEAF position — bind a fresh name at the READ path (the exact key the body's `Core::SumPayload` uses).
+    let nm = synth_payload_name(env.next_payload);
+    env.next_payload += 1;
+    env.payloads
+        .insert((root_scrut, read_path.to_vec()), nm.clone());
+    Ok(b.name(nm))
+}
+
+/// Reconstruct surface arms for a deep decision-`SumCont` tree under one outer variant (v-wasm-opt review #4):
+/// walk each `Switch` arm, threading a `path -> variant-choice` map; at each `Leaf`, [`build_arm_pat`] emits
+/// ONE surface arm `(<deep-pattern> <body>)` reflecting that leaf-path's choices (an explicit variant becomes a
+/// sub-pattern, a default becomes `_`). Enumerating every leaf keeps the emitted match exhaustive without relying
+/// on a synthetic wildcard. A `Guarded`/`LitTest` node in the tree declines (a later slice).
+#[allow(clippy::too_many_arguments)]
+fn emit_switch_tree(
+    db: &mut Db,
+    b: &mut Builder,
+    root_scrut: StructId,
+    root_ty: &Ty,
+    cont: &crate::core::SumCont,
+    choices: std::collections::HashMap<Vec<crate::core::PathStep>, Option<u32>>,
+    expected: &Option<Ty>,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+    children: &mut Vec<StructId>,
+) -> Result<(), Reject> {
+    use crate::core::SumCont;
+    match cont {
+        SumCont::Leaf(body) => {
+            let pat = build_arm_pat(db, b, root_scrut, root_ty, &[], &[], &choices, env, emitted)?;
+            let body_node = emit_expr(db, b, *body, expected.clone(), env, emitted)?;
+            children.push(b.list(vec![pat, body_node]));
+            Ok(())
+        }
+        SumCont::Switch { path, arms } => {
+            for arm in arms {
+                let mut c = choices.clone();
+                c.insert(path.to_vec(), arm.disc);
+                emit_switch_tree(db, b, root_scrut, root_ty, &arm.cont, c, expected, env, emitted, children)?;
+            }
+            Ok(())
+        }
+        _ => Err(Reject::decline(
+            "the Cadenza backend does not yet lower a guarded / literal-test node in a deep sum-match tree"
+                .to_string(),
+        )),
+    }
+}
+
 /// Reconstruct the surface `(match <scrutinee> (<pattern> <body>)…)` for a `Core::MatchSum`. M4a lowers the
 /// SIMPLE decision-tree shape: the `root` is a [`SumCont::Switch`] on the scrutinee's OWN discriminant
 /// (empty `path`), every arm dispatches on an EXPLICIT variant (`disc: Some`) to a bare [`SumCont::Leaf`]
@@ -2343,12 +2565,32 @@ fn emit_match_sum(
                             )?;
                             break;
                         }
-                        _ => {
-                            return Err(Reject::decline(
-                                "the Cadenza backend does not yet lower a literal-test / nested-switch \
-                                 sum-match arm"
-                                    .to_string(),
-                            ));
+                        // A DEEP decision-tree cont (a nested Switch at an arbitrary path — through a
+                        // newtype/tuple, or multi-payload — beyond the linear-chain [`emit_nested_switch_chain`]
+                        // handles). Reconstruct the surface arms by walking the tree ([`emit_switch_tree`] +
+                        // [`build_arm_pat`], v-wasm-opt review #4): the outer variant `disc` is the choice at the
+                        // root path `[]`, and each nested `Switch` arm adds its `path -> disc` choice; each leaf
+                        // becomes one deep surface arm.
+                        SumCont::Switch { .. } => {
+                            let root_ty = crate::infer::type_of(db, scrutinee);
+                            let mut choices: std::collections::HashMap<
+                                Vec<crate::core::PathStep>,
+                                Option<u32>,
+                            > = std::collections::HashMap::new();
+                            choices.insert(Vec::new(), Some(disc));
+                            emit_switch_tree(
+                                db,
+                                b,
+                                scrutinee,
+                                &root_ty,
+                                cont,
+                                choices,
+                                &expected,
+                                env,
+                                emitted,
+                                &mut children,
+                            )?;
+                            break;
                         }
                     }
                 }
