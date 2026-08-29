@@ -23299,22 +23299,14 @@ mod diagnostics {
 
     #[test]
     fn over_application_offers_a_delete_the_extra_argument_fix() {
-        // Applying MORE arguments than a function/ctor/operator accepts (CDZ0203/CDZ0201) now carries a
-        // `delete` fix removing the FIRST surplus argument — the fixpoint removes each extra in turn.
-        // A ctor `(Mk 1 2)` (arity 1) and a user-fn `(g 1 2)` (arity 1) each report ONCE with the fix.
-        for src in [
-            "(module m (type P (Mk Int64)) (def (f) (Mk 1 2)) (export f))",
-            "(module m (def (g (: x Int64)) x) (def (f) (g 1 2)) (export f))",
-        ] {
-            let d = first_error(src);
-            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-            let fix = d.fix.expect("a delete-the-extra-arg fix is carried");
-            assert_eq!(fix.kind, crate::abi::FixKind::Delete);
-            assert!(
-                !fix.verified,
-                "which callee the author meant is a guess → heuristic"
-            );
-        }
+        // Applying MORE arguments than a function/ctor/operator accepts (CDZ0203/CDZ0201) carries a
+        // `delete` fix removing the FIRST surplus argument. The SIMPLE ctor + user-fn over-application
+        // delete-fix migrated to corpus 09-functions ("over-applying a constructor is a type error" +
+        // "over-applying a named function by an extra argument is a type error", each now carrying
+        // (fix (kind delete) (unverified))). What REMAINS here is corpus-inexpressible: the DEDUP /
+        // no-secondary sub-cases (exactly-ONE error after a sibling reject is dropped), the 1-of-2 curry
+        // no-false-positive, and the member-op multi-substring message — none expressible in the corpus
+        // (error …) form (single (message …), no total-count / no-other-code).
         // A fixed-arity OPERATOR `(+ 1 2 3)` produces TWO faults (the grammar CDZ0201 "+ takes exactly 2
         // operands" + the generic CDZ0203 over-application). They are the same defect — dedup keeps ONE,
         // the authoritative CDZ0201, carrying the delete fix on the surplus operand.

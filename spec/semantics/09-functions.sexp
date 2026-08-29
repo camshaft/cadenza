@@ -3201,9 +3201,11 @@
   (doc    "`(Some 1 2)` desugars to `((Some 1) 2)`: the constructor `Some` is single-arity, so
            `(Some 1)` is a complete Sum value, and applying it to `2` applies a non-function — a type
            error (CDZ0203), the same as `(5 3)` above. The compiler MUST reject it rather than drop
-           the `2` and yield `(Some 1)`, which would silently accept the ill-formed application.")
+           the `2` and yield `(Some 1)`, which would silently accept the ill-formed application. Carries a
+           DELETE fix on the surplus argument (heuristic/unverified — which callee the author meant is a
+           guess). Fix-quality migrated from rcdzc over_application_offers_a_delete_the_extra_argument_fix.")
   (input  (Some 1 2))
-  (error  CDZ0203))
+  (error  CDZ0203 (fix (kind delete) (unverified))))
 
 (case "over-applying a constructor by several arguments is a type error"
   (doc    "The same shape with more extra arguments: `(Some 1 2 3)` desugars to `(((Some 1) 2) 3)`,
@@ -3232,9 +3234,10 @@
   (doc    "The named-def companion: `(def (f x) (+ x 1))`, `(f 5 9)` applies the unary `f` to two args.
            By §Functions Are Single-Arity this desugars to `((f 5) 9)` — `(f 5)` = 6, applied to 9 is a
            non-function application → CDZ0203. Arity is checked for a named function exactly as for a
-           lambda or a constructor.")
+           lambda or a constructor. Carries a DELETE fix on the surplus argument (heuristic/unverified).
+           Fix-quality migrated from rcdzc over_application_offers_a_delete_the_extra_argument_fix.")
   (input  (do (def (f (: x Int64)) (+ x 1)) (def (main) (f 5 9)) (export main)))
-  (error  CDZ0203))
+  (error  CDZ0203 (fix (kind delete) (unverified))))
 
 ; The arity check has a lower end too: a UNARY variant applied to ZERO arguments is under-applied. A
 ; sum type constructor is a single-arity function that produces the tagged variant "when applied to
