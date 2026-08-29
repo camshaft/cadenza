@@ -29295,53 +29295,6 @@ mod stage1 {
     }
 
     #[test]
-    fn wrap_of_a_non_integer_source_is_rejected() {
-        // `(UInt8.wrap true)` — `wrap`'s type is `∀(w,s). Int^s_w → UInt8`; unifying the source `true`
-        // (Bool) against `(Int a)` FAILS. The one generic application rule catches it (CDZ0203), no
-        // conversion-specific check.
-        let msg = expect_decline("(UInt8.wrap true)");
-        assert!(
-            msg.contains("unify")
-                || msg.contains("Bool")
-                || msg.contains("Int")
-                || msg.contains("match"),
-            "got: {msg}"
-        );
-    }
-
-    #[test]
-    fn mixing_two_widths_without_conversion_is_rejected() {
-        // 06-numeric-model: `(+ (: 1 UInt8) (: 2 Int32))` — two different integer types with no explicit
-        // conversion → CDZ0301 (no silent promotion). The one generic rule (unify the operands) catches
-        // it: UInt8 and Int32 differ in BOTH signedness and width.
-        let msg = expect_decline("(+ (: 1 UInt8) (: 2 Int32))");
-        assert!(
-            msg.contains("unify")
-                || msg.contains("width")
-                || msg.contains("Int")
-                || msg.contains("UInt"),
-            "got: {msg}"
-        );
-    }
-
-    #[test]
-    fn mixing_an_integer_and_a_float_is_rejected_no_silent_promotion() {
-        // 06-numeric-model: `(+ 2 2.0)` mixes an Int64 and a Float64, which do NOT silently promote —
-        // rejected (numeric-model.md §Numeric Types Do Not Silently Promote). The float literal gets
-        // `Ty::Float`, distinct from the operator's `(Int a)`, so unification FAILS (coded CDZ0301, both
-        // numeric-but-different). Every integer operator (arith/bitwise/shift) mixed with a float rejects
-        // the same way — the one generic operand-unification rule, no float special case. The message
-        // names the two conflicting types.
-        for op in ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"] {
-            let msg = expect_decline(&format!("({op} 2 2.0)"));
-            assert!(
-                msg.contains("Float64") && (msg.contains("Int") || msg.contains("unify")),
-                "int↔float mix under `{op}` should cite the numeric mismatch; got: {msg}"
-            );
-        }
-    }
-
-    #[test]
     fn a_non_admitted_float_width_is_rejected_cdz0302() {
         // 06-numeric-model: `(Float N)` for N ∉ {32,64} — the admitted IEEE set — is rejected CDZ0302
         // (numeric-model.md §A Floating-Point Type Is Indexed By A Compile-Time Width), the float

@@ -86,6 +86,24 @@
   (input  (>> 1 2.0))
   (error  CDZ0301))
 
+(case "mixing two integer widths without an explicit conversion is rejected"
+  (doc    "`(+ (: 1 UInt8) (: 2 Int32))` adds two DIFFERENT integer types (UInt8 and Int32 — differing in
+           both signedness and width) with no explicit conversion. An integer operator is `∀a. (Int a) ->
+           (Int a) -> (Int a)`, so the one generic operand-unification rule catches it: the two distinct
+           integer instances fail to unify → CDZ0301, the same no-silent-promotion rule the Int64/Float64
+           mix above hits, applied to two integer widths. The author must convert one side (`.of`/`.wrap`)
+           explicitly. (migrated from rcdzc mixing_two_widths_without_conversion.)")
+  (input  (do (def (main) (+ (: 1 UInt8) (: 2 Int32))) (export main)))
+  (error  CDZ0301))
+
+(case "wrapping a non-integer source is rejected"
+  (doc    "`(UInt8.wrap true)` applies the narrowing wrap `∀(w,s). Int^s_w -> UInt8` to a Bool source.
+           `true` has no `(Int a)` instance, so unifying the source against the wrap's integer domain FAILS
+           — CDZ0203 via the one generic application rule, with no conversion-specific check. (migrated from
+           rcdzc wrap_of_a_non_integer_source.)")
+  (input  (do (def (main) (UInt8.wrap true)) (export main)))
+  (error  CDZ0203))
+
 (case "a constant shift by an OUT-OF-RANGE count is rejected at compile time with CDZ0304"
   (doc    "A shift count must be a valid bit position 0..=63; a constant count outside that range has no
            value and is rejected at COMPILE time (decline-don't-miscompile — it would trap at run time), CDZ0304
