@@ -127,9 +127,12 @@ partial def expectedValue? (m : Module) (i : Nat) : Option Value :=
     | Option.some "set" => (seqVals m (cs.extract 1 cs.size)).bind (fun es => (Eval.canonSet es).map Value.set)
     | Option.some "record" => (recordFields? m (cs.extract 1 cs.size)).map Value.record
     | Option.some ctor =>
-      -- a prelude/user sum VARIANT value `(Ctor payload)` — bare ctor head + one payload child
-      -- (nullary renders `(Ctor unit)`); every other name-headed value node is a variant in canonical form
-      ((cs[1]?).bind (expectedValue? m)).map (fun p => Value.variant ctor.toUTF8 p)
+      -- a prelude/user sum VARIANT value `(Ctor v…)` — bare ctor head + its field children. One field →
+      -- `variant Ctor payload` (nullary renders `(Ctor unit)`); MULTI-field (≥2, `(P v1 v2)`) →
+      -- `variant Ctor (tuple v1…vN)` — symmetric with evalVariantCtor's multi-field construction.
+      let fieldIds := cs.extract 1 cs.size
+      if fieldIds.size ≥ 2 then (seqVals m fieldIds).map (fun vs => Value.variant ctor.toUTF8 (Value.tuple vs))
+      else ((fieldIds[0]?).bind (expectedValue? m)).map (fun p => Value.variant ctor.toUTF8 p)
     | Option.none => Option.none
   | _ => Option.none
 
