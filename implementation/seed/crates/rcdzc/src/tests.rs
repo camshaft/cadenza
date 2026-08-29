@@ -13003,7 +13003,6 @@ mod match_engine {
     // Int64"); + 2 controls that RUN: a nullary `(None)` constructs (→ 0), a correctly-applied `(Some 5)`
     // compiles + matches (→ 5). --case grades codes + messages + run values. The NOT-"carries" negative on
     // the generic Some is the inexpressible remainder, covered by the positive message halves.)
-
     #[test]
     fn if_branches_of_distinct_numeric_type_are_cdz0201_but_cross_kind_stays_cdz0203() {
         // 02-binding "a conditional with integer and floating-point branches is a type error": two DISTINCT
