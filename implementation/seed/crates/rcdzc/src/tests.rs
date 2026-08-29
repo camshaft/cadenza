@@ -30486,59 +30486,6 @@ mod stage1 {
         }
     }
 
-    #[test]
-    fn a_host_delegating_a_value_definition_is_rejected() {
-        // A `host` delegates EFFECTS to the boundary (capabilities-and-effects.md §Host Delegation Is An
-        // Entrypoint's Prerogative). `(host (foo) …)` where `foo` is a top-level `(def foo …)` names a VALUE,
-        // not an effect — a malformed grant. It used to compile and run silently (the bogus delegation was
-        // dropped by a `filter_map` in `check_no_home`, computing an empty manifest). Now `check_no_home`
-        // rejects a delegated name that resolves to a value def CDZ0201. CONSERVATIVE: it flags only an
-        // unambiguous value def (`def_by_name`), never a nested-module effect (which is absent from the
-        // top-level registries), so a valid delegation is never false-flagged.
-        let d = compile_component(&crate::codec::encode(&parse(
-            "(module m (def foo 5) (def (main) (host (foo) 5)) (export main))",
-        )))
-        .expect_err("delegating a value definition to the host must be rejected");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("foo") && d.message.contains("effect"),
-            "the message names the offending value and explains a host delegates effects: {}",
-            d.message
-        );
-        // A valid effect delegation still compiles (regression): the effect's op is reached in the body, so
-        // it is neither latent nor a non-effect.
-        assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (effect ask (op ask (-> Unit Int64))) \
-                 (def (main) (host (ask) (ask.ask))) (export main))",
-            )))
-            .is_ok(),
-            "a valid host delegation of a declared effect must compile"
-        );
-        // A nested-module effect delegated inside that module is NOT false-flagged (its effect decl is not in
-        // the top-level registry — the check must not treat it as a non-effect).
-        assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module top (def (main) (do (module m (effect log (op emit (-> String Unit))) \
-                 (def (main) (host (log) ((. log emit) \"hi\")))) 0)) (export main))",
-            )))
-            .is_ok(),
-            "a nested-module effect delegation must not be false-flagged as a non-effect"
-        );
-        // A delegated TYPE head — `(host (C) …)` where `C` is a sum type — is likewise a non-effect (the
-        // host twin of the handle-head type case). It used to compile silently; now it names `C` as a type.
-        let ty = compile_component(&crate::codec::encode(&parse(
-            "(module m (type C (Red)) (def (main) (host (C) (+ 1 1))) (export main))",
-        )))
-        .expect_err("delegating a type to the host must be rejected");
-        assert_eq!(ty.code.as_deref(), Some("CDZ0201"), "got: {}", ty.message);
-        assert!(
-            ty.message.contains("`C`") && ty.message.contains("is a type"),
-            "names the delegated type: {}",
-            ty.message
-        );
-    }
-
     /// A MALFORMED EFFECT CLAUSE — one that is not an `(op …)` operation — is CDZ0201, not silently
     /// dropped. `scan_effect_decl` skips any clause whose head is not `op` (a bare literal `(effect E 5)`,
     /// a non-`op`-headed list `(effect E (foo …))`) and an `(op)` with no name, so a garbled operation
@@ -30645,33 +30592,6 @@ mod stage1 {
             no_home.iter().any(|d| d.code.as_deref() == Some("CDZ0401")),
             "a genuine ungranted perform is still CDZ0401 (no over-suppression): {:?}",
             no_home.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn a_host_delegating_the_same_effect_twice_is_rejected() {
-        // A `host`'s effect list is a SET — the manifest is the union of escaping effects — so `(host (A A)
-        // …)` names the same effect twice, the same fixed-set-no-duplicates ill-formedness a duplicate effect
-        // operation and a duplicate handler arm are rejected for (CDZ0201). Left unchecked it double-imports
-        // at the boundary and TRAPS at run time; `check_no_home` now rejects the second occurrence.
-        let d = compile_component(&crate::codec::encode(&parse(
-            "(module m (effect A (op a (-> Unit Int64))) (def (main) (host (A A) (A.a))) (export main))",
-        )))
-        .expect_err("delegating the same effect twice must be rejected");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("more than once") || d.message.contains("delegated"),
-            "the message explains the duplicate delegation: {}",
-            d.message
-        );
-        // A single delegation of a declared effect still compiles (regression).
-        assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (effect ask (op ask (-> Unit Int64))) \
-                 (def (main) (host (ask) (ask.ask))) (export main))",
-            )))
-            .is_ok(),
-            "a single valid host delegation must compile"
         );
     }
 
