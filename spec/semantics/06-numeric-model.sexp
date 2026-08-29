@@ -3125,7 +3125,7 @@
   (call   main (: 20 Int64)) (output (: 2030507111317198 Int64))
   (call   main (: 2 Int64)) (output (: 21 Int64))
   (call   main (: 1 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 40))
+  (live-objects known-leak 40 0 0))
 
 (case "a runtime BigInt in an Option payload crosses the host boundary"
   (doc    "`(Some (* (BigInt.of 1000000) (BigInt.of 1000000)))` — a runtime BigInt (the 10^12 product does
@@ -3146,7 +3146,7 @@
                 (if (= v 0) (None) (Some (* (BigInt.of v) (BigInt.of 1000000))))) (export main)))
   (call   main (: 5 Int64)) (output (: (Some 5000000) (Option BigInt)))
   (call   main (: 0 Int64)) (output (: (None unit) (Option BigInt)))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 0))
 
 (case "an arbitrary-precision literal beyond 64 bits is an exact BigInt"
   (doc    "`(: 100000000000000000000 BigInt)` annotates a literal larger than Int64.max as a BigInt — an
@@ -9764,7 +9764,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 3 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 4 3))
 
 (case "a runtime BigInt narrowed to Int64 at the EXACT maximum fits and one past traps"
   (doc    "`Int64.of` on a runtime BigInt at the EXACT signed-64 maximum: 2·2^62 - 1 + k narrows cleanly at
@@ -10077,7 +10077,7 @@
             (export main)))
   (call   main (: 20 Int64)) (output (: 1 Int64))
   (call   main (: 7 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 60))
+  (live-objects known-leak 60 21))
 
 ;; -- guard-elision trap-preservation boundaries: masks and remainders never license dropping overflow guards (breaker batch 372, from the 2026-07-17 banked candidate) --
 (case "geb1 a mask by -1 is NOT narrowing — the add guard stays and traps at MAX"
