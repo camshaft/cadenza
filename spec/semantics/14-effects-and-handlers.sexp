@@ -97,6 +97,14 @@
   (input (do (effect E (op get)) (def (main) (E.get)) (export main)))
   (error CDZ0201 (message "this operation has no type")) (no-other-errors))
 
+(case "an effect operation with no name is rejected"
+  (doc "An operation clause is `(op <name> <type>)`; the name must be a bare name. `(op (-> Unit Int64))` puts
+        the TYPE where the name belongs, silently registering a nameless (unreachable) op → now CDZ0201: an
+        operation must be named, like a def or a variant. (migrated from rcdzc
+        an_effect_operation_with_no_name_is_rejected.)")
+  (input (do (effect E (op (-> Unit Int64))) (def (main) 5) (export main)))
+  (error CDZ0201 (message "named") (message "op")))
+
 (case "a branch-dead host-call leaks no import or host-call at any optimization level"
   (doc    "Capability-safety fence at the #4805 (force-lower-all POST-layout) seam: an effectful helper `io`
            that delegates `ask.ask` to the host is referenced ONLY inside a `(if false …)` branch that const-

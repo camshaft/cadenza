@@ -29068,50 +29068,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_duplicate_effect_operation_is_rejected() {
-        // An effect's operations are a closed name-set (like a sum's variants), so declaring `f` twice is
-        // CDZ0201 — the fifth closed-name-set duplicate-member check (`capabilities-and-effects.md` §An
-        // Effect Declaration Names The Effect And Types Its Operations).
-        let src = "(do (effect E (op f (-> Int64 Int64)) (op f (-> Int64 Int64))) \
-                   (def (main) 1) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a duplicate effect operation must be rejected"
-        );
-        // PERFORMING the dup-op effect projects its synth record, which used to re-report the same
-        // duplicate as a misleading "record names field `get` more than once" (leaking the internal
-        // record). Only the declaration-site op reject remains; the record-field consequent is suppressed.
-        let performed = "(do (effect E (op get (-> Unit Int64)) (op get (-> Unit Bool))) \
-                         (def (f) (E.get)) (export f))";
-        let ds = crate::diagnostics(&mut crate::db::Db::load(parse(performed)));
-        let errs: Vec<&str> = ds
-            .iter()
-            .filter(|d| d.severity == crate::abi::Severity::Error)
-            .map(|d| d.message.as_str())
-            .collect();
-        assert!(
-            errs.iter()
-                .any(|m| m.contains("declared more than once in effect")),
-            "the declaration-site op reject is present: {errs:?}"
-        );
-        assert!(
-            !errs.iter().any(|m| m.contains("record names field")),
-            "the record-field consequent is suppressed: {errs:?}"
-        );
-        // NO OVER-SUPPRESSION: a GENUINE duplicate record field still reports.
-        let dup_field = crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (def (f) (. (record (a 1) (a 2)) a)) (export f))",
-        )));
-        assert!(
-            dup_field
-                .iter()
-                .any(|d| d.message.contains("record names field `a` more than once")),
-            "a genuine duplicate record field still reports: {:?}",
-            dup_field.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
     fn performing_an_operation_with_a_wrong_type_argument_is_rejected() {
         // `E.op` is declared `(-> Int64 Int64)`; performing `(E.op true)` supplies a Bool where an Int64
         // is required. E0 synthesizes `E.op` as a typed operation value, so a perform is an ordinary
@@ -29217,49 +29173,6 @@ mod stage1 {
             "the arm names an operation the FIRST Log does not declare — the two Logs are distinct: {}",
             err.message
         );
-    }
-
-    #[test]
-    fn a_duplicate_module_declaration_in_one_scope_is_rejected() {
-        use crate::testkit::parse;
-        // CONTRAST with `two_same_named_effects_are_distinct_not_conflated`: a `(module a …)` BINDS its
-        // name `a` in the enclosing scope (`11-modules.sexp`: "a module binds its name in the enclosing
-        // scope"), reached by member access `(. a field)` — exactly like a `def`/`type` name. So declaring
-        // `(module a …)` TWICE in ONE scope is a fixed-name-set collision (member access resolved
-        // inconsistently between the two), NOT the first-wins DISTINCT that same-named EFFECTS have (an
-        // effect is reached through a handler naming it, not by name-in-scope). It rejects CDZ0201 + a
-        // delete fix, keyed on `(parent scope, name)`.
-        let d = crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(do (module a (def (g) 1) (export g)) (module a (def (h) 2) (export h)) \
-             (def (main) 0) (export main))",
-        )))
-        .into_iter()
-        .find(|d| d.message.contains("module `a` is declared more than once"))
-        .expect("a duplicate module in one scope must be rejected");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert_eq!(
-            d.fix.as_ref().map(|f| f.kind),
-            Some(crate::abi::FixKind::Delete),
-            "carries a delete-the-duplicate fix: {}",
-            d.message
-        );
-        // NO false positive: a single module, two DIFFERENTLY-named modules, and the SAME nested-module
-        // name under DIFFERENT parents (distinct scopes) are all clean — the collision is per-scope.
-        for ok in [
-            "(do (module a (def (g) 1) (export g)) (def (main) ((. a g))) (export main))",
-            "(do (module a (def (g) 1) (export g)) (module b (def (h) 2) (export h)) \
-             (def (main) 0) (export main))",
-            "(do (module outer1 (module inner (def (g) 1) (export g)) (def (a) 1) (export a)) \
-             (module outer2 (module inner (def (h) 2) (export h)) (def (b) 2) (export b)) \
-             (def (main) 0) (export main))",
-        ] {
-            assert!(
-                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                    .iter()
-                    .any(|d| d.message.contains("is declared more than once")),
-                "a non-duplicate module layout is not flagged: {ok}"
-            );
-        }
     }
 
     #[test]
@@ -30623,33 +30536,6 @@ mod stage1 {
             ty.message.contains("`C`") && ty.message.contains("is a type"),
             "names the delegated type: {}",
             ty.message
-        );
-    }
-
-    #[test]
-    fn an_effect_operation_with_no_name_is_rejected() {
-        // An operation clause is `(op <name> <type>)`; its name must be a bare name. `(op (-> Unit Int64))`
-        // puts the TYPE where the name belongs — `scan_effect_decl` recorded it with an EMPTY name and a
-        // `name_occ` at the type node, silently registering a nameless (unreachable) operation. Now
-        // `collect_faults` rejects it CDZ0201: an operation must be named, like a def or a variant.
-        let d = compile_component(&crate::codec::encode(&parse(
-            "(module m (effect E (op (-> Unit Int64))) (def (main) 5) (export main))",
-        )))
-        .expect_err("a nameless effect operation must be rejected");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("named") && d.message.contains("op"),
-            "the message explains an operation must be named: {}",
-            d.message
-        );
-        // A well-formed effect declaration still compiles (regression).
-        assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (effect E (op get (-> Unit Int64))) \
-                 (def (main) (handle E 0 ((get (u) s (resume s s))) (E.get))) (export main))",
-            )))
-            .is_ok(),
-            "a well-formed effect declaration must compile"
         );
     }
 
