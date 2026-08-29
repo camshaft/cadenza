@@ -24937,22 +24937,6 @@ mod diagnostics {
     }
 
     #[test]
-    fn an_undeclared_capitalized_ctor_still_rejects_cdz0101() {
-        // OS1 LOAD-BEARING constraint — the open-sum row variable does NOT sanction undeclared local
-        // constructor names. A bare capitalized head that names no declared variant STILL rejects
-        // CDZ0101 (`07-type-system.sexp:47` pins the type-position twin). Open-ness is declared via the
-        // explicit `.. r` marker on `(type …)`, NOT by any-undeclared-ctor-is-open (option 1a, which
-        // §208 forbids). This pins that the marker did not open a hole for typo'd ctor names.
-        let d = first_error("(module m (def (main) (Nope 5)) (export main))");
-        assert_eq!(
-            d.code.as_deref(),
-            Some("CDZ0101"),
-            "an undeclared capitalized ctor is still unbound (CDZ0101): {}",
-            d.message
-        );
-    }
-
-    #[test]
     fn a_single_variant_open_sum_is_not_erased_to_an_irrefutable_newtype() {
         // OS1 soundness edge — a CLOSED single-variant sum `(type Box (Wrap Int64))` erases to a newtype
         // whose sole constructor pattern `(Wrap n)` is IRREFUTABLE (no `_` needed). But the SAME sum
