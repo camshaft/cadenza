@@ -63,6 +63,19 @@ if [ "$_sub" = "xtask" ] && [ "${2:-}" = "build" ] && [ -z "${3:-}" ]; then
   exec nix run "$_flake#build"
 fi
 
+# ROUTE `cargo xtask test` → `nix run <flake>#fast-gate` (v-fleet-tooling, coord v-xtask-decompose seq-202
+# 2026-08-29). The xtask `test` GUARDRAIL (which merely REFUSED `cargo test --workspace` + pointed devs at
+# dev-gate/fast-gate) is being DELETED to shrink xtask; routing here does the RIGHT cached thing instead of
+# erroring — `#fast-gate` is the touched-crate test+clippy+fmt the guardrail already redirected to. This is a
+# real EXEC route (a `cargo-nix-hints.tsv` entry only prints a WARN, it never routes — so a hint alone would
+# dead-end `cargo xtask test` once `Cmd::Test` is gone). Mirrors the `cargo xtask build` route above; landed
+# BEFORE the arm-removal so there is no dead-end window (this pre-empts the vanished subcommand).
+if [ "$_sub" = "xtask" ] && [ "${2:-}" = "test" ]; then
+  _flake="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+  echo "cargo-shim: routing 'cargo xtask test' → nix run $_flake#fast-gate (all-nix: cached touched-crate test+clippy+fmt — the guardrail's redirect target; bypass with CDZ_NO_CARGO_SHIM=1)." >&2
+  exec nix run "$_flake#fast-gate"
+fi
+
 # ROUTE a whole-workspace / front-end `cargo build` (NO `-p`, NO `--target`) → `nix run <flake>#build`. Two
 # escape hatches to REAL cargo (silent pass-through), because `.#build` materializes the HOST-NATIVE
 # front-end only:
