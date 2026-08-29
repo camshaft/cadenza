@@ -4466,7 +4466,8 @@
            downgrade the message. A genuine typo (a name that was never a member) still takes the ordinary
            CDZ0201 unknown-member did-you-mean, so this fires ONLY on the fixed retired set.")
   (input  (do (def (main) (Map.size (Map.insert (Map.empty) 1 10))) (export main)))
-  (error CDZ0603))
+  (error CDZ0603 (message "`Map.size` was renamed to `Map.len`") (message "write `(. Map len)`")
+                 (fix (kind replace) (replacement "len") (verified))))
 
 (case "the retired Tuple.cat name is rejected with the Tuple.concat rename fix-it (CDZ0603)"
   (doc    "The Tuple leg of the naming cutover: `Tuple.cat` was renamed to `Tuple.concat` (join two → one,
@@ -4475,7 +4476,8 @@
            CDZ0603 for the Tuple.cat leg specifically — the corpus previously pinned only Map.size, so a
            future change could have broken the diagnostic for Tuple without any graded case catching it.")
   (input  (do (def (main) (. (Tuple.cat #tuple(1 2) #tuple(3 4)) 0)) (export main)))
-  (error CDZ0603))
+  (error CDZ0603 (message "`Tuple.cat` was renamed to `Tuple.concat`") (message "write `(. Tuple concat)`")
+                 (fix (kind replace) (replacement "concat") (verified))))
 
 (case "the retired Tuple.pop name is rejected with the Tuple.remove rename fix-it (CDZ0603)"
   (doc    "The third leg of the cutover: `Tuple.pop` was renamed to `Tuple.remove` (Set/Map already used
@@ -4484,7 +4486,8 @@
            Completes the graded-corpus coverage of CDZ0603 across all three retired names (Map.size /
            Tuple.cat / Tuple.pop), so a regression on any one leg is caught by the shared gate.")
   (input  (do (def (main) (. (Tuple.pop #tuple(1 2 3)) 0)) (export main)))
-  (error CDZ0603))
+  (error CDZ0603 (message "`Tuple.pop` was renamed to `Tuple.remove`") (message "write `(. Tuple remove)`")
+                 (fix (kind replace) (replacement "remove") (verified))))
 
 (case "an unknown member name is rejected with a did-you-mean (CDZ0201)"
   (doc    "The GENERIC unknown-member reject the CDZ0603 rename cases above refer to: a member name that was
