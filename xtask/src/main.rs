@@ -141,6 +141,13 @@ enum Cmd {
     /// `crates/rcdzc/src/backend/wasm/runtime_abi.rs` — every declared op as `{ name, params, result }`
     /// core-signature data. The compiler builds its per-program import section from this rather than
     /// pasting opaque envelope blobs. Run after changing the runtime WIT; the output is committed.
+    ///
+    /// This is ALSO the runtime-HASH SYNC command (the flag-day PATH-B convention, operator 2026-08-29):
+    /// it recomputes the three committed content-address hashes — `REQUIRED_RUNTIME_HASH` /
+    /// `DEBUG_RUNTIME_HASH` / `REQUIRED_NFC_HASH` — from the freshly built runtime and rewrites them into
+    /// `runtime_abi.rs`. So after a runtime change, `cargo xtask codegen` is the ONE command that re-syncs
+    /// the committed hash; there is deliberately no separate `sync-hashes` (it would only duplicate this).
+    /// `--check` (below) plus the nix `*-hash-parity` checks fail on any committed-vs-freshly-computed drift.
     Codegen {
         /// Don't write; regenerate in memory and exit non-zero if the committed file is out of date.
         /// This is the STALENESS GATE (wired into `xtask check`): it makes a forgotten regeneration a
