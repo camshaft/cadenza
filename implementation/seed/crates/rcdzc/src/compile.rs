@@ -4988,7 +4988,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         }
         // A sequencing block unconditionally evaluates every statement AND the tail — descend into each.
         Core::Seq { stmts, tail } => {
-            for s in stmts {
+            for &s in stmts.iter() {
                 collect_reached_poisons(db, s, out);
             }
             collect_reached_poisons(db, tail, out);

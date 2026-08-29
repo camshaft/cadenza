@@ -1376,7 +1376,8 @@ pub enum Core {
     //= spec/capabilities/core-semantics.md#an-expression-evaluated-only-for-its-effect-yields-the-unit-value
     //# A program that terminates normally without producing a value other than through the host calls it makes MUST produce the unit value as its normal-termination value.
     Seq {
-        stmts: Vec<StructId>,
+        // Build-once-immutable; Rc<[StructId]> for the cheap memo-hit/recursive-walk clone (see `Call`).
+        stmts: std::rc::Rc<[StructId]>,
         tail: StructId,
     },
     /// A BOUNDARY BLOCK — the target of a non-local `Break` (the `?`/try-operator's enclosing boundary,

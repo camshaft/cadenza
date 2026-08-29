@@ -1483,7 +1483,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
             }
         }
         Core::Seq { stmts, tail } => {
-            for s in stmts {
+            for &s in stmts.iter() {
                 collect_closure_codes(db, s, out);
             }
             collect_closure_codes(db, tail, out);
@@ -1912,7 +1912,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             }
         }
         crate::core::Core::Seq { stmts, tail } => {
-            for s in stmts {
+            for &s in stmts.iter() {
                 collect_call_callees(db, s, out);
             }
             collect_call_callees(db, tail, out);
