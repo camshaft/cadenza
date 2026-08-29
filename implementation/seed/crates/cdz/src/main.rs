@@ -6436,6 +6436,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 compile_diag: None,
                 component_name: None,
                 report_live_objects: false,
+                tolerate_fewer_live_objects: false, // grade-only leniency; a watch `run` never grades
                 core_module: None,
                 core_export: None,
             }),
@@ -12608,6 +12609,7 @@ mod tests {
             diagnostics: None,
             component_name: None,
             report_live_objects: true,
+            tolerate_fewer_live_objects: false,
             baseline: None,
             emit_verdict: None,
             core_module: None,
@@ -12664,6 +12666,7 @@ mod tests {
             diagnostics: None,
             component_name: None,
             report_live_objects: false,
+            tolerate_fewer_live_objects: false,
             baseline: None,
             emit_verdict: None,
             core_module: None,
