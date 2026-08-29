@@ -131,17 +131,22 @@ fn generate_runtime_abi(paths: &Paths, check: bool) {
     // program pins). NFC lives in a separate imported component so the core runtime stays light (FINDING#23);
     // its address now rides inline in the heap's import (operator directive 2026-08-23: self-describing
     // imports, no runtime.toml mapping). One extra `cargo component` build.
+    // FLAG-DAY: the build still runs — for IMM_UNIT (read from the runtime's `cdz-abi` section) and its
+    // store-seeding side effect (a contract `cdz test` resolves the runtime by content address) — but its
+    // computed hashes are DISCARDED: the committed file records fixed PLACEHOLDERS (see the constants
+    // above), never the real hash, so a runtime-code change no longer churns this file. nix injects the
+    // real hash at build; the committed placeholder is only the bare-cargo fallback.
     let nfc_hash = build_nfc_hash(paths);
-    let (runtime_hash, debug_runtime_hash, imm_unit) = build_runtime_hashes(paths, &nfc_hash);
+    let (_runtime_hash, _debug_runtime_hash, imm_unit) = build_runtime_hashes(paths, &nfc_hash);
     // Build the body as tokens (`render`), pretty-print + rustfmt it (`format_tokens`), then prepend the
     // `//!` module banner as text (a module doc is awkward as a token attribute). prettyplease-then-
     // rustfmt makes the committed file agree with BOTH `fmt --check` and `codegen --check`.
     let body = format_tokens(render(
         &ops,
         iface,
-        &runtime_hash,
-        &debug_runtime_hash,
-        &nfc_hash,
+        RUNTIME_HASH_PLACEHOLDER,
+        DEBUG_HASH_PLACEHOLDER,
+        NFC_HASH_PLACEHOLDER,
         imm_unit,
     ));
     let source = format!("{}{body}", runtime_abi_banner());
@@ -198,6 +203,19 @@ fn emit_or_check(out: &PathBuf, source: &str, check: bool, oracle: &str, summary
 /// so this lands opt-in + parallel-proven (the nix path must produce the IDENTICAL hashes; see the
 /// `codegen_nix_consume_matches_self_build` parity test) before the default ever flips.
 const CODEGEN_FROM_NIX_ENV: &str = "CDZ_CODEGEN_FROM_NIX";
+
+// FLAG-DAY (runtime-hash, operator GO 2026-08-29): the runtime content hashes are NO LONGER committed.
+// nix injects the REAL hash at build (CDZ_RUNTIME_HASH / CDZ_DEBUG_RUNTIME_HASH / CDZ_NFC_HASH via
+// seedCompiler + cdzCompile → runtime_abi.rs's `option_env!` Some-branch), so the committed None-fallback
+// is a fixed, RECOGNIZABLE base62 PLACEHOLDER (NOT a real hash, NOT compile_error so bare-cargo rcdzc still
+// compiles). This kills the recurring hash-bump churn + stale-store broadcasts: a runtime-code change
+// rotates the real (injected) hash but no longer bumps this committed file. The `codegen --check` hash
+// comparison thus becomes placeholder-vs-placeholder (trivially stable); IMM_UNIT (a stable ABI constant)
+// is still read from the build. Fully dropping the self-build is a follow-up (it cascades into removing the
+// store-seeding + build machinery); this flag-day placeholders the hashes only.
+const RUNTIME_HASH_PLACEHOLDER: &str = "0PLACEHOLDERnixInjectsTheRealRUNTIMEhash00000";
+const DEBUG_HASH_PLACEHOLDER: &str = "0PLACEHOLDERnixInjectsTheRealDEBUGruntimehash";
+const NFC_HASH_PLACEHOLDER: &str = "0PLACEHOLDERnixInjectsTheRealNFCcomponenthash";
 
 /// The `nix` binary to invoke — PATH first (honor a custom/newer nix), else the standard multi-user
 /// profile location. Mirrors `fleet::nix_binary` (kept local to avoid cross-module exposure of a private
