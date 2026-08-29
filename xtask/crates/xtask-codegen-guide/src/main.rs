@@ -3,10 +3,11 @@
 //! walks the guide-doc heads, and emits the `@generated` TSX chapter module — replacing the node
 //! `scripts/codegen-chapters.mjs`. Operator: one parser (Rust), no node parser; binary AST = interchange.
 //!
-//! Renders: chapter meta → H1 + Lede; ordered blocks h2/p/note (byte-parity with chapterModel.ts) +
-//! runnable/exercise/why (I5 example blocks); inline text/em/c/br/strong/link/app-link. The PROSE subset is
-//! byte-identical to chapterModel.ts (so `check:codegen-sync` holds on the pilots); example blocks emit
-//! extraction-compatible + DOM-correct TSX (fidelity = `check:codegen` DOM vs pre-flip hand-written),
+//! Renders: chapter meta → H1 + Lede; ordered blocks h2/p/note (prose) + runnable/exercise/why (I5 example
+//! blocks); inline text/em/c/br/strong/link/app-link. This IS the guide's codegen engine (the earlier node
+//! prose core was retired when the whole guide flipped to .sexp); `check:codegen-sync` pins each committed
+//! `.tsx` to this render, and example blocks emit extraction-compatible + DOM-correct TSX (fidelity =
+//! `check:codegen` DOM vs pre-flip hand-written),
 //! including multi-file `(files (file …) …)` runnables. Usage: `[--check] <chapter.sexp>`.
 use cadenza_ast::ast::{Arenas, Struct, StructId};
 use cadenza_syntax_core::spans::SpanTable;
@@ -364,7 +365,7 @@ fn render_chapter(a: &Arenas, chapter: StructId, text: &str, spans: &SpanTable) 
     }
 
     let mut out = String::new();
-    out.push_str("// @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (chapterModel.ts).\n");
+    out.push_str("// @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).\n");
     out.push_str(&format!(
         "import {{ {} }} from \"../../components/Prose.tsx\";\n",
         prose.iter().copied().collect::<Vec<_>>().join(", ")
@@ -660,7 +661,7 @@ fn render_inline(a: &Arenas, i: StructId) -> String {
     }
 }
 
-/// JSX text escape — matches chapterModel.ts escapeText: wrap in `{"…"}` (JS-string-escaped) when the text
+/// JSX text escape: wrap in `{"…"}` (JS-string-escaped) when the text
 /// has a JSX-significant char `{}<>` OR whitespace JSX would collapse (2+ consecutive spaces, tab, newline).
 fn escape_text(text: &str) -> String {
     let has_jsx = text.contains(['{', '}', '<', '>']);

@@ -1,8 +1,8 @@
 /// The guide sexp→TSX codegen BUILD STEP (cadenza-docs I4, step F — the source-of-truth flip). For every
-/// `src/content/chapters/*.sexp`, generate the sibling `<Pascal>.tsx` chapter module via the pure codegen
-/// core (chapterModel.ts). Runs BEFORE `tsc -b` in the build so the generated TSX is type-checked
-/// (design §4.4: codegen-before-tsc). This is the thin FILESYSTEM wrapper; all schema/render logic is in the
-/// node-tested core.
+/// `src/content/chapters/*.sexp`, generate the sibling `<Pascal>.tsx` chapter module via the Rust xtask
+/// `xtask-codegen-guide` (the schema/render engine; the earlier node core was retired). Runs BEFORE `tsc -b`
+/// in the build so the generated TSX is type-checked (design §4.4: codegen-before-tsc). This is the thin
+/// FILESYSTEM wrapper; all schema/render logic lives in the xtask.
 ///
 /// MODES:
 ///   (default / `--write`): regenerate each chapter `.tsx` from its `.sexp`. The generated file carries an
@@ -41,7 +41,7 @@ function resolveOnPath(name) {
 
 // ENGINE (cadenza-docs I5): the guide sexp→TSX codegen is the Rust xtask `xtask-codegen-guide` — the MAIN
 // cadenza-syntax-sexpr parser reads each chapter .sexp into the binary AST + emits the TSX (operator: one
-// parser, no rust+node duplication; the node chapterModel.ts is retired as the engine). Build it here via
+// parser, no rust+node duplication; the earlier node core has been retired). Build it here via
 // `cargo build -p …` (the `-p` form falls through the all-nix cargo-shim to real cargo) — the guide-examples
 // nix derivation already has cargo (it runs `cargo xtask guide-wasm`), so this works in the gate too, PROVIDED
 // the crate is in that derivation's src fileset (v-nix).
