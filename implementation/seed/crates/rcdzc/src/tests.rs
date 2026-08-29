@@ -23181,49 +23181,14 @@ mod diagnostics {
         assert_eq!(ignored[0].code.as_deref(), Some("CDZ0301"));
     }
 
-    #[test]
-    fn a_non_integer_float_annotated_int_names_the_fix_path_not_a_bare_mismatch() {
-        // `(: 3.5 Int64)` — a NON-integer float literal annotated an integer type — has NO clean literal
-        // retype (truncating 3.5 loses the fraction, so the drop-the-`.0` fix that `(: 3.0 Int64)` gets
-        // does NOT apply). Without help it dead-ends at the bare "annotation type Int64 does not match
-        // value type Float64". Now it names WHY + the two real paths (annotate a float type, or round/
-        // truncate to an integer). Tail only — rounding-vs-truncating is the author's choice, so no fix.
-        let d = first_error("(module m (def (main) (: 3.5 Int64)) (export main))");
-        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-        assert!(
-            d.message.contains("fractional part")
-                && d.message.contains("annotate a float type")
-                && d.message.contains("round/truncate"),
-            "names the float-has-a-fraction reason + the annotate-float / round-to-int paths: {}",
-            d.message
-        );
-        // NO mechanical fix (the author must choose round vs truncate vs retype).
-        assert!(
-            d.fix.is_none(),
-            "a non-integer float→int has no one-shot fix (unlike the integer-valued `(: 3.0 Int64)`)"
-        );
-        // GUARD the sibling that MUST keep its clean fix: an INTEGER-valued float literal `(: 3.0 Int64)`
-        // still gets the drop-the-fractional-form retype fix (this change only added a tail to the
-        // no-clean-repair fallthrough; it must not have swallowed the literal-retype path).
-        let clean = first_error("(module m (def (main) (: 3.0 Int64)) (export main))");
-        assert_eq!(
-            clean.code.as_deref(),
-            Some("CDZ0203"),
-            "got: {}",
-            clean.message
-        );
-        assert!(
-            clean.message.contains("drop the fractional form"),
-            "an integer-valued float keeps its clean retype message: {}",
-            clean.message
-        );
-        let fix = clean
-            .fix
-            .as_ref()
-            .expect("the integer-valued float keeps its retype fix");
-        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-        assert_eq!(fix.replacement, "3", "retypes `3.0` → `3`");
-    }
+    // (a_non_integer_float_annotated_int_names_the_fix_path_not_a_bare_mismatch migrated to corpus
+    // 06-numeric-model by ENHANCING the two existing drop-fraction cases with the message facets it
+    // protected: "a non-integer float literal annotated an integer type carries NO drop-fraction fix"
+    // ((: 2.5 Int64) → CDZ0203 (message "fractional part")(message "annotate a float type")
+    // (message "round/truncate")(no-fix) — names WHY + the two real paths, not a bare mismatch) + "an
+    // integer-valued float literal annotated an integer type offers a drop-the-fraction fix (Int64)"
+    // ((: 3.0 Int64) → CDZ0203 (message "drop the fractional form")(fix (kind replace)(replacement "3"))
+    // — the guard that the clean literal-retype path survives). --case grades the message facets.)
 
     #[test]
     fn a_partial_application_of_a_builtin_operation_declines_honestly_naming_the_op() {
