@@ -5896,6 +5896,15 @@
   (output (: 10 Int64))
   (warns  CDZ0307 (message "computed but discarded")))
 
+(case "an ill-typed non-final do-statement is still caught though its value is discarded"
+  (doc    "A non-final `do` form is EVALUATED for effect (value discarded), but the fault walk descends into
+           EVERY form, not only the tail — so an ill-typed intermediate is still rejected. `(do (if 5 1 2)
+           42)` has a non-Bool `if` condition in the discarded first position → CDZ0203 'if condition must
+           be Bool', not silently skipped because its value is unused. (migrated from rcdzc
+           a_do_block_with_an_ill_typed_intermediate_is_still_caught.)")
+  (input  (do (def (main) (do (if 5 1 2) 42)) (export main)))
+  (error  CDZ0203 (message "condition must be Bool")))
+
 ; The DIVIDE-BY-ZERO face of the same elision: the trap-observation rule is about WHETHER the value is
 ; observed, not WHICH trap it would raise. An unused binding whose init is a divide-by-zero (`(/ 100 d)`
 ; at d = 0) is elided exactly as the overflow one above — the ÷0 trap does not occur and the body's value

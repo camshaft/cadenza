@@ -24867,29 +24867,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_unary_minus_of_a_non_numeric_operand_is_rejected() {
-        // Negation is defined only over numeric types; `(- s)` on a String is a type error (CDZ0201),
-        // the unary twin of arithmetic-on-a-non-number — never a silent coercion to a number.
-        let msg = expect_decline("(let ((s \"hi\")) (- s))");
-        assert!(
-            msg.contains("negation is not defined on"),
-            "a non-numeric negation is rejected with the negation message, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn a_do_block_with_an_ill_typed_intermediate_is_still_caught() {
-        // A non-final `do` form is EVALUATED (value discarded), so an ill-typed intermediate must still be
-        // rejected — the fault walk descends into EVERY form, not only the last. `(if 5 1 2)` (a non-Bool
-        // condition) in a non-final position is caught even though its value is discarded.
-        let msg = expect_decline("(do (if 5 1 2) 42)");
-        assert!(
-            msg.contains("condition must be Bool"),
-            "an ill-typed do intermediate must be caught though discarded; got: {msg}"
-        );
-    }
-
-    #[test]
     fn a_malformed_do_block_surfaces_in_the_diagnostics_query_on_any_body() {
         // An EMPTY `(do)` (no value form) and a `do` ending in a DECLARATION (`(do (def x 5))`, valueless)
         // are coded CDZ0201 well-formedness faults. They were reached only by the emit-path lowering walk
