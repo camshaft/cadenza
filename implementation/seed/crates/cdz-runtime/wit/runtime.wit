@@ -97,6 +97,12 @@ interface heap {
   //    it emits `dup` once a construct first shares a handle. ──
   dup: func(handle: u32);  // 19
   drop: func(handle: u32); // 20
+  // `dup-if-shared` (semantically "dup-if-rc-gt-1"; WIT names cannot have a numeric `-1` segment) —
+  //    SHARING-AWARE conditional retain: dup the handle (rc++) IFF it is currently SHARED (rc > 1), else a
+  //    no-op; returns the handle. The compiler emits it where a payload borrowed out of a boundary-owned
+  //    scrutinee escapes into a result ctor: it needs an independent ref only when the scrutinee is
+  //    caller-shared (rc > 1), NOT when uniquely owned (rc == 1). No-op for an immediate/immortal.
+  dup-if-shared: func(handle: u32) -> u32;  // (codegen-assigned index; name-sorted)
 
   // ── Map (indices 21–25) — a key→value collection with DYNAMIC keys, a DISTINCT type from a
   //    record (whose field set is fixed and whose "keys" are compile-time indices). Both keys and
