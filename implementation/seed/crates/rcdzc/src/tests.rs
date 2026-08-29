@@ -42067,6 +42067,83 @@ mod sidecar_driven {
         }
     }
 
+    /// `EmitTestsShredStandalone` FORCES the standalone shape even when a shared LIBRARY exists — the
+    /// operator-hybrid mode for small-closure suites: no main, each `@test` a SELF-CONTAINED component (its lib
+    /// INLINED), `main-file` = "". Contrast `EmitTestsShred` on the SAME fixture (recursive `tri` helper), which
+    /// emits a main + consumers. This is the key win: a compound-param `@test` that would DECLINE at the peer
+    /// boundary shreds cleanly here (no boundary), so a suite gets FULL coverage. Fixture reuses the recursive
+    /// helper (which UNDER `EmitTestsShred` produces a main) to prove the variant SUPPRESSES it.
+    #[test]
+    fn emit_tests_shred_standalone_forces_no_main_even_with_a_library() {
+        let src = crate::codec::encode(&parse(
+            "(do \
+             (def (tri (: n Int64)) (if (= n 0) 0 (+ n (tri (- n 1))))) \
+             (@ test (def (t-a) (if (= (tri 3) 6) unit (trap \"x\")))) \
+             (@ test (def (t-b) (if (= (tri 4) 10) unit (trap \"x\")))))",
+        ));
+        let out = crate::host::run_with_compiler_stack(|| {
+            crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "suite", src.clone()),
+                    Artifact::new(
+                        sidecar::KIND_SIDECAR,
+                        "drive",
+                        sidecar::encode(&[Request::EmitTestsShredStandalone]),
+                    ),
+                ],
+                &[],
+            )
+        });
+        assert!(
+            !out.has_error(),
+            "standalone-forced shred does not error: {:?}",
+            out.diagnostics
+        );
+        // NO main provider — even though `tri` is an emitted (recursive) library def.
+        assert!(
+            out.artifacts.iter().all(|a| a.kind != "component-provider"),
+            "EmitTestsShredStandalone emits NO main even with a library"
+        );
+        // Two self-contained per-test components, all valid; manifest main-file "" for both.
+        let consumer_names: Vec<&str> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == crate::backend::Target::Wasm.artifact_kind())
+            .map(|a| a.name.as_str())
+            .collect();
+        assert!(
+            consumer_names.contains(&"test-t-a") && consumer_names.contains(&"test-t-b"),
+            "self-contained per-test components: {consumer_names:?}"
+        );
+        for a in &out.artifacts {
+            if a.kind == crate::backend::Target::Wasm.artifact_kind() {
+                let mut v =
+                    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+                v.validate_all(&a.bytes).unwrap_or_else(|e| {
+                    panic!("standalone-forced shred `{}` validates: {e}", a.name)
+                });
+            }
+        }
+        let manifest = out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == crate::sidecar::KIND_SHRED_MANIFEST)
+            .expect("a shred-manifest artifact");
+        let arena = crate::codec::decode(&manifest.bytes).expect("manifest decodes");
+        let entries = arena
+            .as_form(arena.root, "shred-manifest")
+            .expect("(shred-manifest …)");
+        assert_eq!(entries.len(), 2);
+        for &e in entries {
+            let f = arena.as_form(e, "entry").expect("(entry …)");
+            assert_eq!(
+                arena.as_str(f[6]).expect("main-file Str"),
+                "",
+                "standalone-forced: main-file empty (no --peer)"
+            );
+        }
+    }
+
     #[test]
     fn consumer_only_emits_the_closure_hash_sidecar() {
         // GATE-PERF (codegen-skip-on-HIT, v-compiler-perf ↔ v-cdz-tooling): `EmitTestsConsumerOnly` now
