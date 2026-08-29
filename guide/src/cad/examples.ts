@@ -182,10 +182,10 @@ def main() = host Param in
    let t = Param.thickness() in
    let r = Param.bore() in
      lower(plate(w, d, t, r)))`,
-    sexpr: `(pragma param (param (: widget slider) (: range (list 20 200)) (: default 50)) (: width Rational))
-(pragma param (param (: widget slider) (: range (list 20 150)) (: default 30)) (: depth Rational))
-(pragma param (param (: widget slider) (: range (list 2 20)) (: default 5)) (: thickness Rational))
-(pragma param (param (: widget slider) (: range (list 1 15)) (: default 3)) (: bore Rational))
+    sexpr: `(pragma param (param (: widget slider) (: range #list(20 200)) (: default 50)) (: width Rational))
+(pragma param (param (: widget slider) (: range #list(20 150)) (: default 30)) (: depth Rational))
+(pragma param (param (: widget slider) (: range #list(2 20)) (: default 5)) (: thickness Rational))
+(pragma param (param (: widget slider) (: range #list(1 15)) (: default 3)) (: bore Rational))
 (def (plate (: w Rational) (: d Rational) (: t Rational) (: r Rational)) (hole-through (box w d t) r t))
 (def (main)
   (host (Param)
@@ -217,10 +217,10 @@ def main() = host Param in
    let t = Param.bthickness() in
    let r = Param.bbore() in
      lower(bracket(w, d, t, r)))`,
-    sexpr: `(pragma param (param (: widget slider) (: range (list 1 8)) (: default 3)) (: bwidth Rational))
-(pragma param (param (: widget slider) (: range (list 1 6)) (: default 2)) (: bdepth Rational))
-(pragma param (param (: widget slider) (: range (list 1 4)) (: default 1)) (: bthickness Rational))
-(pragma param (param (: widget slider) (: range (list 1 2)) (: default 1)) (: bbore Rational))
+    sexpr: `(pragma param (param (: widget slider) (: range #list(1 8)) (: default 3)) (: bwidth Rational))
+(pragma param (param (: widget slider) (: range #list(1 6)) (: default 2)) (: bdepth Rational))
+(pragma param (param (: widget slider) (: range #list(1 4)) (: default 1)) (: bthickness Rational))
+(pragma param (param (: widget slider) (: range #list(1 2)) (: default 1)) (: bbore Rational))
 (def (bracket (: w Rational) (: d Rational) (: t Rational) (: r Rational))
   (hole-through (box (inch w) (inch d) (inch t)) (inch r) (inch t)))
 (def (main)
@@ -274,11 +274,11 @@ def standing-arm(wid: Rational, rise: Rational, t: Rational, r: Rational) =
 def main() = host Param in
   (let len = Param.pa-len() in let wid = Param.pa-wid() in let t = Param.pa-thick() in let rise = Param.pa-rise() in let r = Param.pa-bolt() in
      lower(fuse(base-plate(len, wid, t, r), standing-arm(wid, rise, t, r))))`,
-    sexpr: `(pragma param (param (: widget slider) (: range (list 20 80)) (: default 40)) (: pa-len Rational))
-(pragma param (param (: widget slider) (: range (list 15 50)) (: default 30)) (: pa-wid Rational))
-(pragma param (param (: widget slider) (: range (list 2 10)) (: default 4)) (: pa-thick Rational))
-(pragma param (param (: widget slider) (: range (list 10 50)) (: default 25)) (: pa-rise Rational))
-(pragma param (param (: widget slider) (: range (list 1 8)) (: default 3)) (: pa-bolt Rational))
+    sexpr: `(pragma param (param (: widget slider) (: range #list(20 80)) (: default 40)) (: pa-len Rational))
+(pragma param (param (: widget slider) (: range #list(15 50)) (: default 30)) (: pa-wid Rational))
+(pragma param (param (: widget slider) (: range #list(2 10)) (: default 4)) (: pa-thick Rational))
+(pragma param (param (: widget slider) (: range #list(10 50)) (: default 25)) (: pa-rise Rational))
+(pragma param (param (: widget slider) (: range #list(1 8)) (: default 3)) (: pa-bolt Rational))
 (def (base-plate (: len Rational) (: wid Rational) (: t Rational) (: r Rational))
   (cut (move-z (/ t (/ 2 1)) (box len wid t)) (move-z (/ t (/ 2 1)) (move-x (/ len (/ 4 1)) (cyl (* t (/ 2 1)) r)))))
 (def (arm-flat (: wid Rational) (: rise Rational) (: t Rational) (: r Rational))
@@ -345,9 +345,9 @@ def main() = host Param in
    let len = Param.arm-length() in
    let d = Param.depth() in
      lower(snowflake(s, len, d)))`,
-    sexpr: `(pragma param (param (: widget slider) (: range (list 1 200)) (: default 42)) (: seed Int64))
-(pragma param (param (: widget slider) (: range (list 10 40)) (: default 20)) (: arm-length Rational))
-(pragma param (param (: widget slider) (: range (list 1 3)) (: default 2)) (: depth Int64))
+    sexpr: `(pragma param (param (: widget slider) (: range #list(1 200)) (: default 42)) (: seed Int64))
+(pragma param (param (: widget slider) (: range #list(10 40)) (: default 20)) (: arm-length Rational))
+(pragma param (param (: widget slider) (: range #list(1 3)) (: default 2)) (: depth Int64))
 (def (lcg-next (: s Int64)) (% (* (: 16807 Int64) s) (: 2147483647 Int64)))
 (def (roll (: s Int64) (: lo Int64) (: hi Int64)) (+ lo (% (lcg-next s) (+ (- hi lo) (: 1 Int64)))))
 (def (seed-state (: n Int64)) (+ (% n (: 2147483646 Int64)) (: 1 Int64)))
@@ -356,18 +356,18 @@ def main() = host Param in
   (let ((w (/ len (/ 8 1)))) (fuse (move-x (/ len (/ 2 1)) (box len w w)) (move-x len (ball w)))))
 (def (branch (: state Int64) (: len Rational) (: depth Int64))
   (if (= depth (: 0 Int64))
-    (tuple (segment len) (lcg-next state))
+    #tuple((segment len) (lcg-next state))
     (let ((n (roll state (: 1 Int64) (: 3 Int64))))
       (add-children (lcg-next state) len depth n (: 0 Int64) (segment len)))))
 (def (add-children (: state Int64) (: len Rational) (: depth Int64) (: n Int64) (: i Int64) (: acc (Solid Rational)))
   (if (= i n)
-    (tuple acc state)
+    #tuple(acc state)
     (let ((ang (r (roll state (: 25 Int64) (: 75 Int64)))))
       (let ((s1 (lcg-next state)))
         (let ((offset (/ (* len (r (roll s1 (: 30 Int64) (: 70 Int64)))) (/ 100 1))))
           (let ((s2 (lcg-next s1)))
             (match (branch s2 (* len (/ 3 5)) (- depth (: 1 Int64)))
-              ((tuple child s3)
+              (#tuple(child s3)
                 (let ((placed (move-x offset (rotate-z ang child))))
                   (add-children s3 len depth n (+ i (: 1 Int64)) (fuse acc (fuse placed (mirror-x placed)))))))))))))
 (def (six-fold (: arm (Solid Rational)) (: i Int64) (: acc (Solid Rational)))
@@ -376,7 +376,7 @@ def main() = host Param in
     (six-fold arm (+ i (: 1 Int64)) (fuse acc (rotate-z (r (* i (: 60 Int64))) arm)))))
 (def (snowflake (: seed0 Int64) (: len Rational) (: depth Int64))
   (match (branch (seed-state seed0) len depth)
-    ((tuple arm _) (six-fold arm (: 0 Int64) (. Solid Empty)))))
+    (#tuple(arm _) (six-fold arm (: 0 Int64) (. Solid Empty)))))
 (def (main)
   (host (Param)
     (let ((s ((. Param seed))) (len ((. Param arm-length))) (d ((. Param depth))))
@@ -420,11 +420,11 @@ def main() = host Param in
    let bald = Param.ball-dia() in
    let dd = Param.dimple-depth() in
      lower(stand(bd, td, h, bald, dd)))`,
-    sexpr: `(pragma param (param (: widget slider) (: range (list 60 120)) (: default 90)) (: base-dia Rational))
-(pragma param (param (: widget slider) (: range (list 40 100)) (: default 66)) (: top-dia Rational))
-(pragma param (param (: widget slider) (: range (list 20 80)) (: default 40)) (: height Rational))
-(pragma param (param (: widget slider) (: range (list 50 110)) (: default 80)) (: ball-dia Rational))
-(pragma param (param (: widget slider) (: range (list 2 20)) (: default 6)) (: dimple-depth Rational))
+    sexpr: `(pragma param (param (: widget slider) (: range #list(60 120)) (: default 90)) (: base-dia Rational))
+(pragma param (param (: widget slider) (: range #list(40 100)) (: default 66)) (: top-dia Rational))
+(pragma param (param (: widget slider) (: range #list(20 80)) (: default 40)) (: height Rational))
+(pragma param (param (: widget slider) (: range #list(50 110)) (: default 80)) (: ball-dia Rational))
+(pragma param (param (: widget slider) (: range #list(2 20)) (: default 6)) (: dimple-depth Rational))
 (def (profile (: br Rational) (: tr Rational) (: h Rational))
   ((. Profile PathProfile) (line-to (line-to (line-to (path-start) (v2 br 0)) (v2 tr h)) (v2 0 h))))
 (def (stand (: bd Rational) (: td Rational) (: h Rational) (: bald Rational) (: dd Rational))
