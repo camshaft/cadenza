@@ -3705,3 +3705,45 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 1111 Int64)))
+
+; NATIVE #-form compound EQUALITY (M3 native-ast-compound-data). The alias/legacy spellings of compound
+; equality are pinned above and throughout; these pin the NATIVE `#word(…)` spelling across every collection
+; kind, so `Eq`/`const_compound_eq`'s structural walk reads the native ctor-leaf heads + FieldPair entries
+; exactly like the alias. The distinguishing semantics: record/map/set equality is by CONTENTS (key/element
+; set), order-INDEPENDENT; a list is ORDERED (element sequence); nesting recurses. (The native #tuple cases
+; live above alongside the float-leaf pins.)
+
+(case "native #record equality is by field set, order-INDEPENDENT"
+  (doc "`#record((= x 1) (= y 2))` = `#record((= y 2) (= x 1))` — a record compares by its field→value map, so
+        a different field WRITE order is still equal. The native-spelling twin of the alias record-eq pins.")
+  (input (do (def (main) (= #record((= x 1) (= y 2)) #record((= y 2) (= x 1)))) (export main)))
+  (output (: true Bool)))
+
+(case "native #map equality is by entry set, order-INDEPENDENT"
+  (doc "`#map((= 1 10) (= 2 20))` = `#map((= 2 20) (= 1 10))` — a map compares by its key→value associations,
+        independent of insertion/write order.")
+  (input (do (def (main) (= #map((= 1 10) (= 2 20)) #map((= 2 20) (= 1 10)))) (export main)))
+  (output (: true Bool)))
+
+(case "native #set equality is by element set, order-INDEPENDENT"
+  (doc "`#set(1 2 3)` = `#set(3 2 1)` — a set compares by membership, independent of element order.")
+  (input (do (def (main) (= #set(1 2 3) #set(3 2 1))) (export main)))
+  (output (: true Bool)))
+
+(case "native #list equality is ORDERED — a different element order is NOT equal"
+  (doc "`#list(1 2)` /= `#list(2 1)` — a list compares by its element SEQUENCE, so reordering breaks equality
+        (the contrast to the order-independent set/map/record above).")
+  (input (do (def (main) (= #list(1 2) #list(2 1))) (export main)))
+  (output (: false Bool)))
+
+(case "native nested #record-in-#list equality recurses"
+  (doc "`#list(#record((= a 1)))` = `#list(#record((= a 1)))` — the structural walk descends the native
+        ctor-leaf heads recursively, comparing the inner record by field set.")
+  (input (do (def (main) (= #list(#record((= a 1))) #list(#record((= a 1))))) (export main)))
+  (output (: true Bool)))
+
+(case "native #set of #tuples is order-independent over compound elements"
+  (doc "`#set(#tuple(1 2) #tuple(3 4))` = `#set(#tuple(3 4) #tuple(1 2))` — a set of compound elements compares
+        by membership, and each element by the native #tuple structural walk.")
+  (input (do (def (main) (= #set(#tuple(1 2) #tuple(3 4)) #set(#tuple(3 4) #tuple(1 2)))) (export main)))
+  (output (: true Bool)))
