@@ -111,7 +111,19 @@ partial def normalize : SymExpr → SymExpr
     let args' := args.map normalize
     match foldConst? op args' with
     | some v => .const v
-    | none => .app op args'
+    | none =>
+      -- SOUND INTEGER algebraic identities (common optimizer simplifications). `x+0`/`x-0`/`x*1` preserve
+      -- the operand (incl. its traps) and never overflow; `x*0`→0 DROPS the operand so it needs a trap-free
+      -- guard. INTEGER `0`/`1` ONLY — the float analogues (`x+0.0`, `x*0.0`) are UNSOUND (`-0.0`, `nan`/`inf`).
+      let isI := fun (e : SymExpr) (n : Int) => e == SymExpr.const (Value.int n)
+      match op, args' with
+      | "+", #[a, b] => if isI b 0 then a else if isI a 0 then b else .app op args'
+      | "-", #[a, b] => if isI b 0 then a else .app op args'
+      | "*", #[a, b] => if isI b 1 then a else if isI a 1 then b
+                        else if isI b 0 && !mayTrap a then SymExpr.const (Value.int 0)
+                        else if isI a 0 && !mayTrap b then SymExpr.const (Value.int 0)
+                        else .app op args'
+      | _, _ => .app op args'
   | .tuple es => .tuple (es.map normalize)
   | .record fs => .record (fs.map (fun kv => (kv.1, normalize kv.2)))
   | .ctor tag args => .ctor tag (args.map normalize)
@@ -531,8 +543,18 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 #guard normalize (.ite (.app "<" #[.const (.int 1), .const (.int 2)]) (.var 0) (.var 1)) == SymExpr.var 0
 -- a comparison with a NON-constant operand is left symbolic (not folded).
 #guard normalize (.app "<" #[.var 0, .const (.int 5)]) == SymExpr.app "<" #[.var 0, .const (.int 5)]
--- SOUNDNESS: INTEGER arithmetic is NOT folded (needs width/overflow-trap semantics) — left symbolic.
+-- SOUNDNESS: INTEGER const arithmetic is NOT folded (needs width/overflow-trap semantics) — left symbolic.
 #guard normalize (.app "+" #[.const (.int 2), .const (.int 3)]) == SymExpr.app "+" #[.const (.int 2), .const (.int 3)]
+-- SOUND integer algebraic identities: x+0→x, x-0→x, x*1→x (operand preserved, never overflows).
+#guard normalize (.app "+" #[.var 0, .const (.int 0)]) == SymExpr.var 0
+#guard normalize (.app "-" #[.var 0, .const (.int 0)]) == SymExpr.var 0
+#guard normalize (.app "*" #[.var 0, .const (.int 1)]) == SymExpr.var 0
+-- x*0→0 ONLY when the operand is trap-free (a var here); a trapping operand keeps the multiply.
+#guard normalize (.app "*" #[.var 0, .const (.int 0)]) == SymExpr.const (.int 0)
+#guard normalize (.app "*" #[.app "/" #[.var 0, .const (.int 0)], .const (.int 0)])
+       == SymExpr.app "*" #[.app "/" #[.var 0, .const (.int 0)], .const (.int 0)]
+-- float x+0.0 is NOT simplified (unsound: -0.0) — stays symbolic.
+#guard normalize (.app "+" #[.var 0, .const (.f64 0.0)]) == SymExpr.app "+" #[.var 0, .const (.f64 0.0)]
 -- FLOAT arithmetic IS folded (IEEE total, no trap → sound): mirrors v-cdz-smith's fp-1/fp-2 false-positives.
 #guard normalize (.app "+" #[.const (.f64 475.0), .const (.f64 514.0)]) == SymExpr.const (.f64 989.0)
 #guard normalize (.app "*" #[.const (.f64 6.0), .const (.f64 7.0)]) == SymExpr.const (.f64 42.0)
