@@ -286,6 +286,18 @@ impl<'a> Printer<'a> {
                 self.leaf(&leaf);
             }
             Struct::List(items) => {
+                // A native RATIONAL value `(RationalTag <num-int> <den-int>)` (seq-204) renders as the
+                // first-class scalar literal `<num>r<den>` (e.g. `3r2`), the surface twin of
+                // `Builder::rational` — the reader lexes `3r2` straight back to the same tag node. NO
+                // `Rational.of` resugar, NO `(: … Rational)` ascription, NO `num/den` string (operator's
+                // "native value, no sugar/desugar"). Rendered here at the list level because the tag is a
+                // payloadless head (like FieldPair/Member). Children are ordinary Int atoms (num, den).
+                if let Some((num, den)) = self.a.rational_parts(id) {
+                    self.expr(num, 0);
+                    self.doc.word("r");
+                    self.expr(den, 0);
+                    return;
+                }
                 // Depth guard: `expr` is the printer's single recursion hub (every mutually-recursive
                 // shape helper reaches a child through it). Only a `List` descends, so guard HERE. Past
                 // MAX_PRINT_DEPTH (far above any reader-parseable nesting) emit an elision instead of
@@ -9458,6 +9470,20 @@ mod tests {
         assert_eq!(assert_roundtrip("1.5", 80), "1.5");
         assert_eq!(assert_roundtrip("1000000", 80), "1000000");
         assert_eq!(assert_roundtrip("0b1010", 80), "0b1010");
+    }
+
+    #[test]
+    fn native_rational_literal_prints_and_reparses() {
+        // seq-204: a rational is a FIRST-CLASS native literal `<num>r<den>` (the `r` marker — NOT `/`, which
+        // is Int64 integer division) that lexes to the native `(RationalTag <num-int> <den-int>)` node and
+        // prints STRAIGHT BACK — NO `Rational.of` resugar, NO `(: … Rational)` ascription, NO `num/den`
+        // string (operator: native value, no sugar/desugar). Idempotent ml→binary→ml round-trip.
+        assert_eq!(assert_roundtrip("3r2", 80), "3r2");
+        assert_eq!(assert_roundtrip("-3r2", 80), "-3r2"); // sign rides the numerator
+        assert_eq!(assert_roundtrip("22r7", 80), "22r7"); // multi-digit num + den
+        assert_eq!(assert_roundtrip("1r3", 80), "1r3");
+        // A spaced `3 / 2` is UNAFFECTED — it stays Int64 division, never a rational literal.
+        assert_eq!(assert_roundtrip("3 / 2", 80), "3 / 2");
     }
 
     #[test]

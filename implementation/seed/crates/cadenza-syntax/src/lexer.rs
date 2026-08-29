@@ -470,6 +470,22 @@ impl<'a> Lexer<'a> {
         while matches!(self.peek(), Some(c) if c.is_ascii_digit() || c == '_') {
             end = self.bump().unwrap().span;
         }
+        // A native RATIONAL literal `<int>r<int>` (`3r2` = 3/2; seq-204): an integer numerator, a
+        // lowercase `r` marker (mirroring the `R` Rational suffix `5R`=5/1), an integer denominator, NO
+        // spaces. Checked BEFORE the float/exponent/suffix peel so it only fires on a plain-INTEGER
+        // numerator (a rational's parts are integers; `3.5` never reaches here as a rational num). Only when
+        // a DIGIT follows `r` (so a bare `3r` stays `3` + the identifier `r`). `/` is NEVER a rational —
+        // unspaced `3/2` is Int64 integer division. The parser splits `<num>r<den>` into a rational node.
+        if self.peek() == Some('r') && self.peek2().is_some_and(|c| c.is_ascii_digit()) {
+            end = self.bump().unwrap().span; // r
+            while matches!(self.peek(), Some(c) if c.is_ascii_digit() || c == '_') {
+                end = self.bump().unwrap().span;
+            }
+            return Token {
+                kind: Kind::Rational,
+                span: a.span.merge(end),
+            };
+        }
         // fractional part: `.` followed by a digit.
         if self.peek() == Some('.') && self.peek2().is_some_and(|c| c.is_ascii_digit()) {
             is_float = true;
