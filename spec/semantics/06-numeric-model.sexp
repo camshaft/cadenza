@@ -13012,3 +13012,16 @@
     (export main)))
   (call main (: 5 Int64)) (output (: 281 Int64))
   (call main (: 2 Int64)) (output (: 182 Int64)))
+
+(case "cdzw62 SYMBOL values — runtime-selected equality and set dedup — round-trip the cadenza hop"
+  (doc "Symbol hop census (breaker): a runtime-selected symbol compared against a literal (n=7 → alpha
+        = alpha → 1; n=-1 → beta ≠ alpha → 0) and a symbol SET collapsing a runtime-selected duplicate
+        (n=7 → {a,b,c} = 3; n=-1 → {b,c} = 2) — both faces dual-path equal and byte-idempotent, so the
+        hop preserves symbol identity and content-byte set ordering.")
+  (input (do
+    (def (f (: n Int64)) (if (= (if (> n 0) #"alpha" #"beta") #"alpha") 1 0))
+    (def (g (: n Int64)) (Set.len #set((if (> n 0) #"a" #"b") #"b" #"c")))
+    (def (main (: n Int64)) (+ (* 10 (f n)) (g n)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 13 Int64))
+  (call main (: -1 Int64)) (output (: 2 Int64)))
