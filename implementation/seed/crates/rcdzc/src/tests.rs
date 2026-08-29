@@ -18341,32 +18341,10 @@ mod match_engine {
     }
 
     #[test]
-    fn a_bool_list_match_missing_a_lead_value_or_the_empty_arm_still_rejects() {
-        // The saturation relaxation is SOUND — it fires ONLY when both bool values AND the empty list are
-        // covered. A single bool-lead arm does not saturate the first element (the other value is
-        // uncovered), and dropping the empty arm leaves length 0 uncovered — both stay CDZ0210.
-        assert_eq!(
-            reject_code(
-                "(module m (def (f (: xs (List Bool))) \
-                   (match xs ((list) 0) ((list true .. r) 1))) \
-                 (def (main) (f (list true))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0210"),
-            "only one bool-lead value → the other first-element value is uncovered"
-        );
-        assert_eq!(
-            reject_code(
-                "(module m (def (f (: xs (List Bool))) \
-                   (match xs ((list true .. r) 1) ((list false .. r) 2))) \
-                 (def (main) (f (list true))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0210"),
-            "no empty arm → length 0 is uncovered even when the first element saturates"
-        );
-    }
-
+    // (a_bool_list_match_missing_a_lead_value_or_the_empty_arm_still_rejects migrated to corpus
+    // 05-compound-types, the saturation-soundness reject block after the bool/ctor-lead-saturating cases:
+    // a bool-lead match covering only one bool value → CDZ0210 (the other first-element value uncovered);
+    // no empty arm → CDZ0210 (length 0 uncovered). --case grades the reject codes.)
     #[test]
     fn a_sum_variants_list_payload_split_across_empty_and_rest_arms_is_exhaustive() {
         // A sum variant whose LIST PAYLOAD is refined by MULTIPLE arms that jointly cover every length —
@@ -18417,59 +18395,12 @@ mod match_engine {
         // COMPILE-time exhaustiveness pins above (a list-arm set covering empty + every non-empty is total).
     }
 
-    #[test]
-    fn a_sum_list_payload_with_an_uncovered_length_still_rejects() {
-        // Sound: the list-payload split relaxation covers a variant ONLY when its arms jointly span every
-        // length. A lone `(list x .. r)` leaves length 0 uncovered; an `(list) + (list a b .. r)` leaves
-        // length 1 uncovered (a gap between the exact-0 and the ≥2 rest); a missing sibling variant is
-        // uncovered — all stay CDZ0210.
-        for src in [
-            // only the non-empty arm — length 0 uncovered.
-            "(module m (type Box (Bx (List Int64))) \
-               (def (f (: b Box)) (match b ((Bx (list x .. _r)) x))) \
-               (def (main) (f (Bx (list 7)))) (export main))",
-            // exact-0 + at-least-2 — length 1 is a gap.
-            "(module m (type Box (Bx (List Int64))) \
-               (def (f (: b Box)) (match b ((Bx (list)) 0) ((Bx (list a b .. _r)) a))) \
-               (def (main) (f (Bx (list 7)))) (export main))",
-            // a covered Some payload but no None arm — the sibling variant is uncovered.
-            "(module m (def (f (: o (Option (List Int64)))) \
-               (match o ((Some (list)) 0) ((Some (list x .. _r)) x))) \
-               (def (main) (f (Some (list 7)))) (export main))",
-        ] {
-            assert_eq!(
-                reject_code(src).as_deref(),
-                Some("CDZ0210"),
-                "an uncovered length / variant still rejects: {src}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_ctor_list_match_missing_a_variant_or_the_empty_arm_still_rejects() {
-        // Sound: the ctor-saturation relaxation fires ONLY when EVERY variant AND the empty list are covered.
-        // A missing variant leaves that first-element value uncovered; a missing empty arm leaves length 0.
-        assert_eq!(
-            reject_code(
-                "(module m (type C (R) (G) (B)) (def (f (: xs (List C))) \
-                   (match xs ((list) 0) ((list (R) .. _r) 1) ((list (G) .. _r) 2))) \
-                 (def (main) (f (list (R)))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0210"),
-            "a missing variant (B) → that first-element value is uncovered"
-        );
-        assert_eq!(
-            reject_code(
-                "(module m (def (f (: xs (List (Option Int64)))) \
-                   (match xs ((list (Some x) .. _r) x) ((list (None) .. _r) 99))) \
-                 (def (main) (f (list (None)))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0210"),
-            "no empty arm → length 0 uncovered even when the variant set saturates"
-        );
-    }
+    // (a_sum_list_payload_with_an_uncovered_length_still_rejects + a_ctor_list_match_missing_a_variant_or_the_empty_arm_still_rejects
+    // migrated to corpus 05-compound-types, the saturation-soundness reject block: a sum-payload list match
+    // with only the non-empty arm / an exact-0 + at-least-2 gap / an Option covering only Some → CDZ0210;
+    // a ctor-lead match missing a variant / with no empty arm → CDZ0210. All pin that the saturation
+    // relaxation fires ONLY on JOINTLY-total coverage; any length/value/variant gap still rejects. --case
+    // grades the reject codes (all 7 across the block PASS).)
 
     #[test]
     fn a_refutable_ctor_list_element_still_requires_a_catch_all() {

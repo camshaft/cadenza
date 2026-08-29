@@ -6469,6 +6469,46 @@
   (call   main (: 2 Int64))
   (output (: 99 Int64)))
 
+; SOUNDNESS of the saturation relaxation: it fires ONLY when the arms JOINTLY span every length AND every
+; first-element value/variant. Any gap — a missing bool-lead value, a missing empty arm (length 0), a
+; length-1 gap between an exact-0 and an at-least-2 rest, a missing sibling variant — stays CDZ0210
+; non-exhaustive. Migrated from rcdzc a_bool_list_match_missing_a_lead_value_or_the_empty_arm_still_rejects +
+; a_sum_list_payload_with_an_uncovered_length_still_rejects + a_ctor_list_match_missing_a_variant_or_the_empty_arm_still_rejects.
+(case "a bool-lead list match covering only one bool value still rejects (the other first-element value is uncovered)"
+  (input  (do (def (f (: xs (List Bool))) (match xs ((list) 0) ((list true .. r) 1)))
+              (def (main) (f (list true))) (export main)))
+  (error  CDZ0210))
+
+(case "a bool-lead-saturating list match with no empty arm still rejects (length 0 uncovered)"
+  (input  (do (def (f (: xs (List Bool))) (match xs ((list true .. r) 1) ((list false .. r) 2)))
+              (def (main) (f (list true))) (export main)))
+  (error  CDZ0210))
+
+(case "a sum-payload list match with only the non-empty arm still rejects (length 0 uncovered)"
+  (input  (do (type Box (Bx (List Int64))) (def (f (: b Box)) (match b ((Bx (list x .. _r)) x)))
+              (def (main) (f (Bx (list 7)))) (export main)))
+  (error  CDZ0210))
+
+(case "a sum-payload list match with exact-0 and at-least-2 arms still rejects (length 1 is a gap)"
+  (input  (do (type Box (Bx (List Int64))) (def (f (: b Box)) (match b ((Bx (list)) 0) ((Bx (list a b .. _r)) a)))
+              (def (main) (f (Bx (list 7)))) (export main)))
+  (error  CDZ0210))
+
+(case "an Option-of-list match covering only Some still rejects (the None sibling is uncovered)"
+  (input  (do (def (f (: o (Option (List Int64)))) (match o ((Some (list)) 0) ((Some (list x .. _r)) x)))
+              (def (main) (f (Some (list 7)))) (export main)))
+  (error  CDZ0210))
+
+(case "a ctor-lead list match missing a variant still rejects (that first-element value is uncovered)"
+  (input  (do (type C (R) (G) (B)) (def (f (: xs (List C))) (match xs ((list) 0) ((list (R) .. _r) 1) ((list (G) .. _r) 2)))
+              (def (main) (f (list (R)))) (export main)))
+  (error  CDZ0210))
+
+(case "a ctor-lead-saturating list match with no empty arm still rejects (length 0 uncovered)"
+  (input  (do (def (f (: xs (List (Option Int64)))) (match xs ((list (Some x) .. _r) x) ((list (None) .. _r) 99)))
+              (def (main) (f (list (None)))) (export main)))
+  (error  CDZ0210))
+
 (case "a leading nested-list element dispatches on the inner list's length"
   (doc    "A nested list element with LEADING positions `(list (list a .. r1) .. r2)` dispatches on the
            INNER list's length — `(list a .. r1)` matches only a NON-empty inner list (it binds the inner
