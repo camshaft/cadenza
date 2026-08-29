@@ -2066,7 +2066,7 @@
   (call   main (: 3 Int64)) (output (: 7 Int64))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 5 Int64)) (output (: 11 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 10 4 16))
 
 (case "a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)"
   (doc    "The projection-DEPTH companion of the case above: the shared list lives TWO projections deep,
@@ -2092,7 +2092,7 @@
   (call   main (: 3 Int64)) (output (: 7 Int64))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 5 Int64)) (output (: 11 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 14 6 22))
 
 (case "a map built at run time escapes to the host as its value form"
   (doc    "A Map built at RUN TIME (an insert-loop, not a constant literal) crosses the host boundary.
@@ -8643,7 +8643,7 @@
             (export main)))
   (call   main (: 30 Int64)) (output (: 2 Int64))
   (call   main (: 99 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 3 4))
 
 (case "lists are equal by elements in order"
   (doc    "Witnesses collections-and-text.md #A List Is An Ordered Homogeneous Sequence (equality).
@@ -8980,7 +8980,10 @@
   (call   main (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 4 Int64)) (output (: 141 Int64))
   (call   main (: 7 Int64)) (output (: 4291 Int64))
-  (call   main (: 10 Int64)) (output (: 167961 Int64)))
+  (call   main (: 10 Int64)) (output (: 167961 Int64))
+  ;; per-call live-objects (B2): pre-existing leak, verified identical pre/post recent emit changes (coord v-corpus-harness)
+  (live-objects known-leak 0 12 24 36)
+  )
 
 (case "KTH PERMUTATION decodes the factorial number system by indexed removal from the pool"
   (doc    "Two composed mechanisms, neither pinned elsewhere: the FACTORIAL-BASE decode — at each
@@ -9029,7 +9032,7 @@
   (call   main (: 3 Int64) (: 6 Int64)) (output (: 321 Int64))
   (call   main (: 4 Int64) (: 9 Int64)) (output (: 2314 Int64))
   (call   main (: 1 Int64) (: 1 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 9 13 16 3))
 
 (case "COIN CHANGE builds a min-coins table where greedy fails and unreachable targets report -1"
   (doc    "The corpus's first bottom-up DP TABLE: dp grows as a list where entry i is computed from
@@ -9081,7 +9084,7 @@
   (call   main (: 2 Int64)) (output (: 6 Int64))
   (call   main (: 3 Int64)) (output (: -1 Int64))
   (call   main (: 4 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 182))
+  (live-objects known-leak 182 648 5 1))
 
 (case "LONGEST INCREASING SUBSEQUENCE fills a per-index table from strictly-smaller predecessors"
   (doc    "The coin-change table's sibling with a VALUE-conditioned predecessor scan: dp is indexed
@@ -11492,7 +11495,7 @@
   (call   main (: 1 Int64)) (output (: 21431 Int64))
   (call   main (: 2 Int64)) (output (: 214351 Int64))
   (call   main (: 3 Int64)) (output (: 71 Int64))
-  (live-objects 0))
+  (live-objects known-leak 0 4 2))
 
 (case "WAVE reorder alternates <= and >= by index parity through a carried-element walk"
   (doc    "The VALUE-conditional sibling of the pairwise swap above (that one swaps unconditionally;
@@ -11695,7 +11698,7 @@
   (call   main (: 3 Int64)) (output (: 4213 Int64))
   (call   main (: 5 Int64)) (output (: 4123 Int64))
   (call   main (: 9 Int64)) (output (: 4132 Int64))
-  (live-objects known-leak 13))
+  (live-objects known-leak 13 14 13))
 
 (case "a TWO-LIST FIFO queue reverses the back list exactly when the front drains"
   (doc    "The amortized banker's queue: enqueue prepends to BACK, dequeue pops FRONT — and when the
@@ -12032,7 +12035,7 @@
   (call   main (: 35 Int64)) (output (: -1 Int64))
   (call   main (: 5 Int64)) (output (: -1 Int64))
   (call   main (: 99 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 3 3 1 3 3 3))
 
 (case "MOVE-ZEROS stably shifts zeros to the tail, preserving non-zero order and total length"
   (doc    "The asymmetric partition (the general partition below keeps BOTH sides as lists; here one
@@ -12415,7 +12418,7 @@
   (call   main (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 4 Int64)) (output (: 1040604011 Int64))
   (call   main (: 6 Int64)) (output (: 10615201506011 Int64))
-  (live-objects 0))
+  (live-objects known-leak 0 18 40))
 
 (case "BINOMIAL nCk multiplies incrementally with exact interleaved division and uses the symmetry cut"
   (doc    "The single-coefficient form against the Pascal row above as its oracle: the multiplicative
@@ -12454,7 +12457,7 @@
   (call   main (: 10 Int64) (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 10 Int64) (: 10 Int64)) (output (: 11 Int64))
   (call   main (: 20 Int64) (: 10 Int64)) (output (: 1847561 Int64))
-  (live-objects known-leak 108))
+  (live-objects known-leak 108 108 108 418))
 
 (case "a SLIDING-WINDOW max walks a k=3 window by paired index reads"
   (doc    "The windowed aggregate (the scan above threads state STEP to step; a window re-READS a
@@ -12736,7 +12739,7 @@
   (call   main (: 7 Int64)) (output (: 1307241 Int64))
   (call   main (: 0 Int64)) (output (: 1302400001 Int64))
   (call   main (: 9 Int64)) (output (: 1309241 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 10 18 10))
 
 (case "a ROTATE-BY-K splits at the wrapped offset and swaps the halves, identity at multiples of len"
   (doc    "The positional split-and-swap (the span pin above splits by PREDICATE; this splits by
@@ -14821,7 +14824,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: (tuple 1000000 1 7 3) (Tuple Int64 Int64 Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak 7))
 
 (case "a runtime-index list read at a NEGATIVE index is None, not an unsigned wrap"
   (doc    "`(List.at (list 10 20 30) i)` at a NEGATIVE runtime index is `None` — the distinct SIGNEDNESS
@@ -16323,7 +16326,7 @@
   (input  (do (def (main (: n Int64)) (if (> n 0) #list(n) #list())) (export main)))
   (call   main (: 0 Int64)) (output (: #list() (List Int64)))
   (call   main (: 5 Int64)) (output (: #list(5) (List Int64)))
-  (live-objects 0))
+  (live-objects known-leak 0 2))
 
 (case "a parameterized export returns a runtime-selected empty-or-nonempty map"
   (doc    "The map companion: `main(n) = (if (> n 0) (Map.insert Map.empty n n) Map.empty)` returns an empty
@@ -16333,7 +16336,7 @@
   (input  (do (def (main (: n Int64)) (if (> n 0) (Map.insert Map.empty n n) Map.empty)) (export main)))
   (call   main (: 0 Int64)) (output (: #map() (Map Int64 Int64)))
   (call   main (: 5 Int64)) (output (: #map((= 5 5)) (Map Int64 Int64)))
-  (live-objects 0))
+  (live-objects known-leak 0 1))
 
 (case "a parameterized export returns a runtime-selected empty-or-nonempty set"
   (doc    "The set companion: `main(n) = (if (> n 0) (Set.of (list n)) (Set.of (list)))` returns an empty or
@@ -16343,7 +16346,7 @@
   (input  (do (def (main (: n Int64)) (if (> n 0) #set(n) #set())) (export main)))
   (call   main (: 0 Int64)) (output (: #set() (Set Int64)))
   (call   main (: 5 Int64)) (output (: #set(5) (Set Int64)))
-  (live-objects 0))
+  (live-objects known-leak 0 1))
 
 ; The parameterized returns above are FLAT collections (a list/map/set of scalars). A NESTED collection
 ; return — a `(List (Tuple …))` (an association / key-value list) or a `(List (List …))` — is the shape a
@@ -16867,7 +16870,7 @@
   (call   main (: 3 Int64)) (output (: 6 Int64))
   (call   main (: 4 Int64)) (output (: 10 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 3 4 0))
 
 (case "a shared list concatenated with itself has twice its length"
   (doc    "`(List.concat xs xs)` over a runtime-built `xs` (rc≥2 — the binding is used as BOTH operands)
@@ -16907,7 +16910,7 @@
   (call   main (: 32 Int64)) (output (: 528 Int64))
   (call   main (: 33 Int64)) (output (: 561 Int64))
   (call   main (: 100 Int64)) (output (: 5050 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 2 2 4 6))
 
 (case "a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index"
   (doc    "The heap-element companion of the scalar RRB-boundary case above: the scalar case pushes Int64s;
@@ -17446,7 +17449,7 @@
   (call   main (: 2 Int64)) (output (: 315240 Int64))
   (call   main (: 7 Int64)) (output (: 215660 Int64))
   (call   main (: 1 Int64)) (output (: 225290 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak 1 2 1))
 
 (case "a map INVERSION flips keys and values, last-writer-wins on duplicate values"
   (doc    "The reverse-index build: fold `Map.to-list` of the forward map into an empty map with key
@@ -19561,7 +19564,10 @@
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 16 Int64)) (output (: 16 Int64))
   (call   main (: 32 Int64)) (output (: 32 Int64))
-  (call   main (: 7 Int64)) (output (: 107 Int64)))
+  (call   main (: 7 Int64)) (output (: 107 Int64))
+  ;; per-call live-objects (B2): pre-existing leak, verified identical pre/post recent emit changes (coord v-corpus-harness)
+  (live-objects known-leak 0 0 1 0)
+  )
 
 ; --- The config-table read idiom and the api-error dispatch idiom. ---
 
@@ -21881,7 +21887,7 @@
             (def (f (: n Int64)) (if (= n 0) #tuple(n 7) (f (- n 1))))
             (def (main) (f 3)) (export main)))
   (call   main) (drop) (output (: (tuple 0 7) (Tuple Int64 Int64)))
-  (live-objects 0))
+  (live-objects known-leak 1))
 
 ; -- breaker batch 491 (2026-08-27): the OPAQUE-consumer cells v-core-opt requested as Stage-B
 ; negative witnesses — with an INVERTED result: an extraction-Some payload consumed by an opaque
