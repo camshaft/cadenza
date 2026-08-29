@@ -404,6 +404,28 @@
             (+ (Qty.of 1.0 (Qty.unit y)) (Qty.of 2.0 (Unit.base #"second")))))
   (error  CDZ0501))
 
+(case "a prefixed unit of a different dimension still rejects CDZ0501 (prefix scales within a dimension, never across)"
+  (doc    "A PREFIX scales WITHIN a dimension, never across: `km + second` is still CDZ0501. Pins that the
+           family/prefix relaxation (auto-convert within a dimension) does not weaken the dimensional
+           safety the layer exists for. (migrated from rcdzc
+           a_prefixed_unit_of_a_different_dimension_still_rejects_cdz0501.)")
+  (input  (do (def (main) (+ ((. Qty of) 1.0 ((. Unit prefix) kilo ((. Unit base) #"meter")))
+                             ((. Qty of) 1.0 ((. Unit base) #"second")))) (export main)))
+  (error  CDZ0501))
+
+; A `Unit.define` declares a derived unit `(Unit.define <symbol-name> <base-unit> <scale-int> <offset-int>)`
+; — exactly four args, a SYMBOL name, INTEGER scale/offset. A wrong arity, a non-symbol name (a string), or
+; a non-integer scale (a float) is a malformed declaration, CDZ0201 "a `Unit.define` is …". A well-formed
+; `Unit.define` + its use is the satisfying family elsewhere in this file. (migrated from rcdzc
+; a_malformed_unit_define_is_cdz0201.)
+(case "a Unit.define with the wrong arity is rejected"
+  (input  (do (Unit.define #"furlong" (Unit.of #"foot") 660) (def (main) 1) (export main)))
+  (error  CDZ0201 (message "a `Unit.define` is")))
+
+(case "a Unit.define with a non-integer scale is rejected"
+  (input  (do (Unit.define #"furlong" (Unit.of #"foot") 660.5 1) (def (main) 1) (export main)))
+  (error  CDZ0201 (message "a `Unit.define` is")))
+
 (case "Qty.unit recovers the unit of a quantity whose magnitude is a runtime value"
   (doc    "`(Qty.unit (Qty.of n meter))` with `n` a boundary parameter recovers the unit — meter — from the
            quantity's TYPE, which is a compile-time concern independent of the runtime magnitude `n`. Building
