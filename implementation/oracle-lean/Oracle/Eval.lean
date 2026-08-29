@@ -1733,7 +1733,17 @@ partial def evalProject (m : Module) (env : Env) (fuel : Nat) (children : Array 
         | some fv => observeShallow fv
         | none => .unsupported "eval: record has no such field (typecheck not modeled)"
       | none => .unsupported "eval: projection key is not a field name"
-    | .value _ => .unsupported "eval: projection operand is not a record (tuple/other access not modeled)"
+    -- positional TUPLE access `(. tup i)` — the field is an INTEGER index → the i-th element (observed
+    -- shallowly, like a record field). An out-of-arity index is a COMPILE error (CDZ0201, not a runtime
+    -- trap — a tuple's arity is static), so those cases are `expect-error` skips; a runtime out-of-range
+    -- reaching here is an unmodeled shape → sound skip.
+    | .value (.tuple es) =>
+      match (m.nodes[fieldId]?).bind (fun n => match n with
+              | Node.atom lid => (m.leaves[lid]?).bind Value.ofLeaf | _ => none) with
+      | some (.int i) => if 0 ≤ i && i < Int.ofNat es.size then observeShallow (es[i.toNat]!)
+                         else .unsupported "eval: tuple index out of arity (compile error, not modeled)"
+      | _ => .unsupported "eval: tuple projection index is not an integer literal"
+    | .value _ => .unsupported "eval: projection operand is not a record/tuple (other access not modeled)"
     | other => other
   | _, _ => .unsupported "eval: malformed projection"
 
