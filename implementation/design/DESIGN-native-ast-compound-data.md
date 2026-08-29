@@ -660,9 +660,13 @@ effect op-handler arm heads exempted (#5475), and empty list `()` (#5520, `ch.fi
 - **NOT `cdz rewrite`:** §12.2's "resolve-aware `cdz rewrite`" mechanism does not exist — `cdz rewrite`
   (cadenza-syntax) is a generic PATTERN→TEMPLATE structural rewriter (query-engine Rung 2) with no
   compound-nativize transform. `cdz-nativize` supersedes it for this job.
-- **Validated (2026-08-29):** ran `cdz-nativize` over the whole `05-compound-types.sexp` (1436 cases,
-  24 217 lines) → the nativized file round-trips clean (`xtask roundtrip`: 1436 programs ok, 0 failures).
-  So cdz-nativize's native output is reader-valid + printer-fixed-point across a real compound-heavy corpus.
+- **Validated (2026-08-29):** ran `cdz-nativize` over four whole corpus files spanning every tricky
+  construct, then `xtask roundtrip` on each nativized result — all reader-valid + printer-fixed-point:
+  `05-compound-types` 1436 ok, `14c-effects-and-handlers` 939 ok (handler-arm `(set …)` op heads +
+  string-head shadow-escapes), `17-symbols` 72 ok (nested sets-of-tuples with `#"sym"`),
+  `06-numeric-model` 1225 ok (nested `#set(#tuple …)`) — ~3672 cases, 0 failures. So cdz-nativize's native
+  output is reader-valid + printer-fixed-point across real corpora covering name/string/native heads, entry
+  field-pairify, nesting, handler-arm exemption, and empty lists.
 - 🪤 **Invocation gotcha:** `nix develop -c cargo run --bin cdz-nativize` prints the nix-shell BANNER to
   STDOUT (~10 lines) BEFORE the codemod output — it pollutes a `> file` redirect into an "unterminated list"
   corpus parse error. The Phase-2 migration must strip it (`awk 'f||/^[;(]/{f=1;print}'`) or run the built
