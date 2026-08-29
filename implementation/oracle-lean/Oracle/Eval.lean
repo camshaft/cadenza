@@ -1509,9 +1509,12 @@ partial def evalSeqCtor (m : Module) (env : Env) (fuel : Nat) (children : Array 
     (wrap : Array Value → Value) (strict : Bool) : Outcome :=
   -- STRICT (list): a list is heap-MATERIALIZED, so construction FORCES each element — a non-value outcome
   -- (trap/unsupported/diverges) PROPAGATES, i.e. a trapping element traps at construction even if only the
-  -- length is later taken (v-spec-oracle ruling 2026-08-28: list construction observes its elements; corpus
-  -- 28-compiler-primitives:2411, 06-numeric/0043). NON-strict (tuple/record): store a non-value element as a
-  -- `poison` (lazy — unobserved until projected, per core-semantics §Trap…Observed which names tuple/record).
+  -- length is later taken (operator ruling A / #5194; corpus 28-compiler-primitives:2411, 06-numeric/0043).
+  -- The force is DEEP (observeDeep): the list's heap cells hold VALUES not thunks, so a DEFERRED trap in a
+  -- materialized tuple/record SLOT surfaces too — `(list (tuple (/ 5 0) 1) …)` traps even though the tuple's
+  -- slot 0 is a deferred poison and the tuple is later dropped (breaker #5227, 06-numeric case 1108). A
+  -- STANDALONE tuple stays lazy (#5145 eq); it is materializing INTO the heap list that forces the slots.
+  -- NON-strict (tuple/record): store a non-value element as a `poison` (lazy — unobserved until projected).
   let rec go (js : List Nat) (acc : Except Outcome (Array Value)) : Except Outcome (Array Value) :=
     match js with
     | [] => acc
@@ -1521,7 +1524,9 @@ partial def evalSeqCtor (m : Module) (env : Env) (fuel : Nat) (children : Array 
       | .ok vs =>
         if strict then
           match evalNode m env defaultIntTy fuel j with
-          | .value v => go rest (.ok (vs.push v))
+          | .value v => (match observeDeep v with
+                         | .value fv => go rest (.ok (vs.push fv))
+                         | forced => .error forced)   -- a deferred inner slot trap surfaces at materialization
           | other => .error other
         else go rest (.ok (vs.push (outcomeToValue (evalNode m env defaultIntTy fuel j))))
   match go (children.extract 1 children.size).toList (.ok #[]) with
