@@ -35,7 +35,13 @@ pub enum OutputFormat {
 /// TIMEOUT: a run is capped at a wall-clock deadline (default 30s) so a runaway/infinite loop TRAPS
 /// instead of spinning forever; set `CDZ_RUN_TIMEOUT_SECS=<n>` to change it, or `=0` to disable the cap
 /// (e.g. under a debugger). A normal program finishes in milliseconds and never hits this.
-#[derive(clap::Args, Clone)]
+// `Default` so a construction site (the `cdz` front-end's WatchCmd::Run caller + its test literals) can
+// spread `..Default::default()` and stay compiling when a NEW field is added — killing the recurring
+// cross-crate E0063 class (a `cdz-run` field add that the `cdz`-scoped dev-gate misses, breaking the
+// `cdz` bin build). Every field's `Default` equals its clap default (Option→None, Vec→empty, bool→false,
+// `compile_status` i32→0 = `default_value_t`, `format` OutputFormat→Sexp = `default_value = "sexp"`), so a
+// spread-defaulted `RunArgs` matches a clap-parsed one with only the explicitly-set fields overridden.
+#[derive(clap::Args, Clone, Default)]
 pub struct RunArgs {
     /// The component `.wasm` to run, or `-` to read it from stdin (so it composes in a pipe:
     /// `cdz compile - -o - | cdz run -`). OMITTED — under the `cdz` front-end — means "the project in the
