@@ -298,8 +298,25 @@ there); cdz stays rcdzc-free — cdz only spawns + marshals bytes.
 **Open ownership Q → v-inference:** the `Request::EmitTestsShred` rcdzc EMIT (compile.rs artifact assembly +
 the per-test bucketing) is contained (reuses `compute_tests_consumer`/`compute_shared_closure_provider` +
 the existing composed-emit component wrap), but lives in rcdzc's sidecar/emit (v-inference's lane; they own
-`Query::TestList` too). Settle: I build it (subsystem rcdzc) with their review, or they fold it in. Blocks on
-nothing except that ownership call — the mechanism is proven above.
+`Query::TestList` too). Settle: I build it (subsystem rcdzc) with their review, or they fold it in.
+
+**⚠ DESIGN GAP found 2026-08-29 — "main" must be the WHOLE LIBRARY, not just cross-file edges.** The composed
+emit's `main` = `cross_component_edges` = defs that are BOTH shared (in another file's reachable set = imported
+cross-file) AND called by the file — the CROSS-FILE closure. A SAME-FILE suite (iterators: 360 of the ~1529
+tests, no cross-file imports) has an EMPTY cross-edge set → NO provider → the operator's uniform "main + per-test
+linking main" model produces no main. Fix: **main = ALL reachable non-`@test` defs (the whole library)**, so
+every suite (same-file or cross-file) gets a main and each thin `test-<k>` links it — uniform exec
+(`cdz-run test-<k>.wasm --peer main=main.wasm`). HYPOTHESIS (needs v-inference validation): `compute_provider_
+for_edges(db, edges)` already takes an ARBITRARY edges list, and `compute_tests_consumer(db, &[test], edges,
+iface)` excludes+imports `edges` — so passing `edges = layout.order \ test_defs` (all reachable library defs)
+should yield a whole-library main + per-test consumers that import only what they call. OPEN → v-inference: does
+that hold (reachability/index-agreement) with the FULL library as the boundary, or is a new "whole-library
+provider" layout fn needed? This gap gates the emit build (would be wrong for same-file suites otherwise).
+
+**Encoding (→ v-inference, in flight):** per the operator no-JSON/cadenza-ast-binary directive, the `test-list`
+query RESULT + the emit-shred MANIFEST should be cadenza-ast VALUES (forwarded directly, one shared codec),
+not a bespoke `u32`-count blob — asked v-inference to make `KIND_TEST_LIST` a cadenza-ast value (A) or cdz
+re-encodes (B). Same encoding lands on the emit-shred manifest.
 
 ## Coordination (critical — adjacent lanes)
 
