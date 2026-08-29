@@ -646,6 +646,25 @@ const FILTERED_DECLINE_SIGNATURES: &[&str] = &[
     "the-export-returns--which-the",
 ];
 
+/// Write the equiv-sweep symbolic-false-positive `(orig, program1)` render pairs — the cases where the
+/// oracle's symbolic normal forms differ but the sampled runtime values AGREE, so the round-trip IS
+/// equivalent and the oracle is missing a normalize rule. Each pair is written as two files
+/// `equiv-fp-N.orig.sexp` and `equiv-fp-N.program1.sexp` (the original program and its `--target cadenza`
+/// round-trip) — the exact pair v-lean-oracle reads to see which optimizer transform its normalizer must
+/// reconcile. Returns the count written.
+#[cfg(feature = "differential")]
+fn write_equiv_false_positives(
+    dir: &std::path::Path,
+    pairs: &[(String, String)],
+) -> std::io::Result<usize> {
+    std::fs::create_dir_all(dir)?;
+    for (n, (orig, program1)) in pairs.iter().enumerate() {
+        std::fs::write(dir.join(format!("equiv-fp-{n}.orig.sexp")), orig)?;
+        std::fs::write(dir.join(format!("equiv-fp-{n}.program1.sexp")), program1)?;
+    }
+    Ok(pairs.len())
+}
+
 /// Dedup declines by signature and write ONE minimal (shortest) repro `.sexp` + `.reason.txt` per
 /// distinct signature into `dir` — the breaker decline→corpus gap hand-off producer. Keeps the shortest
 /// repro seen for each signature ACROSS runs (skips overwriting when an existing repro is already no
@@ -910,6 +929,7 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
     let mut store: Option<PathBuf> = None;
     let mut cdz: Option<PathBuf> = None;
     let mut oracle: Option<PathBuf> = None;
+    let mut false_positives_dir: Option<PathBuf> = None;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -920,6 +940,9 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
             "--store" => store = it.next().map(PathBuf::from),
             "--cdz" => cdz = it.next().map(PathBuf::from),
             "--oracle" => oracle = it.next().map(PathBuf::from),
+            // Where to write the (orig, program1) render pairs for symbolic FALSE-POSITIVES (sampled
+            // values agree, oracle normal forms differ) — the hand-off for v-lean-oracle's normalizer.
+            "--false-positives-dir" => false_positives_dir = it.next().map(PathBuf::from),
             other => {
                 eprintln!("cdz-smith cadenza-equiv: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -981,18 +1004,34 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
         oracle.display(),
         findings_dir.display()
     );
-    match driver::equiv_cadenza_sweep(&cfg, &store, &cdz, &oracle, count) {
+    let mut false_positives: Vec<(String, String)> = Vec::new();
+    match driver::equiv_cadenza_sweep(&cfg, &store, &cdz, &oracle, count, &mut false_positives) {
         Ok(stats) => {
             eprintln!(
-                "[cdz-smith] cadenza-equiv done: {} trials | {} proven, {} boundary, {} confirmed-divergence ({} unconfirmed), {} not-comparable ({} new buckets)",
+                "[cdz-smith] cadenza-equiv done: {} trials | {} proven, {} boundary, {} confirmed-divergence, {} symbolic-false-positive, {} uncomparable, {} not-comparable ({} new buckets)",
                 stats.trials,
                 stats.proven,
                 stats.boundary,
                 stats.confirmed_divergences,
-                stats.unconfirmed_suspected,
+                stats.symbolic_false_positives,
+                stats.uncomparable_confirm,
                 stats.not_comparable,
                 stats.new_buckets,
             );
+            // Write the symbolic-false-positive (orig, program1) pairs for v-lean-oracle's normalizer triage.
+            if let Some(dir) = &false_positives_dir
+                && !false_positives.is_empty()
+            {
+                match write_equiv_false_positives(dir, &false_positives) {
+                    Ok(n) => eprintln!(
+                        "[cdz-smith] wrote {n} symbolic-false-positive pair(s) → {} (hand off to v-lean-oracle)",
+                        dir.display()
+                    ),
+                    Err(e) => {
+                        eprintln!("cdz-smith cadenza-equiv: cannot write false-positives dir: {e}")
+                    }
+                }
+            }
             if stats.stale_oracle {
                 eprintln!(
                     "cdz-smith cadenza-equiv: the oracle predates the (equiv …) node (#5719) — rebuild `.#oracle-lean`."

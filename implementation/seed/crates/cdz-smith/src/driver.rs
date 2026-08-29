@@ -500,8 +500,13 @@ pub struct EquivStats {
     pub boundary: u64,
     /// Suspected divergences the sampled `cadenza_diff` CONFIRMED (filed as findings).
     pub confirmed_divergences: u64,
-    /// Suspected divergences the sampled run did NOT reproduce (symbolic-only; logged, not filed).
-    pub unconfirmed_suspected: u64,
+    /// Suspected divergences where the sampled values AGREED — a SYMBOLIC FALSE-POSITIVE (the oracle's
+    /// normal forms differ but the runtime values match). v-lean-oracle's normalizer-incompleteness
+    /// metric; the `(orig, program1)` pair is collected for their triage. Not filed.
+    pub symbolic_false_positives: u64,
+    /// Suspected divergences the sampled net could NOT compare (param'd main / skip / hang) — inherent,
+    /// not a symbolic false-positive and not a divergence. Not filed.
+    pub uncomparable_confirm: u64,
     /// Programs with no comparable equiv trial (source unparseable / cadenza round-trip declined or hung).
     pub not_comparable: u64,
     /// New finding buckets created this sweep.
@@ -515,9 +520,11 @@ pub struct EquivStats {
 
 /// Run the symbolic-equivalence cadenza sweep over `count` coerced programs: build an `(equiv <orig>
 /// <cadenza-roundtrip>)` trial per program, judge in batches via `judge_batch_items`, and route each
-/// verdict. A `SuspectedDivergence` is CONFIRMED with the sampled [`crate::cadenza_diff::cadenza_diff`]
-/// before filing (never file blind on the symbolic skip). `store` is the runtime store (for the sampled
-/// confirm), `cdz` the binary (for the round-trip + confirm), `oracle` the equiv-aware `oracle-check`.
+/// verdict. A `SuspectedDivergence` is CONFIRMED with the sampled [`crate::cadenza_diff::cadenza_confirm`]
+/// before filing (never file blind on the symbolic skip): a sampled DIVERGENCE is filed; sampled
+/// VALUES-AGREE is a symbolic false-positive whose `(orig, program1)` render pair is pushed to
+/// `false_positives` for v-lean-oracle's normalizer triage; sampled uncomparable is inherent.
+/// `store` is the runtime store, `cdz` the binary (round-trip + confirm), `oracle` the equiv-aware oracle.
 #[cfg(feature = "differential")]
 pub fn equiv_cadenza_sweep(
     cfg: &Config,
@@ -525,8 +532,9 @@ pub fn equiv_cadenza_sweep(
     cdz: &std::path::Path,
     oracle: &std::path::Path,
     count: u64,
+    false_positives: &mut Vec<(String, String)>,
 ) -> std::io::Result<EquivStats> {
-    use crate::cadenza_diff::{CzDiff, cadenza_diff, equiv_trial_for};
+    use crate::cadenza_diff::{ConfirmOutcome, cadenza_confirm, equiv_trial_for};
     use crate::lean::{BatchItem, judge_batch_items};
 
     let fstore = FindingStore::open(&cfg.findings_dir)?;
@@ -536,8 +544,8 @@ pub fn equiv_cadenza_sweep(
     let _ = std::fs::create_dir_all(&tmp);
 
     const BATCH: usize = 32;
-    let mut batch_items: Vec<BatchItem> = Vec::new();
     let mut batch_srcs: Vec<String> = Vec::new();
+    let mut batch_trials: Vec<crate::lean::EquivTrial> = Vec::new();
 
     for i in 0..count {
         let seed = rng.next();
@@ -554,16 +562,18 @@ pub fn equiv_cadenza_sweep(
         let _ = std::fs::create_dir_all(&tmp);
         match equiv_trial_for(cdz, &source, &tmp) {
             Some(trial) => {
-                batch_items.push(BatchItem::Equiv(trial));
+                batch_trials.push(trial);
                 batch_srcs.push(source);
             }
             None => stats.not_comparable += 1,
         }
 
         let last = i + 1 == count;
-        if batch_items.len() >= BATCH || (last && !batch_items.is_empty()) {
-            let verdicts = judge_batch_items(oracle, &batch_items)?;
-            for (src, v) in batch_srcs.iter().zip(&verdicts) {
+        if batch_trials.len() >= BATCH || (last && !batch_trials.is_empty()) {
+            let items: Vec<BatchItem> =
+                batch_trials.iter().cloned().map(BatchItem::Equiv).collect();
+            let verdicts = judge_batch_items(oracle, &items)?;
+            for ((src, trial), v) in batch_srcs.iter().zip(&batch_trials).zip(&verdicts) {
                 match classify_equiv_verdict(v) {
                     EquivClass::StaleOracle => {
                         stats.stale_oracle = true;
@@ -588,8 +598,8 @@ pub fn equiv_cadenza_sweep(
                         // skip alone). A fresh scratch for the confirm run.
                         let _ = std::fs::remove_dir_all(&tmp);
                         let _ = std::fs::create_dir_all(&tmp);
-                        match cadenza_diff(cdz, src, store, &tmp) {
-                            CzDiff::Mismatch { direct, cadenza } => {
+                        match cadenza_confirm(cdz, src, store, &tmp) {
+                            ConfirmOutcome::Divergence { direct, cadenza } => {
                                 stats.confirmed_divergences += 1;
                                 let detail = format!(
                                     "cadenza-equiv (symbolic normalized-but-different, sampled-CONFIRMED): \
@@ -611,24 +621,36 @@ pub fn equiv_cadenza_sweep(
                                     "cadenza-equiv divergence (symbolic+sampled)",
                                 );
                             }
-                            // Symbolic suspicion not reproduced by the sampled run — do NOT file.
-                            _ => stats.unconfirmed_suspected += 1,
+                            // Sampled values AGREE while the oracle's normal forms differ = a SYMBOLIC
+                            // FALSE-POSITIVE. Collect the (orig, program1) render pair for v-lean-oracle's
+                            // normalizer triage (render the round-trip AST the trial already carries).
+                            ConfirmOutcome::ValuesAgree => {
+                                stats.symbolic_false_positives += 1;
+                                let cadenza_render =
+                                    cadenza_syntax::printer::print(&trial.cadenza, 100);
+                                false_positives.push((src.clone(), cadenza_render));
+                            }
+                            // Sampled net couldn't compare (param'd main / skip / hang) — inherent.
+                            ConfirmOutcome::Uncomparable | ConfirmOutcome::Hang => {
+                                stats.uncomparable_confirm += 1;
+                            }
                         }
                     }
                 }
             }
-            batch_items.clear();
+            batch_trials.clear();
             batch_srcs.clear();
         }
 
         if cfg.progress_every != 0 && (i + 1).is_multiple_of(cfg.progress_every) {
             eprintln!(
-                "[cdz-smith] equiv-cadenza {}/{count} | {} proven, {} boundary, {} confirmed-div ({} unconfirmed), {} not-comparable",
+                "[cdz-smith] equiv-cadenza {}/{count} | {} proven, {} boundary, {} confirmed-div, {} symbolic-fp, {} uncomparable, {} not-comparable",
                 i + 1,
                 stats.proven,
                 stats.boundary,
                 stats.confirmed_divergences,
-                stats.unconfirmed_suspected,
+                stats.symbolic_false_positives,
+                stats.uncomparable_confirm,
                 stats.not_comparable,
             );
         }

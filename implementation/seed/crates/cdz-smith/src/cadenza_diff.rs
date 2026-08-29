@@ -162,64 +162,77 @@ fn first_line(s: &str) -> String {
         .collect()
 }
 
-/// Compare the DIRECT-wasm outcome with the `--target cadenza` round-tripped outcome for one program.
-/// `tmp` is a scratch directory (unique per call). Returns [`CzDiff::Agree`] when either side skips.
-pub fn cadenza_diff(cdz: &Path, source: &str, store: &Path, tmp: &Path) -> CzDiff {
+/// An early exit from the dual-path evaluation, before a side-by-side comparison is possible.
+enum DualEarly {
+    /// A compile/run step HUNG (hit the per-call timeout); `.0` names the step.
+    Hang(&'static str),
+    /// The pair is non-comparable (scratch-write failure, or the shared front-end declined the DIRECT
+    /// path so there is nothing to round-trip).
+    Uncomparable,
+}
+
+/// Run BOTH paths (direct-wasm and `--target cadenza` round-trip) and return each side's [`Outcome`],
+/// or an early exit. Shared by [`cadenza_diff`] (value-eq classification) and [`cadenza_confirm`] (the
+/// symbolic-equivalence confirm), so the two can never drift on how the paths are run.
+fn run_dual_path(
+    cdz: &Path,
+    source: &str,
+    store: &Path,
+    tmp: &Path,
+) -> Result<(Outcome, Outcome), DualEarly> {
     let src_path = tmp.join("p.sexp");
     if std::fs::write(&src_path, source).is_err() {
-        return CzDiff::Agree; // scratch write failed — skip (never a false mismatch)
+        return Err(DualEarly::Uncomparable); // scratch write failed — non-comparable
     }
 
     // DIRECT path: source -> wasm. A compile HANG here = the compiler hangs on P (seq-203 hang-witness).
     let direct_wasm = tmp.join("direct.wasm");
     let direct = match cdz_compile(cdz, &[&src_path], false, &direct_wasm) {
         Ok(()) => cdz_run(cdz, &direct_wasm, store),
-        Err(CompileErr::Timeout) => {
-            return CzDiff::Hang {
-                at: "direct-compile",
-            };
-        }
-        // The FRONT-END declined P — nothing to compare (both paths share the front-end). Skip.
-        Err(CompileErr::Decline(r)) => {
-            return CzDiff::from_sides(
-                &Outcome::Skip(format!("direct-compile: {r}")),
-                &Outcome::Skip(String::new()),
-            );
-        }
+        Err(CompileErr::Timeout) => return Err(DualEarly::Hang("direct-compile")),
+        // The FRONT-END declined P — nothing to compare (both paths share the front-end).
+        Err(CompileErr::Decline(_)) => return Err(DualEarly::Uncomparable),
     };
     // A run HANG on the direct side is also a hang-witness (runtime non-termination).
     if direct == Outcome::Timeout {
-        return CzDiff::Hang { at: "direct-run" };
+        return Err(DualEarly::Hang("direct-run"));
     }
     // A direct skip (e.g. param'd main) → nothing to compare.
     if let Outcome::Skip(_) = direct {
-        return CzDiff::Agree;
+        return Err(DualEarly::Uncomparable);
     }
 
     // CADENZA path: source -> .ast (--target cadenza) -> wasm.
     let ast_path = tmp.join("mid.ast");
     match cdz_compile(cdz, &[&src_path], true, &ast_path) {
         Ok(()) => {}
-        Err(CompileErr::Timeout) => return CzDiff::Hang { at: "cadenza-emit" },
-        // `--target cadenza` refused to emit — a cadenza-emit DECLINE (coverage gap, not a value miscompile).
+        Err(CompileErr::Timeout) => return Err(DualEarly::Hang("cadenza-emit")),
+        // `--target cadenza` refused to emit — a cadenza-emit DECLINE (coverage gap): the cadenza side
+        // is a Skip, so the pair is non-comparable (matches the prior `from_sides(direct, Skip)=Agree`).
         Err(CompileErr::Decline(r)) => {
-            return CzDiff::from_sides(&direct, &Outcome::Skip(format!("cadenza-emit: {r}")));
+            return Ok((direct, Outcome::Skip(format!("cadenza-emit: {r}"))));
         }
     }
     let cadenza_wasm = tmp.join("cadenza.wasm");
     let cadenza = match cdz_compile(cdz, &[&ast_path], false, &cadenza_wasm) {
         Ok(()) => cdz_run(cdz, &cadenza_wasm, store),
-        Err(CompileErr::Timeout) => {
-            return CzDiff::Hang {
-                at: "recompile-ast",
-            };
-        }
+        Err(CompileErr::Timeout) => return Err(DualEarly::Hang("recompile-ast")),
         Err(CompileErr::Decline(r)) => Outcome::Skip(format!("recompile-ast: {r}")),
     };
     if cadenza == Outcome::Timeout {
-        return CzDiff::Hang { at: "cadenza-run" };
+        return Err(DualEarly::Hang("cadenza-run"));
     }
-    CzDiff::from_sides(&direct, &cadenza)
+    Ok((direct, cadenza))
+}
+
+/// Compare the DIRECT-wasm outcome with the `--target cadenza` round-tripped outcome for one program.
+/// `tmp` is a scratch directory (unique per call). Returns [`CzDiff::Agree`] when either side skips.
+pub fn cadenza_diff(cdz: &Path, source: &str, store: &Path, tmp: &Path) -> CzDiff {
+    match run_dual_path(cdz, source, store, tmp) {
+        Ok((direct, cadenza)) => CzDiff::from_sides(&direct, &cadenza),
+        Err(DualEarly::Hang(at)) => CzDiff::Hang { at },
+        Err(DualEarly::Uncomparable) => CzDiff::Agree,
+    }
 }
 
 /// The `--target cadenza` round-trip AST for a program — the input to v-lean-oracle's `(equiv P P')`
@@ -269,6 +282,53 @@ pub fn equiv_trial_for(cdz: &Path, source: &str, tmp: &Path) -> Option<EquivTria
     match cadenza_roundtrip_ast(cdz, source, tmp) {
         RoundtripAst::Ast(cadenza) => Some(EquivTrial { orig, cadenza }),
         RoundtripAst::Declined(_) | RoundtripAst::Hang => None,
+    }
+}
+
+/// The refined result of the sampled confirm for an equiv sweep's suspected divergence — splits the
+/// old "not-a-mismatch" outcome so the two very different reasons are distinguishable. See
+/// [`cadenza_confirm`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmOutcome {
+    /// Both paths ran to comparable outcomes and DISAGREE — a CONFIRMED cadenza-backend divergence.
+    Divergence { direct: String, cadenza: String },
+    /// Both paths ran to the SAME value (or both trapped): the sampled values AGREE. For an equiv-sweep
+    /// suspected divergence this is a SYMBOLIC FALSE-POSITIVE — the oracle's normal forms differ but the
+    /// runtime values match, so it names a normalize rule the oracle is missing (v-lean-oracle's metric).
+    ValuesAgree,
+    /// A skip/decline on either side — the sampled net could NOT compare (e.g. a param'd main). Inherent
+    /// non-comparability, not a symbolic false-positive and not a divergence.
+    Uncomparable,
+    /// A step hung during the confirm run.
+    Hang,
+}
+
+/// Re-run the sampled value-eq paths and classify the result at higher resolution than [`cadenza_diff`]:
+/// distinguish a real value AGREEMENT ([`ConfirmOutcome::ValuesAgree`]) from mere non-comparability
+/// ([`ConfirmOutcome::Uncomparable`]). Used by the equiv sweep to CONFIRM a symbolic suspected divergence
+/// and, when the sampled values agree, mark it a symbolic false-positive to hand back to v-lean-oracle.
+pub fn cadenza_confirm(cdz: &Path, source: &str, store: &Path, tmp: &Path) -> ConfirmOutcome {
+    match run_dual_path(cdz, source, store, tmp) {
+        Ok((direct, cadenza)) => classify_confirm(&direct, &cadenza),
+        Err(DualEarly::Hang(_)) => ConfirmOutcome::Hang,
+        Err(DualEarly::Uncomparable) => ConfirmOutcome::Uncomparable,
+    }
+}
+
+/// Classify two sampled [`Outcome`]s for the confirm (pure — unit-testable without a compiler). A `Skip`
+/// on either side → `Uncomparable`; both trap or equal values → `ValuesAgree`; differing values or a
+/// value-vs-trap liveness split → `Divergence`.
+fn classify_confirm(direct: &Outcome, cadenza: &Outcome) -> ConfirmOutcome {
+    match (direct, cadenza) {
+        (Outcome::Skip(_) | Outcome::Timeout, _) | (_, Outcome::Skip(_) | Outcome::Timeout) => {
+            ConfirmOutcome::Uncomparable
+        }
+        (Outcome::Trap, Outcome::Trap) => ConfirmOutcome::ValuesAgree,
+        (Outcome::Value(a), Outcome::Value(b)) if a == b => ConfirmOutcome::ValuesAgree,
+        (direct, cadenza) => ConfirmOutcome::Divergence {
+            direct: show(direct),
+            cadenza: show(cadenza),
+        },
     }
 }
 
@@ -327,6 +387,36 @@ mod tests {
             CzDiff::from_sides(&Outcome::Value("7".into()), &Outcome::Trap),
             CzDiff::Mismatch { .. }
         ));
+    }
+
+    /// `classify_confirm` (pure) splits the confirm outcomes: equal values / both-trap → ValuesAgree (a
+    /// symbolic false-positive when it confirms an equiv suspected divergence); differing values or a
+    /// value-vs-trap split → Divergence; a Skip/Timeout on either side → Uncomparable.
+    #[test]
+    fn classify_confirm_splits_agree_from_uncomparable() {
+        use Outcome::*;
+        assert_eq!(
+            classify_confirm(&Value("7".into()), &Value("7".into())),
+            ConfirmOutcome::ValuesAgree
+        );
+        assert_eq!(classify_confirm(&Trap, &Trap), ConfirmOutcome::ValuesAgree);
+        assert!(matches!(
+            classify_confirm(&Value("7".into()), &Value("8".into())),
+            ConfirmOutcome::Divergence { .. }
+        ));
+        assert!(matches!(
+            classify_confirm(&Value("7".into()), &Trap),
+            ConfirmOutcome::Divergence { .. }
+        ));
+        // A skip on either side = the sampled net couldn't compare (NOT a symbolic false-positive).
+        assert_eq!(
+            classify_confirm(&Skip("x".into()), &Value("7".into())),
+            ConfirmOutcome::Uncomparable
+        );
+        assert_eq!(
+            classify_confirm(&Value("7".into()), &Skip("y".into())),
+            ConfirmOutcome::Uncomparable
+        );
     }
 
     /// Unparseable source yields no equiv trial (SKIP) — and short-circuits BEFORE invoking `cdz` (the
