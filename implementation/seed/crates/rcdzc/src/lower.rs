@@ -19930,6 +19930,34 @@ fn lower_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "arithmetic identity simplified (op elided)");
                 return simplified;
             }
+            // OVERFLOW POLICY (STAGE 2c, numeric-model §Overflow Behavior Is Configurable By Policy — the
+            // RUNTIME twin of the 2b const-fold above): under a `(pragma overflow (signed|unsigned wrap))`
+            // module a RUNTIME `+`/`-`/`*` that overflows must WRAP (two's-complement, mod 2^width) — NOT
+            // trap. `overflow_mode_of` resolves this node's authoritative mode off the SAME predicate the
+            // both-const arm read (so const/runtime cannot drift; signedness-selective per #5686). We do NOT
+            // emit a new backend op: the `WrappingAdd`/`WrappingSub`/`WrappingMul` prims already lower to the
+            // raw machine op + a narrow re-normalize (mask/sign-extend, NO overflow guard) in every backend
+            // (wasm/rust/cadenza) and are treated first-class by every pass (`is_trap_free`, `arith_identity`,
+            // `const_eval`). So rewrite `+`/`-`/`*` to its wrapping twin here — identical value+width to what
+            // the 2b const path yields, and to `UInt8.wrapping-add` etc. `Trap` mode / no-pragma leaves the op
+            // unchanged (→ the checked-arith emit that traps, as before). Guarded to fixed-width `Int`
+            // (peeling `Qty`) to match the const half exactly — BigInt/Rational lower elsewhere and never wrap.
+            let op = if matches!(op, Prim::Add | Prim::Sub | Prim::Mul)
+                && crate::infer::overflow_mode_of(db, id) == crate::db::OverflowMode::Wrap
+                && matches!(
+                    peel_qty_inner_ty(crate::infer::type_of(db, id)),
+                    crate::ty::Ty::Int(_)
+                ) {
+                let w = match op {
+                    Prim::Add => Prim::WrappingAdd,
+                    Prim::Sub => Prim::WrappingSub,
+                    _ => Prim::WrappingMul, // Mul (the `matches!` guard admits only Add/Sub/Mul)
+                };
+                trace!(target: "rcdzc::lower", node = id.0, op = intrinsic_name(op), "runtime +/-/* rewritten to its WRAPPING twin (pragma overflow wrap) — raw machine op, no trap guard");
+                w
+            } else {
+                op
+            };
             trace!(target: "rcdzc::lower", op = intrinsic_name(op), "arithmetic stays runtime (operand not constant)");
             Core::Arith {
                 op,
