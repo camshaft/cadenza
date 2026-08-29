@@ -5006,19 +5006,20 @@
   (output (: 3401 Int64))
   (live-objects known-leak 4))
 
-(case "D1 an if-joined dual-used rope sharing a pre-if concat child in BOTH arms is a TRACKED KNOWN double-free (980-residual, latent) fenced"
+(case "D1 an if-joined dual-used rope sharing a pre-if concat child in BOTH arms reclaims cleanly (was a 980-residual double-free, FIXED #5424)"
   (doc    "The 980-family sibling the narrowed cross-arm (a) gate does NOT reach. `keep = (if mode r2a r2b)`
            where r2a=(String.concat r1 x) and r2b=(String.concat r1 y) BOTH consume the SAME pre-if rope r1,
            and `keep` is DUAL-used (byte-len + a value-eq compare). All three conditions are required (each
-           alone is clean: single-use keep / two-concat-without-if / independent-ropes-dual-use). r1 is freed
+           alone is clean: single-use keep / two-concat-without-if / independent-ropes-dual-use). r1 WAS freed
            TWICE — via the kept arm's post-join drop AND the unkept arm's drop — a double-free SILENT and
-           value-correct on the shipped runtime (output 80) but TRAPPING on the debug-counters runtime. The
-           `(live-objects …)` clause FORCES the debug run where the UAF fires, so this is a TRACKED KNOWN-FAIL
-           FENCE (v-memory-safety + v-corpus-harness, the #4547 mechanism): an emit change making this shape
-           corpus-reachable cannot ship the double-free silently, and the fix (v-core-opt reclaim arc, tracked
-           behind glb1 — confirm over-drop vs under-retain by rc-count first) flips it to PASS = surfaces the
-           land. Hand-built witness (not yet cdz-smith-reachable); r1 is consumed PRE-`if` so narrowed (a)
-           [consume-in-an-if-arm + borrow-as-result-in-the-other] cannot reach it.")
+           value-correct on the shipped runtime (output 80) but TRAPPING on the debug-counters runtime. FIXED by
+           #5424 (let-drop elides a binding CONSUMED into a later sibling init as a fresh-alloc child — the D1
+           flat-let over-drop), now clean-0 both modes ([0,0], `(live-objects 0)` genuine; v-memory-safety +
+           v-core-opt co-verified on the nix/seated check). RETAINED as a REGRESSION-GUARD (v-memory-safety +
+           v-corpus-harness, the #4547 mechanism): the `(live-objects …)` clause FORCES the debug run, so an emit
+           change re-introducing this shape's double-free re-fails here rather than shipping it silently. Hand-built
+           witness (not yet cdz-smith-reachable); r1 is consumed PRE-`if` so the narrowed cross-arm (a)
+           [consume-in-an-if-arm + borrow-as-result-in-the-other] does not reach it.")
   (input (do
     (def (rep (: s String) (: n Int64) (: acc String)) (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
     (def (main (: mode Int64))
