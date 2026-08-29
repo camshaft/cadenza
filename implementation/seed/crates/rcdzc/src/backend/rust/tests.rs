@@ -8150,6 +8150,53 @@ fn rustc_host_seq_elides_a_discarded_pure_statement_no_spurious_trap() {
 }
 
 #[test]
+fn rustc_dead_let_heap_ctor_force_evals_trapping_scalar_arg() {
+    // CASE2 (#5194/#5328, breaker cross-backend gate-check-rust red): the STRICT-construction twin of the
+    // adv-56 elide above. A REACHED list/set/map ctor whose result is DEAD still MUST evaluate its
+    // trap-possible SCALAR arg computations (their traps occur) — the (A)-strict rule OVERRIDES §283
+    // dead-init elision (which elides only a bare unobserved scalar; v-spec-oracle). `(let ((x (list 1
+    // (/ 5 d)))) 0)`: `lower_let` decomposes the dead list ctor to its trap-possible scalar `(/ 5 d)`,
+    // marks it in `db.strict_force_eval`, and sequences it (discarded) before the body `0` via `Core::Seq`
+    // — NOTHING is built (decompose-and-mark, not build-and-reclaim → no borrowed-element double-free). The
+    // rust `Core::Seq` emit now force-evaluates a `strict_force_eval` stmt (`let _ = …`) instead of eliding
+    // it, so at d=0 the div-by-zero TRAPS. This was wasm-only in #5328 (the rust backend §283-elided the
+    // dead ctor and returned 0, dropping the trap) → v-spec-oracle's #5332 03-equality:1658 pin went RED on
+    // gate-check-rust until this arm. `f` (not `main`) avoids colliding with the generated `fn main`.
+    let src = "(module m (def (f (: d Int64)) (let ((x (list 1 (/ 5 d)))) 0)) (export f))";
+    let rs = compile_rust(src);
+    // EMIT: the decomposed `(/ 5 d)` is force-evaluated (the checked div is present), NOT §283-elided; and
+    // the dead list itself is NOT built (decompose-and-mark) — no `Vec`/list-ctor for it. The scalar div
+    // emits an explicit `if r == 0 { panic!("division by zero") }` guard (the rust backend's div-by-zero
+    // trap form), inside a discarded `let _ = { … }` — its presence proves the arg was force-evaluated, not
+    // §283-elided (an elided arg would leave NO `division by zero` guard anywhere in the emit).
+    assert!(
+        rs.contains("division by zero") && rs.contains("let _ = {"),
+        "the dead-list ctor's trap-possible scalar arg `(/ 5 d)` is force-evaluated (its div-by-zero guard \
+         is present in a discarded `let _ = {{`), not elided:\n{rs}"
+    );
+    // RUNTIME d=0: the (A)-strict force makes the discarded `(/ 5 0)` TRAP divide-by-zero (a RanOk here is a
+    // lost trap — the exact regression breaker flagged). d=1: runs → body value 0 (no trap, nothing leaked).
+    match rustc_run_traps(&rs, "f(0)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("by zero"),
+            "a dead-let list ctor with a `/0` scalar arg must TRAP divide-by-zero; panic was:\n{msg}"
+        ),
+        TrapRun::RanOk(out) => {
+            panic!(
+                "dead-let `(list 1 (/ 5 0))` discarded must STILL trap (CASE2 strict force), but ran → {out}"
+            )
+        }
+        TrapRun::NoRustc => {}
+    }
+    if let Some(out) = rustc_run(&rs, "f(1)") {
+        assert_eq!(
+            out, "0",
+            "d=1: the dead-let ctor is discarded, no trap, the body value 0 is returned"
+        );
+    }
+}
+
+#[test]
 fn rustc_closure_capturing_a_let_bound_host_call_emits_it_once() {
     // H6: a returned closure that captures a LET-BOUND host-call result must fire the host op ONCE, not
     // twice. `(host (ask) (let ((v (ask.ask))) (fn (x) (+ x v))))` — lowering inlines the `(ask.ask)` value
