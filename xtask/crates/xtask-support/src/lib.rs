@@ -828,4 +828,99 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    /// `parse_records` is the corpus parser every command crate (roundtrip, prune-baselines) reads through;
+    /// a silent regression drops or mis-pairs cases. Pin the tricky bits: `---` record boundaries, the
+    /// two-value `module`/`peer`/`host-response` splits, the `expect`-closes-a-trial pairing of a pending
+    /// `call`+`arg`s, the `(message …)` warn clause, and the per-call `live-objects known-leak` first-count.
+    #[test]
+    fn parse_records_pins_the_corpus_grammar() {
+        let text = "\
+case\tadds two\n\
+program\t(fn add)\n\
+module\thelper\t(lib prog)\n\
+peer\twasi:io\t(peer prog)\n\
+needs\tio\n\
+host-response\tget\t42\n\
+host-call\tget\n\
+warns\tCDZ0201 (message \"deprecated\")\n\
+wit-world\t(world w)\n\
+component-name\tapp:main\n\
+live-objects\tknown-leak\t3\t13\t0\n\
+call\tadd\n\
+arg\t1\n\
+arg\t2\n\
+expect\t3\n\
+---\n\
+case\tmethod drive\n\
+program\t(fn next)\n\
+call-method\tnext\n\
+then-call\t0\n\
+drop-handle\t1\n\
+expect\tdone\n\
+---\n";
+        let recs = parse_records(text);
+        assert_eq!(recs.len(), 2, "two `---`-terminated records");
+
+        let r = &recs[0];
+        assert_eq!(r.description, "adds two");
+        assert_eq!(r.program, "(fn add)");
+        assert_eq!(r.modules, vec![("helper".into(), "(lib prog)".into())]);
+        assert_eq!(r.peers, vec![("wasi:io".into(), "(peer prog)".into())]);
+        assert_eq!(r.needs, vec!["io".to_string()]);
+        assert_eq!(r.host_responses, vec![("get".into(), "42".into())]);
+        assert_eq!(r.host_calls, vec!["get".to_string()]);
+        assert_eq!(r.warns, vec![("CDZ0201".into(), Some("deprecated".into()))]);
+        assert_eq!(r.wit_world.as_deref(), Some("(world w)"));
+        assert_eq!(r.component_name.as_deref(), Some("app:main"));
+        // per-call `known-leak\t3\t13\t0` → this direct path takes the FIRST count.
+        assert_eq!(r.live_objects, Some(3));
+        assert_eq!(r.trials.len(), 1);
+        let call = r.trials[0].call.as_ref().expect("the trial has a call");
+        assert_eq!(r.trials[0].expect, "3");
+        assert_eq!(call.export, "add");
+        assert_eq!(call.args, vec!["1".to_string(), "2".to_string()]);
+        assert_eq!(call.second_call, None);
+        assert!(!call.drop_handle);
+        assert_eq!(call.method, None);
+
+        // A `(call-method)` case has NO export but still produces a Call (from `method` alone), carries a
+        // nullary `then` second-call (`Some(vec![])`, distinct from `None`), and the `(drop)` flag.
+        let m = &recs[1];
+        assert_eq!(m.description, "method drive");
+        let mc = m.trials[0].call.as_ref().expect("method drive has a call");
+        assert_eq!(m.trials[0].expect, "done");
+        assert_eq!(mc.export, "");
+        assert!(mc.args.is_empty());
+        assert_eq!(mc.method.as_deref(), Some("next"));
+        assert_eq!(mc.second_call, Some(vec![]));
+        assert!(mc.drop_handle);
+    }
+
+    /// The shared `(message …)` clause splitter (error/declines/warns diagnostic-text pins). Pin the head
+    /// vs optional phrase, the empty-head `declines` form, and that a phrase with no opening quote is not
+    /// asserted (`None`) rather than mis-parsed.
+    #[test]
+    fn split_message_clause_separates_code_from_optional_phrase() {
+        assert_eq!(split_message_clause("CDZ0201"), ("CDZ0201", None));
+        assert_eq!(
+            split_message_clause("CDZ0201 (message \"malformed record\")"),
+            ("CDZ0201", Some("malformed record"))
+        );
+        assert_eq!(
+            split_message_clause("(message \"IEEE partial order\")"),
+            ("", Some("IEEE partial order"))
+        );
+        // no opening quote → the clause is simply not asserted (never a bogus phrase).
+        assert_eq!(split_message_clause("(message noquote)"), ("", None));
+    }
+
+    /// `first_line` is used to surface a launched tool's first stderr line; pin the empty and
+    /// single-line (no trailing newline) edges so an empty slice can't panic.
+    #[test]
+    fn first_line_handles_empty_and_unterminated() {
+        assert_eq!(first_line(b"hello\nworld"), "hello");
+        assert_eq!(first_line(b"single"), "single");
+        assert_eq!(first_line(b""), "");
+    }
 }
