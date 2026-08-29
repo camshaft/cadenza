@@ -326,7 +326,7 @@
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (output #record((= o (continue unit))))
   (call f (: #record((= x 5)) (Record (: x Int64))))
-  (output (: (record (= o (close 5))) (record (= o Rev))))
+  (output #record((= o (close 5))))
   (live-objects known-leak 2))
 (case "a record param field is read by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)"
   (doc    "SHAPE 19 — a record PARAM whose WIT field order differs from the guest name-lex order is read by NAME, not
@@ -1263,7 +1263,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is #rec
   (component-name "cadenza:demo/iface")
   (input (do (type Outcome (Continue) (Close Int64)) (def (f (: x Int64)) #record((= o (if (= x 0) Outcome.Continue (Outcome.Close x))) (= n x))) (export f)))
   (call f (: 0 Int64)) (output #record((= o (continue unit)) (= n 0)))
-  (call f (: 7 Int64)) (output (: (record (= o (close 7)) (= n 7)) (record (= o Outcome) (= n Int64))))
+  (call f (: 7 Int64)) (output #record((= o (close 7)) (= n 7)))
   (live-objects known-leak 1 2))
 
 (case "a typed record result with an option<COMPOUND> field crosses the export boundary (declared world)"
@@ -1272,7 +1272,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is #rec
   (component-name "cadenza:demo/iface")
   (input (do (def (f (: x Int64)) #record((= d (if (= x 0) Option.None (Option.Some #record((= a x))))) (= n x))) (export f)))
   (call f (: 0 Int64)) (output #record((= d (None unit)) (= n 0)))
-  (call f (: 5 Int64)) (output (: (record (= d (Some (record (= a 5)))) (= n 5)) (record (= d (Option (Record (: a Int64)))) (= n Int64))))
+  (call f (: 5 Int64)) (output #record((= d (Some #record((= a 5)))) (= n 5)))
   (live-objects known-leak 1 3))
 
 ; -- breaker batch 408 (2026-08-26): the scalar-param + compound-result acceptance ladder, promoted
