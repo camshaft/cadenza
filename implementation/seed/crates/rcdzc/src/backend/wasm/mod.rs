@@ -10874,12 +10874,81 @@ fn emit_bytes_provider_member(
 ///
 //= spec/contracts/reproducible-derivation.md#derivation-is-a-function-of-source-and-toolchain
 //# The identity of the value-heap runtime a program is emitted against MUST be the content address of that runtime component, so that "which runtime" is a hash rather than a version label and a program's observable behavior — which depends on the runtime's construction, storage, and reclamation of values — is pinned to exact bytes (component-abi.md §The Value-Heap Runtime).
+/// The recognizable prefix the runtime-hash flag-day renders into `runtime_abi.rs`'s committed hash
+/// fallbacks (`0PLACEHOLDERnixInjectsTheReal…`) once part a flips them. nix (and native injection) set
+/// `CDZ_RUNTIME_HASH` to the REAL content hash, which `option_env!` prefers; the committed placeholder is
+/// only ever seen when the env was NOT injected — a bare `cargo build --bin cdz` or a missed native build
+/// site. A hash carrying this prefix is therefore never a valid runtime reference.
+const RUNTIME_HASH_PLACEHOLDER_PREFIX: &str = "0PLACEHOLDER";
+
+/// Whether `hash` is the flag-day placeholder sentinel (the committed fallback leaked through because
+/// `CDZ_RUNTIME_HASH` was not injected). Pure prefix check — the safe-by-construction discriminator.
+fn hash_is_placeholder(hash: &str) -> bool {
+    hash.starts_with(RUNTIME_HASH_PLACEHOLDER_PREFIX)
+}
+
+/// The versioned runtime import name (`cadenza:runtime/heap@0.0.0+<hash>`) stamped into every component
+/// that references the value-heap runtime. This is the SINGLE stamp site for `REQUIRED_RUNTIME_HASH`.
+///
+/// STAMP-GUARD (runtime-hash flag-day (c), v-nix-elevated REQUIRED): if the committed hash is the
+/// `0PLACEHOLDER` sentinel, the real runtime content hash was NOT injected (`CDZ_RUNTIME_HASH` unset —
+/// a bare-cargo `cdz` or a missed native build site). Stamping it would emit a component importing a
+/// placeholder-named runtime that resolves to the wrong/absent bytes and re-ships opaque heap traps
+/// (the #5687 revert: 3770 traps). HARD-ERROR here instead, converting a silent miscompile into a
+/// legible build-time failure. Fires ONLY on programs that reference the runtime (the ones that would
+/// trap); programs that never call `runtime_import_name` are unaffected — safe by construction.
 fn runtime_import_name() -> String {
-    format!(
-        "{}@0.0.0+{}",
-        runtime_abi::RUNTIME_IFACE,
-        runtime_abi::REQUIRED_RUNTIME_HASH
-    )
+    let hash = runtime_abi::REQUIRED_RUNTIME_HASH;
+    assert!(
+        !hash_is_placeholder(hash),
+        "cdz build integrity [runtime-hash flag-day guard (c)]: REQUIRED_RUNTIME_HASH is the placeholder \
+         sentinel `{hash}` — the real value-heap-runtime content hash was NOT injected. Set CDZ_RUNTIME_HASH \
+         (i.e. build cdz via nix, not a bare `cargo build --bin cdz`). Refusing to stamp a placeholder \
+         runtime import: it would emit a component that traps at run time."
+    );
+    format!("{}@0.0.0+{}", runtime_abi::RUNTIME_IFACE, hash)
+}
+
+#[cfg(test)]
+mod stamp_guard_tests {
+    use super::{hash_is_placeholder, runtime_import_name};
+    use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+
+    #[test]
+    fn placeholder_discriminator_matches_only_the_sentinel() {
+        // The flag-day committed placeholders (all `0PLACEHOLDER…`).
+        assert!(hash_is_placeholder(
+            "0PLACEHOLDERnixInjectsTheRealRUNTIMEhash00000"
+        ));
+        assert!(hash_is_placeholder(
+            "0PLACEHOLDERnixInjectsTheRealDEBUGruntimehash"
+        ));
+        assert!(hash_is_placeholder(
+            "0PLACEHOLDERnixInjectsTheRealNFCcomponenthash"
+        ));
+        // A REAL content hash (base62, never `0PLACEHOLDER…`) is NOT flagged.
+        assert!(!hash_is_placeholder(
+            "0541d3cotzDfAPqHfDMv8Y3uXW4TaIN9LSPEwwzL5oNiJ"
+        ));
+        assert!(!hash_is_placeholder(
+            "05WQLypkiSML9PDP1Y7wpqJEsYukcgOZI9QZzXgfnrlFm"
+        ));
+        assert!(!hash_is_placeholder(""));
+    }
+
+    #[test]
+    fn stamp_of_the_real_committed_hash_does_not_trip_the_guard() {
+        // With the real committed hash (or a nix-injected one), the guard is dormant and the stamp is the
+        // versioned runtime import. Only a `0PLACEHOLDER…` fallback (env not injected) hard-errors — that
+        // path fires exactly on programs referencing the runtime (see runtime_import_name's guard doc).
+        assert!(
+            !hash_is_placeholder(REQUIRED_RUNTIME_HASH),
+            "committed hash must be real, not placeholder"
+        );
+        let name = runtime_import_name();
+        assert!(name.starts_with(RUNTIME_IFACE));
+        assert!(name.contains("@0.0.0+"));
+    }
 }
 
 /// The AST body occurrence of definition `def`, or a decline if it is malformed (no body).
