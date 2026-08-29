@@ -3372,7 +3372,6 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "cadenza-ast",
- "cdz-contract",
  "cdz-rust-render",
  "clap",
  "prettyplease",
@@ -3381,7 +3380,6 @@ dependencies = [
  "serde",
  "serde_json",
  "syn 2.0.119",
- "wasm-encoder 0.239.0",
  "wasmparser 0.239.0",
  "wit-parser",
  "xshell",
