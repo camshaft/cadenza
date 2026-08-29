@@ -2825,14 +2825,10 @@ fn guard_cond_list_binds(
     }
     let pattern = g[0];
     // Only a `(list …)` inner pattern (a `(map …)`/variant/tuple guard is another case's concern).
-    // `compound_form_of` recognizes the native `#list(…)` ctor-leaf head too (not only the name/string alias).
-    if db
-        .ast
-        .compound_form_of(pattern, crate::ast::CompoundCtor::List)
-        .is_none()
-    {
-        return None;
-    }
+    // `compound_form_of` recognizes the native `#list(…)` ctor-leaf head too (not only the name/string alias);
+    // `?` bails when it is not a list pattern (clippy::question_mark — the value itself is unused here).
+    db.ast
+        .compound_form_of(pattern, crate::ast::CompoundCtor::List)?;
     // The guard must be the PATTERN of a match arm `((guard …) body)` whose parent is a `(match …)`.
     let arm = db.parent_of(form)?;
     let Struct::List(pb) = db.ast.get(arm) else {
