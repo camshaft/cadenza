@@ -529,6 +529,12 @@
         # `cargo test --workspace --no-run`) → ∪ `test -p C` == the old whole-workspace run.
         rootWorkspaceCrates = {
           cadenza-ast = "implementation/seed/crates/cadenza-ast";
+          # cadenza-compile-abi (v-cdz-crate-split, approach-B extract): the dep-light compile-boundary types
+          # (Target + OptLevel now; a later slice takes a single cadenza-ast dep for the Request/Query codec).
+          # A ROOT workspace member (crates/* glob) → MUST be registered here or the crane deps-layer src omits
+          # its Cargo.toml and the workspace fails to load. slice-1 is a pure-std LEAF (zero deps); rcdzc/cdz dep
+          # it in v-cdz's slice-1b (lands AFTER this registration). Standalone/inert until then.
+          cadenza-compile-abi = "implementation/seed/crates/cadenza-compile-abi";
           cadenza-syntax = "implementation/seed/crates/cadenza-syntax";
           # cadenza-syntax-* (v-syntax #5076/#5082): cadenza-syntax was split into a dependency-light bottom
           # (cadenza-syntax-core: spans + arena read-helpers + shared literal lexing) plus one crate per data
@@ -921,6 +927,8 @@
               cadenza-syntax-sexpr = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-sexpr" ];
               cadenza-syntax-toml = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-toml" ];
               cdz-num = [ "cdz-num" ];
+              # cadenza-compile-abi slice-1 is a pure-std LEAF (zero workspace deps) — closure is just itself.
+              cadenza-compile-abi = [ "cadenza-compile-abi" ];
               # cdz-world-artifact deps only cadenza-ast (the language's binary-AST builders/codec) + the
               # external wit-parser; xtask still deps cadenza-ast via codegen.rs, so its closure is unchanged.
               cdz-world-artifact = [ "cadenza-ast" "cdz-world-artifact" ];
@@ -4286,6 +4294,7 @@
             # workspace-src (crateCdzCheck, different shape — its clippy is inside cargoWorkspaceCheck).
             perCrateClippyCrane = {
               clippy-cadenza-ast = mkCrateClippyCrane { crate = "cadenza-ast"; };
+              clippy-cadenza-compile-abi = mkCrateClippyCrane { crate = "cadenza-compile-abi"; };
               clippy-cadenza-syntax = mkCrateClippyCrane { crate = "cadenza-syntax"; extraSrc = [ ./spec/semantics ]; };
               # cadenza-syntax split (#5076/#5082): leaf surface crates, no tests/ dir, no spec/semantics dep.
               clippy-cadenza-syntax-cedar = mkCrateClippyCrane { crate = "cadenza-syntax-cedar"; };
@@ -4335,6 +4344,8 @@
             # testCrateCoverageAssert (below) so a new workspace member can't silently escape the test set.
             perCrateTestCrane = {
               test-cadenza-ast = mkCrateTestCrane { crate = "cadenza-ast"; };
+              # cadenza-compile-abi: runs its unit tests (7). Leaf, zero deps. REQUIRED by testCrateCoverageAssert.
+              test-cadenza-compile-abi = mkCrateTestCrane { crate = "cadenza-compile-abi"; };
               test-cadenza-syntax = mkCrateTestCrane { crate = "cadenza-syntax"; extraSrc = [ ./spec/semantics ]; };
               # cadenza-syntax split (#5076/#5082): leaf surface crates, no tests/ dir, no spec/semantics dep.
               test-cadenza-syntax-cedar = mkCrateTestCrane { crate = "cadenza-syntax-cedar"; };
@@ -4432,9 +4443,9 @@
                 inherit (perCrateClippyCrane) clippy-rcdzc clippy-cdz-num clippy-cdz-calc clippy-cadenza-syntax clippy-cdz-platform
                   clippy-cdz-component-rewrite clippy-cdz-contract
                   clippy-cadenza-syntax-cedar clippy-cadenza-syntax-core clippy-cadenza-syntax-json
-                  clippy-cadenza-syntax-sexpr clippy-cadenza-syntax-toml;
+                  clippy-cadenza-syntax-sexpr clippy-cadenza-syntax-toml clippy-cadenza-compile-abi;
               } ''
-              echo "ok: clippy shard A — rcdzc + cdz-num + cdz-calc + cadenza-syntax(+core/cedar/json/sexpr/toml) + cdz-platform + cdz-component-rewrite + cdz-contract" > $out
+              echo "ok: clippy shard A — rcdzc + cdz-num + cdz-calc + cadenza-syntax(+core/cedar/json/sexpr/toml) + cadenza-compile-abi + cdz-platform + cdz-component-rewrite + cdz-contract" > $out
             '';
             clippyShardB = pkgs.runCommand "cargo-clippy-shard-b"
               {
