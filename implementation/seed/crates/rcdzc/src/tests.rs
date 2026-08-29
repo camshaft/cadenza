@@ -10177,6 +10177,38 @@ mod match_engine {
     }
 
     #[test]
+    fn native_compound_patterns_tuple_list_map_resolve_and_bind() {
+        // M3 pattern-spelling guard: `#name(…)` is the sole compound CTOR + PATTERN form (operator ruling).
+        // A native ctor-leaf-headed match PATTERN (`#tuple(a b)`, `#list(h .. t)`, `#map((= k v))`) must
+        // destructure + bind exactly like the name-head `(tuple a b)` / `(list …)` / `(map (= k v))` alias.
+        // Before this, the pattern routers (is_tuple/list/map_pattern in resolve + lower), the map-match
+        // dispatch, and `map_pattern_of`'s entry extraction recognized only the name/string head (and 2-element
+        // `(k v)` map entries), so a native head/FieldPair-entry leaked to value resolution → CDZ0201
+        // "a compound-constructor head leaf is not a value on its own". Now routed through `compound_form_of`
+        // + `field_pair_parts` — all three destructure. (Native tuple + map were the broken ones; list already
+        // worked via the compound_form_of binder-descent.)
+        for (label, src) in [
+            (
+                "native tuple pattern",
+                "(module m (def (f (: p (Tuple Int64 Int64))) (match p (#tuple(a b) (+ a b)))) (def (main) (f #tuple(3 4))) (export main))",
+            ),
+            (
+                "native list pattern",
+                "(module m (def (sum (: xs (List Int64))) (match xs (#list() 0) (#list(h .. t) (+ h (sum t))))) (def (main) (sum #list(1 2 3))) (export main))",
+            ),
+            (
+                "native map pattern",
+                "(module m (def (f (: mp (Map Int64 Int64))) (match mp (#map((= 1 v)) v) (_ 0))) (def (main) (f #map((= 1 7)))) (export main))",
+            ),
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "{label}: a native compound pattern must destructure like its name-head alias (no CDZ0201)"
+            );
+        }
+    }
+
+    #[test]
     fn a_namespaced_ctor_pattern_binds_its_payload_and_a_record_eq_pattern_resolves() {
         // M3 regression guard (consolidation #5158 dropped rcdzc's `as_name` MIGRATION BRIDGE when it deleted
         // rcdzc/ast.rs + unified onto cadenza-ast, whose `as_name` did not bridge). Without the bridge, the

@@ -3651,6 +3651,19 @@ pub(crate) fn map_pattern_of(db: &Db, pat: StructId) -> Option<MapPattern> {
     };
     let mut entries = Vec::with_capacity(entries_tail.len());
     for &entry in entries_tail {
+        // A map-pattern entry is the native `(= k p)` FieldPair leaf (M2, the `#map((= k p))` surface), the
+        // transitional name-head `(= k p)`, or the legacy 2-element `(k p)` pair — mirror `resolve_map`. Before
+        // reading the FieldPair, a native `#map` pattern's `(= k p)` entry (3-element) failed the 2-element
+        // check → `map_pattern_of` returned None → the pattern's native ctor-leaf head leaked to value
+        // resolution (CDZ0201 "compound-constructor head leaf is not a value").
+        if let Some((k, v)) = db
+            .ast
+            .field_pair_parts(entry)
+            .or_else(|| db.ast.field_pair(entry))
+        {
+            entries.push((k, v));
+            continue;
+        }
         match db.ast.get(entry) {
             Struct::List(items) if items.len() == 2 => entries.push((items[0], items[1])),
             _ => return None,
@@ -4075,7 +4088,9 @@ fn find_binder_in_list(
 /// reader keeps in a pattern) or the `"tuple"` string-literal primitive. Used to route a variant's
 /// tuple payload into element-by-element descent.
 fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
-    db.ast.compound_ctor_either(id) == Some(CompoundCtor::Tuple)
+    // Recognize the native ctor-leaf head (M2 `#tuple(…)` pattern) as well as the name/string
+    // heads — `compound_form_of` covers all three.
+    db.ast.compound_form_of(id, CompoundCtor::Tuple).is_some()
 }
 
 /// Whether a `(record (field value) …)` PATTERN binds `name` anywhere — at a bare field value `(x a)` or
@@ -4119,14 +4134,18 @@ fn record_pattern_binds_name(db: &Db, record_pat: StructId, name: &str) -> bool 
 /// `"list"` string-literal primitive. Routes a variant's list payload into element-by-element binder
 /// descent ([`find_binder_in_list`]), the list analogue of [`is_tuple_pattern`].
 fn is_list_pattern(db: &Db, id: StructId) -> bool {
-    db.ast.compound_ctor_either(id) == Some(CompoundCtor::List)
+    // Recognize the native ctor-leaf head (M2 `#list(…)` pattern) as well as the name/string
+    // heads — `compound_form_of` covers all three.
+    db.ast.compound_form_of(id, CompoundCtor::List).is_some()
 }
 
 /// Whether `id` is a map PATTERN `(map (k v) … .. rest)` — a `map` NAME head (the shadowable alias) or the
 /// `"map"` string-literal primitive. Routes a NESTED map sub-pattern into [`find_map_binder_in_pattern`]
 /// (the key-directed binder descent), the map analogue of [`is_tuple_pattern`]/[`is_list_pattern`].
 fn is_map_pattern(db: &Db, id: StructId) -> bool {
-    db.ast.compound_ctor_either(id) == Some(CompoundCtor::Map)
+    // Recognize the native ctor-leaf head (M2 `#map(…)` pattern) as well as the name/string
+    // heads — `compound_form_of` covers all three.
+    db.ast.compound_form_of(id, CompoundCtor::Map).is_some()
 }
 
 /// Descend a TUPLE pattern `(tuple p0 p1…)` looking for the binder `name` in one of its element
