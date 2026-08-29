@@ -1140,6 +1140,123 @@
           echo "ok: cad-tests aggregate — cdz test on cad + compiler-ml + choreography + iterators (per-project split)" > "$out"
         '';
 
+        # ── test-shred: per-@test wasm matrix (v-test-shred; design/DESIGN-test-shred-per-test-caching.md) ──
+        # Mirrors the corpus per-case caching graph for a cadenza @test SUITE: SHRED a project into per-@test
+        # wasm (`cdz test --emit-shred`, in-process rcdzc, wasmtime-free, content-addressed) then one
+        # COMPILER-FREE exec per @test (`cdz-run` + the value-heap store) graded by EXIT CODE (clean
+        # return = PASS, trap = FAIL — a @test has no expected value). Enumerated at EVAL from a COMMITTED
+        # plain-text index (`implementation/<proj>/tests-shred-index.txt`, `name<TAB>is_property` per the
+        # compiler `Db`, no IFD); a @test ABSENT from the shred manifest (a #4031 compound-param decliner)
+        # SKIPS (exit 0). ADDITIVE — does NOT retire `cad-tests`/`testCadenzaProject`; per-suite retire as
+        # each suite's per-test shred covers ALL its tests. Small-closure suites (iterators/cad/choreography)
+        # only for now; compiler-ml stays COARSE (its `cad-test-compiler-ml` arm) until shared-closure
+        # grouping + X5b make its per-test peer shred viable. A `main-file=""` entry (standalone test) drops
+        # `--peer`; a grouped entry composes its library main via `--peer <iface>=<main>` over the shared runtime.
+        # Parse the committed index → [{ stem; name }] from each `stem<TAB>name<TAB>is_property` line.
+        # Keyed by (file-STEM, name): a @test name can repeat across a suite's files, and the stem matches
+        # the manifest's `file` field, so the exec resolves the RIGHT per-@test target (standalone emits a
+        # UNIQUE target per (stem,name), so no collision even for same-named tests across files).
+        testShredIndexEntries = proj:
+          map
+            (l: let fs = pkgs.lib.splitString "\t" l; in { stem = builtins.elemAt fs 0; name = builtins.elemAt fs 1; })
+            (builtins.filter (l: l != "")
+              (pkgs.lib.splitString "\n"
+                (builtins.readFile (./implementation + "/${proj}/tests-shred-index.txt"))));
+        # SHRED (content-addressed) — compile the project's @tests to per-@test wasm + `manifest.cdzb` ONCE.
+        # Closure = the `cdz` binary (emit-shred drives rcdzc IN-PROCESS; wasmtime-free; NO store — compile
+        # only). CA so a compiler change that re-emits identical wasm cache-hits every exec.
+        mkTestShred = { proj, dir }:
+          pkgs.runCommand "test-shred-${proj}"
+            {
+              nativeBuildInputs = [ seedCompiler ];
+              __contentAddressed = true;
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME" "$out"
+            # emit-shred EXITS NON-ZERO when some @tests DECLINE (a #4031 compound-param boundary reject under
+            # the current peer emit) — but it still WRITES the manifest + the shreddable per-@test wasm. Those
+            # declines are EXPECTED + informational (the manifest is the authoritative runnable set; a decliner
+            # SKIPS in its exec, and testCadenzaProject still covers it — this matrix is ADDITIVE). So tolerate
+            # the non-zero exit but guard on a MISSING manifest, which IS a real emit failure. (Standalone-all
+            # emit — the operator's pick, v-cdz building — has no declines → exit 0 → this branch is inert.)
+            if ! cdz test --emit-shred --standalone ${pkgs.lib.fileset.toSource { root = ./.; fileset = dir; }}/implementation/${proj} --out-dir "$out"; then
+              [ -f "$out/manifest.cdzb" ] || { echo "test-shred: emit-shred produced no manifest for ${proj} (real emit failure)" >&2; exit 1; }
+              echo "test-shred: emit-shred for ${proj} exited non-zero (expected — some @tests declined #4031); manifest present, proceeding with the shreddable subset" >&2
+            fi
+          '';
+        # EXEC — grade ONE @test. Closure = the COMPILER-FREE `cdz-run` + the `cdz` binary (for the `cdz
+        # convert` decode) + the value-heap store. The manifest is a cadenza-ast VALUE; `cdz convert --to
+        # sexpr` renders it as (multi-line, pretty-printed) s-expression, which a gawk `RS="(entry"` pass
+        # tokenizes per entry (7 positional fields: name is-property file export target main-iface main-file;
+        # strings quoted, bool true/false). A @test not present in the manifest (a decliner) SKIPS.
+        mkTestExec = { proj, shred, fileStem, testName }:
+          pkgs.runCommand "test-shred-exec-${proj}-${fileStem}-${testName}"
+            {
+              nativeBuildInputs = [ seedCompiler cdzRun pkgs.gawk ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            export CDZ_STORE="${componentStore}"
+            line=$(cdz convert --from binary --to sexpr ${shred}/manifest.cdzb \
+              | gawk -v n="${testName}" -v fs="${fileStem}" 'BEGIN { RS = "\\(entry" } NR > 1 {
+                  c = 0; nf = split($0, t, /[ \t\n]+/);
+                  for (i = 1; i <= nf; i++) { if (t[i] != "") { c++; f[c] = t[i]; if (c == 7) break } }
+                  for (k = 1; k <= 7; k++) { gsub(/^"/, "", f[k]); gsub(/"?\)+$/, "", f[k]); gsub(/"$/, "", f[k]) }
+                  if (f[1] == n && f[3] == fs) { print f[4] "\t" f[5] "\t" f[6] "\t" f[7] }
+                }')
+            if [ -z "$line" ]; then
+              echo "skip: @test ${fileStem}::${testName} not in shred manifest (declined — #4031 compound-param)" > "$out"
+              exit 0
+            fi
+            IFS=$'\t' read -r texport ttarget tiface tmain <<< "$line"
+            args=("${shred}/$ttarget" --call "$texport" --store "${componentStore}" --runtime ${runtimeDebug})
+            if [ -n "$tmain" ]; then args+=(--peer "$tiface=${shred}/$tmain"); fi
+            cdz-run "''${args[@]}"
+            echo "ok: @test ${proj}/${testName} PASS" > "$out"
+          '';
+        # Per-suite check MAP `{ "<name>" = execDrv }` — shred once, one exec per @test (parallel, CA-cached).
+        testShredSuiteChecks = { proj, dir }:
+          let shred = mkTestShred { inherit proj dir; };
+          in builtins.listToAttrs (map
+            (e: { name = "${e.stem}::${e.name}"; value = mkTestExec { inherit proj shred; fileStem = e.stem; testName = e.name; }; })
+            (testShredIndexEntries proj));
+        # Per-suite AGGREGATE — every @test's exec marker (a skip is exit 0). Non-vacuity guarded.
+        mkTestShredSuiteAgg = { proj, dir }:
+          let cases = testShredSuiteChecks { inherit proj dir; };
+          in assert (builtins.length (builtins.attrNames cases)) > 0;
+          pkgs.runCommand "test-shred-${proj}-all" { } ''
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues cases)}
+            echo "ok: test-shred ${proj} — ${toString (builtins.length (builtins.attrNames cases))} @tests via shred→per-test exec (decliners skip)" > "$out"
+          '';
+        # DRIFT-GUARD — committed `tests-shred-index.txt` == fresh `cdz test --list` (sorted `name<TAB>
+        # is_property`). Reds ONLY on a source @test add/remove (STABLE vs #4031 shreddability — never
+        # couples to v-rust-backend's decline set). Mirrors `guideManifestDriftAssert`.
+        mkTestShredIndexDrift = { proj, dir }:
+          pkgs.runCommand "test-shred-index-drift-${proj}" { nativeBuildInputs = [ seedCompiler pkgs.jq ]; } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            cdz test --list ${pkgs.lib.fileset.toSource { root = ./.; fileset = dir; }}/implementation/${proj} \
+              | jq -r '.tests[] | "\(.file | split("/") | last | sub("\\.[^.]*$";""))\t\(.name)\t\(.is_property)"' | sort > fresh.txt
+            if diff -u ${./implementation + "/${proj}/tests-shred-index.txt"} fresh.txt; then
+              echo "ok: committed tests-shred-index.txt == fresh cdz test --list (${proj})" > "$out"
+            else
+              echo "DRIFT: implementation/${proj}/tests-shred-index.txt != fresh 'cdz test --list ${proj}' — regenerate the committed index"
+              exit 1
+            fi
+          '';
+        # v1 SUITES: small-closure suites only (compiler-ml stays coarse via cad-tests until grouping + X5b).
+        # START with iterators (e2e-validated); cad/choreography follow (choreography needs unique per-@test
+        # target filenames for its ~3 cross-file same-name @tests before its flat layout is collision-free).
+        testShredSuites = { iterators = ./implementation/iterators; };
+        testShredFileAggs = pkgs.lib.mapAttrs'
+          (proj: dir: pkgs.lib.nameValuePair "test-shred-${proj}" (mkTestShredSuiteAgg { inherit proj dir; }))
+          testShredSuites;
+        testShredIndexDriftAsserts = pkgs.lib.mapAttrs'
+          (proj: dir: pkgs.lib.nameValuePair "test-shred-index-drift-${proj}" (mkTestShredIndexDrift { inherit proj dir; }))
+          testShredSuites;
+
         # ── rcdzc→WASM: the Cadenza COMPILER as a wasm artifact (agent-harness v0.2, operator 2026-08-03) ─
         #
         # v-agent-harness needs rcdzc as a content-addressable wasm the kernel loads from its blob store +
@@ -4459,7 +4576,7 @@
             guide-shred-check = guideShredCheck;
             guide-examples-shredded = guideExamplesShredded;
             guide-manifest-drift-assert = guideManifestDriftAssert;
-          } // guideFileAggs // {
+          } // guideFileAggs // testShredFileAggs // testShredIndexDriftAsserts // {
             # Full-CI-in-nix increment 6a: the GHA `roundtrip` job — every corpus program round-trips
             # through the syntax surfaces. Corpus-only (reads spec/semantics, no runtime store) → narrow
             # `seedRoundtripSrc` (no compiler-ml, #2007). Invoked via `cargo run --locked` (not the bare
