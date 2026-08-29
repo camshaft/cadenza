@@ -1106,7 +1106,12 @@ partial def evalDo (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children 
                 | none => .error (.unsupported "eval: malformed do-block function def")
               | none => .error (.unsupported "eval: malformed do-block function def target")
           | _, _ => .error (.unsupported "eval: malformed do-block def")
-        | none => .error (.unsupported "eval: do-block non-def statement not modeled")
+        -- a NON-DEF statement: its VALUE is DISCARDED (not bound), so it is UNOBSERVED — its trap is ELIDED
+        -- (core-semantics §"A Trap Occurs Only Where Its Computation Is Observed"; corpus 02-0385/0390,
+        -- 14c-0745 "a discarded division NEVER traps the do"). So skip it and continue with the same env —
+        -- a pure discarded statement contributes nothing to the value. (An effect perform's host side-effect
+        -- is not modeled by the pure-value oracle either; such programs skip on the value-returning op.)
+        | none => bindStmts env rest
     match bindStmts env (items.extract 0 (items.size - 1)).toList with
     | .ok env' => evalNode m env' ty fuel lastId
     | .error o => o
