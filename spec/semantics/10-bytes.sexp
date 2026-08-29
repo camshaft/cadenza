@@ -240,7 +240,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a slice OF a slice over a CONCAT rope composes offsets across the seam"
   (doc    "The view-of-a-view composition case above runs over a FLAT parent; here the parent is a
@@ -269,7 +269,7 @@
                   ((None _u) -3))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 380 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 (case "the composed slice view EQUALS its flat twin and keys a Map by canonical content"
   (doc    "The identity witness of the rope view-of-view case above: the doubly-sliced seam-crossing
@@ -1296,7 +1296,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 439816 Int64))
   (call   main (: 0 Int64)) (output (: -4 Int64))
-  (live-objects known-leak 195 171))
+  (live-objects known-leak 21 19))
 
 ; --- A runtime `Bytes.at` Option is MATCHED — the reader's core idiom -------------------------------
 ; The reader walks the input bytes with `(match (Bytes.at input i) ((Some b) …) (None …))` on every
@@ -2324,7 +2324,7 @@
                     ((None _u) -200)))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 40 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 ; ============================================================================================
 ; Byte-string-literal DISPATCH — a runtime Bytes value matched against `b"…"` whole-value literals
