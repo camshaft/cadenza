@@ -199,3 +199,11 @@ if [ "$iuse" -ge "$ORACLE_THRESHOLD_PCT" ]; then
 else
   printf 'prune-tmp-inodes: oracle class DORMANT — inode-use %s%% below oracle threshold %s%% (fires before the wedge).\n' "$iuse" "$ORACLE_THRESHOLD_PCT"
 fi
+
+# Heartbeat (best-effort, never fails the prune): OVERWRITE a `.last-run` file next to the script. Its MTIME
+# is a liveness proof the (silent, `>/dev/null`) cron actually FIRED — mirroring how the cpu-monitor's
+# samples.tsv freshness proves ITS cron is alive — and its content shows the mode + current /tmp pressure.
+# So "is this cron firing + keeping /tmp low?" is answerable after the fact WITHOUT cron mail (concierge
+# silent-cron observability, 2026-08-29). Overwrite (not append) → bounded, no rotation needed.
+printf '%s apply=%s inode-use=%s%%\n' "$(date -Is)" "$APPLY" "$iuse" \
+  > "$(dirname "${BASH_SOURCE[0]}")/prune-tmp-inodes.last-run" 2>/dev/null || true

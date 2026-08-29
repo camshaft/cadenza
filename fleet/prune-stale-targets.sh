@@ -94,3 +94,9 @@ done
 printf 'prune-stale-targets: %s target/ dir(s) %s; skipped alive=%s fresh=%s excluded=%s\n' \
   "$pruned" "$([ "$APPLY" = 1 ] && echo pruned || echo would-be-pruned)" \
   "$skipped_alive" "$skipped_fresh" "$skipped_excl"
+
+# Heartbeat (best-effort): OVERWRITE a `.last-run` file next to the script — mtime = liveness proof the
+# (silent) cron fired, content = last result. See prune-tmp-inodes.sh for the rationale (concierge silent-
+# cron observability, 2026-08-29). Never fails the prune.
+printf '%s apply=%s pruned=%s\n' "$(date -Is)" "$APPLY" "$pruned" \
+  > "$(dirname "${BASH_SOURCE[0]}")/prune-stale-targets.last-run" 2>/dev/null || true
