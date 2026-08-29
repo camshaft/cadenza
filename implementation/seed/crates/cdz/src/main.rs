@@ -4879,21 +4879,32 @@ fn provider_cache_dir() -> Option<std::path::PathBuf> {
 /// is PER FILE (`seen`), matching the run. Order is the resolved-`files` order (path-sorted / manifest
 /// order) then declaration order — deterministic, so a drift-guard comparing a fresh `--list` to a
 /// committed one is stable. Ignores `--filter`/`--tag`: a manifest must enumerate the WHOLE suite.
-fn list_tests(files: &[String]) -> ExitCode {
-    match list_test_bytes(files) {
-        Ok(bytes) => {
-            // Write the `(test-list …)` cadenza-ast-binary value VERBATIM to stdout (the delegate path's
-            // `Query::TestList` bytes are likewise forwarded raw; consumers decode with the shared `codec`).
-            use std::io::Write as _;
-            match std::io::stdout().write_all(&bytes) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("{PROG}: --list: could not write the test-list: {e}");
-                    ExitCode::FAILURE
+fn list_tests(files: &[String], format: ListFormat) -> ExitCode {
+    match format {
+        // DEFAULT: the canonical cadenza-ast-BINARY `(test-list …)` value, written VERBATIM to stdout (the
+        // delegate path's `Query::TestList` bytes are likewise raw; consumers decode with the shared `codec`).
+        ListFormat::Binary => match list_test_bytes(files) {
+            Ok(bytes) => {
+                use std::io::Write as _;
+                match std::io::stdout().write_all(&bytes) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("{PROG}: --list: could not write the test-list: {e}");
+                        ExitCode::FAILURE
+                    }
                 }
             }
-        }
-        Err(code) => code,
+            Err(code) => code,
+        },
+        // `--format nix`: the eval-readable nix attrset list (v-nix's scoped-cached-IFD discovery source),
+        // printed to stdout (the discovery drv redirects to `$out`, a single `import`-able file).
+        ListFormat::Nix => match collect_test_entries(files) {
+            Ok(entries) => {
+                print!("{}", list_test_nix(entries));
+                ExitCode::SUCCESS
+            }
+            Err(code) => code,
+        },
     }
 }
 
@@ -4902,10 +4913,69 @@ fn list_tests(files: &[String]) -> ExitCode {
 /// is unit-testable without capturing stdout). `Err(ExitCode::FAILURE)` on a load/decode/link fault (a
 /// broken project cannot be honestly enumerated — failing red is what the drift-guard wants).
 fn list_test_bytes(files: &[String]) -> Result<Vec<u8>, ExitCode> {
-    // Accumulate one `(test <name> <is-property> <file>)` child per test into ONE `(test-list …)` value —
-    // the cadenza-ast-binary tooling format (mirrors the delegate `Query::TestList` shape byte-for-byte).
+    // Both `--list` projections (cadenza-ast-binary + `--format nix`) share ONE enumeration; the binary form
+    // encodes each collected `(name, is_property, file)` as a `(test …)` child of `(test-list …)`.
+    let entries = collect_test_entries(files)?;
     let mut b = cadenza_syntax::Builder::new();
-    let mut test_nodes: Vec<cadenza_syntax::StructId> = Vec::new();
+    let mut children: Vec<cadenza_syntax::StructId> = Vec::with_capacity(entries.len() + 1);
+    children.push(b.name("test-list"));
+    for (name, is_property, file) in &entries {
+        let head = b.name("test");
+        let name_n = b.atom_leaf(cadenza_syntax::Leaf::Str(name.as_str().into()));
+        let isprop_n = b.atom_leaf(cadenza_syntax::Leaf::Bool(*is_property));
+        let file_n = b.atom_leaf(cadenza_syntax::Leaf::Str(file.as_str().into()));
+        children.push(b.list(vec![head, name_n, isprop_n, file_n]));
+    }
+    let root = b.list(children);
+    Ok(cadenza_syntax::codec::encode(&b.finish(root)))
+}
+
+/// A nix STRING literal for `s` — quotes + escapes `"`, `\`, a `${` antiquotation opener, and newlines, so
+/// a `@test` name or source path with a special char can't break the emitted (and `import`-ed) nix.
+fn nix_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '$' if chars.peek() == Some(&'{') => out.push_str("\\$"),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `--list --format nix`: a PURE, IFD-cache-stable nix attrset list — `[ { name = "…"; is_property = …;
+/// file = "…"; } … ]` — the eval-readable projection v-nix's scoped-cached-IFD discovery derivation writes to
+/// `$out` and the flake `import`s. SORTED by `(file, name)` so an identical `@test` set yields BYTE-IDENTICAL
+/// output (the discovery drv is then content-stable — eval re-reads only on a real test add/remove, not
+/// ordering noise). Attr names (`name`/`is_property`/`file`) match the emit-shred manifest so the fan-out's
+/// `(file-stem, name)` join is clean. Pure: no timestamps/hashed paths, only the enumerated fields.
+fn list_test_nix(mut entries: Vec<(String, bool, String)>) -> String {
+    entries.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+    let mut s = String::from("[\n");
+    for (name, is_property, file) in &entries {
+        s.push_str(&format!(
+            "  {{ name = {}; is_property = {is_property}; file = {}; }}\n",
+            nix_str(name),
+            nix_str(file),
+        ));
+    }
+    s.push_str("]\n");
+    s
+}
+
+/// Enumerate the resolved suite's `@test`s as owned `(name, is_property, file)` tuples — the walk shared by
+/// [`list_test_bytes`] (cadenza-ast-binary) and [`list_test_nix`]. Same semantics as [`list_tests`]: follow
+/// each file's import closure, build the compiler `Db`, keep only the ENTRY file's own `@test`s in a package
+/// (byte-for-byte `run_test_file`'s filter), dedup per file. `is_property` = `!params.is_empty() ||
+/// name.ends_with("-gen")` (the delegate `compile_tests` classification). Wasmtime-free.
+fn collect_test_entries(files: &[String]) -> Result<Vec<(String, bool, String)>, ExitCode> {
+    let mut entries: Vec<(String, bool, String)> = Vec::new();
     for file in files {
         // Follow the file's import closure — the SAME linked program `cdz test`/`cdz check` sees, so a test
         // in a module that imports a sibling enumerates against the same package. A load error is FATAL for
@@ -4977,21 +5047,10 @@ fn list_test_bytes(files: &[String]) -> Result<Vec<u8>, ExitCode> {
             // over generated inputs); a nullary one is a plain unit test. This matches the delegate path's
             // `compile_tests` classification EXACTLY, so `--list` agrees across both builds.
             let is_property = !db.defs[i].params.is_empty() || name.ends_with("-gen");
-            let head = b.name("test");
-            let name_n = b.atom_leaf(cadenza_syntax::Leaf::Str(name.as_str().into()));
-            let isprop_n = b.atom_leaf(cadenza_syntax::Leaf::Bool(is_property));
-            let file_n = b.atom_leaf(cadenza_syntax::Leaf::Str(file.as_str().into()));
-            test_nodes.push(b.list(vec![head, name_n, isprop_n, file_n]));
+            entries.push((name, is_property, file.clone()));
         }
     }
-    // Wrap the per-test children in the `(test-list …)` root and return its `codec::encode`d bytes — the same
-    // cadenza-ast-binary value the delegate `Query::TestList` produces (consumers decode with the shared
-    // `codec` / `cdz convert --from binary`).
-    let mut children: Vec<cadenza_syntax::StructId> = Vec::with_capacity(test_nodes.len() + 1);
-    children.push(b.name("test-list"));
-    children.extend(test_nodes);
-    let root = b.list(children);
-    Ok(cadenza_syntax::codec::encode(&b.finish(root)))
+    Ok(entries)
 }
 
 /// `cdz test --emit-shred` — the compiler-driven test SHRED (the operator model), the body behind the flag.
@@ -5337,7 +5396,7 @@ fn run_test(args: &TestArgs) -> ExitCode {
     // of the run machinery below. Short-circuit here, right after resolving `files`, so it shares the exact
     // file-resolution `cdz test` uses (manifest / dir walk / one file) but nothing after it.
     if args.list {
-        return list_tests(&files);
+        return list_tests(&files, args.format);
     }
     // `--emit-shred`: shred the suite into per-@test wasm + a manifest (compile-only), then EXIT. Shares the
     // exact file-resolution above; the per-group emit + write is `run_emit_shred`.
@@ -6239,6 +6298,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 warm_only: false, // watch RUNS the tests on each change, never a warm-only pass
                 report_time: false, // watch is an interactive re-run; timing is an opt-in of a direct run
                 list: false, // watch RE-RUNS the suite; enumeration-and-exit is a one-shot direct-run mode
+                format: ListFormat::Binary, // moot when list=false
                 emit_shred: false, // watch RE-RUNS; the shred build-output is a one-shot direct-run mode
                 out_dir: None,
                 standalone: false,
@@ -7754,6 +7814,18 @@ impl From<BuildTargetArg> for rcdzc::Target {
 
 // ── unit testing ───────────────────────────────────────────────────────────────────────────────────
 
+/// The `cdz test --list` output format. `Binary` is the canonical cadenza-ast-binary `(test-list …)` value;
+/// `Nix` is the eval-readable nix attrset-list projection for v-nix's scoped-cached-IFD discovery derivation.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum ListFormat {
+    /// cadenza-ast-binary `(test-list (test <name> <is-property> <file>)…)` — the canonical form (default).
+    #[value(name = "binary")]
+    Binary,
+    /// A pure nix attrset list `[ { name; is_property; file; } … ]`, sorted by (file, name), for IFD.
+    #[value(name = "nix")]
+    Nix,
+}
+
 #[derive(clap::Args)]
 struct TestArgs {
     /// What to test: a FILE (its `@test` defs), a DIRECTORY (its `Project.cdz` suite, else every source
@@ -7816,6 +7888,13 @@ struct TestArgs {
     /// (which adds the per-test wasm + the full manifest as a BUILD output); `--list` is the NAMES-only half.
     #[arg(long)]
     list: bool,
+    /// The `--list` output FORMAT. `binary` (DEFAULT): the canonical cadenza-ast-binary `(test-list …)` value
+    /// (no-JSON mandate; a build-time decoder reads it). `nix`: a PURE, sorted, eval-readable nix attrset list
+    /// `[ { name; is_property; file; } … ]` — the projection v-nix's scoped-cached-IFD test-shred discovery
+    /// derivation writes to `$out` and the flake `import`s (nix-eval cannot parse the binary form). Only
+    /// meaningful with `--list`.
+    #[arg(long, value_enum, default_value_t = ListFormat::Binary)]
+    format: ListFormat,
     /// SHRED the resolved suite into per-`@test` wasm COMPONENTS + a manifest, into `--out-dir`, and EXIT
     /// (compile only — NO run, no wasmtime). The compiler-driven test shred (operator model): each project
     /// file (its own shared-closure group) emits — via the `EmitTestsShred` sidecar, IN-PROCESS — a MAIN
@@ -11892,6 +11971,41 @@ mod tests {
             vec!["alpha-passes".to_string(), "beta-gen".to_string()]
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `--list --format nix` emits a PURE, `(file, name)`-SORTED nix attrset list — the eval-readable
+    /// projection v-nix's scoped-cached-IFD discovery drv writes to `$out` + imports. Pins the exact shape
+    /// (attr names `name`/`is_property`/`file` matching the emit-shred manifest) + the stable sort (so an
+    /// identical `@test` set → byte-identical output → the discovery drv is content-stable for the IFD cache).
+    #[test]
+    fn list_test_nix_emits_a_sorted_pure_attrset_list() {
+        // Unsorted input across two files; nix output must sort by (file, name): a.cdz/apple, a.cdz/beta,
+        // b.cdz/zebra — regardless of enumeration order.
+        let entries = vec![
+            ("zebra".to_string(), false, "b.cdz".to_string()),
+            ("beta".to_string(), false, "a.cdz".to_string()),
+            ("apple".to_string(), true, "a.cdz".to_string()),
+        ];
+        let nix = list_test_nix(entries);
+        assert_eq!(
+            nix,
+            "[\n  \
+             { name = \"apple\"; is_property = true; file = \"a.cdz\"; }\n  \
+             { name = \"beta\"; is_property = false; file = \"a.cdz\"; }\n  \
+             { name = \"zebra\"; is_property = false; file = \"b.cdz\"; }\n\
+             ]\n"
+        );
+    }
+
+    /// `nix_str` quotes + escapes the chars that would break an emitted/`import`-ed nix string: `"`, `\`, a
+    /// `${` antiquotation opener, and newline.
+    #[test]
+    fn nix_str_escapes_nix_special_chars() {
+        assert_eq!(nix_str("plain-name"), "\"plain-name\"");
+        assert_eq!(nix_str("a\"b"), "\"a\\\"b\"");
+        assert_eq!(nix_str("a\\b"), "\"a\\\\b\"");
+        assert_eq!(nix_str("a${b}"), "\"a\\${b}\""); // the `${` opener escaped; a bare `}` is fine
+        assert_eq!(nix_str("a\nb"), "\"a\\nb\"");
     }
 
     /// `cdz test --emit-shred --two-stage` (§S6b stage-2) writes cadenza-ast FRAGMENTS to the out-dir: one
