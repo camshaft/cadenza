@@ -3775,6 +3775,11 @@
               npm run test:unit
               npm run check:prose
               npm run check:prose-native
+              # (v-guide-infra #5768) .sexp↔chapters.ts registry DRIFT gate: asserts every registry field
+              # (title/blurb/pillar/section/exercises) is DERIVABLE from the sibling .sexp — the drift-gate for
+              # the upcoming chapters.ts→@generated derivation. Pure node (reads guide/src + chapters.ts), no
+              # cargo/xtask, zero new inputs (guideExamplesSrc already includes ./guide).
+              npm run check:registry-derive
               npm run check:diagnostics
               npm run check:examples
               npm run check:calculator
