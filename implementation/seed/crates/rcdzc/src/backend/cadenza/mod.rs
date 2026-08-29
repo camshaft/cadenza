@@ -344,8 +344,48 @@ fn emit_def(
         lifted: Some(lifted.clone()),
         ..BinderEnv::default()
     };
-    let body_node = emit_expr(db, b, body, None, &mut env, emitted)?;
+    // A def whose RESULT type is a concrete `Ty::Qty` AND whose body is DIRECTLY a runtime ARITHMETIC
+    // magnitude re-emits the quantity wrapper at the tail: `(def (main …) (Qty.of (* n 2) u))` erases
+    // (`Qty.of` drops its compile-time unit) to a bare `Core::Arith` typed `Ty::Qty`, so re-inserting
+    // `((. Qty of) <magnitude> <unit>)` here reconstructs the genuine quantity return (recompiling folds it
+    // back to the same erased Arith → value-eq + byte-idempotent). The escape type is the def RESULT type
+    // (`def_result_ty`), NOT the body node's own solved type — an erased `Qty.value` peel (`(Qty.value (+ q
+    // r))`) leaves the SAME `Core::Arith`-typed-`Ty::Qty` body but its result type is the bare inner numeric,
+    // so it is NOT matched here and still declines (the direct path returns bare numeric).
+    //
+    // Deliberately restricted to a DIRECT `Core::Arith` body: reconstructing at a nested match-arm /
+    // collection-element position (where a `Ty::Qty` value ALSO appears, e.g. `(list (Qty.of v u) (Qty.of
+    // (+ v 1) u))`) would fire INCONSISTENTLY across sibling positions and mistype the re-emitted program
+    // (`CDZ0203 match arms differ … (Qty …) vs Int64`, confirmed on 18-units-of-measure/0225). Those are a
+    // later, separately-verified slice; keeping this at the def tail proves it cannot leak.
+    let body_node = match def_result_ty(db, def, params.len()) {
+        Some(Ty::Qty { inner, unit }) if matches!(core_of(db, body), Core::Arith { .. }) => {
+            let head = member_access(b, "Qty", "of");
+            let mag =
+                emit_expr_viewed(db, b, body, Some((*inner).clone()), None, &mut env, emitted)?;
+            let unit_node = crate::lower::unit_value_ast(b, &unit);
+            b.list(vec![head, mag, unit_node])
+        }
+        _ => emit_expr(db, b, body, None, &mut env, emitted)?,
+    };
     Ok(b.list(vec![def_head, sig, body_node]))
+}
+
+/// The def's RESULT type — its inferred scheme type ([`crate::infer::def_scheme`]) with `n_params`
+/// parameter arrows (`Ty::Fn`) stripped off. `None` when the scheme is unavailable or the arrow spine is
+/// shorter than the parameter count (a malformed / under-determined signature). This is the body's ESCAPE
+/// type, distinct from the body NODE's own solved type when a unit-erasing op (`Qty.value`) left the node
+/// carrying `Ty::Qty` while the real escape is the bare inner numeric — see the Qty tail re-emit in
+/// [`emit_def`].
+fn def_result_ty(db: &mut Db, def: usize, n_params: usize) -> Option<Ty> {
+    let mut ty = crate::infer::def_scheme(db, def)?.ty;
+    for _ in 0..n_params {
+        match ty {
+            Ty::Fn(_, ret) => ty = (*ret).clone(),
+            _ => return None,
+        }
+    }
+    Some(ty)
 }
 
 /// Reconstruct `(export <name>)` for an exported definition. B0 handles only an export whose boundary
