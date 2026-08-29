@@ -196,6 +196,15 @@ fn describe_side(s: &Side) -> String {
 /// entry; one that does and can't resolve it yields `Declined` (a harness/environment gap, not a
 /// compiler bug — we don't file it).
 pub fn run_wasm(source: &str, store: &std::path::Path) -> Side {
+    run_wasm_with_args(source, store, &[])
+}
+
+/// [`run_wasm`] but CALLING the exported entry with `args` (each coerced to a param type by `cdz-run`),
+/// so a program whose `main` TAKES parameters (a runtime-`n` / heap entry) can be VALUE-checked instead
+/// of failing the 0-arg call → `Declined`. The `args` must match the Lean trial's `(args …)` value-ASTs
+/// (same values, string-rendered here vs value-AST there) so the two sides run the same call. Empty
+/// `args` is exactly [`run_wasm`].
+pub fn run_wasm_with_args(source: &str, store: &std::path::Path, args: &[String]) -> Side {
     // Parse + encode to the binary AST the compiler consumes (the same bridge `compile_catching` uses).
     let arenas = match cadenza_syntax::sexpr::read(source) {
         Ok(a) => a,
@@ -203,7 +212,7 @@ pub fn run_wasm(source: &str, store: &std::path::Path) -> Side {
         Err(e) => return Side::Declined(format!("parse error: {}", e.0)),
     };
     let bytes = cadenza_syntax::codec::encode(&arenas);
-    run_wasm_bytes(&bytes, store)
+    run_wasm_bytes(&bytes, store, args)
 }
 
 /// Run a BINARY-AST blob through the WASM backend — the next-gen entropy path's analog of [`run_wasm`].
@@ -218,12 +227,14 @@ pub fn run_wasm_ast(ast_bytes: &[u8], store: &std::path::Path) -> Side {
         Err(e) => return Side::Declined(format!("decode: {e:?}")),
     };
     let bytes = cadenza_syntax::codec::encode(&arenas);
-    run_wasm_bytes(&bytes, store)
+    run_wasm_bytes(&bytes, store, &[])
 }
 
-/// Compile already-encoded binary-AST `bytes` to a component and run it in-process — the shared tail
-/// of [`run_wasm`] (text path) and [`run_wasm_ast`] (binary-AST-entropy path).
-fn run_wasm_bytes(bytes: &[u8], store: &std::path::Path) -> Side {
+/// Compile already-encoded binary-AST `bytes` to a component and run it in-process with call `args` — the
+/// shared tail of [`run_wasm`] (text path) and [`run_wasm_ast`] (binary-AST-entropy path). `args` are the
+/// values passed to the exported entry (empty for a `main`/0-arg export; `cdz-run` coerces each to a param
+/// type). See [`run_wasm_with_args`].
+fn run_wasm_bytes(bytes: &[u8], store: &std::path::Path, args: &[String]) -> Side {
     // Compile to a component. A rejection/decline (errors-as-data) → not comparable.
     let component = match rcdzc::compile_component(bytes) {
         Ok(c) => c,
@@ -259,6 +270,7 @@ fn run_wasm_bytes(bytes: &[u8], store: &std::path::Path) -> Side {
     let opts = cdz_run::RunOpts {
         runtime,
         runtime_cache_dir: Some(store.to_path_buf()),
+        args: args.to_vec(),
         ..Default::default()
     };
     match cdz_run::run(&component, &opts) {
@@ -1329,6 +1341,43 @@ mod tests {
             "benign scalars must not mismatch: {mismatches:?}"
         );
         assert!(mismatches.is_empty());
+    }
+
+    /// FEASIBILITY (S124): a PARAM'd main can be VALUE-checked by SUPPLYING an arg — `run_wasm_with_args`
+    /// passes the call arg to the wasm side, and the Lean trial carries the SAME value in `(args …)`, so
+    /// the oracle re-runs the same call. `(def (main (: n Int64)) (+ n 1))` @ n=5 → 6 on BOTH sides → HOLDS.
+    /// This proves the arg-passing pipeline end-to-end (the foundation for recovering the ~½ of programs
+    /// that are param'd mains, currently not-comparable). Skips unless the real oracle is discoverable.
+    #[test]
+    fn a_param_main_value_checks_with_a_supplied_arg() {
+        let Some(oracle) = crate::lean::discover_oracle_check() else {
+            eprintln!("skipping: no oracle-check (nix build .#oracle-lean)");
+            return;
+        };
+        let src = "(do (def (main (: n Int64)) (+ n 1)) (export main))";
+        let store = std::path::Path::new("/nonexistent-store"); // pure Int64 arith needs no runtime
+        let side = run_wasm_with_args(src, store, &["5".to_string()]);
+        let Side::Value(v) = &side else {
+            panic!("runtime-n main with arg 5 should run to a value, got {side:?}");
+        };
+        let output = crate::lean::RcdzcOutput::value_from_render(v)
+            .expect("the wasm value renders + parses");
+        let program = cadenza_syntax::sexpr::read(src).expect("program parses");
+        let arg = cadenza_syntax::sexpr::read("5").expect("arg parses");
+        let trial = crate::lean::Trial {
+            program,
+            args: vec![arg],
+            output,
+        };
+        let verdicts =
+            crate::lean::judge_batch(&oracle, &[trial]).expect("oracle judges the batch");
+        assert_eq!(verdicts.len(), 1);
+        assert!(
+            matches!(verdicts[0], crate::lean::Verdict::Holds),
+            "a runtime-n main (+ n 1) @ n=5 must HOLD (wasm 6 == oracle 6) — the oracle binds trial args, \
+             got {:?}",
+            verdicts[0]
+        );
     }
 
     /// A failing oracle process must be ISOLATED, not fatal to the sweep (S103 resilience). A stand-in
