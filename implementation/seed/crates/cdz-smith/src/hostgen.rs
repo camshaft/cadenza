@@ -371,7 +371,13 @@ mod tests {
                 _ => {}
             }
         }
-        assert!(saw_compiled, "some host shape should COMPILE (a supported boundary)");
-        assert!(saw_declined, "some host shape should DECLINE (a gap) — the point of the generator");
+        assert!(
+            saw_compiled,
+            "some host shape should COMPILE (a supported boundary)"
+        );
+        assert!(
+            saw_declined,
+            "some host shape should DECLINE (a gap) — the point of the generator"
+        );
     }
 }
