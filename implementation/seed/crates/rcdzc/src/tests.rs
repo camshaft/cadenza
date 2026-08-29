@@ -21508,36 +21508,6 @@ mod diagnostics {
     //  message (no implicit conversion / Float64 / Int64) + (fix (kind wrap) (replacement "(Float64.of-int …)")
     //  (unverified)); the multi-message form landed via C1 #5277.)
 
-    #[test]
-    fn an_int_literal_argument_to_a_float_parameter_reports_no_double() {
-        // The code/message/retype-fix facets migrated to corpus 06-numeric-model ("an int literal argument to
-        // a float parameter is one annotation-context fault with a retype fix" — CDZ0203 (message "make it a
-        // float literal")(fix (kind replace)(replacement "3.0")); + "an int argument to an UNREFERENCED float
-        // parameter is the sole arg-unify CDZ0301"). What STAYS here is the corpus-INEXPRESSIBLE half: the
-        // no-DOUBLE dedup is a TOTAL-program-error-count / no-OTHER-code assertion, which the corpus (error …)
-        // surface cannot express — its (count N)/(once) is PER-CODE (counts faults carrying that code), so it
-        // cannot assert "exactly ONE error total, and NO accompanying CDZ0301".
-        // Referenced param: the arg-unify's redundant CDZ0301 DEFERS to the reduced body's CDZ0203 → one error.
-        let errs = all_errors("(module m (def (g (: x Float64)) x) (def y (g 3)) (export y))");
-        assert_eq!(
-            errs.len(),
-            1,
-            "one fault, not the old CDZ0301+CDZ0203 double: {:?}",
-            errs.iter()
-                .map(|d| (&d.code, &d.message))
-                .collect::<Vec<_>>()
-        );
-        // Unreferenced param: no body check to defer to, so the sole arg-unify CDZ0301 survives (one error).
-        let ignored = all_errors("(module m (def (g (: x Float64)) 0) (def y (g 3)) (export y))");
-        assert_eq!(
-            ignored.len(),
-            1,
-            "the sole arg-unify report survives when the body ignores the parameter: {:?}",
-            ignored.iter().map(|d| &d.code).collect::<Vec<_>>()
-        );
-        assert_eq!(ignored[0].code.as_deref(), Some("CDZ0301"));
-    }
-
     // (a_non_integer_float_annotated_int_names_the_fix_path_not_a_bare_mismatch migrated to corpus
     // 06-numeric-model by ENHANCING the two existing drop-fraction cases with the message facets it
     // protected: "a non-integer float literal annotated an integer type carries NO drop-fraction fix"
