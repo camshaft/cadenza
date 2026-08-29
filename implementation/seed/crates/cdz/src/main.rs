@@ -6119,7 +6119,6 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 diagnostics: None, // watch `run` doesn't grade diagnostics (a compile-phase grade wire)
                 compile_status: 0,
                 compile_diag: None,
-                diagnostics: None,
                 component_name: None,
                 report_live_objects: false,
                 core_module: None,
