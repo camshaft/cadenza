@@ -1,0 +1,22 @@
+# xtask-merge-baseline — the `.gate-baseline*` git MERGE DRIVER as a standalone leaf (v-xtask-decompose:
+# seq-202 shrink xtask). git invokes it per-merge on a `.gate-baseline*` conflict (registered via
+# `.gitattributes merge=fleet-baseline` + `fleet up`'s register_merge_drivers): union the two sides then
+# verdict-aware dedup, refusing (exit 1, leave the conflict for a human) on a same-description/different-
+# verdict conflict. NOT a nix-app (git needs a fast local binary, not nix-eval per merge) — carved into
+# its own crate binary the driver points at, replacing the in-xtask `Cmd::MergeBaseline` arm.
+#
+# LEAF: deps `xtask-support` only (for `merge_baseline_union` + `BaselineMergeErr` — the baseline-text
+# algebra owned by v-corpus-harness). No xtask dep.
+[package]
+name = "xtask-merge-baseline"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-merge-baseline"
+path = "src/main.rs"
+
+[dependencies]
+# The verdict-aware baseline union/dedup + the conflict/unparseable classification.
+xtask-support = { path = "../xtask-support" }

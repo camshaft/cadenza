@@ -367,6 +367,17 @@
           doCheck = false;
         });
 
+        # xtaskSaveBaselineBin — the thin `cargo xtask gate --save` replacement (v-xtask-decompose seq-202
+        # gate-delete). Reads the `.#corpus-verdicts` harvest (<tag>\t<description> lines) into a
+        # description→verdict map + writes .gate-baseline via `xtask_support::serialize_baseline`. Built from
+        # ONLY its crate closure (deps xtask-support), so it caches independently of xtask. `apps.save-baseline`
+        # builds the harvest + runs this bin `VERDICTS-FILE BASELINE-OUT`. Output: $out/bin/xtask-save-baseline.
+        xtaskSaveBaselineBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-save-baseline"; }) // {
+          pname = "cdz-xtask-save-baseline";
+          cargoExtraArgs = "-p xtask-save-baseline";
+          doCheck = false;
+        });
+
         # xtaskBenchBin — the STANDALONE runtime allocation benchmark (v-xtask-decompose). Built from ONLY the
         # xtask-bench crate's closure (a std-only LEAF — no deps at all), so it caches INDEPENDENTLY of xtask.
         # `apps.bench` wraps it with CDZ_REPO_ROOT; the bin itself shells `cargo test` in cdz-runtime for the
@@ -644,6 +655,14 @@
           # xtask-prune-baselines (v-xtask-decompose): the .gate-baseline* pruner as its own bin crate, deps
           # only xtask-support. Registered here so the crane deps-src includes its Cargo.toml.
           xtask-prune-baselines = "xtask/crates/xtask-prune-baselines";
+          # xtask-save-baseline (v-xtask-decompose seq-202 --save gate-delete): the thin `cargo xtask gate
+          # --save` replacement — reads the .#corpus-verdicts harvest (<tag>\t<description> lines) + writes
+          # .gate-baseline via serialize_baseline. Deps xtask-support only. Registered same-window with the
+          # cherry-picked crate (a crate can't land without its flake reg — Cargo.lock vs rootWorkspaceCrates).
+          xtask-save-baseline = "xtask/crates/xtask-save-baseline";
+          # xtask-merge-baseline (v-xtask-decompose seq-202): the .gate-baseline* git MERGE DRIVER carved into
+          # its own bin (v-ft repoints register_merge_drivers to it after this lands). Deps xtask-support only.
+          xtask-merge-baseline = "xtask/crates/xtask-merge-baseline";
           # xtask-codegen-contracts (v-xtask-decompose): the contract-schema projector (codegen→build-time-nix),
           # deps cadenza-ast + cdz-contract. Registered here so the crane deps-src includes its Cargo.toml.
           xtask-codegen-contracts = "xtask/crates/xtask-codegen-contracts";
@@ -1001,6 +1020,10 @@
               xtask-fmt = [ "cadenza-ast" "cdz-contract" "xtask-fmt" "xtask-support" ];
               # xtask-prune-baselines deps xtask-support (which deps cdz-contract→cadenza-ast).
               xtask-prune-baselines = [ "cadenza-ast" "cdz-contract" "xtask-prune-baselines" "xtask-support" ];
+              # xtask-save-baseline + xtask-merge-baseline dep xtask-support only (→ cdz-contract → cadenza-ast),
+              # mirroring xtask-roundtrip.
+              xtask-save-baseline = [ "cadenza-ast" "cdz-contract" "xtask-save-baseline" "xtask-support" ];
+              xtask-merge-baseline = [ "cadenza-ast" "cdz-contract" "xtask-merge-baseline" "xtask-support" ];
               # xtask-codegen-contracts deps cadenza-ast + cdz-contract (cdz-contract deps cadenza-ast).
               xtask-codegen-contracts = [ "cadenza-ast" "cdz-contract" "xtask-codegen-contracts" ];
               # xtask-codegen-wasm-abi deps only external crates (wasm-encoder/syn/quote/prettyplease) — its
@@ -2956,6 +2979,77 @@
           echo "ok: corpus — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→build→exec caching graph" > "$out"
         '';
 
+        # ── --save HARVEST (v-xtask-decompose seq-202 gate-delete: the nix replacement for `cargo xtask gate
+        # --save`). The gate `--save` regenerated `.gate-baseline` from the current corpus verdicts; instead of
+        # a heavy in-process re-run, HARVEST the verdicts from the per-case nix graph (cached) + let a thin
+        # `xtask-save-baseline` leaf (v-xtask, WIP) write the baseline. `cdz-run --emit-verdict PATH` (#5746)
+        # writes this case's CURRENT verdict `<tag>\t<description>` (tag ∈ pass/todo/fail — the coarse vocab
+        # `.gate-baseline` records) + ALWAYS exits 0 (it CLASSIFIES, not compares — so a regressed case emits its
+        # new verdict instead of failing the derivation, which the grade path would). `mkCorpusVerdict` mirrors
+        # `mkCorpusExec` (same build/store/runtime/peer inputs) but adds `--emit-verdict "$out"` → $out IS the
+        # one-line verdict; the aggregates concat them. `.#corpus-verdicts` = the whole-corpus harvest file
+        # xtask-save-baseline consumes (verdicts-file → .gate-baseline). WASM baseline here; the rust /
+        # rust-async baselines get the same treatment over the corpus-rust / corpus-rust-async exec variants
+        # (follow-up once the wasm harvest + xtask-save-baseline registration land).
+        mkCorpusVerdict = { name, build, idx }:
+          pkgs.runCommand "corpus-verdict-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzRun ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            export CDZ_STORE="${componentStore}"
+            status=$(cat ${build}/compile.status)
+            # SAME inputs as mkCorpusExec (the classify runs the same grade), plus --emit-verdict.
+            args=(--grade ${build}/test-run.ast --compile-status "$status" --compile-diag ${build}/compile.err
+                  --baseline ${./spec/semantics/.gate-baseline})
+            if [ -e ${build}/diagnostics ]; then args+=(--diagnostics ${build}/diagnostics); fi
+            if [ -e ${build}/emit.wasm ]; then args=(${build}/emit.wasm "''${args[@]}"); fi
+            if [ -e ${build}/component-name ]; then args+=(--component-name "$(cat ${build}/component-name)"); fi
+            for pw in ${build}/peer-*.wasm; do
+              [ -e "$pw" ] || continue
+              pn=$(basename "$pw" .wasm)
+              args+=(--peer "$(cat ${build}/$pn.iface)=$pw")
+            done
+            args+=(--runtime ${runtimeDebug})
+            # CLASSIFY: write `<tag>\t<description>` to $out + exit 0 (takes precedence over --baseline; a
+            # regressed/todo case emits its CURRENT verdict rather than failing the build).
+            args+=(--emit-verdict "$out")
+            cdz-run "''${args[@]}"
+            # $out is written by cdz-run (--emit-verdict). Guard against an empty write (a real bug would leave
+            # it absent → the aggregate `cat` fails loud, catching a broken emit-verdict rather than a silent gap).
+            [ -s "$out" ] || { echo "corpus-verdict ${name} ${idx}: cdz-run --emit-verdict wrote no verdict" >&2; exit 1; }
+          '';
+
+        # Per-FILE verdict harvest: concat every case's one-line verdict into one `<tag>\t<description>` file.
+        # (Order-independent — xtask-save-baseline parses into a description→verdict map + sorts on serialize.)
+        verdictsFileAgg = { name, file }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            n = corpusCaseCount file;
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+            cases = map
+              (idx: mkCorpusVerdict { inherit name idx; build = mkCorpusBuild { inherit name shred idx; }; })
+              idxs;
+          in
+          assert (builtins.length cases) > 0;
+          pkgs.runCommand "corpus-verdicts-${name}" { } ''
+            : > "$out"
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} >> "$out"'') cases}
+          '';
+
+        # `.#corpus-verdicts` — the WHOLE-corpus harvest: every file's verdict lines concatenated. This is the
+        # input `apps.save-baseline` feeds to v-xtask's `xtask-save-baseline` leaf (verdicts-file → .gate-baseline).
+        # Cached through the same per-case shred→build→verdict graph as `corpus`, so re-harvesting an unchanged
+        # corpus is a store cache hit.
+        corpusVerdictsAll = pkgs.runCommand "corpus-verdicts" { } ''
+          : > "$out"
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                ''cat ${verdictsFileAgg { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
+              corpusFileNames}
+        '';
+
         # ── wasm-opt OPTIMALITY-GAP sweep (operator 2026-08-27; design/DESIGN-wasm-opt-gap-analysis-rcdzc.md) ──
         # For every corpus wasm output that COMPILES, measure the gap between our emit and what Binaryen's
         # `wasm-opt` would produce. If wasm-opt shrinks nothing, our module is OPTIMAL on the metrics we track;
@@ -4313,6 +4407,11 @@
         # deploy uploads as the Pages artifact (cache-hit on unchanged trunk instead of a cold ARM rebuild).
         packages.guide-site = guideSite;
 
+        # `.#corpus-verdicts` — the WASM-corpus verdict harvest (v-xtask-decompose --save gate-delete). One
+        # `<tag>\t<description>` line per case, concatenated across the whole corpus. `apps.save-baseline`
+        # (pending v-xtask's xtask-save-baseline leaf on main) feeds this to the leaf to regenerate .gate-baseline.
+        packages.corpus-verdicts = corpusVerdictsAll;
+
         # The standalone baseline pruner bin (v-xtask-decompose). `nix build .#xtask-prune-baselines` →
         # result/bin/xtask-prune-baselines. Backs `apps.prune-baselines`; caches independently of xtask.
         packages.xtask-prune-baselines = xtaskPruneBaselinesBin;
@@ -4483,6 +4582,8 @@
               clippy-xtask-codegen-wasm-abi = mkCrateClippyCrane { crate = "xtask-codegen-wasm-abi"; };
               clippy-xtask-codegen-guide = mkCrateClippyCrane { crate = "xtask-codegen-guide"; };
               clippy-xtask-prune-baselines = mkCrateClippyCrane { crate = "xtask-prune-baselines"; };
+              clippy-xtask-save-baseline = mkCrateClippyCrane { crate = "xtask-save-baseline"; };
+              clippy-xtask-merge-baseline = mkCrateClippyCrane { crate = "xtask-merge-baseline"; };
               clippy-xtask-bench = mkCrateClippyCrane { crate = "xtask-bench"; };
               clippy-xtask-install-lsp = mkCrateClippyCrane { crate = "xtask-install-lsp"; };
               clippy-xtask-duvet-check = mkCrateClippyCrane { crate = "xtask-duvet-check"; };
@@ -4542,6 +4643,8 @@
               test-xtask-codegen-wasm-abi = mkCrateTestCrane { crate = "xtask-codegen-wasm-abi"; };
               test-xtask-codegen-guide = mkCrateTestCrane { crate = "xtask-codegen-guide"; };
               test-xtask-prune-baselines = mkCrateTestCrane { crate = "xtask-prune-baselines"; };
+              test-xtask-save-baseline = mkCrateTestCrane { crate = "xtask-save-baseline"; };
+              test-xtask-merge-baseline = mkCrateTestCrane { crate = "xtask-merge-baseline"; };
               # xtask-bench: runs its 4 pure unit tests (tolerance, parse_alloc_lines, baseline round-trip, diff
               # classification). Leaf like the other xtask-* bins. REQUIRED by testCrateCoverageAssert.
               test-xtask-bench = mkCrateTestCrane { crate = "xtask-bench"; };
@@ -4611,7 +4714,7 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-codegen-guide clippy-xtask-prune-baselines clippy-xtask-bench clippy-xtask-install-lsp clippy-xtask-duvet-check clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-codegen-guide clippy-xtask-prune-baselines clippy-xtask-save-baseline clippy-xtask-merge-baseline clippy-xtask-bench clippy-xtask-install-lsp clippy-xtask-duvet-check clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
               echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + xtask-codegen-wasm-abi + xtask-prune-baselines + xtask-bench + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
@@ -5630,6 +5733,29 @@
           {
             type = "app";
             program = "${wrapper}/bin/cdz-duvet-check";
+          };
+
+        # apps.save-baseline — regenerate spec/semantics/.gate-baseline from the nix corpus-verdicts harvest
+        # (v-xtask-decompose seq-202 --save gate-delete replacement for `cargo xtask gate --save`). `nix run
+        # .#save-baseline` builds `.#corpus-verdicts` (the whole-corpus <tag>\t<description> harvest, via the
+        # cached per-case shred→build→verdict graph) then runs xtask-save-baseline to write the baseline via
+        # serialize_baseline. WASM baseline; the rust/rust-async baselines get their own harvest+app follow-up.
+        apps.save-baseline =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-save-baseline";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                # Build the whole-corpus verdict harvest (uses the ambient nix the caller ran with).
+                harvest="$(nix build "$root#corpus-verdicts" --no-link --print-out-paths)"
+                exec ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest" "$root/spec/semantics/.gate-baseline"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-save-baseline";
           };
 
         apps.bench =
