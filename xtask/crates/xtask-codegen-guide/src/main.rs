@@ -113,7 +113,8 @@ fn render_chapter(a: &Arenas, chapter: StructId) -> String {
             Some("title") => title = attr_str(a, f).unwrap_or(""),
             Some("slug") => slug = attr_str(a, f).unwrap_or(""),
             Some("lede") => lede = Some(children(a, f)),
-            Some("pillar") | Some("section") | Some("blurb") => {} // registry metadata, not in .tsx
+            // registry metadata (slug handled above), not rendered into the .tsx.
+            Some("pillar") | Some("section") | Some("blurb") | Some("nav-title") => {}
             Some("h2") => blocks.push(Block::Prose("H2", children(a, f))),
             Some("p") => blocks.push(Block::Prose("P", children(a, f))),
             Some("note") => blocks.push(Block::Prose("Note", children(a, f))),
