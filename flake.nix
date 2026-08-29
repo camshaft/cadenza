@@ -375,6 +375,15 @@
           doCheck = false;
         });
 
+        # xtaskDuvetCheckBin — the STANDALONE duvet citation-floor check (v-xtask-decompose). Built from ONLY
+        # the xtask-duvet-check crate's closure (a serde_json+std LEAF). `apps.duvet-check` wraps it. Output:
+        # $out/bin/xtask-duvet-check.
+        xtaskDuvetCheckBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-duvet-check"; }) // {
+          pname = "cdz-xtask-duvet-check";
+          cargoExtraArgs = "-p xtask-duvet-check";
+          doCheck = false;
+        });
+
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
         # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
@@ -637,6 +646,9 @@
           # LEAF crate. A ROOT workspace member (xtask/crates/* glob), so it MUST be registered here or the
           # crane deps-src omits its Cargo.toml → `cargo build --workspace` (crateCdzCheck) fails to load.
           xtask-install-lsp = "xtask/crates/xtask-install-lsp";
+          # xtask-duvet-check (v-xtask-decompose): the duvet citation-floor check carved into its own
+          # serde_json+std LEAF crate. A ROOT workspace member (xtask/crates/* glob) → MUST be registered.
+          xtask-duvet-check = "xtask/crates/xtask-duvet-check";
         };
         rootCrateNames = builtins.attrNames rootWorkspaceCrates;
         # direct member-edges of one crate across the three rebuild-relevant dep sections (A1 walk).
@@ -983,6 +995,8 @@
               xtask-bench = [ "xtask-bench" ];
               # xtask-install-lsp is a std+xshell LEAF: no workspace deps → closure is just itself.
               xtask-install-lsp = [ "xtask-install-lsp" ];
+              # xtask-duvet-check is a serde_json+std LEAF: no workspace deps → closure is just itself.
+              xtask-duvet-check = [ "xtask-duvet-check" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
               (builtins.attrNames expected);
@@ -4197,6 +4211,7 @@
         # The standalone install-lsp bin (v-xtask-decompose). `nix build .#xtask-install-lsp`. Backs
         # `apps.install-lsp`; caches independently of xtask.
         packages.xtask-install-lsp = xtaskInstallLspBin;
+        packages.xtask-duvet-check = xtaskDuvetCheckBin;
 
         # The standalone mandate-lint binary (v-xtask-decompose). `nix build .#xtask-mandates` →
         # result/bin/xtask-mandates. Backs `apps.lint-mandates` + the mandate gate; caches independently
@@ -4346,6 +4361,7 @@
               clippy-xtask-prune-baselines = mkCrateClippyCrane { crate = "xtask-prune-baselines"; };
               clippy-xtask-bench = mkCrateClippyCrane { crate = "xtask-bench"; };
               clippy-xtask-install-lsp = mkCrateClippyCrane { crate = "xtask-install-lsp"; };
+              clippy-xtask-duvet-check = mkCrateClippyCrane { crate = "xtask-duvet-check"; };
             };
             # cdz's clippy stays in its workspace-src check (crateCdzCheck runs `cargo clippy -p cdz` inside).
             clippyCraneAggregate = pkgs.runCommand "cargo-clippy-crane-aggregate"
@@ -4405,6 +4421,7 @@
               # classification). Leaf like the other xtask-* bins. REQUIRED by testCrateCoverageAssert.
               test-xtask-bench = mkCrateTestCrane { crate = "xtask-bench"; };
               test-xtask-install-lsp = mkCrateTestCrane { crate = "xtask-install-lsp"; };
+              test-xtask-duvet-check = mkCrateTestCrane { crate = "xtask-duvet-check"; };
             };
             # COVERAGE-PARITY assert (concierge mandate — no test silently dropped vs `cargo test
             # --workspace`): the per-crate test crates PLUS cdz (crateCdzCheck) must EXACTLY equal the
@@ -4469,7 +4486,7 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-prune-baselines clippy-xtask-bench clippy-xtask-install-lsp clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-prune-baselines clippy-xtask-bench clippy-xtask-install-lsp clippy-xtask-duvet-check clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
               echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + xtask-codegen-wasm-abi + xtask-prune-baselines + xtask-bench + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
@@ -5478,6 +5495,27 @@
           {
             type = "app";
             program = "${wrapper}/bin/cdz-install-lsp";
+          };
+
+        # apps.duvet-check — the duvet citation-floor check as a nix-native app backed by xtaskDuvetCheckBin
+        # (v-xtask-decompose). `nix run .#duvet-check [-- --save]`. Builds ONLY xtask-duvet-check (serde_json+std
+        # leaf); the `Cmd::DuvetCheck` arm is removed so `cargo xtask duvet-check` forwards here. CDZ_REPO_ROOT
+        # set (it reads duvet report + the committed floor from the worktree); args pass through for --save.
+        apps.duvet-check =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-duvet-check";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export CDZ_REPO_ROOT="$root"
+                exec ${xtaskDuvetCheckBin}/bin/xtask-duvet-check "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-duvet-check";
           };
 
         apps.bench =
