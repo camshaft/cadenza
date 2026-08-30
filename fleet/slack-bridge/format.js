@@ -106,10 +106,18 @@ function renderFleetMessage(msg) {
 // dead-letters the message (moves it to failed/, preserving it) and keeps draining. Kept HERE, in the
 // dep-free module, so the zero-dep smoke test can pin it (bridge.js is transport-only glue over these).
 
-// Content-class post failures after which the relay falls back to the degraded plain variant, then gives up
-// and dead-letters. A transient/transport fault (outage, rate limit) does NOT advance these — it retries.
-const RELAY_DEGRADE_AFTER = 2;
-const RELAY_QUARANTINE_AFTER = 4;
+// Content-class post failures (≈ polls, ~2s each) after which the relay falls back to the degraded plain
+// variant, then gives up and dead-letters. A transient/transport fault (outage, rate limit) does NOT
+// advance these — it retries. PATIENCE: Slack `internal_error` is ambiguous (deterministic content quirk
+// OR a transient server hiccup), and the queue-never-wedges guarantee comes from SKIPPING PAST a failing
+// message (not from quarantining it) — so quarantine can and MUST be very patient, else a brief Slack blip
+// false-dead-letters a good message (observed in production: a clean note whose degraded plain variant had
+// no mrkdwn triggers was still quarantined in ~8s because a transient internal_error spanned its retries,
+// so the operator never saw it). So: a few full-fidelity RICH retries (rides out a short blip without
+// losing content), then the degraded plain variant (dodges a real content quirk AND keeps retrying), and
+// only dead-letter after ~5 min of SUSTAINED failure — by when any normal transient has resolved.
+const RELAY_DEGRADE_AFTER = 5;
+const RELAY_QUARANTINE_AFTER = 155;
 // Relay queue depth at/above which the pump logs a backlog warning — a visible health signal so a wedge
 // can't pile up silently as it did during the ~11h wedge.
 const RELAY_QUEUE_WARN = 25;
@@ -203,6 +211,8 @@ module.exports = {
   relayPlan,
   isContentPostError,
   RELAY_QUEUE_WARN,
+  RELAY_DEGRADE_AFTER,
+  RELAY_QUARANTINE_AFTER,
   helpText,
   KNOWN_KINDS,
   isTransientSocketModeFault,

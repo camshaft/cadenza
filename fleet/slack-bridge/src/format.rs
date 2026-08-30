@@ -166,13 +166,31 @@ fn cap_for_slack(s: String) -> String {
 // dead-lettered); (2) counts only CONTENT-class failures per message and, past [`RELAY_DEGRADE_AFTER`],
 // posts a degraded plain variant ([`render_fleet_message_plain`]); (3) past [`RELAY_QUARANTINE_AFTER`],
 // dead-letters the message (moves it to `failed/`, preserving it) and keeps draining the rest.
+//
+// PATIENCE (thresholds are in POLLS; the outbound loop polls every ~2s): Slack `internal_error` is
+// AMBIGUOUS — it is BOTH the deterministic content/mrkdwn-parse quirk this guard was built for AND a
+// garden-variety transient server hiccup. The queue-never-wedges guarantee comes entirely from SKIPPING
+// PAST a failing message (`continue`), NOT from quarantining it — so quarantine only needs to bound the
+// truly-undeliverable case, and can afford to be very patient. It MUST be: a too-eager quarantine
+// false-dead-letters a perfectly good message during a brief Slack blip (observed in production — a clean
+// `note` whose degraded plain variant carried no mrkdwn triggers was still dead-lettered in ~8s because a
+// transient `internal_error` window happened to span its handful of retries, so the operator never saw
+// it). So we retry the RICH (full-fidelity) render for a few polls (rides out a short blip WITHOUT losing
+// content), then fall back to the degraded plain variant (which both dodges a genuine content quirk AND
+// keeps retrying), and only dead-letter after MINUTES of sustained failure — by which point any normal
+// transient has resolved, so a give-up means the message is genuinely undeliverable.
 
-/// Content-class post failures after which the relay stops sending the rich render and falls back to the
-/// degraded plain variant (which strips mrkdwn triggers + truncates, so it can't re-hit the parse quirk).
-pub const RELAY_DEGRADE_AFTER: u32 = 2;
-/// Content-class post failures after which the relay gives up and dead-letters the message to `failed/`,
-/// so a truly un-postable message is preserved for inspection yet can never block the queue.
-pub const RELAY_QUARANTINE_AFTER: u32 = 4;
+/// Content-class post failures (≈ polls, ~2s each) after which the relay stops sending the rich render and
+/// falls back to the degraded plain variant (strips mrkdwn triggers + truncates, dodging the parse quirk).
+/// A handful of full-fidelity rich retries first, so a SHORT transient blip is ridden out without losing
+/// content; only then do we assume a content quirk and degrade.
+pub const RELAY_DEGRADE_AFTER: u32 = 5;
+/// Content-class post failures (≈ polls, ~2s each) after which the relay gives up and dead-letters the
+/// message to `failed/` (preserved for inspection). ~5 minutes of SUSTAINED failure — far longer than any
+/// normal transient Slack `internal_error`/rate-limit/brief-outage window — so we only dead-letter a
+/// genuinely-undeliverable message, never a good one caught in a blip. The queue never wedges regardless
+/// (a failing message is skipped past, not blocking), so this can afford to be this patient.
+pub const RELAY_QUARANTINE_AFTER: u32 = 155;
 /// Relay queue depth at/above which the pump logs a backlog warning, so a wedge/backlog is VISIBLE (a
 /// health signal) instead of silently piling up as it did during the ~11h wedge.
 pub const RELAY_QUEUE_WARN: usize = 25;
