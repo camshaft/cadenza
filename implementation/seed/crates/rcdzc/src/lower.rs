@@ -14766,6 +14766,15 @@ pub(crate) struct BindingUses {
     /// returned). Used by `should_keep_binding` to detect the adv-50 CALL-BOTH-WAYS shape (a capturing
     /// lambda whose handle both `escapes_whole` AND is `called_direct`), which must be force-kept.
     called_direct: crate::fxhash::FxHashSet<StructId>,
+    /// Bindings that ESCAPE WHOLE inside a SIBLING do-local value-def's INITIALIZER — `(def bag1 #list(f))`
+    /// stores `f` into bag1's cell. The `do`-arm SKIPS a `(def …)` form (its own name-refs are collected at
+    /// the def's by-name uses), so such an escape is NOT in `escapes_whole`/`count`. Recorded SEPARATELY here
+    /// (not folded into `escapes_whole`/`count`, which feed many keep/copy-propagate decisions — broadening
+    /// them regresses broadly, the reverted 3713-case attempt) and read ONLY by `should_keep_binding`'s
+    /// Lambda CALL-BOTH-WAYS force-keep: a capturing lambda that escapes into a sibling def's cell AND is
+    /// called directly must be MATERIALIZED once, or it is beta-substituted (a fresh `Core::Closure` per use)
+    /// → the residual direct call mis-resolves its cell → invalid wasm (breaker: `#list(f)` + a residual `(f 2)`).
+    escapes_in_def_init: crate::fxhash::FxHashSet<StructId>,
 }
 
 /// Walk `node` once, recording into `out` a use (and, unless `proj_operand`, a whole-value escape) for
@@ -14801,6 +14810,19 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
                 // statements are sequenced (their value discarded) → never a projection operand → `false`.
                 let po = if i == last_ix { proj_operand } else { false };
                 collect_binding_uses(db, *f, po, out);
+            } else if let Some(v) = crate::resolve::do_value_def_value(db, *f) {
+                // A do-local VALUE-def `(def b <init>)` is skipped above as a binding, but its INITIALIZER
+                // can ESCAPE an ENCLOSING binding whole — `(def bag1 #list(f))` stores `f` into bag1's cell.
+                // Collect the init's whole-value escapes into a THROWAWAY `BindingUses` and merge ONLY its
+                // `escapes_whole` into the SEPARATE `escapes_in_def_init` set — deliberately NOT touching the
+                // main `count`/`escapes_whole` (those feed many keep/copy-propagate decisions; broadening them
+                // regressed 3713 cases — reverted). `escapes_in_def_init` is read ONLY by the Lambda
+                // force-keep, so a capturing lambda that escapes into a sibling def AND is called directly is
+                // materialized once (else beta-substituted → invalid wasm), with zero effect on any other
+                // binding's keep decision. A FUNCTION-def has no value-init → `None` → still skipped.
+                let mut sub = BindingUses::default();
+                collect_binding_uses(db, v, false, &mut sub);
+                out.escapes_in_def_init.extend(sub.escapes_whole);
             }
         }
         return;
@@ -15000,7 +15022,7 @@ fn should_keep_binding(
     // fixed-shape UNBOXED rep handled by the `compound_contains_*` arms below (they PASS today), so this
     // only engages the boxed-cell reps (list/set/map/sum-payload) the boundary sweep found broken.
     if matches!(resolved_of(db, init), Resolved::Lambda { .. })
-        && uses.escapes_whole.contains(&init)
+        && (uses.escapes_whole.contains(&init) || uses.escapes_in_def_init.contains(&init))
         && uses.called_direct.contains(&init)
         && lambda_is_capturing(db, init)
     {
