@@ -1,0 +1,1 @@
+(doc "a docstring" (def (f) 1))
