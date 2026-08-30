@@ -7949,6 +7949,23 @@
   (call   main (: 0 Int64)) (output (: 50 Int64)))
 
 (case "su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)"
+  (doc    "ROOT-CAUSED (v-effects a44, 2026-08-30). Bisected to a minimal reproducer: sum-state handlers
+           whose arm matches the state via VARIANT patterns fold FINE in isolation — single handler 1/2
+           dispatches, and a NESTED same-effect handler with 1 dispatch each, all compile. The decline needs
+           BOTH (a) a nested inner same-effect handle AND (b) the OUTER handler dispatched at a site AFTER
+           that inner handle (here `(M.step 2)` follows the inner `(handle M (Idle) …)`). At that post-nested
+           outer dispatch the fold re-applies the outer arm, and the outer handler's heap-state SEED let-lift
+           (`(let ((#seedNN (Run n))) …)`, `apply_seed_wrap`) does NOT scope over the re-applied arm — so the
+           arm's `(match s …)` scrutinee resolves to an UNBOUND `#seedNN` (CDZ0101), whose `type_of` is `Any`,
+           which misses the sum-route (`lower.rs` Ty::Sum→`lower_match_sum`) and falls to the scalar-probe
+           path, declining `a match pattern that is not a scalar literal or _ is not yet supported`
+           (`lower.rs:5747`). So it is NOT a general variant-pattern gap and NOT a type-annotation loss — it is
+           the `#seed`/`#st` seed-let-lift SCOPING across a nested same-effect handle (the guarded seam the
+           `apply_seed_wrap` forget/graft comments describe). Fix is fold-side (extend the outer seed-let scope
+           to cover post-nested-handle outer dispatches) — deep + soundness-critical, deferred to a focused
+           session. lower_match_sum genuinely needs the concrete sum type, so there is no lower.rs routing
+           shortcut. Workaround: lift the state read to a `let` outside the handle, or avoid straddling a
+           nested same-effect handle with outer dispatches.")
   (input  (do
             (type Mode (Idle) (Run Int64))
             (effect M (op step (-> Int64 Int64)))
