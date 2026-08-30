@@ -585,8 +585,7 @@ def build-def-env(tree: Tree, entries: List(Tuple(Int64, Int64)), acc: Map(Int64
 /// lowered once and standalone. `eval-core-d` reads this to run a `CCall(name, args)`. Reaches the def-table
 /// via the `Tree.Arena` def-table field (`dt`, 3rd), enumerated in canonical order by `Map.to-list`.
 def lower-def-env(tree: Tree) =
-  (match tree with
-    | Tree.Arena(_, _, dt, _, _, _, _, _, _, _, _, _) =>
+  (let Tree.Arena(_, _, dt, _, _, _, _, _, _, _, _, _) = tree in
         build-def-env(tree, Map.to-list(dt), (Map.empty : Map(Int64, Tuple(List(Int64), Core)))))
 
 /// Probe: is this Core a `CNum v`?
