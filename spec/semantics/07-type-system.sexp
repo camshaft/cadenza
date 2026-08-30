@@ -1337,6 +1337,33 @@
   (input  (= 1 true))
   (error  CDZ0203))
 
+; A Bool operand against a DIFFERENT scalar kind — a number or a Char — names the scalar KIND BOUNDARY in
+; the message ("a Bool and an Int64 are different types … this operation is not defined between a boolean and
+; a number"), rather than the generic scheme-unify "Bool and Int64 must be the same type here" that reads
+; like an internal clash. Two SCALARS, so the code stays CDZ0203 (a two-scalar clash, not the compound cases'
+; CDZ0201). A Char-vs-number is NOT a dead-end boundary — `Char.to-int` is a total conversion, so it keeps a
+; `(Char.to-int …)` WRAP fix (the boundary guard fires only when a Bool, with no numeric/char conversion, is
+; one side). (Migrated from rcdzc a_bool_against_a_number_or_char_names_the_scalar_kind_boundary; the int-vs-
+; float no-promotion CDZ0301 control is the "ordering an integer against a float" case below.)
+(case "ordering a boolean against a number names the scalar kind boundary, not an internal clash"
+  (input  (do (def (g) (< true 5)) (export g)))
+  (error  CDZ0203 (message "different types") (message "between a boolean and a number") (not "must be the same type here")))
+
+(case "adding a boolean to a number names the scalar kind boundary"
+  (input  (do (def (g) (+ 1 true)) (export g)))
+  (error  CDZ0203 (message "different types") (message "between a number and a boolean")))
+
+(case "comparing a boolean against a character names the scalar kind boundary"
+  (input  (do (def (g) (= true #\a)) (export g)))
+  (error  CDZ0203 (message "different types") (message "between a boolean and a character")))
+
+(case "a Char against a number keeps its total-conversion wrap fix, not a dead-end boundary"
+  (doc    "`(+ #\\a 1)` mismatches a Char and an Int64 (CDZ0203), but — unlike a Bool — a Char has a TOTAL
+           conversion to a number (`Char.to-int`), so the diagnostic offers a `(Char.to-int …)` WRAP fix
+           rather than naming a dead-end kind boundary. Pins that the boundary guard is Bool-specific.")
+  (input  (do (def (main) (+ #\a 1)) (export main)))
+  (error  CDZ0203 (fix (kind wrap))))
+
 (case "equality of an integer and a string is a type error"
   (doc    "`(= 1 \"x\")` compares an Int64 with a String — two different types across a kind boundary,
            rejected (CDZ0201). The equality companion of `(< 1 \"x\")` → CDZ0201; `=` never silently

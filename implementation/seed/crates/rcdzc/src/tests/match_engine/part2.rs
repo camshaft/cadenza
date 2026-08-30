@@ -238,58 +238,12 @@ fn arithmetic_or_comparison_with_a_type_value_operand_names_it_not_a_phantom_int
     );
 }
 
-#[test]
-fn a_bool_against_a_number_or_char_names_the_scalar_kind_boundary() {
-    // A `Bool` operand against a DIFFERENT scalar kind — a number or a `Char` — `(< true 5)`, `(+ 1
-    // true)`, `(= true #\a)`. Both are scalars, so the compound/text cross-kind guard does not fire,
-    // and the generic scheme-unify gave "type mismatch: Bool and Int64 must be the same type here" (an
-    // internal-clash read). It now names the boundary: "a Bool and an Int64 are different types — this
-    // operation is not defined between a boolean and a number". KEEPS the code CDZ0203 (the corpus pins
-    // a two-scalar clash at TypeMismatch, not the compound cases' CDZ0201).
-    for (src, between) in [
-        (
-            "(module m (def (g) (< true 5)) (export g))",
-            "between a boolean and a number",
-        ),
-        (
-            "(module m (def (g) (+ 1 true)) (export g))",
-            "between a number and a boolean",
-        ),
-        (
-            "(module m (def (g) (= true #\\a)) (export g))",
-            "between a boolean and a character",
-        ),
-    ] {
-        let d = reject_full(src).unwrap_or_else(|| panic!("{src} rejects"));
-        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-        assert!(
-            d.message.contains("different types")
-                && d.message.contains(between)
-                && !d.message.contains("must be the same type here"),
-            "names the scalar-kind boundary ({between}), not the internal-clash render: {}",
-            d.message
-        );
-    }
-    // A `Char` against a NUMBER is DELIBERATELY NOT a dead-end boundary: `Char.to-int` is a total
-    // conversion, so `(+ #\a 1)` keeps its `(Char.to-int …)` wrap fix (the guard fires only when a
-    // `Bool` — which has no numeric/char conversion — is one side).
-    let ch = reject_full("(module m (def (main) (+ #\\a 1)) (export main))")
-        .expect("Char/Int mismatch rejects");
-    assert_eq!(
-        ch.fix.as_ref().map(|f| f.kind),
-        Some(crate::abi::FixKind::Wrap),
-        "a Char-vs-number keeps its total-conversion wrap fix: {} / {:?}",
-        ch.message,
-        ch.fix
-    );
-    // Two NUMERIC types (int vs float) keep the no-promotion CDZ0301 path — both are "a number", so the
-    // scalar-kind guard never fires.
-    assert_eq!(
-        reject_code("(module m (def (g) (< 1 2.0)) (export g))").as_deref(),
-        Some("CDZ0301"),
-        "an int-vs-float mix keeps the numeric no-promotion code"
-    );
-}
+// (a_bool_against_a_number_or_char_names_the_scalar_kind_boundary migrated to corpus 07-type-system, beside
+// the `(= 1 true)` int-vs-bool case: "ordering a boolean against a number" / "adding a boolean to a number" /
+// "comparing a boolean against a character" → CDZ0203 naming the scalar KIND BOUNDARY (message "between a
+// boolean and a number/character") + (not "must be the same type here"); plus "a Char against a number keeps
+// its total-conversion wrap fix" (CDZ0203 (fix (kind wrap))). The int-vs-float→CDZ0301 control is 07's
+// "ordering an integer against a float" case. All PASS wasm.)
 
 #[test]
 fn a_list_match_is_well_formed_or_declines() {
