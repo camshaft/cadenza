@@ -1569,6 +1569,17 @@ pub struct Db {
         (StructId, crate::backend::wasm::select::EscapeTarget, bool),
         bool,
     >,
+    /// Memo of `select::reclaim::collect_consuming_payload_sites_expr` — each subtree's OWN complete set of
+    /// consuming compound-leaf scrutinee-child sites, keyed by `(node, scrut, consuming)`. The contribution
+    /// is a pure function of that key + the build-once-immutable graph (payload_proj_chain_roots/get_op/
+    /// core_of are pure; `consuming` is the borrow-vs-consume position flag; NO sibling `live_after` here and
+    /// NO read of the shared `out`, unlike mark_binder_dups — v-memory-safety sign-off). LINEARIZES the ~643×
+    /// DAG-as-tree re-walk (collect_consuming_payload_sites_cont calls the expr-walker on the SAME shared
+    /// scrutinee-expr per continuation arm). Compile-lifetime (immutable graph, no clearing); NO in_progress/
+    /// tainted (acyclic by spec + memo writes post-return). Cached value is the node's OWN contribution (a
+    /// FRESH accumulator, NOT a delta vs shared `out`) — spliced via `out.extend` on a hit.
+    pub(crate) payload_sites_memo:
+        crate::fxhash::FxHashMap<(StructId, StructId, bool), Vec<StructId>>,
 
     /// Memo of "does this compound type have a free var?" keyed by the payload's shared `Rc` address — for
     /// the `infer::type_of` memoization guard (`!t.has_free_var()`), which runs on EVERY node's solved type.
@@ -3045,6 +3056,7 @@ impl Db {
             recursive: crate::fxhash::FxHashMap::default(),
             reaches_host_call: crate::fxhash::FxHashMap::default(),
             escape_verdict_memo: crate::fxhash::FxHashMap::default(),
+            payload_sites_memo: crate::fxhash::FxHashMap::default(),
             ty_has_free_var: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
