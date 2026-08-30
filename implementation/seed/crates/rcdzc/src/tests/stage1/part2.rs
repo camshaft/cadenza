@@ -4790,39 +4790,16 @@ fn try_on_a_result_yields_the_ok_payload_type() {
 
 #[test]
 fn the_sigil_question_mark_as_a_head_points_at_the_try_spelling() {
-    // The diagnostics call the operator "`?`/`try`" and `?` is the sigil many languages use, so an
-    // author reaches for `(? e)` — but the s-expr surface head is the keyword `try` (`(try e)`), so `?`
-    // resolves unbound: a misleading "unbound name `?`" (a did-you-mean scan is nonsense for a sigil).
-    // `?` in HEAD position now names the real spelling + carries a VERIFIED `?` → `try` head-rewrite.
+    // WHITE-BOX RESIDUAL. The CDZ0101 code + the "(try <expression>)"/"write `try`" message on a sigil-`?`
+    // HEAD, and the bare-`?` no-hint control, are now corpus 23-try-operator ("the `?` sigil in head
+    // position names the `try` spelling…" / "a bare `?` NOT in head position…"). This keeps ONLY the
+    // VERIFIED `?`→`try` head-rewrite FIX (replacement "try") the corpus fix-grade does not yet cover.
     for body in ["(? (Ok 1))", "(? r)"] {
         let d = expect_error(body);
-        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
-        assert!(
-            d.message.contains("`(try <expression>)`") && d.message.contains("write `try`"),
-            "names the try spelling: {}",
-            d.message
-        );
         let fix = d.fix.as_ref().expect("carries a `?`->`try` fix");
         assert!(fix.verified, "the head rewrite is deterministic (verified)");
         assert_eq!(fix.replacement, "try", "rewrites the `?` head to `try`");
     }
-    // NO false positive: a bare `?` NOT in head position keeps the ordinary unbound-name path (no
-    // try-spelling hint, no fix) — only a `(? …)` head is the reachable-for-try mistake.
-    let arg = expect_error("(list ?)");
-    assert_eq!(arg.code.as_deref(), Some("CDZ0101"), "got: {}", arg.message);
-    assert!(
-        arg.message.contains("unbound name `?`") && !arg.message.contains("try"),
-        "a non-head `?` stays a plain unbound name: {}",
-        arg.message
-    );
-    // NO false change: the correct `(try e)` spelling is unaffected (its own boundary/operand checks
-    // still apply — here a non-fallible operand is the CDZ0203, not an unbound `?`).
-    let ok = expect_error("(try 5)");
-    assert!(
-        !ok.message.contains("spelled `(try"),
-        "a real `(try …)` never draws the `?`-head hint: {}",
-        ok.message
-    );
 }
 
 #[test]
