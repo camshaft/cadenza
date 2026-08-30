@@ -286,40 +286,36 @@ fn compile_with_opt_inner(
         )]);
     }
     // A compile-request `effect-bind` artifact OVERRIDES the program's in-source `(bind …)` defaults (U3):
-    // newline-separated `Effect=iface` REBINDS an effect to a peer; `Effect=` (empty) UNBINDS it (so it
-    // escapes to the host, or a test handles it in-program). Request wins over the source default; an
-    // in-program `(handle …)` still wins over both (it discharges the effect before it escapes).
+    // it carries an effect→interface map (canonical binary AST, operator P0 seq-284) — a non-empty interface
+    // REBINDS an effect to a peer; an EMPTY interface UNBINDS it (so it escapes to the host, or a test
+    // handles it in-program). Request wins over the source default; an in-program `(handle …)` still wins
+    // over both (it discharges the effect before it escapes). A malformed artifact decodes to `None` and is
+    // ignored (an empty map — the input degrades to "no override", never a crash).
     if let Some(a) = inputs.iter().find(|a| a.kind == link::KIND_EFFECT_BIND) {
-        for line in String::from_utf8_lossy(&a.bytes).lines() {
-            let line = line.trim();
-            if line.is_empty() {
+        for (effect, iface) in
+            cadenza_compile_abi::effect_bind_wire::decode(&a.bytes).unwrap_or_default()
+        {
+            let effect = effect.trim();
+            let iface = iface.trim();
+            if iface.is_empty() {
+                db.effect_bindings.remove(effect); // UNBIND (empty interface)
                 continue;
             }
-            match line.split_once('=') {
-                Some((effect, "")) => {
-                    db.effect_bindings.remove(effect.trim()); // UNBIND (empty value)
-                }
-                Some((effect, iface)) => {
-                    // A compile-request REBIND target is the same component-boundary interface name as a
-                    // source `(bind …)`; validate it so a bad `--bind` value is a clear reject, not a
-                    // silent invalid-component miscompile.
-                    let iface = iface.trim();
-                    if !crate::backend::common::export_name::is_valid_interface_name(iface) {
-                        return fail(vec![Reject::coded(
-                            crate::diag::Code::Malformed,
-                            format!(
-                                "the compile-request rebind of `{}` to `{iface}` is not a valid \
-                                 component interface name — {}",
-                                effect.trim(),
-                                crate::diag::MALFORMED_INTERFACE_NAME_MESSAGE
-                            ),
-                        )]);
-                    }
-                    db.effect_bindings
-                        .insert(effect.trim().to_string(), iface.to_string()); // REBIND
-                }
-                None => {} // a bare token with no `=` is ignored (malformed)
+            // A compile-request REBIND target is the same component-boundary interface name as a source
+            // `(bind …)`; validate it so a bad `--bind` value is a clear reject, not a silent
+            // invalid-component miscompile.
+            if !crate::backend::common::export_name::is_valid_interface_name(iface) {
+                return fail(vec![Reject::coded(
+                    crate::diag::Code::Malformed,
+                    format!(
+                        "the compile-request rebind of `{effect}` to `{iface}` is not a valid \
+                         component interface name — {}",
+                        crate::diag::MALFORMED_INTERFACE_NAME_MESSAGE
+                    ),
+                )]);
             }
+            db.effect_bindings
+                .insert(effect.to_string(), iface.to_string()); // REBIND
         }
     }
     trace!(target: "rcdzc::compile", defs = db.defs.len(), exports = db.exports.len(), "loaded program");
