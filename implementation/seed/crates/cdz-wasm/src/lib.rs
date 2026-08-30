@@ -1496,17 +1496,27 @@ pub fn export_types(text: &str, from: &str) -> Result<String, JsError> {
         Ok((bytes, _spans)) => bytes,
         Err(_) => return Ok(String::new()),
     };
-    let text_out = run_query_text(&ast_bytes, &rcdzc::Query::Exports)?;
-    // `Exports` yields `name<TAB>type<TAB>def-name-node-id` per line; keep just `name<TAB>type`.
+    // `Query::Exports` yields the `KIND_EXPORTS` BINARY-AST payload (`exports_wire`), NOT text: each entry
+    // carries the export NAME + its FULL structured type payload as a sub-AST arena (operator seq-307: full
+    // type AST, no render-name string on the wire — the CONSUMER renders a display name from the decoded
+    // structure, exports_wire.rs). So take the bytes (NOT `run_query_text`, which would `from_utf8` the
+    // binary → a fatal "not valid UTF-8" throw on a complex type, or a silent empty parse on a simple one —
+    // the guide-examples render regression), decode them, and render each type via the SHARED
+    // `cadenza_syntax::render_ty` renderer (byte-parity with `Ty::render_name`/`Scheme::render_scheme`) to
+    // reconstruct the documented `name<TAB>type` text contract the JS consumers parse.
+    let bytes = run_query_bytes(&ast_bytes, &rcdzc::Query::Exports)?;
     let mut out = String::new();
-    for line in text_out.lines() {
-        let mut cols = line.split('\t');
-        if let (Some(name), Some(ty)) = (cols.next(), cols.next()) {
-            out.push_str(name);
-            out.push('\t');
-            out.push_str(ty);
-            out.push('\n');
+    for entry in rcdzc::sidecar::decode_exports(&bytes) {
+        out.push_str(&entry.name);
+        out.push('\t');
+        // An export naming a def with a solved scheme carries its type payload; render it as a SCHEME
+        // (a generalized sig's vars get stable letters, monomorphic types render exactly as the name).
+        // An export with no def / unsolved type carries no payload → the type column is empty (the old
+        // "unknown" behavior — the consumer treats a missing type as unknown).
+        if let Some(ty) = &entry.ty {
+            out.push_str(&cadenza_syntax::render_ty::render_ty_scheme(ty, ty.root));
         }
+        out.push('\n');
     }
     Ok(out)
 }
@@ -2010,6 +2020,49 @@ mod tests {
         assert!(
             saw_helper_name,
             "a node's span must cover exactly `helper` — the canonical span mapping holds"
+        );
+    }
+
+    #[test]
+    fn export_types_renders_display_name_text_not_raw_binary() {
+        // Regression guard (guide-examples render red 410->399/10 + a live-app bug): `Query::Exports` now
+        // emits the KIND_EXPORTS BINARY payload (exports_wire), so `export_types` must DECODE it and render
+        // each type via the shared type-name renderer to restore the documented `name<TAB>type` TEXT
+        // contract. The bug was calling `run_query_text` (String::from_utf8 of the binary) -> Class B: a
+        // whole-Float export's row vanished (silent), Class A: a complex-type module threw "not valid UTF-8".
+        // Class B: a whole Float64 export must yield a `main<TAB>Float…` row (the scalar .0-recovery input).
+        let out = export_types("(do (def (main) 3000.0) (export main))", "sexpr")
+            .expect("export_types returns text, not a UTF-8 error");
+        let main_row = out
+            .lines()
+            .find(|l| l.starts_with("main\t"))
+            .expect("a `main<TAB>type` row");
+        assert!(
+            main_row.contains("Float"),
+            "main's whole-float type renders as a Float name (Class B .0-recovery input): {main_row:?}"
+        );
+        // Class A: a complex recursive/compound-returning module must NOT throw invalid-UTF-8, and main's
+        // Int result type must render — the exact shape (recursive Iter sum over a Tuple payload) that threw.
+        let iter = "(do \
+            (type Iter (Nil unit) (Cons (Tuple Int64 Iter))) \
+            (def (from-list xs) (match xs (#list() (Nil unit)) (#list(h .. t) (Cons #tuple(h (from-list t)))))) \
+            (def (ifold it acc f) (match it ((Nil _) acc) ((Cons c) (ifold (. c 1) (f acc (. c 0)) f)))) \
+            (def (main) (ifold (from-list #list(1 2 3)) 0 (fn (a x) (+ a x)))) \
+            (export main))";
+        let out2 = export_types(iter, "sexpr")
+            .expect("a complex-type module does NOT throw invalid-UTF-8 (Class A regression)");
+        let main_row2 = out2
+            .lines()
+            .find(|l| l.starts_with("main\t"))
+            .expect("a `main<TAB>type` row for the iterator module");
+        assert!(
+            main_row2.contains("Int"),
+            "main's Int result type renders: {main_row2:?}"
+        );
+        // Every non-empty row is the documented tab-delimited `name<TAB>type` the JS consumers parse.
+        assert!(
+            out2.lines().all(|l| l.is_empty() || l.contains('\t')),
+            "each row is `name<TAB>type` text: {out2:?}"
         );
     }
 

@@ -74,6 +74,10 @@ pub use cadenza_compile_abi::sidecar::{
 // so a consumer that depends only on `rcdzc` (e.g. `cdz-wasm`) can decode via `rcdzc::sidecar::…`
 // without a direct `cadenza-compile-abi` dep — the same copy the producer above encodes with.
 pub use cadenza_compile_abi::{decode_highlight, encode_highlight};
+// The `Query::Exports` (`KIND_EXPORTS`) decode, re-exported for the same reason: `cdz-wasm`'s
+// `export_types` decodes the binary exports payload via `rcdzc::sidecar::decode_exports` (then renders
+// each export's display type-name from the decoded structure), without a direct `cadenza-compile-abi` dep.
+pub use cadenza_compile_abi::exports_wire::decode_exports;
 
 // The `Request` (materialize an output column) + `Query` (read a fact column) enums that make up one
 // sidecar request list now live in the shared `cadenza-compile-abi` crate — the compile-boundary
