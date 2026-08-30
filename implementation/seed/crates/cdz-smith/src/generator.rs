@@ -950,7 +950,7 @@ impl Gen<'_> {
     /// membership / Map|Set|List value) governs the node, so a mismatch with the outer `want` is a clean
     /// decline, never a false finding.
     fn map_set_builtin_expr(&mut self, depth: u32) {
-        match self.cur.choice(9) {
+        match self.cur.choice(10) {
             0 => {
                 self.out.push_str("(Map.len ");
                 self.num_map(depth);
@@ -1001,11 +1001,50 @@ impl Gen<'_> {
                 self.num_set(depth);
                 self.out.push(')');
             }
-            _ => {
+            8 => {
                 self.out.push_str("(Set.to-list ");
                 self.num_set(depth);
                 self.out.push(')');
             }
+            _ => {
+                // STRING-KEYED map — lookup / len / to-list over a map with string-literal keys, reaching
+                // the string hash + equality collection path that `num_map` (numeric keys) never exercises.
+                match self.cur.choice(3) {
+                    0 => {
+                        self.out.push_str("(Map.lookup ");
+                        self.str_map(depth);
+                        self.out.push(' ');
+                        self.string_lit(); // a string key (hit or miss → Some/None)
+                        self.out.push(')');
+                    }
+                    1 => {
+                        self.out.push_str("(Map.len ");
+                        self.str_map(depth);
+                        self.out.push(')');
+                    }
+                    _ => {
+                        self.out.push_str("(Map.to-list ");
+                        self.str_map(depth);
+                        self.out.push(')');
+                    }
+                }
+            }
+        }
+    }
+
+    /// A STRING-KEYED map (numeric values), 1..=3 entries with distinct string-literal keys. Exercises the
+    /// string hash/equality map-key path that [`num_map`] (numeric keys) never reaches.
+    fn str_map(&mut self, depth: u32) {
+        const KEYS: [&str; 4] = ["\"a\"", "\"b\"", "\"c\"", "\"d\""];
+        let n = 1 + self.cur.choice(3); // 1..=3 entries (distinct keys from KEYS)
+        for _ in 0..n {
+            self.out.push_str("(Map.insert ");
+        }
+        self.out.push_str("Map.empty");
+        for key in KEYS.iter().take(n) {
+            let _ = write!(self.out, " {key} ");
+            self.expr(depth.saturating_sub(1), Kind::Num); // numeric value
+            self.out.push(')');
         }
     }
 
@@ -2321,6 +2360,26 @@ mod tests {
             }
         }
         assert!(hit, "no seed in the sweep emitted a Map/Set builtin");
+    }
+
+    /// The string-KEYED map arm is reachable — some seed emits a `Map` with string-literal keys (a
+    /// `Map.insert Map.empty "…"` — numeric `num_map` never emits a string key), reaching the string
+    /// hash/equality map-key path. Every such program parses. Guards operator seq-23 string-keyed-map coverage.
+    #[test]
+    fn some_seed_emits_a_string_keyed_map() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("Map.empty \"") {
+                hit = true;
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a string-keyed map");
     }
 
     /// The record arm is reachable — some seed emits a `(record (= a …) …)` in GENERAL position (not just
