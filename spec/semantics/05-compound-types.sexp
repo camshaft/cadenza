@@ -18892,6 +18892,24 @@
               (export f)))
   (error CDZ0201))
 
+; Two further facets of the same list-rest-shape fix (migrated from rcdzc
+; a_malformed_list_rest_pattern_names_the_shape_not_an_unbound_surplus_binder): TWO surplus binders after
+; `..` (`#list(a .. b c d)`, body reads both) still deduplicate to ONE rest-shape CDZ0201 with no unbound
+; leak; and a malformed-rest list NESTED in a variant payload (`(Wrap #list(a .. b c))`) reports the rest
+; shape via the nested `pattern_constraints` path — phrased "`.. rest` must be the final element" — again
+; with no spurious unbound-name for the surplus binder.
+(case "a list match pattern with TWO surplus rest binders names the shape, no unbound leak"
+  (input  (do (def (f (: xs (List Int64)))
+                (match xs (#list(a .. b c d) (+ c d)) (_ 0)))
+              (export f)))
+  (error CDZ0201 (message "list rest pattern is") (not "unbound name")))
+
+(case "a malformed list rest NESTED in a variant payload names the rest shape, no unbound leak"
+  (input  (do (type W (Wrap (List Int64)))
+              (def (f (: w W)) (match w ((Wrap #list(a .. b c)) c) (_ 0)))
+              (export f)))
+  (error CDZ0201 (message "must be the final element") (not "unbound name")))
+
 ; --- Consumed loop-invariant heap extractions: the per-kind family ----------------------------------
 ; Two same-day fixes closed this family (aac1b72bc: LICM refuses a heap-typed Proj hoist root;
 ; 50f64b3ae: a consumed sum-payload child retains while its scrutinee lives — my filed SumExpect
