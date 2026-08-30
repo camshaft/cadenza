@@ -2180,7 +2180,7 @@
         # is not in their snapshot → those bins CACHE-HIT → so does an exec keyed on them. A shared
         # whole-workspace snapshot (the old `platformItestSrc`) would rotate every bin on any edit and defeat
         # the exec/build decoupling (the emitted-wasm-unchanged ⇒ exec-cache-hit win).
-        mkPhaseBin = { pname, crate, bin ? pname, closure, injectRuntimeHash ? false }:
+        mkPhaseBin = { pname, crate, bin ? pname, closure, injectRuntimeHash ? false, extraArgs ? "" }:
           craneLib.buildPackage {
             inherit pname;
             version = "0.0.0";
@@ -2225,7 +2225,7 @@
             '';
             # crane injects --locked + --release; scope to just this phase bin (its equivalent of the raw
             # `cargo build -p <crate> --bin <bin>`). Build only — no tests (the gate/CI run those).
-            cargoExtraArgs = "-p ${crate} --bin ${bin}";
+            cargoExtraArgs = "-p ${crate} --bin ${bin} ${extraArgs}";
             doCheck = false;
           };
         # shred (parser closure — excludes rcdzc), build (compiler closure = rcdzc), exec (runtime closure —
@@ -2233,6 +2233,9 @@
         cdzCorpus = mkPhaseBin { pname = "cdz-corpus"; crate = "cdz-corpus"; closure = crateClosure "cdz-corpus"; };
         cdzCompile = mkPhaseBin { pname = "cdz-compile"; crate = "rcdzc"; bin = "cdz-compile"; closure = crateClosure "rcdzc"; injectRuntimeHash = true; };
         cdzRun = mkPhaseBin { pname = "cdz-run"; crate = "cdz-run"; closure = crateClosure "cdz-run"; };
+        # cdzRunExec — CRANELIFT-FREE corpus executor (seq-250/271 AOT split, #5893/#5910/#5922). Drops the
+        # default `cranelift` feature → deserialize-only (Component::deserialize of precompiled .cwasm), no JIT.
+        cdzRunExec = mkPhaseBin { pname = "cdz-run-exec"; crate = "cdz-run"; bin = "cdz-run"; closure = crateClosure "cdz-run"; extraArgs = "--no-default-features"; };
         # cdzHandWrapper / cdzRunHandWrapper — the SELF-CONTAINED front-end wrappers (hoisted out of apps.cdz /
         # apps.cdz-run so `apps.build` can materialize the SAME wrapper into a worktree's target/release/ — no
         # drift). Each exports the phase-bin overrides (CDZ_COMPILE_BIN / CDZ_STORE / CDZ_RUN_BIN / CDZ_CALC_BIN,
@@ -2740,41 +2743,82 @@
         # output/trap, and grades error/declines + warns from the captured compile outcome
         # (`--compile-status`/`--compile-diag`). So exec just hands it the build output — no bash routing.
         # `emit.wasm` is passed only when the compile succeeded (a refusal has none). Exit 1 = a real Fail.
-        mkCorpusExec = { name, build, idx }:
-          pkgs.runCommand "corpus-exec-${name}-${idx}"
+        # ── AOT corpus-exec (seq-250/271, #5893/5910/5922): precompile guest+runtime+store deps to .cwasm ONCE
+        # (cranelift-ON, CA-cached), then EXEC cranelift-FREE via deserialize — removes the per-run wasmtime JIT
+        # from the corpus exec (the recurring cranelift cost the operator flagged). Proven grade-identical to the
+        # direct JIT path on heap cases (v-nix acceptance test). Peer (--peer) cases stay on the JIT path (not
+        # precompiled-capable yet).
+        # componentStoreCwasm — componentStore + each <hash>.wasm ALSO precompiled to <hash>.cwasm, so the
+        # cranelift-free exec resolves store deps (NFC today) via <hash>.cwasm in --precompiled mode (#5922).
+        componentStoreCwasm = pkgs.runCommand "cdz-component-store-cwasm"
+          {
+            nativeBuildInputs = [ cdzRun ];
+            __contentAddressed = true;
+            outputHashMode = "recursive";
+            outputHashAlgo = "sha256";
+          } ''
+          set -euo pipefail
+          cp -rL ${componentStore} "$out"; chmod -R u+w "$out"
+          for w in "$out"/*.wasm; do
+            cdz-run "$w" --precompile-out "''${w%.wasm}.cwasm"
+          done
+        '';
+        # runtimeDebugCwasm — the debug-counters runtime precompiled ONCE, shared by every AOT exec (--runtime).
+        runtimeDebugCwasm = pkgs.runCommand "cdz-runtime-debug-cwasm"
+          { nativeBuildInputs = [ cdzRun ]; } ''
+          cdz-run ${runtimeDebug} --precompile-out "$out"
+        '';
+        # mkCorpusPrecompile — per-case CA precompile of the guest emit.wasm → guest.cwasm (cranelift-ON, keyed
+        # on the guest bytes → recompiles ONLY when the guest changes, not per exec rerun). SKIPS peer cases
+        # (--peer not precompiled-capable) + no-emit (error/decline) cases; the exec JIT-falls-back for those.
+        mkCorpusPrecompile = { name, build, idx }:
+          pkgs.runCommand "corpus-precompile-${name}-${idx}"
             {
               nativeBuildInputs = [ cdzRun ];
+              __contentAddressed = true;
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
             } ''
             set -euo pipefail
+            mkdir -p "$out"
+            # nullglob-SAFE peer detection (nix stdenv bash has nullglob ON — a bare `ls peer-*.wasm` with no
+            # match lists CWD + exits 0, so `! ls …` wrongly reads as "no peers"; `find` is glob-independent).
+            if [ -e ${build}/emit.wasm ] && [ -z "$(find ${build} -maxdepth 1 -name 'peer-*.wasm' -print -quit)" ]; then
+              cdz-run ${build}/emit.wasm --precompile-out "$out/guest.cwasm"
+            fi
+          '';
+        mkCorpusExec = { name, build, precompile, idx }:
+          pkgs.runCommand "corpus-exec-${name}-${idx}"
+            { } ''
+            set -euo pipefail
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
-            export CDZ_STORE="${componentStore}"
             status=$(cat ${build}/compile.status)
+            # Common grade args (outcome-independent). `--diagnostics` feeds KIND_DIAGNOSTICS so a case's
+            # diagnostic-QUALITY facets are asserted (C1); `--component-name` names the emitted component.
             args=(--grade ${build}/test-run.ast --compile-status "$status" --compile-diag ${build}/compile.err
                   --baseline ${./spec/semantics/.gate-baseline})
-            # `--diagnostics` feeds the captured KIND_DIAGNOSTICS wire to the shared grader so a case's
-            # diagnostic-QUALITY facets ((fix …)/(no-fix)/(count N)) are asserted (C1). `mkCorpusBuild` always
-            # writes `diagnostics` (unconditional --emit-diagnostics); absent ⇒ the grader leaves quality OFF.
             if [ -e ${build}/diagnostics ]; then args+=(--diagnostics ${build}/diagnostics); fi
-            if [ -e ${build}/emit.wasm ]; then args=(${build}/emit.wasm "''${args[@]}"); fi
             if [ -e ${build}/component-name ]; then args+=(--component-name "$(cat ${build}/component-name)"); fi
-            # (peer) L3: compose each provider peer the build compiled — `--peer <iface>=<peer-wasm>` binds
-            # the peer's exported interface into the consumer's like-named `(extern …)` (run_with_peers).
-            for pw in ${build}/peer-*.wasm; do
-              [ -e "$pw" ] || continue
-              pn=$(basename "$pw" .wasm)               # peer-N
-              args+=(--peer "$(cat ${build}/$pn.iface)=$pw")
-            done
-            # HEAP-BALANCE (opt-out heap-liveness): under the opt-out default EVERY heap-importing case must
-            # end at its expected live-cell count (0 by default, or the case's explicit / known-leak N), so
-            # every wasm exec runs on the DEBUG-COUNTERS runtime — the shipped one reports 0 vacuously, only
-            # the debug build has the real live-cell export `cdz-run --grade` reads. OVERRIDE the runtime with
-            # `runtimeDebug` unconditionally (cdz-run composes it only when the component imports the heap; a
-            # scalar/const case ignores the override, so this is safe — the grade skips the balance check for
-            # a no-heap case). `runtimeDebug` is a store-path, so every exec's identity is a function of the
-            # debug-runtime and reruns iff it changes (a minor accepted coarsening — formerly only annotated
-            # cases carried this dep).
-            args+=(--runtime ${runtimeDebug})
-            cdz-run "''${args[@]}"
+            if [ -e ${precompile}/guest.cwasm ]; then
+              # AOT PATH (non-peer value case): CRANELIFT-FREE deserialize. Guest + debug runtime precompiled;
+              # store deps (NFC) resolved as <hash>.cwasm from componentStoreCwasm (#5922). No per-run JIT — the
+              # cranelift work happened ONCE in the (CA) precompile, cached per guest. Debug-counters runtime for
+              # the heap-balance live-cell grade (scalar/const cases ignore the runtime, grade skips balance).
+              export CDZ_STORE="${componentStoreCwasm}"
+              ${cdzRunExec}/bin/cdz-run ${precompile}/guest.cwasm --precompiled --runtime ${runtimeDebugCwasm} "''${args[@]}"
+            else
+              # JIT FALLBACK: peer cases (--peer not precompiled-capable) + error/decline cases (no emit.wasm —
+              # graded from the compile status, nothing to run). Byte-for-byte the pre-AOT behavior via cdzRun.
+              export CDZ_STORE="${componentStore}"
+              if [ -e ${build}/emit.wasm ]; then args=(${build}/emit.wasm "''${args[@]}"); fi
+              for pw in ${build}/peer-*.wasm; do
+                [ -e "$pw" ] || continue
+                pn=$(basename "$pw" .wasm)               # peer-N
+                args+=(--peer "$(cat ${build}/$pn.iface)=$pw")
+              done
+              args+=(--runtime ${runtimeDebug})
+              ${cdzRun}/bin/cdz-run "''${args[@]}"
+            fi
             echo "ok: corpus ${name} case ${idx}" > "$out"
           '';
 
@@ -2934,10 +2978,12 @@
           builtins.listToAttrs (map
             (idx: {
               name = "${name}-${idx}";
-              value = mkCorpusExec {
-                inherit name idx;
-                build = mkCorpusBuild { inherit name shred idx; };
-              };
+              value =
+                let build = mkCorpusBuild { inherit name shred idx; };
+                in mkCorpusExec {
+                  inherit name idx build;
+                  precompile = mkCorpusPrecompile { inherit name build idx; };
+                };
             })
             idxs);
 
