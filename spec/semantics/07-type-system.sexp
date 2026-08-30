@@ -3778,3 +3778,12 @@
 (case "the leaf-path drill stops at a deeper field-set difference, naming the immediate field"
   (input  (do (def (h (: r (Record (: inner (Record (: x Int64) (: y Int64)))))) (. r inner)) (def (g) (h #record((= inner #record((= x 1)))))) (export g)))
   (error  CDZ0203 (message "field `inner` should be") (not "inner.")))
+
+; Applying an EFFECT name as a function names the CATEGORY — "`E` is an effect, not a function" — the
+; apply-position analogue of the "is a type, not a function" message. The effect's SYNTHESIZED record type is
+; never leaked to the user (no `Record`/`Any` in the message). A non-name head keeps the type-named message
+; (already covered by the applying-a-non-function cases). (Migrated from rcdzc
+; applying_an_effect_name_names_the_category_not_the_leaked_record_type.)
+(case "applying an effect name names the category, not the leaked synthesized record type"
+  (input  (do (effect E (op foo (-> Int64))) (def (main) (E 5)) (export main)))
+  (error  CDZ0201 (message "`E` is an effect, not a function") (not "Record") (not "Any")))

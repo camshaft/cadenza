@@ -265,36 +265,9 @@ fn a_list_pattern_must_be_linear_and_refutable_elements_decline() {
 // sibling rest-lists is non-linear (CDZ0102); the well-formed two-rest positive is the existing 05 "a tuple of
 // two rest-lists binds each leading head" case. PASS wasm.)
 
-#[test]
-fn applying_an_effect_name_names_the_category_not_the_leaked_record_type() {
-    // `(E 5)` applies an EFFECT name as a function. The head's type is the effect's SYNTHESIZED record,
-    // so rendering it dumped an internal representation at the user (`cannot apply a value of type
-    // (Record (foo (Record (apply Any) …)) …)`). It now names the CATEGORY — "`E` is an effect, not a
-    // function" — the apply-position analogue of the export-a-type category message. A leaky internal
-    // type is never shown.
-    let d =
-        reject_full("(module m (effect E (op foo (-> Int64))) (def (main) (E 5)) (export main))")
-            .expect("applying an effect is rejected");
-    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-    assert!(
-        d.message.contains("`E` is an effect, not a function"),
-        "names the category: {}",
-        d.message
-    );
-    assert!(
-        !d.message.contains("Record") && !d.message.contains("Any"),
-        "the leaked synthesized record type must never appear: {}",
-        d.message
-    );
-    // A non-name head keeps the type-named message (the type IS the useful fact for a literal/value).
-    let lit = reject_full("(module m (def (main) (5 3)) (export main))")
-        .expect("applying a literal is rejected");
-    assert!(
-        lit.message.contains("cannot apply a value of type Int64"),
-        "a literal head keeps the type message: {}",
-        lit.message
-    );
-}
+// (applying_an_effect_name_names_the_category_not_the_leaked_record_type migrated to corpus 07-type-system:
+// `(E 5)` → CDZ0201 "`E` is an effect, not a function" (no leaked Record/Any); the literal-head control
+// is the existing applying-a-non-function case. PASS wasm.)
 
 // (applying_a_nullary_function_says_it_takes_no_arguments migrated to corpus 09-functions, the
 // applying-a-non-function family: "applying a nullary function names it and says it takes no arguments"
@@ -2309,18 +2282,8 @@ fn a_utf8_bin_match_with_no_catch_all_is_non_exhaustive() {
     );
 }
 
-#[test]
-fn a_string_annotation_checks_against_a_string_value() {
-    // `String` in type position (`(: "hi" String)`) decodes to `Ty::String` (`resolve::decode_ty`) —
-    // transparent over a string value, but a MISMATCH is rejected: `(: "hi" Int64)` conflicts the
-    // string value with the Int64 annotation (CDZ0203). Pins `String` as an annotation type + the
-    // String-vs-scalar mismatch (the string counterpart of `(: 5 Bool)`).
-    assert_eq!(
-        reject_code("(module m (def (main) (String.byte-len (: \"hi\" Int64))) (export main))")
-            .as_deref(),
-        Some("CDZ0203")
-    );
-}
+// (a_string_annotation_checks_against_a_string_value migrated to corpus 13-strings: `(: "hi" Int64)` is a
+// String-vs-scalar annotation mismatch → CDZ0203. PASS wasm.)
 
 // (checked_integer_conversion_over_range_message_is_actionable migrated to corpus 06-numeric-model: the
 // actionable-message pins now live on the checked-conversion reject cases — "an out-of-range checked integer
