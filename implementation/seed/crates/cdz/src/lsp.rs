@@ -2598,24 +2598,26 @@ fn fill_completions_from(
         );
     }
 
-    // Local bindings in scope at the cursor (name<TAB>type<TAB>binder) — overwrite to shadow a top-level.
+    // Local bindings in scope at the cursor — overwrite to shadow a top-level. The KIND_SCOPE wire is now
+    // binary AST (`decode_scope`); each binding's type detail is rendered from its FULL structured Ty
+    // payload via the shared cadenza-syntax renderer (`render_ty_scheme`), not a wire render_name string.
     let byte = position_to_byte(text, pos);
-    if let Some(node) = spans.node_at_offset(byte)
-        && let Some(answer) = run_query_text(
+    if let Some(node) = spans.node_at_offset(byte) {
+        let compiled = crate::run_sidecar(
             &arenas,
-            cadenza_compile_abi::sidecar::Query::ScopeAt { node: node.0 },
-            cadenza_compile_abi::sidecar::KIND_SCOPE,
-        )
-    {
-        for line in answer.lines() {
-            let mut cols = line.splitn(3, '\t');
-            if let (Some(name), Some(ty)) = (cols.next(), cols.next()) {
+            cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::ScopeAt {
+                node: node.0,
+            }),
+        );
+        if let Some(bytes) = compiled.artifact(cadenza_compile_abi::sidecar::KIND_SCOPE) {
+            for b in cadenza_compile_abi::decode_scope(bytes) {
+                let detail = cadenza_syntax::render_ty::render_ty_scheme(&b.ty, b.ty.root);
                 items.insert(
-                    name.to_string(),
+                    b.name.clone(),
                     CompletionItem {
-                        label: name.to_string(),
+                        label: b.name,
                         kind: Some(CompletionItemKind::VARIABLE),
-                        detail: Some(ty.to_string()),
+                        detail: Some(detail),
                         ..Default::default()
                     },
                 );

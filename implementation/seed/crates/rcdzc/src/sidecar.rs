@@ -250,18 +250,29 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             }
         }
         Query::ScopeAt { node } => {
-            // Every binding visible at the node, INNERMOST-first, one per line as
-            // `name<TAB>type<TAB>binder-node-id`. Collected by the scope walk, then each binder typed.
+            // Every binding visible at the node, INNERMOST-first, as ONE canonical binary-AST value
+            // `(scope (binding <name> <ty-payload> <binder-node>)…)` via the shared
+            // `cadenza_compile_abi::scope_wire` codec — each binder's FULL structured type payload
+            // (`encode_ty_payload` of `type_of`), NOT a `render_name` string (operator 307: full type AST;
+            // the consumer renders a display name from the decoded structure). `type_of` is total, so the
+            // ty payload + binder node are always present.
             let binders = scope_at(db, crate::ast::StructId(*node));
-            let mut text = String::new();
+            let mut bindings: Vec<cadenza_compile_abi::ScopeBinding> =
+                Vec::with_capacity(binders.len());
             for (name, binder) in binders {
-                let ty = crate::infer::type_of(db, binder).render_name(&db.name_ctx());
-                text.push_str(&format!("{name}\t{ty}\t{}\n", binder.0));
+                let ty = crate::infer::type_of(db, binder);
+                let ty_root = crate::eval::encode_ty_payload(db, &ty);
+                let ty_arena = extract_subtree(&db.ast, ty_root);
+                bindings.push(cadenza_compile_abi::ScopeBinding {
+                    name,
+                    ty: ty_arena,
+                    node: binder.0,
+                });
             }
             QueryResult {
                 kind: KIND_SCOPE,
                 name: node.to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_scope(&bindings),
             }
         }
         Query::Exports => {
