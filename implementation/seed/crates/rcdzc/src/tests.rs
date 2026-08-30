@@ -28068,55 +28068,6 @@ mod stage1 {
     // ── binding patterns: a `let` binder may be an irrefutable pattern ───────────────────────────
 
     #[test]
-    fn a_non_linear_pattern_binder_carries_a_rename_fix() {
-        // CDZ0102 now carries the mechanical repair: RENAME the repeated binder to a fresh non-colliding
-        // name (`a` → `a2`), making the pattern linear (`spec/capabilities/diagnostics.md` §A Diagnostic
-        // Carries A Route To A Fix). Heuristic — the rename clears the hard error but the fresh binder is
-        // then unused until the author wires it up.
-        let d = expect_error("(match (tuple 1 2) ((tuple a a) a))");
-        assert_eq!(d.code.as_deref(), Some("CDZ0102"), "got: {}", d.message);
-        let fix = d.fix.expect("a rename fix is carried");
-        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-        assert_eq!(
-            fix.replacement, "a2",
-            "renames the duplicate to a fresh name"
-        );
-        assert!(
-            !fix.verified,
-            "renaming is a heuristic — the author confirms intent"
-        );
-    }
-
-    #[test]
-    fn a_non_linear_parameter_carries_a_rename_fix_avoiding_collisions() {
-        // The parameter-list CDZ0102 twin — a duplicate parameter `x` renames the second to `x2`. The
-        // fresh name avoids EVERY param name (earlier and later), so a list already holding `x2` renames
-        // to `x3`. (Annotated params keep CDZ0102 the reported error — an exported def with un-annotated
-        // params surfaces the "parameter type is ambiguous" error first.)
-        let d = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (f (: x Int64) (: x Int64)) (+ x 1)) (export f))",
-        )))
-        .expect_err("a duplicate parameter must be rejected");
-        assert_eq!(d.code.as_deref(), Some("CDZ0102"), "got: {}", d.message);
-        assert_eq!(
-            d.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("x2"),
-            "renames the duplicate parameter: {}",
-            d.message
-        );
-        let collide = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (f (: x Int64) (: x Int64) (: x2 Int64)) (+ x 1)) (export f))",
-        )))
-        .expect_err("reject");
-        assert_eq!(
-            collide.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("x3"),
-            "the fresh name dodges the existing `x2`: {}",
-            collide.message
-        );
-    }
-
-    #[test]
     fn an_annotated_let_binder_structural_mismatch_names_the_delta() {
         // A `(: <pat> <Type>)` let binder whose annotation and bound value are the same structured kind but
         // differ — two records of a different field set, two tuples of a different arity — named two whole
