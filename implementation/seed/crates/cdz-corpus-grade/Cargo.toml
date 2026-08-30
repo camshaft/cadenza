@@ -18,3 +18,4 @@ publish = false
 [dependencies]
 anyhow = "1"
 cadenza-syntax = { path = "../cadenza-syntax" }
+cadenza-compile-abi = { path = "../cadenza-compile-abi" }

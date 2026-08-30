@@ -1216,7 +1216,6 @@ fn package_diagnostics_for(
         // accurate `CDZ0201 cyclic module imports`.
         return Some(package_link_faults_as_diagnostics(&compiled, &files));
     };
-    let diag_text = String::from_utf8_lossy(bytes);
 
     // Demux a global node id to `(file index, local id)` via the link-map. Empty map (a lone importing
     // file) → the entry with id unchanged.
@@ -1237,19 +1236,19 @@ fn package_diagnostics_for(
     // The entry file is `files[0]`; keep only faults whose node maps to it, mapped through ITS spans.
     let entry = &files[0];
     let mut out = Vec::new();
-    for line in diag_text.lines() {
-        // Reuse the shared fault-line parser, but first restrict to the entry file's faults and rewrite
-        // the node column to the entry-LOCAL id so `parse_diag_line` resolves it in the entry's spans.
-        let Some((local_line, on_entry)) =
-            rewrite_to_entry_local(line, &link_map, &files, &file_of_node)
+    for d in cadenza_compile_abi::decode_diagnostics(bytes) {
+        // Restrict to the entry file's faults + remap the node to the entry-LOCAL id so `parse_diag_line`
+        // resolves it in the entry's spans (the KIND_DIAGNOSTICS wire is decoded structs now).
+        let Some((local_d, on_entry)) =
+            rewrite_to_entry_local(&d, &link_map, &files, &file_of_node)
         else {
             continue;
         };
         if !on_entry {
             continue; // a fault in an imported file — published when that document is analyzed.
         }
-        if let Some(d) = parse_diag_line(&local_line, &entry.source, &entry.spans) {
-            out.push(d);
+        if let Some(diag) = parse_diag_line(&local_d, &entry.source, &entry.spans) {
+            out.push(diag);
         }
     }
     Some(out)
@@ -1296,20 +1295,15 @@ fn package_link_faults_as_diagnostics(
 /// unanchored (`-`) node stays on the entry (`true`) so a package-level fault with no node is still
 /// shown. `None` only on a malformed line.
 fn rewrite_to_entry_local(
-    line: &str,
-    link_map: &[rcdzc::link::FileSpan],
+    d: &cadenza_compile_abi::Diagnostic,
+    link_map: &[cadenza_compile_abi::FileSpan],
     files: &[crate::closure::LoadedFile],
     file_of_node: &dyn Fn(u32) -> Option<usize>,
-) -> Option<(String, bool)> {
-    // The node id is the THIRD tab column (`severity  code  node  …`).
-    let mut cols: Vec<&str> = line.splitn(8, '\t').collect();
-    if cols.len() < 8 {
-        return None;
-    }
-    let node = cols[2];
-    let Ok(global) = node.parse::<u32>() else {
-        // Unanchored (`-`) or non-numeric — treat as an entry-level fault, line unchanged.
-        return Some((line.to_string(), true));
+) -> Option<(cadenza_compile_abi::Diagnostic, bool)> {
+    // Remap the fault's GLOBAL node id to the entry-LOCAL id (on the decoded struct, not a tab column).
+    let Some(global) = d.node else {
+        // Unanchored — treat as an entry-level fault, unchanged.
+        return Some((d.clone(), true));
     };
     match file_of_node(global) {
         Some(0) => {
@@ -1322,11 +1316,11 @@ fn rewrite_to_entry_local(
                     None => global,
                 }
             };
-            let local_s = local.to_string();
-            cols[2] = &local_s;
-            Some((cols.join("\t"), true))
+            let mut local_d = d.clone();
+            local_d.node = Some(local);
+            Some((local_d, true))
         }
-        _ => Some((line.to_string(), false)), // another file, or unmapped — not the entry's fault
+        _ => Some((d.clone(), false)), // another file, or unmapped — not the entry's fault
     }
 }
 
@@ -1394,10 +1388,10 @@ fn diagnostics_for(text: &str, is_ml: bool) -> Vec<Diagnostic> {
     let compiled =
         crate::dispatch_query_over_inputs(inputs, cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS);
     if let Some(bytes) = compiled.artifact(cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS) {
-        let diag_text = String::from_utf8_lossy(bytes);
-        for line in diag_text.lines() {
-            if let Some(d) = parse_diag_line(line, text, &spans) {
-                out.push(d);
+        // The KIND_DIAGNOSTICS wire is canonical binary AST — decode to the fault structs, no tab parsing.
+        for d in cadenza_compile_abi::decode_diagnostics(bytes) {
+            if let Some(diag) = parse_diag_line(&d, text, &spans) {
+                out.push(diag);
             }
         }
     }
@@ -1461,53 +1455,41 @@ fn parse_surface(
 /// `<error>` placeholder (the parse error already said what to fix). An unanchored (`-`) node maps to the
 /// document start so the diagnostic is still shown (never silently dropped).
 fn parse_diag_line(
-    line: &str,
+    d: &cadenza_compile_abi::Diagnostic,
     text: &str,
     spans: &cadenza_syntax::spans::SpanTable,
 ) -> Option<Diagnostic> {
-    let mut cols = line.splitn(8, '\t');
-    let severity = cols.next()?;
-    let code = cols.next()?;
-    let node = cols.next()?;
-    let _fix_kind = cols.next()?;
-    let _fix_node = cols.next()?;
-    let _fix_repl = cols.next()?;
-    let _fix_verified = cols.next()?;
-    let message = cols.next().unwrap_or("");
+    // Reads the decoded `Diagnostic` STRUCT (the KIND_DIAGNOSTICS wire is canonical binary AST now — the
+    // caller `decode_diagnostics`d it; no per-line tab parsing). The fix fields are unused by the LSP
+    // surface (diagnostics only, no code-action here), so only severity/code/node/message are read.
 
     // Drop the `<error>`-placeholder cascade: a recovered parse placeholder reduces to a bare name
     // `<error>`, which the checker reports as an unbound-name fault referencing a token the user never
     // wrote. `<error>` is unlexable on either surface, so such a message is always the placeholder.
-    if message.contains("`<error>`") {
+    if d.message.contains("`<error>`") {
         return None;
     }
 
-    let severity = match severity {
-        "error" => DiagnosticSeverity::ERROR,
-        "warning" => DiagnosticSeverity::WARNING,
-        _ => DiagnosticSeverity::INFORMATION,
+    let severity = match d.severity {
+        cadenza_compile_abi::Severity::Error => DiagnosticSeverity::ERROR,
+        cadenza_compile_abi::Severity::Warning => DiagnosticSeverity::WARNING,
     };
 
     // The node's source range via the span table; an unanchored/unmapped node → the document start.
-    let range = node
-        .parse::<u32>()
-        .ok()
+    let range = d
+        .node
         .and_then(|id| spans.get(cadenza_syntax::StructId(id)))
         .map(|s| byte_range_to_range(text, s.start, s.end))
         .unwrap_or_else(|| Range::new(Position::new(0, 0), Position::new(0, 0)));
 
-    let code = if code == "-" {
-        None
-    } else {
-        Some(lsp_types::NumberOrString::String(code.to_string()))
-    };
+    let code = d.code.clone().map(lsp_types::NumberOrString::String);
 
     Some(Diagnostic {
         range,
         severity: Some(severity),
         code,
         source: Some("cdz".to_string()),
-        message: message.to_string(),
+        message: d.message.clone(),
         ..Default::default()
     })
 }
@@ -1679,6 +1661,29 @@ fn run_query_text(
     compiled
         .artifact(kind)
         .map(|b| String::from_utf8_lossy(b).into_owned())
+}
+
+/// The RAW artifact bytes of a single sidecar query (the binary-AST variant of [`run_query_text`]) — for a
+/// result whose wire is canonical binary AST (e.g. `KIND_DIAGNOSTICS` → `decode_diagnostics`), not text.
+/// Same `run_sidecar` chokepoint (delegates under `!standalone`).
+fn run_query_bytes(
+    arenas: &cadenza_syntax::Arenas,
+    query: cadenza_compile_abi::sidecar::Query,
+    kind: &str,
+) -> Option<Vec<u8>> {
+    let compiled = crate::run_sidecar(arenas, cadenza_compile_abi::Request::Query(query));
+    compiled.artifact(kind).map(|b| b.to_vec())
+}
+
+/// Map a decoded [`cadenza_compile_abi::FixKind`] to the kind string the shared `fix::fix_edits`/
+/// `code_action_title` engine matches on (`replace`/`insert`/`wrap`/`delete`; `InsertInto` → `insert`).
+fn fix_kind_str(kind: cadenza_compile_abi::FixKind) -> &'static str {
+    match kind {
+        cadenza_compile_abi::FixKind::Replace => "replace",
+        cadenza_compile_abi::FixKind::InsertInto => "insert",
+        cadenza_compile_abi::FixKind::Wrap => "wrap",
+        cadenza_compile_abi::FixKind::Delete => "delete",
+    }
 }
 
 /// The `Location` (in `uri`) of a node id in `spans`, or `None` if the node has no recorded span (a
@@ -3625,7 +3630,7 @@ fn code_actions_at(text: &str, is_ml: bool, uri: &Uri, range: Range) -> Vec<Code
     let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
         return Vec::new();
     };
-    let Some(diag_text) = run_query_text(
+    let Some(diag_bytes) = run_query_bytes(
         &arenas,
         cadenza_compile_abi::sidecar::Query::Diagnostics,
         cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS,
@@ -3643,33 +3648,20 @@ fn code_actions_at(text: &str, is_ml: bool, uri: &Uri, range: Range) -> Vec<Code
     };
 
     let mut actions = Vec::new();
-    for line in diag_text.lines() {
-        // `severity  code  node  fix-kind  fix-node  fix-repl  fix-verified  message` (8 columns).
-        let mut cols = line.splitn(8, '\t');
-        let (severity, code, node, fix_kind, fix_node, fix_repl, fix_verified, message) = match (
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-        ) {
-            (Some(s), Some(c), Some(n), Some(fk), Some(fnode), Some(fr), Some(fv), Some(m)) => {
-                (s, c, n, fk, fnode, fr, fv, m)
-            }
-            _ => continue,
-        };
+    // The KIND_DIAGNOSTICS wire is canonical binary AST — decode to fault STRUCTS + read fields directly.
+    for d in cadenza_compile_abi::decode_diagnostics(&diag_bytes) {
         // No fix, or the `<error>`-placeholder cascade → no action.
-        if fix_kind == "-" || message.contains("`<error>`") {
+        let Some(fix) = &d.fix else {
+            continue;
+        };
+        if d.message.contains("`<error>`") {
             continue;
         }
+        let fix_kind = fix_kind_str(fix.kind);
         // The FAULT's own node range — used to filter to diagnostics overlapping the request range, so we
         // only offer a fix for a squiggle at/around the cursor (the client passes the cursor/selection).
-        let Some(fault_range) = node
-            .parse::<u32>()
-            .ok()
+        let Some(fault_range) = d
+            .node
             .and_then(|id| spans.get(cadenza_syntax::StructId(id)))
             .map(|s| byte_range_to_range(text, s.start, s.end))
         else {
@@ -3679,17 +3671,14 @@ fn code_actions_at(text: &str, is_ml: bool, uri: &Uri, range: Range) -> Vec<Code
             continue;
         }
         // Build the fix's primitive byte edits via the SHARED engine, then map each to an LSP TextEdit.
-        let Ok(fix_target) = fix_node.parse::<u32>() else {
-            continue;
-        };
         let Some(edits) = crate::fix::fix_edits(
             text,
             &tree,
             &origins,
             &spans,
             fix_kind,
-            cadenza_syntax::StructId(fix_target),
-            fix_repl,
+            cadenza_syntax::StructId(fix.node),
+            &fix.replacement,
             surface,
         ) else {
             continue;
@@ -3708,18 +3697,17 @@ fn code_actions_at(text: &str, is_ml: bool, uri: &Uri, range: Range) -> Vec<Code
         let mut changes = HashMap::new();
         changes.insert(uri.clone(), text_edits);
         actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-            title: code_action_title(fix_kind, fix_repl, message),
+            title: code_action_title(fix_kind, &fix.replacement, &d.message),
             kind: Some(CodeActionKind::QUICKFIX),
             diagnostics: Some(vec![Diagnostic {
                 range: fault_range,
-                severity: Some(match severity {
-                    "error" => DiagnosticSeverity::ERROR,
-                    "warning" => DiagnosticSeverity::WARNING,
-                    _ => DiagnosticSeverity::INFORMATION,
+                severity: Some(match d.severity {
+                    cadenza_compile_abi::Severity::Error => DiagnosticSeverity::ERROR,
+                    cadenza_compile_abi::Severity::Warning => DiagnosticSeverity::WARNING,
                 }),
-                code: (code != "-").then(|| lsp_types::NumberOrString::String(code.to_string())),
+                code: d.code.clone().map(lsp_types::NumberOrString::String),
                 source: Some("cdz".to_string()),
-                message: message.to_string(),
+                message: d.message.clone(),
                 ..Default::default()
             }]),
             edit: Some(WorkspaceEdit {
@@ -3728,7 +3716,7 @@ fn code_actions_at(text: &str, is_ml: bool, uri: &Uri, range: Range) -> Vec<Code
             }),
             // A VERIFIED fix (re-checked to clear its diagnostic without introducing new errors) is the
             // preferred one, so the editor's default quick-fix applies the trustworthy edit.
-            is_preferred: Some(fix_verified == "verified"),
+            is_preferred: Some(fix.verified),
             ..Default::default()
         }));
     }
@@ -4491,8 +4479,14 @@ mod tests {
         // An `<error>`-placeholder cascade fault (a spurious unbound-name on a recovered parse placeholder)
         // is dropped — the parse error already said what to fix.
         let spans = cadenza_syntax::parser::read_ml("x").spans;
-        let line = "error\tCDZ0101\t-\t-\t-\t-\t-\tunbound name `<error>`";
-        assert!(parse_diag_line(line, "x", &spans).is_none());
+        let d = cadenza_compile_abi::Diagnostic {
+            severity: cadenza_compile_abi::Severity::Error,
+            code: Some("CDZ0101".into()),
+            message: "unbound name `<error>`".into(),
+            node: None,
+            fix: None,
+        };
+        assert!(parse_diag_line(&d, "x", &spans).is_none());
     }
 
     #[test]
@@ -4500,8 +4494,14 @@ mod tests {
         // A warning-severity, uncoded fault maps to a WARNING diagnostic with no code, at the doc start
         // when its node is unanchored (`-`).
         let spans = cadenza_syntax::parser::read_ml("x").spans;
-        let line = "warning\t-\t-\t-\t-\t-\t-\tsomething is unused";
-        let d = parse_diag_line(line, "x", &spans).expect("a diagnostic");
+        let fault = cadenza_compile_abi::Diagnostic {
+            severity: cadenza_compile_abi::Severity::Warning,
+            code: None,
+            message: "something is unused".into(),
+            node: None,
+            fix: None,
+        };
+        let d = parse_diag_line(&fault, "x", &spans).expect("a diagnostic");
         assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
         assert_eq!(d.code, None);
         assert_eq!(d.message, "something is unused");

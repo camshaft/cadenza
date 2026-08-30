@@ -104,10 +104,10 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
         None => String::new(),
     };
-    let diag_wire: Option<String> = cli
+    let diag_wire: Option<Vec<u8>> = cli
         .diagnostics
         .as_ref()
-        .map(|p| std::fs::read_to_string(p).unwrap_or_default());
+        .map(|p| std::fs::read(p).unwrap_or_default());
     let baseline = match &cli.baseline {
         Some(p) => Some(
             std::fs::read_to_string(p)

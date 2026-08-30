@@ -31,7 +31,7 @@ pub fn grade(
     async_mode: bool,
     compile_status: i32,
     compile_diag: &str,
-    diag_wire: Option<&str>,
+    diag_wire: Option<&[u8]>,
     workdir: &Path,
     baseline: Option<&str>,
 ) -> Result<ExitCode> {
@@ -66,7 +66,7 @@ pub fn grade_to_result(
     async_mode: bool,
     compile_status: i32,
     compile_diag: &str,
-    diag_wire: Option<&str>,
+    diag_wire: Option<&[u8]>,
     workdir: &Path,
 ) -> Result<GradeResult> {
     let host_responses = test_run.host_responses.clone();

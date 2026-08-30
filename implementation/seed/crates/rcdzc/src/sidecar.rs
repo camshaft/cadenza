@@ -111,41 +111,13 @@ fn atom_str(b: &mut Builder, s: &str) -> StructId {
 /// flag, so the two serializations never drift. `crate::diagnostics(db)` is the ungated "as-you-type" fault
 /// set (`collect_faults`, no export/layout gating), so this is well-defined even on an error/decline compile.
 pub fn diagnostics_wire(diags: &[crate::Diagnostic]) -> Vec<u8> {
-    let mut text = String::new();
-    for d in diags {
-        let severity = match d.severity {
-            crate::Severity::Error => "error",
-            crate::Severity::Warning => "warning",
-        };
-        let code = d.code.as_deref().unwrap_or("-");
-        let node = d.node.map_or_else(|| "-".to_string(), |n| n.to_string());
-        let (fix_kind, fix_node, fix_repl, fix_verified) = match &d.fix {
-            Some(f) => (
-                match f.kind {
-                    crate::FixKind::Replace => "replace",
-                    crate::FixKind::InsertInto => "insert",
-                    crate::FixKind::Wrap => "wrap",
-                    crate::FixKind::Delete => "delete",
-                }
-                .to_string(),
-                f.node.to_string(),
-                f.replacement.replace(['\n', '\t'], " "),
-                if f.verified { "verified" } else { "heuristic" }.to_string(),
-            ),
-            None => (
-                "-".to_string(),
-                "-".to_string(),
-                "-".to_string(),
-                "-".to_string(),
-            ),
-        };
-        // Newlines in a message would break the one-line-per-fault framing — collapse them.
-        let message = d.message.replace('\n', " ");
-        text.push_str(&format!(
-            "{severity}\t{code}\t{node}\t{fix_kind}\t{fix_node}\t{fix_repl}\t{fix_verified}\t{message}\n"
-        ));
-    }
-    text.into_bytes()
+    // The diagnostics wire is now the canonical BINARY AST (operator seq-254/284: binary AST everywhere,
+    // no bespoke tab text) — `cadenza_compile_abi::encode_diagnostics` encodes the FULL `Diagnostic`
+    // (severity/code/node/message + the optional fix INCLUDING its `label`), the inverse of every
+    // consumer's `decode_diagnostics`. Supersedes the former bespoke 8-TAB-column text (which dropped
+    // `label`, collapsed message/replacement newlines, and spelled `InsertInto` as `insert`).
+    // `crate::Diagnostic` IS `cadenza_compile_abi::Diagnostic` (re-export), so this is a drop-in.
+    cadenza_compile_abi::encode_diagnostics(diags)
 }
 
 pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {

@@ -234,11 +234,19 @@ fn ml_parse_error_span(text: &str, from: Format) -> Option<(u32, u32)> {
 /// editor shows equals what the CLI would answer, by construction. (The span table stays a front-end
 /// concern: the consumer maps a query's node ids to source ranges, per the query-engine contract.)
 fn run_query_text(ast_bytes: &[u8], query: &rcdzc::Query) -> Result<String, JsError> {
+    let bytes = run_query_bytes(ast_bytes, query)?;
+    String::from_utf8(bytes).map_err(|_| JsError::new("query result was not valid UTF-8"))
+}
+
+/// The raw-bytes twin of [`run_query_text`], for a query whose result artifact is canonical BINARY AST
+/// rather than UTF-8 text (e.g. `Query::Diagnostics` → `KIND_DIAGNOSTICS`, decoded with
+/// `rcdzc::decode_diagnostics`). Interpreting a binary-AST artifact as text and splitting it on tabs
+/// would yield garbage faults, so a structured consumer takes the bytes here and decodes them.
+fn run_query_bytes(ast_bytes: &[u8], query: &rcdzc::Query) -> Result<Vec<u8>, JsError> {
     let arenas = rcdzc::codec::decode(ast_bytes)
         .ok_or_else(|| JsError::new("internal: re-encoded AST failed to decode"))?;
     let mut db = rcdzc::db::Db::load(arenas);
-    let result = rcdzc::sidecar::run_query(&mut db, query);
-    String::from_utf8(result.bytes).map_err(|_| JsError::new("query result was not valid UTF-8"))
+    Ok(rcdzc::sidecar::run_query(&mut db, query).bytes)
 }
 
 /// Compile Cadenza source in the given surface format to a WebAssembly component.
@@ -924,11 +932,11 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
         }
     };
     // Ride the first-class `Diagnostics` sidecar query (the same one `cdz check` runs) — a total fault
-    // read that needs no export. Its result is one fault per line, TAB-separated:
-    // `severity  code  node  fix-kind  fix-node  fix-replacement  fix-verified  message` (each of code /
-    // node / the four fix columns is `-` when absent). We resolve each fault's node id — and its fix's
-    // node id — to a byte span here.
-    let text_out = run_query_text(&ast_bytes, &rcdzc::Query::Diagnostics)?;
+    // read that needs no export. Its `KIND_DIAGNOSTICS` result is canonical BINARY AST (operator seq-254:
+    // binary AST everywhere), decoded with the shared `rcdzc::decode_diagnostics` into `Diagnostic`
+    // structs — no bespoke tab-column parse. We resolve each fault's node id — and its fix's node id — to
+    // a byte span here.
+    let diag_bytes = run_query_bytes(&ast_bytes, &rcdzc::Query::Diagnostics)?;
     // Single-file: every node id keys directly into the user's span table (a miss defaults to the
     // whole-buffer `(0, 0)` — we never drop a single-file fault).
     let span_of = |n: u32| -> Option<(u32, u32)> {
@@ -940,43 +948,45 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
                 .unwrap_or((0, 0)),
         )
     };
-    Ok(diag_lines_to_js(&text_out, from == Format::Ml, span_of))
+    Ok(diags_to_js(
+        &rcdzc::decode_diagnostics(&diag_bytes),
+        from == Format::Ml,
+        span_of,
+    ))
 }
 
-/// Parse the TAB-separated diagnostics text the `Diagnostics` sidecar query emits (one fault per line:
-/// `severity  code  node  fix-kind  fix-node  fix-replacement  fix-verified  message`, each column `-`
-/// when absent) into JS [`Diagnostic`]s. `resolve_span` maps a real node id to its `[from, to)` byte
-/// range in the source UNDER EDIT — the ONE thing the single-file and preloaded-package paths differ on
-/// (the package path demuxes a GLOBAL id through the link-map to the user file first). Returning `None`
-/// means "this fault's node is not in the source under edit" — the fault is DROPPED (over a linked
-/// package that is a fault inside a trusted preloaded library, which the reader can't act on in their own
-/// buffer; the single-file path's `resolve_span` is total, so it never drops). An UNANCHORED fault
-/// (node column `-`) is always kept with a `(0, 0)` range (a whole-program fault, not tied to a node).
-/// `is_ml` selects the surface for a `wrap` fix's prefix/suffix split.
-fn diag_lines_to_js(
-    text_out: &str,
+/// The browser-facing `fix_kind` string for a [`rcdzc::FixKind`] — the SAME vocabulary the `cdz` LSP
+/// emits (`lsp::fix_kind_str`), so the guide's quick-fix affordance keys on one stable set
+/// (`replace`/`insert`/`wrap`/`delete`).
+fn fix_kind_str(kind: rcdzc::FixKind) -> &'static str {
+    match kind {
+        rcdzc::FixKind::Replace => "replace",
+        rcdzc::FixKind::InsertInto => "insert",
+        rcdzc::FixKind::Wrap => "wrap",
+        rcdzc::FixKind::Delete => "delete",
+    }
+}
+
+/// Map the decoded [`rcdzc::Diagnostic`] structs (from the binary-AST `KIND_DIAGNOSTICS` wire, via
+/// `rcdzc::decode_diagnostics`) into JS [`Diagnostic`]s. `resolve_span` maps a real node id to its
+/// `[from, to)` byte range in the source UNDER EDIT — the ONE thing the single-file and preloaded-package
+/// paths differ on (the package path demuxes a GLOBAL id through the link-map to the user file first).
+/// Returning `None` means "this fault's node is not in the source under edit" — the fault is DROPPED
+/// (over a linked package that is a fault inside a trusted preloaded library, which the reader can't act
+/// on in their own buffer; the single-file path's `resolve_span` is total, so it never drops). An
+/// UNANCHORED fault (`node == None`) is always kept with a `(0, 0)` range (a whole-program fault, not
+/// tied to a node). `is_ml` selects the surface for a `wrap` fix's prefix/suffix split.
+fn diags_to_js(
+    diags: &[rcdzc::Diagnostic],
     is_ml: bool,
     resolve_span: impl Fn(u32) -> Option<(u32, u32)>,
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    for line in text_out.lines() {
-        if line.is_empty() {
-            continue;
-        }
-        let mut parts = line.splitn(8, '\t');
-        let severity = parts.next().unwrap_or("error");
-        let code = parts.next().unwrap_or("-");
-        let node_field = parts.next().unwrap_or("-");
-        let fix_kind = parts.next().unwrap_or("-");
-        let fix_node_field = parts.next().unwrap_or("-");
-        let fix_replacement = parts.next().unwrap_or("-");
-        let fix_verified = parts.next().unwrap_or("-");
-        let message = parts.next().unwrap_or("").to_string();
-        // Resolve the primary node. An unanchored `-` node stays a whole-buffer `(0, 0)` fault; a real
-        // id that `resolve_span` places OUTSIDE the source under edit (a preloaded-library fault) is
+    for d in diags {
+        // Resolve the primary node. An unanchored (`None`) node stays a whole-buffer `(0, 0)` fault; a
+        // real id that `resolve_span` places OUTSIDE the source under edit (a preloaded-library fault) is
         // dropped — `continue` skips it so it never squiggles the user's buffer at a bogus offset.
-        let node = node_field.parse::<u32>().ok();
-        let (span_from, span_to) = match node {
+        let (span_from, span_to) = match d.node {
             Some(n) => match resolve_span(n) {
                 Some(span) => span,
                 None => continue,
@@ -985,40 +995,46 @@ fn diag_lines_to_js(
         };
         // A fix that targets a node outside the source under edit is dropped to a no-fix (the diagnostic
         // is still shown; only its quick-fix, which would splice the wrong file, is suppressed).
-        let has_fix = fix_node_field != "-"
-            && fix_node_field
-                .parse::<u32>()
-                .ok()
-                .and_then(&resolve_span)
-                .is_some();
-        let (fix_from, fix_to) = if has_fix {
-            fix_node_field
-                .parse::<u32>()
-                .ok()
-                .and_then(&resolve_span)
-                .unwrap_or((0, 0))
-        } else {
-            (0, 0)
-        };
+        let resolved_fix = d
+            .fix
+            .as_ref()
+            .and_then(|f| resolve_span(f.node).map(|span| (f, span)));
         // A WRAP fix splits into surface-correct `prefix`/`suffix` (never the raw `…`-sentinel
         // replacement, which a JS splice would write literally and corrupt) — the shared reshape+split.
-        let (fix_replacement, fix_prefix, fix_suffix) = if has_fix && fix_kind == "wrap" {
-            let (p, s) = rcdzc::wrap_prefix_suffix(fix_replacement, is_ml);
-            (String::new(), p, s)
-        } else if has_fix {
-            (fix_replacement.to_string(), String::new(), String::new())
-        } else {
-            (String::new(), String::new(), String::new())
-        };
+        let (fix_replacement, fix_prefix, fix_suffix, fix_from, fix_to, fix_verified, fix_kind) =
+            match resolved_fix {
+                Some((f, (ff, ft))) => {
+                    let (repl, prefix, suffix) = if matches!(f.kind, rcdzc::FixKind::Wrap) {
+                        let (p, s) = rcdzc::wrap_prefix_suffix(&f.replacement, is_ml);
+                        (String::new(), p, s)
+                    } else {
+                        (f.replacement.clone(), String::new(), String::new())
+                    };
+                    (
+                        repl,
+                        prefix,
+                        suffix,
+                        ff,
+                        ft,
+                        f.verified,
+                        fix_kind_str(f.kind).to_string(),
+                    )
+                }
+                None => (
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    0,
+                    0,
+                    false,
+                    String::new(),
+                ),
+            };
         out.push(Diagnostic {
-            error: severity != "warning",
-            code: if code == "-" {
-                String::new()
-            } else {
-                code.to_string()
-            },
-            message,
-            node: node.unwrap_or(u32::MAX),
+            error: d.severity != rcdzc::Severity::Warning,
+            code: d.code.clone().unwrap_or_default(),
+            message: d.message.clone(),
+            node: d.node.unwrap_or(u32::MAX),
             from: span_from,
             to: span_to,
             fix_replacement,
@@ -1026,12 +1042,8 @@ fn diag_lines_to_js(
             fix_suffix,
             fix_from,
             fix_to,
-            fix_verified: fix_verified == "verified",
-            fix_kind: if has_fix {
-                fix_kind.to_string()
-            } else {
-                String::new()
-            },
+            fix_verified,
+            fix_kind,
         });
     }
     out
@@ -1300,12 +1312,9 @@ pub fn diagnostics_with_preloaded(
             0,
         )]);
     };
-    let text_out = String::from_utf8(bytes.to_vec())
-        .map_err(|_| JsError::new("diagnostics artifact was not valid UTF-8"))?;
-
     let resolve_span = user_span_resolver(&out, spans);
-    Ok(diag_lines_to_js(
-        &text_out,
+    Ok(diags_to_js(
+        &rcdzc::decode_diagnostics(bytes),
         from == Format::Ml,
         resolve_span,
     ))
