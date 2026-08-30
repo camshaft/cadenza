@@ -15,74 +15,95 @@
 @!default-fraction Rational
 
 import { Solid, SolidR, lower } from "exact"
-import { box, ball, fuse, move-x, rotate-z, mirror-x } from "helpers"
 
-@!param(widget: slider, range: [1, 200], default: 42) seed : Int64
-@!param(widget: slider, range: [10, 40], default: 20) arm-length : Rational
+import { box, ball, fuse, move-x, rotate-z, mirror-x } from "helpers";
+
+@!param(widget: slider, range: [1, 200], default: 42) seed : Int64;
+
+@!param(widget: slider, range: [10, 40], default: 20) arm-length : Rational;
+
 @!param(widget: slider, range: [1, 3], default: 2) depth : Int64
 
 // ── the seeded PRNG (MINSTD LCG), state threaded explicitly ──────────────────────────────────────────
-def lcg-next(s: Int64) = ((16807 : Int64) * s) % (2147483647 : Int64)
+def lcg-next(s: Int64) = (16807 : Int64) * s % (2147483647 : Int64)
+
 // A draw in [lo, hi] from the current state (the caller advances the state with lcg-next for the next draw).
-def roll(s: Int64, lo: Int64, hi: Int64) = lo + (lcg-next(s) % (((hi - lo) + (1 : Int64))))
+def roll(s: Int64, lo: Int64, hi: Int64) = lo + lcg-next(s) % (hi - lo + (1 : Int64))
+
 // Normalize any seed into a valid non-zero MINSTD state.
-def seed-state(n: Int64) = (n % (2147483646 : Int64)) + (1 : Int64)
+def seed-state(n: Int64) = n % (2147483646 : Int64) + (1 : Int64)
+
 // Int64 → Rational (draws are Int64 angles/percents; geometry is exact Rational).
-def r(n: Int64) = Rational.of(n, (1 : Int64))
+def r(n: Int64) = Rational.of(n, 1 : Int64)
 
 // ── the primitives-built snowflake ───────────────────────────────────────────────────────────────────
-
 // One branch SEGMENT from primitives: a slender BAR (a thin box grown along +x from the origin) + a small
 // BALL at its tip. Width scales with length so deeper twigs are finer.
 def segment(len: Rational) =
   let w = len / (8 / 1) in
-  fuse(move-x(len / (2 / 1), box(len, w, w)),      // the bar
-       move-x(len, ball(w)))                        // the tip
+    fuse(
+    move-x(len / (2 / 1), box(len, w, w)),
+    // the bar
+    move-x(len, ball(w))
+  )
 
+// the tip
 // A BRANCH: a segment plus a random number of child branches, each rotated + offset along the parent and
 // mirrored across x (bilateral symmetry), recursing to `depth`. Returns (solid, advanced-state) — the LCG
 // state is threaded so the same seed always rebuilds the same branch.
 def branch(state: Int64, len: Rational, depth: Int64) =
-  if depth == (0 : Int64) then (segment(len), lcg-next(state))
+  if depth == (0 : Int64) then
+    (segment(len), lcg-next(state))
   else
-    let n = roll(state, (1 : Int64), (3 : Int64)) in                 // 1..3 children
-    add-children(lcg-next(state), len, depth, n, (0 : Int64), segment(len))
+    let n = roll(state, 1 : Int64, 3 : Int64) in // 1..3 children
+      add-children(lcg-next(state), len, depth, n, 0 : Int64, segment(len))
 
 def add-children(state: Int64, len: Rational, depth: Int64, n: Int64, i: Int64, acc: Solid(Rational)) =
-  if i == n then (acc, state)
+  if i == n then
+    (acc, state)
   else
-    let ang = r(roll(state, (25 : Int64), (75 : Int64))) in          // splay angle 25°..75°
+    let ang = r(roll(state, 25 : Int64, 75 : Int64)) in // splay angle 25°..75°
     let s1 = lcg-next(state) in
-    let offset = (len * r(roll(s1, (30 : Int64), (70 : Int64)))) / (100 / 1) in   // 30%..70% along the bar
+    let offset = len * r(roll(s1, 30 : Int64, 70 : Int64)) / (100 / 1) in // 30%..70% along the bar
     let s2 = lcg-next(s1) in
-    let (child, s3) = branch(s2, len * (3 / 5), depth - (1 : Int64)) in    // each generation 3/5 shorter
-        let placed = move-x(offset, rotate-z(ang, child)) in
-        add-children(s3, len, depth, n, i + (1 : Int64),             // add the child AND its bilateral mirror
-                     fuse(acc, fuse(placed, mirror-x(placed))))
+    let (child, s3) = branch(s2, len * (3 / 5), depth - (1 : Int64)) in // each generation 3/5 shorter
+    let placed = move-x(offset, rotate-z(ang, child)) in
+      add-children(
+      s3,
+      len,
+      depth,
+      n,
+      i + (1 : Int64),
+      // add the child AND its bilateral mirror
+      fuse(acc, fuse(placed, mirror-x(placed)))
+    )
 
 // SIX-FOLD symmetry: union 6 copies of one arm, each rotated i·60° about z — what reads as a snowflake.
 def six-fold(arm: Solid(Rational), i: Int64, acc: Solid(Rational)) =
-  if i == (6 : Int64) then acc
-  else six-fold(arm, i + (1 : Int64), fuse(acc, rotate-z(r(i * (60 : Int64)), arm)))
+  if i == (6 : Int64) then
+    acc
+  else
+    six-fold(arm, i + (1 : Int64), fuse(acc, rotate-z(r(i * (60 : Int64)), arm)))
 
 // THE SNOWFLAKE: build one seeded arm (from primitives above), then 6-fold it.
 def snowflake(seed0: Int64, len: Rational, depth: Int64) =
-  let (arm, _) = branch(seed-state(seed0), len, depth) in six-fold(arm, (0 : Int64), Solid.Empty)
+  let (arm, _) = branch(seed-state(seed0), len, depth) in
+    six-fold(arm, 0 : Int64, Solid.Empty)
 
 // ── the @param entry: read the seed + config sliders → lower for the mesh driver ──────────────────────
-def main() = host Param in
-  (let s = Param.seed() in
-   let len = Param.arm-length() in
-   let d = Param.depth() in
-     lower(snowflake(s, len, d)))
+def main() =
+  host Param
+  in
+  let s = Param.seed() in
+  let len = Param.arm-length() in
+  let d = Param.depth() in
+    lower(snowflake(s, len, d))
 
 // ── @tests: deterministic + non-empty ──────────────────────────────────────────────────────────────────
-
 @test
-def a-snowflake-is-non-empty() =
-  match snowflake((42 : Int64), 20 / 1, (2 : Int64)) with
-    | Solid.Empty => trap("a snowflake has geometry")
-    | _ => unit
+def a-snowflake-is-non-empty() = match snowflake(42 : Int64, 20 / 1, 2 : Int64) with
+  | Solid.Empty => trap("a snowflake has geometry")
+  | _ => unit
 
 @test
 def the-lowered-snowflake-render-form-is-non-empty() =
@@ -91,23 +112,30 @@ def the-lowered-snowflake-render-form-is-non-empty() =
   // empty-Solid-mesh-annihilation class). main lowers snowflake(...) to the SolidR the driver meshes; pin
   // that the lowered form is not SolidR.Empty so a "renders blank while the model looks fine" regression can't
   // recur silently. (The snowflake folds from an Empty base via Union, so the lowered top is a SolidR.Union.)
-  match lower(snowflake((42 : Int64), 20 / 1, (2 : Int64))) with
-    | SolidR.Empty => trap("the lowered snowflake (what the driver meshes) must NOT be empty — it shipped blank once")
+  match lower(snowflake(42 : Int64, 20 / 1, 2 : Int64)) with
+    | SolidR.Empty => trap(
+      "the lowered snowflake (what the driver meshes) must NOT be empty — it shipped blank once"
+    )
     | _ => unit
 
 @test
 def the-same-seed-builds-the-same-snowflake() =
   // Determinism: the same seed replays the identical LCG draws → the identical solid (same top structure).
-  let a = snowflake((7 : Int64), 20 / 1, (1 : Int64)) in
-  let b = snowflake((7 : Int64), 20 / 1, (1 : Int64)) in
-  match a with | Solid.Union(_, _) => (match b with | Solid.Union(_, _) => unit | _ => trap("b shape")) | _ => trap("a shape")
+  let a = snowflake(7 : Int64, 20 / 1, 1 : Int64) in
+  let b = snowflake(7 : Int64, 20 / 1, 1 : Int64) in
+    match a with
+    | Solid.Union(_, _) => (match b with
+      | Solid.Union(_, _) => unit
+      | _ => trap("b shape")
+    )
+    | _ => trap("a shape")
 
 @test
 def different-seeds-differ-in-child-count() =
   // Seeds 1 vs 2 take different random branch structures (the "unique per seed" property, at the model level).
-  let s1 = roll(seed-state((1 : Int64)), (1 : Int64), (1000 : Int64)) in
-  let s2 = roll(seed-state((2 : Int64)), (1 : Int64), (1000 : Int64)) in
-  if s1 == s2 then trap("seeds 1 and 2 should differ") else unit
+  let s1 = roll(seed-state(1 : Int64), 1 : Int64, 1000 : Int64) in
+  let s2 = roll(seed-state(2 : Int64), 1 : Int64, 1000 : Int64) in
+    if s1 == s2 then trap("seeds 1 and 2 should differ") else unit
 
 @test
 def the-inline-lcg-is-the-minstd-known-answer() =
@@ -119,9 +147,14 @@ def the-inline-lcg-is-the-minstd-known-answer() =
   //   • lcg-next(200000) = 16807·200000 = 3_361_400_000, which EXCEEDS 2^31−1, so the modulo reduces it to
   //     1213916353. A modulus off by one (2147483646) gives 1213916354 → this pins the MODULUS.
   if lcg-next(1 : Int64) == (16807 : Int64) then
-    (if lcg-next(200000 : Int64) == (1213916353 : Int64) then unit
-     else trap("inline LCG lcg-next(200000) must be 1213916353 (pins modulus = 2^31-1; product exceeds it)"))
-  else trap("inline LCG lcg-next(1) must be exactly 16807 (pins multiplier = 16807)")
+    if lcg-next(200000 : Int64) == (1213916353 : Int64) then
+      unit
+    else
+      trap(
+        "inline LCG lcg-next(200000) must be 1213916353 (pins modulus = 2^31-1; product exceeds it)"
+      )
+  else
+    trap("inline LCG lcg-next(1) must be exactly 16807 (pins multiplier = 16807)")
 
 @test
 def a-degenerate-roll-range-is-the-single-point() =
@@ -129,8 +162,10 @@ def a-degenerate-roll-range-is-the-single-point() =
   // `+1` in roll's modulus — WITH it, `% 1` = 0 so roll = lo = k; WITHOUT it, `% 0` (divide by zero → trap).
   // The 25..75 / 30..70 splay/offset draws elsewhere can't catch a dropped +1 (a narrower range still lands
   // in-range). A degenerate zero-width range makes the off-by-one a hard failure.
-  if roll(seed-state(7 : Int64), (5 : Int64), (5 : Int64)) == (5 : Int64) then unit
-  else trap("roll(s, k, k) on a zero-width range must be exactly k")
+  if roll(seed-state(7 : Int64), 5 : Int64, 5 : Int64) == (5 : Int64) then
+    unit
+  else
+    trap("roll(s, k, k) on a zero-width range must be exactly k")
 
 @test
 def seed-state-normalizes-into-a-valid-nonzero-minstd-state() =
@@ -146,8 +181,15 @@ def seed-state-normalizes-into-a-valid-nonzero-minstd-state() =
   //   • seed-state(2147483646) = (0) + 1 = 1 — a modulus-MULTIPLE also lands on 1, pinning the reduction modulus
   //     2147483646 (a wrong 2147483647 gives 2147483647, itself an invalid ≥-modulus state).
   if seed-state(0 : Int64) == (1 : Int64) then
-    (if seed-state(2147483646 : Int64) == (1 : Int64) then unit
-     else trap("seed-state(2147483646) must normalize a modulus-multiple to 1 (pins the modulus = 2147483646)"))
-  else trap("seed-state(0) must be a valid non-zero state = 1 (pins the +1; without it 0 is MINSTD's dead fixed point)")
+    if seed-state(2147483646 : Int64) == (1 : Int64) then
+      unit
+    else
+      trap(
+        "seed-state(2147483646) must normalize a modulus-multiple to 1 (pins the modulus = 2147483646)"
+      )
+  else
+    trap(
+      "seed-state(0) must be a valid non-zero state = 1 (pins the +1; without it 0 is MINSTD's dead fixed point)"
+    )
 
 export { main }

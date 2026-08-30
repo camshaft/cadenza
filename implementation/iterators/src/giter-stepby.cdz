@@ -53,8 +53,8 @@ def take(it, k) =
     GIter.Nil(unit)
   else
     match it with
-    | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, k - 1))
+      | GIter.Nil(_) => GIter.Nil(unit)
+      | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, k - 1))
 
 /// `count(it)` — number of emitted values, driving the pull to exhaustion.
 def count(it) = match it with

@@ -17,21 +17,26 @@
 /// The check is over the UNION of obligations across choice branches (a send that occurs under some branch
 /// must have its receiver able to receive it under that selection). For the strict-selection projectable
 /// subset (Inc 1), branch-aligned matching reduces to this multiset match.
-
 import { Chor } from "chor"
+
 import { Local } from "chor-local"
+
 import { project } from "chor-local"
 
 /// A directed I/O obligation: the OTHER role and the label. For a send, `peer` is the recipient; for a
 /// recv, `peer` is the sender.
-type IO = Ob(String, String)     // peer, label
-def io-peer(x: IO) -> String = match x with | IO.Ob(p, _l) => p
-def io-label(x: IO) -> String = match x with | IO.Ob(_p, l) => l
+type IO =
+  | Ob(String, String) // peer, label
+
+def io-peer(x: IO) -> String = match x with
+  | IO.Ob(p, _l) => p
+
+def io-label(x: IO) -> String = match x with
+  | IO.Ob(_p, l) => l
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Extract a role's send / recv obligations from its projected local type (union across choice branches).
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
 def local-sends(l: Local) -> List(IO) = match l with
   | Local.LEnd => []
   | Local.LSend(to, lbl, k) => List.concat([IO.Ob(to, lbl)], local-sends(k))
@@ -64,42 +69,45 @@ def recvs-branches(brs: List(Local)) -> List(IO) = match brs with
 // Matched I/O: every send of role `r` (to `peer`, label `l`) is mirrored by a recv (from `r`, label `l`)
 // in `peer`'s projection, and every recv of `r` (from `peer`) is mirrored by a send (to `r`) in `peer`'s.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
 /// Does `obs` contain an obligation with this peer + label?
 def has-io(obs: List(IO), peer: String, lbl: String) -> Bool = match obs with
   | [] => false
-  | [o, .. rest] => (if io-peer(o) == peer then (if io-label(o) == lbl then true else has-io(rest, peer, lbl))
-    else has-io(rest, peer, lbl))
+  | [o, .. rest] => if io-peer(o) == peer then
+    if io-label(o) == lbl then true else has-io(rest, peer, lbl)
+  else
+    has-io(rest, peer, lbl)
 
 /// Every send of `r` is mirrored by a recv in its recipient's projection.
 def sends-matched(g: Chor, r: String, mine: List(IO)) -> Bool = match mine with
   | [] => true
-  | [s, .. rest] =>
-    (let recipient = io-peer(s) in
-     let their-recvs = local-recvs(project(g, recipient)) in
-     if has-io(their-recvs, r, io-label(s))   // recipient receives (from r, label) ?
-       then sends-matched(g, r, rest)
-       else false)
+  | [s, .. rest] => let recipient = io-peer(s) in
+  let their-recvs = local-recvs(project(g, recipient)) in
+    if has-io(their-recvs, r, io-label(s)) then
+    // recipient receives (from r, label) ?
+    sends-matched(g, r, rest)
+  else
+    false
 
 /// Every recv of `r` is mirrored by a send in its sender's projection.
 def recvs-matched(g: Chor, r: String, mine: List(IO)) -> Bool = match mine with
   | [] => true
-  | [rc, .. rest] =>
-    (let sender = io-peer(rc) in
-     let their-sends = local-sends(project(g, sender)) in
-     if has-io(their-sends, r, io-label(rc))   // sender sends (to r, label) ?
-       then recvs-matched(g, r, rest)
-       else false)
+  | [rc, .. rest] => let sender = io-peer(rc) in
+  let their-sends = local-sends(project(g, sender)) in
+    if has-io(their-sends, r, io-label(rc)) then
+    // sender sends (to r, label) ?
+    recvs-matched(g, r, rest)
+  else
+    false
 
 /// A single role's I/O is fully matched against its peers.
 def role-matched(g: Chor, r: String) -> Bool =
   let l = project(g, r) in
-  (if sends-matched(g, r, local-sends(l)) then recvs-matched(g, r, local-recvs(l)) else false)
+    if sends-matched(g, r, local-sends(l)) then recvs-matched(g, r, local-recvs(l)) else false
 
 /// Every declared role's I/O is matched — the deadlock-freedom witness.
 def all-roles-matched(roles: List(String), g: Chor) -> Bool = match roles with
   | [] => true
-  | [r, .. rest] => (if role-matched(g, r) then all-roles-matched(rest, g) else false)
+  | [r, .. rest] => if role-matched(g, r) then all-roles-matched(rest, g) else false
 
 /// Deadlock-free (by construction) = matched I/O across all roles. PRECONDITION: `g` is projectable
 /// (`chor-project.projectable`) and well-formed (`chor.wf`); those guards run before this in the pipeline.
@@ -108,14 +116,14 @@ def deadlock-free(roles: List(String), g: Chor) -> Bool = all-roles-matched(role
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Fixtures + tests — the Inc-4 gate.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
 def parties() = ["Buyer", "Seller", "Shipper"]
 
 /// Linear three-party Purchase: matched by construction.
 def purchase-linear() =
-  Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"),
-    Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"),
-      Chor.Comm("Seller", "Shipper", "Ship")))
+  Chor.Seq(
+    Chor.Comm("Buyer", "Seller", "Title"),
+    Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"), Chor.Comm("Seller", "Shipper", "Ship"))
+  )
 
 /// A pure 4-role / 3-hop RELAY chain A→B→C→D (three communications: A→B, B→C, C→D): each role (except the
 /// endpoints) both receives from its predecessor and sends to its successor, with no fan-out. Distinct from
@@ -124,28 +132,36 @@ def purchase-linear() =
 /// recv-from-A pairs with A's send AND B's send-to-C pairs with C's recv, etc. Witnesses that
 /// deadlock-freedom composes down a hop-chain, not just a fan-out tree.
 def relay-chain() =
-  Chor.Seq(Chor.Comm("A", "B", "x"),
-    Chor.Seq(Chor.Comm("B", "C", "y"),
-      Chor.Comm("C", "D", "z")))
+  Chor.Seq(Chor.Comm("A", "B", "x"), Chor.Seq(Chor.Comm("B", "C", "y"), Chor.Comm("C", "D", "z")))
 
 /// A choice both told roles are informed of — matched in every branch.
 def yes-no() =
-  Chor.Choice("Buyer", [
-    Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Yes")),
-    Chor.Branch("No", Chor.Comm("Buyer", "Seller", "No"))])
+  Chor.Choice(
+    "Buyer",
+    [
+      Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Yes")),
+      Chor.Branch("No", Chor.Comm("Buyer", "Seller", "No"))
+    ]
+  )
 
 /// A DIVERGENT choice: Buyer chooses and tells Seller the selection first in EACH branch, then the branches
 /// diverge with DISTINCT multi-step continuations — Ship: Seller replies Tracking; Cancel: Seller replies
 /// Refund. Unlike `yes-no` (one symmetric comm per branch), each branch has a different reply label, so the
 /// matcher must collect send/recv obligations across branches whose continuations genuinely differ.
 def diverg() =
-  Chor.Choice("Buyer", [
-    Chor.Branch("Ship",
-      Chor.Seq(Chor.Comm("Buyer", "Seller", "Ship"),
-        Chor.Comm("Seller", "Buyer", "Tracking"))),
-    Chor.Branch("Cancel",
-      Chor.Seq(Chor.Comm("Buyer", "Seller", "Cancel"),
-        Chor.Comm("Seller", "Buyer", "Refund")))])
+  Chor.Choice(
+    "Buyer",
+    [
+      Chor.Branch(
+        "Ship",
+        Chor.Seq(Chor.Comm("Buyer", "Seller", "Ship"), Chor.Comm("Seller", "Buyer", "Tracking"))
+      ),
+      Chor.Branch(
+        "Cancel",
+        Chor.Seq(Chor.Comm("Buyer", "Seller", "Cancel"), Chor.Comm("Seller", "Buyer", "Refund"))
+      )
+    ]
+  )
 
 /// A THIRD-PARTY-CHOOSER coordinator protocol: `C` decides and tells BOTH `A` and `B` the selection (first
 /// action in each branch), then in the `Go` branch ONLY, `A` and `B` exchange `Data`. Distinct from
@@ -154,34 +170,47 @@ def diverg() =
 /// send/recv obligation present in SOME-but-not-all branches (the branch-union must still match it under
 /// the selection that carries it, and must not demand it under the branch that omits it).
 def coordinator() =
-  Chor.Choice("C", [
-    Chor.Branch("Go",
-      Chor.Seq(Chor.Comm("C", "A", "Go"),
-        Chor.Seq(Chor.Comm("C", "B", "Go"),
-          Chor.Comm("A", "B", "Data")))),
-    Chor.Branch("Halt",
-      Chor.Seq(Chor.Comm("C", "A", "Halt"),
-        Chor.Comm("C", "B", "Halt")))])
+  Chor.Choice(
+    "C",
+    [
+      Chor.Branch(
+        "Go",
+        Chor.Seq(
+          Chor.Comm("C", "A", "Go"),
+          Chor.Seq(Chor.Comm("C", "B", "Go"), Chor.Comm("A", "B", "Data"))
+        )
+      ),
+      Chor.Branch("Halt", Chor.Seq(Chor.Comm("C", "A", "Halt"), Chor.Comm("C", "B", "Halt")))
+    ]
+  )
 
 @test
 def deadlock-free-linear-purchase() =
-  if deadlock-free(parties(), purchase-linear()) then unit
-  else trap("the linear three-party Purchase is deadlock-free (matched I/O)")
+  if deadlock-free(parties(), purchase-linear()) then
+    unit
+  else
+    trap("the linear three-party Purchase is deadlock-free (matched I/O)")
 
 @test
 def deadlock-free-single-comm() =
-  if deadlock-free(["Buyer", "Seller"], Chor.Comm("Buyer", "Seller", "Title")) then unit
-  else trap("a single matched comm is deadlock-free")
+  if deadlock-free(["Buyer", "Seller"], Chor.Comm("Buyer", "Seller", "Title")) then
+    unit
+  else
+    trap("a single matched comm is deadlock-free")
 
 @test
 def deadlock-free-choice() =
-  if deadlock-free(["Buyer", "Seller"], yes-no()) then unit
-  else trap("an informed choice is deadlock-free in every branch")
+  if deadlock-free(["Buyer", "Seller"], yes-no()) then
+    unit
+  else
+    trap("an informed choice is deadlock-free in every branch")
 
 @test
 def deadlock-free-done() =
-  if deadlock-free(parties(), Chor.Done) then unit
-  else trap("the empty protocol is trivially deadlock-free")
+  if deadlock-free(parties(), Chor.Done) then
+    unit
+  else
+    trap("the empty protocol is trivially deadlock-free")
 
 @test
 def deadlock-free-relay-chain() =
@@ -189,8 +218,12 @@ def deadlock-free-relay-chain() =
   // (sends to both Buyer and Shipper). A pure 4-role / 3-hop relay A→B→C→D has every intermediate role as a single
   // in/out relay — B's recv-from-A must pair with A's send, B's send-to-C with C's recv, and so on down the
   // chain. Pins that matched I/O composes along a longer sequential hop-chain, not only across a fan-out.
-  if deadlock-free(["A", "B", "C", "D"], relay-chain()) then unit
-  else trap("a 4-role / 3-hop relay chain A->B->C->D is deadlock-free (matched I/O composes down the chain)")
+  if deadlock-free(["A", "B", "C", "D"], relay-chain()) then
+    unit
+  else
+    trap(
+      "a 4-role / 3-hop relay chain A->B->C->D is deadlock-free (matched I/O composes down the chain)"
+    )
 
 @test
 def deadlock-free-divergent-choice() =
@@ -201,8 +234,10 @@ def deadlock-free-divergent-choice() =
   // mirror recv in Buyer's projection (and vice-versa for the selection sends). This is the branch-union
   // matching the module's own header calls out (the union of obligations across choice branches) — it was
   // pinned at projection + mock-run in earlier slices, but never at the deadlock-free layer until now.
-  if deadlock-free(["Buyer", "Seller"], diverg()) then unit
-  else trap("a projectable divergent-branch choice is deadlock-free (branch-union matched I/O)")
+  if deadlock-free(["Buyer", "Seller"], diverg()) then
+    unit
+  else
+    trap("a projectable divergent-branch choice is deadlock-free (branch-union matched I/O)")
 
 @test
 def deadlock-free-third-party-chooser-coordinator() =
@@ -212,23 +247,27 @@ def deadlock-free-third-party-chooser-coordinator() =
   // recv in B (also under Go), while the Halt branch carries neither — the union must match the present half
   // without demanding the absent one. Prior deadlock-free choice pins (`yes-no`, `diverg`) had every
   // branch's obligations mirrored within that same branch; this is the first with a comm confined to one arm.
-  if deadlock-free(["A", "B", "C"], coordinator()) then unit
-  else trap("a projectable third-party-chooser coordinator (intra-branch comm in one arm) is deadlock-free")
+  if deadlock-free(["A", "B", "C"], coordinator()) then
+    unit
+  else
+    trap(
+      "a projectable third-party-chooser coordinator (intra-branch comm in one arm) is deadlock-free"
+    )
 
 @test
 def sends-are-collected() =
   // Seller's projection of Purchase sends Quote→Buyer and Ship→Shipper.
   let s = local-sends(project(purchase-linear(), "Seller")) in
-  if has-io(s, "Buyer", "Quote") then
-    (if has-io(s, "Shipper", "Ship") then unit else trap("Seller sends Ship to Shipper"))
-  else trap("Seller sends Quote to Buyer")
+    if has-io(s, "Buyer", "Quote") then
+    if has-io(s, "Shipper", "Ship") then unit else trap("Seller sends Ship to Shipper")
+  else
+    trap("Seller sends Quote to Buyer")
 
 @test
 def recvs-are-collected() =
   // Buyer's projection of Purchase receives Quote from Seller.
   let r = local-recvs(project(purchase-linear(), "Buyer")) in
-  if has-io(r, "Seller", "Quote") then unit
-  else trap("Buyer receives Quote from Seller")
+    if has-io(r, "Seller", "Quote") then unit else trap("Buyer receives Quote from Seller")
 
 @test
 def has-io-detects-a-missing-mirror() =
@@ -236,12 +275,15 @@ def has-io-detects-a-missing-mirror() =
   // fire if a projection/codegen bug dropped the recv half of a communication — the send would find no
   // mirror in the recipient's recvs and `sends-matched` would return false (an un-matched I/O = a deadlock).
   let seller-recvs = local-recvs(project(purchase-linear(), "Seller")) in
-  // Seller genuinely receives Title from Buyer...
+    // Seller genuinely receives Title from Buyer...
   if has-io(seller-recvs, "Buyer", "Title") then
     // ...but NOT a fictional "Ghost" label — a dropped/renamed half is detectable.
-    (if has-io(seller-recvs, "Buyer", "Ghost") then trap("Ghost was never sent — must not match")
-     else unit)
-  else trap("Seller really does receive Title from Buyer")
+    if has-io(seller-recvs, "Buyer", "Ghost") then
+      trap("Ghost was never sent — must not match")
+    else
+      unit
+  else
+    trap("Seller really does receive Title from Buyer")
 
 @test
 def matched-io-fails-on-a-mismatched-label() =
@@ -249,14 +291,20 @@ def matched-io-fails-on-a-mismatched-label() =
   // has no mirror in a recv set that only contains (from Buyer, "Other") → sends-matched-style check fails.
   let sends = [IO.Ob("Seller", "Title")] in
   let bad-recvs = [IO.Ob("Buyer", "Other")] in
-  if has-io(bad-recvs, "Seller", "Title") then trap("a mismatched label must not be reported matched")
-  else (if has-io(sends, "Seller", "Title") then unit else trap("the send obligation is present"))
+    if has-io(bad-recvs, "Seller", "Title") then
+    trap("a mismatched label must not be reported matched")
+  else if has-io(sends, "Seller", "Title") then
+    unit
+  else
+    trap("the send obligation is present")
 
 @test
 def deadlock-free-is-symmetric-witness() =
   // Both directions matched: run the checker on the reversed role order → same verdict.
-  if deadlock-free(["Shipper", "Seller", "Buyer"], purchase-linear()) then unit
-  else trap("matched I/O is independent of role-check order")
+  if deadlock-free(["Shipper", "Seller", "Buyer"], purchase-linear()) then
+    unit
+  else
+    trap("matched I/O is independent of role-check order")
 
 @test
 def sends-matched-rejects-a-phantom-send() =
@@ -265,16 +313,18 @@ def sends-matched-rejects-a-phantom-send() =
   // recv in Seller's real projection of Purchase. `sends-matched` must return FALSE (an un-matched send = a
   // deadlock source). Only the positive direction + the has-io primitive were pinned before; this exercises
   // the full sends-matched reject path — the logic `deadlock-free` relies on to actually catch a dropped half.
-  if sends-matched(purchase-linear(), "Buyer", [IO.Ob("Seller", "Ghost")])
-  then trap("a phantom send with no mirror recv must NOT be reported matched")
-  else unit
+  if sends-matched(purchase-linear(), "Buyer", [IO.Ob("Seller", "Ghost")]) then
+    trap("a phantom send with no mirror recv must NOT be reported matched")
+  else
+    unit
 
 @test
 def recvs-matched-rejects-a-phantom-recv() =
   // Mirror of the above for the recv direction: Buyer "receives" (from Seller, "Ghost") with no mirror send
   // in Seller's projection → `recvs-matched` must return FALSE.
-  if recvs-matched(purchase-linear(), "Buyer", [IO.Ob("Seller", "Ghost")])
-  then trap("a phantom recv with no mirror send must NOT be reported matched")
-  else unit
+  if recvs-matched(purchase-linear(), "Buyer", [IO.Ob("Seller", "Ghost")]) then
+    trap("a phantom recv with no mirror send must NOT be reported matched")
+  else
+    unit
 
 export { IO.*, local-sends, local-recvs, deadlock-free, has-io }

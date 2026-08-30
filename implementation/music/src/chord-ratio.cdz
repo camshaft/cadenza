@@ -8,8 +8,8 @@
 /// Complements the Int64 chord.cdz (the MIDI-projection side). Realizing a chord to concrete rational
 /// intervals is exact rational arithmetic; the projection to integer MIDI note numbers happens at the
 /// driver boundary (and awaits the reported Rational→Int gap for a general rounding form).
-
 import { RInterval } from "interval-ratio"
+
 import { octaves, semitones-r, r-eq, r-octave, rinterval, to-semitones-round } from "interval-ratio"
 
 /// A chord: a ROOT interval (from a reference) + the interval stack above it (octave-fractions, ascending,
@@ -21,42 +21,54 @@ type RChord =
 def rchord(root: RInterval, stack: List(RInterval)) = RChord.RChord(root, stack)
 
 /// The root interval of a chord.
-def rchord-root(c: RChord) = match c with | RChord.RChord(r, _) => r
+def rchord-root(c: RChord) = match c with
+  | RChord.RChord(r, _) => r
 
 /// The interval stack of a chord.
-def rchord-stack(c: RChord) = match c with | RChord.RChord(_, s) => s
+def rchord-stack(c: RChord) = match c with
+  | RChord.RChord(_, s) => s
 
 // ---- the common chord-quality stacks, as octave-fractions (12-TET) ----------------------------------
-
 /// Triads (root, third, fifth) as twelfths of the octave.
-def major-triad-stack-r = [semitones-r(0), semitones-r(4), semitones-r(7)]        // major third + perfect fifth
-def minor-triad-stack-r = [semitones-r(0), semitones-r(3), semitones-r(7)]        // minor third + perfect fifth
+def major-triad-stack-r = [semitones-r(0), semitones-r(4), semitones-r(7)]
+
+// major third + perfect fifth
+def minor-triad-stack-r = [semitones-r(0), semitones-r(3), semitones-r(7)]
+
+// minor third + perfect fifth
 def diminished-triad-stack-r = [semitones-r(0), semitones-r(3), semitones-r(6)]
+
 def augmented-triad-stack-r = [semitones-r(0), semitones-r(4), semitones-r(8)]
 
 /// Sevenths (triad + a seventh) as twelfths of the octave.
 def dominant-seventh-stack-r = [semitones-r(0), semitones-r(4), semitones-r(7), semitones-r(10)]
+
 def major-seventh-stack-r = [semitones-r(0), semitones-r(4), semitones-r(7), semitones-r(11)]
+
 def minor-seventh-stack-r = [semitones-r(0), semitones-r(3), semitones-r(7), semitones-r(10)]
 
 /// Named chord builders off a root interval.
 def major-triad-r(root: RInterval) = RChord.RChord(root, major-triad-stack-r)
+
 def minor-triad-r(root: RInterval) = RChord.RChord(root, minor-triad-stack-r)
+
 def diminished-triad-r(root: RInterval) = RChord.RChord(root, diminished-triad-stack-r)
+
 def augmented-triad-r(root: RInterval) = RChord.RChord(root, augmented-triad-stack-r)
+
 def dominant-seventh-r(root: RInterval) = RChord.RChord(root, dominant-seventh-stack-r)
+
 def major-seventh-r(root: RInterval) = RChord.RChord(root, major-seventh-stack-r)
+
 def minor-seventh-r(root: RInterval) = RChord.RChord(root, minor-seventh-stack-r)
 
 // ---- realizing a chord to concrete (absolute) rational intervals ------------------------------------
-
 /// Add the root to each stacked interval to get the absolute intervals of the chord's notes. Recursive
 /// driver, annotated. Uses `r-add`-style octave-fraction addition; builds fresh RIntervals (no imported
 /// boxed-field reuse — the 9939 discipline, though RInterval wraps a scalar Rational here).
-def realize-go(root: RInterval, stack: List(RInterval), out: List(RInterval)) =
-  match stack with
-    | [] => out
-    | [h, .. t] => realize-go(root, t, List.push(out, rinterval(octaves(root) + octaves(h))))
+def realize-go(root: RInterval, stack: List(RInterval), out: List(RInterval)) = match stack with
+  | [] => out
+  | [h, .. t] => realize-go(root, t, List.push(out, rinterval(octaves(root) + octaves(h))))
 
 /// The absolute intervals of a chord's notes (root + each stacked fraction).
 def rchord-intervals(c: RChord) = realize-go(rchord-root(c), rchord-stack(c), [])
@@ -67,16 +79,16 @@ def rchord-size(c: RChord) = list-len-ri(rchord-stack(c))
 /// Does the chord contain a given absolute interval (exact rational match)? Recursive, annotated.
 def rchord-has(c: RChord, i: RInterval) = interval-member(rchord-intervals(c), i)
 
-def interval-member(xs: List(RInterval), i: RInterval) =
-  match xs with
-    | [] => false
-    | [h, .. t] => if r-eq(h, i) then true else interval-member(t, i)
+def interval-member(xs: List(RInterval), i: RInterval) = match xs with
+  | [] => false
+  | [h, .. t] => if r-eq(h, i) then true else interval-member(t, i)
 
 /// Length of an RInterval list (recursive, annotated).
-def list-len-ri(xs: List(RInterval)) = match xs with | [] => 0 | [_, .. t] => 1 + list-len-ri(t)
+def list-len-ri(xs: List(RInterval)) = match xs with
+  | [] => 0
+  | [_, .. t] => 1 + list-len-ri(t)
 
 // ---- rational chord → MIDI note numbers (the theory-core → playable-wire bridge) --------------------
-
 /// Project a rational chord to concrete MIDI note numbers over a `base` note (leverages interval-ratio's
 /// `to-semitones-round`, the nearest-semitone rational→Int64 projection landed 2026-07-21). Each realized
 /// absolute interval (an octave-fraction from the tonic) becomes `base + round(interval × 12)` semitones —
@@ -84,72 +96,77 @@ def list-len-ri(xs: List(RInterval)) = match xs with | [] => 0 | [_, .. t] => 1 
 /// sevenths) the projection is exact; for a microtonal/just-intonation chord it snaps each note to the
 /// nearest semitone. This is the chord-level twin of `to-semitones` — the bridge from the exact rational
 /// theory core to the Int64 MIDI wire. Recursive driver, annotated params (CDZ0201).
-def to-midi-go(base: Int64, is: List(RInterval), out: List(Int64)) =
-  match is with
-    | [] => out
-    | [h, .. t] => to-midi-go(base, t, List.push(out, base + to-semitones-round(h)))
+def to-midi-go(base: Int64, is: List(RInterval), out: List(Int64)) = match is with
+  | [] => out
+  | [h, .. t] => to-midi-go(base, t, List.push(out, base + to-semitones-round(h)))
 
 /// The MIDI note numbers of a rational chord's notes over `base` (root position, ascending).
 def rchord-to-midi(c: RChord, base: Int64) = to-midi-go(base, rchord-intervals(c), [])
 
 /// ============================ @test suite (rational chords) ============================
-
 @test
 def a-major-triad-stacks-a-major-third-and-a-fifth() =
   // Root, 4/12, 7/12 of the octave. On root 0/1 the notes are 0, 4/12, 7/12.
   let c = major-triad-r(rinterval(Rational.of(0, 1))) in
-  match rchord-intervals(c) with
-    | [a, b, d] =>
-      if r-eq(a, semitones-r(0)) then
-        (if r-eq(b, semitones-r(4)) then (if r-eq(d, semitones-r(7)) then unit else trap("fifth")) else trap("third"))
-      else trap("root")
+    match rchord-intervals(c) with
+    | [a, b, d] => if r-eq(a, semitones-r(0)) then
+      if r-eq(b, semitones-r(4)) then
+        if r-eq(d, semitones-r(7)) then unit else trap("fifth")
+      else
+        trap("third")
+    else
+      trap("root")
     | _ => trap("three notes")
 
 @test
 def a-minor-triad-lowers-the-third-to-three-twelfths() =
   let c = minor-triad-r(rinterval(Rational.of(0, 1))) in
-  match rchord-intervals(c) with
+    match rchord-intervals(c) with
     | [_, b, _] => if r-eq(b, semitones-r(3)) then unit else trap("minor third is 3/12")
     | _ => trap("three notes")
 
 @test
 def a-dominant-seventh-adds-ten-twelfths() =
   let c = dominant-seventh-r(rinterval(Rational.of(0, 1))) in
-  if rchord-size(c) == 4 then
-    (if rchord-has(c, semitones-r(10)) then unit else trap("dominant adds a 10/12 seventh"))
-  else trap("four notes")
+    if rchord-size(c) == 4 then
+    if rchord-has(c, semitones-r(10)) then unit else trap("dominant adds a 10/12 seventh")
+  else
+    trap("four notes")
 
 @test
 def a-chord-is-transposable-preserving-the-stack() =
   // Rooting the chord an octave up shifts every interval by 1/1 but preserves the stack fractions: the
   // third is still 4/12 ABOVE the root. Mode/root-independent, exact.
   let c = major-triad-r(r-octave) in
-  match rchord-intervals(c) with
-    | [root, third, _] =>
-      // third - root == 4/12 regardless of where the root sits.
-      if r-eq(rinterval(octaves(third) - octaves(root)), semitones-r(4)) then
-        (if r-eq(root, r-octave) then unit else trap("root is at the octave")) else trap("third is 4/12 above root")
+    match rchord-intervals(c) with
+    | [root, third, _] => // third - root == 4/12 regardless of where the root sits.
+    if r-eq(rinterval(octaves(third) - octaves(root)), semitones-r(4)) then
+      if r-eq(root, r-octave) then unit else trap("root is at the octave")
+    else
+      trap("third is 4/12 above root")
     | _ => trap("three notes")
 
 @test
 def membership-is-exact-rational() =
   // A major triad on 0 contains 7/12 (its fifth) but not 6/12 (a tritone).
   let c = major-triad-r(rinterval(Rational.of(0, 1))) in
-  if rchord-has(c, semitones-r(7)) then
-    (if rchord-has(c, semitones-r(6)) then trap("no tritone in a major triad") else unit)
-  else trap("fifth is present")
+    if rchord-has(c, semitones-r(7)) then
+    if rchord-has(c, semitones-r(6)) then trap("no tritone in a major triad") else unit
+  else
+    trap("fifth is present")
 
 @test
 def a-diminished-triad-stacks-two-minor-thirds() =
   // dim triad on 0 = 0, 3/12, 6/12 (two stacked minor thirds); has its 6/12 diminished fifth, not a 7/12.
   let c = diminished-triad-r(rinterval(Rational.of(0, 1))) in
-  match rchord-intervals(c) with
-    | [_, b, d] =>
-      if r-eq(b, semitones-r(3)) then
-        (if r-eq(d, semitones-r(6)) then
-          (if rchord-has(c, semitones-r(7)) then trap("no perfect fifth in a dim triad") else unit)
-         else trap("diminished fifth is 6/12"))
-      else trap("minor third is 3/12")
+    match rchord-intervals(c) with
+    | [_, b, d] => if r-eq(b, semitones-r(3)) then
+      if r-eq(d, semitones-r(6)) then
+        if rchord-has(c, semitones-r(7)) then trap("no perfect fifth in a dim triad") else unit
+      else
+        trap("diminished fifth is 6/12")
+    else
+      trap("minor third is 3/12")
     | _ => trap("three notes")
 
 @test
@@ -158,17 +175,21 @@ def an-augmented-triad-splits-the-octave-into-three-equal-thirds() =
   // each) that sum to exactly 12/12 = one octave, with zero drift. Pins that stacking the third above the
   // top note (8/12 + 4/12) lands on the octave EXACTLY in rational space (a property a float would smear).
   let c = augmented-triad-r(rinterval(Rational.of(0, 1))) in
-  match rchord-intervals(c) with
-    | [a, b, d] =>
-      if r-eq(a, semitones-r(0)) then
-        (if r-eq(b, semitones-r(4)) then
-          (if r-eq(d, semitones-r(8)) then
-            // top (8/12) + one more major third (4/12) == exactly the octave (12/12 = 1/1).
-            (if r-eq(rinterval(octaves(d) + octaves(semitones-r(4))), r-octave) then unit
-             else trap("8/12 + 4/12 = the octave exactly"))
-           else trap("augmented fifth is 8/12"))
-         else trap("major third is 4/12"))
-      else trap("root is 0")
+    match rchord-intervals(c) with
+    | [a, b, d] => if r-eq(a, semitones-r(0)) then
+      if r-eq(b, semitones-r(4)) then
+        if r-eq(d, semitones-r(8)) then
+          // top (8/12) + one more major third (4/12) == exactly the octave (12/12 = 1/1).
+          if r-eq(rinterval(octaves(d) + octaves(semitones-r(4))), r-octave) then
+            unit
+          else
+            trap("8/12 + 4/12 = the octave exactly")
+        else
+          trap("augmented fifth is 8/12")
+      else
+        trap("major third is 4/12")
+    else
+      trap("root is 0")
     | _ => trap("three notes")
 
 @test
@@ -176,32 +197,49 @@ def a-rational-major-triad-projects-to-midi-c-e-g() =
   // The theory-core → wire bridge: a rational C-major triad on base 60 → MIDI [60, 64, 67] (C E G), and a
   // dominant seventh on 60 → [60, 64, 67, 70]. On the 12-TET grid the projection is exact.
   let cmaj = major-triad-r(rinterval(Rational.of(0, 1))) in
-  match rchord-to-midi(cmaj, 60) with
-    | [a, b, d] =>
-      if a == 60 then
-        if b == 64 then
-          if d == 67 then
-            (match rchord-to-midi(dominant-seventh-r(rinterval(Rational.of(0, 1))), 60) with
-              | [_, _, _, sev] => if sev == 70 then unit else trap("dom7 seventh → 70")
-              | _ => trap("dom7 has four notes"))
-          else trap("fifth → 67")
-        else trap("third → 64")
-      else trap("root → 60")
+    match rchord-to-midi(cmaj, 60) with
+    | [a, b, d] => if a == 60 then
+      if b == 64 then
+        if d == 67 then
+          match rchord-to-midi(dominant-seventh-r(rinterval(Rational.of(0, 1))), 60) with
+            | [_, _, _, sev] => if sev == 70 then unit else trap("dom7 seventh → 70")
+            | _ => trap("dom7 has four notes")
+        else
+          trap("fifth → 67")
+      else
+        trap("third → 64")
+    else
+      trap("root → 60")
     | _ => trap("triad has three notes")
 
 @test
 def rational-chord-to-midi-transposes-with-the-base() =
   // Projecting the same chord over a different base just shifts every note: C major on 67 (G) → [67,71,74].
   let cmaj = major-triad-r(rinterval(Rational.of(0, 1))) in
-  match rchord-to-midi(cmaj, 67) with
-    | [a, b, d] => if a == 67 then (if b == 71 then (if d == 74 then unit else trap("74")) else trap("71")) else trap("67")
+    match rchord-to-midi(cmaj, 67) with
+    | [a, b, d] => if a == 67 then
+      if b == 71 then if d == 74 then unit else trap("74") else trap("71")
+    else
+      trap("67")
     | _ => trap("three notes")
 
 export {
   RChord.*,
-  rchord, rchord-root, rchord-stack, rchord-intervals, rchord-size, rchord-has,
+  rchord,
+  rchord-root,
+  rchord-stack,
+  rchord-intervals,
+  rchord-size,
+  rchord-has,
   rchord-to-midi,
-  major-triad-r, minor-triad-r, diminished-triad-r, augmented-triad-r,
-  dominant-seventh-r, major-seventh-r, minor-seventh-r,
-  major-triad-stack-r, minor-triad-stack-r, dominant-seventh-stack-r,
+  major-triad-r,
+  minor-triad-r,
+  diminished-triad-r,
+  augmented-triad-r,
+  dominant-seventh-r,
+  major-seventh-r,
+  minor-seventh-r,
+  major-triad-stack-r,
+  minor-triad-stack-r,
+  dominant-seventh-stack-r
 }

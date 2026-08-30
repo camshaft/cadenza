@@ -11,45 +11,48 @@
 /// THE SHOWCASE: mixing units is EXACT. A plate that is `mm 50` wide with `inch (1/4)` bolt holes carries
 /// `50` and `127/20` (= 6.35 mm) with ZERO rounding — the thing floats can't do and the reason Rational+Qty
 /// exist. `Unit.in` converts by the exact direct ratio over Rational (inch = 127/5000 m, mm = 1/1000 m).
-
 /// NUMERIC MODE (S1-redux): `@!default-fraction Rational` — exact-by-default, so a bare `n/d` here is an
 /// exact Rational (no `Rational.of` noise). Module-local (doesn't leak into imported `exact`). Where an
 /// `Int64` is genuinely wanted under this default, an explicit `(… : Int64)` annotation overrides it.
 @!default-fraction Rational
 
 import { Vec3 } from "exact"
+
 import { v3 } from "exact"
 
 /// A `Rational` from an integer (the common case: `ri 50` = 50/1). Sugar over `Rational.of`. Kept with an
 /// `Int64` signature (an importer passes a bare Int64 count); the literal `1` denominator is annotated
 /// `(1 : Int64)` so it stays an Int64 argument under this module's `default-fraction Rational`.
-def ri(n: Int64) = Rational.of(n, (1 : Int64))
+def ri(n: Int64) = Rational.of(n, 1 : Int64)
 
 /// Convert a `Qty` length to the model's bare-`Rational` MILLIMETRES (the exact edge conversion). `Unit.in`
 /// rescales to millimeter over Rational (exact direct ratio); `Qty.value` drops the now-mm unit wrapper. The
 /// `: Rational` body annotation PINS the return type — without it each call site infers independently and a
 /// `mm(..) + inch(..)` sum collides (CDZ0301 Int64-vs-Rational); the model unit is exact Rational millimetres.
-def in-mm(q) = (Unit.in(Unit.of(#"millimeter"), q) : Rational)
+def in-mm(q) -> Rational = q as millimeter
 
 /// ---- Length constructors: a magnitude in a named unit → exact model millimetres (bare Rational) --------
 /// Each accepts a `Rational` magnitude so fractional real-world lengths (`inch (1/4)`, `mm (5/2)`) stay exact.
+def mm(n: Rational) = in-mm(n millimeter)
 
-def mm(n: Rational) = in-mm(Qty.of(n, Unit.of(#"millimeter")))
-def cm(n: Rational) = in-mm(Qty.of(n, Unit.of(#"centimeter")))
-def m(n: Rational) = in-mm(Qty.of(n, Unit.of(#"meter")))
-def inch(n: Rational) = in-mm(Qty.of(n, Unit.of(#"inch")))
-def foot(n: Rational) = in-mm(Qty.of(n, Unit.of(#"foot")))
+def cm(n: Rational) = in-mm(n centimeter)
+
+def m(n: Rational) = in-mm(n meter)
+
+def inch(n: Rational) = in-mm(n inch)
+
+def foot(n: Rational) = in-mm(n foot)
 
 /// A `Vec3` from three lengths given in millimetres (the everyday model-unit vector constructor).
 def v3-mm(x: Rational, y: Rational, z: Rational) = v3(mm(x), mm(y), mm(z))
 
 /// Render a bare-Rational model coordinate (millimetres) back out as a `Qty` length, for DISPLAY in a chosen
 /// unit — the OUTPUT edge (the dual of the input constructors). `coord` is the stored mm magnitude.
-def as-mm(coord: Rational) = Qty.of(coord, Unit.of(#"millimeter"))
+def as-mm(coord: Rational) = coord millimeter
+
 def display-in(coord: Rational, unit) = Unit.in(unit, as-mm(coord))
 
 /// ============================ @test suite (R2 units boundary — exact, mixed) ============================
-
 @test
 def mm-is-identity-in-the-model-unit() =
   if mm(ri(50)) == ri(50) then unit else trap("50 mm = 50 in the mm model unit")
@@ -58,13 +61,17 @@ def mm-is-identity-in-the-model-unit() =
 def inch-converts-exactly() =
   // 1 inch = 25.4 mm = 127/5 exactly; 1/4 inch = 6.35 mm = 127/20 exactly (no float rounding).
   if inch(ri(1)) == 127 / 5 then
-    (if inch(1 / 4) == 127 / 20 then unit else trap("1/4 inch = 127/20 mm"))
-  else trap("1 inch = 127/5 mm")
+    if inch(1 / 4) == 127 / 20 then unit else trap("1/4 inch = 127/20 mm")
+  else
+    trap("1 inch = 127/5 mm")
 
 @test
 def cm-and-m-convert-exactly() =
   // 3 cm = 30 mm; 2 m = 2000 mm.
-  if cm(ri(3)) == ri(30) then (if m(ri(2)) == ri(2000) then unit else trap("2 m = 2000 mm")) else trap("3 cm = 30 mm")
+  if cm(ri(3)) == ri(30) then
+    if m(ri(2)) == ri(2000) then unit else trap("2 m = 2000 mm")
+  else
+    trap("3 cm = 30 mm")
 
 @test
 def foot-converts-exactly() =
@@ -76,45 +83,53 @@ def mixing-units-is-exact() =
   // THE showcase: a 50 mm width and a 1/4 inch radius coexist EXACTLY in one model, no rounding.
   // 50 mm + 1/4 inch = 50 + 127/20 = 1127/20 mm.
   let total = mm(ri(50)) + inch(1 / 4) in
-  if total == 1127 / 20 then unit else trap("50mm + 0.25in = 1127/20 mm exactly")
+    if total == 1127 / 20 then unit else trap("50mm + 0.25in = 1127/20 mm exactly")
 
 @test
 def a_length_round_trips_mm_to_inch() =
   // the OUTPUT edge: a 127/5 mm (= 1 inch) coordinate, displayed in inches, has magnitude exactly 1 — the
   // dual of the input constructors, exact both ways. `display-in` (= Unit.in ∘ as-mm) already returns a bare
   // Rational, so it's compared directly — no redundant Qty.value (v-quantity's CDZ0501 tightening).
-  let one-inch-in-mm = inch(ri(1)) in            // 127/5 mm, stored bare
-  let shown = display-in(one-inch-in-mm, Unit.of(#"inch")) in
-  if (shown : Rational) == ri(1) then unit else trap("127/5 mm displays as exactly 1 inch")
+  let one-inch-in-mm = inch(ri(1)) in // 127/5 mm, stored bare
+  let shown = display-in(one-inch-in-mm, Unit.of(#inch)) in
+    if (shown : Rational) == ri(1) then unit else trap("127/5 mm displays as exactly 1 inch")
 
 @test
 def as-mm-wraps-a-bare-mm-coordinate() =
   // as-mm is the OUTPUT edge dual of the input constructors: a stored bare-Rational mm coordinate → a Qty in
   // millimeters. Directly (was only exercised transitively via display-in): its value is the same Rational and
   // re-reading it in mm returns the coordinate (identity round-trip on the model unit). Exact.
-  let coord = 127 / 20 in            // 6.35 mm (a 1/4-inch hole radius), exact
+  let coord = 127 / 20 in // 6.35 mm (a 1/4-inch hole radius), exact
   let q = as-mm(coord) in
-  if Qty.value(q) == coord then
-    (if (Unit.in(Unit.of(#"millimeter"), q) : Rational) == coord then unit else trap("re-read in mm")) else trap("as-mm value")
+    if Qty.value(q) == coord then
+    if (q as millimeter : Rational) == coord then unit else trap("re-read in mm")
+  else
+    trap("as-mm value")
 
 @test
 def v3-mm-builds-a-millimetre-vector() =
   let v = v3-mm(ri(10), ri(20), ri(30)) in
-  // component-wise scalar checks (a whole-Vec3 `==` now walks over Rational since the ty_heap_walkable fix,
+    // component-wise scalar checks (a whole-Vec3 `==` now walks over Rational since the ty_heap_walkable fix,
   // but this file doesn't import v3-eq; a per-component scalar compare is equally exact and self-contained).
-  match v with | Vec3.V3(x, y, z) =>
-    if x == ri(10) then (if y == ri(20) then (if z == ri(30) then unit else trap("z")) else trap("y")) else trap("x")
+  match v with
+    | Vec3.V3(x, y, z) => if x == ri(10) then
+      if y == ri(20) then if z == ri(30) then unit else trap("z") else trap("y")
+    else
+      trap("x")
 
 @test
 def display-in-cm-and-foot-is-exact() =
   // display-in was only pinned for inch (a_length_round_trips_mm_to_inch) and mm (as-mm-wraps...); pin the
   // cm + foot OUTPUT edge too, so a display-direction conversion-factor regression on those units can't slip.
   // 30 mm displays as exactly 3 cm; 1524/5 mm (= 1 foot) displays as exactly 1 foot. Dual of cm/foot-converts.
-  let thirty-mm = cm(ri(3)) in                    // 30 mm, stored bare
-  let a-foot-in-mm = foot(ri(1)) in               // 1524/5 mm, stored bare
-  if (display-in(thirty-mm, Unit.of(#"centimeter")) : Rational) == ri(3) then
-    (if (display-in(a-foot-in-mm, Unit.of(#"foot")) : Rational) == ri(1) then unit
-     else trap("1524/5 mm displays as exactly 1 foot"))
-  else trap("30 mm displays as exactly 3 cm")
+  let thirty-mm = cm(ri(3)) in // 30 mm, stored bare
+  let a-foot-in-mm = foot(ri(1)) in // 1524/5 mm, stored bare
+    if (display-in(thirty-mm, Unit.of(#centimeter)) : Rational) == ri(3) then
+    if (display-in(a-foot-in-mm, Unit.of(#foot)) : Rational) == ri(1) then
+      unit
+    else
+      trap("1524/5 mm displays as exactly 1 foot")
+  else
+    trap("30 mm displays as exactly 3 cm")
 
 export { ri, mm, cm, m, inch, foot, v3-mm, as-mm }

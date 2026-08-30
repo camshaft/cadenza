@@ -27,8 +27,8 @@ import {
 
 // ---- the quality a note set identifies as ------------------------------------------------------------
 /// A recognized chord quality, or `Unknown` when a note set matches no named stack. Nullary variants — the
-  /// identification result.
-  type Quality =
+/// identification result.
+type Quality =
   | MajorTriad
   | MinorTriad
   | DiminishedTriad
@@ -44,7 +44,7 @@ import {
 /// Floored pitch class `0..11` of a note number (matches chord.cdz's `pc-of`).
 def pc-of(n: Int64) =
   let r = n % 12 in
-  if r < 0 then r + 12 else r
+    if r < 0 then r + 12 else r
 
 /// Insert `x` into a sorted (ascending) list, keeping it sorted and DEDUPED (a duplicate is dropped). The
 /// signature must be a canonical sorted set for the stack comparison to work. Recursive, annotated params.
@@ -52,8 +52,10 @@ def insert-sorted(xs: List(Int64), x: Int64) = match xs with
   | [] => [x]
   | [h, .. t] => if x == h then
     xs
+  else if x < h then
+    List.prepend(xs, x)
   else
-    if x < h then List.prepend(xs, x) else List.prepend(insert-sorted(t, x), h)
+    List.prepend(insert-sorted(t, x), h)
 
 /// Fold a note list into its sorted, deduped set of root-RELATIVE pitch classes (each note's pitch class
 /// minus the root pitch class, mod 12). Recursive driver threading the accumulating sorted set.
@@ -84,34 +86,26 @@ def list-eq(a: List(Int64), b: List(Int64)) = match a with
 /// Returns `Unknown` if nothing matches.
 def identify(notes: List(Int64), root: Pitch) =
   let sig = signature(notes, root) in
-  if list-eq(sig, major-triad-stack) then
+    if list-eq(sig, major-triad-stack) then
     Quality.MajorTriad
+  else if list-eq(sig, minor-triad-stack) then
+    Quality.MinorTriad
+  else if list-eq(sig, diminished-triad-stack) then
+    Quality.DiminishedTriad
+  else if list-eq(sig, augmented-triad-stack) then
+    Quality.AugmentedTriad
+  else if list-eq(sig, major-seventh-stack) then
+    Quality.MajorSeventh
+  else if list-eq(sig, dominant-seventh-stack) then
+    Quality.DominantSeventh
+  else if list-eq(sig, minor-seventh-stack) then
+    Quality.MinorSeventh
+  else if list-eq(sig, half-diminished-stack) then
+    Quality.HalfDiminished
+  else if list-eq(sig, diminished-seventh-stack) then
+    Quality.DiminishedSeventh
   else
-    if list-eq(sig, minor-triad-stack) then
-      Quality.MinorTriad
-    else
-      if list-eq(sig, diminished-triad-stack) then
-        Quality.DiminishedTriad
-      else
-        if list-eq(sig, augmented-triad-stack) then
-          Quality.AugmentedTriad
-        else
-          if list-eq(sig, major-seventh-stack) then
-            Quality.MajorSeventh
-          else
-            if list-eq(sig, dominant-seventh-stack) then
-              Quality.DominantSeventh
-            else
-              if list-eq(sig, minor-seventh-stack) then
-                Quality.MinorSeventh
-              else
-                if list-eq(sig, half-diminished-stack) then
-                  Quality.HalfDiminished
-                else
-                  if list-eq(sig, diminished-seventh-stack) then
-                    Quality.DiminishedSeventh
-                  else
-                    Quality.Unknown
+    Quality.Unknown
 
 /// Is a quality one of the recognized named chords (not `Unknown`)?
 def is-known(q: Quality) = match q with
@@ -153,7 +147,7 @@ def identification-is-octave-and-order-invariant() =
 def identifies-the-four-seventh-chords() =
   // Root-position sevenths off C (60): maj7 [0,4,7,11], dom7 [0,4,7,10], min7 [0,3,7,10], dim7 [0,3,6,9].
   let c = Pitch.Pitch(60) in
-  match identify([60, 64, 67, 71], c) with
+    match identify([60, 64, 67, 71], c) with
     | Quality.MajorSeventh => (match identify([60, 64, 67, 70], c) with
       | Quality.DominantSeventh => (match identify([60, 63, 67, 70], c) with
         | Quality.MinorSeventh => (match identify([60, 63, 66, 69], c) with
@@ -170,7 +164,7 @@ def identifies-the-four-seventh-chords() =
 def distinguishes-diminished-and-augmented-triads() =
   // dim triad [0,3,6] vs aug triad [0,4,8] — the two symmetric triads must not be confused.
   let c = Pitch.Pitch(60) in
-  match identify([60, 63, 66], c) with
+    match identify([60, 63, 66], c) with
     | Quality.DiminishedTriad => (match identify([60, 64, 68], c) with
       | Quality.AugmentedTriad => unit
       | _ => trap("aug triad")

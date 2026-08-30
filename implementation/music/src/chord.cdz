@@ -8,8 +8,8 @@
 /// Grounds on pitch.cdz (transpose, note, Pitch) — chords are built from intervals off a root pitch, so a
 /// C-major triad and a G-major triad share the same interval stack [0,4,7]. This is the harmony layer the
 /// phase-2 demos (chord-to-arpeggio, chord tracks) will consume.
-
 import { Pitch, Interval } from "pitch"
+
 import { pitch, note, transpose, interval, octave-interval, semitones } from "pitch"
 
 /// A chord: a ROOT pitch plus the interval stack (semitones above the root, ascending, starting at 0 for
@@ -21,47 +21,69 @@ type Chord =
 def chord(root: Pitch, stack: List(Int64)) = Chord.Chord(root, stack)
 
 /// The root pitch of a chord.
-def chord-root(c: Chord) = match c with | Chord.Chord(r, _) => r
+def chord-root(c: Chord) = match c with
+  | Chord.Chord(r, _) => r
 
 /// The interval stack of a chord (semitones above the root).
-def chord-stack(c: Chord) = match c with | Chord.Chord(_, stack) => stack
+def chord-stack(c: Chord) = match c with
+  | Chord.Chord(_, stack) => stack
 
 // ---- the common chord-quality interval stacks --------------------------------------------------------
-
 /// Triads: root + third + fifth.
-def major-triad-stack = [0, 4, 7]        // major third + perfect fifth
-def minor-triad-stack = [0, 3, 7]        // minor third + perfect fifth
-def diminished-triad-stack = [0, 3, 6]   // minor third + diminished fifth
-def augmented-triad-stack = [0, 4, 8]    // major third + augmented fifth
+def major-triad-stack = [0, 4, 7]
 
+// major third + perfect fifth
+def minor-triad-stack = [0, 3, 7]
+
+// minor third + perfect fifth
+def diminished-triad-stack = [0, 3, 6]
+
+// minor third + diminished fifth
+def augmented-triad-stack = [0, 4, 8]
+
+// major third + augmented fifth
 /// Sevenths: the triad plus a seventh.
-def major-seventh-stack = [0, 4, 7, 11]      // major triad + major seventh
-def dominant-seventh-stack = [0, 4, 7, 10]   // major triad + minor seventh
-def minor-seventh-stack = [0, 3, 7, 10]      // minor triad + minor seventh
-def half-diminished-stack = [0, 3, 6, 10]    // diminished triad + minor seventh
-def diminished-seventh-stack = [0, 3, 6, 9]  // fully diminished
+def major-seventh-stack = [0, 4, 7, 11]
 
+// major triad + major seventh
+def dominant-seventh-stack = [0, 4, 7, 10]
+
+// major triad + minor seventh
+def minor-seventh-stack = [0, 3, 7, 10]
+
+// minor triad + minor seventh
+def half-diminished-stack = [0, 3, 6, 10]
+
+// diminished triad + minor seventh
+def diminished-seventh-stack = [0, 3, 6, 9]
+
+// fully diminished
 // ---- named chord builders off a root pitch -----------------------------------------------------------
-
 def major-triad(root: Pitch) = Chord.Chord(root, major-triad-stack)
+
 def minor-triad(root: Pitch) = Chord.Chord(root, minor-triad-stack)
+
 def diminished-triad(root: Pitch) = Chord.Chord(root, diminished-triad-stack)
+
 def augmented-triad(root: Pitch) = Chord.Chord(root, augmented-triad-stack)
+
 def major-seventh(root: Pitch) = Chord.Chord(root, major-seventh-stack)
+
 def dominant-seventh(root: Pitch) = Chord.Chord(root, dominant-seventh-stack)
+
 def minor-seventh(root: Pitch) = Chord.Chord(root, minor-seventh-stack)
+
 def half-diminished(root: Pitch) = Chord.Chord(root, half-diminished-stack)
+
 def diminished-seventh(root: Pitch) = Chord.Chord(root, diminished-seventh-stack)
 
 // ---- realizing a chord to concrete pitches -----------------------------------------------------------
-
 /// Transpose the root by each interval in a stack to get the list of concrete note numbers. Recursive
 /// driver with annotated params (a recursive fn whose params infer as free vars has no machine
 /// representation — CDZ0201).
-def notes-go(root: Pitch, stack: List(Int64), out: List(Int64)) =
-  match stack with
-    | [] => out
-    | [h, .. t] => notes-go(root, t, List.push(out, note(transpose(root, interval(h)))))
+def notes-go(root: Pitch, stack: List(Int64), out: List(Int64)) = match stack with
+  | [] => out
+  | [h, .. t] => notes-go(root, t, List.push(out, note(transpose(root, interval(h)))))
 
 /// The concrete MIDI note numbers of a chord in close position (root position), ascending.
 def chord-notes(c: Chord) = notes-go(chord-root(c), chord-stack(c), [])
@@ -70,53 +92,52 @@ def chord-notes(c: Chord) = notes-go(chord-root(c), chord-stack(c), [])
 def chord-size(c: Chord) = List.len(chord-stack(c))
 
 // ---- inversion: rotate the voicing -------------------------------------------------------------------
-
 /// INVERT a chord once: drop the root and re-add it an octave up as the new TOP note, keeping the chord's
 /// pitch content but changing which note is in the bass. A C-major triad [C,E,G] inverts to [E,G,C'] —
 /// the interval stack becomes [each remaining interval - lowest], with the old lowest lifted +12 on top.
 /// We express this concretely on the NOTE list to keep the octave arithmetic honest.
-def invert-notes(notes: List(Int64)) =
-  match notes with
-    | [] => []
-    | [lo, .. rest] => List.push(rest, lo + 12)
+def invert-notes(notes: List(Int64)) = match notes with
+  | [] => []
+  | [lo, .. rest] => List.push(rest, lo + 12)
 
 /// Invert a chord `n` times, returning the resulting ascending note list. Recursive, annotated.
 def invert-chord-go(notes: List(Int64), n: Int64) =
-  if n <= 0 then notes
-  else invert-chord-go(invert-notes(notes), n - 1)
+  if n <= 0 then notes else invert-chord-go(invert-notes(notes), n - 1)
 
 /// The note numbers of a chord after `n` inversions (0 = root position).
 def chord-inversion(c: Chord, n: Int64) = invert-chord-go(chord-notes(c), n)
 
 // ---- membership: does a chord contain a pitch class? ------------------------------------------------
-
 /// Floored pitch class of a note number.
-def pc-of(n: Int64) = let r = n % 12 in (if r < 0 then r + 12 else r)
+def pc-of(n: Int64) =
+  let r = n % 12 in
+    if r < 0 then r + 12 else r
 
 /// Does a note list contain a given pitch class (any octave)? Recursive, annotated.
-def notes-have-pc(notes: List(Int64), pc: Int64) =
-  match notes with
-    | [] => false
-    | [h, .. t] => if pc-of(h) == pc then true else notes-have-pc(t, pc)
+def notes-have-pc(notes: List(Int64), pc: Int64) = match notes with
+  | [] => false
+  | [h, .. t] => if pc-of(h) == pc then true else notes-have-pc(t, pc)
 
 /// Does the chord contain the pitch class of the given pitch?
 def chord-has(c: Chord, p: Pitch) = notes-have-pc(chord-notes(c), pc-of(note(p)))
 
 /// ============================ @test suite (chords) ============================
-
 @test
 def c-major-triad-is-c-e-g() =
   // C major triad on C4 (60) = [60, 64, 67] = C, E, G.
   let cmaj = major-triad(pitch(60)) in
-  match chord-notes(cmaj) with
-    | [a, b, c] => if a == 60 then (if b == 64 then (if c == 67 then unit else trap("G")) else trap("E")) else trap("C")
+    match chord-notes(cmaj) with
+    | [a, b, c] => if a == 60 then
+      if b == 64 then if c == 67 then unit else trap("G") else trap("E")
+    else
+      trap("C")
     | _ => trap("triad has three notes")
 
 @test
 def minor-triad-lowers-the-third() =
   // A minor triad flats the third: C minor = [60, 63, 67].
   let cmin = minor-triad(pitch(60)) in
-  match chord-notes(cmin) with
+    match chord-notes(cmin) with
     | [_, b, _] => if b == 63 then unit else trap("minor third is Eb")
     | _ => trap("triad has three notes")
 
@@ -124,25 +145,36 @@ def minor-triad-lowers-the-third() =
 def dominant-seventh-adds-a-minor-seventh() =
   // G7 (dominant seventh on G4=67) = [67, 71, 74, 77] — G B D F.
   let g7 = dominant-seventh(pitch(67)) in
-  match chord-notes(g7) with
-    | [g, b, d, f] =>
-      if g == 67 then (if b == 71 then (if d == 74 then (if f == 77 then unit else trap("F")) else trap("D")) else trap("B")) else trap("G")
+    match chord-notes(g7) with
+    | [g, b, d, f] => if g == 67 then
+      if b == 71 then
+        if d == 74 then if f == 77 then unit else trap("F") else trap("D")
+      else
+        trap("B")
+    else
+      trap("G")
     | _ => trap("seventh has four notes")
 
 @test
 def first-inversion-moves-the-root-up-an-octave() =
   // First inversion of C major [60,64,67] = [64, 67, 72] — E, G, C(next octave).
   let cmaj = major-triad(pitch(60)) in
-  match chord-inversion(cmaj, 1) with
-    | [e, g, c] => if e == 64 then (if g == 67 then (if c == 72 then unit else trap("C up an octave")) else trap("G")) else trap("E")
+    match chord-inversion(cmaj, 1) with
+    | [e, g, c] => if e == 64 then
+      if g == 67 then if c == 72 then unit else trap("C up an octave") else trap("G")
+    else
+      trap("E")
     | _ => trap("still three notes")
 
 @test
 def second-inversion-lifts-two-notes() =
   // Second inversion of C major = [67, 72, 76] — G, C', E'.
   let cmaj = major-triad(pitch(60)) in
-  match chord-inversion(cmaj, 2) with
-    | [g, c, e] => if g == 67 then (if c == 72 then (if e == 76 then unit else trap("E'")) else trap("C'")) else trap("G")
+    match chord-inversion(cmaj, 2) with
+    | [g, c, e] => if g == 67 then
+      if c == 72 then if e == 76 then unit else trap("E'") else trap("C'")
+    else
+      trap("G")
     | _ => trap("still three notes")
 
 @test
@@ -150,27 +182,32 @@ def inversion-preserves-pitch-content() =
   // Inverting keeps the same pitch classes — C major always contains C(0), E(4), G(7).
   let cmaj = major-triad(pitch(60)) in
   let inv2 = chord-inversion(cmaj, 2) in
-  if notes-have-pc(inv2, 0) then
-    (if notes-have-pc(inv2, 4) then
-      (if notes-have-pc(inv2, 7) then unit else trap("G retained"))
-     else trap("E retained"))
-  else trap("C retained")
+    if notes-have-pc(inv2, 0) then
+    if notes-have-pc(inv2, 4) then
+      if notes-have-pc(inv2, 7) then unit else trap("G retained")
+    else
+      trap("E retained")
+  else
+    trap("C retained")
 
 @test
 def chord-membership-is-by-pitch-class() =
   // E5 (76, pitch class 4) is in C major triad; F5 (77, pitch class 5) is not.
   let cmaj = major-triad(pitch(60)) in
-  if chord-has(cmaj, pitch(76)) then
-    (if chord-has(cmaj, pitch(77)) then trap("F is not in C major") else unit)
-  else trap("E is in C major")
+    if chord-has(cmaj, pitch(76)) then
+    if chord-has(cmaj, pitch(77)) then trap("F is not in C major") else unit
+  else
+    trap("E is in C major")
 
 @test
 def diminished-seventh-is-a-stack-of-minor-thirds() =
   // A fully diminished seventh is four notes each a minor third (3 semitones) apart: [0,3,6,9] off root.
   let dim7 = diminished-seventh(pitch(60)) in
-  match chord-notes(dim7) with
-    | [a, b, c, d] =>
-      if b - a == 3 then (if c - b == 3 then (if d - c == 3 then unit else trap("gap 3")) else trap("gap 2")) else trap("gap 1")
+    match chord-notes(dim7) with
+    | [a, b, c, d] => if b - a == 3 then
+      if c - b == 3 then if d - c == 3 then unit else trap("gap 3") else trap("gap 2")
+    else
+      trap("gap 1")
     | _ => trap("four notes")
 
 @test
@@ -179,29 +216,56 @@ def seventh-chord-full-inversion-cycle-returns-pitch-content() =
   // Gmaj7 [67,71,74,78] → after 4 inversions each note is +12: [79,83,86,90], same pitch content.
   let gmaj7 = major-seventh(pitch(67)) in
   let cycled = chord-inversion(gmaj7, 4) in
-  // Every original pitch class must still be present (7=G, 11=B, 2=D, 6=F#).
+    // Every original pitch class must still be present (7=G, 11=B, 2=D, 6=F#).
   if notes-have-pc(cycled, 7) then
-    (if notes-have-pc(cycled, 11) then
-      (if notes-have-pc(cycled, 2) then
-        (if notes-have-pc(cycled, 6) then
-          (match cycled with | [lo, .. _] => if lo == 79 then unit else trap("lifted an octave") | _ => trap("four notes"))
-         else trap("F# retained")) else trap("D retained")) else trap("B retained"))
-  else trap("G retained")
+    if notes-have-pc(cycled, 11) then
+      if notes-have-pc(cycled, 2) then
+        if notes-have-pc(cycled, 6) then
+          match cycled with
+            | [lo, .. _] => if lo == 79 then unit else trap("lifted an octave")
+            | _ => trap("four notes")
+        else
+          trap("F# retained")
+      else
+        trap("D retained")
+    else
+      trap("B retained")
+  else
+    trap("G retained")
 
 @test
 def augmented-triad-splits-the-octave-evenly() =
   // An augmented triad is two stacked major thirds: [0,4,8] — each gap 4 semitones.
   let aug = augmented-triad(pitch(60)) in
-  match chord-notes(aug) with
-    | [a, b, c] => if b - a == 4 then (if c - b == 4 then unit else trap("gap 2")) else trap("gap 1")
+    match chord-notes(aug) with
+    | [a, b, c] => if b - a == 4 then if c - b == 4 then unit else trap("gap 2") else trap("gap 1")
     | _ => trap("three notes")
 
 export {
   Chord.*,
-  chord, chord-root, chord-stack, chord-notes, chord-size, chord-inversion, chord-has,
-  major-triad, minor-triad, diminished-triad, augmented-triad,
-  major-seventh, dominant-seventh, minor-seventh, half-diminished, diminished-seventh,
-  major-triad-stack, minor-triad-stack, diminished-triad-stack, augmented-triad-stack,
-  major-seventh-stack, dominant-seventh-stack, minor-seventh-stack, half-diminished-stack,
-  diminished-seventh-stack,
+  chord,
+  chord-root,
+  chord-stack,
+  chord-notes,
+  chord-size,
+  chord-inversion,
+  chord-has,
+  major-triad,
+  minor-triad,
+  diminished-triad,
+  augmented-triad,
+  major-seventh,
+  dominant-seventh,
+  minor-seventh,
+  half-diminished,
+  diminished-seventh,
+  major-triad-stack,
+  minor-triad-stack,
+  diminished-triad-stack,
+  augmented-triad-stack,
+  major-seventh-stack,
+  dominant-seventh-stack,
+  minor-seventh-stack,
+  half-diminished-stack,
+  diminished-seventh-stack
 }

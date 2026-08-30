@@ -12,26 +12,29 @@
 /// Floored modulus into `0 .. m-1` (local; matches pitch.cdz's mod-floor for negative sizes).
 def mod-floor(n: Int64, m: Int64) =
   let r = n % m in
-  if r < 0 then r + m else r
+    if r < 0 then r + m else r
 
 /// Is an interval (given as a signed semitone count) CONSONANT? Folds by absolute size into 0..11, then
 /// classifies: 0,3,4,5,7,8,9 consonant; 1,2,6,10,11 dissonant.
 def is-consonant(semitones: Int64) =
   let a = if semitones < 0 then 0 - semitones else semitones in
   let f = mod-floor(a, 12) in
-  if f == 0 then
+    if f == 0 then
+    true
+  else if f == 3 then
+    true
+  else if f == 4 then
+    true
+  else if f == 5 then
+    true
+  else if f == 7 then
+    true
+  else if f == 8 then
+    true
+  else if f == 9 then
     true
   else
-    if f == 3 then
-      true
-    else
-      if f == 4 then
-        true
-      else
-        if f == 5 then
-          true
-        else
-          if f == 7 then true else if f == 8 then true else if f == 9 then true else false
+    false
 
 /// Is an interval DISSONANT (the complement of consonant)?
 def is-dissonant(semitones: Int64) = if is-consonant(semitones) then false else true
@@ -39,7 +42,7 @@ def is-dissonant(semitones: Int64) = if is-consonant(semitones) then false else 
 /// Is an interval a PERFECT consonance (unison/fourth/fifth/octave: folded 0, 5, or 7)?
 def is-perfect-consonance(semitones: Int64) =
   let f = mod-floor(if semitones < 0 then 0 - semitones else semitones, 12) in
-  if f == 0 then true else if f == 5 then true else if f == 7 then true else false
+    if f == 0 then true else if f == 5 then true else if f == 7 then true else false
 
 /// ============================ @test suite (consonance laws) ============================
 @test
@@ -106,7 +109,7 @@ def consonant-and-dissonant-partition-the-octave() =
   // Every semitone 0..11 is exactly one of consonant/dissonant (a total partition) — check all twelve.
   let check = fn(s: Int64) =>
       if is-consonant(s) then if is-dissonant(s) then false else true else is-dissonant(s) in
-  if check(0) then
+    if check(0) then
     if check(1) then
       if check(2) then
         if check(3) then

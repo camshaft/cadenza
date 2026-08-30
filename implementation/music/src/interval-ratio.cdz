@@ -1,22 +1,22 @@
 /// interval-ratio.cdz — the RATIONAL interval representation (operator directive 2026-07-19, via
-  /// concierge): "use rational numbers everywhere; an interval is an OCTAVE, and each step is a FRACTION of
-  /// it — chromatic note = 1/12, heptatonic step = 1/7 — so the representation is MODE-INDEPENDENT and the
-  /// relationships are preserved across modes." This is euphony's model (euphony-units/src/pitch/interval.rs:
-  /// `Interval` is a ratio, UNISON = 0/1, OCTAVE = 1/1), written fresh in Cadenza on the builtin `Rational`.
-  ///
-  /// WHY RATIONAL (the operator's point): a step is a fraction of the octave, so it means the same thing in
-  /// EVERY mode — a heptatonic "second" is 1/7 of an octave whether you're in Ionian or Dorian; a chromatic
-  /// semitone is always 1/12. Nothing is tied to a fixed integer semitone grid, and it dovetails with
-  /// Cadenza's rational-by-default numerics. This is the CORE music-theory representation; the concrete
-  /// 12-TET MIDI note number is only a PROJECTION at the driver boundary (schedule.cdz / a WebMIDI driver),
-  /// exactly as euphony keeps `frequency.rs` separate from `interval.rs`.
-  ///
-  /// An `RInterval` is a `Rational` count of OCTAVES: 0 = unison, 1 = one octave up, 1/12 = a chromatic
-  /// semitone, 7/12 = a perfect fifth (7 semitones), 1/7 = a heptatonic scale step. Positive = ascending,
-  /// negative = descending. All arithmetic is exact rational arithmetic (no float, no rounding until the
-  /// MIDI projection).
-  /// A rational interval: a `Rational` number of octaves above (or below, if negative) a reference pitch.
-  type RInterval =
+/// concierge): "use rational numbers everywhere; an interval is an OCTAVE, and each step is a FRACTION of
+/// it — chromatic note = 1/12, heptatonic step = 1/7 — so the representation is MODE-INDEPENDENT and the
+/// relationships are preserved across modes." This is euphony's model (euphony-units/src/pitch/interval.rs:
+/// `Interval` is a ratio, UNISON = 0/1, OCTAVE = 1/1), written fresh in Cadenza on the builtin `Rational`.
+///
+/// WHY RATIONAL (the operator's point): a step is a fraction of the octave, so it means the same thing in
+/// EVERY mode — a heptatonic "second" is 1/7 of an octave whether you're in Ionian or Dorian; a chromatic
+/// semitone is always 1/12. Nothing is tied to a fixed integer semitone grid, and it dovetails with
+/// Cadenza's rational-by-default numerics. This is the CORE music-theory representation; the concrete
+/// 12-TET MIDI note number is only a PROJECTION at the driver boundary (schedule.cdz / a WebMIDI driver),
+/// exactly as euphony keeps `frequency.rs` separate from `interval.rs`.
+///
+/// An `RInterval` is a `Rational` count of OCTAVES: 0 = unison, 1 = one octave up, 1/12 = a chromatic
+/// semitone, 7/12 = a perfect fifth (7 semitones), 1/7 = a heptatonic scale step. Positive = ascending,
+/// negative = descending. All arithmetic is exact rational arithmetic (no float, no rounding until the
+/// MIDI projection).
+/// A rational interval: a `Rational` number of octaves above (or below, if negative) a reference pitch.
+type RInterval =
   | RInterval(Rational)
 
 /// Build a rational interval from a `Rational` number of octaves.
@@ -24,7 +24,8 @@ def rinterval(octaves: Rational) = RInterval.RInterval(octaves)
 
 /// The octave-fraction of a rational interval (a `Rational`).
 def octaves(i: RInterval) =
-  let RInterval.RInterval(r) = i in r
+  let RInterval.RInterval(r) = i in
+    r
 
 // ---- constructing intervals as fractions of the octave ----------------------------------------------
 /// The `n`-th step of an `m`-EDO (equal division of the octave) system, as a fraction of the octave:
@@ -108,8 +109,10 @@ def r-complement(i: RInterval) = RInterval.RInterval(Rational.of(1, 1) - octaves
 def to-semitones-in-range(i: RInterval, lo: Int64, hi: Int64) =
   if lo > hi then
     Option.None(unit)
+  else if r-eq(i, semitones-r(lo)) then
+    Option.Some(lo)
   else
-    if r-eq(i, semitones-r(lo)) then Option.Some(lo) else to-semitones-in-range(i, lo + 1, hi)
+    to-semitones-in-range(i, lo + 1, hi)
 
 /// The exact 12-TET semitone count of an in-grid interval within +/- two octaves (the useful MIDI range for
 /// a single interval), or `None` if it is not exactly a twelfth-of-octave in that range.
@@ -153,7 +156,7 @@ def a-fifth-is-seven-twelfths-of-an-octave() =
   // The perfect fifth is 7/12 of an octave, and projects to 7 semitones.
   if r-eq(r-perfect-fifth, semitones-r(7)) then
     match to-semitones-exact(r-perfect-fifth) with
-      | Option.Some(s) => (if s == 7 then unit else trap("projects to 7 semitones"))
+      | Option.Some(s) => if s == 7 then unit else trap("projects to 7 semitones")
       | Option.None(_) => trap("fifth is in-grid")
   else
     trap("fifth is 7/12")
@@ -204,9 +207,9 @@ def a-heptatonic-step-is-one-seventh() =
 def twelve-semitones-make-an-octave() =
   // Twelve chromatic steps sum to exactly one octave (exact rational, no drift).
   let twelve = r-add(semitones-r(6), semitones-r(6)) in
-  if r-eq(twelve, r-octave) then
+    if r-eq(twelve, r-octave) then
     match to-semitones-exact(r-octave) with
-      | Option.Some(s) => (if s == 12 then unit else trap("octave projects to 12 semitones"))
+      | Option.Some(s) => if s == 12 then unit else trap("octave projects to 12 semitones")
       | Option.None(_) => trap("octave is in-grid")
   else
     trap("12 semitones = octave")
@@ -216,7 +219,7 @@ def negate-turns-ascending-into-descending() =
   // Negating a fifth gives -7/12; from-to is the signed difference.
   if r-eq(r-negate(r-perfect-fifth), rinterval(Rational.of(0, 1) - Rational.of(7, 12))) then
     match to-semitones-exact(r-negate(r-perfect-fifth)) with
-      | Option.Some(s) => (if s == 0 - 7 then unit else trap("projects to -7"))
+      | Option.Some(s) => if s == 0 - 7 then unit else trap("projects to -7")
       | Option.None(_) => trap("negated fifth is in-grid")
   else
     trap("negate")
@@ -229,7 +232,7 @@ def seven-sevenths-is-an-octave-across-any-mode() =
   let four = r-add(two, two) in
   let six = r-add(four, two) in
   let seven = r-add(six, degree-r(1)) in
-  if r-eq(seven, r-octave) then unit else trap("7 * (1/7) = 1 octave")
+    if r-eq(seven, r-octave) then unit else trap("7 * (1/7) = 1 octave")
 
 @test
 def in-grid-projects-exactly-off-grid-declines() =
@@ -237,12 +240,12 @@ def in-grid-projects-exactly-off-grid-declines() =
   // NOT a twelfth (7.5 semitones) — with no Rational->Int rounding available, the exact projection
   // declines with None (pins the language-gap boundary; a rounding form waits on the conversion op).
   match to-semitones-exact(rinterval(Rational.of(2, 3))) with
-    | Option.Some(s) => (if s == 8 then
+    | Option.Some(s) => if s == 8 then
       match to-semitones-exact(rinterval(Rational.of(5, 8))) with
         | Option.None(_) => unit
         | Option.Some(_) => trap("5/8 octave is off-grid, should decline")
     else
-      trap("2/3 octave = 8 semitones"))
+      trap("2/3 octave = 8 semitones")
     | Option.None(_) => trap("2/3 octave is on-grid (8/12)")
 
 @test
@@ -253,15 +256,15 @@ def minor-sixth-and-minor-seventh-close-the-grid() =
   // 12-TET grid to the true full twelve (reviewer coverage gap on 44bdb682e).
   if r-eq(r-minor-sixth, semitones-r(8)) then
     match to-semitones-exact(r-minor-sixth) with
-      | Option.Some(s) => (if s == 8 then
+      | Option.Some(s) => if s == 8 then
         if r-eq(r-minor-seventh, semitones-r(10)) then
           match to-semitones-exact(r-minor-seventh) with
-            | Option.Some(t) => (if t == 10 then unit else trap("minor seventh projects to 10"))
+            | Option.Some(t) => if t == 10 then unit else trap("minor seventh projects to 10")
             | Option.None(_) => trap("minor seventh is in-grid")
         else
           trap("minor seventh is 10/12")
       else
-        trap("minor sixth projects to 8"))
+        trap("minor sixth projects to 8")
       | Option.None(_) => trap("minor sixth is in-grid")
   else
     trap("minor sixth is 8/12")
@@ -301,10 +304,10 @@ def to-semitones-agrees-with-to-semitones-exact-on-grid() =
   // Where to-semitones-exact returns Some(k), to-semitones returns the same k — the general projection is a
   // superset of the exact one on the grid (they can only diverge OFF the grid, where -exact declines).
   match to-semitones-exact(r-perfect-fifth) with
-    | Option.Some(s) => (if to-semitones(r-perfect-fifth) == s then
+    | Option.Some(s) => if to-semitones(r-perfect-fifth) == s then
       unit
     else
-      trap("fifth: general == exact"))
+      trap("fifth: general == exact")
     | Option.None(_) => trap("fifth is on-grid")
 
 @test
@@ -318,11 +321,11 @@ def to-semitones-snaps-an-off-grid-interval-toward-zero() =
   // a fifth (7/12 + 1/24 = 15/24 of an octave) is 7.5 semitones → truncate toward zero = 7. This is the
   // capability the projection adds over to-semitones-exact (which returns None here).
   let quarter-sharp-fifth = rinterval(Rational.of(15, 24)) in
-  match to-semitones-exact(quarter-sharp-fifth) with
-    | Option.None(_) => (if to-semitones(quarter-sharp-fifth) == 7 then
+    match to-semitones-exact(quarter-sharp-fifth) with
+    | Option.None(_) => if to-semitones(quarter-sharp-fifth) == 7 then
       unit
     else
-      trap("7.5 semitones truncates to 7"))
+      trap("7.5 semitones truncates to 7")
     | Option.Some(_) => trap("a quarter-sharp fifth is OFF the 12-TET grid")
 
 @test
@@ -347,7 +350,7 @@ def floor-rounds-down-where-truncate-rounds-toward-zero() =
   // monotone downward snap truncate can't (truncate and floor DIFFER here — the reason floor was worth
   // adding once the prelude op landed).
   let desc-quarter-sharp-fifth = rinterval(Rational.of(0 - 15, 24)) in
-  if to-semitones(desc-quarter-sharp-fifth) == 0 - 7 then
+    if to-semitones(desc-quarter-sharp-fifth) == 0 - 7 then
     if to-semitones-floor(desc-quarter-sharp-fifth) == 0 - 8 then
       if to-semitones-ceil(desc-quarter-sharp-fifth) == 0 - 7 then unit else trap("ceil -> -7")
     else
@@ -359,7 +362,7 @@ def floor-rounds-down-where-truncate-rounds-toward-zero() =
 def ceil-rounds-up-for-a-positive-off-grid-interval() =
   // A positive off-grid 7.5 semitones: ceil → 8 (up), vs truncate/floor → 7. Pins ceil's upward rounding.
   let quarter-sharp-fifth = rinterval(Rational.of(15, 24)) in
-  if to-semitones-ceil(quarter-sharp-fifth) == 8 then
+    if to-semitones-ceil(quarter-sharp-fifth) == 8 then
     if to-semitones-floor(quarter-sharp-fifth) == 7 then unit else trap("floor -> 7")
   else
     trap("ceil -> 8")
@@ -370,7 +373,7 @@ def round-snaps-to-the-nearest-semitone-ties-away-from-zero() =
   // Exactly a tie: 15/24 octave = 7.5 → 8 (half-AWAY-from-zero). Its negative -7.5 → -8 (away from zero).
   let near-fifth = rinterval(Rational.of(29, 48)) in
   let quarter-sharp-fifth = rinterval(Rational.of(15, 24)) in
-  if to-semitones-round(near-fifth) == 7 then
+    if to-semitones-round(near-fifth) == 7 then
     if to-semitones-round(quarter-sharp-fifth) == 8 then
       if to-semitones-round(r-negate(quarter-sharp-fifth)) == 0 - 8 then unit else trap("-7.5 → -8")
     else

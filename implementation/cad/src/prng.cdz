@@ -34,7 +34,7 @@ def next(state: Int64) = multiplier() * state % modulus()
 def seed(n: Int64) =
   let m1 = max-state() in
   let s = n % m1 in
-  (if s < (0 : Int64) then s + m1 else s) + (1 : Int64)
+    (if s < (0 : Int64) then s + m1 else s) + (1 : Int64)
 
 /// A bounded draw in [0, k): the next state, reduced mod k. `state` is already positive (from `seed`/`next`),
 /// so the result is in [0, k). `k` must be > 0. Returns just the draw — advance separately with `next` for
@@ -56,9 +56,14 @@ def next-of-one-is-the-minstd-known-answer() =
   //     3_361_400_000 mod 2147483647 = 1213916353. A modulus off by one (2147483646) gives 1213916354, so this
   //     second value pins the MODULUS. Together they nail the exact MINSTD parameters.
   if next(1 : Int64) == (16807 : Int64) then
-    (if next(200000 : Int64) == (1213916353 : Int64) then unit
-     else trap("MINSTD next(200000) must be 1213916353 (pins modulus = 2^31-1; product exceeds it so the mod bites)"))
-  else trap("MINSTD next(1) must be exactly 16807 (pins multiplier = 16807)")
+    if next(200000 : Int64) == (1213916353 : Int64) then
+      unit
+    else
+      trap(
+        "MINSTD next(200000) must be 1213916353 (pins modulus = 2^31-1; product exceeds it so the mod bites)"
+      )
+  else
+    trap("MINSTD next(1) must be exactly 16807 (pins multiplier = 16807)")
 
 @test
 def between-on-a-degenerate-range-is-the-single-point() =
@@ -67,15 +72,17 @@ def between-on-a-degenerate-range-is-the-single-point() =
   // `% 0` (division by zero → trap). The [3,8] range test can't catch a dropped +1 (it only checks the result
   // stays within [3,8], which [3,7] does). A degenerate range makes the off-by-one a hard failure.
   let s = seed(7 : Int64) in
-  if between(s, 5 : Int64, 5 : Int64) == (5 : Int64) then unit
-  else trap("between(s, k, k) on a zero-width range must be exactly k")
+    if between(s, 5 : Int64, 5 : Int64) == (5 : Int64) then
+    unit
+  else
+    trap("between(s, k, k) on a zero-width range must be exactly k")
 
 @test
 def next-is-deterministic-and-advances() =
   // Same state → same next (reproducible); and the stream actually moves (next ≠ state for a normal state).
   let s = seed(42 : Int64) in
   let r1 = next(s) in
-  if r1 == next(s) then
+    if r1 == next(s) then
     if r1 == s then trap("stream should advance off the seed") else unit
   else
     trap("next must be deterministic")
@@ -85,7 +92,7 @@ def seed-normalizes-into-the-valid-range() =
   // Any seed — including 0 and a negative — maps into [1, 2^31 - 2] (never MINSTD's 0 fixed point).
   let a = seed(0 : Int64) in
   let b = seed((0 : Int64) - (123 : Int64)) in
-  if a >= (1 : Int64) and a <= max-state() then
+    if a >= (1 : Int64) and a <= max-state() then
     if b >= (1 : Int64) and b <= max-state() then unit else trap("negative seed out of range")
   else
     trap("zero seed out of range")
@@ -95,14 +102,14 @@ def roll-is-in-range() =
   // roll(state, 6) is a d6: always in [0, 6).
   let s = seed(99 : Int64) in
   let m = roll(s, 6 : Int64) in
-  if m >= (0 : Int64) and m < (6 : Int64) then unit else trap("roll must be in [0, 6)")
+    if m >= (0 : Int64) and m < (6 : Int64) then unit else trap("roll must be in [0, 6)")
 
 @test
 def between-is-inclusive-in-range() =
   // between(state, 3, 8) is in [3, 8] inclusive.
   let s = seed(7 : Int64) in
   let v = between(s, 3 : Int64, 8 : Int64) in
-  if v >= (3 : Int64) and v <= (8 : Int64) then unit else trap("between must be in [3, 8]")
+    if v >= (3 : Int64) and v <= (8 : Int64) then unit else trap("between must be in [3, 8]")
 
 @test
 def different-seeds-give-different-streams() =

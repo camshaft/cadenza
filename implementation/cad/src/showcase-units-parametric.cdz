@@ -45,7 +45,7 @@ def main() =
   let d = Param.bdepth() in
   let t = Param.bthickness() in
   let r = Param.bbore() in
-  lower(bracket(w, d, t, r))
+    lower(bracket(w, d, t, r))
 
 /// @test: pin the non-parametric core (the bracket at fixed inch dims to its exact mm envelope) so the shape
 /// plus the unit conversion are gate-protected. The parametric path (param plus host-response) is proven via
@@ -56,7 +56,7 @@ def bracket-at-fixed-inches-has-the-exact-mm-envelope() =
   // is exactly (381/5, 254/5, 127/5) mm, the exact inch-to-mm conversion, no float. The hole never grows the
   // box, so the envelope is the outer block; the bracket is non-empty.
   let b = bracket(3 / 1, 2 / 1, 1 / 1, 1 / 4) in
-  if v3-eq(aabbr-size(bounding-box(b)), v3(381 / 5, 254 / 5, 127 / 5))
+    if v3-eq(aabbr-size(bounding-box(b)), v3(381 / 5, 254 / 5, 127 / 5))
       and solidr-is-empty(b) == false then
     unit
   else
@@ -75,7 +75,9 @@ def the-lowered-bracket-render-form-is-non-empty() =
   // the LOWERED output is not SolidR.Empty. (bracket's top node is hole-through = a Difference → the lowered top
   // is SolidR.Difference, a real meshable render node.)
   match lower(bracket(3 / 1, 2 / 1, 1 / 1, 1 / 4)) with
-    | SolidR.Empty => trap("the lowered bracket render form (what the driver meshes) must NOT be empty")
+    | SolidR.Empty => trap(
+      "the lowered bracket render form (what the driver meshes) must NOT be empty"
+    )
     | _ => unit
 
 export { main }

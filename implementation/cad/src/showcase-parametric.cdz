@@ -38,7 +38,7 @@ def main() =
   let d = Param.depth() in
   let t = Param.thickness() in
   let r = Param.bore() in
-  lower(plate(w, d, t, r))
+    lower(plate(w, d, t, r))
 
 /// ---- @test: pin the NON-parametric core (the helper-built plate at fixed dims) so the shape is gate-
 /// protected. (The PARAMETRIC path — @param + host-response — is proven via `cdz run --host-response`, not a
@@ -48,7 +48,7 @@ def plate-at-fixed-dims-is-a-drilled-block() =
   // plate(50, 30, 5, 3) — a 50×30×5 plate with a Ø6 bore. The hole (a Difference) never grows the box, so
   // the envelope is exactly the outer block 50×30×5; and it's not empty (a real drilled plate).
   let p = plate(50 / 1, 30 / 1, 5 / 1, 3 / 1) in
-  if v3-eq(aabbr-size(bounding-box(p)), v3(50 / 1, 30 / 1, 5 / 1)) and solidr-is-empty(p) == false then
+    if v3-eq(aabbr-size(bounding-box(p)), v3(50 / 1, 30 / 1, 5 / 1)) and solidr-is-empty(p) == false then
     unit
   else
     trap("plate(50,30,5,3) envelope is the 50×30×5 block, non-empty")
@@ -62,7 +62,9 @@ def the-lowered-plate-render-form-is-non-empty() =
   // not SolidR.Empty. (plate's top node is hole-through = a Difference → the lowered top is SolidR.Difference,
   // a real meshable render node.)
   match lower(plate(50 / 1, 30 / 1, 5 / 1, 3 / 1)) with
-    | SolidR.Empty => trap("the lowered plate render form (what the driver meshes) must NOT be empty")
+    | SolidR.Empty => trap(
+      "the lowered plate render form (what the driver meshes) must NOT be empty"
+    )
     | _ => unit
 
 export { main }

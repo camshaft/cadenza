@@ -15,8 +15,8 @@ import { semitones, interval-between, mod-floor } from "pitch"
 
 // ---- the named simple intervals ----------------------------------------------------------------------
 /// A named simple interval (within one octave), plus `Compound` for anything a full octave or more that
-  /// isn't an exact octave multiple. Nullary variants — the naming result.
-  type IntervalName =
+/// isn't an exact octave multiple. Nullary variants — the naming result.
+type IntervalName =
   | PerfectUnison
   | MinorSecond
   | MajorSecond
@@ -39,7 +39,7 @@ import { semitones, interval-between, mod-floor } from "pitch"
 def name-of-semitones(s: Int64) =
   let a = if s < 0 then 0 - s else s in
   let folded = mod-floor(a, 12) in
-  if folded == 0 then
+    if folded == 0 then
     if a == 0 then IntervalName.PerfectUnison else IntervalName.PerfectOctave
   else
     name-of-folded(folded)

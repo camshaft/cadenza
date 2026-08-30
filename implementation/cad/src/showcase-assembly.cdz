@@ -12,45 +12,50 @@
 @!default-fraction Rational
 
 import { Solid, SolidR, Vec3, Aabb, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
+
 import { box, cyl, fuse, cut, move-x, move-y, move-z, rotate-x, rotate-z, mirror-y, hole-through } from "helpers"
 
 /// ---- shared dimensions (the single source of truth every part + mate reads) -------------------------
 /// A change here re-mates the whole assembly (parts line up by construction, like printing's shared consts).
-def plate-len() = 40 / 1      // base plate length (x)
-def plate-wid() = 30 / 1      // base plate + arm width (y)
-def thick() = 4 / 1           // material thickness
-def arm-height() = 25 / 1     // how tall the vertical arm stands
-def bolt-r() = 3 / 1          // bolt-hole radius
+def plate-len() = 40 / 1
 
+// base plate length (x)
+def plate-wid() = 30 / 1
+
+// base plate + arm width (y)
+def thick() = 4 / 1
+
+// material thickness
+def arm-height() = 25 / 1
+
+// how tall the vertical arm stands
+def bolt-r() = 3 / 1
+
+// bolt-hole radius
 /// ---- the PARTS (each a named `Solid` def — the "part tree" is this call graph) ----------------------
-
 /// The horizontal base plate: a `plate-len × plate-wid × thick` slab, its bottom face on z=0 (shifted up
 /// half a thickness from the origin-centred box), with a bolt hole near the front.
 def base-plate() =
   let slab = move-z(thick() / (2 / 1), box(plate-len(), plate-wid(), thick())) in
-  // bolt hole: a vertical cylinder through the thickness, placed 3/4 along +x, centred in y.
+    // bolt hole: a vertical cylinder through the thickness, placed 3/4 along +x, centred in y.
   let hole = move-x(plate-len() / (4 / 1), cyl(thick() * (2 / 1), bolt-r())) in
-  cut(slab, move-z(thick() / (2 / 1), hole))
+    cut(slab, move-z(thick() / (2 / 1), hole))
 
 /// The vertical arm: a `plate-wid × arm-height × thick` slab standing UP. Built flat, then rotated 90° about
 /// x so it rises in +z, with a bolt hole through its face. (This is the rotation-mating the model needed.)
 def arm-flat() =
   let slab = move-z(thick() / (2 / 1), box(plate-wid(), arm-height(), thick())) in
   let hole = move-y(arm-height() / (3 / 1), cyl(thick() * (2 / 1), bolt-r())) in
-  cut(slab, move-z(thick() / (2 / 1), hole))
+    cut(slab, move-z(thick() / (2 / 1), hole))
 
 /// A triangular corner gusset (approximated as a small angled box) bracing the base↔arm joint.
-def gusset() =
-  rotate-z(45 / 1, box(arm-height() / (2 / 1), thick(), plate-wid() / (2 / 1)))
+def gusset() = rotate-z(45 / 1, box(arm-height() / (2 / 1), thick(), plate-wid() / (2 / 1)))
 
 /// ---- the ASSEMBLY: mate the parts, origin-relative, via transform chains over the shared dimensions ---
-
 /// Stand the arm up at the base's back edge: rotate the flat arm +90° about x (so its +y becomes +z), then
 /// translate it to the base's back edge (y = -plate-wid/2) and up onto the base's top face (z = thick).
 def standing-arm() =
-  move-y((rzero() - plate-wid()) / (2 / 1),
-    move-z(thick(),
-      rotate-x(90 / 1, arm-flat())))
+  move-y((rzero() - plate-wid()) / (2 / 1), move-z(thick(), rotate-x(90 / 1, arm-flat())))
 
 def rzero() = 0 / 1
 
@@ -58,8 +63,8 @@ def rzero() = 0 / 1
 /// assembly — a single `Solid` built by unioning transformed parts, exactly the design-doc pattern.
 def l-bracket() =
   let core = fuse(base-plate(), standing-arm()) in
-  let braced = fuse(core, move-y((rzero() - plate-wid()) / (2 / 1) + (thick() / (2 / 1)), gusset())) in
-  braced
+  let braced = fuse(core, move-y((rzero() - plate-wid()) / (2 / 1) + thick() / (2 / 1), gusset())) in
+    braced
 
 /// ---- @tests: pin the assembly mates ----------------------------------------------------------------
 /// 🪤 These tests deliberately DO NOT take `bounding-box` of the full multi-part assembly: `bounding-box` is
@@ -68,11 +73,13 @@ def l-bracket() =
 /// unaffected (the driver never calls bounding-box), so the showcase renders correctly; but a bbox over the
 /// whole assembly would be unreliable. So we pin PER-PART envelopes (small, reliable trees) + the assembly's
 /// non-emptiness, which is what's soundly checkable until the miscompile is fixed.
-
 @test
 def the-assembly-is-non-empty() =
   // The full assembly is real geometry (a top-node test, not a full heap-walk — miscompile-safe).
-  if solidr-is-empty(l-bracket()) == false then unit else trap("the L-bracket assembly has geometry")
+  if solidr-is-empty(l-bracket()) == false then
+    unit
+  else
+    trap("the L-bracket assembly has geometry")
 
 @test
 def the-lowered-render-form-is-non-empty() =
@@ -89,17 +96,22 @@ def the-lowered-render-form-is-non-empty() =
 def the-standing-arm-rises-above-the-base() =
   // The arm PART (a small tree — reliable bbox) stands well above z=0 after its 90° rotate + lift onto the
   // base top: its z-top exceeds the base thickness by a wide margin (the mate raises it).
-  match bounding-box(standing-arm()) with | Aabb.Box(_, hi) =>
-    (match hi with | Vec3.V3(_, _, hz) =>
-      if hz > thick() then unit else trap("the standing arm rises above the base's top face"))
+  match bounding-box(standing-arm()) with
+    | Aabb.Box(_, hi) => match hi with
+      | Vec3.V3(_, _, hz) => if hz > thick() then
+        unit
+      else
+        trap("the standing arm rises above the base's top face")
 
 @test
 def the-base-plate-hole-does-not-grow-the-base() =
   // Sanity on the part itself (a small tree — reliable bbox): drilling the bolt hole (a cut) never grows the
   // base plate's envelope beyond the raw slab.
   let slab = move-z(thick() / (2 / 1), box(plate-len(), plate-wid(), thick())) in
-  if v3-eq(aabbr-size(bounding-box(base-plate())), aabbr-size(bounding-box(slab))) then unit
-  else trap("the bolt hole must not grow the base plate")
+    if v3-eq(aabbr-size(bounding-box(base-plate())), aabbr-size(bounding-box(slab))) then
+    unit
+  else
+    trap("the bolt hole must not grow the base plate")
 
 /// The render entry: lower the assembly for the mesh driver. (A parametric version — dimensions as @params —
 /// is a natural follow-up; this pins the assembly-as-code pattern first.)

@@ -29,8 +29,8 @@ import { Ast } from "ast"
 import { ast-eq } from "ast-eq"
 
 /// The global-protocol AST. One recursive sum; `Choice` holds a list of `Branch` nodes (a `Branch` outside
-  /// a `Choice` is ill-formed — see `wf`), mirroring how `Ast.List` holds arbitrary `Ast` children.
-  type Chor =
+/// a `Choice` is ill-formed — see `wf`), mirroring how `Ast.List` holds arbitrary `Ast` children.
+type Chor =
   | Done
   | Comm(String, String, String)
   | Seq(Chor, Chor)
@@ -49,23 +49,23 @@ def chor-eq(a: Chor, b: Chor) = match a with
     | _ => false
   )
   | Chor.Comm(f, t, l) => (match b with
-    | Chor.Comm(f2, t2, l2) => (if f == f2 then if t == t2 then l == l2 else false else false)
+    | Chor.Comm(f2, t2, l2) => if f == f2 then if t == t2 then l == l2 else false else false
     | _ => false
   )
   | Chor.Seq(x, y) => (match b with
-    | Chor.Seq(x2, y2) => (if chor-eq(x, x2) then chor-eq(y, y2) else false)
+    | Chor.Seq(x2, y2) => if chor-eq(x, x2) then chor-eq(y, y2) else false
     | _ => false
   )
   | Chor.Choice(c, brs) => (match b with
-    | Chor.Choice(c2, brs2) => (if c == c2 then chor-list-eq(brs, brs2) else false)
+    | Chor.Choice(c2, brs2) => if c == c2 then chor-list-eq(brs, brs2) else false
     | _ => false
   )
   | Chor.Branch(l, k) => (match b with
-    | Chor.Branch(l2, k2) => (if l == l2 then chor-eq(k, k2) else false)
+    | Chor.Branch(l2, k2) => if l == l2 then chor-eq(k, k2) else false
     | _ => false
   )
   | Chor.Rec(v, body) => (match b with
-    | Chor.Rec(v2, body2) => (if v == v2 then chor-eq(body, body2) else false)
+    | Chor.Rec(v2, body2) => if v == v2 then chor-eq(body, body2) else false
     | _ => false
   )
   | Chor.Var(v) => match b with
@@ -118,23 +118,20 @@ def from-op(op: String, rest: List(Ast)) =
     match rest with
       | [] => Option.Some(Chor.Done)
       | _ => Option.None(unit)
+  else if op == "comm" then
+    from-comm(rest)
+  else if op == "seq" then
+    from-seq(rest)
+  else if op == "choice" then
+    from-choice(rest)
+  else if op == "branch" then
+    from-branch(rest)
+  else if op == "rec" then
+    from-rec(rest)
+  else if op == "var" then
+    from-var(rest)
   else
-    if op == "comm" then
-      from-comm(rest)
-    else
-      if op == "seq" then
-        from-seq(rest)
-      else
-        if op == "choice" then
-          from-choice(rest)
-        else
-          if op == "branch" then
-            from-branch(rest)
-          else
-            if op == "rec" then
-              from-rec(rest)
-            else
-              if op == "var" then from-var(rest) else Option.None(unit)
+    Option.None(unit)
 
 /// `(comm from to label)` — three names.
 def from-comm(rest: List(Ast)) = match rest with
@@ -231,15 +228,15 @@ def role-declared(roles: List(String), x: String) = match roles with
 /// of rec-var names in scope.
 def wf-in(roles: List(String), bound: List(String), c: Chor) = match c with
   | Chor.Done => true
-  | Chor.Comm(f, t, _l) => (if role-declared(roles, f) then
+  | Chor.Comm(f, t, _l) => if role-declared(roles, f) then
     if role-declared(roles, t) then if f == t then false else true else false
   else
-    false)
-  | Chor.Seq(a, b) => (if wf-in(roles, bound, a) then wf-in(roles, bound, b) else false)
-  | Chor.Choice(chooser, brs) => (if role-declared(roles, chooser) then
+    false
+  | Chor.Seq(a, b) => if wf-in(roles, bound, a) then wf-in(roles, bound, b) else false
+  | Chor.Choice(chooser, brs) => if role-declared(roles, chooser) then
     if all-branches(brs) then wf-branches(roles, bound, brs) else false
   else
-    false)
+    false
   | Chor.Branch(_, k) => wf-in(roles, bound, k)
   | Chor.Rec(v, body) => wf-in(roles, List.concat([v], bound), body)
   | Chor.Var(v) => role-declared(bound, v)
@@ -291,41 +288,41 @@ def purchase() =
 /// `Chor` → `Ast` → `Chor` is the identity on `Purchase` (the flagship round-trip).
 @test
 def rt-purchase() = match from-ast(to-ast(purchase())) with
-  | Option.Some(c) => (if chor-eq(c, purchase()) then
+  | Option.Some(c) => if chor-eq(c, purchase()) then
     unit
   else
-    trap("Purchase Chor→Ast→Chor must be identity"))
+    trap("Purchase Chor→Ast→Chor must be identity")
   | Option.None(_) => trap("Purchase must parse back from its canonical node")
 
 /// The dual direction: `Ast` → `Chor` → `Ast` is the identity on Purchase's canonical node.
 @test
 def rt-purchase-ast() =
   let node = to-ast(purchase()) in
-  match from-ast(node) with
-    | Option.Some(c) => (if ast-eq(to-ast(c), node) then
+    match from-ast(node) with
+    | Option.Some(c) => if ast-eq(to-ast(c), node) then
       unit
     else
-      trap("Purchase Ast→Chor→Ast must be identity"))
+      trap("Purchase Ast→Chor→Ast must be identity")
     | Option.None(_) => trap("Purchase canonical node must parse")
 
 /// Round-trip of each leaf/spine shape.
 @test
 def rt-done() = match from-ast(to-ast(Chor.Done)) with
-  | Option.Some(c) => (if chor-eq(c, Chor.Done) then unit else trap("Done round-trips"))
+  | Option.Some(c) => if chor-eq(c, Chor.Done) then unit else trap("Done round-trips")
   | Option.None(_) => trap("Done parses")
 
 @test
 def rt-comm() =
   let c = Chor.Comm("A", "B", "M") in
-  match from-ast(to-ast(c)) with
-    | Option.Some(c2) => (if chor-eq(c2, c) then unit else trap("Comm round-trips"))
+    match from-ast(to-ast(c)) with
+    | Option.Some(c2) => if chor-eq(c2, c) then unit else trap("Comm round-trips")
     | Option.None(_) => trap("Comm parses")
 
 @test
 def rt-rec() =
   let c = Chor.Rec("Loop", Chor.Seq(Chor.Comm("A", "B", "M"), Chor.Var("Loop"))) in
-  match from-ast(to-ast(c)) with
-    | Option.Some(c2) => (if chor-eq(c2, c) then unit else trap("Rec round-trips"))
+    match from-ast(to-ast(c)) with
+    | Option.Some(c2) => if chor-eq(c2, c) then unit else trap("Rec round-trips")
     | Option.None(_) => trap("Rec parses")
 
 /// Round-trip must be non-vacuous: distinct choreographies must not compare equal.
@@ -413,8 +410,8 @@ def nested-rec-round-trips() =
         Chor.Rec("Inner", Chor.Seq(Chor.Comm("B", "A", "N"), Chor.Var("Inner")))
       )
     ) in
-  match from-ast(to-ast(g)) with
-    | Option.Some(g2) => (if chor-eq(g, g2) then unit else trap("nested rec must round-trip"))
+    match from-ast(to-ast(g)) with
+    | Option.Some(g2) => if chor-eq(g, g2) then unit else trap("nested rec must round-trip")
     | Option.None(_) => trap("from-ast(to-ast) of a nested rec")
 
 @test
@@ -427,7 +424,7 @@ def wf-accepts-inner-var-bound-by-inner-rec() =
         Chor.Rec("Inner", Chor.Seq(Chor.Comm("B", "A", "N"), Chor.Var("Inner")))
       )
     ) in
-  if wf(["A", "B"], g) then unit else trap("a var bound by the inner rec is well-formed")
+    if wf(["A", "B"], g) then unit else trap("a var bound by the inner rec is well-formed")
 
 @test
 def wf-rejects-rec-var-referenced-out-of-its-scope() =
@@ -439,7 +436,7 @@ def wf-rejects-rec-var-referenced-out-of-its-scope() =
       "Outer",
       Chor.Seq(Chor.Rec("Inner", Chor.Comm("B", "A", "N")), Chor.Var("Inner"))
     ) in
-  if wf(["A", "B"], g) then
+    if wf(["A", "B"], g) then
     trap("Inner is out of scope in the outer body — must be rejected")
   else
     unit

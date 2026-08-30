@@ -66,8 +66,8 @@ def take(it, n) =
     GIter.Nil(unit)
   else
     match it with
-    | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1))
+      | GIter.Nil(_) => GIter.Nil(unit)
+      | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1))
 
 /// TESTS ----------------------------------------------------------------------------------------------
 /// zip exhaustion directions: shorter-left (the mirror of giter.cdz's shorter-right case) and

@@ -36,7 +36,7 @@ def candidate-keys-go(pcs: List(Int64), k: Int64, out: List(Int64)) =
     out
   else
     let next = if scale-contains-all(major(k), pcs) then List.push(out, k) else out in
-    candidate-keys-go(pcs, k + 1, next)
+      candidate-keys-go(pcs, k + 1, next)
 
 /// The list of major-key ROOTS (pitch classes 0..11) whose scale contains every pitch class in `pcs`.
 /// e.g. the C-major triad {0,4,7} returns [0, 5, 7] (C, F and G major all contain C-E-G).
@@ -64,7 +64,7 @@ def a-c-major-triad-fits-c-f-and-g-major() =
   // {C, E, G} = {0,4,7} is diatonic to C major (obviously), and also to F major (F G A Bb C D E — has
   // C,E,G) and G major (G A B C D E F# — has C,E,G). Those are exactly the three keys.
   let cands = candidate-keys([0, 4, 7]) in
-  if has(cands, 0) then
+    if has(cands, 0) then
     if has(cands, 5) then
       if has(cands, 7) then
         if candidate-count([0, 4, 7]) == 3 then unit else trap("exactly three keys")
@@ -81,7 +81,7 @@ def the-full-c-major-scale-fits-only-c-major() =
   // uniquely (a maximal diatonic constraint).
   let c-scale = [0, 2, 4, 5, 7, 9, 11] in
   let cands = candidate-keys(c-scale) in
-  if candidate-count(c-scale) == 1 then
+    if candidate-count(c-scale) == 1 then
     if has(cands, 0) then unit else trap("the one key is C major")
   else
     trap("the full scale fits exactly one key")
@@ -104,7 +104,7 @@ def the-empty-set-fits-every-key() =
 def fits-key-agrees-with-the-scan() =
   // fits-key(root, pcs) is true exactly when root is among candidate-keys(pcs).
   let pcs = [0, 4, 7] in
-  if fits-key(0, pcs) then
+    if fits-key(0, pcs) then
     if fits-key(5, pcs) then
       if fits-key(1, pcs) then trap("Db major does NOT contain a C-E-G triad") else unit
     else
@@ -122,7 +122,7 @@ def a-single-note-fits-the-seven-keys-containing-it() =
 def fits-key-wraps-a-high-root() =
   // fits-key folds its root mod 12, so root 12 == root 0 (C).
   let pcs = [0, 4, 7] in
-  if fits-key(12, pcs) then unit else trap("root 12 folds to C major")
+    if fits-key(12, pcs) then unit else trap("root 12 folds to C major")
 
 @test
 def a-relative-minor-scale-pins-its-relative-major-key() =
@@ -130,7 +130,7 @@ def a-relative-minor-scale-pins-its-relative-major-key() =
   // relative-major/minor identity. So candidate-keys narrows to exactly C major (root 0): key detection
   // over major scales reports the relative MAJOR of a minor passage, as expected (no separate minor scan).
   let a-minor-pcs = [9, 11, 0, 2, 4, 5, 7] in
-  if candidate-count(a-minor-pcs) == 1 then
+    if candidate-count(a-minor-pcs) == 1 then
     match candidate-keys(a-minor-pcs) with
       | [0] => unit
       | _ => trap("the one key is C major (the relative major of A minor)")
@@ -143,7 +143,7 @@ def a-dominant-seventh-pins-its-key-uniquely() =
   // (the tritone B-F is what makes a dominant seventh function). So candidate-keys narrows to exactly C —
   // the strongest "the seventh chord names the key" fact, a real tonal-harmony invariant.
   let g7 = [7, 11, 2, 5] in
-  if candidate-count(g7) == 1 then
+    if candidate-count(g7) == 1 then
     if fits-key(0, g7) then unit else trap("the one key is C major")
   else
     trap("a dominant seventh fits exactly one major key")

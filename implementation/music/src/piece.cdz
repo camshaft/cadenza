@@ -75,7 +75,7 @@ def the-progression-has-every-note() =
 def the-progression-schedules-with-no-stuck-keys() =
   // The end-to-end gate: the whole piece lowers to paired on/off events, net zero — no stuck keys.
   let evs = schedule(progression) in
-  if List.len(evs) == 32 then
+    if List.len(evs) == 32 then
     if balanced(evs) then unit else trap("balanced")
   else
     trap("32 events")
@@ -116,8 +116,7 @@ def count-on-chan(notes: List(Note), c: Int64) = match notes with
 /// Is every note on channel 0 or channel 1 (the two voices)? Recursive, annotated.
 def all-on-chan-0-or-1(notes: List(Note)) = match notes with
   | [] => true
-  | [h, .. rest] =>
-    let c = note-chan(h) in
+  | [h, .. rest] => let c = note-chan(h) in
     if c == 0 then all-on-chan-0-or-1(rest) else if c == 1 then all-on-chan-0-or-1(rest) else false
 
 /// The note number of a note — via the exported accessors, NOT a nested `Note.Note(Pitch.Pitch(k),…)`

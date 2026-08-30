@@ -1,19 +1,19 @@
 /// giter-chain.cdz — DIRECT coverage for the `chain` combiner (iterator concatenation), split into its
-  /// own small module.
-  ///
-  /// WHY A SEPARATE MODULE. `chain : GIter(a) -> GIter(a) -> GIter(a)` is `flatten`'s per-inner combiner
-  /// (see giter-flat.cdz), but there it is only ever exercised TRANSITIVELY through `flatten` — a `chain`
-  /// regression that still happens to compose under `flatten` would slip past. These tests pin `chain`'s
-  /// three invariants at its OWN arm. They cannot live in giter-flat.cdz: that module sits at the
-  /// per-module monomorphizer instantiation-PRESSURE ceiling (measured — a direct `chain@Int64` call there
-  /// collides with its String `flatten` path, re-resolving the monomorphic `digit-from`), so a direct
-  /// `chain` test destabilizes its global solve. A SMALL dedicated module keeps `chain`'s Int64
-  /// instantiation isolated (per-module compilation isolates the pressure), the SAME "isolate the heavy
-  /// instantiation in its own module" pattern giter-flat.cdz documents for `flatten`.
-  ///
-  /// The generic pull-iterator (same cons-cell shape as giter.cdz / giter-flat.cdz; re-declared here so
-  /// this module is self-contained — each src/*.cdz is its own namespace).
-  type GIter =
+/// own small module.
+///
+/// WHY A SEPARATE MODULE. `chain : GIter(a) -> GIter(a) -> GIter(a)` is `flatten`'s per-inner combiner
+/// (see giter-flat.cdz), but there it is only ever exercised TRANSITIVELY through `flatten` — a `chain`
+/// regression that still happens to compose under `flatten` would slip past. These tests pin `chain`'s
+/// three invariants at its OWN arm. They cannot live in giter-flat.cdz: that module sits at the
+/// per-module monomorphizer instantiation-PRESSURE ceiling (measured — a direct `chain@Int64` call there
+/// collides with its String `flatten` path, re-resolving the monomorphic `digit-from`), so a direct
+/// `chain` test destabilizes its global solve. A SMALL dedicated module keeps `chain`'s Int64
+/// instantiation isolated (per-module compilation isolates the pressure), the SAME "isolate the heavy
+/// instantiation in its own module" pattern giter-flat.cdz documents for `flatten`.
+///
+/// The generic pull-iterator (same cons-cell shape as giter.cdz / giter-flat.cdz; re-declared here so
+/// this module is self-contained — each src/*.cdz is its own namespace).
+type GIter =
   | Nil
   | Cons(a, GIter(a))
 
@@ -71,7 +71,7 @@ def chain-preserves-count() =
 @test
 def chain-is-associative() =
   if digits(chain(chain(from-list([1, 2]), from-list([3])), from-list([4, 5])))
-     == digits(chain(from-list([1, 2]), chain(from-list([3]), from-list([4, 5])))) then
+      == digits(chain(from-list([1, 2]), chain(from-list([3]), from-list([4, 5])))) then
     unit
   else
     trap("chain is associative: (a++b)++c == a++(b++c)")

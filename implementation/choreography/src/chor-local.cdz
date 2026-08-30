@@ -28,7 +28,7 @@ import { Chor } from "chor"
 import { participates } from "chor-project"
 
 /// A local (session) type — one role's view of the protocol.
-  type Local =
+type Local =
   | LEnd
   | LSend(String, String, Local) // to, label, continuation
   | LRecv(String, String, Local) // from, label, continuation
@@ -43,15 +43,19 @@ import { participates } from "chor-project"
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 def project-k(g: Chor, r: String, k: Local) -> Local = match g with
   | Chor.Done => k
-  | Chor.Comm(f, t, l) => (if r == f then
+  | Chor.Comm(f, t, l) => if r == f then
     Local.LSend(t, l, k)
+  else if r == t then
+    Local.LRecv(f, l, k)
   else
-    if r == t then Local.LRecv(f, l, k) else k)
+    k
   | Chor.Seq(a, b) => project-k(a, r, project-k(b, r, k))
-  | Chor.Choice(p, brs) => (if r == p then
+  | Chor.Choice(p, brs) => if r == p then
     Local.LIntC(project-branches(brs, r, k))
+  else if any-participates(r, brs) then
+    Local.LExtC(p, project-branches(brs, r, k))
   else
-    if any-participates(r, brs) then Local.LExtC(p, project-branches(brs, r, k)) else k)
+    k
   | Chor.Branch(_l, cont) => project-k(cont, r, k) // wf keeps branches inside choices; be total
   | Chor.Rec(v, body) => Local.LRecT(v, project-k(body, r, k))
   | Chor.Var(v) => Local.LVarT(v)
@@ -85,17 +89,17 @@ def local-eq(a: Local, b: Local) -> Bool = match a with
     | _ => false
   )
   | Local.LSend(t, l, k) => (match b with
-    | Local.LSend(t2, l2, k2) => (if t == t2 then
+    | Local.LSend(t2, l2, k2) => if t == t2 then
       if l == l2 then local-eq(k, k2) else false
     else
-      false)
+      false
     | _ => false
   )
   | Local.LRecv(f, l, k) => (match b with
-    | Local.LRecv(f2, l2, k2) => (if f == f2 then
+    | Local.LRecv(f2, l2, k2) => if f == f2 then
       if l == l2 then local-eq(k, k2) else false
     else
-      false)
+      false
     | _ => false
   )
   | Local.LIntC(brs) => (match b with
@@ -103,15 +107,15 @@ def local-eq(a: Local, b: Local) -> Bool = match a with
     | _ => false
   )
   | Local.LExtC(f, brs) => (match b with
-    | Local.LExtC(f2, brs2) => (if f == f2 then local-list-eq(brs, brs2) else false)
+    | Local.LExtC(f2, brs2) => if f == f2 then local-list-eq(brs, brs2) else false
     | _ => false
   )
   | Local.LBranch(l, k) => (match b with
-    | Local.LBranch(l2, k2) => (if l == l2 then local-eq(k, k2) else false)
+    | Local.LBranch(l2, k2) => if l == l2 then local-eq(k, k2) else false
     | _ => false
   )
   | Local.LRecT(v, body) => (match b with
-    | Local.LRecT(v2, body2) => (if v == v2 then local-eq(body, body2) else false)
+    | Local.LRecT(v2, body2) => if v == v2 then local-eq(body, body2) else false
     | _ => false
   )
   | Local.LVarT(v) => match b with
@@ -144,7 +148,7 @@ def yes-no() =
 def project-comm-sender() =
   // Buyer sends Title to Seller → LSend("Seller","Title",LEnd).
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-  if local-eq(project(g, "Buyer"), Local.LSend("Seller", "Title", Local.LEnd)) then
+    if local-eq(project(g, "Buyer"), Local.LSend("Seller", "Title", Local.LEnd)) then
     unit
   else
     trap("Buyer projects a comm it sends to LSend")
@@ -152,7 +156,7 @@ def project-comm-sender() =
 @test
 def project-comm-receiver() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-  if local-eq(project(g, "Seller"), Local.LRecv("Buyer", "Title", Local.LEnd)) then
+    if local-eq(project(g, "Seller"), Local.LRecv("Buyer", "Title", Local.LEnd)) then
     unit
   else
     trap("Seller projects a comm it receives to LRecv")
@@ -160,7 +164,7 @@ def project-comm-receiver() =
 @test
 def project-comm-bystander-is-end() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-  if local-eq(project(g, "Shipper"), Local.LEnd) then
+    if local-eq(project(g, "Shipper"), Local.LEnd) then
     unit
   else
     trap("an uninvolved role projects a comm to LEnd")
@@ -170,7 +174,7 @@ def project-seq-threads-continuation() =
   // Buyer: send Title, then receive Quote.
   let g = Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"), Chor.Comm("Seller", "Buyer", "Quote")) in
   let expect = Local.LSend("Seller", "Title", Local.LRecv("Seller", "Quote", Local.LEnd)) in
-  if local-eq(project(g, "Buyer"), expect) then
+    if local-eq(project(g, "Buyer"), expect) then
     unit
   else
     trap("Buyer projects a sequence to nested send-then-recv")
@@ -183,7 +187,7 @@ def project-chooser-is-internal-choice() =
         Local.LBranch("No", Local.LSend("Seller", "No", Local.LEnd))
       ]
     ) in
-  if local-eq(project(yes-no(), "Buyer"), expect) then
+    if local-eq(project(yes-no(), "Buyer"), expect) then
     unit
   else
     trap("the chooser projects a choice to an INTERNAL choice of sends")
@@ -197,7 +201,7 @@ def project-told-role-is-external-choice() =
         Local.LBranch("No", Local.LRecv("Buyer", "No", Local.LEnd))
       ]
     ) in
-  if local-eq(project(yes-no(), "Seller"), expect) then
+    if local-eq(project(yes-no(), "Seller"), expect) then
     unit
   else
     trap("a told role projects a choice to an EXTERNAL choice from the chooser")
@@ -215,7 +219,7 @@ def project-rec-is-recursive-local() =
   // rec Loop . (Buyer -> Seller : Ping ; Loop) — Buyer's local type is rec Loop . !Seller.Ping ; Loop.
   let g = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
   let expect = Local.LRecT("Loop", Local.LSend("Seller", "Ping", Local.LVarT("Loop"))) in
-  if local-eq(project(g, "Buyer"), expect) then
+    if local-eq(project(g, "Buyer"), expect) then
     unit
   else
     trap("a guarded rec projects to a recursive local type")
@@ -224,7 +228,7 @@ def project-rec-is-recursive-local() =
 def project-rec-receiver-side() =
   let g = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
   let expect = Local.LRecT("Loop", Local.LRecv("Buyer", "Ping", Local.LVarT("Loop"))) in
-  if local-eq(project(g, "Seller"), expect) then
+    if local-eq(project(g, "Seller"), expect) then
     unit
   else
     trap("the receiver's rec projection is a recursive recv")
@@ -233,7 +237,7 @@ def project-rec-receiver-side() =
 def project-distinguishes-roles() =
   // Non-vacuous: Buyer's and Seller's projections of the same comm must differ.
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-  if local-eq(project(g, "Buyer"), project(g, "Seller")) then
+    if local-eq(project(g, "Buyer"), project(g, "Seller")) then
     trap("sender and receiver projections must differ")
   else
     unit
@@ -282,7 +286,7 @@ def project-told-role-keeps-divergent-branch-continuations() =
         )
       ]
     ) in
-  if local-eq(project(divergent-told(), "Seller"), expect) then
+    if local-eq(project(divergent-told(), "Seller"), expect) then
     unit
   else
     trap("the told role's external choice keeps each branch's distinct recv-then-send continuation")
@@ -302,7 +306,7 @@ def project-chooser-keeps-divergent-branch-continuations() =
         )
       ]
     ) in
-  if local-eq(project(divergent-told(), "Buyer"), expect) then
+    if local-eq(project(divergent-told(), "Buyer"), expect) then
     unit
   else
     trap("the chooser's internal choice keeps each branch's distinct send-then-recv continuation")

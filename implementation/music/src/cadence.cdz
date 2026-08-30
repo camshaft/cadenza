@@ -1,3 +1,4 @@
+// ---- the cadence kinds -------------------------------------------------------------------------------
 /// cadence.cdz — recognize the standard harmonic CADENCES from a pair of scale degrees.
 ///
 /// A cadence is the harmonic punctuation that closes (or suspends) a phrase, named by the two chords at
@@ -12,31 +13,42 @@
 /// Pure integer degree analysis (degrees folded mod 7), no imports — it composes with progression.cdz at
 /// the degree-index boundary (classify successive entries of a `progression`'s degree list). The Half test
 /// is checked LAST so V→I reads as Authentic (not Half), matching how theory names the stronger cadence.
-
-// ---- the cadence kinds -------------------------------------------------------------------------------
-
 /// A recognized cadence between two scale degrees, or `NoCadence`.
 type Cadence =
-  | Authentic | Plagal | Half | Deceptive | NoCadence
+  | Authentic
+  | Plagal
+  | Half
+  | Deceptive
+  | NoCadence
 
 /// Floored modulus into `0 .. m-1` (degrees fold into 0..6).
-def mod-floor(n: Int64, m: Int64) = let r = n % m in (if r < 0 then r + m else r)
+def mod-floor(n: Int64, m: Int64) =
+  let r = n % m in
+    if r < 0 then r + m else r
 
 /// Classify the cadence from scale degree `a` to scale degree `b` (0-based, folded mod 7). Authentic (V→I)
 /// and Plagal (IV→I) and Deceptive (V→vi) are checked before Half (→V), so V→I is Authentic not Half.
 def cadence-of(a: Int64, b: Int64) =
   let from = mod-floor(a, 7) in
   let to = mod-floor(b, 7) in
-  if to == 0 then
-    (if from == 4 then Cadence.Authentic      // V → I
-     else if from == 3 then Cadence.Plagal    // IV → I
-     else Cadence.NoCadence)                  // some other → I is not a named cadence here
+    if to == 0 then
+    if from == 4 then
+      Cadence.Authentic // V → I
+    else if from == 3 then
+      Cadence.Plagal // IV → I
+    else
+      Cadence.NoCadence // some other → I is not a named cadence here
   else if from == 4 then
-    (if to == 5 then Cadence.Deceptive        // V → vi (dominant resolves away from the tonic)
-     else if to == 4 then Cadence.Half        // V → V (still on the dominant)
-     else Cadence.NoCadence)                  // V → something else is not a named cadence
-  else if to == 4 then Cadence.Half           // anything → V (open, suspended)
-  else Cadence.NoCadence
+    if to == 5 then
+      Cadence.Deceptive // V → vi (dominant resolves away from the tonic)
+    else if to == 4 then
+      Cadence.Half // V → V (still on the dominant)
+    else
+      Cadence.NoCadence // V → something else is not a named cadence
+  else if to == 4 then
+    Cadence.Half // anything → V (open, suspended)
+  else
+    Cadence.NoCadence
 
 /// Does a cadence CLOSE a phrase (Authentic or Plagal land on the tonic)? Half and Deceptive do not.
 def is-closing(c: Cadence) = match c with
@@ -45,25 +57,29 @@ def is-closing(c: Cadence) = match c with
   | _ => false
 
 /// ============================ @test suite (cadence laws) ============================
+@test
+def authentic-is-five-to-one() = match cadence-of(4, 0) with
+  | Cadence.Authentic => unit
+  | _ => trap("V->I is authentic")
 
 @test
-def authentic-is-five-to-one() =
-  match cadence-of(4, 0) with | Cadence.Authentic => unit | _ => trap("V->I is authentic")
+def plagal-is-four-to-one() = match cadence-of(3, 0) with
+  | Cadence.Plagal => unit
+  | _ => trap("IV->I is plagal")
 
 @test
-def plagal-is-four-to-one() =
-  match cadence-of(3, 0) with | Cadence.Plagal => unit | _ => trap("IV->I is plagal")
-
-@test
-def deceptive-is-five-to-six() =
-  match cadence-of(4, 5) with | Cadence.Deceptive => unit | _ => trap("V->vi is deceptive")
+def deceptive-is-five-to-six() = match cadence-of(4, 5) with
+  | Cadence.Deceptive => unit
+  | _ => trap("V->vi is deceptive")
 
 @test
 def half-ends-on-the-dominant() =
   // Anything landing on V (that isn't itself a stronger named cadence) is a half cadence: ii->V, I->V.
   match cadence-of(1, 4) with
-    | Cadence.Half =>
-      (match cadence-of(0, 4) with | Cadence.Half => unit | _ => trap("I->V is half"))
+    | Cadence.Half => (match cadence-of(0, 4) with
+      | Cadence.Half => unit
+      | _ => trap("I->V is half")
+    )
     | _ => trap("ii->V is half")
 
 @test
@@ -71,26 +87,33 @@ def five-to-one-is-authentic-not-half() =
   // Precedence: V->I must read as Authentic even though I is not V — the stronger cadence wins. And a
   // non-cadential motion (I->IV) is NoCadence.
   match cadence-of(4, 0) with
-    | Cadence.Authentic =>
-      (match cadence-of(0, 3) with | Cadence.NoCadence => unit | _ => trap("I->IV is not a cadence"))
+    | Cadence.Authentic => (match cadence-of(0, 3) with
+      | Cadence.NoCadence => unit
+      | _ => trap("I->IV is not a cadence")
+    )
     | _ => trap("V->I authentic")
 
 @test
 def closing-only-for-tonic-cadences() =
   // is-closing: Authentic + Plagal close; Half + Deceptive + NoCadence do not.
   if is-closing(Cadence.Authentic) then
-    (if is-closing(Cadence.Plagal) then
-      (if is-closing(Cadence.Half) then trap("half does not close") else
-        (if is-closing(Cadence.Deceptive) then trap("deceptive does not close") else unit))
-     else trap("plagal closes"))
-  else trap("authentic closes")
+    if is-closing(Cadence.Plagal) then
+      if is-closing(Cadence.Half) then
+        trap("half does not close")
+      else if is-closing(Cadence.Deceptive) then
+        trap("deceptive does not close")
+      else
+        unit
+    else
+      trap("plagal closes")
+  else
+    trap("authentic closes")
 
 @test
 def degrees-fold-mod-seven() =
   // A degree index past the octave folds: degree 11 == 4 (V), so 11 -> 7(==0, I) is still authentic.
-  match cadence-of(11, 7) with | Cadence.Authentic => unit | _ => trap("folded V->I is authentic")
+  match cadence-of(11, 7) with
+    | Cadence.Authentic => unit
+    | _ => trap("folded V->I is authentic")
 
-export {
-  Cadence.*,
-  cadence-of, is-closing,
-}
+export { Cadence.*, cadence-of, is-closing }

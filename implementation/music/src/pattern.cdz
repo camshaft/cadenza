@@ -15,14 +15,15 @@
 /// Timing is EXACT even when a cycle doesn't divide evenly among N children: child `i` spans
 /// `[start + i*cycle/N, start + (i+1)*cycle/N)`, so the sub-spans tile the whole cycle with no gap or
 /// drift (integer division on the CUMULATIVE boundary, not a per-child rounded width).
-
 import { Note } from "schedule"
+
 import { note-at, note-pitch, note-start, note-dur, schedule, balanced } from "schedule"
+
 import { pitch-of } from "compose"
+
 import { mod-floor, note } from "pitch"
 
 // ---- the Pattern tree --------------------------------------------------------------------------------
-
 /// A pattern over one cycle. Recursive/monomorphic (the Synth-graph idiom applied to time):
 ///   - `Silence`      — a rest: renders to no notes, but still OCCUPIES its time slot.
 ///   - `Atom(num)`    — one MIDI note number sounding for the whole span it is given.
@@ -37,7 +38,6 @@ type Pattern =
   | Fast(Int64, Pattern)
 
 // ---- builders (the live-coding surface) --------------------------------------------------------------
-
 /// A rest that occupies its slot but sounds nothing.
 def silence = Pattern.Silence
 
@@ -63,11 +63,10 @@ def euclid-onset(i: Int64, k: Int64, n: Int64) = mod-floor(i * k, n) < k
 /// steps (onsets at steps 0, 3, 6). `k` is clamped to `0..n`; `n <= 0` is silence. The signature Tidal/
 /// Strudel `euclid` live-coding operator, as pure pattern data.
 def euclid(k: Int64, n: Int64, num: Int64) =
-  if n <= 0 then Pattern.Silence
-  else Pattern.Seq(euclid-steps(0, clamp(k, 0, n), n, num, []))
+  if n <= 0 then Pattern.Silence else Pattern.Seq(euclid-steps(0, clamp(k, 0, n), n, num, []))
 
 /// Clamp `x` into `[lo, hi]` (a small local helper for `euclid`'s `k`).
-def clamp(x: Int64, lo: Int64, hi: Int64) = if x < lo then lo else (if x > hi then hi else x)
+def clamp(x: Int64, lo: Int64, hi: Int64) = if x < lo then lo else if x > hi then hi else x
 
 /// Build the step list of E(k, n) from the LAST step down to step `start`, prepending each so the result
 /// is in ascending step order. Recursive driver, annotated params (CDZ0201). We recurse from `n-1` down so
@@ -76,75 +75,85 @@ def euclid-steps(start: Int64, k: Int64, n: Int64, num: Int64, acc: List(Pattern
   euclid-steps-go(n - 1, start, k, n, num, acc)
 
 def euclid-steps-go(i: Int64, start: Int64, k: Int64, n: Int64, num: Int64, acc: List(Pattern)) =
-  if i < start then acc
+  if i < start then
+    acc
   else
     let step = if euclid-onset(i, k, n) then Pattern.Atom(num) else Pattern.Silence in
-    euclid-steps-go(i - 1, start, k, n, num, List.prepend(acc, step))
+      euclid-steps-go(i - 1, start, k, n, num, List.prepend(acc, step))
 
 /// REVERSE a pattern in time (Tidal's `rev`): a `Seq` plays its children last-to-first, so the sequence
 /// runs backwards; `Fast` reverses its inner pattern; `Stack` reverses each layer (the layers are
 /// simultaneous, so their ORDER is immaterial, but a nested `Seq` inside a layer must still flip). `Atom`
 /// and `Silence` are their own reverse. Structural — no new constructor, and `rev(rev(p))` is `p`.
-def rev(p: Pattern) =
-  match p with
-    | Pattern.Silence => Pattern.Silence
-    | Pattern.Atom(num) => Pattern.Atom(num)
-    | Pattern.Seq(kids) => Pattern.Seq(rev-list(reverse-pats(kids, [])))
-    | Pattern.Stack(kids) => Pattern.Stack(rev-list(kids))
-    | Pattern.Fast(n, q) => Pattern.Fast(n, rev(q))
+def rev(p: Pattern) = match p with
+  | Pattern.Silence => Pattern.Silence
+  | Pattern.Atom(num) => Pattern.Atom(num)
+  | Pattern.Seq(kids) => Pattern.Seq(rev-list(reverse-pats(kids, [])))
+  | Pattern.Stack(kids) => Pattern.Stack(rev-list(kids))
+  | Pattern.Fast(n, q) => Pattern.Fast(n, rev(q))
 
 /// Reverse each pattern in a list IN PLACE (map `rev` over it, order preserved) — used for `Stack`, whose
 /// child order is immaterial but whose nested `Seq`s must still flip. Recursive driver (CDZ0201).
-def rev-list(ps: List(Pattern)) =
-  match ps with
-    | [] => []
-    | [h, .. t] => List.prepend(rev-list(t), rev(h))
+def rev-list(ps: List(Pattern)) = match ps with
+  | [] => []
+  | [h, .. t] => List.prepend(rev-list(t), rev(h))
 
 /// Reverse the ORDER of a pattern list (into `acc`) — used for `Seq`, where running the children
 /// last-to-first is what makes the sequence play backwards. Recursive driver (CDZ0201).
-def reverse-pats(ps: List(Pattern), acc: List(Pattern)) =
-  match ps with
-    | [] => acc
-    | [h, .. t] => reverse-pats(t, List.prepend(acc, h))
+def reverse-pats(ps: List(Pattern), acc: List(Pattern)) = match ps with
+  | [] => acc
+  | [h, .. t] => reverse-pats(t, List.prepend(acc, h))
 
 // ---- rendering a pattern over a span to timed Notes --------------------------------------------------
-
 /// Render `p` into the span `[start, start + span)` (in ticks) as a list of `Note`s on one channel +
 /// velocity. `Silence` yields nothing; `Atom` yields one note filling the whole span; `Seq` tiles the
 /// span among its children on EXACT cumulative boundaries; `Stack` renders every child over the FULL
 /// span; `Fast(n, q)` renders `q` into each of `n` equal sub-spans. Mutually recursive with the list
 /// drivers below; all params annotated (a recursive fn whose params infer as free vars has no machine
 /// representation — CDZ0201).
-def render-span(p: Pattern, chan: Int64, vel: Int64, start: Int64, span: Int64) =
-  match p with
-    | Pattern.Silence => []
-    | Pattern.Atom(num) => [note-at(pitch-of(num), chan, vel, start, span)]
-    | Pattern.Seq(kids) => render-seq(kids, chan, vel, start, span, list-len(kids), 0, [])
-    | Pattern.Stack(kids) => render-stack(kids, chan, vel, start, span, [])
-    | Pattern.Fast(n, q) => render-seq(repeat-pat(q, n), chan, vel, start, span, n, 0, [])
+def render-span(p: Pattern, chan: Int64, vel: Int64, start: Int64, span: Int64) = match p with
+  | Pattern.Silence => []
+  | Pattern.Atom(num) => [note-at(pitch-of(num), chan, vel, start, span)]
+  | Pattern.Seq(kids) => render-seq(kids, chan, vel, start, span, list-len(kids), 0, [])
+  | Pattern.Stack(kids) => render-stack(kids, chan, vel, start, span, [])
+  | Pattern.Fast(n, q) => render-seq(repeat-pat(q, n), chan, vel, start, span, n, 0, [])
 
 /// SEQ driver: lay child `i` (of `n` total) into `[start + i*span/n, start + (i+1)*span/n)` — the exact
 /// cumulative-boundary tiling, so N sub-spans cover the whole span with no gap or rounding drift.
-def render-seq(kids: List(Pattern), chan: Int64, vel: Int64, start: Int64, span: Int64, n: Int64, i: Int64, out: List(Note)) =
-  match kids with
-    | [] => out
-    | [h, .. t] =>
-      let lo = start + (i * span) / n in
-      let hi = start + ((i + 1) * span) / n in
-      render-seq(t, chan, vel, start, span, n, i + 1, List.concat(out, render-span(h, chan, vel, lo, hi - lo)))
+def render-seq(kids: List(Pattern), chan: Int64, vel: Int64, start: Int64, span: Int64, n: Int64, i: Int64, out: List(
+  Note
+)) = match kids with
+  | [] => out
+  | [h, .. t] => let lo = start + i * span / n in
+  let hi = start + (i + 1) * span / n in
+    render-seq(
+    t,
+    chan,
+    vel,
+    start,
+    span,
+    n,
+    i + 1,
+    List.concat(out, render-span(h, chan, vel, lo, hi - lo))
+  )
 
 /// STACK driver: render EVERY child over the same full `[start, start + span)` and concatenate — the
 /// notes overlap in time (a chord / layered voices).
-def render-stack(kids: List(Pattern), chan: Int64, vel: Int64, start: Int64, span: Int64, out: List(Note)) =
-  match kids with
-    | [] => out
-    | [h, .. t] =>
-      render-stack(t, chan, vel, start, span, List.concat(out, render-span(h, chan, vel, start, span)))
+def render-stack(kids: List(Pattern), chan: Int64, vel: Int64, start: Int64, span: Int64, out: List(
+  Note
+)) = match kids with
+  | [] => out
+  | [h, .. t] => render-stack(
+    t,
+    chan,
+    vel,
+    start,
+    span,
+    List.concat(out, render-span(h, chan, vel, start, span))
+  )
 
 /// Build a list of `n` copies of a pattern (for `Fast`), so a repeat renders as an n-child `Seq`.
-def repeat-pat(p: Pattern, n: Int64) =
-  if n <= 0 then []
-  else List.prepend(repeat-pat(p, n - 1), p)
+def repeat-pat(p: Pattern, n: Int64) = if n <= 0 then [] else List.prepend(repeat-pat(p, n - 1), p)
 
 /// Length of a pattern list (local, annotated — the seq divisor).
 def list-len(ps: List(Pattern)) = match ps with
@@ -169,11 +178,23 @@ def render-pattern(p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-tick
 def render-cycles(p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-ticks: Int64, cycles: Int64) =
   render-cycles-go(p, chan, vel, start, cycle-ticks, 0, cycles, [])
 
-def render-cycles-go(p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-ticks: Int64, i: Int64, cycles: Int64, out: List(Note)) =
-  if i >= cycles then out
+def render-cycles-go(p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-ticks: Int64, i: Int64, cycles: Int64, out: List(
+  Note
+)) =
+  if i >= cycles then
+    out
   else
     let at = start + i * cycle-ticks in
-    render-cycles-go(p, chan, vel, start, cycle-ticks, i + 1, cycles, List.concat(out, render-pattern(p, chan, vel, at, cycle-ticks)))
+      render-cycles-go(
+      p,
+      chan,
+      vel,
+      start,
+      cycle-ticks,
+      i + 1,
+      cycles,
+      List.concat(out, render-pattern(p, chan, vel, at, cycle-ticks))
+    )
 
 /// Render `cycles` cycles, applying the transform `f` to the pattern on EVERY `n`-th cycle (Tidal's
 /// `every n f p`): cycle `i` plays `f(p)` when `i mod n == 0`, else plain `p`. So `every(4, rev, p)`
@@ -183,47 +204,65 @@ def render-cycles-go(p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-ti
 def render-every(n: Int64, f: Pattern -> Pattern, p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-ticks: Int64, cycles: Int64) =
   render-every-go(n, f, p, chan, vel, start, cycle-ticks, 0, cycles, [])
 
-def render-every-go(n: Int64, f: Pattern -> Pattern, p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-ticks: Int64, i: Int64, cycles: Int64, out: List(Note)) =
-  if i >= cycles then out
+def render-every-go(n: Int64, f: Pattern -> Pattern, p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-ticks: Int64, i: Int64, cycles: Int64, out: List(
+  Note
+)) =
+  if i >= cycles then
+    out
   else
     let at = start + i * cycle-ticks in
     let this-cycle = if mod-floor(i, n) == 0 then f(p) else p in
-    render-every-go(n, f, p, chan, vel, start, cycle-ticks, i + 1, cycles, List.concat(out, render-pattern(this-cycle, chan, vel, at, cycle-ticks)))
+      render-every-go(
+      n,
+      f,
+      p,
+      chan,
+      vel,
+      start,
+      cycle-ticks,
+      i + 1,
+      cycles,
+      List.concat(out, render-pattern(this-cycle, chan, vel, at, cycle-ticks))
+    )
 
 /// ============================ @test suite (pattern timing laws) ============================
-
 @test
 def a-single-atom-fills-the-whole-cycle() =
   // note-pat(60) over a 4000-tick cycle → one note at tick 0 lasting the whole 4000.
   let ns = render-pattern(note-pat(60), 0, 100, 0, 4000) in
-  match ns with
-    | [n] =>
-      (if note-start(n) == 0 then
-        (if note-dur(n) == 4000 then unit else trap("dur")) else trap("start"))
+    match ns with
+    | [n] => if note-start(n) == 0 then
+      if note-dur(n) == 4000 then unit else trap("dur")
+    else
+      trap("start")
     | _ => trap("expected exactly one note")
 
 @test
 def silence-renders-no-notes-but-holds-its-slot() =
   // A rest yields no notes; a seq of [note, silence] still puts the note in the FIRST half only.
   if list-len-notes(render-pattern(silence, 0, 100, 0, 4000)) == 0 then
-    (let ns = render-pattern(seq([note-pat(60), silence]), 0, 100, 0, 4000) in
-     match ns with
-       | [n] => (if note-dur(n) == 2000 then unit else trap("first half is 2000"))
-       | _ => trap("one note (the silence adds none)"))
-  else trap("silence is empty")
+    let ns = render-pattern(seq([note-pat(60), silence]), 0, 100, 0, 4000) in
+      match ns with
+      | [n] => if note-dur(n) == 2000 then unit else trap("first half is 2000")
+      | _ => trap("one note (the silence adds none)")
+  else
+    trap("silence is empty")
 
 @test
 def seq-tiles-the-cycle-into-equal-spans() =
   // seq([60,64,67]) over 3000 ticks → three notes at 0/1000/2000, each 1000 long, back to back.
   let ns = render-pattern(seq([note-pat(60), note-pat(64), note-pat(67)]), 0, 100, 0, 3000) in
-  match ns with
-    | [a, b, c] =>
-      (if note-start(a) == 0 then
-        (if note-start(b) == 1000 then
-          (if note-start(c) == 2000 then
-            (if note-dur(c) == 1000 then unit else trap("dur")) else trap("c start"))
-         else trap("b start"))
-       else trap("a start"))
+    match ns with
+    | [a, b, c] => if note-start(a) == 0 then
+      if note-start(b) == 1000 then
+        if note-start(c) == 2000 then
+          if note-dur(c) == 1000 then unit else trap("dur")
+        else
+          trap("c start")
+      else
+        trap("b start")
+    else
+      trap("a start")
     | _ => trap("expected three notes")
 
 @test
@@ -231,70 +270,82 @@ def seq-tiles-exactly-with-no-gap-when-it-does-not-divide() =
   // 1000 ticks / 3 children: cumulative boundaries 0,333,666,1000 — the spans TILE with no gap/overlap,
   // and the last child's end is EXACTLY the cycle end (no rounding drift).
   let ns = render-pattern(seq([note-pat(60), note-pat(62), note-pat(64)]), 0, 100, 0, 1000) in
-  match ns with
-    | [a, b, c] =>
-      // each note's end == the next note's start; last end == 1000.
-      (if (note-start(a) + note-dur(a)) == note-start(b) then
-        (if (note-start(b) + note-dur(b)) == note-start(c) then
-          (if (note-start(c) + note-dur(c)) == 1000 then unit else trap("last ends at cycle end"))
-         else trap("b tiles c"))
-       else trap("a tiles b"))
+    match ns with
+    | [a, b, c] => // each note's end == the next note's start; last end == 1000.
+    if note-start(a) + note-dur(a) == note-start(b) then
+      if note-start(b) + note-dur(b) == note-start(c) then
+        if note-start(c) + note-dur(c) == 1000 then unit else trap("last ends at cycle end")
+      else
+        trap("b tiles c")
+    else
+      trap("a tiles b")
     | _ => trap("three notes")
 
 @test
 def stack-layers-children-simultaneously() =
   // stack([60,64,67]) over 2000 ticks → a C-major triad: three notes ALL starting at 0, ALL 2000 long.
   let ns = render-pattern(stack([note-pat(60), note-pat(64), note-pat(67)]), 0, 100, 0, 2000) in
-  match ns with
-    | [a, b, c] =>
-      (if note-start(a) == 0 then
-        (if note-start(b) == 0 then
-          (if note-start(c) == 0 then
-            (if note-dur(a) == 2000 then unit else trap("full span")) else trap("c at 0"))
-         else trap("b at 0"))
-       else trap("a at 0"))
+    match ns with
+    | [a, b, c] => if note-start(a) == 0 then
+      if note-start(b) == 0 then
+        if note-start(c) == 0 then
+          if note-dur(a) == 2000 then unit else trap("full span")
+        else
+          trap("c at 0")
+      else
+        trap("b at 0")
+    else
+      trap("a at 0")
     | _ => trap("three notes")
 
 @test
 def fast-crams-repeats-into-the-span() =
   // fast(4, note-pat(60)) over 4000 ticks → four notes at 0/1000/2000/3000, each 1000 long.
   let ns = render-pattern(fast(4, note-pat(60)), 0, 100, 0, 4000) in
-  if list-len-notes(ns) == 4 then
-    (match ns with
-      | [a, b, _, _] =>
-        (if note-start(a) == 0 then
-          (if note-start(b) == 1000 then
-            (if note-dur(b) == 1000 then unit else trap("dur")) else trap("b start"))
-         else trap("a start"))
-      | _ => trap("four notes"))
-  else trap("fast 4 makes four notes")
+    if list-len-notes(ns) == 4 then
+    match ns with
+      | [a, b, _, _] => if note-start(a) == 0 then
+        if note-start(b) == 1000 then
+          if note-dur(b) == 1000 then unit else trap("dur")
+        else
+          trap("b start")
+      else
+        trap("a start")
+      | _ => trap("four notes")
+  else
+    trap("fast 4 makes four notes")
 
 @test
 def nested-seq-subdivides-recursively() =
   // seq([60, seq([64, 67])]) over 4000: first half (0..2000) is one note; second half splits into two
   // (2000..3000, 3000..4000). Three notes total, proving Seq nests.
   let ns = render-pattern(seq([note-pat(60), seq([note-pat(64), note-pat(67)])]), 0, 100, 0, 4000) in
-  match ns with
-    | [a, b, c] =>
-      (if note-dur(a) == 2000 then
-        (if note-start(b) == 2000 then
-          (if note-start(c) == 3000 then
-            (if note-dur(c) == 1000 then unit else trap("c dur")) else trap("c start"))
-         else trap("b start"))
-       else trap("a dur"))
+    match ns with
+    | [a, b, c] => if note-dur(a) == 2000 then
+      if note-start(b) == 2000 then
+        if note-start(c) == 3000 then
+          if note-dur(c) == 1000 then unit else trap("c dur")
+        else
+          trap("c start")
+      else
+        trap("b start")
+    else
+      trap("a dur")
     | _ => trap("three notes")
 
 @test
 def render-cycles-loops-the-pattern-at-successive-offsets() =
   // Two cycles of seq([60,64]) over 2000-tick cycles → notes at 0,1000 (cycle 0) then 2000,3000 (cycle 1).
   let ns = render-cycles(seq([note-pat(60), note-pat(64)]), 0, 100, 0, 2000, 2) in
-  if list-len-notes(ns) == 4 then
-    (match ns with
-      | [_, _, c, d] =>
-        (if note-start(c) == 2000 then
-          (if note-start(d) == 3000 then unit else trap("d start")) else trap("c start"))
-      | _ => trap("four notes"))
-  else trap("two cycles of two = four notes")
+    if list-len-notes(ns) == 4 then
+    match ns with
+      | [_, _, c, d] => if note-start(c) == 2000 then
+        if note-start(d) == 3000 then unit else trap("d start")
+      else
+        trap("c start")
+      | _ => trap("four notes")
+  else
+    trap("two cycles of two = four notes")
 
 @test
 def a-pattern-schedules-to-balanced-events() =
@@ -302,36 +353,47 @@ def a-pattern-schedules-to-balanced-events() =
   // stuck-key-free (balanced) MIDI event stream — pins that pattern output is valid for the whole pipeline.
   let p = seq([stack([note-pat(60), note-pat(64), note-pat(67)]), note-pat(72), silence]) in
   let evs = schedule(render-pattern(p, 0, 100, 0, 3840)) in
-  if balanced(evs) then unit else trap("pattern output must schedule to a balanced stream")
+    if balanced(evs) then unit else trap("pattern output must schedule to a balanced stream")
 
 @test
 def euclid-tresillo-hits-steps-zero-three-six() =
   // E(3,8), the tresillo: three onsets spread as evenly as possible over eight steps, at 0, 3, 6.
   if euclid-onset(0, 3, 8) then
-    (if euclid-onset(3, 3, 8) then
-      (if euclid-onset(6, 3, 8) then
-        (if euclid-onset(1, 3, 8) then trap("step 1 is a rest") else
-          (if euclid-onset(4, 3, 8) then trap("step 4 is a rest") else unit))
-       else trap("step 6 is an onset"))
-     else trap("step 3 is an onset"))
-  else trap("step 0 is an onset")
+    if euclid-onset(3, 3, 8) then
+      if euclid-onset(6, 3, 8) then
+        if euclid-onset(1, 3, 8) then
+          trap("step 1 is a rest")
+        else if euclid-onset(4, 3, 8) then
+          trap("step 4 is a rest")
+        else
+          unit
+      else
+        trap("step 6 is an onset")
+    else
+      trap("step 3 is an onset")
+  else
+    trap("step 0 is an onset")
 
 @test
 def euclid-renders-onsets-only-and-tiles-the-cycle() =
   // euclid(3,8,60) over 3840 ticks → exactly THREE notes (the rests add none), each 480 ticks (3840/8),
   // starting at 0, 3*480=1440, 6*480=2880 — the onsets land on their Euclidean steps, evenly tiled.
   let ns = render-pattern(euclid(3, 8, 60), 0, 100, 0, 3840) in
-  if list-len-notes(ns) == 3 then
-    (match ns with
-      | [a, b, c] =>
-        (if note-start(a) == 0 then
-          (if note-start(b) == 1440 then
-            (if note-start(c) == 2880 then
-              (if note-dur(a) == 480 then unit else trap("step is 480 ticks")) else trap("c at 2880"))
-           else trap("b at 1440"))
-         else trap("a at 0"))
-      | _ => trap("three onsets"))
-  else trap("E(3,8) has exactly three onsets")
+    if list-len-notes(ns) == 3 then
+    match ns with
+      | [a, b, c] => if note-start(a) == 0 then
+        if note-start(b) == 1440 then
+          if note-start(c) == 2880 then
+            if note-dur(a) == 480 then unit else trap("step is 480 ticks")
+          else
+            trap("c at 2880")
+        else
+          trap("b at 1440")
+      else
+        trap("a at 0")
+      | _ => trap("three onsets")
+  else
+    trap("E(3,8) has exactly three onsets")
 
 @test
 def euclid-clamps-degenerate-counts() =
@@ -340,31 +402,36 @@ def euclid-clamps-degenerate-counts() =
   let full = render-pattern(euclid(8, 4, 60), 0, 100, 0, 4000) in
   let empty = render-pattern(euclid(0, 8, 60), 0, 100, 0, 4000) in
   let none = render-pattern(euclid(3, 0, 60), 0, 100, 0, 4000) in
-  if list-len-notes(full) == 4 then
-    (if list-len-notes(empty) == 0 then
-      (if list-len-notes(none) == 0 then unit else trap("n<=0 is silence"))
-     else trap("k<=0 is all rests"))
-  else trap("k>=n fills every step")
+    if list-len-notes(full) == 4 then
+    if list-len-notes(empty) == 0 then
+      if list-len-notes(none) == 0 then unit else trap("n<=0 is silence")
+    else
+      trap("k<=0 is all rests")
+  else
+    trap("k>=n fills every step")
 
 @test
 def euclid-schedules-to-a-balanced-stream() =
   // End-to-end: a Euclidean rhythm renders to Notes the scheduler lowers to a stuck-key-free stream.
   let evs = schedule(render-pattern(euclid(5, 8, 64), 0, 100, 0, 3840)) in
-  if balanced(evs) then unit else trap("euclid output must schedule to a balanced stream")
+    if balanced(evs) then unit else trap("euclid output must schedule to a balanced stream")
 
 @test
 def rev-plays-a-sequence-backwards() =
   // rev(seq([60,64,67])) over 3000 ticks → the notes sound in REVERSE order: 67 at tick 0, 64 at 1000,
   // 60 at 2000 (the pitches flip; the timing grid does not).
   let ns = render-pattern(rev(seq([note-pat(60), note-pat(64), note-pat(67)])), 0, 100, 0, 3000) in
-  match ns with
-    | [a, b, c] =>
-      (if note-num-of(a) == 67 then
-        (if note-num-of(b) == 64 then
-          (if note-num-of(c) == 60 then
-            (if note-start(a) == 0 then unit else trap("first at tick 0")) else trap("c is 60"))
-         else trap("b is 64"))
-       else trap("a is 67"))
+    match ns with
+    | [a, b, c] => if note-num-of(a) == 67 then
+      if note-num-of(b) == 64 then
+        if note-num-of(c) == 60 then
+          if note-start(a) == 0 then unit else trap("first at tick 0")
+        else
+          trap("c is 60")
+      else
+        trap("b is 64")
+    else
+      trap("a is 67")
     | _ => trap("three notes")
 
 @test
@@ -373,11 +440,14 @@ def rev-is-its-own-inverse() =
   let p = seq([note-pat(60), note-pat(62), note-pat(64), note-pat(65)]) in
   let once = render-pattern(p, 0, 100, 0, 4000) in
   let twice = render-pattern(rev(rev(p)), 0, 100, 0, 4000) in
-  match once with
-    | [a0, _, _, _] =>
-      (match twice with
-        | [b0, _, _, _] => if note-num-of(a0) == note-num-of(b0) then unit else trap("double-rev restores order")
-        | _ => trap("twice has four notes"))
+    match once with
+    | [a0, _, _, _] => (match twice with
+      | [b0, _, _, _] => if note-num-of(a0) == note-num-of(b0) then
+        unit
+      else
+        trap("double-rev restores order")
+      | _ => trap("twice has four notes")
+    )
     | _ => trap("once has four notes")
 
 @test
@@ -387,7 +457,7 @@ def rev-flips-a-nested-seq-inside-a-stack() =
   // then 60, while the sustained-72 layer is unchanged. Over 2000 ticks the seq-layer's first note is 64.
   let p = stack([seq([note-pat(60), note-pat(64)]), note-pat(72)]) in
   let ns = render-pattern(rev(p), 0, 100, 0, 2000) in
-  // The stack renders layer 1 (the seq) first: two notes, then the sustained 72. First note is 64 (flipped).
+    // The stack renders layer 1 (the seq) first: two notes, then the sustained 72. First note is 64 (flipped).
   match ns with
     | [a, _, _] => if note-num-of(a) == 64 then unit else trap("nested seq inside stack must flip")
     | _ => trap("expected three notes (two from the seq layer + one sustained)")
@@ -397,25 +467,39 @@ def render-every-transforms-only-the-nth-cycle() =
   // every(2, rev, seq([60,64])) over three 2000-tick cycles: cycles 0 and 2 are REVERSED (play 64 then
   // 60), cycle 1 is forward (60 then 64). Six notes; check the first note of each cycle.
   let ns = render-every(2, rev, seq([note-pat(60), note-pat(64)]), 0, 100, 0, 2000, 3) in
-  if list-len-notes(ns) == 6 then
-    (match ns with
-      | [c0, _, c1, _, c2, _] =>
-        (if note-num-of(c0) == 64 then          // cycle 0: reversed → 64 first
-          (if note-num-of(c1) == 60 then         // cycle 1: forward → 60 first
-            (if note-num-of(c2) == 64 then unit else trap("cycle 2 reversed")) else trap("cycle 1 forward"))
-         else trap("cycle 0 reversed"))
-      | _ => trap("six notes"))
-  else trap("three cycles of two = six notes")
+    if list-len-notes(ns) == 6 then
+    match ns with
+      | [c0, _, c1, _, c2, _] => if note-num-of(c0) == 64 then
+        // cycle 0: reversed → 64 first
+        if note-num-of(c1) == 60 then
+          // cycle 1: forward → 60 first
+          if note-num-of(c2) == 64 then unit else trap("cycle 2 reversed")
+        else
+          trap("cycle 1 forward")
+      else
+        trap("cycle 0 reversed")
+      | _ => trap("six notes")
+  else
+    trap("three cycles of two = six notes")
 
 @test
 def render-every-schedules-to-a-balanced-stream() =
   // End-to-end: an every-varied loop still schedules to a stuck-key-free stream.
   let evs = schedule(render-every(3, rev, euclid(3, 8, 60), 0, 100, 0, 3840, 4)) in
-  if balanced(evs) then unit else trap("every-varied loop must schedule to a balanced stream")
+    if balanced(evs) then unit else trap("every-varied loop must schedule to a balanced stream")
 
 export {
   Pattern.*,
-  silence, note-pat, seq, stack, fast, euclid, rev,
+  silence,
+  note-pat,
+  seq,
+  stack,
+  fast,
+  euclid,
+  rev,
   euclid-onset,
-  render-span, render-pattern, render-cycles, render-every,
+  render-span,
+  render-pattern,
+  render-cycles,
+  render-every
 }

@@ -17,7 +17,6 @@
 import { pc-of, insert-sorted, pc-set } from "pc-set"
 
 // ---- pitch-class set transposition -------------------------------------------------------------------
-
 /// Transpose a pitch-class SET up by `t` semitones (mod 12), returning a fresh canonical sorted set (the
 /// shift can reorder members, so re-sort via the shared `insert-sorted`). Recursive driver, annotated.
 def transpose-set-go(pcs: List(Int64), t: Int64, acc: List(Int64)) = match pcs with
@@ -28,16 +27,17 @@ def transpose-set-go(pcs: List(Int64), t: Int64, acc: List(Int64)) = match pcs w
 def transpose-pc-set(notes: List(Int64), t: Int64) = transpose-set-go(pc-set(notes), t, [])
 
 // ---- set equality ------------------------------------------------------------------------------------
-
 /// Exact equality of two Int64 lists (element-wise). Both are sorted deduped sets, so `==` is set equality.
 def list-eq(a: List(Int64), b: List(Int64)) = match a with
-  | [] => (match b with | [] => true | [_, .. _] => false)
-  | [ha, .. ta] => (match b with
+  | [] => (match b with
+    | [] => true
+    | [_, .. _] => false
+  )
+  | [ha, .. ta] => match b with
     | [] => false
-    | [hb, .. tb] => if ha == hb then list-eq(ta, tb) else false)
+    | [hb, .. tb] => if ha == hb then list-eq(ta, tb) else false
 
 // ---- transpositional equivalence ---------------------------------------------------------------------
-
 /// Search transpositions of set `a` for one equal to set `b`, starting at amount `t` and stepping `t` up
 /// by one MOD 12 (`pc-of(t + 1)` wraps 11 back to 0) each recursion, for up to `fuel` steps. Returns the
 /// first matching `t` as `Some(t)`, or `None` when `fuel` is exhausted with no match. Called with `t = 0`
@@ -46,9 +46,12 @@ def list-eq(a: List(Int64), b: List(Int64)) = match a with
 /// valid pitch-class interval back, matching `transposition-between`'s documented range). Typed absence —
 /// no sentinel interval flows out.
 def find-transposition(a: List(Int64), b: List(Int64), t: Int64, fuel: Int64) =
-  if fuel <= 0 then Option.None(unit)
-  else if list-eq(transpose-set-go(a, t, []), b) then Option.Some(pc-of(t))
-  else find-transposition(a, b, pc-of(t + 1), fuel - 1)
+  if fuel <= 0 then
+    Option.None(unit)
+  else if list-eq(transpose-set-go(a, t, []), b) then
+    Option.Some(pc-of(t))
+  else
+    find-transposition(a, b, pc-of(t + 1), fuel - 1)
 
 /// The transposition interval `0..11` mapping the pitch-class set of `xs` onto that of `ys`, as
 /// `Some(t)`, or `None` if they are NOT transpositions of one another. (Returns the SMALLEST such t; for a
@@ -58,23 +61,22 @@ def transposition-between(xs: List(Int64), ys: List(Int64)) =
 
 /// Are two note sets the SAME transpositional set-class (one a transposition of the other)? Sets of
 /// different SIZE can never be T-equivalent; otherwise search the twelve transpositions.
-def same-transposition-class(xs: List(Int64), ys: List(Int64)) =
-  match transposition-between(xs, ys) with
-    | Option.Some(_) => true
-    | Option.None(_) => false
+def same-transposition-class(xs: List(Int64), ys: List(Int64)) = match transposition-between(xs, ys) with
+  | Option.Some(_) => true
+  | Option.None(_) => false
 
 /// ============================ @test suite (transpositional set-class) ============================
-
 @test
 def two-major-triads-are-the-same-transposition-class() =
   // C major {0,4,7} and G major {7,11,2} are both major triads → T-equivalent, mapped by t=7.
   let c = [60, 64, 67] in
   let g = [67, 71, 74] in
-  if same-transposition-class(c, g) then
-    (match transposition-between(c, g) with
+    if same-transposition-class(c, g) then
+    match transposition-between(c, g) with
       | Option.Some(t) => if t == 7 then unit else trap("C major maps to G major by t=7")
-      | Option.None(_) => trap("they are T-equivalent"))
-  else trap("two major triads share a set-class")
+      | Option.None(_) => trap("they are T-equivalent")
+  else
+    trap("two major triads share a set-class")
 
 @test
 def a-major-and-a-minor-triad-are-different-set-classes() =
@@ -82,26 +84,30 @@ def a-major-and-a-minor-triad-are-different-set-classes() =
   // {0,3,7}) → None, non-vacuous negative.
   let maj = [60, 64, 67] in
   let min = [60, 63, 67] in
-  if same-transposition-class(maj, min) then trap("major and minor are different set-classes")
-  else (match transposition-between(maj, min) with
-    | Option.None(_) => unit
-    | Option.Some(_) => trap("no transposition maps major onto minor"))
+    if same-transposition-class(maj, min) then
+    trap("major and minor are different set-classes")
+  else
+    match transposition-between(maj, min) with
+      | Option.None(_) => unit
+      | Option.Some(_) => trap("no transposition maps major onto minor")
 
 @test
 def transposition-class-is-octave-order-and-doubling-invariant() =
   // The test is on pitch-class SETS: re-voicing, reordering, and octave-doubling C major must not change
   // that it is T-equivalent to G major.
-  let c-spread-doubled = [67, 60, 76, 72] in   // G, C, E', C' — reordered, spread, C doubled → set {0,4,7}
-  let g = [74, 67, 71] in                       // reordered G major → set {2,7,11}
-  if same-transposition-class(c-spread-doubled, g) then unit
-  else trap("the set-class survives voicing/order/doubling")
+  let c-spread-doubled = [67, 60, 76, 72] in // G, C, E', C' — reordered, spread, C doubled → set {0,4,7}
+  let g = [74, 67, 71] in // reordered G major → set {2,7,11}
+    if same-transposition-class(c-spread-doubled, g) then
+    unit
+  else
+    trap("the set-class survives voicing/order/doubling")
 
 @test
 def every-set-is-t-equivalent-to-itself-at-t-zero() =
   // Reflexivity: a set maps onto itself, and the SMALLEST such t is 0 (for a non-symmetric set the only
   // one). A C-major triad against itself → Some(0).
   let c = [60, 64, 67] in
-  match transposition-between(c, c) with
+    match transposition-between(c, c) with
     | Option.Some(t) => if t == 0 then unit else trap("a set maps to itself at t=0")
     | Option.None(_) => trap("a set is T-equivalent to itself")
 
@@ -111,20 +117,25 @@ def transpose-pc-set-round-trips-back-by-the-complement() =
   // up 5 then up 7 = up 12 = identity.
   let c = pc-set([60, 64, 67]) in
   let up5 = transpose-pc-set([60, 64, 67], 5) in
-  if list-eq(transpose-set-go(up5, 7, []), c) then unit
-  else trap("t then 12-t is the identity transposition")
+    if list-eq(transpose-set-go(up5, 7, []), c) then
+    unit
+  else
+    trap("t then 12-t is the identity transposition")
 
 @test
 def the-diminished-seventh-is-transpositionally-symmetric() =
   // The fully-symmetric dim7 {0,3,6,9} maps onto ITSELF under transposition by 3 (its period). So
   // transposition-between(dim7, dim7-up-3) finds t and the two are the same set-class; and dim7 vs its
   // own +3 transposition are equal SETS (the symmetry). Pins the wrap + symmetric-set handling.
-  let dim7 = [60, 63, 66, 69] in                 // {0,3,6,9}
-  let dim7-up3 = transpose-pc-set(dim7, 3) in     // still {0,3,6,9}
-  if list-eq(dim7-up3, pc-set(dim7)) then
-    (if same-transposition-class(dim7, [61, 64, 67, 70]) then unit  // {1,4,7,10} = dim7 at t=1
-     else trap("a transposed dim7 is the same set-class"))
-  else trap("dim7 transposed by 3 is itself")
+  let dim7 = [60, 63, 66, 69] in // {0,3,6,9}
+  let dim7-up3 = transpose-pc-set(dim7, 3) in // still {0,3,6,9}
+    if list-eq(dim7-up3, pc-set(dim7)) then
+    if same-transposition-class(dim7, [61, 64, 67, 70]) then
+      unit // {1,4,7,10} = dim7 at t=1
+    else
+      trap("a transposed dim7 is the same set-class")
+  else
+    trap("dim7 transposed by 3 is itself")
 
 @test
 def the-relation-is-symmetric-by-the-complementary-transposition() =
@@ -133,13 +144,14 @@ def the-relation-is-symmetric-by-the-complementary-transposition() =
   // mapping interval is consistent, not just that the sets are related.
   let c = [60, 64, 67] in
   let g = [67, 71, 74] in
-  match transposition-between(c, g) with
-    | Option.Some(tcg) =>
-      (match transposition-between(g, c) with
-        | Option.Some(tgc) =>
-          if tcg == 7 then (if tgc == 5 then unit else trap("G major maps back to C major by t=5"))
-          else trap("C major maps to G major by t=7")
-        | Option.None(_) => trap("the relation is symmetric — G~C too"))
+    match transposition-between(c, g) with
+    | Option.Some(tcg) => (match transposition-between(g, c) with
+      | Option.Some(tgc) => if tcg == 7 then
+        if tgc == 5 then unit else trap("G major maps back to C major by t=5")
+      else
+        trap("C major maps to G major by t=7")
+      | Option.None(_) => trap("the relation is symmetric — G~C too")
+    )
     | Option.None(_) => trap("C~G")
 
 @test
@@ -147,18 +159,22 @@ def different-cardinalities-are-never-t-equivalent() =
   // A triad (3 members) and a seventh (4 members) can never be transpositions of each other → None.
   let triad = [60, 64, 67] in
   let seventh = [60, 64, 67, 70] in
-  if same-transposition-class(triad, seventh) then trap("a triad and a seventh differ in size")
-  else unit
+    if same-transposition-class(triad, seventh) then
+    trap("a triad and a seventh differ in size")
+  else
+    unit
 
 @test
 def the-empty-set-is-t-equivalent-only-to-the-empty-set() =
   // Degenerate base case: the empty set maps onto the empty set (Some(0)), but not onto any non-empty set.
   match transposition-between([], []) with
     | Option.Some(t) => if t == 0 then
-        (if same-transposition-class([], [60]) then trap("empty is not T-equivalent to a note") else unit)
-      else trap("empty maps to empty at t=0")
+      if same-transposition-class([], [60]) then
+        trap("empty is not T-equivalent to a note")
+      else
+        unit
+    else
+      trap("empty maps to empty at t=0")
     | Option.None(_) => trap("the empty set is T-equivalent to itself")
 
-export {
-  transpose-pc-set, transposition-between, same-transposition-class,
-}
+export { transpose-pc-set, transposition-between, same-transposition-class }

@@ -66,7 +66,7 @@ def is-conjunct(notes: List(Int64)) = leap-count(notes) == 0
 def net-direction(notes: List(Int64)) = match notes with
   | [] => Direction.Level
   | [h, .. t] => let last = last-note(h, t) in
-  if last > h then Direction.Rising else if last < h then Direction.Falling else Direction.Level
+    if last > h then Direction.Rising else if last < h then Direction.Falling else Direction.Level
 
 /// The last note of a non-empty melody (head + tail form). Recursive, annotated.
 def last-note(h: Int64, t: List(Int64)) = match t with
@@ -78,17 +78,14 @@ def last-note(h: Int64, t: List(Int64)) = match t with
 def steps-are-the-signed-note-to-note-motion() =
   // C D E [60,62,64] steps up by +2, +2.
   match steps([60, 62, 64]) with
-    | [a, b] => (if a == 2 then
-      if b == 2 then unit else trap("second step")
-    else
-      trap("first step"))
+    | [a, b] => if a == 2 then if b == 2 then unit else trap("second step") else trap("first step")
     | _ => trap("two steps for three notes")
 
 @test
 def a-descending-line-has-negative-steps() =
   // [67,64,60] (G E C) steps -3, -4.
   match steps([67, 64, 60]) with
-    | [a, b] => (if a == 0 - 3 then if b == 0 - 4 then unit else trap("second") else trap("first"))
+    | [a, b] => if a == 0 - 3 then if b == 0 - 4 then unit else trap("second") else trap("first")
     | _ => trap("two steps")
 
 @test
@@ -110,8 +107,10 @@ def a-scale-is-conjunct-and-an-arpeggio-is-not() =
   if is-conjunct([60, 62, 64, 65]) then
     if is-conjunct([60, 64, 67]) then
       trap("an arpeggio leaps")
+    else if leap-count([60, 64, 67]) == 2 then
+      unit
     else
-      if leap-count([60, 64, 67]) == 2 then unit else trap("two leaps in the arpeggio")
+      trap("two leaps in the arpeggio")
   else
     trap("a scale is conjunct")
 
@@ -144,7 +143,7 @@ def a-melody-too-short-to-move-is-level() =
 def a-chromatic-run-is-conjunct() =
   // Twelve chromatic semitones [60..71] move entirely by minor seconds → conjunct, range 11.
   let run = [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71] in
-  if is-conjunct(run) then
+    if is-conjunct(run) then
     if range(run) == 11 then unit else trap("chromatic run spans 11")
   else
     trap("a chromatic run is stepwise")

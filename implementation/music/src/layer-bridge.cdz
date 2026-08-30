@@ -49,10 +49,7 @@ import { major-triad-stack, dominant-seventh-stack } from "chord"
 /// Assert the rational interval `ri` projects (exactly, on the 12-TET grid) to the same semitone count the
 /// Int64 interval `ii` carries. Returns unit on agreement, traps on mismatch or an off-grid rational.
 def agree(ri: RInterval, ii: Interval) = match to-semitones-exact(ri) with
-  | Option.Some(s) => (if s == semitones(ii) then
-    unit
-  else
-    trap("rational/Int64 semitone mismatch"))
+  | Option.Some(s) => if s == semitones(ii) then unit else trap("rational/Int64 semitone mismatch")
   | Option.None(_) => trap(
     "rational interval is off the 12-TET grid — cannot bridge to Int64 semitones"
   )
@@ -114,7 +111,7 @@ def the-whole-twelve-tet-grid-round-trips() =
   let _u9 = agree(r-major-sixth, major-sixth) in
   let _u10 = agree(r-minor-seventh, minor-seventh) in
   let _u11 = agree(r-major-seventh, major-seventh) in
-  agree(r-octave, octave-interval)
+    agree(r-octave, octave-interval)
 
 /// Assert a rational chord's STACK (list of RInterval offsets) projects, entry-by-entry, to the Int64
 /// semitone stack `ints` — the chord-level twin of `agree`. Traps on any mismatch or off-grid entry.
@@ -126,10 +123,10 @@ def chord-agree(rstack: List(RInterval), ints: List(Int64)) = match rstack with
   | [rh, .. rt] => match ints with
     | [] => trap("rational chord has more intervals")
     | [ih, .. it] => match to-semitones-exact(rh) with
-      | Option.Some(s) => (if s == ih then
+      | Option.Some(s) => if s == ih then
         chord-agree(rt, it)
       else
-        trap("chord stack semitone mismatch"))
+        trap("chord stack semitone mismatch")
       | Option.None(_) => trap("rational chord interval off the 12-TET grid")
 
 @test
@@ -138,6 +135,6 @@ def rational-and-int64-chords-agree-on-twelve-tet() =
   // CHORDS): the rational chord stacks project to the SAME semitone stacks as the Int64 chord.cdz stacks.
   // major-triad-r → [0,4,7] = major-triad-stack; dominant-seventh-r → [0,4,7,10] = dominant-seventh-stack.
   let _t = chord-agree(rchord-stack(major-triad-r(r-unison)), major-triad-stack) in
-  chord-agree(rchord-stack(dominant-seventh-r(r-unison)), dominant-seventh-stack)
+    chord-agree(rchord-stack(dominant-seventh-r(r-unison)), dominant-seventh-stack)
 
 export { agree, chord-agree }
