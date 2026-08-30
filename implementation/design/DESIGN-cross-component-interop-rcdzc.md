@@ -499,7 +499,7 @@ composition; no wasmparser in the compile path, no external interface artifact n
   (a compound interface member is a later increment); bare (no runtime) provider.
 - **X4b-4 — runner/CLI delivery. ✅ DONE (`spec`) — DRIVEABLE FROM THE COMMAND LINE.** Two CLI surfaces:
   (1) `cdz compile <prov> --component-name cadenza:pkg/iface` (a `--component-name` flag on
-  `rcdzc::cli::CompileArgs` + the `cdz` driver → a `KIND_COMPONENT_NAME` artifact via
+  `rcdzc_cli::CompileArgs` + the `cdz` driver → a `KIND_COMPONENT_NAME` artifact via
   `component_name_artifact`, the `--entry` pattern) publishes a provider's interface; (2) `cdz-run <cons>
   --peer cadenza:pkg/iface=<prov.wasm>` (a repeatable `--peer interface=path`) composes the consumer with
   its peers via `run_with_peers` — resolving the shared runtime if the consumer OR any peer needs it.

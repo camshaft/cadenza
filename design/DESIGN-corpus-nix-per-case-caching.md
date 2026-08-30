@@ -68,7 +68,7 @@ This mirrors the harness framework's already-landed `mkHarnessAst` (transform) v
   (`program.ast` / `module-*.ast` / `wit-world.ast` / `component-name` / `test-run.ast`) + a `manifest`
   (SHIPPED). Standalone bin: `cdz-corpus`.
 - build: `cdz compile` already takes binary-AST `ast:/wit-world:` inputs + `--component-name`/`--entry`
-  and emits per-backend (`-t wasm|rust|…`); `rcdzc::cli::parse_and_run()` is the standalone entry.
+  and emits per-backend (`-t wasm|rust|…`); `rcdzc_cli::parse_and_run()` is the standalone entry.
   Expose it as a small `cdz-compile` bin (rcdzc has a `[lib]`, no `[[bin]]` yet) — a compiler-only-closure
   passthrough, since the shred already hands it native inputs.
 - exec: `cdz run-emitted` (run a pre-compiled artifact — already compiler-independent). Add grading
@@ -99,7 +99,7 @@ on the full corpus.
    shred (DONE: #3364 + #3382 single-form program root; native wit-world/component-name replacing the
    compile-unit container). Unit-tested; verified end to end that a shredded case (incl. an imposed
    `wit-world.ast` + `component-name`) compiles with the compiler's native args and NO transform.
-2. **`cdz-compile` small bin** (compiler-only closure) — a passthrough over `rcdzc::cli::parse_and_run()`
+2. **`cdz-compile` small bin** (compiler-only closure) — a passthrough over `rcdzc_cli::parse_and_run()`
    building a case's native artifacts → wasm/outcome per backend.
 3. **`cdz-run` grade mode** — run-emitted + compare to expect → pass/fail.
 4. **flake module**: `mkCorpusCase` (shred→build→exec) over ONE corpus file (01-literals) + aggregate;
