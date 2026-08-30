@@ -45,6 +45,20 @@ run_real() {
 # Emergency bypass — kill-switch execs real cargo unchanged.
 [ -n "${CDZ_NO_CARGO_SHIM:-}" ] && run_real "$@"
 
+# SHARED COMPILE CACHE — no-restart propagation of #5878 (operator seq-267). window.sh sets RUSTC_WRAPPER at
+# window LAUNCH only, so the ~32 ALREADY-RUNNING agents don't have it. This shim runs on EVERY cargo call, so
+# injecting it HERE means a running agent's next cargo build picks up sccache with NO window restart (once
+# refresh-tools re-installs this shim on its next `fleet sync`). Only the native-cargo (run_real) path uses
+# it — the nix routes below are hermetic (RUSTC_WRAPPER doesn't enter the nix sandbox). NOTE: this does NOT
+# make cranelift cross-worktree-HIT — build-script generated-source path keying structurally defeats that
+# (that's warm-target seq-195's job); this delivers the registry-dep + same-worktree PARTIAL win. Respect an
+# explicit override; skip if sccache isn't installed.
+if [ -z "${RUSTC_WRAPPER:-}" ] && command -v sccache >/dev/null 2>&1; then
+  export RUSTC_WRAPPER=sccache
+  export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache-fleet}"
+  export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-20G}"
+fi
+
 _sub="${1:-}"
 
 # CONTROL-PLANE EXEMPT: `cargo xtask fleet …` is the fleet orchestration hot loop — NEVER warn/touch it

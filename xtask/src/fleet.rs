@@ -7586,8 +7586,33 @@ fn sync_base_pause_prefers_origin_main(
         && pr_sync_paused_by_trunk_lag(om_ahead_of_trunk)
 }
 
+/// Re-run `refresh-tools.sh` (reinstall the cargo/nix shims + re-sync the nix PATH wrappers) from the
+/// current worktree, so a RUNNING agent picks up a landed shim/tooling change WITHOUT a window restart
+/// (operator seq-267). `refresh-tools.sh` ALREADY documents `fleet sync` as its "agent update path" caller
+/// (sync's `git reset --hard` fires no git hook, so the post-merge/post-checkout hooks miss agents) — but
+/// the call was never actually wired; this is that wiring. THROTTLED via `REFRESH_MIN_INTERVAL_SEC` (30min)
+/// so the per-tick sync doesn't re-eval nix every time — the script's stamp-gate skips within the interval,
+/// so most syncs are a cheap no-op and only ~2×/hour does it re-cp the shims + re-eval the wrappers.
+/// FAIL-OPEN + best-effort (never blocks the sync; the script self-bounds with a 300s nix timeout + exits 0
+/// on any error). Skips silently if the script isn't materialized (older hub).
+fn refresh_fleet_tools(fleet: &Fleet, cwd: &Path) {
+    let script = fleet.root.join("refresh-tools.sh");
+    if !script.exists() {
+        return;
+    }
+    let _ = Command::new("bash")
+        .arg(&script)
+        .current_dir(cwd)
+        .env("REFRESH_MIN_INTERVAL_SEC", "1800")
+        .output();
+}
+
 fn sync(fleet: &Fleet, force: bool) {
     let cwd = std::env::current_dir().expect("cwd");
+    // Propagate any landed shim/tooling change to THIS running agent without a restart (operator seq-267):
+    // sync runs every tick, so re-running refresh-tools here re-installs the (throttled) shims fleet-wide.
+    // Runs regardless of the sync outcome below (tools are orthogonal to the git state). Fail-open.
+    refresh_fleet_tools(fleet, &cwd);
     let git = |args: &[&str]| -> std::process::Output {
         Command::new("git")
             .current_dir(&cwd)
