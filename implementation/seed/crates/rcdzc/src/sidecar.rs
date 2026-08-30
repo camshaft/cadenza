@@ -128,35 +128,38 @@ pub fn diagnostics_wire(diags: &[crate::Diagnostic]) -> Vec<u8> {
 pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
     match query {
         Query::TypeOf { name } => {
-            let text = match db.def_by_name(name) {
+            // The `cdz type NAME` verdict as a tagged binary-AST sum (`cadenza_compile_abi::type_info_wire`),
+            // NOT a rendered string (operator 307: full type AST; the consumer renders + decides exit code
+            // from the STRUCTURE, no `is_no_such_definition` string-match):
+            //   • Found(ty-payload) — the def's GENERALIZED scheme type as the structured payload
+            //     (`encode_ty_payload`); the consumer renders it via `render_ty_scheme` (distinct quantified
+            //     vars get stable letters `a`,`b`,… so a generic sig's TIE STRUCTURE is visible), preserving
+            //     the old `render_scheme` display.
+            //   • Unknown — the def exists but its type could not be solved (an ambiguous unannotated param);
+            //     a DEFINED "unknown", not an error (the query is total).
+            //   • NoDef(msg) — the name names no definition; the total verdict message, with the same closed-
+            //     set "did you mean?" (`did_you_mean` over the program's own def names) the compiler's
+            //     unbound-name sites carry. The consumer prints it + exits FAILURE (a typo isn't a type).
+            let info = match db.def_by_name(name) {
                 Some(def) => match crate::infer::def_scheme(db, def) {
-                    // The definition's rendered type. `render_scheme` names each DISTINCT quantified type
-                    // variable with a stable letter (`a`, `b`, …) rather than collapsing every var to `_`,
-                    // so a generic signature's TIE STRUCTURE is visible — `(-> (List a) (Iter a))` (element
-                    // tied) reads differently from `(-> (Iter a) (Iter b))` (untied), where `render_name`
-                    // would print `(-> (Iter _) (Iter _))` for both. A monomorphic scheme is byte-identical
-                    // to `render_name`. Diagnostic MESSAGES keep the collapsed `_` (an unknown type there is
-                    // just "some type"); only this `cdz type` surface names vars, the tool for diagnosing a
-                    // recursive-generic monomorphization tie.
-                    Some(scheme) => scheme.render_scheme(&db.name_ctx()),
-                    // A def whose type could not be solved (an ambiguous unannotated parameter) — a
-                    // DEFINED "unknown", not an error: the query is total.
-                    None => "unknown".to_string(),
+                    Some(scheme) => {
+                        let ty_root = crate::eval::encode_ty_payload(db, &scheme.ty);
+                        cadenza_compile_abi::TypeInfo::Found(extract_subtree(&db.ast, ty_root))
+                    }
+                    None => cadenza_compile_abi::TypeInfo::Unknown,
                 },
-                // A name that names no definition — but a near-miss for a REAL def name (`computee` for
-                // `compute`) is almost always a typo, so name the nearest, the same closed-set "did you
-                // mean?" the compiler's unbound-name / export / pragma sites carry. The candidate pool is
-                // the program's own def names, so a suggestion can only ever point at a real definition.
                 None => {
                     let names: Vec<&str> = db.defs.iter().map(|d| d.name.as_str()).collect();
                     let hint = crate::diag::suggest::did_you_mean(name, names, 3);
-                    format!("no such definition `{name}`{hint}")
+                    cadenza_compile_abi::TypeInfo::NoDef(format!(
+                        "no such definition `{name}`{hint}"
+                    ))
                 }
             };
             QueryResult {
                 kind: KIND_TYPE_INFO,
                 name: name.clone(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_type_info(&info),
             }
         }
         Query::UsesOf { name } => {

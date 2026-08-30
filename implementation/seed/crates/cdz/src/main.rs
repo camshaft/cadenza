@@ -5137,22 +5137,6 @@ struct DocModuleArgs {
     width: usize,
 }
 
-/// Does a total by-NAME query's rendered result (`type`/`doc`/`instantiations`) mean "the name resolves
-/// to NOTHING" (a typo) rather than a real answer? The `TypeOf`/`DocOf`/… sidecar queries are TOTAL — they
-/// return a defined line even for an unknown name: `no such definition `<name>`` optionally followed by a
-/// hint (` — did you mean `Y`?` OR ` — closest matches: …`). A `cdz` command maps THIS verdict to a
-/// non-zero exit so a script can tell a typo from a real (if empty/undocumented) answer.
-///
-/// Match by RECONSTRUCTING the exact sentinel for the QUERIED `name` and comparing the WHOLE trimmed text
-/// (`== sentinel`, or `sentinel + " — "` + any hint) — NOT a loose `contains`/`starts_with` on arbitrary
-/// rendered prose, which would misclassify a legitimate result that merely began with that phrase (the
-/// pr467 brittleness fix, generalized across the by-name queries).
-fn is_no_such_definition(rendered: &str, name: &str) -> bool {
-    let sentinel = format!("no such definition `{name}`");
-    let trimmed = rendered.trim();
-    trimmed == sentinel || trimmed.starts_with(&format!("{sentinel} — "))
-}
-
 /// `cdz type NAME FILE` — parse in-process, drive the compiler's `TypeOf` sidecar query, print the
 /// rendered type. A query is a pure, total fact read: it answers even for a program that would not
 /// compile (`DESIGN-sidecar-api.md`). An UNRESOLVABLE name (a typo) exits non-zero — the answer is still
@@ -5173,17 +5157,28 @@ fn run_type(args: &TypeArgs) -> ExitCode {
         }),
     );
     match out.artifact(cadenza_compile_abi::sidecar::KIND_TYPE_INFO) {
-        Some(bytes) => {
-            let text = String::from_utf8_lossy(bytes);
-            println!("{text}");
-            // A total query answers even for an unknown name with a "no such definition `X`" verdict —
-            // map that to a FAILURE (a typo isn't a type), while a real type stays SUCCESS.
-            if is_no_such_definition(&text, &args.name) {
-                ExitCode::FAILURE
-            } else {
+        // The verdict is a structured binary-AST sum (`decode_type_info`); the exit code + display come
+        // from the TAG, not a string-match. `Found` renders the FULL structured type payload via the
+        // shared cadenza-syntax renderer (`render_ty_scheme` — distinct quantified vars get stable letters,
+        // preserving the old `render_scheme` display); `NoDef` (a typo) prints its total verdict message +
+        // exits FAILURE (a typo isn't a type); `Unknown` prints "unknown" (a real but unsolved type).
+        Some(bytes) => match cadenza_compile_abi::decode_type_info(bytes) {
+            cadenza_compile_abi::TypeInfo::Found(ty) => {
+                println!(
+                    "{}",
+                    cadenza_syntax::render_ty::render_ty_scheme(&ty, ty.root)
+                );
                 ExitCode::SUCCESS
             }
-        }
+            cadenza_compile_abi::TypeInfo::Unknown => {
+                println!("unknown");
+                ExitCode::SUCCESS
+            }
+            cadenza_compile_abi::TypeInfo::NoDef(msg) => {
+                println!("{msg}");
+                ExitCode::FAILURE
+            }
+        },
         None => {
             report_errors(&out);
             ExitCode::FAILURE
