@@ -308,8 +308,8 @@ pub(super) fn lower_map_field(
             None => {
                 // A nested map inside a RUNTIME/non-constant compound — the runtime nested-map read is not
                 // yet wired (the direct runtime path below reads the whole `scrutinee`, not a sub-path).
-                return Core::Poison(Reject::decline(
-                    "a nested map pattern over a runtime/non-constant scrutinee is not yet matched",
+                return Core::Poison(Reject::unsupported(
+                    "matching a nested map pattern over a runtime/non-constant scrutinee is not supported",
                 ));
             }
         }
@@ -343,8 +343,8 @@ pub(super) fn lower_map_field(
                 value_heads,
             );
         }
-        return Core::Poison(Reject::decline(
-            "a nested map pattern over a runtime map scrutinee is not yet matched (constant map only)",
+        return Core::Poison(Reject::unsupported(
+            "matching a nested map pattern over a runtime map scrutinee is not supported (constant map only)",
         ));
     };
     match key {
@@ -363,8 +363,8 @@ pub(super) fn lower_map_field(
                         let ev = *ev;
                         return match fold_sum_path(db, ev, value_steps) {
                             Some(c) => c,
-                            None => Core::Poison(Reject::decline(
-                                "a nested value sub-pattern over a runtime value in a constant map is not yet matched",
+                            None => Core::Poison(Reject::unsupported(
+                                "matching a nested value sub-pattern over a runtime value in a constant map is not supported",
                             )),
                         };
                     }
@@ -1137,8 +1137,8 @@ pub(super) fn lower_record_project(
                 _ => match runtime_record_fields(db, record) {
                     Some(m) => (m, true),
                     None => {
-                        return Core::Poison(Reject::decline(
-                            "a record row operation over a runtime record is not yet built",
+                        return Core::Poison(Reject::unsupported(
+                            "a record row operation over a runtime record is not supported",
                         ));
                     }
                 },
@@ -1196,13 +1196,13 @@ pub(super) fn lower_record_merge(db: &mut Db, id: StructId, a: StructId, b: Stru
             }
         };
     let Some(fa) = operand_fields(db, a, &mut runtime_operands) else {
-        return Core::Poison(Reject::decline(
-            "Record.merge over a runtime record is not yet built",
+        return Core::Poison(Reject::unsupported(
+            "Record.merge over a runtime record is not supported",
         ));
     };
     let Some(fb) = operand_fields(db, b, &mut runtime_operands) else {
-        return Core::Poison(Reject::decline(
-            "Record.merge over a runtime record is not yet built",
+        return Core::Poison(Reject::unsupported(
+            "Record.merge over a runtime record is not supported",
         ));
     };
     // The union — `a`'s fields then `b`'s (a shared field would let `b` win, but the disjointness CDZ0211
@@ -1265,8 +1265,8 @@ pub(super) fn lower_record_insert(
                 _ => match runtime_record_fields(db, record) {
                     Some(m) => (m, true),
                     None => {
-                        return Core::Poison(Reject::decline(
-                            "a record row operation over a runtime record is not yet built",
+                        return Core::Poison(Reject::unsupported(
+                            "a record row operation over a runtime record is not supported",
                         ));
                     }
                 },
@@ -1343,8 +1343,8 @@ pub(super) fn lower_record_pop(
                 _ => match runtime_record_fields(db, record) {
                     Some(m) => (m, true),
                     None => {
-                        return Core::Poison(Reject::decline(
-                            "Record.pop over a runtime record is not yet built",
+                        return Core::Poison(Reject::unsupported(
+                            "Record.pop over a runtime record is not supported",
                         ));
                     }
                 },
@@ -1404,8 +1404,8 @@ pub(super) fn lower_tuple_cat(db: &mut Db, id: StructId, a: StructId, b: StructI
                 elems: elems.into(),
             }
         }
-        _ => Core::Poison(Reject::decline(
-            "Tuple.concat over a runtime tuple is not yet built",
+        _ => Core::Poison(Reject::unsupported(
+            "Tuple.concat over a runtime tuple is not supported",
         )),
     }
 }
@@ -1444,8 +1444,8 @@ pub(super) fn lower_tuple_split_at(
     let Core::Tuple { elems } = core_of(db, tuple) else {
         return match core_of(db, tuple) {
             Core::Poison(r) => Core::Poison(r),
-            _ => Core::Poison(Reject::decline(
-                "Tuple.split-at over a runtime tuple is not yet built",
+            _ => Core::Poison(Reject::unsupported(
+                "Tuple.split-at over a runtime tuple is not supported",
             )),
         };
     };
@@ -1475,8 +1475,8 @@ pub(super) fn lower_tuple_pop(db: &mut Db, id: StructId, tuple: StructId) -> Cor
     let Core::Tuple { elems } = core_of(db, tuple) else {
         return match core_of(db, tuple) {
             Core::Poison(r) => Core::Poison(r),
-            _ => Core::Poison(Reject::decline(
-                "Tuple.remove over a runtime tuple is not yet built",
+            _ => Core::Poison(Reject::unsupported(
+                "Tuple.remove over a runtime tuple is not supported",
             )),
         };
     };
@@ -1597,8 +1597,8 @@ pub(super) fn lower_checked_arith(
             // later width stage generalizes the overflow test to the solved width.
             let (Some(x), Some(y)) = (a.to_i64(), b.to_i64()) else {
                 // An operand beyond the machine range — a later width stage handles it; decline for now.
-                return Core::Poison(Reject::decline(
-                    "checked arithmetic on an operand beyond the evaluated width is not yet folded",
+                return Core::Poison(Reject::unsupported(
+                    "checked arithmetic on an operand beyond the evaluated width is not supported",
                 ));
             };
             let checked = match prim {
@@ -2054,8 +2054,8 @@ pub(super) fn lower_wrapping_arith(
     match (a, b) {
         (Core::ConstInt(x), Core::ConstInt(y)) => {
             let (Some(x), Some(y)) = (x.to_i64(), y.to_i64()) else {
-                return Core::Poison(Reject::decline(
-                    "wrapping arithmetic on an operand beyond the evaluated width is not yet folded",
+                return Core::Poison(Reject::unsupported(
+                    "wrapping arithmetic on an operand beyond the evaluated width is not supported",
                 ));
             };
             let n = match prim {
@@ -2104,7 +2104,7 @@ pub(super) fn lower_bytes_of(db: &mut Db, id: StructId, list: StructId) -> Core 
     }
     let Core::ListNew { elems } = core_of(db, list) else {
         // A runtime list (a parameter, a push-built list) is a later increment — decline cleanly.
-        return Core::Poison(Reject::decline(
+        return Core::Poison(Reject::unsupported(
             "Bytes.of of a runtime list is not supported (only a visible list literal)",
         ));
     };
