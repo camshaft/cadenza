@@ -357,6 +357,27 @@
   (input  (do (def (mk n) (: 5 (UInt n))) (def (main) (mk 8)) (export main)))
   (error  CDZ0302))
 
+; An UNBOUND NAME in a width position — `(: a (Int hello))` — is neither a type (the nested-type-var walk
+; skips it) nor a compile-time literal, so it once slipped past `cdz check` SILENTLY (reduced to sentinel
+; `Int0`). It now surfaces a width-specific CDZ0101 at the offending arg: "unbound name `hello`" + "a width
+; must be a compile-time integer literal" + the ctor-appropriate sized example (`Int64`/`UInt64`/`Float64`) —
+; the width analogue of an unbound type name. The descent visits EVERY type-arg position (a nested
+; `(List (Int hello))`, a non-first `(Map Int64 (UInt zzz))`). A BOUND width variable (`(Int a)` with `a`
+; a `Type` param) stays valid (06 "need not be a LITERAL"); an over-ceiling `(UInt 65)` keeps its CDZ0302.
+; (Migrated from rcdzc an_unbound_name_in_a_width_position_names_it_as_a_width_not_silently_accepted.)
+(case "an unbound name in an integer width position surfaces a width-specific unbound-name error"
+  (input  (do (def (f (: a (Int hello))) a) (export f)))
+  (error  CDZ0101 (message "unbound name `hello`")
+                  (message "a width must be a compile-time integer literal") (message "`Int64`")))
+
+(case "an unbound width name nested in a compound annotation is caught"
+  (input  (do (def (f (: a (List (Int hello)))) a) (export f)))
+  (error  CDZ0101 (message "a width must be a compile-time integer literal")))
+
+(case "an unbound width name in a NON-first type-argument position is caught and names the ctor-appropriate example"
+  (input  (do (def (f (: a (Map Int64 (UInt zzz)))) a) (export f)))
+  (error  CDZ0101 (message "unbound name `zzz`") (message "`UInt64`")))
+
 ; A fixed integer width strictly GREATER than 64 is well-formed as a natural but "reserved to the
 ; big-integer layer" — CDZ0302, and it carries a REPLACE fix retyping the whole `(Int W)`/`(UInt W)`
 ; compound to the unbounded `BigInt` (which holds any magnitude — the type-level twin of the literal-range
