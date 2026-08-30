@@ -5042,27 +5042,11 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
 }
 
 fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
-    // A bare `resume` node lowered STANDALONE (out of its handler-fold context) yields the
-    // `Resolved::Resume` CDZ0900 poison ("this `resume` is not reducible by the tail-resumptive fold …",
-    // lower/compute.rs). But the reached-poison walk must NEVER independently fault a resume node — its
-    // real diagnostic is always reported elsewhere: (a) when the enclosing handle FOLDS, the actual emit
-    // splices the resume and SUCCEEDS, so this standalone poison is SPURIOUS (it would wrongly block a
-    // working artifact — the mutual-group `…_folds` case, v-inference-triaged); (b) when the handle
-    // cannot fold, the whole-handle `HANDLER_NOT_REDUCIBLE_DECLINE` poison is reported at the handle
-    // (this per-resume copy is redundant); (c) a truly STRAY resume (no enclosing arm) is already
-    // rejected upstream by the `STRAY_RESUME_MESSAGE` CDZ0201 check in `collect_faults`. So skip the
-    // resume node here — its value/next-state faults, if the handle folds, surface through the folded
-    // core; if it does not fold, the program is already declined at the handle. (v-effects, routed by
-    // v-deferral-declines fault-hygiene, root-caused by v-inference: the speculative CDZ0900 lingered in
-    // the pre-dedup fault list and would surface — wrongly — once dedup self-suppression is fixed.)
-    // This guard catches a resume at the walk ROOT; a resume NESTED inside a node whose `core_of` reduces
-    // to the resume poison is caught by the `Core::Poison` arm below (keyed on the same message const).
-    if matches!(
-        crate::resolve::resolved_of(db, id),
-        crate::resolved::Resolved::Resume { .. }
-    ) {
-        return;
-    }
+    // NB: a `Resolved::Resume` node's `RESUME_NOT_REDUCIBLE_DECLINE` poison (reached here directly OR via a
+    // containing node's `core_of`) is NOT special-cased in this walk — it is dropped CENTRALLY at the
+    // `collect_faults` chokepoint (the `faults.retain` on that const), which covers this walk AND the
+    // type_errors walks uniformly. A resume's real diagnostic is always reported elsewhere (the enclosing
+    // handle's fold outcome, or the upstream `STRAY_RESUME` CDZ0201), so nothing is lost.
     // A `do` SEQUENCING block resolves to a `Ref` to its LAST form, so `core_of` follows only that. But
     // every INTERMEDIATE form is UNCONDITIONALLY evaluated (its value discarded), so a provable trap in
     // one is a build failure — descend into every form here (the raw AST head, since the core collapsed
@@ -5099,16 +5083,6 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         // precise anchor is at least attributed to the node it was reached at. (`sanitize_origin` at
         // the ABI edge later drops it if this node turns out to be prelude/synthesized.)
         Core::Poison(mut r) => {
-            // A RESUME-not-reducible poison reached HERE — `core_of` of a node CONTAINING a resume,
-            // lowered out of its handler-fold context (the mutual-group `…_folds` resume is NESTED, not
-            // the walk root, so the `Resolved::Resume` guard at the top of this fn misses it) — is the
-            // same spurious/redundant decline as that guard covers: skip it (see that guard's (a)/(b)/(c)
-            // rationale — a resume's real diagnostic is always reported elsewhere). Keyed on the shared
-            // const so it does NOT match the sibling `HANDLER_NOT_REDUCIBLE_DECLINE` ("this handler…"),
-            // which is a genuine handle-level decline that MUST still surface.
-            if r.message == crate::diag::RESUME_NOT_REDUCIBLE_DECLINE {
-                return;
-            }
             r.set_origin_if_absent(id);
             out.push(r);
         }
