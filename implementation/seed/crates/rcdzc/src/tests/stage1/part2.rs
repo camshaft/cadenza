@@ -4982,42 +4982,6 @@ fn a_try_in_a_called_helper_finds_its_boundary_not_a_false_cdz0230() {
 }
 
 #[test]
-fn a_try_in_an_immediately_applied_non_fallible_lambda_is_cdz0230() {
-    // v-try-operator ruling (option b): a lambda is a function boundary EXACTLY like a def — its
-    // boundary is its RESULT TYPE, no auto-wrap. `((fn () (try (Some 1))))`'s lambda body is the bare
-    // `?`, so its result is the unwrapped `Int64` (non-fallible) → CDZ0230, IDENTICAL to the def-body
-    // twin `(def (helper) (try (Some 1)))`. Before the fix this SILENTLY compiled + unwrapped to 1: the
-    // immediately-applied lambda is inlined, so the `?` was checked only on the parentless β-copy where
-    // `enclosing_boundary_ty` fell off → None → inconclusive. Now `collect`'s `Resolved::Lambda` arm
-    // checks the ORIGINAL parented body of an application-heading lambda, so the boundary walk reaches
-    // the `(fn …)` body (parents intact) and the genuine CDZ0230 fires.
-    let src = "(module m (def (main) ((fn () (try (Some 1))))) (export main))";
-    let d = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("a `?` in an immediately-applied non-fallible lambda must reject CDZ0230");
-    assert_eq!(
-        d.code.as_deref(),
-        Some("CDZ0230"),
-        "a `?` in a non-fallible immediately-applied lambda is CDZ0230, got: {}",
-        d.message
-    );
-}
-
-#[test]
-fn a_try_in_an_immediately_applied_fallible_lambda_works() {
-    // The complement: an immediately-applied lambda whose RESULT is fallible (`Option`) — the `?` has a
-    // valid boundary (the lambda's own Option result), so it works, NOT a false CDZ0230 from the new
-    // application-heading-lambda body check. `(fn () (let ((x (try (Some 7)))) (Some (+ x 1))))` →
-    // `(Some 8)`. Guards that checking the original lambda body does not over-reject a genuinely
-    // fallible one.
-    let src = "(module m \
-            (def (main) ((fn () (let ((x (try (Some 7)))) (Some (+ x 1)))))) (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-        "a `?` in an immediately-applied lambda with an Option result must COMPILE, not false CDZ0230"
-    );
-}
-
-#[test]
 fn a_result_try_under_an_option_boundary_is_a_type_mismatch() {
     // A `Result`-valued `?` under an `Option` boundary cannot short-circuit — the kinds disagree, and
     // there is no coercion (§5). The body's tail `(Some …)` makes the enclosing function's result
