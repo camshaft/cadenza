@@ -5432,6 +5432,23 @@ fn check(paths: &Paths, profile: &str) {
     log.step_native("cross-crate-path-include", || {
         xtask_support::cross_crate_path_include_lint(&paths.repo)
     });
+    // fmt-ENFORCEMENT (operator directive seq-282): every `.cdz`/`.sexp` SOURCE must be canonically
+    // formatted (`cdz fmt --check`) — "the formatter dictates style, enforced". BUILT + wired here but
+    // DISABLED until v-syntax's codebase-wide fmt-normalize (`cdz fmt --write` over all .cdz + .sexp)
+    // completes: enabling it before the tree is normalized would red the WHOLE fleet's gate on day 1. To
+    // ENABLE, flip `CDZ_FMT_CHECK_ENFORCE` to true — COORDINATED with v-syntax's "normalize complete"
+    // signal, and with the gate SCOPE matching v-syntax's normalize scope exactly (else it reds a file they
+    // didn't touch). The AUTHORITATIVE fleet-wide enforcement is v-nix's nix `cdzFmtCheck` (gate-local runs
+    // nix checks, not `cargo xtask check`); this is the local-`cargo xtask check` companion, mirroring how
+    // the emoji lint lives in BOTH check() and the nix emojiLintCheck.
+    const CDZ_FMT_CHECK_ENFORCE: bool = false;
+    if CDZ_FMT_CHECK_ENFORCE {
+        log.step(
+            "cdz-fmt-check",
+            "cargo run -q -p cdz -- fmt --check implementation spec/semantics",
+            repo,
+        );
+    }
     // Mandate-enforcement lint: NO LONGER an inline step here (v-xtask-decompose 2026-08-28). The
     // mandate lint now lives in the STANDALONE `xtask-mandates` crate + the nix `mandateLintCheck`
     // (rewired to `cargo run -p xtask-mandates`), which gate-local folds into its fail-set — the
