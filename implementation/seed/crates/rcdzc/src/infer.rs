@@ -1118,10 +1118,7 @@ fn literal_map_insert_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty:
     }
     // UP: while the current node is the OPERAND (arg 0) of an enclosing `Map.insert`.
     let mut child = insert0;
-    loop {
-        let Some(parent) = db.parent_of(child) else {
-            break;
-        };
+    while let Some(parent) = db.parent_of(child) {
         let (ph, p0, pk, pv) = {
             let Resolved::Apply { head, args } = resolved_ref(db, parent) else {
                 break;
