@@ -2927,57 +2927,14 @@ fn a_lowercase_name_in_a_type_position_points_at_the_unannotated_generic_route()
 }
 
 #[test]
-fn an_unbound_name_in_a_width_position_names_it_as_a_width_not_silently_accepted() {
-    // The WIDTH argument of `(Int W)`/`(UInt W)`/`(Float W)` must be a compile-time integer literal. An
-    // UNBOUND NAME there — `(: a (Int hello))` — is not a type (so the nested-type-var walk skips it) and
-    // reads as a non-constant width (so the ill-formed-width check waves it through as if it were a BOUND
-    // width variable), which let it slip past `cdz check` SILENTLY (the annotation reduced to sentinel
-    // `Int0`). Now it surfaces a width-specific CDZ0101 at the offending arg — the width analogue of an
-    // unbound type name. A BOUND width variable stays valid.
+fn a_bound_or_constant_width_does_not_trip_the_unbound_width_reject() {
+    // WHITE-BOX RESIDUAL. The unbound-NAME-width rejects (`(Int hello)` etc. → width-specific CDZ0101,
+    // nested + non-first arg positions) are now corpus 06-numeric-model ("an unbound name in an integer
+    // width position…" + nested/non-first). This keeps the no-false-positive controls the corpus does not
+    // cheaply express — chiefly a BOUND width VARIABLE `(Int a)` (a `Type` parameter used as a generic
+    // width), which must check clean, not trip the unbound-width reject. (A concrete `(Int 64)` / odd
+    // `(Int 7)` are corpus width cases; an over-ceiling `(UInt 65)` keeps its CDZ0302 there.)
     let diags = |src: &str| crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-    for (name, ctor, example) in [
-        ("hello", "Int", "Int64"),
-        ("bad", "UInt", "UInt64"),
-        ("hi", "Float", "Float64"),
-    ] {
-        let src = format!("(module m (def (f (: a ({ctor} {name}))) a) (export f))");
-        let ds = diags(&src);
-        let d = ds
-            .iter()
-            .find(|d| d.code.as_deref() == Some("CDZ0101"))
-            .unwrap_or_else(|| {
-                panic!("`({ctor} {name})` surfaces a CDZ0101 for the unbound width: {ds:?}")
-            });
-        assert!(
-            d.message.contains(&format!("unbound name `{name}`"))
-                && d.message
-                    .contains("a width must be a compile-time integer literal")
-                && d.message.contains(&format!("`{example}`")),
-            "the unbound width names it + the width guidance + the ctor-appropriate example: {}",
-            d.message
-        );
-    }
-    // NESTED: an unbound width buried in a compound annotation `(List (Int hello))` is caught too.
-    let nested = diags("(module m (def (f (: a (List (Int hello)))) a) (export f))");
-    assert!(
-        nested.iter().any(|d| d.code.as_deref() == Some("CDZ0101")
-            && d.message
-                .contains("a width must be a compile-time integer literal")),
-        "a nested unbound width is caught: {nested:?}"
-    );
-    // DOUBLY-NESTED, in a NON-FIRST type-argument position: `(Map Int64 (UInt zzz))` — the unbound width
-    // sits in the map's VALUE slot, past a well-formed key. Pins that the descent visits every arg
-    // position (not just the first) and names the UInt-appropriate example.
-    let deep = diags("(module m (def (f (: a (Map Int64 (UInt zzz)))) a) (export f))");
-    assert!(
-        deep.iter().any(|d| d.code.as_deref() == Some("CDZ0101")
-            && d.message.contains("unbound name `zzz`")
-            && d.message.contains("`UInt64`")),
-        "a doubly-nested unbound width in a later arg position is caught + named: {deep:?}"
-    );
-    // CONTROLS — must NOT trip this reject:
-    // a concrete width `(Int 64)`, an odd width `(Int 7)`, and a BOUND width variable `(Int a)` (a `Type`
-    // parameter used as a generic width) all check clean; an over-ceiling `(UInt 65)` keeps its CDZ0302.
     for ok in [
         "(module m (def (f (: a (Int 64))) a) (export f))",
         "(module m (def (f (: a (Int 7))) a) (export f))",
@@ -2991,11 +2948,6 @@ fn an_unbound_name_in_a_width_position_names_it_as_a_width_not_silently_accepted
             "a valid width form checks clean: {ok} → {ok_diags:?}"
         );
     }
-    let over = diags("(module m (def (f (: a (UInt 65))) a) (export f))");
-    assert!(
-        over.iter().any(|d| d.code.as_deref() == Some("CDZ0302")),
-        "an over-ceiling width keeps its CDZ0302 (not the unbound-width path): {over:?}"
-    );
 }
 
 // ── integer widths (I3, fold): named widths, per-width bounds, annotations, odd widths ────────
