@@ -6788,9 +6788,10 @@ fn desugar_refutable_literal_list_elements(
         else {
             continue;
         };
-        let lead = es
-            .iter()
-            .position(|&e| db.ast.as_name(e) == Some(".."))
+        let lead = db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, _)| i)
             .unwrap_or(es.len());
         for &e in &es[..lead] {
             if is_refutable_literal_element(db, e) {
@@ -6827,9 +6828,10 @@ fn desugar_refutable_literal_list_elements(
             crate::ast::Struct::List(items) if !items.is_empty() => items[0],
             _ => db.push_name("list"),
         };
-        let lead = es
-            .iter()
-            .position(|&e| db.ast.as_name(e) == Some(".."))
+        let lead = db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, _)| i)
             .unwrap_or(es.len());
         let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
         let mut tests: Vec<StructId> = Vec::new();
@@ -7271,9 +7273,10 @@ fn desugar_refutable_ctor_list_elements(
             .ast
             .compound_form_of(inner, CompoundCtor::List)
             .map(<[_]>::to_vec)?;
-        let lead = es
-            .iter()
-            .position(|&e| db.ast.as_name(e) == Some(".."))
+        let lead = db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, _)| i)
             .unwrap_or(es.len());
         Some(es[..lead].to_vec())
     };
@@ -7305,9 +7308,10 @@ fn desugar_refutable_ctor_list_elements(
             new_arms.push(db.push_list(vec![pat, body]));
             continue;
         };
-        let lead = es
-            .iter()
-            .position(|&e| db.ast.as_name(e) == Some(".."))
+        let lead = db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, _)| i)
             .unwrap_or(es.len());
         // Locate the refutable-ctor leading element positions.
         let ctor_positions: Vec<usize> = (0..lead)
@@ -7469,9 +7473,10 @@ fn desugar_refutable_nested_list_elements(
             .ast
             .compound_form_of(inner, CompoundCtor::List)
             .map(<[_]>::to_vec)?;
-        let lead = es
-            .iter()
-            .position(|&e| db.ast.as_name(e) == Some(".."))
+        let lead = db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, _)| i)
             .unwrap_or(es.len());
         Some(es[..lead].to_vec())
     };
@@ -7502,9 +7507,10 @@ fn desugar_refutable_nested_list_elements(
             new_arms.push(db.push_list(vec![pat, body]));
             continue;
         };
-        let lead = es
-            .iter()
-            .position(|&e| db.ast.as_name(e) == Some(".."))
+        let lead = db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, _)| i)
             .unwrap_or(es.len());
         let nested_positions: Vec<usize> = (0..lead)
             .filter(|&p| refutable_nested_list_element(db, es[p]).is_some())
@@ -7759,9 +7765,10 @@ fn desugar_refutable_map_list_elements(
             .ast
             .compound_form_of(inner, CompoundCtor::List)
             .map(<[_]>::to_vec)?;
-        let lead = es
-            .iter()
-            .position(|&e| db.ast.as_name(e) == Some(".."))
+        let lead = db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, _)| i)
             .unwrap_or(es.len());
         Some(es[..lead].to_vec())
     };
@@ -7791,9 +7798,10 @@ fn desugar_refutable_map_list_elements(
             new_arms.push(db.push_list(vec![pat, body]));
             continue;
         };
-        let lead = es
-            .iter()
-            .position(|&e| db.ast.as_name(e) == Some(".."))
+        let lead = db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, _)| i)
             .unwrap_or(es.len());
         let map_positions: Vec<usize> = (0..lead)
             .filter(|&p| is_map_element_pattern(db, es[p]))
