@@ -323,6 +323,40 @@
   (input  (do (type Color (Red) (Green)) (type W (Wrap Color)) (def (main) 0) (export main)))
   (call   main) (output (: 0 Int64)))
 
+; A bare PRELUDE type constructor (`List`/`Set`/`Map`/`Qty`) in a PARAMETER type annotation — `(: x List)`
+; — is CDZ0203, but the message must NOT call it "a value, not a type" (it IS a type, a constructor): it
+; names the missing type argument and spells the applied form (`(List Elem)`, `(Map Key Value)`, `(Qty T u)`),
+; the bare-name twin of the wrong-arity `(List Int64 Int64)` message. A bare USER generic echoes its own
+; parameters (`(Box a)`, `(Pair a b)`); a genuine VALUE misused as a type keeps "is a value, not a type".
+; (Migrated from rcdzc a_bare_type_constructor_in_type_position_names_the_missing_argument.)
+(case "a bare List constructor in a parameter type names the missing element argument"
+  (input  (do (def (f (: x List)) x) (export f)))
+  (error  CDZ0203 (message "`List` is a type constructor") (message "`(List Elem)`") (not "is a value")))
+
+(case "a bare Set constructor in a parameter type names the missing element argument"
+  (input  (do (def (f (: x Set)) x) (export f)))
+  (error  CDZ0203 (message "`Set` is a type constructor") (message "`(Set Elem)`")))
+
+(case "a bare Map constructor in a parameter type names its two missing arguments"
+  (input  (do (def (f (: x Map)) x) (export f)))
+  (error  CDZ0203 (message "`Map` is a type constructor") (message "`(Map Key Value)`")))
+
+(case "a bare Qty constructor in a parameter type names its missing arguments"
+  (input  (do (def (f (: x Qty)) x) (export f)))
+  (error  CDZ0203 (message "`Qty` is a type constructor") (message "`(Qty T u)`")))
+
+(case "a bare user generic in a parameter type echoes its own parameter"
+  (input  (do (type Box (W a)) (def (f (: b Box)) b) (export f)))
+  (error  CDZ0203 (message "`Box` is a type constructor") (message "`(Box a)`")))
+
+(case "a bare 2-parameter user generic echoes both parameters"
+  (input  (do (type Pair (P a b)) (def (f (: x Pair)) x) (export f)))
+  (error  CDZ0203 (message "`Pair` is a type constructor") (message "`(Pair a b)`")))
+
+(case "a genuine value misused as a parameter type keeps the is-a-value message (not the constructor one)"
+  (input  (do (def helper 5) (def (f (: x helper)) x) (export helper)))
+  (error  CDZ0203 (message "`helper` is a value, not a type")))
+
 ; APPLYING a type name in EXPRESSION position (where a function was expected) — the value-position twin of the
 ; type-position "needs a type argument" family above. The head reduces to a type-value, so the generic
 ; typeval discriminator recognizes it (no hard-coded name list). The message DIVERGES by whether the type is
