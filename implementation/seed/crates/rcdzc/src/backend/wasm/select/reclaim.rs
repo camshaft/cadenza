@@ -819,6 +819,36 @@ pub(super) fn collect_consuming_payload_sites_expr(
     consuming: bool,
     out: &mut HashSet<StructId>,
 ) {
+    // MEMO (v-memory-safety sign-off, front-3 sibling): each subtree's contributed site-set is a pure fn of
+    // (id, scrut, consuming) + the immutable graph (no sibling live_after, no read of `out`), so memoize it.
+    // Cache each node's OWN COMPLETE contribution computed into a FRESH accumulator (NOT a delta vs the shared
+    // `out` — that would capture sibling inserts + corrupt the cache); splice on a hit via `out.extend`
+    // (equivalent to re-walking since the walk's only effect is idempotent, order-independent set-inserts).
+    // Linearizes the ~643× DAG-as-tree re-walk (the cont-walker calls this on the SAME shared scrutinee-expr
+    // per arm). NO in_progress/tainted — acyclic by spec (Core::Call recurses only into args) + the memo
+    // writes only AFTER the recursion returns, so no cycle-artifact can be cached (see `Db::payload_sites_memo`).
+    // The inner worker's recursion calls THIS wrapper, so nested/shared subtrees memoize.
+    if let Some(cached) = db.payload_sites_memo.get(&(id, scrut, consuming)) {
+        out.extend(cached.iter().copied());
+        return;
+    }
+    let mut own: HashSet<StructId> = HashSet::new();
+    collect_consuming_payload_sites_expr_inner(db, id, scrut, consuming, &mut own);
+    db.payload_sites_memo
+        .insert((id, scrut, consuming), own.iter().copied().collect());
+    out.extend(own);
+}
+
+/// The unmemoized worker of [`collect_consuming_payload_sites_expr`]. Its recursive
+/// `collect_consuming_payload_sites_expr(...)` calls resolve to the MEMOIZED wrapper above, so a shared
+/// scrutinee-subtree reached via many continuation arms is computed once and spliced thereafter.
+fn collect_consuming_payload_sites_expr_inner(
+    db: &mut Db,
+    id: StructId,
+    scrut: StructId,
+    consuming: bool,
+    out: &mut HashSet<StructId>,
+) {
     if payload_proj_chain_roots_at_node(db, id, scrut) {
         let scalar_leaf = matches!(get_op(db, id), Ok(Some(_)));
         if consuming && !scalar_leaf {
