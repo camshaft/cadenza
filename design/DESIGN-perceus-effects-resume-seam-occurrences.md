@@ -1,7 +1,10 @@
 # Perceus OccTable — the effects RESUME-SEAM occurrences (v-effects slice)
 
-Status: DESIGN (v-effects, 2026-08-30; rev.2 keyed to POST-SPLICE Core per v-memory-safety's
-accept). The resume-seam slice of the uniform per-occurrence reclaim architecture — read
+Status: DESIGN — SOUNDNESS-COMPLETE, awaiting Increment B (v-effects, 2026-08-30; rev.4: the §2.1
+double-handle residual CLOSED-by-construction per v-memory-safety's co-verification). Gate status:
+v-core-opt's Increment A (hczm capture-escape UAF) LANDED #5926; Increment B (dup_at repr) is next;
+this slice's two entry points wire into Increment C once A+B are both in. The resume-seam slice of
+the uniform per-occurrence reclaim architecture — read
 [`DESIGN-perceus-per-occurrence-dup-placement-uniform.md`](DESIGN-perceus-per-occurrence-dup-placement-uniform.md)
 first; that doc lists v-effects as CO on the boundary / **resume seams**. This enumerates the
 resume-seam heap values *as the POST-SPLICE Core `select.rs` actually sees them*, the `ValueKey`
@@ -77,12 +80,27 @@ is handled by both. Grounding:
   back-edge, §5's. That is exactly what the LOCUS PARTITION enforces: the back-edge param is not a
   `Captured` slot nor a `#st` `PayloadNode`, so this slice's two entry points never see it.
 
-**⚠ v-core-opt confirmation required BEFORE emit:** confirm the tail-resumptive dispatch-loop state
-param is reached ONLY as a `Core::Param` back-edge (so §5 owns it) and is NEVER surfaced as a
-`Captured` slot or a `#st` `PayloadNode` that this slice's entry points would pick up. If any effects
-lowering ALSO materializes the loop state into a closure capture on some path, that path IS a
-double-handle candidate and needs the explicit exclusion. Acceptance control (§6): a tail-resumptive
-reclaim case must NOT trap the #4635 double-handle detector.
+**✅ CLOSED BY CONSTRUCTION (v-memory-safety co-verified, rev.4).** The residual I flagged — "IF a
+lowering ALSO materializes the loop state into a closure capture, that path is a double-handle
+candidate" — is SELF-PREVENTING; no emit-hold, no empirical v-core-opt confirmation needed. §5's
+`looped_owned_param_drops` owns-drops a param ONLY IF `param_only_borrowed_or_backedge` returns true
+(select.rs:4833, else default-deny at 4835). That predicate (7356-7426) whitelists only borrow
+positions / identity back-edge tail-call args / borrow-ops / SumPayload / Match-scrutinee / If-Let
+sub-positions; its final arm is `_ => false` (7423-7425) — **a `Core::Closure` capturing the param is
+NOT whitelisted → `param_only_borrowed_or_backedge = false` → §5 does NOT own-drop it.** And the
+escaping-continuation reification (effects.rs:2701, `k = (fn (#kv) C)` applied via `CallClosure`) IS
+exactly a `Core::Closure` capturing the state. So the two cases are exhaustive and disjoint:
+
+- loop state ONLY a back-edge `Param` (never captured) → §5 owns-drops it; this slice never surfaces a
+  bare back-edge `Param` → disjoint.
+- loop state ALSO captured into the continuation `Closure` (the "residual" path) → the Closure use
+  makes `param_only_borrowed_or_backedge = false` → §5 BACKS OFF (leaves it) → this slice's
+  `Captured`-dup (init=0, §2.3) is the sole owner → NO double-free, NO explicit exclusion.
+
+Either way §5's default-deny detects the Closure capture and yields ownership to this slice. **The two
+reclaim models can never double-handle the same param.** The #4635 double-handle detector (§6) stays
+as a belt-and-suspenders regression pin (cheap; witnesses the invariant across future emit changes),
+NOT a blocker.
 
 ## 3. Borrow vs Consume at each post-splice node (the "reuse, don't re-derive" gate)
 
