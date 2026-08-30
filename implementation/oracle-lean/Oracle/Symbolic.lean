@@ -110,16 +110,24 @@ True if it contains ANY arithmetic or bitwise application anywhere (`+ - * / %`,
 comparisons/booleans do not themselves trap but their operands might, so recurse; `var`/`const` never trap.
 Used to GUARD the equal-branch `if` collapse: dropping a condition is sound ONLY if the condition cannot
 trap (else `(if <trapping-c> a a)` — which traps — would wrongly collapse to `a`, a FALSE "proven"). -/
-partial def mayTrap : SymExpr → Bool
+def mayTrap : SymExpr → Bool
   | .var _ => false
   | .const _ => false
-  | .app op args => arithOps.contains op || bitwiseOps.contains op || args.any mayTrap
+  | .app op args => arithOps.contains op || bitwiseOps.contains op || args.attach.any (fun x => mayTrap x.val)
   | .ite c t e => mayTrap c || mayTrap t || mayTrap e
-  | .tuple es => es.any mayTrap
-  | .record fs => fs.any (fun kv => mayTrap kv.2)
-  | .ctor _ args => args.any mayTrap
+  | .tuple es => es.attach.any (fun x => mayTrap x.val)
+  | .record fs => fs.attach.any (fun x => mayTrap x.val.2)
+  | .ctor _ args => args.attach.any (fun x => mayTrap x.val)
   | .proj b _ => mayTrap b
-  | .case s arms => mayTrap s || arms.any (fun a => mayTrap a.2)
+  | .case s arms => mayTrap s || arms.attach.any (fun x => mayTrap x.val.2)
+termination_by e => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals
+    first
+      | omega
+      | (have h := Array.sizeOf_lt_of_mem x.property; omega)
+      | (rcases x with ⟨⟨k, e⟩, hmem⟩; have h := Array.sizeOf_lt_of_mem hmem; simp_all; omega)
 
 /-- Canonicalize a symbolic expression by SOUND rewrites only: recurse into subterms; SOUND constant
 folding of comparison/boolean ops (`foldConst?`); an `if` on a (now possibly-folded) constant boolean

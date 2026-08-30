@@ -15,14 +15,18 @@ facts the normalizer's trap-guarded rewrites rest on:
     `(< x y)` (allowing the collapse). This is what makes dropping a trap-free operand sound
     (`x*0 → 0`, `if c a a → a`, `or a true → true` drop an operand only when it cannot trap).
 
-Scope note — `symToValue?` is now TOTAL (a structural `termination_by sizeOf` def, converted from
-`partial` alongside this file), so its equation lemmas exist and `simp [symToValue?]` proves its leaf
-facts (below). Still deferred: `mayTrap` / `normalize` remain `partial def`s (Array-closure recursion),
-hence OPAQUE in the kernel — no equation lemmas, so `rfl`/`simp`/`unfold` cannot prove even
-`mayTrap (.var n) = false`. The same `attach`+`termination_by sizeOf`+`decreasing_by` treatment used
-for `symToValue?` unlocks them next (see the vertical log). Likewise the full goal
-`denote (normalize e) = denote e` needs the `denote` semantics (with an ambient integer width, since a
-symbolic arithmetic `app` is width-erased) and equation lemmas for `normalize`.
+  • `mayTrap` is FALSE on both leaves (`const`/`var`) — the trap-freedom fact that directly licenses
+    dropping a constant or variable operand in a trap-guarded rewrite (`x*0 → 0`, `if x a a → a`).
+
+Scope note — `symToValue?` and `mayTrap` are now TOTAL (structural `termination_by sizeOf` defs,
+converted from `partial` alongside this file), so their equation lemmas exist and `simp` proves their
+leaf facts (below). Still deferred: `normalize` remains a `partial def` (it recurses through
+`foldConst?`/`evalArithOp` with many arms), hence OPAQUE in the kernel — no equation lemmas, so
+`rfl`/`simp`/`unfold` cannot prove `normalize (.var n) = .var n`. The same
+`attach`+`termination_by sizeOf`+`decreasing_by` treatment used here unlocks it next (see the vertical
+log). Likewise the full goal `denote (normalize e) = denote e` needs the `denote` semantics (with an
+ambient integer width, since a symbolic arithmetic `app` is width-erased) and equation lemmas for
+`normalize`.
 -/
 import Oracle.Symbolic
 
@@ -70,6 +74,15 @@ theorem symToValue?_proj (b : SymExpr) (sel : ByteArray) : symToValue? (.proj b 
   simp [symToValue?]
 theorem symToValue?_case (s : SymExpr) (arms : Array (ByteArray × SymExpr)) :
     symToValue? (.case s arms) = none := by simp [symToValue?]
+
+/-! ## `mayTrap` is false on the leaves.
+`mayTrap` is a total (`termination_by sizeOf`) def; its `const`/`var` arms are literally `false`, so
+`simp` discharges these. A leaf provably cannot trap — the fact that makes dropping a constant or
+variable operand in a trap-guarded rewrite sound (`x*0 → 0` when `x` is a leaf, `if x a a → a` for a
+variable/constant condition, `or a true → true` when `a` is a leaf). -/
+
+theorem mayTrap_const (v : Value) : mayTrap (.const v) = false := by simp [mayTrap]
+theorem mayTrap_var (n : Nat) : mayTrap (.var n) = false := by simp [mayTrap]
 
 /-! ## Trap classification: `arithOps` ∪ `bitwiseOps` = exactly the trapping ops.
 `arithOps`/`bitwiseOps` are plain `List String` data, so membership is decidable — these `decide`
