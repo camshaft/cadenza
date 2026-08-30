@@ -1148,7 +1148,11 @@ impl Gen<'_> {
     /// Operator directive 2026-08-30: keep expanding generated program shapes.
     fn mixed_compound_expr(&mut self, depth: u32) {
         const LABELS: [&str; 3] = ["a", "b", "c"];
-        match self.cur.choice(4) {
+        match self.cur.choice(5) {
+            4 => {
+                // A NESTED COLLECTION (a heap collection whose ELEMENTS are themselves heap collections).
+                self.nested_collection_expr(depth);
+            }
             3 => {
                 // A MIXED-WIDTH OPERATION/AGGREGATE reconciliation (see [`mixed_width_recon`]).
                 self.mixed_width_recon();
@@ -1280,6 +1284,85 @@ impl Gen<'_> {
         } else {
             let t = NARROW_INT[self.cur.choice(NARROW_INT.len())];
             let _ = write!(self.out, "(: {} {t})", self.cur.range(0, 100));
+        }
+    }
+
+    /// A NESTED COLLECTION — a heap collection whose ELEMENTS are themselves heap collections/compounds,
+    /// RETURNED directly (so it round-trips through the nested-heap layout that flat collections never
+    /// exercise, and its VALUE is compared by the differential). `List.at`/`Map.lookup` return an `Option`,
+    /// so chaining ops on an element declines — hence these return the nested value directly. Inner numbers
+    /// are small literals so it reliably types + is value-comparable. Six shapes over list/tuple/map/record.
+    /// Operator directive 2026-08-30: keep expanding generated program shapes.
+    fn nested_collection_expr(&mut self, _depth: u32) {
+        // A small inner list `(list <n> <n>)` and tuple `(tuple <n> <n>)` of literal numbers.
+        macro_rules! inner_list {
+            () => {{
+                let _ = write!(
+                    self.out,
+                    "(list {} {})",
+                    self.cur.range(0, 9),
+                    self.cur.range(0, 9)
+                );
+            }};
+        }
+        macro_rules! inner_tuple {
+            () => {{
+                let _ = write!(
+                    self.out,
+                    "(tuple {} {})",
+                    self.cur.range(0, 9),
+                    self.cur.range(0, 9)
+                );
+            }};
+        }
+        match self.cur.choice(6) {
+            0 => {
+                // List of lists.
+                self.out.push_str("(list ");
+                inner_list!();
+                self.out.push(' ');
+                inner_list!();
+                self.out.push(')');
+            }
+            1 => {
+                // Tuple of lists.
+                self.out.push_str("(tuple ");
+                inner_list!();
+                self.out.push(' ');
+                inner_list!();
+                self.out.push(')');
+            }
+            2 => {
+                // Map with a LIST value.
+                self.out.push_str("(Map.insert Map.empty 0 ");
+                inner_list!();
+                self.out.push(')');
+            }
+            3 => {
+                // List of tuples.
+                self.out.push_str("(list ");
+                inner_tuple!();
+                self.out.push(' ');
+                inner_tuple!();
+                self.out.push(')');
+            }
+            4 => {
+                // List of maps.
+                let _ = write!(
+                    self.out,
+                    "(list (Map.insert Map.empty 0 {}) (Map.insert Map.empty 1 {}))",
+                    self.cur.range(0, 9),
+                    self.cur.range(0, 9)
+                );
+            }
+            _ => {
+                // Record with a list field and a tuple field.
+                self.out.push_str("(record (= a ");
+                inner_list!();
+                self.out.push_str(") (= b ");
+                inner_tuple!();
+                self.out.push_str("))");
+            }
         }
     }
 
@@ -2645,6 +2728,31 @@ mod tests {
             hit,
             "no seed in the sweep emitted a mixed-width compound projection"
         );
+    }
+
+    /// The nested-collection arm is reachable — some seed emits a heap collection whose ELEMENTS are
+    /// themselves collections (a list-of-lists and a list-of-tuples), reaching the nested-heap-layout path.
+    /// Every such program parses. Guards operator seq-23 nested-collection coverage.
+    #[test]
+    fn some_seed_emits_a_nested_collection() {
+        let mut saw_list_of_lists = false;
+        let mut saw_list_of_tuples = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(list (list ") {
+                saw_list_of_lists = true;
+            }
+            if src.contains("(list (tuple ") {
+                saw_list_of_tuples = true;
+            }
+        }
+        assert!(saw_list_of_lists, "no seed emitted a list-of-lists");
+        assert!(saw_list_of_tuples, "no seed emitted a list-of-tuples");
     }
 
     /// The mixed-width RECONCILIATION arm is reachable — some seed emits an operation/aggregate that pins
