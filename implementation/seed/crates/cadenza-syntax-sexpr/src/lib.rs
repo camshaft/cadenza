@@ -708,6 +708,12 @@ fn nat_walk(
         // fields #5120). A 3-element entry is already FieldPair; list/tuple/set have elements, not entries.
         if matches!(name, "map" | "record") {
             for &entry in ch.iter().skip(1) {
+                // A construction SPREAD `(.. v)` (the wrapped rest/spread node, #5838/#5826) is ALSO a
+                // 2-element list, but it is NOT a `(k v)` entry — FieldPair-ifying it to `(= .. v)` would
+                // invent a field named `..` and corrupt the spread. Leave spread entries untouched.
+                if a.head_name(entry) == Some("..") {
+                    continue;
+                }
                 if let Struct::List(ec) = a.get(entry)
                     && ec.len() == 2
                 {
@@ -1733,6 +1739,39 @@ mod tests {
         );
         // A `set` LITERAL outside any handler arm still nativizes (the exemption is arm-head-scoped).
         assert_eq!(n("(do (set 1 2))"), "(do #set(1 2))");
+    }
+
+    #[test]
+    fn nativize_compound_source_preserves_construction_spread_in_record_and_map() {
+        // A construction SPREAD `(.. v)` (the wrapped rest/spread node, #5838/#5826) inside a record/map is
+        // a 2-element list, but it is NOT a `(k v)` entry — the field-pairify step must NOT rewrite it to
+        // `(= .. v)` (which would invent a field named `..` and corrupt the spread). A real `(k v)` entry
+        // sitting alongside it still field-pairifies.
+        let n = |s: &str| super::nativize_compound_source(s).unwrap();
+        // record: an explicit `(= a 1)` field + a spread — spread stays `(.. r)`.
+        assert_eq!(
+            n("(do (def (f r) (record (= a 1) (.. r))) (export f))"),
+            "(do (def (f r) #record((= a 1) (.. r))) (export f))"
+        );
+        // record: a POSITIONAL `(a 1)` entry field-pairifies to `(= a 1)`; the spread is left alone.
+        assert_eq!(
+            n("(do (def (f r) (record (a 1) (.. r))) (export f))"),
+            "(do (def (f r) #record((= a 1) (.. r))) (export f))"
+        );
+        // map: same — positional `(k v)` → `(= k v)`, spread preserved.
+        assert_eq!(
+            n("(do (def (f m) (map (k v) (.. m))) (export f))"),
+            "(do (def (f m) #map((= k v) (.. m))) (export f))"
+        );
+        // list/tuple/set carry ELEMENTS (no field-pairify), so a spread was already safe there — pin it.
+        assert_eq!(
+            n("(do (def (f xs) (list 1 (.. xs) 2)) (export f))"),
+            "(do (def (f xs) #list(1 (.. xs) 2)) (export f))"
+        );
+        assert_eq!(
+            n("(do (def (f t) (tuple (.. t) 9)) (export f))"),
+            "(do (def (f t) #tuple((.. t) 9)) (export f))"
+        );
     }
 
     #[test]
