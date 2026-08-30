@@ -436,6 +436,43 @@ theorem denoteBinary_add_zero_value (w : IntTy) (x : Int) (v : Value)
     (h : denoteBinary "+" w (.value (.int x)) (.value (.int 0)) = .value v) : v = .int x :=
   evalArithOp_add_zero_r x w v (denoteBinary_arith "+" w x 0 hf (by decide) ▸ h)
 
+-- The remaining operand-DROPPING identities (`0*x→0`, `x-x→0`, `x%1→0`).
+theorem denoteBinary_mul_zero_l_value (w : IntTy) (y : Int) (v : Value)
+    (hf : foldConst? "*" #[.const (.int 0), .const (.int y)] = none)
+    (h : denoteBinary "*" w (.value (.int 0)) (.value (.int y)) = .value v) : v = .int 0 :=
+  evalArithOp_mul_zero_l y w v (denoteBinary_arith "*" w 0 y hf (by decide) ▸ h)
+
+theorem denoteBinary_sub_self_value (w : IntTy) (x : Int) (v : Value)
+    (hf : foldConst? "-" #[.const (.int x), .const (.int x)] = none)
+    (h : denoteBinary "-" w (.value (.int x)) (.value (.int x)) = .value v) : v = .int 0 :=
+  evalArithOp_sub_self x w v (denoteBinary_arith "-" w x x hf (by decide) ▸ h)
+
+theorem denoteBinary_mod_one_value (w : IntTy) (x : Int) (v : Value)
+    (hf : foldConst? "%" #[.const (.int x), .const (.int 1)] = none)
+    (h : denoteBinary "%" w (.value (.int x)) (.value (.int 1)) = .value v) : v = .int 0 :=
+  evalArithOp_mod_one x w v (denoteBinary_arith "%" w x 1 hf (by decide) ▸ h)
+
+-- The remaining operand-PRESERVING identities (`x-0→x`, `x*1→x`, `1*x→x`, `x/1→x`).
+theorem denoteBinary_sub_zero_value (w : IntTy) (x : Int) (v : Value)
+    (hf : foldConst? "-" #[.const (.int x), .const (.int 0)] = none)
+    (h : denoteBinary "-" w (.value (.int x)) (.value (.int 0)) = .value v) : v = .int x :=
+  evalArithOp_sub_zero_r x w v (denoteBinary_arith "-" w x 0 hf (by decide) ▸ h)
+
+theorem denoteBinary_mul_one_r_value (w : IntTy) (x : Int) (v : Value)
+    (hf : foldConst? "*" #[.const (.int x), .const (.int 1)] = none)
+    (h : denoteBinary "*" w (.value (.int x)) (.value (.int 1)) = .value v) : v = .int x :=
+  evalArithOp_mul_one_r x w v (denoteBinary_arith "*" w x 1 hf (by decide) ▸ h)
+
+theorem denoteBinary_mul_one_l_value (w : IntTy) (y : Int) (v : Value)
+    (hf : foldConst? "*" #[.const (.int 1), .const (.int y)] = none)
+    (h : denoteBinary "*" w (.value (.int 1)) (.value (.int y)) = .value v) : v = .int y :=
+  evalArithOp_mul_one_l y w v (denoteBinary_arith "*" w 1 y hf (by decide) ▸ h)
+
+theorem denoteBinary_div_one_value (w : IntTy) (x : Int) (v : Value)
+    (hf : foldConst? "/" #[.const (.int x), .const (.int 1)] = none)
+    (h : denoteBinary "/" w (.value (.int x)) (.value (.int 1)) = .value v) : v = .int x :=
+  evalArithOp_div_one x w v (denoteBinary_arith "/" w x 1 hf (by decide) ▸ h)
+
 /-! ### Capstone base cases: `denote (normalize e) = denote e` on the leaves.
 The normalizer preserves meaning on `var` (it is the identity) and `const` (float canonicalization is
 now aligned in `denote`, so the equality is structural). These are the base cases of the full
