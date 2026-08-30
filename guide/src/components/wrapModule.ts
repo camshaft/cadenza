@@ -186,8 +186,12 @@ export function stripModule(rendered: string, surface: Surface): string {
       .replace(/\(export\s+[^)]*\)\s*$/, "")
       .trim();
     // A synthesized single `(def (main) <expr>)` (no other defs) → unwrap to the bare expression.
-    const bare = /^\(def\s+\(main\)\s+([\s\S]*)\)$/.exec(body);
-    if (bare && !/\(def\b|\(type\b/.test(bare[1])) return bare[1].trim();
+    // Capture the body WITHOUT consuming its leading whitespace (no `\s+`) so `dedent` sees the expr's own
+    // indent on every line and strips the leaked `def`-body indent uniformly — a multi-line expr's
+    // continuation lines otherwise keep the 2-space `def`-body indent (a lone `.trim()` fixes only line 1).
+    // Mirrors the ML branch's `dedent(bare[1])` below.
+    const bare = /^\(def\s+\(main\)([\s\S]*)\)$/.exec(body);
+    if (bare && !/\(def\b|\(type\b/.test(bare[1])) return dedent(bare[1]).trim();
     return body;
   }
   // ML: top-level forms are separated by a trailing `;` and a blank line. Drop the `export { … }`
