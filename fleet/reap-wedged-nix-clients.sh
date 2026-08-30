@@ -45,6 +45,28 @@ APPLY=0
 # Append a timestamped audit line to REAP_LOG (best-effort; never fail the reap on a log-write error).
 log() { echo "$(date -Is) $*" >>"$REAP_LOG" 2>/dev/null || true; }
 
+# (0) ORPHANED-LEAK branch (v-fleet-tooling 2026-08-30): an ORPHANED (ppid=1) own-user `nix build
+# .#checks.<arch>.local-gate` is a LEAK — its owning agent/window DIED (the proc reparented to init), so
+# NOTHING will ever consume the gate result or manage the proc. Unlike a SLOW legit build (which has a
+# LIVE owner), an orphaned gate is unambiguous waste, so it is reaped REGARDLESS of age or the wedge
+# signature — the reaper's false-negative bias (never kill real work) does NOT apply here: there is no
+# owner doing work. SCOPED to `local-gate` ONLY (always agent-synchronous → orphan = leak); deliberately
+# NOT other `.#checks.*` (an orphaned corpus-* could be a legit warm-keep fire-and-forget warm build).
+# Own-user only (a kill across uids would EPERM); honors REAP_EXEMPT_REGEX. Closes the leaked-gate class
+# the 180min wedge-gate misses — 4 such orphaned local-gates (42-60min, 0% CPU) were hand-reaped at load 99.
+orphans="$(ps -eo pid,ppid,euid,args 2>/dev/null \
+  | awk -v me="$(id -u)" -v exempt="$REAP_EXEMPT_REGEX" \
+      '$2 == 1 && $3 == me && /nix build \.#checks/ && /local-gate/ && !/awk/ && (exempt == "" || $0 !~ exempt) {print $1}')"
+if [ -n "$orphans" ]; then
+  n_orph="$(printf '%s\n' "$orphans" | grep -c .)"
+  echo "reap-wedged-nix-clients: ${n_orph} ORPHANED (ppid=1, own-user) local-gate LEAK(s) — owner dead, reaping regardless of age. $([ "$APPLY" = 1 ] && echo 'KILLING:' || echo 'WOULD-KILL (dry-run; pass --apply):')"
+  for p in $orphans; do
+    oinfo="$(ps -o pid,etime,args -p "$p" 2>/dev/null | tail -1 | cut -c1-100)"
+    echo "  $oinfo"
+    if [ "$APPLY" = 1 ]; then kill -KILL "$p" 2>/dev/null || true; log "KILLED-ORPHAN-LEAK pid=$p ($oinfo)"; fi
+  done
+fi
+
 # Count active build-worker processes. NOTE: `pgrep -c` already PRINTS the count (0 when none) and
 # exits 1 on no match, so a `|| echo 0` would DOUBLE-print ("0\n0") and break the integer test — capture
 # its output and default an empty/failed result to 0 instead.
