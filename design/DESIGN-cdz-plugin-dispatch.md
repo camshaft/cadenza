@@ -83,7 +83,7 @@ Nothing here is new machinery — it is the *generalization* of two patterns alr
    applied uniformly across all subcommands, and it subsumes the per-surface `#[cfg]` delegation with a
    single dispatch front-door.
 
-**Most of the target external binaries already exist:** `cdz-compile` (`rcdzc/src/bin/cdz-compile.rs`),
+**Most of the target external binaries already exist:** `cdz-compile` (`rcdzc-cli/src/bin/cdz-compile.rs`),
 `cdz-run`, `cdz-corpus` (`cdz-corpus/src/bin/cdz-corpus.rs`), `cdz-calc`, `cdz-cad`, `cdz-smith`,
 `cdz-rust-run`. The migration is largely *rewiring `cdz` to forward to bins that already ship*, plus
 minting a few new ones (a `cdz-syntax` for convert/fmt/query/rewrite/…, and a `cdz-query`/LSP host for
