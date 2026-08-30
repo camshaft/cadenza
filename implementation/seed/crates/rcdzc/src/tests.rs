@@ -41061,46 +41061,55 @@ mod debug_info {
 
     #[test]
     fn strip_recovers_the_undecorated_component_byte_for_byte() {
-        // The reproducibility anchor (§5): `strip(emit(debug)) == emit(no-debug)`, byte-for-byte, where
-        // `strip` is a SECTION REMOVER (`wasm-tools strip`), never a re-serializer. Proves inertness,
-        // strippability, and reproducibility in one cheap check. Skips if `wasm-tools` is not installed.
+        // The reproducibility anchor (§5): the debug component is the plain component PLUS inert,
+        // strippable custom sections — so `wasm-tools strip --all` (a section REMOVER, never a
+        // re-serializer) on BOTH yields byte-for-byte identical bare modules. Proves inertness,
+        // strippability, and reproducibility in one cheap check. (Was `strip(debug) == plain`, but PLAIN
+        // now legitimately carries the inert `cdz-result-type` run-wiring custom section (#5951) that
+        // `strip --all` also removes — so compare stripped-vs-stripped, not stripped-vs-plain.) Skips if
+        // `wasm-tools` is not installed.
         use std::io::Write;
         use std::process::Command;
         let src = "(module m (def (main) 42) (export main))";
         let plain = component_of(src, Target::Wasm);
         let debug = component_of(src, Target::WasmDebug);
 
-        // Write the debug component to a temp file and strip its custom sections.
-        let dir = std::env::temp_dir();
-        let in_path = dir.join(format!("cdz-dbg-{}.wasm", std::process::id()));
-        let out_path = dir.join(format!("cdz-dbg-{}-stripped.wasm", std::process::id()));
-        std::fs::File::create(&in_path)
-            .and_then(|mut f| f.write_all(&debug))
-            .expect("write debug component");
-
-        // `wasm-tools strip --all` removes every custom section (including `name`).
-        let status = Command::new("wasm-tools")
-            .args(["strip", "--all"])
-            .arg(&in_path)
-            .arg("-o")
-            .arg(&out_path)
-            .status();
-        let status = match status {
-            Ok(s) => s,
-            Err(_) => {
-                eprintln!("wasm-tools not found on PATH; skipping strip round-trip");
-                let _ = std::fs::remove_file(&in_path);
-                return;
-            }
+        // Strip EVERY custom section (`--all`: `name`, `cdz-result-type`, and the debug sections) from a
+        // component. `None` (⇒ the test skips) when `wasm-tools` is not on PATH.
+        let strip_all = |bytes: &[u8], tag: &str| -> Option<Vec<u8>> {
+            let dir = std::env::temp_dir();
+            let in_path = dir.join(format!("cdz-{tag}-{}.wasm", std::process::id()));
+            let out_path = dir.join(format!("cdz-{tag}-{}-stripped.wasm", std::process::id()));
+            std::fs::File::create(&in_path)
+                .and_then(|mut f| f.write_all(bytes))
+                .expect("write component");
+            let ran = match Command::new("wasm-tools")
+                .args(["strip", "--all"])
+                .arg(&in_path)
+                .arg("-o")
+                .arg(&out_path)
+                .status()
+            {
+                Ok(s) => {
+                    assert!(s.success(), "wasm-tools strip failed");
+                    Some(std::fs::read(&out_path).expect("read stripped"))
+                }
+                Err(_) => None,
+            };
+            let _ = std::fs::remove_file(&in_path);
+            let _ = std::fs::remove_file(&out_path);
+            ran
         };
-        assert!(status.success(), "wasm-tools strip failed");
-        let stripped = std::fs::read(&out_path).expect("read stripped");
-        let _ = std::fs::remove_file(&in_path);
-        let _ = std::fs::remove_file(&out_path);
 
+        let (Some(stripped_debug), Some(stripped_plain)) =
+            (strip_all(&debug, "dbg"), strip_all(&plain, "plain"))
+        else {
+            eprintln!("wasm-tools not found on PATH; skipping strip round-trip");
+            return;
+        };
         assert_eq!(
-            stripped, plain,
-            "stripping a debug component's custom sections must recover the undecorated bytes exactly"
+            stripped_debug, stripped_plain,
+            "stripping every custom section from the debug + plain components must recover identical bare bytes"
         );
     }
 
