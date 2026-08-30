@@ -4974,18 +4974,16 @@
                 # hole — gateCheck is wasm-only, so a rust-only emit divergence (v-effects E0425 mutual-rec)
                 # reached trunk green. Narrow `--case mutual` subset (rustc-per-case → full 6686 is prohibitive
                 # per-MR); nightly runs the full rust gate. See gateCheckRust's def note.
-                # cad-test-compiler-ml folded into the fail-set (v-ft/v-cml/concierge 2026-08-10, HARD gate):
-                # it runs the compiler-ml pfq SPINE (compiler-ml Project.cdz tests = src/*.cdz incl
-                # db-query-perfield.cdz), which a Core-shape edit can break — the hole broke twice. ZERO added
-                # gate cost by construction: seedCompilerClosure = crateClosure cdz ++ cdz-run and rcdzc IS in
-                # cdz's closure, so a Core-shape edit (rcdzc/src/core.rs, ty.rs, lower.rs) rotates seedCompilerSrc
-                # → rebuilds seedCompiler → RERUNS this spine; a corpus-only / non-closure MR leaves seedCompiler
-                # cached → this stays cached (cache-hit). So the nix dep graph gives the "gate Core-touching MRs
-                # on the spine" conditional FOR FREE — no pr-sync git-diff logic. (bare-identifier inherit can't
-                # take the hyphenated attr, so bind it explicitly from cdzCadProjectTests.)
-                cadTestCompilerMl = cdzCadProjectTests.cad-test-compiler-ml;
+                # cad-test-compiler-ml REMOVED from the forced fail-set (OPERATOR 2026-08-30): compiler-ml is not
+                # changing actively, nothing depends on it, and it was only an effective rust-compiler STRESS
+                # test — so stop forcing everyone to run it (the hung `cdz test --warm-only` compiler-ml compiles
+                # were a top fleet-CPU starvation source). It STAYS available as an OPT-IN / advisory check
+                # (`checks.<sys>.cad-test-compiler-ml`, still built by `cdzCadProjectTests`) — just not a blocking
+                # gate. (Was folded in 2026-08-10 as a Core-shape spine guard; a Core-shape edit still rotates
+                # seedCompiler + the corpus/cad spine catches gross Core breaks, so dropping the forced spine
+                # here is acceptable per the operator.) checks.yml required-set drop = coordinated w/ v-gha-green.
               } ''
-              echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) + mandate-lint + cad-test-compiler-ml (Core-shape spine guard), green on aarch64-nix" > $out
+              echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) + mandate-lint (compiler-ml now OPT-IN, not forced — operator 2026-08-30), green on aarch64-nix" > $out
             '';
           in
           {
