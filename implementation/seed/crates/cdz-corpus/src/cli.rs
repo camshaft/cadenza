@@ -68,6 +68,20 @@ enum CorpusCmd {
         #[arg(long)]
         list_missing: bool,
     },
+    /// Check corpus files are in NATIVE compound-value form — FAST, no compile/run.
+    ///
+    /// Asserts `nativize_compound_source_skip_outputs(file) == file` for each `.sexp`: every INPUT-side
+    /// compound value literal must already be in the native `#word` ctor form (`#list`/`#tuple`/`#record`/
+    /// `#map`/`#set`), NOT the classic name-head `(list …)`/`(tuple …)`. The rewrite is IDEMPOTENT and
+    /// `--skip-outputs` leaves `(output …)` expected values untouched, so this never entangles a render
+    /// re-pin. A peer adding a classic-form input makes the file NON-idempotent — this lint FAILs and NAMES
+    /// the file (a PR-time guard replacing by-hand drift catching; operator M3 native-form corpus). Exits
+    /// NON-ZERO on any non-native file (run the nativize codemod to fix).
+    NativizeCheck {
+        /// Corpus `.sexp` files to check (typically the full `spec/semantics/*.sexp` glob).
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
 }
 
 /// Run a corpus command per `args`, returning the process exit code. `prog` names the tool in
@@ -83,6 +97,7 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
             baseline,
             list_missing,
         } => check_baseline_drift(files, baseline, *list_missing),
+        CorpusCmd::NativizeCheck { files } => check_nativize_idempotence(files),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -166,6 +181,41 @@ fn check_baseline_drift(
         Err(format!(
             "{} VANISHED baseline title(s) in {baseline} — a renamed/removed case left the baseline stale; regenerate with `cargo xtask gate --save`",
             vanished.len()
+        ))
+    }
+}
+
+/// `nativize-check FILE…`: assert each corpus file is ALREADY in native compound-value input form — i.e.
+/// `nativize_compound_source_skip_outputs` is a NO-OP on it. A file the rewrite CHANGES contains a classic
+/// name-head input compound (`(list …)`/`(tuple …)`/…) a peer added; reported by name. `--skip-outputs`
+/// leaves `(output …)` expected values untouched, so this is orthogonal to any render re-pin. Exits
+/// NON-ZERO on any non-native file (fix: run the nativize codemod). The PR-time guard for operator M3's
+/// native-form corpus, replacing by-hand drift catching.
+fn check_nativize_idempotence(files: &[String]) -> Result<(), String> {
+    let mut non_native: Vec<String> = Vec::new();
+    for path in files {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+        let nativized = sexpr::nativize_compound_source_skip_outputs(&text)
+            .map_err(|e| format!("{path}: nativize failed: {e:?}"))?;
+        if nativized != text {
+            non_native.push(path.clone());
+        }
+    }
+    if non_native.is_empty() {
+        println!(
+            "nativize-check: OK — all {} file(s) in native #ctor compound-value input form",
+            files.len()
+        );
+        Ok(())
+    } else {
+        for p in &non_native {
+            eprintln!(
+                "nativize-check: NON-NATIVE input compound in {p} — a classic name-head (list …)/(tuple …)/… ; run the nativize codemod"
+            );
+        }
+        Err(format!(
+            "{} file(s) have classic-form input compounds — corpus must use native #ctor form (operator M3)",
+            non_native.len()
         ))
     }
 }
