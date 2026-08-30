@@ -4133,7 +4133,7 @@ fn run_doctor(args: &DoctorArgs) -> ExitCode {
 
     // Runtime store.
     let store = args.store.clone().unwrap_or_else(default_store);
-    let required = rcdzc::backend::wasm::runtime_abi::REQUIRED_RUNTIME_HASH;
+    let required = cadenza_compile_abi::runtime_hash::REQUIRED_RUNTIME_HASH;
     let store_status = if !store.is_dir() {
         "missing"
     } else if store.join(format!("{required}.wasm")).is_file() {
