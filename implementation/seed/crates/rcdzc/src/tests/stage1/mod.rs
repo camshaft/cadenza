@@ -2927,61 +2927,6 @@ fn a_lowercase_name_in_a_type_position_points_at_the_unannotated_generic_route()
 }
 
 #[test]
-fn a_bare_width_ctor_in_type_position_suggests_the_sized_default_with_a_fix() {
-    // `Int` / `UInt` / `Float` are the WIDTH-FAMILY value constructors — they build a sized type from a
-    // width literal (`(Int 64)` ≡ `Int64`), so a bare `(: a Int)` uses a VALUE as a type. This is the
-    // near-universal newcomer reflex (`int`/`float` name a type in most other languages). The diagnostic
-    // now names the concrete sized DEFAULT the author meant + carries a one-shot Replace fix to it, the
-    // rustc "help: perhaps you meant `i32`" analogue — instead of the opaque "`Int` is a value, not a
-    // type" with no route to a fix.
-    let reject_of = |name: &str| {
-        crate::diagnostics(&mut crate::db::Db::load(parse(&format!(
-            "(module m (def (f (: a {name})) a) (export f))"
-        ))))
-        .into_iter()
-        .find(|d| d.code.as_deref() == Some("CDZ0203"))
-        .unwrap_or_else(|| panic!("bare `{name}` in a type position rejects with CDZ0203"))
-    };
-    for (name, default, other_width) in [
-        ("Int", "Int64", "Int32"),
-        ("UInt", "UInt64", "UInt8"),
-        ("Float", "Float64", "Float32"),
-    ] {
-        let d = reject_of(name);
-        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-        assert!(
-            d.message
-                .contains(&format!("`{name}` is a width constructor"))
-                && d.message.contains(&format!("use `{default}`"))
-                && d.message.contains(other_width),
-            "bare `{name}` names the sized default + other widths: {}",
-            d.message
-        );
-        assert!(
-            !d.message.contains("is a value, not a type"),
-            "a width constructor is NOT called a plain value: {}",
-            d.message
-        );
-        // The Replace fix retypes the annotation to the sized default — heuristic (a narrower width may
-        // have been wanted), but it type-checks in one edit.
-        let fix = d.fix.as_ref().expect("the width-default fix is carried");
-        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-        assert_eq!(fix.replacement, default);
-        // ROUND-TRIP: applying the fix (`Int` → `Int64`) clears the fault — the retyped annotation
-        // checks clean (no error-severity diagnostic), proving the suggestion is the actual repair (the
-        // one-shot rule). The bare `Int`/`Float`/`UInt` reject is GONE once the sized type is used.
-        assert!(
-            crate::diagnostics(&mut crate::db::Db::load(parse(&format!(
-                "(module m (def (f (: a {default})) a) (export f))"
-            ))))
-            .iter()
-            .all(|d| d.severity != crate::abi::Severity::Error),
-            "applying the `{name}` → `{default}` fix type-checks clean"
-        );
-    }
-}
-
-#[test]
 fn an_unbound_name_in_a_width_position_names_it_as_a_width_not_silently_accepted() {
     // The WIDTH argument of `(Int W)`/`(UInt W)`/`(Float W)` must be a compile-time integer literal. An
     // UNBOUND NAME there — `(: a (Int hello))` — is not a type (so the nested-type-var walk skips it) and

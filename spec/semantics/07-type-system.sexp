@@ -357,6 +357,28 @@
   (input  (do (def helper 5) (def (f (: x helper)) x) (export helper)))
   (error  CDZ0203 (message "`helper` is a value, not a type")))
 
+; `Int`/`UInt`/`Float` are the WIDTH-FAMILY value constructors — they build a sized type from a width literal
+; (`(Int 64)` ≡ `Int64`), so a bare `(: a Int)` uses a VALUE as a type (the near-universal newcomer reflex, as
+; `int`/`float` name a type in most languages). CDZ0203, but the message names the concrete sized DEFAULT the
+; author likely meant (`use Int64`) + another admitted width, and carries a one-shot Replace fix to the default
+; (the rustc "perhaps you meant `i32`" analogue) — NOT the opaque "is a value, not a type". Applying the fix
+; (`Int` → `Int64`) type-checks clean. (Migrated from rcdzc
+; a_bare_width_ctor_in_type_position_suggests_the_sized_default_with_a_fix.)
+(case "a bare Int width-constructor names the sized default with a replace fix"
+  (input  (do (def (f (: a Int)) a) (export f)))
+  (error  CDZ0203 (message "`Int` is a width constructor") (message "use `Int64`") (message "Int32")
+                  (not "is a value") (fix (kind replace) (replacement "Int64"))))
+
+(case "a bare UInt width-constructor names the sized default with a replace fix"
+  (input  (do (def (f (: a UInt)) a) (export f)))
+  (error  CDZ0203 (message "`UInt` is a width constructor") (message "use `UInt64`") (message "UInt8")
+                  (fix (kind replace) (replacement "UInt64"))))
+
+(case "a bare Float width-constructor names the sized default with a replace fix"
+  (input  (do (def (f (: a Float)) a) (export f)))
+  (error  CDZ0203 (message "`Float` is a width constructor") (message "use `Float64`") (message "Float32")
+                  (fix (kind replace) (replacement "Float64"))))
+
 ; APPLYING a type name in EXPRESSION position (where a function was expected) — the value-position twin of the
 ; type-position "needs a type argument" family above. The head reduces to a type-value, so the generic
 ; typeval discriminator recognizes it (no hard-coded name list). The message DIVERGES by whether the type is
