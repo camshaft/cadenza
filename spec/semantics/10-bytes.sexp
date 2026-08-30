@@ -129,6 +129,23 @@
   (input  (Bytes.len (Bytes.of #list())))
   (output (: 0 Int64)))
 
+; A `String` supplied where `Bytes` is required has a TOTAL prelude conversion — the UTF-8 encode
+; `String.to-bytes` — so the CDZ0203 mismatch carries a WRAP fix wrapping the string in it (the `…` hole
+; marks where the operand goes). The REVERSE (`Bytes` where a `String` is required) is FALLIBLE
+; (`from-bytes : Bytes → Option String`), so there is no one-shot wrap that type-checks → NO fix (honest,
+; not a cascade). (Migrated from rcdzc a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix.)
+(case "a String where Bytes is expected offers a to-bytes conversion wrap (operator-arg position)"
+  (input  (do (def (f) (Bytes.len "hi")) (export f)))
+  (error  CDZ0203 (fix (kind wrap) (replacement "(String.to-bytes …)") (unverified))))
+
+(case "a String where Bytes is expected offers a to-bytes conversion wrap (annotated-param call site)"
+  (input  (do (def (f (: b Bytes)) b) (def (main) (f "hi")) (export main)))
+  (error  CDZ0203 (fix (kind wrap) (replacement "(String.to-bytes …)") (unverified))))
+
+(case "a Bytes where a String is expected offers no fix (the decode is fallible)"
+  (input  (do (def (f (: s String)) s) (def (main (: b Bytes)) (f b)) (export main)))
+  (error  CDZ0203 (no-fix)))
+
 (case "two empty byte sequences are equal"
   (doc    "`(= (Bytes.of (list)) (Bytes.of (list)))` is true: two zero-length byte sequences carry the
            same (empty) bytes in order, so they are structurally equal (core-semantics.md #Equality Is
