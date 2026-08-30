@@ -2756,6 +2756,21 @@ fn collect_sumpayload_escape_dup_sites(db: &mut Db, body: StructId, sites: &mut 
     if !db.lifted.iter().any(|l| l.body == body) {
         return;
     }
+    // #5833 OVER-MARK FIX (v-memory-safety-signed-off gate (a), 177 over-retention): the escape query below
+    // (`binding_escapes_dup_aware`'s Proj arm) CONSERVATIVELY treats a nested-compound projection
+    // `(. p 1)` as its operand `p` ESCAPING — a `dup`-worthy alias-out. That bias is correct+safe for the
+    // ~78 reclaim-DECISION callers (there escape=true means "don't reclaim" = a LEAK), but here it is a
+    // FALSE POSITIVE: when the projected child is read only to SCALARS (`(. (. p 1) 0)`), `p` is
+    // borrow-then-dead — it does NOT truly escape — so the escape-dup is spurious + unbalanced (nothing
+    // consumes it), and the boundary drop of the arg then hits `p` at rc>1 and cannot free it (the 177
+    // leak + the corpus-21 nested-tuple 0→2). Gate the dup with the SAME payload-safety
+    // `nontail_param_payload_ok` uses (a scoped fix on THIS collector, NOT the shared escape query — that
+    // would flip the 78 reclaim callers toward a UAF): SUPPRESS the escape-dup for an extraction whose root
+    // param is matched ONLY by PAYLOAD-SAFE (borrow-then-dead) MatchSums; KEEP it for a REAL escape (the
+    // payload returned whole / fed to a consuming ctor/op — the snowflake `sum-new(OSphere r)`, the
+    // `List.push (. t 0)` FBIP shape). Default-KEEP (operator leak>UAF): a param with ANY non-payload-safe
+    // match keeps its dups.
+    let payload_safe = payload_safe_match_param_binders(db, body);
     let mut nodes = Vec::new();
     collect_payload_extraction_nodes(db, body, &mut nodes);
     for node in nodes {
@@ -2768,10 +2783,67 @@ fn collect_sumpayload_escape_dup_sites(db: &mut Db, body: StructId, sites: &mut 
         if !payload_extraction_roots_at_param(db, node) {
             continue;
         }
+        // SUPPRESS (default-KEEP): the extraction's root param is matched only by payload-safe
+        // (borrow-then-dead) MatchSums → the escape query's compound-projection "escape" is spurious.
+        if let Some(binder) = extraction_root_param_binder(db, node)
+            && payload_safe.contains(&binder)
+        {
+            continue;
+        }
         // The extracted payload ESCAPES via a result ctor / the return (not borrow-only).
         if binding_escapes_dup_aware(db, body, EscapeTarget::Node(node), false, None) {
             sites.insert(node);
         }
+    }
+}
+
+/// Param binders whose EVERY `MatchSum` in `body` is PAYLOAD-SAFE (borrow-then-dead) per
+/// [`nontail_param_payload_ok`] — their match-extracted payloads never escape (no construct-compound, no
+/// re-match, no payload-in-result), so the [`collect_sumpayload_escape_dup_sites`] escape-dup is a false
+/// positive (a compound projection read only to scalars). DEFAULT-KEEP: a binder with ANY non-payload-safe
+/// match is EXCLUDED (its escape-dups are kept — leak > UAF). `never_diverges = false` so the payload
+/// escape clauses (not the divergence gate) decide safety here.
+fn payload_safe_match_param_binders(db: &mut Db, body: StructId) -> HashSet<StructId> {
+    let mut safe: HashSet<StructId> = HashSet::new();
+    let mut excluded: HashSet<StructId> = HashSet::new();
+    collect_payload_safe_match_binders(db, body, &mut safe, &mut excluded);
+    safe.retain(|b| !excluded.contains(b));
+    safe
+}
+
+fn collect_payload_safe_match_binders(
+    db: &mut Db,
+    id: StructId,
+    safe: &mut HashSet<StructId>,
+    excluded: &mut HashSet<StructId>,
+) {
+    if let Core::MatchSum { scrutinee, root } = core_of(db, id)
+        && let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, scrutinee)
+    {
+        let scrut_ty = type_of(db, scrutinee);
+        if is_heap_type(&scrut_ty) {
+            if nontail_param_payload_ok(db, scrutinee, &scrut_ty, false, &root) {
+                safe.insert(binder);
+            } else {
+                excluded.insert(binder);
+            }
+        }
+    }
+    for child in core_child_ids(db, id) {
+        collect_payload_safe_match_binders(db, child, safe, excluded);
+    }
+}
+
+/// The `Core::Param`/`Core::LocalRef` binder a `SumPayload`/`Proj` extraction chain bottoms at (the twin of
+/// [`payload_extraction_roots_at_param`] that RETURNS the binder), or `None` for a non-param root.
+fn extraction_root_param_binder(db: &mut Db, id: StructId) -> Option<StructId> {
+    match core_of(db, id) {
+        Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+        Core::SumPayload { scrutinee, .. }
+        | Core::Proj {
+            operand: scrutinee, ..
+        } => extraction_root_param_binder(db, scrutinee),
+        _ => None,
     }
 }
 
