@@ -86,6 +86,10 @@ pub use cadenza_compile_abi::exports_wire::decode_exports;
 // `cdz` LSP `render_type_at` + the `decode_exports` template).
 pub use cadenza_compile_abi::TypeAt;
 pub use cadenza_compile_abi::type_at_wire::decode_type_at;
+// The `Query::ResolveOf` (`KIND_RESOLVE`) decode — the go-to-definition target node id (or none), now a
+// BINARY-AST value (`resolve_wire`, flipped in #6152). Re-exported so cdz-wasm's `define_at` reads the
+// node id via `rcdzc::sidecar::decode_resolve` instead of `String::from_utf8` + `parse::<u32>()`.
+pub use cadenza_compile_abi::resolve_wire::decode_resolve;
 
 // The `Request` (materialize an output column) + `Query` (read a fact column) enums that make up one
 // sidecar request list now live in the shared `cadenza-compile-abi` crate — the compile-boundary

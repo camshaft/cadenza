@@ -1416,14 +1416,12 @@ pub fn define_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<Defi
         .get(node)
         .expect("node_at_offset returned a spanned node");
     // Ride the `ResolveOf` sidecar query (the same one `cdz def` runs): it resolves the reference at
-    // this node to its defining occurrence's node id (following `Ref`/`Lambda`), or an empty result for
-    // a non-navigable token or a span-less binding. One node id, or empty.
-    let text_out = run_query_text(&ast_bytes, &rcdzc::Query::ResolveOf { node: node.0 })?;
-    let Some(target_id) = text_out
-        .lines()
-        .next()
-        .and_then(|l| l.trim().parse::<u32>().ok())
-    else {
+    // this node to its defining occurrence's node id (following `Ref`/`Lambda`), or none for a
+    // non-navigable token or a span-less binding. The result is a BINARY-AST value (`resolve_wire`,
+    // #6152), NOT text — so DECODE the node id (`String::from_utf8` + `parse` on the binary was the same
+    // from_utf8-on-binary bug class as `type_at`/`export_types` #6324).
+    let bytes = run_query_bytes(&ast_bytes, &rcdzc::Query::ResolveOf { node: node.0 })?;
+    let Some(target_id) = rcdzc::sidecar::decode_resolve(&bytes) else {
         return Ok(None); // not a navigable reference
     };
     let target = cadenza_syntax::ast::StructId(target_id);
@@ -2120,6 +2118,36 @@ mod tests {
             def_hit.type_name.contains("main"),
             "a def hover renders `name : type`: {:?}",
             def_hit.type_name
+        );
+    }
+
+    #[test]
+    fn define_at_resolves_a_reference_not_raw_binary() {
+        // Regression guard (same bug class as type_at / export_types #6324): `Query::ResolveOf` emits the
+        // KIND_RESOLVE target node id as BINARY AST (`resolve_wire`, #6152), so `define_at` must
+        // `decode_resolve` it, NOT `String::from_utf8` + `parse::<u32>()` (which threw / mis-parsed on the
+        // binary). `define_at` backs the guide editor's go-to-definition.
+        let src = "(do (def (foo) 1) (def (main) foo) (export main))";
+        // The `foo` REFERENCE (in `main`'s body) resolves to the `foo` DEFINITION (a distinct earlier span).
+        let ref_off = src.rfind("foo").expect("the `foo` reference") as u32;
+        let hit = define_at(src, "sexpr", ref_off)
+            .expect("define_at returns a resolution, not a UTF-8 error (Class A regression)")
+            .expect("the `foo` reference resolves to its definition");
+        assert!(
+            (hit.from, hit.to) != (hit.ref_from, hit.ref_to),
+            "the resolved def span is distinct from the reference span (decode_resolve gave a real target): \
+             def [{},{}) ref [{},{})",
+            hit.from,
+            hit.to,
+            hit.ref_from,
+            hit.ref_to
+        );
+        // The reference span covers the cursor offset (sanity: we hovered the ref token).
+        assert!(
+            hit.ref_from <= ref_off && ref_off < hit.ref_to,
+            "the reference span [{},{}) covers the hovered offset {ref_off}",
+            hit.ref_from,
+            hit.ref_to
         );
     }
 
