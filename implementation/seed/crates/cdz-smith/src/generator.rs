@@ -1249,7 +1249,48 @@ impl Gen<'_> {
     /// distinct from the plain `fn_expr`/`app_expr` arms where a param is used as a value. The concrete
     /// lambda is `Num -> Num` and `f` is applied to numeric args, so the whole expression is a scalar
     /// (crosses the boundary — a closure-valued RESULT would decline). Operator directive 2026-08-30.
+    /// A closure stored in a heap TUPLE, then PROJECTED out and APPLIED — reaching the indirect-call-
+    /// through-a-heap-collection-element path (a boxed closure read from a tuple slot and applied), which
+    /// [`higher_order_expr`]'s closure-PARAMETER application and `fn_expr`'s direct lambda never exercise.
+    /// Two `Num -> Num` lambdas in a 2-tuple; project index 0/1 and apply to a generated `Num`. Typed +
+    /// terminating (bodies are bounded `Num` exprs; f/g aren't value bindings so no spurious re-application).
+    /// Operator directive 2026-08-30: keep expanding generated program shapes.
+    fn closure_in_tuple_expr(&mut self, _depth: u32) {
+        let x = self.env.fresh();
+        let y = self.env.fresh();
+        // SHALLOW guaranteed `Num -> Num` bodies (a param op, identity, or a literal) so the closures are
+        // reliably typed and the program actually REACHES the backend indirect-call path (a deep generated
+        // body almost always declines, leaving the store/apply path unexercised).
+        let _ = write!(self.out, "((. (tuple (fn ({x}) ");
+        self.simple_num_body(&x);
+        let _ = write!(self.out, ") (fn ({y}) ");
+        self.simple_num_body(&y);
+        let _ = write!(self.out, ")) {}) ", self.cur.choice(2)); // close tuple, project index 0/1, close access
+        let _ = write!(self.out, "{})", self.cur.range(0, 9)); // the Num argument, close the application
+    }
+
+    /// A SHALLOW, guaranteed-`Num` expression over `param`: a numeric op on the param, the bare param
+    /// (identity), or a small literal. Used where a body must reliably type as `Num` (e.g. a closure the
+    /// generator stores + applies) rather than a rich possibly-declining `self.expr`.
+    fn simple_num_body(&mut self, param: &str) {
+        match self.cur.choice(3) {
+            0 => {
+                let op = ["+", "-", "*"][self.cur.choice(3)];
+                let _ = write!(self.out, "({op} {param} {})", self.cur.range(0, 9));
+            }
+            1 => self.out.push_str(param), // identity
+            _ => {
+                let _ = write!(self.out, "{}", self.cur.range(0, 9));
+            }
+        }
+    }
+
     fn higher_order_expr(&mut self, depth: u32) {
+        // Half the time, reach the closure-stored-in-a-collection indirect-call path instead.
+        if self.cur.flip() {
+            self.closure_in_tuple_expr(depth);
+            return;
+        }
         let f = self.env.fresh();
         let x = self.env.fresh();
         // ((fn (f) …applies f…) …)  — f is NOT pushed into scope (it's a function we apply literally,
@@ -2493,6 +2534,30 @@ mod tests {
         assert!(
             hit,
             "no seed in the sweep emitted a higher-order application"
+        );
+    }
+
+    /// The closure-in-collection arm is reachable — some seed emits a closure stored in a tuple, projected,
+    /// and applied (`((. (tuple (fn …) (fn …)) <i>) <arg>)`), reaching the indirect-call-through-a-heap-
+    /// element path. Every such program parses. Guards operator seq-23 closure-in-collection coverage.
+    #[test]
+    fn some_seed_emits_a_closure_in_collection() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            // A tuple of two lambdas immediately projected + applied is unique to this arm.
+            if src.contains("((. (tuple (fn (") {
+                hit = true;
+            }
+        }
+        assert!(
+            hit,
+            "no seed in the sweep emitted a closure-in-collection application"
         );
     }
 
