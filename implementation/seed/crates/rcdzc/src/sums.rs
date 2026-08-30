@@ -266,18 +266,27 @@ fn type_form_payloads(ast: &mut Arenas, name: &str, variants: &[(&str, &[StructI
 
 /// The occurrence of the variant-constructor field named `vname` inside a synthesized sum `record` —
 /// so the prelude map can bind a BARE variant name (`Some`) to its constructor. The record is `(record
-/// ((meta t) …) [(meta apply) …] [(meta sum-decl) …] (Some <ctor>) (None <ctor>)…)`; a variant field is
-/// a 2-element `(name <ctor>)` list whose name matches `vname`. `None` if not found (e.g. a meta field).
+/// ((meta t) …) [(meta apply) …] [(meta sum-decl) …] (= Some <ctor>) (= None <ctor>)…)`; a variant field
+/// is the canonical `(= name <ctor>)` FieldPair (seq-276) — or the legacy bare `(name <ctor>)` 2-element
+/// pair — whose name matches `vname`. `None` if not found (e.g. a meta field).
 pub fn variant_ctor_field(ast: &Arenas, record: StructId, vname: &str) -> Option<StructId> {
     let Struct::List(children) = ast.get(record) else {
         return None;
     };
     for &field in children.iter().skip(1) {
-        if let Struct::List(pair) = ast.get(field)
+        // seq-276: `sum_record` now emits each variant field as the canonical `(= name <ctor>)` FieldPair;
+        // read that shape via `field_pair`, still accepting the legacy bare `(name <ctor>)` 2-element pair.
+        let (name_id, ctor_id) = if let Some(kv) = ast.field_pair(field) {
+            kv
+        } else if let Struct::List(pair) = ast.get(field)
             && pair.len() == 2
-            && ast.as_name(pair[0]) == Some(vname)
         {
-            return Some(pair[1]);
+            (pair[0], pair[1])
+        } else {
+            continue;
+        };
+        if ast.as_name(name_id) == Some(vname) {
+            return Some(ctor_id);
         }
     }
     None
