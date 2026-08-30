@@ -67,8 +67,11 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
           # Enable ca-derivations so the deploy reuses the shared content-addressed store (#3363)
-          # instead of rebuilding the world. Appends to the installer nix-command/flakes.
-          extra-conf: "extra-experimental-features = ca-derivations"
+          # instead of rebuilding the world. accept-flake-config lets nix TRUST the flake's
+          # nixConfig extra-substituters (camshaft.cachix.org, v-nix #6213) so the guide-site build
+          # PULLS the cachix-warmed closure instead of rebuilding cold (operator: "The rest should
+          # pull"; matches checks.yml #6215 + cache-warm.yml). Appends to installer nix-command/flakes.
+          extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true"
       - uses: ./.github/actions/nix-store-cache
 
       # Build the DEPLOYABLE guide site through nix (v-nix #5809 packages.guide-site / flake guideSite).
