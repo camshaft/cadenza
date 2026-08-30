@@ -2401,6 +2401,22 @@
   (input  (quasiquote ((unquote-splicing 5) 3)))
   (error  CDZ0201))
 
+(case "splicing a string value into a quasiquote is a type error (a string is not a list to splice)"
+  (doc    "The STRING companion of the non-list splice reject: `(f ,@\"ab\")` splices a String, which is a
+           byte sequence, not a `(List _)` whose elements splice — so it is ill-typed, CDZ0201, exactly as
+           the Int64 and integer-literal non-list splices above. Pins that the splice-operand list check is
+           by TYPE (String is not a list), not only by scalar-vs-compound shape.")
+  (input  (do (def (main) (quasiquote (f (unquote-splicing "ab")))) (export main)))
+  (error  CDZ0201))
+
+(case "an unbound unquote-splicing operand keeps its own unbound-name error, not a spurious non-list reject"
+  (doc    "The splice operand is EVALUATED (metaprogramming.md #Quasiquote Constructs AST With Selective
+           Evaluation), so an unbound name in it is the ordinary scope error CDZ0101 — PRIMARY, not shadowed
+           by a spurious 'not a list' CDZ0201 layered on top. `(f ,@zzz)` with `zzz` unbound is CDZ0101, the
+           splice twin of the unbound-inside-an-unquote case.")
+  (input  (do (def (main) (quasiquote (f (unquote-splicing zzz)))) (export main)))
+  (error  CDZ0101))
+
 (case "quasiquote nests with inner unquote evaluated"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            quasiquote nests, so ``(+ ,,x) evaluates the inner , to produce `(+ ,<x-value>).

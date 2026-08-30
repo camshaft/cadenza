@@ -12552,58 +12552,6 @@ mod match_engine {
     }
 
     #[test]
-    fn splicing_a_non_list_into_a_quasiquote_is_cdz0201() {
-        // 12-metaprogramming "splicing a non-list value into a quasiquote" / "splicing an integer literal
-        // directly": `,@` splices the ELEMENTS of a LIST into the parent (metaprogramming.md §Quasiquote
-        // Constructs AST With Selective Evaluation), so its operand MUST be a list. A splice of a PROVABLY
-        // non-list value — a scalar, a string — has no elements to splice, so it is ill-typed (CDZ0201),
-        // surfaced through the quoted structure even though the enclosing quasiquote itself declines.
-        // Directly-written literal `,@5`:
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (quasiquote ((unquote-splicing 5) 3))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0201")
-        );
-        // A bound non-list name `,@x` with x an Int64:
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (let ((x 5)) (quasiquote (f (unquote-splicing x))))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0201")
-        );
-        // A string operand is likewise a non-list splice.
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (quasiquote (f (unquote-splicing \"ab\")))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0201")
-        );
-        // CONSERVATIVE: `,@` of an actual LIST is NOT rejected as a non-list — it declines downstream
-        // (the Ast value is unbuilt), a Todo, never a false CDZ0201. And an unbound splice operand keeps
-        // its OWN CDZ0101 (the operand's error is primary, not a spurious "not a list" on top).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (let ((xs (list 1 2 3))) (quasiquote (f (unquote-splicing xs))))) (export main))"
-            )
-            .as_deref(),
-            None,
-            "a splice of an actual list must NOT be rejected CDZ0201 — it declines (Ast unbuilt)"
-        );
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (quasiquote (f (unquote-splicing zzz)))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0101"),
-            "an unbound splice operand keeps its own CDZ0101, not a non-list CDZ0201"
-        );
-    }
-
-    #[test]
     fn record_project_narrows_to_named_fields_absent_field_is_cdz0212() {
         // 15-rows "projecting a record restricts it to the named fields" + "...onto an absent field is
         // rejected": `(Record.project r (a c))` narrows `r` to EXACTLY the named fields, each carrying its
