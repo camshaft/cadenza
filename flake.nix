@@ -178,6 +178,24 @@
             ++ nonClosureManifests seedCompilerClosure
             ++ [ ./xtask/Cargo.toml ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]);
         };
+        # The TEST-RUNNER variant (seedCompilerTestRunner, --features cdz/standalone) links rcdzc IN-PROCESS
+        # for `cdz test`/discovery/emit-shred — so its SRC fileset MUST carry rcdzc's src. seedCompilerClosure
+        # is computed STATICALLY (independent of --features), and once v-cdz-crate-split flips rcdzc to
+        # `optional=true` (standalone=["dep:rcdzc"]) its includeOptional=false will DROP rcdzc-src → the
+        # test-runner build would fail "no rcdzc src" despite --features standalone. So explicitly UNION rcdzc's
+        # own closure in. TODAY (rcdzc still a non-optional cdz dep) this is a NO-OP — rcdzc is already in
+        # seedCompilerClosure — so it's safe to pre-land; it just SURVIVES the optional flip. corpus/other
+        # optionals stay OUT (includeOptional=false on both), preserving the test-runner's leanness. The
+        # compile/delegate seedCompiler keeps the plain seedCompilerClosure and CORRECTLY sheds rcdzc post-flip.
+        seedTestRunnerClosure = pkgs.lib.unique
+          (seedCompilerClosure ++ crateClosure' { includeOptional = false; } "rcdzc");
+        seedTestRunnerSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions (
+            (pkgs.lib.concatMap crateCompileSrc seedTestRunnerClosure)
+            ++ nonClosureManifests seedTestRunnerClosure
+            ++ [ ./xtask/Cargo.toml ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]);
+        };
         # CRANE-INCREMENTAL (v-nix+v-ft 2026-08-08, cold-warm/saturation arc): built via craneLib consuming the
         # SHARED cargoArtifacts deps-layer instead of a monolithic buildRustPackage. WHY: the old buildRustPackage
         # recompiled the ENTIRE dep closure + first-party crates on EVERY rcdzc/cdz/cdz-run edit (rcdzc changes
@@ -201,10 +219,9 @@
         #    rcdzc is already in seedCompilerClosure (non-optional today); WHEN v-cdz-crate-split flips
         #    `standalone=["dep:rcdzc"]` + `rcdzc={optional=true}`, THIS variant's closure must gain
         #    includeOptional for rcdzc (seam coordinated with v-cdz-crate-split — the compile variant stays as-is).
-        mkSeedCompiler = { pname, cargoExtraArgs }: craneLib.buildPackage {
-          inherit pname cargoExtraArgs;
+        mkSeedCompiler = { pname, cargoExtraArgs, src ? seedCompilerSrc, closure ? seedCompilerClosure }: craneLib.buildPackage {
+          inherit pname cargoExtraArgs src;
           version = "0.0.0";
-          src = seedCompilerSrc;
           inherit cargoArtifacts;
           cargoVendorDir = seedCargoVendor;
           # Materialize synthetic empty target stubs for the non-closure members (+ xtask) whose real src the
@@ -229,7 +246,7 @@
             export CDZ_DEBUG_RUNTIME_HASH="$(cat ${runtimeDebugHash})"
             export CDZ_NFC_HASH="$(cat ${nfcHash})"
             chmod -R u+w .
-            ${stubNonClosure seedCompilerClosure}
+            ${stubNonClosure closure}
             [ -f xtask/src/main.rs ] || { mkdir -p xtask/src; echo "fn main(){}" > xtask/src/main.rs; }
             [ -f xtask/src/lib.rs ] || echo "" > xtask/src/lib.rs
           '';
@@ -258,6 +275,10 @@
         seedCompilerTestRunner = mkSeedCompiler {
           pname = "cdz-seed-compiler-testrunner";
           cargoExtraArgs = "-p cdz -p cdz-run --no-default-features --features cdz/standalone";
+          # Dedicated src/closure that explicitly carries rcdzc (see seedTestRunnerClosure) — survives the
+          # rcdzc-optional flip; no-op today. The compile seedCompiler above keeps the default closure.
+          src = seedTestRunnerSrc;
+          closure = seedTestRunnerClosure;
         };
 
         # xtaskBin — the `xtask` dev-tool binary AS a relocatable nix package (v-xtask-decompose, operator
