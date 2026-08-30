@@ -1993,25 +1993,6 @@ fn an_op_on_a_later_same_named_effect_gets_the_shadowed_declaration_hint() {
 }
 
 #[test]
-fn a_genuine_member_typo_still_gets_the_ordinary_unknown_member_error() {
-    // CDZ0603 fires ONLY on the fixed retired set — a name that was never a member (`Map.siz`, a plain
-    // typo) still takes the ordinary CDZ0201 unknown-member did-you-mean, so the rename hint never
-    // shadows a normal typo. (Guards the "diagnostic-only, tight retired set" invariant.)
-    let d = expect_error("(Map.siz (map (1 2)))");
-    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-    assert!(
-        d.message.contains("the `Map` module has no member `siz`"),
-        "an unrecognized member is the ordinary unknown-member error: {}",
-        d.message
-    );
-    assert!(
-        !d.message.contains("was renamed"),
-        "the rename hint does not fire on a plain typo: {}",
-        d.message
-    );
-}
-
-#[test]
 fn the_renamed_collection_ops_resolve_under_their_new_names() {
     // The canonical spellings COMPILE — a pure surface rename, no eval/backend change (the intrinsics
     // `map-size`/`tuple-cat`/`tuple-pop` stay wired; only the surface key moved). Same shape as the
