@@ -2768,6 +2768,16 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Ty::Map(_, mv) => container_slot_grounding(mv),
                 _ => (None, None),
             };
+            // The map's SETTLED key type — `wrap_ord_key` must wrap by THIS (a `__CdzF32`/`__CdzF64` Ord
+            // shell for a float key), NOT the individual entry key's own `type_of`: a bare deferred-width
+            // float key (`2.0` beside a `(: 1.0 Float32)` sibling) defaults its `type_of` to Float64, so
+            // wrapping by it emitted `__CdzF64::new(<f32>)` into a `BTreeMap<__CdzF32, _>` (operator ruling:
+            // SUPPORT float map keys like float Sets; the E0605/E0308 map-KEY bug). Fall back to the entry's
+            // own type only when the map key type is unresolved.
+            let map_key_ty: Option<Ty> = match type_of(db, id).strip_nominal() {
+                Ty::Map(mk, _) => Some((**mk).clone()),
+                _ => None,
+            };
             let mut lines = String::new();
             for (k, v) in entries.iter() {
                 let ke = if let Some(it) = key_it {
@@ -2777,7 +2787,10 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 } else {
                     emit(db, *k, env, ctx)?
                 };
-                let kt = type_of(db, *k);
+                let kt = match map_key_ty.as_ref() {
+                    Some(t) => t.clone(),
+                    None => type_of(db, *k),
+                };
                 let ke = wrap_ord_key(&db.name_ctx(), ke, &kt);
                 let ve = if let Some(it) = val_it {
                     emit_grounded(db, *v, it, env, ctx)?
