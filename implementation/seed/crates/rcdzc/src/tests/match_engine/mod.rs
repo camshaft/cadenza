@@ -1246,28 +1246,6 @@ fn a_constructor_export_is_semantically_validated() {
 }
 
 #[test]
-fn a_ctor_export_type_head_gets_no_spurious_did_you_mean() {
-    // WHITE-BOX RESIDUAL of the ctor-export mistyped-type-head suggest (its positive half — a near-miss
-    // `Colr` -> `Color` "did you mean" + rename fix — is now the corpus 11-modules ctor-export case).
-    // Keeps the NEGATIVE the corpus cannot assert: a value-named export head, and a FAR-miss undeclared
-    // name, must NOT get a spurious type suggestion — a message-ABSENCE.
-    for src in [
-        "(module m (def (helper) 5) (export (. helper *)) (def (main) 5) (export main))",
-        "(module m (type Color (R)) (export (. zzzzz *)) (def (main) 5) (export main))",
-    ] {
-        let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-            .into_iter()
-            .find(|d| d.message.contains("to be a sum type"))
-            .unwrap_or_else(|| panic!("expected a ctor-export reject: {src}"));
-        assert!(
-            !d.message.contains("did you mean"),
-            "no spurious type suggestion: {src} -> {}",
-            d.message
-        );
-    }
-}
-
-#[test]
 fn a_mistyped_top_level_keyword_suggests_the_keyword_and_carries_a_replace_fix() {
     // A top-level `(head …)` form whose head is a near-miss for a DECLARATION KEYWORD (`exprot`→
     // `export`, `deff`→`def`) is a mistyped keyword — the likeliest intent in a declaration position.

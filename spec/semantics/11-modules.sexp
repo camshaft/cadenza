@@ -2786,3 +2786,16 @@
   (input (do (type Color (R) (G)) (export (. Colr *)) (def (main) 5) (export main)))
   (error CDZ0201 (message "to be a sum type") (message "did you mean `Color`?")
                  (fix (kind replace) (replacement "Color"))))
+
+; The did-you-mean fires ONLY on a plausible NEAR-MISS of a declared sum. A VALUE-named export head
+; (`(export (. helper *))` where `helper` is a def, not a type) and a FAR-MISS undeclared name
+; (`(export (. zzzzz *))`, no declared type near it) both still reject "to be a sum type" (CDZ0201) but carry
+; NO spurious type suggestion — the `(not "did you mean")` message-absence pins that. (Migrated from rcdzc
+; a_ctor_export_type_head_gets_no_spurious_did_you_mean.)
+(case "a constructor-export whose head names a VALUE (not a sum type) gets no spurious did-you-mean"
+  (input (do (def (helper) 5) (export (. helper *)) (def (main) 5) (export main)))
+  (error CDZ0201 (message "to be a sum type") (not "did you mean")))
+
+(case "a constructor-export whose head is a FAR-MISS undeclared name gets no spurious did-you-mean"
+  (input (do (type Color (R)) (export (. zzzzz *)) (def (main) 5) (export main)))
+  (error CDZ0201 (message "to be a sum type") (not "did you mean")))
