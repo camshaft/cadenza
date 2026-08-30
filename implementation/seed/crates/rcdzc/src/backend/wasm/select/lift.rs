@@ -492,9 +492,9 @@ pub(super) fn emit_option_sum_lift(
         .map(|(d, _)| *d)
         .collect();
     if !(nvar == 2 && payload_arms.len() == 1 && nullary_arms.len() == 1) {
-        return Err(Reject::decline(
+        return Err(Reject::unsupported(
             "the general result-lift wires an option-shaped sum result (2 variants: one single-payload, \
-             one nullary); a wider variant/enum/result is a later increment",
+             one nullary); a wider variant/enum/result is not supported",
         ));
     }
     let some_disc = payload_arms[0];

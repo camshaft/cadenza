@@ -811,9 +811,9 @@ pub(super) fn build_host_group(
     .filter(|x| **x)
     .count();
     if nominal_kinds > 1 {
-        return Err(Reject::decline(
+        return Err(Reject::unsupported(
             "a host interface mixing more than one nominal parameter kind (record / enum / bare-variant) is \
-             not yet emitted (one kind per interface — this slice)",
+             not supported (one kind per interface)",
         ));
     } else if !record_params.is_empty() {
         let has_str_param = group
