@@ -6803,8 +6803,9 @@ const VERIFY_KERNEL_LINKING_ENABLED: bool = false;
 /// `@invariant` obligations. Embedded as codec BYTES (not source text) because rcdzc must NOT depend on the
 /// `cadenza-syntax` reader in lib code (the "COPY, DON'T DEPEND" directive — rcdzc vendors `codec.rs`); the
 /// bytes are `cadenza_syntax::codec::encode(sexpr::read(verify_kernel.cdz))`, decoded here by rcdzc's OWN
-/// `codec::decode`. Regenerated from `verify_kernel.cdz` by the `regenerate_verify_kernel_bin` test.
-const VERIFY_KERNEL_BIN: &[u8] = include_bytes!("verify_kernel.bin");
+/// `codec::decode`. Regenerated at BUILD TIME from `src/verify_kernel.cdz` by `build.rs` (into `OUT_DIR`),
+/// so there is no committed golden to go stale (was a recurring stale-golden fleet-red: #6236, #6460).
+const VERIFY_KERNEL_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/verify_kernel.bin"));
 
 /// Decode the bundled verification-kernel bytes into an rcdzc `Arenas` (rcdzc's own codec — no reader dep).
 /// `None` if the embedded asset fails to decode — a build-time invariant (checked in), so the caller treats

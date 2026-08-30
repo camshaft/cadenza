@@ -1086,44 +1086,6 @@ fn bundled_verify_kernel_asset_reads_and_declares_thm_and_licenses() {
     );
 }
 
-/// Verification Inc-b a1: the committed `verify_kernel.bin` STAYS IN SYNC with `verify_kernel.cdz`. The
-/// compiler embeds the kernel as codec BYTES (not source) because rcdzc must not depend on the
-/// `cadenza-syntax` reader in lib code ("COPY, DON'T DEPEND"). The `.bin` =
-/// `cadenza_syntax::codec::encode(sexpr::read(.cdz))` — exactly the bridge bytes rcdzc's own
-/// `codec::decode` reads.
-///
-/// HERMETIC (Copilot PR#537): this test does NOT mutate the source tree on a normal run — it ASSERTS the
-/// committed `.bin` equals the freshly-encoded bytes (a checked drift guard, safe on a read-only/CI
-/// checkout), and REGENERATES the artifact only when `REGEN_VERIFY_KERNEL_BIN` is set in the environment
-/// (the manual tool: `REGEN_VERIFY_KERNEL_BIN=1 cargo test -p rcdzc regenerate_verify_kernel_bin` after
-/// editing the kernel). Round-trip through rcdzc's own codec is asserted either way.
-#[test]
-fn regenerate_verify_kernel_bin() {
-    const KERNEL_SRC: &str = include_str!("../../verify_kernel.cdz");
-    let syntax = cadenza_syntax::sexpr::read(KERNEL_SRC).expect("verify_kernel.cdz reads");
-    let bytes = cadenza_syntax::codec::encode(&syntax);
-    // rcdzc's OWN codec decodes the bridge bytes (the invariant the bundled-kernel path relies on).
-    let decoded = crate::codec::decode(&bytes).expect("kernel bytes decode with rcdzc codec");
-    assert!(
-        !decoded.structure.is_empty(),
-        "decoded kernel arena is non-empty"
-    );
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/verify_kernel.bin");
-    if std::env::var_os("REGEN_VERIFY_KERNEL_BIN").is_some() {
-        // Manual regeneration tool — the ONLY path that writes the tracked artifact.
-        std::fs::write(path, &bytes).expect("write verify_kernel.bin");
-    } else {
-        // Normal run: assert the committed artifact matches (no source-tree mutation, CI-safe).
-        let committed = include_bytes!("../../verify_kernel.bin");
-        assert_eq!(
-            committed.as_slice(),
-            bytes.as_slice(),
-            "verify_kernel.bin is STALE vs verify_kernel.cdz — regenerate with \
-                 REGEN_VERIFY_KERNEL_BIN=1 cargo test -p rcdzc regenerate_verify_kernel_bin"
-        );
-    }
-}
-
 /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
 /// valid: `T` a declared sum, `A` one of its variants. The linker's `as_ctor_export` recorded the
 /// (type, ctor) names WITHOUT checking they exist, so `(export (. T Nonesuch))` (a ctor `T` lacks),

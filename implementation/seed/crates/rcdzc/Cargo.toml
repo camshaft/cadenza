@@ -86,6 +86,13 @@ version = "0.1"
 default-features = false
 features = ["std"]
 
+# BUILD-TIME ONLY (build.rs): regenerates the bundled verify_kernel.bin from verify_kernel.cdz via the
+# REAL cadenza-syntax codec (codec::encode(sexpr::read(...))) into OUT_DIR, so there is no committed
+# golden to go stale. Acyclic — cadenza-syntax does not depend on rcdzc. NOT in the compile path (the
+# "copy, don't depend" invariant holds: rcdzc's own copied codec decodes these bytes at compile time).
+[build-dependencies]
+cadenza-syntax = { path = "../cadenza-syntax" }
+
 [dev-dependencies]
 # The real front-end reader (TESTS ONLY — like wasm-encoder below, never in the compile
 # path, so the "copy, don't depend" round-trip is preserved). Test fixtures read the s-expression
