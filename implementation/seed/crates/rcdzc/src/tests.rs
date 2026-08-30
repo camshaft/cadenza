@@ -701,7 +701,10 @@ fn two_member_record_world_bytes() -> Vec<u8> {
     let member = |b: &mut Builder, member_name: &str, field: &str| {
         let fty = s64(b);
         let fname = b.name(field);
-        let f_field = b.list(vec![fname, fty]);
+        let f_field = {
+            let eqh = b.name("=");
+            b.list(vec![eqh, fname, fty])
+        };
         let rec_head = b.atom_leaf(Leaf::Str("record".into()));
         let rec = b.list(vec![rec_head, f_field]);
         let res_ty = s64(b);
@@ -795,7 +798,10 @@ fn reducer_full_world_bytes() -> Vec<u8> {
     };
     let field = |b: &mut Builder, name: &str, ty| {
         let n = b.name(name);
-        b.list(vec![n, ty])
+        {
+            let eqh = b.name("=");
+            b.list(vec![eqh, n, ty])
+        }
     };
     let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
         let h = b.atom_leaf(Leaf::Str("record".into()));
@@ -983,7 +989,10 @@ fn run_result_world_bytes() -> Vec<u8> {
     };
     let field = |b: &mut Builder, name: &str, ty| {
         let n = b.name(name);
-        b.list(vec![n, ty])
+        {
+            let eqh = b.name("=");
+            b.list(vec![eqh, n, ty])
+        }
     };
     let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
         let h = b.atom_leaf(Leaf::Str("record".into()));
