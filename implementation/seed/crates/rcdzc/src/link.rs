@@ -43,21 +43,11 @@
 use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
 use crate::diag::Reject;
 
-/// The input-artifact kind that names the package ENTRY file. Its bytes are the entry's artifact name
-/// (a UTF-8 string) — the file whose `(export …)` forms the component boundary. It rides the artifact
-/// stream exactly like the `sidecar`/`spans` inputs (`DESIGN-package-linking.md` §3c): a new kind, a
-/// `.find(kind == KIND_ENTRY)`, no change to `compile`'s signature. Absent + a single `ast` = today's
-/// single-file compile; absent + multiple `ast` = a package with no named entry, which declines.
-pub const KIND_ENTRY: &str = "entry";
-
-/// The input-artifact kind that names the INTERFACE a PROVIDER component publishes its exports under
-/// (X4b, `DESIGN-cross-component-interop-rcdzc.md`). Its bytes are the interface name (`cadenza:pkg/iface`)
-/// a peer consumer's `(effect …)` `(bind "cadenza:pkg/iface")` binds to (the effects-unified surface, U2).
-/// Rides the artifact stream like
-/// `KIND_ENTRY`. Absent (the common case) → the component exports its boundary funcs at top level
-/// (byte-identical to before); present → `emit` wraps them as that named interface instance so a peer can
-/// import them. The compile REQUEST specifies it (operator: peers must agree on the published name).
-pub const KIND_COMPONENT_NAME: &str = "component-name";
+// The `entry`/`component-name` INPUT-artifact kinds are compile-BOUNDARY vocabulary — moved to
+// the shared `cadenza-compile-abi` crate (the front-end builds them, the compiler reads them).
+// Re-exported so `crate::link::{KIND_ENTRY, KIND_COMPONENT_NAME}` + `compile`'s `find(kind == …)`
+// stay byte-stable.
+pub use cadenza_compile_abi::abi::{KIND_COMPONENT_NAME, KIND_ENTRY};
 
 /// The input-artifact kind naming which PROVIDER export members cross the boundary as CANONICAL BYTES
 /// (`list<u8>` via `value-encode`/`value-decode`) rather than as opaque runtime `u32` HANDLES (X5).

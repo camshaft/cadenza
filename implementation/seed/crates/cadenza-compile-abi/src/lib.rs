@@ -21,8 +21,8 @@ pub mod spans;
 pub mod target;
 
 pub use abi::{
-    Artifact, CompileOutput, Diagnostic, DiagnosticFix, FixKind, Severity, WRAP_HOLE,
-    wrap_prefix_suffix,
+    Artifact, CompileOutput, Diagnostic, DiagnosticFix, FixKind, KIND_COMPONENT_NAME, KIND_ENTRY,
+    Severity, WRAP_HOLE, component_name_artifact, entry_artifact, wrap_prefix_suffix,
 };
 pub use diagnostics_wire::{decode_diagnostics, encode_diagnostics};
 pub use link_map::{FileSpan, KIND_LINK_MAP, decode_link_map, encode_link_map};

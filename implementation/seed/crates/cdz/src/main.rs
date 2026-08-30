@@ -33,6 +33,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cadenza_syntax::cli as syntax_cli;
+// The in-process compiler CLI — used ONLY on the `standalone` dispatch branches (`run_with_specs` /
+// `run_prepared_with_overflow`); a `!standalone` build delegates + never links `rcdzc`, so gate the import.
+#[cfg(feature = "standalone")]
 use rcdzc::cli as compiler_cli;
 
 // The LSP server (`cdz lsp`) — its own module so `main.rs` gains only the `Cmd::Lsp` arm + dispatch,
@@ -2202,14 +2205,14 @@ fn run_compile(args: compile_args::CompileArgs) -> ExitCode {
     // `KIND_ENTRY` artifact, exactly as the artifacts-in `run` path does. When no `--entry` was given but
     // a single file's import closure was followed (above), that file is the entry.
     if let Some(entry) = args.entry() {
-        inputs.push(compiler_cli::entry_artifact(entry));
+        inputs.push(cadenza_compile_abi::abi::entry_artifact(entry));
     } else if let Some(entry) = &entry_from_closure {
-        inputs.push(compiler_cli::entry_artifact(entry));
+        inputs.push(cadenza_compile_abi::abi::entry_artifact(entry));
     }
     // A `--component-name <INTERFACE>` names the interface a cross-component PROVIDER publishes its exports
     // under — inject it as a `KIND_COMPONENT_NAME` artifact (X4b), same as the artifacts-in `run` path.
     if let Some(iface) = args.component_name() {
-        inputs.push(compiler_cli::component_name_artifact(iface));
+        inputs.push(cadenza_compile_abi::abi::component_name_artifact(iface));
     }
     // Thread the requested `--opt-level` (default `O1`) + `--overflow-signed`/`--overflow-unsigned`
     // (default none) through to the compile — `cdz compile --opt-level O2 --overflow-signed wrap foo.cdz`
@@ -2254,7 +2257,7 @@ fn compile_source_specs(
         ));
     }
     if let Some(entry) = entry {
-        inputs.push(compiler_cli::entry_artifact(entry));
+        inputs.push(cadenza_compile_abi::abi::entry_artifact(entry));
     }
     // `run_prepared` applies the `[Wasm]` default when `targets` is empty, matching a bare `cdz compile`.
     // `opt_level` is the resolved build tier; `overflow` the resolved global overflow policy.
@@ -2342,11 +2345,11 @@ fn compile_project_component_bytes_named(
             cadenza_compile_abi::spans::encode(&span_data),
         ));
     }
-    inputs.push(compiler_cli::entry_artifact(entry));
+    inputs.push(cadenza_compile_abi::abi::entry_artifact(entry));
     // A path-dep publishes its exports under an interface name (the same `--component-name` a manual
     // cross-component provider uses), so the consumer's `--peer <iface>=<path>` binds it by that name.
     if let Some(iface) = component_name {
-        inputs.push(compiler_cli::component_name_artifact(iface));
+        inputs.push(cadenza_compile_abi::abi::component_name_artifact(iface));
     }
     dispatch_project_to_bytes(inputs, opt_level, overflow)
 }
@@ -4661,7 +4664,7 @@ fn precompile_group(
     entry: &str,
     cache_dir: Option<&std::path::Path>,
 ) -> (Option<ProviderPeer>, Vec<(String, Vec<u8>)>) {
-    let entry_marker = compiler_cli::entry_artifact(entry);
+    let entry_marker = cadenza_compile_abi::abi::entry_artifact(entry);
     let drive = |req: cadenza_compile_abi::Request| -> cadenza_compile_abi::CompileOutput {
         let mut inputs = ast_inputs.clone();
         inputs.push(cadenza_compile_abi::Artifact::new(
@@ -5243,7 +5246,7 @@ fn run_emit_shred(
             "drive",
             cadenza_compile_abi::sidecar::encode(std::slice::from_ref(&shred_req)),
         ));
-        inputs.push(compiler_cli::entry_artifact(&closure[0].name));
+        inputs.push(cadenza_compile_abi::abi::entry_artifact(&closure[0].name));
         let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
         // A per-`@test` DECLINE (a compound/closure-param test that can't cross the peer boundary — the
         // deferred #4031 limit) is error-severity, but it is INFORMATIONAL for the shred, NOT a failure: the
@@ -5941,7 +5944,7 @@ fn run_test_file(
             cadenza_compile_abi::sidecar::encode(&[cadenza_compile_abi::Request::EmitTests]),
         ));
         if is_package {
-            inputs.push(compiler_cli::entry_artifact(&closure[0].name));
+            inputs.push(cadenza_compile_abi::abi::entry_artifact(&closure[0].name));
         }
         let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
         let Some(component) = out.artifact("component") else {
@@ -9039,7 +9042,7 @@ fn check_one(
                 cadenza_compile_abi::sidecar::Query::Diagnostics,
             )]),
         ));
-        inputs.push(compiler_cli::entry_artifact(&files[0].name));
+        inputs.push(cadenza_compile_abi::abi::entry_artifact(&files[0].name));
         dispatch_query_over_inputs(inputs, cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS)
     } else {
         run_sidecar(
@@ -10139,7 +10142,7 @@ fn run_func_layout(args: &FuncLayoutArgs) -> ExitCode {
                 cadenza_compile_abi::sidecar::Query::FuncLayout,
             )]),
         ));
-        inputs.push(compiler_cli::entry_artifact(&files[0].name));
+        inputs.push(cadenza_compile_abi::abi::entry_artifact(&files[0].name));
         dispatch_query_over_inputs(inputs, cadenza_compile_abi::sidecar::KIND_FUNC_LAYOUT)
     } else {
         run_sidecar(
