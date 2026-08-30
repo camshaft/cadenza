@@ -1170,6 +1170,32 @@
   (input  (do (def (f (: r (Record (: x Int64) (: y Int64)))) r) (def (main) (f #record((= x 1) (= zzzzzz 2)))) (export main)))
   (error  CDZ0203 (no-fix)))
 
+; The TUPLE analogue of the record field-set add/delete: a tuple literal with the wrong ARITY names the gap
+; ("expected a tuple with N elements, but this one has M") AND carries the POSITIONAL repair — too FEW gets a
+; `(trap "TODO")` placeholder appended per missing trailing position; ONE too many gets the trailing element
+; deleted. The value-annotation site carries the same. TWO too many is not one clean delete → no fix. A
+; SAME-ARITY per-position TYPE mismatch keeps its own element message with no arity add/delete. (Migrated from
+; rcdzc a_tuple_arity_mismatch_offers_add_missing_or_delete_extra_elements.)
+(case "a tuple ARGUMENT with too few elements carries an add (insert) fix appending a placeholder"
+  (input  (do (def (f (: t (Tuple Int64 Int64 Int64))) t) (def (main) (f #tuple(1 2))) (export main)))
+  (error  CDZ0203 (message "expected a tuple with 3 elements, but this one has 2") (fix (kind insert-into) (replacement-contains "(trap \"TODO\")"))))
+
+(case "a tuple ARGUMENT with one too many elements carries a delete fix on the trailing element"
+  (input  (do (def (f (: t (Tuple Int64 Int64))) t) (def (main) (f #tuple(1 2 3))) (export main)))
+  (error  CDZ0203 (message "expected a tuple with 2 elements, but this one has 3") (fix (kind delete))))
+
+(case "the direct value-annotation site also carries the tuple add fix for too few elements"
+  (input  (do (def (main) (: #tuple(1 2) (Tuple Int64 Int64 Int64))) (export main)))
+  (error  CDZ0203 (fix (kind insert-into) (replacement-contains "(trap \"TODO\")"))))
+
+(case "a tuple ARGUMENT with two too many elements is not one clean delete — no mechanical fix"
+  (input  (do (def (f (: t (Tuple Int64))) t) (def (main) (f #tuple(1 2 3))) (export main)))
+  (error  CDZ0203 (no-fix)))
+
+(case "a same-arity per-position tuple type mismatch keeps its element message with no add or delete fix"
+  (input  (do (def (f (: t (Tuple Int64 Int64))) t) (def (main) (f #tuple(1 true))) (export main)))
+  (error  CDZ0203 (message "element 1 should be Int64") (no-fix)))
+
 ; The variant-payload TYPE check must fire wherever the constructor appears — including as the direct
 ; scrutinee of a `match`. A sum's shape is "its variant names with their payload types" (type-system.md
 ; #The Structural Types Are Record, Tuple, And Sum), and "a value of a sum type MUST be constructed
