@@ -34,8 +34,8 @@ def div-floor(n: Int64, m: Int64) =
 def pitch(n: Int64) = Pitch.Pitch(n)
 
 /// The raw MIDI note number of a pitch.
-def note(p: Pitch) = match p with
-  | Pitch.Pitch(n) => n
+def note(p: Pitch) =
+  let Pitch.Pitch(n) = p in n
 
 /// The PITCH CLASS `0..11` (C=0, C#=1, … B=11): the note folded into a single octave, floored so it is
 /// canonical even for notes below C-1.
@@ -62,8 +62,8 @@ def same-pitch-class(a: Pitch, b: Pitch) = pitch-class(a) == pitch-class(b)
 def interval(semis: Int64) = Interval.Interval(semis)
 
 /// The semitone count of an interval.
-def semitones(i: Interval) = match i with
-  | Interval.Interval(s) => s
+def semitones(i: Interval) =
+  let Interval.Interval(s) = i in s
 
 /// The interval FROM `a` TO `b` (`b - a` semitones): positive if `b` is higher.
 def interval-between(a: Pitch, b: Pitch) = Interval.Interval(note(b) - note(a))

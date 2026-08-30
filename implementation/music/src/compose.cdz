@@ -167,16 +167,16 @@ def a-sequence-is-gapless-each-note-ends-where-the-next-begins() =
 
 // ---- test helpers -----------------------------------------------------------------------------------
 /// The start tick of a note (mirrors schedule.cdz's accessor; local to keep this test self-contained).
-def start-of(n: Note) = match n with
-  | Note.Note(_, _, _, s, _) => s
+def start-of(n: Note) =
+  let Note.Note(_, _, _, s, _) = n in s
 
 /// The note number of a note.
-def num-of(n: Note) = match n with
-  | Note.Note(Pitch.Pitch(k), _, _, _, _) => k
+def num-of(n: Note) =
+  let Note.Note(Pitch.Pitch(k), _, _, _, _) = n in k
 
 /// The duration (in ticks) of a note.
-def dur-of(n: Note) = match n with
-  | Note.Note(_, _, _, _, d) => d
+def dur-of(n: Note) =
+  let Note.Note(_, _, _, _, d) = n in d
 
 /// Do all notes start at `t`? Recursive, annotated.
 def all-start-at(notes: List(Note), t: Int64) = match notes with
