@@ -520,6 +520,21 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
                    | .value v => .sym (SymExpr.const v)
                    | _ => .sym (SymExpr.app hs args))
                 else .sym (SymExpr.app hs args)
+              -- FLOAT const-fold. Round each op to f32 when the operands mention Float32 — the backend
+              -- rounds per-op to f32, so folding at f64 would diverge (v-cdz-smith fp-0); else fold at f64
+              -- via evalFloatOp. (Comparison / = / bool over floats stays in normalize's foldConst?.)
+              | _, #[SymExpr.const va, SymExpr.const vb] =>
+                if arithOps.contains hs then
+                  (match Value.asF64? va, Value.asF64? vb with
+                   | some x, some y =>
+                     (match evalFloatOp hs x y with
+                      | .value (.f64 r) =>
+                        let isF32 := (children[1]?.map (mentionsFloat32? m)).getD false
+                                     || (children[2]?.map (mentionsFloat32? m)).getD false
+                        .sym (SymExpr.const (.f64 (if isF32 then (Float.toFloat32 r).toFloat else r)))
+                      | _ => .sym (SymExpr.app hs args))
+                   | _, _ => .sym (SymExpr.app hs args))
+                else .sym (SymExpr.app hs args)
               | _, _ => .sym (SymExpr.app hs args)
           else
             -- a call `(f arg…)` to a top-level def `f` (not shadowed by a local): INLINE it — bind each
@@ -861,5 +876,19 @@ private def _symMatchProg (n : UInt8) : Module :=
 #guard equivMain (_symMatchProg 0) (_symMatchProg 0) == EquivVerdict.proven
 -- two matches differing only in the None-arm body are NOT proven (the symbolic cases differ) — no false proven.
 #guard equivMain (_symMatchProg 0) (_symMatchProg 1) == EquivVerdict.cannotProve "normalized-but-different"
+
+-- FLOAT32 fold precision (v-cdz-smith fp-0): `(/ (: 10.0 Float32) (: 3.0 Float32))` must fold at f32
+-- (the backend rounds per-op to f32), NOT f64. leaves 0:/ 1:: 2:(10.0) 3:Float32 4:(3.0).
+private def _f32div : Module :=
+  { leaves := #[Leaf.name "/".toUTF8, Leaf.name ":".toUTF8, Leaf.float false 0 (ByteArray.mk #[10]),
+                Leaf.name "Float32".toUTF8, Leaf.float false 0 (ByteArray.mk #[3])],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[0, 1, 2], .atom 1, .atom 4, .atom 3, .list #[4, 5, 6],
+               .atom 0, .list #[8, 3, 7]], root := 9 }
+#guard symEval _f32div [] symDefaultFuel defaultIntTy 9 == SymOutcome.sym (.const (.f64 (Float.toFloat32 (10.0 / 3.0)).toFloat))
+-- contrast: the SAME division without Float32 (bare Float64 literals) folds at f64 (unrounded).
+private def _f64div : Module :=
+  { leaves := #[Leaf.name "/".toUTF8, Leaf.float false 0 (ByteArray.mk #[10]), Leaf.float false 0 (ByteArray.mk #[3])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
+#guard symEval _f64div [] symDefaultFuel defaultIntTy 3 == SymOutcome.sym (.const (.f64 (10.0 / 3.0)))
 
 end Oracle
