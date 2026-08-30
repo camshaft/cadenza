@@ -3876,6 +3876,12 @@
               # derived fields trivially match). Kept both (harmless; derive is the narrower field-level check).
               # Pure node, no cargo/xtask, zero new inputs.
               npm run check:registry-sync
+              # (v-guide-infra fork1a) playground examples.ts EXAMPLES[] is now @generated from the sibling
+              # examples.sexp (source-of-truth). Assert committed == regen — the playground analogue of
+              # check:registry-sync above. Run via the Rust xtask DIRECTLY (operator: no JS shim); the
+              # prebuilt xtaskCodegenGuideBin is on PATH (+ CDZ_XTASK_CODEGEN_GUIDE). cwd is guide/ (the
+              # `cd guide` above), so the path is guide-relative. (v-nix pre-approved this line.)
+              xtask-codegen-guide --playground-registry --check src/playground/examples.ts
               npm run check:diagnostics
               npm run check:examples
               npm run check:calculator
