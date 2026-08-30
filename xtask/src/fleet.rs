@@ -6356,10 +6356,25 @@ const GATE_LEASE_WEIGHT: usize = 2;
 /// aged build acquires unconditionally, not just a bounded +1 slot) is OPTION-1, a tested follow-up.
 const CHECK_LEASE_AGING_SECS: u64 = 540;
 
+/// HARD CAP on how long a vertical acquirer POLLS for a slot before GIVING UP (2026-08-30, concierge-greenlit
+/// PRIMARY propagation fix). WHY: the poll loop was UNBOUNDED — a waiter that can't fit even AGED (sustained
+/// over-cap) polled FOREVER, hanging the agent's `cargo xtask fleet gate-local` Bash call → the agent froze
+/// mid-tick (observed: wrappers 17-18min old vs a 10min /loop interval) → never reached its next `sync` →
+/// never REBUILT xtask → so a landed lease fix (#6004/#6157/…) could NEVER propagate to it (the chicken-egg
+/// behind the fleet-wide land-block). Bounding the wait makes a stuck gate-local RETURN (as NoChecks — retry
+/// next tick) instead of hang → the Bash call returns → the /loop re-fires → sync REBUILDS → the fix lands.
+/// 600s = the default /loop interval: a gate-local must never monopolize more than one tick waiting. Aging
+/// (540s) still gets first chance; only the can't-fit-even-aged pathological case hits this cap.
+const CHECK_LEASE_WAIT_MAX: u64 = 600;
+
 /// An acquired check-lease; releasing (removing the lease file) happens on drop, so a normal `check`
 /// exit — or an early `return`/panic — frees the slot without an explicit release call.
 pub struct CheckLease {
     file: Option<PathBuf>,
+    /// True iff `acquire` GAVE UP after [`CHECK_LEASE_WAIT_MAX`] without acquiring — the caller must NOT
+    /// proceed as if leased (gate-local returns NoChecks so the agent retries next tick instead of hanging).
+    /// Distinct from `file: None` fail-open (no lease dir → proceed unthrottled): a timeout means DON'T build.
+    timed_out: bool,
 }
 
 impl Drop for CheckLease {
@@ -6577,7 +6592,10 @@ pub fn acquire_check_lease(repo: &Path, priority: bool) -> CheckLease {
 pub fn acquire_check_lease_weighted(repo: &Path, priority: bool, weight: usize) -> CheckLease {
     let Some(dir) = check_lease_dir(repo) else {
         eprintln!("check-lease: no lease dir (failing OPEN — unthrottled).");
-        return CheckLease { file: None };
+        return CheckLease {
+            file: None,
+            timed_out: false,
+        };
     };
     let pid = std::process::id();
     // The class also encodes the WEIGHT for the scan: a heavy vertical is a `gate` lease (weight
@@ -6618,9 +6636,31 @@ pub fn acquire_check_lease_weighted(repo: &Path, priority: bool, weight: usize) 
             // Create the lease; its mtime marks acquisition (and is our liveness stamp).
             if std::fs::write(&file, format!("{}\t{}", now, class)).is_err() {
                 eprintln!("check-lease: could not write lease (failing OPEN — unthrottled).");
-                return CheckLease { file: None };
+                return CheckLease {
+                    file: None,
+                    timed_out: false,
+                };
             }
-            return CheckLease { file: Some(file) };
+            return CheckLease {
+                file: Some(file),
+                timed_out: false,
+            };
+        }
+        // HARD WAIT CAP: a waiter that can't fit even AGED (sustained over-cap) would poll forever, HANGING
+        // the agent's gate-local Bash call → the agent freezes mid-tick + never re-syncs/rebuilds (the
+        // propagation chicken-egg). Give up after CHECK_LEASE_WAIT_MAX + signal timed_out so the caller
+        // (run_gate_local) returns NoChecks (retry next tick) instead of hanging. A successful acquire (go,
+        // above) always wins over this — only a genuinely-stuck waiter times out.
+        if now.saturating_sub(wait_start) >= CHECK_LEASE_WAIT_MAX {
+            eprintln!(
+                "check-lease: GAVE UP after {}s (cap {CHECK_LEASE_WAIT_MAX}s; live weight {vert_weight}/{max}) — \
+                 returning timed-out so the caller retries next tick instead of hanging the agent's loop.",
+                now.saturating_sub(wait_start)
+            );
+            return CheckLease {
+                file: None,
+                timed_out: true,
+            };
         }
         if !waited_notice {
             println!(
@@ -10073,6 +10113,17 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     // back (the load-125 deadlock, 2026-08-30). At weight 2 the adaptive cap yields ≤2 concurrent local-gates
     // at load ~24 and ≤1 when saturated — the concurrency scales down with load. See `GATE_LEASE_WEIGHT`.
     let _lease = acquire_check_lease_weighted(&fleet.repo, false, GATE_LEASE_WEIGHT);
+    // If the lease acquire GAVE UP (waited past CHECK_LEASE_WAIT_MAX under sustained contention), do NOT
+    // build — return NoChecks so this tick ENDS (the agent's Bash call returns, the /loop re-fires, the next
+    // tick's `sync` REBUILDS xtask + retries the gate). This is the anti-freeze fix: without it, the unbounded
+    // wait hung the agent mid-tick forever, blocking every lease fix from propagating (the fleet land-block).
+    if _lease.timed_out {
+        eprintln!(
+            "gate-local: could not acquire a check-lease slot within {CHECK_LEASE_WAIT_MAX}s of contention — \
+             NO-CHECKS (not built; retry next tick). Yielding so the loop can re-tick + sync rather than hang."
+        );
+        return CiVerdict::NoChecks;
+    }
     let target = format!(".#checks.{arch}-linux.local-gate");
     let nix_bin = nix_binary();
     eprintln!(
