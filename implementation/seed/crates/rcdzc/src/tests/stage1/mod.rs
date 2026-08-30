@@ -2557,18 +2557,10 @@ fn left_shift_that_overflows_fails_the_build() {
     assert!(expect_decline("(<< 4611686018427387904 1)").contains("overflows Int64"));
 }
 
-#[test]
-fn shift_by_the_width_or_more_fails_the_build() {
-    // (<< 1 64) — a shift count ≥ width traps rather than masking (CDZ0304); named as an
-    // out-of-range count (not an overflow — the count itself is the fault).
-    assert!(expect_decline("(<< 1 64)").contains("shift count 64 is out of range"));
-}
-
-#[test]
-fn negative_shift_count_fails_the_build() {
-    // (<< 1 -1) — a negative shift count traps rather than masking (CDZ0304), named as out-of-range.
-    assert!(expect_decline("(<< 1 -1)").contains("shift count -1 is out of range"));
-}
+// NOTE: the constant out-of-range shift-count rejects — `(<< 1 64)` (count ≥ width) and `(<< 1 -1)`
+// (negative count) — migrated to corpus 06-numeric-model "a constant shift by an OUT-OF-RANGE count is
+// rejected at compile time with CDZ0304", whose doc explicitly covers the `>= 64` and negative-count class
+// (minimal repro `(<< 5 -1)` + the `(<< 5 64)` / right-shift twins). rcdzc tests deleted (corpus-covered).
 
 #[test]
 fn an_unsigned_narrow_width_shift_trap_names_the_width_and_cause() {
@@ -2869,19 +2861,9 @@ fn wrap_to_a_nonaliased_width_folds() {
     assert_eq!(fold_const_u128("((UInt 48).wrap -1)"), (1u128 << 48) - 1);
 }
 
-#[test]
-fn signed_and_unsigned_of_the_same_width_do_not_promote() {
-    // `(+ (: 1 Int8) (: 2 UInt8))` — same width (8), different SIGNEDNESS → still rejected (no
-    // implicit promotion). Pins that signedness alone is a mismatch, not just width.
-    let msg = expect_decline("(+ (: 1 Int8) (: 2 UInt8))");
-    assert!(
-        msg.contains("unify")
-            || msg.contains("Int")
-            || msg.contains("UInt")
-            || msg.contains("differ"),
-        "got: {msg}"
-    );
-}
+// NOTE: `signed_and_unsigned_of_the_same_width_do_not_promote` (`(+ (: 1 Int8) (: 2 UInt8))` → CDZ0301,
+// signedness-alone mismatch at equal width) migrated to corpus 06-numeric-model "same-width integers of
+// different signedness do not promote (signedness alone is a mismatch)". rcdzc test deleted (corpus-covered).
 
 #[test]
 fn a_wide_record_argument_unifies_across_many_calls_in_bounded_time() {
