@@ -2016,7 +2016,22 @@ pub(super) fn const_value_ast(
             // RE-CANONICALIZE via `from_f64`: the stored `Decimal` carries the SOURCE LITERAL's digit form,
             // but the canonical value form is the FULL exact expansion (scalar display_float + rust + the
             // runtime `float_leaf`), so a CONST compound-element float renders identically to a runtime one.
-            let canon = crate::ast::Decimal::from_f64(f64::from_bits(d.to_f64_bits())).unwrap_or(d);
+            let mut canon =
+                crate::ast::Decimal::from_f64(f64::from_bits(d.to_f64_bits())).unwrap_or(d);
+            // DEMOTE a Float32-typed constant through binary32 before baking, mirroring the runtime
+            // `Core::ConstFloat` emit (`… as f32`), the float-arith/compare const folds, and the Rust
+            // backend. Without this a const-folded `(: 0.1 Float32)` value (e.g. `(List.at (list (: 0.1
+            // Float32)) 0)`, which folds to `(Some 0.1)` and bakes its value form here) keeps the UN-demoted
+            // f64 0.1 — a wasm-vs-rust VALUE differential (rust demotes; witness rcdzc-wasm-list-float32-
+            // element-not-demoted). A `Float64`/default-width const is byte-identical (the guard is false).
+            if let crate::ty::Ty::Float(ft) = crate::infer::type_of(db, id)
+                && ft.ground_width() == 32
+            {
+                canon = crate::ast::Decimal::from_f64(
+                    f64::from_bits(canon.to_f64_bits()) as f32 as f64
+                )
+                .unwrap_or(canon);
+            }
             Some(b.atom_leaf(Leaf::Float(canon)))
         }
         Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
@@ -2286,7 +2301,22 @@ pub(super) fn const_value_ast_at(
             // RE-CANONICALIZE via `from_f64`: the stored `Decimal` carries the SOURCE LITERAL's digit form,
             // but the canonical value form is the FULL exact expansion (scalar display_float + rust + the
             // runtime `float_leaf`), so a CONST compound-element float renders identically to a runtime one.
-            let canon = crate::ast::Decimal::from_f64(f64::from_bits(d.to_f64_bits())).unwrap_or(d);
+            let mut canon =
+                crate::ast::Decimal::from_f64(f64::from_bits(d.to_f64_bits())).unwrap_or(d);
+            // DEMOTE a Float32-typed constant through binary32 before baking, mirroring the runtime
+            // `Core::ConstFloat` emit (`… as f32`), the float-arith/compare const folds, and the Rust
+            // backend. Without this a const-folded `(: 0.1 Float32)` value (e.g. `(List.at (list (: 0.1
+            // Float32)) 0)`, which folds to `(Some 0.1)` and bakes its value form here) keeps the UN-demoted
+            // f64 0.1 — a wasm-vs-rust VALUE differential (rust demotes; witness rcdzc-wasm-list-float32-
+            // element-not-demoted). A `Float64`/default-width const is byte-identical (the guard is false).
+            if let crate::ty::Ty::Float(ft) = crate::infer::type_of(db, id)
+                && ft.ground_width() == 32
+            {
+                canon = crate::ast::Decimal::from_f64(
+                    f64::from_bits(canon.to_f64_bits()) as f32 as f64
+                )
+                .unwrap_or(canon);
+            }
             Some(b.atom_leaf(Leaf::Float(canon)))
         }
         Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
