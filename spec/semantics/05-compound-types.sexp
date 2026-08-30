@@ -11037,6 +11037,20 @@
   (input (do (type C (Alpha) (Beta)) (type D (Alph Int64)) (def (main) (match (C.Alpha) ((D.Alph x) x) (_ 2))) (export main)))
   (error CDZ0203 (message "did you mean") (fix (kind replace) (replacement "Alpha"))))
 
+; The same pattern-head enrichment reaches a SINGLE-VARIANT NEWTYPE scrutinee (`(type A (Xyz))` erases to a
+; Ty::Nominal newtype, once a separate reject path with no suggestion): a wrong ctor over a newtype scrutinee
+; gets the same two-tier — near→did-you-mean+fix to the sole variant, far→"closest matches" listing it. Both
+; the newtype and the boxed-sum paths now share the one enrichment. (Migrated from rcdzc
+; a_wrong_ctor_over_a_single_variant_newtype_scrutinee_is_enriched_too; the newtype's own-ctor-still-matches
+; COMPILE-validity half stays a white-box rcdzc pin.)
+(case "a near-typo ctor over a single-variant newtype suggests its sole variant with a fix"
+  (input (do (type A (Xyz)) (type B (Xyw)) (def (f (: a A)) (match a ((Xyw) 1))) (export f)))
+  (error CDZ0203 (message "not a variant of the matched type A") (message "did you mean") (fix (kind replace) (replacement "Xyz"))))
+
+(case "a far-typo ctor over a single-variant newtype lists its sole variant"
+  (input (do (type A (Xyz)) (type B (Y)) (def (f (: a A)) (match a ((Y) 1))) (export f)))
+  (error CDZ0203 (message "not a variant of the matched type A") (message "closest matches") (not "did you mean")))
+
 ; --- A redundant match arm — the DUAL of non-exhaustiveness -----------------------------------
 ; core-semantics.md #Matching Is Exhaustive Or Rejected has a dual: where a NON-exhaustive match leaves a
 ; value no arm covers (CDZ0210, a rejection), a REDUNDANT arm is one no value reaches — an EARLIER arm
