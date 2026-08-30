@@ -69,10 +69,10 @@ def eval-args(args: List(Core), i: Int64, env: Map(Int64, Value), defs: Map(Int6
     | Option.Some(a) =>
         (match eval-core-s(a, env, defs, store) with
           | Option.None(_) => Option.None(unit)
-          | Option.Some(vs1) => (match vs1 with | (v, store1) =>
+          | Option.Some(vs1) => (let (v, store1) = vs1 in
               (match eval-args(args, i + 1, env, defs, store1) with
                 | Option.None(_) => Option.None(unit)
-                | Option.Some(rs) => (match rs with | (rest, store2) =>
+                | Option.Some(rs) => (let (rest, store2) = rs in
                     Option.Some((List.concat(List.push([], v), rest), store2)))))))
 
 /// bind-params (slice-B3): bind param binder-ids positionally to arg values in a FRESH env (lexical — the
@@ -118,11 +118,11 @@ def apply-def-by-name(name: Int64, args: List(Core), env: Map(Int64, Value), def
   (match Map.lookup(defs, name) with
     | Option.None(_) => Option.None(unit)
     | Option.Some(pb) =>
-        (match pb with
-          | (params, body) =>
+        (
+          let (params, body) = pb in
               (match eval-args(args, 0, env, defs, store) with
                 | Option.None(_) => Option.None(unit)
-                | Option.Some(vs) => (match vs with | (vals, store1) =>
+                | Option.Some(vs) => (let (vals, store1) = vs in
                     eval-core-s(body, bind-params(params, vals, 0, (Map.empty : Map(Int64, Value))), defs, store1)))))
 
 /// eval-core-d (slice-B3): the 3-arg PUBLIC workhorse — evaluate a Core term under `env` + `defs`, returning
@@ -135,7 +135,7 @@ def eval-core-d(c: Core, env: Map(Int64, Value), defs: Map(Int64, (List(Int64), 
     // S-w0 boundary: unwrap the final Value to Option(Int64) so every external caller/@test is unchanged. A
     // non-VInt result (impossible today; VStr/VChar arrive in S-w1) declines to None — exactly the old
     // "no Int value" behavior. run-src's Option(Int64) return widens later (S-w2) to render the wider verdict.
-    | Option.Some(vs) => (match vs with | (v, _) => value-int(v)))
+    | Option.Some(vs) => (let (v, _) = vs in value-int(v)))
 
 /// The store-threaded workhorse (M2-b-2a): `eval-core-d` + a `SumStore` threaded IN and OUT of every arm, so a
 /// sum-value CONSTRUCTION (CCtor, added M2-b-2b) can ALLOCATE into the store and the grown store' flows onward.
@@ -159,9 +159,9 @@ def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, (List(Int64), 
       // S-w0: unwrap both operand Values to Int64 for eval-bin (a non-VInt operand — none today — declines);
       // rewrap the arith result as VInt.
       (match eval-core-s(l, env, defs, store) with
-        | Option.Some(as1) => (match as1 with | (av, store1) =>
+        | Option.Some(as1) => (let (av, store1) = as1 in
           (match eval-core-s(r, env, defs, store1) with
-            | Option.Some(bs2) => (match bs2 with | (bv, store2) =>
+            | Option.Some(bs2) => (let (bv, store2) = bs2 in
                 (match value-int(av) with
                   | Option.None(_) => Option.None(unit)
                   | Option.Some(a) => (match value-int(bv) with
@@ -175,14 +175,14 @@ def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, (List(Int64), 
       // non-recursive let: eval the value in the CURRENT env (threading store → store1), bind the Value to the
       // let's canonical id, eval body under store1.
       (match eval-core-s(valExpr, env, defs, store) with
-        | Option.Some(vs1) => (match vs1 with | (v, store1) => eval-core-s(body, Map.insert(env, binder, v), defs, store1))
+        | Option.Some(vs1) => (let (v, store1) = vs1 in eval-core-s(body, Map.insert(env, binder, v), defs, store1))
         | Option.None(_) => Option.None(unit))
   | Core.CIf(cond, thn, els) =>
       // Bool is 0/1 in Core: a non-zero condition takes the then-branch, zero takes the else. Only the taken
       // branch is evaluated (lazy). Thread store: cond → store1, then the taken branch under store1. S-w0:
       // unwrap the cond Value to test its Int (a non-VInt cond — none today — declines).
       (match eval-core-s(cond, env, defs, store) with
-        | Option.Some(cs1) => (match cs1 with | (cv, store1) =>
+        | Option.Some(cs1) => (let (cv, store1) = cs1 in
             (match value-int(cv) with
               | Option.None(_) => Option.None(unit)
               | Option.Some(c) => (if (c == 0) then eval-core-s(els, env, defs, store1) else eval-core-s(thn, env, defs, store1))))
@@ -212,10 +212,10 @@ def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, (List(Int64), 
       // element — none today — declines; storing a String payload is a later S-w1+ decision).
       (match eval-args(args, 0, env, defs, store) with
         | Option.None(_) => Option.None(unit)
-        | Option.Some(vs) => (match vs with | (vals, store1) =>
+        | Option.Some(vs) => (let (vals, store1) = vs in
             (match values-ints(vals, 0, ([] : List(Int64))) with
               | Option.None(_) => Option.None(unit)
-              | Option.Some(ints) => (match store-alloc(store1, tag, ints) with | (h, store2) => Option.Some((Value.VInt(h), store2))))))
+              | Option.Some(ints) => (let (h, store2) = store-alloc(store1, tag, ints) in Option.Some((Value.VInt(h), store2))))))
   | Core.CMatchSum(scrut, tag, binders, thn, els) =>
       // M2-b-2b sum DECONSTRUCT: eval scrut to a handle, read its store-tag. If it EQUALS `tag`, bind each
       // payload element to its binder (store-payload h i → binders[i]) and eval `then` under that env; else
@@ -225,7 +225,7 @@ def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, (List(Int64), 
       // unwrap the scrut Value to the Int64 handle (a non-VInt scrut — none today — declines).
       (match eval-core-s(scrut, env, defs, store) with
         | Option.None(_) => Option.None(unit)
-        | Option.Some(hs) => (match hs with | (hv, store1) =>
+        | Option.Some(hs) => (let (hv, store1) = hs in
             (match value-int(hv) with
               | Option.None(_) => Option.None(unit)
               | Option.Some(h) =>
@@ -243,7 +243,7 @@ def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, (List(Int64), 
       // unwrap the scrut Value to its Int tag.
       (match eval-core-s(scrut, env, defs, store) with
         | Option.None(_) => Option.None(unit)
-        | Option.Some(vs) => (match vs with | (vv, store1) =>
+        | Option.Some(vs) => (let (vv, store1) = vs in
             (match value-int(vv) with
               | Option.None(_) => Option.None(unit)
               | Option.Some(v) =>
@@ -257,7 +257,7 @@ def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, (List(Int64), 
       // S-w0: unwrap the operand Value to the Int64 handle; wrap the Int64 payload read back as VInt.
       (match eval-core-s(operand, env, defs, store) with
         | Option.None(_) => Option.None(unit)
-        | Option.Some(hs) => (match hs with | (hv, store1) =>
+        | Option.Some(hs) => (let (hv, store1) = hs in
             (match value-int(hv) with
               | Option.None(_) => Option.None(unit)
               | Option.Some(h) =>
@@ -626,9 +626,9 @@ def ev-nullary-call-evaluates-to-body() =
   // a nullary call NApp(calleeName, -1) over a body `NLit(42)` runs through eval-tree (lower resolves name→body
   // via def-body-of, inlines the body → CNum 42 → eval) to 42. End-to-end proof of slice-2's β-reduction-over-
   // zero-args. Body registered under name 900 via record-def.
-  (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
+  (let (bodyId, t1) = add-node(empty-tree(), Node.NLit(42)) in
     (let t1d = record-def(t1, 900, bodyId) in
-     (match add-node(t1d, Node.NApp(900, -1)) with | (root, tree) =>
+     (let (root, tree) = add-node(t1d, Node.NApp(900, -1)) in
       (match eval-tree(tree, root) with
         | Option.Some(v) => (if v == 42 then unit else trap("nullary call evaluates to its body value (42)"))
         | Option.None(_) => trap("a nullary call runs end-to-end")))))
@@ -638,11 +638,11 @@ def ev-nullary-call-over-arith-body() =
   // the body can be COMPOUND: a nullary call over `(+ 40 2)` (NBin) evaluates to 42 — lower inlines the whole
   // body Core, eval runs it. Pins that the inlined body is evaluated (not just a literal passthrough). Body
   // registered under name 900.
-  (match add-node(empty-tree(), Node.NLit(40)) with | (aId, t1) =>
-    (match add-node(t1, Node.NLit(2)) with | (bId, t2) =>
-      (match add-node(t2, Node.NBin(43, aId, bId)) with | (bodyId, t3) =>
+  (let (aId, t1) = add-node(empty-tree(), Node.NLit(40)) in
+    (let (bId, t2) = add-node(t1, Node.NLit(2)) in
+      (let (bodyId, t3) = add-node(t2, Node.NBin(43, aId, bId)) in
         (let t3d = record-def(t3, 900, bodyId) in
-         (match add-node(t3d, Node.NApp(900, -1)) with | (root, tree) =>
+         (let (root, tree) = add-node(t3d, Node.NApp(900, -1)) in
           (match eval-tree(tree, root) with
             | Option.Some(v) => (if v == 42 then unit else trap("nullary call over (+ 40 2) = 42"))
             | Option.None(_) => trap("a nullary call over an arith body runs")))))))
@@ -652,11 +652,11 @@ def ev-nullary-call-nested-in-arith() =
   // a nullary call as a SUB-EXPRESSION (not the root): `(+ (mk) 1)` where mk's body = 41 → 42. Pins that
   // NApp composes inside a CBin — the inlined body Core sits as a CBin operand and evaluates. (slice-2 pinned
   // NApp-as-root; this pins NApp-nested, the shape a real program uses: a call feeding an operator.)
-  (match add-node(empty-tree(), Node.NLit(41)) with | (mkBody, t1) =>
+  (let (mkBody, t1) = add-node(empty-tree(), Node.NLit(41)) in
     (let t1d = record-def(t1, 900, mkBody) in                        // register mk (name 900) → body 41
-     (match add-node(t1d, Node.NApp(900, -1)) with | (callId, t2) =>
-      (match add-node(t2, Node.NLit(1)) with | (oneId, t3) =>
-        (match add-node(t3, Node.NBin(43, callId, oneId)) with | (root, tree) =>
+     (let (callId, t2) = add-node(t1d, Node.NApp(900, -1)) in
+      (let (oneId, t3) = add-node(t2, Node.NLit(1)) in
+        (let (root, tree) = add-node(t3, Node.NBin(43, callId, oneId)) in
           (match eval-tree(tree, root) with
             | Option.Some(v) => (if v == 42 then unit else trap("(+ (mk) 1) = 42 (call nested in arith)"))
             | Option.None(_) => trap("a nullary call nested in arith evals")))))))
@@ -666,11 +666,11 @@ def ev-nullary-call-chain-inlines-transitively() =
   // a CHAIN of nullary calls: `g`'s body IS a call to `f` (f body = 42), and the root calls `g`. So the root
   // NApp inlines g's body — which is ITSELF an NApp — which in turn inlines f's body 42. Pins that lowering
   // inlines a callee body TRANSITIVELY (NApp over NApp), the shape `(def (f) 42) (def (g) (f)) (g)` produces.
-  (match add-node(empty-tree(), Node.NLit(42)) with | (fBody, t1) =>
+  (let (fBody, t1) = add-node(empty-tree(), Node.NLit(42)) in
     (let t1d = record-def(t1, 900, fBody) in                         // f (name 900) → body 42
-     (match add-node(t1d, Node.NApp(900, -1)) with | (gBody, t2) => // g's body: a call to f
+     (let (gBody, t2) = add-node(t1d, Node.NApp(900, -1)) in // g's body: a call to f
       (let t2d = record-def(t2, 901, gBody) in                       // g (name 901) → body `(f)`
-       (match add-node(t2d, Node.NApp(901, -1)) with | (root, tree) => // root: `(g)`
+       (let (root, tree) = add-node(t2d, Node.NApp(901, -1)) in // root: `(g)`
         (match eval-tree(tree, root) with
           | Option.Some(v) => (if v == 42 then unit else trap("(g) where g=(f), f=42 → 42 (transitive inline)"))
           | Option.None(_) => trap("a chain of nullary calls inlines transitively")))))))
@@ -681,9 +681,9 @@ def ev-napp-with-arg-but-no-param-declines() =
   // finds param-of(calleeId) = None → no Core → eval None. This is DISTINCT from a genuine param call (which
   // records a param — see ev-param-call-clet below). slice-3c is LANDED; the decline here is correct because
   // no param was recorded, NOT because param-calls are unimplemented. (No record-param on this tree.)
-  (match add-node(empty-tree(), Node.NLit(7)) with | (bodyId, t1) =>
-    (match add-node(t1, Node.NLit(5)) with | (argId, t2) =>
-      (match add-node(t2, Node.NApp(bodyId, argId)) with | (root, tree) =>
+  (let (bodyId, t1) = add-node(empty-tree(), Node.NLit(7)) in
+    (let (argId, t2) = add-node(t1, Node.NLit(5)) in
+      (let (root, tree) = add-node(t2, Node.NApp(bodyId, argId)) in
         (match eval-tree(tree, root) with
           | Option.None(_) => unit
           | Option.Some(_) => trap("a call WITH an arg but NO recorded param declines (over-applied nullary)")))))
@@ -696,11 +696,11 @@ def ev-param-call-clet() =
   // body/param, lowers to CLet(paramNode, argCore, bodyCore) → binds 41 to the param, evals the body → 42. The
   // direct-Core complement to sread-eval's se-single-param-call (full source pipeline); exercises CLet without
   // the reader.
-  (match add-node(empty-tree(), Node.NVar(7)) with | (paramId, t1) =>
-    (match add-node(t1, Node.NLit(1)) with | (oneId, t2) =>
-      (match add-node(t2, Node.NBin(43, paramId, oneId)) with | (bodyId, t3) =>
-        (match add-node(t3, Node.NLit(41)) with | (argId, t4) =>
-          (match add-node(t4, Node.NApp(900, argId)) with | (root, t5) =>
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(7)) in
+    (let (oneId, t2) = add-node(t1, Node.NLit(1)) in
+      (let (bodyId, t3) = add-node(t2, Node.NBin(43, paramId, oneId)) in
+        (let (argId, t4) = add-node(t3, Node.NLit(41)) in
+          (let (root, t5) = add-node(t4, Node.NApp(900, argId)) in
             (let tree = record-param(record-def(t5, 900, bodyId), 900, paramId) in
              (match eval-tree(tree, root) with
                | Option.Some(v) => (if v == 42 then unit else trap("f(41) where f(n)=n+1 → 42"))
