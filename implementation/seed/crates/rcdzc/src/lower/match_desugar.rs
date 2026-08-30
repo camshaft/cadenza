@@ -829,8 +829,8 @@ pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, S
     }
     // Runtime scalar scrutinee — it must BE a scalar (a compound needs a heap walk, later).
     if !is_scalar(db, scrutinee) {
-        return Core::Poison(Reject::decline(
-            "matching a compound value needs a heap walk (not yet built)",
+        return Core::Poison(Reject::unsupported(
+            "matching a compound value needs a heap walk",
         ));
     }
     // GUARDED SCALAR MATCH → nested `if`-chain (the scalar analogue of the string desugar above). A match
@@ -3101,9 +3101,9 @@ pub(super) fn lower_match_list(
 pub(super) fn map_value_irrefutable_or_decline(db: &mut Db, v: StructId) -> Result<(), Reject> {
     match check_binding_pattern(db, v, &crate::ty::Ty::Any) {
         Ok(()) => Ok(()),
-        Err(r) if r.code == Some(Code::NonExhaustive) => Err(Reject::decline(
+        Err(r) if r.code == Some(Code::NonExhaustive) => Err(Reject::unsupported(
             "a refutable map value sub-pattern (a literal or multi-variant constructor) needs \
-             value-discriminant refinement, which the key-directed map matcher does not yet support",
+             value-discriminant refinement, which the key-directed map matcher does not support",
         )),
         Err(r) => Err(r),
     }
@@ -3141,9 +3141,9 @@ pub(super) fn list_element_irrefutable_or_decline(
             })
             .unwrap_or(false);
         if has_leading {
-            return Err(Reject::decline(
+            return Err(Reject::unsupported(
                 "a nested list element with leading positions (e.g. `(list a .. rest)`) is refutable — it \
-                 needs an inner-length guard the length-dispatch matcher does not yet emit; only the \
+                 needs an inner-length guard the length-dispatch matcher does not emit; only the \
                  zero-leading rest form `(list .. rest)` is irrefutable here",
             ));
         }
@@ -3154,9 +3154,9 @@ pub(super) fn list_element_irrefutable_or_decline(
         Ok(()) => Ok(()),
         // A refutable element (literal / multi-variant ctor) → not-yet-supported in a length-dispatch list
         // match; decline honestly rather than reject (nothing is ill-formed — the refinement is unbuilt).
-        Err(r) if r.code == Some(Code::NonExhaustive) => Err(Reject::decline(
+        Err(r) if r.code == Some(Code::NonExhaustive) => Err(Reject::unsupported(
             "a refutable list element sub-pattern (a literal or multi-variant constructor) needs \
-             element-value refinement, which the length-dispatch list matcher does not yet support",
+             element-value refinement, which the length-dispatch list matcher does not support",
         )),
         // A shape error (CDZ0201), a non-linear binder (CDZ0102), or a not-yet-supported irrefutable
         // shape (a record / single-variant-sum element declines) propagates as-is.
