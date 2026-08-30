@@ -11,17 +11,18 @@
 //! emit debug sections. When absent (the common no-debug build), nothing reads it and the artifact is
 //! exactly today's bytes.
 //!
-//! **The wire form** (hand-rolled leb128, TOTAL decode — the same discipline as `codec` and `sidecar`,
-//! so it ports to the Cadenza self-host and never panics on untrusted bytes):
+//! **The wire form** is canonical BINARY AST (`cadenza_ast::codec`) — the SAME wire every compile-boundary
+//! artifact speaks (operator P0, seq-284: "Binary AST everywhere" — no bespoke hand-rolled leb128 framing),
+//! TOTAL decode (never panics on untrusted bytes, so it ports to the Cadenza self-host):
 //!
 //! ```text
-//!   <VarU64 path_len> <path_len UTF-8 bytes>     -- the tree-relative module path (the DWARF file name)
-//!   <VarU64 span_count>                          -- how many spans follow (== the arena's node count)
-//!   <span_count × ( <VarU64 start> <VarU64 len> )>   -- each node's byte range as (start, length)
+//!   (list [ Str module_path
+//!           (list [ (list [Int start] [Int len]) … ])   -- one 2-element form per node, span-count implicit
+//!           Str source ])
 //! ```
 //!
-//! A span is stored as `(start, LENGTH)` rather than `(start, end)` because a length is always `>= 0`
-//! and typically small, so its varint is one byte for most nodes — smaller and impossible to encode
+//! A span is stored as `(start, LENGTH)` rather than `(start, end)` because a length is always `>= 0` and
+//! typically small (and the AST-level `Int` leaf carries it directly) — smaller and impossible to encode
 //! backwards. The path is the TREE-RELATIVE module path (`source-tree-encoding.md` §MUST include each
 //! module's tree-relative path), never an absolute filesystem path — the reproducibility contract
 //! (design §4) records this path in the DWARF file entry, so an absolute path would leak the build
@@ -34,8 +35,7 @@
 //= spec/capabilities/debug-information.md#a-source-location-is-a-span-over-the-canonical-representation
 //# A source location recorded in debug information MUST be a source span over the canonical representation, so that the location is stable under any textual rendering rather than tied to one textual syntax.
 
-use cadenza_ast::ast::StructId;
-use cadenza_ast::leb128::{self, Reader};
+use cadenza_ast::ast::{Builder, IntValue, Leaf, Radix, Struct, StructId};
 
 /// The kinded input artifact carrying the span side-table.
 pub const KIND_SPANS: &str = "spans";
@@ -163,25 +163,34 @@ impl LineStarts {
 /// (the caller turns that into a decline diagnostic), never a panic. Mirrors `codec::decode` /
 /// `sidecar::decode` discipline exactly so the format ports to the self-host.
 pub fn decode(bytes: &[u8]) -> Option<SpanData> {
-    let mut r = Reader::new(bytes);
-    let path_len = r.read_var_len()?;
-    let path_bytes = r.take(path_len)?;
-    let module_path = String::from_utf8(path_bytes.to_vec()).ok()?;
-    let count = r.read_var_len()?;
-    let mut spans = Vec::with_capacity(count.min(1 << 20));
-    for _ in 0..count {
-        let start = u32::try_from(r.read_varu64()?).ok()?;
-        let len = u32::try_from(r.read_varu64()?).ok()?;
-        spans.push((start, len));
-    }
-    // The source text (length-prefixed UTF-8), for line/col derivation. Follows the span table.
-    let src_len = r.read_var_len()?;
-    let src_bytes = r.take(src_len)?;
-    let source = String::from_utf8(src_bytes.to_vec()).ok()?;
-    // A trailing garbage byte is a malformed table — reject rather than silently accept a prefix.
-    if !r.at_end() {
+    // Canonical binary AST (see module docs): a 3-column root `Ast.List` of `[Str path, spans-list, Str
+    // source]`, where spans-list is a `List` of `(list [Int start][Int len])` forms. Read via the SAME
+    // shared `cadenza_ast::codec` every compile-boundary artifact speaks. TOTAL: a non-AST payload, a
+    // wrong-shape tree, or an out-of-range operand yields `None` (a decline), never a panic.
+    let a = cadenza_ast::codec::decode(bytes)?;
+    let Struct::List(cols) = a.get(a.root).clone() else {
+        return None;
+    };
+    if cols.len() != 3 {
         return None;
     }
+    let module_path = a.as_str(cols[0])?.to_string();
+    let Struct::List(span_forms) = a.get(cols[1]).clone() else {
+        return None;
+    };
+    let mut spans = Vec::with_capacity(span_forms.len());
+    for f in span_forms {
+        let Struct::List(pair) = a.get(f) else {
+            return None;
+        };
+        if pair.len() != 2 {
+            return None;
+        }
+        let start = u32::try_from(a.as_int(pair[0])?.to_i64()?).ok()?;
+        let len = u32::try_from(a.as_int(pair[1])?.to_i64()?).ok()?;
+        spans.push((start, len));
+    }
+    let source = a.as_str(cols[2])?.to_string();
     Some(SpanData {
         module_path,
         spans,
@@ -190,19 +199,32 @@ pub fn decode(bytes: &[u8]) -> Option<SpanData> {
 }
 
 /// Encode a span side-table to its wire bytes — the counterpart to [`decode`], used by a driver (and
-/// the tests) to build a `spans` input. `decode(encode(s)) == s`.
+/// the tests) to build a `spans` input. Canonical binary AST (see module docs). `decode(encode(s)) == s`.
 pub fn encode(data: &SpanData) -> Vec<u8> {
-    let mut out = Vec::new();
-    leb128::write_u64(&mut out, data.module_path.len() as u64);
-    out.extend_from_slice(data.module_path.as_bytes());
-    leb128::write_u64(&mut out, data.spans.len() as u64);
-    for &(start, len) in &data.spans {
-        leb128::write_u64(&mut out, start as u64);
-        leb128::write_u64(&mut out, len as u64);
-    }
-    leb128::write_u64(&mut out, data.source.len() as u64);
-    out.extend_from_slice(data.source.as_bytes());
-    out
+    let mut b = Builder::new();
+    let path = b.atom_leaf(Leaf::Str(data.module_path.as_str().into()));
+    let span_forms: Vec<StructId> = data
+        .spans
+        .iter()
+        .map(|&(start, len)| {
+            let s = int_leaf(&mut b, start);
+            let l = int_leaf(&mut b, len);
+            b.list(vec![s, l])
+        })
+        .collect();
+    let spans_list = b.list(span_forms);
+    let source = b.atom_leaf(Leaf::Str(data.source.as_str().into()));
+    let root = b.list(vec![path, spans_list, source]);
+    cadenza_ast::codec::encode(&b.finish(root))
+}
+
+/// An `Ast.Int` (decimal) leaf for a span's `start`/`len` — the same integer-atom encoding the sibling
+/// compile-boundary wires (`link_map`, `sidecar`) use for their node-id operands.
+fn int_leaf(b: &mut Builder, n: u32) -> StructId {
+    b.atom_leaf(Leaf::Int {
+        value: IntValue::from_i64(i64::from(n)),
+        radix: Radix::Dec,
+    })
 }
 
 #[cfg(test)]
@@ -299,32 +321,25 @@ mod tests {
     }
 
     #[test]
-    fn truncated_is_none_not_panic() {
-        // A span count of 2 but only one span present.
-        let mut bytes = encode(&SpanData {
-            module_path: "m".to_string(),
-            spans: vec![(1, 1)],
-            ..Default::default()
-        });
-        // The count byte sits right after the 1-byte path length + 1 path byte.
-        bytes[2] = 2; // claim two spans
-        assert_eq!(decode(&bytes), None);
-    }
-
-    #[test]
-    fn trailing_garbage_is_none() {
-        let mut bytes = encode(&SpanData {
-            module_path: "m".to_string(),
-            spans: vec![(1, 1)],
-            ..Default::default()
-        });
-        bytes.push(0x00); // an extra byte past the declared table
-        assert_eq!(decode(&bytes), None);
-    }
-
-    #[test]
-    fn truncated_path_is_none() {
-        // path_len = 5, but no path bytes present.
-        assert_eq!(decode(&[0x05]), None);
+    fn malformed_bytes_are_none_not_panic() {
+        // Now that the wire is canonical binary AST, TOTAL decode means: non-AST / garbage bytes, an empty
+        // input, and a well-formed AST of the WRONG SHAPE all yield None (a decline) rather than panicking —
+        // the same graceful-degrade the sibling `link_map` / `result_types` codecs give.
+        assert_eq!(decode(b"not a binary-ast tree"), None);
+        assert_eq!(decode(&[0xff, 0xff, 0xff, 0xff]), None);
+        assert!(decode(&[]).is_none());
+        // A bare `Str` root (not the 3-column list) is the wrong shape → None.
+        let mut b = Builder::new();
+        let root = b.atom_leaf(Leaf::Str("nope".into()));
+        assert_eq!(decode(&cadenza_ast::codec::encode(&b.finish(root))), None);
+        // A 3-col list whose middle column is not a list-of-pairs → None (a span form of the wrong arity).
+        let mut b = Builder::new();
+        let path = b.atom_leaf(Leaf::Str("m".into()));
+        let one = int_leaf(&mut b, 1);
+        let bad_form = b.list(vec![one]); // a 1-element span form (want 2)
+        let spans = b.list(vec![bad_form]);
+        let src = b.atom_leaf(Leaf::Str(String::new().as_str().into()));
+        let root = b.list(vec![path, spans, src]);
+        assert_eq!(decode(&cadenza_ast::codec::encode(&b.finish(root))), None);
     }
 }
