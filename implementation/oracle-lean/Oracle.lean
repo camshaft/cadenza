@@ -8,6 +8,7 @@ import Oracle.Ast
 import Oracle.Value
 import Oracle.Eval
 import Oracle.Symbolic
+import Oracle.SymbolicSound
 import Oracle.Check
 import Oracle.Frame
 import Oracle.Handler
