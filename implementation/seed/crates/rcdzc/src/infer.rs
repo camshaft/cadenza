@@ -284,6 +284,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // magnitude → invalid wasm). Filtered to an INT peer — an int literal never adopts a FLOAT magnitude
         // (that stays a rejectable int-vs-float mix). A constraint, so it precedes the module defaults below.
         Resolved::Int(_) => qty_magnitude_context_ty(db, id)
+            .or_else(|| literal_collection_element_context_ty(db, id))
             .filter(|t| matches!(t, Ty::Int(_)))
             .or_else(|| module_default_fraction_ty(db, id))
             .or_else(|| module_default_int_ty(db, id))
@@ -400,6 +401,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // magnitude width (filtered to a FLOAT peer — a float literal never adopts an int magnitude). A
         // constraint, so it precedes the module fraction/float defaults.
         Resolved::Float(_) => qty_magnitude_context_ty(db, id)
+            .or_else(|| literal_collection_element_context_ty(db, id))
             .filter(|t| matches!(t, Ty::Float(_)))
             .or_else(|| module_default_fraction_ty(db, id))
             .or_else(|| module_default_float_ty(db, id))
@@ -963,6 +965,71 @@ fn literal_binop_float32_context(db: &mut Db, id: StructId) -> bool {
 /// still rejects CDZ0301 at the arith node (an ANNOTATED literal `(: 5 Int64)` has the annotation as its parent,
 /// not the `Qty.of`, so this never fires for it). Returns the sibling magnitude's concretely-fixed `Ty::Int`/
 /// `Ty::Float`, else `None`. Climbs through nested arith exactly as [`literal_binop_context_ty`] does.
+/// Whether `id` is a bare numeric LITERAL (a `Resolved::Int`/`Resolved::Float`) — a DEFERRED-width value that
+/// imposes no width on a homogeneous-collection sibling (and would recurse into the element-context helper if
+/// consulted via `type_of`). Decided STRUCTURALLY (no `type_of`), safe to call while typing a sibling literal.
+fn is_bare_numeric_literal(db: &mut Db, id: StructId) -> bool {
+    matches!(resolved_ref(db, id), Resolved::Int(_) | Resolved::Float(_))
+}
+
+/// The element TYPE a bare numeric LITERAL adopts from its HOMOGENEOUS-COLLECTION context (operator seq-40:
+/// width-unification across every homogeneous collection). A bare literal written as an ELEMENT of a
+/// `(list …)`/`#list(…)`/`(Set.of (list …))`-style collection adopts a SIBLING element's concretely-fixed
+/// width — the collection is homogeneous, so one specified width fixes them all; a bare literal adopts it
+/// (`(list 1.0 (: 2.0 Float32))` → the `1.0` adopts `Float32`, `List Float32`). Without this the bare literal
+/// grounded to the 64-bit DEFAULT while a sibling was narrower, so the WASM path compiled it un-unified while
+/// the RUST backend emitted an ill-typed `Vec` (fuzzer rcdzc-rust-mixed-float-width-list E0308). A sibling
+/// that is ITSELF a bare literal is DEFERRED and imposes nothing (and is skipped STRUCTURALLY to avoid a
+/// mutual-`type_of` cycle, exactly as [`qty_magnitude_context_ty`] does); NONE concrete → the 64-bit default
+/// stands. Two CONCRETE-different widths are a contradiction the collection-homogeneity check already rejects
+/// (CDZ0201). Returns a sibling's concretely-fixed `Ty::Int`/`Ty::Float`, else `None`.
+fn literal_collection_element_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
+    let parent = db.parent_of(id)?;
+    // Sibling ELEMENTS of the enclosing list/set (`id` is one element). Two spellings: the symbol form
+    // `Resolved::List`/`Set` (from `#list(…)`), and the name-alias `Apply(ListNew, …)` (from `(list …)`).
+    let siblings: Vec<StructId> = {
+        match resolved_ref(db, parent) {
+            Resolved::List { elems } | Resolved::Set { elems } => {
+                if !elems.contains(&id) {
+                    return None;
+                }
+                elems.iter().copied().filter(|&e| e != id).collect()
+            }
+            Resolved::Apply { head, args } => {
+                let head = *head;
+                if !args.contains(&id) {
+                    return None;
+                }
+                let sibs: Vec<StructId> = args.iter().copied().filter(|&e| e != id).collect();
+                // Drop the borrow before the `&mut db` call: only a `ListNew` application's args are ELEMENTS
+                // (any other application's args are curried operands, not homogeneous peers).
+                if crate::eval::meta_apply_of(db, head) != Some(crate::resolved::Prim::ListNew) {
+                    return None;
+                }
+                sibs
+            }
+            _ => return None,
+        }
+    };
+    for sib in siblings {
+        // A bare-literal sibling is DEFERRED (imposes nothing) — skip it (also breaks a mutual-`type_of`
+        // cycle between two bare-literal elements). A genuinely-fixed sibling (annotated/param/computed) binds.
+        if is_bare_numeric_literal(db, sib) {
+            continue;
+        }
+        let t = type_of(db, sib);
+        let fixed = match &t {
+            crate::ty::Ty::Int(i) => i.width_is_fixed(),
+            crate::ty::Ty::Float(f) => matches!(f.width, crate::ty::Width::Fixed(_)),
+            _ => false,
+        };
+        if fixed {
+            return Some(t);
+        }
+    }
+    None
+}
+
 /// Whether `id` is a `(Qty.of <lit> u)` whose MAGNITUDE is a bare numeric LITERAL — a DEFERRED-magnitude
 /// quantity that imposes no width on an arith sibling (and, if consulted via `type_of`, would recurse back
 /// into [`qty_magnitude_context_ty`] and cycle). Decided STRUCTURALLY (no `type_of`), so it is safe to call

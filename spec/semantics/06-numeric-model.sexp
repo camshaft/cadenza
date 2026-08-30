@@ -1514,6 +1514,22 @@
   (input  (do (def (main) #list(-41 (: 1 UInt64))) (export main)))
   (error  CDZ0302))
 
+; The FLOAT face of the sibling-inferred width (operator seq-40 width-unification): a mixed-float list
+; `(list 1.0 (: 2.0 Float32))` UNIFIES — the bare `1.0` ADOPTS the annotated sibling's `Float32` (a homogeneous
+; list has ONE element width; one specified fixes them all), so the list is `(List Float32)` and `1.0` emits at
+; f32. Before this the bare `1.0` grounded to the Float64 DEFAULT while the sibling was Float32: WASM compiled
+; the un-unified list, but the RUST backend emitted an ill-typed `Vec` mixing f32/f64 (error[E0308], fuzzer
+; rcdzc-rust-mixed-float-width-list). Rust already width-unifies INT list elements (the cases above); this is the
+; float twin. A runtime index keeps `List.at` from const-folding, so the list is actually built at its unified
+; element type on both backends.
+(case "a bare float list element adopts a sibling's Float32 width — the mixed-float list unifies (no rust E0308)"
+  (doc    "`(list 1.0 (: 2.0 Float32))` unifies to `(List Float32)`: the bare `1.0` adopts the annotated
+           `Float32` sibling (seq-40 — one specified width fixes the homogeneous list), so `main 0` reads the
+           first element `1.0` as a Float32. Formerly `1.0` stayed the Float64 default and the RUST backend
+           emitted a Vec mixing f32/f64 (E0308) while wasm compiled it un-unified — a cross-backend differential.")
+  (input  (do (def (main) (list 1.0 (: 2.0 Float32))) (export main)))
+  (call   main) (output (: #list(1.0 2.0) (List Float32))))
+
 ; The sibling-inferred width check also reaches a bare `(list …)` DESCENDED THROUGH a collection builder —
 ; a `Set.of` element list and a `Map.insert` value where the width is fixed by a sibling annotation, not a
 ; `(Set …)`/`(Map …)` collection annotation. Distinct seams from the plain-list arm (Set.of descends its
