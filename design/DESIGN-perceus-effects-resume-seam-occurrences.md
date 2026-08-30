@@ -42,14 +42,47 @@ The fold reifies the continuation two ways (effects.rs ~2686–2758):
 
 | resume-seam value | POST-SPLICE Core node (`select.rs` sees) | ValueKey | note |
 |---|---|---|---|
-| threaded state `s`, tail-resumptive | `Core::Param{s}` / `Core::LocalRef{s}` — the dispatch-loop state param, read in the inlined `C` | `Param(s)` (or `Let` when the loop names it) | it IS a synthesized fn param of the specialized dispatch loop (effects.rs:512 threading) |
+| threaded state `s`, tail-resumptive | `Core::Param{s}` — the self-recursive dispatch-loop state param, threaded on the back-edge | **§5's domain — EXCLUDED from this slice** (see §5.1) | it is a loop back-edge param `looped_owned_param_drops` already models; this slice must NOT dup-each it |
 | threaded state `s`, escaping continuation | a slot of the reified `Core::Closure` env; read inside the closure body | `Captured(i)` | closure-env-owned ⇒ `init = 0` (borrowed) — the borrowed-N rule §2.3 |
 | the `#st` value/state tuple | a materialized Core tuple from `build_value_state_tuple` (effects.rs:5588), unpacked by tuple-`Proj` per dispatch | `PayloadNode(proj)` | same shape as a sum-payload extraction the reference doc already models — "re-projected per dispatch" |
 | resume value `v` | an operand occurrence spliced into `C` (tail), or a `CallClosure` arg (escaping) | (the enclosing value's occurrence) | NOT a new key — an occurrence of an existing value |
 
-NO new `ValueKey` variant. The resume seam is three existing entry points: **param-keyed** (tail
-threaded state), **capture-keyed** (escaping-continuation closure env), **payload-node-keyed** (the
-`#st` tuple unpack) — each seeding the same `classify_occurrences` walk.
+NO new `ValueKey` variant. This slice is TWO entry points: **capture-keyed** (escaping-continuation
+closure env) and **payload-node-keyed** (the `#st` tuple unpack). The **tail-resumptive back-edge
+state param is NOT in this slice** — it is §5's loop-reclaim domain (see §5.1). This is the
+resolution of v-memory-safety's mandatory double-handle gate.
+
+## 2.1 §5.1 — the tail-resumptive state param is §5's, NOT this slice (v-mem's mandatory gate)
+
+v-memory-safety flagged: if this slice borrowed-DUPS the tail-resumptive loop-threaded state param
+AND §5's `looped_owned_param_drops` owned-DROPS the same param, the two reclaim models double-handle
+one value → not a leak but a **double-free** (borrowed-dup expects the loop to keep the ref; §5's
+owned-drop frees it → a freed-then-dup'd cell = UAF).
+
+Resolution (verified against `looped_owned_param_drops`, select.rs:4749): **partition by LOCUS — the
+tail-resumptive back-edge state param stays §5's; this slice owns only the escaping-continuation
+`Captured` slots + the `#st` `PayloadNode` reads.** They are disjoint Core loci (a closure-env
+capture / a per-dispatch tuple projection vs. a self-recursive loop's back-edge param), so no param
+is handled by both. Grounding:
+
+- §5 `looped_owned_param_drops` targets a PLAIN self-recursive (single-member) loop's heap param that
+  is INVARIANT (identity-passed on every back-edge) AND `param_only_borrowed_or_backedge`. It
+  owned-drops that param once at loop exit.
+- A VARYING loop-carried state (the common effects case — the state ADVANCES, `(Run k)` → `(Run (+ k
+  v))`) is ALREADY EXCLUDED by §5 (`invalidate_varying_params`, select.rs:4816 "a varying heap param
+  is left to leak"). So §5 neither owns nor drops it — and neither does this slice. It stays a §5
+  leak (a separate reclaim gap, NOT this slice's target).
+- An INVARIANT state (resume-unchanged, `(resume v s)` threading `s` identity) IS §5's owned-drop
+  target. This slice must therefore NOT classify that back-edge thread as a Consume-to-dup — it is a
+  back-edge, §5's. That is exactly what the LOCUS PARTITION enforces: the back-edge param is not a
+  `Captured` slot nor a `#st` `PayloadNode`, so this slice's two entry points never see it.
+
+**⚠ v-core-opt confirmation required BEFORE emit:** confirm the tail-resumptive dispatch-loop state
+param is reached ONLY as a `Core::Param` back-edge (so §5 owns it) and is NEVER surfaced as a
+`Captured` slot or a `#st` `PayloadNode` that this slice's entry points would pick up. If any effects
+lowering ALSO materializes the loop state into a closure capture on some path, that path IS a
+double-handle candidate and needs the explicit exclusion. Acceptance control (§6): a tail-resumptive
+reclaim case must NOT trap the #4635 double-handle detector.
 
 ## 3. Borrow vs Consume at each post-splice node (the "reuse, don't re-derive" gate)
 
