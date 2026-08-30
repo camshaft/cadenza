@@ -86,6 +86,36 @@
   (input  (>> 1 2.0))
   (error  CDZ0301))
 
+; A COMPARISON (`<`/`>`/`=`/…) over an int/float mix hits the SAME no-silent-promotion rule (CDZ0301) as
+; arithmetic, and carries the SAME two-way literal retype fix in EITHER operand order: an int literal
+; against a float var retypes UP to a float literal (`3` → `3.0`), a float literal against an int var drops
+; the fractional form (`3.0` → `3`). (Earlier the fix depended on which operand unified as "expected", so
+; the int-literal-first order `(< 3 x)` got no fix; the two-way coercion fires it either order now.)
+; (Migrated from rcdzc a_mixed_int_float_comparison_offers_the_retype_fix_regardless_of_operand_order.)
+(case "an int-literal-first comparison against a float var retypes the literal up"
+  (input  (do (def (f (: x Float64)) (< 3 x)) (export f)))
+  (error  CDZ0301 (fix (kind replace) (replacement "3.0") (unverified))))
+
+(case "a float-var-first comparison against an int literal retypes the literal up (mirror order)"
+  (input  (do (def (f (: x Float64)) (< x 3)) (export f)))
+  (error  CDZ0301 (fix (kind replace) (replacement "3.0") (unverified))))
+
+(case "an int-var comparison against a float literal drops the fractional form"
+  (input  (do (def (f (: n Int64)) (< n 3.0)) (export f)))
+  (error  CDZ0301 (fix (kind replace) (replacement "3") (unverified))))
+
+(case "equality over an int/float mix gets the retype fix too, not just ordering"
+  (input  (do (def (f (: x Float64)) (= 3 x)) (export f)))
+  (error  CDZ0301 (fix (kind replace) (replacement "3.0") (unverified))))
+
+(case "a same-type Int64 comparison is valid (no false numeric-mix reject)"
+  (input  (do (def (f (: a Int64) (: b Int64)) (< a b)) (def (main) (f 1 2)) (export main)))
+  (call   main) (output (: true Bool)))
+
+(case "a same-type Float64 comparison is valid (no false numeric-mix reject)"
+  (input  (do (def (f (: a Float64) (: b Float64)) (< a b)) (def (main) (f 1.0 2.0)) (export main)))
+  (call   main) (output (: true Bool)))
+
 (case "mixing two integer widths without an explicit conversion is rejected"
   (doc    "`(+ (: 1 UInt8) (: 2 Int32))` adds two DIFFERENT integer types (UInt8 and Int32 — differing in
            both signedness and width) with no explicit conversion. An integer operator is `∀a. (Int a) ->

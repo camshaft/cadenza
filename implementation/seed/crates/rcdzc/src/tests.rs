@@ -14409,68 +14409,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_mixed_int_float_comparison_offers_the_retype_fix_regardless_of_operand_order() {
-        // A COMPARISON (`< > = …`) over an int/float mix rides the generic `∀a. a→a→Bool` scheme, so it
-        // fell to the generic scheme-unify — whose fix depended on WHICH operand unified as "expected":
-        // `(< n 3.0)` retyped `3.0`, but the flipped `(< 3 x)` (int literal first, float var second) got
-        // the bare "no implicit conversion" with NO fix. Now a comparison numeric mix faults with the SAME
-        // two-way coercion the arithmetic mix uses (M168), so the int-literal retype fires either order.
-        // INT-literal FIRST, float var second — the previously-fix-less order.
-        let flipped =
-            reject_full("(module m (def (f (: x Float64)) (< 3 x)) (export f))").expect("reject");
-        assert_eq!(
-            flipped.code.as_deref(),
-            Some("CDZ0301"),
-            "got: {}",
-            flipped.message
-        );
-        assert_eq!(
-            flipped.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("3.0"),
-            "int-literal-first comparison retypes the literal up: {}",
-            flipped.message
-        );
-        // FLOAT var first, int literal second — retype the literal too (the mirror).
-        let normal =
-            reject_full("(module m (def (f (: x Float64)) (< x 3)) (export f))").expect("reject");
-        assert_eq!(
-            normal.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("3.0"),
-            "the mirror order retypes the same literal: {}",
-            normal.message
-        );
-        // INT var, float LITERAL — drop the fractional form (`3.0` → `3`), either order.
-        let int_var =
-            reject_full("(module m (def (f (: n Int64)) (< n 3.0)) (export f))").expect("reject");
-        assert_eq!(
-            int_var.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("3"),
-            "an int var vs a float literal drops the fractional form: {}",
-            int_var.message
-        );
-        // `=` (equality) gets it too, not just ordering.
-        let eq =
-            reject_full("(module m (def (f (: x Float64)) (= 3 x)) (export f))").expect("reject");
-        assert_eq!(
-            eq.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("3.0"),
-            "equality gets the retype fix too: {}",
-            eq.message
-        );
-        // NO false change: a SAME-TYPE numeric comparison is valid (no error).
-        assert!(
-            reject_code("(module m (def (f (: a Int64) (: b Int64)) (< a b)) (export f))")
-                .is_none(),
-            "a same-type Int64 comparison is valid"
-        );
-        assert!(
-            reject_code("(module m (def (f (: a Float64) (: b Float64)) (< a b)) (export f))")
-                .is_none(),
-            "a same-type Float64 comparison is valid"
-        );
-    }
-
-    #[test]
     fn arithmetic_on_two_same_typed_non_numeric_operands_names_the_real_type_and_plus_offers_concat()
      {
         // `(+ s t)` on two Strings (the Python/JS reflex) — and on two Lists/Records/Tuples/Bools/etc. —
