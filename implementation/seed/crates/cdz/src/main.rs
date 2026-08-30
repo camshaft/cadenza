@@ -5210,7 +5210,8 @@ fn run_type_at(args: &TypeAtArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let ty = String::from_utf8_lossy(bytes);
+    // The hover verdict is a structured binary-AST value (`decode_type_at`); render it to its display text.
+    let ty = render_type_at(&cadenza_compile_abi::decode_type_at(bytes));
     // Show the node's source range so the caller can highlight exactly the sub-expression typed.
     match spans.get(node) {
         Some(span) => {
@@ -5221,6 +5222,27 @@ fn run_type_at(args: &TypeAtArgs) -> ExitCode {
         None => println!("{ty}"),
     }
     ExitCode::SUCCESS
+}
+
+/// Render a decoded [`cadenza_compile_abi::TypeAt`] hover verdict to its display string — the shared
+/// consumer-side render for `cdz type-at` and the LSP hover / inlay-hint sites. A type payload is rendered
+/// via the shared cadenza-syntax type renderer (`render_ty_scheme`), so no render-name string crosses the
+/// wire: a def reads `name : <type>` (or `name : unknown` when the scheme is unsolved), a grammar keyword
+/// `keyword <kw>`, and an untypeable/poison node `unknown`.
+pub(crate) fn render_type_at(v: &cadenza_compile_abi::TypeAt) -> String {
+    use cadenza_compile_abi::TypeAt;
+    match v {
+        TypeAt::Def { name, ty } => {
+            let t = match ty {
+                Some(a) => cadenza_syntax::render_ty::render_ty_scheme(a, a.root),
+                None => "unknown".to_string(),
+            };
+            format!("{name} : {t}")
+        }
+        TypeAt::Keyword(kw) => format!("keyword {kw}"),
+        TypeAt::Ty(a) => cadenza_syntax::render_ty::render_ty_scheme(a, a.root),
+        TypeAt::Unknown => "unknown".to_string(),
+    }
 }
 
 /// `cdz doc NAME FILE` — drive the compiler's `DocOf` sidecar query, print the documentation. Answers

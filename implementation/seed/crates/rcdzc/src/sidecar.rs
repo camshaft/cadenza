@@ -177,15 +177,16 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
         }
         Query::TypeAt { node } => {
             let id = crate::ast::StructId(*node);
-            // A HOVER answer, not just a raw type: a grammar keyword names itself, a definition shows
-            // its signature (`name : type`), an untypeable/poison node says "unknown" — never the bare
-            // fallback `Any` or a leaked internal operator record. A genuinely-typed node renders its
-            // type (a function name already renders as its arrow `(-> A B)`).
-            let text = hover_text(db, id);
+            // A HOVER answer as a tagged binary-AST verdict (`cadenza_compile_abi::type_at_wire`), NOT a
+            // rendered string (operator 307): a grammar keyword names itself (`Keyword`), a definition
+            // carries its signature payload (`Def`), a genuinely-typed node its type payload (`Ty`), an
+            // untypeable/poison node `Unknown`. The FULL structured Ty payload crosses; the consumer
+            // renders the display (`name : <type>` / `<type>` / `keyword <kw>` / `unknown`).
+            let verdict = hover_verdict(db, id);
             QueryResult {
                 kind: KIND_TYPE_AT,
                 name: node.to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_type_at(&verdict),
             }
         }
         Query::Diagnostics => {
@@ -1973,52 +1974,70 @@ fn match_arm_binder(db: &Db, form: StructId, from: StructId) -> Option<(String, 
     Some((name.to_string(), scrutinee))
 }
 
-/// The HOVER text for a node — a presentation answer, not a raw type. In priority order:
-///  1. a non-user node (past the program, or a synthesized one with no source) → `unknown`;
+/// The HOVER verdict for a node as a structured [`cadenza_compile_abi::TypeAt`] (the consumer renders the
+/// display text). In priority order:
+///  1. a non-user node (past the program, or a synthesized one with no source) → [`TypeAt::Unknown`];
 ///  2. a DEFINITION the node identifies (its `(def …)` form, its signature list, or its NAME atom) →
-///     the def's SIGNATURE, `name : <type>` (a function reads as `name : (-> A B)`, a value as
-///     `name : T`) — so hovering a def shows what it defines, not its body's type alone;
-///  3. a GRAMMAR KEYWORD atom (`def`/`export`/`module`/`if`/`let`/`match`/`fn`/`:`/`and`/`or`/`not`/`.`)
-///     → `keyword <kw>` — these are syntax, not expressions, so they have no type;
-///  4. otherwise the node's solved type (`type_of` → `render_name`), with the two poor renderings
-///     cleaned up: the fallback `Any` (an untypeable/poison node) → `unknown`, and a leaked operator
-///     RECORD (`(record (apply …) (t …))`, a prelude operator value) → its callable `(t …)` field.
-fn hover_text(db: &mut Db, id: StructId) -> String {
+///     [`TypeAt::Def`] carrying its name + signature scheme payload (or `None` when unsolved) — so hovering
+///     a def shows what it defines (rendered `name : <type>`), not its body's type alone;
+///  3. a GRAMMAR KEYWORD atom (`def`/`export`/`module`/`if`/`let`/`match`/`fn`/`:`/`and`/`or`/`not`/`.`) →
+///     [`TypeAt::Keyword`] — syntax, not an expression, so it has no type;
+///  4. otherwise the node's solved type, cleaned at the Ty LEVEL (see [`hover_ty_verdict`]): the fallback
+///     `Ty::Any` → [`TypeAt::Unknown`], a leaked prelude-operator RECORD → its callable field, else the
+///     structured type payload as [`TypeAt::Ty`].
+fn hover_verdict(db: &mut Db, id: StructId) -> cadenza_compile_abi::TypeAt {
+    use cadenza_compile_abi::TypeAt;
     if !db.is_user_node(id) {
-        return "unknown".to_string();
+        return TypeAt::Unknown;
     }
-    // (2) A definition the node identifies → its signature.
+    // (2) A definition the node identifies → its signature scheme payload (or None when unsolved).
     if let Some(def) = def_identified_by(db, id) {
         let name = db.defs[def].name.clone();
-        let sig = match crate::infer::def_scheme(db, def) {
-            Some(scheme) => scheme.ty.render_name(&db.name_ctx()),
-            None => "unknown".to_string(),
-        };
-        return format!("{name} : {sig}");
+        let ty = crate::infer::def_scheme(db, def).map(|scheme| {
+            let root = crate::eval::encode_ty_payload(db, &scheme.ty);
+            extract_subtree(&db.ast, root)
+        });
+        return TypeAt::Def { name, ty };
     }
     // (3) A grammar keyword atom.
     if let Some(kw) = grammar_keyword(db, id) {
-        return format!("keyword {kw}");
+        return TypeAt::Keyword(kw.to_string());
     }
-    // (4) The solved type, cleaned up.
-    let ty = crate::infer::type_of(db, id).render_name(&db.name_ctx());
-    let cleaned = clean_hover_type(&ty);
-    // (4b) An UN-ANNOTATED def-parameter binder types as `Any` here — a non-recursive def's param is never
-    // solved standalone (it inlines at each call), so `type_of` at the binder reads `Any` → "unknown".
-    // But the body's uses DO constrain it (`(+ x 1)` pins `x` to `Int64`). Recover that INFERRED type for
-    // the hover / `TypeAt` / inlayHint — whose whole purpose is to show the type the author did NOT write.
-    // Only when `type_of` gave nothing (`unknown`) and the node resolves to a `Param` binder; a genuinely
-    // generic param (`id`'s `x`) stays "unknown" (`query_param_ty` returns `None`). Fixes the v-lsp
-    // inlayHint gap (an un-annotated binder returned "unknown" even when locally inferable).
-    // The node may be the binder occurrence (`Resolved::Param`) OR a body USE of it (`Resolved::Ref` to the
-    // binder) — `query_param_ty` normalizes both and returns `None` for a non-param / genuinely-generic
-    // node, so trying it whenever the type is "unknown" is safe (no false hover on a non-param).
-    if cleaned == "unknown"
+    // (4) The solved type. (4b) An UN-ANNOTATED def-parameter binder types as `Ty::Any` here — a
+    // non-recursive def's param is never solved standalone (it inlines at each call). But the body's uses
+    // DO constrain it (`(+ x 1)` pins `x` to `Int64`). Recover that INFERRED type (`query_param_ty`, which
+    // normalizes the binder occurrence AND a body USE of it, and returns `None` for a non-param / genuinely
+    // generic node) so the hover shows the type the author did NOT write, rather than "unknown".
+    let mut ty = crate::infer::type_of(db, id);
+    if matches!(ty, crate::ty::Ty::Any)
         && let Some(t) = crate::infer::query_param_ty(db, id)
     {
-        return clean_hover_type(&t.render_name(&db.name_ctx()));
+        ty = t;
     }
-    cleaned
+    hover_ty_verdict(db, &ty)
+}
+
+/// Map a hover node's solved `Ty` to the [`cadenza_compile_abi::TypeAt`] type verdict, cleaning two poor
+/// forms at the Ty level (what the old string `clean_hover_type` did on the render): a bare [`Ty::Any`]
+/// (untypeable/poison) → [`TypeAt::Unknown`]; a leaked prelude-operator RECORD (a `Ty::Record` carrying a
+/// callable `t` field — the value an operator NAME like `+` resolves to) → its `t` field's callable scheme,
+/// so hover surfaces the arrow, not the record. Any other type → the structured payload as [`TypeAt::Ty`].
+fn hover_ty_verdict(db: &mut Db, ty: &crate::ty::Ty) -> cadenza_compile_abi::TypeAt {
+    use cadenza_compile_abi::TypeAt;
+    if matches!(ty, crate::ty::Ty::Any) {
+        return TypeAt::Unknown;
+    }
+    // A prelude operator name resolves to a record `{apply, t: <callable scheme>}`; surface the callable
+    // `t` field so hover reads as the operator's arrow, not the internal record (Ty-level analogue of the
+    // old `clean_hover_type` `(record (apply …) (t …))` string-unwrap).
+    if let crate::ty::Ty::Record(fields) = ty
+        && let Some((_, callable)) = fields.iter().find(|(sym, _)| &*sym.name == "t")
+    {
+        let root = crate::eval::encode_ty_payload(db, callable);
+        return TypeAt::Ty(extract_subtree(&db.ast, root));
+    }
+    let root = crate::eval::encode_ty_payload(db, ty);
+    TypeAt::Ty(extract_subtree(&db.ast, root))
 }
 
 /// The definition a node IDENTIFIES, if any: the def's `(def …)` form, its signature list
@@ -2048,45 +2067,6 @@ fn grammar_keyword(db: &Db, id: StructId) -> Option<&'static str> {
         && kids.first() == Some(&id)
     {
         return Some(kw);
-    }
-    None
-}
-
-/// Clean up a rendered type for hover: the untypeable fallback `Any` reads as `unknown`, and a leaked
-/// prelude-operator RECORD (`(record (apply …) (t T))` — the value an operator name resolves to) reads
-/// as its callable `(t …)` field, the operator's actual scheme. Any other type passes through.
-fn clean_hover_type(ty: &str) -> String {
-    if ty == "Any" {
-        return "unknown".to_string();
-    }
-    // An operator record leaks as `(record (apply …) (t <scheme>))` — surface the `(t …)` payload.
-    if let Some(rest) = ty.strip_prefix("(record ")
-        && let Some(t_at) = rest.find("(t ")
-    {
-        // Extract the balanced parenthesized group after `(t `.
-        let after = &rest[t_at + 3..];
-        if let Some(scheme) = balanced_prefix(after) {
-            return scheme.to_string();
-        }
-    }
-    ty.to_string()
-}
-
-/// The balanced-parenthesis prefix of `s` starting mid-group: read until the paren depth (which starts
-/// at 1, accounting for the enclosing `(t …)` we're inside) returns to 0. Returns the inner text.
-fn balanced_prefix(s: &str) -> Option<&str> {
-    let mut depth = 1i32;
-    for (i, c) in s.char_indices() {
-        match c {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&s[..i]);
-                }
-            }
-            _ => {}
-        }
     }
     None
 }

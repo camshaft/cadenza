@@ -1610,7 +1610,7 @@ fn hover_at(text: &str, is_ml: bool, pos: Position) -> Option<Hover> {
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
     let ty = compiled
         .artifact(cadenza_compile_abi::sidecar::KIND_TYPE_AT)
-        .map(|b| String::from_utf8_lossy(b).trim().to_string())
+        .map(|b| crate::render_type_at(&cadenza_compile_abi::decode_type_at(b)))
         .unwrap_or_default();
     // A total-but-uninformative answer ("unknown", or empty) is not worth a hover popup — return None so
     // the editor shows nothing rather than a meaningless box.
@@ -1747,11 +1747,15 @@ fn type_definition_at(text: &str, is_ml: bool, pos: Position, uri: &Uri) -> Opti
     let (arenas, spans, _errors) = parse_surface(text, is_ml).ok()?;
     let byte = position_to_byte(text, pos);
     let node = spans.node_at_offset(byte)?;
-    let ty = run_query_text(
+    let out = crate::run_sidecar(
         &arenas,
-        cadenza_compile_abi::sidecar::Query::TypeAt { node: node.0 },
-        cadenza_compile_abi::sidecar::KIND_TYPE_AT,
-    )?;
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::TypeAt {
+            node: node.0,
+        }),
+    );
+    let ty = crate::render_type_at(&cadenza_compile_abi::decode_type_at(
+        out.artifact(cadenza_compile_abi::sidecar::KIND_TYPE_AT)?,
+    ));
     let name = navigable_type_name(&ty)?;
     // Map the type NAME to its top-level declaration node (the same `Symbols` lookup references uses),
     // then to a source location. A name that names no declared type (a builtin) yields None.
@@ -1815,7 +1819,7 @@ fn package_type_definition_at(
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
     let ty = compiled
         .artifact(cadenza_compile_abi::sidecar::KIND_TYPE_AT)
-        .map(|b| String::from_utf8_lossy(b).trim().to_string())?;
+        .map(|b| crate::render_type_at(&cadenza_compile_abi::decode_type_at(b)))?;
     let name = navigable_type_name(&ty)?;
 
     // Locate the type NAME's declaration in whichever loaded file declares it — its own `Symbols` gives a
@@ -1948,7 +1952,7 @@ fn package_hover_at(
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
     let ty = compiled
         .artifact(cadenza_compile_abi::sidecar::KIND_TYPE_AT)
-        .map(|b| String::from_utf8_lossy(b).trim().to_string())
+        .map(|b| crate::render_type_at(&cadenza_compile_abi::decode_type_at(b)))
         .unwrap_or_default();
     if ty.is_empty() || ty == "unknown" {
         return None; // let the single-buffer path try (or show nothing)
@@ -3387,13 +3391,16 @@ fn emit_param_type_hints(
             if span.start < range_lo || span.start >= range_hi {
                 continue;
             }
-            let Some(ty) = run_query_text(
+            let out = crate::run_sidecar(
                 arenas,
-                cadenza_compile_abi::sidecar::Query::TypeAt { node: param.0 },
-                cadenza_compile_abi::sidecar::KIND_TYPE_AT,
-            ) else {
+                cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::TypeAt {
+                    node: param.0,
+                }),
+            );
+            let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_TYPE_AT) else {
                 continue;
             };
+            let ty = crate::render_type_at(&cadenza_compile_abi::decode_type_at(bytes));
             let ty = ty.trim();
             // A generic param answers `unknown` (no single monomorphic type) — emit no hint there.
             if ty.is_empty() || ty == "unknown" {

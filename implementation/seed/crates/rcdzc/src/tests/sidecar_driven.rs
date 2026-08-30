@@ -16,14 +16,6 @@ fn inputs(src: &str, requests: &[Request]) -> Vec<Artifact> {
     ]
 }
 
-/// The text bytes of the first artifact of `kind`, as a `String`.
-fn artifact_text(out: &crate::abi::CompileOutput, kind: &str) -> Option<String> {
-    out.artifacts
-        .iter()
-        .find(|a| a.kind == kind)
-        .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
-}
-
 // The func-layout artifact is now canonical binary AST (operator P0 seq-284) rather than TAB text, so
 // decode it via the shared codec and render the historical TAB rows — the SAME `render_text` the `cdz
 // func-layout` CLI prints, so these assertions still pin the byte-stable text form.
@@ -2518,7 +2510,13 @@ fn a_type_at_query_types_the_node_at_a_source_offset() {
         "a query does not fail: {:?}",
         out.diagnostics
     );
-    assert_eq!(artifact_text(&out, KIND_TYPE_AT).as_deref(), Some("Int64"));
+    // The `42` literal is annotated Int64 → a `Ty` verdict carrying the `(Int 64)` payload (head `Int`).
+    assert_ty_head(
+        &cadenza_compile_abi::decode_type_at(
+            artifact_bytes(&out, KIND_TYPE_AT).expect("a type-at artifact"),
+        ),
+        "Int",
+    );
 }
 
 #[test]
@@ -2531,14 +2529,19 @@ fn a_type_at_query_for_a_non_user_node_is_total() {
         &[],
     );
     assert!(!out.has_error());
-    assert_eq!(
-        artifact_text(&out, KIND_TYPE_AT).as_deref(),
-        Some("unknown")
-    );
+    // A node past the program → the `Unknown` verdict (a defined "unknown", never a crash).
+    assert!(matches!(
+        cadenza_compile_abi::decode_type_at(
+            artifact_bytes(&out, KIND_TYPE_AT).expect("a type-at artifact")
+        ),
+        cadenza_compile_abi::TypeAt::Unknown
+    ));
 }
 
-/// Hover text for the node at `substr`'s first occurrence in `src` (the TypeAt query answer).
-fn hover_at(src: &str, substr: &str) -> String {
+/// The decoded [`cadenza_compile_abi::TypeAt`] hover VERDICT for the node at `substr`'s first occurrence
+/// in `src` (KIND_TYPE_AT is now a binary-AST verdict; the display-string rendering is the cdz consumer's
+/// job via `render_ty_scheme`, so a rcdzc test asserts the STRUCTURED verdict — see the assert helpers).
+fn hover_at(src: &str, substr: &str) -> cadenza_compile_abi::TypeAt {
     let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse");
     let off = src.find(substr).expect("substr in source");
     let node = spans.node_at_offset(off).expect("a node at the offset");
@@ -2555,7 +2558,43 @@ fn hover_at(src: &str, substr: &str) -> String {
         &[],
     );
     assert!(!out.has_error(), "{:?}", out.diagnostics);
-    artifact_text(&out, KIND_TYPE_AT).expect("a type-at artifact")
+    cadenza_compile_abi::decode_type_at(
+        artifact_bytes(&out, KIND_TYPE_AT).expect("a type-at artifact"),
+    )
+}
+
+/// Assert a hover verdict is a `Keyword(kw)`.
+fn assert_keyword(v: &cadenza_compile_abi::TypeAt, kw: &str) {
+    match v {
+        cadenza_compile_abi::TypeAt::Keyword(k) => assert_eq!(k, kw),
+        other => panic!("expected Keyword({kw}), got {other:?}"),
+    }
+}
+
+/// Assert a hover verdict is a `Ty` whose payload head is `head` (the rcdzc-visible structure — the display
+/// name is rendered consumer-side).
+fn assert_ty_head(v: &cadenza_compile_abi::TypeAt, head: &str) {
+    match v {
+        cadenza_compile_abi::TypeAt::Ty(a) => {
+            assert_eq!(a.head_name(a.root), Some(head), "Ty payload head: {a:?}")
+        }
+        other => panic!("expected Ty(head={head}), got {other:?}"),
+    }
+}
+
+/// Assert a hover verdict is a `Def{name}` whose signature payload head is `ty_head` (`None` = unsolved).
+fn assert_def(v: &cadenza_compile_abi::TypeAt, name: &str, ty_head: Option<&str>) {
+    match v {
+        cadenza_compile_abi::TypeAt::Def { name: n, ty } => {
+            assert_eq!(n, name, "def name");
+            assert_eq!(
+                ty.as_ref().and_then(|a| a.head_name(a.root)),
+                ty_head,
+                "def sig payload head"
+            );
+        }
+        other => panic!("expected Def({name}), got {other:?}"),
+    }
 }
 
 #[test]
@@ -2563,10 +2602,10 @@ fn hover_on_a_grammar_keyword_names_the_keyword_not_any() {
     // A grammar keyword (`def`/`export`/`module`/`:`) is syntax, not an expression — hover names it
     // rather than returning the misleading `Any` fallback.
     let src = "(module m (def (main) (: 42 Int64)) (export main))";
-    assert_eq!(hover_at(src, "def"), "keyword def");
-    assert_eq!(hover_at(src, "export"), "keyword export");
-    assert_eq!(hover_at(src, "module"), "keyword module");
-    assert_eq!(hover_at(src, ": 42"), "keyword :");
+    assert_keyword(&hover_at(src, "def"), "def");
+    assert_keyword(&hover_at(src, "export"), "export");
+    assert_keyword(&hover_at(src, "module"), "module");
+    assert_keyword(&hover_at(src, ": 42"), ":");
 }
 
 #[test]
@@ -2574,11 +2613,11 @@ fn hover_on_a_definition_shows_its_signature() {
     // Hovering a function's NAME or its `(def …)` form shows the SIGNATURE (the full arrow), not the
     // body's return type alone. A nullary def shows `name : T`.
     let src = "(module m (def (inc (: n Int64)) (+ n 1)) (def (g) (: 5 Int64)) (export main))";
-    // The function name and the whole def form both read as the signature.
-    assert_eq!(hover_at(src, "inc"), "inc : (-> Int64 Int64)");
-    assert_eq!(hover_at(src, "(def (inc"), "inc : (-> Int64 Int64)");
-    // A nullary def reads `name : T`.
-    assert_eq!(hover_at(src, "(g)"), "g : Int64");
+    // The function name and the whole def form both identify the def → its arrow signature payload.
+    assert_def(&hover_at(src, "inc"), "inc", Some("->"));
+    assert_def(&hover_at(src, "(def (inc"), "inc", Some("->"));
+    // A nullary def's signature payload is the scalar `(Int 64)` (head `Int`).
+    assert_def(&hover_at(src, "(g)"), "g", Some("Int"));
 }
 
 #[test]
@@ -2594,9 +2633,9 @@ fn hover_on_a_def_in_a_wide_module_finds_the_right_def_via_the_ident_index() {
         .collect::<Vec<_>>()
         .join(" ");
     let src = format!("(module m {defs} (def (main) (d0 1)) (export main))");
-    // Hover a def NAME deep in the list — must resolve to that def's own signature.
-    assert_eq!(hover_at(&src, "(d30 "), "d30 : (-> Int64 Int64)");
-    assert_eq!(hover_at(&src, "(d59 "), "d59 : (-> Int64 Int64)");
+    // Hover a def NAME deep in the list — must resolve to that def's own signature (its arrow payload).
+    assert_def(&hover_at(&src, "(d30 "), "d30", Some("->"));
+    assert_def(&hover_at(&src, "(d59 "), "d59", Some("->"));
 }
 
 #[test]
@@ -2620,7 +2659,13 @@ fn hover_on_a_reference_shows_the_value_type_not_the_signature() {
         ],
         &[],
     );
-    assert_eq!(artifact_text(&out, KIND_TYPE_AT).as_deref(), Some("Int64"));
+    // A reference to a value hovers as the VALUE's type (a `Ty` payload `(Int 64)`, head `Int`), not a sig.
+    assert_ty_head(
+        &cadenza_compile_abi::decode_type_at(
+            artifact_bytes(&out, KIND_TYPE_AT).expect("a type-at artifact"),
+        ),
+        "Int",
+    );
 }
 
 #[test]
@@ -2649,10 +2694,12 @@ fn hover_on_an_unannotated_but_inferable_param_binder_shows_the_solved_type() {
         ],
         &[],
     );
-    assert_eq!(
-        artifact_text(&out, KIND_TYPE_AT).as_deref(),
-        Some("Int64"),
-        "an un-annotated but numerically-used param hovers as its inferred Int64"
+    // The recovered inferred type is a `Ty` payload `(Int 64)` (head `Int`), via query_param_ty.
+    assert_ty_head(
+        &cadenza_compile_abi::decode_type_at(
+            artifact_bytes(&out, KIND_TYPE_AT).expect("a type-at artifact"),
+        ),
+        "Int",
     );
 }
 
@@ -2678,21 +2725,24 @@ fn hover_on_a_fully_generic_param_binder_stays_unknown() {
         ],
         &[],
     );
-    assert_eq!(
-        artifact_text(&out, KIND_TYPE_AT).as_deref(),
-        Some("unknown"),
+    assert!(
+        matches!(
+            cadenza_compile_abi::decode_type_at(
+                artifact_bytes(&out, KIND_TYPE_AT).expect("a type-at artifact")
+            ),
+            cadenza_compile_abi::TypeAt::Unknown
+        ),
         "a fully-generic param must not be pinned to a monomorphic width"
     );
 }
 
 #[test]
 fn hover_on_an_operator_does_not_leak_a_record() {
-    // A prelude operator name (`+`) resolves to an internal record; hover must not leak
-    // `(record (apply …) (t …))` — it surfaces the callable arrow instead.
+    // A prelude operator name (`+`) resolves to an internal record; hover must not leak the record — the
+    // verdict is a `Ty` carrying the CALLABLE ARROW payload (head `->`, not `Record`), so the consumer
+    // renders the operator's arrow.
     let src = "(module m (def (main) (+ 1 2)) (export main))";
-    let h = hover_at(src, "+");
-    assert!(!h.starts_with("(record"), "no record leak: {h}");
-    assert!(h.starts_with("(->"), "an arrow/callable: {h}");
+    assert_ty_head(&hover_at(src, "+"), "->");
 }
 
 #[test]
