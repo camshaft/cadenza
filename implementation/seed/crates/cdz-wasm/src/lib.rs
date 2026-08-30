@@ -228,21 +228,18 @@ fn ml_parse_error_span(text: &str, from: Format) -> Option<(u32, u32)> {
         .map(|e| (e.span.start as u32, e.span.end as u32))
 }
 
-/// Decode `ast_bytes` into a `Db` and run one sidecar `Query`, returning its result artifact's bytes
-/// as UTF-8 text. This is the ONE path every IDE fact read goes through — the browser IDE speaks the
-/// same sidecar query vocabulary as the `cdz` CLI (`cdz type-at`/`def`/`check`/`uses`), so a fact the
-/// editor shows equals what the CLI would answer, by construction. (The span table stays a front-end
-/// concern: the consumer maps a query's node ids to source ranges, per the query-engine contract.)
-fn run_query_text(ast_bytes: &[u8], query: &rcdzc::Query) -> Result<String, JsError> {
-    let bytes = run_query_bytes(ast_bytes, query)?;
-    String::from_utf8(bytes).map_err(|_| JsError::new("query result was not valid UTF-8"))
-}
-
-/// The raw-bytes twin of [`run_query_text`], for a query whose result artifact is canonical BINARY AST
-/// rather than UTF-8 text (e.g. `Query::Diagnostics` → `KIND_DIAGNOSTICS` via `rcdzc::decode_diagnostics`,
-/// `Query::Highlight` → `KIND_HIGHLIGHT` via `rcdzc::sidecar::decode_highlight`). Interpreting a binary-AST
-/// artifact as text and splitting it on tabs would yield garbage, so a structured consumer takes the bytes
-/// here and decodes them.
+/// Decode `ast_bytes` into a `Db`, run one sidecar `Query`, and return its result artifact's raw BYTES.
+/// This is the ONE path every IDE fact read goes through — the browser IDE speaks the same sidecar query
+/// vocabulary as the `cdz` CLI (`cdz type-at`/`def`/`check`/`uses`), so a fact the editor shows equals
+/// what the CLI would answer, by construction. (The span table stays a front-end concern: the consumer
+/// maps a query's node ids to source ranges, per the query-engine contract.)
+///
+/// EVERY sidecar result artifact is now canonical BINARY AST (seq-254 "binary AST is THE data exchange
+/// format"), so callers DECODE the bytes with the artifact's `*_wire` codec (`decode_diagnostics`,
+/// `decode_type_at`, `decode_resolve`, `decode_exports`, `decode_highlight`, `decode_instantiations`, …)
+/// rather than interpreting them as UTF-8 text — a `String::from_utf8` here would throw on a non-UTF-8
+/// payload (Class A) or silently mis-parse a valid-by-luck one (Class B). (The former `run_query_text`
+/// helper did exactly that and was removed once every consumer moved to a structured decode.)
 fn run_query_bytes(ast_bytes: &[u8], query: &rcdzc::Query) -> Result<Vec<u8>, JsError> {
     let arenas = rcdzc::codec::decode(ast_bytes)
         .ok_or_else(|| JsError::new("internal: re-encoded AST failed to decode"))?;
@@ -1953,57 +1950,36 @@ pub fn disposition(
     {
         return Ok(None);
     }
-    // Ride the `Instantiations` query — TAB-tagged lines: one `disp<TAB>name-node<TAB>DISPOSITION`, then
-    // (for a specialized def) `inst<TAB>spec-name<TAB>name-node<TAB>arg;arg;…` per instance. An UNKNOWN
-    // name (the hovered token names no definition) yields the empty string → no tooltip.
-    let text_out = run_query_text(
+    // Ride the `Instantiations` query — a BINARY-AST report (`instantiations_wire`), NOT text. DECODE it
+    // (the old `run_query_text` + TAB-split was the same from_utf8-on-binary bug class as type_at /
+    // export_types #6324). `known == false` = the hovered token names no definition → no tooltip.
+    let bytes = run_query_bytes(
         &ast_bytes,
         &rcdzc::Query::Instantiations {
             name: name.to_string(),
         },
     )?;
-    let mut disposition = String::new();
-    let mut def_span = span;
-    let mut instances: Vec<String> = Vec::new();
-    for line in text_out.lines() {
-        let mut cols = line.split('\t');
-        match cols.next() {
-            Some("disp") => {
-                let (Some(node_str), Some(disp)) = (cols.next(), cols.next()) else {
-                    continue;
-                };
-                disposition = disp.to_string();
-                // Anchor the tooltip to the DEFINITION's name occurrence (which may differ from the
-                // hovered use), so the range is stable whether the reader hovers the def or a call site.
-                if let Some(s) = node_str
-                    .parse::<u32>()
-                    .ok()
-                    .and_then(|n| spans.get(cadenza_syntax::ast::StructId(n)))
-                {
-                    def_span = s;
-                }
-            }
-            Some("inst") => {
-                // `inst<TAB>spec-name<TAB>name-node<TAB>arg;arg;…` — render the `;`-joined args as a
-                // readable `a, b, c`, dropping the unstable synthesized spec name + the node id.
-                let (_spec, _node, arglist) = match (cols.next(), cols.next(), cols.next()) {
-                    (Some(s), Some(n), Some(a)) => (s, n, a),
-                    _ => continue,
-                };
-                let pretty = arglist
-                    .split(';')
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                instances.push(pretty);
-            }
-            _ => continue,
-        }
+    let Some(report) = rcdzc::sidecar::decode_instantiations(&bytes) else {
+        return Ok(None); // artifact absent / malformed → no tooltip
+    };
+    if !report.known {
+        return Ok(None); // an unknown name has no disposition
     }
-    // No `disp` line ⇒ the hovered token names no definition (an unknown name) ⇒ no tooltip.
+    // Present the disposition set readably (joined by `+`, as `cdz instantiations` renders it — a def may
+    // carry a combination like `transformed→copy`). A known def always carries at least one.
+    let disposition = report.dispositions.join("+");
     if disposition.is_empty() {
         return Ok(None);
     }
+    // Anchor the tooltip to the DEFINITION's name occurrence (which may differ from the hovered use), so
+    // the range is stable whether the reader hovers the def or a call site; fall back to the hovered span.
+    let def_span = report
+        .name_node
+        .and_then(|n| spans.get(cadenza_syntax::ast::StructId(n)))
+        .unwrap_or(span);
+    // Each instance's per-argument descriptors rendered `a, b, c` (dropping the unstable synthesized spec
+    // name + node id the report also carries) — the same readable form the old `;`-joined row produced.
+    let instances: Vec<String> = report.instances.iter().map(|i| i.args.join(", ")).collect();
     Ok(Some(Disposition {
         name: name.to_string(),
         disposition,

@@ -90,6 +90,12 @@ pub use cadenza_compile_abi::type_at_wire::decode_type_at;
 // BINARY-AST value (`resolve_wire`, flipped in #6152). Re-exported so cdz-wasm's `define_at` reads the
 // node id via `rcdzc::sidecar::decode_resolve` instead of `String::from_utf8` + `parse::<u32>()`.
 pub use cadenza_compile_abi::resolve_wire::decode_resolve;
+// The `Query::Instantiations` (`KIND_INSTANTIATIONS`) decode + its report/`Instance` structs — a
+// BINARY-AST value (`instantiations_wire`). Re-exported so cdz-wasm's `disposition` reads the report via
+// `rcdzc::sidecar::decode_instantiations` instead of `String::from_utf8` + TAB-splitting the binary.
+pub use cadenza_compile_abi::instantiations_wire::{
+    Instance as InstantiationsInstance, Instantiations, decode as decode_instantiations,
+};
 
 // The `Request` (materialize an output column) + `Query` (read a fact column) enums that make up one
 // sidecar request list now live in the shared `cadenza-compile-abi` crate — the compile-boundary
