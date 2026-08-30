@@ -163,6 +163,24 @@
   (input  (do (def (main) (Map.siz #map((= 1 2)))) (export main)))
   (error  CDZ0201 (message "the `Map` module has no member `siz`") (not "was renamed")))
 
+; The absent-member message names the operand's REAL category, not always "record has no field": an EFFECT's
+; op set → "operation", a prelude MODULE → "member" (above), a user SUM type → "variant", a user RECORD →
+; "field". Each still carries the same "did you mean `<near>`?" hint. Pins that the category-naming is uniform
+; across the member-miss surfaces, so the author sees the right word for the operand they wrote. (Migrated from
+; rcdzc an_absent_member_names_the_operand_category_not_always_record.)
+(case "an absent EFFECT operation names the effect and 'operation', with a did-you-mean"
+  (input  (do (effect E (op emit (-> Int64 Unit)) (op log (-> Int64 Unit)))
+              (def (main) (host (E) (E.emt 5))) (export main)))
+  (error  CDZ0201 (message "effect `E` has no operation `emt`") (message "did you mean `emit`?")))
+
+(case "an absent user-sum VARIANT names the type and 'variant', with a did-you-mean"
+  (input  (do (type Color (Red) (Green) (Blue)) (def (main) (Color.Gren 5)) (export main)))
+  (error  CDZ0201 (message "the type `Color` has no variant `Gren`") (message "did you mean `Green`?")))
+
+(case "an absent user-RECORD field keeps 'record has no field' (a record is a record to the author)"
+  (input  (do (def (g (: r (Record (: foo Int64)))) (. r fooo)) (export g)))
+  (error  CDZ0212 (message "record has no field `fooo`")))
+
 (case "a module member named by the export clause is reachable"
   (doc    "The visible companion of the private case: `pub` IS named by `(export pub)`, so it is a field
            of the module's record and `(. m pub)` reaches it — pub(5) = 6. Pins that filtering the record
