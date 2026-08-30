@@ -1128,29 +1128,46 @@ impl<'a> Printer<'a> {
         if paren {
             self.doc.word("(");
         }
+        // FLATTEN the else-if LADDER (operator seq69/seq70): render every `if`/`else if`/`else` HEADER at
+        // the SAME outer indent inside ONE box, rather than recursing into `expr` for an `if`-shaped else
+        // branch — which opened a NESTED `cbox(INDENT)` per rung, indenting a chained-if DEEPER on every
+        // `else` (the operator's "20 levels deep" compiler-ml pain). Loop the ladder here: the else branch,
+        // while it is a bare `(if cond then else)` (3-arg), continues the same box as `else if …`; the
+        // final non-`if` else prints once. Each branch BODY stays indented one level under its header.
         self.doc.word("if ");
-        // Condition at PREC_KEYWORD so a nested block-form condition (`if`/`let`/`match`)
-        // parenthesizes — `if (if a then b else c) then …` rather than the unreadable `if if a …`.
-        self.expr(args[0], PREC_KEYWORD);
-        self.doc.word(" then");
-        // Branches at 0: a nested `if` here does NOT parenthesize, so an `else if` chain stays the
-        // idiomatic `… else if c then …` (indentation, not parens, disambiguates). A breakable space
-        // keeps `then t` on the line when it fits, else drops `t` to an indented line; `else` dedents
-        // back to the `if` column.
-        self.doc.space();
-        let then_had_trailing = self.expr_with_trailing_comment(args[1], 0);
-        // A same-line `//` trailing the then-branch runs to end-of-line, so `else` MUST drop to the next
-        // line — a breakable space would collapse to ` else` INSIDE the comment (`then 1 // note else 2`
-        // swallows the `else`, breaking re-parse). Force a hardbreak (dedented to the `if` column) when
-        // the then-branch carried a trailing comment; otherwise the ordinary breakable space.
-        if then_had_trailing {
-            self.doc.hardbreak_with(-INDENT);
-        } else {
-            self.doc.break_with(1, -INDENT);
+        let mut arms = args;
+        loop {
+            // Condition at PREC_KEYWORD so a nested block-form condition (`if`/`let`/`match`) parenthesizes
+            // — `if (if a then b else c) then …` rather than the unreadable `if if a …`.
+            self.expr(arms[0], PREC_KEYWORD);
+            self.doc.word(" then");
+            // Breakable space keeps `then t` on the line when it fits, else drops `t` to an indented line.
+            self.doc.space();
+            let then_had_trailing = self.expr_with_trailing_comment(arms[1], 0);
+            // A same-line `//` trailing the then-branch runs to end-of-line, so `else` MUST drop to the next
+            // line — a breakable space would collapse to ` else` INSIDE the comment (`then 1 // note else 2`
+            // swallows the `else`). Force a hardbreak (dedented to the `if` column) when the then-branch
+            // carried a trailing comment; otherwise the ordinary breakable space (dedent back to the column).
+            if then_had_trailing {
+                self.doc.hardbreak_with(-INDENT);
+            } else {
+                self.doc.break_with(1, -INDENT);
+            }
+            // A BARE `if`-shaped else branch (no comment/annotation wrapper) flattens: `else if …` in the
+            // SAME box at this indent. Any other else (or a wrapped `if`) prints once and ends the ladder.
+            match self.a.as_form(arms[2], "if") {
+                Some(inner) if inner.len() == 3 => {
+                    self.doc.word("else if ");
+                    arms = inner;
+                }
+                _ => {
+                    self.doc.word("else");
+                    self.doc.space();
+                    self.expr_with_trailing_comment(arms[2], 0);
+                    break;
+                }
+            }
         }
-        self.doc.word("else");
-        self.doc.space();
-        self.expr_with_trailing_comment(args[2], 0);
         if paren {
             self.doc.word(")");
         }

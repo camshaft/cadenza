@@ -4846,6 +4846,51 @@ mod tests {
     }
 
     #[test]
+    fn a_chained_else_if_ladder_flattens_headers_to_one_indent() {
+        // operator seq69/seq70: an `else if` ladder must NOT indent DEEPER per rung — every
+        // `if`/`else if`/`else` header stays at the OUTER indent (the "20 levels deep" compiler-ml pain
+        // was the printer nesting `else { if { else { if … } } }`, one cbox per rung). A too-wide chain
+        // lays out as a FLAT ladder (headers aligned, bodies one level under each header).
+        let src = "def classify(x) =\n\
+                   \x20\x20if first-threshold-check-predicate(x) then first-branch-result-value(x)\n\
+                   \x20\x20else if second-threshold-check-predicate(x) then second-branch-result-value(x)\n\
+                   \x20\x20else if third-threshold-check-predicate(x) then third-branch-result-value(x)\n\
+                   \x20\x20else final-fallback-branch-result-value(x)\n";
+        let p = read_ml(src);
+        assert!(p.ok(), "parses: {:?}", p.errors);
+        let printed = crate::printer::print(&p.arenas, 60); // narrow width forces the ladder to break
+        // Every `else if`/`else` header sits at the SAME indent (flat ladder, not deepening per rung).
+        let header_indents: Vec<usize> = printed
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                t.starts_with("else if ") || t == "else"
+            })
+            .map(|l| l.len() - l.trim_start().len())
+            .collect();
+        assert!(
+            header_indents.len() >= 3,
+            "ladder broke into rungs:\n{printed}"
+        );
+        assert!(
+            header_indents.iter().all(|&i| i == header_indents[0]),
+            "all else-if/else headers at ONE indent (flat ladder, not deepening): {header_indents:?}\n{printed}"
+        );
+        // Round-trips structurally + idempotent.
+        let rp = read_ml(&printed);
+        assert!(
+            rp.ok() && p.arenas.structurally_eq(&rp.arenas),
+            "ladder round-trips: {:?}\n{printed}",
+            rp.errors
+        );
+        assert_eq!(
+            crate::printer::print(&rp.arenas, 60),
+            printed,
+            "idempotent\n{printed}"
+        );
+    }
+
+    #[test]
     fn a_trailing_comment_on_a_non_last_infix_operand_survives_the_round_trip() {
         // Regression (seq-277/C3 slice 3): a same-line `//` on a NON-LAST operand of a multi-line infix
         // chain (`a and b  // note` newline `and c`) USED TO DROP — the Pratt infix loop never drained the
