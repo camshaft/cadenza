@@ -2981,11 +2981,13 @@ pub fn reduce_ctor(
             Ok(encode_typeval(db, &rec))
         }
         // The compound-VALUE constructors reached via the shadowable `tuple`/`record` alias names.
-        // Reduce the application to the STRING-HEADED primitive form — `(tuple a b)` → `("tuple" a b)`,
-        // `(record (x 1) …)` → `("record" (x 1) …)` — so it resolves to `Resolved::Tuple`/
+        // Reduce the application to the NATIVE ctor-LEAF primitive form — `(tuple a b)` → `(#tuple a b)`,
+        // `(record (x 1) …)` → `(#record (x 1) …)` — so it resolves to `Resolved::Tuple`/
         // `Resolved::Record` and every downstream machinery (the compile-time-visible fold in
         // `reduce_to_tuple_elems`/`reduce_to_record_id`, member projection, the host-escape walk,
-        // `type_of`, `lower`) treats it IDENTICALLY to a value written with the string primitive.
+        // `type_of`, `lower`) treats it IDENTICALLY to a value written with the native ctor-leaf primitive
+        // (the ctor-leaf head is unshadowable like the legacy string head it replaces — dual-read via
+        // `compound_ctor_prim` — shedding a string head ahead of the M3 reader-flip).
         //
         // WARNING: `push_list` RE-PARENTS the arg subtrees under the new head, which would orphan a field/
         // element value like the runtime param `a` in `(record (x a) …)` from its lexical scope (a
@@ -3020,11 +3022,11 @@ pub fn reduce_ctor(
             for &a in args {
                 crate::resolve::resolve_subtree(db, a);
             }
-            let head = db.push_str(match prim {
-                Prim::TupleNew => "tuple",
-                Prim::ListNew => "list",
-                _ => "record",
-            });
+            let head = db.push_atom(Leaf::Ctor(match prim {
+                Prim::TupleNew => CompoundCtor::Tuple,
+                Prim::ListNew => CompoundCtor::List,
+                _ => CompoundCtor::Record,
+            }));
             let mut children = vec![head];
             children.extend_from_slice(args);
             let built = db.push_list(children);
@@ -3047,7 +3049,7 @@ pub fn reduce_ctor(
             for &entry in args {
                 crate::resolve::resolve_subtree(db, entry);
             }
-            let head = db.push_str("map");
+            let head = db.push_atom(Leaf::Ctor(CompoundCtor::Map));
             let mut children = vec![head];
             children.extend_from_slice(args);
             let built = db.push_list(children);
@@ -3100,7 +3102,7 @@ pub fn reduce_ctor(
             };
             crate::resolve::resolve_subtree(db, lookup_app);
             crate::resolve::resolve_subtree(db, update_app);
-            let head = db.push_str("tuple");
+            let head = db.push_atom(Leaf::Ctor(CompoundCtor::Tuple));
             let built = db.push_list(vec![head, lookup_app, update_app]);
             db.cache_build(key, built);
             Ok(built)
@@ -4134,10 +4136,11 @@ pub fn build_int_module(db: &mut Db, signed: bool, width: u32) -> StructId {
     // the shared `wrap` intrinsic.
     fields.push(wrap_field(db, signed, width));
 
-    // The record PRIMITIVE head is the STRING `"record"` (the ordinary NAME `record` is a shadowable
-    // prelude alias). A compiler-synthesized module record builds directly with the string head so it
-    // resolves structurally to `Resolved::Record`, independent of any user binding of the name `record`.
-    let head = db.push_str("record");
+    // The record head is the NATIVE ctor-LEAF `Leaf::Ctor(Record)` (the ordinary NAME `record` is a
+    // shadowable prelude alias). A compiler-synthesized module record builds directly with the ctor-leaf
+    // head so it resolves structurally to `Resolved::Record`, independent of any user binding of the name
+    // `record` — unshadowable exactly like the legacy string head it replaces (dual-read).
+    let head = db.push_atom(Leaf::Ctor(CompoundCtor::Record));
     let mut children = vec![head];
     children.append(&mut fields);
     db.push_list(children)
@@ -4155,7 +4158,7 @@ pub fn build_float_module(db: &mut Db, width: u32) -> StructId {
     let of_int = float_of_int_field(db, width);
     let of = float_of_field(db, width);
     let fields = vec![meta_field(db, "t", ty_node), of_int, of];
-    let head = db.push_str("record");
+    let head = db.push_atom(Leaf::Ctor(CompoundCtor::Record));
     let mut children = vec![head];
     for f in fields {
         children.push(f);
@@ -4191,7 +4194,7 @@ fn float_of_int_field(db: &mut Db, width: u32) -> StructId {
         db.push_list(vec![head, who])
     };
     let apply_field = meta_field(db, "apply", apply);
-    let rec_head = db.push_str("record");
+    let rec_head = db.push_atom(Leaf::Ctor(CompoundCtor::Record));
     let rec = db.push_list(vec![rec_head, t_field, apply_field]);
     let k = db.push_name("of-int");
     let eq = db.push_name("="); // seq-276: canonical (= name value) record entry
@@ -4229,7 +4232,7 @@ fn float_of_field(db: &mut Db, width: u32) -> StructId {
         db.push_list(vec![head, who])
     };
     let apply_field = meta_field(db, "apply", apply);
-    let rec_head = db.push_str("record");
+    let rec_head = db.push_atom(Leaf::Ctor(CompoundCtor::Record));
     let rec = db.push_list(vec![rec_head, t_field, apply_field]);
     let k = db.push_name("of");
     let eq = db.push_name("="); // seq-276: canonical (= name value) record entry
@@ -4262,7 +4265,7 @@ fn wrap_field(db: &mut Db, signed: bool, width: u32) -> StructId {
     let lambda = db.push_list(vec![fn_head, params, body]);
     // `("record" ((meta t) lambda) ((meta apply) (intrinsic wrap)))` — the record primitive is the
     // string head `"record"`.
-    let rec_head = db.push_str("record");
+    let rec_head = db.push_atom(Leaf::Ctor(CompoundCtor::Record));
     let t_field = meta_field(db, "t", lambda);
     let prim = intrinsic_node(db, "wrap");
     let apply_field = meta_field(db, "apply", prim);
