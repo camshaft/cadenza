@@ -66,3 +66,19 @@ Inside a trial's outcome clause (graded against the compiler's captured `KIND_DI
   encoding, so migrated cases are wire-flip-safe.
 - STAGING (concierge): publish + a proof tranche now; hold the fleet-wide per-lane push until seq-276 and
   the rational flag-days land. Coordinate the tranche boundaries with v-corpus-harness (grade + baseline hygiene).
+
+## Message-ABSENCE assertion — `(not "phrase")` (operator seq-29)
+
+Complement of the positive `(message "phrase")` (contains) substring pin: `(not "phrase")` requires the
+diagnostic to NOT contain `phrase`. Repeatable + AND-d, and composes with the positive pins on `(error …)`,
+`(declines …)`, and `(warning …)`:
+
+```
+(declines CDZ0900 (message "not yet") (not "internal error"))
+(error CDZ0201 (message "malformed record") (not "panic"))
+```
+
+Semantics (graded on the sexp `test-run.ast` path): after the code + every positive substring match, the
+grade FAILS if the diagnostic contains ANY `(not …)` phrase. This lets a message-ABSENCE rust test (one that
+only asserts `!diagnostic.contains("X")`) move into the corpus rather than staying a rust `#[test]` (the
+motivating case: #6127). The flat direct-gate manifest ignores `(not …)` (rich prose pins are sexp-path-only).

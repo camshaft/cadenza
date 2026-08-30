@@ -94,6 +94,14 @@ the primary clause is instead:
   the corpus records the rejection itself rather than what some evaluator might have produced had the
   program run. Cadenza has one implementation kind — a compiler — so there is no second, dynamic
   outcome to record.
+  - Diagnostic **prose** may be pinned alongside the code, on `(error …)`, `(declines …)`, and
+    `(warning …)` (and the `(warns …)` presence clause): `(message "<phrase>")` requires the emitted
+    diagnostic to CONTAIN `<phrase>` — repeatable, ALL required (AND). Its complement `(not "<phrase>")`
+    requires the diagnostic to NOT contain `<phrase>` — also repeatable, ALL required (a message-ABSENCE
+    assertion, e.g. that a user-facing decline does not leak an `"internal error"` phrase). Positive and
+    negative pins compose: `(declines CDZ0900 (message "not yet") (not "internal error"))`. (These prose
+    pins are graded on the sexp `test-run.ast` path; the flat direct-gate manifest checks code + a single
+    positive phrase.)
 
 **Observation clause — optional.**
 - `(host-calls <call>...)` — the exact ordered sequence of host calls the run makes, each `<call>`

@@ -245,13 +245,18 @@ pub enum Expect {
     /// gate requires the emitted diagnostic to contain EVERY one (AND). Empty = code-only (historical). This
     /// captures multi-part messages that name the rule AND each operand without shed (operator seq353 +
     /// capture-max-coverage).
-    Error(String, Vec<String>),
+    /// The third field pins message ABSENCE substrings (repeatable `(not "phrase")`, seq-29): the emitted
+    /// diagnostic must NOT contain ANY of them (the complement of the required-substrings — required-absence,
+    /// AND-d). Lets a case assert a message does not mention a phrase (e.g. no `"internal error"`) so a
+    /// message-absence rust test can move into the corpus. Empty = no absence assertion.
+    Error(String, Vec<String>, Vec<String>),
     /// `(warning <CODE>)` (or `(warning <CODE> (message "phrase"))`) — a NON-DENYING diagnostic: the
     /// compiler COMPILES the program (produces an artifact) AND emits a WARNING with this code. The
     /// severity companion of `Error` (which is a REJECTION — no artifact); a warning accompanies a produced
     /// component (e.g. a dead-trap or unused-binding lint). Pairs with a `(count N)` for the exact-warning-
-    /// count tests. The second field pins message substrings (repeatable `(message …)`, ALL required), as with `Error`.
-    Warning(String, Vec<String>),
+    /// count tests. The second field pins message substrings (repeatable `(message …)`, ALL required), as with `Error`;
+    /// the third pins message ABSENCE substrings (repeatable `(not "phrase")`, seq-29 — NONE may appear).
+    Warning(String, Vec<String>, Vec<String>),
     /// `(trap "<reason>")` — the run halts with this reason.
     Trap(String),
     /// `(declines)` — the compiler DECLINES to emit a component for this program: a well-formed program
@@ -268,7 +273,9 @@ pub enum Expect {
     /// (any code / codeless). The `Vec` holds load-bearing SUBSTRINGS of the decline's diagnostic MESSAGE the
     /// corpus pins (`(declines … (message "phrase"))`, repeatable — ALL required; the gate requires the
     /// decline diagnostic to CONTAIN every phrase, operator seq353). Empty vec = any message passes.
-    Declines(Option<String>, Vec<String>),
+    /// The third field pins message ABSENCE substrings (repeatable `(not "phrase")`, seq-29): the decline
+    /// diagnostic must NOT contain ANY of them (required-absence, AND-d). Empty = no absence assertion.
+    Declines(Option<String>, Vec<String>, Vec<String>),
 }
 
 /// A platform-conformance case (`(platform-case "title" …)`) — the runtime/platform analog of a
@@ -393,6 +400,19 @@ fn message_clauses(a: &Arenas, tail: &[StructId]) -> Vec<String> {
     tail.iter()
         .filter_map(|&child| {
             a.as_form(child, "message")
+                .and_then(|t| t.first().copied())
+                .and_then(|id| string_leaf(a, id))
+        })
+        .collect()
+}
+
+/// Scan a diagnostic clause's `tail` for `(not "phrase")` sub-forms (seq-29) — the message-ABSENCE
+/// complement of [`message_clauses`]. Each yields a substring the emitted diagnostic must NOT contain
+/// (required-absence, AND-d with the positive `(message …)` substrings). Repeatable; empty when none.
+fn not_message_clauses(a: &Arenas, tail: &[StructId]) -> Vec<String> {
+    tail.iter()
+        .filter_map(|&child| {
+            a.as_form(child, "not")
                 .and_then(|t| t.first().copied())
                 .and_then(|id| string_leaf(a, id))
         })
@@ -583,7 +603,7 @@ pub fn render(records: &[Record]) -> String {
                 // `error CODE`, plus ` (message "phrase")` VERBATIM when the case pins a message — the
                 // exact surface xtask's split_message_clause parses (operator seq353). Absent → byte-
                 // identical to the historical `error CODE` line (back-compat).
-                Expect::Error(code, message) => {
+                Expect::Error(code, message, not_message) => {
                     out.push_str("error ");
                     out.push_str(code);
                     for m in message {
@@ -591,16 +611,27 @@ pub fn render(records: &[Record]) -> String {
                         out.push_str(m);
                         out.push_str("\")");
                     }
+                    for n in not_message {
+                        out.push_str(" (not \"");
+                        out.push_str(n);
+                        out.push_str("\")");
+                    }
                 }
                 // `warning CODE`, plus ` (message "phrase")` — mirrors `error` (the non-denying severity
                 // companion). The diagnostic-quality facets ride the sexp `test-run.ast` grade path, not this
-                // flat direct-gate manifest (which grades only code + message today).
-                Expect::Warning(code, message) => {
+                // flat direct-gate manifest (which grades only code + message today). A `(not "phrase")`
+                // absence pin (seq-29) is rendered too but graded only on the sexp path (xtask ignores it).
+                Expect::Warning(code, message, not_message) => {
                     out.push_str("warning ");
                     out.push_str(code);
                     for m in message {
                         out.push_str(" (message \"");
                         out.push_str(m);
+                        out.push_str("\")");
+                    }
+                    for n in not_message {
+                        out.push_str(" (not \"");
+                        out.push_str(n);
                         out.push_str("\")");
                     }
                 }
@@ -611,7 +642,7 @@ pub fn render(records: &[Record]) -> String {
                 // `declines`, plus ` CDZxxxx` when the case pins the decline's error-code (seq-286), plus
                 // ` (message "phrase")` when it pins the diagnostic prose; bare `declines` (byte-identical to
                 // before) when it pins neither.
-                Expect::Declines(code, message) => {
+                Expect::Declines(code, message, not_message) => {
                     out.push_str("declines");
                     if let Some(c) = code {
                         out.push(' ');
@@ -620,6 +651,11 @@ pub fn render(records: &[Record]) -> String {
                     for m in message {
                         out.push_str(" (message \"");
                         out.push_str(m);
+                        out.push_str("\")");
+                    }
+                    for n in not_message {
+                        out.push_str(" (not \"");
+                        out.push_str(n);
                         out.push_str("\")");
                     }
                 }
@@ -1023,9 +1059,10 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                         .and_then(|id| a.as_name(id).map(str::to_string))
                 {
                     let message = message_clauses(a, tail);
+                    let not_message = not_message_clauses(a, tail);
                     trials.push(Trial {
                         call: pending_call.take(),
-                        expect: Expect::Error(code, message),
+                        expect: Expect::Error(code, message, not_message),
                         diag: diag_clause(a, tail),
                     });
                 }
@@ -1041,9 +1078,10 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                         .and_then(|id| a.as_name(id).map(str::to_string))
                 {
                     let message = message_clauses(a, tail);
+                    let not_message = not_message_clauses(a, tail);
                     trials.push(Trial {
                         call: pending_call.take(),
-                        expect: Expect::Warning(code, message),
+                        expect: Expect::Warning(code, message, not_message),
                         diag: diag_clause(a, tail),
                     });
                 }
@@ -1075,9 +1113,10 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     .map(str::to_string);
                 // `message_clauses` scans for `(message …)` forms, so it ignores a leading bare code name.
                 let message = tail.map(|t| message_clauses(a, t)).unwrap_or_default();
+                let not_message = tail.map(|t| not_message_clauses(a, t)).unwrap_or_default();
                 trials.push(Trial {
                     call: pending_call.take(),
-                    expect: Expect::Declines(code, message),
+                    expect: Expect::Declines(code, message, not_message),
                     diag: None,
                 });
             }
@@ -1097,16 +1136,17 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                         .and_then(|id| a.as_name(id).map(str::to_string))
                 {
                     let message = message_clauses(a, inner_tail);
+                    let not_message = not_message_clauses(a, inner_tail);
                     let diag = diag_clause(a, inner_tail);
                     if let Some(last) = trials.last_mut() {
-                        last.expect = Expect::Error(code, message);
+                        last.expect = Expect::Error(code, message, not_message);
                         if diag.is_some() {
                             last.diag = diag;
                         }
                     } else {
                         trials.push(Trial {
                             call: pending_call.take(),
-                            expect: Expect::Error(code, message),
+                            expect: Expect::Error(code, message, not_message),
                             diag,
                         });
                     }
@@ -1754,12 +1794,39 @@ mod tests {
                (case "none" (input 1_) (error CDZ0201))"#,
         )
         .unwrap();
-        assert!(matches!(&recs[0].trials[0].expect, Expect::Error(c, ms)
+        assert!(matches!(&recs[0].trials[0].expect, Expect::Error(c, ms, _)
             if c == "CDZ0301" && ms.as_slice() == ["no implicit conversion", "Float64", "Int64"]));
-        assert!(matches!(&recs[1].trials[0].expect, Expect::Error(c, ms)
+        assert!(matches!(&recs[1].trials[0].expect, Expect::Error(c, ms, _)
             if c == "CDZ0201" && ms.as_slice() == ["sep"]));
         assert!(
-            matches!(&recs[2].trials[0].expect, Expect::Error(c, ms) if c == "CDZ0201" && ms.is_empty())
+            matches!(&recs[2].trials[0].expect, Expect::Error(c, ms, _) if c == "CDZ0201" && ms.is_empty())
+        );
+    }
+
+    /// seq-29 `(not "phrase")` message-ABSENCE pin: parses into the third field of `Expect::Error` /
+    /// `Expect::Declines`, separate from the positive `(message …)` substrings, and renders back verbatim.
+    #[test]
+    fn not_message_clause_parses_and_renders() {
+        let recs = read(
+            r#"(case "err" (input 1_) (error CDZ0201 (message "malformed") (not "internal error")))
+               (case "dec" (input 1_) (declines CDZ0900 (message "not yet") (not "panic") (not "ICE")))"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(&recs[0].trials[0].expect, Expect::Error(c, ms, neg)
+            if c == "CDZ0201" && ms.as_slice() == ["malformed"] && neg.as_slice() == ["internal error"])
+        );
+        assert!(
+            matches!(&recs[1].trials[0].expect, Expect::Declines(c, ms, neg)
+            if c.as_deref() == Some("CDZ0900") && ms.as_slice() == ["not yet"] && neg.as_slice() == ["panic", "ICE"])
+        );
+        let text = to_records(
+            r#"(case "err" (input 1_) (error CDZ0201 (message "malformed") (not "internal error")))"#,
+        )
+        .unwrap();
+        assert!(
+            text.contains(r#"(not "internal error")"#),
+            "not-clause renders: {text}"
         );
     }
 
@@ -1796,7 +1863,7 @@ mod tests {
         assert!(d.fix.is_none());
 
         // (3) warning result kind + substring fix + unverified.
-        assert!(matches!(&recs[2].trials[0].expect, Expect::Warning(c, m)
+        assert!(matches!(&recs[2].trials[0].expect, Expect::Warning(c, m, _)
             if c == "CDZ0305" && m.as_slice() == ["dead"]));
         let fx = recs[2].trials[0]
             .diag
