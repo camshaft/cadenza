@@ -2781,7 +2781,9 @@
             } ''
             set -euo pipefail
             mkdir -p "$out"
-            if [ -e ${build}/emit.wasm ] && ! ls ${build}/peer-*.wasm >/dev/null 2>&1; then
+            # nullglob-SAFE peer detection (nix stdenv bash has nullglob ON — a bare `ls peer-*.wasm` with no
+            # match lists CWD + exits 0, so `! ls …` wrongly reads as "no peers"; `find` is glob-independent).
+            if [ -e ${build}/emit.wasm ] && [ -z "$(find ${build} -maxdepth 1 -name 'peer-*.wasm' -print -quit)" ]; then
               cdz-run ${build}/emit.wasm --precompile-out "$out/guest.cwasm"
             fi
           '';
