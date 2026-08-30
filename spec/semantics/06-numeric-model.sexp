@@ -8801,7 +8801,27 @@
             (def (f (: x (UInt 65))) x)
             (def (main) 0)
             (export main)))
-  (error  CDZ0302))
+  (error  CDZ0302 (message "`UInt65` is not a valid integer type")))
+
+(case "a zero-width integer in an unused parameter is rejected"
+  (doc    "`(UInt 0)` — zero is not a width — in an unused parameter's type is CDZ0302 like the over-ceiling
+           `(UInt 65)`. The totality check fires on any ill-formed width. From rcdzc
+           an_over_ceiling_width_in_an_unused_parameter_is_rejected_cdz0302.")
+  (input  (do (def (f (: x (UInt 0))) x) (def (main) 0) (export main)))
+  (error  CDZ0302 (message "`UInt0` is not a valid integer type")))
+
+(case "an over-ceiling SIGNED width in an unused parameter is rejected"
+  (doc    "`(Int 128)` — past the 1..=64 ceiling — in an unused parameter's type is CDZ0302, the signed
+           companion of the `(UInt 65)` case. From rcdzc an_over_ceiling_width_in_an_unused_parameter_is_rejected_cdz0302.")
+  (input  (do (def (f (: x (Int 128))) x) (def (main) 0) (export main)))
+  (error  CDZ0302 (message "`Int128` is not a valid integer type")))
+
+(case "a VALID narrow width in an unused parameter is not over-rejected"
+  (doc    "No over-rejection: a well-formed `(UInt 8)` in an unused (dead but valid) parameter compiles —
+           the totality check fires only on an ill-formed width, not any narrow param. From rcdzc
+           an_over_ceiling_width_in_an_unused_parameter_is_rejected_cdz0302.")
+  (input  (do (def (f (: x (UInt 8))) x) (def (main) 0) (export main)))
+  (call   main) (output (: 0 Int64)))
 
 (case "a malformed integer width — negative or non-natural — is rejected at compile time"
   (doc    "`(: 5 (Int -8))` names a NEGATIVE width. A bit width is a compile-time NATURAL number in
