@@ -1251,6 +1251,34 @@
   (input  (do (def (f (: c Bool)) (: (+ (if c 40000 2) 5) Int16)) (export f)))
   (error  CDZ0302))
 
+; A bare literal takes its width from an integer binary-op CONTEXT even when its IMMEDIATE binop sibling is
+; DEFERRED but the width is fixed TRANSITIVELY by an ANCESTOR arith op (numeric-model.md §An Explicit … Or
+; Other Constraint On An Integer Literal MUST Take Precedence). An arith op unifies its two operands to ONE
+; width, so a narrow width fixed at an ANCESTOR flows DOWN through the intervening arith ops to the literal,
+; and an out-of-range literal is range-checked at `cdz check` (CDZ0201) — matching both backends, not a
+; check-vs-emit divergence (wasm CDZ0302 / rust `as u8` truncation 10000→16, a wrong-value miscompile). The
+; climb reaches through multiple arith levels; an in-range literal and an ISOLATED op (no narrow ancestor,
+; literal stays Int64) are unaffected. (Migrated from rcdzc
+; a_literal_whose_width_is_fixed_transitively_through_arith_ops_rejects_at_check.)
+(case "a bare literal whose width is fixed TRANSITIVELY through an ancestor arith op is range-checked"
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (+ (* 10000 (if (< a b) 1 0)) (% a b))) (export main)))
+  (error  CDZ0201))
+
+(case "the transitive-arith width flow climbs TWO arith levels down to the literal"
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (+ (+ (* 10000 (if (< a b) 1 0)) b) b)) (export main)))
+  (error  CDZ0201))
+
+(case "an IN-RANGE literal in the transitive-arith-width position compiles and runs (no over-rejection)"
+  (doc    "The SAME shape with `100` (fits UInt8): `(main 1 2)` = `(+ (* 100 1) (% 1 2))` = `(+ 100 1)` = 101.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (+ (* 100 (if (< a b) 1 0)) (% a b))) (export main)))
+  (call   main (: 1 UInt8) (: 2 UInt8)) (output (: 101 UInt8)))
+
+(case "an ISOLATED multiply with no narrow-width ancestor leaves the literal at its Int64 default"
+  (doc    "No over-rejection: with NO UInt8-fixed ancestor, `(* 10000 (if (< a b) 1 0))` leaves `10000` at the
+           Int64 default (10000 fits Int64), so it compiles; `(main 1 2)` = `(* 10000 1)` = 10000 : Int64.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (* 10000 (if (< a b) 1 0))) (export main)))
+  (call   main (: 1 UInt8) (: 2 UInt8)) (output (: 10000 Int64)))
+
 ; ── `cdz check` agrees with EMIT on a runtime-if/match branch literal + a narrow parameter width: a
 ; RUNTIME `if`/`match` (runtime condition/scrutinee) with an out-of-range branch literal under a narrow-width
 ; annotation, or a bare out-of-range literal reaching a narrow PARAMETER (directly OR transitively through a
