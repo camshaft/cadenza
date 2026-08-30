@@ -1229,6 +1229,35 @@ impl Ty {
         }
     }
 
+    /// Whether this type carries a numeric whose WIDTH or SIGN is still UNGROUNDED (a `Width::Deferred`/
+    /// `Width::Var` or `Sign::Deferred`/`Sign::Var`) — reachable at this position or in a no-arrow data
+    /// element. A bare integer/decimal literal is deferred until something constrains it; a member of a
+    /// mutual-recursion SCC solved WHILE a sibling is in-flight sees that sibling as `Any`, so a bare-literal
+    /// return grounds to a still-DEFERRED numeric (no concrete peer yet) that the old scheme solve CACHED —
+    /// freezing e.g. `v0`'s return `Int{Deferred}` (→ default `Int64`) while a sibling's `(: 3 UInt16)` base
+    /// pins the group `UInt16`, so the two schemes disagree at the machine width and the emit is invalid wasm
+    /// (#6049). `compute_def_scheme` uses this to DEFER such a reentrant result (uncached) so a later clean
+    /// demand re-grounds the width against the now-concrete sibling. An arrow is NOT descended (a closure
+    /// domain/result hole is not the return-position data numeric), matching `has_any_in_data_element`.
+    pub fn has_ungrounded_width(&self) -> bool {
+        match self {
+            Ty::Int(it) => {
+                !matches!(it.width, Width::Fixed(_)) || !matches!(it.sign, Sign::Fixed(_))
+            }
+            Ty::Float(ft) => !matches!(ft.width, Width::Fixed(_)),
+            Ty::Fn(_, _) => false,
+            Ty::Tuple(elems) => elems.iter().any(Ty::has_ungrounded_width),
+            Ty::List(elem) | Ty::Set(elem) => elem.has_ungrounded_width(),
+            Ty::Map(k, v) => k.has_ungrounded_width() || v.has_ungrounded_width(),
+            Ty::Record(fields) => fields.values().any(Ty::has_ungrounded_width),
+            Ty::Sum { args, .. } | Ty::Nominal { args, .. } => {
+                args.iter().any(Ty::has_ungrounded_width)
+            }
+            Ty::Qty { inner, .. } => inner.has_ungrounded_width(),
+            _ => false,
+        }
+    }
+
     /// Whether this type contains a TYPE-VALUE (`Ty::Type`, the kind of types) anywhere — itself, or
     /// nested in a compound (`(Tuple Type Int64)`, `(List Type)`, a record field, a sum/nominal arg). A
     /// type-value is COMPILE-TIME ONLY (`type-system.md §226`: a type-value never flows from runtime data),

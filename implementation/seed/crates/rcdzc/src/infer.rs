@@ -117,7 +117,23 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
             // monomorphic fold whose internal self-call `Any` must stay cached — the `across_def_flavors` /
             // bottom-up-fold cases the `node_external` arm protects).
             || !db.solving_schemes.is_empty());
-    if !matches!(t, Ty::Any) && !ty_has_free_var(db, &t) && !skip_reentrant_nested_any {
+    // PARALLEL to the data-`Any` skip, for the NUMERIC-WIDTH twin (#6049): a result with an UNGROUNDED
+    // numeric width computed DURING A MUTUAL-RECURSION solve is PROVISIONAL — a bare-literal return unified
+    // with an in-flight sibling's `Any` grounds to a still-deferred numeric (`Int{Deferred}`), which
+    // `has_free_var` treats as GROUND (deferred widths default), so the ordinary guard would MEMOIZE it and
+    // FREEZE the member's return width even after the sibling's ANNOTATED base pins the SCC to a concrete
+    // width — the two schemes then disagree at the machine width and the emit is invalid wasm. Skip caching
+    // so a later CLEAN read re-grounds it (the bare literal ADOPTS the sibling's concrete width). Scoped to
+    // `solving_schemes.len() > 1` — an ACTUAL mutual-recursion SCC (2+ schemes on the stack), NOT a lone
+    // recursive def (whose own single-scheme solve is byte-identical: its deferred literals cache + default
+    // as before). Companion to `def_scheme`'s `has_ungrounded_width` defer, which re-grounds the SCHEME; the
+    // emit also reads per-NODE `type_of`, so those nodes must likewise not freeze.
+    let skip_reentrant_deferred_width = db.solving_schemes.len() > 1 && t.has_ungrounded_width();
+    if !matches!(t, Ty::Any)
+        && !ty_has_free_var(db, &t)
+        && !skip_reentrant_nested_any
+        && !skip_reentrant_deferred_width
+    {
         db.types.fill(id, t.clone());
     }
     t
@@ -5373,6 +5389,25 @@ fn compute_def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     let sibling_in_flight = db.solving_schemes.iter().any(|&d| d != def);
     if sibling_in_flight && result.has_any_in_data_element() {
         trace!(target: "rcdzc::infer", def, result = %result.render_name(&db.name_ctx()), "def_scheme: result has a data-Any from an in-flight sibling → defer (re-grounds after the SCC settles)");
+        return None;
+    }
+    // DEFER A RESULT WITH AN UNGROUNDED NUMERIC WIDTH born reentrantly (mutual-recursion SCC), the numeric
+    // twin of the data-`Any` case above. A member solved WHILE a sibling is in-flight sees the sibling call
+    // as `Any` (the re-entry guard returns `None`), so a BARE-LITERAL return has no concrete peer and grounds
+    // to a still-DEFERRED numeric (`Int{Deferred}` → default `Int64`). The old solve CACHED that, freezing
+    // the member's return width even though a sibling's ANNOTATED base pins the SCC to a concrete width — so
+    // `v0` (bare `5`) cached `Int{Deferred}` while `v1` (`(: 3 UInt16)`) is `UInt16`, and the two schemes
+    // disagree at the machine width: the emit lowers `v0`'s recursive `v1`-call (an `i32`/`UInt16`) into
+    // `v0`'s `i64`/`Int64` return slot → INVALID wasm (#6049; `cdz check` passes, the component won't
+    // compile). DEFER (return `None`, uncached under `reentrant_solve`) so a later CLEAN demand — after the
+    // SCC's concrete-width member (`v1`) memoizes — recomputes the bare-literal member's result with the
+    // sibling concrete, so `5` ADOPTS `UInt16` and the group agrees. SCOPED to a reentrant solve like the
+    // data-`Any` case: at the TOP of the stack there is no in-flight sibling to re-ground against, so a
+    // deferred-width result there grounds to its default as before (an all-bare SCC with no concrete peer
+    // re-grounds UNIFORMLY at the top-of-stack default — byte-identical). Termination holds because the
+    // top-of-stack member never defers (it anchors the SCC's width).
+    if sibling_in_flight && result.has_ungrounded_width() {
+        trace!(target: "rcdzc::infer", def, result = %result.render_name(&db.name_ctx()), "def_scheme: result has an ungrounded numeric width from an in-flight sibling → defer (re-grounds after the SCC settles)");
         return None;
     }
     // Curry: `p_0 -> p_1 -> … -> result`. A nullary def is just `result`.
