@@ -298,6 +298,20 @@
   (input  (do (def (g (: str String)) (. str foo)) (export g)))
   (error  CDZ0201 (message "a String value has no field `foo`") (message "live on the `String` module") (message "((. String <op>) <value>") (no-fix)))
 
+; A SUM value accessed by NAME — `(. o foo)` on an `(Option …)`, `(. p x)` on a user sum — is not a field
+; read either: a sum's payload is reached by MATCHING its variants. The message spells a `(match <value> …)`
+; template, one arm per variant with payload binders shown, instead of the dead-end "requires a record" (the
+; sum twin of the collection-module redirect above). A prelude `Option` names `Some`(one payload)/`None`(none);
+; a user sum names its own variants + arities. No mechanical fix — the arm bodies are the author's. (Migrated
+; from rcdzc named_member_access_on_a_sum_points_at_matching_its_variants.)
+(case "named member access on a sum redirects to a match template over its variants"
+  (input  (do (def (g (: o (Option Int64))) (. o foo)) (export g)))
+  (error  CDZ0201 (message "a sum's payload is reached by matching its variants") (message "(match <value> ((Some x0) ") (no-fix)))
+
+(case "named member access on a user sum spells its own variants and payload binders in the match template"
+  (input  (do (type P (Mk Int64) (Z)) (def (g (: p P)) (. p x)) (export g)))
+  (error  CDZ0201 (message "a sum's payload is reached by matching its variants") (message "(match <value> ((Mk x0) ") (no-fix)))
+
 ; --- Accessing a field the record does not have is a static type error, not a runtime trap --------
 ; The cases above reject member access on a NON-record (an Int, Bool, Tuple, String) at compile time —
 ; the projection has no defined result, so the compiler rejects rather than emitting a component that

@@ -1357,44 +1357,6 @@ fn a_called_tuple_by_name_access_reports_the_position_message_once_not_a_call_si
 }
 
 #[test]
-fn named_member_access_on_a_sum_points_at_matching_its_variants() {
-    // A SUM value accessed by NAME — `(. o foo)` on an `(Option …)`, `(. p x)` on a user sum — is not a
-    // field read: a sum's payload is reached by MATCHING its variants. It now spells a `(match <value>
-    // …)` template (one arm per variant, payload binders shown) instead of the dead-end "requires a
-    // record" — the sum twin of the tuple-index (M124) / collection-module (M125) redirect.
-    // A prelude `Option` names both variants (`Some` carries one payload, `None` none).
-    let opt = compile_component(&crate::codec::encode(&parse(
-        "(module m (def (g (: o (Option Int64))) (. o foo)) (export g))",
-    )))
-    .expect_err("named access on an Option must reject");
-    assert_eq!(opt.code.as_deref(), Some("CDZ0201"), "got: {}", opt.message);
-    assert!(
-        opt.message
-            .contains("a sum's payload is reached by matching its variants")
-            && opt
-                .message
-                .contains("(match <value> ((Some x0) …) ((None) …))"),
-        "spells the Option match template: {}",
-        opt.message
-    );
-    // A USER sum spells its own variants + payload arities (`Mk` one payload, `Z` none).
-    let user = compile_component(&crate::codec::encode(&parse(
-        "(module m (type P (Mk Int64) (Z)) (def (g (: p P)) (. p x)) (export g))",
-    )))
-    .expect_err("named access on a user sum must reject");
-    assert!(
-        user.message.contains("(match <value> ((Mk x0) …) ((Z) …))"),
-        "spells the user sum's match template with payload binders: {}",
-        user.message
-    );
-    // No mechanical fix (the intended arm bodies are the author's).
-    assert!(
-        opt.fix.is_none() && user.fix.is_none(),
-        "no mechanical fix for a match redirect"
-    );
-}
-
-#[test]
 fn a_misspelled_field_on_a_visible_record_suggests_the_nearest_field() {
     // The record analogue of the unbound-name "did you mean?" — a field typo (`height` → `heigth`)
     // on a compile-time-visible record names the near field AND carries a heuristic fix on the KEY
