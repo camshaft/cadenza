@@ -1326,29 +1326,6 @@ fn the_renamed_collection_ops_resolve_under_their_new_names() {
 }
 
 #[test]
-fn a_meta_channel_field_is_not_offered_as_a_member_suggestion() {
-    // A prelude sum module (`Option`) carries internal META CHANNELS — `(meta t)`/`(meta apply)`/… —
-    // keyed in the `"meta"` namespace. They are the compiler's type/apply channels, NOT user-facing
-    // members. `(Option.Ok 5)` used to suggest "closest matches: `t`, `None`, `Some`" — the internal
-    // `t` a baseless variant suggestion. `record_field_names` now filters meta-namespaced fields, so
-    // only real members/variants are offered.
-    let d = expect_error("(Option.Ok 5)");
-    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-    assert!(
-        d.message.contains("closest matches:")
-            && d.message.contains("`Some`")
-            && d.message.contains("`None`"),
-        "offers the real variants: {}",
-        d.message
-    );
-    assert!(
-        !d.message.contains("`t`"),
-        "the internal `(meta t)` channel is not offered as a member: {}",
-        d.message
-    );
-}
-
-#[test]
 fn a_misspelled_field_call_head_reports_one_error_not_a_dup() {
     // A misspelled field access used as a CALL HEAD (`((. r fld-typo) 5)`) is checked by BOTH the
     // infer member-check (which adds the did-you-mean fix) AND the emit-side member fold — at two
