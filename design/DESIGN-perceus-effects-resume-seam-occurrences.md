@@ -140,6 +140,32 @@ borrow), the Consume is missed → under-dup → UAF. This is the seam to check 
 `binding_escapes_dup_aware`; if it mis-counts, a targeted `Param`/`Captured` consume-on-thread arm is
 the minimal fix (NOT a new global predicate).
 
+**✅ §3 FLAG RESOLVED — VERIFIED against `select/reclaim.rs` 2026-08-30 (tick a69), post-split.** The
+FLAG's "collapses two occurrences" fear does NOT materialize for the `Captured` entry point, because
+Increment A's `collect_captured_escape_dup_sites` (reclaim.rs:1478-1517, LANDED #5926) already runs
+PER-OCCURRENCE and PER-NODE: it collects every `Core::Captured{index}` occurrence (grouped by slot),
+pre-gates on `capture_escapes_via_body(index)`, then for each occurrence calls
+`binding_escapes_dup_aware(db, body, EscapeTarget::Node(occ), false, None)` (line 1512) and inserts
+into the dup-site set ONLY the occurrences that escape. So a capture BOTH projected (borrow) AND
+escaped (consume) — the hczm2 shape, structurally identical to my pass-through FLAG — dups ONLY the
+escaping occurrence; the borrow read is left un-dup'd. No under-dup, no over-dup, NO targeted arm
+needed. The `Core::Captured` arm itself (reclaim.rs:188-192) classifies borrow-vs-escape exactly as §3
+requires: escapes UNLESS `tail_borrowed` (a `Proj`-scalar / `*.len` / borrow-op ancestor).
+
+**⇒ Increment-B dependency NARROWS.** The code's own comment (reclaim.rs:1493-1495) states the ONLY
+case the per-node collector can't yet serve is "a single `Core::Captured` node CONSUMED TWICE" (the
+multiset repr — literally Increment B). But the escaping-continuation reify COPIES the continuation `C`
+per resume (a multi-shot arm splices a FRESH `C` per `(k v)`, reduce.rs:606-614 / `rewrite_resume_to_
+context`), so each resume's captured-state read is a DISTINCT `Core::Captured` node — the
+distinct-node multi-escape case Increment A ALREADY handles. **HYPOTHESIS (empirical census pending a
+free gate): my §2 escaping-continuation `Captured` entry point may need NO new classifier code — the
+effects-reified closures may already flow through `collect_captured_escape_dup_sites` and get correct
+per-escape dups under Increment A.** The genuine Increment-B residual for this slice is only a SHARED
+`Core::Captured` node consumed twice within ONE continuation copy. To confirm: run an escaping-k effects
+case (`crn1`/`(use-k k)` shape) under `--live-objects` and check for 0 (already-reclaimed) vs a leak.
+This narrows what I owe v-memory-safety's inventory — flag it as "partially Increment-A-served, census
+pending" rather than wholesale "resume-seam-pending gated on B" once censused.
+
 ## 4. glb1 = the §2.3 borrowed-N-escapes acceptance case
 
 glb1 (the collapse-continuation join-point duplication) in post-splice Core is a `Core::CallClosure`
@@ -181,8 +207,13 @@ with occurrences."
 
 1. v-memory-safety soundness-reviews §2 (ValueKey mapping) + §3 (borrow/consume verdicts, esp. the
    §3 FLAG pass-through seam) before any emit.
-2. v-effects verifies §3 against `binding_escapes_dup_aware` (which arms classify each seam-node;
-   flag the mis-counted one) and confirms glb1's §4 shape.
-3. v-effects implements the three §2 entry points into `classify_occurrences` + the glb1 acceptance
-   case, feeding v-core-opt a classified slice — NOT touching `select.rs` emit or placement. Lands as
-   part of #5857 Increment C, behind v-core-opt's Increment A + B.
+2. ✅ DONE (a69): v-effects verified §3 against `binding_escapes_dup_aware` (`select/reclaim.rs` post-
+   split) — the `Captured` arm + per-node `collect_captured_escape_dup_sites` already classify + dup
+   the escaping occurrence only; NO targeted arm needed (see §3 FLAG RESOLVED). glb1's §4 `Captured`
+   shape confirmed. Residual: EMPIRICAL census (escaping-k case under `--live-objects`) to confirm the
+   reified closures already flow through the Increment-A collector — pending a free gate slot.
+3. v-effects implements the §2 entry points into `classify_occurrences` + the glb1 acceptance
+   case, feeding v-core-opt a classified slice — NOT touching `select.rs` emit or placement. NOTE the
+   narrowed gate: the `Captured` entry point may be Increment-A-served ALREADY (distinct-node multi-
+   escape); the genuine Increment-B need is only the SHARED-node-consumed-twice residual + the `#st`
+   `PayloadNode` multiset. Lands as part of #5857 Increment C.
