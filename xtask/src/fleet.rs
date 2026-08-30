@@ -10278,10 +10278,21 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     // build — return NoChecks so this tick ENDS (the agent's Bash call returns, the /loop re-fires, the next
     // tick's `sync` REBUILDS xtask + retries the gate). This is the anti-freeze fix: without it, the unbounded
     // wait hung the agent mid-tick forever, blocking every lease fix from propagating (the fleet land-block).
+    // GUIDANCE (concierge standing model 2026-08-30, pr-sync stood down): a NO-CHECKS here means gate-local
+    // could not acquire under load — the big-nix-lock can only run ~cap heavy gate-locals at once, so a
+    // NO-CHECKS is the cap correctly refusing to oversubscribe (NOT a bug, and priority-grant is retired —
+    // it just starved verticals). Do NOT retry gate-local forever. For a VERIFIED critical land, FALL BACK
+    // to --admin-on-verified: confirm the narrow inputs are green (`cargo xtask dev-gate` + a scoped
+    // `cargo xtask gate --files <your>.sexp --target wasm` and/or `cargo test -p <crate>`), then
+    // `gh pr merge --admin`. Otherwise just let the loop re-tick (it may acquire when the lock frees).
     if _lease.timed_out {
         eprintln!(
             "gate-local: could not acquire a check-lease slot within {CHECK_LEASE_WAIT_MAX}s of contention — \
-             NO-CHECKS (not built; retry next tick). Yielding so the loop can re-tick + sync rather than hang."
+             NO-CHECKS (not built). Under load the big-nix-lock runs only ~cap heavy gate-locals at once, so \
+             this is the cap refusing to oversubscribe, not a failure. Do NOT retry gate-local forever: for a \
+             VERIFIED critical land, FALL BACK to --admin-on-verified — dev-gate + a scoped `gate --files \
+             <your>.sexp --target wasm` (and/or `cargo test -p <crate>`) green, then `gh pr merge --admin`. \
+             Otherwise let the /loop re-tick + sync (it may acquire once the lock frees)."
         );
         return CiVerdict::NoChecks;
     }
