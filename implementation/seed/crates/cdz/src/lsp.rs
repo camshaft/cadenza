@@ -1617,9 +1617,14 @@ fn hover_at(text: &str, is_ml: bool, pos: Position) -> Option<Hover> {
     if ty.is_empty() || ty == "unknown" {
         return None;
     }
+    // The hovered node's documentation, decoded from the structured binary-AST wire — only a `Doc`
+    // outcome yields hover prose (a no-answer verdict → no doc section); ZERO string parsing.
     let doc = compiled
         .artifact(cadenza_compile_abi::sidecar::KIND_DOC)
-        .map(|b| String::from_utf8_lossy(b).trim().to_string())
+        .and_then(|b| match cadenza_compile_abi::decode_doc(b) {
+            cadenza_compile_abi::DocAnswer::Doc(text) => Some(text.trim().to_string()),
+            _ => None,
+        })
         .filter(|d| !d.is_empty());
     // The hovered node's source range, so the editor underlines exactly the sub-expression it typed.
     let range = spans
@@ -1664,8 +1669,8 @@ fn run_query_text(
 }
 
 /// The RAW artifact bytes of a single sidecar query (the binary-AST variant of [`run_query_text`]) — for a
-/// result whose wire is canonical binary AST (e.g. `KIND_DIAGNOSTICS` → `decode_diagnostics`), not text.
-/// Same `run_sidecar` chokepoint (delegates under `!standalone`).
+/// result whose wire is canonical binary AST (e.g. `KIND_DIAGNOSTICS` → `decode_diagnostics`,
+/// `KIND_USES` → `decode_uses`), not text. Same `run_sidecar` chokepoint (delegates under `!standalone`).
 fn run_query_bytes(
     arenas: &cadenza_syntax::Arenas,
     query: cadenza_compile_abi::sidecar::Query,
@@ -1684,6 +1689,19 @@ fn fix_kind_str(kind: cadenza_compile_abi::FixKind) -> &'static str {
         cadenza_compile_abi::FixKind::Wrap => "wrap",
         cadenza_compile_abi::FixKind::Delete => "delete",
     }
+}
+
+/// The decoded `Symbols` outline records `(name, kind, name-node-id)` for `arenas` — the `Symbols` query
+/// answer on the canonical binary-AST wire (`symbols_wire`) run through the shared codec, for the LSP
+/// handlers that read the document outline. ZERO string parsing.
+fn query_symbols(arenas: &cadenza_syntax::Arenas) -> Vec<(String, String, u32)> {
+    run_query_bytes(
+        arenas,
+        cadenza_compile_abi::sidecar::Query::Symbols,
+        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
+    )
+    .map(|b| cadenza_compile_abi::decode_symbols(&b))
+    .unwrap_or_default()
 }
 
 /// The `Location` (in `uri`) of a node id in `spans`, or `None` if the node has no recorded span (a
@@ -1708,13 +1726,14 @@ fn definition_at(text: &str, is_ml: bool, pos: Position, uri: &Uri) -> Option<Lo
     let (arenas, spans, _errors) = parse_surface(text, is_ml).ok()?;
     let byte = position_to_byte(text, pos);
     let node = spans.node_at_offset(byte)?;
-    let answer = run_query_text(
+    let bytes = run_query_bytes(
         &arenas,
         cadenza_compile_abi::sidecar::Query::ResolveOf { node: node.0 },
         cadenza_compile_abi::sidecar::KIND_RESOLVE,
     )?;
-    // The `ResolveOf` answer is the defining occurrence's node id (empty = not a navigable reference).
-    let target: u32 = answer.trim().parse().ok()?;
+    // The `ResolveOf` answer is the defining occurrence's node id (none = not a navigable reference),
+    // decoded from the binary-AST wire — ZERO string parsing.
+    let target = cadenza_compile_abi::decode_resolve(&bytes)?;
     node_location(text, &spans, uri, target)
 }
 
@@ -1857,7 +1876,8 @@ fn package_definition_at(
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
     let bytes = compiled.artifact(cadenza_compile_abi::sidecar::KIND_RESOLVE)?;
-    let target: u32 = String::from_utf8_lossy(bytes).trim().parse().ok()?;
+    // The defining occurrence's global node id, decoded from the binary-AST wire — ZERO string parsing.
+    let target = cadenza_compile_abi::decode_resolve(bytes)?;
 
     // Demux the global target to its owning file, then a Location in that file (its URI + local span).
     let link_map = compiled
@@ -1933,9 +1953,14 @@ fn package_hover_at(
     if ty.is_empty() || ty == "unknown" {
         return None; // let the single-buffer path try (or show nothing)
     }
+    // The hovered node's documentation, decoded from the structured binary-AST wire — only a `Doc`
+    // outcome yields hover prose (a no-answer verdict → no doc section); ZERO string parsing.
     let doc = compiled
         .artifact(cadenza_compile_abi::sidecar::KIND_DOC)
-        .map(|b| String::from_utf8_lossy(b).trim().to_string())
+        .and_then(|b| match cadenza_compile_abi::decode_doc(b) {
+            cadenza_compile_abi::DocAnswer::Doc(text) => Some(text.trim().to_string()),
+            _ => None,
+        })
         .filter(|d| !d.is_empty());
     // Hover range = the cursor node's span in the ENTRY file (base 0, so the entry spans apply directly).
     let range = entry_spans
@@ -2030,12 +2055,12 @@ fn references_at(
     // top-level symbol: either it IS that symbol's declaration name occurrence, or it RESOLVES
     // (`ResolveOf`) to it. Otherwise return empty (a node-keyed local-uses query is a later increment).
     let top_node = top_level_symbol_node(&arenas, &name);
-    let resolves_to = run_query_text(
+    let resolves_to = run_query_bytes(
         &arenas,
         cadenza_compile_abi::sidecar::Query::ResolveOf { node: node.0 },
         cadenza_compile_abi::sidecar::KIND_RESOLVE,
     )
-    .and_then(|a| a.trim().parse::<u32>().ok());
+    .and_then(|b| cadenza_compile_abi::decode_resolve(&b));
     let cursor_is_top_level =
         top_node == Some(node.0) || (top_node.is_some() && resolves_to == top_node);
     if !cursor_is_top_level {
@@ -2043,15 +2068,13 @@ fn references_at(
     }
 
     let mut locations: Vec<Location> = Vec::new();
-    if let Some(answer) = run_query_text(
+    if let Some(bytes) = run_query_bytes(
         &arenas,
         cadenza_compile_abi::sidecar::Query::UsesOf { name: name.clone() },
         cadenza_compile_abi::sidecar::KIND_USES,
     ) {
-        for line in answer.lines() {
-            if let Ok(id) = line.trim().parse::<u32>()
-                && let Some(loc) = node_location(text, &spans, uri, id)
-            {
+        for id in cadenza_compile_abi::decode_uses(&bytes) {
+            if let Some(loc) = node_location(text, &spans, uri, id) {
                 locations.push(loc);
             }
         }
@@ -2201,7 +2224,7 @@ fn incoming_calls_for(
         .map(|(n, k, _)| (n, k))
         .collect();
     // Each reference's range, from `UsesOf` (node-id-keyed → source range).
-    let Some(answer) = run_query_text(
+    let Some(bytes) = run_query_bytes(
         &arenas,
         cadenza_compile_abi::sidecar::Query::UsesOf {
             name: name.to_string(),
@@ -2214,10 +2237,7 @@ fn incoming_calls_for(
     let mut order: Vec<String> = Vec::new();
     let mut by_caller: std::collections::HashMap<String, Vec<Range>> =
         std::collections::HashMap::new();
-    for line in answer.lines() {
-        let Ok(id) = line.trim().parse::<u32>() else {
-            continue;
-        };
+    for id in cadenza_compile_abi::decode_uses(&bytes) {
         let Some(span) = spans.get(cadenza_syntax::StructId(id)) else {
             continue;
         };
@@ -2371,22 +2391,11 @@ fn range_contains(range: &Range, pos: Position) -> bool {
 /// the same authority `Symbols`/`Exports` use, so a name that names no top-level declaration (a purely
 /// local binder) yields `None`, which is exactly what the shadowing guard needs.
 fn top_level_symbol_node(arenas: &cadenza_syntax::Arenas, name: &str) -> Option<u32> {
-    let answer = run_query_text(
-        arenas,
-        cadenza_compile_abi::sidecar::Query::Symbols,
-        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
-    )?;
-    for line in answer.lines() {
-        // `name<TAB>kind<TAB>name-node-id`
-        let mut cols = line.splitn(3, '\t');
-        if let (Some(n), Some(_kind), Some(node)) = (cols.next(), cols.next(), cols.next())
-            && n == name
-            && let Ok(id) = node.trim().parse::<u32>()
-        {
-            return Some(id);
-        }
-    }
-    None
+    // The name-node-id of the top-level declaration named `name`, from the binary-AST `Symbols` outline.
+    query_symbols(arenas)
+        .into_iter()
+        .find(|(n, _, _)| n == name)
+        .map(|(_, _, node)| node)
 }
 
 /// Cross-file find-references: every occurrence of the TOP-LEVEL name under the cursor, ACROSS the
@@ -2451,11 +2460,9 @@ fn package_references_at(
     ));
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
-    let artifact_text = |kind: &str| -> Option<String> {
-        compiled
-            .artifact(kind)
-            .map(|b| String::from_utf8_lossy(b).into_owned())
-    };
+    // Read a query answer's RAW artifact bytes off the package compile, decoded via the shared
+    // binary-AST codec (`KIND_SYMBOLS`/`KIND_RESOLVE`) — ZERO string parsing.
+    let artifact_bytes = |kind: &str| -> Option<&[u8]> { compiled.artifact(kind) };
 
     // SHADOWING GUARD (package flavor). `UsesOf` is NAME-keyed, so a LOCAL binder shadowing a top-level
     // name would leak the top-level's refs. Proceed only when the cursor genuinely belongs to a
@@ -2471,18 +2478,15 @@ fn package_references_at(
     // the top-level's uses. Requiring the resolve TARGET to be a `Symbols` node is what distinguishes a
     // genuine top-level from a shadowing local. `symbols_lines` is parsed once and reused for the
     // declaration-node lookup below (avoiding a separate entry-only `Symbols` compile).
-    let symbols_answer =
-        artifact_text(cadenza_compile_abi::sidecar::KIND_SYMBOLS).unwrap_or_default();
-    let symbol_nodes: std::collections::HashSet<u32> = symbols_answer
-        .lines()
-        .filter_map(|line| {
-            line.rsplit('\t')
-                .next()
-                .and_then(|c| c.trim().parse::<u32>().ok())
-        })
-        .collect();
-    let resolves_to = artifact_text(cadenza_compile_abi::sidecar::KIND_RESOLVE)
-        .and_then(|a| a.trim().parse::<u32>().ok());
+    // Decode the package `Symbols` outline ONCE (reused for the symbol-node set AND the declaration-node
+    // lookup below — no extra compile).
+    let symbols = artifact_bytes(cadenza_compile_abi::sidecar::KIND_SYMBOLS)
+        .map(cadenza_compile_abi::decode_symbols)
+        .unwrap_or_default();
+    let symbol_nodes: std::collections::HashSet<u32> =
+        symbols.iter().map(|(_, _, node)| *node).collect();
+    let resolves_to = artifact_bytes(cadenza_compile_abi::sidecar::KIND_RESOLVE)
+        .and_then(cadenza_compile_abi::decode_resolve);
     // The cursor belongs to a top-level symbol iff it IS a `Symbols` name-node (a declaration occurrence,
     // entry-local == global at base 0) or RESOLVES to one (a use of a top-level/imported name).
     let cursor_is_symbol = symbol_nodes.contains(&cursor.0);
@@ -2493,13 +2497,10 @@ fn package_references_at(
     // The declaration node named `name` for the include-declaration fallback below — read from the SAME
     // package `Symbols` answer (its GLOBAL id, whichever file the def lives in), so no extra compile.
     // `None` when `name` names no top-level declaration (then `resolves_to` carries the target).
-    let top_node = symbols_answer.lines().find_map(|line| {
-        let mut cols = line.splitn(3, '\t');
-        match (cols.next(), cols.next(), cols.next()) {
-            (Some(n), Some(_kind), Some(node)) if n == name => node.trim().parse::<u32>().ok(),
-            _ => None,
-        }
-    });
+    let top_node = symbols
+        .iter()
+        .find(|(n, _, _)| n == &name)
+        .map(|(_, _, node)| *node);
 
     let files_ref = &files;
     let mut out: Vec<Location> = Vec::new();
@@ -2529,10 +2530,8 @@ fn package_references_at(
         })
     };
     if let Some(bytes) = compiled.artifact(cadenza_compile_abi::sidecar::KIND_USES) {
-        for line in String::from_utf8_lossy(bytes).lines() {
-            if let Ok(global) = line.trim().parse::<u32>()
-                && let Some(loc) = loc_of_global(global)
-            {
+        for global in cadenza_compile_abi::decode_uses(bytes) {
+            if let Some(loc) = loc_of_global(global) {
                 out.push(loc);
             }
         }
@@ -2586,26 +2585,17 @@ fn fill_completions_from(
         return;
     };
 
-    // Top-level declarations (name<TAB>kind<TAB>node) — kind ∈ value/function/type/effect/module.
-    if let Some(answer) = run_query_text(
-        &arenas,
-        cadenza_compile_abi::sidecar::Query::Symbols,
-        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
-    ) {
-        for line in answer.lines() {
-            let mut cols = line.splitn(3, '\t');
-            if let (Some(name), Some(kind)) = (cols.next(), cols.next()) {
-                items.insert(
-                    name.to_string(),
-                    CompletionItem {
-                        label: name.to_string(),
-                        kind: Some(symbol_kind_to_completion_kind(kind)),
-                        detail: Some(kind.to_string()),
-                        ..Default::default()
-                    },
-                );
-            }
-        }
+    // Top-level declarations — kind ∈ value/function/type/effect/module (from the binary-AST outline).
+    for (name, kind, _) in query_symbols(&arenas) {
+        items.insert(
+            name.clone(),
+            CompletionItem {
+                label: name.clone(),
+                kind: Some(symbol_kind_to_completion_kind(&kind)),
+                detail: Some(kind),
+                ..Default::default()
+            },
+        );
     }
 
     // Local bindings in scope at the cursor (name<TAB>type<TAB>binder) — overwrite to shadow a top-level.
@@ -2670,11 +2660,10 @@ fn package_completions_at(
             cadenza_compile_abi::sidecar::Query::Exports,
             cadenza_compile_abi::sidecar::KIND_EXPORTS,
         );
-        let kinds = query_columns(
-            &lib.arenas,
-            cadenza_compile_abi::sidecar::Query::Symbols,
-            cadenza_compile_abi::sidecar::KIND_SYMBOLS,
-        );
+        let kinds: std::collections::HashMap<String, String> = query_symbols(&lib.arenas)
+            .into_iter()
+            .map(|(n, k, _)| (n, k))
+            .collect();
         for name in imported {
             // A local binder of the same spelling already won — don't shadow it with the import.
             if items.contains_key(&name) {
@@ -2792,21 +2781,11 @@ fn code_lenses_for(text: &str, is_ml: bool) -> Vec<CodeLens> {
     let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
         return Vec::new();
     };
-    // The top-level declaration names + their name-node ids (for lens placement) — the `Symbols` query.
-    let Some(symbols) = run_query_text(
-        &arenas,
-        cadenza_compile_abi::sidecar::Query::Symbols,
-        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
-    ) else {
-        return Vec::new();
-    };
-    let names: Vec<(String, u32)> = symbols
-        .lines()
-        .filter_map(|line| {
-            let mut cols = line.splitn(3, '\t');
-            let (name, _kind, node) = (cols.next()?, cols.next()?, cols.next()?);
-            Some((name.to_string(), node.trim().parse::<u32>().ok()?))
-        })
+    // The top-level declaration names + their name-node ids (for lens placement) — the `Symbols` query,
+    // decoded from the binary-AST outline.
+    let names: Vec<(String, u32)> = query_symbols(&arenas)
+        .into_iter()
+        .map(|(name, _kind, node)| (name, node))
         .collect();
     if names.is_empty() {
         return Vec::new();
@@ -2942,30 +2921,16 @@ fn top_level_symbols_of(text: &str, is_ml: bool) -> Vec<(String, String, Range)>
     let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
         return Vec::new();
     };
-    let Some(answer) = run_query_text(
-        &arenas,
-        cadenza_compile_abi::sidecar::Query::Symbols,
-        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
-    ) else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
-    for line in answer.lines() {
-        // `name<TAB>kind<TAB>name-node-id`
-        let mut cols = line.splitn(3, '\t');
-        let (Some(name), Some(kind), Some(node)) = (cols.next(), cols.next(), cols.next()) else {
-            continue;
-        };
-        let Some(range) = node
-            .trim()
-            .parse::<u32>()
-            .ok()
-            .and_then(|id| spans.get(cadenza_syntax::StructId(id)))
+    for (name, kind, node) in query_symbols(&arenas) {
+        // Map the name-node id to its source range; a row whose node has no span contributes nothing.
+        let Some(range) = spans
+            .get(cadenza_syntax::StructId(node))
             .map(|s| byte_range_to_range(text, s.start, s.end))
         else {
             continue;
         };
-        out.push((name.to_string(), kind.to_string(), range));
+        out.push((name, kind, range));
     }
     out
 }
@@ -3776,21 +3741,14 @@ fn semantic_tokens_for(text: &str, is_ml: bool) -> Vec<SemanticToken> {
     let Some(bytes) = compiled.artifact(cadenza_compile_abi::sidecar::KIND_HIGHLIGHT) else {
         return Vec::new();
     };
-    let hl_text = String::from_utf8_lossy(bytes);
 
-    // Gather each classified leaf as an absolute (line, start-char, length, token-type) tuple. The
-    // Highlight query already emits leaves in ascending node-id order, but node id is not source order,
-    // so sort by (line, start) before delta-encoding (LSP requires ascending position).
+    // Gather each classified leaf as an absolute (line, start-char, length, token-type) tuple, decoded
+    // from the canonical binary-AST wire (`highlight_wire`, ZERO string parsing). The Highlight query
+    // already emits leaves in ascending node-id order, but node id is not source order, so sort by
+    // (line, start) before delta-encoding (LSP requires ascending position).
     let mut abs: Vec<(u32, u32, u32, u32)> = Vec::new();
-    for line in hl_text.lines() {
-        let mut cols = line.splitn(2, '\t');
-        let (Some(node), Some(kind)) = (cols.next(), cols.next()) else {
-            continue;
-        };
-        let Some(token_type) = highlight_kind_to_token_index(kind) else {
-            continue;
-        };
-        let Some(id) = node.parse::<u32>().ok() else {
+    for (id, kind) in cadenza_compile_abi::decode_highlight(bytes) {
+        let Some(token_type) = highlight_kind_to_token_index(&kind) else {
             continue;
         };
         let Some(span) = spans.get(cadenza_syntax::StructId(id)) else {

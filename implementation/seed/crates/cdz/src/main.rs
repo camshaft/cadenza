@@ -5252,55 +5252,51 @@ fn run_doc(args: &DocArgs) -> ExitCode {
             name: args.name.clone(),
         }),
     );
-    match out.artifact(cadenza_compile_abi::sidecar::KIND_DOC) {
-        Some(bytes) => {
-            let text = String::from_utf8_lossy(bytes);
-            // The `DocOf` query is TOTAL — it returns a doc artifact for THREE outcomes: the doc text, a
-            // "no documentation for `X`" line (a REAL definition that carries no doc), and a "no such
-            // definition `X`" line (the name resolves to NOTHING — a typo). The first two are a SUCCESS
-            // (`X` exists; asking for its doc is a legitimate answer), but an unresolvable name is a
-            // FAILURE — a caller/script should tell "you misspelled the name" from "this exists but is
-            // undocumented". `is_no_such_definition` matches the exact sentinel for the queried name (not a
-            // loose prefix on the doc prose — the pr467 brittleness fix, shared with `cdz type`).
-            let no_such = is_no_such_definition(&text, &args.name);
-            // The undocumented-but-real sentinel is the compiler's exact `no documentation for `X`` line
-            // (rcdzc `DocOf`), matched precisely (not a loose prefix) so a real doc that happens to start
-            // with those words isn't misread.
-            let undocumented = text.trim() == format!("no documentation for `{}`", args.name);
-            if args.json {
-                use cadenza_syntax::query::json;
-                let mut obj = json::Object::new();
-                obj.string("name", &args.name);
-                obj.raw("exists", if no_such { "false" } else { "true" });
-                obj.raw(
-                    "documented",
-                    if !no_such && !undocumented {
-                        "true"
-                    } else {
-                        "false"
-                    },
-                );
-                // `doc` is the actual doc text only when documented; null for the two "no doc" outcomes,
-                // so a consumer never mistakes a sentinel line for real documentation.
-                if !no_such && !undocumented {
-                    obj.string("doc", text.trim_end());
-                } else {
-                    obj.raw("doc", "null");
-                }
-                println!("{}", obj.finish());
-            } else {
-                println!("{text}");
-            }
-            if no_such {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            }
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_DOC) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    use cadenza_compile_abi::DocAnswer;
+    // The `DocOf` query is TOTAL, answering with a STRUCTURED outcome (`DocAnswer`) — the doc text, an
+    // `Undocumented` verdict (a REAL definition that carries no doc), or a `NoSuchDef` verdict (the name
+    // resolves to NOTHING — a typo, with an optional suggestion). The first two are a SUCCESS (`X` exists;
+    // asking for its doc is a legitimate answer), but an unresolvable name is a FAILURE — a caller/script
+    // tells "you misspelled the name" from "this exists but is undocumented" off the VARIANT, not a
+    // sentinel string. The user-facing message wording lives HERE (the consumer holds the queried name),
+    // so no post-decode parsing (operator P0 seq-284/307-308).
+    let answer = cadenza_compile_abi::decode_doc(bytes);
+    let name = &args.name;
+    let no_such = matches!(answer, DocAnswer::NoSuchDef { .. });
+    let documented = matches!(answer, DocAnswer::Doc(_));
+    let human = match &answer {
+        DocAnswer::Doc(text) => text.clone(),
+        DocAnswer::Undocumented => format!("no documentation for `{name}`"),
+        DocAnswer::NoSuchDef {
+            suggestion: Some(near),
+        } => format!("no such definition `{name}` — did you mean `{near}`?"),
+        DocAnswer::NoSuchDef { suggestion: None } => format!("no such definition `{name}`"),
+    };
+    if args.json {
+        use cadenza_syntax::query::json;
+        let mut obj = json::Object::new();
+        obj.string("name", name);
+        obj.raw("exists", if no_such { "false" } else { "true" });
+        obj.raw("documented", if documented { "true" } else { "false" });
+        // `doc` is the actual doc text only when documented; null for the two "no doc" outcomes, so a
+        // consumer never mistakes a sentinel for real documentation.
+        if let DocAnswer::Doc(text) = &answer {
+            obj.string("doc", text.trim_end());
+        } else {
+            obj.raw("doc", "null");
         }
-        None => {
-            report_errors(&out);
-            ExitCode::FAILURE
-        }
+        println!("{}", obj.finish());
+    } else {
+        println!("{human}");
+    }
+    if no_such {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
@@ -5393,12 +5389,11 @@ fn run_doc_at(args: &DocAtOffsetArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let doc = String::from_utf8_lossy(bytes);
-    // A total query: an empty answer means the node documents nothing — say so rather than print a blank.
-    if doc.trim().is_empty() {
-        println!("no documentation at byte offset {}", args.offset);
-    } else {
-        println!("{doc}");
+    // A total query: `Doc(text)` prints the documentation; any no-answer verdict (the node documents
+    // nothing) says so rather than print a blank — off the STRUCTURED outcome, no string-matching.
+    match cadenza_compile_abi::decode_doc(bytes) {
+        cadenza_compile_abi::DocAnswer::Doc(text) if !text.trim().is_empty() => println!("{text}"),
+        _ => println!("no documentation at byte offset {}", args.offset),
     }
     ExitCode::SUCCESS
 }
@@ -5418,26 +5413,10 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
-    // Each line is a bare reference node-id. A non-empty line that is NOT an integer is a sidecar
-    // format skew — flag it (fail at the end) rather than silently dropping the reference (PR #525's
-    // silent-drop class); a blank line is skipped.
-    let mut malformed = false;
-    let mut ids: Vec<u32> = Vec::new();
-    for line in text.lines() {
-        let t = line.trim();
-        if t.is_empty() {
-            continue;
-        }
-        match t.parse::<u32>() {
-            Ok(id) => ids.push(id),
-            Err(_) => {
-                report_malformed_query_row("uses", line);
-                malformed = true;
-            }
-        }
-    }
-    if ids.is_empty() && !malformed {
+    // The reference node ids, decoded from the canonical binary-AST wire (`uses_wire`) — the consumer
+    // does ZERO string parsing; a malformed/wrong-shape entry is dropped by the total codec.
+    let ids = cadenza_compile_abi::decode_uses(bytes);
+    if ids.is_empty() {
         eprintln!("{PROG}: no references to `{}` in {}", args.name, args.file);
         return ExitCode::SUCCESS;
     }
@@ -5472,11 +5451,7 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
             }
         }
     }
-    if malformed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::SUCCESS
 }
 
 /// Whether an error diagnostic with code `code` is ABSENT from `text` when parsed as `is_ml` (else
@@ -6364,9 +6339,9 @@ fn run_def(args: &DefArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
-    // The result is the defining occurrence's node id (empty = not a navigable reference).
-    let Some(target) = text.trim().parse::<u32>().ok() else {
+    // The defining occurrence's node id, decoded from the binary-AST wire (`resolve_wire`) — none = not
+    // a navigable reference; the consumer does ZERO string parsing.
+    let Some(target) = cadenza_compile_abi::decode_resolve(bytes) else {
         eprintln!(
             "{PROG}: no definition for the token at byte offset {} in {}",
             args.offset, args.file
@@ -6559,38 +6534,22 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
-    if text.trim().is_empty() {
+    // The outline records `(name, kind, name-node-id)`, decoded from the canonical binary-AST wire
+    // (`symbols_wire`) — the consumer does ZERO string parsing.
+    let symbols = cadenza_compile_abi::decode_symbols(bytes);
+    if symbols.is_empty() {
         eprintln!("{PROG}: {} declares nothing", args.file);
         return ExitCode::SUCCESS;
     }
-    // Each line is `name<TAB>kind<TAB>name-node-id`. One line-start index (binary-searched line:col) so a
-    // wide declaration list stays linear (the same swap `exports`/`highlight` carry). Both output shapes —
-    // the human `file:line:col: kind name` and the `--json` object — are computed from the SAME resolved
-    // `(name, kind, line, col)` so they can't drift.
+    // One line-start index (binary-searched line:col) so a wide declaration list stays linear (the same
+    // swap `exports`/`highlight` carry). Both output shapes — the human `file:line:col: kind name` and the
+    // `--json` object — are computed from the SAME resolved `(name, kind, line, col)` so they can't drift.
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
-    let mut malformed = false;
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let mut cols = line.splitn(3, '\t');
-        let (name, kind, node) = match (cols.next(), cols.next(), cols.next()) {
-            (Some(n), Some(k), Some(d)) => (n, k, d),
-            // A row that isn't the expected `name<TAB>kind<TAB>node` shape is a sidecar format skew — fail
-            // loudly rather than silently drop the symbol (PR #525's silent-drop class).
-            _ => {
-                report_malformed_query_row("symbols", line);
-                malformed = true;
-                continue;
-            }
-        };
+    for (name, kind, node) in symbols {
         // Resolve the name-node id to a `line:col` (or `None` if the span table has no entry — then the
         // human form prints just the file and the JSON omits line/col).
-        let line_col = node
-            .parse::<u32>()
-            .ok()
-            .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
+        let line_col = spans
+            .get(cadenza_syntax::StructId(node))
             .map(|span| index.line_col(&source, span.start));
         if args.json {
             use cadenza_syntax::query::json;
@@ -6600,8 +6559,8 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
                 obj.raw("line", &l.to_string());
                 obj.raw("col", &c.to_string());
             }
-            obj.string("kind", kind);
-            obj.string("name", name);
+            obj.string("kind", &kind);
+            obj.string("name", &name);
             println!("{}", obj.finish());
         } else {
             let loc = match line_col {
@@ -6611,11 +6570,7 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
             println!("{loc}: {kind} {name}");
         }
     }
-    if malformed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::SUCCESS
 }
 
 /// `cdz param-manifest FILE` — the `@param` WIDGET MANIFEST: one record per `@param(widget: …) name : Type`
@@ -6935,35 +6890,18 @@ fn run_highlight(args: &HighlightArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
     // ONE line-start index over the source, so each token's line:col is a binary search, not a from-start
     // newline scan — `highlight` emits a token for EVERY node (a whole-file classify), and the per-token
     // from-start `line_col` made it O(tokens × source_len) = O(N²) (a 6400-def file = 5.1s, 99.7% in
     // `line_col`). With the index it is linear. (The fixes-8-11 pattern — the same swap `uses`/`scope`
     // already carry.)
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
-    // Each line is `node-id<TAB>kind`. Map the node to a `file:line:col`, skipping a span-less node (so
-    // every emitted token — human OR `--json` — carries a real position; no raw-id fallback here). Both
-    // output shapes are computed from the SAME resolved `(kind, line, col)` so they can't drift.
-    let mut malformed = false;
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let mut cols = line.splitn(2, '\t');
-        let (node, kind) = match (cols.next(), cols.next()) {
-            (Some(n), Some(k)) => (n, k),
-            _ => {
-                report_malformed_query_row("highlight", line);
-                malformed = true;
-                continue;
-            }
-        };
-        if let Some(span) = node
-            .parse::<u32>()
-            .ok()
-            .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
-        {
+    // Each `(node-id, kind)` pair, decoded from the canonical binary-AST wire (`highlight_wire`, ZERO
+    // string parsing). Map the node to a `file:line:col`, skipping a span-less node (so every emitted
+    // token — human OR `--json` — carries a real position; no raw-id fallback here). Both output shapes
+    // are computed from the SAME resolved `(kind, line, col)` so they can't drift.
+    for (node, kind) in cadenza_compile_abi::decode_highlight(bytes) {
+        if let Some(span) = spans.get(cadenza_syntax::StructId(node)) {
             let (l, c) = index.line_col(&source, span.start);
             if args.json {
                 use cadenza_syntax::query::json;
@@ -6971,18 +6909,14 @@ fn run_highlight(args: &HighlightArgs) -> ExitCode {
                 obj.string("file", &args.file);
                 obj.raw("line", &l.to_string());
                 obj.raw("col", &c.to_string());
-                obj.string("kind", kind);
+                obj.string("kind", &kind);
                 println!("{}", obj.finish());
             } else {
                 println!("{}:{l}:{c}: {kind}", args.file);
             }
         }
     }
-    if malformed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::SUCCESS
 }
 
 // ── shared plumbing ────────────────────────────────────────────────────────────────────────────────

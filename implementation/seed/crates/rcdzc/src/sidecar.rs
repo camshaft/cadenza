@@ -70,6 +70,11 @@ pub use cadenza_compile_abi::sidecar::{
     KIND_TYPE_INFO, KIND_USES,
 };
 
+// The binary-AST query-answer codecs (per-KIND `*_wire` modules in `cadenza-compile-abi`) re-exported
+// so a consumer that depends only on `rcdzc` (e.g. `cdz-wasm`) can decode via `rcdzc::sidecar::…`
+// without a direct `cadenza-compile-abi` dep — the same copy the producer above encodes with.
+pub use cadenza_compile_abi::{decode_highlight, encode_highlight};
+
 // The `Request` (materialize an output column) + `Query` (read a fact column) enums that make up one
 // sidecar request list now live in the shared `cadenza-compile-abi` crate — the compile-boundary
 // contract types `cdz` and `rcdzc` agree on. Re-exported here so `crate::sidecar::Request`/`::Query`
@@ -155,18 +160,16 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             }
         }
         Query::UsesOf { name } => {
-            let uses = uses_of(db, name);
-            // One node index per line, in ascending id order — the deterministic order the columns
-            // model requires (a query answer is a function of the program, not of traversal order).
-            let mut text = String::new();
-            for id in uses {
-                text.push_str(&id.0.to_string());
-                text.push('\n');
-            }
+            // The reference node ids, ascending — the deterministic order the columns model requires
+            // (a query answer is a function of the program, not of traversal order). The wire is
+            // canonical BINARY AST (`uses_wire`, operator P0 seq-284/307-308: no bespoke TAB/newline
+            // text), a root list of `Ast.Int` node-id leaves the `cdz` consumers decode via the shared
+            // codec — never a string split.
+            let ids: Vec<u32> = uses_of(db, name).into_iter().map(|id| id.0).collect();
             QueryResult {
                 kind: KIND_USES,
                 name: name.clone(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_uses(&ids),
             }
         }
         Query::TypeAt { node } => {
@@ -226,7 +229,7 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                     })
                     .unwrap_or(target)
             };
-            let mut text = String::new();
+            let mut resolved: Option<u32> = None;
             if db.is_user_node(id) {
                 let target = match crate::resolve::resolved_of(db, id) {
                     Resolved::Ref { value } => Some(value),
@@ -234,13 +237,16 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                     _ => None,
                 };
                 if let Some(target) = target {
-                    text = format!("{}\n", name_occ_of_def_body(db, target).0);
+                    resolved = Some(name_occ_of_def_body(db, target).0);
                 }
             }
+            // The defining occurrence's node id, or none — canonical BINARY AST (`resolve_wire`,
+            // operator P0 seq-284/307-308: no bespoke text), a root list of zero/one `Ast.Int` the `cdz`
+            // consumers decode via the shared codec, never a string parse.
             QueryResult {
                 kind: KIND_RESOLVE,
                 name: node.to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_resolve(resolved),
             }
         }
         Query::ScopeAt { node } => {
@@ -392,20 +398,23 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             // itself a token (its head/children are), so only leaves are emitted. Classification reads
             // the resolved column + the meta channels a value already carries (see `classify_highlight`).
             let node_count = db.ast.structure.len();
-            let mut text = String::new();
+            let mut tokens: Vec<(u32, &str)> = Vec::new();
             for i in 0..node_count {
                 let id = StructId(i as u32);
                 if !db.is_user_node(id) {
                     continue;
                 }
                 if let Some(kind) = classify_highlight(db, id) {
-                    text.push_str(&format!("{}\t{}\n", id.0, kind.as_str()));
+                    tokens.push((id.0, kind.as_str()));
                 }
             }
+            // Each classified leaf as a `(node-id, kind)` pair — canonical BINARY AST (`highlight_wire`,
+            // operator P0 seq-284/307-308: no bespoke TAB/newline text), a root list of `(Int Str)` forms
+            // the `cdz`/`cdz-wasm` consumers decode via the shared codec, never a string split.
             QueryResult {
                 kind: KIND_HIGHLIGHT,
                 name: "highlight".to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_highlight(&tokens),
             }
         }
         Query::DocOf { name } => {
@@ -420,22 +429,24 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             // but carries no doc → "no documentation for `X`"; a name that refers to NOTHING → "no such
             // definition `X`". A cdz-side pre-check can't draw this line (it also documents built-ins that
             // aren't in the file's `Symbols`), but the query knows the `Db` + prelude + keyword tables.
-            let text = match doc_of_name(db, name) {
-                Some(doc) => doc,
-                None if name_is_known(db, name) => format!("no documentation for `{name}`"),
-                // Unresolvable — a typo. Offer a "did you mean?" over the DOCUMENTABLE names the query
-                // knows (user defs + built-in prelude bindings), so the answer is actionable like the
-                // compiler's own unbound-name diagnostics (`suggest::nearest`, its edit-distance +
-                // 1-char/empty guards). No suggestion when nothing is close enough.
-                None => match nearest_known_name(db, name) {
-                    Some(near) => format!("no such definition `{name}` — did you mean `{near}`?"),
-                    None => format!("no such definition `{name}`"),
+            // A STRUCTURED tagged answer (`doc_wire::DocAnswer`), NOT prose the consumer must string-match
+            // (operator P0 seq-284/307-308: no discriminator carried in text). The user-facing wording
+            // (`no documentation for `X``, `no such definition `X` — did you mean `Y`?`) lives on the
+            // consumer, which holds the queried name; here we carry only the outcome + the optional
+            // suggestion (over the DOCUMENTABLE names the query knows — user defs + built-in prelude
+            // bindings, via `suggest::nearest`'s edit-distance + 1-char/empty guards; `None` when nothing
+            // is close enough).
+            let answer = match doc_of_name(db, name) {
+                Some(doc) => cadenza_compile_abi::DocAnswer::Doc(doc),
+                None if name_is_known(db, name) => cadenza_compile_abi::DocAnswer::Undocumented,
+                None => cadenza_compile_abi::DocAnswer::NoSuchDef {
+                    suggestion: nearest_known_name(db, name),
                 },
             };
             QueryResult {
                 kind: KIND_DOC,
                 name: name.clone(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_doc(&answer),
             }
         }
         Query::DocAt { node } => {
@@ -444,11 +455,16 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             // signature occurrence; its `(doc "…")` text is read from the doc column. TOTAL: a node that
             // does not reach a documented definition yields the empty result (no line).
             let id = StructId(*node);
-            let text = doc_at_node(db, id).unwrap_or_default();
+            // Structured (`doc_wire::DocAnswer`): the doc text when the node reaches a documented
+            // definition, else `Undocumented` (the total "no answer"). The consumer renders the message.
+            let answer = match doc_at_node(db, id) {
+                Some(doc) => cadenza_compile_abi::DocAnswer::Doc(doc),
+                None => cadenza_compile_abi::DocAnswer::Undocumented,
+            };
             QueryResult {
                 kind: KIND_DOC,
                 name: node.to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_doc(&answer),
             }
         }
         Query::Instantiations { name } => {
@@ -468,16 +484,22 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
         }
         Query::Symbols => {
             // The DOCUMENT OUTLINE: every top-level declaration classified by kind, one
-            // `name<TAB>kind<TAB>name-node-id` line. Reads the declaration columns `scan_top_level` filled
-            // — no new pass. Columns grouped (defs → types → effects → modules), declaration order within
+            // `(name, kind, name-node-id)` record. Reads the declaration columns `scan_top_level` filled
+            // — no new pass. Records grouped (defs → types → effects → modules), declaration order within
             // each, so the answer is a deterministic function of the program. INTERNAL defs (the do-local /
             // module-member callables `modules::register_callable` registers) are not top-level source
-            // declarations, so they are skipped.
-            let text = symbols_text(db);
+            // declarations, so they are skipped. The wire is canonical BINARY AST (`symbols_wire`,
+            // operator P0 seq-284/307-308: no bespoke TAB/newline text), a root list of `(Str Str Int)`
+            // forms the `cdz` consumers decode via the shared codec, never a string split.
+            let entries = symbols_entries(db);
+            let borrowed: Vec<(&str, &str, u32)> = entries
+                .iter()
+                .map(|(name, kind, node)| (name.as_str(), *kind, *node))
+                .collect();
             QueryResult {
                 kind: KIND_SYMBOLS,
                 name: "symbols".to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_symbols(&borrowed),
             }
         }
         Query::ParamManifest => {
@@ -856,10 +878,10 @@ impl SymbolKind {
 /// child (a function's `(NAME param…)` head) or the bare value-def name, matching `Exports`. Skips INTERNAL
 /// defs (do-local / module-member callables) — they are not source-level top-level declarations. Total: an
 /// empty program yields the empty string.
-fn symbols_text(db: &Db) -> String {
-    let mut text = String::new();
+fn symbols_entries(db: &Db) -> Vec<(String, &'static str, u32)> {
+    let mut entries: Vec<(String, &'static str, u32)> = Vec::new();
     let mut emit = |name: &str, kind: SymbolKind, node: StructId| {
-        text.push_str(&format!("{name}\t{}\t{}\n", kind.as_str(), node.0));
+        entries.push((name.to_string(), kind.as_str(), node.0));
     };
     for def in &db.defs {
         // A synthesized callable (a recursive do-local / module member) is not a top-level source
@@ -920,7 +942,7 @@ fn symbols_text(db: &Db) -> String {
             decl_name_node(db, md.occ, "module"),
         );
     }
-    text
+    entries
 }
 
 /// The NAME occurrence of a `(head NAME …)` declaration FORM at `occ` — the first tail element (the name

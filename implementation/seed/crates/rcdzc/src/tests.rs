@@ -35806,6 +35806,31 @@ mod sidecar_driven {
             })
     }
 
+    /// The RAW bytes of the first artifact of `kind` — for the query answers whose wire is canonical
+    /// binary AST (`KIND_USES`, …), which the test decodes via the shared `cadenza-compile-abi` codec.
+    fn artifact_bytes<'a>(out: &'a crate::abi::CompileOutput, kind: &str) -> Option<&'a [u8]> {
+        out.artifacts
+            .iter()
+            .find(|a| a.kind == kind)
+            .map(|a| a.bytes.as_slice())
+    }
+
+    /// The `(node-id, kind)` highlight pairs decoded from the binary-AST `KIND_HIGHLIGHT` wire.
+    fn highlight_pairs(out: &crate::abi::CompileOutput) -> Vec<(u32, String)> {
+        cadenza_compile_abi::decode_highlight(
+            artifact_bytes(out, KIND_HIGHLIGHT).expect("a highlight artifact"),
+        )
+    }
+
+    /// Every `KIND_DOC` answer decoded from the binary-AST wire, in artifact (request) order.
+    fn doc_answers(out: &crate::abi::CompileOutput) -> Vec<cadenza_compile_abi::DocAnswer> {
+        out.artifacts
+            .iter()
+            .filter(|a| a.kind == KIND_DOC)
+            .map(|a| cadenza_compile_abi::decode_doc(&a.bytes))
+            .collect()
+    }
+
     #[test]
     fn a_type_of_query_reads_the_type_column() {
         // A `TypeOf` request for a nullary def answers with its rendered type — the same canonical text
@@ -38031,8 +38056,8 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        let text = artifact_text(&out, KIND_USES).expect("a uses artifact");
-        let ids: Vec<u32> = text.lines().map(|l| l.parse().unwrap()).collect();
+        let bytes = artifact_bytes(&out, KIND_USES).expect("a uses artifact");
+        let ids: Vec<u32> = cadenza_compile_abi::decode_uses(bytes);
         // Three references to `helper`, none of them the def's body.
         assert_eq!(ids.len(), 3, "uses = {ids:?}");
         assert!(
@@ -38077,8 +38102,8 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        let text = artifact_text(&out, KIND_USES).expect("a uses artifact");
-        let ids: Vec<u32> = text.lines().map(|l| l.parse().unwrap()).collect();
+        let bytes = artifact_bytes(&out, KIND_USES).expect("a uses artifact");
+        let ids: Vec<u32> = cadenza_compile_abi::decode_uses(bytes);
         // Exactly N references (one bare `helper` per `d{i}`) — no declaration-site name (helper's own, or
         // any of the N `d{i}` / `main` sig names) leaked in, and none of the N uses was missed. Ascending.
         assert_eq!(ids.len(), n, "one use per referencing def: {ids:?}");
@@ -38111,7 +38136,8 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        assert_eq!(artifact_text(&out, KIND_USES).as_deref(), Some(""));
+        let bytes = artifact_bytes(&out, KIND_USES).expect("a uses artifact");
+        assert!(cadenza_compile_abi::decode_uses(bytes).is_empty());
     }
 
     #[test]
@@ -38502,11 +38528,10 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        let target: u32 = artifact_text(&out, KIND_RESOLVE)
-            .expect("a resolve artifact")
-            .trim()
-            .parse()
-            .expect("a node id");
+        let target: u32 = cadenza_compile_abi::decode_resolve(
+            artifact_bytes(&out, KIND_RESOLVE).expect("a resolve artifact"),
+        )
+        .expect("a node id");
         // The target is helper's def NAME occurrence (the sig's first child) — the go-to-definition
         // anchor. Spot-check via a fresh resolve: the sig's first child, NOT the body.
         let db = crate::db::Db::load(parse(src));
@@ -38543,7 +38568,8 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        assert_eq!(artifact_text(&out, KIND_RESOLVE).as_deref(), Some(""));
+        let bytes = artifact_bytes(&out, KIND_RESOLVE).expect("a resolve artifact");
+        assert_eq!(cadenza_compile_abi::decode_resolve(bytes), None);
     }
 
     /// Parse `src`, resolve `offset` to a node, run `ScopeAt`, and return the `(name, type)` bindings.
@@ -38652,18 +38678,17 @@ mod sidecar_driven {
         assert_eq!(artifact_text(&out, KIND_EXPORTS).as_deref(), Some(""));
     }
 
-    /// The `Symbols` outline as `(name, kind)` rows, in the artifact's emit order.
+    /// The `Symbols` outline as `(name, kind)` rows, in the artifact's emit order — decoded from the
+    /// binary-AST wire.
     fn symbol_rows(src: &str) -> Vec<(String, String)> {
         let out = compile(&inputs(src, &[Request::Query(Query::Symbols)]), &[]);
         assert!(!out.has_error(), "{:?}", out.diagnostics);
-        artifact_text(&out, KIND_SYMBOLS)
-            .expect("a symbols artifact")
-            .lines()
-            .map(|l| {
-                let mut c = l.split('\t');
-                (c.next().unwrap().to_string(), c.next().unwrap().to_string())
-            })
-            .collect()
+        cadenza_compile_abi::decode_symbols(
+            artifact_bytes(&out, KIND_SYMBOLS).expect("a symbols artifact"),
+        )
+        .into_iter()
+        .map(|(name, kind, _)| (name, kind))
+        .collect()
     }
 
     #[test]
@@ -38729,27 +38754,29 @@ mod sidecar_driven {
         let src = "42";
         let out = compile(&inputs(src, &[Request::Query(Query::Symbols)]), &[]);
         assert!(!out.has_error(), "{:?}", out.diagnostics);
-        assert_eq!(artifact_text(&out, KIND_SYMBOLS).as_deref(), Some(""));
+        let bytes = artifact_bytes(&out, KIND_SYMBOLS).expect("a symbols artifact");
+        assert!(cadenza_compile_abi::decode_symbols(bytes).is_empty());
     }
 
     #[test]
     fn a_symbols_query_carries_a_jumpable_name_node() {
-        // The node id on each line is the declaration's NAME occurrence (a user node), so a consumer can
-        // resolve it to a source range and jump — the go-to affordance the outline rides on.
+        // The node id in each record is the declaration's NAME occurrence (a user node), so a consumer
+        // can resolve it to a source range and jump — the go-to affordance the outline rides on.
         let src = "(do (type Color Red Green Blue) (def (f x) x) (export f))";
         let out = compile(&inputs(src, &[Request::Query(Query::Symbols)]), &[]);
         assert!(!out.has_error(), "{:?}", out.diagnostics);
-        let text = artifact_text(&out, KIND_SYMBOLS).expect("a symbols artifact");
-        for line in text.lines() {
-            let node: u32 = line
-                .rsplit('\t')
-                .next()
-                .unwrap()
-                .parse()
-                .expect("a node id");
-            // Every reported node id is a real user node (mappable to a span), never a `-` sentinel.
-            assert_ne!(line.rsplit('\t').next().unwrap(), "-", "line: {line}");
-            let _ = node;
+        let symbols = cadenza_compile_abi::decode_symbols(
+            artifact_bytes(&out, KIND_SYMBOLS).expect("a symbols artifact"),
+        );
+        assert!(!symbols.is_empty(), "the outline has declarations");
+        // Every reported node id is a real in-range arena node (the binary-AST wire carries a `u32` per
+        // record, so a `-` sentinel is structurally impossible — a consumer can always resolve + jump).
+        let arenas = parse(src);
+        for (name, _kind, node) in &symbols {
+            assert!(
+                (*node as usize) < arenas.structure.len(),
+                "name {name} node {node} out of range"
+            );
         }
     }
 
@@ -38943,15 +38970,13 @@ mod sidecar_driven {
             out.diagnostics
         );
         // The FIRST DocOf artifact is `answer`'s doc, the SECOND is `dbl`'s (request order preserved).
-        let docs: Vec<String> = out
-            .artifacts
-            .iter()
-            .filter(|a| a.kind == KIND_DOC)
-            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
-            .collect();
+        use cadenza_compile_abi::DocAnswer;
         assert_eq!(
-            docs,
-            vec!["the answer".to_string(), "doubles x".to_string()]
+            doc_answers(&out),
+            vec![
+                DocAnswer::Doc("the answer".to_string()),
+                DocAnswer::Doc("doubles x".to_string())
+            ]
         );
     }
 
@@ -38981,18 +39006,18 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        let docs: Vec<String> = out
-            .artifacts
-            .iter()
-            .filter(|a| a.kind == KIND_DOC)
-            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
-            .collect();
+        // DISTINCT structured verdicts (not sentinel strings): a real-but-undocumented def, a typo naming
+        // nothing, and a near-miss typo carrying a suggestion. The user-facing wording lives on the `cdz`
+        // consumer now — the wire carries only the variant + the optional suggestion.
+        use cadenza_compile_abi::DocAnswer;
         assert_eq!(
-            docs,
+            doc_answers(&out),
             vec![
-                "no documentation for `main`".to_string(),
-                "no such definition `ghost`".to_string(),
-                "no such definition `mian` — did you mean `main`?".to_string(),
+                DocAnswer::Undocumented,
+                DocAnswer::NoSuchDef { suggestion: None },
+                DocAnswer::NoSuchDef {
+                    suggestion: Some("main".to_string())
+                },
             ]
         );
     }
@@ -39016,22 +39041,19 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        let docs: Vec<String> = out
-            .artifacts
-            .iter()
-            .filter(|a| a.kind == KIND_DOC)
-            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
-            .collect();
+        use cadenza_compile_abi::DocAnswer;
+        let answers = doc_answers(&out);
+        let doc_text = |a: &DocAnswer| match a {
+            DocAnswer::Doc(t) => t.clone(),
+            other => panic!("expected a Doc answer, got {other:?}"),
+        };
+        let d0 = doc_text(&answers[0]);
+        let d1 = doc_text(&answers[1]);
         assert!(
-            docs[0].contains("persistent") && docs[0].contains("sequence"),
-            "List's built-in doc: {:?}",
-            docs[0]
+            d0.contains("persistent") && d0.contains("sequence"),
+            "List's built-in doc: {d0:?}"
         );
-        assert!(
-            docs[1].starts_with("Conditional"),
-            "if's keyword doc: {:?}",
-            docs[1]
-        );
+        assert!(d1.starts_with("Conditional"), "if's keyword doc: {d1:?}");
     }
 
     #[test]
@@ -39050,8 +39072,10 @@ mod sidecar_driven {
             let out = compile(&inputs(src, &[Request::Query(Query::DocAt { node })]), &[]);
             assert!(!out.has_error(), "{:?}", out.diagnostics);
             assert_eq!(
-                artifact_text(&out, KIND_DOC).as_deref(),
-                Some("a helper value"),
+                cadenza_compile_abi::decode_doc(
+                    artifact_bytes(&out, KIND_DOC).expect("a doc artifact")
+                ),
+                cadenza_compile_abi::DocAnswer::Doc("a helper value".to_string()),
                 "node {node} should surface the doc"
             );
         }
@@ -39077,7 +39101,12 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        assert_eq!(artifact_text(&out, KIND_DOC).as_deref(), Some(""));
+        assert_eq!(
+            cadenza_compile_abi::decode_doc(
+                artifact_bytes(&out, KIND_DOC).expect("a doc artifact")
+            ),
+            cadenza_compile_abi::DocAnswer::Undocumented
+        );
     }
 
     /// Run the `Highlight` query over `src` and collect the SET of `kind` strings assigned to the leaf
@@ -39087,16 +39116,9 @@ mod sidecar_driven {
     fn highlight_kinds_of(src: &str, spelling: &str) -> Vec<String> {
         let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
         assert!(!out.has_error(), "{:?}", out.diagnostics);
-        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
-        // node-id → kind
-        let by_id: std::collections::BTreeMap<u32, String> = text
-            .lines()
-            .filter_map(|l| {
-                let mut p = l.splitn(2, '\t');
-                let id: u32 = p.next()?.parse().ok()?;
-                Some((id, p.next()?.to_string()))
-            })
-            .collect();
+        // node-id → kind (decoded from the binary-AST wire)
+        let by_id: std::collections::BTreeMap<u32, String> =
+            highlight_pairs(&out).into_iter().collect();
         // Find every leaf whose name spelling matches, then read its kind.
         let arenas = parse(src);
         let mut kinds = Vec::new();
@@ -39270,10 +39292,10 @@ mod sidecar_driven {
         assert_eq!(highlight_kinds_of(src, "t"), vec!["variable", "variable"]);
         // NOTHING in a clean `@tag` program is painted error-red.
         let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
-        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        let pairs = highlight_pairs(&out);
         assert!(
-            !text.lines().any(|l| l.ends_with("\tunbound")),
-            "no token in a clean @tag program is unbound:\n{text}"
+            !pairs.iter().any(|(_, k)| k == "unbound"),
+            "no token in a clean @tag program is unbound:\n{pairs:?}"
         );
     }
 
@@ -39297,10 +39319,10 @@ mod sidecar_driven {
         assert_eq!(highlight_kinds_of(src, "t"), vec!["variable", "variable"]);
         // NOTHING in a clean stacked-annotation program is painted error-red.
         let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
-        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        let pairs = highlight_pairs(&out);
         assert!(
-            !text.lines().any(|l| l.ends_with("\tunbound")),
-            "no token in a clean stacked-annotation program is unbound:\n{text}"
+            !pairs.iter().any(|(_, k)| k == "unbound"),
+            "no token in a clean stacked-annotation program is unbound:\n{pairs:?}"
         );
     }
 
@@ -39389,14 +39411,14 @@ mod sidecar_driven {
         // `true`/`42`/`0` are non-NAME leaves (Bool / Int), so the by-name helper can't find them; check
         // the raw artifact carries a `literal` (the bool) and a `number` (the ints).
         let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
-        let text = artifact_text(&out, KIND_HIGHLIGHT).unwrap();
+        let pairs = highlight_pairs(&out);
         assert!(
-            text.lines().any(|l| l.ends_with("\tliteral")),
-            "the bool literal is classified: {text}"
+            pairs.iter().any(|(_, k)| k == "literal"),
+            "the bool literal is classified: {pairs:?}"
         );
         assert!(
-            text.lines().any(|l| l.ends_with("\tnumber")),
-            "a number token is classified: {text}"
+            pairs.iter().any(|(_, k)| k == "number"),
+            "a number token is classified: {pairs:?}"
         );
     }
 
@@ -39410,15 +39432,15 @@ mod sidecar_driven {
         // by-name helper can't find them — read the raw artifact, like the bool/number test.)
         let each = |src: &str, kind: &str| {
             let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
-            let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+            let pairs = highlight_pairs(&out);
             assert!(
-                text.lines().any(|l| l.ends_with(&format!("\t{kind}"))),
-                "expected a `{kind}` token in:\n{text}"
+                pairs.iter().any(|(_, k)| k == kind),
+                "expected a `{kind}` token in:\n{pairs:?}"
             );
             // A well-formed literal program never paints error-red.
             assert!(
-                !text.lines().any(|l| l.ends_with("\tunbound")),
-                "a clean literal program has no unbound token:\n{text}"
+                !pairs.iter().any(|(_, k)| k == "unbound"),
+                "a clean literal program has no unbound token:\n{pairs:?}"
             );
         };
         // A CHAR literal `#\a`.
@@ -39461,10 +39483,10 @@ mod sidecar_driven {
                    (def (main) (handle Ask unit ((ask (u) s (resume 42 s))) (Ask.ask))) \
                    (export main))";
         let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
-        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        let pairs = highlight_pairs(&out);
         assert!(
-            !text.lines().any(|l| l.ends_with("\tunbound")),
-            "no token in a clean effect program is unbound:\n{text}"
+            !pairs.iter().any(|(_, k)| k == "unbound"),
+            "no token in a clean effect program is unbound:\n{pairs:?}"
         );
         // The declaration/control heads are keywords.
         assert_eq!(highlight_kinds_of(src, "effect"), vec!["keyword"]);
