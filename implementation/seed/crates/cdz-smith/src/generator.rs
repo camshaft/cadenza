@@ -413,7 +413,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(25) {
+        match self.cur.choice(26) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -436,6 +436,7 @@ impl Gen<'_> {
             21 => self.char_expr(depth),
             22 => self.qty_expr(depth),
             23 => self.float32_expr(depth),
+            24 => self.higher_order_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -898,6 +899,37 @@ impl Gen<'_> {
             self.expr(depth.saturating_sub(1), Kind::Num);
             self.out.push_str("))");
         }
+    }
+
+    /// A HIGHER-ORDER application — `((fn (f) <apply f to a num>) (fn (x) <num body>))` — reaching the
+    /// applyClosure-over-a-closure-valued-PARAMETER path (a fn receives a closure and APPLIES it),
+    /// distinct from the plain `fn_expr`/`app_expr` arms where a param is used as a value. The concrete
+    /// lambda is `Num -> Num` and `f` is applied to numeric args, so the whole expression is a scalar
+    /// (crosses the boundary — a closure-valued RESULT would decline). Operator directive 2026-08-30.
+    fn higher_order_expr(&mut self, depth: u32) {
+        let f = self.env.fresh();
+        let x = self.env.fresh();
+        // ((fn (f) …applies f…) …)  — f is NOT pushed into scope (it's a function we apply literally,
+        // not a Num value the generated arg-exprs may reference).
+        let _ = write!(self.out, "((fn ({f}) ");
+        if self.cur.flip() {
+            let _ = write!(self.out, "({f} ");
+            self.expr(depth.saturating_sub(1), Kind::Num);
+            self.out.push(')');
+        } else {
+            // Apply f twice (a richer closure-parameter use).
+            let _ = write!(self.out, "(+ ({f} ");
+            self.expr(depth.saturating_sub(1), Kind::Num);
+            let _ = write!(self.out, ") ({f} ");
+            self.expr(depth.saturating_sub(1), Kind::Num);
+            self.out.push_str("))");
+        }
+        // The concrete Num -> Num lambda argument; x is in scope (Num) for its body.
+        let _ = write!(self.out, ") (fn ({x}) ");
+        let xmark = self.env.push(x, Kind::Num);
+        self.expr(depth.saturating_sub(1), Kind::Num);
+        self.env.truncate(xmark);
+        self.out.push_str("))");
     }
 
     /// A FLOAT32 expression — Float32-ascribed arithmetic / comparison / a Float32 tuple or list —
@@ -1973,6 +2005,29 @@ mod tests {
         assert!(
             hit,
             "no seed in the sweep emitted a Float32-ascribed operand"
+        );
+    }
+
+    /// The higher-order arm is reachable — some seed emits `((fn (f) …(f …)…) (fn (x) …))` where the
+    /// outer lambda APPLIES its closure-valued parameter — and every such program parses. Guards the
+    /// applyClosure-over-param reach (operator directive 2026-08-30).
+    #[test]
+    fn some_seed_emits_a_higher_order_application() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("((fn (") && src.contains(") (fn (") {
+                hit = true;
+            }
+        }
+        assert!(
+            hit,
+            "no seed in the sweep emitted a higher-order application"
         );
     }
 
