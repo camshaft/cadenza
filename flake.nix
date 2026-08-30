@@ -4124,6 +4124,12 @@
               # (direct xtask, no JS shim — same style as the playground-registry gate). Guards the .sexp→.ts drift.
               xtask-codegen-guide --homepage --check src/content/HomePage.sexp
               npm run check:diagnostics
+              # (v-guide-infra) cdz-wasm QUERY-consumer guard: export_types/type_at/define_at/disposition must
+              # DECODE their binary wires, not run a raw from_utf8 over them. cdz-wasm is outside the workspace +
+              # ungated, so the binary-flip (#6148) silently broke the guide/editor consumers (fixed #6324/#6342);
+              # this reds the gate on a future flip instead of in-browser. Runs in its OWN process (one program),
+              # so it is independent of check:examples' accumulation. Pure node, no new inputs.
+              npm run check:wasm-queries
               npm run check:examples
               npm run check:calculator
               npm run check:worker-stack
