@@ -323,11 +323,51 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
             .try_init();
     }
 
+    // Delegate to the parsed-values compile core. `run` is the rcdzc-BIN front door — it owns the
+    // trace-sink install above — and `run_with_specs` is the reusable core a DIFFERENT front-end
+    // (`cdz` in a `!standalone` build, which can't construct this crate's PRIVATE `CompileArgs`) calls
+    // with its OWN parsed args. Byte-identical: `run` just pulls each field/accessor and forwards.
+    let targets = cli.targets();
+    let opt_level = cli.opt_level();
+    let overflow = cli.overflow_spec();
+    run_with_specs(
+        &cli.inputs,
+        &targets,
+        cli.out.clone(),
+        cli.entry(),
+        cli.export.as_deref(),
+        cli.component_name(),
+        opt_level,
+        overflow,
+        cli.emit_diagnostics.as_deref(),
+        prog,
+    )
+}
+
+/// The parsed-values compile core `run` (the rcdzc bin) delegates to — reads the named input artifacts
+/// (from disk, or stdin for `-`), applies the `--export` splice + `--entry`/`--component-name` injection,
+/// and runs the compile. Exposed so a SEPARATE front-end (`cdz`) can drive an in-process compile from its
+/// OWN parsed arguments WITHOUT constructing this crate's private `CompileArgs` — the thin-`cdz`
+/// `!standalone` seam: `cdz` owns arg parsing; a `standalone` build calls this in-process, a `!standalone`
+/// build delegates the same values to `cdz-compile`. Byte-identical to the body `run` used to inline.
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_specs(
+    input_specs: &[String],
+    targets: &[Target],
+    out: Option<PathBuf>,
+    entry: Option<&str>,
+    export: Option<&str>,
+    component_name: Option<&str>,
+    opt_level: OptLevel,
+    overflow: crate::db::OverflowSpec,
+    emit_diagnostics: Option<&std::path::Path>,
+    prog: &str,
+) -> ExitCode {
     // Read each named input artifact — from disk, or from stdin when the path is `-` (so the bin
     // composes in a pipe: `… | rcdzc - -o -`). A `-` input takes the kind/name from its spec, both
     // defaulting to `ast`/`main` since a piped artifact has no file stem to name it after.
     let mut inputs: Vec<Artifact> = Vec::new();
-    for spec in &cli.inputs {
+    for spec in input_specs {
         let parsed = parse_input_spec(spec);
         let bytes = if parsed.path.as_os_str() == "-" {
             let mut buf = Vec::new();
@@ -353,7 +393,7 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
     // is the per-test shred compile (`rcdzc closure.cdzb test.cdzb --export sym`): the shared-closure
     // fragment + the per-test fragment concatenate into one standalone component (NOT a cross-component
     // package link — that is `--entry`, which `conflicts_with = "entry"` keeps mutually exclusive).
-    if let Some(export_sym) = &cli.export {
+    if let Some(export_sym) = export {
         match splice_ast_inputs(&inputs, export_sym) {
             Ok(spliced) => inputs = vec![spliced],
             Err(e) => {
@@ -367,27 +407,22 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
     // ARE the entry name), the same stream `compile()` reads the entry from (`DESIGN-package-linking.md`
     // §3c). Absent, a multi-`ast` package declines (no rule to pick the entry); a single-file compile
     // needs none.
-    if let Some(entry) = cli.entry() {
+    if let Some(entry) = entry {
         inputs.push(entry_artifact(entry));
     }
     // A `--component-name <INTERFACE>` names the interface a PROVIDER publishes its exports under — inject
     // it as a `KIND_COMPONENT_NAME` artifact (X4b).
-    if let Some(iface) = cli.component_name() {
+    if let Some(iface) = component_name {
         inputs.push(component_name_artifact(iface));
     }
 
-    // Read `opt_level` + `emit_diagnostics` BEFORE moving `cli.out` into the call (a partial move would
-    // poison `cli`, and the `&Path` must borrow a local, not a moved-from `cli`).
-    let opt_level = cli.opt_level();
-    let overflow = cli.overflow_spec();
-    let emit_diagnostics = cli.emit_diagnostics.clone();
     run_prepared_with_overflow(
         inputs,
-        &cli.targets(),
-        cli.out,
+        targets,
+        out,
         opt_level,
         overflow,
-        emit_diagnostics.as_deref(),
+        emit_diagnostics,
         prog,
     )
 }
