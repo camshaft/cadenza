@@ -49746,7 +49746,8 @@ fn collect_static_compounds_gathers_markable_roots_only() {
 }
 
 /// bytes-second run-wiring (compiler side): `compile` surfaces the GUEST export result-type map as a
-/// `KIND_RESULT_TYPES` artifact (`<name>\t<Ty::render_name>`) AND embeds it as a `cdz-result-type`
+/// `KIND_RESULT_TYPES` artifact — the STRUCTURED binary-AST codec (seq-284/307 B: each export's full `Ty`
+/// via `encode_ty_payload`, NOT a `<name>\t<render_name>` string) — AND embeds it as a `cdz-result-type`
 /// component custom section (the piped-run path byte-scans it for `render_val_typed`'s leaf disambiguation).
 #[test]
 fn compile_emits_the_result_type_map_artifact_and_component_custom_section() {
@@ -49761,14 +49762,24 @@ fn compile_emits_the_result_type_map_artifact_and_component_custom_section() {
         )],
         &[crate::backend::Target::Wasm],
     );
-    // The KIND_RESULT_TYPES artifact carries the export→Ty map (g → Bytes).
+    // The KIND_RESULT_TYPES artifact carries the export→Ty map (g → Bytes), decoded via the shared codec
+    // (the producer builds a standalone `encode_ty_payload` arena per export + frames via
+    // `encode_result_types`; the round-trip through `decode_result_types` pins the producer shape).
     let map = out
         .artifact(crate::abi::Artifact::KIND_RESULT_TYPES)
         .expect("a result-types artifact");
-    let map_s = String::from_utf8_lossy(map);
-    assert!(
-        map_s.contains("g\t") && map_s.contains("Bytes"),
-        "the result-type map records g → Bytes: {map_s:?}"
+    let decoded = cadenza_compile_abi::decode_result_types(map);
+    assert_eq!(decoded.len(), 1, "one export in the map: {decoded:?}");
+    assert_eq!(decoded[0].0, "g", "the export name");
+    // Post-#6107 (DecodedTy dropped as the wrong abstraction): `decode_result_types` returns the FULL Ty
+    // payload as an `Arenas` per export, and the consumer walks it. `encode_ty_payload` encodes `Ty::Bytes`
+    // as the bare name leaf `Bytes` (eval.rs), so the payload arena's root is an atom `Bytes` — assert over
+    // the arena, which pins the same producer shape the old `DecodedTy::Bytes` did.
+    let ty = &decoded[0].1;
+    assert_eq!(
+        ty.as_name(ty.root),
+        Some("Bytes"),
+        "g's result-type payload arena is the bare `Bytes` leaf: {ty:?}"
     );
     // The component bytes embed the `cdz-result-type` custom section (the piped-run byte-scan target).
     let comp = out
