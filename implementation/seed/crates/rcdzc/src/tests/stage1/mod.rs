@@ -1008,25 +1008,17 @@ fn a_lexical_well_formedness_fault_surfaces_in_an_unreached_body() {
             .find(|d| d.code.as_deref() == Some(code))
             .unwrap_or_else(|| panic!("no {code} for {src}"))
     };
-    // In a PARAMETERIZED body (never lowered standalone by the emit walk):
-    find(
-        "(module m (def (g (: n Int64)) (+ n 0o17)) (export g))",
-        "CDZ0201",
-    );
+    // An OUT-OF-RANGE FLOAT in a PARAMETERIZED body (never lowered standalone by the emit walk) surfaces
+    // CDZ0201. Its reject round-trips to a ~400-digit decimal expansion — impractical as corpus text — so
+    // this facet stays a rust residual; the octal-int / non-scalar-char / non-exported / reachable-dedup
+    // sibling facets moved to corpus 01-literals "a malformed literal in a parameterized (unreached) body
+    // still surfaces" + siblings.
     find(
         "(module m (def (g (: n Int64)) (+ 1.0e400 2.0)) (export g))",
         "CDZ0201",
     );
-    find(
-        "(module m (def (g (: n Int64)) (if (= n 0) #\\u+D800 #\\a)) (export g))",
-        "CDZ0002",
-    );
-    // In a NON-EXPORTED nullary def body (also not reached by the standalone emit walk):
-    find(
-        "(module m (def (f) 0o17) (def (main) 1) (export main))",
-        "CDZ0201",
-    );
-    // NO false positive: a well-formed literal in a parameterized body stays clean.
+    // NO false positive: a well-formed literal in a parameterized body stays clean (a compile-clean check
+    // the corpus would need a run to express; kept as a white-box control here).
     assert!(
         crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (def (g (: n Int64)) (+ n 42)) (export g))"
@@ -1034,18 +1026,6 @@ fn a_lexical_well_formedness_fault_surfaces_in_an_unreached_body() {
         .iter()
         .all(|d| d.severity != crate::abi::Severity::Error),
         "a valid literal in a parameterized body produces no fault"
-    );
-    // Reachable-body case still reports EXACTLY ONCE (the infer copy + any emit copy dedup).
-    let reached: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (def (main) 0o17) (export main))",
-    )))
-    .into_iter()
-    .filter(|d| d.code.as_deref() == Some("CDZ0201"))
-    .collect();
-    assert_eq!(
-        reached.len(),
-        1,
-        "reachable body reports once, not doubled: {reached:?}"
     );
 }
 
