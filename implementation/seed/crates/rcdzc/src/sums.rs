@@ -35,7 +35,7 @@
 //! the same "present, but not yet realized" state a prelude `unrealized` field has, reached by the same
 //! generic member-access-then-decline path.
 
-use crate::ast::{Arenas, IntValue, Leaf, Radix, Struct, StructId};
+use crate::ast::{Arenas, CompoundCtor, IntValue, Leaf, Radix, Struct, StructId};
 use crate::db::{TypeDecl, Variant};
 use crate::prelude::{meta_field, push_atom, push_list};
 
@@ -325,7 +325,7 @@ fn type_form(ast: &mut Arenas, name: &str, variants: &[(&str, &[&str])]) -> Stru
 /// Returns the record occurrence AND, in declaration order, each variant's constructor occurrence — so
 /// `synthesize` can cache them on the variants (an O(1) later ctor lookup instead of a name-scan).
 fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let mut children = vec![head];
     let mut ctors = Vec::with_capacity(decl.variants.len());
 
@@ -450,7 +450,7 @@ fn is_node_tree_sum(ast: &Arenas, decl: &TypeDecl) -> bool {
 /// shape whose `(meta apply)` is the named intrinsic, so projecting the field and applying it rides the
 /// ordinary `(meta apply)` dispatch to the intrinsic's lowering. The generic form of `expect_op_record`.
 fn intrinsic_op_record(ast: &mut Arenas, type_scheme: StructId, prim: &str) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let t_field = meta_field(ast, "t", type_scheme);
     let builder = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", builder);
@@ -525,7 +525,7 @@ fn expect_type_scheme(ast: &mut Arenas, decl: &TypeDecl, payload0: StructId) -> 
 /// intrinsic (`Prim::SumExpect`). Projecting `(. Option expect)` gives this record; applying it dispatches
 /// through the ordinary `(meta apply)` path to the unwrap-or-trap lowering.
 fn expect_op_record(ast: &mut Arenas, type_scheme: StructId) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let t_field = meta_field(ast, "t", type_scheme);
     let builder = {
         let ih = push_atom(ast, Leaf::Name("intrinsic".into()));
@@ -548,8 +548,10 @@ fn expect_op_record(ast: &mut Arenas, type_scheme: StructId) -> StructId {
 ///    per-variant prim). The owning sum + payload arity are recovered from the ctor's `(meta t)`, so
 ///    the discriminant is all this channel needs.
 fn variant_ctor(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant, disc: u32) -> StructId {
-    // The record PRIMITIVE head is the STRING `"record"` (the NAME `record` is a shadowable alias).
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    // The record head is the NATIVE ctor-LEAF `Leaf::Ctor(Record)` (unshadowable, recognized by kind — the
+    // NAME `record` is a shadowable alias); it resolves structurally via `compound_ctor_prim` exactly as the
+    // legacy `"record"` string head did (dual-read), shedding a string head ahead of the M3 reader-flip.
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let ctor_ty = ctor_type_scheme(ast, decl, variant);
     let t_field = meta_field(ast, "t", ctor_ty);
     // `(meta apply)` = the shared sum-new intrinsic.
