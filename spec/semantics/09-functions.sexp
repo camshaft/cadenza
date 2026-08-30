@@ -96,6 +96,35 @@
   (call main (: 1 Int64)) (output (: 202 Int64))
   (call main (: 50 Int64)) (output (: 300 Int64)))
 
+(case "a factory-returned closure that BOTH escapes into a list AND is directly applied at the same binder"
+  (doc    "The adversarial CALL-BOTH-WAYS witness for a REDUCES-TO-LAMBDA binding: `f = (mk-adder k)` — a
+           factory CALL that reduces to the capturing closure `(fn (x) (+ x k))` — is used TWO ways at once:
+           its handle ESCAPES-WHOLE into `#list(f f)` (which the runtime must materialize), AND it is
+           DIRECTLY applied `(f 2)`. Both must observe the SAME captured `k`: `(f 5) + (f 2)` from the list
+           slot and the direct call = `(5+k) + (2+k) = 7 + 2k`. k=3 → 13; k=0 → 7; k=-4 → -1.
+
+           Pins the fix for a SHARED backend miscompile (invalid on BOTH targets before it): the adv-50
+           CALL-BOTH-WAYS force-keep matched only a LITERAL `(fn …)` binding, so a factory-CALL binding that
+           REDUCES to a capturing lambda slipped past it and copy-propagated — the escape LIFTED the reduced
+           closure (recording its captured `k` occurrence) while the direct `(f 2)` β-FOLDED to `(+ 2 k)`,
+           reusing that occurrence as a capture-env read in the ENCLOSING scope (which has no closure env):
+           the wasm module failed to compile (a bad `call_indirect`/type mismatch on the lifted body) and
+           the rust emit referenced an unbound capture parameter (`__cap0`, E0425). The fix force-keeps the
+           reduced closure as ONE materialized `Core::Let` slot so the direct call `call_indirect`s that one
+           cell (both uses share it) — no fold reuses a poisoned occurrence. The `(: k Int64)` boundary
+           parameter keeps the capture RUNTIME (nothing folds), so the lift-and-share path is exercised; the
+           list holding two references to the one closure exercises the escape+direct intersection.")
+  (input (do
+        (def (mk-adder (: n Int64)) (fn ((: x Int64)) (+ x n)))
+        (def (main (: k Int64))
+          (let ((f (mk-adder k)))
+            (let ((bag #list(f f)))
+              (+ ((Option.expect (List.at bag 0) "g") 5) (f 2)))))
+        (export main)))
+  (call main (: 3 Int64)) (output (: 13 Int64))
+  (call main (: 0 Int64)) (output (: 7 Int64))
+  (call main (: -4 Int64)) (output (: -1 Int64)))
+
 (case "a partial application captures a runtime parameter in the residual closure"
   (doc    "Partially applying to a VARIABLE reference must CAPTURE it in the residual lambda: `((sub n) 3)`
            curries `(sub a b) = (- a b)` to `(fn (b) (- n b))`, and `n` — a caller-pinned free variable —

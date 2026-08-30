@@ -2300,6 +2300,30 @@ pub(super) fn collect_binding_uses(
 /// not trigger the very speculative lift the adv-50 force-keep guards against. A non-capturing lambda
 /// (`(fn (x) (+ x 1))`) has an empty capture set and needs no env cell, so it is not subject to the
 /// captured-occurrence poison and stays copy-propagated. Returns false for a non-lambda `init`.
+/// Whether `init` REDUCES to a CAPTURING lambda — a factory-CALL head `(mk-adder k)` returning
+/// `(fn (x) (+ x n))`, which is an `Apply` (not a `Resolved::Lambda`), so [`lambda_is_capturing`]
+/// (which only inspects a LITERAL lambda) reports `false` for it. Reduces `init` to its lambda's
+/// `(params, body)` via [`crate::eval::lambda_params_and_body`] (a β-reduction that does NOT lower —
+/// the same reduce-not-lower family as the `lambda_body` gate that follows, so this never triggers the
+/// speculative lift it exists to avoid) and runs the lift-free lexical capture walk
+/// [`body_captures_free_runtime_name`] over the reduced body with the reduced params pre-bound. Used by
+/// `should_keep_binding`'s reduces-to-lambda CALL-BOTH-WAYS force-keep (the adv-50 hazard one syntactic
+/// step removed).
+pub(super) fn reduced_lambda_is_capturing(db: &mut Db, init: StructId) -> bool {
+    let Some((params, body)) = crate::eval::lambda_params_and_body(db, init) else {
+        return false;
+    };
+    let mut bound: Vec<String> = params
+        .iter()
+        .filter_map(|&p| {
+            db.ast
+                .as_name(crate::eval::param_name_occ(db, p))
+                .map(str::to_string)
+        })
+        .collect();
+    body_captures_free_runtime_name(db, body, &mut bound)
+}
+
 pub(super) fn lambda_is_capturing(db: &mut Db, init: StructId) -> bool {
     let Resolved::Lambda { params, body } = resolved_of(db, init) else {
         return false;
@@ -2379,6 +2403,29 @@ pub(super) fn should_keep_binding(
     if matches!(resolved_of(db, init), Resolved::Lambda { .. }) {
         return false;
     }
+    // The reduces-to-lambda CALL-BOTH-WAYS keep — the adv-50 hazard ONE SYNTACTIC STEP REMOVED. When the
+    // init REDUCES to a CAPTURING lambda (a factory call `(mk-adder k)` returning `(fn (x) (+ x n))`) AND
+    // its handle BOTH escapes-whole (into a heap collection / sum payload / passed / returned) AND is
+    // directly called, the `Resolved::Lambda` keep above does NOT catch it (the init is an `Apply`, not a
+    // literal lambda), so it falls to the propagate short-circuit just below — and copy-propagating it
+    // MISCOMPILES exactly as the literal-lambda case would: the ESCAPE lifts the reduced closure (recording
+    // its captured occurrences in `db.captured_ref`) while the DIRECT call β-folds `(f 2)` to `(+ 2 <cap>)`,
+    // REUSING the captured occurrence — now memoized as a `Core::Captured` env-read in the ENCLOSING
+    // (env-less) scope → invalid wasm module / rust `__cap0` unbound (E0425). Force-keep so the reduced
+    // closure is materialized ONCE as a `Core::Let` slot and the direct call routes through it via
+    // `call_indirect` (`head_is_runtime_fn_value`'s kept-binding arm), both uses sharing the single cell —
+    // no fold reuses a poisoned occurrence. Gated IDENTICALLY to the literal keep (escapes_whole +
+    // called_direct) PLUS a lift-free lexical capturing test on the REDUCED lambda: a NON-capturing reduced
+    // lambda (`(mk-const)` → `(fn (x) x)`) has no occurrence to poison and folds cleanly, so it stays on
+    // the propagate path below UNCHANGED (byte-neutral). Checked BEFORE the blanket `lambda_body`
+    // short-circuit, which otherwise propagates every reduces-to-lambda init.
+    if crate::eval::lambda_body(db, init).is_some()
+        && (uses.escapes_whole.contains(&init) || uses.escapes_in_def_init.contains(&init))
+        && uses.called_direct.contains(&init)
+        && reduced_lambda_is_capturing(db, init)
+    {
+        return true;
+    }
     // A binding whose value REDUCES to a lambda — a function returning a closure, `(mk n)` returning
     // `(fn (x) (+ n x))` — is the SAME hazard one syntactic step removed: it is not a `Resolved::Lambda`
     // (it is an `Apply`), so it slips past the check above, but `is_runtime_computation`'s `core_of` below
@@ -2388,7 +2435,9 @@ pub(super) fn should_keep_binding(
     // occurrence — so the stale `captured_ref` entry makes the FOLDED `n` lower to a `Core::Captured`
     // env-read in the ENCLOSING scope (which has no env) → invalid wasm ("expected i32, found i64"). Detect
     // it with `lambda_body` (which reduces but does NOT lower, so it does not pollute) and propagate, so the
-    // application folds inline exactly as the (working) `((mk n) 3)` and HOF-argument forms do.
+    // application folds inline exactly as the (working) `((mk n) 3)` and HOF-argument forms do. (The
+    // reduces-to-lambda CALL-BOTH-WAYS subset that MUST be kept is diverted just above; what reaches here is
+    // a pure direct-call or a non-capturing reduced lambda, both of which fold correctly.)
     if crate::eval::lambda_body(db, init).is_some() {
         return false;
     }
