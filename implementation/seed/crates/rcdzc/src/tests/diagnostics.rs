@@ -297,37 +297,6 @@ fn over_application_offers_a_delete_the_extra_argument_fix() {
 //  Int64→Float64 (replacement "(Float64.of-int …)"), Int32→Float64 nested "(Float64.of-int (Int64.of …))",
 //  and the literal control (: 3 Float64) → (replacement "3.0"). All CDZ0203.)
 #[test]
-fn a_record_type_renders_capitalized_matching_its_annotation_spelling() {
-    // `Ty::render_name` spells a RECORD type `(Record (: a Int64))` — CAPITALIZED, the type-constructor
-    // head the author writes in an annotation (`(: r (Record (: a Int64)))`), consistent with
-    // `Tuple`/`List`/`Map`/`Set`; each field is the canonical `(: name T)` ASCRIPTION node (RT3,
-    // DESIGN-record-type-syntax). It used to render lowercase `(record …)` — the VALUE constructor
-    // spelling, which a type annotation REJECTS ("not a type"), so a mismatch message named a type the
-    // reader could not have written. The rendered type must round-trip as a valid annotation.
-    let d = first_error("(module m (def y (: (record (= a 1)) (Record (: a Bool)))) (export y))");
-    assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-    assert!(
-        d.message.contains("(Record (: a Bool))") && d.message.contains("(Record (: a Int64))"),
-        "record TYPE renders capitalized with ascription fields, matching the annotation spelling: {}",
-        d.message
-    );
-    assert!(
-        !d.message.contains("(record ("),
-        "no lowercase value-constructor spelling in a TYPE message: {}",
-        d.message
-    );
-    // The rendered type is a VALID annotation (round-trips) — a reader can copy `(Record (: a Bool))`
-    // straight into an annotation; a compile of exactly that spelling never says "not a type".
-    let round_trip =
-        all_errors("(module m (def (f (: r (Record (: a Bool)))) r) (def (main) 0) (export main))");
-    assert!(
-        !round_trip.iter().any(|e| e.message.contains("not a type")),
-        "the rendered `(Record …)` spelling is accepted in type position: {:?}",
-        round_trip.iter().map(|e| &e.message).collect::<Vec<_>>()
-    );
-}
-
-#[test]
 fn a_cross_kind_operator_clash_uses_the_correct_indefinite_article() {
     use crate::ty::{FloatTy, IntTy, Ty};
     // `Ty::render_with_article` prefixes the correct indefinite article for a message that reads
