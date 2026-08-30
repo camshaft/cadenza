@@ -514,12 +514,6 @@ pub const MAX_SOURCE_BYTES: u64 = 512 * 1024;
 pub const FILE_SIZE_ALLOWLIST: &[&str] = &[
     "implementation/seed/crates/rcdzc/src/tests.rs",
     "implementation/seed/crates/cdz-runtime/src/lib.rs",
-    // GRANDFATHERED 2026-08-30 when the file-size lint was WIRED INTO local-gate (v-fleet-tooling): it was
-    // already 776KB (over the 512KiB limit) but had ESCAPED the gate because file_size_lint ran only in the
-    // monolith `cargo xtask check`, not the gate. Grandfathered so enabling enforcement doesn't red the gate;
-    // the OWNER (cdz-runtime / v-runtime) should SPLIT it into test modules + drop this entry (per the
-    // operator shrink-initiative — the list must SHRINK). Flagged to concierge + the owner on landing.
-    "implementation/seed/crates/cdz-runtime/src/tests.rs",
 ];
 
 /// FILE-SIZE lint (operator directive seq-274): FAIL if any `implementation/**/*.rs` source file exceeds
