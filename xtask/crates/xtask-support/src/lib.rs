@@ -517,7 +517,6 @@ pub const FILE_SIZE_ALLOWLIST: &[&str] = &[
     "implementation/seed/crates/rcdzc/src/backend/wasm/select.rs",
     "implementation/seed/crates/cdz-runtime/src/lib.rs",
     "implementation/seed/crates/rcdzc/src/infer.rs",
-    "implementation/seed/crates/rcdzc/src/backend/wasm/mod.rs",
 ];
 
 /// FILE-SIZE lint (operator directive seq-274): FAIL if any `implementation/**/*.rs` source file exceeds
