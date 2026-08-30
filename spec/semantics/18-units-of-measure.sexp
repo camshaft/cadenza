@@ -500,11 +500,10 @@
            §A Dimensional Mismatch Is An Error), a compile-time rejection (units erase before the program
            runs, never a runtime trap). The message names the OPERATION (adding) and the two bare UNITS
            (meter, second) and states the equal-dimensions rule — the rustc-gold form, not a full `(Qty …)`
-           type dump. (Migrated from rcdzc combining_quantities_of_incompatible_dimension_is_cdz0501; the
-           message-does-NOT-dump-the-full-`(Qty …)`-type negative is the inexpressible remainder kept as a
-           shrunk white-box residual.)")
+           type dump — the message must NOT contain `(Qty`, pinned by the `(not …)` message-absence clause.
+           (Migrated from rcdzc combining_quantities_of_incompatible_dimension_is_cdz0501.)")
   (input  (do (def (main) (+ (Qty.of 1.0 (Unit.base #"meter")) (Qty.of 1.0 (Unit.base #"second")))) (export main)))
-  (error  CDZ0501 (message "adding") (message "meter") (message "second")))
+  (error  CDZ0501 (message "adding") (message "meter") (message "second") (not "(Qty")))
 
 ; MIXED-MAGNITUDE-WIDTH under quantity arithmetic — the magnitudes UNIFY WITH THEIR CONSTRUCTION (operator
 ; seq-32: "types unify with their construction — the literal adopts the one width"). A BARE literal magnitude
