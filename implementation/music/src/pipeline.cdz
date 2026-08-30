@@ -9,22 +9,31 @@
 ///
 /// Grounds on scale.cdz (`collapse-to-scale`) + schedule.cdz (`Note`, transforms). Builds every output Note
 /// FRESH from an Int64 note number (never reuses an imported boxed Pitch field — the 9939 discipline).
-
 import { Note } from "schedule"
-import { note-at, note-pitch, note-chan, note-vel, note-start, note-dur, transpose-piece, remap-channel } from "schedule"
+
+import {
+  note-at,
+  note-pitch,
+  note-chan,
+  note-vel,
+  note-start,
+  note-dur,
+  transpose-piece,
+  remap-channel
+} from "schedule"
+
 import { Scale, collapse-to-scale, major } from "scale"
+
 import { pitch, note } from "pitch"
 
 /// COLLAPSE every note of a piece onto the degrees of `s` (snap chromatic input into the mode). Each output
 /// note keeps its channel/velocity/timing; only the pitch is snapped. Recursive driver, annotated. Builds
 /// the new Note fresh from the collapsed note NUMBER (9939-safe — never reuse the boxed Pitch field).
-def collapse-piece-go(s: Scale, notes: List(Note), out: List(Note)) =
-  match notes with
-    | [] => out
-    | [h, .. t] =>
-      let snapped-num = note(collapse-to-scale(s, note-pitch(h))) in
-      let moved = note-at(pitch(snapped-num), note-chan(h), note-vel(h), note-start(h), note-dur(h)) in
-      collapse-piece-go(s, t, List.push(out, moved))
+def collapse-piece-go(s: Scale, notes: List(Note), out: List(Note)) = match notes with
+  | [] => out
+  | [h, .. t] => let snapped-num = note(collapse-to-scale(s, note-pitch(h))) in
+  let moved = note-at(pitch(snapped-num), note-chan(h), note-vel(h), note-start(h), note-dur(h)) in
+    collapse-piece-go(s, t, List.push(out, moved))
 
 /// Collapse a whole piece into the mode `s`.
 def collapse-piece(s: Scale, notes: List(Note)) = collapse-piece-go(s, notes, [])
@@ -42,16 +51,17 @@ def quantize-and-shift(src-mode: Scale, semis: Int64, notes: List(Note)) =
   transpose-piece(collapse-piece(src-mode, notes), semis)
 
 /// ============================ @test suite (MIDI pipeline transform) ============================
-
 @test
 def collapse-snaps-a-chromatic-piece-into-the-mode() =
   // A piece with a chromatic F#4 (66) collapsed into C major snaps it to F4 (65); in-mode notes unchanged.
   let cmaj = major(0) in
   let piece = [note-at(pitch(66), 0, 100, 0, 480), note-at(pitch(64), 0, 100, 480, 480)] in
   let snapped = collapse-piece(cmaj, piece) in
-  match snapped with
-    | [a, b] =>
-      if note(note-pitch(a)) == 65 then (if note(note-pitch(b)) == 64 then unit else trap("E stays E")) else trap("F# snaps to F")
+    match snapped with
+    | [a, b] => if note(note-pitch(a)) == 65 then
+      if note(note-pitch(b)) == 64 then unit else trap("E stays E")
+    else
+      trap("F# snaps to F")
     | _ => trap("two notes")
 
 @test
@@ -59,11 +69,17 @@ def collapse-preserves-timing-and-channel() =
   // Only the pitch is snapped; channel/velocity/start/dur survive.
   let cmaj = major(0) in
   let piece = [note-at(pitch(66), 3, 77, 240, 480)] in
-  match collapse-piece(cmaj, piece) with
-    | [a] =>
-      if note-chan(a) == 3 then
-        (if note-vel(a) == 77 then (if note-start(a) == 240 then (if note-dur(a) == 480 then unit else trap("dur")) else trap("start")) else trap("vel"))
-      else trap("chan")
+    match collapse-piece(cmaj, piece) with
+    | [a] => if note-chan(a) == 3 then
+      if note-vel(a) == 77 then
+        if note-start(a) == 240 then
+          if note-dur(a) == 480 then unit else trap("dur")
+        else
+          trap("start")
+      else
+        trap("vel")
+    else
+      trap("chan")
     | _ => trap("one note")
 
 @test
@@ -71,18 +87,23 @@ def the-pipeline-collapses-then-transposes-then-remaps() =
   // F#4 (66) on channel 0 → collapse into C major → F4 (65) → transpose +7 → C5 (72) → remap to channel 9.
   let cmaj = major(0) in
   let piece = [note-at(pitch(66), 0, 100, 0, 480)] in
-  match pipeline(cmaj, 7, 9, piece) with
-    | [a] =>
-      if note(note-pitch(a)) == 72 then (if note-chan(a) == 9 then unit else trap("remapped to channel 9")) else trap("F#→F→(+7)→C5=72")
+    match pipeline(cmaj, 7, 9, piece) with
+    | [a] => if note(note-pitch(a)) == 72 then
+      if note-chan(a) == 9 then unit else trap("remapped to channel 9")
+    else
+      trap("F#→F→(+7)→C5=72")
     | _ => trap("one note")
 
 @test
 def quantize-and-shift-keeps-the-channel() =
   // Same collapse+transpose but no remap — the channel is preserved.
   let cmaj = major(0) in
-  let piece = [note-at(pitch(61), 5, 100, 0, 480)] in    // C#4 (61) → collapse to C4 (60) → +2 → D4 (62)
-  match quantize-and-shift(cmaj, 2, piece) with
-    | [a] => if note(note-pitch(a)) == 62 then (if note-chan(a) == 5 then unit else trap("channel kept")) else trap("C#→C→(+2)→D=62")
+  let piece = [note-at(pitch(61), 5, 100, 0, 480)] in // C#4 (61) → collapse to C4 (60) → +2 → D4 (62)
+    match quantize-and-shift(cmaj, 2, piece) with
+    | [a] => if note(note-pitch(a)) == 62 then
+      if note-chan(a) == 5 then unit else trap("channel kept")
+    else
+      trap("C#→C→(+2)→D=62")
     | _ => trap("one note")
 
 @test
@@ -91,13 +112,23 @@ def a-whole-chromatic-run-collapses-into-major() =
   // (a member of C major's pitch classes). The demo-#3 "force into a mode" over a full input.
   let cmaj = major(0) in
   let chromatic-run = [
-    note-at(pitch(60), 0, 100, 0, 100), note-at(pitch(61), 0, 100, 100, 100),
-    note-at(pitch(62), 0, 100, 200, 100), note-at(pitch(63), 0, 100, 300, 100),
-    note-at(pitch(64), 0, 100, 400, 100), note-at(pitch(65), 0, 100, 500, 100),
-    note-at(pitch(66), 0, 100, 600, 100), note-at(pitch(67), 0, 100, 700, 100),
-    note-at(pitch(68), 0, 100, 800, 100), note-at(pitch(69), 0, 100, 900, 100),
-    note-at(pitch(70), 0, 100, 1000, 100), note-at(pitch(71), 0, 100, 1100, 100)] in
-  if all-in-major(collapse-piece(cmaj, chromatic-run)) then unit else trap("every collapsed note is a C-major degree")
+      note-at(pitch(60), 0, 100, 0, 100),
+      note-at(pitch(61), 0, 100, 100, 100),
+      note-at(pitch(62), 0, 100, 200, 100),
+      note-at(pitch(63), 0, 100, 300, 100),
+      note-at(pitch(64), 0, 100, 400, 100),
+      note-at(pitch(65), 0, 100, 500, 100),
+      note-at(pitch(66), 0, 100, 600, 100),
+      note-at(pitch(67), 0, 100, 700, 100),
+      note-at(pitch(68), 0, 100, 800, 100),
+      note-at(pitch(69), 0, 100, 900, 100),
+      note-at(pitch(70), 0, 100, 1000, 100),
+      note-at(pitch(71), 0, 100, 1100, 100)
+    ] in
+    if all-in-major(collapse-piece(cmaj, chromatic-run)) then
+    unit
+  else
+    trap("every collapsed note is a C-major degree")
 
 @test
 def collapse-is-idempotent-on-an-in-mode-piece() =
@@ -106,51 +137,73 @@ def collapse-is-idempotent-on-an-in-mode-piece() =
   // major, and every note number is unchanged.
   let cmaj = major(0) in
   let in-mode = [
-    note-at(pitch(60), 0, 100, 0, 240), note-at(pitch(64), 0, 100, 240, 240),
-    note-at(pitch(67), 0, 100, 480, 240), note-at(pitch(71), 0, 100, 720, 240)] in
-  if same-numbers(in-mode, collapse-piece(cmaj, in-mode)) then unit else trap("collapse fixes an in-mode piece")
+      note-at(pitch(60), 0, 100, 0, 240),
+      note-at(pitch(64), 0, 100, 240, 240),
+      note-at(pitch(67), 0, 100, 480, 240),
+      note-at(pitch(71), 0, 100, 720, 240)
+    ] in
+    if same-numbers(in-mode, collapse-piece(cmaj, in-mode)) then
+    unit
+  else
+    trap("collapse fixes an in-mode piece")
 
 @test
 def the-pipeline-is-empty-on-an-empty-piece() =
   // Every transform's recursive base case (`[] => out`, out seeded `[]`): no input notes → no output,
   // for collapse, the full pipeline, and quantize-and-shift alike.
   let cmaj = major(0) in
-  if List.len(collapse-piece(cmaj, [])) == 0 then
+    if List.len(collapse-piece(cmaj, [])) == 0 then
     if List.len(pipeline(cmaj, 7, 9, [])) == 0 then
-      if List.len(quantize-and-shift(cmaj, 2, [])) == 0 then unit else trap("empty quantize-and-shift")
+      if List.len(quantize-and-shift(cmaj, 2, [])) == 0 then
+        unit
+      else
+        trap("empty quantize-and-shift")
     else
       trap("empty pipeline")
   else
     trap("empty collapse")
 
 // ---- test helpers -----------------------------------------------------------------------------------
-
 /// Do two pieces carry the same note numbers in the same order? Recursive, annotated.
-def same-numbers(xs: List(Note), ys: List(Note)) =
-  match xs with
-    | [] => (match ys with | [] => true | _ => false)
-    | [x, .. xt] =>
-      (match ys with
-        | [] => false
-        | [y, .. yt] =>
-          if note(note-pitch(x)) == note(note-pitch(y)) then same-numbers(xt, yt) else false)
+def same-numbers(xs: List(Note), ys: List(Note)) = match xs with
+  | [] => (match ys with
+    | [] => true
+    | _ => false
+  )
+  | [x, .. xt] => match ys with
+    | [] => false
+    | [y, .. yt] => if note(note-pitch(x)) == note(note-pitch(y)) then
+      same-numbers(xt, yt)
+    else
+      false
 
 /// Every note's pitch class is a C-major degree (0,2,4,5,7,9,11). Recursive, annotated.
-def all-in-major(notes: List(Note)) =
-  match notes with
-    | [] => true
-    | [h, .. t] =>
-      let pc = pc-of(note(note-pitch(h))) in
-      if is-white-key(pc) then all-in-major(t) else false
+def all-in-major(notes: List(Note)) = match notes with
+  | [] => true
+  | [h, .. t] => let pc = pc-of(note(note-pitch(h))) in
+    if is-white-key(pc) then all-in-major(t) else false
 
-def pc-of(n: Int64) = let r = n % 12 in (if r < 0 then r + 12 else r)
+def pc-of(n: Int64) =
+  let r = n % 12 in
+    if r < 0 then r + 12 else r
 
 /// Is a pitch class a C-major (white-key) degree?
 def is-white-key(pc: Int64) =
-  if pc == 0 then true else if pc == 2 then true else if pc == 4 then true
-  else if pc == 5 then true else if pc == 7 then true else if pc == 9 then true
-  else if pc == 11 then true else false
+  if pc == 0 then
+    true
+  else if pc == 2 then
+    true
+  else if pc == 4 then
+    true
+  else if pc == 5 then
+    true
+  else if pc == 7 then
+    true
+  else if pc == 9 then
+    true
+  else if pc == 11 then
+    true
+  else
+    false
 
-export {
-  collapse-piece, pipeline, quantize-and-shift,
-}
+export { collapse-piece, pipeline, quantize-and-shift }

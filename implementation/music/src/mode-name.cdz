@@ -12,7 +12,7 @@ import { scale-steps, mode-steps } from "scale"
 
 // ---- the diatonic modes ------------------------------------------------------------------------------
 /// A named diatonic mode, or `Unknown` for a step pattern that is not a rotation of the major scale.
-  type Mode =
+type Mode =
   | Ionian
   | Dorian
   | Phrygian
@@ -48,22 +48,23 @@ def steps-eq(a: List(Int64), b: List(Int64)) = match a with
 /// Scan mode indices `i .. 6`, returning `Some(index)` of the mode whose `mode-steps(i)` equals `steps`, or
 /// `None` if none match. Returns a typed Option — no sentinel index flows in-band. Recursive, annotated.
 def match-mode-go(steps: List(Int64), i: Int64) =
-  if i > 6 then Option.None(unit)
-  else if steps-eq(steps, mode-steps(i)) then Option.Some(i)
-  else match-mode-go(steps, i + 1)
+  if i > 6 then
+    Option.None(unit)
+  else if steps-eq(steps, mode-steps(i)) then
+    Option.Some(i)
+  else
+    match-mode-go(steps, i + 1)
 
 /// Identify the diatonic MODE of a scale from its step pattern: the mode whose rotation of the major scale
 /// matches, or `Unknown` if the step list is not a diatonic-mode rotation. Aeolian/Ionian etc. fall out.
-def name-mode(s: Scale) =
-  match match-mode-go(scale-steps(s), 0) with
-    | Option.Some(idx) => mode-of-index(idx)
-    | Option.None(_) => Mode.Unknown
+def name-mode(s: Scale) = match match-mode-go(scale-steps(s), 0) with
+  | Option.Some(idx) => mode-of-index(idx)
+  | Option.None(_) => Mode.Unknown
 
 /// Identify a mode directly from a step list (not wrapped in a `Scale`).
-def name-mode-steps(steps: List(Int64)) =
-  match match-mode-go(steps, 0) with
-    | Option.Some(idx) => mode-of-index(idx)
-    | Option.None(_) => Mode.Unknown
+def name-mode-steps(steps: List(Int64)) = match match-mode-go(steps, 0) with
+  | Option.Some(idx) => mode-of-index(idx)
+  | Option.None(_) => Mode.Unknown
 
 /// Is a scale one of the seven diatonic modes (i.e. `name-mode` is not `Unknown`)?
 def is-diatonic-mode(s: Scale) = match name-mode(s) with
@@ -126,7 +127,7 @@ def round-trips-scale-cdz-mode-steps() =
   let ok6 = match name-mode-steps(mode-steps(6)) with
       | Mode.Locrian => true
       | _ => false in
-  if ok0 then
+    if ok0 then
     if ok2 then if ok6 then unit else trap("Locrian round-trip") else trap("Phrygian round-trip")
   else
     trap("Ionian round-trip")

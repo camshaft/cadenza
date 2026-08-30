@@ -11,64 +11,72 @@
 /// So: AUTHOR with these `*-m` constructors (units-carrying) → get a `Solid(Qty[meter])` whose type tracks
 /// length end-to-end → `lower` to `Solid(Rational)` → `bounding-box`/render/mesh (all exact Rational, f64
 /// only at the leaf). This is the units-everywhere geometry the operator asked for.
-
 @!default-fraction Rational
 
 import { Solid, Vec3, Vec2, Profile, Path, PathSeg } from "exact"
 
 /// A length in the base METER unit — the type every model dimension carries. A coordinate IS a length.
 ///  `Qty(Rational, Unit.base(#"meter"))` = an exact-Rational magnitude in meters.
-
 /// A meter length from a magnitude (`meters(5)` = a 5-metre length). Sugar over `Qty.of`; under a caller's
 /// `default-fraction Rational` a bare `5` grounds to Rational, so `meters(5)` / `meters(3/2)` both work.
-def meters(n: Rational) = Qty.of(n, Unit.of(#"meter"))
+def meters(n: Rational) = n meter
 
 /// A units-carrying 3-vector: three meter lengths. A bare number here is a CDZ0301 type error — the units
 /// enforcement the operator wants, at the point of authoring.
-def v3m(
-  x: Qty(Rational, Unit.base(#"meter")),
-  y: Qty(Rational, Unit.base(#"meter")),
-  z: Qty(Rational, Unit.base(#"meter"))
-) = Vec3.V3(x, y, z)
+def v3m(x: Qty(Rational, Unit.base(#meter)), y: Qty(Rational, Unit.base(#meter)), z: Qty(
+  Rational,
+  Unit.base(#meter)
+)) = Vec3.V3(x, y, z)
 
 /// ---- units-carrying primitive + combinator constructors: build a `Solid(Qty[meter])` ------------------
 /// Each dimension is a length `Qty[meter]`; the resulting model's type tracks length end-to-end.
-
 /// An axis-aligned box of FULL size (w, d, h) — each a meter length — centred at the origin.
-def cube-m(w: Qty(Rational, Unit.base(#"meter")), d: Qty(Rational, Unit.base(#"meter")), h: Qty(Rational, Unit.base(#"meter"))) =
-  Solid.Cube(v3m(w, d, h))
+def cube-m(w: Qty(Rational, Unit.base(#meter)), d: Qty(Rational, Unit.base(#meter)), h: Qty(
+  Rational,
+  Unit.base(#meter)
+)) = Solid.Cube(v3m(w, d, h))
 
 /// A sphere of the given radius (a meter length).
-def sphere-m(r: Qty(Rational, Unit.base(#"meter"))) = Solid.Sphere(r)
+def sphere-m(r: Qty(Rational, Unit.base(#meter))) = Solid.Sphere(r)
 
 /// A cylinder of FULL height + radius (both meter lengths), centred on +z.
-def cylinder-m(height: Qty(Rational, Unit.base(#"meter")), r: Qty(Rational, Unit.base(#"meter"))) =
+def cylinder-m(height: Qty(Rational, Unit.base(#meter)), r: Qty(Rational, Unit.base(#meter))) =
   Solid.Cylinder(height, r)
 
 /// The boolean combinators over units-carrying solids (they compose `Solid(Qty[meter])` values). The
 /// params are annotated `Solid(Qty[meter])` since an exported boundary fn needs a concrete parameter type.
-def union-m(a: Solid(Qty(Rational, Unit.base(#"meter"))), b: Solid(Qty(Rational, Unit.base(#"meter")))) = Solid.Union(a, b)
-def difference-m(a: Solid(Qty(Rational, Unit.base(#"meter"))), b: Solid(Qty(Rational, Unit.base(#"meter")))) = Solid.Difference(a, b)
-def intersection-m(a: Solid(Qty(Rational, Unit.base(#"meter"))), b: Solid(Qty(Rational, Unit.base(#"meter")))) = Solid.Intersection(a, b)
+def union-m(a: Solid(Qty(Rational, Unit.base(#meter))), b: Solid(Qty(Rational, Unit.base(#meter)))) =
+  Solid.Union(a, b)
+
+def difference-m(a: Solid(Qty(Rational, Unit.base(#meter))), b: Solid(
+  Qty(Rational, Unit.base(#meter))
+)) = Solid.Difference(a, b)
+
+def intersection-m(a: Solid(Qty(Rational, Unit.base(#meter))), b: Solid(
+  Qty(Rational, Unit.base(#meter))
+)) = Solid.Intersection(a, b)
 
 /// Translate a units-carrying solid by a meter offset vector.
-def translate-m(by: Vec3(Qty(Rational, Unit.base(#"meter"))), s: Solid(Qty(Rational, Unit.base(#"meter")))) = Solid.Translate(by, s)
+def translate-m(by: Vec3(Qty(Rational, Unit.base(#meter))), s: Solid(
+  Qty(Rational, Unit.base(#meter))
+)) = Solid.Translate(by, s)
 
 /// ---- the render edge: lower `Solid(Qty[meter])` → `Solid(Rational)` (bare meters) --------------------
 /// Unwraps each coordinate `Qty[meter]` to its exact bare-Rational meter magnitude (`Qty.value`), so the
 /// bare-`Rational` model the mesh drivers + `bounding-box` consume is UNCHANGED (driver grammar stays
 /// `n/d`; f64 only at the manifold FFI edge). This is the "units in the model, bare meters on the wire" of
 /// the B-via-generic ruling — the same generic `Solid`/`Vec3`, two instantiations, a structural map between.
-
-def lower-v(v: Vec3(Qty(Rational, Unit.base(#"meter")))) =
-  let Vec3.V3(x, y, z) = v in Vec3.V3(Qty.value(x), Qty.value(y), Qty.value(z))
+def lower-v(v: Vec3(Qty(Rational, Unit.base(#meter)))) =
+  let Vec3.V3(x, y, z) = v in
+    Vec3.V3(Qty.value(x), Qty.value(y), Qty.value(z))
 
 /// Unwrap a 2-D vector's `Qty[meter]` coords to bare-Rational meters.
-def lower-v2(v: Vec2(Qty(Rational, Unit.base(#"meter")))) =
-  let Vec2.V2(x, y) = v in Vec2.V2(Qty.value(x), Qty.value(y))
+def lower-v2(v: Vec2(Qty(Rational, Unit.base(#meter)))) =
+  let Vec2.V2(x, y) = v in
+    Vec2.V2(Qty.value(x), Qty.value(y))
 
 /// Unwrap one path segment's `Qty[meter]` coords to bare-Rational meters.
-def lower-pathseg-q(s: PathSeg(Qty(Rational, Unit.base(#"meter")))) = match s with
+def lower-pathseg-q(s: PathSeg(Qty(Rational, Unit.base(#meter)))) = match s with
   | PathSeg.MoveToAbs(p) => PathSeg.MoveToAbs(lower-v2(p))
   | PathSeg.MoveToRel(p) => PathSeg.MoveToRel(lower-v2(p))
   | PathSeg.LineToAbs(p) => PathSeg.LineToAbs(lower-v2(p))
@@ -79,21 +87,25 @@ def lower-pathseg-q(s: PathSeg(Qty(Rational, Unit.base(#"meter")))) = match s wi
 /// Unwrap a path's `Qty[meter]` coords to bare-Rational meters. Structural recursion over the input (head/tail),
 /// accumulating the unwrapped segments in order (the fleet-standard `[h, .. t]`-destructure + `List.push` fold;
 /// no index counter).
-def lower-path-q(p: Path(Qty(Rational, Unit.base(#"meter")))) =
-  let Path.Segs(xs) = p in Path.Segs(lower-path-q-go(xs, []))
-def lower-path-q-go(xs: List(PathSeg(Qty(Rational, Unit.base(#"meter")))), acc: List(PathSeg(Rational))) =
-  match xs with
-    | [] => acc
-    | [s, .. t] => lower-path-q-go(t, List.push(acc, lower-pathseg-q(s)))
+def lower-path-q(p: Path(Qty(Rational, Unit.base(#meter)))) =
+  let Path.Segs(xs) = p in
+    Path.Segs(lower-path-q-go(xs, []))
+
+def lower-path-q-go(xs: List(PathSeg(Qty(Rational, Unit.base(#meter)))), acc: List(
+  PathSeg(Rational)
+)) = match xs with
+  | [] => acc
+  | [s, .. t] => lower-path-q-go(t, List.push(acc, lower-pathseg-q(s)))
 
 /// Unwrap a 2-D profile's `Qty[meter]` coords to bare-Rational meters (the render-edge twin of `lower-v`
 /// for the extrude/revolve profile arms).
-def lower-p(p: Profile(Qty(Rational, Unit.base(#"meter")))) = match p with
-  | Profile.Rect(sz) => (let Vec2.V2(w, h) = sz in Profile.Rect(Vec2.V2(Qty.value(w), Qty.value(h))))
+def lower-p(p: Profile(Qty(Rational, Unit.base(#meter)))) = match p with
+  | Profile.Rect(sz) => let Vec2.V2(w, h) = sz in
+    Profile.Rect(Vec2.V2(Qty.value(w), Qty.value(h)))
   | Profile.Circle(r) => Profile.Circle(Qty.value(r))
   | Profile.PathProfile(pth) => Profile.PathProfile(lower-path-q(pth))
 
-def lower(s: Solid(Qty(Rational, Unit.base(#"meter")))) = match s with
+def lower(s: Solid(Qty(Rational, Unit.base(#meter)))) = match s with
   | Solid.Empty => Solid.Empty
   | Solid.Cube(v) => Solid.Cube(lower-v(v))
   | Solid.Sphere(r) => Solid.Sphere(Qty.value(r))
@@ -115,35 +127,41 @@ def lower(s: Solid(Qty(Rational, Unit.base(#"meter")))) = match s with
   | Solid.Detail(n, of) => Solid.Detail(n, lower(of))
 
 /// ============================ @test suite (S3 — units-carrying model + lower, exact meters) ============================
-
 @test
 def a-cube-authored-in-meters-lowers-to-exact-rational() =
   // Author a 4×2×6-metre box with units; lower to bare Rational meters. The lowered coords are exactly
   // 4, 2, 6 (the meter magnitudes) — units carried in the model, unwrapped at the render edge.
-  let model = cube-m(meters(4/1), meters(2/1), meters(6/1)) in
-  match lower(model) with
-    | Solid.Cube(v) =>
-      (match v with | Vec3.V3(x, y, z) =>
-        if x == 4/1 then (if z == 6/1 then unit else trap("z")) else trap("x"))
+  let model = cube-m(meters(4 / 1), meters(2 / 1), meters(6 / 1)) in
+    match lower(model) with
+    | Solid.Cube(v) => (match v with
+      | Vec3.V3(x, y, z) => if x == 4 / 1 then if z == 6 / 1 then unit else trap("z") else trap("x")
+    )
     | _ => trap("expected a Cube")
 
 @test
 def a-difference-of-units-solids-lowers-recursively() =
   // A units-carrying CSG tree (cube minus sphere) lowers through the booleans to a bare-Rational tree.
-  let model = difference-m(cube-m(meters(4/1), meters(4/1), meters(4/1)), sphere-m(meters(2/1))) in
-  match lower(model) with | Solid.Difference(a, b) =>
-    (match b with | Solid.Sphere(r) => if r == 2/1 then unit else trap("r") | _ => trap("b"))
+  let model = difference-m(
+      cube-m(meters(4 / 1), meters(4 / 1), meters(4 / 1)),
+      sphere-m(meters(2 / 1))
+    ) in
+    match lower(model) with
+    | Solid.Difference(a, b) => (match b with
+      | Solid.Sphere(r) => if r == 2 / 1 then unit else trap("r")
+      | _ => trap("b")
+    )
     | _ => trap("diff")
 
 @test
 def a-component-authored-in-inches-lowers-to-exact-meters() =
   // THE showcase: author a dimension in INCHES; it converts to exact Rational METERS (1 inch = 127/5000 m),
   // the model carries it as a length, and lower unwraps it to that exact meter magnitude — no float.
-  let inch-x = Qty.of(Unit.in(Unit.of(#"meter"), Qty.of(1/1, Unit.of(#"inch"))), Unit.of(#"meter")) in
-  let model = cube-m(inch-x, meters(1/1), meters(1/1)) in
-  match lower(model) with
-    | Solid.Cube(v) =>
-      (match v with | Vec3.V3(x, _, _) => if x == 127/5000 then unit else trap("1 inch = 127/5000 m"))
+  let inch-x = Qty.of(Qty.of(1 / 1, Unit.of(#inch)) as meter, Unit.of(#meter)) in
+  let model = cube-m(inch-x, meters(1 / 1), meters(1 / 1)) in
+    match lower(model) with
+    | Solid.Cube(v) => (match v with
+      | Vec3.V3(x, _, _) => if x == 127 / 5000 then unit else trap("1 inch = 127/5000 m")
+    )
     | _ => trap("expected a Cube")
 
 @test
@@ -152,15 +170,22 @@ def a-translated-units-cylinder-lowers-its-offset-and-dims-to-exact-meters() =
   // Translate arm (which unwraps the OFFSET Vec3's Qty[meter] via lower-v — a distinct path from the
   // primitive coord unwrap). Author a cylinder (height 6 m, radius 2 m) translated by (3, 0, 0) m; lower it
   // and confirm the offset AND the dims all unwrap to their exact meter magnitudes.
-  let model = translate-m(v3m(meters(3/1), meters(0/1), meters(0/1)), cylinder-m(meters(6/1), meters(2/1))) in
-  match lower(model) with
-    | Solid.Translate(by, of) =>
-      (match by with | Vec3.V3(bx, by2, bz) =>
-        if bx == 3/1 and by2 == 0/1 and bz == 0/1 then
-          (match of with
-            | Solid.Cylinder(h, r) => if h == 6/1 and r == 2/1 then unit else trap("cylinder dims unwrap to 6 m x 2 m")
-            | _ => trap("expected a Cylinder under the Translate"))
-        else trap("translate offset unwraps to (3,0,0) m"))
+  let model = translate-m(
+      v3m(meters(3 / 1), meters(0 / 1), meters(0 / 1)),
+      cylinder-m(meters(6 / 1), meters(2 / 1))
+    ) in
+    match lower(model) with
+    | Solid.Translate(by, of) => (match by with
+      | Vec3.V3(bx, by2, bz) => if bx == 3 / 1 and by2 == 0 / 1 and bz == 0 / 1 then
+        match of with
+          | Solid.Cylinder(h, r) => if h == 6 / 1 and r == 2 / 1 then
+            unit
+          else
+            trap("cylinder dims unwrap to 6 m x 2 m")
+          | _ => trap("expected a Cylinder under the Translate")
+      else
+        trap("translate offset unwraps to (3,0,0) m")
+    )
     | _ => trap("expected a Translate")
 
 @test
@@ -168,16 +193,18 @@ def an-extruded-units-rect-profile-lowers-profile-and-height-to-exact-meters() =
   // Exercises lower's ExtrudeLinear arm + lower-p's Rect arm — a whole untested code path (the profile
   // unwrap is distinct from the Solid coord/offset unwraps). Author a Rect profile (4 m x 2 m) extruded by
   // 3 m, all as Qty[meter]; lower and confirm the profile dims AND the extrude height unwrap to exact meters.
-  let prof = Profile.Rect(Vec2.V2(meters(4/1), meters(2/1))) in
-  let model = Solid.ExtrudeLinear(prof, meters(3/1)) in
-  match lower(model) with
-    | Solid.ExtrudeLinear(p, h) =>
-      (match p with
-        | Profile.Rect(sz) =>
-          (match sz with | Vec2.V2(w, d) =>
-            if w == 4/1 and d == 2/1 and h == 3/1 then unit
-            else trap("extruded Rect profile lowers to 4m x 2m x height 3m"))
-        | _ => trap("expected a Rect profile"))
+  let prof = Profile.Rect(Vec2.V2(meters(4 / 1), meters(2 / 1))) in
+  let model = Solid.ExtrudeLinear(prof, meters(3 / 1)) in
+    match lower(model) with
+    | Solid.ExtrudeLinear(p, h) => (match p with
+      | Profile.Rect(sz) => (match sz with
+        | Vec2.V2(w, d) => if w == 4 / 1 and d == 2 / 1 and h == 3 / 1 then
+          unit
+        else
+          trap("extruded Rect profile lowers to 4m x 2m x height 3m")
+      )
+      | _ => trap("expected a Rect profile")
+    )
     | _ => trap("expected an ExtrudeLinear")
 
 @test
@@ -188,38 +215,63 @@ def a-units-path-profile-lowers-every-segment-coordinate-to-exact-meters() =
   // coordinate uses a DISTINCT x≠y value so a swapped-axis (lower-v2 x↔y) or wrong-control regression can't
   // hide: line-to (6,2); cubic-to end (8,3) via controls (7,5) and (9,1). All must unwrap to exact meters,
   // axis-preserving.
-  let pth = Path.Segs(List.push(List.push(List.push([],
-              PathSeg.MoveToAbs(Vec2.V2(meters(0/1), meters(0/1)))),
-              PathSeg.LineToAbs(Vec2.V2(meters(6/1), meters(2/1)))),
-              PathSeg.CubicToAbs(Vec2.V2(meters(8/1), meters(3/1)),
-                                 Vec2.V2(meters(7/1), meters(5/1)),
-                                 Vec2.V2(meters(9/1), meters(1/1))))) in
-  let model = Solid.ExtrudeLinear(Profile.PathProfile(pth), meters(4/1)) in
-  match lower(model) with
-    | Solid.ExtrudeLinear(p, h) =>
-      (match p with
-        | Profile.PathProfile(lp) =>
-          (match lp with | Path.Segs(xs) =>
-            // segment 1 is LineToAbs(6,2); segment 2 is CubicToAbs end(8,3) c0(7,5) c1(9,1).
-            (match List.at(xs, (1 : Int64)) with
-              | Option.Some(s1) => (match s1 with
-                  | PathSeg.LineToAbs(lp1) => (match lp1 with | Vec2.V2(lx, ly) =>
-                      if lx == 6/1 and ly == 2/1 then
-                        (match List.at(xs, (2 : Int64)) with
-                          | Option.Some(s2) => (match s2 with
-                              | PathSeg.CubicToAbs(e, c0, c1) =>
-                                (match e with | Vec2.V2(ex, ey) =>
-                                  (match c0 with | Vec2.V2(c0x, c0y) =>
-                                    (match c1 with | Vec2.V2(c1x, c1y) =>
-                                      if ex == 8/1 and ey == 3/1 and c0x == 7/1 and c0y == 5/1
-                                         and c1x == 9/1 and c1y == 1/1 and h == 4/1 then unit
-                                      else trap("units cubic seg lowers to end(8,3) c0(7,5) c1(9,1), height 4"))))
-                              | _ => trap("segment 2 is a CubicToAbs"))
-                          | Option.None => trap("segment 2 exists"))
-                      else trap("units line seg lowers to (6,2) axis-preserving"))
-                  | _ => trap("segment 1 is a LineToAbs"))
-              | Option.None => trap("segment 1 exists")))
-        | _ => trap("expected a PathProfile"))
+  let pth = Path.Segs(
+      List.push(
+        List.push(
+          List.push([], PathSeg.MoveToAbs(Vec2.V2(meters(0 / 1), meters(0 / 1)))),
+          PathSeg.LineToAbs(Vec2.V2(meters(6 / 1), meters(2 / 1)))
+        ),
+        PathSeg.CubicToAbs(
+          Vec2.V2(meters(8 / 1), meters(3 / 1)),
+          Vec2.V2(meters(7 / 1), meters(5 / 1)),
+          Vec2.V2(meters(9 / 1), meters(1 / 1))
+        )
+      )
+    ) in
+  let model = Solid.ExtrudeLinear(Profile.PathProfile(pth), meters(4 / 1)) in
+    match lower(model) with
+    | Solid.ExtrudeLinear(p, h) => (match p with
+      | Profile.PathProfile(lp) => (match lp with
+        | Path.Segs(xs) => // segment 1 is LineToAbs(6,2); segment 2 is CubicToAbs end(8,3) c0(7,5) c1(9,1).
+        match List.at(xs, 1 : Int64) with
+          | Option.Some(s1) => (match s1 with
+            | PathSeg.LineToAbs(lp1) => (match lp1 with
+              | Vec2.V2(lx, ly) => if lx == 6 / 1 and ly == 2 / 1 then
+                match List.at(xs, 2 : Int64) with
+                  | Option.Some(s2) => (match s2 with
+                    | PathSeg.CubicToAbs(e, c0, c1) => (match e with
+                      | Vec2.V2(ex, ey) => match c0 with
+                        | Vec2.V2(c0x, c0y) => match c1 with
+                          | Vec2.V2(c1x, c1y) => if ex == 8 / 1 and ey == 3 / 1 and c0x == 7 / 1
+                              and c0y == 5 / 1 and c1x == 9 / 1 and c1y == 1 / 1 and h == 4 / 1 then
+                            unit
+                          else
+                            trap("units cubic seg lowers to end(8,3) c0(7,5) c1(9,1), height 4")
+                    )
+                    | _ => trap("segment 2 is a CubicToAbs")
+                  )
+                  | Option.None => trap("segment 2 exists")
+              else
+                trap("units line seg lowers to (6,2) axis-preserving")
+            )
+            | _ => trap("segment 1 is a LineToAbs")
+          )
+          | Option.None => trap("segment 1 exists")
+      )
+      | _ => trap("expected a PathProfile")
+    )
     | _ => trap("expected an ExtrudeLinear")
 
-export { meters, v3m, cube-m, sphere-m, cylinder-m, union-m, difference-m, intersection-m, translate-m, lower-v, lower }
+export {
+  meters,
+  v3m,
+  cube-m,
+  sphere-m,
+  cylinder-m,
+  union-m,
+  difference-m,
+  intersection-m,
+  translate-m,
+  lower-v,
+  lower
+}

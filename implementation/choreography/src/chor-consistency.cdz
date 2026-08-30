@@ -9,20 +9,25 @@
 /// labels, equals the number of RECV obligations in its projected local type. I.e. codegen emits one `let
 /// (perform (recv …))` per `LRecv` in the local type, and run consumes one inbox label per `let`. If any
 /// pass drops or adds a half, the consumed count and the obligation count disagree.
-
 import { Chor } from "chor"
+
 import { project } from "chor-local"
+
 import { Local } from "chor-local"
+
 import { gen-role } from "chor-codegen"
+
 import { run } from "chor-run"
+
 import { inbox-of } from "chor-run"
+
 import { sends-of } from "chor-run"
+
 import { Msg } from "chor-run"
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Helpers: obligation counts from the local type; a label list of a role's recvs (to feed as an inbox).
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
 def len-strs(xs: List(String)) -> Int64 = match xs with
   | [] => 0
   | [_h, .. rest] => 1 + len-strs(rest)
@@ -64,17 +69,17 @@ def send-labels-brs(brs: List(Local)) -> List(String) = match brs with
 // must fully drain (it consumed exactly as many labels as it has recv obligations) and it must emit exactly
 // as many messages as it has send obligations.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
 def consistent-role(g: Chor, r: String) -> Bool =
   let l = project(g, r) in
   let recvs = recv-labels(l) in
   let sends = send-labels(l) in
-  let t = run(gen-role(g, r), recvs) in      // feed exactly the role's projected recv labels as its inbox
-  // inbox fully drained ⇒ codegen emitted one recv per LRecv and run consumed one label per recv.
-  (if len-strs(inbox-of(t)) == 0 then
-     // sent-message count equals send-obligation count ⇒ codegen emitted one send per LSend.
-     (len-msgs(sends-of(t)) == len-strs(sends))
-   else false)
+  let t = run(gen-role(g, r), recvs) in // feed exactly the role's projected recv labels as its inbox
+    // inbox fully drained ⇒ codegen emitted one recv per LRecv and run consumed one label per recv.
+  if len-strs(inbox-of(t)) == 0 then
+    // sent-message count equals send-obligation count ⇒ codegen emitted one send per LSend.
+    len-msgs(sends-of(t)) == len-strs(sends)
+  else
+    false
 
 /// Count sent messages (length only — no need to inspect Msg fields).
 def len-msgs(xs: List(Msg)) -> Int64 = match xs with
@@ -84,58 +89,75 @@ def len-msgs(xs: List(Msg)) -> Int64 = match xs with
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Fixtures + tests.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
 def purchase-linear() =
-  Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"),
-    Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"),
-      Chor.Comm("Seller", "Shipper", "Ship")))
+  Chor.Seq(
+    Chor.Comm("Buyer", "Seller", "Title"),
+    Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"), Chor.Comm("Seller", "Shipper", "Ship"))
+  )
 
 @test
 def buyer-run-agrees-with-projection() =
-  if consistent-role(purchase-linear(), "Buyer") then unit
-  else trap("Buyer's generated run consumes/sends exactly its projected recv/send obligations")
+  if consistent-role(purchase-linear(), "Buyer") then
+    unit
+  else
+    trap("Buyer's generated run consumes/sends exactly its projected recv/send obligations")
 
 @test
 def seller-run-agrees-with-projection() =
-  if consistent-role(purchase-linear(), "Seller") then unit
-  else trap("Seller's generated run agrees with its projection (2 sends: Quote, Ship; 1 recv: Title)")
+  if consistent-role(purchase-linear(), "Seller") then
+    unit
+  else
+    trap("Seller's generated run agrees with its projection (2 sends: Quote, Ship; 1 recv: Title)")
 
 @test
 def shipper-run-agrees-with-projection() =
-  if consistent-role(purchase-linear(), "Shipper") then unit
-  else trap("Shipper's generated run agrees with its projection (1 recv: Ship; 0 sends)")
+  if consistent-role(purchase-linear(), "Shipper") then
+    unit
+  else
+    trap("Shipper's generated run agrees with its projection (1 recv: Ship; 0 sends)")
 
 @test
 def all-roles-consistent-on-purchase() =
   if consistent-role(purchase-linear(), "Buyer") then
-    (if consistent-role(purchase-linear(), "Seller") then
-       (if consistent-role(purchase-linear(), "Shipper") then unit
-        else trap("Shipper consistent")) else trap("Seller consistent")) else trap("Buyer consistent")
+    if consistent-role(purchase-linear(), "Seller") then
+      if consistent-role(purchase-linear(), "Shipper") then unit else trap("Shipper consistent")
+    else
+      trap("Seller consistent")
+  else
+    trap("Buyer consistent")
 
 @test
 def recv-labels-match-projection() =
   // Concrete: Seller's projected recv labels are exactly [Title].
   let seller-recvs = recv-labels(project(purchase-linear(), "Seller")) in
-  if len-strs(seller-recvs) == 1 then unit
-  else trap("Seller has exactly one recv obligation (Title)")
+    if len-strs(seller-recvs) == 1 then
+    unit
+  else
+    trap("Seller has exactly one recv obligation (Title)")
 
 @test
 def send-labels-match-projection() =
   // Seller's projected send labels are exactly [Quote, Ship] → length 2.
   let seller-sends = send-labels(project(purchase-linear(), "Seller")) in
-  if len-strs(seller-sends) == 2 then unit
-  else trap("Seller has exactly two send obligations (Quote, Ship)")
+    if len-strs(seller-sends) == 2 then
+    unit
+  else
+    trap("Seller has exactly two send obligations (Quote, Ship)")
 
 @test
 def choice-free-single-comm-consistent() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-  if consistent-role(g, "Buyer") then (if consistent-role(g, "Seller") then unit else trap("Seller")) else trap("Buyer")
+    if consistent-role(g, "Buyer") then
+    if consistent-role(g, "Seller") then unit else trap("Seller")
+  else
+    trap("Buyer")
 
 /// A role that receives from TWO senders then replies — Hub has a 2-label inbox to drain.
 def two-senders() =
-  Chor.Seq(Chor.Comm("A", "Hub", "M1"),
-    Chor.Seq(Chor.Comm("C", "Hub", "M2"),
-      Chor.Comm("Hub", "A", "Ack")))
+  Chor.Seq(
+    Chor.Comm("A", "Hub", "M1"),
+    Chor.Seq(Chor.Comm("C", "Hub", "M2"), Chor.Comm("Hub", "A", "Ack"))
+  )
 
 /// A projectable CHOICE: Buyer tells Seller Yes/No in each branch. Every consistency fixture before this was
 /// choice-FREE (Purchase, single-comm, two-senders), so `recv-labels`/`send-labels`' LIntC/LExtC/LBranch
@@ -143,9 +165,13 @@ def two-senders() =
 /// is [Yes, No] (2) and Buyer's send set is [Yes, No] (2), and the generated ematch/ichoice, run against
 /// that inbox, still drains it fully and emits the matching sends.
 def yes-no-choice() =
-  Chor.Choice("Buyer", [
-    Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Yes")),
-    Chor.Branch("No", Chor.Comm("Buyer", "Seller", "No"))])
+  Chor.Choice(
+    "Buyer",
+    [
+      Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Yes")),
+      Chor.Branch("No", Chor.Comm("Buyer", "Seller", "No"))
+    ]
+  )
 
 @test
 def hub-with-two-recvs-is-consistent() =
@@ -153,16 +179,21 @@ def hub-with-two-recvs-is-consistent() =
   // (from C), then sends Ack. Every consistency test before this had roles with ≤1 recv (Purchase), so the
   // multi-`let`-recv codegen sequencing + multi-label inbox DRAIN in `run` was un-witnessed. If run
   // mis-counted a 2-message drain (consumed too few/many), consistent-role would return false here.
-  if consistent-role(two-senders(), "Hub") then unit
-  else trap("Hub with 2 recvs + 1 send is consistent — its 2-label inbox fully drains")
+  if consistent-role(two-senders(), "Hub") then
+    unit
+  else
+    trap("Hub with 2 recvs + 1 send is consistent — its 2-label inbox fully drains")
 
 @test
 def all-roles-consistent-with-a-multi-recv-hub() =
   // The whole 3-role protocol composes: senders A/C each 1 send, Hub 2 recvs + 1 send, A also recvs Ack.
   if consistent-role(two-senders(), "A") then
-    (if consistent-role(two-senders(), "C") then
-       (if consistent-role(two-senders(), "Hub") then unit else trap("Hub")) else trap("C"))
-  else trap("A")
+    if consistent-role(two-senders(), "C") then
+      if consistent-role(two-senders(), "Hub") then unit else trap("Hub")
+    else
+      trap("C")
+  else
+    trap("A")
 
 @test
 def told-role-in-a-choice-is-cross-pass-consistent() =
@@ -177,7 +208,9 @@ def told-role-in-a-choice-is-cross-pass-consistent() =
   // is the "choice-free / single-session" scope this module's header calls out, not a drift bug (verified by
   // probe: Seller consistent, Buyer's emitted=1 vs branch-union send-oblig=2). Consistency of the chooser's
   // CHOSEN branch is covered by the choice-free per-branch fixtures.
-  if consistent-role(yes-no-choice(), "Seller") then unit
-  else trap("a told role's ematch run drains its branch-union recv inbox consistently")
+  if consistent-role(yes-no-choice(), "Seller") then
+    unit
+  else
+    trap("a told role's ematch run drains its branch-union recv inbox consistently")
 
 export { recv-labels, send-labels, consistent-role }

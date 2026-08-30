@@ -9,58 +9,90 @@
 /// Plus `roles-of : Chor -> List(String)` — every role that participates (a comm's from/to, a choice's
 /// chooser), deduplicated. This makes a `.sexp` protocol SELF-DESCRIBING: the `cdz chor` `.sexp` path infers
 /// the role set from the protocol, so the surface needs no separate `roles` declaration.
-
 import { Ast } from "ast"
+
 import { Chor } from "chor"
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // A minimal s-expr reader: recursive descent over char indices, emitting Ast.Name / Ast.List.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
 /// Is char `c` s-expr whitespace or a paren (a token boundary)?
 def is-delim(c: String) -> Bool =
-  if c == " " then true else (if c == "(" then true else (if c == ")" then true
-    else (if c == "\n" then true else (if c == "\t" then true else false))))
+  if c == " " then
+    true
+  else if c == "(" then
+    true
+  else if c == ")" then
+    true
+  else if c == "\n" then
+    true
+  else if c == "\t" then
+    true
+  else
+    false
 
 /// Skip whitespace from index `i`, returning the first non-whitespace index.
 def skip-ws(s: String, i: Int64) -> Int64 =
-  if i >= String.byte-len(s) then i
-  else (match String.at(s, i) with
-    | Option.Some(c) => (if (if c == " " then true else (if c == "\n" then true else (if c == "\t" then true else false)))
-      then skip-ws(s, i + 1) else i)
-    | Option.None(_) => i)
+  if i >= String.byte-len(s) then
+    i
+  else
+    match String.at(s, i) with
+      | Option.Some(c) => if (if c == " " then
+          true
+        else if c == "\n" then
+          true
+        else if c == "\t" then
+          true
+        else
+          false) then
+        skip-ws(s, i + 1)
+      else
+        i
+      | Option.None(_) => i
 
 /// Scan a bare atom (a run of non-delimiter chars) from `i`, accumulating into `acc`; returns (atom, next-i).
-def scan-atom(s: String, i: Int64, acc: String) -> (String, Int64) =
-  if i >= String.byte-len(s) then (acc, i)
-  else (match String.at(s, i) with
-    | Option.Some(c) => (if is-delim(c) then (acc, i) else scan-atom(s, i + 1, String.concat(acc, c)))
-    | Option.None(_) => (acc, i))
+def scan-atom(s: String, i: Int64, acc: String) -> Tuple(String, Int64) =
+  if i >= String.byte-len(s) then
+    (acc, i)
+  else
+    match String.at(s, i) with
+      | Option.Some(c) => if is-delim(c) then
+        (acc, i)
+      else
+        scan-atom(s, i + 1, String.concat(acc, c))
+      | Option.None(_) => (acc, i)
 
 /// Parse ONE node starting at index `i` (after ws). Returns Some((node, next-i)) or None (malformed).
 /// A `(` opens a list (read nodes until `)`); anything else is an atom → Ast.Name.
-def parse-node(s: String, i0: Int64) -> Option((Ast, Int64)) =
+def parse-node(s: String, i0: Int64) -> Option(Tuple(Ast, Int64)) =
   let i = skip-ws(s, i0) in
-  if i >= String.byte-len(s) then Option.None(unit)
-  else (match String.at(s, i) with
-    | Option.Some(c) =>
-      (if c == "(" then parse-list(s, i + 1, [])
-       else (if c == ")" then Option.None(unit)          // unexpected close
-         else (let (atom, ni) = scan-atom(s, i, "") in (if atom == "" then Option.None(unit)
-             else Option.Some((Ast.Name(atom), ni))))))
-    | Option.None(_) => Option.None(unit))
+    if i >= String.byte-len(s) then
+    Option.None(unit)
+  else
+    match String.at(s, i) with
+      | Option.Some(c) => if c == "(" then
+        parse-list(s, i + 1, [])
+      else if c == ")" then
+        Option.None(unit) // unexpected close
+      else
+        let (atom, ni) = scan-atom(s, i, "") in
+          if atom == "" then Option.None(unit) else Option.Some((Ast.Name(atom), ni))
+      | Option.None(_) => Option.None(unit)
 
 /// Read list elements from `i` until the matching `)`. `acc` collects children (in order).
-def parse-list(s: String, i0: Int64, acc: List(Ast)) -> Option((Ast, Int64)) =
+def parse-list(s: String, i0: Int64, acc: List(Ast)) -> Option(Tuple(Ast, Int64)) =
   let i = skip-ws(s, i0) in
-  if i >= String.byte-len(s) then Option.None(unit)     // unterminated list
-  else (match String.at(s, i) with
-    | Option.Some(c) =>
-      (if c == ")" then Option.Some((Ast.List(acc), i + 1))
-       else (match parse-node(s, i) with
-         | Option.Some((node, ni)) => parse-list(s, ni, List.concat(acc, [node]))
-         | Option.None(_) => Option.None(unit)))
-    | Option.None(_) => Option.None(unit))
+    if i >= String.byte-len(s) then
+    Option.None(unit) // unterminated list
+  else
+    match String.at(s, i) with
+      | Option.Some(c) => (if c == ")" then
+        Option.Some((Ast.List(acc), i + 1))
+      else
+        match parse-node(s, i) with
+          | Option.Some((node, ni)) => parse-list(s, ni, List.concat(acc, [node]))
+          | Option.None(_) => Option.None(unit))
+      | Option.None(_) => Option.None(unit)
 
 /// Read a whole s-expr string into an Ast (None on malformed / trailing garbage tolerated).
 def read(s: String) -> Option(Ast) = match parse-node(s, 0) with
@@ -70,10 +102,9 @@ def read(s: String) -> Option(Ast) = match parse-node(s, 0) with
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // roles-of: the participating role set of a protocol (dedup), so a `.sexp` protocol is self-describing.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
 def mem(xs: List(String), x: String) -> Bool = match xs with
   | [] => false
-  | [h, .. r] => (if h == x then true else mem(r, x))
+  | [h, .. r] => if h == x then true else mem(r, x)
 
 def add-role(xs: List(String), x: String) -> List(String) =
   if mem(xs, x) then xs else List.concat(xs, [x])
@@ -97,34 +128,46 @@ def roles-of(g: Chor) -> List(String) = roles-into(g, [])
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
 import { from-ast } from "chor"
+
 import { chor-eq } from "chor"
 
 @test
 def read-an-atom() = match read("Buyer") with
-  | Option.Some(Ast.Name(n)) => (if n == "Buyer" then unit else trap("atom name"))
+  | Option.Some(Ast.Name(n)) => if n == "Buyer" then unit else trap("atom name")
   | _ => trap("a bare atom reads to Ast.Name")
 
 @test
 def read-a-flat-list() = match read("(comm Buyer Seller Title)") with
   | Option.Some(Ast.List(es)) => (match es with
-    | [Ast.Name(a), Ast.Name(b), Ast.Name(c), Ast.Name(d)] =>
-      (if a == "comm" then (if b == "Buyer" then (if c == "Seller" then (if d == "Title" then unit
-        else trap("d")) else trap("c")) else trap("b")) else trap("a"))
-    | _ => trap("comm reads to a 4-element name list"))
+    | [Ast.Name(a), Ast.Name(b), Ast.Name(c), Ast.Name(d)] => if a == "comm" then
+      if b == "Buyer" then
+        if c == "Seller" then if d == "Title" then unit else trap("d") else trap("c")
+      else
+        trap("b")
+    else
+      trap("a")
+    | _ => trap("comm reads to a 4-element name list")
+  )
   | _ => trap("(comm …) reads to Ast.List")
 
 @test
 def read-nested-then-from-ast() =
   // The full surface: read a Purchase-shaped s-expr, from-ast it, and chor-eq the expected Chor.
   let src = "(seq (comm Buyer Seller Title) (comm Seller Buyer Quote))" in
-  let expect = Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"), Chor.Comm("Seller", "Buyer", "Quote")) in
-  (match read(src) with
+  let expect = Chor.Seq(
+      Chor.Comm("Buyer", "Seller", "Title"),
+      Chor.Comm("Seller", "Buyer", "Quote")
+    ) in
+    match read(src) with
     | Option.Some(a) => (match from-ast(a) with
-      | Option.Some(g) => (if chor-eq(g, expect) then unit else trap("parsed Chor must equal the expected"))
-      | Option.None(_) => trap("from-ast must parse the read Ast"))
-    | Option.None(_) => trap("read must parse the s-expr"))
+      | Option.Some(g) => if chor-eq(g, expect) then
+        unit
+      else
+        trap("parsed Chor must equal the expected")
+      | Option.None(_) => trap("from-ast must parse the read Ast")
+    )
+    | Option.None(_) => trap("read must parse the s-expr")
 
 @test
 def read-rejects-unterminated() = match read("(comm Buyer") with
@@ -134,28 +177,36 @@ def read-rejects-unterminated() = match read("(comm Buyer") with
 @test
 def read-handles-extra-whitespace() =
   let src = "  ( seq  (comm A B M)   (done) )  " in
-  (match read(src) with
+    match read(src) with
     | Option.Some(a) => (match from-ast(a) with
       | Option.Some(_g) => unit
-      | Option.None(_) => trap("from-ast on whitespace-padded parse"))
-    | Option.None(_) => trap("read tolerates surrounding + interior whitespace"))
+      | Option.None(_) => trap("from-ast on whitespace-padded parse")
+    )
+    | Option.None(_) => trap("read tolerates surrounding + interior whitespace")
 
 @test
 def roles-of-purchase() =
-  let g = Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"),
-    Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"), Chor.Comm("Seller", "Shipper", "Ship"))) in
-  // Buyer, Seller, Shipper — first-seen order, deduplicated.
-  (match roles-of(g) with
-    | [a, b, c] => (if a == "Buyer" then (if b == "Seller" then (if c == "Shipper" then unit
-      else trap("c=Shipper")) else trap("b=Seller")) else trap("a=Buyer"))
-    | _ => trap("Purchase has exactly 3 roles"))
+  let g = Chor.Seq(
+      Chor.Comm("Buyer", "Seller", "Title"),
+      Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"), Chor.Comm("Seller", "Shipper", "Ship"))
+    ) in
+    // Buyer, Seller, Shipper — first-seen order, deduplicated.
+  match roles-of(g) with
+    | [a, b, c] => if a == "Buyer" then
+      if b == "Seller" then if c == "Shipper" then unit else trap("c=Shipper") else trap("b=Seller")
+    else
+      trap("a=Buyer")
+    | _ => trap("Purchase has exactly 3 roles")
 
 @test
 def roles-of-choice-includes-chooser() =
   let g = Chor.Choice("Buyer", [Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Y"))]) in
-  (match roles-of(g) with
-    | [a, b] => (if a == "Buyer" then (if b == "Seller" then unit else trap("Seller")) else trap("Buyer chooser first"))
-    | _ => trap("chooser + participant = 2 roles"))
+    match roles-of(g) with
+    | [a, b] => if a == "Buyer" then
+      if b == "Seller" then unit else trap("Seller")
+    else
+      trap("Buyer chooser first")
+    | _ => trap("chooser + participant = 2 roles")
 
 @test
 def roles-of-collects-across-branches() =
@@ -163,22 +214,36 @@ def roles-of-collects-across-branches() =
   // branch. This is what makes a `.sexp` protocol self-describing — if a branch-local role were missed,
   // `cdz chor`'s emitted bundle would be SHORT an actor. Buyer chooses; branch A involves Seller+Shipper,
   // branch B involves Carrier → all four, first-seen order.
-  let g = Chor.Choice("Buyer", [
-    Chor.Branch("A", Chor.Seq(Chor.Comm("Buyer", "Seller", "Sa"), Chor.Comm("Seller", "Shipper", "Go"))),
-    Chor.Branch("B", Chor.Comm("Buyer", "Carrier", "Cb"))]) in
-  (match roles-of(g) with
-    | [a, b, c, d] => (if a == "Buyer" then (if b == "Seller" then (if c == "Shipper" then
-        (if d == "Carrier" then unit else trap("d=Carrier")) else trap("c=Shipper")) else trap("b=Seller"))
-      else trap("a=Buyer"))
-    | _ => trap("a two-branch choice yields all four participating roles"))
+  let g = Chor.Choice(
+      "Buyer",
+      [
+        Chor.Branch(
+          "A",
+          Chor.Seq(Chor.Comm("Buyer", "Seller", "Sa"), Chor.Comm("Seller", "Shipper", "Go"))
+        ),
+        Chor.Branch("B", Chor.Comm("Buyer", "Carrier", "Cb"))
+      ]
+    ) in
+    match roles-of(g) with
+    | [a, b, c, d] => if a == "Buyer" then
+      if b == "Seller" then
+        if c == "Shipper" then
+          if d == "Carrier" then unit else trap("d=Carrier")
+        else
+          trap("c=Shipper")
+      else
+        trap("b=Seller")
+    else
+      trap("a=Buyer")
+    | _ => trap("a two-branch choice yields all four participating roles")
 
 @test
 def roles-of-dedups() =
   // A role appearing twice is counted once.
   let g = Chor.Seq(Chor.Comm("A", "B", "M"), Chor.Comm("B", "A", "N")) in
-  (match roles-of(g) with
-    | [a, b] => (if a == "A" then (if b == "B" then unit else trap("B")) else trap("A"))
-    | _ => trap("two roles, deduplicated"))
+    match roles-of(g) with
+    | [a, b] => if a == "A" then if b == "B" then unit else trap("B") else trap("A")
+    | _ => trap("two roles, deduplicated")
 
 @test
 def roles-of-descends-nested-choice() =
@@ -186,14 +251,22 @@ def roles-of-descends-nested-choice() =
   // flat two-branch choice. Buyer chooses; branch Go → Seller chooses (branch Ship → Seller→Carrier) →
   // Carrier is 2 choices deep. All three roles must appear (first-seen order). Deeper recursion than the
   // flat roles-of-collects-across-branches pin.
-  let g = Chor.Choice("Buyer", [
-    Chor.Branch("Go", Chor.Choice("Seller", [
-      Chor.Branch("Ship", Chor.Comm("Seller", "Carrier", "Deliver"))])),
-    Chor.Branch("Stop", Chor.Comm("Buyer", "Seller", "Halt"))]) in
-  (match roles-of(g) with
-    | [a, b, c] => (if a == "Buyer" then (if b == "Seller" then (if c == "Carrier" then unit
-        else trap("c=Carrier")) else trap("b=Seller")) else trap("a=Buyer"))
-    | _ => trap("a choice nested inside a branch surfaces all three roles"))
+  let g = Chor.Choice(
+      "Buyer",
+      [
+        Chor.Branch(
+          "Go",
+          Chor.Choice("Seller", [Chor.Branch("Ship", Chor.Comm("Seller", "Carrier", "Deliver"))])
+        ),
+        Chor.Branch("Stop", Chor.Comm("Buyer", "Seller", "Halt"))
+      ]
+    ) in
+    match roles-of(g) with
+    | [a, b, c] => if a == "Buyer" then
+      if b == "Seller" then if c == "Carrier" then unit else trap("c=Carrier") else trap("b=Seller")
+    else
+      trap("a=Buyer")
+    | _ => trap("a choice nested inside a branch surfaces all three roles")
 
 @test
 def read-a-nested-choice-roundtrips() =
@@ -201,11 +274,12 @@ def read-a-nested-choice-roundtrips() =
   // recursive-descent parse of doubly-nested lists). Pairs with the roles-of nested pin so the whole
   // `.sexp` surface is witnessed on nested choices, not just flat ones.
   let src = "(choice Buyer (branch Go (choice Seller (branch Ship (comm Seller Carrier Deliver)))) (branch Stop (comm Buyer Seller Halt)))" in
-  (match read(src) with
+    match read(src) with
     | Option.Some(a) => (match from-ast(a) with
       | Option.Some(_g) => unit
-      | Option.None(_) => trap("from-ast must parse the read nested-choice Ast"))
-    | Option.None(_) => trap("read must parse a nested-choice s-expr"))
+      | Option.None(_) => trap("from-ast must parse the read nested-choice Ast")
+    )
+    | Option.None(_) => trap("read must parse a nested-choice s-expr")
 
 @test
 def read-a-choice-then-from-ast() =
@@ -214,14 +288,22 @@ def read-a-choice-then-from-ast() =
   // reader/grammar change can't silently break the `.sexp` surface for choice protocols (only seq/comm was
   // pinned before, leaving choice/rec — both supported by from-ast — un-witnessed).
   let src = "(choice Buyer (branch Yes (comm Buyer Seller Y)) (branch No (comm Buyer Seller N)))" in
-  let expect = Chor.Choice("Buyer", [
-    Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Y")),
-    Chor.Branch("No", Chor.Comm("Buyer", "Seller", "N"))]) in
-  (match read(src) with
+  let expect = Chor.Choice(
+      "Buyer",
+      [
+        Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Y")),
+        Chor.Branch("No", Chor.Comm("Buyer", "Seller", "N"))
+      ]
+    ) in
+    match read(src) with
     | Option.Some(a) => (match from-ast(a) with
-      | Option.Some(g) => (if chor-eq(g, expect) then unit else trap("parsed choice must equal the expected"))
-      | Option.None(_) => trap("from-ast must parse the read choice Ast"))
-    | Option.None(_) => trap("read must parse a choice s-expr"))
+      | Option.Some(g) => if chor-eq(g, expect) then
+        unit
+      else
+        trap("parsed choice must equal the expected")
+      | Option.None(_) => trap("from-ast must parse the read choice Ast")
+    )
+    | Option.None(_) => trap("read must parse a choice s-expr")
 
 @test
 def read-a-rec-then-from-ast() =
@@ -229,27 +311,33 @@ def read-a-rec-then-from-ast() =
   // rec/var surface so the guarded-loop protocols (e.g. FleetIntegrate's) stay readable from `.sexp`.
   let src = "(rec Loop (seq (comm Buyer Seller Ping) (var Loop)))" in
   let expect = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
-  (match read(src) with
+    match read(src) with
     | Option.Some(a) => (match from-ast(a) with
-      | Option.Some(g) => (if chor-eq(g, expect) then unit else trap("parsed rec must equal the expected"))
-      | Option.None(_) => trap("from-ast must parse the read rec Ast"))
-    | Option.None(_) => trap("read must parse a rec s-expr"))
+      | Option.Some(g) => if chor-eq(g, expect) then
+        unit
+      else
+        trap("parsed rec must equal the expected")
+      | Option.None(_) => trap("from-ast must parse the read rec Ast")
+    )
+    | Option.None(_) => trap("read must parse a rec s-expr")
 
 @test
 def roles-of-rec-skips-var() =
   // PIN: roles-of descends a Rec body but a bare Var contributes no role (it's a loop back-edge, not a
   // participant). The rec Ping loop's only roles are Buyer + Seller.
   let g = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
-  (match roles-of(g) with
-    | [a, b] => (if a == "Buyer" then (if b == "Seller" then unit else trap("Seller")) else trap("Buyer"))
-    | _ => trap("the rec Ping loop has exactly Buyer + Seller (Var adds none)"))
+    match roles-of(g) with
+    | [a, b] => if a == "Buyer" then
+      if b == "Seller" then unit else trap("Seller")
+    else
+      trap("Buyer")
+    | _ => trap("the rec Ping loop has exactly Buyer + Seller (Var adds none)")
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // TOTALITY pins: the `cdz chor` `.sexp` surface hands user input straight to `read`, so `read` must be
 // TOTAL — never trap or loop on malformed input, only return None. Pin the degenerate/malformed inputs so
 // a future reader change can't turn a graceful None into a panic or non-termination.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
 @test
 def read-empty-is-none() = match read("") with
   | Option.None(_) => unit
@@ -270,28 +358,31 @@ def read-tolerates-trailing-garbage() =
   // Documented behavior: `read` returns the FIRST node and ignores trailing text (parse-node discards
   // its next-index). A well-formed leading node still parses even with junk after it.
   match read("(done) trailing junk") with
-  | Option.Some(_) => unit
-  | Option.None(_) => trap("read takes the first node; trailing text is tolerated")
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("read takes the first node; trailing text is tolerated")
 
 @test
 def read-empty-list-is-not-a-protocol() =
   // `()` reads to Ast.List([]) (well-formed s-expr) but from-ast rejects it (no op head) → None.
   match read("()") with
-  | Option.Some(a) => (match from-ast(a) with
-    | Option.None(_) => unit
-    | Option.Some(_) => trap("an empty list is not a protocol"))
-  | Option.None(_) => trap("() reads to an empty Ast.List")
+    | Option.Some(a) => (match from-ast(a) with
+      | Option.None(_) => unit
+      | Option.Some(_) => trap("an empty list is not a protocol")
+    )
+    | Option.None(_) => trap("() reads to an empty Ast.List")
 
 @test
 def read-deeply-nested-seq() =
   // A 5-deep seq nest reads + from-asts + roles-of without issue (recursive descent terminates).
   let src = "(seq (comm A B M1) (seq (comm B C M2) (seq (comm C D M3) (seq (comm D E M4) (comm E F M5)))))" in
-  (match read(src) with
+    match read(src) with
     | Option.Some(a) => (match from-ast(a) with
       | Option.Some(g) => (match roles-of(g) with
         | [_a, _b, _c, _d, _e, _f] => unit
-        | _ => trap("the 5-deep chain has exactly 6 roles"))
-      | Option.None(_) => trap("from-ast on the deep nest"))
-    | Option.None(_) => trap("read on the deep nest"))
+        | _ => trap("the 5-deep chain has exactly 6 roles")
+      )
+      | Option.None(_) => trap("from-ast on the deep nest")
+    )
+    | Option.None(_) => trap("read on the deep nest")
 
 export { read, roles-of }

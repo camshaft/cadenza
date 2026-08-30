@@ -13,11 +13,12 @@
 @!default-fraction Rational
 
 import { Solid, Vec3, Aabb } from "exact"
+
 import { v3, bounding-box, aabbr-size, v3-eq, v3-x } from "exact"
+
 import { ri, mm, cm, inch, foot } from "units"
 
 /// ---- constructors: exact primitives dimensioned in the model unit (mm), built from length values -------
-
 /// An axis-aligned box of the given width/depth/height (each an exact mm coordinate — pass `mm 50` / `inch
 /// 2` etc). `Cube` stores the FULL size (centred at origin), so `box (mm 50) …` is a 50 mm-wide box.
 def box(w: Rational, d: Rational, h: Rational) = Solid.Cube(v3(w, d, h))
@@ -26,18 +27,18 @@ def box(w: Rational, d: Rational, h: Rational) = Solid.Cube(v3(w, d, h))
 def cyl(height: Rational, radius: Rational) = Solid.Cylinder(height, radius)
 
 /// Translate a solid by exact mm offsets.
-def move(x: Rational, y: Rational, z: Rational, s: Solid(Rational)) = Solid.Translate(v3(x, y, z), s)
+def move(x: Rational, y: Rational, z: Rational, s: Solid(Rational)) =
+  Solid.Translate(v3(x, y, z), s)
 
 /// ---- the marquee model: a plate with two bolt holes, dimensioned in MIXED units ------------------------
-
 /// A rectangular plate, `w × d` in millimetres and `t` thick, with two bolt holes of radius `r` at 1/4 and
 /// 3/4 width. Write `plate (mm 50) (mm 30) (mm 5) (inch (1/4))` — the width is metric, the holes imperial,
 /// and every coordinate is EXACT. Holes are cut with `Difference`.
 def plate(w: Rational, d: Rational, t: Rational, r: Rational) =
   Solid.Difference(
-    Solid.Difference(box(w, d, t),
-      move(w / ri(4), d / ri(2), ri(0), cyl(t, r))),
-    move((w * ri(3)) / ri(4), d / ri(2), ri(0), cyl(t, r)))
+    Solid.Difference(box(w, d, t), move(w / ri(4), d / ri(2), ri(0), cyl(t, r))),
+    move(w * ri(3) / ri(4), d / ri(2), ri(0), cyl(t, r))
+  )
 
 /// A hollow tube: outer cylinder minus a concentric bore (both dimensioned in units).
 def tube(len: Rational, ro: Rational, ri-inner: Rational) =
@@ -54,15 +55,15 @@ def tube(len: Rational, ro: Rational, ri-inner: Rational) =
 def bolt-flange(r: Rational, t: Rational, bore: Rational, bcr: Rational, hole-r: Rational) =
   let disc = cyl(t, r) in
   let with-bore = Solid.Difference(disc, cyl(t, bore)) in
-  // the four cardinal bolt holes on the bolt circle (radius bcr) — exact offsets ±bcr / 0.
+    // the four cardinal bolt holes on the bolt circle (radius bcr) — exact offsets ±bcr / 0.
   let h-east = move(bcr, ri(0), ri(0), cyl(t, hole-r)) in
   let h-west = move(ri(0) - bcr, ri(0), ri(0), cyl(t, hole-r)) in
   let h-north = move(ri(0), bcr, ri(0), cyl(t, hole-r)) in
   let h-south = move(ri(0), ri(0) - bcr, ri(0), cyl(t, hole-r)) in
-  Solid.Difference(
     Solid.Difference(
-      Solid.Difference(
-        Solid.Difference(with-bore, h-east), h-west), h-north), h-south)
+    Solid.Difference(Solid.Difference(Solid.Difference(with-bore, h-east), h-west), h-north),
+    h-south
+  )
 
 /// An L-bracket: a base plate `w × d × t` UNIONED with an upright wall `w × t × h` that stands along the
 /// base's back edge, with a mounting hole (radius `hole-r`) through the base. Write
@@ -73,64 +74,78 @@ def bolt-flange(r: Rational, t: Rational, bore: Rational, bcr: Rational, hole-r:
 /// union's bounding box is exactly `w × d × h` regardless of the (thin) wall thickness.
 def l-bracket(w: Rational, d: Rational, h: Rational, t: Rational, hole-r: Rational) =
   let base = box(w, d, t) in
-  // the upright wall: a thin slab, moved to the base's back edge (+y) and up (+z) so it stands on the base.
+    // the upright wall: a thin slab, moved to the base's back edge (+y) and up (+z) so it stands on the base.
   let wall = move(ri(0), (d - t) / ri(2), (h - t) / ri(2), box(w, t, h)) in
   let bracket = Solid.Union(base, wall) in
-  // a mounting hole through the base thickness, near the front-centre of the base.
-  let hole = move(ri(0), ri(0) - (d / ri(4)), ri(0), cyl(t, hole-r)) in
-  Solid.Difference(bracket, hole)
+    // a mounting hole through the base thickness, near the front-centre of the base.
+  let hole = move(ri(0), ri(0) - d / ri(4), ri(0), cyl(t, hole-r)) in
+    Solid.Difference(bracket, hole)
 
 /// ============================ @test suite (R3 exact+units models) ============================
-
 @test
 def plate-box-is-its-outer-size-in-mm() =
   // a 50mm × 30mm × 5mm plate (holes internal) → bounding box exactly (50, 30, 5) mm.
   let p = plate(mm(ri(50)), mm(ri(30)), mm(ri(5)), inch(1 / 4)) in
-  if v3-eq(aabbr-size(bounding-box(p)), v3(ri(50), ri(30), ri(5))) then unit
-  else trap("plate outer box is 50×30×5 mm exactly")
+    if v3-eq(aabbr-size(bounding-box(p)), v3(ri(50), ri(30), ri(5))) then
+    unit
+  else
+    trap("plate outer box is 50×30×5 mm exactly")
 
 @test
 def plate-mixes-metric-and-imperial-exactly() =
   // the showcase: the plate's holes are 1/4 inch = 127/20 mm — carried EXACTLY alongside the mm width.
   // check the hole radius value flows through as the exact Rational (no float).
-  if inch(1 / 4) == 127 / 20 then unit
-  else trap("1/4 inch hole = 127/20 mm exactly, mixed with metric plate")
+  if inch(1 / 4) == 127 / 20 then
+    unit
+  else
+    trap("1/4 inch hole = 127/20 mm exactly, mixed with metric plate")
 
 @test
 def a_metric_and_imperial_box_agree_when_equal() =
   // a 25.4mm cube and a 1-inch cube have the SAME exact bounding box (25.4mm == 1inch exactly).
   let metric = box(254 / 10, 254 / 10, 254 / 10) in
   let imperial = box(inch(ri(1)), inch(ri(1)), inch(ri(1))) in
-  if v3-eq(aabbr-size(bounding-box(metric)), aabbr-size(bounding-box(imperial))) then unit
-  else trap("25.4mm cube == 1inch cube exactly")
+    if v3-eq(aabbr-size(bounding-box(metric)), aabbr-size(bounding-box(imperial))) then
+    unit
+  else
+    trap("25.4mm cube == 1inch cube exactly")
 
 @test
 def tube-outer-box-is-diameter-by-length() =
   // a tube 60mm long, outer radius 20mm → box (40, 40, 60) mm.
   let t = tube(mm(ri(60)), mm(ri(20)), mm(ri(10))) in
-  if v3-eq(aabbr-size(bounding-box(t)), v3(ri(40), ri(40), ri(60))) then unit
-  else trap("tube outer box (2ro, 2ro, len) = (40,40,60) mm")
+    if v3-eq(aabbr-size(bounding-box(t)), v3(ri(40), ri(40), ri(60))) then
+    unit
+  else
+    trap("tube outer box (2ro, 2ro, len) = (40,40,60) mm")
 
 @test
 def foot-dimensioned-box-is-exact() =
   // a 1-foot cube → 304.8 mm = 1524/5 per axis, exact.
   let c = box(foot(ri(1)), foot(ri(1)), foot(ri(1))) in
-  match bounding-box(c) with | Aabb.Box(_, hi) =>
-    if v3-x(hi) == 762 / 5 then unit else trap("1-foot cube half-extent = 762/5 mm (full 1524/5)")
+    match bounding-box(c) with
+    | Aabb.Box(_, hi) => if v3-x(hi) == 762 / 5 then
+      unit
+    else
+      trap("1-foot cube half-extent = 762/5 mm (full 1524/5)")
 
 @test
 def bolt-flange-box-is-its-diameter-by-thickness() =
   // a flange of radius 60mm, 8mm thick (bore 20, bolt circle 45, 1/4in holes) → outer envelope (2r, 2r, t) =
   // (120, 120, 8) mm: the disc sets the diameter, and the bore + bolt holes (Differences) never grow the box.
   let f = bolt-flange(mm(ri(60)), mm(ri(8)), mm(ri(20)), mm(ri(45)), inch(1 / 4)) in
-  if v3-eq(aabbr-size(bounding-box(f)), v3(ri(120), ri(120), ri(8))) then unit
-  else trap("bolt-flange envelope is (2r, 2r, t) = (120, 120, 8) mm exactly")
+    if v3-eq(aabbr-size(bounding-box(f)), v3(ri(120), ri(120), ri(8))) then
+    unit
+  else
+    trap("bolt-flange envelope is (2r, 2r, t) = (120, 120, 8) mm exactly")
 
 @test
 def bolt-flange-mixes-metric-body-with-imperial-fasteners() =
   // the showcase: a metric flange (60mm r, 45mm bolt circle) carries 1/4-inch bolt holes = 127/20 mm EXACTLY.
   if inch(1 / 4) == 127 / 20 then
-    (if mm(ri(45)) == ri(45) then unit else trap("bolt circle 45 mm exact")) else trap("1/4in bolt hole = 127/20 mm")
+    if mm(ri(45)) == ri(45) then unit else trap("bolt circle 45 mm exact")
+  else
+    trap("1/4in bolt hole = 127/20 mm")
 
 @test
 def bolt-flange-hole-centres-sit-on-the-bolt-circle() =
@@ -141,26 +156,34 @@ def bolt-flange-hole-centres-sit-on-the-bolt-circle() =
   let bcr = mm(ri(45)) in
   let hole-r = inch(1 / 4) in
   let east-hole = move(bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
-  match bounding-box(east-hole) with | Aabb.Box(lo, hi) =>
-    // centre-x = (lo.x + hi.x)/2 must equal bcr = 45; and the west hole (−bcr) mirrors to −45.
-    (if (v3-x(lo) + v3-x(hi)) / ri(2) == ri(45) then
-      (let west-hole = move(ri(0) - bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
-        match bounding-box(west-hole) with | Aabb.Box(wlo, whi) =>
-          if (v3-x(wlo) + v3-x(whi)) / ri(2) == ri(0) - ri(45) then unit else trap("west hole centre = -45"))
-     else trap("east hole centre = +45 (on the 45mm bolt circle)"))
+    match bounding-box(east-hole) with
+    | Aabb.Box(lo, hi) => // centre-x = (lo.x + hi.x)/2 must equal bcr = 45; and the west hole (−bcr) mirrors to −45.
+    if (v3-x(lo) + v3-x(hi)) / ri(2) == ri(45) then
+      let west-hole = move(ri(0) - bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
+        match bounding-box(west-hole) with
+        | Aabb.Box(wlo, whi) => if (v3-x(wlo) + v3-x(whi)) / ri(2) == ri(0) - ri(45) then
+          unit
+        else
+          trap("west hole centre = -45")
+    else
+      trap("east hole centre = +45 (on the 45mm bolt circle)")
 
 @test
 def l-bracket-box-is-its-envelope-in-mm() =
   // a 50×40×30 mm L-bracket (1/8-inch wall, 3mm hole) → outer envelope exactly (50, 40, 30) mm: the base
   // gives w×d, the upright wall raises z to the full h, and the hole (a Difference) never grows the box.
   let b = l-bracket(mm(ri(50)), mm(ri(40)), mm(ri(30)), inch(1 / 8), mm(ri(3))) in
-  if v3-eq(aabbr-size(bounding-box(b)), v3(ri(50), ri(40), ri(30))) then unit
-  else trap("L-bracket envelope is 50×40×30 mm exactly (union of base+wall, hole doesn't grow it)")
+    if v3-eq(aabbr-size(bounding-box(b)), v3(ri(50), ri(40), ri(30))) then
+    unit
+  else
+    trap("L-bracket envelope is 50×40×30 mm exactly (union of base+wall, hole doesn't grow it)")
 
 @test
 def l-bracket-wall-thickness-is-exact-imperial() =
   // the showcase: the wall is 1/8 inch = 127/40 mm (= 3.175), carried EXACTLY alongside the metric arms.
-  if inch(1 / 8) == 127 / 40 then unit
-  else trap("1/8 inch wall = 127/40 mm exactly, mixed with the metric 50×40×30 bracket")
+  if inch(1 / 8) == 127 / 40 then
+    unit
+  else
+    trap("1/8 inch wall = 127/40 mm exactly, mixed with the metric 50×40×30 bracket")
 
 export { box, cyl, move, plate, tube, l-bracket, bolt-flange }

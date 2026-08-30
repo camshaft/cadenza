@@ -1,5 +1,5 @@
 /// The abstract syntax tree the compiler operates on — a homoiconic node tree. Mirrors rcdzc's ast.rs (Leaf + Struct) in ideal Cadenza form: ONE recursive sum, no arena indirection — a node CONTAINS its children rather than indexing them by id. The leaf variants are the subset the pipeline observes so far (Int/Str/Bool value leaves + the Name identifier + the List form); the richer wire leaves (Float, Char, Bytes, Sym, markers) join as the passes that read them land.
-  type Ast =
+type Ast =
   | Int(Int64)
   | Str(String)
   | Bool(Bool)

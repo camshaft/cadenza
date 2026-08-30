@@ -1,80 +1,80 @@
 /// giter.cdz — a GENERIC (`∀a`) STRICT (eager, fully-materialized) pull-iterator, the element-polymorphic
-  /// companion to the monomorphic-Int64 `iter.cdz`. This module exists because the recursive-generic PRODUCER element tie
-  /// (a `List(a) -> GIter(a)` producer whose result element must tie to its argument) was the long-standing
-  /// inference gap that pinned `iter.cdz` to `Int64`; that gap is now RESOLVED upstream (rcdzc "tie a
-  /// recursive-generic producer's result element to its argument — Part C, rigid param vars"), verified here
-  /// by a producer composed with a consumer at TWO distinct element types in one program (Int64 AND String —
-  /// see `from-list-composes-at-two-element-types` / `collect-instantiates-at-two-types`).
-  ///
-  /// ⚠ STRICTNESS — this is EAGER, not lazy. The cons-cell is FULLY MATERIALIZED when a producer runs:
-  /// `from-list`/`range-from` build the ENTIRE `GIter(a)` (a deep recursion) up front, so `take(it, 3)` over a
-  /// huge source does NOT "pull only 3" — the source is already built (and a source of ≳10⁴ elements overflows
-  /// the call stack and TRAPS). `next` just projects an ALREADY-BUILT cell. A genuinely LAZY sequence needs a
-  /// thunk tail (`Cons(a, Unit -> GIter(a))` forced on demand), which this encoding does NOT have (Cadenza is
-  /// strict). So treat these as EAGER transformers over finite in-memory sequences, NOT lazy streams.
-  ///
-  /// ENCODING — a recursive CONS-CELL sum (`Nil | Cons(a, GIter(a))`), NOT the reified sum-of-step-shapes
-  /// `iter.cdz` uses. The two encodings differ on purpose:
-  ///   - `iter.cdz` (mono-Int64) reifies each transformer as a step-shape variant that STORES A CLOSURE over
-  ///     the element (`MapI((Int64 -> Int64), Iter)`, …) — its `next` INTERPRETS one step, so it forces nothing
-  ///     until pulled (that reified form IS lazy without a thunk; the generic cons-cell form here is NOT).
-  ///   - `giter.cdz` (generic) uses the cons-cell recursion because THAT is the shape the Part C tie
-  ///     unblocks: the producer `from-list` recurses through `Cons`, threading the element `h : a` into
-  ///     `Cons(h, from-list(t))`, so the result element ties to the argument element and the whole thing
-  ///     monomorphizes independently per element type. A `FromList(List(a))` wrapper (no self-recursion in
-  ///     the producer) does NOT tie the element and still declines CDZ0201 — verified — so the cons-cell
-  ///     form is the correct generic encoding today.
-  /// `next` is the pull interface (`GIter(a) -> Option((a, GIter(a)))`): pure (re-stepping yields the same
-  /// element) and total ON AN ALREADY-BUILT iterator (it never traps itself — but BUILDING a huge source can,
-  /// per the strictness note above); the cons-cell IS the materialized rest, so `next` just projects it.
-  ///
-  /// SCOPE (slices 1–18, 21–22; 19–20 deferred — see below). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
-  /// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`, `enumerate`,
-  /// `intersperse`, `step-by`, `zip3`, `windows2`, `interleave`). CLOSURE-STORING (unblocked by the
-  /// recursive-generic-transformer closure tie + the rigid-biased if-join): `map`, `filter`, `drop-while`,
-  /// `take-while`, `scan`, `find`, `last-where`, `all`, `any`, `count-if`, `map-while`, `span-len`,
-  /// `fold`, `zip-with`, `position` — each threads a closure and monomorphizes per element type. Every function
-  /// composes at Int64 AND String in one program (the tests pin this).
-  ///
-  /// DEFERRED (recursive-generic-tie family — v-inference's queued deep slices):
-  ///   - TRANSITIVE-DELEGATE tie: `reduce` (wrapper seeds a 2nd recursive helper with the HEAD element) and
-  ///     `reverse` (…with a bare-Nil ACCUMULATOR) DECLINE at ≥2 element types — an element-typed accumulator
-  ///     threaded THROUGH a delegate is not tied across the wrapper's two monomorphizations (single type
-  ///     compiles+runs; filed + two witnesses routed to v-inference). No annotation workaround for the generic
-  ///     form.
-  ///   - MODULE-SCALE saturation: `repeat-n` (chain n times) and `find-map` (map+find fusion) each compose at
-  ///     ≥2 element types IN ISOLATION, but DECLINE CDZ0201 when added to THIS full module — the accumulated
-  ///     cross-function instantiations exceed what the monomorphizer currently ties (a whole-module effect, not
-  ///     a single-def gap; routed to v-inference as the same deep-tie family surfacing at scale).
-  /// All land the tick the corresponding tie lands.
-  /// ELEMENT-CHANGING
-  /// is supported too: `zip`/`enumerate` yield a tuple element, `map` maps `a -> b` at a DIFFERENT result type
-  /// (int→Bool, int→String — see the tests), and `zip-with`/`fold` fuse to an inferred result/accumulator type;
-  /// no `∀`-annotation is needed because the new type is INFERRED from the (unannotated) closure / tuple, never
-  /// WRITTEN — so the "no-∀-binder-in-annotation" surface gap does not bite here.
-  ///
-  /// RESOLVED (was a residual inference gap; fixed upstream by rcdzc `565f6d184` "tie an unannotated closure's
-  /// aggregate-result elements to its domain"):
-  ///   - An UNUSED/identity closure (`fn (s) => s`) at TWO element types now COMPOSES (it previously declined
-  ///     on the closure-body-result-from-domain multi-instantiation residual). Verified: `gmap` with `fn(x)=>x+1`
-  ///     at Int AND `fn(s)=>s` at String in one program runs. So the "closures must USE their parameter" caveat
-  ///     below no longer holds — identity/pass-through closures are fine now.
-  ///
-  /// KNOWN EDGE this module steers around (NOT Part C, NOT a miscompile):
-  ///   - NULLARY generic producer (`empty : Unit -> GIter(a)`) has NO argument to tie its element to, so a use
-  ///     that does not otherwise constrain `a` (e.g. `count(empty())`) declines CDZ0201 — correct-to-reject
-  ///     (the program is genuinely ambiguous in `a`), though the message misleadingly blames the argument-tie
-  ///     when there is no argument (a diagnostic-wording nit, routed to v-inference). A `from-list([])` whose
-  ///     element IS fixed by context runs correctly. So this module offers no `empty`/`is-empty` yet; a real
-  ///     caller fixes the element in context (`chain(empty(), from-list([1]))`), which lands once `empty` has
-  ///     a determinable element (e.g. an explicit `Type` param) in a follow-up.
-  ///   - MUTUALLY-recursive generic producer GROUP still declines (no shared substitution across the group —
-  ///     v-inference's caveat). Every function here is SELF-recursive, the shape Part C fixed. Do not add a
-  ///     mutually-recursive generic producer pair without re-checking with v-inference.
-  /// The generic pull-iterator as a recursive cons cell.
-  ///   - `Nil`         — exhausted (the empty iterator).
-  ///   - `Cons(h, rest)` — yield `h : a`, then continue with `rest : GIter(a)`.
-  type GIter =
+/// companion to the monomorphic-Int64 `iter.cdz`. This module exists because the recursive-generic PRODUCER element tie
+/// (a `List(a) -> GIter(a)` producer whose result element must tie to its argument) was the long-standing
+/// inference gap that pinned `iter.cdz` to `Int64`; that gap is now RESOLVED upstream (rcdzc "tie a
+/// recursive-generic producer's result element to its argument — Part C, rigid param vars"), verified here
+/// by a producer composed with a consumer at TWO distinct element types in one program (Int64 AND String —
+/// see `from-list-composes-at-two-element-types` / `collect-instantiates-at-two-types`).
+///
+/// ⚠ STRICTNESS — this is EAGER, not lazy. The cons-cell is FULLY MATERIALIZED when a producer runs:
+/// `from-list`/`range-from` build the ENTIRE `GIter(a)` (a deep recursion) up front, so `take(it, 3)` over a
+/// huge source does NOT "pull only 3" — the source is already built (and a source of ≳10⁴ elements overflows
+/// the call stack and TRAPS). `next` just projects an ALREADY-BUILT cell. A genuinely LAZY sequence needs a
+/// thunk tail (`Cons(a, Unit -> GIter(a))` forced on demand), which this encoding does NOT have (Cadenza is
+/// strict). So treat these as EAGER transformers over finite in-memory sequences, NOT lazy streams.
+///
+/// ENCODING — a recursive CONS-CELL sum (`Nil | Cons(a, GIter(a))`), NOT the reified sum-of-step-shapes
+/// `iter.cdz` uses. The two encodings differ on purpose:
+///   - `iter.cdz` (mono-Int64) reifies each transformer as a step-shape variant that STORES A CLOSURE over
+///     the element (`MapI((Int64 -> Int64), Iter)`, …) — its `next` INTERPRETS one step, so it forces nothing
+///     until pulled (that reified form IS lazy without a thunk; the generic cons-cell form here is NOT).
+///   - `giter.cdz` (generic) uses the cons-cell recursion because THAT is the shape the Part C tie
+///     unblocks: the producer `from-list` recurses through `Cons`, threading the element `h : a` into
+///     `Cons(h, from-list(t))`, so the result element ties to the argument element and the whole thing
+///     monomorphizes independently per element type. A `FromList(List(a))` wrapper (no self-recursion in
+///     the producer) does NOT tie the element and still declines CDZ0201 — verified — so the cons-cell
+///     form is the correct generic encoding today.
+/// `next` is the pull interface (`GIter(a) -> Option((a, GIter(a)))`): pure (re-stepping yields the same
+/// element) and total ON AN ALREADY-BUILT iterator (it never traps itself — but BUILDING a huge source can,
+/// per the strictness note above); the cons-cell IS the materialized rest, so `next` just projects it.
+///
+/// SCOPE (slices 1–18, 21–22; 19–20 deferred — see below). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
+/// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`, `enumerate`,
+/// `intersperse`, `step-by`, `zip3`, `windows2`, `interleave`). CLOSURE-STORING (unblocked by the
+/// recursive-generic-transformer closure tie + the rigid-biased if-join): `map`, `filter`, `drop-while`,
+/// `take-while`, `scan`, `find`, `last-where`, `all`, `any`, `count-if`, `map-while`, `span-len`,
+/// `fold`, `zip-with`, `position` — each threads a closure and monomorphizes per element type. Every function
+/// composes at Int64 AND String in one program (the tests pin this).
+///
+/// DEFERRED (recursive-generic-tie family — v-inference's queued deep slices):
+///   - TRANSITIVE-DELEGATE tie: `reduce` (wrapper seeds a 2nd recursive helper with the HEAD element) and
+///     `reverse` (…with a bare-Nil ACCUMULATOR) DECLINE at ≥2 element types — an element-typed accumulator
+///     threaded THROUGH a delegate is not tied across the wrapper's two monomorphizations (single type
+///     compiles+runs; filed + two witnesses routed to v-inference). No annotation workaround for the generic
+///     form.
+///   - MODULE-SCALE saturation: `repeat-n` (chain n times) and `find-map` (map+find fusion) each compose at
+///     ≥2 element types IN ISOLATION, but DECLINE CDZ0201 when added to THIS full module — the accumulated
+///     cross-function instantiations exceed what the monomorphizer currently ties (a whole-module effect, not
+///     a single-def gap; routed to v-inference as the same deep-tie family surfacing at scale).
+/// All land the tick the corresponding tie lands.
+/// ELEMENT-CHANGING
+/// is supported too: `zip`/`enumerate` yield a tuple element, `map` maps `a -> b` at a DIFFERENT result type
+/// (int→Bool, int→String — see the tests), and `zip-with`/`fold` fuse to an inferred result/accumulator type;
+/// no `∀`-annotation is needed because the new type is INFERRED from the (unannotated) closure / tuple, never
+/// WRITTEN — so the "no-∀-binder-in-annotation" surface gap does not bite here.
+///
+/// RESOLVED (was a residual inference gap; fixed upstream by rcdzc `565f6d184` "tie an unannotated closure's
+/// aggregate-result elements to its domain"):
+///   - An UNUSED/identity closure (`fn (s) => s`) at TWO element types now COMPOSES (it previously declined
+///     on the closure-body-result-from-domain multi-instantiation residual). Verified: `gmap` with `fn(x)=>x+1`
+///     at Int AND `fn(s)=>s` at String in one program runs. So the "closures must USE their parameter" caveat
+///     below no longer holds — identity/pass-through closures are fine now.
+///
+/// KNOWN EDGE this module steers around (NOT Part C, NOT a miscompile):
+///   - NULLARY generic producer (`empty : Unit -> GIter(a)`) has NO argument to tie its element to, so a use
+///     that does not otherwise constrain `a` (e.g. `count(empty())`) declines CDZ0201 — correct-to-reject
+///     (the program is genuinely ambiguous in `a`), though the message misleadingly blames the argument-tie
+///     when there is no argument (a diagnostic-wording nit, routed to v-inference). A `from-list([])` whose
+///     element IS fixed by context runs correctly. So this module offers no `empty`/`is-empty` yet; a real
+///     caller fixes the element in context (`chain(empty(), from-list([1]))`), which lands once `empty` has
+///     a determinable element (e.g. an explicit `Type` param) in a follow-up.
+///   - MUTUALLY-recursive generic producer GROUP still declines (no shared substitution across the group —
+///     v-inference's caveat). Every function here is SELF-recursive, the shape Part C fixed. Do not add a
+///     mutually-recursive generic producer pair without re-checking with v-inference.
+/// The generic pull-iterator as a recursive cons cell.
+///   - `Nil`         — exhausted (the empty iterator).
+///   - `Cons(h, rest)` — yield `h : a`, then continue with `rest : GIter(a)`.
+type GIter =
   | Nil
   | Cons(a, GIter(a))
 
@@ -441,10 +441,8 @@ def empty-int-source-collects-empty() =
 @test
 def next-yields-head-then-rest() = match next(from-list([42, 43])) with
   | Option.None(_) => trap("next of non-empty must be Some")
-  | Option.Some(p) => let (h, rest) = p in if h == 42 then
-      if count(rest) == 1 then unit else trap("rest length")
-    else
-      trap("head value")
+  | Option.Some(p) => let (h, rest) = p in
+    if h == 42 then if count(rest) == 1 then unit else trap("rest length") else trap("head value")
 
 /// SLICE-2 closure-free combinators, each pinned at TWO element types in one program.
 @test
@@ -543,10 +541,9 @@ def zip-mixed-element-types() =
 @test
 def zip-pairs-carry-both-elements() = match next(zip(from-list([7, 8]), from-list(["x", "y"]))) with
   | Option.None(_) => trap("zip of non-empty must yield")
-  | Option.Some(p) => let (pair, _rest) = p in let (l, r) = pair in if l == 7 then
-        if r == "x" then unit else trap("zip right elem")
-      else
-        trap("zip left elem")
+  | Option.Some(p) => let (pair, _rest) = p in
+  let (l, r) = pair in
+    if l == 7 then if r == "x" then unit else trap("zip right elem") else trap("zip left elem")
 
 @test
 def zip-empty-left-is-empty() =
@@ -733,10 +730,12 @@ def scan-string-accumulator() =
 @test
 def enumerate-ints-indices-climb() = match next(enumerate(from-list([10, 20, 30]))) with
   | Option.None(_) => trap("enumerate of non-empty must yield")
-  | Option.Some(p) => let (pair, _rest) = p in let (i, v) = pair in if i == 0 then
-        if v == 10 then unit else trap("enumerate first elem")
-      else
-        trap("enumerate first index")
+  | Option.Some(p) => let (pair, _rest) = p in
+  let (i, v) = pair in
+    if i == 0 then
+    if v == 10 then unit else trap("enumerate first elem")
+  else
+    trap("enumerate first index")
 
 @test
 def enumerate-preserves-length-ints() =
@@ -932,10 +931,12 @@ def zip3-three-different-element-types() = match next(
     zip3(from-list(["a", "b"]), from-list([1, 2]), from-list([true, false]))
   ) with
   | Option.None(_) => trap("zip3 mixed must yield")
-  | Option.Some(p) => let (triple, _rest) = p in let (s, n, b) = triple in if s == "a" then
-        if n == 1 then if b then unit else trap("zip3 bool") else trap("zip3 int")
-      else
-        trap("zip3 str")
+  | Option.Some(p) => let (triple, _rest) = p in
+  let (s, n, b) = triple in
+    if s == "a" then
+    if n == 1 then if b then unit else trap("zip3 bool") else trap("zip3 int")
+  else
+    trap("zip3 str")
 
 /// SLICE-15: `windows2` — closure-free sliding adjacent pairs (n-1 out), pinned at two element types and the
 /// short-input edges (0/1 element → empty).
@@ -946,10 +947,9 @@ def windows2-adjacent-pairs-ints() =
 @test
 def windows2-carries-both-neighbors() = match next(windows2(from-list([10, 20, 30]))) with
   | Option.None(_) => trap("windows2 must yield")
-  | Option.Some(p) => let (pair, _rest) = p in let (l, r) = pair in if l == 10 then
-        if r == 20 then unit else trap("windows2 right")
-      else
-        trap("windows2 left")
+  | Option.Some(p) => let (pair, _rest) = p in
+  let (l, r) = pair in
+    if l == 10 then if r == 20 then unit else trap("windows2 right") else trap("windows2 left")
 
 @test
 def windows2-strings-second-source-type() =

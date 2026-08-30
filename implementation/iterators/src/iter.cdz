@@ -90,109 +90,107 @@ def next(it) = match it with
     | [h, .. t] => Option.Some((h, Iter.FromList(t)))
   )
   | Iter.RangeI(r) => let (lo, hi) = r in
-  if lo < hi then Option.Some((lo, Iter.RangeI((lo + 1, hi)))) else Option.None(unit)
+    if lo < hi then Option.Some((lo, Iter.RangeI((lo + 1, hi)))) else Option.None(unit)
   | Iter.MapI(mf) => (let (f, src) = mf in
-  match next(src) with
+    match next(src) with
     | Option.None(_) => Option.None(unit)
     | Option.Some(p) => let (v, rest) = p in
-    Option.Some((f(v), Iter.MapI((f, rest)))))
+      Option.Some((f(v), Iter.MapI((f, rest)))))
   | Iter.FilterI(pf) => (let (p, src) = pf in
-  match next(src) with
+    match next(src) with
     | Option.None(_) => Option.None(unit)
     | Option.Some(pr) => let (v, rest) = pr in
-    if p(v) then Option.Some((v, Iter.FilterI((p, rest)))) else next(Iter.FilterI((p, rest))))
+      if p(v) then Option.Some((v, Iter.FilterI((p, rest)))) else next(Iter.FilterI((p, rest))))
   | Iter.TakeI(nf) => (let (n, src) = nf in
-  if n <= 0 then
+    if n <= 0 then
     Option.None(unit)
   else
     match next(src) with
       | Option.None(_) => Option.None(unit)
       | Option.Some(p) => let (v, rest) = p in
-      Option.Some((v, Iter.TakeI((n - 1, rest)))))
+        Option.Some((v, Iter.TakeI((n - 1, rest)))))
   | Iter.DropI(nf) => (let (n, src) = nf in
-  if n <= 0 then
+    if n <= 0 then
     next(src)
   else
     match next(src) with
       | Option.None(_) => Option.None(unit)
       | Option.Some(p) => let (v, rest) = p in
-      next(Iter.DropI((n - 1, rest))))
+        next(Iter.DropI((n - 1, rest))))
   | Iter.TakeWhileI(pf) => (let (p, src) = pf in
-  match next(src) with
+    match next(src) with
     | Option.None(_) => Option.None(unit)
     | Option.Some(pr) => let (v, rest) = pr in
-    if p(v) then Option.Some((v, Iter.TakeWhileI((p, rest)))) else Option.None(unit))
+      if p(v) then Option.Some((v, Iter.TakeWhileI((p, rest)))) else Option.None(unit))
   | Iter.ChainI(ab) => (let (a, b) = ab in
-  match next(a) with
+    match next(a) with
     // drain `a` first; when `a` is exhausted, step straight into `b`
     | Option.None(_) => next(b)
     | Option.Some(p) => let (v, rest) = p in
-    Option.Some((v, Iter.ChainI((rest, b)))))
+      Option.Some((v, Iter.ChainI((rest, b)))))
   | Iter.ZipWithI(zf) => (let (f, ab) = zf in
   let (a, b) = ab in
-  match next(a) with
+    match next(a) with
     // stop as soon as EITHER side runs out — the shorter iterator bounds the result
     | Option.None(_) => Option.None(unit)
     | Option.Some(pa) => let (va, ra) = pa in
-    match next(b) with
+      match next(b) with
       | Option.None(_) => Option.None(unit)
       | Option.Some(pb) => let (vb, rb) = pb in
-      Option.Some((f(va, vb), Iter.ZipWithI((f, (ra, rb))))))
+        Option.Some((f(va, vb), Iter.ZipWithI((f, (ra, rb))))))
   | Iter.ScanI(sf) => (let (f, acc-src) = sf in
   let (acc, src) = acc-src in
-  // yield the running accumulator, threading the new acc into the rest
+    // yield the running accumulator, threading the new acc into the rest
   match next(src) with
     | Option.None(_) => Option.None(unit)
     | Option.Some(p) => let (v, rest) = p in
     let acc2 = f(acc, v) in
-    Option.Some((acc2, Iter.ScanI((f, (acc2, rest))))))
+      Option.Some((acc2, Iter.ScanI((f, (acc2, rest))))))
   | Iter.IterateI(itf) => let (f, cur) = itf in
-  // never exhausts: yield `cur`, and the rest resumes from `f(cur)`
+    // never exhausts: yield `cur`, and the rest resumes from `f(cur)`
   Option.Some((cur, Iter.IterateI((f, f(cur)))))
   | Iter.StepRangeI(sr) => let (lo, hi-step) = sr in
   let (hi, step) = hi-step in
-  // yield `lo` while below `hi`, advancing by `step`. Guards: a non-positive step never advances
+    // yield `lo` while below `hi`, advancing by `step`. Guards: a non-positive step never advances
   // (no infinite pull); and `lo + step` is only computed when it cannot overflow — if `lo` is within
   // `step` of `Int64.max` there is no representable next element below `hi`, so the rest is empty.
   // `next` stays TOTAL (never traps) even for a range abutting `Int64.max`.
   if step <= 0 then
     Option.None(unit)
-  else
-    if lo < hi then
-      if lo > Int64.max - step then
-        Option.Some((lo, Iter.StepRangeI((hi, (hi, step)))))
-      else
-        Option.Some((lo, Iter.StepRangeI((lo + step, (hi, step)))))
+  else if lo < hi then
+    if lo > Int64.max - step then
+      Option.Some((lo, Iter.StepRangeI((hi, (hi, step)))))
     else
-      Option.None(unit)
+      Option.Some((lo, Iter.StepRangeI((lo + step, (hi, step)))))
+  else
+    Option.None(unit)
   | Iter.DownRangeI(dr) => let (hi, lo) = dr in
-  // descending half-open: yield `hi-1` while it is still `>= lo`, then continue from `hi-1`
+    // descending half-open: yield `hi-1` while it is still `>= lo`, then continue from `hi-1`
   if hi > lo then Option.Some((hi - 1, Iter.DownRangeI((hi - 1, lo)))) else Option.None(unit)
   | Iter.InclRangeI(ir) => let (lo, hi) = ir in
-  // inclusive `[lo, hi]`: yield `lo` while `lo <= hi`. `lo + 1` is computed ONLY when `lo < hi`, so
+    // inclusive `[lo, hi]`: yield `lo` while `lo <= hi`. `lo + 1` is computed ONLY when `lo < hi`, so
   // it is at most `hi <= Int64.max` — no overflow even when `hi == Int64.max` (the last element is
   // yielded with an empty rest rather than an overflowing `lo + 1`). Total: `next` never traps.
   if lo > hi then
     Option.None(unit)
+  else if lo < hi then
+    Option.Some((lo, Iter.InclRangeI((lo + 1, hi))))
   else
-    if lo < hi then
-      Option.Some((lo, Iter.InclRangeI((lo + 1, hi))))
-    else
-      Option.Some((lo, Iter.FromList([])))
+    Option.Some((lo, Iter.FromList([])))
   | Iter.FlatMapI(ff) => (let (f, cur-src) = ff in
   let (cur, src) = cur-src in
-  // drain the current sub-iterator; when it is empty, pull the next source element `x` and open
+    // drain the current sub-iterator; when it is empty, pull the next source element `x` and open
   // `f(x)` as the new current sub-iterator (recursing to skip any empty sub-iterators)
   match next(cur) with
     | Option.Some(p) => let (v, rest) = p in
-    Option.Some((v, Iter.FlatMapI((f, (rest, src)))))
+      Option.Some((v, Iter.FlatMapI((f, (rest, src)))))
     | Option.None(_) => match next(src) with
       | Option.None(_) => Option.None(unit)
       | Option.Some(ps) => let (x, srest) = ps in
-      next(Iter.FlatMapI((f, (f(x), srest)))))
+        next(Iter.FlatMapI((f, (f(x), srest)))))
   | Iter.IntersperseI(isp) => (let (sep, pending-src) = isp in
   let (pending, src) = pending-src in
-  // if a separator is pending AND the source still has an element, yield `sep` (then next yields the
+    // if a separator is pending AND the source still has an element, yield `sep` (then next yields the
   // element); otherwise yield the next source element and mark a separator pending before the one after
   if pending then
     match next(src) with
@@ -202,9 +200,9 @@ def next(it) = match it with
     match next(src) with
       | Option.None(_) => Option.None(unit)
       | Option.Some(p) => let (v, rest) = p in
-      Option.Some((v, Iter.IntersperseI((sep, (true, rest))))))
+        Option.Some((v, Iter.IntersperseI((sep, (true, rest))))))
   | Iter.StepByI(sb) => (let (n, src) = sb in
-  // yield the head, then advance the rest by dropping the next `n-1` elements (via the lazy DropI).
+    // yield the head, then advance the rest by dropping the next `n-1` elements (via the lazy DropI).
   // A non-positive `n` yields nothing (guards against a zero/negative stride).
   if n <= 0 then
     Option.None(unit)
@@ -212,15 +210,15 @@ def next(it) = match it with
     match next(src) with
       | Option.None(_) => Option.None(unit)
       | Option.Some(p) => let (v, rest) = p in
-      Option.Some((v, Iter.StepByI((n, Iter.DropI((n - 1, rest)))))))
+        Option.Some((v, Iter.StepByI((n, Iter.DropI((n - 1, rest)))))))
   | Iter.DedupI(dd) => let (have, prev-src) = dd in
   let (prev, src) = prev-src in
-  // yield an element only if it differs from the one just yielded (`prev`, valid when `have`). A
+    // yield an element only if it differs from the one just yielded (`prev`, valid when `have`). A
   // duplicate recurses to skip it, threading the same `prev`; a new value yields + becomes the new `prev`.
   match next(src) with
     | Option.None(_) => Option.None(unit)
     | Option.Some(p) => let (v, rest) = p in
-    if have then
+      if have then
       if v == prev then
         next(Iter.DedupI((true, (prev, rest))))
       else
@@ -265,12 +263,12 @@ def iter-set(s) = Iter.FromList(Set.to-list(s))
 def map-keys-list(pairs: List(Tuple(Int64, Int64))) = match pairs with
   | [] => []
   | [h, .. t] => let (k, _v) = h in
-  List.concat([k], map-keys-list(t))
+    List.concat([k], map-keys-list(t))
 
 def map-vals-list(pairs: List(Tuple(Int64, Int64))) = match pairs with
   | [] => []
   | [h, .. t] => let (_k, v) = h in
-  List.concat([v], map-vals-list(t))
+    List.concat([v], map-vals-list(t))
 
 /// Iterate a MAP's KEYS in CANONICAL key order. Bridges a map into the Int64 iterator via
 /// `Map.to-list` (canonical-key-order entries) + a key projection, so map keys drop into every
@@ -292,7 +290,9 @@ type EntryIter =
   | EFromList(List(Tuple(Int64, Int64)))
 
 /// Step an `EntryIter`: yield `Option(((key, value), rest))`, `None` at exhaustion. Total and pure.
-def entry-next(it) = let EntryIter.EFromList(xs) = it in match xs with
+def entry-next(it) =
+  let EntryIter.EFromList(xs) = it in
+    match xs with
     | [] => Option.None(unit)
     | [h, .. t] => Option.Some((h, EntryIter.EFromList(t)))
 
@@ -304,7 +304,7 @@ def iter-map-entries(m) = EntryIter.EFromList(Map.to-list(m))
 def index-pairs-from(it, i) = match next(it) with
   | Option.None(_) => []
   | Option.Some(p) => let (v, rest) = p in
-  List.concat([(i, v)], index-pairs-from(rest, i + 1))
+    List.concat([(i, v)], index-pairs-from(rest, i + 1))
 
 /// Pair each element of an iterator with its zero-based INDEX, as an `EntryIter` of `(index, element)`.
 /// The index-carrying companion of `iter-map-entries` — walk index AND value together
@@ -318,7 +318,7 @@ def enumerate(it) = EntryIter.EFromList(index-pairs-from(it, 0))
 def adjacent-pairs-from(it, have, prev) = match next(it) with
   | Option.None(_) => []
   | Option.Some(p) => let (v, rest) = p in
-  if have then
+    if have then
     List.concat([(prev, v)], adjacent-pairs-from(rest, true, v))
   else
     adjacent-pairs-from(rest, true, v)
@@ -333,10 +333,10 @@ def pairwise(it) = EntryIter.EFromList(adjacent-pairs-from(it, false, 0))
 def zip-pairs-from(a, b) = match next(a) with
   | Option.None(_) => []
   | Option.Some(pa) => let (x, ra) = pa in
-  match next(b) with
+    match next(b) with
     | Option.None(_) => []
     | Option.Some(pb) => let (y, rb) = pb in
-    List.concat([(x, y)], zip-pairs-from(ra, rb))
+      List.concat([(x, y)], zip-pairs-from(ra, rb))
 
 /// Zip two iterators element-wise into an `EntryIter` of `(a_i, b_i)` pairs, stopping at the shorter.
 /// The PAIR-yielding companion of `zip-with` (which combines each pair into one scalar via `f`) — keeps
@@ -349,7 +349,7 @@ def fold-entries(it, acc, f: Int64 -> Int64 -> Int64 -> Int64) = match entry-nex
   | Option.None(_) => acc
   | Option.Some(p) => let (kv, rest) = p in
   let (k, v) = kv in
-  fold-entries(rest, f(acc, k, v), f)
+    fold-entries(rest, f(acc, k, v), f)
 
 /// Number of entries the entry-iterator yields (the map's entry count).
 def entry-count(it) = fold-entries(it, 0, fn(a, _k, _v) => a + 1)
@@ -404,7 +404,7 @@ def intersperse(it, sep) = Iter.IntersperseI((sep, (false, it)))
 def fold(it, acc, f: Int64 -> Int64 -> Int64) = match next(it) with
   | Option.None(_) => acc
   | Option.Some(p) => let (v, rest) = p in
-  fold(rest, f(acc, v), f)
+    fold(rest, f(acc, v), f)
 
 /// Fold WITHOUT an initial accumulator: seed with the first element, then combine the rest with `f`.
 /// `None` for an empty iterator (there is no element to seed with). Useful for `max`/`min`/`gcd`-style
@@ -412,7 +412,7 @@ def fold(it, acc, f: Int64 -> Int64 -> Int64) = match next(it) with
 def reduce(it, f: Int64 -> Int64 -> Int64) = match next(it) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(p) => let (v, rest) = p in
-  Option.Some(fold(rest, v, f))
+    Option.Some(fold(rest, v, f))
 
 /// Number of elements the iterator yields.
 def count(it) = fold(it, 0, fn(a, v) => a + 1)
@@ -427,13 +427,13 @@ def product(it) = fold(it, 1, fn(a, v) => a * v)
 def contains(it, target) = match next(it) with
   | Option.None(_) => false
   | Option.Some(p) => let (v, rest) = p in
-  if v == target then true else contains(rest, target)
+    if v == target then true else contains(rest, target)
 
 // zero-based position of the first element equal to `target`, threading the running index
 def position-from(it, target, i) = match next(it) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(p) => let (v, rest) = p in
-  if v == target then Option.Some(i) else position-from(rest, target, i + 1)
+    if v == target then Option.Some(i) else position-from(rest, target, i + 1)
 
 /// The zero-based INDEX of the first element equal to `target`, or `None` (the index counterpart of
 /// `contains`; short-circuits on the first match).
@@ -446,19 +446,19 @@ def for-each(it, f: Int64 -> Unit) = match next(it) with
   | Option.None(_) => unit
   | Option.Some(p) => let (v, rest) = p in
   let _ = f(v) in
-  for-each(rest, f)
+    for-each(rest, f)
 
 /// Materialize the iterator back into a list (the bridge from computation back to data).
 def collect-list(it) = match next(it) with
   | Option.None(_) => []
   | Option.Some(p) => let (v, rest) = p in
-  List.concat([v], collect-list(rest))
+    List.concat([v], collect-list(rest))
 
 /// The first element `p` accepts, or `None`.
 def find(it, p: Int64 -> Bool) = match next(it) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(pr) => let (v, rest) = pr in
-  if p(v) then Option.Some(v) else find(rest, p)
+    if p(v) then Option.Some(v) else find(rest, p)
 
 /// Does any element satisfy `p`? (short-circuits)
 def any(it, p: Int64 -> Bool) = match find(it, p) with
@@ -469,14 +469,14 @@ def any(it, p: Int64 -> Bool) = match find(it, p) with
 def all(it, p: Int64 -> Bool) = match next(it) with
   | Option.None(_) => true
   | Option.Some(pr) => let (v, rest) = pr in
-  if p(v) then all(rest, p) else false
+    if p(v) then all(rest, p) else false
 
 /// How many elements satisfy `p` — the count of the sub-sequence `filter(it, p)` would yield, without
 /// materializing it. (The predicate companion of `count`.)
 def count-where(it, p: Int64 -> Bool) = match next(it) with
   | Option.None(_) => 0
   | Option.Some(pr) => let (v, rest) = pr in
-  if p(v) then 1 + count-where(rest, p) else count-where(rest, p)
+    if p(v) then 1 + count-where(rest, p) else count-where(rest, p)
 
 /// Does the iterator yield NO elements? `true` iff the first pull is exhaustion (does not drain the
 /// whole iterator — the O(1) emptiness test).
@@ -489,7 +489,7 @@ def is-empty(it) = match next(it) with
 def last(it) = match next(it) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(p) => let (v, rest) = p in
-  match next(rest) with
+    match next(rest) with
     | Option.None(_) => Option.Some(v)
     | Option.Some(_) => last(rest)
 
@@ -497,55 +497,55 @@ def last(it) = match next(it) with
 def nth(it, n) = match next(it) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(p) => let (v, rest) = p in
-  if n <= 0 then Option.Some(v) else nth(rest, n - 1)
+    if n <= 0 then Option.Some(v) else nth(rest, n - 1)
 
 // running helpers keep the current best while pulling the rest (closure-free — no fold combinator)
 def max-from(it, best) = match next(it) with
   | Option.None(_) => best
   | Option.Some(p) => let (v, rest) = p in
-  if v > best then max-from(rest, v) else max-from(rest, best)
+    if v > best then max-from(rest, v) else max-from(rest, best)
 
 def min-from(it, best) = match next(it) with
   | Option.None(_) => best
   | Option.Some(p) => let (v, rest) = p in
-  if v < best then min-from(rest, v) else min-from(rest, best)
+    if v < best then min-from(rest, v) else min-from(rest, best)
 
 /// The largest element, or `None` if empty.
 def max(it) = match next(it) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(p) => let (v, rest) = p in
-  Option.Some(max-from(rest, v))
+    Option.Some(max-from(rest, v))
 
 /// The smallest element, or `None` if empty.
 def min(it) = match next(it) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(p) => let (v, rest) = p in
-  Option.Some(min-from(rest, v))
+    Option.Some(min-from(rest, v))
 
 // keep the element whose `key` is largest so far, threading (best-elem, best-key)
 def max-by-from(it, best, best-key, key: Int64 -> Int64) = match next(it) with
   | Option.None(_) => best
   | Option.Some(p) => let (v, rest) = p in
   let k = key(v) in
-  if k > best-key then max-by-from(rest, v, k, key) else max-by-from(rest, best, best-key, key)
+    if k > best-key then max-by-from(rest, v, k, key) else max-by-from(rest, best, best-key, key)
 
 def min-by-from(it, best, best-key, key: Int64 -> Int64) = match next(it) with
   | Option.None(_) => best
   | Option.Some(p) => let (v, rest) = p in
   let k = key(v) in
-  if k < best-key then min-by-from(rest, v, k, key) else min-by-from(rest, best, best-key, key)
+    if k < best-key then min-by-from(rest, v, k, key) else min-by-from(rest, best, best-key, key)
 
 /// The element with the largest `key(elem)`, or `None` if empty. Ties keep the first seen.
 def max-by(it, key: Int64 -> Int64) = match next(it) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(p) => let (v, rest) = p in
-  Option.Some(max-by-from(rest, v, key(v), key))
+    Option.Some(max-by-from(rest, v, key(v), key))
 
 /// The element with the smallest `key(elem)`, or `None` if empty. Ties keep the first seen.
 def min-by(it, key: Int64 -> Int64) = match next(it) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(p) => let (v, rest) = p in
-  Option.Some(min-by-from(rest, v, key(v), key))
+    Option.Some(min-by-from(rest, v, key(v), key))
 
 // ── Tests ────────────────────────────────────────────────────────────────────────────────────────
 def int-list-eq(a, b) = match a with
@@ -677,13 +677,13 @@ def contains-in-empty-is-false() =
 def re-steppable() =
   // an iterator is a value: stepping does not consume it — both reads see the same first element
   let it = range(10, 20) in
-  match next(it) with
+    match next(it) with
     | Option.None(_) => trap("should yield")
     | Option.Some(p1) => let (a, _) = p1 in
-    match next(it) with
+      match next(it) with
       | Option.None(_) => trap("should still yield")
       | Option.Some(p2) => let (b, _) = p2 in
-      if a == 10 then
+        if a == 10 then
         if b == 10 then unit else trap("second read differs")
       else
         trap("first read wrong")
@@ -976,12 +976,12 @@ def for-each-visits-every-element() =
   // the range's elements (and none beyond it)
   let _ = for-each(range(0, 5), fn(x) =>
       if x >= 0 then if x < 5 then unit else trap("visited too high") else trap("visited too low")) in
-  unit
+    unit
 
 @test
 def for-each-over-empty-is-a-noop() =
   let _ = for-each(empty(), fn(_x) => trap("empty should never call f")) in
-  unit
+    unit
 
 // ── Edge-of-range totality (PR #384 regression): `next` must never trap, even abutting Int64.max ──
 @test
@@ -991,7 +991,7 @@ def range-inclusive-at-int64-max-does-not-overflow() =
   match next(range-inclusive(Int64.max, Int64.max)) with
     | Option.None(_) => trap("should yield Int64.max once")
     | Option.Some(p) => let (v, rest) = p in
-    if v == Int64.max then
+      if v == Int64.max then
       match next(rest) with
         | Option.None(_) => unit
         | Option.Some(_) => trap("inclusive range at max should have exactly one element")
@@ -1083,13 +1083,16 @@ def min-by-empty-is-none() =
 def law-collect-round-trips-from-list() =
   // collect-list ∘ from-list = identity, for several shapes
   let xs = [7, 0, 0 - 3, 42, 5] in
-  if int-list-eq(collect-list(from-list(xs)), xs) then unit else trap("collect ∘ from-list ≠ id")
+    if int-list-eq(collect-list(from-list(xs)), xs) then unit else trap("collect ∘ from-list ≠ id")
 
 @test
 def law-count-equals-collected-length() =
   // count(it) == length(collect-list(it)) — the two ways of measuring agree
   let it = filter(range(0, 20), fn(x) => x % 3 == 0) in
-  if count(it) == count(from-list(collect-list(it))) then unit else trap("count ≠ collected length")
+    if count(it) == count(from-list(collect-list(it))) then
+    unit
+  else
+    trap("count ≠ collected length")
 
 @test
 def law-chain-is-associative() =
@@ -1097,7 +1100,7 @@ def law-chain-is-associative() =
   let a = from-list([1, 2]) in
   let b = from-list([3]) in
   let c = from-list([4, 5]) in
-  if int-list-eq(
+    if int-list-eq(
       collect-list(chain(chain(a, b), c)),
       collect-list(chain(from-list([1, 2]), chain(from-list([3]), from-list([4, 5]))))
     ) then
@@ -1122,7 +1125,7 @@ def law-take-drop-splits() =
   // take(it, n) ++ drop(it, n) reconstructs it (for a finite, re-steppable source)
   let full = collect-list(range(0, 10)) in
   let split = collect-list(chain(take(range(0, 10), 4), drop(range(0, 10), 4))) in
-  if int-list-eq(split, full) then unit else trap("take n ++ drop n ≠ whole")
+    if int-list-eq(split, full) then unit else trap("take n ++ drop n ≠ whole")
 
 @test
 def law-sum-equals-fold-plus() =
@@ -1235,7 +1238,7 @@ def flat-map-coexists-with-scan() =
   // Both must compile and run now.
   let a = collect-list(flat-map(from-list([1, 2]), fn(x) => from-list([x, x]))) in
   let b = collect-list(scan(range(1, 4), 0, fn(acc, x) => acc + x)) in
-  if int-list-eq(a, [1, 1, 2, 2]) then
+    if int-list-eq(a, [1, 1, 2, 2]) then
     if int-list-eq(b, [1, 3, 6]) then unit else trap("scan")
   else
     trap("flat-map")
@@ -1402,13 +1405,13 @@ def iter-set-sum-canonical() =
 def iter-map-keys-canonical-order() =
   // keys of {5:50, 2:20, 8:80} in canonical KEY order -> [2, 5, 8]
   let m = Map.insert(Map.insert(Map.insert(Map.empty(), 5, 50), 2, 20), 8, 80) in
-  if int-list-eq(collect-list(iter-map-keys(m)), [2, 5, 8]) then unit else trap("keys = [2,5,8]")
+    if int-list-eq(collect-list(iter-map-keys(m)), [2, 5, 8]) then unit else trap("keys = [2,5,8]")
 
 @test
 def iter-map-values-in-key-order() =
   // values of {5:50, 2:20, 8:80} paired to canonical key order (2,5,8) -> [20, 50, 80]
   let m = Map.insert(Map.insert(Map.insert(Map.empty(), 5, 50), 2, 20), 8, 80) in
-  if int-list-eq(collect-list(iter-map-values(m)), [20, 50, 80]) then
+    if int-list-eq(collect-list(iter-map-values(m)), [20, 50, 80]) then
     unit
   else
     trap("values = [20,50,80]")
@@ -1417,19 +1420,19 @@ def iter-map-values-in-key-order() =
 def iter-map-keys-sum() =
   // keys drop into the consumers: sum of keys {1,2,3} = 6
   let m = Map.insert(Map.insert(Map.insert(Map.empty(), 1, 10), 2, 20), 3, 30) in
-  if sum(iter-map-keys(m)) == 6 then unit else trap("key sum = 6")
+    if sum(iter-map-keys(m)) == 6 then unit else trap("key sum = 6")
 
 @test
 def iter-map-values-compose() =
   // values compose with transformers: doubled values of {1:2, 2:4} -> [4, 8], sum 12
   let m = Map.insert(Map.insert(Map.empty(), 1, 2), 2, 4) in
-  if sum(map(iter-map-values(m), fn(x) => x * 2)) == 12 then unit else trap("2*(2+4) = 12")
+    if sum(map(iter-map-values(m), fn(x) => x * 2)) == 12 then unit else trap("2*(2+4) = 12")
 
 @test
 def iter-map-keys-empty() =
   // a map with its sole entry removed yields no keys
   let m = Map.remove(Map.insert(Map.empty(), 1, 10), 1) in
-  if count(iter-map-keys(m)) == 0 then unit else trap("empty map has no keys")
+    if count(iter-map-keys(m)) == 0 then unit else trap("empty map has no keys")
 
 // ── dedup: drop consecutive duplicates ───────────────────────────────────────────────────────────
 @test
@@ -1522,7 +1525,7 @@ def is-empty-of-filtered-out() =
 def entries-fold-key-times-value() =
   // {2:10, 3:100} -> sum of key*value = 2*10 + 3*100 = 320 (key AND value in one pass)
   let m = Map.insert(Map.insert(Map.empty(), 2, 10), 3, 100) in
-  if fold-entries(iter-map-entries(m), 0, fn(acc, k, v) => acc + k * v) == 320 then
+    if fold-entries(iter-map-entries(m), 0, fn(acc, k, v) => acc + k * v) == 320 then
     unit
   else
     trap("320")
@@ -1531,17 +1534,17 @@ def entries-fold-key-times-value() =
 def entries-count-is-entry-count() =
   // {1:_,2:_,3:_} with a dup key -> 3 distinct entries
   let m = Map.insert(Map.insert(Map.insert(Map.insert(Map.empty(), 1, 1), 2, 2), 3, 3), 1, 9) in
-  if entry-count(iter-map-entries(m)) == 3 then unit else trap("3 entries")
+    if entry-count(iter-map-entries(m)) == 3 then unit else trap("3 entries")
 
 @test
 def entries-canonical-key-order() =
   // first entry (by entry-next) has the smallest key; fold that picks the first key = 2 of {5,2,8}
   let m = Map.insert(Map.insert(Map.insert(Map.empty(), 5, 50), 2, 20), 8, 80) in
-  match entry-next(iter-map-entries(m)) with
+    match entry-next(iter-map-entries(m)) with
     | Option.None(_) => trap("nonempty")
     | Option.Some(p) => let (kv, _) = p in
     let (k, v) = kv in
-    if k == 2 then
+      if k == 2 then
       if v == 20 then unit else trap("first value 20")
     else
       trap("first key should be min 2")
@@ -1549,13 +1552,13 @@ def entries-canonical-key-order() =
 @test
 def entries-of-empty-map() =
   let m = Map.remove(Map.insert(Map.empty(), 1, 10), 1) in
-  if entry-count(iter-map-entries(m)) == 0 then unit else trap("empty map has no entries")
+    if entry-count(iter-map-entries(m)) == 0 then unit else trap("empty map has no entries")
 
 @test
 def entries-sum-keys-matches-iter-map-keys() =
   // fold-entries summing keys agrees with sum(iter-map-keys …) — the two map views are consistent
   let m = Map.insert(Map.insert(Map.insert(Map.empty(), 4, 40), 6, 60), 2, 20) in
-  if fold-entries(iter-map-entries(m), 0, fn(acc, k, _v) => acc + k) == sum(iter-map-keys(m)) then
+    if fold-entries(iter-map-entries(m), 0, fn(acc, k, _v) => acc + k) == sum(iter-map-keys(m)) then
     unit
   else
     trap("entry-key-sum ≠ iter-map-keys sum")
@@ -1581,7 +1584,7 @@ def enumerate-first-index-is-zero() =
     | Option.None(_) => trap("nonempty")
     | Option.Some(p) => let (kv, _) = p in
     let (i, v) = kv in
-    if i == 0 then if v == 42 then unit else trap("first value 42") else trap("first index 0")
+      if i == 0 then if v == 42 then unit else trap("first value 42") else trap("first index 0")
 
 @test
 def enumerate-empty() =
@@ -1634,7 +1637,7 @@ def pairwise-first-pair() =
     | Option.None(_) => trap("should have a pair")
     | Option.Some(p) => let (kv, _) = p in
     let (a, b) = kv in
-    if a == 3 then if b == 5 then unit else trap("second is 5") else trap("first is 3")
+      if a == 3 then if b == 5 then unit else trap("second is 5") else trap("first is 3")
 
 @test
 def pairwise-over-a-range() =
@@ -1676,7 +1679,7 @@ def zip-entries-first-pair() = match entry-next(
   | Option.None(_) => trap("should have a pair")
   | Option.Some(p) => let (kv, _) = p in
   let (x, y) = kv in
-  if x == 7 then if y == 70 then unit else trap("second is 70") else trap("first is 7")
+    if x == 7 then if y == 70 then unit else trap("second is 70") else trap("first is 7")
 
 @test
 def zip-entries-bounds-infinite() =
@@ -1692,7 +1695,9 @@ def zip-entries-bounds-infinite() =
 type Susp =
   | Thunk(Unit -> Int64)
 
-def force-susp(s: Susp) = let Susp.Thunk(f) = s in f(unit)
+def force-susp(s: Susp) =
+  let Susp.Thunk(f) = s in
+    f(unit)
 
 @test
 def unit-param-closure-boxed-regression() =

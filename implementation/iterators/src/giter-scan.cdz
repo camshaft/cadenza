@@ -1,18 +1,18 @@
 /// giter-scan.cdz — DIRECT edge coverage for the `scan` combinator (running fold), split into its own
-  /// small module.
-  ///
-  /// WHY A SEPARATE MODULE. `scan(it, acc, f)` emits the running accumulator BEFORE each step, so it yields
-  /// n+1 values for n inputs and its `Nil` base case emits the seed alone (`Cons(acc, Nil)`). giter.cdz pins
-  /// scan's happy path (running sum, n+1 count, a non-element accumulator over Strings) but NOT the
-  /// EMPTY-input edge — that `Nil`-base seed-only emission is the subtle one (an off-by-one in the base arm
-  /// would drop or duplicate the seed and slip past the non-empty tests). These pin it directly. It lives in
-  /// its own module because giter.cdz (92 @tests) sits at the per-module monomorphizer instantiation-pressure
-  /// ceiling its header documents; a fresh module isolates the added instantiation (the same "isolate the
-  /// heavy instantiation" pattern giter-flat.cdz / giter-chain.cdz follow).
-  ///
-  /// The generic pull-iterator (same cons-cell shape as the sibling modules; re-declared here so this module
-  /// is self-contained — each src/*.cdz is its own namespace).
-  type GIter =
+/// small module.
+///
+/// WHY A SEPARATE MODULE. `scan(it, acc, f)` emits the running accumulator BEFORE each step, so it yields
+/// n+1 values for n inputs and its `Nil` base case emits the seed alone (`Cons(acc, Nil)`). giter.cdz pins
+/// scan's happy path (running sum, n+1 count, a non-element accumulator over Strings) but NOT the
+/// EMPTY-input edge — that `Nil`-base seed-only emission is the subtle one (an off-by-one in the base arm
+/// would drop or duplicate the seed and slip past the non-empty tests). These pin it directly. It lives in
+/// its own module because giter.cdz (92 @tests) sits at the per-module monomorphizer instantiation-pressure
+/// ceiling its header documents; a fresh module isolates the added instantiation (the same "isolate the
+/// heavy instantiation" pattern giter-flat.cdz / giter-chain.cdz follow).
+///
+/// The generic pull-iterator (same cons-cell shape as the sibling modules; re-declared here so this module
+/// is self-contained — each src/*.cdz is its own namespace).
+type GIter =
   | Nil
   | Cons(a, GIter(a))
 
@@ -42,8 +42,8 @@ def take(it, n) =
     GIter.Nil(unit)
   else
     match it with
-    | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1))
+      | GIter.Nil(_) => GIter.Nil(unit)
+      | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1))
 
 /// `collect(it)` — reify the iterator back to a `List(a)` so a test can assert the exact emitted sequence.
 def collect(it) = match it with

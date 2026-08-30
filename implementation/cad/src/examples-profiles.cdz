@@ -55,7 +55,7 @@ def arch-fin() =
       v2(8 / 1, 10 / 1),
       v2(0 / 1, 10 / 1)
     ) in
-  extrude(outline(profile), 2 / 1)
+    extrude(outline(profile), 2 / 1)
 
 /// A WAVE-TOP fin drawn with RELATIVE segments (`cubic-by`) — the same spline layer as `arch-fin`, but authored
 /// as deltas from the cursor so you don't recompute absolute coordinates as the pen moves. Base: line-by (10,0)
@@ -69,7 +69,7 @@ def wave-fin() =
       v2(0 / 1 - 2 / 1, 4 / 1),
       v2(2 / 1, 4 / 1)
     ) in
-  extrude(outline(profile), 3 / 1)
+    extrude(outline(profile), 3 / 1)
 
 /// ---- @test suite: pin the extents (the meshable geometry is exercised by the native cdz-cad driver) ----
 @test

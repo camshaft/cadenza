@@ -11,7 +11,6 @@
 /// same fraction of a bar regardless of tempo or resolution. The concrete integer TICK count is a
 /// projection (whole-note-fraction × ticks-per-whole), computed at the driver edge once the Rational→Int
 /// gap (reported) is closed; until then rhythm.cdz's integer ticks carry the wire timing.
-
 /// A duration as a `Rational` fraction of a WHOLE note. 1/1 = whole, 1/4 = quarter, 1/8 = eighth.
 type RDuration =
   | RDuration(Rational)
@@ -20,14 +19,18 @@ type RDuration =
 def rduration(whole-notes: Rational) = RDuration.RDuration(whole-notes)
 
 /// The whole-note-fraction of a duration (a `Rational`).
-def whole-notes(d: RDuration) = match d with | RDuration.RDuration(r) => r
+def whole-notes(d: RDuration) = match d with
+  | RDuration.RDuration(r) => r
 
 // ---- the note-value durations, as fractions of a whole note -----------------------------------------
-
 def r-whole = RDuration.RDuration(Rational.of(1, 1))
+
 def r-half = RDuration.RDuration(Rational.of(1, 2))
+
 def r-quarter = RDuration.RDuration(Rational.of(1, 4))
+
 def r-eighth = RDuration.RDuration(Rational.of(1, 8))
+
 def r-sixteenth = RDuration.RDuration(Rational.of(1, 16))
 
 /// A DOTTED duration = 3/2 of the value (value + half itself), exact: dotted quarter = 3/8.
@@ -38,10 +41,10 @@ def r-dotted(d: RDuration) = RDuration.RDuration(whole-notes(d) * Rational.of(3,
 def r-triplet(d: RDuration) = RDuration.RDuration(whole-notes(d) * Rational.of(2, 3))
 
 /// An N-TUPLET version = (base / n) of a beat's worth: divide the duration into `n` equal exact parts.
-def r-tuplet(d: RDuration, n: Int64) = RDuration.RDuration(whole-notes(d) * Rational.of(1, 1) / Rational.of-int(n))
+def r-tuplet(d: RDuration, n: Int64) =
+  RDuration.RDuration(whole-notes(d) * Rational.of(1, 1) / Rational.of-int(n))
 
 // ---- duration arithmetic (exact rational) -----------------------------------------------------------
-
 /// Place one duration after another (sum the fractions).
 def rdur-add(a: RDuration, b: RDuration) = RDuration.RDuration(whole-notes(a) + whole-notes(b))
 
@@ -52,53 +55,63 @@ def rdur-times(d: RDuration, n: Int64) = RDuration.RDuration(whole-notes(d) * Ra
 def rdur-eq(a: RDuration, b: RDuration) = whole-notes(a) == whole-notes(b)
 
 /// ============================ @test suite (rational durations) ============================
-
 @test
 def note-values-are-fractions-of-a-whole() =
   // whole=1/1, half=1/2, quarter=1/4, eighth=1/8, sixteenth=1/16 — exact fractions.
   if rdur-eq(r-quarter, rduration(Rational.of(1, 4))) then
-    (if rdur-eq(r-eighth, rduration(Rational.of(1, 8))) then
-      (if rdur-eq(r-sixteenth, rduration(Rational.of(1, 16))) then unit else trap("sixteenth")) else trap("eighth"))
-  else trap("quarter")
+    if rdur-eq(r-eighth, rduration(Rational.of(1, 8))) then
+      if rdur-eq(r-sixteenth, rduration(Rational.of(1, 16))) then unit else trap("sixteenth")
+    else
+      trap("eighth")
+  else
+    trap("quarter")
 
 @test
 def four-quarters-make-a-whole() =
   // The exactness the rational model buys: four quarters sum to exactly one whole note.
   let two = rdur-add(r-quarter, r-quarter) in
   let four = rdur-add(two, two) in
-  if rdur-eq(four, r-whole) then unit else trap("4 * 1/4 = 1 whole")
+    if rdur-eq(four, r-whole) then unit else trap("4 * 1/4 = 1 whole")
 
 @test
 def a-dotted-quarter-is-three-eighths() =
   // Dotted quarter = 3/2 * 1/4 = 3/8 of a whole note (a quarter + an eighth), exact.
   if rdur-eq(r-dotted(r-quarter), rduration(Rational.of(3, 8))) then
-    (if rdur-eq(r-dotted(r-quarter), rdur-add(r-quarter, r-eighth)) then unit else trap("dotted = quarter + eighth"))
-  else trap("dotted quarter is 3/8")
+    if rdur-eq(r-dotted(r-quarter), rdur-add(r-quarter, r-eighth)) then
+      unit
+    else
+      trap("dotted = quarter + eighth")
+  else
+    trap("dotted quarter is 3/8")
 
 @test
 def three-triplet-eighths-fill-a-quarter-exactly() =
   // The exactness win: a triplet-eighth = 2/3 * 1/8 = 1/12 of a whole; THREE of them = 3/12 = 1/4 = a
   // quarter, with ZERO drift (integer ticks at low resolution or floats would not close cleanly).
   let te = r-triplet(r-eighth) in
-  if rdur-eq(te, rduration(Rational.of(1, 12))) then
-    (if rdur-eq(rdur-times(te, 3), r-quarter) then unit else trap("3 triplet-eighths = a quarter"))
-  else trap("triplet-eighth is 1/12")
+    if rdur-eq(te, rduration(Rational.of(1, 12))) then
+    if rdur-eq(rdur-times(te, 3), r-quarter) then unit else trap("3 triplet-eighths = a quarter")
+  else
+    trap("triplet-eighth is 1/12")
 
 @test
 def a-quintuplet-divides-exactly() =
   // A 5-tuplet over a quarter: each part is 1/4 * 1/5 = 1/20; five of them close to a quarter exactly.
   let fifth = r-tuplet(r-quarter, 5) in
-  if rdur-eq(fifth, rduration(Rational.of(1, 20))) then
-    (if rdur-eq(rdur-times(fifth, 5), r-quarter) then unit else trap("5 fifths = a quarter"))
-  else trap("quintuplet part is 1/20")
+    if rdur-eq(fifth, rduration(Rational.of(1, 20))) then
+    if rdur-eq(rdur-times(fifth, 5), r-quarter) then unit else trap("5 fifths = a quarter")
+  else
+    trap("quintuplet part is 1/20")
 
 @test
 def durations-are-tempo-and-resolution-independent() =
   // A quarter is 1/4 of a whole note no matter the tempo or tick resolution — the mode/tempo-independence
   // the rational model gives time (mirrors the pitch core's mode-independence).
   let bar-4-4 = rdur-times(r-quarter, 4) in
-  if rdur-eq(bar-4-4, r-whole) then
-    (if rdur-eq(rdur-times(r-eighth, 8), r-whole) then unit else trap("8 eighths = a whole")) else trap("4 quarters = a bar")
+    if rdur-eq(bar-4-4, r-whole) then
+    if rdur-eq(rdur-times(r-eighth, 8), r-whole) then unit else trap("8 eighths = a whole")
+  else
+    trap("4 quarters = a bar")
 
 @test
 def a-double-dotted-quarter-is-seven-sixteenths() =
@@ -106,33 +119,48 @@ def a-double-dotted-quarter-is-seven-sixteenths() =
   // double-dot in notation is quarter + eighth + sixteenth = 7/16; our r-dotted is the compounding 3/2
   // form, so dotted-of-dotted = 9/16 — this pins WHICH convention r-dotted uses so it can't silently drift.)
   let dd = r-dotted(r-dotted(r-quarter)) in
-  if rdur-eq(dd, rduration(Rational.of(9, 16))) then
+    if rdur-eq(dd, rduration(Rational.of(9, 16))) then
     // the notational double-dot (quarter + eighth + sixteenth) is a separate exact sum, 7/16:
-    (if rdur-eq(rdur-add(rdur-add(r-quarter, r-eighth), r-sixteenth), rduration(Rational.of(7, 16))) then unit
-     else trap("notational double-dot = 7/16"))
-  else trap("compounding double-dot = 9/16")
+    if rdur-eq(rdur-add(rdur-add(r-quarter, r-eighth), r-sixteenth), rduration(Rational.of(7, 16))) then
+      unit
+    else
+      trap("notational double-dot = 7/16")
+  else
+    trap("compounding double-dot = 9/16")
 
 @test
 def nested-triplets-stay-exact() =
   // A triplet OF a triplet-eighth = 2/3 * 2/3 * 1/8 = 4/72 = 1/18 of a whole — still exact, no drift.
   // Nine of them = 9/18 = 1/2 (a half note) exactly; the value stays a clean reduced rational throughout.
   let tt = r-triplet(r-triplet(r-eighth)) in
-  if rdur-eq(tt, rduration(Rational.of(1, 18))) then
-    (if rdur-eq(rdur-times(tt, 9), r-half) then unit else trap("9 nested = a half note"))
-  else trap("nested triplet-eighth = 1/18")
+    if rdur-eq(tt, rduration(Rational.of(1, 18))) then
+    if rdur-eq(rdur-times(tt, 9), r-half) then unit else trap("9 nested = a half note")
+  else
+    trap("nested triplet-eighth = 1/18")
 
 @test
 def a-seven-tuplet-of-a-half-note-closes-exactly() =
   // Septuplet over a half note: each part 1/2 * 1/7 = 1/14; seven close to a half exactly (the drift-free
   // property holds for any n, not just the common 3/5).
   let sev = r-tuplet(r-half, 7) in
-  if rdur-eq(sev, rduration(Rational.of(1, 14))) then
-    (if rdur-eq(rdur-times(sev, 7), r-half) then unit else trap("7 septuplets = a half"))
-  else trap("septuplet part is 1/14")
+    if rdur-eq(sev, rduration(Rational.of(1, 14))) then
+    if rdur-eq(rdur-times(sev, 7), r-half) then unit else trap("7 septuplets = a half")
+  else
+    trap("septuplet part is 1/14")
 
 export {
   RDuration.*,
-  rduration, whole-notes,
-  r-whole, r-half, r-quarter, r-eighth, r-sixteenth,
-  r-dotted, r-triplet, r-tuplet, rdur-add, rdur-times, rdur-eq,
+  rduration,
+  whole-notes,
+  r-whole,
+  r-half,
+  r-quarter,
+  r-eighth,
+  r-sixteenth,
+  r-dotted,
+  r-triplet,
+  r-tuplet,
+  rdur-add,
+  rdur-times,
+  rdur-eq
 }

@@ -17,20 +17,23 @@
 /// The base `run-sim` returns an `Instant` (the final clock), so this first cut's task returns the end
 /// time (proving the piece played out over Sim time). Returning the played `List(MidiEvent)` waits on the
 /// generic-return `run-sim(t: Type, task) : t` (DES MR abd9c4555, queued).
-
 import { MidiEvent } from "schedule"
+
 import { ev-tick, schedule, play-order, note-at, balanced } from "schedule"
+
 import { Note } from "schedule"
+
 import { pitch } from "pitch"
+
 import { major-triad, chord-notes } from "chord"
 
 // ── vendored Sim (minimal: effect + run-sim + Instant), from implementation/des/src/sim.cdz @ a9d2cabb2 ──
-
 /// A virtual instant — UInt64 nanoseconds (here we use it as an absolute TICK count). Vendored.
 type Instant =
   | Instant(UInt64)
 
-def inst-ns(t: Instant) = match t with | Instant.Instant(n) => n
+def inst-ns(t: Instant) = match t with
+  | Instant.Instant(n) => n
 
 /// The DES effect: `sleep` suspends until an absolute instant, `now` reads the fast-forward clock. Vendored.
 effect Sim =
@@ -50,25 +53,24 @@ def run-sim(t: Type, task: Unit -> t) =
   task(unit)
 
 // ── the demo: walk a tick-ordered event stream, sleeping to each event's tick ──
-
 /// Wrap a music tick as a DES `Instant` (UInt64 ns). A played piece's ticks are absolute positions ≥ 0,
 /// but nothing upstream ENFORCES that (`note-at`/`schedule` accept any Int64 start), so a negative tick
 /// would `UInt64.wrap` to ~2^64 and make the DES clock leap forward instead of failing fast (PR#662). We
 /// GUARD it: a negative tick traps (fail-fast, a caller bug) rather than silently corrupting virtual time.
 /// The ticks ARE the ns unit here — no conversion, per the DES seam (ticks map directly onto the clock).
 def tick-instant(tick: Int64) =
-  if tick < 0 then trap("negative tick cannot be a DES Instant (UInt64 ns) — a played piece's ticks must be >= 0")
-  else Instant.Instant(UInt64.wrap(tick))
+  if tick < 0 then
+    trap("negative tick cannot be a DES Instant (UInt64 ns) — a played piece's ticks must be >= 0")
+  else
+    Instant.Instant(UInt64.wrap(tick))
 
 /// The play task: walk the tick-ordered events, sleeping the virtual clock forward to each event's tick.
 /// Returns the FINAL clock instant. Recursive driver, annotated — performs `Sim.sleep`, so it lives inside
 /// `run-sim` (effects are intra-component; see the header).
-def play-task-go(evs: List(MidiEvent)) =
-  match evs with
-    | [] => Sim.now()
-    | [e, .. t] =>
-      let _slept = Sim.sleep(tick-instant(ev-tick(e))) in
-      play-task-go(t)
+def play-task-go(evs: List(MidiEvent)) = match evs with
+  | [] => Sim.now()
+  | [e, .. t] => let _slept = Sim.sleep(tick-instant(ev-tick(e))) in
+    play-task-go(t)
 
 /// Play a piece (a list of `Note`s) over the Sim clock: schedule it to paired on/off events, sort into
 /// tick order, then sleep-walk the stream. Returns the final clock instant = the tick of the last event.
@@ -79,12 +81,10 @@ def play-piece(notes: List(Note)) =
 /// the order they actually fired — returning the played `List(MidiEvent)`. This is what a WebMIDI driver
 /// forwards (the on/off messages in play order), and the real deliverable now that generic `run-sim`
 /// returns the task's own type. Recursive, annotated; performs `Sim.sleep` so it runs inside `run-sim`.
-def play-events-go(evs: List(MidiEvent)) =
-  match evs with
-    | [] => []
-    | [e, .. t] =>
-      let _slept = Sim.sleep(tick-instant(ev-tick(e))) in
-      List.prepend(play-events-go(t), e)
+def play-events-go(evs: List(MidiEvent)) = match evs with
+  | [] => []
+  | [e, .. t] => let _slept = Sim.sleep(tick-instant(ev-tick(e))) in
+    List.prepend(play-events-go(t), e)
 
 /// Play a piece and return the PLAYED event stream (tick-ordered on/off `MidiEvent`s) — the WebMIDI-driver
 /// deliverable. Same fast-forward walk as `play-piece`, but yields the events instead of the final clock.
@@ -92,24 +92,30 @@ def play-events(notes: List(Note)) =
   run-sim(List(MidiEvent), fn(_u) => play-events-go(play-order(schedule(notes))))
 
 /// ============================ @test suite (DES-composed piece) ============================
-
 @test
 def a-single-note-plays-and-the-clock-reaches-its-off() =
   // One C4 quarter (on@0, off@960): the task sleeps to 0 then 960; the final clock is 960.
   let piece = [note-at(pitch(60), 0, 100, 0, 960)] in
   let final = play-piece(piece) in
-  if inst-ns(final) == UInt64.wrap(960) then unit else trap("clock reaches the note's off at tick 960")
+    if inst-ns(final) == UInt64.wrap(960) then
+    unit
+  else
+    trap("clock reaches the note's off at tick 960")
 
 @test
 def a-sequence-plays-in-tick-order-ending-at-the-last-off() =
   // Three notes back to back (0, 960, 1920), each a quarter: the last off is at 1920+960 = 2880. The clock
   // fast-forwards through every on/off in order and ends at 2880.
   let piece = [
-    note-at(pitch(60), 0, 100, 0, 960),
-    note-at(pitch(64), 0, 100, 960, 960),
-    note-at(pitch(67), 0, 100, 1920, 960)] in
+      note-at(pitch(60), 0, 100, 0, 960),
+      note-at(pitch(64), 0, 100, 960, 960),
+      note-at(pitch(67), 0, 100, 1920, 960)
+    ] in
   let final = play-piece(piece) in
-  if inst-ns(final) == UInt64.wrap(2880) then unit else trap("clock ends at the last note's off, 2880")
+    if inst-ns(final) == UInt64.wrap(2880) then
+    unit
+  else
+    trap("clock ends at the last note's off, 2880")
 
 @test
 def a-chord-block-plays-over-sim-time() =
@@ -117,18 +123,21 @@ def a-chord-block-plays-over-sim-time() =
   // at 960 having fast-forwarded through the (tick-sorted) block. Built from the chord primitive.
   let nums = chord-notes(major-triad(pitch(60))) in
   let piece = [
-    note-at(pitch(60), 0, 100, 0, 960),
-    note-at(pitch(64), 0, 100, 0, 960),
-    note-at(pitch(67), 0, 100, 0, 960)] in
+      note-at(pitch(60), 0, 100, 0, 960),
+      note-at(pitch(64), 0, 100, 0, 960),
+      note-at(pitch(67), 0, 100, 0, 960)
+    ] in
   let final = play-piece(piece) in
-  if inst-ns(final) == UInt64.wrap(960) then
-    (if List.len(nums) == 3 then unit else trap("triad has three notes")) else trap("chord block ends at 960")
+    if inst-ns(final) == UInt64.wrap(960) then
+    if List.len(nums) == 3 then unit else trap("triad has three notes")
+  else
+    trap("chord block ends at 960")
 
 @test
 def an-empty-piece-leaves-the-clock-at-zero() =
   // Edge: no events → the task never sleeps → the clock stays at its initial 0.
   let final = play-piece([]) in
-  if inst-ns(final) == UInt64.wrap(0) then unit else trap("empty piece leaves the clock at 0")
+    if inst-ns(final) == UInt64.wrap(0) then unit else trap("empty piece leaves the clock at 0")
 
 @test
 def notes-authored-out-of-order-still-play-in-tick-order() =
@@ -137,10 +146,15 @@ def notes-authored-out-of-order-still-play-in-tick-order() =
   // fast-forwards monotonically and ends at the true last off (1920 + 480 = 2400), because sleeps only ever
   // move the clock forward. This pins that the demo respects tick order regardless of authoring order.
   let piece = [
-    note-at(pitch(67), 0, 100, 1920, 480),   // authored FIRST but starts later
-    note-at(pitch(60), 0, 100, 0, 480)] in    // authored second, starts at 0
+      note-at(pitch(67), 0, 100, 1920, 480),
+      // authored FIRST but starts later
+      note-at(pitch(60), 0, 100, 0, 480)
+    ] in // authored second, starts at 0
   let final = play-piece(piece) in
-  if inst-ns(final) == UInt64.wrap(2400) then unit else trap("plays in tick order, ends at the true last off 2400")
+    if inst-ns(final) == UInt64.wrap(2400) then
+    unit
+  else
+    trap("plays in tick order, ends at the true last off 2400")
 
 @test
 def a-composed-arpeggio-plays-to-its-final-offset() =
@@ -148,12 +162,16 @@ def a-composed-arpeggio-plays-to-its-final-offset() =
   // ascending run a quarter apart (0,960,1920,2880) each an eighth (480) long — the last off is 2880+480
   // = 3360. Confirms a longer piece fast-forwards through every event and lands at the final offset.
   let piece = [
-    note-at(pitch(60), 0, 100, 0, 480),
-    note-at(pitch(62), 0, 100, 960, 480),
-    note-at(pitch(64), 0, 100, 1920, 480),
-    note-at(pitch(65), 0, 100, 2880, 480)] in
+      note-at(pitch(60), 0, 100, 0, 480),
+      note-at(pitch(62), 0, 100, 960, 480),
+      note-at(pitch(64), 0, 100, 1920, 480),
+      note-at(pitch(65), 0, 100, 2880, 480)
+    ] in
   let final = play-piece(piece) in
-  if inst-ns(final) == UInt64.wrap(3360) then unit else trap("clock ends at the last eighth's off, 3360")
+    if inst-ns(final) == UInt64.wrap(3360) then
+    unit
+  else
+    trap("clock ends at the last eighth's off, 3360")
 
 @test
 def play-events-returns-the-played-stream-in-tick-order() =
@@ -161,25 +179,31 @@ def play-events-returns-the-played-stream-in-tick-order() =
   // A single C4 quarter → [on@0, off@960]; the stream is balanced and the ticks are non-decreasing.
   let piece = [note-at(pitch(60), 0, 100, 0, 960)] in
   let stream = play-events(piece) in
-  if List.len(stream) == 2 then
-    (if balanced(stream) then
-      (match stream with
-        | [first, second] => if ev-tick(first) == 0 then (if ev-tick(second) == 960 then unit else trap("off at 960")) else trap("on at 0")
-        | _ => trap("two events"))
-     else trap("stream is balanced"))
-  else trap("two events")
+    if List.len(stream) == 2 then
+    if balanced(stream) then
+      match stream with
+        | [first, second] => if ev-tick(first) == 0 then
+          if ev-tick(second) == 960 then unit else trap("off at 960")
+        else
+          trap("on at 0")
+        | _ => trap("two events")
+    else
+      trap("stream is balanced")
+  else
+    trap("two events")
 
 @test
 def play-events-of-a-chord-yields-all-six-events-balanced() =
   // A 3-note chord (all at tick 0, quarter long) → 6 events (3 on + 3 off), balanced, in tick order.
   let piece = [
-    note-at(pitch(60), 0, 100, 0, 960),
-    note-at(pitch(64), 0, 100, 0, 960),
-    note-at(pitch(67), 0, 100, 0, 960)] in
+      note-at(pitch(60), 0, 100, 0, 960),
+      note-at(pitch(64), 0, 100, 0, 960),
+      note-at(pitch(67), 0, 100, 0, 960)
+    ] in
   let stream = play-events(piece) in
-  if List.len(stream) == 6 then (if balanced(stream) then unit else trap("balanced")) else trap("six events")
+    if List.len(stream) == 6 then
+    if balanced(stream) then unit else trap("balanced")
+  else
+    trap("six events")
 
-export {
-  Instant.*,
-  run-sim, inst-ns, tick-instant, play-piece, play-events,
-}
+export { Instant.*, run-sim, inst-ns, tick-instant, play-piece, play-events }

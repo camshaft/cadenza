@@ -52,7 +52,7 @@ def diatonic-triad(s: Scale, d: Int64) =
   let third-pc = nth-pc(pcs, mod-floor(d + 2, n)) in
   let fifth-pc = nth-pc(pcs, mod-floor(d + 4, n)) in
   let stack = [0, up-interval(root-pc, third-pc), up-interval(root-pc, fifth-pc)] in
-  chord(pitch-of(4, root-pc), stack)
+    chord(pitch-of(4, root-pc), stack)
 
 /// The diatonic SEVENTH chord on scale degree `d`: the triad plus the scale degree `d+6` (another third),
 /// giving the I△7 / ii7 / V7 / vii°7 four-note chords. Same "stack scale thirds, let intervals decide the
@@ -70,7 +70,7 @@ def diatonic-seventh(s: Scale, d: Int64) =
       up-interval(root-pc, fifth-pc),
       up-interval(root-pc, seventh-pc)
     ] in
-  chord(pitch-of(4, root-pc), stack)
+    chord(pitch-of(4, root-pc), stack)
 
 // ---- a progression: a list of diatonic chords by degree ----------------------------------------------
 /// Build a PROGRESSION: map a list of 0-indexed scale degrees to their diatonic triads in the scale. So
@@ -87,54 +87,56 @@ def progression(s: Scale, degrees: List(Int64)) = progression-go(s, degrees, [])
 def the-tonic-triad-of-c-major-is-c-e-g() =
   // Degree 0 (I) of C major is a C major triad: root pitch class 0, stack [0,4,7].
   let i = diatonic-triad(major-c, 0) in
-  let Chord.Chord(_, stack) = i in match stack with
-      | [a, b, c] => (if a == 0 then
-        if b == 4 then if c == 7 then unit else trap("fifth") else trap("third")
-      else
-        trap("root"))
-      | _ => trap("triad has three intervals")
+  let Chord.Chord(_, stack) = i in
+    match stack with
+    | [a, b, c] => if a == 0 then
+      if b == 4 then if c == 7 then unit else trap("fifth") else trap("third")
+    else
+      trap("root")
+    | _ => trap("triad has three intervals")
 
 @test
 def the-supertonic-of-c-major-is-a-minor-triad() =
   // Degree 1 (ii) of C major is D minor: stack [0,3,7] (a minor third + perfect fifth) — the quality falls
   // out of the scale steps, we never asked for "minor".
   let ii = diatonic-triad(major-c, 1) in
-  let Chord.Chord(_, stack) = ii in match stack with
-      | [_, b, c] => (if b == 3 then
-        if c == 7 then unit else trap("fifth")
-      else
-        trap("D minor third"))
-      | _ => trap("three intervals")
+  let Chord.Chord(_, stack) = ii in
+    match stack with
+    | [_, b, c] => if b == 3 then if c == 7 then unit else trap("fifth") else trap("D minor third")
+    | _ => trap("three intervals")
 
 @test
 def the-leading-tone-triad-of-c-major-is-diminished() =
   // Degree 6 (vii°) of C major is B diminished: stack [0,3,6] (minor third + diminished fifth).
   let vii = diatonic-triad(major-c, 6) in
-  let Chord.Chord(_, stack) = vii in match stack with
-      | [_, b, c] => (if b == 3 then
-        if c == 6 then unit else trap("diminished fifth")
-      else
-        trap("minor third"))
-      | _ => trap("three intervals")
+  let Chord.Chord(_, stack) = vii in
+    match stack with
+    | [_, b, c] => if b == 3 then
+      if c == 6 then unit else trap("diminished fifth")
+    else
+      trap("minor third")
+    | _ => trap("three intervals")
 
 @test
 def the-dominant-seventh-of-c-major-is-g-b-d-f() =
   // Degree 4 (V7) of C major is a dominant seventh: stack [0,4,7,10] (major triad + minor seventh).
   let v7 = diatonic-seventh(major-c, 4) in
-  let Chord.Chord(_, stack) = v7 in match stack with
-      | [_, b, c, d] => (if b == 4 then
-        if c == 7 then if d == 10 then unit else trap("minor seventh") else trap("fifth")
-      else
-        trap("major third"))
-      | _ => trap("seventh has four intervals")
+  let Chord.Chord(_, stack) = v7 in
+    match stack with
+    | [_, b, c, d] => if b == 4 then
+      if c == 7 then if d == 10 then unit else trap("minor seventh") else trap("fifth")
+    else
+      trap("major third")
+    | _ => trap("seventh has four intervals")
 
 @test
 def the-tonic-seventh-of-c-major-is-a-major-seventh() =
   // Degree 0 (I△7) of C major is a major seventh chord: stack [0,4,7,11].
   let i7 = diatonic-seventh(major-c, 0) in
-  let Chord.Chord(_, stack) = i7 in match stack with
-      | [_, _, _, d] => (if d == 11 then unit else trap("major seventh"))
-      | _ => trap("four intervals")
+  let Chord.Chord(_, stack) = i7 in
+    match stack with
+    | [_, _, _, d] => if d == 11 then unit else trap("major seventh")
+    | _ => trap("four intervals")
 
 @test
 def degree-indexing-wraps-past-the-octave() =
@@ -142,7 +144,7 @@ def degree-indexing-wraps-past-the-octave() =
   // Compare their root pitch classes (both should be C = 0) rather than deep-matching two stacks.
   let wrapped = diatonic-triad(major-c, 7) in
   let tonic = diatonic-triad(major-c, 0) in
-  if triad-root-pc(wrapped) == triad-root-pc(tonic) then
+    if triad-root-pc(wrapped) == triad-root-pc(tonic) then
     if triad-root-pc(tonic) == 0 then unit else trap("tonic root is C")
   else
     trap("degree 7 wraps to degree 0")
@@ -152,21 +154,25 @@ def a-one-four-five-progression-has-three-chords() =
   // progression(C major, [I, IV, V]) = three chords; the first is the tonic (root pc 0), the second is IV
   // (root pc 5, F), the third is V (root pc 7, G). Pins the progression builder + the roots.
   let prog = progression(major-c, [0, 3, 4]) in
-  match prog with
-    | [i, iv, v] => (if triad-root-pc(i) == 0 then
+    match prog with
+    | [i, iv, v] => if triad-root-pc(i) == 0 then
       if triad-root-pc(iv) == 5 then
         if triad-root-pc(v) == 7 then unit else trap("V root is G")
       else
         trap("IV root is F")
     else
-      trap("I root is C"))
+      trap("I root is C")
     | _ => trap("I-IV-V is three chords")
 
 /// Local helper: the root pitch class of a chord (test-only; through its root pitch).
-def triad-root-pc(c: Chord) = let Chord.Chord(p, _) = c in mod-floor(pitch-note(p), 12)
+def triad-root-pc(c: Chord) =
+  let Chord.Chord(p, _) = c in
+    mod-floor(pitch-note(p), 12)
 
 /// Local helper: note number of a pitch (test-only).
-def pitch-note(p: Pitch) = let Pitch.Pitch(x) = p in x
+def pitch-note(p: Pitch) =
+  let Pitch.Pitch(x) = p in
+    x
 
 /// C major, the fixture key for the tests above (root pitch class 0).
 def major-c = major(0)

@@ -54,52 +54,49 @@ def a-major-scale-harmonizes-to-seven-triads() =
 def the-first-and-fourth-and-fifth-are-major-triads() =
   // In C major the I, IV, V are major triads (stack [0,4,7]); check the tonic's stack.
   match harmonized-triads(major-c) with
-    | [i, _, _, _, _, _, _] => (let Chord.Chord(_, stack) = i in match stack with
-        | [a, b, c] => (if a == 0 then
-          if b == 4 then if c == 7 then unit else trap("fifth") else trap("third")
-        else
-          trap("root"))
-        | _ => trap("triad has three intervals")
-    )
+    | [i, _, _, _, _, _, _] => (let Chord.Chord(_, stack) = i in
+      match stack with
+      | [a, b, c] => if a == 0 then
+        if b == 4 then if c == 7 then unit else trap("fifth") else trap("third")
+      else
+        trap("root")
+      | _ => trap("triad has three intervals"))
     | _ => trap("seven triads")
 
 @test
 def the-second-is-a-minor-triad() =
   // The ii chord (index 1) of C major is minor (stack [0,3,7]).
   match harmonized-triads(major-c) with
-    | [_, ii, _, _, _, _, _] => (let Chord.Chord(_, stack) = ii in match stack with
-        | [_, b, c] => (if b == 3 then
-          if c == 7 then unit else trap("fifth")
-        else
-          trap("ii is minor"))
-        | _ => trap("three intervals")
-    )
+    | [_, ii, _, _, _, _, _] => (let Chord.Chord(_, stack) = ii in
+      match stack with
+      | [_, b, c] => if b == 3 then if c == 7 then unit else trap("fifth") else trap("ii is minor")
+      | _ => trap("three intervals"))
     | _ => trap("seven triads")
 
 @test
 def the-leading-tone-chord-is-diminished() =
   // vii° (index 6) of C major is diminished (stack [0,3,6]).
   match harmonized-triads(major-c) with
-    | [_, _, _, _, _, _, vii] => (let Chord.Chord(_, stack) = vii in match stack with
-        | [_, b, c] => (if b == 3 then
-          if c == 6 then unit else trap("dim fifth")
-        else
-          trap("minor third"))
-        | _ => trap("three intervals")
-    )
+    | [_, _, _, _, _, _, vii] => (let Chord.Chord(_, stack) = vii in
+      match stack with
+      | [_, b, c] => if b == 3 then
+        if c == 6 then unit else trap("dim fifth")
+      else
+        trap("minor third")
+      | _ => trap("three intervals"))
     | _ => trap("seven triads")
 
 @test
 def the-dominant-seventh-of-the-harmonized-scale-is-a-dom7() =
   // In the seventh-chord harmonization, V7 (index 4) is a dominant seventh (stack [0,4,7,10]).
   match harmonized-sevenths(major-c) with
-    | [_, _, _, _, v7, _, _] => (let Chord.Chord(_, stack) = v7 in match stack with
-        | [_, b, c, d] => (if b == 4 then
-          if c == 7 then if d == 10 then unit else trap("minor seventh") else trap("fifth")
-        else
-          trap("major third"))
-        | _ => trap("four intervals")
-    )
+    | [_, _, _, _, v7, _, _] => (let Chord.Chord(_, stack) = v7 in
+      match stack with
+      | [_, b, c, d] => if b == 4 then
+        if c == 7 then if d == 10 then unit else trap("minor seventh") else trap("fifth")
+      else
+        trap("major third")
+      | _ => trap("four intervals"))
     | _ => trap("seven sevenths")
 
 @test
@@ -108,13 +105,17 @@ def harmony-degree-agrees-with-progression() =
   // the single-degree builder. Compare the tonic's root pitch class.
   let a = harmony-degree(major-c, 0) in
   let b = diatonic-triad(major-c, 0) in
-  let Chord.Chord(ra, _) = a in let Chord.Chord(rb, _) = b in if pitch-note(ra) == pitch-note(rb) then
-        unit
-      else
-        trap("aggregation matches the single builder")
+  let Chord.Chord(ra, _) = a in
+  let Chord.Chord(rb, _) = b in
+    if pitch-note(ra) == pitch-note(rb) then
+    unit
+  else
+    trap("aggregation matches the single builder")
 
 /// Local helper: note number of a pitch (test-only).
-def pitch-note(p: Pitch) = let Pitch.Pitch(x) = p in x
+def pitch-note(p: Pitch) =
+  let Pitch.Pitch(x) = p in
+    x
 
 /// C major, the fixture (root pitch class 0).
 def major-c = major(0)

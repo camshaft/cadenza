@@ -34,72 +34,108 @@
 /// exact gate design §6.1 names ("a MergeRequest→Merged round-trip executed over a mock Comm; a Ref flows
 /// Worker→PrSync and a Sha flows back"). The recursive form is exercised for wf / projectability /
 /// deadlock-freedom, which are structural and loop-aware.
-
 import { Chor } from "chor"
+
 import { wf } from "chor"
+
 import { projectable } from "chor-project"
+
 import { unprojectable-role } from "chor-project"
+
 import { project } from "chor-local"
+
 import { Local } from "chor-local"
+
 import { deadlock-free } from "chor-safety"
+
 import { gen-role } from "chor-codegen"
+
 import { run } from "chor-run"
+
 import { deliver } from "chor-run"
+
 import { sends-of } from "chor-run"
+
 import { inbox-of } from "chor-run"
+
 import { strs-eq } from "chor-run"
 
 def fleet-roles() = ["Worker", "PrSync", "Concierge"]
 
 /// The full recursive FleetIntegrate protocol (design §6.1).
 def fleet-integrate() =
-  Chor.Rec("Session",
+  Chor.Rec(
+    "Session",
     Chor.Seq(
       Chor.Comm("Worker", "PrSync", "MergeRequest"),
-      Chor.Choice("PrSync", [
-        // Each branch's FIRST actions are selection messages to BOTH non-choosers (knowledge of choice).
-        Chor.Branch("Merged",
-          Chor.Seq(Chor.Comm("PrSync", "Worker", "Merged"),
-            Chor.Seq(Chor.Comm("PrSync", "Concierge", "Idle"), Chor.Var("Session")))),
-        Chor.Branch("Reject",
-          Chor.Seq(Chor.Comm("PrSync", "Worker", "Reject"),
-            Chor.Seq(Chor.Comm("PrSync", "Concierge", "Idle"), Chor.Var("Session")))),
-        Chor.Branch("Blocked",
-          // PrSync tells Worker it's blocked (Worker must know not to await a verdict), tells the Concierge
-          // (Ask), awaits the human Answer, then loops.
-          Chor.Seq(Chor.Comm("PrSync", "Worker", "Blocked"),
-            Chor.Seq(Chor.Comm("PrSync", "Concierge", "Ask"),
-              Chor.Seq(Chor.Comm("Concierge", "PrSync", "Answer"), Chor.Var("Session")))))])))
+      Chor.Choice(
+        "PrSync",
+        [
+          // Each branch's FIRST actions are selection messages to BOTH non-choosers (knowledge of choice).
+          Chor.Branch(
+            "Merged",
+            Chor.Seq(
+              Chor.Comm("PrSync", "Worker", "Merged"),
+              Chor.Seq(Chor.Comm("PrSync", "Concierge", "Idle"), Chor.Var("Session"))
+            )
+          ),
+          Chor.Branch(
+            "Reject",
+            Chor.Seq(
+              Chor.Comm("PrSync", "Worker", "Reject"),
+              Chor.Seq(Chor.Comm("PrSync", "Concierge", "Idle"), Chor.Var("Session"))
+            )
+          ),
+          Chor.Branch(
+            "Blocked",
+            // PrSync tells Worker it's blocked (Worker must know not to await a verdict), tells the Concierge
+            // (Ask), awaits the human Answer, then loops.
+            Chor.Seq(
+              Chor.Comm("PrSync", "Worker", "Blocked"),
+              Chor.Seq(
+                Chor.Comm("PrSync", "Concierge", "Ask"),
+                Chor.Seq(Chor.Comm("Concierge", "PrSync", "Answer"), Chor.Var("Session"))
+              )
+            )
+          )
+        ]
+      )
+    )
+  )
 
 /// A single-session unfolding (no recursion) — one MergeRequest that PrSync merges. The design §6.1 run gate.
 def fleet-merged-once() =
-  Chor.Seq(
-    Chor.Comm("Worker", "PrSync", "MergeRequest"),
-    Chor.Comm("PrSync", "Worker", "Merged"))
+  Chor.Seq(Chor.Comm("Worker", "PrSync", "MergeRequest"), Chor.Comm("PrSync", "Worker", "Merged"))
 
 /// A single-session Blocked unfolding — the escalation path Worker→PrSync→Concierge→PrSync.
 def fleet-blocked-once() =
   Chor.Seq(
     Chor.Comm("Worker", "PrSync", "MergeRequest"),
-    Chor.Seq(
-      Chor.Comm("PrSync", "Concierge", "Ask"),
-      Chor.Comm("Concierge", "PrSync", "Answer")))
+    Chor.Seq(Chor.Comm("PrSync", "Concierge", "Ask"), Chor.Comm("Concierge", "PrSync", "Answer"))
+  )
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Inc-5 gate: the flagship accepted + projected + deadlock-free + executed end-to-end.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
 @test
 def fleet-is-well-formed() =
-  if wf(fleet-roles(), fleet-integrate()) then unit
-  else trap("FleetIntegrate is well-formed (declared distinct roles, branches in choice, bound Session var)")
+  if wf(fleet-roles(), fleet-integrate()) then
+    unit
+  else
+    trap(
+      "FleetIntegrate is well-formed (declared distinct roles, branches in choice, bound Session var)"
+    )
 
 @test
 def fleet-is-projectable() =
   // The central claim on a REAL protocol: the choice at PrSync is projectable — Worker told in Merged/Reject,
   // Concierge told in Blocked; neither is left guessing.
-  if projectable(fleet-roles(), fleet-integrate()) then unit
-  else trap("FleetIntegrate is projectable — every non-chooser is informed in each branch it participates in")
+  if projectable(fleet-roles(), fleet-integrate()) then
+    unit
+  else
+    trap(
+      "FleetIntegrate is projectable — every non-chooser is informed in each branch it participates in"
+    )
 
 @test
 def fleet-no-unprojectable-role() = match unprojectable-role(fleet-roles(), fleet-integrate()) with
@@ -110,22 +146,23 @@ def fleet-no-unprojectable-role() = match unprojectable-role(fleet-roles(), flee
 def fleet-worker-projection-is-a-loop() =
   // Worker's projected local type: rec Session . !PrSync.MergeRequest ; &{...}. Just assert it's an LRecT
   // (a recursive local type) — the loop each worker actually runs, generated from the global protocol.
-  (match project(fleet-integrate(), "Worker") with
-    | Local.LRecT(v, _body) => (if v == "Session" then unit else trap("Worker's loop binds Session"))
-    | _ => trap("Worker projects to a recursive local type (LRecT)"))
+  match project(fleet-integrate(), "Worker") with
+    | Local.LRecT(v, _body) => if v == "Session" then unit else trap("Worker's loop binds Session")
+    | _ => trap("Worker projects to a recursive local type (LRecT)")
 
 @test
-def fleet-concierge-projection-is-a-loop() =
-  (match project(fleet-integrate(), "Concierge") with
-    | Local.LRecT(_v, _body) => unit
-    | _ => trap("Concierge projects to a recursive local type"))
+def fleet-concierge-projection-is-a-loop() = match project(fleet-integrate(), "Concierge") with
+  | Local.LRecT(_v, _body) => unit
+  | _ => trap("Concierge projects to a recursive local type")
 
 @test
 def fleet-is-deadlock-free() =
   // Inc 4 on the flagship: every send has its mirror recv across Worker/PrSync/Concierge — the fleet's
   // coordination cannot wedge on a message no one sends.
-  if deadlock-free(fleet-roles(), fleet-integrate()) then unit
-  else trap("FleetIntegrate is deadlock-free by construction (matched I/O across all three roles)")
+  if deadlock-free(fleet-roles(), fleet-integrate()) then
+    unit
+  else
+    trap("FleetIntegrate is deadlock-free by construction (matched I/O across all three roles)")
 
 @test
 def fleet-merge-request-round-trip() =
@@ -133,15 +170,21 @@ def fleet-merge-request-round-trip() =
   // sends MergeRequest to PrSync; PrSync's generated code receives it and sends Merged back to Worker; the
   // value provably flows Worker→PrSync and Merged flows back.
   let g = fleet-merged-once() in
-  let worker1 = run(gen-role(g, "Worker"), []) in                 // Worker sends MergeRequest (then awaits)
+  let worker1 = run(gen-role(g, "Worker"), []) in // Worker sends MergeRequest (then awaits)
   let prsync-inbox = deliver(sends-of(worker1), "PrSync") in
-  if strs-eq(prsync-inbox, ["MergeRequest"]) then                 // PrSync got the request
-    (let prsync = run(gen-role(g, "PrSync"), prsync-inbox) in      // PrSync recvs it, sends Merged to Worker
-     if strs-eq(inbox-of(prsync), []) then                        // PrSync consumed the request
-       (if strs-eq(deliver(sends-of(prsync), "Worker"), ["Merged"]) then unit   // Merged routed back to Worker
-        else trap("PrSync sends Merged back to Worker"))
-     else trap("PrSync consumes the MergeRequest"))
-  else trap("Worker's generated code sends MergeRequest to PrSync")
+    if strs-eq(prsync-inbox, ["MergeRequest"]) then
+    // PrSync got the request
+    let prsync = run(gen-role(g, "PrSync"), prsync-inbox) in // PrSync recvs it, sends Merged to Worker
+      if strs-eq(inbox-of(prsync), []) then
+      // PrSync consumed the request
+      if strs-eq(deliver(sends-of(prsync), "Worker"), ["Merged"]) then
+        unit // Merged routed back to Worker
+      else
+        trap("PrSync sends Merged back to Worker")
+    else
+      trap("PrSync consumes the MergeRequest")
+  else
+    trap("Worker's generated code sends MergeRequest to PrSync")
 
 @test
 def fleet-blocked-escalation-round-trip() =
@@ -151,18 +194,25 @@ def fleet-blocked-escalation-round-trip() =
   let worker1 = run(gen-role(g, "Worker"), []) in
   let prsync = run(gen-role(g, "PrSync"), deliver(sends-of(worker1), "PrSync")) in
   let concierge-inbox = deliver(sends-of(prsync), "Concierge") in
-  if strs-eq(concierge-inbox, ["Ask"]) then                       // Ask reached the Concierge
-    (let concierge = run(gen-role(g, "Concierge"), concierge-inbox) in
-     if strs-eq(deliver(sends-of(concierge), "PrSync"), ["Answer"]) then unit   // Answer routed back to PrSync
-     else trap("Concierge answers PrSync"))
-  else trap("PrSync escalates an Ask to the Concierge")
+    if strs-eq(concierge-inbox, ["Ask"]) then
+    // Ask reached the Concierge
+    let concierge = run(gen-role(g, "Concierge"), concierge-inbox) in
+      if strs-eq(deliver(sends-of(concierge), "PrSync"), ["Answer"]) then
+      unit // Answer routed back to PrSync
+    else
+      trap("Concierge answers PrSync")
+  else
+    trap("PrSync escalates an Ask to the Concierge")
 
 @test
 def fleet-single-sessions-are-deadlock-free() =
   // The unfolded single sessions are themselves matched-I/O (a sanity companion to the recursive check).
   if deadlock-free(fleet-roles(), fleet-merged-once()) then
-    (if deadlock-free(fleet-roles(), fleet-blocked-once()) then unit
-     else trap("the Blocked unfolding is deadlock-free"))
-  else trap("the Merged unfolding is deadlock-free")
+    if deadlock-free(fleet-roles(), fleet-blocked-once()) then
+      unit
+    else
+      trap("the Blocked unfolding is deadlock-free")
+  else
+    trap("the Merged unfolding is deadlock-free")
 
 export { fleet-integrate, fleet-merged-once, fleet-blocked-once, fleet-roles }

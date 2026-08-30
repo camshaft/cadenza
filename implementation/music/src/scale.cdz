@@ -8,8 +8,8 @@
 /// Grounds on pitch.cdz: degrees are absolute `Pitch`es transposed off a root, membership is tested by
 /// pitch class, and "collapse a chromatic note into the scale" snaps a foreign pitch to its nearest scale
 /// degree (the operator's phase-2 MIDI-pipeline primitive: force everything into a chosen mode).
-
 import { Pitch, Interval } from "pitch"
+
 import { pitch, note, pitch-class, transpose, interval, mod-floor } from "pitch"
 
 /// A scale: a ROOT pitch class (0..11) plus the ordered list of STEP intervals (semitone gaps) that walk
@@ -23,13 +23,14 @@ type Scale =
 def scale(root: Int64, steps: List(Int64)) = Scale.Scale(mod-floor(root, 12), steps)
 
 /// The root pitch class of a scale.
-def scale-root(s: Scale) = match s with | Scale.Scale(r, _) => r
+def scale-root(s: Scale) = match s with
+  | Scale.Scale(r, _) => r
 
 /// The step pattern of a scale.
-def scale-steps(s: Scale) = match s with | Scale.Scale(_, steps) => steps
+def scale-steps(s: Scale) = match s with
+  | Scale.Scale(_, steps) => steps
 
 // ---- the parent major step pattern + modal rotation --------------------------------------------------
-
 /// The Ionian (major) step pattern: whole, whole, half, whole, whole, whole, half.
 def major-steps = [2, 2, 1, 2, 2, 2, 1]
 
@@ -37,10 +38,12 @@ def major-steps = [2, 2, 1, 2, 2, 2, 1]
 /// recursive driver's params are annotated (a recursive fn whose params infer as free vars has no machine
 /// representation — CDZ0201). Rotating the major step pattern by the mode's degree index yields that mode.
 def rotate-left(xs: List(Int64), n: Int64) =
-  if n <= 0 then xs
-  else match xs with
-    | [] => []
-    | [h, .. t] => rotate-left(List.push(t, h), n - 1)
+  if n <= 0 then
+    xs
+  else
+    match xs with
+      | [] => []
+      | [h, .. t] => rotate-left(List.push(t, h), n - 1)
 
 /// The step pattern for a diatonic MODE, indexed 0..6 (0 = Ionian/major, 1 = Dorian, … 6 = Locrian): the
 /// major pattern rotated left by the mode index.
@@ -51,27 +54,32 @@ def mode(root: Int64, mode-index: Int64) = Scale.Scale(mod-floor(root, 12), mode
 
 /// The seven named modes as builders off a root.
 def ionian(root: Int64) = mode(root, 0)
+
 def dorian(root: Int64) = mode(root, 1)
+
 def phrygian(root: Int64) = mode(root, 2)
+
 def lydian(root: Int64) = mode(root, 3)
+
 def mixolydian(root: Int64) = mode(root, 4)
+
 def aeolian(root: Int64) = mode(root, 5)
+
 def locrian(root: Int64) = mode(root, 6)
 
 /// The major and natural-minor scales are Ionian and Aeolian.
 def major(root: Int64) = ionian(root)
+
 def natural-minor(root: Int64) = aeolian(root)
 
 // ---- degrees: from step pattern to the pitch classes of the scale -----------------------------------
-
 /// Walk the step pattern accumulating pitch classes. Emit `root + acc` (folded to a pitch class) ONCE per
 /// step, then advance `acc` by that step — so a 7-step pattern yields 7 degrees (the root plus the six
 /// interior degrees), and the final step closes the octave WITHOUT re-emitting the root. For major on C
 /// this emits at acc = 0,2,4,5,7,9,11 — exactly the white keys. Recursive driver with annotated params.
-def degrees-go(root: Int64, steps: List(Int64), acc: Int64, out: List(Int64)) =
-  match steps with
-    | [] => out
-    | [s, .. t] => degrees-go(root, t, acc + s, List.push(out, mod-floor(root + acc, 12)))
+def degrees-go(root: Int64, steps: List(Int64), acc: Int64, out: List(Int64)) = match steps with
+  | [] => out
+  | [s, .. t] => degrees-go(root, t, acc + s, List.push(out, mod-floor(root + acc, 12)))
 
 /// The pitch classes of a scale, one per degree (root first), in ascending order within the octave.
 def scale-degrees(s: Scale) = degrees-go(scale-root(s), scale-steps(s), 0, [])
@@ -80,12 +88,10 @@ def scale-degrees(s: Scale) = degrees-go(scale-root(s), scale-steps(s), 0, [])
 def scale-size(s: Scale) = List.len(scale-steps(s))
 
 // ---- membership + chromatic collapse ----------------------------------------------------------------
-
 /// Is a pitch class a member of the list of scale pitch classes? Recursive linear search (annotated).
-def pc-member(pcs: List(Int64), pc: Int64) =
-  match pcs with
-    | [] => false
-    | [h, .. t] => if h == pc then true else pc-member(t, pc)
+def pc-member(pcs: List(Int64), pc: Int64) = match pcs with
+  | [] => false
+  | [h, .. t] => if h == pc then true else pc-member(t, pc)
 
 /// Is a PITCH in the scale (by pitch class, any octave)?
 def in-scale(s: Scale, p: Pitch) = pc-member(scale-degrees(s), pitch-class(p))
@@ -95,48 +101,56 @@ def in-scale(s: Scale, p: Pitch) = pc-member(scale-degrees(s), pitch-class(p))
 /// MIDI-pipeline primitive — force any incoming note into a chosen mode. `fuel` bounds the search to one
 /// octave (12 steps always suffice: every scale contains at least one pitch class).
 def collapse-go(s: Scale, p: Pitch, fuel: Int64) =
-  if fuel <= 0 then p
-  else if in-scale(s, p) then p
-  else collapse-go(s, pitch(note(p) - 1), fuel - 1)
+  if fuel <= 0 then
+    p
+  else if in-scale(s, p) then
+    p
+  else
+    collapse-go(s, pitch(note(p) - 1), fuel - 1)
 
 /// Snap a pitch down to the nearest scale degree at or below it.
 def collapse-to-scale(s: Scale, p: Pitch) = collapse-go(s, p, 12)
 
 /// ============================ @test suite (scales / modes) ============================
-
 @test
 def c-major-has-the-white-keys() =
   // C major (Ionian on C=0) is exactly the pitch classes {0,2,4,5,7,9,11} — the white keys.
   let cmaj = major(0) in
   let ds = scale-degrees(cmaj) in
-  if List.len(ds) == 7 then
-    (if pc-member(ds, 0) then
-      (if pc-member(ds, 4) then
-        (if pc-member(ds, 11) then
-          (if pc-member(ds, 1) then trap("C# not in C major") else unit)
-         else trap("B missing"))
-       else trap("E missing"))
-     else trap("C missing"))
-  else trap("seven degrees")
+    if List.len(ds) == 7 then
+    if pc-member(ds, 0) then
+      if pc-member(ds, 4) then
+        if pc-member(ds, 11) then
+          if pc-member(ds, 1) then trap("C# not in C major") else unit
+        else
+          trap("B missing")
+      else
+        trap("E missing")
+    else
+      trap("C missing")
+  else
+    trap("seven degrees")
 
 @test
 def major-step-pattern-sums-to-an-octave() =
   // The step pattern of any diatonic mode sums to 12 (it closes the octave).
   let total = sum-list(major-steps, 0) in
-  if total == 12 then
-    (if sum-list(mode-steps(3), 0) == 12 then unit else trap("lydian sums to 12"))
-  else trap("major sums to 12")
+    if total == 12 then
+    if sum-list(mode-steps(3), 0) == 12 then unit else trap("lydian sums to 12")
+  else
+    trap("major sums to 12")
 
 @test
 def dorian-is-a-rotation-of-major() =
   // D Dorian shares the white keys with C major (a mode is a rotation of the parent scale). D=2.
   let d-dorian = dorian(2) in
   let ds = scale-degrees(d-dorian) in
-  // Every degree of D Dorian must be a white key (member of C major's pitch classes).
+    // Every degree of D Dorian must be a white key (member of C major's pitch classes).
   let cmaj = scale-degrees(major(0)) in
-  if all-members(ds, cmaj) then
-    (if List.len(ds) == 7 then unit else trap("seven degrees"))
-  else trap("D Dorian is not all white keys")
+    if all-members(ds, cmaj) then
+    if List.len(ds) == 7 then unit else trap("seven degrees")
+  else
+    trap("D Dorian is not all white keys")
 
 @test
 def natural-minor-is-aeolian() =
@@ -144,27 +158,30 @@ def natural-minor-is-aeolian() =
   let a-min = natural-minor(9) in
   let ds = scale-degrees(a-min) in
   let cmaj = scale-degrees(major(0)) in
-  if all-members(ds, cmaj) then unit else trap("A minor is the white keys")
+    if all-members(ds, cmaj) then unit else trap("A minor is the white keys")
 
 @test
 def membership-tracks-pitch-class-any-octave() =
   // E4 (64, pitch class 4) is in C major; F#4 (66, pitch class 6) is not; E5 also in.
   let cmaj = major(0) in
-  if in-scale(cmaj, pitch(64)) then
-    (if in-scale(cmaj, pitch(76)) then
-      (if in-scale(cmaj, pitch(66)) then trap("F# is not in C major") else unit)
-     else trap("E5 in C major"))
-  else trap("E4 in C major")
+    if in-scale(cmaj, pitch(64)) then
+    if in-scale(cmaj, pitch(76)) then
+      if in-scale(cmaj, pitch(66)) then trap("F# is not in C major") else unit
+    else
+      trap("E5 in C major")
+  else
+    trap("E4 in C major")
 
 @test
 def collapse-snaps-a-chromatic-note-into-the-mode() =
   // F#4 (66) collapsed into C major floor-snaps to F4 (65) — the nearest scale degree at or below.
   let cmaj = major(0) in
   let snapped = collapse-to-scale(cmaj, pitch(66)) in
-  if note(snapped) == 65 then
+    if note(snapped) == 65 then
     // A note already in the scale is unchanged.
-    (if note(collapse-to-scale(cmaj, pitch(64))) == 64 then unit else trap("in-scale note unchanged"))
-  else trap("F# snaps to F")
+    if note(collapse-to-scale(cmaj, pitch(64))) == 64 then unit else trap("in-scale note unchanged")
+  else
+    trap("F# snaps to F")
 
 @test
 def every-chromatic-note-collapses-onto-a-scale-degree() =
@@ -172,16 +189,20 @@ def every-chromatic-note-collapses-onto-a-scale-degree() =
   // scale degree — no note escapes the mode. Walk all 12 semitones above C4 and assert each collapses
   // into C major.
   let cmaj = major(0) in
-  if all-collapse-in-scale(cmaj, 60, 12) then unit else trap("a chromatic note escaped the mode")
+    if all-collapse-in-scale(cmaj, 60, 12) then unit else trap("a chromatic note escaped the mode")
 
 @test
 def collapse-never-moves-a-note-more-than-a-semitone-below-in-a-diatonic-scale() =
   // In a diatonic scale the largest gap is a whole tone, so a floor-snap moves a foreign note down by at
   // most 1 semitone. F#4 (66) → F4 (65) is exactly 1; C#4 (61) → C4 (60) is 1.
   let cmaj = major(0) in
-  if note(pitch(66)) - note(collapse-to-scale(cmaj, pitch(66))) == 1 then
-    (if note(pitch(61)) - note(collapse-to-scale(cmaj, pitch(61))) == 1 then unit else trap("C# moves one"))
-  else trap("F# moves one")
+    if note(pitch(66)) - note(collapse-to-scale(cmaj, pitch(66))) == 1 then
+    if note(pitch(61)) - note(collapse-to-scale(cmaj, pitch(61))) == 1 then
+      unit
+    else
+      trap("C# moves one")
+  else
+    trap("F# moves one")
 
 @test
 def collapse-works-in-a-transposed-mode-not-just-c-major() =
@@ -191,33 +212,58 @@ def collapse-works-in-a-transposed-mode-not-just-c-major() =
   // silently relying on root==0.
   let dmaj = major(2) in
   let snapped = collapse-to-scale(dmaj, pitch(72)) in
-  if in-scale(dmaj, snapped) then
-    (if note(snapped) == 71 then
-      (if note(collapse-to-scale(dmaj, pitch(73))) == 73 then unit else trap("C#5 is already in D major"))
-     else trap("C5 floor-snaps to B4 in D major"))
-  else trap("collapsed note is a D-major degree")
+    if in-scale(dmaj, snapped) then
+    if note(snapped) == 71 then
+      if note(collapse-to-scale(dmaj, pitch(73))) == 73 then
+        unit
+      else
+        trap("C#5 is already in D major")
+    else
+      trap("C5 floor-snaps to B4 in D major")
+  else
+    trap("collapsed note is a D-major degree")
 
 // ---- test helpers -----------------------------------------------------------------------------------
-
 /// Every note in `base .. base+n-1` collapses to a pitch in the scale (recursive, annotated).
 def all-collapse-in-scale(s: Scale, base: Int64, n: Int64) =
-  if n <= 0 then true
-  else if in-scale(s, collapse-to-scale(s, pitch(base))) then all-collapse-in-scale(s, base + 1, n - 1)
-  else false
+  if n <= 0 then
+    true
+  else if in-scale(s, collapse-to-scale(s, pitch(base))) then
+    all-collapse-in-scale(s, base + 1, n - 1)
+  else
+    false
 
 /// Sum a list of Int64 (recursive, annotated).
-def sum-list(xs: List(Int64), acc: Int64) =
-  match xs with | [] => acc | [h, .. t] => sum-list(t, acc + h)
+def sum-list(xs: List(Int64), acc: Int64) = match xs with
+  | [] => acc
+  | [h, .. t] => sum-list(t, acc + h)
 
 /// Every element of `xs` is a member of `ys` (recursive, annotated).
-def all-members(xs: List(Int64), ys: List(Int64)) =
-  match xs with
-    | [] => true
-    | [h, .. t] => if pc-member(ys, h) then all-members(t, ys) else false
+def all-members(xs: List(Int64), ys: List(Int64)) = match xs with
+  | [] => true
+  | [h, .. t] => if pc-member(ys, h) then all-members(t, ys) else false
 
 export {
   Scale.*,
-  scale, scale-root, scale-steps, major-steps, rotate-left, mode-steps, mode,
-  ionian, dorian, phrygian, lydian, mixolydian, aeolian, locrian, major, natural-minor,
-  scale-degrees, scale-size, pc-member, in-scale, collapse-to-scale,
+  scale,
+  scale-root,
+  scale-steps,
+  major-steps,
+  rotate-left,
+  mode-steps,
+  mode,
+  ionian,
+  dorian,
+  phrygian,
+  lydian,
+  mixolydian,
+  aeolian,
+  locrian,
+  major,
+  natural-minor,
+  scale-degrees,
+  scale-size,
+  pc-member,
+  in-scale,
+  collapse-to-scale
 }

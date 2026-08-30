@@ -1,29 +1,29 @@
 /// giter-flat.cdz — the NESTED generic iterator `flatten`, split into its own small module.
-  ///
-  /// WHY A SEPARATE MODULE. `flatten : GIter(GIter(a)) -> GIter(a)` needs the "element threaded INTO a
-  /// generic callee" tie (rcdzc `e7d78a566` "tie a recursive transformer's element through a generic callee"):
-  /// its `Cons` arm threads the inner iterator `inner : GIter(a)` into the generic `chain`, so the scheme
-  /// solve must tie `chain`'s domain to `inner`'s element — which that fix makes, so `flatten` now infers
-  /// `(-> (GIter (GIter a)) (GIter a))` and composes at two element types.
-  ///
-  /// It lives HERE, not in `giter.cdz`, because a NESTED generic instantiation (`GIter(GIter a)`) is HEAVY —
-  /// it doubles the type structure the monomorphizer carries — and `giter.cdz` (92 @tests) already sits at
-  /// the monomorphizer's per-module instantiation-PRESSURE ceiling. Measured on trunk with the tie fix:
-  /// `flatten` composes with ≤ ~20 other test call-sites but DECLINES (CDZ0201) when added to the full 92-test
-  /// `giter.cdz` — the ceiling, NOT the tie, is the binding constraint (reported to v-inference; a global
-  /// monomorphizer pressure/cap limit governs how large an instantiation set one module can carry). A SMALL
-  /// dedicated module keeps `flatten`'s heavy nested instantiation isolated (per-module compilation isolates
-  /// the pressure), so the capability lives here (the tie fix IS real and works) while `giter.cdz` keeps its
-  /// full coverage — the appropriate home for `flatten` given the current per-module ceiling.
-  ///
-  /// This module does NOT hold `concat-map`/`flat-map` (`flatten ∘ gmap`, where the mapped closure RETURNS a
-  /// `GIter` — a nested generic through a closure): that shape exceeds the current per-module ceiling even
-  /// standalone. The accumulator-threading `reduce`/`reverse` need a different monomorphization tie (element
-  /// through a self-call accumulator) that the compiler does not currently make. See `giter.cdz`'s header for
-  /// the full set of functions the current inference/monomorphization limits keep out.
-  /// The generic pull-iterator (same cons-cell shape as `giter.cdz`; re-declared here so this module is
-  /// self-contained — each `src/*.cdz` is its own namespace).
-  type GIter =
+///
+/// WHY A SEPARATE MODULE. `flatten : GIter(GIter(a)) -> GIter(a)` needs the "element threaded INTO a
+/// generic callee" tie (rcdzc `e7d78a566` "tie a recursive transformer's element through a generic callee"):
+/// its `Cons` arm threads the inner iterator `inner : GIter(a)` into the generic `chain`, so the scheme
+/// solve must tie `chain`'s domain to `inner`'s element — which that fix makes, so `flatten` now infers
+/// `(-> (GIter (GIter a)) (GIter a))` and composes at two element types.
+///
+/// It lives HERE, not in `giter.cdz`, because a NESTED generic instantiation (`GIter(GIter a)`) is HEAVY —
+/// it doubles the type structure the monomorphizer carries — and `giter.cdz` (92 @tests) already sits at
+/// the monomorphizer's per-module instantiation-PRESSURE ceiling. Measured on trunk with the tie fix:
+/// `flatten` composes with ≤ ~20 other test call-sites but DECLINES (CDZ0201) when added to the full 92-test
+/// `giter.cdz` — the ceiling, NOT the tie, is the binding constraint (reported to v-inference; a global
+/// monomorphizer pressure/cap limit governs how large an instantiation set one module can carry). A SMALL
+/// dedicated module keeps `flatten`'s heavy nested instantiation isolated (per-module compilation isolates
+/// the pressure), so the capability lives here (the tie fix IS real and works) while `giter.cdz` keeps its
+/// full coverage — the appropriate home for `flatten` given the current per-module ceiling.
+///
+/// This module does NOT hold `concat-map`/`flat-map` (`flatten ∘ gmap`, where the mapped closure RETURNS a
+/// `GIter` — a nested generic through a closure): that shape exceeds the current per-module ceiling even
+/// standalone. The accumulator-threading `reduce`/`reverse` need a different monomorphization tie (element
+/// through a self-call accumulator) that the compiler does not currently make. See `giter.cdz`'s header for
+/// the full set of functions the current inference/monomorphization limits keep out.
+/// The generic pull-iterator (same cons-cell shape as `giter.cdz`; re-declared here so this module is
+/// self-contained — each `src/*.cdz` is its own namespace).
+type GIter =
   | Nil
   | Cons(a, GIter(a))
 

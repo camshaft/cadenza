@@ -16,7 +16,7 @@ import { pitch-class, note, mod-floor } from "pitch"
 
 // ---- Letter: the seven natural note names ------------------------------------------------------------
 /// A letter name with no accidental — the seven "white key" pitch classes.
-  type Letter =
+type Letter =
   | C
   | D
   | E
@@ -38,8 +38,8 @@ def letter-pc(l: Letter) = match l with
 
 // ---- Accidental: how far a letter is bent, in semitones ----------------------------------------------
 /// An accidental: a signed semitone bend applied to a letter. Double-flat/flat/natural/sharp/double-sharp
-  /// cover standard notation.
-  type Accidental =
+/// cover standard notation.
+type Accidental =
   | DoubleFlat
   | Flat
   | Natural
@@ -56,9 +56,9 @@ def acc-offset(a: Accidental) = match a with
 
 // ---- NoteName: a spelled note (letter + accidental), still octave-free -------------------------------
 /// A spelled note name: a letter plus its accidental. This names a PITCH CLASS with a chosen spelling
-  /// (C-sharp and D-flat are different `NoteName`s that fold to the same pitch class), but carries no octave
-  /// yet — `spelled-pitch` adds the octave to land on a concrete MIDI note.
-  type NoteName =
+/// (C-sharp and D-flat are different `NoteName`s that fold to the same pitch class), but carries no octave
+/// yet — `spelled-pitch` adds the octave to land on a concrete MIDI note.
+type NoteName =
   | NoteName(Letter, Accidental)
 
 /// Build a spelled note name from a letter and an accidental.
@@ -66,11 +66,13 @@ def note-name(l: Letter, a: Accidental) = NoteName.NoteName(l, a)
 
 /// The letter of a spelled note name.
 def name-letter(nn: NoteName) =
-  let NoteName.NoteName(l, _) = nn in l
+  let NoteName.NoteName(l, _) = nn in
+    l
 
 /// The accidental of a spelled note name.
 def name-accidental(nn: NoteName) =
-  let NoteName.NoteName(_, a) = nn in a
+  let NoteName.NoteName(_, a) = nn in
+    a
 
 /// The RAW chromatic offset of a spelled note: letter natural + accidental, BEFORE folding into an octave.
 /// This can sit outside `0..11` on purpose — B-sharp is 12 and C-flat is -1, and that overflow is exactly
@@ -159,7 +161,7 @@ def c-sharp-and-d-flat-are-enharmonic() =
   // The classic enharmonic pair: different letter + accidental, same pitch class 1, so they compare equal.
   let cs = note-name(Letter.C, Accidental.Sharp) in
   let df = note-name(Letter.D, Accidental.Flat) in
-  if note-name-pc(cs) == 1 then
+    if note-name-pc(cs) == 1 then
     if note-name-pc(df) == 1 then
       if enharmonic-eq(cs, df) then unit else trap("not enharmonic")
     else
@@ -172,14 +174,14 @@ def enharmonic-eq-rejects-a-genuine-semitone-apart() =
   // Non-vacuous: C-natural and C-sharp are a real semitone apart, so NOT enharmonic.
   let c = note-name(Letter.C, Accidental.Natural) in
   let cs = note-name(Letter.C, Accidental.Sharp) in
-  if enharmonic-eq(c, cs) then trap("should differ") else unit
+    if enharmonic-eq(c, cs) then trap("should differ") else unit
 
 @test
 def b-sharp-carries-up-across-the-octave() =
   // B-sharp in octave 3 sounds as C4 (MIDI 60): the sharp pushes the raw offset to 12, carrying the note
   // up into the next octave — the notation-correct octave-boundary behavior.
   let bs = note-name(Letter.B, Accidental.Sharp) in
-  if note(spelled-pitch(bs, 3)) == 60 then
+    if note(spelled-pitch(bs, 3)) == 60 then
     if note-name-pc(bs) == 0 then unit else trap("B# folds to pc 0")
   else
     trap("B#3 sounds as C4")
@@ -189,7 +191,7 @@ def c-flat-carries-down-across-the-octave() =
   // C-flat in octave 4 sounds as B3 (MIDI 59): the flat pulls the raw offset to -1, carrying the note down
   // into the previous octave.
   let cb = note-name(Letter.C, Accidental.Flat) in
-  if note(spelled-pitch(cb, 4)) == 59 then
+    if note(spelled-pitch(cb, 4)) == 59 then
     if note-name-pc(cb) == 11 then unit else trap("Cb folds to pc 11")
   else
     trap("Cb4 sounds as B3")
@@ -199,14 +201,17 @@ def double-accidentals-resolve-to-the-natural-neighbor() =
   // F-double-sharp is G (pc 7); G-double-flat is F (pc 5).
   let fx = note-name(Letter.F, Accidental.DoubleSharp) in
   let gbb = note-name(Letter.G, Accidental.DoubleFlat) in
-  if note-name-pc(fx) == 7 then if note-name-pc(gbb) == 5 then unit else trap("Gbb") else trap("Fx")
+    if note-name-pc(fx) == 7 then
+    if note-name-pc(gbb) == 5 then unit else trap("Gbb")
+  else
+    trap("Fx")
 
 @test
 def spelled-pitch-round-trips-through-pitch-class() =
   // A spelled note's pitch class (via pitch.cdz) matches its note-name pitch class, in any octave.
   let ef = note-name(Letter.E, Accidental.Flat) in
   let p = spelled-pitch(ef, 4) in
-  if pitch-class(p) == note-name-pc(ef) then
+    if pitch-class(p) == note-name-pc(ef) then
     if note(spelled-pitch(note-name(Letter.C, Accidental.Natural), 4)) == 60 then
       unit
     else
@@ -221,11 +226,11 @@ def sharp-and-flat-spellings-agree-on-pitch-class() =
   let check = fn(pc: Int64) =>
       let sh = sharp-name-of-pc(pc) in
       let fl = flat-name-of-pc(pc) in
-      if note-name-pc(sh) == pc then
+        if note-name-pc(sh) == pc then
         if note-name-pc(fl) == pc then enharmonic-eq(sh, fl) else false
       else
         false in
-  if check(0) then
+    if check(0) then
     if check(1) then
       if check(6) then
         if check(10) then if check(11) then unit else trap("pc 11") else trap("pc 10")
@@ -242,7 +247,7 @@ def sharp-and-flat-differ-in-name-for-a-black-key() =
   // real and not just the same note twice.
   let sh = sharp-name-of-pc(1) in
   let fl = flat-name-of-pc(1) in
-  match name-letter(sh) with
+    match name-letter(sh) with
     | Letter.C => (match name-letter(fl) with
       | Letter.D => unit
       | _ => trap("flat spelling of pc 1 should be D-flat")

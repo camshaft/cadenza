@@ -1,31 +1,31 @@
 /// adapter.cdz — the operator-directed MONOMORPHIC/GENERIC/FUSING iterator, adapter-record form.
-  ///
-  /// This is the operator's re-charter (2026-07-18): iterators as AD-HOC POLYMORPHISM — a record carrying a
-  /// set of functions + a closure that implements the protocol — NOT an enum-dispatched step interpreter and
-  /// NOT a trait system. "Make the combinator functions CONST and it should be ZERO COST" — a chain fuses to
-  /// one loop as if hand-written. See `implementation/design/DESIGN-monomorphic-fusing-iterators-rcdzc.md`.
-  ///
-  /// THE SHAPE. An iterator is a pair `(state, step)` where `step : state -> Option (elem, state)` pulls one
-  /// element and returns the NEXT state (or `None` at exhaustion). A combinator (`map`/`filter`/…) is a plain
-  /// function that WRAPS the upstream iterator's `step` into a NEW `step` calling the upstream one DIRECTLY —
-  /// a static, monomorphized closure call, NOT a runtime tag match. A consumer (`fold`/`count`/…) drives the
-  /// step to exhaustion. Because every `step` is a concrete monomorphized closure and rcdzc always-inlines
-  /// non-recursive defs by default, a `map`/`filter` chain collapses into the consumer's ONE driving loop —
-  /// no per-element dispatch, no intermediate iterator value materialized between stages (the fusion the
-  /// operator wants). Adding a combinator = ONE new `def` returning a wrapped `step`; no central-enum edit.
-  ///
-  /// ⚠ MONOMORPHIC (Int64 element, List(Int64) state) FOR NOW — this is the forcing proof that the adapter
-  /// fused model RUNS on today's compiler (I1 milestone: cd9be4379 unblocked the generic-variant stored-closure
-  /// callback; the chain runs end-to-end). The GENERIC (∀-element) form is gated on the recursive-generic
-  /// monomorphization tie (v-inference's mono ceiling) — a recursive consumer/driver whose param types come
-  /// from a generic Iter can't yet be monomorphized. So this mono form proves fusion NOW; the generic form
-  /// generalizes it once the tie lands. This is the same staging that built iter.cdz.
-  ///
-  /// 🔑 The recursive DRIVER (`drive`) needs its params ANNOTATED — a recursive function whose params infer as
-  /// free vars has no machine representation (CDZ0201) until the driver's `step`/`state`/`acc`/combiner types
-  /// are pinned. Non-recursive combinators (`map`/`filter`) need only their closure param annotated.
-  /// The adapter iterator: a state (the remaining input) + a `step` that pulls one element and the next state.
-  type Iter =
+///
+/// This is the operator's re-charter (2026-07-18): iterators as AD-HOC POLYMORPHISM — a record carrying a
+/// set of functions + a closure that implements the protocol — NOT an enum-dispatched step interpreter and
+/// NOT a trait system. "Make the combinator functions CONST and it should be ZERO COST" — a chain fuses to
+/// one loop as if hand-written. See `implementation/design/DESIGN-monomorphic-fusing-iterators-rcdzc.md`.
+///
+/// THE SHAPE. An iterator is a pair `(state, step)` where `step : state -> Option (elem, state)` pulls one
+/// element and returns the NEXT state (or `None` at exhaustion). A combinator (`map`/`filter`/…) is a plain
+/// function that WRAPS the upstream iterator's `step` into a NEW `step` calling the upstream one DIRECTLY —
+/// a static, monomorphized closure call, NOT a runtime tag match. A consumer (`fold`/`count`/…) drives the
+/// step to exhaustion. Because every `step` is a concrete monomorphized closure and rcdzc always-inlines
+/// non-recursive defs by default, a `map`/`filter` chain collapses into the consumer's ONE driving loop —
+/// no per-element dispatch, no intermediate iterator value materialized between stages (the fusion the
+/// operator wants). Adding a combinator = ONE new `def` returning a wrapped `step`; no central-enum edit.
+///
+/// ⚠ MONOMORPHIC (Int64 element, List(Int64) state) FOR NOW — this is the forcing proof that the adapter
+/// fused model RUNS on today's compiler (I1 milestone: cd9be4379 unblocked the generic-variant stored-closure
+/// callback; the chain runs end-to-end). The GENERIC (∀-element) form is gated on the recursive-generic
+/// monomorphization tie (v-inference's mono ceiling) — a recursive consumer/driver whose param types come
+/// from a generic Iter can't yet be monomorphized. So this mono form proves fusion NOW; the generic form
+/// generalizes it once the tie lands. This is the same staging that built iter.cdz.
+///
+/// 🔑 The recursive DRIVER (`drive`) needs its params ANNOTATED — a recursive function whose params infer as
+/// free vars has no machine representation (CDZ0201) until the driver's `step`/`state`/`acc`/combiner types
+/// are pinned. Non-recursive combinators (`map`/`filter`) need only their closure param annotated.
+/// The adapter iterator: a state (the remaining input) + a `step` that pulls one element and the next state.
+type Iter =
   | Mk(List(Int64), List(Int64) -> Option(Tuple(Int64, List(Int64))))
 
 /// PRODUCERS ------------------------------------------------------------------------------------------
@@ -42,14 +42,16 @@ def from-list(xs) =
 def map(it, f: Int64 -> Int64) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => match step(s) with
     | Option.None(_) => Option.None(unit)
-    | Option.Some(p) => let (x, s2) = p in Option.Some((f(x), s2)))
+    | Option.Some(p) => let (x, s2) = p in
+      Option.Some((f(x), s2)))
 
 /// `filter(it, p)` — keep only elements satisfying `p`. The new step drives the upstream step forward,
 /// skipping non-matching elements, via the recursive `filter-step` worker (annotated, since it recurses).
 def filter-step(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
   -> Bool) = match step(s) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pair) => let (x, s2) = pair in if p(x) then Option.Some((x, s2)) else filter-step(step, s2, p)
+  | Option.Some(pair) => let (x, s2) = pair in
+    if p(x) then Option.Some((x, s2)) else filter-step(step, s2, p)
 
 def filter(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => filter-step(step, s, p))
@@ -62,7 +64,8 @@ def filter(it, p: Int64 -> Bool) = match it with
 def take-while(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => match step(s) with
     | Option.None(_) => Option.None(unit)
-    | Option.Some(pair) => let (x, s2) = pair in if p(x) then Option.Some((x, s2)) else Option.None(unit))
+    | Option.Some(pair) => let (x, s2) = pair in
+      if p(x) then Option.Some((x, s2)) else Option.None(unit))
 
 /// `filter-map(it, f)` — the fused map-then-filter: apply `f : Int64 -> Option(Int64)` to each element,
 /// keep the `Some` results, drop the `None`s (transform + select in one pass). Same-state (`List(Int64)`),
@@ -76,9 +79,10 @@ def take-while(it, p: Int64 -> Bool) = match it with
 def filter-map-step(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const f: Int64
   -> Option(Int64)) = match step(s) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pair) => let (x, s2) = pair in match f(x) with
-      | Option.None(_) => filter-map-step(step, s2, f)
-      | Option.Some(y) => Option.Some((y, s2))
+  | Option.Some(pair) => let (x, s2) = pair in
+    match f(x) with
+    | Option.None(_) => filter-map-step(step, s2, f)
+    | Option.Some(y) => Option.Some((y, s2))
 
 def filter-map(it, f: Int64 -> Option(Int64)) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => filter-map-step(step, s, f))
@@ -90,7 +94,8 @@ def filter-map(it, f: Int64 -> Option(Int64)) = match it with
 def drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), acc: Int64, const g: Int64
   -> Int64 -> Int64) = match step(s) with
   | Option.None(_) => acc
-  | Option.Some(p) => let (x, s2) = p in drive(step, s2, g(acc, x), g)
+  | Option.Some(p) => let (x, s2) = p in
+    drive(step, s2, g(acc, x), g)
 
 /// `fold(it, acc, g)` — left-fold the iterator through `g`, seeded by `acc`. The fusing consumer.
 def fold(it, acc, g: Int64 -> Int64 -> Int64) = match it with
@@ -101,7 +106,8 @@ def count-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s:
     s
   ) with
   | Option.None(_) => n
-  | Option.Some(p) => let (_x, s2) = p in count-drive(step, s2, n + 1)
+  | Option.Some(p) => let (_x, s2) = p in
+    count-drive(step, s2, n + 1)
 
 def count(it) = match it with
   | Iter.Mk(s, step) => count-drive(step, s, 0)
@@ -111,7 +117,8 @@ def count(it) = match it with
 def any-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
   -> Bool) = match step(s) with
   | Option.None(_) => false
-  | Option.Some(pr) => let (x, s2) = pr in if p(x) then true else any-drive(step, s2, p)
+  | Option.Some(pr) => let (x, s2) = pr in
+    if p(x) then true else any-drive(step, s2, p)
 
 def any(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s, step) => any-drive(step, s, p)
@@ -121,7 +128,8 @@ def any(it, p: Int64 -> Bool) = match it with
 def all-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
   -> Bool) = match step(s) with
   | Option.None(_) => true
-  | Option.Some(pr) => let (x, s2) = pr in if p(x) then all-drive(step, s2, p) else false
+  | Option.Some(pr) => let (x, s2) = pr in
+    if p(x) then all-drive(step, s2, p) else false
 
 def all(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s, step) => all-drive(step, s, p)
@@ -130,7 +138,8 @@ def all(it, p: Int64 -> Bool) = match it with
 def find-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
   -> Bool) = match step(s) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pr) => let (x, s2) = pr in if p(x) then Option.Some(x) else find-drive(step, s2, p)
+  | Option.Some(pr) => let (x, s2) = pr in
+    if p(x) then Option.Some(x) else find-drive(step, s2, p)
 
 def find(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s, step) => find-drive(step, s, p)
@@ -142,7 +151,8 @@ def find(it, p: Int64 -> Bool) = match it with
 def position-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), i: Int64, const p: Int64
   -> Bool) = match step(s) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pr) => let (x, s2) = pr in if p(x) then Option.Some(i) else position-drive(step, s2, i + 1, p)
+  | Option.Some(pr) => let (x, s2) = pr in
+    if p(x) then Option.Some(i) else position-drive(step, s2, i + 1, p)
 
 def position(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s, step) => position-drive(step, s, 0, p)
@@ -169,7 +179,8 @@ def nth-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: L
     s
   ) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(p) => let (x, s2) = p in if n <= 0 then Option.Some(x) else nth-drive(step, s2, n - 1)
+  | Option.Some(p) => let (x, s2) = p in
+    if n <= 0 then Option.Some(x) else nth-drive(step, s2, n - 1)
 
 def nth(it, n) =
   if n < 0 then
@@ -184,7 +195,8 @@ def contains-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
     s
   ) with
   | Option.None(_) => false
-  | Option.Some(p) => let (x, s2) = p in if x == target then true else contains-drive(step, s2, target)
+  | Option.Some(p) => let (x, s2) = p in
+    if x == target then true else contains-drive(step, s2, target)
 
 def contains(it, target) = match it with
   | Iter.Mk(s, step) => contains-drive(step, s, target)
@@ -194,8 +206,9 @@ def contains(it, target) = match it with
 def last-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), seen: Int64, have: Bool) = match step(
     s
   ) with
-  | Option.None(_) => (if have then Option.Some(seen) else Option.None(unit))
-  | Option.Some(p) => let (x, s2) = p in last-drive(step, s2, x, true)
+  | Option.None(_) => if have then Option.Some(seen) else Option.None(unit)
+  | Option.Some(p) => let (x, s2) = p in
+    last-drive(step, s2, x, true)
 
 def last(it) = match it with
   | Iter.Mk(s, step) => last-drive(step, s, 0, false)

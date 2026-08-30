@@ -19,7 +19,7 @@ import { RDuration, whole-notes, r-whole, r-half, r-quarter, r-eighth, r-sixteen
 /// equality). Traps on mismatch. Whole is the reference unit both layers share.
 def rhythm-agree(d: Duration, rd: RDuration) =
   let as-fraction = Rational.of(tick-count(d), tick-count(whole)) in
-  if as-fraction == whole-notes(rd) then
+    if as-fraction == whole-notes(rd) then
     unit
   else
     trap("rhythm tick-fraction and rational whole-note-fraction disagree")
@@ -48,14 +48,14 @@ def the-whole-note-family-round-trips() =
   let _h = rhythm-agree(half, r-half) in
   let _q = rhythm-agree(quarter, r-quarter) in
   let _e = rhythm-agree(eighth, r-eighth) in
-  rhythm-agree(sixteenth, r-sixteenth)
+    rhythm-agree(sixteenth, r-sixteenth)
 
 @test
 def the-quarter-is-exactly-a-fourth-of-the-whole() =
   // Spot-pin the projection concretely: quarter = 960 ticks, whole = 3840, so 960/3840 = 1/4 = r-quarter's
   // whole-note fraction. Ties the PPQ grid to the rational model at a specific value.
   let frac = Rational.of(tick-count(quarter), tick-count(whole)) in
-  if frac == Rational.of(1, 4) then
+    if frac == Rational.of(1, 4) then
     if frac == whole-notes(r-quarter) then unit else trap("quarter fraction is r-quarter")
   else
     trap("quarter is a fourth of the whole")
