@@ -263,6 +263,16 @@ jobs:
     # an arm64 slot (pure runner-cost, same axis as C; lower queue-leverage than the x86 cdz-agent-host but
     # available now + independent). Same pattern as clippy/test/codegen (#2171).
     runs-on: ubuntu-24.04-arm
+    # STARVE FAIL-FAST GUARD (v-nix interim, v-gha-green 2026-08-30): under heavy fleet nix contention the
+    # per-suite build (esp. the next suite after iterators — cad-tests, which builds the seed-compiler) can
+    # STARVE on the big-nix-lock and hang with ZERO progress. Observed 3 consecutive hourly runs (23:18/01:00/
+    # 01:32) hang ~1h30m+ on this job, blocking the WHOLE hourly-on-main cadence via the ci concurrency group
+    # (next run queues forever) + forcing a hand-cancel each time. A healthy run is ~12min (cache-warm; the
+    # ~12.1m note above is the COLD hand-wired body); 30min = ~2.5x headroom for a contention-slow-BUT-progressing
+    # run while fail-fasting a starved hang, so a starve reds THIS advisory job (non-required) instead of stalling
+    # the cadence. DURABLE fix is v-nix splitting the cad/compiler-ml/choreography/iterators aggregate so no single
+    # suite can starve the run. Tune N with v-nix if healthy wall-time drifts.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
