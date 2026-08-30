@@ -8515,3 +8515,273 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	a BigInt mixed with a fixed-width integer is the numeric no-promotion error, with a BigInt.of coercion fix
+pass	a Bool let-binder init annotated Int64 has no coercion and carries no fix
+pass	a Bool match with only the false arm is non-exhaustive
+pass	a Bool match with two of the same literal is non-exhaustive
+pass	a CONSTANT bare-Int64 left shift whose result overflows Int64 is rejected
+pass	a Char against a number keeps its total-conversion wrap fix, not a dead-end boundary
+pass	a NON-literal int let-binder init annotated Float wraps in of-int
+pass	a String let-binder init annotated Bytes wraps in to-bytes
+pass	a bad binary digit is a malformed literal, not an unbound name
+pass	a bare (key value) map entry VALUE is no longer accepted
+pass	a bare (key value) record field VALUE is no longer accepted
+pass	a bare 2-parameter user generic echoes both parameters
+pass	a bare Float width-constructor names the sized default with a replace fix
+pass	a bare Int width-constructor names the sized default with a replace fix
+pass	a bare List constructor in a parameter type names the missing element argument
+pass	a bare Map constructor in a parameter type names its two missing arguments
+pass	a bare Map.insert value that adopts Float32 and OVERFLOWS binary32 is rejected (CDZ0302, adopt range-check)
+pass	a bare Qty constructor in a parameter type names its missing arguments
+pass	a bare Set constructor in a parameter type names the missing element argument
+pass	a bare UInt width-constructor names the sized default with a replace fix
+pass	a bare `?` NOT in head position stays an ordinary unbound name with no try hint
+pass	a bare literal just past Int64.max (2^63) takes the same annotate-UInt64 fix
+pass	a bare literal past Int64.max that still fits UInt64 offers an annotate-UInt64 wrap fix
+pass	a bare literal past UInt64.max escalates the annotate fix to BigInt
+pass	a bare literal whose width is fixed TRANSITIVELY through an ancestor arith op is range-checked
+pass	a bare operator keeps the generic mismatch message, not a member-op phrasing
+pass	a bare structural set match pattern is a coded, check-surfaced rejection
+pass	a bare user generic in a parameter type echoes its own parameter
+pass	a binary arithmetic operator with too many operands offers a delete-the-surplus fix
+pass	a called def's zero-arm scalar match reports the non-exhaustive reject exactly once, not at the call site too
+pass	a called scalar member access surfaces the type-naming message, not the bare one
+pass	a called tuple index out of range surfaces the arity-naming message, not the bare one
+pass	a computed integer second operand against a float wraps in Float64.of-int
+pass	a confident prelude-module member typo carries an applyable rename fix
+pass	a constructor-export whose head is a FAR-MISS undeclared name gets no spurious did-you-mean
+pass	a constructor-export whose head names a VALUE (not a sum type) gets no spurious did-you-mean
+pass	a constructor-pattern list element over a NON-SUM element type gets no spurious variant suggestion
+pass	a cross-dimension if-join clash stays a plain mismatch (no same-dimension scale tail)
+pass	a cross-dimension list-join clash stays a plain mismatch (no same-dimension scale tail)
+pass	a cross-kind clash message picks the indefinite article by SOUND, not letter (a UInt8)
+pass	a duplicate name WITHIN one multi-name export clause is rejected with a delete fix
+pass	a far absent-field label in Record.without lists the available fields with no confident fix
+pass	a far-miss record match pattern field carries no baseless suggestion or fix
+pass	a far-typo BARE variant pattern head is an unbound name with no confident suggestion
+pass	a far-typo ctor over a single-variant newtype lists its sole variant
+pass	a far-typo qualified variant pattern head lists the sum's variants and offers no confident fix
+pass	a float-first arithmetic mix retypes the trailing integer literal up to a float
+pass	a float-form literal with an N (BigInt) suffix explains the slip and suggests the R suffix
+pass	a function argument of the wrong ARITY names the argument-count delta
+pass	a function argument with the wrong RESULT type names the result axis
+pass	a further over-ceiling UNSIGNED width well past 64 is rejected naming the written width
+pass	a genuine effect-op typo (no shadowing) keeps the ordinary did-you-mean
+pass	a genuine value misused as a parameter type keeps the is-a-value message (not the constructor one)
+pass	a genuinely-missing field in a record ARGUMENT carries an add (insert) fix, not a rename
+pass	a genuinely-missing nested field gets no rename fix
+pass	a handler arm naming a later-effect op explains the shadowing on its CDZ0403
+pass	a head typo nearer to a real def suggests the def over a grammar keyword
+pass	a heterogeneous native #map literal NAMES the two clashing value types (diagnostic quality)
+pass	a list element out of range for a SIBLING element's annotated width is rejected
+pass	a list element over the max of a SIBLING-inferred narrow width is rejected
+pass	a list element-type mismatch names the element axis and offers no mechanical fix
+pass	a list literal of records differing in one field type names the differing field
+pass	a list literal of tuples of different arity names the arity delta at the join
+pass	a list match pattern with TWO surplus rest binders names the shape, no unbound leak
+pass	a list pattern on a record value is a shape error naming the type, not the payload
+pass	a list pattern on a tuple value says a list pattern matches only a list
+pass	a list-element join over different-unit same-dimension quantities names the scale
+pass	a malformed list rest NESTED in a variant payload names the rest shape, no unbound leak
+pass	a map KEY-type mismatch names the key axis
+pass	a map VALUE-type mismatch names the value axis
+pass	a map with BOTH axes wrong reports the leftmost (key) axis deterministically
+pass	a match whose arm tuples differ in one position names the differing position
+pass	a match with a float arm and a later int-literal arm retypes the int-literal arm up
+pass	a match with an int-literal arm and a later float arm retypes the int-literal arm up
+pass	a member-access field with no close match lists the available fields with no confident fix
+pass	a member-operand typo suggests a member-accessible module sharing a variant name, with a rename fix
+pass	a miscased boolean False suggests the lowercase false literal with a replace fix
+pass	a miscased boolean True suggests the lowercase true literal with a replace fix
+pass	a mismatch against a sum with no fitting variant carries no wrap suggestion
+pass	a mismatch between two same-named distinct types disambiguates the shared name (argument site)
+pass	a misspelled and keyword in head position suggests and
+pass	a misspelled field in a SHARED nested record drills the rename into the inner literal
+pass	a misspelled field in a constructed record names the field-diff and offers a rename fix
+pass	a misspelled field in a record ARGUMENT names the field-diff and offers a rename fix
+pass	a misspelled field in a record LET-BINDER carries the same field rename fix
+pass	a misspelled field on a runtime record reached through a parameter suggests the nearest field the same way
+pass	a misspelled field on a visible record literal suggests the nearest field with a heuristic rename fix
+pass	a misspelled if keyword in head position suggests if
+pass	a misspelled let keyword in head position suggests let
+pass	a misspelled match keyword in head position suggests match
+pass	a multi-parameter user generic sum under-applied names its two-argument arity
+pass	a mutual-recursion group with two concrete-different return widths is rejected (no silent unify)
+pass	a near-miss absent field in Record.without suggests the near field with a replace fix
+pass	a near-miss wrong-sum variant pattern head suggests the matched sum's variant with a fix
+pass	a near-typo BARE variant pattern head is an unbound name that still suggests the nearest variant
+pass	a near-typo ctor over a single-variant newtype suggests its sole variant with a fix
+pass	a near-typo qualified variant pattern head suggests the nearest variant with a replace fix
+pass	a nested-path mismatch mixes a record field name and a tuple index
+pass	a non-member intrinsic-module arm head over a recursive body is a coded CDZ0201
+pass	a nullary variant applied to a payload names the variant and that it cannot be applied
+pass	a partial application as an operator operand names the forgotten call with a polished function-value lead
+pass	a partial application of a performing closure that escapes its handler is rejected
+pass	a partial application still needing two arguments pluralizes the count
+pass	a partial application where a scalar is expected names the forgotten call
+pass	a payload-typed let-binder init annotated its sum wraps in the variant constructor
+pass	a plain prelude-member typo gets the ordinary unknown-member error, not a rename hint
+pass	a prelude List over-applied with two type arguments names its arity
+pass	a prelude Map under-applied with one type argument names its two-argument arity
+pass	a prelude Qty under-applied with one type argument names its two-argument arity
+pass	a prelude Qty with zero type arguments names its two-argument arity
+pass	a prelude Set over-applied with two type arguments names its one-argument arity
+pass	a qualified nullary variant applied to a payload names the bare variant
+pass	a reachable unbound name found by two passes is reported exactly once
+pass	a record ARGUMENT missing fields carries an add (insert) fix with a placeholder per missing field
+pass	a record ARGUMENT with a lone surplus field carries a delete fix
+pass	a record match pattern typo field suggests the nearest field with a rename fix
+pass	a rest-form set match pattern is likewise a coded rejection (a set has no positional structure)
+pass	a reused rest binder across sibling rest-lists is non-linear
+pass	a same-arity function PARAMETER difference resolves at the inner argument, no fn-signature tail
+pass	a same-arity per-position tuple type mismatch keeps its element message with no add or delete fix
+pass	a same-arity tuple element-type mismatch names the specific position, not an arity delta
+pass	a same-field-set record with a differing field type names the field, not a field-set difference
+pass	a string value annotated as a non-String type is a mismatch
+pass	a structurally-mismatched List.push element names the operation and the field-level delta
+pass	a three-level nested record mismatch grows the dotted path
+pass	a too-big literal inside BigInt.of carries no wrap fix and names the drop-the-wrapper repair
+pass	a tuple ARGUMENT with one too many elements carries a delete fix on the trailing element
+pass	a tuple ARGUMENT with too few elements carries an add (insert) fix appending a placeholder
+pass	a tuple ARGUMENT with two too many elements is not one clean delete — no mechanical fix
+pass	a tuple element path drills into a nested record field
+pass	a tuple passed with too FEW elements names the arity delta
+pass	a tuple passed with too MANY elements names the arity delta the other direction
+pass	a two-fixed-width magnitude clash under quantity arithmetic is CDZ0301 (no silent widening)
+pass	a two-level nested record mismatch drills to the dotted leaf path
+pass	a type annotation with too few operands names the one part present
+pass	a type annotation with too many operands names the three parts present
+pass	a type-position typo does not suggest a nearer VALUE def
+pass	a type-position typo still suggests a prelude type with a rename fix
+pass	a type-position typo still suggests a real user type with a rename fix
+pass	a typo'd handle effect name does not suggest a prelude variant constructor with no members
+pass	a typo'd handle effect name prefers a member-accessible effect over an equidistant variant
+pass	a user generic sum over-applied with two type arguments names its one-argument arity
+pass	a variant constructor String-into-Bytes payload mismatch offers the to-bytes wrap fix
+pass	a variant constructor int-valued-float payload mismatch offers the drop-the-fraction fix
+pass	a variant constructor int-width payload mismatch offers the of-conversion wrap fix
+pass	a variant constructor payload mismatch with no coercion carries the bare reject and no fix
+pass	a wrong-arity prelude ctor in a VALUE annotation routes through the same arity helper
+pass	a wrong-arity user generic sum in a VALUE annotation routes through the same arity check
+pass	a wrong-element-type List.push names the operation and its expected/actual types
+pass	a wrong-sum variant pattern head lists the MATCHED type's variants
+pass	a wrong-type argument to a conversion op names the operation
+pass	adding a boolean to a number names the scalar kind boundary
+pass	adding an integer to a nominal newtype names the kind boundary
+pass	adding an integer to a user sum names the kind boundary, not a phantom Int64 clash
+pass	an N-suffixed token with a NON-numeric body gets the generic malformed message, not the N-suffix explanation
+pass	an absent EFFECT operation names the effect and 'operation', with a did-you-mean
+pass	an absent user-RECORD field keeps 'record has no field' (a record is a record to the author)
+pass	an absent user-sum VARIANT names the type and 'variant', with a did-you-mean
+pass	an ambiguous missing-and-extra record field set (not a typo) gets no mechanical fix
+pass	an ambiguous two-field constructed-record slip guides with the field-diff but offers no confident fix
+pass	an empty type annotation names the zero parts present
+pass	an escaping closure whose body performs is rejected (perform out of the handler's extent)
+pass	an exponent-form float with an N suffix gets the R-suffix fix
+pass	an exported closure whose body applies an arithmetic operator to a non-numeric operand is rejected
+pass	an exported function with an unannotated parameter is rejected as ambiguous
+pass	an if whose branch records differ in one field type names the differing field
+pass	an if whose branch tuples differ in arity is a CDZ0203 branch-join mismatch naming the arity delta
+pass	an if whose branch tuples differ in one element type names the differing position at the join
+pass	an if with a float then-branch and an int-literal else-branch retypes the else int literal up
+pass	an if with an int-literal then-branch and a float else-branch retypes the int literal up
+pass	an if-join over different-unit same-dimension quantities names the scale, not a shadowed declaration
+pass	an ill-typed condition inside a let body is still caught (the check descends through the let)
+pass	an int LITERAL let-binder init annotated Float retypes to a float literal
+pass	an int literal FIRST against a non-literal float retypes the literal up
+pass	an int-first arithmetic mix drops the trailing float literal's fractional form
+pass	an int-vs-bool if branch clash is not coercible, so no float-retype fix is offered
+pass	an int-width let-binder annotation mismatch offers the of-conversion wrap fix
+pass	an integer literal match with no wildcard is non-exhaustive
+pass	an integer-valued float LITERAL let-binder init annotated Int drops the fraction
+pass	an integer-valued float with an N suffix also gets the R-suffix fix
+pass	an internal meta channel is not offered as a member suggestion
+pass	an op declared only on a LATER same-named effect explains the shadowing, not a typo list
+pass	an operator-arg record field-SET mismatch names the delta, not the raw unify message
+pass	an operator-arg record field-TYPE mismatch names the differing field's types
+pass	an operator-arg tuple ARITY mismatch names the element counts
+pass	an ordinary distinct-name mismatch adds no same-name disambiguation tail
+pass	an ordinary over-applied user function keeps the anonymous arity message, not a constructor phrasing
+pass	an out-of-range Map.insert KEY via a sibling-inferred width is CDZ0302
+pass	an out-of-range literal in an INNER Map.insert of a builder chain is rejected — the descent recurses the chain
+pass	an out-of-range signed checked conversion names its signed valid range
+pass	an out-of-range signed literal names its valid range in the diagnostic
+pass	an out-of-range unsigned literal names a range starting at zero
+pass	an over-ceiling SIGNED width far past the ceiling is rejected naming the written width
+pass	an over-ceiling SIGNED width one past the ceiling is rejected naming the written width
+pass	an unbound match arm head over a recursive body is a coded CDZ0101, not silently accepted
+pass	an unbound name close to a let binding suggests the binding with a replace fix
+pass	an unbound name close to a top-level def suggests it with a replace fix
+pass	an unbound name in an integer width position surfaces a width-specific unbound-name error
+pass	an unbound width name in a NON-first type-argument position is caught and names the ctor-appropriate example
+pass	an unbound width name nested in a compound annotation is caught
+pass	an undefined name in the 2nd+ position of a multi-name export clause is caught with a did-you-mean
+pass	an unknown prelude-module operation lists the available operations, not a confident single
+pass	an unrelated-payload Option mismatch gets no match-it hint
+pass	an unsolved type variable renders as underscore in a call-argument mismatch
+pass	an unsolved type variable renders as underscore in a list-element clash
+pass	an unsolved type variable renders as underscore in an if-branch join
+pass	annotating with a monomorphic sum applied to a type argument says it takes no type parameters
+pass	applying a generic type constructor to a value names the type-argument position
+pass	applying a monomorphic sum in value position says it takes no type parameters
+pass	applying a non-generic prelude type to a value names it a type, not a function
+pass	applying a nullary function names it and says it takes no arguments
+pass	applying a nullary function with two surplus arguments pluralizes the count
+pass	applying a plain value def keeps the type-named message, not the nullary-function wording
+pass	applying an effect name names the category, not the leaked synthesized record type
+pass	comparing a boolean against a character names the scalar kind boundary
+pass	comparing a list against an integer names the kind boundary
+pass	comparing a record against an integer names the kind boundary
+pass	comparing a user sum against a record (different compound kinds) names the kind boundary
+pass	comparing a user sum against a string names the kind boundary
+pass	comparing an Option to its payload reads at the argument site and carries a wrap-in-Some fix
+pass	float-first division of a mixed int/float pair does not silently promote
+pass	float-first multiplication of a mixed int/float pair does not silently promote
+pass	float-first subtraction of a mixed int/float pair does not silently promote
+pass	named member access on a List redirects to the List operation module
+pass	named member access on a Map redirects to the Map operation module
+pass	named member access on a Set redirects to the Set operation module
+pass	named member access on a String redirects to the String operation module
+pass	named member access on a sum redirects to a match template over its variants
+pass	named member access on a user sum spells its own variants and payload binders in the match template
+pass	no forgotten-call hint when the expected type is itself a function (fn-vs-fn mismatch)
+pass	no forgotten-call hint when the fully-applied result would still differ from the expected type
+pass	ordering a boolean against a number names the scalar kind boundary, not an internal clash
+pass	ordering a tuple against an integer names the kind boundary
+pass	over-applying a bare variant constructor names the constructor and its arity
+pass	over-applying a member op names the operation and its arity with a delete-surplus fix
+pass	over-applying an arity-1 member op uses the singular argument
+pass	same-typed List operands to + reject without a phantom Int64 clash
+pass	same-typed String operands to % reject without a phantom Int64 clash
+pass	same-typed String operands to + reject without a phantom Int64 clash
+pass	same-width integers of different signedness do not promote (signedness alone is a mismatch)
+pass	the WIDTH-indexed Int constructor with two width arguments names the width arity
+pass	the WIDTH-indexed Int constructor with zero width arguments names the width arity
+pass	the WIDTH-indexed UInt constructor with zero width arguments names the width arity
+pass	the `?` sigil in head position names the `try` spelling, not a bare unbound name
+pass	the arrow type constructor with zero arguments names the arrow shape and its minimum
+pass	the direct value-annotation site also carries the add fix for a missing record field
+pass	the direct value-annotation site also carries the tuple add fix for too few elements
+pass	the function-signature delta hint also fires at a value-annotation site
+pass	the integer-only remainder operator rejects a float operand (CDZ0301, no float fold)
+pass	the leaf-path drill stops at a deeper field-set difference, naming the immediate field
+pass	the match-it hint also fires at a binop unify site over an optional read
+pass	the member-access spelling of an over-applied constructor names it dotted
+pass	the mirror order (non-literal float then int literal) offers the identical literal retype
+pass	the same-name disambiguation also fires at a value annotation
+pass	the sibling-inferred list-element width check is order-independent (the bare element first)
+pass	the transitive-arith width flow climbs TWO arith levels down to the literal
+pass	the widest unsigned range bound renders exactly (u128 arithmetic, not i64)
+pass	the wrap-in-variant fix's constructor is derived generically from the user sum, not hardcoded
+pass	two DIFFERENT user sums keep the generic same-kind mismatch, not the kind boundary
+pass	two distinct called zero-arm scalar matches each report (no false-merge to one)
+pass	two distinct occurrences of the same unbound name are each reported, not merged to one
+pass	using an Option where its bare payload is expected says to match it, with no mechanical fix
+todo	a multi-shot continuation reaching an outer effect via an if branch declines cleanly
+todo	a multi-shot continuation reaching an outer handler's effect declines cleanly, never doubling it
+todo	a multi-shot continuation spanning a host call declines cleanly, never doubling the host call
+todo	a multi-shot continuation spanning a host call inside a do declines cleanly
+todo	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
+todo	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
+todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
+todo	an escaping captured continuation is refused, not miscompiled
