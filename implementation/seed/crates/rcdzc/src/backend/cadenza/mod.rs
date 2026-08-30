@@ -2165,8 +2165,9 @@ fn build_arm_pat(
         emitted: &std::collections::HashSet<StructId>,
     ) -> Result<StructId, Reject> {
         if db.is_user_node(decl) && !emitted.contains(&decl) {
-            return Err(Reject::decline(
-                "the Cadenza backend does not re-emit a deep nested match over an un-emitted user sum"
+            return Err(Reject::unsupported(
+                "the Cadenza backend does not support re-emitting a deep nested match over an \
+                 un-emitted user sum"
                     .to_string(),
             ));
         }
@@ -2672,8 +2673,8 @@ fn emit_nested_switch_chain(
     // (per-level) A user sum whose `(type …)` was not re-emitted must decline HERE, not only at the root —
     // its variant heads must resolve on recompile. Option/Result are ambient (prelude), so they proceed.
     if db.is_user_node(decl) && !emitted.contains(&decl) {
-        return Err(Reject::decline(
-            "the Cadenza backend does not re-emit a nested match over an un-emitted user sum"
+        return Err(Reject::unsupported(
+            "the Cadenza backend does not support re-emitting a nested match over an un-emitted user sum"
                 .to_string(),
         ));
     }
