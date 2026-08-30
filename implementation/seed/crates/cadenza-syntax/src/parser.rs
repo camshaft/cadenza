@@ -184,6 +184,19 @@ pub fn read_ml(src: &str) -> Parsed {
     parse(src, FileId::default())
 }
 
+/// The FROZEN RECURSIVE-parser reference for the differential oracle (see
+/// `roundtrip_tests::generative_roundtrip`), used while the ML parser is converted from recursive
+/// descent to an explicit worklist. At present it is identical to [`read_ml`] (both run the recursive
+/// `parse`), so the oracle is a green passthrough. When a later increment makes [`read_ml`]/`parse`
+/// ITERATIVE (adding iterative methods ALONGSIDE the recursive ones, not rewriting in place), this is
+/// repointed to the preserved recursive entry so it stays the recursive baseline the oracle diffs the
+/// new iterative output against byte-for-byte (arenas + span table + errors). Removed once the rewrite
+/// is complete and soaked. Test-only — it never ships in a non-test build.
+#[cfg(test)]
+pub(crate) fn read_ml_recursive(src: &str) -> Parsed {
+    parse(src, FileId::default())
+}
+
 struct Parser<'a> {
     src: &'a str,
     tokens: Vec<Token>,
