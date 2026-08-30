@@ -1595,38 +1595,26 @@
         #
         # TIGHTLY SCOPED source: only the cdz-runtime crate (+ the workspace pin) — NOT the whole repo
         # — so a change ANYWHERE ELSE does not invalidate these derivations' cache.
-        # DRIFT-PROOF the codec-core staging: DERIVE the `#[path]`-included sources straight from
-        # cdz-runtime/src/lib.rs's `#[path = "../../…"]` declarations, so this fileset AUTO-FOLLOWS a move.
-        # #5158 relocated these (rcdzc→cadenza-ast) and the HAND-LISTED fileset then silently threw at eval
-        # FLEET-WIDE — three separate agents hit it (v-guide-infra / v-xtask-decompose / v-cdz-crate-split)
-        # before it was hand-fixed (#5174). Deriving from the source-of-truth `#[path]` means a future
-        # retarget needs NO manual fileset sync + can't re-break eval. Matches the `../../<crate>/src/<file>`
-        # cross-crate SHARE form (re-rooted at crates/); ASSERTS non-empty so a `#[path]`-FORMAT change fails
-        # LOUD here with a clear message rather than as an obscure downstream missing-file build error.
-        runtimePathIncludes =
-          let
-            libRs = builtins.readFile ./implementation/seed/crates/cdz-runtime/src/lib.rs;
-            # POSIX ERE (builtins.split): anchor on `path = "../../…"` — the `#[…]` bracket-escapes `\[`/`\]`
-            # are rejected by nix's regex engine, and `path = "../../<rel>"` is distinctive to the #[path]
-            # attrs (the only such construct in lib.rs). Captures the cross-crate share path after `../../`.
-            parts = builtins.split ''path *= *"\.\./\.\./([^"]+)"'' libRs;
-            rels = map (m: builtins.elemAt m 0) (builtins.filter builtins.isList parts);
-          in
-          if rels == [ ]
-          then throw ("flake.nix runtimeSrc: found no `#[path = \"../../…\"]` codec-core includes in "
-            + "cdz-runtime/src/lib.rs — did the #[path] declaration format change? Update runtimePathIncludes.")
-          else map (rel: ./implementation/seed/crates + ("/" + rel)) rels;
+        # seq-273 (operator, co-land with v-runtime slice-1): cdz-runtime NO LONGER `#[path]`-source-includes
+        # cadenza-ast — it declares a real `cadenza-ast = { path = "../cadenza-ast", default-features = false }`
+        # crate dep (its no_std+alloc CORE). The #459 cross-crate-LTO/frozen-hash worry was RESOLVED host-local:
+        # the runtime hash is injected PER-HOST from the same nix closure (runtime_abi.rs:95-96, no cross-host
+        # repro requirement), and lto+cu=1 still erases the crate boundary → a one-time hash re-record (v-runtime
+        # verified 05L2JC reproducible on aarch64; v-nix confirmed the semantics + this flake side). So the nix
+        # runtime source closure now STAGES THE cadenza-ast CRATE (src + Cargo.toml) so cargo/cargo-component
+        # resolves the path-dep, INSTEAD of deriving+staging the (now-gone) `#[path]` sibling files. A cadenza-ast
+        # change rotates the runtime (bytes depend) — correct + expected.
         runtimeSrc = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions ([
             ./implementation/seed/crates/cdz-runtime
+            # cadenza-ast is now a real path-dep of cdz-runtime (seq-273) — stage the whole crate so cargo
+            # resolves it (its no_std+alloc core via default-features=false). Replaces the old `#[path]`-derived
+            # codec-core staging (runtimePathIncludes). The shared canonical binary codec (ast value model +
+            # Builder + codec::encode/decode) still makes the runtime's ast-encode/ast-decode heap ops
+            # byte-identical to the compile-time `Ast.encode` fold — now via the crate dep, not source-include.
+            ./implementation/seed/crates/cadenza-ast
           ]
-          # The codec-core (ast/leb128/codec) cdz-runtime `#[path]`-includes from cadenza-ast — the shared
-          # canonical serializer the `ast-encode`/`ast-decode` heap ops reuse so the runtime bytes are
-          # byte-identical to the compile-time `Ast.encode` fold (copy-don't-depend via shared SOURCE, NOT a
-          # crate dep — the #459 cross-crate-LTO/frozen-hash lesson). DERIVED from lib.rs's `#[path]` (above)
-          # so a move auto-follows. A change to any correctly rotates the runtime component (bytes depend).
-          ++ runtimePathIncludes
           ++ [
             # The runtime's world imports `cadenza:nfc/normalize` (FINDING#23); its Cargo.toml points
             # cargo-component's WIT resolution at the sibling NFC crate's WIT. Scope to just the WIT (all the

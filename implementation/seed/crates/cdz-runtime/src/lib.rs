@@ -151,15 +151,13 @@ mod bigint;
 // frozen runtime wasm hash, which must be a function of THIS crate's own compilation only. cadenza-ast's
 // `ast.rs`/`codec.rs`/`leb128.rs` are the `no_std`+alloc CORE (canon/fxhash/std behind `cfg(feature =
 // "std")`), so they include standalone here exactly as rcdzc's copies did, byte-identically.
-#[allow(dead_code)]
-#[path = "../../cadenza-ast/src/ast.rs"]
-mod ast;
-#[allow(dead_code)]
-#[path = "../../cadenza-ast/src/codec.rs"]
-mod codec;
-#[allow(dead_code)]
-#[path = "../../cadenza-ast/src/leb128.rs"]
-mod leb128;
+// Re-exported from the `cadenza-ast` CRATE (default-features = false → its no_std+alloc codec core),
+// replacing the former `#[path]`-into-a-sibling-crate's-src source-include (operator seq-273). The
+// `crate::ast::` / `crate::codec::` / `crate::leb128::` call sites below are unchanged. `#[allow(unused_imports)]`
+// because not every re-exported module is named directly (codec/ast reach leb128 through cadenza-ast's
+// own internal `crate::` paths, resolved inside cadenza-ast now — a cleaner boundary than the include).
+#[allow(unused_imports)]
+pub(crate) use cadenza_ast::{ast, codec, leb128};
 
 /// A single-threaded stand-in for `std::thread_local!`, so the two scratch/counter cells work under
 /// `no_std` (the shipped wasm build) without pulling in `std`. A component instance is

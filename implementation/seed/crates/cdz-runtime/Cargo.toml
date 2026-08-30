@@ -48,6 +48,15 @@ wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
 # compile-time fold in rcdzc, so both places produce byte-identical digests (the design's §9 invariant).
 blake3 = { version = "1.8", default-features = false }
 
+# The shared canonical cadenza-AST binary codec (ast value model + Builder + codec::encode/decode +
+# leb128) — the SAME source the compiler (rcdzc) uses, so the runtime's `ast-encode`/`ast-decode` ops
+# (93/94) serialize BYTE-IDENTICALLY to the compile-time `Ast.encode` fold. `default-features = false`
+# takes cadenza-ast's `no_std` + `alloc` CORE ONLY (its `std` default gates num-bigint/unicode-
+# normalization — the #459 num-bigint hazard that must never enter this frozen-hash wasm). Replaces the
+# former `#[path]`-into-cadenza-ast/src source-include (operator seq-273); under lto + codegen-units=1
+# the crate boundary is erased, so the emitted wasm stays byte-reproducible (hash re-recorded once).
+cadenza-ast = { path = "../cadenza-ast", default-features = false }
+
 # The embedded wasm allocator (see src/allocator.rs) — the runtime ships its own allocator. Gated to
 # wasm only: native `cargo test` uses the system allocator, so the Handle-typed core stays testable
 # natively without pulling talc in. Swappable in one file — the heap core never references it.
