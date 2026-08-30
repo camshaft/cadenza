@@ -3976,10 +3976,13 @@ mod tests {
             HoverContents::Scalar(MarkedString::String(s)) => s.clone(),
             other => panic!("unexpected hover contents: {other:?}"),
         };
-        // The answer mentions the inferred type (an Int-family type for `42`).
-        assert!(
-            rendered.contains("Int"),
-            "hover should report the type, got: {rendered}"
+        // EXACT render, not a `contains("Int")` substring: `KIND_TYPE_AT` is a binary-AST wire, and the
+        // signature-help sibling regressed for a release when its render fell back to the raw `cdzast…`
+        // payload — which still CONTAINS the type bytes, so a substring check passed on garbage. Pin the
+        // clean render so a decoder-skipping regression fails loudly here too.
+        assert_eq!(
+            rendered, "answer : Int64",
+            "hover reports the callee name + its cleanly-rendered inferred type"
         );
         assert!(
             h.range.is_some(),
@@ -4177,9 +4180,11 @@ mod tests {
             HoverContents::Scalar(MarkedString::String(s)) => s.clone(),
             other => panic!("unexpected hover contents: {other:?}"),
         };
-        assert!(
-            rendered.contains("Int"),
-            "hover on a let-local use should report its inferred Int type, got: {rendered}"
+        // EXACT render (see `hover_on_a_definition_reports_its_type` for why substring checks are unsafe on
+        // a binary-AST wire): the inferred scalar renders cleanly as `Int64`, not a `cdzast…`-embedded `Int`.
+        assert_eq!(
+            rendered, "Int64",
+            "hover on a let-local use reports its cleanly-rendered inferred Int64 type"
         );
     }
 
@@ -4197,9 +4202,12 @@ mod tests {
             HoverContents::Scalar(MarkedString::String(s)) => s.clone(),
             other => panic!("unexpected hover contents: {other:?}"),
         };
-        assert!(
-            rendered.contains("List") && rendered.contains("Int"),
-            "hover on a compound let-local use should report its inferred (List Int) type, got: {rendered}"
+        // EXACT compound render: pins that the structured type survives as `(List Int64)`, not a flattened
+        // scalar, an `unknown`, or the raw `cdzast…` wire (a substring `contains("List") && contains("Int")`
+        // would pass on the undecoded payload — the binary-wire regression class this whole family guards).
+        assert_eq!(
+            rendered, "(List Int64)",
+            "hover on a compound let-local use reports its cleanly-rendered inferred (List Int64) type"
         );
     }
 
@@ -4222,15 +4230,17 @@ mod tests {
             }
         };
         // Binder `x` in `f(x)` (col 6) and its use in `x + 1` (col 11) — both now report the inferred Int64.
+        // EXACT render on both the binder and the use (substring checks are unsafe on the binary-AST wire —
+        // see `hover_on_a_definition_reports_its_type`): each is exactly `Int64`, not a `cdzast…`-embedded one.
         let binder = rendered_at(6, "the unannotated param binder");
-        assert!(
-            binder.contains("Int64"),
-            "the binder hovers its inferred Int64, got: {binder}"
+        assert_eq!(
+            binder, "Int64",
+            "the binder hovers its cleanly-rendered inferred Int64"
         );
         let use_ = rendered_at(11, "the use of the unannotated param");
-        assert!(
-            use_.contains("Int64"),
-            "the use hovers its inferred Int64, got: {use_}"
+        assert_eq!(
+            use_, "Int64",
+            "the use hovers its cleanly-rendered inferred Int64"
         );
     }
 
