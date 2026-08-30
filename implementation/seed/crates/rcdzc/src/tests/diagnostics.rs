@@ -1721,30 +1721,14 @@ fn a_malformed_match_pattern_does_not_also_warn_its_binders_unused() {
 /// twin of the sum matcher's `variant_disc_of`-miss path — so `type_errors`' `match_pattern_fault`
 /// accessor surfaces it. `diags_of` runs the exact `crate::diagnostics` (check) path.
 #[test]
-fn a_list_arm_ctor_head_over_a_recursive_body_is_a_coded_fault_in_check() {
-    // Self-recursive `go` over a `(List Int64)` scrutinee, arm head `Zorp` — an unbound name. `check`
-    // (diagnostics) must report the CDZ0101, not pass clean.
-    let unbound = "(module m (def (go (: rest (List Int64))) \
-                       (match rest ((Zorp x) (go (list x))) (_ 0))) (export go))";
-    let all = diags_of(unbound);
-    assert!(
-        all.iter()
-            .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("Zorp")),
-        "check reports the unbound arm-head as CDZ0101 (was silent, exit 0): {all:?}"
-    );
-    // `List.Cons`/`List.Nil` arm heads over a recursive body — `List` is an intrinsic MODULE, not a sum
-    // type, so these are non-members → CDZ0201, again surfaced by `check`.
-    let member = "(module m (def (go (: rest (List Int64))) \
-                      (match rest (((. List Nil) _) 0) (((. List Cons) h t) (go rest)))) (export go))";
-    let all = diags_of(member);
-    assert!(
-        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-            && d.message.contains("List")
-            && d.message.contains("member")),
-        "check reports the non-member list arm head as CDZ0201: {all:?}"
-    );
-    // NO false alarm: a WELL-FORMED recursive list fold (element + rest binder patterns) stays clean —
-    // this path fires only on a ctor-shaped head, never a legitimate `(list …)` pattern or a binder.
+fn a_well_formed_recursive_list_fold_checks_clean_not_a_false_arm_head_fault() {
+    // WHITE-BOX residual. The reject halves — an UNBOUND arm head (`Zorp`) → CDZ0101 and a NON-MEMBER
+    // intrinsic-module arm head (`(. List Nil)`/`(. List Cons)`) → CDZ0201, both surfaced by `check` even
+    // over a self-recursive body — migrated to corpus 05-compound-types ("an unbound match arm head over a
+    // recursive body …" + "a non-member intrinsic-module arm head …"). What stays here (corpus-inexpressible:
+    // a `(List …)` entry param has no scalar boundary → declines at the export path, not a clean value case):
+    // the no-false-alarm control that a WELL-FORMED recursive list fold (element + rest binder patterns)
+    // stays clean — this path fires only on a ctor-shaped head, never a legitimate `(list …)` pattern or binder.
     let ok = "(module m (def (go (: acc Int64) (: rest (List Int64))) \
                   (match rest ((list) acc) ((list h .. t) (go (+ acc h) t)))) (export go))";
     // Bind once — `diags_of` recompiles the module, so evaluating it in both the predicate and the
