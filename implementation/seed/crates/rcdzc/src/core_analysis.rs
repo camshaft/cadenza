@@ -77,6 +77,19 @@ pub(crate) fn is_heap_type(ty: &Ty) -> bool {
         // its erased payload gets no `dup` and the shared handle is FBIP-mutated while still referenced
         // (drift). Classify by the erased inner shape, exactly like `Qty`.
         Ty::Nominal { inner, .. } => is_heap_type(inner),
+        // A runtime CLOSURE VALUE (`Core::Closure`) is a flat arr cell on the value heap (`box-int(code)` +
+        // captures), so a `Ty::Fn`-typed binder/param that holds one is a HEAP value and MUST be a Perceus
+        // RETAIN candidate — else `collect_retain_candidate_binders` skips it, `mark_binder_dups` never runs,
+        // NO `dup` is emitted for a multi-use, and the shared cell is freed while still referenced: a closure
+        // DOUBLED into one collection literal (`#list(f f)`) puts the SAME rc==1 cell into two slots → the
+        // list's drop double-frees it, or a residual direct apply reads a freed cell → a garbage funcref →
+        // `call_indirect` trap (breaker's #5980 doubled-occurrence residual). A FULLY-SOLVED closure type
+        // (`Ty::Fn(Int64, Int64)`, no free var) is the gap `is_heap_type_for_retain`'s `has_free_var` fallback
+        // did NOT cover. This is the closure twin of the String/Symbol + BigInt/Rational omissions fixed above
+        // (a heap value whose TYPE was not classified heap). A runtime `Fn` value is ONLY ever a heap closure
+        // (`Core::Closure` — a lambda lift), so this is sound; the dup/drop of a closure cell is an ordinary
+        // arr dup/drop.
+        Ty::Fn(_, _) => true,
         _ => false,
     }
 }
