@@ -2261,9 +2261,10 @@ fn emit_runtime_resource(
     // once) — decline. Only the pure-host, scalar case is emitted here.
     if !host_imports.is_empty() {
         if !extern_imports.is_empty() {
-            return Err(Reject::decline(
-                "a host effect composed with a peer effect in a resource-escaping entrypoint is not yet \
-                 emitted (host+peer+resource triple fusion)",
+            return Err(Reject::unsupported(
+                "the host+peer+resource fusion — a host effect and a peer effect both composed with a \
+                 resource-escaping entrypoint — needs the combined host-and-peer import-space emit \
+                 alongside the resource escape",
             ));
         }
         if host::set_needs_memory(&host_imports) {
@@ -6436,9 +6437,10 @@ fn emit_runtime_bytes_resource(
     // one host effect, is a further fusion — decline cleanly (mirrors the Flat/Sum/RecursiveSum host arms).
     if !host_imports.is_empty() {
         if !extern_imports.is_empty() {
-            return Err(Reject::decline(
-                "a host effect composed with a peer effect in a resource-escaping entrypoint is not yet \
-                 emitted (host+peer+resource triple fusion)",
+            return Err(Reject::unsupported(
+                "the host+peer+resource fusion — a host effect and a peer effect both composed with a \
+                 resource-escaping entrypoint — needs the combined host-and-peer import-space emit \
+                 alongside the resource escape",
             ));
         }
         if host::set_needs_memory(&host_imports) {
@@ -6759,9 +6761,10 @@ fn emit_runtime_sum_resource(
     // host-alongside-peer shape declines.
     if !host_imports.is_empty() {
         if !extern_imports.is_empty() {
-            return Err(Reject::decline(
-                "a host effect composed with a peer effect in a resource-escaping entrypoint is not yet \
-                 emitted (host+peer+resource triple fusion)",
+            return Err(Reject::unsupported(
+                "the host+peer+resource fusion — a host effect and a peer effect both composed with a \
+                 resource-escaping entrypoint — needs the combined host-and-peer import-space emit \
+                 alongside the resource escape",
             ));
         }
         if host::set_needs_memory(&host_imports) {
@@ -7066,9 +7069,10 @@ fn emit_recursive_sum_resource(
     // host ops compose via `assemble_host_runtime_resource`; a String-param or host-alongside-peer declines.
     if !host_imports.is_empty() {
         if !extern_imports.is_empty() {
-            return Err(Reject::decline(
-                "a host effect composed with a peer effect in a resource-escaping entrypoint is not yet \
-                 emitted (host+peer+resource triple fusion)",
+            return Err(Reject::unsupported(
+                "the host+peer+resource fusion — a host effect and a peer effect both composed with a \
+                 resource-escaping entrypoint — needs the combined host-and-peer import-space emit \
+                 alongside the resource escape",
             ));
         }
         if host::set_needs_memory(&host_imports) {
