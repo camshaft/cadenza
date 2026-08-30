@@ -496,6 +496,7 @@ impl Gen<'_> {
     /// - COMPOSED: the INNER arm's resume value itself performs the OUTER effect (`(E1.o1 …)`) — a perform
     ///   from inside a handler arm, discharged by the enclosing OUTER handler (the deep cross-handler /
     ///   xhs seam). The body performs `E2.o2`; the outer arm is a plain resume (no re-perform of E2).
+    ///
     /// Shape (`main`'s body, nested `handle`s over top-level effect decls):
     /// `(do (effect E1 (op o1 (-> Int64 Int64))) (effect E2 (op o2 (-> Int64 Int64)))
     ///      (def (main) (handle E1 <i1> ((o1 (p1) s1 (resume <v1> <n1>)))
@@ -1072,7 +1073,6 @@ impl Gen<'_> {
             3 => {
                 // A MIXED-WIDTH OPERATION/AGGREGATE reconciliation (see [`mixed_width_recon`]).
                 self.mixed_width_recon();
-                return;
             }
             0 => {
                 // Heterogeneous tuple, projected by index.

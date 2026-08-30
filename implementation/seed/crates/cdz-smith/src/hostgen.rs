@@ -263,6 +263,81 @@ pub fn generate_module_fuzz(entropy: &[u8]) -> (Vec<(String, String)>, String) {
     )
 }
 
+/// A DELIBERATELY-MALFORMED multi-module program for fuzzing the import/export RESOLUTION ERROR PATHS
+/// (operator seq-23 follow-on: import EDGE cases). Every shape here is a resolution/linkage error that
+/// the compiler MUST reject with a clean diagnostic (a DECLINE) — never a crash, invalid wasm, hang, or
+/// parse error. Each program PARSES (the surface is well-formed); the error is semantic (a dangling
+/// import, an undefined export, a duplicate export, or an import cycle). Five shapes:
+/// 0. import a name the module does NOT export (module exports `f`, entry imports `g`);
+/// 1. import from a module that does NOT exist (`"nope"`);
+/// 2. module exports a name that is NOT defined (`(export undefined_name)`);
+/// 3. DUPLICATE export of the same name (`(export f) (export f)`);
+/// 4. CIRCULAR import (liba imports libb.g, libb imports liba.f) — must be detected + declined, not hang.
+///
+/// Returns `(modules, entry_src)` for [`crate::oracle::compile_modules_catching`]. A Crash/InvalidWasm/
+/// Hang/ParseError on any of these is a finding: the resolver mishandled a malformed link.
+pub fn generate_module_edge(entropy: &[u8]) -> (Vec<(String, String)>, String) {
+    let mut c = Cursor::new(entropy);
+    let t = gen_wit(&mut c, MAX_TYPE_DEPTH);
+    match c.pick(5) {
+        0 => {
+            // Import a name the module does NOT export (dangling import).
+            let liba = format!("(do (def (f (: x {})) x) (export f))", t.ty);
+            let entry = format!(
+                "(do (import \"liba\" (g)) (def (main) (g {})) (export main))",
+                t.lit
+            );
+            (vec![("liba".to_string(), liba)], entry)
+        }
+        1 => {
+            // Import from a module that does NOT exist.
+            let liba = format!("(do (def (f (: x {})) x) (export f))", t.ty);
+            let entry = format!(
+                "(do (import \"nope\" (f)) (def (main) (f {})) (export main))",
+                t.lit
+            );
+            (vec![("liba".to_string(), liba)], entry)
+        }
+        2 => {
+            // Module exports a name that is NOT defined.
+            let liba = format!("(do (def (f (: x {})) x) (export undefined_name))", t.ty);
+            let entry = format!(
+                "(do (import \"liba\" (f)) (def (main) (f {})) (export main))",
+                t.lit
+            );
+            (vec![("liba".to_string(), liba)], entry)
+        }
+        3 => {
+            // DUPLICATE export of the same name.
+            let liba = format!("(do (def (f (: x {})) x) (export f) (export f))", t.ty);
+            let entry = format!(
+                "(do (import \"liba\" (f)) (def (main) (f {})) (export main))",
+                t.lit
+            );
+            (vec![("liba".to_string(), liba)], entry)
+        }
+        _ => {
+            // CIRCULAR import: liba imports libb.g, libb imports liba.f (must be detected, not hang).
+            let liba = format!(
+                "(do (import \"libb\" (g)) (def (f (: x {})) (g x)) (export f))",
+                t.ty
+            );
+            let libb = format!(
+                "(do (import \"liba\" (f)) (def (g (: y {})) (f y)) (export g))",
+                t.ty
+            );
+            let entry = format!(
+                "(do (import \"liba\" (f)) (def (main) (f {})) (export main))",
+                t.lit
+            );
+            (
+                vec![("liba".to_string(), liba), ("libb".to_string(), libb)],
+                entry,
+            )
+        }
+    }
+}
+
 /// Coerce entropy into a WIT-WORLD guest + world pair for the per-cell WIT-BINDING decline surface (via
 /// [`crate::oracle::compile_world_catching`]). The world declares interface `iface` with one member `f`
 /// of an ARBITRARY WIT type `T` ([`gen_wit`]'s `wit` form): `(world w (export iface (member f (func
@@ -443,6 +518,62 @@ mod tests {
         assert!(
             saw_declined,
             "some host shape should DECLINE (a gap) — the point of the generator"
+        );
+    }
+
+    /// Every `generate_module_edge` program — a DELIBERATELY-MALFORMED import/export link — is CLEANLY
+    /// HANDLED: it either cleanly DECLINES (a resolution/linkage error the compiler must reject) or
+    /// COMPILES (a tolerated case), NEVER a Crash / InvalidWasm / hang. AND the shapes whose link is
+    /// genuinely UNSATISFIABLE — a missing module, a dangling import (importing a name the module does not
+    /// export), an undefined export, or an import CYCLE — MUST DECLINE (never silently compile a broken
+    /// link). A duplicate identical export is tolerated (idempotent), so it may compile. This is the
+    /// module-resolution ERROR-PATH robustness invariant (operator seq-23 follow-on: import edge cases).
+    #[test]
+    fn module_edge_programs_are_cleanly_handled() {
+        let mut saw_must_decline = false;
+        let mut saw_circular = false;
+        for seed in 0u64..1024 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(7);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let (modules, entry) = generate_module_edge(&bytes);
+            let verdict = compile_modules_catching(&modules, &entry);
+            // Never a crash / invalid wasm on a malformed link.
+            assert!(
+                matches!(
+                    verdict,
+                    Verdict::Compiled { .. } | Verdict::Declined { .. } | Verdict::ParseError(_)
+                ),
+                "malformed-link edge program must be cleanly handled, got {verdict:?}\nmodules: {modules:?}\nentry: {entry}"
+            );
+            // A genuinely UNSATISFIABLE link must DECLINE (not silently compile a broken import/export).
+            let missing = entry.contains("(import \"nope\"");
+            let undefined = modules
+                .iter()
+                .any(|(_, s)| s.contains("(export undefined_name)"));
+            let circular = modules.iter().any(|(_, s)| s.contains("(import \"libb\""));
+            let dup = modules
+                .iter()
+                .any(|(_, s)| s.contains("(export f) (export f)"));
+            let dangling = !missing && !undefined && !circular && !dup; // entry imports `g`, unexported
+            if missing || undefined || circular || dangling {
+                saw_must_decline = true;
+                if circular {
+                    saw_circular = true;
+                }
+                assert!(
+                    matches!(verdict, Verdict::Declined { .. } | Verdict::ParseError(_)),
+                    "unsatisfiable link must DECLINE, got {verdict:?}\nmodules: {modules:?}\nentry: {entry}"
+                );
+            }
+        }
+        assert!(
+            saw_must_decline && saw_circular,
+            "sweep did not reach the must-decline edge shapes (incl. the import cycle)"
         );
     }
 }
