@@ -4117,6 +4117,22 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             })
         });
     }
+    // CENTRAL RESUME-POISON FILTER (v-effects design ruling; the tail-resumptive-fold decline is their
+    // lane). The `Resolved::Resume` core-lowering poison (`RESUME_NOT_REDUCIBLE_DECLINE`, lower/compute.rs)
+    // is emitted whenever ANY fault-collection walk lowers a resume-bearing body STANDALONE via `core_of`
+    // (the reached-poison walk, the per-body `type_errors` walks, …), but the REAL emit splices the resume
+    // INSIDE the enclosing handle fold and succeeds — so this standalone poison is speculative. Per-walk
+    // skips (#6390/#6399 patched only `collect_reached_poisons_at`) are whack-a-mole; drop it ONCE here for
+    // ALL walks. SOUND by v-effects's 3-case analysis, losing no real diagnostic: (a) the handle FOLDS →
+    // emit succeeds → this poison is spurious; (b) the handle cannot fold → `HANDLER_NOT_REDUCIBLE_DECLINE`
+    // is reported AT THE HANDLE (a DIFFERENT message → not filtered → still surfaces); (c) a truly STRAY
+    // resume → `STRAY_RESUME` CDZ0201 upstream (different message → not filtered). Keyed on the exact const
+    // so it never catches the sibling handler-level decline. Today the dedup self-suppression (a coded
+    // decline drops itself at a coded node) ALSO happens to drop this poison, so this filter is
+    // behavior-NEUTRAL now; it makes the drop EXPLICIT + robust (independent of that self-suppression) and
+    // completes #6390/#6399's per-walk skips, which miss a poison produced deep by `core_of` of a
+    // containing node (the nested `…_folds` resume at node 187 leaks through the `type_errors` walks).
+    faults.retain(|r| r.message != crate::diag::RESUME_NOT_REDUCIBLE_DECLINE);
     dedup_faults(db, faults, has_bakeable_type_export)
 }
 
