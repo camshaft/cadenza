@@ -5940,10 +5940,14 @@ fn rustc_roundtrip_const_float_nan_emits_and_compares_by_canonical_bits() {
         nan.contains("f64::from_bits(0x7FF8_0000_0000_0000u64)"),
         "Float64.nan → canonical NaN from_bits:\n{nan}"
     );
-    // e2e: the NaN result renders as the canonical `NaN` text (the driver's Float render handles is_nan()).
-    let driver = "fn main(){ let r = prog::mk(); if r.is_nan() { println!(\"NaN\"); } else { println!(\"{}\", r); } }";
+    // e2e: the NaN result renders as the canonical `nan` text (seq-287: the round-trippable value form the
+    // binary-AST printer emits; both gates' Float render agree on `nan`, retiring the old `NaN`).
+    let driver = "fn main(){ let r = prog::mk(); if r.is_nan() { println!(\"nan\"); } else { println!(\"{}\", r); } }";
     if let Some(out) = rustc_run_driver(&nan, driver) {
-        assert_eq!(out, "NaN", "a constant NaN float result renders NaN");
+        assert_eq!(
+            out, "nan",
+            "a constant NaN float result renders the canonical nan"
+        );
     }
     // NaN equality by CANONICAL BYTE FORM: `n = x/x` (NaN when x=0), then `(= n Float64.nan)` — the
     // canonical-bits compare makes NaN == NaN true (unlike IEEE `==`). c>0 selects the nan-compare arm → 1.

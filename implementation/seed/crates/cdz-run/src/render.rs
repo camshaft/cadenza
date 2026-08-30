@@ -1,182 +1,208 @@
 //! Render a wasmtime component `Val` to canonical text — the observable form a test compares.
 //!
-//! Scalars render directly; a string uses `cadenza-syntax`'s escape table (the dual of the reader's
-//! unescape), so a rendered string is byte-identical to what the front-end prints and reads back.
-//! Floats follow the corpus value form (`-0.0`, `NaN`, integral floats as `N.0`).
+//! seq-283/284/287 (operator: "Binary AST is THE data exchange format, no bespoke value renderers"):
+//! this maps a wasmtime `Val` (+ its guest result `Ty`, to disambiguate the WIT-erased leaves) into a
+//! `cadenza-ast` VALUE arena and routes it through the ONE canonical printer, `cadenza_syntax::sexpr::print`
+//! — the SAME renderer `cdz-rust-render` uses. The Ty picks the arena NODE (a `list<u8>` → a `Leaf::Bytes`
+//! atom → `b"…"`; a generic list → `compound(List)` → `#list`; a `Set` → `compound(Set)` → `#set`; a
+//! `Symbol` → `Leaf::Sym` → `#"…"`); the printer renders it canonically. This replaces the old ~255-line
+//! bespoke Val→text renderer (which duplicated the printer's escaping / `#ctor` forms / float form).
 //!
-//! Compounds render in the native `#ctor(…)` value-forms (`#list`/`#tuple`/`#record`) — the operator-ruled
-//! canonical VALUE render (`#ctor` everywhere for values; TYPE descriptors stay name-head per seq-206). This
-//! is the SAME spelling the value-encode / rust-backend / nullary path emits (#5586), so an arg-taking typed-
-//! interface-export result (rendered here from a live wasmtime `Val`) matches a nullary program's
-//! value-form-encoded `(output …)` — one uniform #ctor value spelling across every face.
-//!
-//! (A follow-up `render_val_typed` slice adds the guest-result-Ty leaf disambiguation — a `list<u8>` as
-//! `Bytes` `b"…"` vs `List UInt8` `#list(…)`, a `string` as a `Symbol` `#"…"` — threaded from the compile
-//! via a `cdz-result-type` component custom section.)
+//! Byte-identical to the prior bespoke render for every leaf/compound/sum EXCEPT a NaN float: the printer's
+//! canonical (round-trippable) value form is `nan`, where the old `display_float` printed `NaN` (re-pinned,
+//! v-corpus-harness-verified sole flip 01-literals:298).
 
-use cadenza_syntax::literal;
+use cadenza_syntax::ast::{Builder, CompoundCtor, Decimal, IntValue, Leaf, Radix, StructId};
+use cadenza_syntax::sexpr;
+use std::sync::Arc;
 use wasmtime::component::Val;
 
 /// Render `v` to its canonical text (the type-blind render — a `Val` already tags its shape by variant).
 pub fn render_val(v: &Val) -> String {
-    match v {
-        Val::Bool(b) => b.to_string(),
-        Val::S8(i) => i.to_string(),
-        Val::U8(i) => i.to_string(),
-        Val::S16(i) => i.to_string(),
-        Val::U16(i) => i.to_string(),
-        Val::S32(i) => i.to_string(),
-        Val::U32(i) => i.to_string(),
-        Val::S64(i) => i.to_string(),
-        Val::U64(i) => i.to_string(),
-        Val::Float32(f) => display_float(*f as f64),
-        Val::Float64(f) => display_float(*f),
-        Val::Char(c) => c.to_string(),
-        // Closed-escape-set render (the dual of the reader's unescape), so a non-printable scalar
-        // renders verbatim and reads back to the same value.
-        Val::String(s) => format!("\"{}\"", literal::escape_string(s)),
-        // LIST + TUPLE render in the native `#list(…)` / `#tuple(…)` value-forms — DISTINCT (the native forms
-        // disambiguate what the old head-less `(x y)` conflated), matching the value-encode / rust-backend
-        // spelling.
-        Val::List(xs) => {
-            let inner: Vec<String> = xs.iter().map(render_val).collect();
-            format!("#list({})", inner.join(" "))
-        }
-        Val::Tuple(xs) => {
-            let inner: Vec<String> = xs.iter().map(render_val).collect();
-            format!("#tuple({})", inner.join(" "))
-        }
-        // A RECORD renders the native `#record((= name value) …)` value-form, in field order — the same
-        // spelling the value-encode / resource-escape path prints, so a typed interface-export result
-        // (rendered here) matches a `(wit-world …)` case's `(output …)` clause after the #ctor unification.
-        Val::Record(fields) => {
-            let inner: Vec<String> = fields
-                .iter()
-                .map(|(n, v)| format!("(= {n} {})", render_val(v)))
-                .collect();
-            format!("#record({})", inner.join(" "))
-        }
-        // An OPTION renders `(Some <value>)` / `(None unit)` — the corpus sum value-form (the `unit` payload
-        // marks the absent case, matching the reader).
-        Val::Option(None) => "(None unit)".to_string(),
-        Val::Option(Some(v)) => format!("(Some {})", render_val(v)),
-        // A RESULT renders `(Ok <value>)` / `(Err <value>)`; an empty payload renders `unit`.
-        Val::Result(Ok(p)) => {
-            format!(
-                "(Ok {})",
-                p.as_deref()
-                    .map(render_val)
-                    .unwrap_or_else(|| "unit".into())
-            )
-        }
-        Val::Result(Err(p)) => {
-            format!(
-                "(Err {})",
-                p.as_deref()
-                    .map(render_val)
-                    .unwrap_or_else(|| "unit".into())
-            )
-        }
-        // A VARIANT renders `(<case> <payload>)` / `(<case> unit)` for the nullary case — the case NAME is
-        // the WIT/component-model spelling (kebab, e.g. `continue`/`close`), which is the recorded canonical
-        // form a corpus `(output …)` matches. An ENUM (no payloads) renders `(<case> unit)` likewise.
-        Val::Variant(case, payload) => {
-            format!(
-                "({case} {})",
-                payload
-                    .as_deref()
-                    .map(render_val)
-                    .unwrap_or_else(|| "unit".into())
-            )
-        }
-        Val::Enum(case) => format!("({case} unit)"),
-        other => format!("{other:?}"),
-    }
+    let mut b = Builder::new();
+    let root = build_val(&mut b, v, None);
+    sexpr::print(&b.finish(root))
 }
 
 /// Render `v` using the guest RESULT-TYPE s-expr `ty` (the `Ty::render_name` form — e.g. `Bytes`,
 /// `(List Int64)`, `(Record (: b1 Int64) (: b2 Bytes))`, `(Tuple Int64 Bytes)`) to DISAMBIGUATE the
 /// WIT-erased leaves the raw `Val` cannot: a `list<u8>` is a `Bytes` (`b"…"`) vs a `List UInt8`
 /// (`#list(…)`), a `list` is a `List` vs a `Set` (`#set(…)`), a `string` is a `String` (`"…"`) vs a
-/// `Symbol` (`#"…"`). The `Val` already tags List/Tuple/Record/Option/Result by variant, so `ty` only
-/// supplies the per-leaf render CHOICE + threads through the compounds to each leaf. MIRRORS
-/// `cadenza-syntax`'s printer per leaf (`b"…"` via `literal::escape_bytes`, `#list`/`#set`/`#tuple`/`#record`),
-/// so the direct-WIT-lifted grade render and the resource-escape decode-print render are byte-identical. The
-/// type is the GUEST's compiled result type (threaded from the compile — never the corpus EXPECTED type), so
-/// a genuine Bytes-vs-List mismatch still surfaces. Falls back to the type-blind [`render_val`] for a scalar,
-/// a variant/sum, an unhandled head (`Map`), or a shape/type mismatch — never worse than the untyped render.
+/// `Symbol` (`#"…"`). The type is the GUEST's compiled result type (threaded from the compile — never the
+/// corpus EXPECTED type), so a genuine Bytes-vs-List mismatch still surfaces. Falls back to the type-blind
+/// mapping for a scalar, a sum, an unhandled head (`Map`), or a shape/type mismatch — never worse.
 pub fn render_val_typed(v: &Val, ty: &str) -> String {
-    let (head, args) = split_type(ty);
-    match (v, head) {
-        // THE KEY DISAMBIGUATION: a `list<u8>` that is a `Bytes` renders `b"…"`, not `#list(…)`. Both cross
-        // the WIT boundary as `list<u8>` -> `Val::List` of `U8`.
-        (Val::List(xs), "Bytes") => {
+    let mut b = Builder::new();
+    let root = build_val(&mut b, v, Some(ty));
+    sexpr::print(&b.finish(root))
+}
+
+/// A bare-name atom (`Leaf::Name`) — a sum-ctor head (`Some`/`None`/`Ok`/…), an enum/variant case name, a
+/// record field key (renders `x`, not `"x"`), or the `unit` payload marker.
+fn name_atom(b: &mut Builder, name: &str) -> StructId {
+    b.atom_leaf(Leaf::Name(Arc::from(name)))
+}
+
+/// The canonical `unit` marker atom — the absent/empty payload (`(None unit)` / `(case unit)`).
+fn unit_atom(b: &mut Builder) -> StructId {
+    name_atom(b, "unit")
+}
+
+/// A float VALUE leaf, matching the old `display_float(*f as f64)`: NaN → `Leaf::FloatNan` (renders `nan` —
+/// the ONE canonical-form change from the old `NaN`), ±inf → `Leaf::FloatInf` (`inf`/`-inf`, = the old Rust
+/// `{}` fallthrough), else a `Decimal` from the f64 (integral → `N.0`, `-0.0` sign preserved) → the printer's
+/// `render_decimal`. Both Float32 and Float64 promote to f64 first (the old renderer did `*f as f64`), so a
+/// Float32 renders its f64-promoted shortest form (NOT `Decimal::from_f32`, which would diverge).
+fn float_atom(b: &mut Builder, f: f64) -> StructId {
+    if f.is_nan() {
+        b.atom_leaf(Leaf::FloatNan)
+    } else if f.is_infinite() {
+        b.atom_leaf(Leaf::FloatInf {
+            negative: f.is_sign_negative(),
+        })
+    } else {
+        // `from_f64` is `Some` for every finite f64 (it declines only on non-finite, handled above).
+        b.atom_leaf(Leaf::Float(
+            Decimal::from_f64(f).expect("finite f64 has a Decimal"),
+        ))
+    }
+}
+
+/// Map a wasmtime `Val` (+ optional guest result-`Ty` s-expr for leaf disambiguation) into a `cadenza-ast`
+/// VALUE arena node. The printer then renders it canonically. `ty = None` is the type-blind render (a `Val`
+/// tags its shape by variant); `ty = Some(...)` supplies the per-leaf CHOICE the WIT boundary erased.
+fn build_val(b: &mut Builder, v: &Val, ty: Option<&str>) -> StructId {
+    // Split the type (if any) into its head constructor + argument sub-exprs, for the leaf disambiguation.
+    let (head, args): (&str, Vec<&str>) = match ty {
+        Some(t) => split_type(t),
+        None => ("", Vec::new()),
+    };
+    match v {
+        Val::Bool(x) => b.atom_leaf(Leaf::Bool(*x)),
+        Val::S8(i) => int_atom(b, *i as i64),
+        Val::U8(i) => int_atom(b, *i as i64),
+        Val::S16(i) => int_atom(b, *i as i64),
+        Val::U16(i) => int_atom(b, *i as i64),
+        Val::S32(i) => int_atom(b, *i as i64),
+        Val::U32(i) => int_atom(b, *i as i64),
+        Val::S64(i) => int_atom(b, *i),
+        // A `u64` above `i64::MAX` needs the unsigned magnitude (a signed cast would render negative).
+        Val::U64(i) => b.atom_leaf(Leaf::Int {
+            value: IntValue::from_u128(*i as u128),
+            radix: Radix::Dec,
+        }),
+        Val::Float32(f) => float_atom(b, *f as f64),
+        Val::Float64(f) => float_atom(b, *f),
+        Val::Char(c) => b.atom_leaf(Leaf::Char(*c)),
+        // A `Symbol` crosses as a WIT `string` (a `Val::String`); the guest result-type `Symbol` renders the
+        // canonical `#"…"` (`Leaf::Sym`), else a plain `String` renders `"…"` (`Leaf::Str`). Same escape codec.
+        Val::String(s) if head == "Symbol" => b.atom_leaf(Leaf::Sym(Arc::from(s.as_str()))),
+        Val::String(s) => b.atom_leaf(Leaf::Str(Arc::from(s.as_str()))),
+        // A `list<u8>` that is a `Bytes` renders `b"…"` (a `Leaf::Bytes` atom), not `#list(…)`. Both cross the
+        // WIT boundary as `list<u8>` → `Val::List` of `U8`; the guest type `Bytes` disambiguates.
+        Val::List(xs) if head == "Bytes" => {
             let bytes: Vec<u8> = xs
                 .iter()
                 .map(|e| match e {
-                    Val::U8(b) => *b,
+                    Val::U8(x) => *x,
                     _ => 0,
                 })
                 .collect();
-            format!("b\"{}\"", literal::escape_bytes(&bytes))
+            b.atom_leaf(Leaf::Bytes(Arc::from(&bytes[..])))
         }
-        (Val::List(xs), "List") => {
-            let et = args.first().copied().unwrap_or("");
-            let inner: Vec<String> = xs.iter().map(|x| render_val_typed(x, et)).collect();
-            format!("#list({})", inner.join(" "))
+        // A `list` that is a `Set` renders `#set(…)`; else `#list(…)`. Elements thread the element type.
+        Val::List(xs) => {
+            let elem_ty = if head == "Set" || head == "List" {
+                args.first().copied()
+            } else {
+                None
+            };
+            let ctor = if head == "Set" {
+                CompoundCtor::Set
+            } else {
+                CompoundCtor::List
+            };
+            let children: Vec<StructId> = xs.iter().map(|x| build_val(b, x, elem_ty)).collect();
+            b.compound(ctor, &children)
         }
-        (Val::List(xs), "Set") => {
-            let et = args.first().copied().unwrap_or("");
-            let inner: Vec<String> = xs.iter().map(|x| render_val_typed(x, et)).collect();
-            format!("#set({})", inner.join(" "))
-        }
-        (Val::Tuple(xs), "Tuple") => {
-            let inner: Vec<String> = xs
+        Val::Tuple(xs) => {
+            let children: Vec<StructId> = xs
                 .iter()
                 .enumerate()
-                .map(|(i, x)| render_val_typed(x, args.get(i).copied().unwrap_or("")))
+                .map(|(i, x)| build_val(b, x, args.get(i).copied()))
                 .collect();
-            format!("#tuple({})", inner.join(" "))
+            b.compound(CompoundCtor::Tuple, &children)
         }
-        (Val::Record(fields), "Record") => {
-            let inner: Vec<String> = fields
+        // A record renders `#record((= name value) …)` — each field a `(= key value)` FieldPair, key a bare
+        // `Leaf::Name` (renders `x`, not `"x"`), in field order.
+        Val::Record(fields) => {
+            let children: Vec<StructId> = fields
                 .iter()
                 .map(|(n, val)| {
-                    let ft = record_field_type(&args, n).unwrap_or("");
-                    format!("(= {n} {})", render_val_typed(val, ft))
+                    let ft = ty.and_then(|_| record_field_type(&args, n));
+                    let key = name_atom(b, n);
+                    let value = build_val(b, val, ft);
+                    b.field_pair(key, value)
                 })
                 .collect();
-            format!("#record({})", inner.join(" "))
+            b.compound(CompoundCtor::Record, &children)
         }
-        (Val::Option(Some(x)), "Option") => {
-            format!(
-                "(Some {})",
-                render_val_typed(x, args.first().copied().unwrap_or(""))
-            )
+        // A guest-ADT sum renders as a plain list with a Name head (NOT a `#ctor`): `(None unit)` / `(Some v)`
+        // / `(Ok p)` / `(Err p)` / `(case payload)` / `(enumcase unit)` — matching the recorded value forms.
+        Val::Option(None) => {
+            let head = name_atom(b, "None");
+            let u = unit_atom(b);
+            b.list(vec![head, u])
         }
-        (Val::Result(Ok(p)), "Result") => format!(
-            "(Ok {})",
-            p.as_deref()
-                .map(|x| render_val_typed(x, args.first().copied().unwrap_or("")))
-                .unwrap_or_else(|| "unit".into())
-        ),
-        (Val::Result(Err(p)), "Result") => format!(
-            "(Err {})",
-            p.as_deref()
-                .map(|x| render_val_typed(x, args.get(1).copied().unwrap_or("")))
-                .unwrap_or_else(|| "unit".into())
-        ),
-        // A SYMBOL crosses as a WIT `string` (a `Val::String`), like a plain `String` — the type-blind render
-        // can't tell them apart. The canonical Symbol value-form is `#"…"` (`cadenza_syntax` `Leaf::Sym`);
-        // disambiguate by the guest result-type `Symbol`. Symbols + Strings share the string-escape codec.
-        (Val::String(s), "Symbol") => format!("#\"{}\"", literal::escape_string(s)),
+        Val::Option(Some(x)) => {
+            let h = name_atom(b, "Some");
+            let inner = build_val(b, x, args.first().copied());
+            b.list(vec![h, inner])
+        }
+        Val::Result(Ok(p)) => {
+            let h = name_atom(b, "Ok");
+            let inner = payload_or_unit(b, p.as_deref(), args.first().copied());
+            b.list(vec![h, inner])
+        }
+        Val::Result(Err(p)) => {
+            let h = name_atom(b, "Err");
+            let inner = payload_or_unit(b, p.as_deref(), args.get(1).copied());
+            b.list(vec![h, inner])
+        }
+        // A VARIANT renders `(<case> <payload>)` / `(<case> unit)`; an ENUM (no payload) `(<case> unit)`. The
+        // case NAME is the WIT/component-model (kebab) spelling — the recorded canonical form.
+        Val::Variant(case, payload) => {
+            let h = name_atom(b, case);
+            let inner = payload_or_unit(b, payload.as_deref(), None);
+            b.list(vec![h, inner])
+        }
+        Val::Enum(case) => {
+            let h = name_atom(b, case);
+            let u = unit_atom(b);
+            b.list(vec![h, u])
+        }
         // A CLOSURE result-type `(-> param… result)`: the export is a closure FACTORY, so its result-Ty is
-        // the function type — but the VALUE here is the closure's CALL RESULT. Render as the arrow's LAST arm.
-        (_, "->") => render_val_typed(v, args.last().copied().unwrap_or("")),
-        // Scalars, `(None …)`, a variant/enum, an unhandled head (`Map`), or a shape/type mismatch -> the
-        // type-blind render (correct there; a mismatch is never worse).
-        _ => render_val(v),
+        // the function type — but the VALUE is the closure's CALL RESULT. Render as the arrow's LAST arm.
+        _ if head == "->" => build_val(b, v, args.last().copied()),
+        // An unhandled `Val` (Flags / Resource / …) — a debug fallback, as the old renderer did.
+        other => b.atom_leaf(Leaf::Str(Arc::from(format!("{other:?}").as_str()))),
     }
+}
+
+/// A sum payload node, or the `unit` marker when the payload is absent (`Ok`/`Err`/variant nullary payload).
+fn payload_or_unit(b: &mut Builder, p: Option<&Val>, ty: Option<&str>) -> StructId {
+    match p {
+        Some(v) => build_val(b, v, ty),
+        None => unit_atom(b),
+    }
+}
+
+/// An integer VALUE leaf from a signed `i64` magnitude (decimal radix).
+fn int_atom(b: &mut Builder, v: i64) -> StructId {
+    b.atom_leaf(Leaf::Int {
+        value: IntValue::from_i64(v),
+        radix: Radix::Dec,
+    })
 }
 
 /// Split a canonical type s-expr into its HEAD constructor + its balanced-paren ARGUMENT sub-exprs. A bare
@@ -192,8 +218,8 @@ fn split_type(ty: &str) -> (&str, Vec<&str>) {
     let mut parts: Vec<&str> = Vec::new();
     let mut depth = 0i32;
     let mut start = 0usize;
-    for (i, &b) in bytes.iter().enumerate() {
-        match b {
+    for (i, &bb) in bytes.iter().enumerate() {
+        match bb {
             b'(' => depth += 1,
             b')' => depth -= 1,
             b' ' | b'\t' | b'\n' if depth == 0 => {
@@ -229,22 +255,6 @@ fn record_field_type<'a>(fields: &[&'a str], name: &str) -> Option<&'a str> {
     None
 }
 
-/// Canonical float rendering, matching the corpus value form: `-0.0`, `NaN`, and integral floats
-/// as `N.0`.
-pub fn display_float(f: f64) -> String {
-    if f == 0.0 && f.is_sign_negative() {
-        "-0.0".into()
-    } else if f.is_nan() {
-        "NaN".into()
-    } else if f.fract() == 0.0 && f.is_finite() {
-        // `{:.0}` prints the exact integer value of the whole float injectively — unlike `f as i64`,
-        // which saturates at i64::MAX so every whole float ≥ 2^63 would collapse to one string.
-        format!("{f:.0}.0")
-    } else {
-        format!("{f}")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,13 +262,13 @@ mod tests {
 
     /// Compounds render in the native `#ctor(…)` forms (the operator-ruled #ctor-everywhere value render):
     /// `#list`/`#tuple` are DISTINCT (not the old head-less `(x y)`), a record is `#record((= n v)…)`.
-    /// Sums/variants keep the `(case …)` value-form.
+    /// Sums/variants keep the `(case …)` value-form. (Byte-equivalence gate for the arena rewrite — these
+    /// strings are exactly what the old bespoke renderer produced.)
     #[test]
     fn compounds_render_native_ctor_forms() {
         let ints = |xs: &[i64]| xs.iter().map(|&i| Val::S64(i)).collect::<Vec<_>>();
         assert_eq!(render_val(&Val::List(ints(&[1, 2]))), "#list(1 2)");
         assert_eq!(render_val(&Val::Tuple(ints(&[1, 2]))), "#tuple(1 2)");
-        // list vs tuple of the same elements are now DISTINGUISHABLE.
         assert_ne!(
             render_val(&Val::List(ints(&[3, 4]))),
             render_val(&Val::Tuple(ints(&[3, 4])))
@@ -270,7 +280,6 @@ mod tests {
             ])),
             "#record((= x 3) (= y 13))"
         );
-        // nested: a record holding a tuple + a list.
         assert_eq!(
             render_val(&Val::Record(vec![
                 ("pair".into(), Val::Tuple(ints(&[3, 4]))),
@@ -278,23 +287,20 @@ mod tests {
             ])),
             "#record((= pair #tuple(3 4)) (= xs #list(3 6)))"
         );
-        // Sums stay the (case …) value-form (NOT a #ctor).
         assert_eq!(render_val(&Val::Option(None)), "(None unit)");
         assert_eq!(
             render_val(&Val::Option(Some(Box::new(Val::S64(5))))),
             "(Some 5)"
         );
     }
-    /// `render_val_typed` uses the guest result type to disambiguate the WIT-erased leaves the raw `Val`
-    /// cannot: a `list<u8>` is `Bytes` (`b"…"`) vs `List UInt8` (`#list`), a `list` is `List` vs `Set`
-    /// (`#set`) — threading the type through compounds to reach a nested Bytes leaf. The `b"…"` matches
-    /// `cadenza-syntax`'s `literal::escape_bytes`.
+
+    /// `render_val_typed` uses the guest result type to disambiguate the WIT-erased leaves.
     #[test]
     fn typed_render_disambiguates_bytes_and_recurses() {
         let u8s = |xs: &[u8]| xs.iter().map(|&b| Val::U8(b)).collect::<Vec<_>>();
         assert_eq!(
             render_val_typed(&Val::List(u8s(&[5, 6])), "Bytes"),
-            format!("b\"{}\"", literal::escape_bytes(&[5, 6]))
+            format!("b\"{}\"", cadenza_syntax::literal::escape_bytes(&[5, 6]))
         );
         assert_eq!(
             render_val_typed(&Val::List(u8s(&[5, 6])), "(List UInt8)"),
@@ -304,7 +310,6 @@ mod tests {
             render_val_typed(&Val::List(vec![Val::S64(3), Val::S64(6)]), "(Set Int64)"),
             "#set(3 6)"
         );
-        // NESTED: a record with a Bytes field + an Int field — the type reaches the Bytes leaf.
         assert_eq!(
             render_val_typed(
                 &Val::Record(vec![
@@ -315,10 +320,9 @@ mod tests {
             ),
             format!(
                 "#record((= ct b\"{}\") (= n 7))",
-                literal::escape_bytes(&[1, 2])
+                cadenza_syntax::literal::escape_bytes(&[1, 2])
             )
         );
-        // scalar / mismatch → type-blind render (never worse).
         assert_eq!(render_val_typed(&Val::S64(42), "Int64"), "42");
         assert_eq!(
             render_val_typed(&Val::List(u8s(&[1, 2])), "SomethingUnknown"),
@@ -326,17 +330,31 @@ mod tests {
         );
     }
 
-    /// A `Symbol` result crosses as a WIT `string` (a `Val::String`), like a plain `String`; the guest
-    /// result-type `Symbol` renders the canonical `#"…"` value-form, `String` stays `"…"`.
+    /// A `Symbol` result crosses as a WIT `string` (a `Val::String`); the guest result-type `Symbol` renders
+    /// the canonical `#"…"`, `String` stays `"…"`.
     #[test]
     fn typed_render_disambiguates_symbol_from_string() {
         assert_eq!(
             render_val_typed(&Val::String("go".into()), "Symbol"),
-            format!("#\"{}\"", literal::escape_string("go"))
+            format!("#\"{}\"", cadenza_syntax::literal::escape_string("go"))
         );
         assert_eq!(
             render_val_typed(&Val::String("go".into()), "String"),
-            format!("\"{}\"", literal::escape_string("go"))
+            format!("\"{}\"", cadenza_syntax::literal::escape_string("go"))
         );
+    }
+
+    /// Float VALUE forms match the old `display_float(*f as f64)`: integral `N.0`, `-0.0` sign preserved,
+    /// ±inf `inf`/`-inf` — and NaN → the canonical `nan` (the SOLE change from the old `NaN`, re-pinned).
+    #[test]
+    fn floats_render_canonical_value_forms() {
+        assert_eq!(render_val(&Val::Float64(3.0)), "3.0");
+        assert_eq!(render_val(&Val::Float64(-0.0)), "-0.0");
+        assert_eq!(render_val(&Val::Float64(1.5)), "1.5");
+        assert_eq!(render_val(&Val::Float64(f64::INFINITY)), "inf");
+        assert_eq!(render_val(&Val::Float64(f64::NEG_INFINITY)), "-inf");
+        assert_eq!(render_val(&Val::Float64(f64::NAN)), "nan");
+        // Float32 promotes to f64 (its f64-promoted shortest form), like the old renderer.
+        assert_eq!(render_val(&Val::Float32(2.0)), "2.0");
     }
 }
