@@ -4812,26 +4812,88 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 ctx_pct,
                 CTX_SATURATION_THRESHOLD,
                 flagged_id.as_deref(),
-                last.as_ref().map(|(id, age)| (id.as_str(), *age)),
+                last.as_ref().map(|(id, age, _)| (id.as_str(), *age)),
                 drain_nudge_grace,
                 DRAIN_NUDGE_STUCK_GRACE,
             );
-            if action == DrainNudge::Stuck {
-                // A prior auto-nudge didn't stick (same message still unconsumed). Surface it loudly so
-                // the concierge can hand-arm immediately instead of waiting out the full grace.
-                eprintln!(
-                    "  ⚠ '{}' STILL has message '{}' unconsumed after an auto-nudge — the nudge didn't \
-                     STICK. Re-nudging; if it persists again, hand-arm the '{}' pane.",
-                    a.name,
-                    flagged_id.as_deref().unwrap_or("?"),
-                    a.name
-                );
-            }
-            if matches!(action, DrainNudge::Fresh | DrainNudge::Stuck) {
+            // Consecutive-stuck tally: a Stuck action = the SAME flagged message survived our prior nudge,
+            // so bump the running count; a Fresh action (new message / first nudge) resets it to 1. After
+            // DRAIN_STALL_RESTART_THRESHOLD stuck nudges the session is DRIFTED (nudges aren't reaching its
+            // tick), so we ESCALATE to an auto-restart instead of nudging forever (concierge-greenlit
+            // 2026-08-30 — exactly the manual kill-window+fleet-up they were hand-doing per drain-stall).
+            let prev_stuck = last.as_ref().map(|(_, _, c)| *c).unwrap_or(0);
+            let stuck_count = if action == DrainNudge::Stuck {
+                prev_stuck.saturating_add(1)
+            } else {
+                1
+            };
+            // Share the wall-restart thrash-guard (WEDGE_RESTART_GRACE) so a just-relaunched agent can't be
+            // bounced twice within one window, across BOTH restart causes.
+            let restart_rate_limited = wedge_restart_age_secs(fleet, &a.name, now)
+                .is_some_and(|s| s < WEDGE_RESTART_GRACE);
+            let escalate_restart = action == DrainNudge::Stuck
+                && decide_drain_escalation(
+                    stuck_count,
+                    DRAIN_STALL_RESTART_THRESHOLD,
+                    restart_rate_limited,
+                ) == DrainEscalation::Restart;
+            if escalate_restart {
+                // A drifted session: it ignored DRAIN_STALL_RESTART_THRESHOLD nudges on the SAME message. A
+                // nudge / `/loop` re-issue re-runs the same broken tick, so only a FRESH session clears it.
+                if dry_run {
+                    println!(
+                        "  DRY-RUN would AUTO-RESTART '{}' (drain-stall unfixed after {} nudges)",
+                        a.name, stuck_count
+                    );
+                } else {
+                    match restart_window(fleet, &session, &a.name) {
+                        RestartOutcome::Restarted => {
+                            stamp_wedge_restart(fleet, &a.name); // shared thrash-guard
+                            clear_drain_nudge(fleet, &a.name); // reset the count for the fresh session
+                            wedge_restarts += 1;
+                            eprintln!(
+                                "  ⟳ AUTO-RESTARTED '{}' — drain-stall unfixed after {} nudges (a nudge can't \
+                                 fix a drifted session; a fresh session re-reads its charter + drains via the \
+                                 resolver). Durable state persists. (self-heal, no operator needed)",
+                                a.name, stuck_count
+                            );
+                            println!(
+                                "  ⟳ auto-restarted '{}' (drain-stall escalation, {} ineffective nudges)",
+                                a.name, stuck_count
+                            );
+                        }
+                        RestartOutcome::RelaunchFailed => eprintln!(
+                            "  ‼ '{}' drain-stall auto-restart: RELAUNCH FAILED after kill — no window now; \
+                             `fleet up` re-creates it. Not rate-limiting so the next sweep retries.",
+                            a.name
+                        ),
+                        RestartOutcome::KillFailed => eprintln!(
+                            "  ! '{}' drain-stall auto-restart: tmux kill-window failed — left as-is, retry next sweep.",
+                            a.name
+                        ),
+                    }
+                }
+            } else if matches!(action, DrainNudge::Fresh | DrainNudge::Stuck) {
+                if action == DrainNudge::Stuck {
+                    // A prior auto-nudge didn't stick (same message still unconsumed). Surface it loudly.
+                    eprintln!(
+                        "  ⚠ '{}' STILL has message '{}' unconsumed after an auto-nudge (stuck x{}) — the \
+                         nudge didn't STICK. Re-nudging; escalates to an auto-restart at {} stuck.",
+                        a.name,
+                        flagged_id.as_deref().unwrap_or("?"),
+                        stuck_count,
+                        DRAIN_STALL_RESTART_THRESHOLD
+                    );
+                }
                 if dry_run {
                     println!("  DRY-RUN would auto-nudge '{}' to drain its inbox", a.name);
                 } else if nudge_drain_stall(&session, &a.name) {
-                    stamp_drain_nudge(fleet, &a.name, flagged_id.as_deref().unwrap_or(""));
+                    stamp_drain_nudge(
+                        fleet,
+                        &a.name,
+                        flagged_id.as_deref().unwrap_or(""),
+                        stuck_count,
+                    );
                     println!(
                         "  + auto-nudged '{}' to drain its inbox (--nudge-drain-stalls){}",
                         a.name,
@@ -6169,23 +6231,44 @@ fn stamp_wedge_restart(fleet: &Fleet, name: &str) {
 /// don't re-nudge) from the SAME message still unconsumed after our nudge (the nudge didn't stick —
 /// re-nudge on a shorter cooldown + flag loudly). An empty id (legacy marker written before ids were
 /// tracked) reads as `""`, which never equals a real filename, so it degrades to the churn path.
-fn last_drain_nudge(fleet: &Fleet, name: &str, now: u64) -> Option<(String, u64)> {
+fn last_drain_nudge(fleet: &Fleet, name: &str, now: u64) -> Option<(String, u64, u32)> {
     let path = fleet.root.join("drain-nudge").join(name);
     let age = file_mtime_unix(&path).map(|m| now.saturating_sub(m))?;
-    let id = std::fs::read_to_string(&path)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-    Some((id, age))
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    let (id, count) = parse_drain_nudge(&raw);
+    Some((id, age, count))
 }
 
-/// Record an auto drain-nudge: write the flagged message-id to `.claude/fleet/drain-nudge/<name>`
-/// (its mtime is the nudge time). The id is the oldest unconsumed message we saw — a later sweep
-/// compares against it to detect a nudge that didn't stick (same id) vs healthy churn (new id).
-fn stamp_drain_nudge(fleet: &Fleet, name: &str, flagged_id: &str) {
+/// Parse a drain-nudge marker body `"<flagged-id>\t<consecutive-stuck-count>"` into `(id, count)`. A LEGACY
+/// marker (id only, no tab — written before the count was tracked) reads as count 1 (a marker existing means
+/// at least one nudge was already sent). Empty/whitespace → `("", 0)`. Pure so the round-trip is unit-tested.
+fn parse_drain_nudge(raw: &str) -> (String, u32) {
+    let line = raw.trim();
+    if line.is_empty() {
+        return (String::new(), 0);
+    }
+    match line.split_once('\t') {
+        Some((id, cnt)) => (id.trim().to_string(), cnt.trim().parse().unwrap_or(1)),
+        None => (line.to_string(), 1), // legacy id-only marker → treat as one prior nudge
+    }
+}
+
+/// Record an auto drain-nudge: write `"<flagged-id>\t<count>"` to `.claude/fleet/drain-nudge/<name>`
+/// (its mtime is the nudge time). The id is the oldest unconsumed message we saw — a later sweep compares
+/// against it to detect a nudge that didn't stick (same id) vs healthy churn (new id). `count` is the
+/// CONSECUTIVE-stuck-nudge tally for that same id, which the watchdog uses to ESCALATE to an auto-restart
+/// once a drifted session has ignored `DRAIN_STALL_RESTART_THRESHOLD` nudges (see `decide_drain_escalation`).
+fn stamp_drain_nudge(fleet: &Fleet, name: &str, flagged_id: &str, count: u32) {
     let dir = fleet.root.join("drain-nudge");
     std::fs::create_dir_all(&dir).ok();
-    std::fs::write(dir.join(name), format!("{flagged_id}\n")).ok();
+    std::fs::write(dir.join(name), format!("{flagged_id}\t{count}\n")).ok();
+}
+
+/// Clear the drain-nudge marker (remove the file) so the consecutive-stuck count RESETS — called after an
+/// auto-restart escalation, since the fresh relaunched session starts clean; a lingering count would
+/// immediately re-escalate before the restarted agent has had a chance to drain on its first tick.
+fn clear_drain_nudge(fleet: &Fleet, name: &str) {
+    let _ = std::fs::remove_file(fleet.root.join("drain-nudge").join(name));
 }
 
 /// The oldest (by durable delivery seq) unconsumed ACTIONABLE message filename in this agent's hub
@@ -7156,6 +7239,41 @@ fn decide_drain_nudge(
                 }
             }
         }
+    }
+}
+
+/// Consecutive stuck-nudge count at which the watchdog ESCALATES a drain-stall to an auto-RESTART
+/// (kill-window + relaunch `window.sh`) instead of nudging again (concierge-greenlit 2026-08-30). WHY a
+/// restart, not more nudges / a `/loop` re-issue: a drain-stall that survives repeated nudges is a DRIFTED
+/// SESSION (its tick isn't draining via the canonical resolver despite a correct role body) — the `continue`
+/// nudge just re-runs that same drifted tick, and re-issuing `/loop` re-arms the SAME session, so neither
+/// clears it; only a FRESH session (restart) does. 3 = give the cheap nudge two tries (the initial Fresh +
+/// one Stuck re-nudge) before the heavier restart. Higher than the dead-cron `REPEATED_NUDGE_ESCALATE_THRESHOLD`
+/// (2) because a full window restart is heavier than that path's `/loop` re-arm.
+const DRAIN_STALL_RESTART_THRESHOLD: u32 = 3;
+
+#[derive(Debug, PartialEq, Eq)]
+enum DrainEscalation {
+    /// Keep sending the cheap keystroke nudge (below threshold, or a restart is thrash-guard rate-limited).
+    Nudge,
+    /// Escalate to an auto-restart of the window (the nudge can't reach a drifted session).
+    Restart,
+}
+
+/// Should a repeatedly-stuck drain-nudge ESCALATE to an auto-restart? Pure so it's unit-testable without
+/// tmux/fs. Restart ONLY when the SAME message has been stuck through `>= threshold` nudges AND a restart is
+/// not rate-limited by the shared `WEDGE_RESTART_GRACE` thrash-guard (so a just-relaunched agent can't be
+/// bounced again within the window) — otherwise keep nudging. `consecutive_stuck` is the tally INCLUDING the
+/// stuck nudge this sweep would record.
+fn decide_drain_escalation(
+    consecutive_stuck: u32,
+    threshold: u32,
+    restart_rate_limited: bool,
+) -> DrainEscalation {
+    if consecutive_stuck >= threshold && !restart_rate_limited {
+        DrainEscalation::Restart
+    } else {
+        DrainEscalation::Nudge
     }
 }
 
@@ -16894,6 +17012,52 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             1,
             "exactly one prune-stale-targets line"
         );
+    }
+
+    #[test]
+    fn decide_drain_escalation_restarts_only_at_threshold_and_when_not_rate_limited() {
+        let t = DRAIN_STALL_RESTART_THRESHOLD;
+        // Below threshold → keep nudging (the cheap lever gets its tries first).
+        assert_eq!(decide_drain_escalation(1, t, false), DrainEscalation::Nudge);
+        assert_eq!(
+            decide_drain_escalation(t - 1, t, false),
+            DrainEscalation::Nudge
+        );
+        // At/above threshold + not rate-limited → escalate to a restart.
+        assert_eq!(
+            decide_drain_escalation(t, t, false),
+            DrainEscalation::Restart
+        );
+        assert_eq!(
+            decide_drain_escalation(t + 5, t, false),
+            DrainEscalation::Restart
+        );
+        // At threshold BUT a restart is thrash-guard rate-limited → hold at nudge (don't bounce a
+        // just-relaunched agent within WEDGE_RESTART_GRACE).
+        assert_eq!(decide_drain_escalation(t, t, true), DrainEscalation::Nudge);
+        assert_eq!(
+            decide_drain_escalation(t + 5, t, true),
+            DrainEscalation::Nudge
+        );
+    }
+
+    #[test]
+    fn parse_drain_nudge_round_trips_id_and_count_and_reads_legacy_markers() {
+        // Current format: "<id>\t<count>".
+        assert_eq!(
+            parse_drain_nudge("000000012345-1-note.json\t3\n"),
+            ("000000012345-1-note.json".to_string(), 3)
+        );
+        // LEGACY marker (id only, no tab — written before the count existed) → count 1 (one prior nudge).
+        assert_eq!(
+            parse_drain_nudge("000000012345-1-note.json\n"),
+            ("000000012345-1-note.json".to_string(), 1)
+        );
+        // Empty/whitespace → no id, count 0 (never effectively nudged).
+        assert_eq!(parse_drain_nudge(""), (String::new(), 0));
+        assert_eq!(parse_drain_nudge("   \n"), (String::new(), 0));
+        // A garbled count degrades to 1 (a marker exists → at least one nudge), never panics.
+        assert_eq!(parse_drain_nudge("msg\tNaN"), ("msg".to_string(), 1));
     }
 
     #[test]
