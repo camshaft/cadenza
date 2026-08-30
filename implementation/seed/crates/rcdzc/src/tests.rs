@@ -7905,37 +7905,12 @@ mod match_engine {
     // value of type Int64 — bind it with one sub-pattern `(Mk x)`")). --case grades code + message (both PASS).
     // The NOT-"payload" negative is the corpus-inexpressible remainder, covered by the positive field-count message.)
 
-    #[test]
-    fn an_exported_closure_body_is_type_checked() {
-        // TYPE-SOUNDNESS HOLE: an EXPORTED closure `(def (a) (fn …))` crosses the host boundary and is
-        // never β-reduced, so its body escaped the type-checker (`collect_node`'s `Lambda` arm is a no-op)
-        // — an ill-typed body emitted an invalid component instead of rejecting. The closure-export path
-        // now runs `type_errors` over the body, so a body fault surfaces exactly as an ordinary def's does.
-        //   annotation mismatch: (: x Bool) over an Int64 value → CDZ0203.
-        assert_eq!(
-            reject_code("(module m (def (a) (fn ((: x Int64)) (: x Bool))) (export a))").as_deref(),
-            Some("CDZ0203"),
-            "an ill-typed exported-closure body must reject, not emit an invalid component"
-        );
-        // arithmetic type mismatch: Int64 + Bool → CDZ0203.
-        assert_eq!(
-            reject_code("(module m (def (a) (fn ((: x Int64)) (+ x true))) (export a))").as_deref(),
-            Some("CDZ0203"),
-        );
-        // SUBSUMES the narrow-arg-wide-result invalid-component case: the body `(+ x 100)` over Int8 is
-        // Int8, annotated Int64 — an ill-typed body → CDZ0203, no longer an invalid `i64/i32` component.
-        assert_eq!(
-            reject_code("(module m (def (a) (fn ((: x Int8)) (: (+ x 100) Int64))) (export a))")
-                .as_deref(),
-            Some("CDZ0203"),
-        );
-        // NO OVER-REJECTION: a WELL-TYPED exported closure still compiles clean (returns no rejection).
-        assert_eq!(
-            reject_code("(module m (def (a) (fn ((: x Int64)) (+ x 100))) (export a))"),
-            None,
-            "a well-typed exported closure must still compile"
-        );
-    }
+    // (an_exported_closure_body_is_type_checked migrated to corpus 21-host-closures, the exported-closure
+    // body-type-check block: annotation-mismatch body `(fn ((: x Int64)) (: x Bool))` → CDZ0203, narrow-arg
+    // wide-result body `(fn ((: x Int8)) (: (+ x 100) Int64))` → CDZ0203, and the arithmetic non-numeric-operand
+    // body `(fn ((: x Int64)) (+ x true))` → CDZ0203 (all three exercise the same closure-export body
+    // `type_errors`-before-emit soundness path). The NO-OVER-REJECTION positive control is covered by the many
+    // well-typed exported-closure running cases in 21-host-closures (make/call over `(+ x 1)`, `(* x 3)`, …).)
 
     #[test]
     fn a_bakeable_type_valued_export_crosses_the_boundary() {
