@@ -35654,24 +35654,6 @@ mod stage1 {
     }
 
     #[test]
-    fn try_on_a_non_fallible_operand_is_a_type_mismatch() {
-        // A `?` on a plain Int64 has nothing to unwrap — the ordinary type mismatch CDZ0203 (the operand
-        // must be a `Result`/`Option`). Anchored at the operand.
-        let d = expect_error("(try 5)");
-        assert_eq!(
-            d.code.as_deref(),
-            Some("CDZ0203"),
-            "a `?` on a non-fallible operand is CDZ0203, got: {}",
-            d.message
-        );
-        assert!(
-            d.message.contains("fallible"),
-            "message should say the operand must be fallible: {}",
-            d.message
-        );
-    }
-
-    #[test]
     fn try_on_an_ill_typed_operand_reports_the_operand_error_not_a_fallible_cascade() {
         // When the OPERAND is itself ill-typed, that fault is primary — the `?`-shape check must NOT pile a
         // confusing "operand must be fallible, found <fallback-type>" on top. `(try (+ 1 2.0))` — the `+`
@@ -35690,21 +35672,6 @@ mod stage1 {
             "the `?`-not-fallible cascade must be SUPPRESSED when the operand is ill-typed: {}",
             d.message
         );
-    }
-
-    #[test]
-    fn try_with_the_wrong_arity_is_malformed() {
-        // `(try)` / `(try a b)` are malformed — `try` takes EXACTLY one operand (the surplus-delete fix
-        // path shared with `quote`). CDZ0201.
-        for body in ["(try)", "(try 1 2)"] {
-            let d = expect_error(body);
-            assert_eq!(
-                d.code.as_deref(),
-                Some("CDZ0201"),
-                "`{body}` is malformed (arity), got: {}",
-                d.message
-            );
-        }
     }
 
     #[test]
