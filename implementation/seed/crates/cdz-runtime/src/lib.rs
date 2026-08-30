@@ -5418,7 +5418,7 @@ fn vec_find_child_relaxed(node: Handle, idx: u32) -> (usize, u32) {
     (lo, idx - base)
 }
 
-/// `vec-empty` — a new owned empty vector (rc 1). No root node until the first push.
+// `vec-empty` — a new owned empty vector (rc 1). No root node until the first push.
 // The shared IMMORTAL empty-vec singleton (lazily minted on first use), the `IMM_UNIT` analog for lists.
 // `Handle::NULL` marks "not yet minted" (a real empty-vec is a heap node, never null), so the first
 // `op_vec_empty` allocates + immortalizes it and every later call returns the SAME node.
@@ -8463,8 +8463,8 @@ fn champ_size_of(node: Handle) -> u32 {
     with_node(node, 0, |n| champ_size(&n.raw))
 }
 
-/// The canonical empty map: both bitmaps 0, size 0, no handles (exactly `is_empty_node`). U3's
-/// remove-to-empty MUST reproduce this representation so callers can recognise emptiness uniformly.
+// The canonical empty map: both bitmaps 0, size 0, no handles (exactly `is_empty_node`). U3's
+// remove-to-empty MUST reproduce this representation so callers can recognise emptiness uniformly.
 #[allow(dead_code)]
 // The shared IMMORTAL empty-MAP singleton (the IMM_UNIT / empty-vec analog for maps) — lazily minted,
 // rc=IMMORTAL (census-excluded), so an empty map allocates ONCE and is reused, never per-occurrence.
@@ -10043,8 +10043,8 @@ fn op_map_iter_val(cur: Handle) -> Handle {
 // use-site differs — and the compiler picks the op family statically, so a set node is only ever
 // touched with stride 1.
 
-/// The canonical empty set — byte-identical to the empty map (`alloc_raw(vec![], champ_header(0,0,0))`);
-/// the collection kind is compile-time knowledge, not a runtime tag.
+// The canonical empty set — byte-identical to the empty map (`alloc_raw(vec![], champ_header(0,0,0))`);
+// the collection kind is compile-time knowledge, not a runtime tag.
 #[allow(dead_code)]
 // The shared IMMORTAL empty-SET singleton (per-type, mirrors EMPTY_MAP). Separate from EMPTY_MAP for
 // type-clarity + zero cross-type aliasing, though an empty set + empty map are structurally identical.
