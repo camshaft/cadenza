@@ -1466,6 +1466,35 @@
   (input  (: #set(200) (Set Int8)))
   (error  CDZ0302))
 
+(case "an out-of-range literal SET element via Set.insert is rejected"
+  (doc    "The Set.insert builder face (the Set.of case above uses the list constructor; this uses the
+           incremental insert prim): `(Set.insert #set() 200)` under `(Set Int8)` grounds the inserted
+           element `200` to Int8 → overflow → CDZ0302. Pins the descent reaches a Set.insert element, not
+           only a Set.of one.")
+  (input  (: (Set.insert #set() 200) (Set Int8)))
+  (error  CDZ0302))
+
+(case "an out-of-range literal in an INNER Map.insert of a builder chain is rejected — the descent recurses the chain"
+  (doc    "The DEEP builder-chain face: `(Map.insert (Map.insert Map.empty 1 200) 2 1)` under `(Map Int64 Int8)`
+           — the overflowing `200` sits in the INNER insert, reached by the fit-check recursing the operand
+           chain, not only the outermost insert. Pins the builder-chain descent is recursive, not single-level.")
+  (input  (: (Map.insert (Map.insert Map.empty 1 200) 2 1) (Map Int64 Int8)))
+  (error  CDZ0302))
+
+(case "an IN-RANGE literal through a Map.insert builder chain compiles and runs (no over-rejection)"
+  (doc    "The must-hold control for the Map.insert builder-chain reject: `5` fits Int8, so the map builds
+           and `Map.len` reads 1 — the fit-check rejects only genuine overflows, not every builder-supplied
+           literal.")
+  (input  (do (def (main) (Map.len (: (Map.insert Map.empty 1 5) (Map Int64 Int8)))) (export main)))
+  (call   main) (output (: 1 Int64)))
+
+(case "an IN-RANGE literal in a Set under a narrow annotation compiles and runs (no over-rejection)"
+  (doc    "The Set control companion of the Set-element reject: `5` fits Int8, so the set builds and `Set.len`
+           reads 1. (Spelled with the `#set(…)` literal — the `Set.of #list(…)` builder normalizes to it on
+           the ML surface, so the literal is the round-trippable form.)")
+  (input  (do (def (main) (Set.len (: #set(5) (Set Int8)))) (export main)))
+  (call   main) (output (: 1 Int64)))
+
 (case "an out-of-range literal in a TUPLE nested inside a set element is rejected — the descent recurses"
   (doc    "The nested-compound face of the #5217 descent (breaker matrix w4): `#set(#tuple(200))` under
            `(Set (Tuple Int8))` — the overflowing literal sits one compound level DOWN, inside the tuple
