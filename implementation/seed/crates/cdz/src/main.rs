@@ -60,6 +60,9 @@ mod doc_module;
 // build's `--no-default-features` packaging); the default (`standalone` ON) bundles the compiler
 // in-process. `cdz compile`/`cdz build` route through [`dispatch_compile_args`] /
 // [`dispatch_compile_prepared`], which pick delegation vs in-process at compile time.
+// `cdz compile`'s cdz-LOCAL arg struct — the front-end parses it in BOTH builds (standalone dispatches
+// it in-process via `run_with_specs`; !standalone delegates it), so it is UNCONDITIONAL, not gated.
+mod compile_args;
 #[cfg(not(feature = "standalone"))]
 mod delegate;
 
@@ -170,7 +173,7 @@ enum Cmd {
 
     // ── compiler (rcdzc) ────────────────────────────────────────────────────────────────────────
     /// Compile binary-AST artifacts to one or more backend targets (wasm/rust). The `rcdzc` surface.
-    Compile(compiler_cli::CompileArgs),
+    Compile(compile_args::CompileArgs),
 
     // ── run (cdz-run) ───────────────────────────────────────────────────────────────────────────
     /// Run a finished wasm component: link it (resolving its value-heap runtime by content address from
@@ -2056,14 +2059,27 @@ fn collect_source_dir(dir: &std::path::Path, out: &mut Vec<String>) -> Result<()
 /// Dispatch a PURE ARTIFACTS-IN `cdz compile` (no source-file input): spawn `cdz-compile` under the
 /// `delegate-compile` feature, else run the compiler in-process (`compiler_cli::run`, byte-for-byte the
 /// standalone `rcdzc` bin's behavior). One seam so the two builds stay behavior-identical.
-fn dispatch_compile_args(args: compiler_cli::CompileArgs) -> ExitCode {
+fn dispatch_compile_args(args: compile_args::CompileArgs) -> ExitCode {
     #[cfg(not(feature = "standalone"))]
     {
         delegate::delegate_args(&args, PROG)
     }
     #[cfg(feature = "standalone")]
     {
-        compiler_cli::run(args, PROG)
+        // The front-end owns arg parsing (cdz-local `CompileArgs`); the in-process compiler is reached
+        // through `run_with_specs` (the parsed-values core), NOT this crate's private `CompileArgs`.
+        compiler_cli::run_with_specs(
+            args.input_specs(),
+            &args.targets(),
+            args.out_path(),
+            args.entry(),
+            args.export(),
+            args.component_name(),
+            args.opt_level(),
+            args.overflow_spec(),
+            args.emit_diagnostics(),
+            PROG,
+        )
     }
 }
 
@@ -2097,7 +2113,7 @@ fn dispatch_compile_prepared(
     }
 }
 
-fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
+fn run_compile(args: compile_args::CompileArgs) -> ExitCode {
     // Expand any DIRECTORY input into the source files under it (recursively), so
     // `cdz compile src/ --entry app` compiles a whole package tree without naming each file. A plain
     // file, a `kind:name=path` artifact spec, and `-` (stdin) pass through untouched. Done here at the

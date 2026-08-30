@@ -143,7 +143,7 @@ fn spawn(
 /// `--entry`/`--component-name` flags + targets/`-o`/`--opt-level` verbatim to `cdz-compile`. The
 /// specs already name on-disk artifacts (or `-` for stdin, whose stream the inherited stdin carries),
 /// so no temp files are needed — this is the same `run` the standalone `rcdzc`/`cdz-compile` bin does.
-pub fn delegate_args(args: &rcdzc::cli::CompileArgs, prog: &str) -> ExitCode {
+pub fn delegate_args(args: &crate::compile_args::CompileArgs, prog: &str) -> ExitCode {
     spawn(
         args.input_specs(),
         &args.targets(),
@@ -687,7 +687,7 @@ mod tests {
             Target::RustAsync,
             Target::Cadenza,
         ] {
-            let parsed = rcdzc::cli::CompileArgs::try_parse_from([
+            let parsed = crate::compile_args::CompileArgs::try_parse_from([
                 "cdz-compile",
                 "x.ast",
                 "--target",
@@ -697,7 +697,7 @@ mod tests {
             assert_eq!(parsed.targets(), vec![t], "round-trip for {t:?}");
         }
         for o in [OptLevel::O0, OptLevel::O1, OptLevel::O2, OptLevel::O3] {
-            let parsed = rcdzc::cli::CompileArgs::try_parse_from([
+            let parsed = crate::compile_args::CompileArgs::try_parse_from([
                 "cdz-compile",
                 "x.ast",
                 "--opt-level",
