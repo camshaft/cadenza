@@ -7005,7 +7005,7 @@
             (@ inline-always (def (loop-n (: n Int64)) (if (= n 0) 0 (loop-n (- n 1)))))
             (def (main) (loop-n 5))
             (export main)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "recursive") (message "inline-always")))
 
 ; The `@` sigil is GENERAL (`@name form` — "future annotations `@deprecated`, `@test` layer in with no new
 ; lexer/parser/resolver rules"). An annotation name the compiler does NOT model is TRANSPARENT: the strip
