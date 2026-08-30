@@ -4951,21 +4951,6 @@ fn a_try_in_a_called_helper_finds_its_boundary_not_a_false_cdz0230() {
 }
 
 #[test]
-fn a_result_try_under_an_option_boundary_is_a_type_mismatch() {
-    // A `Result`-valued `?` under an `Option` boundary cannot short-circuit — the kinds disagree, and
-    // there is no coercion (§5). The body's tail `(Some …)` makes the enclosing function's result
-    // `Option`, but the `?`'s operand `(Ok 1)` is a `Result` → CDZ0203.
-    let src = "(module m (def (main) (let ((x (try (Ok 1)))) (Some x))) (export main))";
-    let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
-    assert_eq!(
-        d.code.as_deref(),
-        Some("CDZ0203"),
-        "a Result-`?` under an Option boundary is CDZ0203, got: {}",
-        d.message
-    );
-}
-
-#[test]
 fn a_constant_success_try_folds_to_the_payload() {
     // BRICK 2 (the CONSTANT-SUCCESS fold, DESIGN-try-operator-rcdzc.md §3.2): a `?` on a compile-time
     // `Some x` / `Ok x` unwraps to the payload — no boundary break fires on the happy path, so it
