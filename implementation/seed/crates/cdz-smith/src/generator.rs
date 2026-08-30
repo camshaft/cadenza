@@ -302,7 +302,14 @@ impl Gen<'_> {
         // of the grammar never touch (a `(type …)` decl must be TOP-LEVEL). Operator directive
         // 2026-08-30: keep expanding the shapes of programs.
         if self.cur.choice(4) == 0 {
-            self.user_sum_program();
+            // A whole-program special shape needing top-level structure the body dispatch can't build:
+            // a user-sum type decl, or a try/`?` fallible-boundary program. (The sub-choice here only
+            // affects this ~1/4 branch — the normal-path crafted-seed tests take choice(4) != 0.)
+            if self.cur.flip() {
+                self.user_sum_program();
+            } else {
+                self.try_program();
+            }
             return;
         }
         self.out.push_str("(do (def (main");
@@ -319,6 +326,33 @@ impl Gen<'_> {
         let depth = 5;
         self.expr(depth, Kind::Any);
         self.out.push_str(") (export main))");
+    }
+
+    /// A TRY/`?` fallible-boundary program: a helper `(def (f) (: (Ok …) (Result Int64 Int64)))` whose
+    /// body threads one or two `(try (Ok <num>))` unwraps, + a `main` that matches `f`'s Result. Reaches
+    /// the try-operator / `?` desugaring — the fallible-boundary propagation lowering (a Result-returning
+    /// fn where `try` unwraps Ok and would early-return Err), which nothing else generates (a bare `(try …)`
+    /// declines: it needs an enclosing Result/Option boundary — the `(: … (Result Int64 Int64))` ascription).
+    /// Operator directive 2026-08-30: keep expanding generated program shapes. Ok-wrapped operands only (a
+    /// bare `(try (Err …))` declines on Err-type unification, so the Ok path is what reaches emit).
+    fn try_program(&mut self) {
+        let depth = 4;
+        self.out.push_str("(do (def (f) (: (Ok ");
+        if self.cur.flip() {
+            self.out.push_str("(try (Ok ");
+            self.expr(depth, Kind::Num);
+            self.out.push_str("))");
+        } else {
+            // Two try-unwraps combined — exercises multiple `?` boundaries in one body.
+            self.out.push_str("(+ (try (Ok ");
+            self.expr(depth, Kind::Num);
+            self.out.push_str(")) (try (Ok ");
+            self.expr(depth, Kind::Num);
+            self.out.push_str(")))");
+        }
+        self.out.push_str(
+            ") (Result Int64 Int64))) (def (main) (match (f) ((Ok v) v) ((Err e) e))) (export main))",
+        );
     }
 
     /// A USER-DEFINED-SUM program: a top-level monomorphic `(type …)` declaration + a param-less `main`
@@ -1842,6 +1876,30 @@ mod tests {
         assert!(hit, "no seed in the sweep emitted a Qty");
     }
 
+    /// The try/`?` program shape is reachable — some seed emits a `(try (Ok …))` inside a Result-returning
+    /// helper matched by main — and every such program parses. Guards the try/`?` fallible-boundary
+    /// desugaring reach (operator directive 2026-08-30 to keep expanding generated program shapes).
+    #[test]
+    fn some_seed_emits_a_try_operator() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(try (Ok ") {
+                assert!(
+                    src.contains("(Result Int64 Int64)") && src.contains("((Err e)"),
+                    "try program without its Result fallible boundary + match:\n{src}"
+                );
+                hit = true;
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a try/? program");
+    }
+
     /// The recursive-def arm is reachable — some seed emits a NESTED `(def (...` helper (main is the
     /// only other def) — and every program that path can emit still parses. Also asserts the
     /// TERMINATION STRUCTURE holds on every such program: the helper carries a `(if (<= ` base-case
@@ -1856,8 +1914,12 @@ mod tests {
                 cadenza_syntax::sexpr::read(&src).is_ok(),
                 "generated program did not parse:\n{src}"
             );
-            // `main` is the only top-level def; a SECOND `(def (` is a recursive helper.
-            if src.matches("(def (").count() >= 2 {
+            // `main` is the only top-level def; a SECOND `(def (` is a recursive helper — EXCEPT in the
+            // special whole-program shapes, whose top-level helper is not a rec_def_expr helper: a
+            // try/`?` program has a sibling `(def (f) …)` boundary fn (no recursion), and a user-sum
+            // program declares a type. Exclude those so this only checks genuine normal-path rec-defs.
+            let is_special = src.contains("(try (Ok ") || src.contains("(do (type ");
+            if !is_special && src.matches("(def (").count() >= 2 {
                 hit = true;
                 assert!(
                     src.contains("(if (<= "),
