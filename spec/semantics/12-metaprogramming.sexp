@@ -694,6 +694,20 @@
             (_            0)))
   (output (: 1 Int64)))
 
+; `read : String → Ast` parses re-readable text, so its argument MUST be a String. A non-String operand is a
+; type error, but a naive scheme-unify grounded the operand parameter to String and leaked the OPAQUE "String
+; and <T> must be the same type here" clash. The reject now NAMES the real fault ("`read`'s argument must be a
+; String"), the sibling of the `trap`-message-requirement reject (corpus 07). (The valid String-argument reads
+; above are the no-false-positive companions.) (Migrated from rcdzc
+; a_non_string_read_argument_names_the_string_requirement_not_a_phantom_clash.)
+(case "a non-String Ast.read argument names the String requirement (Int64 operand)"
+  (input  (do (def (f) (Ast.read 5)) (export f)))
+  (error  CDZ0203 (message "`read`'s argument must be a String") (message "a value of type Int64 was given") (not "must be the same type here")))
+
+(case "a non-String Ast.read argument names the String requirement (Bool operand)"
+  (input  (do (def (f) (Ast.read true)) (export f)))
+  (error  CDZ0203 (message "`read`'s argument must be a String") (message "a value of type Bool was given") (not "must be the same type here")))
+
 (case "eval of a quoted byte-string literal folds to the bytes value"
   (doc    "`(eval (quote b\"hi\"))` reconstructs the `b\"…\"` byte literal (which evaluates to itself, like a
            quoted string) and folds to that `Bytes` value — the bytes companion of `(eval (quote \"hi\"))`.

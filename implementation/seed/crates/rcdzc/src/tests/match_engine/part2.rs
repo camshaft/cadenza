@@ -670,45 +670,6 @@ fn a_malformed_unit_composition_operand_is_named_not_silently_shipped() {
 }
 
 #[test]
-fn a_non_string_read_argument_names_the_string_requirement_not_a_phantom_clash() {
-    use crate::testkit::parse;
-    // The `trap` SIBLING: `read : String → Ast` (parses re-readable text back into an `Ast`). A
-    // non-String operand (`(read 5)`, `(read true)`) is a type error, but the generic scheme-unify
-    // grounded the operand parameter to `String` and reported the OPAQUE "type mismatch: String and
-    // Int64 must be the same type here" (unlike `print : Ast → String`, whose distinctive `Ast` operand
-    // the checker names directly). It now names the real fault, exactly as the `trap` arm.
-    for (src, ty) in [
-        ("(module m (def (f) (Ast.read 5)) (export f))", "Int64"),
-        ("(module m (def (f) (Ast.read true)) (export f))", "Bool"),
-    ] {
-        let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-            .into_iter()
-            .find(|d| d.message.contains("`read`'s argument must be a String"))
-            .unwrap_or_else(|| panic!("a non-String read argument must be named: {src}"));
-        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-        assert!(
-            d.message
-                .contains(&format!("a value of type {ty} was given"))
-                && !d.message.contains("must be the same type here"),
-            "names the argument-type, not a phantom clash: {}",
-            d.message
-        );
-    }
-    // NO false positive: a String literal and a String-typed param argument are clean.
-    for ok in [
-        "(module m (def (f) (Ast.read \"(+ 1 2)\")) (export f))",
-        "(module m (def (f (: s String)) (Ast.read s)) (export f))",
-    ] {
-        assert!(
-            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                .iter()
-                .any(|d| d.message.contains("`read`'s argument must be a String")),
-            "a well-formed read is not flagged: {ok}"
-        );
-    }
-}
-
-#[test]
 fn a_partial_builtin_operation_as_an_unconsumed_value_is_rejected_not_silently_shipped() {
     use crate::testkit::parse;
     // M227 (co-designed with v-inference): a BUILT-IN OPERATION applied at FEWER args than it takes —
