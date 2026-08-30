@@ -45,7 +45,7 @@ pub fn render_val_typed(v: &Val, ty: &Arenas) -> String {
 /// leaf-name atom (`Bytes`, `Int64`) → `(Some(name), &[])`. Threads `(arena, child)` to recurse the render
 /// disambiguation into element/field/payload types. Mirrors the old `split_type` string parse, now over the
 /// decoded arena (structural, not a render-name string).
-fn ty_parts<'a>(a: &'a Arenas, id: StructId) -> (Option<&'a str>, &'a [StructId]) {
+fn ty_parts(a: &Arenas, id: StructId) -> (Option<&str>, &[StructId]) {
     match a.get(id) {
         Struct::Atom(_) => (a.as_name(id), &[]),
         Struct::List(kids) => (kids.first().and_then(|&h| a.as_name(h)), &kids[1..]),
