@@ -40,23 +40,19 @@ export default function Ordering() {
       />
       <P>That works, but those numbers are a convention you have to remember, and nothing stops a caller from forgetting the <C>equal</C> case or inventing a meaningless <C>2</C>. Cadenza gives you the three answers as a <em>value</em> instead.</P>
       <H2>The <C>Ordering</C> value</H2>
-      <P><C>Ordering.of</C> takes two values and returns an <C>Ordering</C>, a sum with exactly three variants, <C>Less</C>, <C>Equal</C>, and <C>Greater</C>. You read it apart with <C>match</C>, the same way you would any sum. Here <C>3</C> is less than <C>9</C>, so the <C>Less</C> arm fires:</P>
+      <P><C>Ordering.of</C> takes two values and returns an <C>Ordering</C>, a sum with exactly three variants, <C>Less</C>, <C>Equal</C>, and <C>Greater</C>. The value itself is the answer, a named case instead of a magic number. Here <C>3</C> is less than <C>9</C>, so you get <C>Less</C>:</P>
       <Runnable
-        source={`(def (order-sign a b) (match ((. Ordering of) a b) ((Less _) -1) ((Equal _) 0) ((Greater _) 1)))
-
-(def (main) (order-sign 3 9))`}
+        source={`((. Ordering of) 3 9)`}
       />
-      <P>Now the three cases have names, not magic numbers, and because <C>Ordering</C> is a closed sum, the compiler holds you to all three. Delete the <C>Greater</C> arm and Run: instead of a value you get a compile-time error, <C>non-exhaustive match: pattern `Greater` not covered</C>:</P>
+      <P>You read an <C>Ordering</C> apart with <C>match</C> to act on each case, the same way you would any sum. Because it's a closed sum, the compiler holds you to all three variants: drop the <C>Greater</C> arm and Run, and instead of a value you get a compile-time error, <C>non-exhaustive match: pattern `Greater` not covered</C>:</P>
       <Note>This one is <strong>meant to be rejected</strong>. The point is that a forgotten case is caught when you write it, not discovered as a wrong answer in production.</Note>
       <Runnable
-        source={`(match ((. Ordering of) 3 9) ((Less _) 1) ((Equal _) 0))`}
+        source={`(match ((. Ordering of) 3 9) ((Less _) "less") ((Equal _) "equal"))`}
         expect="error"
       />
-      <P><C>Ordering.of</C> is <em>generic</em>, so it works on any two values of the same type, not just numbers. Text compares in dictionary order, so <C>"apple"</C> comes before <C>"banana"</C> and the <C>Less</C> arm fires again:</P>
+      <P><C>Ordering.of</C> is <em>generic</em>, so it works on any two values of the same type, not just numbers. Text compares in dictionary order, so <C>"apple"</C> comes before <C>"banana"</C>, giving <C>Less</C> again:</P>
       <Runnable
-        source={`(def (order-sign a b) (match ((. Ordering of) a b) ((Less _) -1) ((Equal _) 0) ((Greater _) 1)))
-
-(def (main) (order-sign "apple" "banana"))`}
+        source={`((. Ordering of) "apple" "banana")`}
       />
       <H2>Ordered types can be keys</H2>
       <P><C>Bytes</C> is ordered too, lexicographically over its <em>unsigned</em> byte values, the same way Text compares in dictionary order. So <C>(Bytes.of #list(1 2))</C> comes before <C>(Bytes.of #list(1 3))</C>, decided at the first byte that differs:</P>
