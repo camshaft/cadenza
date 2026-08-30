@@ -39,8 +39,7 @@ def store-alloc(store: SumStore, tag: Int64, payloads: List(Int64)) = match stor
 def store-tag(store: SumStore, hnd: Int64) = match store with
   | SumStore.SumStore(_, cells) => match Map.lookup(cells, hnd) with
     | Option.None(_) => Option.None(unit)
-    | Option.Some(cell) => match cell with
-      | (tag, _) => Option.Some(tag)
+    | Option.Some(cell) => let (tag, _) = cell in Option.Some(tag)
 
 /// Read the i-th PAYLOAD element of the sum value at `hnd` — `Some value` if the hnd is allocated AND has
 /// an i-th element, else `None`. A payload-binding ctor pattern (`(Some x) → …`) reads element 0 to bind `x`;
@@ -48,30 +47,26 @@ def store-tag(store: SumStore, hnd: Int64) = match store with
 def store-payload(store: SumStore, hnd: Int64, i: Int64) = match store with
   | SumStore.SumStore(_, cells) => match Map.lookup(cells, hnd) with
     | Option.None(_) => Option.None(unit)
-    | Option.Some(cell) => match cell with
-      | (_, payloads) => List.at(payloads, i)
+    | Option.Some(cell) => let (_, payloads) = cell in List.at(payloads, i)
 
 @test
 def sst-alloc-then-read-tag() =
   // allocate a `Some 5` (tag 1, payload [5]); the hnd reads back tag 1.
-  match store-alloc(empty-store(), 1, List.push([], 5)) with
-    | (h, st) => match store-tag(st, h) with
+  let (h, st) = store-alloc(empty-store(), 1, List.push([], 5)) in match store-tag(st, h) with
       | Option.Some(t) => (if t == 1 then unit else trap("alloc tag 1 reads back 1"))
       | Option.None(_) => trap("an allocated hnd has a tag")
 
 @test
 def sst-alloc-then-read-payload() =
   // the `Some 5` hnd reads back payload element 0 = 5.
-  match store-alloc(empty-store(), 1, List.push([], 5)) with
-    | (h, st) => match store-payload(st, h, 0) with
+  let (h, st) = store-alloc(empty-store(), 1, List.push([], 5)) in match store-payload(st, h, 0) with
       | Option.Some(v) => (if v == 5 then unit else trap("Some 5 payload[0] = 5"))
       | Option.None(_) => trap("an allocated hnd has payload element 0")
 
 @test
 def sst-nullary-payload-empty() =
   // a NULLARY-shaped alloc (tag 3, no payloads) reads its tag but has NO element 0.
-  match store-alloc(empty-store(), 3, [] : List(Int64)) with
-    | (h, st) => match store-tag(st, h) with
+  let (h, st) = store-alloc(empty-store(), 3, [] : List(Int64)) in match store-tag(st, h) with
       | Option.Some(t) => (if t == 3 then
         match store-payload(st, h, 0) with
           | Option.None(_) => unit
@@ -83,9 +78,7 @@ def sst-nullary-payload-empty() =
 @test
 def sst-unique-handles() =
   // two allocs get DISTINCT handles (monotone counter), each reading back its OWN tag — no aliasing.
-  match store-alloc(empty-store(), 1, List.push([], 10)) with
-    | (h1, st1) => match store-alloc(st1, 2, List.push([], 20)) with
-      | (h2, st2) => if h1 == h2 then
+  let (h1, st1) = store-alloc(empty-store(), 1, List.push([], 10)) in let (h2, st2) = store-alloc(st1, 2, List.push([], 20)) in if h1 == h2 then
         trap("distinct allocs must get distinct handles")
       else
         match store-tag(st2, h1) with
@@ -101,8 +94,7 @@ def sst-unique-handles() =
 @test
 def sst-two-field-payload() =
   // a two-field ctor `Pair 3 4` (tag 0, payloads [3,4]): element 0 = 3, element 1 = 4.
-  match store-alloc(empty-store(), 0, List.concat(List.push([], 3), List.push([], 4))) with
-    | (h, st) => match store-payload(st, h, 0) with
+  let (h, st) = store-alloc(empty-store(), 0, List.concat(List.push([], 3), List.push([], 4))) in match store-payload(st, h, 0) with
       | Option.Some(a) => (match store-payload(st, h, 1) with
         | Option.Some(b) => (if a == 3 and b == 4 then unit else trap("Pair 3 4 → [3,4]"))
         | Option.None(_) => trap("element 1 present")
@@ -114,9 +106,7 @@ def sst-nested-sum-hnd-as-payload() =
   // NESTED sum `Some (Some 5)`: alloc inner `Some 5` → hnd h1; alloc outer `Some h1` with h1 AS its payload.
   // Reading outer payload[0] gives h1, which reads back as tag 1 / payload 5 — nested sums need no new rep (a
   // hnd IS an Int64 payload element).
-  match store-alloc(empty-store(), 1, List.push([], 5)) with
-    | (h1, st1) => match store-alloc(st1, 1, List.push([], h1)) with
-      | (h2, st2) => match store-payload(st2, h2, 0) with
+  let (h1, st1) = store-alloc(empty-store(), 1, List.push([], 5)) in let (h2, st2) = store-alloc(st1, 1, List.push([], h1)) in match store-payload(st2, h2, 0) with
         | Option.Some(inner) => (match store-tag(st2, inner) with
           | Option.Some(it) => (if it == 1 then
             match store-payload(st2, inner, 0) with

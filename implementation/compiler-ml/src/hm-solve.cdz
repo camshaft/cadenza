@@ -29,8 +29,8 @@ import { Scheme, instantiate } from "hm-scheme"
 /// solve: `SVar0 ~ Signed` then `(TyInt SVar0 _) ~ (TyInt Unsigned _)` CONFLICTS because 0 is already Signed.
 def solve-from(su0: Subst, cs: List(Tuple(Ty, Ty))) = match cs with
   | [] => Option.Some(su0)
-  | [c, .. rest] => (match c with
-      | (a, b) => (match unify-ty-su(su0, a, b) with
+  | [c, .. rest] => (
+      let (a, b) = c in (match unify-ty-su(su0, a, b) with
           | Option.Some(su1) => solve-from(su1, rest)
           | Option.None(_) => Option.None(unit)))
 
@@ -99,9 +99,9 @@ def hs-instantiate-then-solve-is-let-polymorphism() =
   // taint the other (let-polymorphism). Scheme ∀s0. (TyInt s0 W?) ; instantiate at counter 0 → freshened var A,
   // at that counter's result → freshened var B. Constrain A~Int64 (signed); B stays free → solving [A~Int64]
   // then applying to B leaves B's var UNBOUND (a distinct var), proving the two uses don't share a binding.
-  (match instantiate(Scheme.Scheme(List.push([], 0), ([] : List(Int64)), var-int(0, 5)), 10) with
-    | (tyA, n1) => (match instantiate(Scheme.Scheme(List.push([], 0), ([] : List(Int64)), var-int(0, 6)), n1) with
-        | (tyB, _n2) =>
+  (
+    let (tyA, n1) = instantiate(Scheme.Scheme(List.push([], 0), ([] : List(Int64)), var-int(0, 5)), 10) in (
+        let (tyB, _n2) = instantiate(Scheme.Scheme(List.push([], 0), ([] : List(Int64)), var-int(0, 6)), n1) in
             // constrain the FIRST instantiation to Int64, solve, then apply to the SECOND — B must remain a var
             // (unbound), i.e. NOT forced to Signed. Distinct fresh vars = independent.
             (match solve(List.push([], (tyA, ty-int64()))) with

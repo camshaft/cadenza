@@ -40,8 +40,7 @@ def demand-typed-eff(id: Int64, deflt: Ty) = match require-ty(DbState.get(), id)
 /// fill the column, put the new Db (caches it in the effect state), return the fact.
 def cache-typed-eff(id: Int64, deflt: Ty) =
   let filled = fill-ty(DbState.get(), id, deflt) in
-  match DbState.put(filled) with
-    | _ => deflt
+  let _ = DbState.put(filled) in deflt
 
 // ---- TESTS: the state-effect carrier memoizes without manual threading (unblocked by the eff-let fix) ----
 import { Tok, parse-tokens } from "parse-db"
@@ -50,8 +49,8 @@ import { IntType, Sign, Width } from "ty"
 /// A canonical Int64 `Ty` for the demos (was Typed.TIntW(true,64) pre-A2-migration).
 def ty-i64() = Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(64)))
 
-def sample-tree() = match parse-tokens([Tok.TNum(5)]) with
-  | (_, tree) => tree
+def sample-tree() =
+  let (_, tree) = parse-tokens([Tok.TNum(5)]) in tree
 
 @test
 def ds-get-returns-fresh-db() =

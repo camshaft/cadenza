@@ -111,8 +111,8 @@ def core-filled(db: Db) =
 import { Tok, parse-tokens } from "parse-db"
 
 /// A tiny parsed tree to key columns against (the literal `5` → root id 0).
-def sample-db() = match parse-tokens([Tok.TNum(5)]) with
-  | (_, tree) => db-of(tree)
+def sample-db() =
+  let (_, tree) = parse-tokens([Tok.TNum(5)]) in db-of(tree)
 
 @test
 def db-empty-columns-absent() =

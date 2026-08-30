@@ -107,8 +107,7 @@ def hv-fresh-int-ty-both-axes-fresh() =
 @test
 def hv-fresh-two-ints-are-distinct() =
   // two consecutive fresh ints share NO var-ids (threading the counter): first (10,11), second (12,13).
-  match fresh-int-ty(10) with
-    | (_t1, n1) => (match fresh-int-ty(n1) with
+  let (_t1, n1) = fresh-int-ty(10) in (match fresh-int-ty(n1) with
         | (Ty.TyInt(IntType.IntType(Sign.SVar(sa), Width.WVar(wa))), n2) =>
             (if (sa == 12) and (wa == 13) and (n2 == 14) then unit else trap("second fresh int is (SVar 12, WVar 13)"))
         | _ => trap("second fresh int"))
