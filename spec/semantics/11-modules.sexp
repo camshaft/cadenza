@@ -181,6 +181,15 @@
   (input  (do (def (g (: r (Record (: foo Int64)))) (. r fooo)) (export g)))
   (error  CDZ0212 (message "record has no field `fooo`")))
 
+; The far-miss face at the MODULE category (the flagship "match the Rust bar" case): `(. List get)` — `List`
+; has no `get` (it is `at`), and `get` is too far to be a confident typo, so the diagnostic LISTS the real
+; operations ("closest matches: … `at` …") instead of a baseless "did you mean?" or a dead-end miss, putting
+; the fix route in the message. A prelude module rides the same member-miss a user record takes but names the
+; MODULE category. (Migrated from rcdzc an_unknown_module_operation_lists_the_available_operations.)
+(case "an unknown prelude-module operation lists the available operations, not a confident single"
+  (input  (. List get))
+  (error  CDZ0201 (message "the `List` module has no member `get`") (message "closest matches:") (message "`at`") (not "did you mean")))
+
 (case "a module member named by the export clause is reachable"
   (doc    "The visible companion of the private case: `pub` IS named by `(export pub)`, so it is a field
            of the module's record and `(. m pub)` reaches it — pub(5) = 6. Pins that filtering the record

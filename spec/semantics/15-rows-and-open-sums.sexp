@@ -316,6 +316,16 @@
   (input  (do (def (main) (Record.without #record((= alpha 1)) (zzzzzz))) (export main)))
   (error  CDZ0212 (message "closest matches: `alpha`") (no-fix)))
 
+; The MEMBER-ACCESS face of the far-miss: `(. r zzzzzz)` where no field is within the edit-distance cutoff
+; gets NEITHER a confident "did you mean?" (which would be a baseless guess) NOR a bare dead-end "no field",
+; but LISTS the record's actual fields ("closest matches: `height`, `width`") — a closed, small field set is
+; signal an author acts on. No fix (a list of options is not one mechanical edit) and no false single. The
+; member-access twin of the far Record.without label above. (Migrated from rcdzc
+; a_field_with_no_close_match_lists_the_available_fields.)
+(case "a member-access field with no close match lists the available fields with no confident fix"
+  (input  (. #record((= width 10) (= height 20)) zzzzzz))
+  (error  CDZ0212 (message "closest matches:") (message "`height`") (message "`width`") (not "did you mean") (no-fix)))
+
 ; The MEMBER-ACCESS companions of the near-miss field-typo above: a `(. r k)` where `k` is a near-miss of a
 ; real field carries the SAME confident "did you mean `<near>`?" + a HEURISTIC replace fix on the key token
 ; (diagnostics.md §A Diagnostic Carries A Route To A Fix) — the record analogue of the unbound-name did-you-
