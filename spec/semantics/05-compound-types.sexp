@@ -245,6 +245,17 @@
   (input     (. 5 x))
   (error     CDZ0201))
 
+; A scalar member access reached through a CALL — `(def (main) ((. 5 x)))` used as the entry — surfaces
+; `infer`'s RICH "member access requires a record, found Int64", which NAMES the operand type (Int64), not
+; the bare "member access requires a record" (no ", found <T>"). Pins the type-naming message on the
+; call-through form. (Migrated from rcdzc a_scalar_member_access_reports_one_coded_error… — the surviving
+; type-naming message. The test's OTHER assertion — that the bare UNCODED duplicate is deduped to exactly
+; one error — stays a small rcdzc residual: the corpus (count N)/(no-other-errors) facets reason over CODED
+; faults only, so a codeless-duplicate dedup is inexpressible here.)
+(case "a called scalar member access surfaces the type-naming message, not the bare one"
+  (input  (do (def (main) ((. 5 x))) (export main)))
+  (error  CDZ0201 (message "member access requires a record, found Int64")))
+
 (case "member access on a boolean is a type error"
   (doc    "The Bool-operand companion: `(. true x)` accesses a field of a non-record, a type error the
            compiler rejects (CDZ0201).")
@@ -363,6 +374,15 @@
            declines rather than emitting the trapping access.")
   (input     (. #tuple(10 20 30) 3))
   (error     CDZ0201))
+
+; The tuple-index twin of the scalar-member case above: an out-of-range tuple index reached through a CALL
+; surfaces the RICH "… out of range for a 2-element tuple" (from `infer`, names the arity), not the bare
+; "tuple index 5 is out of range" (no " for a M-element tuple" tail). Pins the arity-naming message.
+; (Migrated from rcdzc a_scalar_member_access_reports_one_coded_error… — the surviving arity-naming message;
+; the uncoded-duplicate dedup stays a small rcdzc residual, as noted above.)
+(case "a called tuple index out of range surfaces the arity-naming message, not the bare one"
+  (input  (do (def (main) ((. #tuple(1 2) 5))) (export main)))
+  (error  CDZ0201 (message "for a 2-element tuple")))
 
 ; The static-arity range check must reach a tuple whose arity is known through a FUNCTION RETURN, not only
 ; a directly-written tuple literal. `mk` returns `(tuple 1 2)`, so `(mk)`'s result is a two-element tuple —
