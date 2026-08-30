@@ -49,9 +49,13 @@ def push-cs(acc: List(Tuple(Ty, Ty)), cs: List(Tuple(Ty, Ty))) = List.concat(acc
 
 /// Fold `collect` over a list of child node-ids, threading the accumulator left-to-right (replaces the 4-deep
 /// nested `collect(.. collect(.. collect(..)))` — this is the idiomatic accumulator fold, one child per step).
-def collect-children(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty), ids: List(Int64), acc: List(
-  Tuple(Ty, Ty)
-)) = match ids with
+def collect-children(
+  tree: Tree,
+  rcol: Map(Int64, Resolved),
+  env: Map(Int64, Ty),
+  ids: List(Int64),
+  acc: List(Tuple(Ty, Ty))
+) = match ids with
   | [] => acc
   | [child, .. rest] =>
     collect-children(tree, rcol, env, rest, collect(tree, rcol, env, child, acc))
@@ -76,9 +80,13 @@ def collect-children(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty)
 ///   other composites (NApp/NMatchCtor): NOT generated here yet (NApp arg~param / ct-decl identity — S1c) —
 ///     no emit, no recursion (the caller handles them until then).
 /// THREADS the resolve column `rcol` (S1b): NVar needs its binder resolution. Every recursion passes it through.
-def collect(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty), id: Int64, acc: List(
-  Tuple(Ty, Ty)
-)) = match node-at(tree, id) with
+def collect(
+  tree: Tree,
+  rcol: Map(Int64, Resolved),
+  env: Map(Int64, Ty),
+  id: Int64,
+  acc: List(Tuple(Ty, Ty))
+) = match node-at(tree, id) with
   | Option.Some(Node.NBin(op, l, r)) =>
     if op >= 60 then
       if op <= 65 then

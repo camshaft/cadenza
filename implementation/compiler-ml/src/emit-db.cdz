@@ -649,10 +649,14 @@ def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64), dept
 /// W-compound: emit a CCtor's payload-store sequence — for each arg i: `local.get scratch ; <emit arg> ;
 /// i64.store align=3 offset=8*(i+1)` (element i after the tag). Index recursion; scratch (i32 local) holds the
 /// alloc base. Args are flat (can-emit gate), so emitting an arg never touches the scratch local.
-def emit-ctor-stores(args: List(Core), i: Int64, scratch: Int64, binders: List(Int64), defidx: Map(
-  Int64,
-  Int64
-), depth: Int64) =
+def emit-ctor-stores(
+  args: List(Core),
+  i: Int64,
+  scratch: Int64,
+  binders: List(Int64),
+  defidx: Map(Int64, Int64),
+  depth: Int64
+) =
   if i == List.len(args) then
     Bytes.of([])
   else
@@ -678,10 +682,13 @@ def emit-ctor-stores(args: List(Core), i: Int64, scratch: Int64, binders: List(I
 /// (element i sits after the tag; scratch holds the wrapped handle addr). A -1 binder is a `_` wildcard — skip
 /// the bind but the FIELD position i still advances (so field 0 as `_` does not shift field 1's offset),
 /// mirroring eval's bind-payload. Index recursion; emits nothing for the empty-binder (nullary boxed) case.
-def emit-payload-binds(bs: List(Int64), i: Int64, scratch: Int64, binders: List(Int64), defidx: Map(
-  Int64,
-  Int64
-)) =
+def emit-payload-binds(
+  bs: List(Int64),
+  i: Int64,
+  scratch: Int64,
+  binders: List(Int64),
+  defidx: Map(Int64, Int64)
+) =
   if i == List.len(bs) then
     Bytes.of([])
   else
@@ -714,7 +721,13 @@ def emit-payload-binds(bs: List(Int64), i: Int64, scratch: Int64, binders: List(
 
 /// slice-B'(Bp3): emit a CCall's arg terms left-to-right (index recursion, the emit idiom), each onto the i64
 /// stack, concatenated — the wasm call convention (args pushed in order before `call`).
-def emit-call-args(args: List(Core), i: Int64, binders: List(Int64), defidx: Map(Int64, Int64), depth: Int64) =
+def emit-call-args(
+  args: List(Core),
+  i: Int64,
+  binders: List(Int64),
+  defidx: Map(Int64, Int64),
+  depth: Int64
+) =
   if i == List.len(args) then
     Bytes.of([])
   else
@@ -767,10 +780,11 @@ def body-of-scratch(instrs: Bytes, nlocals: Int64, nscratch: Int64) =
 def defenv-funcidx-map(entries: List(Tuple(Int64, Tuple(List(Int64), Core)))) =
   defenv-funcidx-map-go(entries, 0, Map.empty : Map(Int64, Int64))
 
-def defenv-funcidx-map-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, acc: Map(
-  Int64,
-  Int64
-)) =
+def defenv-funcidx-map-go(
+  entries: List(Tuple(Int64, Tuple(List(Int64), Core))),
+  i: Int64,
+  acc: Map(Int64, Int64)
+) =
   if i == List.len(entries) then
     acc
   else

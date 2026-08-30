@@ -120,9 +120,16 @@ def render-span(p: Pattern, chan: Int64, vel: Int64, start: Int64, span: Int64) 
 
 /// SEQ driver: lay child `i` (of `n` total) into `[start + i*span/n, start + (i+1)*span/n)` — the exact
 /// cumulative-boundary tiling, so N sub-spans cover the whole span with no gap or rounding drift.
-def render-seq(kids: List(Pattern), chan: Int64, vel: Int64, start: Int64, span: Int64, n: Int64, i: Int64, out: List(
-  Note
-)) = match kids with
+def render-seq(
+  kids: List(Pattern),
+  chan: Int64,
+  vel: Int64,
+  start: Int64,
+  span: Int64,
+  n: Int64,
+  i: Int64,
+  out: List(Note)
+) = match kids with
   | [] => out
   | [h, .. t] =>
     let lo = start + i * span / n in
@@ -140,9 +147,14 @@ def render-seq(kids: List(Pattern), chan: Int64, vel: Int64, start: Int64, span:
 
 /// STACK driver: render EVERY child over the same full `[start, start + span)` and concatenate — the
 /// notes overlap in time (a chord / layered voices).
-def render-stack(kids: List(Pattern), chan: Int64, vel: Int64, start: Int64, span: Int64, out: List(
-  Note
-)) = match kids with
+def render-stack(
+  kids: List(Pattern),
+  chan: Int64,
+  vel: Int64,
+  start: Int64,
+  span: Int64,
+  out: List(Note)
+) = match kids with
   | [] => out
   | [h, .. t] =>
     render-stack(
@@ -177,12 +189,25 @@ def render-pattern(p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-tick
 
 /// Render `cycles` consecutive cycles of a pattern back-to-back (a loop), each `cycle-ticks` long. This is
 /// what a looping-pedal / live set plays: the same tree re-rendered every cycle at the next offset.
-def render-cycles(p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-ticks: Int64, cycles: Int64) =
-  render-cycles-go(p, chan, vel, start, cycle-ticks, 0, cycles, [])
+def render-cycles(
+  p: Pattern,
+  chan: Int64,
+  vel: Int64,
+  start: Int64,
+  cycle-ticks: Int64,
+  cycles: Int64
+) = render-cycles-go(p, chan, vel, start, cycle-ticks, 0, cycles, [])
 
-def render-cycles-go(p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-ticks: Int64, i: Int64, cycles: Int64, out: List(
-  Note
-)) =
+def render-cycles-go(
+  p: Pattern,
+  chan: Int64,
+  vel: Int64,
+  start: Int64,
+  cycle-ticks: Int64,
+  i: Int64,
+  cycles: Int64,
+  out: List(Note)
+) =
   if i >= cycles then
     out
   else
@@ -203,12 +228,29 @@ def render-cycles-go(p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-ti
 /// reverses the pattern on cycles 0, 4, 8, … and plays it forward otherwise — the classic live-coding
 /// variation operator. `n <= 1` transforms every cycle; the transform is a `Pattern -> Pattern` (rev,
 /// fast, a user combinator). Higher-order: `f` is applied per cycle before rendering.
-def render-every(n: Int64, f: Pattern -> Pattern, p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-ticks: Int64, cycles: Int64) =
-  render-every-go(n, f, p, chan, vel, start, cycle-ticks, 0, cycles, [])
+def render-every(
+  n: Int64,
+  f: Pattern -> Pattern,
+  p: Pattern,
+  chan: Int64,
+  vel: Int64,
+  start: Int64,
+  cycle-ticks: Int64,
+  cycles: Int64
+) = render-every-go(n, f, p, chan, vel, start, cycle-ticks, 0, cycles, [])
 
-def render-every-go(n: Int64, f: Pattern -> Pattern, p: Pattern, chan: Int64, vel: Int64, start: Int64, cycle-ticks: Int64, i: Int64, cycles: Int64, out: List(
-  Note
-)) =
+def render-every-go(
+  n: Int64,
+  f: Pattern -> Pattern,
+  p: Pattern,
+  chan: Int64,
+  vel: Int64,
+  start: Int64,
+  cycle-ticks: Int64,
+  i: Int64,
+  cycles: Int64,
+  out: List(Note)
+) =
   if i >= cycles then
     out
   else

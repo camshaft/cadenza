@@ -41,10 +41,11 @@ type Vec3m =
 /// MUST pass a length (a bare `Rational` is a CDZ0301 type error here, which is exactly the strong typing
 /// we want), and a length authored in any unit converts to exact meters before storage. Stores the exact
 /// bare-Rational meter magnitude.
-def v3-len(x: Qty(Rational, Unit.base(#meter)), y: Qty(Rational, Unit.base(#meter)), z: Qty(
-  Rational,
-  Unit.base(#meter)
-)) = Vec3m.V3m(Qty.value(x), Qty.value(y), Qty.value(z))
+def v3-len(
+  x: Qty(Rational, Unit.base(#meter)),
+  y: Qty(Rational, Unit.base(#meter)),
+  z: Qty(Rational, Unit.base(#meter))
+) = Vec3m.V3m(Qty.value(x), Qty.value(y), Qty.value(z))
 
 /// Read a coordinate back OUT as a length-`Qty` in meters (the dual of `v3-len`). The stored magnitude is
 /// re-wrapped as a meter quantity, so downstream code that wants units gets them.

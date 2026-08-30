@@ -67,10 +67,13 @@ def eval-core(c: Core, env: Map(Int64, Value)) =
 /// store, whose store' must flow to the next arg's eval). Returns `Option((List(Int64), SumStore))`. Index
 /// recursion (List.at/List.len) — the compiler-ml idiom; a List is never cons-destructured here. Any arg that
 /// declines sinks the whole call to `None` (total).
-def eval-args(args: List(Core), i: Int64, env: Map(Int64, Value), defs: Map(
-  Int64,
-  Tuple(List(Int64), Core)
-), store: SumStore) =
+def eval-args(
+  args: List(Core),
+  i: Int64,
+  env: Map(Int64, Value),
+  defs: Map(Int64, Tuple(List(Int64), Core)),
+  store: SumStore
+) =
   if i == List.len(args) then
     Option.Some(([] : List(Value), store))
   else
@@ -131,10 +134,13 @@ def bind-payload(store: SumStore, h: Int64, binders: List(Int64), i: Int64, env:
 /// monomorphization bug (spurious CDZ0101 unbound param; queue/mlrepro-new-fn-in-eval-core-mutual-recursion-
 /// cycle-spurious-unbound-param.md). v-inference fixed that host bug (`5cdc957da`, type_specialize scope-skip),
 /// so the two arms now SHARE this helper.
-def apply-def-by-name(name: Int64, args: List(Core), env: Map(Int64, Value), defs: Map(
-  Int64,
-  Tuple(List(Int64), Core)
-), store: SumStore) = match Map.lookup(defs, name) with
+def apply-def-by-name(
+  name: Int64,
+  args: List(Core),
+  env: Map(Int64, Value),
+  defs: Map(Int64, Tuple(List(Int64), Core)),
+  store: SumStore
+) = match Map.lookup(defs, name) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(pb) =>
     let (params, body) = pb in
@@ -170,7 +176,12 @@ def eval-core-d(c: Core, env: Map(Int64, Value), defs: Map(Int64, Tuple(List(Int
 /// is read-only (a def-env, per slice-B3); the SumStore GROWS (v-inference's note: unlike defs, thread store'
 /// forward from each sub-eval). CNum/CVar/CFnRef don't touch the store; CBin/CLet/CIf/CCall/CFnRefVar thread it
 /// through their sub-evals. Recursion terminates by the PROGRAM's base case (a CIf guard), never by fuel.
-def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, Tuple(List(Int64), Core)), store: SumStore) = match c with
+def eval-core-s(
+  c: Core,
+  env: Map(Int64, Value),
+  defs: Map(Int64, Tuple(List(Int64), Core)),
+  store: SumStore
+) = match c with
   | Core.CNum(v, _, _) => Option.Some((Value.VInt(v), store)) // a scalar literal is VInt; width is an emit concern
   | Core.CVar(b) =>
     (match Map.lookup(env, b) with

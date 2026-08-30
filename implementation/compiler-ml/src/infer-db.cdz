@@ -122,7 +122,13 @@ def is-deferred-int(t: Ty) = match t with
 /// producer-reads-producer contract: infer consumes resolve's already-memoized facts.
 /// Infer each tuple ELEMENT node in order, threading the type column (mirrors NBin/NIf's sequential child
 /// inference, generalized to a list). Returns the filled tcol; `tuple-elem-types` then reads each back.
-def infer-tuple-elems(tree: Tree, ids: List(Int64), rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty), i: Int64) =
+def infer-tuple-elems(
+  tree: Tree,
+  ids: List(Int64),
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty),
+  i: Int64
+) =
   if i == List.len(ids) then
     tcol
   else
@@ -394,10 +400,13 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
 /// an arg is a caller-scope expression (a literal, a var, arith over them, or ANOTHER recursive self-call
 /// which lands back here and stops at Int64 — never a body descent). This is what lets B1b's `lower-def-env`
 /// later type each body ONCE: the inner self-call types Int64 and terminates the walk.
-def infer-recursive-call(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(
-  Int64,
-  Ty
-)) =
+def infer-recursive-call(
+  tree: Tree,
+  id: Int64,
+  argId: Int64,
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty)
+) =
   if argId == -1 then
     Map.insert(tcol, id, t-int64()) // nullary self-call → Int64
   else
@@ -413,10 +422,13 @@ def infer-recursive-call(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, R
 /// (we type the args so their nodes get facts + an ill-typed arg propagates; arg/param arity+type checking is a
 /// follow-up — HO-2b-ii-B types the RESULT so `(apply inc 41)`-style bodies type). A non-fn callee-fact, a
 /// non-TFn var-type, or no fact → TErr (a plain unknown callee, exactly as before this arm existed).
-def infer-fn-param-call(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(
-  Int64,
-  Ty
-)) =
+def infer-fn-param-call(
+  tree: Tree,
+  id: Int64,
+  argId: Int64,
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty)
+) =
   let ta = if argId == -1 then tcol else infer-node(tree, argId, rcol, tcol) in
   let ta2 = infer-rec-arg-opt(tree, arg2-of(tree, id), rcol, ta) in
   let ta3 = infer-rec-arg-opt(tree, arg3-of(tree, id), rcol, ta2) in
@@ -488,10 +500,12 @@ def args-fit-go(argIds: List(Int64), ptys: List(Ty), i: Int64, tcol: Map(Int64, 
 
 /// Type an OPTIONAL higher-arg slot of a recursive call (arg2/3/4): present → type its subtree; absent → the
 /// column passes through unchanged. Additive — mirrors the non-recursive infer-param2/3/4 arg walk.
-def infer-rec-arg-opt(tree: Tree, argOpt: Option(Int64), rcol: Map(Int64, Resolved), tcol: Map(
-  Int64,
-  Ty
-)) = match argOpt with
+def infer-rec-arg-opt(
+  tree: Tree,
+  argOpt: Option(Int64),
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty)
+) = match argOpt with
   | Option.Some(a) => infer-node(tree, a, rcol, tcol)
   | Option.None(_) => tcol
 
@@ -589,10 +603,16 @@ def bind-param-types(params: List(Int64), ptys: List(Ty), i: Int64, tcol: Map(In
           | Option.None(_) => tcol
           | Option.Some(pty) => bind-param-types(params, ptys, i + 1, Map.insert(tcol, pid, pty))
 
-def infer-app-with-arg-ty(tree: Tree, id: Int64, calleeId: Int64, calleeBody: Int64, paramId: Int64, rcol: Map(
-  Int64,
-  Resolved
-), ta: Map(Int64, Ty), argTyOpt: Option(Ty)) = match argTyOpt with
+def infer-app-with-arg-ty(
+  tree: Tree,
+  id: Int64,
+  calleeId: Int64,
+  calleeBody: Int64,
+  paramId: Int64,
+  rcol: Map(Int64, Resolved),
+  ta: Map(Int64, Ty),
+  argTyOpt: Option(Ty)
+) = match argTyOpt with
   | Option.Some(argTy) =>
     (let tp = Map.insert(ta, paramId, param-bind-type(tree, paramId, argTy)) in // param1 : declared narrow type, else arg's type
     // slice-3d: a 2-ARG call also types arg2 + binds param2 (both params in tcol before the body is
@@ -640,10 +660,13 @@ def var-type(tree: Tree, binder: Int64, tcol: Map(Int64, Ty)) = match node-at(tr
 /// `None` if a 2nd arg is present but the callee has no 2nd param (over-applied → the caller maps to TErr).
 /// `Some(tcol')` = either no 2nd arg (1-arg call — tcol unchanged) or arg2 typed + param2 bound. The caller
 /// then types the body under tcol', so var-type resolves BOTH param uses.
-def infer-param2(tree: Tree, id: Int64, calleeId: Int64, rcol: Map(Int64, Resolved), tcol: Map(
-  Int64,
-  Ty
-)) = match arg2-of(tree, id) with
+def infer-param2(
+  tree: Tree,
+  id: Int64,
+  calleeId: Int64,
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty)
+) = match arg2-of(tree, id) with
   | Option.None(_) => Option.Some(tcol) // 1-arg call — nothing to add
   | Option.Some(arg2Id) =>
     match param2-of(tree, calleeId) with
@@ -666,10 +689,13 @@ def infer-param2(tree: Tree, id: Int64, calleeId: Int64, rcol: Map(Int64, Resolv
 /// slice-3e: bind param3's type for a 3-ARG call (the mirror of infer-param2). arg3-of None → a ≤2-arg call,
 /// pass tcol through. Else bind param3 to its declared narrow type (param-bind-type) or the arg3's type, and
 /// fit-check arg3 (CDZ0302). An arg3 with no param3 → None (over-applied → the caller flags TErr).
-def infer-param3(tree: Tree, id: Int64, calleeId: Int64, rcol: Map(Int64, Resolved), tcol: Map(
-  Int64,
-  Ty
-)) = match arg3-of(tree, id) with
+def infer-param3(
+  tree: Tree,
+  id: Int64,
+  calleeId: Int64,
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty)
+) = match arg3-of(tree, id) with
   | Option.None(_) => Option.Some(tcol) // ≤2-arg call — nothing to add
   | Option.Some(arg3Id) =>
     match param3-of(tree, calleeId) with
@@ -687,10 +713,13 @@ def infer-param3(tree: Tree, id: Int64, calleeId: Int64, rcol: Map(Int64, Resolv
 /// slice-3f: bind param4's type for a 4-ARG call (the mirror of infer-param3). arg4-of None → a ≤3-arg call,
 /// pass tcol through. Else bind param4 to its declared narrow type (param-bind-type) or the arg4's type, and
 /// fit-check arg4 (CDZ0302). An arg4 with no param4 → None (over-applied → the caller flags TErr).
-def infer-param4(tree: Tree, id: Int64, calleeId: Int64, rcol: Map(Int64, Resolved), tcol: Map(
-  Int64,
-  Ty
-)) = match arg4-of(tree, id) with
+def infer-param4(
+  tree: Tree,
+  id: Int64,
+  calleeId: Int64,
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty)
+) = match arg4-of(tree, id) with
   | Option.None(_) => Option.Some(tcol) // ≤3-arg call — nothing to add
   | Option.Some(arg4Id) =>
     match param4-of(tree, calleeId) with
@@ -1038,7 +1067,12 @@ def ctor-payload-binder-type(tree: Tree, patCtorName: Int64) = match ctor-argtyp
 /// fold over the index `i`. For a single-binder [id] this seeds exactly binderIds[0]←argTypes[0] = the pre-fold head
 /// behavior (backward-compatible). An argType-ENCODING -1 (a field in `argTypes`, decode-argtype-enc(-1)=TErr) → a
 /// TErr binder → any use declines, same discipline as the single-field Bool. (Distinct from the binderId WILDCARD -1 below.)
-def seed-ctor-binders-go(tcol: Map(Int64, Ty), argTypes: List(Int64), binderIds: List(Int64), i: Int64) =
+def seed-ctor-binders-go(
+  tcol: Map(Int64, Ty),
+  argTypes: List(Int64),
+  binderIds: List(Int64),
+  i: Int64
+) =
   if i == List.len(binderIds) then
     tcol
   else

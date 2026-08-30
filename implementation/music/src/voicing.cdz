@@ -37,9 +37,15 @@ def voice-distance(from: List(Int64), to: List(Int64)) = voice-distance-go(from,
 /// Scan inversions `i = 0 .. n-1` of chord `c`, tracking the one whose note list is closest (least
 /// `voice-distance`) to `ref`. `best-i`/`best-cost`/`best-notes` carry the running winner; ties keep the
 /// LOWER inversion index (we only replace on a strictly smaller cost). Recursive driver, annotated.
-def nearest-go(c: Chord, ref: List(Int64), i: Int64, n: Int64, best-i: Int64, best-cost: Int64, best-notes: List(
-  Int64
-)) =
+def nearest-go(
+  c: Chord,
+  ref: List(Int64),
+  i: Int64,
+  n: Int64,
+  best-i: Int64,
+  best-cost: Int64,
+  best-notes: List(Int64)
+) =
   if i >= n then
     best-notes
   else
@@ -52,7 +58,14 @@ def nearest-go(c: Chord, ref: List(Int64), i: Int64, n: Int64, best-i: Int64, be
 
 /// The inversion INDEX (0-based) of chord `c` that voice-leads most smoothly from `ref` — same scan as
 /// `nearest-voicing` but returning which inversion won (for analysis/labeling).
-def nearest-index-go(c: Chord, ref: List(Int64), i: Int64, n: Int64, best-i: Int64, best-cost: Int64) =
+def nearest-index-go(
+  c: Chord,
+  ref: List(Int64),
+  i: Int64,
+  n: Int64,
+  best-i: Int64,
+  best-cost: Int64
+) =
   if i >= n then
     best-i
   else

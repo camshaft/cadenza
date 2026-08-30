@@ -911,8 +911,9 @@ def position-finds-first-matching-int-index() = match position(from-list([10, 20
   | Option.Some(i) => if i == 1 then unit else trap("position int index")
 
 @test
-def position-finds-first-matching-string-index() = match position(from-list(["a", "bb", "ccc"]), fn(s) =>
-    String.byte-len(s) == 3) with
+def position-finds-first-matching-string-index() = match position(from-list(["a", "bb", "ccc"]), fn(
+    s
+  ) => String.byte-len(s) == 3) with
   | Option.None(_) => trap("position str must find")
   | Option.Some(i) => if i == 2 then unit else trap("position str index")
 

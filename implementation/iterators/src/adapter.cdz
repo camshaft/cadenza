@@ -49,8 +49,11 @@ def map(it, f: Int64 -> Int64) = match it with
 
 /// `filter(it, p)` — keep only elements satisfying `p`. The new step drives the upstream step forward,
 /// skipping non-matching elements, via the recursive `filter-step` worker (annotated, since it recurses).
-def filter-step(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
-  -> Bool) = match step(s) with
+def filter-step(
+  const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
+  s: List(Int64),
+  const p: Int64 -> Bool
+) = match step(s) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(pair) =>
     let (x, s2) = pair in
@@ -81,8 +84,11 @@ def take-while(it, p: Int64 -> Bool) = match it with
 /// tail-loop escape-module fix. This is the I4 extensibility demo — a brand-new combinator added by ONE new
 /// `def` pair, NO edit to any central dispatch (the operator's "trivial to extend" criterion), the payoff
 /// over the reified enum where a new combinator meant a new `Iter` variant AND a new `next` arm.
-def filter-map-step(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const f: Int64
-  -> Option(Int64)) = match step(s) with
+def filter-map-step(
+  const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
+  s: List(Int64),
+  const f: Int64 -> Option(Int64)
+) = match step(s) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(pair) =>
     let (x, s2) = pair in
@@ -97,8 +103,12 @@ def filter-map(it, f: Int64 -> Option(Int64)) = match it with
 /// `drive(step, s, acc, g)` — the recursive fold worker: pull each element and thread it through `g`. Its
 /// params are ANNOTATED (a recursive generic-shaped def otherwise has no machine representation). This is
 /// the single loop a `map(filter(...))` chain inlines into.
-def drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), acc: Int64, const g: Int64
-  -> Int64 -> Int64) = match step(s) with
+def drive(
+  const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
+  s: List(Int64),
+  acc: Int64,
+  const g: Int64 -> Int64 -> Int64
+) = match step(s) with
   | Option.None(_) => acc
   | Option.Some(p) =>
     let (x, s2) = p in
@@ -109,9 +119,11 @@ def fold(it, acc, g: Int64 -> Int64 -> Int64) = match it with
   | Iter.Mk(s, step) => drive(step, s, acc, g)
 
 /// `count-drive`/`count` — number of elements (a closure-free consumer atop the same driving pattern).
-def count-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), n: Int64) = match step(
-    s
-  ) with
+def count-drive(
+  const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
+  s: List(Int64),
+  n: Int64
+) = match step(s) with
   | Option.None(_) => n
   | Option.Some(p) =>
     let (_x, s2) = p in
@@ -122,8 +134,11 @@ def count(it) = match it with
 
 /// `any(it, p)` — does SOME element satisfy `p`? Short-circuits at the first match (stops driving). A
 /// closure-storing scalar consumer over the same driving pattern.
-def any-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
-  -> Bool) = match step(s) with
+def any-drive(
+  const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
+  s: List(Int64),
+  const p: Int64 -> Bool
+) = match step(s) with
   | Option.None(_) => false
   | Option.Some(pr) =>
     let (x, s2) = pr in
@@ -134,8 +149,11 @@ def any(it, p: Int64 -> Bool) = match it with
 
 /// `all(it, p)` — do ALL elements satisfy `p`? (vacuously true for empty). Short-circuits at the first
 /// failure. The `any` dual.
-def all-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
-  -> Bool) = match step(s) with
+def all-drive(
+  const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
+  s: List(Int64),
+  const p: Int64 -> Bool
+) = match step(s) with
   | Option.None(_) => true
   | Option.Some(pr) =>
     let (x, s2) = pr in
@@ -145,8 +163,11 @@ def all(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s, step) => all-drive(step, s, p)
 
 /// `find(it, p)` — the first element satisfying `p`, or `None`. Short-circuits. Returns `Option(Int64)`.
-def find-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
-  -> Bool) = match step(s) with
+def find-drive(
+  const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
+  s: List(Int64),
+  const p: Int64 -> Bool
+) = match step(s) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(pr) =>
     let (x, s2) = pr in
@@ -159,8 +180,12 @@ def find(it, p: Int64 -> Bool) = match it with
 /// `Iterator::position`; the index dual of `find`, which returns the element). Short-circuits at the first
 /// match. Threads a running index `i` alongside the state; recurses via if/else (like `find`), so it dodges
 /// the mixed-match Option-tail-loop wasm bug (v-wasm-opt) that the `match f(x)` form of filter-map hits.
-def position-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), i: Int64, const p: Int64
-  -> Bool) = match step(s) with
+def position-drive(
+  const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
+  s: List(Int64),
+  i: Int64,
+  const p: Int64 -> Bool
+) = match step(s) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(pr) =>
     let (x, s2) = pr in
@@ -187,9 +212,11 @@ def product(it) = fold(it, 1, fn(a, x) => a * x)
 /// `n < 0 => None` guard is at the entry, so `nth-drive` only ever sees a non-negative index (its `n <= 0`
 /// base then correctly returns the current head at index 0). Without the guard a negative index would
 /// silently return the FIRST element (`nth(-1) == nth(0)`), diverging from `List.at(-1) == None`.
-def nth-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), n: Int64) = match step(
-    s
-  ) with
+def nth-drive(
+  const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
+  s: List(Int64),
+  n: Int64
+) = match step(s) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(p) =>
     let (x, s2) = p in
@@ -204,9 +231,11 @@ def nth(it, n) =
 
 /// `contains(it, target)` — does the iterator yield `target`? Short-circuits at the first match (so it
 /// terminates on an infinite source that contains the target).
-def contains-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), target: Int64) = match step(
-    s
-  ) with
+def contains-drive(
+  const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
+  s: List(Int64),
+  target: Int64
+) = match step(s) with
   | Option.None(_) => false
   | Option.Some(p) =>
     let (x, s2) = p in
@@ -217,9 +246,12 @@ def contains(it, target) = match it with
 
 /// `last(it)` — the final element, or `None` for an empty iterator. Drains, tracking the most-recent
 /// element via a `have` flag (so an empty source is `None`, not a bogus 0).
-def last-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), seen: Int64, have: Bool) = match step(
-    s
-  ) with
+def last-drive(
+  const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
+  s: List(Int64),
+  seen: Int64,
+  have: Bool
+) = match step(s) with
   | Option.None(_) => if have then Option.Some(seen) else Option.None(unit)
   | Option.Some(p) =>
     let (x, s2) = p in
@@ -534,8 +566,9 @@ def law-contains-is-any-eq() =
 @test
 def deep-map-map-map-filter-sum() =
   if sum(
-        filter(map(map(map(from-list([1, 2, 3, 4]), fn(x) => x + 1), fn(x) => x * 2), fn(x) => x - 1), fn(x) =>
-          x > 4)
+        filter(map(map(map(from-list([1, 2, 3, 4]), fn(x) => x + 1), fn(x) => x * 2), fn(x) => x - 1), fn(
+          x
+        ) => x > 4)
       ) == 21 then
     unit
   else
@@ -620,8 +653,9 @@ def filter-map-then-count() =
 def deep-filter-map-take-while-chain-fuses() =
   if sum(
         take-while(filter-map(filter(map(from-list([1, 2, 3, 4, 5, 6, 7, 8]), fn(x) => x * 3), fn(x) =>
-          x > 4), fn(x) => if x - x / 2 * 2 == 0 then Option.Some(x / 2) else Option.None(unit)), fn(x) =>
-          x < 20)
+          x > 4), fn(x) => if x - x / 2 * 2 == 0 then Option.Some(x / 2) else Option.None(unit)), fn(
+          x
+        ) => x < 20)
       ) == 30 then
     unit
   else

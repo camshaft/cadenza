@@ -28,10 +28,11 @@ def inches(n: Int64) =
 /// A meter-model axis-aligned box: width/depth/height given as LENGTHS (type-checked), stored as exact
 /// meters, built into the exact `Solid(Rational)` CSG the drivers consume. Mixing a length with a bare number here
 /// is a CDZ0301 type error — the strong unit typing the operator wants, at the point of authoring.
-def box-len(w: Qty(Rational, Unit.base(#meter)), d: Qty(Rational, Unit.base(#meter)), h: Qty(
-  Rational,
-  Unit.base(#meter)
-)) = Solid.Cube(to-vec3(v3-len(w, d, h)))
+def box-len(
+  w: Qty(Rational, Unit.base(#meter)),
+  d: Qty(Rational, Unit.base(#meter)),
+  h: Qty(Rational, Unit.base(#meter))
+) = Solid.Cube(to-vec3(v3-len(w, d, h)))
 
 /// ---- worked models: author in real units, exact meters underneath ----
 /// A 2m × 1m × 1m plinth, authored in meters. Exact.

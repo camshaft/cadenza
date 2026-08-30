@@ -543,9 +543,13 @@ def record-ctor-tag-typed(tree: Tree, ctorName: Int64, declName: Int64, tag: Int
 /// `[]` (or the single-field shim's `[0]`); a 1-field ctor `[enc]`; a multi-field `(Pair Int64 Bool)` → `[65, 1]`.
 /// The ct value's 3rd slot is this list (v-inference t443 steer: co-located tag+argTypes in ONE ct entry, feeds
 /// CMatchSum's binder-list positionally). Same 12th arena field, so only the ct accessors change (no arena ripple).
-def record-ctor-tag-typed-list(tree: Tree, ctorName: Int64, declName: Int64, tag: Int64, argTypes: List(
-  Int64
-)) =
+def record-ctor-tag-typed-list(
+  tree: Tree,
+  ctorName: Int64,
+  declName: Int64,
+  tag: Int64,
+  argTypes: List(Int64)
+) =
   let Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, ct) = tree in
   Tree.Arena(
     m,
@@ -631,7 +635,14 @@ def decl-is-enum-disc(tree: Tree, declName: Int64) =
 /// `payload` its PAYLOAD ctors. Enum-disc iff (payload == 0) AND (nullary >= 2). A payload ctor of the decl
 /// makes the rep boxed (any payload → not enum-disc). Index recursion over the (ctorName, (declName, tag, argTypes))
 /// entries (no list-tail — the arena has no generic list-tail; `List.at(entries, i)` walks positionally).
-def decl-enum-disc-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64, List(Int64)))), declName: Int64, i: Int64, nullary: Int64, payload: Int64) =
+def decl-enum-disc-go(
+  tree: Tree,
+  entries: List(Tuple(Int64, Tuple(Int64, Int64, List(Int64)))),
+  declName: Int64,
+  i: Int64,
+  nullary: Int64,
+  payload: Int64
+) =
   if i == List.len(entries) then
     if payload == 0 then nullary >= 2 else false
   else
@@ -658,7 +669,13 @@ def decl-ctor-count(tree: Tree, declName: Int64) =
   decl-ctor-count-go(tree, Map.to-list(ct), declName, 0, 0)
 
 /// Index fold for decl-ctor-count: count ct-entries whose declName == `declName` (mirrors decl-enum-disc-go).
-def decl-ctor-count-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64, List(Int64)))), declName: Int64, i: Int64, n: Int64) =
+def decl-ctor-count-go(
+  tree: Tree,
+  entries: List(Tuple(Int64, Tuple(Int64, Int64, List(Int64)))),
+  declName: Int64,
+  i: Int64,
+  n: Int64
+) =
   if i == List.len(entries) then
     n
   else
@@ -683,7 +700,11 @@ def decl-name-registered(tree: Tree, nameId: Int64) =
   let Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) = tree in
   decl-name-registered-go(Map.to-list(ct), nameId, 0)
 
-def decl-name-registered-go(entries: List(Tuple(Int64, Tuple(Int64, Int64, List(Int64)))), nameId: Int64, i: Int64) =
+def decl-name-registered-go(
+  entries: List(Tuple(Int64, Tuple(Int64, Int64, List(Int64)))),
+  nameId: Int64,
+  i: Int64
+) =
   if i == List.len(entries) then
     false
   else
