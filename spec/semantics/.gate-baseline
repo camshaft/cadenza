@@ -9112,3 +9112,8 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	D1 an if-joined dual-used rope sharing a pre-if concat child in BOTH arms reclaims cleanly (was a 980-residual double-free, FIXED #5424)
+pass	a misspelled match keyword in head position suggests match
+pass	a misspelled if keyword in head position suggests if
+pass	a misspelled let keyword in head position suggests let
+pass	a misspelled and keyword in head position suggests and
+pass	a head typo nearer to a real def suggests the def over a grammar keyword
