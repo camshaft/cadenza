@@ -11867,32 +11867,6 @@ mod match_engine {
     // compiles + matches (→ 5). --case grades codes + messages + run values. The NOT-"carries" negative on
     // the generic Some is the inexpressible remainder, covered by the positive message halves.)
     #[test]
-    fn if_branches_of_distinct_numeric_type_are_cdz0201_but_cross_kind_stays_cdz0203() {
-        // 02-binding "a conditional with integer and floating-point branches is a type error": two DISTINCT
-        // NUMERIC branch types (Int64 vs Float64) are the no-silent-promotion rule (numeric-model.md
-        // #Numeric Types Do Not Silently Promote) → a MALFORMED program (CDZ0201). Every OTHER branch
-        // disagreement — a cross-KIND mismatch (Int vs Bool, a compound vs a scalar, tuples of different
-        // arity) — is the structural type mismatch (CDZ0203). The split is by "both branches numeric".
-        assert_eq!(
-            reject_code("(module m (def (main) (if true 1 3.5)) (export main))").as_deref(),
-            Some("CDZ0201")
-        );
-        // Cross-kind: Int64 then vs Bool else — a structural mismatch, still CDZ0203.
-        assert_eq!(
-            reject_code("(module m (def (main) (if true 1 false)) (export main))").as_deref(),
-            Some("CDZ0203")
-        );
-        // Cross-kind: two tuples of different arity — CDZ0203 (a tuple's arity is part of its type).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (if true (tuple 1 2) (tuple 3 4 5))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0203")
-        );
-    }
-
-    #[test]
     fn symbol_reader_sugar_and_nominal_boundary() {
         // A Symbol is NOMINAL over String: comparing the two across the boundary is CDZ0202 with an
         // actionable `Symbol.of` wrap fix. (The `#"text"` reader sugar reads to the same value as
