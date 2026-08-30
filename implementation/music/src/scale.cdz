@@ -42,8 +42,8 @@ def rotate-left(xs: List(Int64), n: Int64) =
     xs
   else
     match xs with
-      | [] => []
-      | [h, .. t] => rotate-left(List.push(t, h), n - 1)
+    | [] => []
+    | [h, .. t] => rotate-left(List.push(t, h), n - 1)
 
 /// The step pattern for a diatonic MODE, indexed 0..6 (0 = Ionian/major, 1 = Dorian, … 6 = Locrian): the
 /// major pattern rotated left by the mode index.

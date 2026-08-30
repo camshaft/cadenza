@@ -22,11 +22,11 @@ def node-count-list(elems: List(Ast)) = match elems with
 def head-name(node: Ast) = match node with
   | Ast.List(elems) => (
     match elems with
-      | [] => None(unit)
-      | [first, .. _] =>
-        match first with
-          | Ast.Name(n) => Some(n)
-          | _ => None(unit)
+    | [] => None(unit)
+    | [first, .. _] =>
+      match first with
+      | Ast.Name(n) => Some(n)
+      | _ => None(unit)
   )
   | _ => None(unit)
 

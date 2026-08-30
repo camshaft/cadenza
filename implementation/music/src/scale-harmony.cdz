@@ -57,12 +57,12 @@ def the-first-and-fourth-and-fifth-are-major-triads() =
     | [i, _, _, _, _, _, _] => (
       let Chord.Chord(_, stack) = i in
       match stack with
-        | [a, b, c] =>
-          if a == 0 then
-            if b == 4 then if c == 7 then unit else trap("fifth") else trap("third")
-          else
-            trap("root")
-        | _ => trap("triad has three intervals")
+      | [a, b, c] =>
+        if a == 0 then
+          if b == 4 then if c == 7 then unit else trap("fifth") else trap("third")
+        else
+          trap("root")
+      | _ => trap("triad has three intervals")
     )
     | _ => trap("seven triads")
 
@@ -73,9 +73,8 @@ def the-second-is-a-minor-triad() =
     | [_, ii, _, _, _, _, _] => (
       let Chord.Chord(_, stack) = ii in
       match stack with
-        | [_, b, c] =>
-          if b == 3 then if c == 7 then unit else trap("fifth") else trap("ii is minor")
-        | _ => trap("three intervals")
+      | [_, b, c] => if b == 3 then if c == 7 then unit else trap("fifth") else trap("ii is minor")
+      | _ => trap("three intervals")
     )
     | _ => trap("seven triads")
 
@@ -86,9 +85,9 @@ def the-leading-tone-chord-is-diminished() =
     | [_, _, _, _, _, _, vii] => (
       let Chord.Chord(_, stack) = vii in
       match stack with
-        | [_, b, c] =>
-          if b == 3 then if c == 6 then unit else trap("dim fifth") else trap("minor third")
-        | _ => trap("three intervals")
+      | [_, b, c] =>
+        if b == 3 then if c == 6 then unit else trap("dim fifth") else trap("minor third")
+      | _ => trap("three intervals")
     )
     | _ => trap("seven triads")
 
@@ -99,12 +98,12 @@ def the-dominant-seventh-of-the-harmonized-scale-is-a-dom7() =
     | [_, _, _, _, v7, _, _] => (
       let Chord.Chord(_, stack) = v7 in
       match stack with
-        | [_, b, c, d] =>
-          if b == 4 then
-            if c == 7 then if d == 10 then unit else trap("minor seventh") else trap("fifth")
-          else
-            trap("major third")
-        | _ => trap("four intervals")
+      | [_, b, c, d] =>
+        if b == 4 then
+          if c == 7 then if d == 10 then unit else trap("minor seventh") else trap("fifth")
+        else
+          trap("major third")
+      | _ => trap("four intervals")
     )
     | _ => trap("seven sevenths")
 

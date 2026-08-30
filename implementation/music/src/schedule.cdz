@@ -236,20 +236,20 @@ def a-note-lowers-to-a-balanced-on-off-pair() =
   // C4 on channel 0, velocity 100, at tick 0 for a quarter (960) → on@0 + off@960, same channel+note.
   let n = note-at(pitch-c4, 0, 100, 0, 960) in
   match note-events(n) with
-    | [on, off] =>
-      if ev-on(on) then
-        if ev-on(off) then
-          trap("second event is NOT the off (still an on)")
-        else if ev-tick(on) == 0 then
-          if ev-tick(off) == 960 then
-            if ev-note(on) == 60 then unit else trap("note number")
-          else
-            trap("off tick")
+  | [on, off] =>
+    if ev-on(on) then
+      if ev-on(off) then
+        trap("second event is NOT the off (still an on)")
+      else if ev-tick(on) == 0 then
+        if ev-tick(off) == 960 then
+          if ev-note(on) == 60 then unit else trap("note number")
         else
-          trap("on tick")
+          trap("off tick")
       else
-        trap("first event is the on")
-    | _ => trap("a note is two events")
+        trap("on tick")
+    else
+      trap("first event is the on")
+  | _ => trap("a note is two events")
 
 @test
 def scheduling-a-piece-is-balanced() =
@@ -274,8 +274,8 @@ def transposition-preserves-the-pairing() =
   if balanced(evs) then
     // and the notes actually moved up 7 semitones (C4 60 → G4 67).
     match evs with
-      | [on, .. _] => if ev-note(on) == 67 then unit else trap("moved up a fifth")
-      | _ => trap("has events")
+    | [on, .. _] => if ev-note(on) == 67 then unit else trap("moved up a fifth")
+    | _ => trap("has events")
   else
     trap("balanced after transpose")
 
@@ -423,12 +423,12 @@ def play-order-is-stable-for-same-tick-events() =
   let piece = [note-at(pitch-c4, 0, 100, 0, 480), note-at(pitch-e4, 0, 100, 0, 480)] in
   let stream = play-order(schedule(piece)) in
   match stream with
-    | [first, .. _] =>
-      if ev-note(first) == 60 then
-        if ev-on(first) then unit else trap("on")
-      else
-        trap("C's on comes first (stable)")
-    | _ => trap("has events")
+  | [first, .. _] =>
+    if ev-note(first) == 60 then
+      if ev-on(first) then unit else trap("on")
+    else
+      trap("C's on comes first (stable)")
+  | _ => trap("has events")
 
 @test
 def play-order-keeps-a-zero-length-notes-on-before-its-off() =
@@ -437,12 +437,12 @@ def play-order-keeps-a-zero-length-notes-on-before-its-off() =
   let piece = [note-at(pitch-c4, 0, 100, 100, 0)] in
   let stream = play-order(schedule(piece)) in
   match stream with
-    | [first, second] =>
-      if ev-on(first) then
-        if ev-on(second) then trap("second is NOT the off (still an on)") else unit
-      else
-        trap("on before off")
-    | _ => trap("two events")
+  | [first, second] =>
+    if ev-on(first) then
+      if ev-on(second) then trap("second is NOT the off (still an on)") else unit
+    else
+      trap("on before off")
+  | _ => trap("two events")
 
 @test
 def play-order-preserves-balance-and-on-before-off-at-play-time() =
@@ -452,8 +452,8 @@ def play-order-preserves-balance-and-on-before-off-at-play-time() =
   let stream = play-order(schedule(piece)) in
   if balanced(stream) then
     match stream with
-      | [first, .. _] => if ev-on(first) then unit else trap("first event is the on")
-      | _ => trap("has events")
+    | [first, .. _] => if ev-on(first) then unit else trap("first event is the on")
+    | _ => trap("has events")
   else
     trap("balanced after sort")
 

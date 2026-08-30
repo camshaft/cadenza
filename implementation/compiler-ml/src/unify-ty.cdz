@@ -22,17 +22,17 @@ def unify-sign(a: Sign, b: Sign) = match a with
   | Sign.SVar(_) => Option.Some(b)
   | Sign.Signed => (
     match b with
-      | Sign.SignDef => Option.Some(Sign.Signed)
-      | Sign.SVar(_) => Option.Some(Sign.Signed) // ARC-A1: b is an un-bound var → takes `a` (Signed)
-      | Sign.Signed => Option.Some(Sign.Signed)
-      | Sign.Unsigned => Option.None(unit)
+    | Sign.SignDef => Option.Some(Sign.Signed)
+    | Sign.SVar(_) => Option.Some(Sign.Signed) // ARC-A1: b is an un-bound var → takes `a` (Signed)
+    | Sign.Signed => Option.Some(Sign.Signed)
+    | Sign.Unsigned => Option.None(unit)
   )
   | Sign.Unsigned =>
     match b with
-      | Sign.SignDef => Option.Some(Sign.Unsigned)
-      | Sign.SVar(_) => Option.Some(Sign.Unsigned) // ARC-A1: b is an un-bound var → takes `a` (Unsigned)
-      | Sign.Unsigned => Option.Some(Sign.Unsigned)
-      | Sign.Signed => Option.None(unit)
+    | Sign.SignDef => Option.Some(Sign.Unsigned)
+    | Sign.SVar(_) => Option.Some(Sign.Unsigned) // ARC-A1: b is an un-bound var → takes `a` (Unsigned)
+    | Sign.Unsigned => Option.Some(Sign.Unsigned)
+    | Sign.Signed => Option.None(unit)
 
 /// Combine two widths (rcdzc unify_width): a DEFERRED width takes the other; two FIXED widths must be EQUAL
 /// else conflict. INDEPENDENT of sign (the orthogonal-axis rule).
@@ -41,9 +41,9 @@ def unify-width(a: Width, b: Width) = match a with
   | Width.WVar(_) => Option.Some(b) // ARC-A1: un-bound var ~ anything → the other (INERT until B3's Subst)
   | Width.WFixed(n) =>
     match b with
-      | Width.WidthDef => Option.Some(Width.WFixed(n))
-      | Width.WVar(_) => Option.Some(Width.WFixed(n)) // ARC-A1: b un-bound var → takes `a`
-      | Width.WFixed(m) => if n == m then Option.Some(Width.WFixed(n)) else Option.None(unit)
+    | Width.WidthDef => Option.Some(Width.WFixed(n))
+    | Width.WVar(_) => Option.Some(Width.WFixed(n)) // ARC-A1: b un-bound var → takes `a`
+    | Width.WFixed(m) => if n == m then Option.Some(Width.WFixed(n)) else Option.None(unit)
 
 /// Unify two integer types: unify SIGN and WIDTH independently; both must combine (a Fixed mismatch on
 /// EITHER axis is a conflict, checked regardless of the other axis's state). `Some(IntType)` = the combined
@@ -52,39 +52,39 @@ def unify-int(a: IntType, b: IntType) =
   let IntType.IntType(sa, wa) = a in
   let IntType.IntType(sb, wb) = b in
   match unify-sign(sa, sb) with
-    | Option.Some(s) => (
-      match unify-width(wa, wb) with
-        | Option.Some(w) => Option.Some(IntType.IntType(s, w))
-        | Option.None(_) => Option.None(unit)
-    )
+  | Option.Some(s) => (
+    match unify-width(wa, wb) with
+    | Option.Some(w) => Option.Some(IntType.IntType(s, w))
     | Option.None(_) => Option.None(unit)
+  )
+  | Option.None(_) => Option.None(unit)
 
 /// UNIFY two `Ty`: two integers unify per unify-int (orthogonal sign+width); Bool~Bool → Bool; anything with
 /// TyErr, or a cross-kind (int~Bool), → None. The combining primitive infer's arith-result + if-join use.
 def unify-ty(a: Ty, b: Ty) = match a with
   | Ty.TyInt(ita) => (
     match b with
-      | Ty.TyInt(itb) => (
-        match unify-int(ita, itb) with
-          | Option.Some(it) => Option.Some(Ty.TyInt(it))
-          | Option.None(_) => Option.None(unit)
-      )
-      | _ => Option.None(unit)
+    | Ty.TyInt(itb) => (
+      match unify-int(ita, itb) with
+      | Option.Some(it) => Option.Some(Ty.TyInt(it))
+      | Option.None(_) => Option.None(unit)
+    )
+    | _ => Option.None(unit)
   )
   | Ty.TyBool => (
     match b with
-      | Ty.TyBool => Option.Some(Ty.TyBool)
-      | _ => Option.None(unit)
+    | Ty.TyBool => Option.Some(Ty.TyBool)
+    | _ => Option.None(unit)
   )
   | Ty.TyChar => (
     match b with
-      | Ty.TyChar => Option.Some(Ty.TyChar)
-      | _ => Option.None(unit)
+    | Ty.TyChar => Option.Some(Ty.TyChar)
+    | _ => Option.None(unit)
   )
   | Ty.TyString => (
     match b with
-      | Ty.TyString => Option.Some(Ty.TyString)
-      | _ => Option.None(unit)
+    | Ty.TyString => Option.Some(Ty.TyString)
+    | _ => Option.None(unit)
   )
   | Ty.TyErr => Option.None(unit)
   // HIGHER-ORDER: two function types unify iff SAME arity, params unify PAIRWISE, and results unify (rcdzc
@@ -92,50 +92,50 @@ def unify-ty(a: Ty, b: Ty) = match a with
   // result conflict → None (poison propagates). A TyFn never unifies with an int/bool/err (cross-kind → None).
   | Ty.TyFn(psa, ra) => (
     match b with
-      | Ty.TyFn(psb, rb) =>
-        if List.len(psa) == List.len(psb) then
-          match unify-ty-list(psa, psb, 0) with
-            | Option.Some(ps) => (
-              match unify-ty(ra, rb) with
-                | Option.Some(r) => Option.Some(Ty.TyFn(ps, r))
-                | Option.None(_) => Option.None(unit)
-            )
-            | Option.None(_) => Option.None(unit)
-        else
-          Option.None(unit) // arity mismatch → conflict
-      | _ => Option.None(unit)
+    | Ty.TyFn(psb, rb) =>
+      if List.len(psa) == List.len(psb) then
+        match unify-ty-list(psa, psb, 0) with
+        | Option.Some(ps) => (
+          match unify-ty(ra, rb) with
+          | Option.Some(r) => Option.Some(Ty.TyFn(ps, r))
+          | Option.None(_) => Option.None(unit)
+        )
+        | Option.None(_) => Option.None(unit)
+      else
+        Option.None(unit) // arity mismatch → conflict
+    | _ => Option.None(unit)
   ) // fn ~ non-fn → conflict
   // M2-b-2b-ii-c2 USER SUM: DECL-IDENTITY unify — two sum types unify (to themselves) iff SAME decl name-id,
   // never structural inner (closes recursive sums; a cross-type ctor pattern → different decl → None → reject).
   | Ty.TySum(na) => (
     match b with
-      | Ty.TySum(nb) => if na == nb then Option.Some(Ty.TySum(na)) else Option.None(unit)
-      | _ => Option.None(unit)
+    | Ty.TySum(nb) => if na == nb then Option.Some(Ty.TySum(na)) else Option.None(unit)
+    | _ => Option.None(unit)
   ) // sum ~ non-sum → conflict
   // COMPOUND TUPLE: two tuple types unify iff SAME arity and elements unify PAIRWISE (mirrors the TyFn param
   // arm, minus a result). Any arity/element conflict → None; a tuple ~ non-tuple → conflict.
   | Ty.TyTuple(esa) => (
     match b with
-      | Ty.TyTuple(esb) =>
-        if List.len(esa) == List.len(esb) then
-          match unify-ty-list(esa, esb, 0) with
-            | Option.Some(es) => Option.Some(Ty.TyTuple(es))
-            | Option.None(_) => Option.None(unit)
-        else
-          Option.None(unit) // arity mismatch → conflict
-      | _ => Option.None(unit)
+    | Ty.TyTuple(esb) =>
+      if List.len(esa) == List.len(esb) then
+        match unify-ty-list(esa, esb, 0) with
+        | Option.Some(es) => Option.Some(Ty.TyTuple(es))
+        | Option.None(_) => Option.None(unit)
+      else
+        Option.None(unit) // arity mismatch → conflict
+    | _ => Option.None(unit)
   ) // tuple ~ non-tuple → conflict
   // COMPOUND RECORD: unify iff SAME field names AND paired types unify pairwise (mirrors TyTuple + a name check).
   | Ty.TyRecord(na, ta) => (
     match b with
-      | Ty.TyRecord(nb, tb) =>
-        if List.len(na) == List.len(nb) and int-list-eq(na, nb, 0) then
-          match unify-ty-list(ta, tb, 0) with
-            | Option.Some(ts) => Option.Some(Ty.TyRecord(na, ts))
-            | Option.None(_) => Option.None(unit)
-        else
-          Option.None(unit) // field-name/arity mismatch → conflict
-      | _ => Option.None(unit)
+    | Ty.TyRecord(nb, tb) =>
+      if List.len(na) == List.len(nb) and int-list-eq(na, nb, 0) then
+        match unify-ty-list(ta, tb, 0) with
+        | Option.Some(ts) => Option.Some(Ty.TyRecord(na, ts))
+        | Option.None(_) => Option.None(unit)
+      else
+        Option.None(unit) // field-name/arity mismatch → conflict
+    | _ => Option.None(unit)
   ) // record ~ non-record → conflict
   // ARC-B5 B1: this STATELESS combiner (the pre-HM live-infer primitive) has no Subst to bind a var into, so a
   // TyVar declines here — the real var-binding unify is unify-subst.cdz's unify-ty-su (Subst-threading, B3). A
@@ -149,17 +149,17 @@ def unify-ty-list(a: List(Ty), b: List(Ty), i: Int64) =
     Option.Some([] : List(Ty))
   else
     match List.at(a, i) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(ta) =>
+      match List.at(b, i) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(ta) =>
-        match List.at(b, i) with
+      | Option.Some(tb) =>
+        match unify-ty(ta, tb) with
+        | Option.None(_) => Option.None(unit)
+        | Option.Some(t) =>
+          match unify-ty-list(a, b, i + 1) with
           | Option.None(_) => Option.None(unit)
-          | Option.Some(tb) =>
-            match unify-ty(ta, tb) with
-              | Option.None(_) => Option.None(unit)
-              | Option.Some(t) =>
-                match unify-ty-list(a, b, i + 1) with
-                  | Option.None(_) => Option.None(unit)
-                  | Option.Some(rest) => Option.Some(List.concat(List.push([], t), rest))
+          | Option.Some(rest) => Option.Some(List.concat(List.push([], t), rest))
 
 // ---- TESTS: orthogonal sign/width unification over the shared Ty ------------------------------------
 import { ty-int64, ty-fixed-int, ty-deferred-int } from "ty"

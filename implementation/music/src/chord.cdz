@@ -127,59 +127,59 @@ def c-major-triad-is-c-e-g() =
   // C major triad on C4 (60) = [60, 64, 67] = C, E, G.
   let cmaj = major-triad(pitch(60)) in
   match chord-notes(cmaj) with
-    | [a, b, c] =>
-      if a == 60 then
-        if b == 64 then if c == 67 then unit else trap("G") else trap("E")
-      else
-        trap("C")
-    | _ => trap("triad has three notes")
+  | [a, b, c] =>
+    if a == 60 then
+      if b == 64 then if c == 67 then unit else trap("G") else trap("E")
+    else
+      trap("C")
+  | _ => trap("triad has three notes")
 
 @test
 def minor-triad-lowers-the-third() =
   // A minor triad flats the third: C minor = [60, 63, 67].
   let cmin = minor-triad(pitch(60)) in
   match chord-notes(cmin) with
-    | [_, b, _] => if b == 63 then unit else trap("minor third is Eb")
-    | _ => trap("triad has three notes")
+  | [_, b, _] => if b == 63 then unit else trap("minor third is Eb")
+  | _ => trap("triad has three notes")
 
 @test
 def dominant-seventh-adds-a-minor-seventh() =
   // G7 (dominant seventh on G4=67) = [67, 71, 74, 77] — G B D F.
   let g7 = dominant-seventh(pitch(67)) in
   match chord-notes(g7) with
-    | [g, b, d, f] =>
-      if g == 67 then
-        if b == 71 then
-          if d == 74 then if f == 77 then unit else trap("F") else trap("D")
-        else
-          trap("B")
+  | [g, b, d, f] =>
+    if g == 67 then
+      if b == 71 then
+        if d == 74 then if f == 77 then unit else trap("F") else trap("D")
       else
-        trap("G")
-    | _ => trap("seventh has four notes")
+        trap("B")
+    else
+      trap("G")
+  | _ => trap("seventh has four notes")
 
 @test
 def first-inversion-moves-the-root-up-an-octave() =
   // First inversion of C major [60,64,67] = [64, 67, 72] — E, G, C(next octave).
   let cmaj = major-triad(pitch(60)) in
   match chord-inversion(cmaj, 1) with
-    | [e, g, c] =>
-      if e == 64 then
-        if g == 67 then if c == 72 then unit else trap("C up an octave") else trap("G")
-      else
-        trap("E")
-    | _ => trap("still three notes")
+  | [e, g, c] =>
+    if e == 64 then
+      if g == 67 then if c == 72 then unit else trap("C up an octave") else trap("G")
+    else
+      trap("E")
+  | _ => trap("still three notes")
 
 @test
 def second-inversion-lifts-two-notes() =
   // Second inversion of C major = [67, 72, 76] — G, C', E'.
   let cmaj = major-triad(pitch(60)) in
   match chord-inversion(cmaj, 2) with
-    | [g, c, e] =>
-      if g == 67 then
-        if c == 72 then if e == 76 then unit else trap("E'") else trap("C'")
-      else
-        trap("G")
-    | _ => trap("still three notes")
+  | [g, c, e] =>
+    if g == 67 then
+      if c == 72 then if e == 76 then unit else trap("E'") else trap("C'")
+    else
+      trap("G")
+  | _ => trap("still three notes")
 
 @test
 def inversion-preserves-pitch-content() =
@@ -208,12 +208,12 @@ def diminished-seventh-is-a-stack-of-minor-thirds() =
   // A fully diminished seventh is four notes each a minor third (3 semitones) apart: [0,3,6,9] off root.
   let dim7 = diminished-seventh(pitch(60)) in
   match chord-notes(dim7) with
-    | [a, b, c, d] =>
-      if b - a == 3 then
-        if c - b == 3 then if d - c == 3 then unit else trap("gap 3") else trap("gap 2")
-      else
-        trap("gap 1")
-    | _ => trap("four notes")
+  | [a, b, c, d] =>
+    if b - a == 3 then
+      if c - b == 3 then if d - c == 3 then unit else trap("gap 3") else trap("gap 2")
+    else
+      trap("gap 1")
+  | _ => trap("four notes")
 
 @test
 def seventh-chord-full-inversion-cycle-returns-pitch-content() =
@@ -227,8 +227,8 @@ def seventh-chord-full-inversion-cycle-returns-pitch-content() =
       if notes-have-pc(cycled, 2) then
         if notes-have-pc(cycled, 6) then
           match cycled with
-            | [lo, .. _] => if lo == 79 then unit else trap("lifted an octave")
-            | _ => trap("four notes")
+          | [lo, .. _] => if lo == 79 then unit else trap("lifted an octave")
+          | _ => trap("four notes")
         else
           trap("F# retained")
       else
@@ -243,8 +243,8 @@ def augmented-triad-splits-the-octave-evenly() =
   // An augmented triad is two stacked major thirds: [0,4,8] — each gap 4 semitones.
   let aug = augmented-triad(pitch(60)) in
   match chord-notes(aug) with
-    | [a, b, c] => if b - a == 4 then if c - b == 4 then unit else trap("gap 2") else trap("gap 1")
-    | _ => trap("three notes")
+  | [a, b, c] => if b - a == 4 then if c - b == 4 then unit else trap("gap 2") else trap("gap 1")
+  | _ => trap("three notes")
 
 export {
   Chord.*,

@@ -113,27 +113,27 @@ def an-arpeggio-spreads-the-notes-in-time() =
   // The same triad arpeggiated with step 240: notes start at 0, 240, 480 — ascending in time.
   let arp = arpeggiate([60, 64, 67], 0, 100, 0, 240, 240) in
   match arp with
-    | [a, b, c] =>
-      if start-of(a) == 0 then
-        if start-of(b) == 240 then
-          if start-of(c) == 480 then unit else trap("third at 480")
-        else
-          trap("second at 240")
+  | [a, b, c] =>
+    if start-of(a) == 0 then
+      if start-of(b) == 240 then
+        if start-of(c) == 480 then unit else trap("third at 480")
       else
-        trap("first at 0")
-    | _ => trap("three notes")
+        trap("second at 240")
+    else
+      trap("first at 0")
+  | _ => trap("three notes")
 
 @test
 def a-sequence-plays-notes-back-to-back() =
   // A four-note run, each a quarter (960): starts at 0, 960, 1920, 2880 — no gaps, no overlaps.
   let seq = sequence([60, 62, 64, 65], 0, 100, 0, 960) in
   match seq with
-    | [_, b, _, d] =>
-      if start-of(b) == 960 then
-        if start-of(d) == 2880 then unit else trap("fourth start")
-      else
-        trap("second start")
-    | _ => trap("four notes")
+  | [_, b, _, d] =>
+    if start-of(b) == 960 then
+      if start-of(d) == 2880 then unit else trap("fourth start")
+    else
+      trap("second start")
+  | _ => trap("four notes")
 
 @test
 def block-and-arpeggio-carry-the-same-notes() =
@@ -175,12 +175,12 @@ def a-sequence-is-gapless-each-note-ends-where-the-next-begins() =
   // begins — no gaps, no overlaps — regardless of the fixed note length.
   let seq = sequence([60, 62, 64], 0, 100, 0, 960) in
   match seq with
-    | [a, b, c] =>
-      if start-of(a) + dur-of(a) == start-of(b) then
-        if start-of(b) + dur-of(b) == start-of(c) then unit else trap("b ends where c begins")
-      else
-        trap("a ends where b begins")
-    | _ => trap("three notes")
+  | [a, b, c] =>
+    if start-of(a) + dur-of(a) == start-of(b) then
+      if start-of(b) + dur-of(b) == start-of(c) then unit else trap("b ends where c begins")
+    else
+      trap("a ends where b begins")
+  | _ => trap("three notes")
 
 // ---- test helpers -----------------------------------------------------------------------------------
 /// The start tick of a note (mirrors schedule.cdz's accessor; local to keep this test self-contained).

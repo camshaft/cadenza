@@ -29,44 +29,44 @@ def every-named-triad-round-trips-at-c() =
   // Build each named triad at C (60), realize + identify against C → the same quality.
   let c = Pitch.Pitch(60) in
   match id-of(major-triad(c), c) with
-    | Quality.MajorTriad => (
-      match id-of(minor-triad(c), c) with
-        | Quality.MinorTriad => (
-          match id-of(diminished-triad(c), c) with
-            | Quality.DiminishedTriad => (
-              match id-of(augmented-triad(c), c) with
-                | Quality.AugmentedTriad => unit
-                | _ => trap("aug triad round-trip")
-            )
-            | _ => trap("dim triad round-trip")
-        )
-        | _ => trap("minor triad round-trip")
+  | Quality.MajorTriad => (
+    match id-of(minor-triad(c), c) with
+    | Quality.MinorTriad => (
+      match id-of(diminished-triad(c), c) with
+      | Quality.DiminishedTriad => (
+        match id-of(augmented-triad(c), c) with
+        | Quality.AugmentedTriad => unit
+        | _ => trap("aug triad round-trip")
+      )
+      | _ => trap("dim triad round-trip")
     )
-    | _ => trap("major triad round-trip")
+    | _ => trap("minor triad round-trip")
+  )
+  | _ => trap("major triad round-trip")
 
 @test
 def every-named-seventh-round-trips-at-c() =
   // The four (well, five) named sevenths at C round-trip through construct→identify.
   let c = Pitch.Pitch(60) in
   match id-of(major-seventh(c), c) with
-    | Quality.MajorSeventh => (
-      match id-of(dominant-seventh(c), c) with
-        | Quality.DominantSeventh => (
-          match id-of(minor-seventh(c), c) with
-            | Quality.MinorSeventh => (
-              match id-of(half-diminished(c), c) with
-                | Quality.HalfDiminished => (
-                  match id-of(diminished-seventh(c), c) with
-                    | Quality.DiminishedSeventh => unit
-                    | _ => trap("dim7 round-trip")
-                )
-                | _ => trap("half-dim round-trip")
-            )
-            | _ => trap("min7 round-trip")
+  | Quality.MajorSeventh => (
+    match id-of(dominant-seventh(c), c) with
+    | Quality.DominantSeventh => (
+      match id-of(minor-seventh(c), c) with
+      | Quality.MinorSeventh => (
+        match id-of(half-diminished(c), c) with
+        | Quality.HalfDiminished => (
+          match id-of(diminished-seventh(c), c) with
+          | Quality.DiminishedSeventh => unit
+          | _ => trap("dim7 round-trip")
         )
-        | _ => trap("dom7 round-trip")
+        | _ => trap("half-dim round-trip")
+      )
+      | _ => trap("min7 round-trip")
     )
-    | _ => trap("maj7 round-trip")
+    | _ => trap("dom7 round-trip")
+  )
+  | _ => trap("maj7 round-trip")
 
 @test
 def round-trip-is-root-independent() =
@@ -75,12 +75,12 @@ def round-trip-is-root-independent() =
   let fsharp = Pitch.Pitch(66) in
   let bflat = Pitch.Pitch(58) in
   match id-of(major-triad(fsharp), fsharp) with
-    | Quality.MajorTriad => (
-      match id-of(dominant-seventh(bflat), bflat) with
-        | Quality.DominantSeventh => unit
-        | _ => trap("dom7 at Bb round-trips")
-    )
-    | _ => trap("major triad at F# round-trips")
+  | Quality.MajorTriad => (
+    match id-of(dominant-seventh(bflat), bflat) with
+    | Quality.DominantSeventh => unit
+    | _ => trap("dom7 at Bb round-trips")
+  )
+  | _ => trap("major triad at F# round-trips")
 
 @test
 def identify-survives-every-actual-inversion() =
@@ -90,16 +90,16 @@ def identify-survives-every-actual-inversion() =
   let c = Pitch.Pitch(60) in
   let cmaj = major-triad(c) in
   match identify(chord-inversion(cmaj, 0), c) with
+  | Quality.MajorTriad => (
+    match identify(chord-inversion(cmaj, 1), c) with
     | Quality.MajorTriad => (
-      match identify(chord-inversion(cmaj, 1), c) with
-        | Quality.MajorTriad => (
-          match identify(chord-inversion(cmaj, 2), c) with
-            | Quality.MajorTriad => unit
-            | _ => trap("2nd inversion")
-        )
-        | _ => trap("1st inversion")
+      match identify(chord-inversion(cmaj, 2), c) with
+      | Quality.MajorTriad => unit
+      | _ => trap("2nd inversion")
     )
-    | _ => trap("root position")
+    | _ => trap("1st inversion")
+  )
+  | _ => trap("root position")
 
 @test
 def augmented-triad-inversion-is-still-augmented-against-original-root() =
@@ -109,12 +109,12 @@ def augmented-triad-inversion-is-still-augmented-against-original-root() =
   let c = Pitch.Pitch(60) in
   let aug = augmented-triad(c) in
   match identify(chord-inversion(aug, 1), c) with
-    | Quality.AugmentedTriad => (
-      match identify(chord-inversion(aug, 2), c) with
-        | Quality.AugmentedTriad => unit
-        | _ => trap("2nd inversion augmented")
-    )
-    | _ => trap("1st inversion augmented")
+  | Quality.AugmentedTriad => (
+    match identify(chord-inversion(aug, 2), c) with
+    | Quality.AugmentedTriad => unit
+    | _ => trap("2nd inversion augmented")
+  )
+  | _ => trap("1st inversion augmented")
 
 @test
 def half-diminished-and-diminished-seventh-are-distinguished() =
@@ -123,14 +123,14 @@ def half-diminished-and-diminished-seventh-are-distinguished() =
   // not confuse them — pins that the full 4-note signature (not just the triad) decides the quality.
   let c = Pitch.Pitch(60) in
   match id-of(half-diminished(c), c) with
-    | Quality.HalfDiminished => (
-      match id-of(diminished-seventh(c), c) with
-        | Quality.DiminishedSeventh => unit
-        | Quality.HalfDiminished => trap("dim7 must not read as half-dim — the seventh differs")
-        | _ => trap("dim7")
-    )
-    | Quality.DiminishedSeventh => trap("half-dim must not read as dim7 — the seventh differs")
-    | _ => trap("half-dim")
+  | Quality.HalfDiminished => (
+    match id-of(diminished-seventh(c), c) with
+    | Quality.DiminishedSeventh => unit
+    | Quality.HalfDiminished => trap("dim7 must not read as half-dim — the seventh differs")
+    | _ => trap("dim7")
+  )
+  | Quality.DiminishedSeventh => trap("half-dim must not read as dim7 — the seventh differs")
+  | _ => trap("half-dim")
 
 @test
 def a-seventh-analyzed-against-the-wrong-root-is-not-its-named-quality() =
@@ -139,8 +139,8 @@ def a-seventh-analyzed-against-the-wrong-root-is-not-its-named-quality() =
   // that identification of sevenths — like triads — is anchored to the given root, not a rootless set match.
   let cdom7 = dominant-seventh(Pitch.Pitch(60)) in
   match identify(chord-notes(cdom7), Pitch.Pitch(64)) with
-    | Quality.DominantSeventh => trap("against the wrong root E it must not read as a C dom7")
-    | _ => unit
+  | Quality.DominantSeventh => trap("against the wrong root E it must not read as a C dom7")
+  | _ => unit
 
 @test
 def identification-works-in-a-sub-zero-register() =
@@ -148,8 +148,8 @@ def identification-works-in-a-sub-zero-register() =
   // pitch-class folding handles the low register the same as the middle one (no sign/negative-note bug).
   let low-c = Pitch.Pitch(0) in
   match id-of(major-triad(low-c), low-c) with
-    | Quality.MajorTriad => unit
-    | _ => trap("a major triad at C-1 (MIDI 0) still identifies")
+  | Quality.MajorTriad => unit
+  | _ => trap("a major triad at C-1 (MIDI 0) still identifies")
 
 @test
 def a-triad-is-not-mis-identified-as-a-seventh() =
@@ -157,11 +157,11 @@ def a-triad-is-not-mis-identified-as-a-seventh() =
   // length), and vice versa — the construct/identify inverse is exact, not fuzzy.
   let c = Pitch.Pitch(60) in
   match id-of(major-triad(c), c) with
-    | Quality.MajorSeventh => trap("a triad is not a seventh")
-    | Quality.DominantSeventh => trap("a triad is not a seventh")
-    | _ =>
-      match id-of(dominant-seventh(c), c) with
-        | Quality.MajorTriad => trap("a seventh is not a triad")
-        | _ => unit
+  | Quality.MajorSeventh => trap("a triad is not a seventh")
+  | Quality.DominantSeventh => trap("a triad is not a seventh")
+  | _ =>
+    match id-of(dominant-seventh(c), c) with
+    | Quality.MajorTriad => trap("a seventh is not a triad")
+    | _ => unit
 
 export { id-of }

@@ -73,39 +73,39 @@ def gen-role(g: Chor, r: String) -> Ast = codegen(project(g, r))
 def a-eq(a: Ast, b: Ast) -> Bool = match a with
   | Ast.Int(x) => (
     match b with
-      | Ast.Int(y) => x == y
-      | _ => false
+    | Ast.Int(y) => x == y
+    | _ => false
   )
   | Ast.Str(x) => (
     match b with
-      | Ast.Str(y) => x == y
-      | _ => false
+    | Ast.Str(y) => x == y
+    | _ => false
   )
   | Ast.Bool(x) => (
     match b with
-      | Ast.Bool(y) => if x then y else if y then false else true
-      | _ => false
+    | Ast.Bool(y) => if x then y else if y then false else true
+    | _ => false
   )
   | Ast.Name(x) => (
     match b with
-      | Ast.Name(y) => x == y
-      | _ => false
+    | Ast.Name(y) => x == y
+    | _ => false
   )
   | Ast.List(xs) =>
     match b with
-      | Ast.List(ys) => a-list-eq(xs, ys)
-      | _ => false
+    | Ast.List(ys) => a-list-eq(xs, ys)
+    | _ => false
 
 def a-list-eq(xs: List(Ast), ys: List(Ast)) -> Bool = match xs with
   | [] => (
     match ys with
-      | [] => true
-      | _ => false
+    | [] => true
+    | _ => false
   )
   | [x, .. xr] =>
     match ys with
-      | [] => false
-      | [y, .. yr] => if a-eq(x, y) then a-list-eq(xr, yr) else false
+    | [] => false
+    | [y, .. yr] => if a-eq(x, y) then a-list-eq(xr, yr) else false
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Fixtures + tests — the Inc-3a gate: golden generated programs per role.

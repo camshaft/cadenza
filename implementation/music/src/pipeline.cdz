@@ -59,12 +59,12 @@ def collapse-snaps-a-chromatic-piece-into-the-mode() =
   let piece = [note-at(pitch(66), 0, 100, 0, 480), note-at(pitch(64), 0, 100, 480, 480)] in
   let snapped = collapse-piece(cmaj, piece) in
   match snapped with
-    | [a, b] =>
-      if note(note-pitch(a)) == 65 then
-        if note(note-pitch(b)) == 64 then unit else trap("E stays E")
-      else
-        trap("F# snaps to F")
-    | _ => trap("two notes")
+  | [a, b] =>
+    if note(note-pitch(a)) == 65 then
+      if note(note-pitch(b)) == 64 then unit else trap("E stays E")
+    else
+      trap("F# snaps to F")
+  | _ => trap("two notes")
 
 @test
 def collapse-preserves-timing-and-channel() =
@@ -72,18 +72,18 @@ def collapse-preserves-timing-and-channel() =
   let cmaj = major(0) in
   let piece = [note-at(pitch(66), 3, 77, 240, 480)] in
   match collapse-piece(cmaj, piece) with
-    | [a] =>
-      if note-chan(a) == 3 then
-        if note-vel(a) == 77 then
-          if note-start(a) == 240 then
-            if note-dur(a) == 480 then unit else trap("dur")
-          else
-            trap("start")
+  | [a] =>
+    if note-chan(a) == 3 then
+      if note-vel(a) == 77 then
+        if note-start(a) == 240 then
+          if note-dur(a) == 480 then unit else trap("dur")
         else
-          trap("vel")
+          trap("start")
       else
-        trap("chan")
-    | _ => trap("one note")
+        trap("vel")
+    else
+      trap("chan")
+  | _ => trap("one note")
 
 @test
 def the-pipeline-collapses-then-transposes-then-remaps() =
@@ -91,12 +91,12 @@ def the-pipeline-collapses-then-transposes-then-remaps() =
   let cmaj = major(0) in
   let piece = [note-at(pitch(66), 0, 100, 0, 480)] in
   match pipeline(cmaj, 7, 9, piece) with
-    | [a] =>
-      if note(note-pitch(a)) == 72 then
-        if note-chan(a) == 9 then unit else trap("remapped to channel 9")
-      else
-        trap("F#→F→(+7)→C5=72")
-    | _ => trap("one note")
+  | [a] =>
+    if note(note-pitch(a)) == 72 then
+      if note-chan(a) == 9 then unit else trap("remapped to channel 9")
+    else
+      trap("F#→F→(+7)→C5=72")
+  | _ => trap("one note")
 
 @test
 def quantize-and-shift-keeps-the-channel() =
@@ -104,12 +104,12 @@ def quantize-and-shift-keeps-the-channel() =
   let cmaj = major(0) in
   let piece = [note-at(pitch(61), 5, 100, 0, 480)] in // C#4 (61) → collapse to C4 (60) → +2 → D4 (62)
   match quantize-and-shift(cmaj, 2, piece) with
-    | [a] =>
-      if note(note-pitch(a)) == 62 then
-        if note-chan(a) == 5 then unit else trap("channel kept")
-      else
-        trap("C#→C→(+2)→D=62")
-    | _ => trap("one note")
+  | [a] =>
+    if note(note-pitch(a)) == 62 then
+      if note-chan(a) == 5 then unit else trap("channel kept")
+    else
+      trap("C#→C→(+2)→D=62")
+  | _ => trap("one note")
 
 @test
 def a-whole-chromatic-run-collapses-into-major() =
@@ -173,14 +173,14 @@ def the-pipeline-is-empty-on-an-empty-piece() =
 def same-numbers(xs: List(Note), ys: List(Note)) = match xs with
   | [] => (
     match ys with
-      | [] => true
-      | _ => false
+    | [] => true
+    | _ => false
   )
   | [x, .. xt] =>
     match ys with
-      | [] => false
-      | [y, .. yt] =>
-        if note(note-pitch(x)) == note(note-pitch(y)) then same-numbers(xt, yt) else false
+    | [] => false
+    | [y, .. yt] =>
+      if note(note-pitch(x)) == note(note-pitch(y)) then same-numbers(xt, yt) else false
 
 /// Every note's pitch class is a C-major degree (0,2,4,5,7,9,11). Recursive, annotated.
 def all-in-major(notes: List(Note)) = match notes with

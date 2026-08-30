@@ -132,8 +132,8 @@ def a-relative-minor-scale-pins-its-relative-major-key() =
   let a-minor-pcs = [9, 11, 0, 2, 4, 5, 7] in
   if candidate-count(a-minor-pcs) == 1 then
     match candidate-keys(a-minor-pcs) with
-      | [0] => unit
-      | _ => trap("the one key is C major (the relative major of A minor)")
+    | [0] => unit
+    | _ => trap("the one key is C major (the relative major of A minor)")
   else
     trap("a full relative-minor scale pins exactly one major key")
 

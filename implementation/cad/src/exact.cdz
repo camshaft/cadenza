@@ -365,14 +365,14 @@ def bounding-box(s: Solid(Rational)) = match s with
   | Solid.Intersection(a, b) => aabbr-intersect(bounding-box(a), bounding-box(b))
   | Solid.Translate(by, of) => (
     match bounding-box(of) with
-      | Aabb.Box(lo, hi) => Aabb.Box(v3-add(lo, by), v3-add(hi, by))
+    | Aabb.Box(lo, hi) => Aabb.Box(v3-add(lo, by), v3-add(hi, by))
   )
   | Solid.Scale(by, of) => (
     match bounding-box(of) with
-      // A NEGATIVE scale factor (a mirror) flips a corner past the other on that axis, so the scaled corners can
-      // be inverted — `aabbr-of-corners` re-normalizes them (identity for a positive factor). Same guard the
-      // primitives use.
-      | Aabb.Box(lo, hi) => aabbr-of-corners(v3-mul(lo, by), v3-mul(hi, by))
+    // A NEGATIVE scale factor (a mirror) flips a corner past the other on that axis, so the scaled corners can
+    // be inverted — `aabbr-of-corners` re-normalizes them (identity for a positive factor). Same guard the
+    // primitives use.
+    | Aabb.Box(lo, hi) => aabbr-of-corners(v3-mul(lo, by), v3-mul(hi, by))
   )
   // A mirror across an axis-aligned plane is a sign flip on the corners (exact), re-normalized. For a
   // non-axis normal the reflection is still exact over Rational (a normal is Rational), but this uses the
@@ -380,28 +380,28 @@ def bounding-box(s: Solid(Rational)) = match s with
   // each corner coordinate whose axis the normal selects (non-zero component), then renormalize.
   | Solid.Mirror(normal, of) => (
     match bounding-box(of) with
-      | Aabb.Box(lo, hi) => aabbr-of-corners(v3-mirror(lo, normal), v3-mirror(hi, normal))
+    | Aabb.Box(lo, hi) => aabbr-of-corners(v3-mirror(lo, normal), v3-mirror(hi, normal))
   )
   // A rotation about the origin keeps every point within its distance from the origin, so a box symmetric
   // about the origin with half-extent = the child's max |coordinate| over its 8 corners ENCLOSES any rotation
   // (exact + always-valid, like the conservative full-Revolve box; a tight rotated box would need trig).
   | Solid.Rotate(_, of) => (
     match bounding-box(of) with
-      | Aabb.Box(lo, hi) => // SOUND conservative bound: the symmetric box of the child's L1 corner-radius encloses ANY rotation
-        // about the origin (a corner can rotate onto one axis at its full distance-from-origin; the L1 sum
-        // upper-bounds that L2 distance without needing an irrational sqrt).
-        let r = aabbr-rotate-radius(lo, hi) in
-        aabbr-of-corners(Vec3.V3(rzero() - r, rzero() - r, rzero() - r), Vec3.V3(r, r, r))
+    | Aabb.Box(lo, hi) => // SOUND conservative bound: the symmetric box of the child's L1 corner-radius encloses ANY rotation
+      // about the origin (a corner can rotate onto one axis at its full distance-from-origin; the L1 sum
+      // upper-bounds that L2 distance without needing an irrational sqrt).
+      let r = aabbr-rotate-radius(lo, hi) in
+      aabbr-of-corners(Vec3.V3(rzero() - r, rzero() - r, rzero() - r), Vec3.V3(r, r, r))
   )
   // A linear extrude lifts the profile straight up +z by `height` (centred, like Cube): the box is the
   // profile's XY extent × [-height/2, height/2]. `profile-half-extent` gives the profile's ±x/±y half-widths.
   | Solid.ExtrudeLinear(p, height) => (
     match profile-half-extent(p) with
-      | Vec2.V2(hx, hy) =>
-        aabbr-of-corners(
-          Vec3.V3(rzero() - hx, rzero() - hy, rzero() - rhalf(height)),
-          Vec3.V3(hx, hy, rhalf(height))
-        )
+    | Vec2.V2(hx, hy) =>
+      aabbr-of-corners(
+        Vec3.V3(rzero() - hx, rzero() - hy, rzero() - rhalf(height)),
+        Vec3.V3(hx, hy, rhalf(height))
+      )
   )
   // A revolve sweeps the profile about the y-axis. The EXACT enclosing box (valid for ANY sweep angle, since a
   // partial revolve is a subset of the full one — a bounding box may over-approximate) is: the profile's max
@@ -409,8 +409,8 @@ def bounding-box(s: Solid(Rational)) = match s with
   // TIGHT box would need trig — deferred; the conservative full-revolve box is exact + always encloses.)
   | Solid.Revolve(p, _) => (
     match profile-half-extent(p) with
-      | Vec2.V2(rx, ry) =>
-        aabbr-of-corners(Vec3.V3(rzero() - rx, rzero() - ry, rzero() - rx), Vec3.V3(rx, ry, rx))
+    | Vec2.V2(rx, ry) =>
+      aabbr-of-corners(Vec3.V3(rzero() - rx, rzero() - ry, rzero() - rx), Vec3.V3(rx, ry, rx))
   )
   // A Detail is a MESH hint (tessellation resolution), NOT geometry — its box is exactly its child's box.
   | Solid.Detail(_, of) => bounding-box(of)
@@ -537,24 +537,24 @@ def solid-rational-leaves-compare-under-destructure() =
   let s1 = Solid.Difference(Solid.Cube(v3(4 / 1, 4 / 1, 4 / 1)), Solid.Sphere(5 / 2)) in
   let s2 = Solid.Difference(Solid.Cube(v3(4 / 1, 4 / 1, 4 / 1)), Solid.Sphere(10 / 4)) in
   match s1 with
-    | Solid.Difference(_, r1) => (
-      match s2 with
-        | Solid.Difference(_, r2) => (
-          match r1 with
-            | Solid.Sphere(a) => (
-              match r2 with
-                | Solid.Sphere(b) => // the sphere radii 5/2 and 10/4 are the SAME normalized Rational; a differing radius (3/1) is not.
-                  if a == b then
-                    if a == 3 / 1 then trap("5/2 must differ from 3/1") else unit
-                  else
-                    trap("5/2 == 10/4 normalized (Rational leaf walk)")
-                | _ => trap("s2 tool is a Sphere too")
-            )
-            | _ => trap("s1 tool is a Sphere too")
-        )
-        | _ => trap("s2 is a Difference")
+  | Solid.Difference(_, r1) => (
+    match s2 with
+    | Solid.Difference(_, r2) => (
+      match r1 with
+      | Solid.Sphere(a) => (
+        match r2 with
+        | Solid.Sphere(b) => // the sphere radii 5/2 and 10/4 are the SAME normalized Rational; a differing radius (3/1) is not.
+          if a == b then
+            if a == 3 / 1 then trap("5/2 must differ from 3/1") else unit
+          else
+            trap("5/2 == 10/4 normalized (Rational leaf walk)")
+        | _ => trap("s2 tool is a Sphere too")
+      )
+      | _ => trap("s1 tool is a Sphere too")
     )
-    | _ => trap("s1 is a Difference")
+    | _ => trap("s2 is a Difference")
+  )
+  | _ => trap("s1 is a Difference")
 
 @test
 def v3-eq-and-add() =
@@ -586,11 +586,11 @@ def bounding-box-of-a-union-encloses-both() =
       Solid.Translate(v3(five, rzero(), rzero()), Solid.Cube(v3(two, two, two)))
     ) in
   match bounding-box(model) with
-    | Aabb.Box(lo, hi) =>
-      if v3-x(lo) == rzero() - 1 / 1 then
-        if v3-x(hi) == 6 / 1 then unit else trap("hi.x should be 6 exactly")
-      else
-        trap("lo.x should be -1")
+  | Aabb.Box(lo, hi) =>
+    if v3-x(lo) == rzero() - 1 / 1 then
+      if v3-x(hi) == 6 / 1 then unit else trap("hi.x should be 6 exactly")
+    else
+      trap("lo.x should be -1")
 
 @test
 def bounding-box-size-is-exact() =
@@ -634,22 +634,22 @@ def zero-dimensioned-primitives-have-a-well-formed-degenerate-box-and-are-not-pr
     // dead branch) — assert ALL THREE variants, since a bug pruning only sphere/cylinder degenerates would slip
     // a cube-only check.
     match simplify-r(zc) with
-      | Solid.Cube(_) => (
-        match simplify-r(zs) with
-          | Solid.Sphere(_) => (
-            match simplify-r(zy) with
-              | Solid.Cylinder(_, _) => unit
-              | _ =>
-                trap(
-                  "a zero-size Cylinder must survive simplify-r as a Cylinder node, not be pruned to Empty"
-                )
+    | Solid.Cube(_) => (
+      match simplify-r(zs) with
+      | Solid.Sphere(_) => (
+        match simplify-r(zy) with
+        | Solid.Cylinder(_, _) => unit
+        | _ =>
+          trap(
+            "a zero-size Cylinder must survive simplify-r as a Cylinder node, not be pruned to Empty"
           )
-          | _ =>
-            trap(
-              "a zero-radius Sphere must survive simplify-r as a Sphere node, not be pruned to Empty"
-            )
       )
-      | _ => trap("a zero-size Cube must survive simplify-r as a Cube node, not be pruned to Empty")
+      | _ =>
+        trap(
+          "a zero-radius Sphere must survive simplify-r as a Sphere node, not be pruned to Empty"
+        )
+    )
+    | _ => trap("a zero-size Cube must survive simplify-r as a Cube node, not be pruned to Empty")
   else
     trap(
       "a zero-dimensioned primitive must bound to a well-formed zero box (0,0,0), not an inverted one"
@@ -708,16 +708,16 @@ def nested-transforms-compose-in-order() =
       Solid.Scale(v3(2 / 1, 2 / 1, 2 / 1), cube)
     ) in
   match bounding-box(scale-of-translate) with
-    | Aabb.Box(slo, shi) =>
-      match bounding-box(translate-of-scale) with
-        | Aabb.Box(tlo, thi) => // scale-of-translate: x ∈ [5, 7]; translate-of-scale: x ∈ [2, 4]. Both exact, and DIFFERENT (non-commutative).
-          if v3-x(slo) == 5 / 1 and v3-x(shi) == 7 / 1 then
-            if v3-x(tlo) == 2 / 1 and v3-x(thi) == 4 / 1 then
-              unit
-            else
-              trap("Translate∘Scale should give x ∈ [2,4]")
-          else
-            trap("Scale∘Translate should give x ∈ [5,7]")
+  | Aabb.Box(slo, shi) =>
+    match bounding-box(translate-of-scale) with
+    | Aabb.Box(tlo, thi) => // scale-of-translate: x ∈ [5, 7]; translate-of-scale: x ∈ [2, 4]. Both exact, and DIFFERENT (non-commutative).
+      if v3-x(slo) == 5 / 1 and v3-x(shi) == 7 / 1 then
+        if v3-x(tlo) == 2 / 1 and v3-x(thi) == 4 / 1 then
+          unit
+        else
+          trap("Translate∘Scale should give x ∈ [2,4]")
+      else
+        trap("Scale∘Translate should give x ∈ [5,7]")
 
 // ---- P-D: 2-D profiles + linear extrude / revolve (profile→Solid lift) --------------------------------
 @test
@@ -727,8 +727,8 @@ def profile-half-extent-is-exact() =
     | Vec2.V2(rx, ry) =>
       if rx == 2 / 1 and ry == 3 / 1 then
         match profile-half-extent(Profile.Circle(5 / 2)) with
-          | Vec2.V2(cx, cy) =>
-            if cx == 5 / 2 and cy == 5 / 2 then unit else trap("Circle half-extent = (r, r)")
+        | Vec2.V2(cx, cy) =>
+          if cx == 5 / 2 and cy == 5 / 2 then unit else trap("Circle half-extent = (r, r)")
       else
         trap("Rect half-extent = (w/2, h/2)")
 
@@ -773,24 +773,24 @@ def lower-maps-extrude-and-revolve-to-the-monomorphic-render-form() =
   let ext = Solid.ExtrudeLinear(Profile.Rect(v2(4 / 1, 2 / 1)), 6 / 1) in
   let rev = Solid.Revolve(Profile.Circle(3 / 1), 90 / 1) in
   match lower(ext) with
-    | SolidR.ExtrudeLinear(rp, h) => (
-      match rp with
-        | ProfileR.Rect(rv) =>
-          let Vec2R.V2(w, hh) = rv in
-          if w == 4 / 1 and hh == 2 / 1 and h == 6 / 1 then
-            match lower(rev) with
-              | SolidR.Revolve(cp, deg) => (
-                match cp with
-                  | ProfileR.Circle(r) =>
-                    if r == 3 / 1 and deg == 90 / 1 then unit else trap("Revolve(Circle) dims lost")
-                  | _ => trap("Revolve profile should be a Circle")
-              )
-              | _ => trap("lower(Revolve) should be SolidR.Revolve")
-          else
-            trap("ExtrudeLinear Rect dims/height lost")
-        | _ => trap("Extrude profile should be a Rect")
-    )
-    | _ => trap("lower(ExtrudeLinear) should be SolidR.ExtrudeLinear")
+  | SolidR.ExtrudeLinear(rp, h) => (
+    match rp with
+    | ProfileR.Rect(rv) =>
+      let Vec2R.V2(w, hh) = rv in
+      if w == 4 / 1 and hh == 2 / 1 and h == 6 / 1 then
+        match lower(rev) with
+        | SolidR.Revolve(cp, deg) => (
+          match cp with
+          | ProfileR.Circle(r) =>
+            if r == 3 / 1 and deg == 90 / 1 then unit else trap("Revolve(Circle) dims lost")
+          | _ => trap("Revolve profile should be a Circle")
+        )
+        | _ => trap("lower(Revolve) should be SolidR.Revolve")
+      else
+        trap("ExtrudeLinear Rect dims/height lost")
+    | _ => trap("Extrude profile should be a Rect")
+  )
+  | _ => trap("lower(ExtrudeLinear) should be SolidR.ExtrudeLinear")
 
 // ---- P-D: 2-D paths / splines (rsolid-matched builders) --------------------------------------------
 @test
@@ -805,14 +805,14 @@ def path-builders-accumulate-segments-in-order() =
   if List.len(xs) == (4 : Int64) then
     // the 2nd segment (index 1) is the first line-to → LineToAbs(4, 0).
     match List.at(xs, 1 : Int64) with
-      | Option.Some(s) => (
-        match s with
-          | PathSeg.LineToAbs(p) =>
-            let Vec2.V2(x, y) = p in
-            if x == 4 / 1 and y == rzero() then unit else trap("first line-to is (4,0)")
-          | _ => trap("segment 1 is a LineToAbs")
-      )
-      | Option.None => trap("segment 1 exists")
+    | Option.Some(s) => (
+      match s with
+      | PathSeg.LineToAbs(p) =>
+        let Vec2.V2(x, y) = p in
+        if x == 4 / 1 and y == rzero() then unit else trap("first line-to is (4,0)")
+      | _ => trap("segment 1 is a LineToAbs")
+    )
+    | Option.None => trap("segment 1 exists")
   else
     trap("a start + 3 line-to = 4 segments")
 
@@ -825,22 +825,17 @@ def path-half-extent-bounds-the-outline() =
       v2(rzero(), 2 / 1)
     ) in
   match path-half-extent(square) with
-    | Vec2.V2(hx, hy) =>
-      if hx == 4 / 1 and hy == 2 / 1 then
-        let curved = cubic-to(
-            path-start(),
-            v2(6 / 1, rzero()),
-            v2(3 / 1, 5 / 1),
-            v2(5 / 1, rzero())
-          ) in
-        match path-half-extent(curved) with
-          | Vec2.V2(cx, cy) =>
-            if cx == 6 / 1 and cy == 5 / 1 then
-              unit
-            else
-              trap("cubic extent bounds the control hull (6,5)")
-      else
-        trap("square path extent is (4,2)")
+  | Vec2.V2(hx, hy) =>
+    if hx == 4 / 1 and hy == 2 / 1 then
+      let curved = cubic-to(path-start(), v2(6 / 1, rzero()), v2(3 / 1, 5 / 1), v2(5 / 1, rzero())) in
+      match path-half-extent(curved) with
+      | Vec2.V2(cx, cy) =>
+        if cx == 6 / 1 and cy == 5 / 1 then
+          unit
+        else
+          trap("cubic extent bounds the control hull (6,5)")
+    else
+      trap("square path extent is (4,2)")
 
 @test
 def relative-path-segments-accumulate-the-cursor-in-the-extent() =
@@ -850,11 +845,11 @@ def relative-path-segments-accumulate-the-cursor-in-the-extent() =
   // start (0,0), line-by (10,0) → cursor (10,0), line-by (10,0) → cursor (20,0). Max-abs extent x MUST be 20.
   let p = line-by(line-by(path-start(), v2(10 / 1, rzero())), v2(10 / 1, rzero())) in
   match path-half-extent(p) with
-    | Vec2.V2(hx, _) =>
-      if hx == 20 / 1 then
-        unit
-      else
-        trap("relative segments accumulate: two line-by(10,0) reach x=20, not 10")
+  | Vec2.V2(hx, _) =>
+    if hx == 20 / 1 then
+      unit
+    else
+      trap("relative segments accumulate: two line-by(10,0) reach x=20, not 10")
 
 @test
 def a-relative-cubic-threads-the-cursor-through-its-control-hull() =
@@ -873,13 +868,13 @@ def a-relative-cubic-threads-the-cursor-through-its-control-hull() =
       v2(rzero(), 7 / 1)
     ) in // control c1 delta → absolute (10, 7)
   match path-half-extent(p) with
-    | Vec2.V2(hx, hy) =>
-      if hx == 15 / 1 and hy == 7 / 1 then
-        unit
-      else
-        trap(
-          "relative cubic threads the cursor: end reaches absolute x=15 (raw-delta bug would give 5)"
-        )
+  | Vec2.V2(hx, hy) =>
+    if hx == 15 / 1 and hy == 7 / 1 then
+      unit
+    else
+      trap(
+        "relative cubic threads the cursor: end reaches absolute x=15 (raw-delta bug would give 5)"
+      )
 
 @test
 def a-relative-cursor-advance-is-consumed-by-a-later-segment() =
@@ -906,13 +901,13 @@ def a-relative-cursor-advance-is-consumed-by-a-later-segment() =
       v2(10 / 1, rzero())
     ) in // final line-by → cursor 25 → 35, reaching x=35
   match path-half-extent(p) with
-    | Vec2.V2(hx, _) =>
-      if hx == 35 / 1 then
-        unit
-      else
-        trap(
-          "a chained relative path must thread the cursor through every advance: the final line-by reaches x=35 (a raw-delta advance caps it at 25)"
-        )
+  | Vec2.V2(hx, _) =>
+    if hx == 35 / 1 then
+      unit
+    else
+      trap(
+        "a chained relative path must thread the cursor through every advance: the final line-by reaches x=35 (a raw-delta advance caps it at 25)"
+      )
 
 @test
 def path-extent-takes-the-absolute-value-of-negative-reaches() =
@@ -922,13 +917,13 @@ def path-extent-takes-the-absolute-value-of-negative-reaches() =
   // a line-to (-6, 0) and a line-to (0, -4) → the max-abs extent is (6, 4), not (0, 0). Pins v2abs on both axes.
   let p = line-to(line-to(path-start(), v2(rzero() - 6 / 1, rzero())), v2(rzero(), rzero() - 4 / 1)) in
   match path-half-extent(p) with
-    | Vec2.V2(hx, hy) =>
-      if hx == 6 / 1 and hy == 4 / 1 then
-        unit
-      else
-        trap(
-          "path-half-extent abs's negative reaches: (-6,0) and (0,-4) give extent (6,4), not (0,0)"
-        )
+  | Vec2.V2(hx, hy) =>
+    if hx == 6 / 1 and hy == 4 / 1 then
+      unit
+    else
+      trap(
+        "path-half-extent abs's negative reaches: (-6,0) and (0,-4) give extent (6,4), not (0,0)"
+      )
 
 @test
 def a-path-profile-extrudes-with-the-path-bound() =
@@ -952,14 +947,14 @@ def lower-maps-a-path-profile-to-the-render-form() =
   // covered by lower-maps-extrude-and-revolve + path-builders/path-half-extent).
   let square = line-to(path-start(), v2(4 / 1, 2 / 1)) in // [MoveToAbs(0,0), LineToAbs(4,2)] → 2 segs
   match lower(Solid.ExtrudeLinear(Profile.PathProfile(square), 3 / 1)) with
-    | SolidR.ExtrudeLinear(rp, _) => (
-      match rp with
-        | ProfileR.PathProfile(rpath) =>
-          let PathR.Segs(rxs) = rpath in
-          if List.len(rxs) == (2 : Int64) then unit else trap("lowered path should have 2 segments")
-        | _ => trap("lowered profile should be a PathProfile")
-    )
-    | _ => trap("lower(ExtrudeLinear PathProfile) should be SolidR.ExtrudeLinear")
+  | SolidR.ExtrudeLinear(rp, _) => (
+    match rp with
+    | ProfileR.PathProfile(rpath) =>
+      let PathR.Segs(rxs) = rpath in
+      if List.len(rxs) == (2 : Int64) then unit else trap("lowered path should have 2 segments")
+    | _ => trap("lowered profile should be a PathProfile")
+  )
+  | _ => trap("lower(ExtrudeLinear PathProfile) should be SolidR.ExtrudeLinear")
 
 @test
 def negative-scale-keeps-a-well-formed-box() =
@@ -971,17 +966,17 @@ def negative-scale-keeps-a-well-formed-box() =
   let two = 2 / 1 in
   let mirrored = Solid.Scale(v3(rzero() - one, one, rzero() - two), Solid.Cube(v3(two, two, two))) in
   match bounding-box(mirrored) with
-    | Aabb.Box(lo, hi) => // lo ≤ hi on every axis (well-formed), and size is the POSITIVE (2, 2, 4).
-      if v3-eq(lo, v3(rzero() - one, rzero() - one, rzero() - two)) then
-        if v3-eq(hi, v3(one, one, two)) then
-          if v3-eq(aabbr-size(bounding-box(mirrored)), v3(two, two, 4 / 1)) then
-            unit
-          else
-            trap("mirrored size must be positive (2,2,4)")
+  | Aabb.Box(lo, hi) => // lo ≤ hi on every axis (well-formed), and size is the POSITIVE (2, 2, 4).
+    if v3-eq(lo, v3(rzero() - one, rzero() - one, rzero() - two)) then
+      if v3-eq(hi, v3(one, one, two)) then
+        if v3-eq(aabbr-size(bounding-box(mirrored)), v3(two, two, 4 / 1)) then
+          unit
         else
-          trap("hi corner")
+          trap("mirrored size must be positive (2,2,4)")
       else
-        trap("lo corner — box should be normalized, not inverted")
+        trap("hi corner")
+    else
+      trap("lo corner — box should be normalized, not inverted")
 
 @test
 def negative-primitive-dimensions-keep-a-well-formed-box() =
@@ -1012,11 +1007,11 @@ def intersection-of-two-cubes-is-the-overlap() =
   let a = Solid.Cube(v3(two, two, two)) in
   let b = Solid.Translate(v3(one, rzero(), rzero()), Solid.Cube(v3(two, two, two))) in
   match bounding-box(Solid.Intersection(a, b)) with
-    | Aabb.Box(lo, hi) =>
-      if v3-x(lo) == rzero() then
-        if v3-x(hi) == one then unit else trap("hi.x = 1")
-      else
-        trap("lo.x = 0")
+  | Aabb.Box(lo, hi) =>
+    if v3-x(lo) == rzero() then
+      if v3-x(hi) == one then unit else trap("hi.x = 1")
+    else
+      trap("lo.x = 0")
 
 @test
 def intersection-of-disjoint-solids-is-an-inverted-empty-box() =
@@ -1030,16 +1025,16 @@ def intersection-of-disjoint-solids-is-an-inverted-empty-box() =
   let a = Solid.Cube(v3(two, two, two)) in
   let b = Solid.Translate(v3(10 / 1, rzero(), rzero()), Solid.Cube(v3(two, two, two))) in
   match bounding-box(Solid.Intersection(a, b)) with
-    | Aabb.Box(lo, hi) => // the separating axis is inverted (lo.x > hi.x); the non-separating axes stay well-formed (lo <= hi).
-      if v3-x(lo) > v3-x(hi) then
-        if v3-y(lo) == rzero() - 1 / 1 then
-          if v3-y(hi) == 1 / 1 then unit else trap("hi.y = 1")
-        else
-          trap("lo.y = -1")
+  | Aabb.Box(lo, hi) => // the separating axis is inverted (lo.x > hi.x); the non-separating axes stay well-formed (lo <= hi).
+    if v3-x(lo) > v3-x(hi) then
+      if v3-y(lo) == rzero() - 1 / 1 then
+        if v3-y(hi) == 1 / 1 then unit else trap("hi.y = 1")
       else
-        trap(
-          "expected an inverted box on the separating x axis (lo.x > hi.x) for a disjoint intersection"
-        )
+        trap("lo.y = -1")
+    else
+      trap(
+        "expected an inverted box on the separating x axis (lo.x > hi.x) for a disjoint intersection"
+      )
 
 // ---- R9: direct coverage for the exported vector/box helpers that were only exercised transitively --------
 @test
@@ -1075,14 +1070,14 @@ def aabbr-union-and-intersect-of-explicit-boxes() =
   let p = Aabb.Box(v3(rzero(), rzero(), rzero()), v3(2 / 1, 2 / 1, 2 / 1)) in
   let q = Aabb.Box(v3(1 / 1, 1 / 1, 1 / 1), v3(4 / 1, 4 / 1, 4 / 1)) in
   match aabbr-union(p, q) with
-    | Aabb.Box(ulo, uhi) =>
-      match aabbr-intersect(p, q) with
-        | Aabb.Box(ilo, ihi) =>
-          if v3-eq(ulo, v3(rzero(), rzero(), rzero())) and v3-eq(uhi, v3(4 / 1, 4 / 1, 4 / 1))
-              and v3-eq(ilo, v3(1 / 1, 1 / 1, 1 / 1)) and v3-eq(ihi, v3(2 / 1, 2 / 1, 2 / 1)) then
-            unit
-          else
-            trap("union/intersect corners")
+  | Aabb.Box(ulo, uhi) =>
+    match aabbr-intersect(p, q) with
+    | Aabb.Box(ilo, ihi) =>
+      if v3-eq(ulo, v3(rzero(), rzero(), rzero())) and v3-eq(uhi, v3(4 / 1, 4 / 1, 4 / 1))
+          and v3-eq(ilo, v3(1 / 1, 1 / 1, 1 / 1)) and v3-eq(ihi, v3(2 / 1, 2 / 1, 2 / 1)) then
+        unit
+      else
+        trap("union/intersect corners")
 
 // ---- R11: simplify-r — the empty-solid algebraic identities on the EXACT Solid(Rational) model --------------------
 @test
@@ -1099,22 +1094,22 @@ def simplify-r-absorbs-empty-in-union() =
   let sl = simplify-r(Solid.Union(Solid.Empty, cube)) in
   let sr = simplify-r(Solid.Union(cube, Solid.Empty)) in
   match sl with
-    | Solid.Cube(lv) =>
-      if v3-eq(lv, dims) then
-        match sr with
-          | Solid.Cube(rv) =>
-            if v3-eq(rv, dims) then
-              unit
-            else
-              trap(
-                "Union x Empty must preserve the original cube's 4×2×6 dims, not a degenerate/wrong-size cube"
-              )
-          | _ => trap("Union x Empty must collapse to the bare cube, not a surviving Union node")
-      else
-        trap(
-          "Union Empty x must preserve the original cube's 4×2×6 dims, not a degenerate/wrong-size cube"
-        )
-    | _ => trap("Union Empty x must collapse to the bare cube, not a surviving Union node")
+  | Solid.Cube(lv) =>
+    if v3-eq(lv, dims) then
+      match sr with
+      | Solid.Cube(rv) =>
+        if v3-eq(rv, dims) then
+          unit
+        else
+          trap(
+            "Union x Empty must preserve the original cube's 4×2×6 dims, not a degenerate/wrong-size cube"
+          )
+      | _ => trap("Union x Empty must collapse to the bare cube, not a surviving Union node")
+    else
+      trap(
+        "Union Empty x must preserve the original cube's 4×2×6 dims, not a degenerate/wrong-size cube"
+      )
+  | _ => trap("Union Empty x must collapse to the bare cube, not a surviving Union node")
 
 @test
 def simplify-r-intersection-with-empty-is-empty() =
@@ -1319,47 +1314,46 @@ def lower-preserves-every-constructor-and-coordinate() =
   // collision with constructor names like `Cube`). The left branch is `Translate(+1x, Cylinder 3 1)`; the
   // right is `Scale(2, Difference(Cube 4, Intersection(Sphere 5/2, Empty)))`.
   match lower(tree) with
-    | SolidR.Union(left, right) => (
-      match left with
-        | SolidR.Translate(lv, lc) => (
-          let Vec3R.V3(lx, _, _) = lv in
-          match lc with
-            | SolidR.Cylinder(ch, cr) =>
-              if lx == 1 / 1 and ch == 3 / 1 and cr == 1 / 1 then
-                match right with
-                  | SolidR.Scale(_, rc) => (
-                    match rc with
-                      | SolidR.Difference(box, tools) => (
-                        match box with
-                          | SolidR.Cube(bv) =>
-                            let Vec3R.V3(bx, _, _) = bv in
-                            if bx == 4 / 1 then
-                              match tools with
-                                | SolidR.Intersection(ball, hole) => (
-                                  match ball with
-                                    | SolidR.Sphere(sr) => (
-                                      match hole with
-                                        | SolidR.Empty =>
-                                          if sr == 5 / 2 then unit else trap("sphere radius lost")
-                                        | _ => trap("Empty leaf lost")
-                                    )
-                                    | _ => trap("Sphere lost")
-                                )
-                                | _ => trap("Intersection lost")
-                            else
-                              trap("cube x lost")
-                          | _ => trap("Cube lost")
-                      )
-                      | _ => trap("Difference lost")
+  | SolidR.Union(left, right) => (
+    match left with
+    | SolidR.Translate(lv, lc) => (
+      let Vec3R.V3(lx, _, _) = lv in
+      match lc with
+      | SolidR.Cylinder(ch, cr) =>
+        if lx == 1 / 1 and ch == 3 / 1 and cr == 1 / 1 then
+          match right with
+          | SolidR.Scale(_, rc) => (
+            match rc with
+            | SolidR.Difference(box, tools) => (
+              match box with
+              | SolidR.Cube(bv) =>
+                let Vec3R.V3(bx, _, _) = bv in
+                if bx == 4 / 1 then
+                  match tools with
+                  | SolidR.Intersection(ball, hole) => (
+                    match ball with
+                    | SolidR.Sphere(sr) => (
+                      match hole with
+                      | SolidR.Empty => if sr == 5 / 2 then unit else trap("sphere radius lost")
+                      | _ => trap("Empty leaf lost")
+                    )
+                    | _ => trap("Sphere lost")
                   )
-                  | _ => trap("Scale lost")
-              else
-                trap("translate/cylinder coords lost")
-            | _ => trap("Cylinder lost")
-        )
-        | _ => trap("Translate lost")
+                  | _ => trap("Intersection lost")
+                else
+                  trap("cube x lost")
+              | _ => trap("Cube lost")
+            )
+            | _ => trap("Difference lost")
+          )
+          | _ => trap("Scale lost")
+        else
+          trap("translate/cylinder coords lost")
+      | _ => trap("Cylinder lost")
     )
-    | _ => trap("Union lost")
+    | _ => trap("Translate lost")
+  )
+  | _ => trap("Union lost")
 
 @test
 def lower-maps-rotate-and-mirror-to-the-render-form() =
@@ -1370,22 +1364,22 @@ def lower-maps-rotate-and-mirror-to-the-render-form() =
       Solid.Mirror(v3(1 / 1, rzero(), rzero()), Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1)))
     ) in
   match lower(tree) with
-    | SolidR.Rotate(rv, rc) =>
-      let Vec3R.V3(_, _, rz) = rv in
-      if rz == 60 / 1 then
-        match rc with
-          | SolidR.Mirror(nv, mc) =>
-            let Vec3R.V3(nx, _, _) = nv in
-            if nx == 1 / 1 then
-              match mc with
-                | SolidR.Cube(_) => unit
-                | _ => trap("mirror child (Cube) lost")
-            else
-              trap("mirror normal x lost")
-          | _ => trap("Mirror lost")
-      else
-        trap("rotate z-degrees lost")
-    | _ => trap("Rotate lost")
+  | SolidR.Rotate(rv, rc) =>
+    let Vec3R.V3(_, _, rz) = rv in
+    if rz == 60 / 1 then
+      match rc with
+      | SolidR.Mirror(nv, mc) =>
+        let Vec3R.V3(nx, _, _) = nv in
+        if nx == 1 / 1 then
+          match mc with
+          | SolidR.Cube(_) => unit
+          | _ => trap("mirror child (Cube) lost")
+        else
+          trap("mirror normal x lost")
+      | _ => trap("Mirror lost")
+    else
+      trap("rotate z-degrees lost")
+  | _ => trap("Rotate lost")
 
 @test
 def lower-maps-detail-to-the-render-form() =
@@ -1394,14 +1388,14 @@ def lower-maps-detail-to-the-render-form() =
   // (the mesh driver parses `(Detail <count> <child>)` and meshes the child at that resolution).
   let tree = Solid.Detail(64 : Int64, Solid.Sphere(5 / 2)) in
   match lower(tree) with
-    | SolidR.Detail(n, child) =>
-      if n == (64 : Int64) then
-        match child with
-          | SolidR.Sphere(r) => if r == 5 / 2 then unit else trap("detail child radius lost")
-          | _ => trap("detail child (Sphere) lost")
-      else
-        trap("detail segment count lost")
-    | _ => trap("lower(Detail) should be SolidR.Detail")
+  | SolidR.Detail(n, child) =>
+    if n == (64 : Int64) then
+      match child with
+      | SolidR.Sphere(r) => if r == 5 / 2 then unit else trap("detail child radius lost")
+      | _ => trap("detail child (Sphere) lost")
+    else
+      trap("detail segment count lost")
+  | _ => trap("lower(Detail) should be SolidR.Detail")
 
 @test
 def detail-builder-constructs-the-override-node() =
@@ -1409,14 +1403,14 @@ def detail-builder-constructs-the-override-node() =
   // count + child intact (destructure — a whole-Solid `==` isn't available since Solid transitively holds a List).
   let built = detail(32 : Int64, Solid.Sphere(3 / 1)) in
   match built with
-    | Solid.Detail(n, child) =>
-      if n == (32 : Int64) then
-        match child with
-          | Solid.Sphere(r) => if r == 3 / 1 then unit else trap("builder child radius lost")
-          | _ => trap("builder child (Sphere) lost")
-      else
-        trap("builder segment count lost")
-    | _ => trap("detail(...) should build a Solid.Detail")
+  | Solid.Detail(n, child) =>
+    if n == (32 : Int64) then
+      match child with
+      | Solid.Sphere(r) => if r == 3 / 1 then unit else trap("builder child radius lost")
+      | _ => trap("builder child (Sphere) lost")
+    else
+      trap("builder segment count lost")
+  | _ => trap("detail(...) should build a Solid.Detail")
 
 @test
 def detail-is-transparent-to-bounding-box() =
@@ -1438,15 +1432,15 @@ def simplify-r-preserves-a-real-detail-and-prunes-an-empty-one() =
   let real = Solid.Detail(16 : Int64, Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1))) in
   if solidr-is-empty(simplify-r(dead)) then
     match simplify-r(real) with
-      | Solid.Detail(n, _) =>
-        if n == (16 : Int64) then
-          if v3-eq(aabbr-size(bounding-box(simplify-r(real))), v3(2 / 1, 2 / 1, 2 / 1)) then
-            unit
-          else
-            trap("simplify-r must preserve the detailed cube's 2x2x2 extent")
+    | Solid.Detail(n, _) =>
+      if n == (16 : Int64) then
+        if v3-eq(aabbr-size(bounding-box(simplify-r(real))), v3(2 / 1, 2 / 1, 2 / 1)) then
+          unit
         else
-          trap("simplify-r must preserve the Detail segment count")
-      | _ => trap("simplify-r must keep a Detail of real geometry, not drop it")
+          trap("simplify-r must preserve the detailed cube's 2x2x2 extent")
+      else
+        trap("simplify-r must preserve the Detail segment count")
+    | _ => trap("simplify-r must keep a Detail of real geometry, not drop it")
   else
     trap("Detail of Empty must simplify to Empty")
 
@@ -1457,13 +1451,13 @@ def mirror-across-x-bounds-exactly() =
   let shifted = Solid.Translate(v3(10 / 1, rzero(), rzero()), Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1))) in
   // shifted box: x in [9, 11]. Mirror across x (normal [1,0,0]) → x in [-11, -9]. Size stays 2×2×2; centre x = -10.
   match bounding-box(Solid.Mirror(v3(1 / 1, rzero(), rzero()), shifted)) with
-    | Aabb.Box(lo, hi) =>
-      let Vec3.V3(lx, _, _) = lo in
-      let Vec3.V3(hx, _, _) = hi in
-      if lx == rzero() - 11 / 1 and hx == rzero() - 9 / 1 then
-        unit
-      else
-        trap("mirror-x of [9,11] should be [-11,-9]")
+  | Aabb.Box(lo, hi) =>
+    let Vec3.V3(lx, _, _) = lo in
+    let Vec3.V3(hx, _, _) = hi in
+    if lx == rzero() - 11 / 1 and hx == rzero() - 9 / 1 then
+      unit
+    else
+      trap("mirror-x of [9,11] should be [-11,-9]")
 
 @test
 def mirror-across-y-and-z-bounds-exactly() =
@@ -1473,24 +1467,24 @@ def mirror-across-y-and-z-bounds-exactly() =
   let shifted-y = Solid.Translate(v3(rzero(), 10 / 1, rzero()), Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1))) in
   // shifted-y box: y in [9, 11], x/z in [-1, 1]. Mirror across y → y in [-11, -9]; x/z unchanged.
   match bounding-box(Solid.Mirror(v3(rzero(), 1 / 1, rzero()), shifted-y)) with
-    | Aabb.Box(lo, hi) =>
-      let Vec3.V3(lx, ly, _) = lo in
-      let Vec3.V3(hx, hy, _) = hi in
-      if ly == rzero() - 11 / 1 and hy == rzero() - 9 / 1 and lx == rzero() - 1 / 1 and hx == 1 / 1 then
-        let shifted-z = Solid.Translate(
-            v3(rzero(), rzero(), 10 / 1),
-            Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1))
-          ) in
-        match bounding-box(Solid.Mirror(v3(rzero(), rzero(), 1 / 1), shifted-z)) with
-          | Aabb.Box(lo2, hi2) =>
-            let Vec3.V3(_, _, lz) = lo2 in
-            let Vec3.V3(_, _, hz) = hi2 in
-            if lz == rzero() - 11 / 1 and hz == rzero() - 9 / 1 then
-              unit
-            else
-              trap("mirror-z of [9,11] should be [-11,-9]")
-      else
-        trap("mirror-y of [9,11] should be [-11,-9] with x untouched")
+  | Aabb.Box(lo, hi) =>
+    let Vec3.V3(lx, ly, _) = lo in
+    let Vec3.V3(hx, hy, _) = hi in
+    if ly == rzero() - 11 / 1 and hy == rzero() - 9 / 1 and lx == rzero() - 1 / 1 and hx == 1 / 1 then
+      let shifted-z = Solid.Translate(
+          v3(rzero(), rzero(), 10 / 1),
+          Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1))
+        ) in
+      match bounding-box(Solid.Mirror(v3(rzero(), rzero(), 1 / 1), shifted-z)) with
+      | Aabb.Box(lo2, hi2) =>
+        let Vec3.V3(_, _, lz) = lo2 in
+        let Vec3.V3(_, _, hz) = hi2 in
+        if lz == rzero() - 11 / 1 and hz == rzero() - 9 / 1 then
+          unit
+        else
+          trap("mirror-z of [9,11] should be [-11,-9]")
+    else
+      trap("mirror-y of [9,11] should be [-11,-9] with x untouched")
 
 @test
 def mirror-is-an-involution() =
@@ -1503,13 +1497,13 @@ def mirror-is-an-involution() =
       Solid.Mirror(v3(1 / 1, rzero(), rzero()), shifted)
     ) in
   match bounding-box(twice) with
-    | Aabb.Box(lo, hi) =>
-      let Vec3.V3(lx, _, _) = lo in
-      let Vec3.V3(hx, _, _) = hi in
-      if lx == 9 / 1 and hx == 11 / 1 then
-        unit
-      else
-        trap("mirror-x applied twice must restore [9,11]")
+  | Aabb.Box(lo, hi) =>
+    let Vec3.V3(lx, _, _) = lo in
+    let Vec3.V3(hx, _, _) = hi in
+    if lx == 9 / 1 and hx == 11 / 1 then
+      unit
+    else
+      trap("mirror-x applied twice must restore [9,11]")
 
 @test
 def rotate-bounds-soundly-encloses() =
@@ -1592,27 +1586,25 @@ def simplify-r-preserves-a-real-rotate-and-mirror() =
   if solidr-is-empty(rot) == false and solidr-is-empty(mir) == false then
     // the surviving nodes are still a Rotate / Mirror (not simplified away to the bare child or a different node)
     match rot with
-      | Solid.Rotate(_, _) => (
-        match mir with
-          | Solid.Mirror(_, _) => // extent preserved: mirror of a cube at x∈[9,11] → x∈[-11,-9], size stays 2×2×2.
-            if v3-eq(aabbr-size(bounding-box(mir)), v3(2 / 1, 2 / 1, 2 / 1)) then
-              // …and simplify-r is IDEMPOTENT on these arms: a SECOND pass is a no-op (the general idempotence
-              // test uses a Difference/Cube/Sphere tree; this pins it specifically for the Rotate/Mirror arms).
-              if v3-eq(aabbr-size(bounding-box(simplify-r(rot))), aabbr-size(bounding-box(rot)))
-                  and v3-eq(
-                    aabbr-size(bounding-box(simplify-r(mir))),
-                    aabbr-size(bounding-box(mir))
-                  ) and solidr-is-empty(simplify-r(rot)) == false then
-                unit
-              else
-                trap(
-                  "simplify-r must be idempotent on the rotate/mirror arms (a second pass is a no-op)"
-                )
-            else
-              trap("simplify-r must preserve the mirrored cube's 2×2×2 extent")
-          | _ => trap("simplify-r dropped the Mirror node on a real child")
-      )
-      | _ => trap("simplify-r dropped the Rotate node on a real child")
+    | Solid.Rotate(_, _) => (
+      match mir with
+      | Solid.Mirror(_, _) => // extent preserved: mirror of a cube at x∈[9,11] → x∈[-11,-9], size stays 2×2×2.
+        if v3-eq(aabbr-size(bounding-box(mir)), v3(2 / 1, 2 / 1, 2 / 1)) then
+          // …and simplify-r is IDEMPOTENT on these arms: a SECOND pass is a no-op (the general idempotence
+          // test uses a Difference/Cube/Sphere tree; this pins it specifically for the Rotate/Mirror arms).
+          if v3-eq(aabbr-size(bounding-box(simplify-r(rot))), aabbr-size(bounding-box(rot)))
+              and v3-eq(aabbr-size(bounding-box(simplify-r(mir))), aabbr-size(bounding-box(mir)))
+              and solidr-is-empty(simplify-r(rot)) == false then
+            unit
+          else
+            trap(
+              "simplify-r must be idempotent on the rotate/mirror arms (a second pass is a no-op)"
+            )
+        else
+          trap("simplify-r must preserve the mirrored cube's 2×2×2 extent")
+      | _ => trap("simplify-r dropped the Mirror node on a real child")
+    )
+    | _ => trap("simplify-r dropped the Rotate node on a real child")
   else
     trap("simplify-r must NOT prune a rotate/mirror of real geometry")
 

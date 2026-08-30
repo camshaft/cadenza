@@ -88,21 +88,21 @@ def di-root-is-int64() =
   // the root of `let x = 2 in x` types to Int64 (TyInt signed width 64).
   let (root, d0) = let-db() in
   match ty-of-db(d0, root, root) with
-    | (_, Option.Some(t)) =>
-      if is-int-ty(t) then
-        let (s, w) = int-parts-of(t) in
-        if s then if w == 64 then unit else trap("width 64") else trap("signed")
-      else
-        trap("root has an int type fact")
-    | _ => trap("root has an Int64 type fact")
+  | (_, Option.Some(t)) =>
+    if is-int-ty(t) then
+      let (s, w) = int-parts-of(t) in
+      if s then if w == 64 then unit else trap("width 64") else trap("signed")
+    else
+      trap("root has an int type fact")
+  | _ => trap("root has an Int64 type fact")
 
 @test
 def di-unbound-is-terr() =
   // a bare unbound var `y` types to a FILLED TyErr (poison-as-filled — a determined ill-typed decline).
   let (root, tree) = parse-tokens([Tok.TName(9)]) in
   match ty-of-db(db-of(tree), root, root) with
-    | (_, Option.Some(Ty.TyErr)) => unit
-    | _ => trap("unbound var types to a filled TyErr")
+  | (_, Option.Some(Ty.TyErr)) => unit
+  | _ => trap("unbound var types to a filled TyErr")
 
 @test
 def di-infer-reuses-resolved-not-reresolve() =
@@ -119,7 +119,7 @@ def di-comparison-is-bool() =
   // `(1 < 2)` types to TyBool at the root.
   let (root, tree) = parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) in
   match ty-of-db(db-of(tree), root, root) with
-    | (_, Option.Some(Ty.TyBool)) => unit
-    | _ => trap("1 < 2 types to TyBool")
+  | (_, Option.Some(Ty.TyBool)) => unit
+  | _ => trap("1 < 2 types to TyBool")
 
 export { infer-into-db, ty-of-db, db-resolved-col, db-ty-col }

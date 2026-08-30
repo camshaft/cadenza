@@ -74,13 +74,13 @@ def signature(notes: List(Int64), root: Pitch) = signature-go(notes, pc-of(note(
 def list-eq(a: List(Int64), b: List(Int64)) = match a with
   | [] => (
     match b with
-      | [] => true
-      | [_, .. _] => false
+    | [] => true
+    | [_, .. _] => false
   )
   | [ha, .. ta] =>
     match b with
-      | [] => false
-      | [hb, .. tb] => if ha == hb then list-eq(ta, tb) else false
+    | [] => false
+    | [hb, .. tb] => if ha == hb then list-eq(ta, tb) else false
 
 // ---- identification ----------------------------------------------------------------------------------
 /// Identify the QUALITY of a set of note numbers, given the intended root. Folds the notes to their
@@ -151,32 +151,32 @@ def identifies-the-four-seventh-chords() =
   // Root-position sevenths off C (60): maj7 [0,4,7,11], dom7 [0,4,7,10], min7 [0,3,7,10], dim7 [0,3,6,9].
   let c = Pitch.Pitch(60) in
   match identify([60, 64, 67, 71], c) with
-    | Quality.MajorSeventh => (
-      match identify([60, 64, 67, 70], c) with
-        | Quality.DominantSeventh => (
-          match identify([60, 63, 67, 70], c) with
-            | Quality.MinorSeventh => (
-              match identify([60, 63, 66, 69], c) with
-                | Quality.DiminishedSeventh => unit
-                | _ => trap("dim7")
-            )
-            | _ => trap("min7")
-        )
-        | _ => trap("dom7")
+  | Quality.MajorSeventh => (
+    match identify([60, 64, 67, 70], c) with
+    | Quality.DominantSeventh => (
+      match identify([60, 63, 67, 70], c) with
+      | Quality.MinorSeventh => (
+        match identify([60, 63, 66, 69], c) with
+        | Quality.DiminishedSeventh => unit
+        | _ => trap("dim7")
+      )
+      | _ => trap("min7")
     )
-    | _ => trap("maj7")
+    | _ => trap("dom7")
+  )
+  | _ => trap("maj7")
 
 @test
 def distinguishes-diminished-and-augmented-triads() =
   // dim triad [0,3,6] vs aug triad [0,4,8] — the two symmetric triads must not be confused.
   let c = Pitch.Pitch(60) in
   match identify([60, 63, 66], c) with
-    | Quality.DiminishedTriad => (
-      match identify([60, 64, 68], c) with
-        | Quality.AugmentedTriad => unit
-        | _ => trap("aug triad")
-    )
-    | _ => trap("dim triad")
+  | Quality.DiminishedTriad => (
+    match identify([60, 64, 68], c) with
+    | Quality.AugmentedTriad => unit
+    | _ => trap("aug triad")
+  )
+  | _ => trap("dim triad")
 
 @test
 def a-random-cluster-is-unknown() =

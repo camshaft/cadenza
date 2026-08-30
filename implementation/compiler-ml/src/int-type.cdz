@@ -42,8 +42,8 @@ def split-sign(name: String) = match after-prefix(name, "UInt") with
   | Option.Some(suffix) => Option.Some((false, suffix))
   | Option.None(_) =>
     match after-prefix(name, "Int") with
-      | Option.Some(suffix) => Option.Some((true, suffix))
-      | Option.None(_) => Option.None(unit)
+    | Option.Some(suffix) => Option.Some((true, suffix))
+    | Option.None(_) => Option.None(unit)
 
 /// The text of `name` AFTER a literal `prefix`, or `None` if `name` doesn't start with `prefix`. Structural
 /// (slice + compare the prefix region), so callers dispatch on the SHAPE of the name, not the whole string.
@@ -53,14 +53,14 @@ def after-prefix(name: String, prefix: String) =
   // byte-len for the same reason. Type names are ASCII, so byte-len == scalar-len here.
   let p = String.byte-len(prefix) in
   match String.slice(name, 0, p) with
-    | Option.Some(head) =>
-      if head == prefix then
-        match String.slice(name, p, String.byte-len(name)) with
-          | Option.Some(rest) => Option.Some(rest)
-          | Option.None(_) => Option.Some("") // prefix IS the whole name → empty suffix
-      else
-        Option.None(unit)
-    | Option.None(_) => Option.None(unit)
+  | Option.Some(head) =>
+    if head == prefix then
+      match String.slice(name, p, String.byte-len(name)) with
+      | Option.Some(rest) => Option.Some(rest)
+      | Option.None(_) => Option.Some("") // prefix IS the whole name → empty suffix
+    else
+      Option.None(unit)
+  | Option.None(_) => Option.None(unit)
 
 /// A `(signed, width-suffix-string)` → the `IntTy` for a STANDARD width, matching the suffix STRUCTURALLY
 /// (one arm per width). A non-standard suffix (`""`, `7`, `128`, junk) is `NotInt`.

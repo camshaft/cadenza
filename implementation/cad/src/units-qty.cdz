@@ -91,7 +91,7 @@ def vec3q-bridges-to-the-exact-vec3-core() =
   // field build plugs into the existing exact machinery, same magnitudes, no f64.
   let v = v3q(qm(4), qm(5), qm(6)) in
   match vec3q-to-vec3(v) with
-    | Vec3.V3(x, y, z) => if x == 4 / 1 then if z == 6 / 1 then unit else trap("z") else trap("x")
+  | Vec3.V3(x, y, z) => if x == 4 / 1 then if z == 6 / 1 then unit else trap("z") else trap("x")
 
 @test
 def a-vec3q-component-authored-in-inches-is-exact-meters() =

@@ -94,8 +94,8 @@ def filter-map-step(
   | Option.Some(pair) =>
     let (x, s2) = pair in
     match f(x) with
-      | Option.None(_) => filter-map-step(step, s2, f)
-      | Option.Some(y) => Option.Some((y, s2))
+    | Option.None(_) => filter-map-step(step, s2, f)
+    | Option.Some(y) => Option.Some((y, s2))
 
 def filter-map(it, f: Int64 -> Option(Int64)) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => filter-map-step(step, s, f))
@@ -408,11 +408,11 @@ def law-position-agrees-with-find-via-nth() = match position(from-list([3, 5, 8,
   | Option.None(_) => trap("position should hit")
   | Option.Some(i) =>
     match nth(from-list([3, 5, 8, 9]), i) with
-      | Option.None(_) => trap("nth at found index must be Some")
-      | Option.Some(v) =>
-        match find(from-list([3, 5, 8, 9]), fn(x) => x > 4) with
-          | Option.None(_) => trap("find should hit")
-          | Option.Some(fv) => if v == fv then unit else trap("nth(position) == find")
+    | Option.None(_) => trap("nth at found index must be Some")
+    | Option.Some(v) =>
+      match find(from-list([3, 5, 8, 9]), fn(x) => x > 4) with
+      | Option.None(_) => trap("find should hit")
+      | Option.Some(fv) => if v == fv then unit else trap("nth(position) == find")
 
 /// scalar consumers: product / nth / contains / last (all same-state).
 @test

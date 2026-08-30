@@ -82,11 +82,11 @@ def v3-len-stores-exact-meters() =
   // Build from three 1/2/3-metre lengths; stored magnitudes are exactly 1, 2, 3 (bare Rational meters).
   let v = v3-len(meters(1), meters(2), meters(3)) in
   match v with
-    | Vec3m.V3m(x, y, z) =>
-      if x == 1 / 1 then
-        if y == 2 / 1 then if z == 3 / 1 then unit else trap("z") else trap("y")
-      else
-        trap("x")
+  | Vec3m.V3m(x, y, z) =>
+    if x == 1 / 1 then
+      if y == 2 / 1 then if z == 3 / 1 then unit else trap("z") else trap("y")
+    else
+      trap("x")
 
 @test
 def a-coordinate-round-trips-out-as-a-meter-length() =
@@ -110,7 +110,7 @@ def authoring-in-inches-stores-exact-meters() =
   let as-exact-meters = Qty.of(one-inch as meter, Unit.of(#meter)) in
   let v = v3-len(as-exact-meters, meters(0), meters(0)) in
   match v with
-    | Vec3m.V3m(x, _, _) => if x == 127 / 5000 then unit else trap("1 inch = 127/5000 m exactly")
+  | Vec3m.V3m(x, _, _) => if x == 127 / 5000 then unit else trap("1 inch = 127/5000 m exactly")
 
 @test
 def to-vec3-bridges-to-the-exact-csg-model() =
@@ -118,6 +118,6 @@ def to-vec3-bridges-to-the-exact-csg-model() =
   // magnitudes, so a units-typed build plugs into the existing exact machinery unchanged.
   let v = v3-len(meters(4), meters(5), meters(6)) in
   match to-vec3(v) with
-    | Vec3.V3(x, y, z) => if x == 4 / 1 then if z == 6 / 1 then unit else trap("z") else trap("x")
+  | Vec3.V3(x, y, z) => if x == 4 / 1 then if z == 6 / 1 then unit else trap("z") else trap("x")
 
 export { Vec3m.*, v3-len, m-x, m-y, m-z, len-m, meters, to-vec3 }

@@ -69,6 +69,7 @@ fn print_mode(arenas: &Arenas, width: usize, display: bool) -> String {
         display,
         depth: 0,
         suppress_leading_docs: false,
+        flush_match_arms: false,
         width,
     };
     // In display mode, an outer `(: value type)` result annotation is stripped — a rendered value
@@ -135,6 +136,15 @@ struct Printer<'a> {
     /// annotation-comment adjacency the frontend is touchy about (v-cad/v-cdz-tooling report). A
     /// one-shot flag (like `delimit_body`): set, print the form, taken+cleared at the def's doc site.
     suppress_leading_docs: bool,
+    /// One-shot flag (operator seq-96/97): the NEXT `match`/`handle` printed is in STATEMENT/TAIL position
+    /// — it starts its OWN line (a def/let/if/arm body-tail, a `do`/top-level statement, a `handle`/`host`
+    /// `in`-body) rather than being BOUND inline to a preceding token (`def f = match …`, a call arg, an
+    /// operand). A statement-position match aligns its `|` arms FLUSH with the `match` keyword's column
+    /// (`cbox(0)`); a bound match keeps them INDENTED one level (`cbox(INDENT)`, the default). Set by each
+    /// statement emitter right before it prints the block (guarded on the body actually being a
+    /// `match`/`handle`), and taken+cleared by `print_match`/`print_handle` so it never leaks to a nested
+    /// value-position match. Mirrors the `delimit_body` one-shot discipline.
+    flush_match_arms: bool,
     /// The target column width the whole print targets — threaded to the sub-grammar printer for an
     /// embedded region (`json{ … }` / `toml{ … }`), which renders its own body at the same width.
     width: usize,
@@ -1131,6 +1141,8 @@ impl<'a> Printer<'a> {
         // flatten (seq69/70). So NO extra indent on the final body: `hardbreak()` uniformly, whether the
         // body is another `let` (chain continues) or the terminal expression.
         self.doc.hardbreak();
+        // The `in`-body is on its own line, so a `match`/`handle` body flushes its arms (seq-96/97).
+        self.flush_match_arms = self.head_is_match_form(self.a.peel_comments(args[1]));
         self.expr(args[1], 0);
         if paren {
             self.doc.word(")");
@@ -1153,6 +1165,8 @@ impl<'a> Printer<'a> {
             };
             self.print_do_stmts(&items);
         } else {
+            // A statement-position `match`/`handle` starts its own line → its arms flush (seq-96/97).
+            self.flush_match_arms = self.head_is_match_form(self.a.peel_comments(id));
             self.expr(id, 0);
         }
     }
@@ -1188,6 +1202,8 @@ impl<'a> Printer<'a> {
             self.doc.word(" then");
             // Breakable space keeps `then t` on the line when it fits, else drops `t` to an indented line.
             self.doc.space();
+            // A `match`/`handle` then-branch on its own line flushes its arms (seq-96/97).
+            self.flush_match_arms = self.head_is_match_form(self.a.peel_comments(arms[1]));
             let then_had_trailing = self.expr_with_trailing_comment(arms[1], 0);
             // A same-line `//` trailing the then-branch runs to end-of-line, so `else` MUST drop to the next
             // line — a breakable space would collapse to ` else` INSIDE the comment (`then 1 // note else 2`
@@ -1208,6 +1224,8 @@ impl<'a> Printer<'a> {
                 _ => {
                     self.doc.word("else");
                     self.doc.space();
+                    // A `match`/`handle` else-branch on its own line flushes its arms (seq-96/97).
+                    self.flush_match_arms = self.head_is_match_form(self.a.peel_comments(arms[2]));
                     self.expr_with_trailing_comment(arms[2], 0);
                     break;
                 }
@@ -1472,8 +1490,11 @@ impl<'a> Printer<'a> {
             self.doc.end();
         } else if self.is_block_body(body) {
             // Hug: a plain space keeps the block on the `=` line; it breaks internally at its own
-            // indentation (the def box is at offset 0, so no extra level is added).
+            // indentation (the def box is at offset 0, so no extra level is added). This is a BOUND
+            // position (the `match`/`handle` sits inline after `=`), so its arms stay INDENTED — clear
+            // any stray `flush_match_arms` so it never inherits a caller's statement-position flush.
             self.doc.word(" ");
+            self.flush_match_arms = false;
             self.expr(body, 0);
         } else {
             // Plain expression: a breakable space, and its own indented box so a long flat body
@@ -2634,6 +2655,8 @@ impl<'a> Printer<'a> {
         self.doc.hardbreak();
         self.doc.word("in");
         self.doc.hardbreak();
+        // The `in`-body is on its own line → a `match`/`handle` body flushes its arms (seq-96/97).
+        self.flush_match_arms = self.head_is_match_form(self.a.peel_comments(body));
         self.expr(body, 0);
         if paren {
             self.doc.word(")");
@@ -2700,10 +2723,15 @@ impl<'a> Printer<'a> {
         // form just renders with the pre-seq-95 glued-paren layout, never a broken round-trip).
         let paren_layout = body_prec == PREC_PIPE_PAREN
             || (body_prec == PREC_KEYWORD && self.head_is_block_form(peeled));
+        // A `match`/`handle` arm body starts its own line (under `=>` or inside the paren-wrap), so its
+        // arms flush with its keyword (seq-96/97). Set the one-shot per body (false for a non-match body,
+        // so it never leaks to a value-position match nested inside).
+        let flush = self.head_is_match_form(peeled);
         if paren_layout {
             self.doc.word(" (");
             self.doc.cbox(INDENT);
             self.doc.zerobreak();
+            self.flush_match_arms = flush;
             self.expr(body, 0);
             self.doc.break_with(0, -INDENT);
             self.doc.word(")");
@@ -2719,6 +2747,7 @@ impl<'a> Printer<'a> {
         } else {
             self.doc.space();
         }
+        self.flush_match_arms = flush;
         self.expr(body, body_prec);
         self.doc.end();
     }
@@ -2735,6 +2764,22 @@ impl<'a> Printer<'a> {
         matches!(
             head.and_then(|h| self.head_name(h)).as_deref(),
             Some("if" | "let" | "match" | "fn" | "handle" | "host")
+        )
+    }
+
+    /// True if `id` is a `match`/`handle` form — the arm-bearing constructs whose `|` arm alignment the
+    /// seq-96/97 flush rule governs. A statement emitter sets `flush_match_arms` to THIS on the body it is
+    /// about to print, so a match/handle that starts its own line flushes its arms, while a value-position
+    /// match nested inside (a call arg, an operand) stays at the default indent (the assignment is `false`
+    /// for a non-match body, so the flag never leaks past this body).
+    fn head_is_match_form(&self, id: StructId) -> bool {
+        let head = match self.a.get(id) {
+            Struct::List(items) => items.first().copied(),
+            _ => None,
+        };
+        matches!(
+            head.and_then(|h| self.head_name(h)).as_deref(),
+            Some("match" | "handle")
         )
     }
 
@@ -2762,6 +2807,8 @@ impl<'a> Printer<'a> {
         self.doc.space();
         self.doc.word("in");
         self.doc.space();
+        // A `match`/`handle` `in`-body on its own line flushes its arms (seq-96/97).
+        self.flush_match_arms = self.head_is_match_form(self.a.peel_comments(body));
         self.expr(body, 0);
         if paren {
             self.doc.word(")");
@@ -3443,7 +3490,17 @@ impl<'a> Printer<'a> {
     /// `match scrut { pat => body, … }` — one arm per line (consistent box) when broken.
     fn print_match(&mut self, args: &[StructId], parent_prec: u8) {
         let paren = parent_prec > 0;
-        self.doc.cbox(INDENT);
+        // Operator seq-96/97: a STATEMENT-position match (its `match` starts its own line — set by the
+        // caller via `flush_match_arms`) aligns its `|` arms FLUSH with the `match` column (`cbox(0)`); a
+        // BOUND match (inline after `def/let/=>`/`(`… — the default, and always the parenthesized/value
+        // case) keeps them INDENTED one level. Take the one-shot NOW so it can't leak into the scrutinee
+        // or a nested value-position match.
+        let arms_indent = if std::mem::take(&mut self.flush_match_arms) && !paren {
+            0
+        } else {
+            INDENT
+        };
+        self.doc.cbox(arms_indent);
         if paren {
             self.doc.word("(");
         }
@@ -7521,6 +7578,35 @@ mod tests {
     }
 
     #[test]
+    fn match_arm_flush_is_conditional_on_own_line_seq96_97() {
+        // Operator seq-96/97: match arms FLUSH with the `match` keyword when `match` starts its OWN line
+        // (a let/if body-tail, a statement); they stay INDENTED one level when `match` is BOUND inline
+        // to a preceding token (`def f = match …`, a call arg).
+
+        // BOUND — `match` on the `def … =` line → arms INDENTED.
+        assert_eq!(
+            assert_roundtrip(
+                "def t(id) = match g(id) with | S(t) => t | N(_) => c(id)",
+                80
+            ),
+            "def t(id) = match g(id) with\n  | S(t) => t\n  | N(_) => c(id)"
+        );
+        // OWN-LINE — the `match` is a `let` in-body on its own line → arms FLUSH with `match`.
+        assert_eq!(
+            assert_roundtrip(
+                "def f(x) = let y = p(x) in match y with | A => 1 | B => 2",
+                80
+            ),
+            "def f(x) =\n  let y = p(x) in\n  match y with\n  | A => 1\n  | B => 2"
+        );
+        // BOUND — a `match` as a call ARG stays INDENTED (value position, not a statement).
+        assert_eq!(
+            assert_roundtrip("def f(x) = g(match x with | A => 1 | B => 2)", 40),
+            "def f(x) =\n  g(match x with\n    | A => 1\n    | B => 2)"
+        );
+    }
+
+    #[test]
     fn parenthesized_arm_body_opens_paren_on_the_arm_line_seq95() {
         // Operator seq-95: a PARENTHESIZED match-arm body puts the open `(` on the `=>` line, the body
         // indented one level under the arm, and the close `)` on its OWN line dedented to the arm indent
@@ -7530,7 +7616,7 @@ mod tests {
                 "def f() = match x with | A => (match x with | C => 1 | _ => 2) | B => 3",
                 200,
             ),
-            "def f() = match x with\n  | A => (\n    match x with\n      | C => 1\n      | _ => 2\n  )\n  | B => 3"
+            "def f() = match x with\n  | A => (\n    match x with\n    | C => 1\n    | _ => 2\n  )\n  | B => 3"
         );
     }
 

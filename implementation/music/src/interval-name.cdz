@@ -80,16 +80,16 @@ def names-the-common-intervals-by-size() =
   match name-of-semitones(0) with
     | IntervalName.PerfectUnison => (
       match name-of-semitones(4) with
-        | IntervalName.MajorThird => (
-          match name-of-semitones(7) with
-            | IntervalName.PerfectFifth => (
-              match name-of-semitones(12) with
-                | IntervalName.PerfectOctave => unit
-                | _ => trap("12 is an octave")
-            )
-            | _ => trap("7 is a perfect fifth")
+      | IntervalName.MajorThird => (
+        match name-of-semitones(7) with
+        | IntervalName.PerfectFifth => (
+          match name-of-semitones(12) with
+          | IntervalName.PerfectOctave => unit
+          | _ => trap("12 is an octave")
         )
-        | _ => trap("4 is a major third")
+        | _ => trap("7 is a perfect fifth")
+      )
+      | _ => trap("4 is a major third")
     )
     | _ => trap("0 is a unison")
 
@@ -99,8 +99,8 @@ def naming-is-direction-independent() =
   match name-of-semitones(0 - 7) with
     | IntervalName.PerfectFifth => (
       match name-of-semitones(7) with
-        | IntervalName.PerfectFifth => unit
-        | _ => trap("ascending fifth")
+      | IntervalName.PerfectFifth => unit
+      | _ => trap("ascending fifth")
     )
     | _ => trap("a descending fifth is still a perfect fifth")
 
@@ -130,8 +130,8 @@ def interval-name-between-two-pitches() =
   match interval-name-between(Pitch.Pitch(60), Pitch.Pitch(67)) with
     | IntervalName.PerfectFifth => (
       match interval-name-between(Pitch.Pitch(60), Pitch.Pitch(64)) with
-        | IntervalName.MajorThird => unit
-        | _ => trap("C to E is a major third")
+      | IntervalName.MajorThird => unit
+      | _ => trap("C to E is a major third")
     )
     | _ => trap("C to G is a perfect fifth")
 

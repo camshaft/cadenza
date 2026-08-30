@@ -38,13 +38,13 @@ def mode-of-index(i: Int64) = match i with
 def steps-eq(a: List(Int64), b: List(Int64)) = match a with
   | [] => (
     match b with
-      | [] => true
-      | [_, .. _] => false
+    | [] => true
+    | [_, .. _] => false
   )
   | [ha, .. ta] =>
     match b with
-      | [] => false
-      | [hb, .. tb] => if ha == hb then steps-eq(ta, tb) else false
+    | [] => false
+    | [hb, .. tb] => if ha == hb then steps-eq(ta, tb) else false
 
 // ---- identifying the mode ----------------------------------------------------------------------------
 /// Scan mode indices `i .. 6`, returning `Some(index)` of the mode whose `mode-steps(i)` equals `steps`, or
@@ -94,12 +94,12 @@ def dorian-and-phrygian-and-lydian-are-named() =
   match name-mode-steps([2, 1, 2, 2, 2, 1, 2]) with
     | Mode.Dorian => (
       match name-mode-steps([1, 2, 2, 2, 1, 2, 2]) with
-        | Mode.Phrygian => (
-          match name-mode-steps([2, 2, 2, 1, 2, 2, 1]) with
-            | Mode.Lydian => unit
-            | _ => trap("Lydian")
-        )
-        | _ => trap("Phrygian")
+      | Mode.Phrygian => (
+        match name-mode-steps([2, 2, 2, 1, 2, 2, 1]) with
+        | Mode.Lydian => unit
+        | _ => trap("Lydian")
+      )
+      | _ => trap("Phrygian")
     )
     | _ => trap("Dorian")
 

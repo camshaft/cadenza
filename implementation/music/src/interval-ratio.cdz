@@ -156,8 +156,8 @@ def a-fifth-is-seven-twelfths-of-an-octave() =
   // The perfect fifth is 7/12 of an octave, and projects to 7 semitones.
   if r-eq(r-perfect-fifth, semitones-r(7)) then
     match to-semitones-exact(r-perfect-fifth) with
-      | Option.Some(s) => if s == 7 then unit else trap("projects to 7 semitones")
-      | Option.None(_) => trap("fifth is in-grid")
+    | Option.Some(s) => if s == 7 then unit else trap("projects to 7 semitones")
+    | Option.None(_) => trap("fifth is in-grid")
   else
     trap("fifth is 7/12")
 
@@ -209,8 +209,8 @@ def twelve-semitones-make-an-octave() =
   let twelve = r-add(semitones-r(6), semitones-r(6)) in
   if r-eq(twelve, r-octave) then
     match to-semitones-exact(r-octave) with
-      | Option.Some(s) => if s == 12 then unit else trap("octave projects to 12 semitones")
-      | Option.None(_) => trap("octave is in-grid")
+    | Option.Some(s) => if s == 12 then unit else trap("octave projects to 12 semitones")
+    | Option.None(_) => trap("octave is in-grid")
   else
     trap("12 semitones = octave")
 
@@ -219,8 +219,8 @@ def negate-turns-ascending-into-descending() =
   // Negating a fifth gives -7/12; from-to is the signed difference.
   if r-eq(r-negate(r-perfect-fifth), rinterval(Rational.of(0, 1) - Rational.of(7, 12))) then
     match to-semitones-exact(r-negate(r-perfect-fifth)) with
-      | Option.Some(s) => if s == 0 - 7 then unit else trap("projects to -7")
-      | Option.None(_) => trap("negated fifth is in-grid")
+    | Option.Some(s) => if s == 0 - 7 then unit else trap("projects to -7")
+    | Option.None(_) => trap("negated fifth is in-grid")
   else
     trap("negate")
 
@@ -243,8 +243,8 @@ def in-grid-projects-exactly-off-grid-declines() =
     | Option.Some(s) =>
       if s == 8 then
         match to-semitones-exact(rinterval(Rational.of(5, 8))) with
-          | Option.None(_) => unit
-          | Option.Some(_) => trap("5/8 octave is off-grid, should decline")
+        | Option.None(_) => unit
+        | Option.Some(_) => trap("5/8 octave is off-grid, should decline")
       else
         trap("2/3 octave = 8 semitones")
     | Option.None(_) => trap("2/3 octave is on-grid (8/12)")
@@ -257,17 +257,17 @@ def minor-sixth-and-minor-seventh-close-the-grid() =
   // 12-TET grid to the true full twelve (reviewer coverage gap on 44bdb682e).
   if r-eq(r-minor-sixth, semitones-r(8)) then
     match to-semitones-exact(r-minor-sixth) with
-      | Option.Some(s) =>
-        if s == 8 then
-          if r-eq(r-minor-seventh, semitones-r(10)) then
-            match to-semitones-exact(r-minor-seventh) with
-              | Option.Some(t) => if t == 10 then unit else trap("minor seventh projects to 10")
-              | Option.None(_) => trap("minor seventh is in-grid")
-          else
-            trap("minor seventh is 10/12")
+    | Option.Some(s) =>
+      if s == 8 then
+        if r-eq(r-minor-seventh, semitones-r(10)) then
+          match to-semitones-exact(r-minor-seventh) with
+          | Option.Some(t) => if t == 10 then unit else trap("minor seventh projects to 10")
+          | Option.None(_) => trap("minor seventh is in-grid")
         else
-          trap("minor sixth projects to 8")
-      | Option.None(_) => trap("minor sixth is in-grid")
+          trap("minor seventh is 10/12")
+      else
+        trap("minor sixth projects to 8")
+    | Option.None(_) => trap("minor sixth is in-grid")
   else
     trap("minor sixth is 8/12")
 
@@ -322,9 +322,9 @@ def to-semitones-snaps-an-off-grid-interval-toward-zero() =
   // capability the projection adds over to-semitones-exact (which returns None here).
   let quarter-sharp-fifth = rinterval(Rational.of(15, 24)) in
   match to-semitones-exact(quarter-sharp-fifth) with
-    | Option.None(_) =>
-      if to-semitones(quarter-sharp-fifth) == 7 then unit else trap("7.5 semitones truncates to 7")
-    | Option.Some(_) => trap("a quarter-sharp fifth is OFF the 12-TET grid")
+  | Option.None(_) =>
+    if to-semitones(quarter-sharp-fifth) == 7 then unit else trap("7.5 semitones truncates to 7")
+  | Option.Some(_) => trap("a quarter-sharp fifth is OFF the 12-TET grid")
 
 @test
 def floor-and-ceil-agree-with-truncate-on-the-grid() =
