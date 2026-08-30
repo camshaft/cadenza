@@ -916,21 +916,46 @@ impl<'a> Printer<'a> {
         if paren {
             self.doc.word("(");
         }
-        // first operand (its left child, if any, already bound at this prec)
-        self.expr(operands[0], prec);
+        // first operand (its left child, if any, already bound at this prec). `force_break` is set when
+        // that operand carried a trailing `//` comment, so the break before the NEXT operator is HARD.
+        let mut force_break = self.infix_operand(operands[0], prec);
         for (i, o) in ops.iter().enumerate() {
-            self.doc.space(); // break BEFORE the operator
+            // A trailing `//` on the previous operand runs to end-of-line, so a soft `space()` here could
+            // stay flat (`a // note and b`) and SWALLOW ` op right` into the comment — force a hardbreak.
+            if force_break {
+                self.doc.hardbreak();
+            } else {
+                self.doc.space(); // break BEFORE the operator
+            }
             // In infix position the operator prints as its SURFACE GLYPH (the arena head `=` for
             // equality prints as `==`; every other op is identity). The backtick escape is only for
             // an operator glyph used as an ordinary NAME.
             self.doc.word(infix_glyph(o).to_string());
             self.doc.word(" ");
-            self.expr(operands[i + 1], prec + 1); // right operand binds one tighter
+            force_break = self.infix_operand(operands[i + 1], prec + 1); // right binds one tighter
         }
         if paren {
             self.doc.word(")");
         }
         self.doc.end();
+    }
+
+    /// Print one operand of an infix chain, re-emitting a trailing `(comment-after "text" inner)` wrapper
+    /// as `inner // text` (the seq-277/C3 mid-infix-chain trailing comment the reader attaches). Returns
+    /// `true` when a trailing comment was emitted, so [`Self::infix`] forces a HARD break before the next
+    /// operator (a `//` runs to end-of-line, so a soft space could keep the chain flat and swallow the
+    /// following ` op right` into the comment). A plain operand prints via `expr` and returns `false`.
+    fn infix_operand(&mut self, operand: StructId, prec: u8) -> bool {
+        if let Some(a) = self.a.as_form(operand, "comment-after")
+            && a.len() == 2
+            && self.is_string(a[0])
+        {
+            self.expr(a[1], prec);
+            self.doc.word(format!(" //{}", self.doc_line_text(a[0])));
+            return true;
+        }
+        self.expr(operand, prec);
+        false
     }
 
     /// The function type `(-> A B)` -> `A -> B`. RIGHT-associative: a chain `(-> A (-> B C))` prints as
