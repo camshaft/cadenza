@@ -5471,13 +5471,25 @@ fn check(paths: &Paths, profile: &str) {
     // (mirrors how the emoji lint lives in BOTH check() and the nix check) — the nix-check wiring is coordinated
     // with v-nix separately. Per-project `cdz fmt --check` over each `src/` (NOT the whole tree) so manifests/
     // `.bin`/cdz-platform/`.sexp` stay out of scope.
-    log.step(
-        "cdz-fmt-check",
-        "cargo run -q -p cdz -- fmt --check implementation/compiler-ml/src implementation/cad/src \
-         implementation/music/src implementation/des/src implementation/iterators/src \
-         implementation/choreography/src",
-        repo,
-    );
+    //
+    // RE-DISABLED 2026-08-30 (same day): the enable above was PREMATURE. The `cdz fmt` PRINTER is a MOVING
+    // TARGET — after v-syntax's #6319 fmt-all, four more printer PRs landed the SAME day (#6329 seq-86/87/89,
+    // #6335, #6338 seq-92/93, #6341 seq-95) WITHOUT re-fmting the corpus, so ALL 6 domain src dirs are now
+    // non-canonical again (verified `cdz fmt --check` exit 1 on every one). Enforcing a fmt gate while the
+    // printer churns just reds the fleet on every printer bump. TRUE precondition = the printer is FROZEN
+    // (v-syntax signals "printer stable") AND a fresh whole-corpus fmt-all lands. Re-enable = flip this const
+    // true once BOTH hold + re-verify the 6-dir `fmt --check` exits 0. (Coordinated with concierge + v-nix,
+    // who is HOLDING the nix `cdzFmtCheck` wiring for the same reason.)
+    const CDZ_FMT_CHECK_ENFORCE: bool = false;
+    if CDZ_FMT_CHECK_ENFORCE {
+        log.step(
+            "cdz-fmt-check",
+            "cargo run -q -p cdz -- fmt --check implementation/compiler-ml/src implementation/cad/src \
+             implementation/music/src implementation/des/src implementation/iterators/src \
+             implementation/choreography/src",
+            repo,
+        );
+    }
     // Mandate-enforcement lint: NO LONGER an inline step here (v-xtask-decompose 2026-08-28). The
     // mandate lint now lives in the STANDALONE `xtask-mandates` crate + the nix `mandateLintCheck`
     // (rewired to `cargo run -p xtask-mandates`), which gate-local folds into its fail-set — the
