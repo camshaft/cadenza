@@ -493,6 +493,35 @@
               (export main)))
   (call   main) (output (: 8 Int64)))
 
+; A `(Unit.of #"name")` naming a unit that is neither a built-in nor a user `Unit.define` is CDZ0201 naming
+; the unknown unit. A NEAR-MISS of a real unit (`metre`/`secnd`) gets a did-you-mean + a Replace fix on the
+; NAME literal that PRESERVES the argument's delimiter — a `#"…"` symbol → `#"meter"`, a plain string
+; `"metre"` → `"meter"` — so the applied fix re-renders a valid argument. A name with NO confident neighbour
+; (`mph`) gets ACTIONABLE compose/declare guidance instead of a misleading closest-matches list. An unknown
+; base inside a `Unit.define` is caught too. (Migrated from rcdzc
+; an_unknown_unit_in_a_quantity_literal_is_named_with_a_suggestion.)
+(case "an unknown unit near a real one suggests it with a delimiter-preserving symbol rename fix"
+  (input  (do (def (main) (Qty.of 5 (Unit.of #"metre"))) (export main)))
+  (error  CDZ0201 (message "unknown unit `metre`") (message "did you mean `meter`?")
+                  (fix (kind replace) (replacement "#\"meter\"") (unverified))))
+
+(case "another unknown-unit near-miss suggests the near unit"
+  (input  (do (def (main) (Qty.of 5 (Unit.of #"secnd"))) (export main)))
+  (error  CDZ0201 (message "did you mean `second`?")
+                  (fix (kind replace) (replacement "#\"second\"") (unverified))))
+
+(case "an unknown unit with no confident neighbour gets compose/declare guidance, not closest-matches"
+  (input  (do (def (main) (Qty.of 45 (Unit.of #"mph"))) (export main)))
+  (error  CDZ0201 (message "compose a compound unit") (message "(Unit.define #\"mph\"")))
+
+(case "applying the unknown-unit rename fix clears the fault — the corrected unit runs"
+  (input  (do (def (main) (Qty.value (Qty.of 5 (Unit.of #"meter")))) (export main)))
+  (call   main) (output (: 5 Int64)))
+
+(case "an unknown BASE unit inside a Unit.define is caught and named"
+  (input  (do (Unit.define #"furlong" (Unit.of #"zorks") 660 1) (def (main) 1) (export main)))
+  (error  CDZ0201 (message "`zorks`")))
+
 (case "a prefixed unit of a different dimension still rejects CDZ0501 (prefix scales within a dimension, never across)"
   (doc    "A PREFIX scales WITHIN a dimension, never across: `km + second` is still CDZ0501. Pins that the
            family/prefix relaxation (auto-convert within a dimension) does not weaken the dimensional
