@@ -36,6 +36,85 @@ namespace Oracle
 -- `arithOps`/`bitwiseOps` live in `namespace Oracle.Eval` (mirrors `Oracle.Symbolic`'s `open Eval`).
 open Eval
 
+/-! ## `denote` — the concrete meaning of a `SymExpr` under a valuation (soundness spec).
+`denote ρ w e` evaluates the symbolic expression `e` to a concrete `Outcome`, with each symbolic
+variable `.var n` bound to the value `ρ n` and integer arithmetic performed at ambient width `w`. It is
+the SEMANTICS the normalizer must preserve: the capstone soundness goal is
+`denote ρ w (normalize e) = denote ρ w e` for all ρ, w — i.e. `normalize` never changes what a program
+computes on any input, so a `proven`-equivalent verdict is never false.
+
+Faithfulness (so the eventual theorem is MEANINGFUL, not a toy): the `.app` case REUSES the exact ops
+the oracle/normalizer use — `foldConst?` for the comparison/boolean/float/equality ops (byte-identical
+to what `normalize` folds), and `evalArithOp` at width `w` for the deferred integer arithmetic
+(`+ - * / %`, with its real overflow-trap semantics). This alignment with `normalize`'s own folding is
+what will make the soundness induction go through. Analyzable fragment only (var/const/scalar-app/ite);
+compound shapes (tuple/record/ctor/proj/case) are `unsupported` here — a later increment. -/
+/-- Combine a UNARY op over its (already-denoted) operand outcome — reuses `foldConst?` (e.g. `not`). -/
+def denoteUnary (op : String) (oa : Outcome) : Outcome :=
+  match oa with
+  | .value va => (match foldConst? op #[.const va] with
+                  | some v => .value v
+                  | none => .unsupported "denote: unmodeled unary op")
+  | o => o
+
+/-- Combine a BINARY op over its (already-denoted) operand outcomes, left-to-right trap propagation.
+Value operands fold via `foldConst?` (comparison/boolean/float/equality — byte-identical to `normalize`)
+or, for the deferred integer arithmetic `foldConst?` leaves unfolded, via the real `evalArithOp` at
+width `w` (its true overflow-trap semantics). NON-recursive — split out of `denote` so `denote`'s own
+matcher stays simple enough for equation-lemma generation. -/
+def denoteBinary (op : String) (w : IntTy) (oa ob : Outcome) : Outcome :=
+  match oa, ob with
+  | .value va, .value vb =>
+    (match foldConst? op #[.const va, .const vb] with
+     | some v => .value v
+     | none => (match va, vb with
+                | .int x, .int y => if arithOps.contains op then evalArithOp op x y w
+                                    else .unsupported "denote: unmodeled binary op"
+                | _, _ => .unsupported "denote: non-integer operands for a deferred op"))
+  | .trap t, _ => .trap t
+  | _, .trap t => .trap t
+  | .diverges, _ => .diverges
+  | _, .diverges => .diverges
+  | _, _ => .unsupported "denote: unmodeled operand outcome"
+
+/-- Dispatch a denoted application on its arity (unary/binary; else unsupported). NON-recursive, so its
+array-literal patterns are fine — kept OUT of `denote` (whose WF-recursive equation compiler rejects
+`#[a,b]` patterns). -/
+def denoteApp (op : String) (w : IntTy) (oargs : Array Outcome) : Outcome :=
+  match oargs with
+  | #[oa] => denoteUnary op oa
+  | #[oa, ob] => denoteBinary op w oa ob
+  | _ => .unsupported "denote: unsupported operator arity"
+
+def denote (ρ : Nat → Value) (w : IntTy) : SymExpr → Outcome
+  | .const v => .value v
+  | .var n => .value (ρ n)
+  | .ite c t e =>
+    match denote ρ w c with
+    | .value (.bool true) => denote ρ w t
+    | .value (.bool false) => denote ρ w e
+    | .value _ => .unsupported "denote: non-boolean ite condition"
+    | o => o
+  | .app op args => denoteApp op w (args.attach.map (fun x => denote ρ w x.val))
+  | _ => .unsupported "denote: unmodeled construct (compound shape — later increment)"
+termination_by e => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | omega
+    | (have h := Array.sizeOf_lt_of_mem x.property; omega)
+
+-- Sanity checks that `denote` computes the expected concrete outcomes (Lean-native, justified: this is
+-- a ∀-inputs metatheorem SPEC beyond corpus reach). Leaves, arithmetic, overflow, comparison, if-select.
+#guard (denote (fun _ => .unit) defaultIntTy (.const (.int 5)) == .value (.int 5))
+#guard (denote (fun _ => .int 7) defaultIntTy (.var 0) == .value (.int 7))
+#guard (denote (fun _ => .unit) defaultIntTy (.app "+" #[.const (.int 2), .const (.int 3)]) == .value (.int 5))
+#guard (denote (fun _ => .unit) defaultIntTy (.app "<" #[.const (.int 2), .const (.int 3)]) == .value (.bool true))
+#guard (denote (fun _ => .unit) defaultIntTy
+          (.app "+" #[.const (.int 9223372036854775807), .const (.int 1)]) == .trap "overflow")
+#guard (denote (fun _ => .unit) defaultIntTy
+          (.ite (.const (.bool true)) (.const (.int 1)) (.const (.int 2))) == .value (.int 1))
+
 /-! ## `isConcreteSym` is decided exactly on the value-shaped constructors.
 `isConcreteSym` is a plain (non-`partial`) `def`, so each arm reduces by `rfl`. Characterizing it over
 ALL nine constructors pins the dispatch that keeps symbolic matching sound: a scrutinee is treated as
