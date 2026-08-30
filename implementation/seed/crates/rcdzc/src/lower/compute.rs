@@ -2744,11 +2744,14 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                             // missing the index — the common case, which would need a runtime closure) and an
                             // over-application (`(Map.size m x)` — already the coded CDZ0203, this is its
                             // weaker Todo sibling). Both are "applied at the wrong arity".
-                            Core::Poison(Reject::decline(format!(
-                                "{named} is applied at the wrong arity — a built-in operation must be \
-                                 applied to exactly its arguments (a partial application, which would need \
-                                 a runtime closure, is not yet built)"
-                            )))
+                            Core::Poison(Reject::declined(
+                                crate::diag::DeclineId::PrimAsValueNeedsClosure,
+                                format!(
+                                    "{named} is applied at the wrong arity — a built-in operation must be \
+                                     applied to exactly its arguments (a partial application, which would \
+                                     require a synthesized runtime closure, is not supported)"
+                                ),
+                            ))
                         }
                         Err(msg) => {
                             trace!(target: "rcdzc::lower", node = id.0, %msg, "apply: constructor declined");
