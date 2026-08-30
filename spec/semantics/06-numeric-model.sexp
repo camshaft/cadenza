@@ -1544,6 +1544,15 @@
   (input  (do (def (main) (Map.len (Map.insert (Map.insert Map.empty 1 (: 5 UInt8)) 2 300))) (export main)))
   (error  CDZ0302))
 
+(case "an out-of-range Map.insert KEY via a sibling-inferred width is CDZ0302"
+  (doc    "The KEY arm of the Map builder face (the value arm is above): `(Map.insert (Map.insert Map.empty
+           (: 1 UInt8) 5) 300 7)` — the FIRST insert's KEY `(: 1 UInt8)` fixes the map's key type to UInt8, so
+           the second insert's un-annotated key `300` overflows UInt8 (max 255) → CDZ0302. The Map.insert
+           range-check covers BOTH key and value once each settles; this pins the KEY position alongside the
+           value case above. Escaped pre-fix (wasm wrapped the key, rust E0308).")
+  (input  (do (def (main) (Map.len (Map.insert (Map.insert Map.empty (: 1 UInt8) 5) 300 7))) (export main)))
+  (error  CDZ0302))
+
 ; The IN-RANGE controls for the two sibling-inferred Set/Map faces above: a value that FITS the
 ; sibling-inferred width must build + compute on every backend (the width check rejects only genuine
 ; overflows, and the rust literal-emitter must render the in-range element at the COLLECTION width, not the
