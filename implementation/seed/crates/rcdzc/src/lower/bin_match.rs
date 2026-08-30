@@ -145,8 +145,8 @@ pub(super) fn lower_bin_build(
                     // bits between flushes, so `7 + k <= 64` keeps the `acc << k` shift lossless). A wider
                     // runtime bit-field declines (the constant path still handles k ≤ 63).
                     if k == 0 || k > 56 {
-                        return Core::Poison(Reject::decline(
-                            "a runtime bin bit-field wider than 56 bits is not yet built",
+                        return Core::Poison(Reject::unsupported(
+                            "a runtime bin bit-field wider than 56 bits is not supported",
                         ));
                     }
                     // A CONSTANT bit-field sibling still range-checks (a k-bit UNSIGNED field; misfit → trap).
@@ -172,8 +172,8 @@ pub(super) fn lower_bin_build(
                         return Core::Poison(r);
                     }
                     if size.is_some() {
-                        return Core::Poison(Reject::decline(
-                            "a runtime sized (bytes b n) construction is not yet built",
+                        return Core::Poison(Reject::unsupported(
+                            "a runtime sized (bytes b n) construction is not supported",
                         ));
                     }
                     if crate::infer::type_of(db, seg.slot) != crate::ty::Ty::Bytes {
@@ -188,8 +188,8 @@ pub(super) fn lower_bin_build(
                 // Constructing a `(utf8 s n)` segment (splice a String's bytes) is not yet lowered — the
                 // `utf8` segment is currently pattern-only (`bin_match_decode`). Decline cleanly.
                 SegKind::Utf8 { .. } => {
-                    return Core::Poison(Reject::decline(
-                        "constructing a utf8 bin segment is not yet built (utf8 is pattern-only)",
+                    return Core::Poison(Reject::unsupported(
+                        "constructing a utf8 bin segment is not supported (utf8 is pattern-only)",
                     ));
                 }
             }
@@ -256,8 +256,8 @@ pub(super) fn lower_bin_build(
                     }
                     // A runtime integer value — the runtime construction path (BN4). Decline for now.
                     _ => {
-                        return Core::Poison(Reject::decline(
-                            "a bin segment with a runtime value is not yet built (constant segments only)",
+                        return Core::Poison(Reject::unsupported(
+                            "a bin segment with a runtime value is not supported (constant segments only)",
                         ));
                     }
                 }
@@ -302,8 +302,8 @@ pub(super) fn lower_bin_build(
                         }
                     }
                     _ => {
-                        return Core::Poison(Reject::decline(
-                            "a bin bit-field with a runtime value is not yet built (constant segments only)",
+                        return Core::Poison(Reject::unsupported(
+                            "a bin bit-field with a runtime value is not supported (constant segments only)",
                         ));
                     }
                 }
@@ -321,8 +321,8 @@ pub(super) fn lower_bin_build(
                     if let Core::Poison(r) = core_of(db, seg.slot) {
                         return Core::Poison(r);
                     }
-                    return Core::Poison(Reject::decline(
-                        "a bin bytes segment with a runtime value is not yet built (constant only)",
+                    return Core::Poison(Reject::unsupported(
+                        "a bin bytes segment with a runtime value is not supported (constant only)",
                     ));
                 };
                 if let Some(n_occ) = size {
@@ -337,8 +337,8 @@ pub(super) fn lower_bin_build(
                         }
                         Core::Poison(r) => return Core::Poison(r),
                         _ => {
-                            return Core::Poison(Reject::decline(
-                                "a bin bytes segment size is not a compile-time constant (not yet built)",
+                            return Core::Poison(Reject::unsupported(
+                                "a bin bytes segment size is not a compile-time constant",
                             ));
                         }
                     }
@@ -348,8 +348,8 @@ pub(super) fn lower_bin_build(
             // Constructing a `(utf8 s n)` segment (splice a String's UTF-8 bytes) is not yet lowered —
             // `utf8` is currently pattern-only (`bin_match_decode`). Decline cleanly.
             SegKind::Utf8 { .. } => {
-                return Core::Poison(Reject::decline(
-                    "constructing a utf8 bin segment is not yet built (utf8 is pattern-only)",
+                return Core::Poison(Reject::unsupported(
+                    "constructing a utf8 bin segment is not supported (utf8 is pattern-only)",
                 ));
             }
         }
@@ -956,8 +956,8 @@ pub(super) fn decode_bin_field_runtime(
                     little_endian: seg.little_endian,
                 }
             }
-            None => Core::Poison(Reject::decline(
-                "a runtime bin int segment after a non-final unsized bytes / utf8 segment is not yet decoded",
+            None => Core::Poison(Reject::unsupported(
+                "a runtime bin int segment after a non-final unsized bytes / utf8 segment is not supported",
             )),
         },
         // A FINAL unsized `(bytes rest)` binder — the tail after the fixed prefix. Read it as
@@ -977,8 +977,8 @@ pub(super) fn decode_bin_field_runtime(
                         off_plus,
                     }
                 }
-                None => Core::Poison(Reject::decline(
-                    "a runtime bin rest binder after a non-final unsized bytes / utf8 segment is not yet decoded",
+                None => Core::Poison(Reject::unsupported(
+                    "a runtime bin rest binder after a non-final unsized bytes / utf8 segment is not supported",
                 )),
             }
         }
@@ -1036,9 +1036,9 @@ pub(super) fn decode_bin_field_runtime(
                     bin_bitfield_read(db, scrut_ref, run_byte_off, run_bits, field_bit_pos, k);
                 core_of(db, read)
             }
-            None => Core::Poison(Reject::decline(
+            None => Core::Poison(Reject::unsupported(
                 "a runtime bin bit-field binder needs a byte-aligned run of ≤64 bits after fixed-int \
-                 segments (a mid-stream or wide bit-field is a later slice)",
+                 segments (a mid-stream or wide bit-field is not supported)",
             )),
         },
         // A `(utf8 s SIZE)` binder (constant OR dependent size, at ANY position) — decode the byte range to
@@ -1062,8 +1062,8 @@ pub(super) fn decode_bin_field_runtime(
                 )),
             }
         }
-        SegKind::Bytes { .. } => Core::Poison(Reject::decline(
-            "a runtime bin non-final sized-bytes binder is not yet decoded",
+        SegKind::Bytes { .. } => Core::Poison(Reject::unsupported(
+            "a runtime bin non-final sized-bytes binder is not supported",
         )),
     }
 }
