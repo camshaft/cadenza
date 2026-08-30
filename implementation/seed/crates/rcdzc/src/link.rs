@@ -1819,21 +1819,12 @@ mod tests {
             .iter()
             .find(|a| a.kind == KIND_LINK_MAP)
             .expect("a linked package must carry a link-map artifact");
-        let text = String::from_utf8(map.bytes.clone()).unwrap();
-        // One line per file: `<path>\t<base>\t<count>`. Parse into (path, base, count).
-        let rows: Vec<(&str, u32, u32)> = text
-            .lines()
-            .map(|l| {
-                let mut it = l.split('\t');
-                let path = it.next().unwrap();
-                let base: u32 = it.next().unwrap().parse().unwrap();
-                let count: u32 = it.next().unwrap().parse().unwrap();
-                (path, base, count)
-            })
-            .collect();
+        // The link-map payload is canonical BINARY AST (seq-254); decode via the shared codec into its
+        // `FileSpan` table rather than parsing bytes by hand.
+        let rows = decode_link_map(&map.bytes);
         assert_eq!(rows.len(), 2, "one link-map row per file");
-        assert!(rows.iter().any(|(p, ..)| *p == "lib"));
-        assert!(rows.iter().any(|(p, ..)| *p == "app"));
+        assert!(rows.iter().any(|f| f.path == "lib"));
+        assert!(rows.iter().any(|f| f.path == "app"));
         // The unbound-name diagnostic's node demuxes into exactly ONE file's range.
         let node = out
             .diagnostics
@@ -1843,8 +1834,8 @@ mod tests {
             .expect("an unbound-name diagnostic anchored to a node");
         let owning: Vec<&str> = rows
             .iter()
-            .filter(|(_, base, count)| node >= *base && node < base + count)
-            .map(|(p, ..)| *p)
+            .filter(|f| f.contains(StructId(node)))
+            .map(|f| f.path.as_str())
             .collect();
         assert_eq!(
             owning,
