@@ -1824,6 +1824,25 @@
               (def (main) (handle E 0 ((b (n) s (resume n s))) (E.a 5))) (export main)))
   (error  CDZ0403 (message "this handler arm names an operation its effect does not declare") (message "declared on a LATER") (message "discharges the FIRST")))
 
+; CONTEXT-AWARE suggestion for a typo'd HANDLE effect name (diagnostics.md §A Diagnostic Carries A Route To A
+; Fix — a fix must be one an agent applies and it WORKS, the one-shot rule): a `handle`'s effect name is
+; rewritten to `(. Name op)` arm ops, so a typo there is a MEMBER OPERAND. Its candidate pool DROPS names with
+; no members (variant constructors), because suggesting one would fail the one-shot rule (`(. Log op)` →
+; "record has no field `op`"). So a name equidistant from a VARIANT and a member-accessible EFFECT prefers the
+; effect; and when no member-accessible name is close, the diagnostic stays the honest plain unbound rather
+; than offering a variant ctor a fix could not resolve (no fix beats a wrong one). (Migrated from rcdzc
+; a_member_operand_typo_prefers_a_member_accessible_name_over_a_nearer_variant +
+; a_member_operand_does_not_suggest_a_prelude_variant_constructor.)
+(case "a typo'd handle effect name prefers a member-accessible effect over an equidistant variant"
+  (input  (do (effect Logr (op op (-> Unit Unit))) (type T (Log Int64))
+              (def (main) (handle Logg 0 ((op (u) s (resume s s))) 42)) (export main)))
+  (error  CDZ0101 (message "did you mean `Logr`?") (fix (kind replace) (replacement "Logr") (unverified))))
+
+(case "a typo'd handle effect name does not suggest a prelude variant constructor with no members"
+  (input  (do (effect E (op get (-> Unit Int64)))
+              (def (main) (handle Nope 0 ((get (u) s (resume s s))) 42)) (export main)))
+  (error  CDZ0101 (message "unbound") (not "None") (not "did you mean")))
+
 ; --- Handler resolution is dynamic in extent, across function boundaries ------------------------
 ; capabilities-and-effects.md #Handler Resolution Is Dynamic In Extent And Statically Determined. The cases
 ; above perform and handle inside one `main`, where dynamic and lexical resolution coincide. These cases
