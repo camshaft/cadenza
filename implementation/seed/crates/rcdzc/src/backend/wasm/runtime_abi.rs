@@ -96,7 +96,7 @@ pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 /// with no cross-host byte-reproducibility requirement); absent, the committed default is used.
 pub const REQUIRED_RUNTIME_HASH: &str = match option_env!("CDZ_RUNTIME_HASH") {
     Some(h) => h,
-    None => "05L2JC0EnCyNacWcbr6mXAt1OEcGaWV0WGPXXJWYSERoc",
+    None => "05BH8eawl5fGDuxP1ZG8nXy1vHriW9MQvaUs7EHN3DhTs",
 };
 /// The BLAKE3 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
@@ -106,7 +106,7 @@ pub const REQUIRED_RUNTIME_HASH: &str = match option_env!("CDZ_RUNTIME_HASH") {
 /// Overridable at compile time via the `CDZ_DEBUG_RUNTIME_HASH` env (see `REQUIRED_RUNTIME_HASH`).
 pub const DEBUG_RUNTIME_HASH: &str = match option_env!("CDZ_DEBUG_RUNTIME_HASH") {
     Some(h) => h,
-    None => "05pi1ZaAB2O10ak7T2Xg6akwnvWYlATuIYwzRJDKx6swb",
+    None => "05LZXhmawjnNl1qw4UlGmADywieiw913uZJjYAqAmkihd",
 };
 /// The NFC-normalization interface — the plain WIT name the value-heap RUNTIME imports for
 /// Unicode Normalization Form C. FINDING#23 (operator ruling d): NFC lives in a SEPARATE
