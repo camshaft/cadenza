@@ -547,6 +547,21 @@ pub fn cdz_render_expr(
 /// instead of inlining, moving the recursion from gate-codegen-time (over the infinite type) to Rust
 /// runtime (over the FINITE value — a `Nil` leaf terminates it). Mirrors the wasm value-encode, which walks
 /// the value, not the type.
+/// The render PATH for a Set element / Map key: a Float element/key is stored in the total-order wrapper
+/// `__CdzF32`/`__CdzF64` (a bare `f32`/`f64` is not `Ord`), and the collection `.iter()` binds it BY
+/// REFERENCE (`&__CdzF{N}`). The float render (`(path).clone() as f64`) needs the RAW float, and
+/// `(&__CdzF32) as f64` is a non-primitive cast (rustc E0605) — so unwrap the wrapper via its `.get()`
+/// (`__CdzF{N}: Copy`, so `(*bind).get()` moves a copy out of the `&`-binding, yielding the `f32`/`f64`).
+/// A non-float key/element is its own render path (byte-identical). Scalar Float only — a nested float leaf
+/// in a TUPLE key/element keeps the per-leaf wrapper and is a separate (rarer) render gap.
+fn ord_unwrap_render_path(ty: &str, bind: &str) -> String {
+    if ty == "Float32" || ty == "Float64" {
+        format!("(*{bind}).get()")
+    } else {
+        bind.to_string()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cdz_render_at(
     ty: &str,
@@ -755,9 +770,11 @@ pub fn cdz_render_at(
         } else {
             format!("{logical_path}.*")
         };
+        // A Float Set element is the `__CdzF{N}` Ord wrapper — unwrap it for the float render (E0605 else).
+        let elem_path = ord_unwrap_render_path(elem_ty, &ebind);
         let inner = cdz_render_at(
             elem_ty,
-            &ebind,
+            &elem_path,
             sums,
             newtypes,
             sum_params,
@@ -794,9 +811,11 @@ pub fn cdz_render_at(
         } else {
             format!("{logical_path}!v")
         };
+        // A Float Map KEY is the `__CdzF{N}` Ord wrapper — unwrap it for the float render (E0605 else).
+        let key_path = ord_unwrap_render_path(key_ty, &kbind);
         let kr = cdz_render_at(
             key_ty,
-            &kbind,
+            &key_path,
             sums,
             newtypes,
             sum_params,
