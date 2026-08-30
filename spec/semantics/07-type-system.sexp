@@ -3510,3 +3510,31 @@
 (case "an ordinary over-applied user function keeps the anonymous arity message, not a constructor phrasing"
   (input  (do (def (h (: a Int64)) a) (def (g) (h 1 2)) (export g)))
   (error  CDZ0203 (message "function of arity 1") (not "were given")))
+
+; An UNAPPLIED / partially-applied function used where a non-function value is expected has type `(-> …)`; the
+; generic "type mismatch: Int64 and (-> …)" never says the value is simply a function you FORGOT to call. Both
+; the annotation/arg site and the binop-unify site append "hasn't been fully applied; apply it to N more
+; argument(s)" (rustc's "you might have forgotten to call this function"), with a polished function-value lead
+; at an operator arg (not the raw internal-clash unify wording). No mechanical fix (the missing arg values are
+; unknown). The hint fires ONLY when applying the remaining args would yield the expected type — an applied
+; result that still differs, or a fn-vs-fn mismatch, keeps the plain message. (Migrated from rcdzc
+; an_unapplied_function_value_names_the_forgotten_call.)
+(case "a partial application where a scalar is expected names the forgotten call"
+  (input  (do (def (h (: a Int64) (: b Int64)) (+ a b)) (def (g (: x Int64)) x) (def (main) (g (h 1))) (export main)))
+  (error  CDZ0203 (message "hasn't been fully applied; apply it to 1 more argument to get an Int64") (no-fix)))
+
+(case "a partial application as an operator operand names the forgotten call with a polished function-value lead"
+  (input  (do (def (h (: a Int64) (: b Int64)) (+ a b)) (def (g) (+ (h 1) 2)) (export g)))
+  (error  CDZ0203 (message "hasn't been fully applied; apply it to 1 more argument") (message "this operation is not defined on a function value") (not "must be the same type here")))
+
+(case "a partial application still needing two arguments pluralizes the count"
+  (input  (do (def (h (: a Int64) (: b Int64) (: c Int64)) (+ a (+ b c))) (def (g) (: (h 1) Int64)) (export g)))
+  (error  CDZ0203 (message "apply it to 2 more arguments")))
+
+(case "no forgotten-call hint when the fully-applied result would still differ from the expected type"
+  (input  (do (def (h (: a Int64) (: b Int64)) (+ a b)) (def (g) (: (h 1) Bool)) (export g)))
+  (error  CDZ0203 (message "Bool") (not "hasn't been fully applied")))
+
+(case "no forgotten-call hint when the expected type is itself a function (fn-vs-fn mismatch)"
+  (input  (do (def (apply1 (: f (-> Int64 Int64)) (: x Int64)) (f x)) (def (h (: a Int64) (: b Int64)) (+ a b)) (def (g) (apply1 h 5)) (export g)))
+  (error  CDZ0203 (message "expected a function taking 1 argument, but this one takes 2") (not "hasn't been fully applied")))
