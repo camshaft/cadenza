@@ -1908,6 +1908,18 @@ fn emit_expr_viewed(
             let i = emit_expr(db, b, index, None, env, emitted)?;
             Ok(b.list(vec![head, s, i]))
         }
+        // `String.scalar-at` split into its OWN `Core::StrScalarAt` (post-#5928/#5932; distinct from the
+        // shared `Core::StrAt` above). It reads the scalar at `index` and returns `Option Char` (the baked
+        // `disc_some`/`disc_none` are the Option discriminants — the surface member re-lowers to the same, so
+        // they need no re-emit). Re-emit the member `((. String scalar-at) operand index)`: recompiling it
+        // re-lowers to the same scalar read + `Option Char`, value-equivalent. Mirrors the `StrAt`/`scalar-at`
+        // arm; the direct wasm/rust backends emit this node green (breaker census post-#5932).
+        Core::StrScalarAt { operand, index, .. } => {
+            let head = member_access(b, "String", "scalar-at");
+            let s = emit_expr(db, b, operand, None, env, emitted)?;
+            let i = emit_expr(db, b, index, None, env, emitted)?;
+            Ok(b.list(vec![head, s, i]))
+        }
         Core::StrSlice {
             string, start, end, ..
         } => {
