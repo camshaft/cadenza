@@ -3030,7 +3030,7 @@
            (numeric-model.md #Numeric Types Do Not Silently Promote). To add the integer, a program
            writes the conversion explicitly: `(+ (Rational.of 1 2) (Rational.of-int 1))`.")
   (input  (+ (Rational.of 1 2) 1))
-  (error  CDZ0301))
+  (error  CDZ0301 (fix (replacement-contains "Rational.of-int"))))
 
 ; --- Arbitrary-precision integers: BigInt, unbounded range, opted into explicitly ---------
 ; `BigInt` (options/numeric-model/) represents every integer with NO bound — the signed, unbounded
@@ -3197,6 +3197,17 @@
   (input  (+ (BigInt.of 40) (BigInt.of 2)))
   (output (: 42 BigInt))
   (live-objects known-leak))
+
+; A BigInt mixed with a fixed-width Int is the numeric no-promotion rule (BigInt counts as numeric in the
+; unify mismatch), so `(+ (BigInt.of n) 1)` is CDZ0301 — NOT the generic CDZ0203 type mismatch — and carries
+; a total-conversion fix wrapping the fixed operand `(BigInt.of …)` so both sides are BigInt in one shot (the
+; BigInt twin of the int-width `.of` coercion, and of the Rational `Rational.of-int` mix above). A Bool/Int
+; mix stays the generic CDZ0203 — BigInt did not widen the numeric net to non-numerics. (Migrated from rcdzc
+; a_bigint_fixed_int_mix_is_the_numeric_no_promotion_error_cdz0301; the Bool control is the non-numeric-operand
+; CDZ0203 case above, and the Rational mix + of-int fix is "a rational operation does not silently promote…".)
+(case "a BigInt mixed with a fixed-width integer is the numeric no-promotion error, with a BigInt.of coercion fix"
+  (input  (do (def (f (: n Int64)) (+ (BigInt.of n) 1)) (export f)))
+  (error  CDZ0301 (fix (replacement-contains "BigInt.of"))))
 
 (case "a negative runtime BigInt result crosses the host boundary with its sign"
   (doc    "`(- (BigInt.of 42) (BigInt.of 100))` = -58 : BigInt — a runtime BigInt SUBTRACT whose result is
