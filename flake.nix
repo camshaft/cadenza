@@ -31,6 +31,20 @@
 
   description = "Cadenza build/test pipeline (Nix flake: N0 devShell + N1 runtime derivation)";
 
+  # SHARED binary cache (operator-greenlit 2026-08-30, "the cachix token is already in the CI, give it a shot").
+  # The `camshaft` cachix cache is the durable root fix for the "rebuilding the whole world" cold-corpus / gate-
+  # local starvation: CI PUSHES the first-party build outputs (compiler + corpus + cdz-wasm closures) here via
+  # cachix-action (CACHIX_AUTH_TOKEN, already in CI — v-gha-green wires the CI push side), and every agent + CI
+  # job PULLS them as substitutes instead of cold-rebuilding from source. PULL needs only the public key below
+  # (no token — read-only); only PUSH needs the token. This SIDESTEPS the disabled cache-nix-action daemon-DB-
+  # swap regression entirely (a substituter, not a store-DB merge → no daemon race). Untrusted-user builds
+  # IGNORE this config with a warning (no hard fail); trusted users + `accept-flake-config` honor it. Restores
+  # the prior-art wiring from #144 / the removed reference/ subsystem (commit 0d625573aa).
+  nixConfig = {
+    extra-substituters = [ "https://camshaft.cachix.org" ];
+    extra-trusted-public-keys = [ "camshaft.cachix.org-1:NuMo5iCUNwDpNWJNlhCw/nFp3aQ7sxsVBXdlNtXs3CQ=" ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay = {
