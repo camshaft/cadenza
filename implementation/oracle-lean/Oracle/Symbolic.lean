@@ -553,7 +553,7 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
         | _, _ => .cannotProve "symeval: malformed projection"
       else match String.fromUTF8? h with
         | some hs =>
-          if arithOps.contains hs || cmpOps.contains hs || hs == "=" || hs == "and" || hs == "or" || hs == "not" then
+          if arithOps.contains hs || bitwiseOps.contains hs || cmpOps.contains hs || hs == "=" || hs == "and" || hs == "or" || hs == "not" then
             let outs := (children.extract 1 children.size).map (fun c => symEval m senv fuel ty c)
             match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
             | some r => .cannotProve r
@@ -755,6 +755,15 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
        == SymExpr.app "*" #[.app "/" #[.var 0, .const (.int 0)], .const (.int 0)]
 -- float x+0.0 is NOT simplified (unsound: -0.0) — stays symbolic.
 #guard normalize (.app "+" #[.var 0, .const (.f64 0.0)]) == SymExpr.app "+" #[.var 0, .const (.f64 0.0)]
+-- BITWISE ops (now modeled symbolically by symEval, #widening): kept symbolic (foldConst? does not fold
+-- bitwise), so P and its round-trip compare structurally; a bitwise op is trap-classified so a `case`/`if`
+-- over it is NOT dropped. `&`/`|`/`^`/shifts over vars or consts stay as their `app`.
+#guard normalize (.app "&" #[.var 0, .var 1]) == SymExpr.app "&" #[.var 0, .var 1]
+#guard normalize (.app "<<" #[.var 0, .const (.int 3)]) == SymExpr.app "<<" #[.var 0, .const (.int 3)]
+#guard normalize (.app "|" #[.const (.int 12), .const (.int 10)]) == SymExpr.app "|" #[.const (.int 12), .const (.int 10)]
+-- SOUNDNESS: a bitwise op MAY trap (shift-out-of-range), so an equal-branch `if` over it does NOT collapse.
+#guard normalize (.ite (.app "<<" #[.var 0, .var 1]) (.var 2) (.var 2))
+       == SymExpr.ite (.app "<<" #[.var 0, .var 1]) (.var 2) (.var 2)
 -- SHORT-CIRCUIT boolean identities: (or true X)→true, (or X false)→X, (and false X)→false, (and X true)→X.
 #guard normalize (.app "or" #[.const (.bool true), .var 0]) == SymExpr.const (.bool true)
 #guard normalize (.app "or" #[.var 0, .const (.bool false)]) == SymExpr.var 0
