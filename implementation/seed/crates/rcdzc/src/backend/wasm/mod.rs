@@ -1234,9 +1234,9 @@ pub fn emit(
         {
             let mut seen = std::collections::HashSet::new();
             if host_imports.iter().any(|hi| !seen.insert(hi.op.clone())) {
-                return Err(Reject::decline(
+                return Err(Reject::unsupported(
                     "two host ops share a name across the reducer's interfaces; the interface-qualified host \
-                     binding is a later increment",
+                     binding is not supported",
                 ));
             }
         }
@@ -1313,9 +1313,8 @@ pub fn emit(
     if !host_imports.is_empty() {
         let iface = host_imports[0].effect.clone();
         if host_imports.iter().any(|h| h.effect != iface) {
-            return Err(Reject::decline(
-                "delegating more than one host effect is not yet emitted (one interface per envelope; \
-                 the multi-interface host shape is a later increment)",
+            return Err(Reject::unsupported(
+                "delegating more than one host effect is not supported (one interface per envelope)",
             ));
         }
         // This pure host-delegating path (`assemble_host_runtime`/`assemble_host`) composes only a
@@ -2268,10 +2267,9 @@ fn emit_runtime_resource(
             ));
         }
         if host::set_needs_memory(&host_imports) {
-            return Err(Reject::decline(
-                "a host op with a STRING parameter in a resource-escaping entrypoint is not yet emitted \
-                 (the shared-memory host-resource `_mem` variant is a later increment); a scalar/unit host \
-                 op result-escaping as a resource IS emitted",
+            return Err(Reject::unsupported(
+                "a host op with a STRING parameter in a resource-escaping entrypoint is not supported \
+                 (a scalar/unit host op result-escaping as a resource IS supported)",
             ));
         }
         // The host op set, laid FIRST in the core module (host imports `0..h`) — a `CallHostImport(i)`
@@ -2291,9 +2289,9 @@ fn emit_runtime_resource(
         // SINGLE effect only — `assemble_host_runtime_resource` imports ONE host interface, so >1 distinct
         // effect would be conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
         if host_imports.iter().any(|hi| hi.effect != iface) {
-            return Err(Reject::decline(
-                "delegating more than one host effect from a resource-escaping entrypoint is not yet \
-                 emitted (one interface per envelope; the multi-interface host shape is a later increment)",
+            return Err(Reject::unsupported(
+                "delegating more than one host effect from a resource-escaping entrypoint is not \
+                 supported (one interface per envelope)",
             ));
         }
         let host_layout = layout
@@ -6444,17 +6442,16 @@ fn emit_runtime_bytes_resource(
             ));
         }
         if host::set_needs_memory(&host_imports) {
-            return Err(Reject::decline(
-                "a host op with a STRING parameter in a resource-escaping entrypoint is not yet emitted \
-                 (the shared-memory host-resource `_mem` variant is a later increment); a scalar/unit host \
-                 op result-escaping as a resource IS emitted",
+            return Err(Reject::unsupported(
+                "a host op with a STRING parameter in a resource-escaping entrypoint is not supported \
+                 (a scalar/unit host op result-escaping as a resource IS supported)",
             ));
         }
         let iface = host_imports[0].effect.clone();
         if host_imports.iter().any(|hi| hi.effect != iface) {
-            return Err(Reject::decline(
-                "delegating more than one host effect from a resource-escaping entrypoint is not yet \
-                 emitted (one interface per envelope; the multi-interface host shape is a later increment)",
+            return Err(Reject::unsupported(
+                "delegating more than one host effect from a resource-escaping entrypoint is not \
+                 supported (one interface per envelope)",
             ));
         }
         let h = host_imports.len() as u32;
@@ -6768,10 +6765,9 @@ fn emit_runtime_sum_resource(
             ));
         }
         if host::set_needs_memory(&host_imports) {
-            return Err(Reject::decline(
-                "a host op with a STRING parameter in a resource-escaping entrypoint is not yet emitted \
-                 (the shared-memory host-resource `_mem` variant is a later increment); a scalar/unit host \
-                 op result-escaping as a resource IS emitted",
+            return Err(Reject::unsupported(
+                "a host op with a STRING parameter in a resource-escaping entrypoint is not supported \
+                 (a scalar/unit host op result-escaping as a resource IS supported)",
             ));
         }
         let h = host_imports.len() as u32;
@@ -6784,9 +6780,9 @@ fn emit_runtime_sum_resource(
         // SINGLE effect only — `assemble_host_runtime_resource` imports ONE host interface, so >1 distinct
         // effect would be conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
         if host_imports.iter().any(|hi| hi.effect != iface) {
-            return Err(Reject::decline(
-                "delegating more than one host effect from a resource-escaping entrypoint is not yet \
-                 emitted (one interface per envelope; the multi-interface host shape is a later increment)",
+            return Err(Reject::unsupported(
+                "delegating more than one host effect from a resource-escaping entrypoint is not \
+                 supported (one interface per envelope)",
             ));
         }
         let host_layout = layout
@@ -7076,10 +7072,9 @@ fn emit_recursive_sum_resource(
             ));
         }
         if host::set_needs_memory(&host_imports) {
-            return Err(Reject::decline(
-                "a host op with a STRING parameter in a resource-escaping entrypoint is not yet emitted \
-                 (the shared-memory host-resource `_mem` variant is a later increment); a scalar/unit host \
-                 op result-escaping as a resource IS emitted",
+            return Err(Reject::unsupported(
+                "a host op with a STRING parameter in a resource-escaping entrypoint is not supported \
+                 (a scalar/unit host op result-escaping as a resource IS supported)",
             ));
         }
         let h = host_imports.len() as u32;
@@ -7092,9 +7087,9 @@ fn emit_recursive_sum_resource(
         // SINGLE effect only — `assemble_host_runtime_resource` imports ONE host interface, so >1 distinct
         // effect would be conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
         if host_imports.iter().any(|hi| hi.effect != iface) {
-            return Err(Reject::decline(
-                "delegating more than one host effect from a resource-escaping entrypoint is not yet \
-                 emitted (one interface per envelope; the multi-interface host shape is a later increment)",
+            return Err(Reject::unsupported(
+                "delegating more than one host effect from a resource-escaping entrypoint is not \
+                 supported (one interface per envelope)",
             ));
         }
         let host_layout = layout
