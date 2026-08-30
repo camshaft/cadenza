@@ -4976,7 +4976,12 @@
   (input  (do (def (mk) (fn ((: o (Option (Tuple Int64 (Tuple Int64 Int64))))) (match o ((Some p) (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1)))) (None 0))))
               (export mk)))
   (call   mk (: (Some #tuple(1 #tuple(2 3))) (Option (Tuple Int64 (Tuple Int64 Int64)))))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  ; PIN the reclaim: this NESTED-tuple payload regressed to live-objects 2 when
+  ; collect_sumpayload_escape_dup_sites (#5833) over-marked `p` as escaping via the borrow-then-dead
+  ; compound projection `(. p 1)` (the 177 over-retention). The payload-safety gate suppresses that
+  ; spurious dup → reclaims to 0. Pinned so it cannot silently re-regress.
+  (live-objects 0))
 
 (case "COMPOUND SUM PAYLOAD: mixed-width tuple payload (Int32, Int64, Bool)"
   (doc    "The payload tuple mixes core widths — `option<tuple<s32,s64,bool>>` flattens to `(disc, i32, i64,
