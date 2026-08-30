@@ -314,7 +314,15 @@ impl Gen<'_> {
             // So the effect-program slot splits with an inner `flip()` (well-distributed over varied_seed).
             match self.cur.choice(3) {
                 0 => self.user_sum_program(),
-                1 => self.try_program(),
+                1 => {
+                    // Slot 1 splits (via flip) between the try/`?` boundary program and a MUTUAL-RECURSION
+                    // program (both top-level shapes; the flip is well-distributed over varied_seed).
+                    if self.cur.flip() {
+                        self.try_program();
+                    } else {
+                        self.mutual_rec_program();
+                    }
+                }
                 _ => {
                     if self.cur.flip() {
                         self.cross_fn_effect_program();
@@ -366,6 +374,38 @@ impl Gen<'_> {
         self.out.push_str(
             ") (Result Int64 Int64))) (def (main) (match (f) ((Ok v) v) ((Err e) e))) (export main))",
         );
+    }
+
+    /// A MUTUAL-RECURSION program: two top-level defs `f`/`g` that call EACH OTHER (not themselves) with a
+    /// DECREMENTING argument and a shared base-case guard, then `main` calls one with a small start. Reaches
+    /// the call-graph SCC / mutual-recursion lowering (both defs in one recursive group, each forward-
+    /// referencing the other) that the single-self-recursion `rec_def_expr` never exercises. TERMINATION is
+    /// structural: every recursive branch calls the OTHER def with `(- n 1)` and both defs guard
+    /// `(if (<= n 0) <base> …)`, and `main` starts at a small 0..=8 arg — so the mutual descent is bounded
+    /// (~n steps, no unbounded loop). Int64 throughout so it type-checks; f/g are NOT value bindings in
+    /// [`Env`], so a generated base-case operand can't spuriously call them. Operator directive 2026-08-30.
+    fn mutual_rec_program(&mut self) {
+        let depth = 3;
+        let f = self.env.fresh();
+        let g = self.env.fresh();
+        let nf = self.env.fresh();
+        let ng = self.env.fresh();
+        // f: base case a generated numeric value (may reference nf); else calls g(n-1).
+        let _ = write!(self.out, "(do (def ({f} (: {nf} Int64)) (if (<= {nf} 0) ");
+        let mark = self.env.push(nf.clone(), Kind::Num);
+        self.expr(depth, Kind::Num);
+        self.env.truncate(mark);
+        let _ = write!(self.out, " ({g} (- {nf} 1)))) ");
+        // g: base case a generated numeric value; else calls f(n-1).
+        let _ = write!(self.out, "(def ({g} (: {ng} Int64)) (if (<= {ng} 0) ");
+        let mark = self.env.push(ng.clone(), Kind::Num);
+        self.expr(depth, Kind::Num);
+        self.env.truncate(mark);
+        let _ = write!(self.out, " ({f} (- {ng} 1)))) ");
+        // main calls f or g with a small starting arg (bounded mutual descent).
+        let start = self.cur.range(0, 8);
+        let callee = if self.cur.flip() { &f } else { &g };
+        let _ = write!(self.out, "(def (main) ({callee} {start})) (export main))");
     }
 
     /// A USER-DEFINED-SUM program: a top-level monomorphic `(type …)` declaration + a param-less `main`
@@ -2436,6 +2476,39 @@ mod tests {
         assert!(
             hit,
             "no seed in the sweep emitted a recursive def (nested `(def (`)"
+        );
+    }
+
+    /// The MUTUAL-RECURSION program is reachable — some seed emits TWO sibling top-level param'd defs that
+    /// each guard `(if (<= n 0) …)` and call the OTHER (not themselves), reaching the call-graph SCC /
+    /// mutual-recursion lowering. Detected via TWO `Int64)) (if (<= ` param'd-base-guard defs (mutual_rec's
+    /// f and g), which the single-helper `rec_def_expr` shape does not produce. Every such program parses.
+    /// Guards operator seq-23 mutual-recursion coverage.
+    #[test]
+    fn some_seed_emits_a_mutual_recursion() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            // Two param'd base-guarded sibling defs = mutual_rec's f + g (rec_def_expr mints one helper).
+            let is_special = src.contains("(try (Ok ")
+                || src.contains("(do (type ")
+                || src.starts_with("(do (effect ");
+            if !is_special && src.matches("Int64)) (if (<= ").count() >= 2 {
+                hit = true;
+                assert!(
+                    src.contains("(def (main) ("),
+                    "mutual-rec program should have a `main` that calls a helper:\n{src}"
+                );
+            }
+        }
+        assert!(
+            hit,
+            "no seed in the sweep emitted a mutual-recursion program"
         );
     }
 
