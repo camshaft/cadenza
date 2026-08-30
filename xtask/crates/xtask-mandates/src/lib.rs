@@ -128,7 +128,7 @@ fn no_hard_coded_runtime_hash(repo: &Path) -> Result<Vec<Violation>, String> {
     for f in rs {
         let rel = f.strip_prefix(repo).unwrap_or(&f);
         let rel_str = rel.to_string_lossy().replace('\\', "/");
-        if is_vendored_path(&rel_str) || is_runtime_abi_hash_home(&rel_str) {
+        if is_vendored_path(&rel_str) || is_sanctioned_hash_home(&rel_str) {
             continue;
         }
         let src = std::fs::read_to_string(&f)
@@ -159,11 +159,14 @@ fn no_hard_coded_runtime_hash(repo: &Path) -> Result<Vec<Violation>, String> {
     Ok(out)
 }
 
-/// Is this the one sanctioned literal-hash file — `rcdzc/src/backend/wasm/runtime_abi.rs`, the codegen'd
-/// home of `REQUIRED_RUNTIME_HASH` etc.? Matched on the path tail so it holds regardless of the crate
-/// root prefix.
-fn is_runtime_abi_hash_home(rel_slash: &str) -> bool {
-    rel_slash.ends_with("rcdzc/src/backend/wasm/runtime_abi.rs")
+/// Is this a sanctioned literal-hash file — a codegen'd home of `REQUIRED_RUNTIME_HASH` etc.? Two files
+/// qualify: `cadenza-compile-abi/src/runtime_hash.rs` (the relocated declaration home, read by the thin
+/// `!standalone` `cdz` without linking `rcdzc`) and `rcdzc/src/backend/wasm/runtime_abi.rs` (the ABI table,
+/// which now RE-EXPORTS the hashes — no literal there today, kept sanctioned for robustness). Matched on
+/// the path tail so it holds regardless of the crate root prefix.
+fn is_sanctioned_hash_home(rel_slash: &str) -> bool {
+    rel_slash.ends_with("cadenza-compile-abi/src/runtime_hash.rs")
+        || rel_slash.ends_with("rcdzc/src/backend/wasm/runtime_abi.rs")
 }
 
 /// A cheap line-level prefilter: does the source contain a content-address-shaped literal (a 64-lowercase-
@@ -482,11 +485,14 @@ mod tests {
     }
 
     #[test]
-    fn runtime_abi_hash_home_is_exempt() {
-        assert!(is_runtime_abi_hash_home(
+    fn sanctioned_hash_home_is_exempt() {
+        assert!(is_sanctioned_hash_home(
             "implementation/seed/crates/rcdzc/src/backend/wasm/runtime_abi.rs"
         ));
-        assert!(!is_runtime_abi_hash_home(
+        assert!(is_sanctioned_hash_home(
+            "implementation/seed/crates/cadenza-compile-abi/src/runtime_hash.rs"
+        ));
+        assert!(!is_sanctioned_hash_home(
             "implementation/seed/crates/cdz/src/main.rs"
         ));
     }
