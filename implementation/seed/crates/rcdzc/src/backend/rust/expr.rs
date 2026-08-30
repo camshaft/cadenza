@@ -3974,9 +3974,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // BigInt shapes and rejects the bare-Int one. (Mirrors the wasm backend's
             // `Ty::Qty { inner, .. } if matches!(*inner, Ty::BigInt)` treatment.)
             if !is_bigint_valued(&type_of(db, lhs)) || !is_bigint_valued(&type_of(db, rhs)) {
-                return Err(Reject::decline(
+                return Err(Reject::unsupported(
                     "a BigInt op whose operand is neither BigInt nor a BigInt-magnitude quantity (a \
-                     bare-Int-typed operand would emit an i64, not a Big) is not yet rendered",
+                     bare-Int-typed operand would emit an i64, not a Big) is not supported",
                 ));
             }
             let l = emit(db, lhs, env, ctx)?;
@@ -4003,9 +4003,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // Both operands must be BigInt-VALUED to emit as `Big` (bare `BigInt` or a `Qty{inner:BigInt}`
             // whose wrapper erases; a bare-`Int` constant would emit an i64 → declines). See `BigIntBinOp`.
             if !is_bigint_valued(&type_of(db, lhs)) || !is_bigint_valued(&type_of(db, rhs)) {
-                return Err(Reject::decline(
+                return Err(Reject::unsupported(
                     "a BigInt comparison whose operand is neither BigInt nor a BigInt-magnitude quantity \
-                     is not yet rendered on the Rust backend",
+                     is not supported by the Rust backend",
                 ));
             }
             let l = emit(db, lhs, env, ctx)?;
@@ -4488,8 +4488,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     helpers.join(" ")
                 ))
             } else {
-                Err(Reject::decline(
-                    "runtime structural equality over this compound is not yet rendered by the Rust backend",
+                Err(Reject::unsupported(
+                    "runtime structural equality over this compound is not supported by the Rust backend",
                 ))
             }
         }
@@ -4866,8 +4866,9 @@ fn emit_value_ord_walk_seen(
             let sum_ty = ty.clone();
             if seen.contains(&sum_ty) {
                 if !args.is_empty() {
-                    return Err(Reject::decline(
-                        "runtime ordering over a RECURSIVE GENERIC sum is not yet rendered by the Rust backend (needs a generic helper fn)",
+                    // (Internal: rendering this would need a generic helper fn; not built yet.)
+                    return Err(Reject::unsupported(
+                        "runtime ordering over a recursive generic sum is not supported by the Rust backend",
                     ));
                 }
                 return Ok(format!("{fn_name}(&{l}, &{r})"));
