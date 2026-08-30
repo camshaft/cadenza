@@ -30,6 +30,11 @@ REAP_MIN="${CDZ_ORPHAN_CDZ_REAP_MIN:-30}"          # reap ORPHANED (PPID 1) `cdz
 REAP_LOG="$LOG_DIR/reap.log"                        # bounded audit of reaped orphans (mtime = last-fired proof)
 REAP_LOG_MAX="${CDZ_REAP_LOG_MAX:-2000}"
 
+OWNED_HUNG_MIN="${CDZ_OWNED_CDZ_HUNG_MIN:-45}"      # NOTE (never kill) the owner of an OWNED cdz hung > this (min)
+ESCALATE_STATE="$LOG_DIR/escalated.tsv"             # rate-limit state: pid<TAB>last-notify-epoch (bounded)
+ESCALATE_COOLDOWN="${CDZ_OWNED_CDZ_COOLDOWN:-3600}" # do NOT re-notify the same pid within this many seconds
+ESCALATE_STATE_MAX="${CDZ_ESCALATE_STATE_MAX:-500}"
+
 mkdir -p "$LOG_DIR" 2>/dev/null || exit 0
 
 # Light per-LOG-TIME normalization: collapse nix-store hashes + /tmp scratch (huge variance, low value),
@@ -72,12 +77,15 @@ reap_orphaned_cdz() {
         "$pid" "$et" "$REAP_MIN" >&2
     fi
   done < <(ps -eo pid=,ppid=,euid=,etimes=,comm= 2>/dev/null)
-  # Bound the audit log (tail-rotate) so it can never become its own disk hog.
-  if [ "$apply" = 1 ] && [ -f "$REAP_LOG" ]; then
-    n="$(wc -l < "$REAP_LOG" 2>/dev/null || echo 0)"
-    if [ "${n:-0}" -gt "$REAP_LOG_MAX" ]; then
-      tail -n "$REAP_LOG_MAX" "$REAP_LOG" > "$REAP_LOG.rot" 2>/dev/null && mv "$REAP_LOG.rot" "$REAP_LOG" 2>/dev/null || true
+  if [ "$apply" = 1 ]; then
+    # Bound the audit log (tail-rotate) so it can never become its own disk hog.
+    if [ -f "$REAP_LOG" ]; then
+      n="$(wc -l < "$REAP_LOG" 2>/dev/null || echo 0)"
+      if [ "${n:-0}" -gt "$REAP_LOG_MAX" ]; then
+        tail -n "$REAP_LOG_MAX" "$REAP_LOG" > "$REAP_LOG.rot" 2>/dev/null && mv "$REAP_LOG.rot" "$REAP_LOG" 2>/dev/null || true
+      fi
     fi
+    # Summarize only when we actually reaped (a quiet apply tick prints nothing — it's the cron's hot path).
     [ "$reaped" -gt 0 ] && printf 'cpu-monitor: reaped %s orphaned cdz proc(s) (>=%smin, own-user)\n' "$reaped" "$REAP_MIN" >&2
   else
     printf 'cpu-monitor: %s orphaned cdz candidate(s) (dry-run; pass --apply to reap)\n' "$seen" >&2
@@ -85,7 +93,96 @@ reap_orphaned_cdz() {
   return 0
 }
 
+# Resolve the OWNING agent of a pid from its cwd: /proc/<pid>/cwd → `…/.claude/worktrees/<agent>/…` → <agent>.
+# Prints the agent name + returns 0 on a match; returns non-zero (prints nothing) if it can't attribute (no
+# proc, or a cwd outside a fleet worktree — in which case we must NOT send a note to a guessed recipient).
+owner_of_pid() {
+  local pid="$1" cwd rest
+  cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null)" || return 1
+  case "$cwd" in
+    */.claude/worktrees/*)
+      rest="${cwd#*/.claude/worktrees/}"   # strip up to and incl worktrees/
+      printf '%s' "${rest%%/*}"            # first path component = the agent/worktree name
+      return 0 ;;
+  esac
+  return 1
+}
+
+# ESCALATE (NOTE, never kill) the owner of an OWNED (live-parent) `cdz` hung > OWNED_HUNG_MIN (concierge item
+# 2, greenlit 2026-08-30 as a low-pri safety net). Unlike the orphan reaper, an OWNED hung cdz has a LIVE
+# parent — a real agent OWNS it, so we must NOT kill it; we send its owner a NOTE so the owner coordinates the
+# stop. Rate-limited per-pid (ESCALATE_COOLDOWN) so a persistently-hung proc can't spam its owner. Owner is
+# resolved from the proc cwd; if it can't be attributed to a fleet worktree we SKIP (never guess a recipient).
+# arg1: apply (1 = actually `fleet send` the note, 0 = dry-run — print who WOULD be notified). FAIL-OPEN.
+# NOTE: deliberately NOT wired into the auto sample tick yet — owner-resolution+send wants a live own-user
+# owned-hung verification first; run via `--escalate-owned [--apply]` until then.
+escalate_owned_hung_cdz() {
+  local apply="${1:-0}" me min_secs now seen=0 notified=0 pid ppid euid et comm owner last hub xtask_wt
+  me="$(id -u 2>/dev/null || echo -1)"
+  min_secs=$(( OWNED_HUNG_MIN * 60 ))
+  now="$(date +%s 2>/dev/null || echo 0)"
+  # The xtask workspace to run `fleet send` from: this script lives at <hub>/.claude/fleet/cpu-monitor.sh,
+  # so ../.. is the hub; pr-sync's worktree always exists + holds a workspace (same pattern as window.sh).
+  hub="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
+  xtask_wt="$hub/.claude/worktrees/pr-sync"
+  while read -r pid ppid euid et comm; do
+    [ -n "$pid" ] || continue
+    [ "$ppid" != "1" ] || continue         # OWNED only — orphans (PPID 1) are the reaper's job, not this
+    [ "$euid" = "$me" ] || continue         # own-user only
+    [ "$comm" = "cdz" ] || continue         # exactly the front-end binary
+    [ "${et:-0}" -ge "$min_secs" ] 2>/dev/null || continue
+    owner="$(owner_of_pid "$pid")" || continue   # unattributable cwd → never guess a recipient
+    [ -n "$owner" ] || continue
+    seen=$((seen + 1))
+    # Per-pid cooldown (last-notify epoch from the state file; awk takes the latest row for this pid).
+    last="$(awk -F'\t' -v p="$pid" '$1==p{t=$2} END{if(t)print t}' "$ESCALATE_STATE" 2>/dev/null || echo)"
+    if [ -n "$last" ] && [ "$((now - last))" -lt "$ESCALATE_COOLDOWN" ] 2>/dev/null; then
+      continue   # notified recently — stay quiet (no spam)
+    fi
+    if [ "$apply" = 1 ]; then
+      # Send the owner a NOTE (never a kill). Plain-text subject/body (no backticks/$() — env-leak safe).
+      if [ -d "$xtask_wt" ] && ( cd "$xtask_wt" && cargo xtask fleet send --from v-fleet-tooling --to "$owner" --kind note \
+            --subject "cpu-monitor: your owned cdz pid $pid has been hung ~$((et/60))min — please stop/investigate (I do NOT kill owned procs)" \
+            --body "Automated fleet-health note from cpu-monitor (v-fleet-tooling). An OWNED (live-parent) cdz front-end in your worktree has been running ~$((et/60))min (>= ${OWNED_HUNG_MIN}min), which matches the compiler-ml warm-only non-termination family (match->let / recursion-lowering; v-compiler-primitives root-caused it as tuple-destructure-LET init-re-eval, fix pending). It is pegging a core and may be starving the gate lease. I do NOT kill owned procs (only ORPHANED PPID-1 leaks get reaped) — please stop or investigate pid $pid. Re-notify cooldown is ${ESCALATE_COOLDOWN}s." >/dev/null 2>&1 ); then
+        notified=$((notified + 1))
+        printf '%s\t%s\n' "$pid" "$now" >> "$ESCALATE_STATE" 2>/dev/null || true
+        printf '%s escalated owned-hung cdz pid=%s owner=%s etimes=%ss (note-only)\n' \
+          "$(date -Is 2>/dev/null || echo now)" "$pid" "$owner" "$et" >> "$REAP_LOG" 2>/dev/null || true
+      fi
+    else
+      printf 'cpu-monitor: WOULD note owner=%s of owned-hung cdz pid=%s etimes=%ss (>=%smin, note-only, never kill)\n' \
+        "$owner" "$pid" "$et" "$OWNED_HUNG_MIN" >&2
+    fi
+  done < <(ps -eo pid=,ppid=,euid=,etimes=,comm= 2>/dev/null)
+  # Bound the rate-limit state file (tail-rotate).
+  if [ -f "$ESCALATE_STATE" ]; then
+    local sn; sn="$(wc -l < "$ESCALATE_STATE" 2>/dev/null || echo 0)"
+    if [ "${sn:-0}" -gt "$ESCALATE_STATE_MAX" ]; then
+      tail -n "$ESCALATE_STATE_MAX" "$ESCALATE_STATE" > "$ESCALATE_STATE.rot" 2>/dev/null && mv "$ESCALATE_STATE.rot" "$ESCALATE_STATE" 2>/dev/null || true
+    fi
+  fi
+  if [ "$apply" = 1 ]; then
+    [ "$notified" -gt 0 ] && printf 'cpu-monitor: escalated %s owned-hung cdz proc(s) to owner(s) (note-only)\n' "$notified" >&2
+  else
+    printf 'cpu-monitor: %s owned-hung cdz candidate(s) (dry-run; pass --apply to note the owner)\n' "$seen" >&2
+  fi
+  return 0
+}
+
 case "${1:-sample}" in
+  --escalate-owned | escalate-owned)
+    # Manual inspection / operator drive. DRY-RUN by default (lists owned-hung cdz + resolved owner);
+    # `--apply` actually sends each owner a note (rate-limited). NOT auto-wired into the sample tick yet.
+    _apply=0
+    [ "${2:-}" = "--apply" ] && _apply=1
+    escalate_owned_hung_cdz "$_apply"
+    exit 0
+    ;;
+  --owner-of)
+    # Tiny self-test / diagnostic: print the resolved owning agent of a pid (or nothing + rc1 if unattributable).
+    owner_of_pid "${2:?usage: cpu-monitor.sh --owner-of <pid>}" && echo || { echo "cpu-monitor: pid ${2} not attributable to a fleet worktree" >&2; exit 1; }
+    exit 0
+    ;;
   --reap-orphans | reap-orphans)
     # Manual inspection / operator drive. DRY-RUN by default (lists candidates); `--apply` actually reaps.
     _apply=0
