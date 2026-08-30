@@ -649,21 +649,12 @@ fn extract_path_literal(attr_line: &str) -> Option<String> {
 /// can only shrink. The cdz-runtime -> cadenza-ast three are owned by v-runtime under seq-273; the cdz-num
 /// -> cdz-runtime one is tracked with v-runtime. REMOVE an entry once its include is converted to a dep.
 pub const PATH_INCLUDE_ALLOWLIST: &[(&str, &str)] = &[
+    // The last remaining cross-crate #[path] include (v-runtime's, seq-275 sweep: extract bigint into a
+    // shared no_std crate). Drop this entry when that extraction lands. (The cdz-runtime -> cadenza-ast
+    // three were removed by seq-273 slice-1, #5931, and dropped from this allowlist accordingly.)
     (
         "implementation/seed/crates/cdz-num/src/lib.rs",
         "../../cdz-runtime/src/bigint.rs",
-    ),
-    (
-        "implementation/seed/crates/cdz-runtime/src/lib.rs",
-        "../../cadenza-ast/src/ast.rs",
-    ),
-    (
-        "implementation/seed/crates/cdz-runtime/src/lib.rs",
-        "../../cadenza-ast/src/codec.rs",
-    ),
-    (
-        "implementation/seed/crates/cdz-runtime/src/lib.rs",
-        "../../cadenza-ast/src/leb128.rs",
     ),
 ];
 
