@@ -18,6 +18,14 @@
 //! The taxonomy grows one variant per added check; its `str` form is the stable `CDZ####` string a
 //! tool branches on.
 
+/// The `DeclineId` catalog (the unsupported-error tracker's oracle: a stable, enumerable referent for
+/// every construct rcdzc declines to compile) is GENERATED from `data/unsupported.sexp` by
+/// `xtask-codegen-declines` (operator seq-106: sexpr source → xtask codegen → rust, no xtask→rcdzc edge).
+/// rcdzc consumes it here; `Reject::id`/`declined()` reference it via this re-export
+/// (`crate::diag::DeclineId`). Edit the sexpr + `cargo run -p xtask-codegen-declines` to regenerate.
+mod declines_generated;
+pub use declines_generated::DeclineId;
+
 /// A stable, machine-readable diagnostic code. Its `code()` string is the durable identity a
 /// consumer matches on; the enum variant is the compiler-internal handle.
 ///
@@ -685,115 +693,6 @@ impl Fix {
 /// prelude appends its nodes AFTER the program's), so an `at` on a program node IS the id the
 /// front-end's span table is keyed by. `None` = an un-anchored "no" (a synthesized node, or a
 /// producer that did not stamp one).
-/// The stable, enumerable catalog of every construct `rcdzc` declines to compile — the "oracle" half of
-/// the unsupported-error tracker (`implementation/design/DESIGN-unsupported-tracker.md`, seq-286-broad).
-/// A `DeclineId` names a REASON (a capability the compiler does not realize), NOT a call site: sites
-/// emitting the same reason share an id (~698 sites collapse to ~150-250 reasons). Minting a variant is
-/// the intended sole way to emit a decline, so `DeclineId::ALL` is a COMPLETE, by-construction list of
-/// the compiler's decline surface — the structural completeness that replaces fragile regex counting
-/// (which undercounts shared-const declines like `PRIM_AS_VALUE_DECLINE`). The generated
-/// `data/unsupported.sexp` registry iterates `ALL`; the human-authored `(blocked-on …)` routing lives
-/// there, not here. INCREMENT 1 (this): the catalog + `Reject::declined()` + the `id` field exist and are
-/// enumerable; per-site migration (switching `decline(msg)` → `declined(id, msg)`) rides the ongoing
-/// seq-280/286 coding sweep. Seeded with the reasons already coded to CDZ0900 (#6163 fusion, #6216
-/// host-boundary/closure-export, v-effects #6219 fold) plus one still-codeless (`PrimAsValueNeedsClosure`).
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
-pub enum DeclineId {
-    /// A host effect and a peer effect both composed with a resource-escaping entrypoint (#6163).
-    WasmHostPeerResourceFusion,
-    /// An export that both receives and returns a closure — a closure transformer (#6216).
-    WasmClosureTransformer,
-    /// A compound result alongside a closure (plain or round-trip) export (#6216).
-    WasmCompoundResultWithClosureExport,
-    /// A recursive-sum / runtime-collection value rendered as a host-boundary result (#6216).
-    WasmValueFormWalkerRecursive,
-    /// A bytes-crossing host op whose signature has no host-boundary form (#6216).
-    WasmBytesCrossingHostOpNoBoundaryForm,
-    /// Matching a map-pattern payload against a runtime map (#6216, select/dispatch).
-    WasmMapPatternRuntimeMap,
-    /// A built-in operation used as a runtime value (would need a synthesized runtime closure).
-    /// Still codeless at its emit site (`lower/compute.rs`) pending v-inference's dedup fix.
-    PrimAsValueNeedsClosure,
-    /// An effect handler in a form the tail-resumptive fold does not specialize (cross-function /
-    /// non-tail resume) — v-effects #6219.
-    TailResumptiveFoldUnhandledForm,
-}
-
-impl DeclineId {
-    /// The complete catalog — the registry generator iterates this; completeness is structural (adding a
-    /// variant without listing it here is caught by the `codegen --check` gate once Increment 2 lands).
-    pub const ALL: &'static [DeclineId] = &[
-        DeclineId::WasmHostPeerResourceFusion,
-        DeclineId::WasmClosureTransformer,
-        DeclineId::WasmCompoundResultWithClosureExport,
-        DeclineId::WasmValueFormWalkerRecursive,
-        DeclineId::WasmBytesCrossingHostOpNoBoundaryForm,
-        DeclineId::WasmMapPatternRuntimeMap,
-        DeclineId::PrimAsValueNeedsClosure,
-        DeclineId::TailResumptiveFoldUnhandledForm,
-    ];
-
-    /// The stable kebab-case key used in the `data/unsupported.sexp` registry. NEVER changes once minted
-    /// (renaming the Rust variant is fine; this string is the durable referent a tool/registry pins).
-    pub fn key(self) -> &'static str {
-        match self {
-            DeclineId::WasmHostPeerResourceFusion => "wasm-host-peer-resource-fusion",
-            DeclineId::WasmClosureTransformer => "wasm-closure-transformer",
-            DeclineId::WasmCompoundResultWithClosureExport => {
-                "wasm-compound-result-with-closure-export"
-            }
-            DeclineId::WasmValueFormWalkerRecursive => "wasm-value-form-walker-recursive",
-            DeclineId::WasmBytesCrossingHostOpNoBoundaryForm => {
-                "wasm-bytes-crossing-host-op-no-boundary-form"
-            }
-            DeclineId::WasmMapPatternRuntimeMap => "wasm-map-pattern-runtime-map",
-            DeclineId::PrimAsValueNeedsClosure => "prim-as-value-needs-closure",
-            DeclineId::TailResumptiveFoldUnhandledForm => "tail-resumptive-fold-unhandled-form",
-        }
-    }
-
-    /// The umbrella code this decline carries today — `Some(CDZ0900)` once coded, `None` while a site is
-    /// still a codeless `decline()` (migration in progress). Wording-independent of the runtime message.
-    pub fn code(self) -> Option<Code> {
-        match self {
-            // Still codeless at the emit site (v-inference dedup fix gates the CDZ0900 flip).
-            DeclineId::PrimAsValueNeedsClosure => None,
-            // Everything else is already coded CDZ0900 (landed).
-            _ => Some(Code::UnsupportedConstruct),
-        }
-    }
-
-    /// A canonical one-line reason — the capability the compiler does not realize — INDEPENDENT of the
-    /// runtime `format!` message's specifics (offending type, arity, name). This is the registry's
-    /// `(reason …)` field.
-    pub fn reason(self) -> &'static str {
-        match self {
-            DeclineId::WasmHostPeerResourceFusion => {
-                "a host effect and a peer effect composed with a resource-escaping entrypoint"
-            }
-            DeclineId::WasmClosureTransformer => {
-                "an export that both receives and returns a closure"
-            }
-            DeclineId::WasmCompoundResultWithClosureExport => {
-                "a compound result alongside a closure export"
-            }
-            DeclineId::WasmValueFormWalkerRecursive => {
-                "a recursive-sum or runtime-collection value as a host-boundary result"
-            }
-            DeclineId::WasmBytesCrossingHostOpNoBoundaryForm => {
-                "a host op whose signature has no host-boundary form"
-            }
-            DeclineId::WasmMapPatternRuntimeMap => {
-                "matching a map-pattern payload against a runtime map"
-            }
-            DeclineId::PrimAsValueNeedsClosure => "a built-in operation used as a runtime value",
-            DeclineId::TailResumptiveFoldUnhandledForm => {
-                "an effect handler in a form the tail-resumptive fold does not specialize"
-            }
-        }
-    }
-}
-
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Reject {
     /// `Some(code)` = a rejection (ill-formed); `None` = a decline (not yet built).

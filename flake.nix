@@ -402,6 +402,14 @@
           cargoExtraArgs = "-p xtask-codegen-wasm-abi";
           doCheck = false;
         });
+        # xtaskCodegenDeclinesBin (v-deferral-declines seq-106; v-nix flake reg) — generates
+        # rcdzc/src/diag/declines_generated.rs (the DeclineId catalog) FROM data/unsupported.sexp. Mirrors
+        # xtaskCodegenWasmAbiBin: crane-built from its own closure (cadenza-ast + external syn/quote/prettyplease).
+        xtaskCodegenDeclinesBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask-codegen-declines"; }) // {
+          pname = "cdz-xtask-codegen-declines";
+          cargoExtraArgs = "-p xtask-codegen-declines";
+          doCheck = false;
+        });
 
         # xtaskCodegenGuideBin — the guide sexp→TSX codegen (v-guide-infra I5, the whole-guide→sexpr flip;
         # v-nix owns the nix wiring). Mirrors xtaskCodegenWasmAbiBin: crane-built from its OWN closure
@@ -734,6 +742,7 @@
           # xtask-codegen-wasm-abi (v-xtask-decompose): the wasm/component byte-table extractor
           # (codegen→build-time-nix), deps only wasm-encoder (external). Registered so crane sees its Cargo.toml.
           xtask-codegen-wasm-abi = "xtask/crates/xtask-codegen-wasm-abi";
+          xtask-codegen-declines = "xtask/crates/xtask-codegen-declines";
           # xtask-codegen-guide (v-guide-infra I5, whole-guide→sexpr flip; v-nix owns the nix wiring): the guide
           # sexp→TSX codegen (deps cadenza-syntax-sexpr + cadenza-ast). Registered so crane sees its Cargo.toml +
           # `xtaskCodegenGuideBin` builds it; guideExamplesCheck sets CDZ_XTASK_CODEGEN_GUIDE to the prebuilt bin.
@@ -1103,6 +1112,7 @@
               # workspace closure is just itself.
               # now deps cadenza-ast (reads wasm-abi.sexp's cadenza-ast binary in the --from-sexpr producer).
               xtask-codegen-wasm-abi = [ "cadenza-ast" "xtask-codegen-wasm-abi" ];
+              xtask-codegen-declines = [ "cadenza-ast" "xtask-codegen-declines" ];
               # xtask-codegen-guide (v-guide-infra I5): reads a chapter .sexp via the MAIN reader
               # (cadenza-syntax-sexpr → cadenza-syntax-core + cadenza-ast) into a cadenza-ast Arenas and emits
               # the @generated .tsx. Closure = the sexpr-reader stack + itself.
@@ -2561,6 +2571,11 @@
           root = ./.;
           fileset = ./data/wasm-abi.sexp;
         };
+        # declinesSexpSrc (v-deferral-declines seq-106) — the DeclineId source-of-truth the codegen reads.
+        declinesSexpSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = ./data/unsupported.sexp;
+        };
         # cdzWasmAbi (v-nix, operator codegen→build-time-nix): the 2nd generated file — run v-xtask-decompose's
         # xtask-codegen-wasm-abi bin to EMIT rcdzc/src/backend/wasm/wasm_abi.rs at build time. FLIPPED to the
         # operator's SEXPR → RUST direction (--from-sexpr, #5316): the bin reads the authoritative wasm-abi.sexp,
@@ -2587,6 +2602,29 @@
           else
             echo "DRIFT: build-time wasm-abi codegen != committed wasm_abi.rs — regen committed or fix the sexpr:"
             cat wasmabi.diff; exit 1
+          fi
+        '';
+        # cdzDeclines (v-deferral-declines seq-106; v-nix flake reg) — run xtask-codegen-declines to EMIT
+        # rcdzc/src/diag/declines_generated.rs from data/unsupported.sexp at build time. Mirrors cdzWasmAbi:
+        # CDZ_REPO_ROOT = the scoped sexp src, CDZ_SEED_BIN_DIR = seedCompiler (the bin reads the sexp as
+        # binary AST via `cdz convert`), first arg = the output path.
+        cdzDeclines = pkgs.runCommand "cdz-declines"
+          { nativeBuildInputs = [ xtaskCodegenDeclinesBin seedCompiler rustToolchain ]; } ''
+          set -euo pipefail
+          mkdir -p "$out"
+          export CDZ_REPO_ROOT="${declinesSexpSrc}"
+          export CDZ_SEED_BIN_DIR="${seedCompiler}/bin"
+          xtask-codegen-declines "$out/declines_generated.rs"
+        '';
+        # DRIFT-GUARD: build-time-generated declines_generated.rs MUST be byte-identical to the committed one
+        # (diff-style, mirrors cdzWasmAbiMatch). A forgotten regen after a data/unsupported.sexp edit → LOUD red.
+        cdzDeclinesMatch = pkgs.runCommand "cdz-declines-match" { } ''
+          set -euo pipefail
+          if diff ${cdzDeclines}/declines_generated.rs ${./implementation/seed/crates/rcdzc/src/diag/declines_generated.rs} > declines.diff; then
+            echo "ok: cdzDeclines (build-time codegen) == committed rcdzc/src/diag/declines_generated.rs (byte-identical)" > "$out"
+          else
+            echo "DRIFT: build-time declines codegen != committed declines_generated.rs — regen committed or fix data/unsupported.sexp:"
+            cat declines.diff; exit 1
           fi
         '';
         # ORACLE-CHECK (operator's INVERTED guarantee, #5316): assert every opcode/valtype/section/magic byte in
@@ -5302,6 +5340,7 @@
             # (also part of flake-repro-backstop). The harness runs that name a contract exercise it in anger.
             contract-hashes-valid = contractHashesValid;
             cdz-wasm-abi-match = cdzWasmAbiMatch;
+            cdz-declines-match = cdzDeclinesMatch;
             # wasm-abi-oracle: the operator-required derived test — every wasm-abi.sexp byte matches the
             # wasm-encoder oracle (catches a sexpr transcription typo now that the sexp is the source of truth).
             # Standalone (like cdz-wasm-abi-match); runs under `nix flake check`.

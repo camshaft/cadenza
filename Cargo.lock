@@ -3435,6 +3435,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask-codegen-declines"
+version = "0.0.0"
+dependencies = [
+ "cadenza-ast",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "xtask-codegen-guide"
 version = "0.0.0"
 dependencies = [
