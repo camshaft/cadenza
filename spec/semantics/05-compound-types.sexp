@@ -275,6 +275,29 @@
   (input     (. "hi" x))
   (error     CDZ0201))
 
+; A collection/text value accessed by NAME — `(. xs foo)` on a `(List …)`, `(Map …)`, `(Set …)`, `String` —
+; is not a field read (these are not records). Their operations live on the type MODULE and take the value
+; first, so the message REDIRECTS: it names the module + the value-first `((. Module <op>) <value> …)` call
+; form instead of the dead-end "requires a record" (the collection/text twin of the tuple-index numeric-form
+; redirect). No mechanical fix — which op the author meant is unknown. A SCALAR keeps the plain "requires a
+; record" (no operation module; covered above). (Migrated from rcdzc
+; named_member_access_on_a_collection_points_at_the_operation_module.)
+(case "named member access on a List redirects to the List operation module"
+  (input  (do (def (g (: xs (List Int64))) (. xs foo)) (export g)))
+  (error  CDZ0201 (message "a (List Int64) value has no field `foo`") (message "live on the `List` module") (message "((. List <op>) <value>") (no-fix)))
+
+(case "named member access on a Map redirects to the Map operation module"
+  (input  (do (def (g (: mp (Map Int64 Int64))) (. mp foo)) (export g)))
+  (error  CDZ0201 (message "a (Map Int64 Int64) value has no field `foo`") (message "live on the `Map` module") (message "((. Map <op>) <value>") (no-fix)))
+
+(case "named member access on a Set redirects to the Set operation module"
+  (input  (do (def (g (: s (Set Int64))) (. s foo)) (export g)))
+  (error  CDZ0201 (message "a (Set Int64) value has no field `foo`") (message "live on the `Set` module") (message "((. Set <op>) <value>") (no-fix)))
+
+(case "named member access on a String redirects to the String operation module"
+  (input  (do (def (g (: str String)) (. str foo)) (export g)))
+  (error  CDZ0201 (message "a String value has no field `foo`") (message "live on the `String` module") (message "((. String <op>) <value>") (no-fix)))
+
 ; --- Accessing a field the record does not have is a static type error, not a runtime trap --------
 ; The cases above reject member access on a NON-record (an Int, Bool, Tuple, String) at compile time —
 ; the projection has no defined result, so the compiler rejects rather than emitting a component that
