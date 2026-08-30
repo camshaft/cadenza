@@ -5040,6 +5040,26 @@ fn fast_gate_output_is_remote_transient(output: &str) -> bool {
         || output.contains("cannot open connection to remote store")
 }
 
+/// A gate sub-check builder that was KILLED under load — NOT a real test/clippy/compile failure, and NOT a
+/// nix daemon/remote transient either. Under sustained check-lease contention a sub-check derivation can be
+/// SIGKILLed (the OOM-killer, a reaper, the loop/harness command-timeout) or SIGTERMed; nix reports that as
+/// the builder "failed with exit code 137/143" (128+SIGKILL / 128+SIGTERM) or "failed due to signal 9/15".
+/// Its output carries NO remote-transient signature, so [`fast_gate_output_is_remote_transient`] misses it
+/// and `gate_local_hold_advisory` would wrongly label it a REAL regression — the false-HOLD class: an agent
+/// then routes/retries a phantom failure and can get stuck (v-rcdzc-test-shrink hit this under the land-block
+/// contention). This distinguishes the contention-kill shape so the advisory says RE-RUN (when the box is
+/// quieter) rather than ROUTE. ADVISORY ONLY — it never changes the RED verdict, so a genuine failure that
+/// merely LOOKS killed is at worst re-run, never merged. Pure so the match rule is unit-tested. NARROW BY
+/// DESIGN: only the KILL signals (9 SIGKILL / 15 SIGTERM = external terminations from a reaper/OOM/timeout)
+/// and their canonical exit codes — NOT a crash signal (SIGSEGV 11 / SIGABRT 6), which IS a real failure to
+/// route, and not a stray "137" in a diff (the phrase is anchored to nix's builder-failure wording).
+fn fast_gate_output_is_contention_kill(output: &str) -> bool {
+    output.contains("failed with exit code 137") // 128 + 9 (SIGKILL: OOM-killer / reaper / hard timeout)
+        || output.contains("failed with exit code 143") // 128 + 15 (SIGTERM)
+        || output.contains("failed due to signal 9")
+        || output.contains("failed due to signal 15")
+}
+
 // ============================================================================================
 // check — the omnibus health check.
 // ============================================================================================
@@ -6933,6 +6953,44 @@ mod trap_grading_tests {
             "note: the remote branch is ahead; a clippy warning about remote_data follows"
         ));
         assert!(!fast_gate_output_is_remote_transient(""));
+    }
+
+    #[test]
+    fn fast_gate_contention_kill_matches_a_killed_builder_not_a_real_or_crashing_failure() {
+        // A sub-check builder SIGKILLed (137 = 128+9) / SIGTERMed (143 = 128+15) under load → contention-kill,
+        // NOT a regression → RE-RUN. This is the false-HOLD class: no remote-transient signature, so the old
+        // advisory called it REAL.
+        assert!(fast_gate_output_is_contention_kill(
+            "error: builder for '/nix/store/abc-oracle.drv' failed with exit code 137"
+        ));
+        assert!(fast_gate_output_is_contention_kill(
+            "error: builder for '/nix/store/abc-corpus.drv' failed with exit code 143"
+        ));
+        assert!(fast_gate_output_is_contention_kill(
+            "error: builder for '/nix/store/abc-wasm-runtime-build.drv' failed due to signal 9 (SIGKILL)"
+        ));
+        assert!(fast_gate_output_is_contention_kill(
+            "error: builder for '/nix/store/abc-oracle.drv' failed due to signal 15 (SIGTERM)"
+        ));
+        // A CRASH signal (SIGSEGV 11 / SIGABRT 6) is a REAL failure to ROUTE, not a contention-kill.
+        assert!(!fast_gate_output_is_contention_kill(
+            "error: builder for '/nix/store/abc-oracle.drv' failed due to signal 11 (SIGSEGV)"
+        ));
+        assert!(!fast_gate_output_is_contention_kill(
+            "error: builder for '/nix/store/abc-oracle.drv' failed due to signal 6 (SIGABRT)"
+        ));
+        // An ordinary non-kill build failure (exit 1 / a real code error) must NOT trip it.
+        assert!(!fast_gate_output_is_contention_kill(
+            "error: builder for '/nix/store/abc-oracle.drv' failed with exit code 1"
+        ));
+        assert!(!fast_gate_output_is_contention_kill(
+            "error[E0308]: mismatched types\n  --> src/lib.rs:10:5"
+        ));
+        // A stray "137" NOT anchored to nix's builder-failure wording must not trip it.
+        assert!(!fast_gate_output_is_contention_kill(
+            "note: 137 tests passed; exit code 0"
+        ));
+        assert!(!fast_gate_output_is_contention_kill(""));
     }
 
     #[test]

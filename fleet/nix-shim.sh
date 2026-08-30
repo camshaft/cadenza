@@ -8,14 +8,18 @@
 # wasteful from-source rebuild that monopolizes build-slots. The check-lease (cap 2) can't see either. This
 # shim surfaces both at the call site so the leased gate-local becomes the sanctioned heavy-nix entry.
 #
-# ROUTING (v-fleet-tooling 2026-08-30, concierge-nod — the gate-local STORM fix): the ONE case the shim does
-# more than warn is a BARE `nix build .#checks.<sys>.local-gate` (the authoritative merge gate) run OUTSIDE
-# the lease — it is ROUTED to `cargo xtask fleet gate-local`, which builds the SAME attr but takes the
-# weighted check-lease (#6004). WHY: a raw local-gate build bypasses `run_gate_local`'s lease entirely, so N
-# agents can run it CONCURRENTLY and self-induce a load storm (observed: 21 concurrent local-gates, load 103,
-# builds starved to 0-byte). Routing it to the leased command closes that escape at the call site. ONLY
-# `local-gate` is routed (it is the aggregate gate + has a leased equivalent); every OTHER heavy attr stays
-# WARN-only (they are distinct builds with no gate-local equivalent). Mirrors the cargo-shim's route pattern.
+# ROUTING (v-fleet-tooling 2026-08-30, concierge-nod — the gate-local STORM fix + the raw-heavy-check bypass):
+# a BARE `nix build .#checks.<sys>.<heavy>` run OUTSIDE the lease is ROUTED so it takes the check-lease
+# instead of escaping the cap. Two routes: (1) `local-gate` (the authoritative merge gate) → `cargo xtask
+# fleet gate-local`, which builds the SAME attr under the WEIGHTED lease (#6004) + priority-lane; (2) ANY
+# OTHER heavy attr (corpus-* / gate-check-* / … per the v-nix-owned nix-heavy-attrs.tsv) → `cargo xtask fleet
+# with-lease nix build …`, which runs the SAME build under a vertical check-lease slot. WHY: a raw heavy
+# `.#checks.*` build bypasses the lease entirely, so N agents run them CONCURRENTLY and self-induce a load
+# storm / big-nix-lock thrash that starves the LEASED gate-locals (observed: 21 concurrent local-gates load
+# 103 → 0-byte; then raw `.#checks.*.corpus-*` builds starving leased gates at 0.1% CPU, concierge 2026-08-30).
+# Routing every heavy raw build to a leased command closes the escape at the call site. FAIL-OPEN: if cargo is
+# unavailable neither route fires → WARN + real nix. The intentionally-UNLEASED warm-keep pass sets
+# CDZ_LEASED_NIX=1 itself, so it is exempt at the top and never routed. Mirrors the cargo-shim's route pattern.
 #
 # SAFETY — this shadows `nix` for the WHOLE fleet (the cargo-shim's `nix run .#test/.#build` routes, gate-
 # local's own `nix build`, refresh-tools, every `apps` invocation flow through it), so a bug is a fleet-wide
@@ -101,8 +105,22 @@ if [ "${1:-}" = "build" ] && [ -f "$_hints" ]; then
       case "$_attr" in $_v) _hit=1; break ;; esac
     done < <(grep -v '^#' "$_hints" 2>/dev/null)
     if [ "$_hit" = 1 ]; then
+      # ROUTE any OTHER bare heavy check attr (corpus-* / gate-check-* / … — everything but local-gate,
+      # which has its own leased command above) through `cargo xtask fleet with-lease nix build …` so it
+      # takes a check-lease slot instead of ESCAPING the cap. This closes the raw-heavy-check bypass that
+      # starved leased gate-locals (concierge 2026-08-30: ~21 concurrent heavy .#checks builds fleet-wide,
+      # several raw multi-target `nix build .#checks.*.corpus-*` that the shim previously only WARNED on then
+      # ran UNLEASED). with-lease sets CDZ_LEASED_NIX=1 before exec-ing nix, so this shim passes the inner
+      # build straight through (the re-entry guard above → no recursion, no double-route). trailing_var_arg
+      # captures `nix build .#… <flags>` verbatim. FAIL-OPEN: if cargo is unavailable we cannot route → fall
+      # back to the WARN + real nix (never block). The intentionally-UNLEASED warm-keep pass sets
+      # CDZ_LEASED_NIX=1 itself → it is exempt at the top and never reaches here.
+      if command -v cargo >/dev/null 2>&1; then
+        echo "⚠ nix-shim: routing a bare heavy 'nix build .#checks.*.$_attr' → 'cargo xtask fleet with-lease nix build …' (a raw heavy check ESCAPES the check-lease cap + starves leased gate-locals; bypass: CDZ_NO_NIX_SHIM=1)." >&2
+        exec cargo xtask fleet with-lease nix "$@"
+      fi
       _m="$(grep -v '^#' "$_hints" 2>/dev/null | awk -F'\t' '$1=="warn:heavy"{sub(/^[^\t]*\t/,"");print;exit}')"
-      [ -n "$_m" ] && echo "⚠ nix-shim (heavy check '$_attr' built bare, escaping the lease): $_m" >&2
+      [ -n "$_m" ] && echo "⚠ nix-shim (heavy check '$_attr' built bare, escaping the lease; cargo absent, cannot route): $_m" >&2
     fi
   fi
 fi

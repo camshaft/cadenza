@@ -373,6 +373,7 @@ impl Fleet {
             "nix-shim.sh",
             "git-stash-safety-shim.sh",
             "cpu-monitor.sh",
+            "warm-keep.sh",
         ] {
             let src = self.src.join(f);
             if src.exists() {
@@ -1624,6 +1625,59 @@ fn ensure_prune_crons(fleet: &Fleet) {
     }
 }
 
+/// The desired HOURLY user-crontab line for the warm-keep GC-root refresh (v-nix+v-fleet-tooling
+/// 2026-08-30), tagged `# fleet:warm-keep` so [`reconcile_tagged_crons`] can find/heal it. Runs the HUB
+/// copy of `warm-keep.sh` (materialized by `up`), which picks a current-main-ish flake worktree and invokes
+/// `nix run .#warm-keep` to re-root the corpus/deps/store warm layer. HOURLY at an off-minute (v-nix-agreed:
+/// warm re-runs are cache-cheap — only a runtime-hash bump or corpus-case churn does real work — matching
+/// the dead cache-warm.yml periodicity; 30min is needless heavy-corpus load, 2h lets roots go stale-ish).
+/// UNLEASED by design (v-nix-agreed): one warm-keep is strictly better than N agents cold-sweeping the
+/// corpus (the 2026-08-28 daemon-wedge), and the hourly cadence IS the retry-supervisor — warm-keep is
+/// sequential + best-effort + exit-0, so a run KILLED mid-corpus under contention still roots what it
+/// finished and the next hourly pass cache-HITS those + retries the rest → the corpus roots CONVERGE over a
+/// few passes; a check-lease would just starve it (the seq-43 problem). Silent (a re-warm never emits cron
+/// mail). Off-minute 17 avoids the :00/:30 herd (see the CronCreate off-minute norm).
+fn warm_keep_cron_line(hub_script: &str) -> String {
+    format!("17 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:warm-keep")
+}
+
+/// Ensure the `# fleet:warm-keep` hourly user-crontab entry exists + points at THIS hub's `warm-keep.sh`
+/// (v-nix+v-fleet-tooling 2026-08-30). Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
+/// [`ensure_cpu_monitor_cron`] / [`ensure_prune_crons`], and INDEPENDENT of them (a separate reconcile/write
+/// in `up`, each preserving the others' lines via [`reconcile_tagged_crons`]'s per-tag heal). Root cause it
+/// fixes: the periodic warm-keep invocation was never installed, so the corpus GC-roots went to ZERO all
+/// session (2026-08-30) and agents cold-swept the corpus (the daemon-wedge risk). v-nix owns the flake app
+/// `apps.warm-keep`; this cron is the scheduler that runs it. Skips silently if `warm-keep.sh` isn't
+/// materialized yet (older tree) or `crontab` is absent/errs — never blocks `fleet up`.
+fn ensure_warm_keep_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("warm-keep.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:warm-keep",
+        warm_keep_cron_line(&script.display().to_string()),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// Pure decision for the checkout-symlink bootstrap: given whether the tracked source dir exists, and the
 /// current state of the `.claude/<name>` path (is-symlink, symlink-target, exists-as-non-symlink), what
 /// should `ensure_claude_symlinks` DO? Split out so the "when do we (re)link vs skip vs refuse" policy is
@@ -1719,6 +1773,10 @@ fn up(fleet: &Fleet) {
     // system-crontab driver replacing concierge's Claude-scheduler prune prompts (survives a concierge
     // restart, offloads the sweep off its context). Independent of the cpu-monitor reconcile; fail-open.
     ensure_prune_crons(fleet);
+    // Re-arm the hourly warm-keep GC-root refresh cron (v-nix+v-ft 2026-08-30) — the missing periodic
+    // scheduler for `apps.warm-keep`. Without it the corpus GC-roots drop to zero and agents cold-sweep the
+    // corpus (the 2026-08-28 daemon-wedge). Independent of the other self-crons; fail-open + drift-healed.
+    ensure_warm_keep_cron(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -10172,12 +10230,21 @@ fn parse_failing_subchecks(nix_output: &str) -> Vec<String> {
 /// [`parse_failing_subchecks`] isn't enough on its own — say whether it's a real regression or the known
 /// nix daemon flake). If the captured build output carries a nix daemon/remote-builder TRANSIENT signature
 /// (the same false-RED family dev-gate auto-retries, #4562), it's very likely infra flake → RE-RUN before
-/// treating it as a regression; otherwise there's no transient signature → treat it as a REAL sub-check
-/// failure to route/fix. Pure so the classification is unit-tested without running nix.
+/// treating it as a regression. Else if a sub-check builder was KILLED under load (exit 137/143 or signal
+/// 9/15 — a contention-kill, see [`crate::fast_gate_output_is_contention_kill`]), that's also NOT a real
+/// regression → RE-RUN when quieter (this closes the false-HOLD class where a killed sub-check carried no
+/// remote-transient signature and got mislabeled REAL). Otherwise there's no transient/kill signature →
+/// treat it as a REAL sub-check failure to route/fix. ADVISORY ONLY — never changes the RED verdict, so a
+/// genuine failure mislabeled here is at worst re-run, never merged. Pure so the classification is
+/// unit-tested without running nix.
 fn gate_local_hold_advisory(captured: &str) -> &'static str {
     if crate::fast_gate_output_is_remote_transient(captured) {
         "gate-local: NOTE — the failure output matches a known nix daemon/remote-builder TRANSIENT (same \
          family dev-gate auto-retries #4562); RE-RUN gate-local before treating this as a regression."
+    } else if crate::fast_gate_output_is_contention_kill(captured) {
+        "gate-local: NOTE — a sub-check builder was KILLED (exit 137/143 or signal 9/15 = SIGKILL/SIGTERM \
+         from the OOM-killer, a reaper, or the loop timeout under check-lease contention), NOT a test/compile \
+         failure; RE-RUN gate-local when the box is quieter before treating this as a regression."
     } else {
         "gate-local: NOTE — no nix-transient signature in the output; treat this as a REAL sub-check \
          failure (a regression to route/fix), not infra flake."
@@ -16819,6 +16886,78 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     }
 
     #[test]
+    fn warm_keep_cron_line_is_hourly_off_minute_silent_and_tagged() {
+        let line = warm_keep_cron_line("/hub/warm-keep.sh");
+        // HOURLY at an off-minute (17, not :00/:30 — avoids the herd), runs the hub script, silent, tagged.
+        assert!(
+            line.starts_with("17 * * * * bash /hub/warm-keep.sh"),
+            "hourly at off-minute 17, invoking the hub script: {line}"
+        );
+        assert!(
+            line.contains(">/dev/null 2>&1"),
+            "silent — no cron mail: {line}"
+        );
+        assert!(
+            line.ends_with("# fleet:warm-keep"),
+            "carries the reconcile tag: {line}"
+        );
+        // Not */30 (too heavy) and not a 2-hourly form — pin the agreed hourly cadence.
+        assert!(!line.contains("*/30"));
+        assert!(!line.contains("*/2 "));
+    }
+
+    #[test]
+    fn reconcile_tagged_crons_installs_and_heals_the_warm_keep_line_beside_the_others() {
+        let desired = [(
+            "# fleet:warm-keep",
+            warm_keep_cron_line("/hub/warm-keep.sh"),
+        )];
+        let want_line = &desired[0].1;
+
+        // Empty crontab → installs the warm-keep line with a trailing newline.
+        let out = reconcile_tagged_crons("", &desired).expect("installs when absent");
+        assert!(out.contains(want_line) && out.ends_with('\n'));
+
+        // Present verbatim alongside the cpu-monitor + prune + unrelated lines → no needless rewrite.
+        let full = format!(
+            "0 5 * * * /usr/bin/backup\n\
+             */2 * * * * bash /hub/cpu-monitor.sh >/dev/null 2>&1 # fleet:cpu-monitor\n\
+             {want_line}\n"
+        );
+        assert!(
+            reconcile_tagged_crons(&full, &desired).is_none(),
+            "verbatim-present → no rewrite"
+        );
+
+        // A DRIFTED warm-keep line (stale hub path / wrong cadence) is healed to the current form, exactly
+        // once, while every OTHER tagged + unrelated entry is preserved.
+        let drifted = "0 5 * * * /usr/bin/backup\n\
+             */2 * * * * bash /hub/cpu-monitor.sh >/dev/null 2>&1 # fleet:cpu-monitor\n\
+             0 * * * * bash /OLD/warm-keep.sh >/dev/null 2>&1 # fleet:warm-keep\n";
+        let healed = reconcile_tagged_crons(drifted, &desired).expect("heals the drifted line");
+        assert!(
+            healed.contains(want_line),
+            "installs the current warm-keep line"
+        );
+        assert!(
+            !healed.contains("/OLD/warm-keep.sh"),
+            "drops the stale hub path"
+        );
+        assert!(
+            healed.contains("# fleet:cpu-monitor") && healed.contains("/usr/bin/backup"),
+            "preserves the cpu-monitor + unrelated entries"
+        );
+        assert_eq!(
+            healed
+                .lines()
+                .filter(|l| l.contains("# fleet:warm-keep"))
+                .count(),
+            1,
+            "exactly one warm-keep line after heal (dedup)"
+        );
+    }
+
+    #[test]
     fn gate_local_hold_advisory_flags_nix_transient_vs_real_failure() {
         // A nix daemon/remote-builder transient (the #4562 family) → advise RE-RUN, not a regression.
         let transient = "error: cannot open connection to remote store 'daemon': \
@@ -16827,10 +16966,21 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(
             gate_local_hold_advisory("Invalid BuildResult status from remote").contains("RE-RUN")
         );
-        // A genuine sub-check builder failure → advise treating it as a REAL regression.
+        // A contention-KILLED sub-check (SIGKILL 137 / signal 9 under load) → advise RE-RUN, not a
+        // regression (the false-HOLD class: no remote-transient signature, so it used to fall to REAL).
+        let killed = "error: builder for '/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-oracle.drv' \
+                      failed with exit code 137";
+        assert!(gate_local_hold_advisory(killed).contains("KILLED"));
+        assert!(gate_local_hold_advisory(killed).contains("RE-RUN"));
+        assert!(!gate_local_hold_advisory(killed).contains("REAL sub-check"));
+        // A genuine sub-check builder failure (exit 1 / a crash signal) → advise treating it as a REAL
+        // regression, NOT a contention-kill re-run.
         let real = "error: builder for '/nix/store/cccccccccccccccccccccccccccccccc-corpus-09-functions.drv' \
                     failed with exit code 1";
         assert!(gate_local_hold_advisory(real).contains("REAL sub-check"));
+        let crashed = "error: builder for '/nix/store/dddddddddddddddddddddddddddddddd-oracle.drv' \
+                       failed due to signal 11 (SIGSEGV)";
+        assert!(gate_local_hold_advisory(crashed).contains("REAL sub-check"));
     }
 
     #[test]
