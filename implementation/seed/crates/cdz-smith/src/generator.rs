@@ -167,6 +167,12 @@ const INT_FIXED_TYPES: &[&str] = &[
     "Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64",
 ];
 
+/// Known base units for `Qty`/`Unit` generation (the SI base set + gram) — an UNKNOWN unit declines
+/// (`unknown unit …`), so the generator sticks to built-ins that reach the quantity/unit lowering.
+const QTY_UNITS: &[&str] = &[
+    "meter", "second", "kilogram", "gram", "ampere", "kelvin", "mole", "candela",
+];
+
 /// Exact float boundaries, each a well-formed float token (starts with a digit, has a `.`/`e`, valid
 /// chars) so `cadenza-syntax::parse_float` accepts it. Covers signed zero, the f32/f64 magnitude
 /// extremes, tiny subnormal-scale values, and out-of-f64-range magnitudes (a clean range/const-fold
@@ -373,7 +379,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(23) {
+        match self.cur.choice(24) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -394,6 +400,7 @@ impl Gen<'_> {
             19 => self.record_expr(depth),
             20 => self.sum_expr(depth),
             21 => self.char_expr(depth),
+            22 => self.qty_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -876,6 +883,61 @@ impl Gen<'_> {
             let c = self.env.fresh();
             let _ = write!(self.out, ") ((Some {c}) (Char.to-int {c})) ((None) 0))");
         }
+    }
+
+    /// A `Qty` (dimensioned quantity) expression, reduced to its magnitude via `Qty.value` so it types
+    /// as a scalar in any position. Reaches the QUANTITY/UNIT lowering — `Qty.of <num> <unit>`,
+    /// `Unit.base`/`Unit.of`, `Qty.value`, `Qty.pow`, and Qty ARITHMETIC (unit algebra: `*` composes
+    /// units, `+` requires matching units) — a value domain the crash hunt never touched (operator
+    /// directive 2026-08-30). Only KNOWN units (an unknown unit declines); numeric magnitudes.
+    fn qty_expr(&mut self, depth: u32) {
+        self.out.push_str("(Qty.value ");
+        let nunits = QTY_UNITS.len();
+        match self.cur.choice(4) {
+            0 => {
+                let u = self.cur.choice(nunits);
+                self.qty_of(depth, u);
+            }
+            1 => {
+                // (Qty.pow <qty> <small-exp>)
+                self.out.push_str("(Qty.pow ");
+                let u = self.cur.choice(nunits);
+                self.qty_of(depth, u);
+                let _ = write!(self.out, " {})", self.cur.range(0, 3));
+            }
+            2 => {
+                // Product — units may differ (compound unit result), Qty.value takes its magnitude.
+                self.out.push_str("(* ");
+                let u1 = self.cur.choice(nunits);
+                self.qty_of(depth, u1);
+                self.out.push(' ');
+                let u2 = self.cur.choice(nunits);
+                self.qty_of(depth, u2);
+                self.out.push(')');
+            }
+            _ => {
+                // Sum — operands MUST share a unit (dimension-checked), so pick ONE unit for both.
+                let u = self.cur.choice(QTY_UNITS.len());
+                self.out.push_str("(+ ");
+                self.qty_of(depth, u);
+                self.out.push(' ');
+                self.qty_of(depth, u);
+                self.out.push(')');
+            }
+        }
+        self.out.push(')'); // close (Qty.value …)
+    }
+
+    /// `(Qty.of <num> (Unit.base|Unit.of #"<known-unit>"))` for the unit at `QTY_UNITS[unit_idx]`.
+    fn qty_of(&mut self, depth: u32, unit_idx: usize) {
+        self.out.push_str("(Qty.of ");
+        self.expr(depth.saturating_sub(1), Kind::Num);
+        let ctor = if self.cur.flip() {
+            "Unit.base"
+        } else {
+            "Unit.of"
+        };
+        let _ = write!(self.out, " ({ctor} #\"{}\"))", QTY_UNITS[unit_idx]);
     }
 
     /// A GUARANTEED-TERMINATING recursive top-level def, exercising the self-call / recursion
@@ -1454,9 +1516,10 @@ mod tests {
     /// The float-boundary arm is reachable: some seed makes `float_lit` emit an exact boundary.
     #[test]
     fn some_seed_emits_a_float_boundary() {
-        let hit = (0u16..=255).any(|b| {
-            let seed = [b as u8; 48];
-            let src = generate(&seed).source;
+        // Uses the VARIED-seed sweep (not uniform `[b; N]` seeds, which the varied_seed doc notes can
+        // make an arm structurally unreachable + are fragile to grammar-modulus shifts as arms are added).
+        let hit = (0u32..8000).any(|n| {
+            let src = generate(&varied_seed(n)).source;
             FLOAT_BOUNDARIES.iter().any(|lit| src.contains(*lit))
         });
         assert!(hit, "no seed in the sweep emitted a float boundary literal");
@@ -1748,6 +1811,35 @@ mod tests {
             saw_roundtrip,
             "no seed in the sweep emitted a Char.to-int round-trip"
         );
+    }
+
+    /// The Qty arm is reachable — some seed emits `(Qty.of … (Unit.base|Unit.of #"<known>"))` reduced via
+    /// `Qty.value` — and every such program parses, using ONLY known units. Guards the quantity/unit
+    /// lowering reach (operator directive 2026-08-30 to keep expanding generated inputs).
+    #[test]
+    fn some_seed_emits_a_qty() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(Qty.of ") {
+                assert!(
+                    src.contains("(Qty.value "),
+                    "Qty built without reducing via Qty.value:\n{src}"
+                );
+                // Every emitted unit is a known one (an unknown unit would decline).
+                assert!(
+                    QTY_UNITS.iter().any(|u| src.contains(&format!("#\"{u}\""))),
+                    "Qty emitted with no known unit:\n{src}"
+                );
+                hit = true;
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a Qty");
     }
 
     /// The recursive-def arm is reachable — some seed emits a NESTED `(def (...` helper (main is the
