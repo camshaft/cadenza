@@ -42,7 +42,7 @@
   # the prior-art wiring from #144 / the removed reference/ subsystem (commit 0d625573aa).
   nixConfig = {
     extra-substituters = [ "https://camshaft.cachix.org" ];
-    extra-trusted-public-keys = [ "camshaft.cachix.org-1:NuMo5iCUNwDpNWJNlhCw/nFp3aQ7sxsVBXdlNtXs3CQ=" ];
+    extra-trusted-public-keys = [ "camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc=" ];
   };
 
   inputs = {
