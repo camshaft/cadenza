@@ -101,9 +101,13 @@
            Of Named Fields), or declines if it does not yet cover the fixed-field-set rule
            (reject-don't-miscompile). Carries a DELETE fix on the redundant second `(= a 2)` entry (the
            first already binds the name) — heuristic (unverified: removing vs renaming is the author's call).
-           Fix-quality migrated from rcdzc a_duplicate_record_field_carries_a_delete_the_duplicate_fix.")
+           `(once)` pins that the duplicate is reported EXACTLY once — a synthesized-node copy whose origin
+           sanitize stripped to unanchored once double-reported it, and `dedup_faults` (run after sanitize)
+           collapses that copy against its anchored twin. Fix-quality migrated from rcdzc
+           a_duplicate_record_field_carries_a_delete_the_duplicate_fix; once-count from
+           a_duplicate_record_field_reports_one_error_not_two.")
   (input      #record((= a 1) (= a 2)))
-  (error      CDZ0201 (message "more than once") (fix (kind delete) (unverified))))
+  (error      CDZ0201 (once) (message "more than once") (fix (kind delete) (unverified))))
 
 (case "a record with a non-adjacent duplicate field name is a type error"
   (doc    "The duplicate need not be adjacent: `(record (a 1) (b 2) (a 3))` still names `a` twice, so
