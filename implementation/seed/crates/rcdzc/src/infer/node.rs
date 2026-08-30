@@ -713,21 +713,53 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             if let Some(&(fk, fv)) = entries.first() {
                 let (fkt, fvt) = (type_of(db, fk), type_of(db, fv));
                 for &(k, v) in entries.iter().skip(1) {
+                    // NAME the two clashing types + carry the peer-delta hint + the int→float retype fix,
+                    // anchored at the OUTLIER entry — the SAME diagnostic quality the `map` name-alias
+                    // (`Apply(MapNew)`) path gives in `check_application`. The native `#map` literal
+                    // (`Resolved::Map`) must not give a WORSE (type-name-less) message than the alias for the
+                    // identical fault; the two forms were split apart by the infer.rs submodule extraction
+                    // (#6039), which left this literal arm on the generic wording — restored here to match.
                     let kt = type_of(db, k);
                     if crate::unify::unify(&mut ksubst, &fkt, &kt, &db.name_ctx()).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, "fault: map keys differ in type (CDZ0201)");
-                        out.push(Reject::coded(
+                        let delta =
+                            peer_type_delta_hint(&fkt, &kt, &db.name_ctx()).unwrap_or_default();
+                        let mut reject = Reject::coded(
                             Code::Malformed,
-                            "a map associates keys of one type (its keys do not share a type)",
-                        ));
+                            format!(
+                                "a map associates keys of one type, but the keys differ: {} and {}{delta}",
+                                fkt.render_name(&db.name_ctx()),
+                                kt.render_name(&db.name_ctx())
+                            ),
+                        )
+                        .at(k);
+                        if let Some(fix) = float_literal_retype_fix(db, fk, &fkt, &kt)
+                            .or_else(|| float_literal_retype_fix(db, k, &kt, &fkt))
+                        {
+                            reject = reject.with_fix(fix);
+                        }
+                        out.push(reject);
                     }
                     let vt = type_of(db, v);
                     if crate::unify::unify(&mut vsubst, &fvt, &vt, &db.name_ctx()).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, "fault: map values differ in type (CDZ0201)");
-                        out.push(Reject::coded(
+                        let delta =
+                            peer_type_delta_hint(&fvt, &vt, &db.name_ctx()).unwrap_or_default();
+                        let mut reject = Reject::coded(
                             Code::Malformed,
-                            "a map associates values of one type (its values do not share a type)",
-                        ));
+                            format!(
+                                "a map associates values of one type, but the values differ: {} and {}{delta}",
+                                fvt.render_name(&db.name_ctx()),
+                                vt.render_name(&db.name_ctx())
+                            ),
+                        )
+                        .at(v);
+                        if let Some(fix) = float_literal_retype_fix(db, fv, &fvt, &vt)
+                            .or_else(|| float_literal_retype_fix(db, v, &vt, &fvt))
+                        {
+                            reject = reject.with_fix(fix);
+                        }
+                        out.push(reject);
                     }
                 }
             }
