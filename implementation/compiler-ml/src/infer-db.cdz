@@ -187,21 +187,21 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         // is Int; comparison (60/61) needs Int operands and is Bool. A non-Int operand → TErr (propagates up).
         (let t1 = infer-node(tree, l, rcol, tcol) in
          (let t2 = infer-node(tree, r, rcol, t1) in
-          (match bin-type(tree, op, t2, l, r) with | ty => Map.insert(t2, id, ty))))
+          (let ty = bin-type(tree, op, t2, l, r) in Map.insert(t2, id, ty))))
     | Option.Some(Node.NLet(_, valId, bodyId)) =>
         // infer value + body; the let's type is the BODY's type — but only if both value and body are
         // well-typed (neither is TErr). The value need not be Int (a let could bind a Bool), so gate on
         // "both non-error" and inherit the body's type.
         (let t1 = infer-node(tree, valId, rcol, tcol) in
          (let t2 = infer-node(tree, bodyId, rcol, t1) in
-          (match let-type(t2, valId, bodyId) with | ty => Map.insert(t2, id, ty))))
+          (let ty = let-type(t2, valId, bodyId) in Map.insert(t2, id, ty))))
     | Option.Some(Node.NIf(condId, thenId, elseId)) =>
         // infer all three; an `if` is well-typed iff cond is TBool and then/else share a ground type — that
         // shared type is the if's type. A non-Bool cond, a mismatched pair, or any TErr child → TErr.
         (let t1 = infer-node(tree, condId, rcol, tcol) in
          (let t2 = infer-node(tree, thenId, rcol, t1) in
           (let t3 = infer-node(tree, elseId, rcol, t2) in
-           (match if-type(t3, condId, thenId, elseId) with | ty => Map.insert(t3, id, ty)))))
+           (let ty = if-type(t3, condId, thenId, elseId) in Map.insert(t3, id, ty)))))
     | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) =>
         // M1-a integer match: infer all four children; well-typed iff scrutinee + literal-pattern are the SAME
         // integer type (they get compared) AND then/else bodies join to a shared type — that join is the match's
@@ -210,7 +210,7 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
          (let m2 = infer-node(tree, litId, rcol, m1) in
           (let m3 = infer-node(tree, thenId, rcol, m2) in
            (let m4 = infer-node(tree, elseId, rcol, m3) in
-            (match match-type(m4, scrutId, litId, thenId, elseId) with | ty => Map.insert(m4, id, ty))))))
+            (let ty = match-type(m4, scrutId, litId, thenId, elseId) in Map.insert(m4, id, ty))))))
     | Option.Some(Node.NMatchCtor(scrutId, patCtorName, binderIds, bodyId, restId)) =>
         // M2-b-2b-ii-c payload ctor-pattern arm: infer the scrutinee (a sum — TSum(decl) since ii-c2b-1), SEED the
         // binder `x`'s type from the ctor's recorded payload argType (ct-argTypes, ii-c2b-2 follow-on): a recorded
@@ -698,8 +698,8 @@ def arith-result-type(tree: Tree, tcol: Map(Int64, Ty), a: Int64, b: Int64) =
                             // node BEING an NLit that fits, so a real mixed-width op still declines.
                             | Option.None(_) =>
                                 (if (is-int-ty(ta) and is-int-ty(tb)) then
-                                   (match int-parts-of(ta) with | (sa, wa) =>
-                                     (match int-parts-of(tb) with | (sb, wb) => arith-lit-adapt(tree, a, sa, wa, b, sb, wb)))
+                                   (let (sa, wa) = int-parts-of(ta) in
+                                     (let (sb, wb) = int-parts-of(tb) in arith-lit-adapt(tree, a, sa, wa, b, sb, wb)))
                                  else Option.None(unit)))
                       | Option.None(_) => Option.None(unit))
                 | Option.None(_) => Option.None(unit))
@@ -715,7 +715,7 @@ def arith-result-type(tree: Tree, tcol: Map(Int64, Ty), a: Int64, b: Int64) =
 def lit-operands-fit-result(tree: Tree, a: Int64, b: Int64, rty: Ty) =
   (if is-int-ty(rty) then
      (if is-deferred-int(rty) then true                            // deferred result → no narrow constraint
-      else (match int-parts-of(rty) with | (rs, rw) =>
+      else (let (rs, rw) = int-parts-of(rty) in
         (if (rw == 64) then true                                   // Int64 → no narrow constraint
          else (if (lit-node-fits(tree, a, rs, rw)) then lit-node-fits(tree, b, rs, rw) else false))))
    else true)
@@ -1091,8 +1091,8 @@ def id-param-name-of-is-option() =
   // Some(nameId), any non-NVar node yields None — never a -1. The linearity check (def-params-nonlinear)
   // collects only the Some names, so a name-less param can't spuriously collide; this guards that a future
   // change can't re-introduce a -1 that names-have-dup would have to special-case again.
-  (match add-node(empty-tree(), Node.NVar(99)) with | (varId, t1) =>
-    (match add-node(t1, Node.NLit(5)) with | (litId, t2) =>
+  (let (varId, t1) = add-node(empty-tree(), Node.NVar(99)) in
+    (let (litId, t2) = add-node(t1, Node.NLit(5)) in
       (match param-name-of(t2, varId) with
         | Option.Some(nm) => (if (nm == 99) then
             (match param-name-of(t2, litId) with    // a literal node is not a param NVar
@@ -1104,37 +1104,37 @@ def id-param-name-of-is-option() =
 @test
 def id-literal-is-int() =
   // "5" → the literal node is TInt; the program is well-typed.
-  (match parse-of([n(5)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([n(5)]) in
     (if well-typed(tree, root) then unit else trap("a literal is TInt")))
 
 @test
 def id-add-is-int() =
   // "1 + 2" → both operands TInt → the + node is TInt.
-  (match parse-of([n(1), plus(), n(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([n(1), plus(), n(2)]) in
     (if well-typed(tree, root) then (if typed-count(tree, root) == 3 then unit else trap("every node typed")) else trap("1 + 2 is TInt")))
 
 @test
 def id-unbound-var-is-err() =
   // a bare "x" → resolve gives RPoison → the var node is TErr → program not well-typed.
-  (match parse-of([var(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([var(1)]) in
     (if type-err-at(tree, root, root) then (if well-typed(tree, root) == false then unit else trap("unbound var is not well-typed")) else trap("unbound var is TErr")))
 
 @test
 def id-bound-var-is-int() =
   // "let x = 2 in x" → the body var is bound → TInt; the let is TInt.
-  (match parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1)]) in
     (if well-typed(tree, root) then unit else trap("bound var makes the let TInt")))
 
 @test
 def id-err-propagates-through-bin() =
   // "x + 1" (x unbound) → the + node is TErr because its left operand is TErr (propagation up).
-  (match parse-of([var(1), plus(), n(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([var(1), plus(), n(1)]) in
     (if type-err-at(tree, root, root) then unit else trap("+ with an unbound operand is TErr")))
 
 @test
 def id-err-propagates-through-let-value() =
   // "let x = y in 5" (y unbound) → the value is TErr → the let is TErr even though the body (5) is TInt.
-  (match parse-of([letkw(), var(1), eq(), var(2), inkw(), n(5)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), var(2), inkw(), n(5)]) in
     (if type-err-at(tree, root, root) then unit else trap("a let with an ill-typed value is TErr")))
 
 // ---- match-type DIRECT unit tests (M1-a integer match combiner) ------------------------------------------
@@ -1149,7 +1149,7 @@ def id-match-type-all-int-joins-to-int() =
               1, mk-int(true, 64)), 2, mk-int(true, 64)), 3, mk-int(true, 64)), 4, mk-int(true, 64)) in
    (match match-type(tc, 1, 2, 3, 4) with
      | Ty.TyErr => trap("all-Int64 match should type Int64, not TErr")
-     | t => (if is-int-ty(t) then (match int-parts-of(t) with | (_, w) => (if w == 64 then unit else trap("match types Int64 width 64"))) else trap("match types an int"))))
+     | t => (if is-int-ty(t) then (let (_, w) = int-parts-of(t) in (if w == 64 then unit else trap("match types Int64 width 64"))) else trap("match types an int"))))
 
 @test
 def id-match-type-scrut-lit-type-mismatch-declines() =
@@ -1188,31 +1188,31 @@ def id-match-type-deferred-scrut-vs-bool-lit-declines() =
 def id-milestone-is-int() =
   // THE MILESTONE `let x = 2 in x * 3 + 1`: fully well-typed — every node TInt, program TInt. This is the
   // green light that Inc4 (lower) + Inc5 (run→7) can proceed on a type-clean tree.
-  (match parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]) in
     (if well-typed(tree, root) then unit else trap("the milestone program is well-typed TInt")))
 
 @test
 def id-nested-let-is-int() =
   // "let a = 1 in let b = 2 in a + b" → both vars bound → all TInt.
-  (match parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), n(2), inkw(), var(1), plus(), var(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), n(2), inkw(), var(1), plus(), var(2)]) in
     (if well-typed(tree, root) then unit else trap("nested lets, both vars bound, is TInt")))
 
 @test
 def id-comparison-is-bool() =
   // "1 < 2" → the < node is TBool (its Int operands satisfy the comparison operand rule).
-  (match parse-of([n(1), lt(), n(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([n(1), lt(), n(2)]) in
     (if is-bool-at(tree, root, root) then unit else trap("1 < 2 is TBool")))
 
 @test
 def id-equality-is-bool() =
   // "3 == 3" → TBool.
-  (match parse-of([n(3), eqop(), n(3)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([n(3), eqop(), n(3)]) in
     (if is-bool-at(tree, root, root) then unit else trap("3 == 3 is TBool")))
 
 @test
 def id-comparison-of-arith-is-bool() =
   // "1 + 2 < 4" → the + node is TInt, the < node (root) is TBool. Mixed-type tree, both facts filled.
-  (match parse-of([n(1), plus(), n(2), lt(), n(4)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([n(1), plus(), n(2), lt(), n(4)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NBin(_, l, _)) =>
         (if is-bool-at(tree, root, root) then (if is-int-at(tree, root, l) then unit else trap("+ child is TInt")) else trap("root < is TBool"))
@@ -1222,43 +1222,43 @@ def id-comparison-of-arith-is-bool() =
 def id-let-can-bind-bool() =
   // "let x = 1 < 2 in x" → x binds a TBool value; the body var x is TBool, the let is TBool. Proves let-type
   // inherits the body's type (not hardcoded Int) and a binding can carry a non-Int ground type.
-  (match parse-of([letkw(), var(1), eq(), n(1), lt(), n(2), inkw(), var(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(1), lt(), n(2), inkw(), var(1)]) in
     (if is-bool-at(tree, root, root) then unit else trap("let binding a Bool has body type Bool")))
 
 @test
 def id-comparison-in-let-value-well-typed() =
   // "let b = 2 < 3 in b" is well-typed (a Bool-valued let).
-  (match parse-of([letkw(), var(2), eq(), n(2), lt(), n(3), inkw(), var(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(2), eq(), n(2), lt(), n(3), inkw(), var(2)]) in
     (if well-typed(tree, root) then unit else trap("Bool-valued let is well-typed")))
 
 @test
 def id-if-is-branch-type() =
   // "if 1 < 2 then 10 else 20" → cond TBool, both branches TInt → the if is TInt.
-  (match parse-of([ifkw(), n(1), lt(), n(2), thenkw(), n(10), elsekw(), n(20)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([ifkw(), n(1), lt(), n(2), thenkw(), n(10), elsekw(), n(20)]) in
     (if is-int-at(tree, root, root) then unit else trap("if with Int branches is TInt")))
 
 @test
 def id-if-nonbool-cond-is-err() =
   // "if 1 then 10 else 20" → cond is TInt, not TBool → the if is TErr (a non-Bool condition is ill-typed).
-  (match parse-of([ifkw(), n(1), thenkw(), n(10), elsekw(), n(20)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([ifkw(), n(1), thenkw(), n(10), elsekw(), n(20)]) in
     (if type-err-at(tree, root, root) then unit else trap("non-Bool cond → TErr")))
 
 @test
 def id-if-branch-mismatch-is-err() =
   // "if 1 < 2 then 10 else (3 < 4)" → then is TInt, else is TBool → mismatched branches → TErr.
-  (match parse-of([ifkw(), n(1), lt(), n(2), thenkw(), n(10), elsekw(), n(3), lt(), n(4)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([ifkw(), n(1), lt(), n(2), thenkw(), n(10), elsekw(), n(3), lt(), n(4)]) in
     (if type-err-at(tree, root, root) then unit else trap("mismatched branch types → TErr")))
 
 @test
 def id-if-bool-branches-is-bool() =
   // "if 1 < 2 then 3 < 4 else 5 < 6" → cond TBool, both branches TBool → the if is TBool.
-  (match parse-of([ifkw(), n(1), lt(), n(2), thenkw(), n(3), lt(), n(4), elsekw(), n(5), lt(), n(6)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([ifkw(), n(1), lt(), n(2), thenkw(), n(3), lt(), n(4), elsekw(), n(5), lt(), n(6)]) in
     (if is-bool-at(tree, root, root) then unit else trap("if with Bool branches is TBool")))
 
 @test
 def id-bool-literal-is-bool() =
   // "true" → TBool.
-  (match parse-of([truelit()]) with | (root, tree) =>
+  (let (root, tree) = parse-of([truelit()]) in
     (if is-bool-at(tree, root, root) then unit else trap("true is TBool")))
 
 @test
@@ -1267,26 +1267,26 @@ def id-both-bool-arith-is-err() =
   // over two Bools must NOT sneak through as Bool. Guards the pr754 fix (typed-to-ty-defer's TBool arm returns
   // None at infer-db.cdz:404 so an arith RESULT type declines) — the both-bool `==` arm (infer-db.cdz:290-291)
   // types equality Bool, but `+`/`-`/`*` over Bools stays TErr. Pins the liaison-requested guard (msg 14206).
-  (match parse-of([truelit(), plus(), falselit()]) with | (root, tree) =>
+  (let (root, tree) = parse-of([truelit(), plus(), falselit()]) in
     (if type-err-at(tree, root, root) then unit else trap("true + false → TErr (arith over two Bools is ill-typed)")))
 
 @test
 def id-both-bool-equality-still-bool() =
   // the twin the above must NOT over-reject: "true == false" → TBool (the both-bool == arm, infer-db.cdz:290-291,
   // is untouched by the arith decline). Together these pin the exact + vs == boundary corpus-bugfix flagged.
-  (match parse-of([truelit(), eqop(), falselit()]) with | (root, tree) =>
+  (let (root, tree) = parse-of([truelit(), eqop(), falselit()]) in
     (if is-bool-at(tree, root, root) then unit else trap("true == false is TBool (both-bool equality still types)")))
 
 @test
 def id-bool-literal-as-if-cond-ok() =
   // "if true then 1 else 2" → cond is TBool (bool literal) → well-typed TInt.
-  (match parse-of([ifkw(), truelit(), thenkw(), n(1), elsekw(), n(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([ifkw(), truelit(), thenkw(), n(1), elsekw(), n(2)]) in
     (if is-int-at(tree, root, root) then unit else trap("if true then Int else Int is TInt")))
 
 @test
 def id-bool-in-arith-is-err() =
   // "true + 1" → a Bool operand to arithmetic → TErr (bin-type requires Int operands).
-  (match parse-of([truelit(), plus(), n(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([truelit(), plus(), n(1)]) in
     (if type-err-at(tree, root, root) then unit else trap("true + 1 is TErr (no bool arithmetic)")))
 
 @test
@@ -1295,7 +1295,7 @@ def id-bool-plus-bool-is-err() =
   // from Bool+Int above): item-3 HM's typed-to-ty-defer initially mapped TBool→TyBool, so unify-ty(TyBool,TyBool)
   // =TyBool flowed through bin-type's arith arm and MIS-ACCEPTED `(+ true false)` as Bool (PR#754 review catch).
   // Fixed: typed-to-ty-defer's TBool arm → None → arith-result-type is integer-only. Pins the fix.
-  (match parse-of([truelit(), plus(), falselit()]) with | (root, tree) =>
+  (let (root, tree) = parse-of([truelit(), plus(), falselit()]) in
     (if type-err-at(tree, root, root) then unit else trap("true + false is TErr (arithmetic is integer-only)")))
 
 @test
@@ -1303,20 +1303,20 @@ def id-bool-comparison-is-bool() =
   // "true == false" → both operands TBool → the == node is TBool. rcdzc's relational ops are `∀a. a → a →
   // Bool` for an orderable `a`, and Bool IS equatable/orderable — so a Bool-Bool comparison is well-typed
   // (was declining before both-bool was added). Bool encodes 0/1, so eval's 0/1 comparison matches rcdzc.
-  (match parse-of([truelit(), eqop(), falselit()]) with | (root, tree) =>
+  (let (root, tree) = parse-of([truelit(), eqop(), falselit()]) in
     (if is-bool-at(tree, root, root) then unit else trap("true == false is TBool (Bool is equatable)")))
 
 @test
 def id-bool-lt-is-bool() =
   // "false < true" → both TBool → the < node is TBool (Bool is ordered: false < true, i.e. 0 < 1).
-  (match parse-of([falselit(), lt(), truelit()]) with | (root, tree) =>
+  (let (root, tree) = parse-of([falselit(), lt(), truelit()]) in
     (if is-bool-at(tree, root, root) then unit else trap("false < true is TBool (Bool is ordered)")))
 
 @test
 def id-mixed-int-bool-comparison-is-err() =
   // "true == 1" → a Bool operand vs an Int operand → neither both-int (unify) nor both-bool → TErr, matching
   // rcdzc's CDZ0301 (Bool vs Int don't unify; no cross-kind comparison).
-  (match parse-of([truelit(), eqop(), n(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([truelit(), eqop(), n(1)]) in
     (if type-err-at(tree, root, root) then unit else trap("true == 1 is TErr (Int~Bool don't unify)")))
 
 // ---- width-aware type facts (slice-2a: Ty carries (signed, width)) ----
@@ -1324,9 +1324,9 @@ def id-mixed-int-bool-comparison-is-err() =
 @test
 def id-literal-is-int64() =
   // "5" → the canonical width-carrying fact is TIntW(true, 64) = Int64. Match the width explicitly.
-  (match parse-of([n(5)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([n(5)]) in
     (match type-at(tree, root, root) with
-      | Option.Some(_ti) => (if is-int-ty(_ti) then (match int-parts-of(_ti) with | (s, w) => (if s then (if w == 64 then unit else trap("width 64")) else trap("signed"))) else trap("Int64 back to an int"))
+      | Option.Some(_ti) => (if is-int-ty(_ti) then (let (s, w) = int-parts-of(_ti) in (if s then (if w == 64 then unit else trap("width 64")) else trap("signed"))) else trap("Int64 back to an int"))
       | _ => trap("a literal is TIntW(true, 64)")))
 
 @test
@@ -1354,27 +1354,27 @@ def id-type-eq-int-not-bool() =
 def id-mixed-width-comparison-is-err() =
   // "Int8 < Int16" → the operands don't unify (width conflict) → the comparison NBin is TErr (declines),
   // matching rcdzc's CDZ0301. Was TBool (a ran-when-should-decline miscompile).
-  (match add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) with | (lId, t1) =>
-    (match add-node(t1, Node.NAnnLit(10, 1, 16)) with | (rId, t2) =>
-      (match add-node(t2, Node.NBin(60, lId, rId)) with | (root, tree) =>
+  (let (lId, t1) = add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) in
+    (let (rId, t2) = add-node(t1, Node.NAnnLit(10, 1, 16)) in
+      (let (root, tree) = add-node(t2, Node.NBin(60, lId, rId)) in
         (if type-err-at(tree, root, root) then unit else trap("Int8 < Int16 → TErr (mixed width declines, CDZ0301)")))))
 
 @test
 def id-mixed-sign-comparison-is-err() =
   // "Int8 < UInt8" (same width, different sign) → operands don't unify (sign conflict) → TErr. Pins the
   // orthogonal sign axis of the same fix.
-  (match add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) with | (lId, t1) =>
-    (match add-node(t1, Node.NAnnLit(10, 0, 8)) with | (rId, t2) =>
-      (match add-node(t2, Node.NBin(60, lId, rId)) with | (root, tree) =>
+  (let (lId, t1) = add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) in
+    (let (rId, t2) = add-node(t1, Node.NAnnLit(10, 0, 8)) in
+      (let (root, tree) = add-node(t2, Node.NBin(60, lId, rId)) in
         (if type-err-at(tree, root, root) then unit else trap("Int8 < UInt8 → TErr (mixed sign declines)")))))
 
 @test
 def id-same-narrow-comparison-still-bool() =
   // control: same-width same-sign narrow comparison "Int8 < Int8" still UNIFIES → TBool (the fix declines
   // ONLY genuine mismatches; a valid narrow comparison is unaffected).
-  (match add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) with | (lId, t1) =>
-    (match add-node(t1, Node.NAnnLit(10, 1, 8)) with | (rId, t2) =>
-      (match add-node(t2, Node.NBin(60, lId, rId)) with | (root, tree) =>
+  (let (lId, t1) = add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) in
+    (let (rId, t2) = add-node(t1, Node.NAnnLit(10, 1, 8)) in
+      (let (root, tree) = add-node(t2, Node.NBin(60, lId, rId)) in
         (if is-bool-at(tree, root, root) then unit else trap("Int8 < Int8 → TBool (same-type comparison unaffected)")))))
 
 @test
@@ -1383,11 +1383,11 @@ def id-same-narrow-arith-preserves-width() =
   // Int64 (that would be a silent promotion). The arith twin of id-same-narrow-comparison-still-bool: a
   // comparison collapses to TBool, but arith PRESERVES the operand width so lower emits a narrow CNum and the
   // overflow-check fires at that width. Pins that same-width narrow arith keeps its width through infer.
-  (match add-node(empty-tree(), Node.NAnnLit(100, 1, 8)) with | (lId, t1) =>
-    (match add-node(t1, Node.NAnnLit(20, 1, 8)) with | (rId, t2) =>
-      (match add-node(t2, Node.NBin(43, lId, rId)) with | (root, tree) =>
+  (let (lId, t1) = add-node(empty-tree(), Node.NAnnLit(100, 1, 8)) in
+    (let (rId, t2) = add-node(t1, Node.NAnnLit(20, 1, 8)) in
+      (let (root, tree) = add-node(t2, Node.NBin(43, lId, rId)) in
         (match type-at(tree, root, root) with
-          | Option.Some(_ti) => (if is-int-ty(_ti) then (match int-parts-of(_ti) with | (_, w) => (if w == 8 then unit else trap("Int8 + Int8 preserves width 8, not widened"))) else trap("Int8 + Int8 is a narrow int"))
+          | Option.Some(_ti) => (if is-int-ty(_ti) then (let (_, w) = int-parts-of(_ti) in (if w == 8 then unit else trap("Int8 + Int8 preserves width 8, not widened"))) else trap("Int8 + Int8 is a narrow int"))
           | _ => trap("Int8 + Int8 is a narrow TIntW")))))
 
 @test
@@ -1397,11 +1397,11 @@ def id-narrow-plus-plain-literal-adapts() =
   // Int64, so it LOOKS mixed-width; arith-lit-adapt recovers by letting the fitting literal take the narrow
   // width. Here NAnnLit(100,Int8) + NLit(10): 10 fits Int8 → result TIntW(_,8). Pins `(+ a 10)` on an Int8
   // param runs (it was declining as spurious mixed-width). Hand-arena.
-  (match add-node(empty-tree(), Node.NAnnLit(100, 1, 8)) with | (lId, t1) =>
-    (match add-node(t1, Node.NLit(10)) with | (rId, t2) =>            // a PLAIN literal (defaults Int64)
-      (match add-node(t2, Node.NBin(43, lId, rId)) with | (root, tree) =>
+  (let (lId, t1) = add-node(empty-tree(), Node.NAnnLit(100, 1, 8)) in
+    (let (rId, t2) = add-node(t1, Node.NLit(10)) in            // a PLAIN literal (defaults Int64)
+      (let (root, tree) = add-node(t2, Node.NBin(43, lId, rId)) in
         (match type-at(tree, root, root) with
-          | Option.Some(_ti) => (if is-int-ty(_ti) then (match int-parts-of(_ti) with | (_, w) => (if w == 8 then unit else trap("Int8 + plain-literal adapts to Int8, not mixed-width TErr"))) else trap("Int8 + fitting plain literal is a narrow int, not TErr"))
+          | Option.Some(_ti) => (if is-int-ty(_ti) then (let (_, w) = int-parts-of(_ti) in (if w == 8 then unit else trap("Int8 + plain-literal adapts to Int8, not mixed-width TErr"))) else trap("Int8 + fitting plain literal is a narrow int, not TErr"))
           | _ => trap("Int8 + fitting plain literal is a narrow TIntW, not TErr")))))
 
 @test
@@ -1409,9 +1409,9 @@ def id-narrow-plus-non-fitting-literal-still-err() =
   // the adaptation is GATED on the literal FITTING: `Int8 + NLit(200)` — 200 does NOT fit Int8 → the literal
   // can't adapt → the pair stays mixed-width → TErr (declines). Pins arith-lit-adapt doesn't launder an
   // out-of-range literal into a narrow op. (rcdzc: `(: 100 Int8) + 200` is not a valid Int8 addition.)
-  (match add-node(empty-tree(), Node.NAnnLit(100, 1, 8)) with | (lId, t1) =>
-    (match add-node(t1, Node.NLit(200)) with | (rId, t2) =>            // 200 does NOT fit Int8
-      (match add-node(t2, Node.NBin(43, lId, rId)) with | (root, tree) =>
+  (let (lId, t1) = add-node(empty-tree(), Node.NAnnLit(100, 1, 8)) in
+    (let (rId, t2) = add-node(t1, Node.NLit(200)) in            // 200 does NOT fit Int8
+      (let (root, tree) = add-node(t2, Node.NBin(43, lId, rId)) in
         (if type-err-at(tree, root, root) then unit else trap("Int8 + NLit(200) — 200 can't adapt to Int8 → TErr")))))
 
 @test
@@ -1419,9 +1419,9 @@ def id-mixed-width-arith-is-err() =
   // narrow ARITH with MISMATCHED widths (`Int8 + Int16`, op 43) → the operands don't unify → TErr (declines),
   // matching rcdzc's CDZ0301 (no implicit width conversion). The arith twin of id-mixed-width-comparison-is-err;
   // the infer-level pin under sread-eval's se-ann-mixed-width-arith-declines (which needs the full pipeline).
-  (match add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) with | (lId, t1) =>
-    (match add-node(t1, Node.NAnnLit(5, 1, 16)) with | (rId, t2) =>
-      (match add-node(t2, Node.NBin(43, lId, rId)) with | (root, tree) =>
+  (let (lId, t1) = add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) in
+    (let (rId, t2) = add-node(t1, Node.NAnnLit(5, 1, 16)) in
+      (let (root, tree) = add-node(t2, Node.NBin(43, lId, rId)) in
         (if type-err-at(tree, root, root) then unit else trap("Int8 + Int16 → TErr (mixed-width arith declines, CDZ0301)")))))
 
 @test
@@ -1429,26 +1429,26 @@ def id-napp-nullary-types-as-body-slice2() =
   // SLICE-2 NULLARY-CALL SEMANTICS: a nullary call NApp(calleeName, -1) types as the callee BODY's type
   // (β-reduction over zero args). Body = NLit(42) → Int64, registered under name 900; the call NApp(900, -1)
   // resolves name→body via def-body-of and types Int64. Hand-arena, no sread.
-  (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
+  (let (bodyId, t1) = add-node(empty-tree(), Node.NLit(42)) in
     (let t1d = record-def(t1, 900, bodyId) in
-     (match add-node(t1d, Node.NApp(900, -1)) with | (root, tree) =>
+     (let (root, tree) = add-node(t1d, Node.NApp(900, -1)) in
       (if is-int-at(tree, root, root) then unit else trap("a nullary NApp types as its callee body (Int64 here)")))))
 
 @test
 def id-napp-nullary-bool-body() =
   // the callee-body type FLOWS: a nullary call over a Bool body types Bool (not a hardcoded type). Body
   // registered under name 900; the call NApp(900, -1) resolves name→body via def-body-of.
-  (match add-node(empty-tree(), Node.NBoolLit(1)) with | (bodyId, t1) =>
+  (let (bodyId, t1) = add-node(empty-tree(), Node.NBoolLit(1)) in
     (let t1d = record-def(t1, 900, bodyId) in
-     (match add-node(t1d, Node.NApp(900, -1)) with | (root, tree) =>
+     (let (root, tree) = add-node(t1d, Node.NApp(900, -1)) in
       (if is-bool-at(tree, root, root) then unit else trap("a nullary NApp over a Bool body types Bool")))))
 
 @test
 def id-napp-with-arg-still-declines() =
   // a call WITH an argument (argId != -1) is the PARAM slice (not yet) → still TErr. Pins the nullary/param boundary.
-  (match add-node(empty-tree(), Node.NLit(7)) with | (bodyId, t1) =>
-    (match add-node(t1, Node.NLit(5)) with | (argId, t2) =>
-      (match add-node(t2, Node.NApp(bodyId, argId)) with | (root, tree) =>
+  (let (bodyId, t1) = add-node(empty-tree(), Node.NLit(7)) in
+    (let (argId, t2) = add-node(t1, Node.NLit(5)) in
+      (let (root, tree) = add-node(t2, Node.NApp(bodyId, argId)) in
         (if type-err-at(tree, root, root) then unit else trap("a call WITH an arg declines until the param slice")))))
 
 @test
@@ -1456,8 +1456,8 @@ def id-param-fit-ok-narrow-const-out-of-range() =
   // NARROW-INT ENFORCEMENT (CDZ0302): param-fit-ok is FALSE when a param has a declared narrow type and the
   // arg is a CONSTANT out of that range. Build a param node + an arg literal 200, record the param's type as
   // Int8 (signed, width 8): 200 does NOT fit → param-fit-ok false (the call will TErr = decline). Hand-arena.
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
-    (match add-node(t1, Node.NLit(200)) with | (argId, t2) =>
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
+    (let (argId, t2) = add-node(t1, Node.NLit(200)) in
       (let t3 = record-param-type(t2, paramId, encode-param-type(true, 8)) in
        (if param-fit-ok(t3, paramId, argId) then trap("200 does NOT fit Int8 → param-fit-ok must be false (CDZ0302)")
         else unit))))
@@ -1465,8 +1465,8 @@ def id-param-fit-ok-narrow-const-out-of-range() =
 @test
 def id-param-fit-ok-narrow-const-in-range() =
   // the in-range constant FITS: arg 100 to an Int8 param → param-fit-ok true (the call proceeds, runs to 100).
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
-    (match add-node(t1, Node.NLit(100)) with | (argId, t2) =>
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
+    (let (argId, t2) = add-node(t1, Node.NLit(100)) in
       (let t3 = record-param-type(t2, paramId, encode-param-type(true, 8)) in
        (if param-fit-ok(t3, paramId, argId) then unit else trap("100 fits Int8 → param-fit-ok true")))))
 
@@ -1474,8 +1474,8 @@ def id-param-fit-ok-narrow-const-in-range() =
 def id-param-fit-ok-width64-identity() =
   // width 64 is the NATIVE identity (fits-width can't reason about it): a big value to an Int64 param FITS
   // (signed-64 always fits) → param-fit-ok true. Pins that a plain `(: n Int64)` param never falsely declines.
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
-    (match add-node(t1, Node.NLit(1000000)) with | (argId, t2) =>
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
+    (let (argId, t2) = add-node(t1, Node.NLit(1000000)) in
       (let t3 = record-param-type(t2, paramId, encode-param-type(true, 64)) in
        (if param-fit-ok(t3, paramId, argId) then unit else trap("Int64 (width 64) is the native identity → always fits")))))
 
@@ -1483,8 +1483,8 @@ def id-param-fit-ok-width64-identity() =
 def id-param-fit-ok-untyped-param-always-ok() =
   // an UNTYPED param (no param-type recorded) → param-fit-ok true regardless of the arg (the arg's own type
   // flows, as before the enforcement). Pins the enforcement fires ONLY on a declared-narrow param.
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
-    (match add-node(t1, Node.NLit(999999)) with | (argId, t2) =>
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
+    (let (argId, t2) = add-node(t1, Node.NLit(999999)) in
       (if param-fit-ok(t2, paramId, argId) then unit else trap("an untyped param imposes no fit constraint"))))
 
 @test
@@ -1492,10 +1492,10 @@ def id-param-fit-ok-nonliteral-arg-ok() =
   // a NON-literal arg (here an NBin) is NOT compile-time fit-checked here → param-fit-ok true (it keeps its
   // own already-checked type, per the corpus note "a RUNTIME argument keeps its own type"). Only a plain NLit
   // constant is rejected by this check.
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
-    (match add-node(t1, Node.NLit(1)) with | (aId, t2) =>
-      (match add-node(t2, Node.NLit(2)) with | (bId, t3) =>
-        (match add-node(t3, Node.NBin(43, aId, bId)) with | (argId, t4) =>
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
+    (let (aId, t2) = add-node(t1, Node.NLit(1)) in
+      (let (bId, t3) = add-node(t2, Node.NLit(2)) in
+        (let (argId, t4) = add-node(t3, Node.NBin(43, aId, bId)) in
           (let t5 = record-param-type(t4, paramId, encode-param-type(true, 8)) in
            (if param-fit-ok(t5, paramId, argId) then unit else trap("a non-literal arg is not compile-time fit-checked here")))))))
 
@@ -1506,18 +1506,18 @@ def id-param-bind-type-declared-narrow-drives-body() =
   // returns TIntW(true, 8) REGARDLESS of the arg's type — so `(+ a a)` on an Int8 param is Int8 arith, and
   // lower/eval carry the width to trap overflow. (Before this, the param took the arg's Int64 type → body arith
   // was Int64, never overflow-checked → `(f 100)` laundered `(+ a a)`=200 as a wide value.)
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
     (let t2 = record-param-type(t1, paramId, encode-param-type(true, 8)) in
      (match param-bind-type(t2, paramId, mk-int(true, 64)) with     // arg is Int64, but the DECLARED type wins
-       | _tp => (if is-int-ty(_tp) then (match int-parts-of(_tp) with | (s, w) => (if s and (w == 8) then unit else trap("declared Int8 drives the param type, not the arg's Int64"))) else trap("param type is an int")))))
+       | _tp => (if is-int-ty(_tp) then (let (s, w) = int-parts-of(_tp) in (if s and (w == 8) then unit else trap("declared Int8 drives the param type, not the arg's Int64"))) else trap("param type is an int")))))
 
 @test
 def id-param-bind-type-untyped-takes-arg-type() =
   // an UNTYPED param (no declared type) binds to the ARG's type (the flow unchanged from before enforcement).
   // param-bind-type returns the arg type verbatim when param-type-of is None.
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
     (match param-bind-type(t1, paramId, mk-int(false, 16)) with     // no declared type → arg's UInt16 flows
-      | _tp => (if is-int-ty(_tp) then (match int-parts-of(_tp) with | (s, w) => (if (if s then false else true) and (w == 16) then unit else trap("untyped param takes the arg's type"))) else trap("param type is an int"))))
+      | _tp => (if is-int-ty(_tp) then (let (s, w) = int-parts-of(_tp) in (if (if s then false else true) and (w == 16) then unit else trap("untyped param takes the arg's type"))) else trap("param type is an int"))))
 
 @test
 def id-recursive-nullary-call-types-int-slice-b2() =
@@ -1525,10 +1525,10 @@ def id-recursive-nullary-call-types-int-slice-b2() =
   // node IS the call NApp(900, -1); record-def keys 900 → that node, so call-is-recursive(900) fires. infer
   // must NOT descend the body (it calls back) — it stamps the call Int64 directly. Hand-built arena (parse-
   // tokens doesn't read def-forms — recursion lives at sread; this pins the infer arm in isolation).
-  (match add-node(empty-tree(), Node.NApp(900, -1)) with | (callId, t1) =>
+  (let (callId, t1) = add-node(empty-tree(), Node.NApp(900, -1)) in
     (let tree = record-def(t1, 900, callId) in
      (match Map.lookup(infer-node(tree, callId, resolve-tree(tree, callId), (Map.empty : Map(Int64, Ty))), callId) with
-       | Option.Some(_ti) => (if is-int-ty(_ti) then (match int-parts-of(_ti) with | (_, w) => (if w == 64 then unit else trap("recursive nullary call → Int64 (width 64)"))) else trap("recursive nullary call is an int"))
+       | Option.Some(_ti) => (if is-int-ty(_ti) then (let (_, w) = int-parts-of(_ti) in (if w == 64 then unit else trap("recursive nullary call → Int64 (width 64)"))) else trap("recursive nullary call is an int"))
        | _ => trap("recursive nullary call should type Int64 (was TErr / node not typed)"))))
 
 @test
@@ -1537,14 +1537,14 @@ def id-recursive-call-with-arith-arg-types-int-slice-b2() =
   // arena) types Int64, AND the arg subtree is typed (7, 1, and the `-` node all get facts — infer-recursive-
   // call types the arg without descending the callee body). Body = NApp(900, subId) with subId = NBin(45,
   // NLit 7, NLit 1); record-def keys 900 → the call so call-is-recursive fires.
-  (match add-node(empty-tree(), Node.NLit(7)) with | (lId, t1) =>
-    (match add-node(t1, Node.NLit(1)) with | (rId, t2) =>
-      (match add-node(t2, Node.NBin(45, lId, rId)) with | (subId, t3) =>
-        (match add-node(t3, Node.NApp(900, subId)) with | (callId, t4) =>
+  (let (lId, t1) = add-node(empty-tree(), Node.NLit(7)) in
+    (let (rId, t2) = add-node(t1, Node.NLit(1)) in
+      (let (subId, t3) = add-node(t2, Node.NBin(45, lId, rId)) in
+        (let (callId, t4) = add-node(t3, Node.NApp(900, subId)) in
           (let tree = record-def(t4, 900, callId) in
            (let tc = infer-node(tree, callId, resolve-tree(tree, callId), (Map.empty : Map(Int64, Ty))) in
             (match Map.lookup(tc, callId) with
-              | Option.Some(_tc) => (if is-int-ty(_tc) then (match int-parts-of(_tc) with | (_, wc) =>
+              | Option.Some(_tc) => (if is-int-ty(_tc) then (let (_, wc) = int-parts-of(_tc) in
                   (if wc == 64 then
                      (match Map.lookup(tc, subId) with            // the arg's `-` node must also be typed (Int)
                        | Option.Some(_ta) => (if is-int-ty(_ta) then unit else trap("recursive call's arith arg subtree should be typed Int"))
@@ -1562,14 +1562,14 @@ def id-if-mixed-deferred-concrete-branches-ground-slice-b1b() =
   // hand-arena `if` here triggered the self-host codegen size-trap in this already-large file — the join is
   // the actual fix logic; if-type just calls it). deferred THEN + Int64 ELSE → Int64.
   (let r = join-branch-types(t-int-deferred(), mk-int(true, 64)) in
-   (if is-int-ty(r) then (match int-parts-of(r) with | (_, w) => (if w == 64 then unit else trap("deferred THEN + Int64 ELSE grounds to Int64 (width 64)")))
+   (if is-int-ty(r) then (let (_, w) = int-parts-of(r) in (if w == 64 then unit else trap("deferred THEN + Int64 ELSE grounds to Int64 (width 64)")))
     else trap("mixed deferred/concrete branches should ground to the concrete Int64, not TErr")))
 
 @test
 def id-if-join-concrete-then-deferred-else-slice-b1b() =
   // the SYMMETRIC case: concrete Int64 THEN + deferred ELSE → Int64 (the deferred else grounds to the then).
   (let r = join-branch-types(mk-int(true, 64), t-int-deferred()) in
-   (if is-int-ty(r) then (match int-parts-of(r) with | (_, w) => (if w == 64 then unit else trap("Int64 THEN + deferred ELSE grounds to Int64")))
+   (if is-int-ty(r) then (let (_, w) = int-parts-of(r) in (if w == 64 then unit else trap("Int64 THEN + deferred ELSE grounds to Int64")))
     else trap("concrete/deferred branches should ground to Int64")))
 
 @test
@@ -1590,31 +1590,31 @@ def id-if-join-mismatched-concrete-is-err-slice-b1b() =
 def id-if-two-literal-branches-still-type-slice-b1b() =
   // regression guard: a TWO-literal if `if (5 < 2) 10 20` (both branches deferred) still types Int (deferred
   // == deferred was already fine; the join must not break it). Whole-tree infer grounds the deferred at root.
-  (match add-node(empty-tree(), Node.NLit(5)) with | (l5, t1) =>
-    (match add-node(t1, Node.NLit(2)) with | (l2, t2) =>
-      (match add-node(t2, Node.NBin(60, l5, l2)) with | (condId, t3) =>
-        (match add-node(t3, Node.NLit(10)) with | (thenId, t4) =>
-          (match add-node(t4, Node.NLit(20)) with | (elseId, t5) =>
-            (match add-node(t5, Node.NIf(condId, thenId, elseId)) with | (ifId, t6) =>
+  (let (l5, t1) = add-node(empty-tree(), Node.NLit(5)) in
+    (let (l2, t2) = add-node(t1, Node.NLit(2)) in
+      (let (condId, t3) = add-node(t2, Node.NBin(60, l5, l2)) in
+        (let (thenId, t4) = add-node(t3, Node.NLit(10)) in
+          (let (elseId, t5) = add-node(t4, Node.NLit(20)) in
+            (let (ifId, t6) = add-node(t5, Node.NIf(condId, thenId, elseId)) in
               (if is-int-at(t6, ifId, ifId) then unit else trap("two-literal if still types Int"))))))))
 
 /// HO-2b-ii-A test helper: build `inc` (name 900) = (def (inc n) (+ n 1)) + a bare ref NVar(900); returns
 /// (refId, tree). param n = NVar(1); body (+ n 1).
 def ho-inc-ref-tree() =
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
-    (match add-node(t1, Node.NVar(1)) with | (nUse, t2) =>
-      (match add-node(t2, Node.NLit(1)) with | (oneId, t3) =>
-        (match add-node(t3, Node.NBin(43, nUse, oneId)) with | (bodyId, t4) =>
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
+    (let (nUse, t2) = add-node(t1, Node.NVar(1)) in
+      (let (oneId, t3) = add-node(t2, Node.NLit(1)) in
+        (let (bodyId, t4) = add-node(t3, Node.NBin(43, nUse, oneId)) in
           (let t5 = record-param(t4, 900, paramId) in
            (let t6 = record-def(t5, 900, bodyId) in
-            (match add-node(t6, Node.NVar(900)) with | (refId, tree) => (refId, tree))))))))
+            (let (refId, tree) = add-node(t6, Node.NVar(900)) in (refId, tree))))))))
 
 @test
 def id-def-arrow-type-builds-tfn() =
   // HO-2b-ii-A: def-arrow-type on `inc` (name 900, one Int64 param, body (+ n 1)) → TFn([Int64], Int64).
-  (match ho-inc-ref-tree() with | (_, tree) =>
+  (let (_, tree) = ho-inc-ref-tree() in
     (match def-arrow-type(tree, 900, (Map.empty : Map(Int64, Resolved)), (Map.empty : Map(Int64, Ty))) with
-      | Ty.TyFn(ps, r) => (if is-int-ty(r) then (match int-parts-of(r) with | (_, rw) => (if rw == 64 then (if List.len(ps) == 1 then unit else trap("inc arrow has 1 param")) else trap("inc arrow result is Int64")))
+      | Ty.TyFn(ps, r) => (if is-int-ty(r) then (let (_, rw) = int-parts-of(r) in (if rw == 64 then (if List.len(ps) == 1 then unit else trap("inc arrow has 1 param")) else trap("inc arrow result is Int64")))
           else trap("inc arrow result is Int64"))
       | Ty.TyErr => trap("def-arrow-type = TErr (body infer failed)")
       | _ => trap("def-arrow-type is a TFn")))
@@ -1622,7 +1622,7 @@ def id-def-arrow-type-builds-tfn() =
 @test
 def id-def-name-as-value-types-as-arrow() =
   // HO-2b-ii-A: a bare def-name reference NVar(900) resolves to RDef(900) → infers to inc's arrow TFn (not TErr).
-  (match ho-inc-ref-tree() with | (refId, tree) =>
+  (let (refId, tree) = ho-inc-ref-tree() in
     (let rcol = resolve-node(tree, refId, (Map.empty : Map(Int64, Int64)), (Map.empty : Map(Int64, Resolved))) in
      (let tcol = infer-node(tree, refId, rcol, (Map.empty : Map(Int64, Ty))) in
       (match Map.lookup(tcol, refId) with
@@ -1636,24 +1636,24 @@ def id-fn-param-call-types-as-arrow-result() =
   // `f` (name 5) is NOT a def (def-body-of misses) → infer-fn-param-call reads the callee-fact at the NApp id.
   // Seed: rcol has RBound(fBinder) keyed by the NApp id (what resolve-db's option-(i) arm stores); tcol has
   // fBinder → TFn([Int64], Int64). Expect the call node → Int64 (the arrow result), NOT TErr.
-  (match add-node(empty-tree(), Node.NVar(7)) with | (fBinder, t1) =>       // f's binder node (a param, NVar)
-    (match add-node(t1, Node.NLit(41)) with | (argId, t2) =>                 // arg x = 41
-      (match add-node(t2, Node.NApp(5, argId)) with | (callId, tree) =>      // (f x): callee name 5, arg
+  (let (fBinder, t1) = add-node(empty-tree(), Node.NVar(7)) in       // f's binder node (a param, NVar)
+    (let (argId, t2) = add-node(t1, Node.NLit(41)) in                 // arg x = 41
+      (let (callId, tree) = add-node(t2, Node.NApp(5, argId)) in      // (f x): callee name 5, arg
         (let rcol = Map.insert((Map.empty : Map(Int64, Resolved)), callId, Resolved.RBound(fBinder)) in  // callee-fact at the NApp id
          (let tcol = Map.insert((Map.empty : Map(Int64, Ty)), fBinder, Ty.TyFn(List.push([], t-int64()), t-int64())) in  // f : (Int64)->Int64
           (let tc = infer-node(tree, callId, rcol, tcol) in
            (match Map.lookup(tc, callId) with
              | Option.Some(Ty.TyErr) => trap("fn-param call should type as arrow result, not TErr")
-             | Option.Some(_tc) => (if is-int-ty(_tc) then (match int-parts-of(_tc) with | (_, w) => (if w == 64 then unit else trap("fn-param call types as arrow result Int64"))) else trap("fn-param call types as arrow result Int64"))
+             | Option.Some(_tc) => (if is-int-ty(_tc) then (let (_, w) = int-parts-of(_tc) in (if w == 64 then unit else trap("fn-param call types as arrow result Int64"))) else trap("fn-param call types as arrow result Int64"))
              | _ => trap("fn-param call types as arrow result Int64"))))))))
 
 @test
 def id-fn-param-call-non-fn-callee-is-terr() =
   // HO-2b-ii-B guard: if the callee-fact binder is NOT a fn (var-type not a TFn), the application is ill-typed
   // → TErr (applying a non-function). Seed fBinder → Int64 (not a TFn); expect the call → TErr.
-  (match add-node(empty-tree(), Node.NVar(7)) with | (fBinder, t1) =>
-    (match add-node(t1, Node.NLit(41)) with | (argId, t2) =>
-      (match add-node(t2, Node.NApp(5, argId)) with | (callId, tree) =>
+  (let (fBinder, t1) = add-node(empty-tree(), Node.NVar(7)) in
+    (let (argId, t2) = add-node(t1, Node.NLit(41)) in
+      (let (callId, tree) = add-node(t2, Node.NApp(5, argId)) in
         (let rcol = Map.insert((Map.empty : Map(Int64, Resolved)), callId, Resolved.RBound(fBinder)) in
          (let tcol = Map.insert((Map.empty : Map(Int64, Ty)), fBinder, t-int64()) in  // f : Int64 (NOT a fn)
           (let tc = infer-node(tree, callId, rcol, tcol) in
@@ -1666,9 +1666,9 @@ def id-fn-param-call-arg-type-mismatch-is-terr() =
   // HO-2c: a fn-param call whose ARG type does not fit the arrow's PARAM type is ill-typed → TErr. f : (Bool)
   // -> Int64, but the arg is 41 (Int64) — Int64 does NOT unify with Bool → the application declines (TErr), not
   // silently Int64. Pins the arg↔param type check (was deferred in HO-2b-ii-B).
-  (match add-node(empty-tree(), Node.NVar(7)) with | (fBinder, t1) =>
-    (match add-node(t1, Node.NLit(41)) with | (argId, t2) =>
-      (match add-node(t2, Node.NApp(5, argId)) with | (callId, tree) =>
+  (let (fBinder, t1) = add-node(empty-tree(), Node.NVar(7)) in
+    (let (argId, t2) = add-node(t1, Node.NLit(41)) in
+      (let (callId, tree) = add-node(t2, Node.NApp(5, argId)) in
         (let rcol = Map.insert((Map.empty : Map(Int64, Resolved)), callId, Resolved.RBound(fBinder)) in
          (let tcol = Map.insert((Map.empty : Map(Int64, Ty)), fBinder, Ty.TyFn(List.push([], Ty.TyBool), t-int64())) in  // f : (Bool)->Int64
           (let tc = infer-node(tree, callId, rcol, tcol) in
@@ -1680,9 +1680,9 @@ def id-fn-param-call-arg-type-mismatch-is-terr() =
 def id-fn-param-call-arity-mismatch-is-terr() =
   // HO-2c: a fn-param call with the WRONG number of args is ill-typed → TErr. f : (Int64, Int64) -> Int64 (2
   // params) but the call passes ONE arg → arity mismatch → TErr.
-  (match add-node(empty-tree(), Node.NVar(7)) with | (fBinder, t1) =>
-    (match add-node(t1, Node.NLit(41)) with | (argId, t2) =>
-      (match add-node(t2, Node.NApp(5, argId)) with | (callId, tree) =>
+  (let (fBinder, t1) = add-node(empty-tree(), Node.NVar(7)) in
+    (let (argId, t2) = add-node(t1, Node.NLit(41)) in
+      (let (callId, tree) = add-node(t2, Node.NApp(5, argId)) in
         (let rcol = Map.insert((Map.empty : Map(Int64, Resolved)), callId, Resolved.RBound(fBinder)) in
          (let tcol = Map.insert((Map.empty : Map(Int64, Ty)), fBinder, Ty.TyFn(List.push(List.push([], t-int64()), t-int64()), t-int64())) in  // f : (Int64,Int64)->Int64
           (let tc = infer-node(tree, callId, rcol, tcol) in
@@ -1719,8 +1719,8 @@ def id-payload-binder-type-int-width-decodes-tintw() =
   // = encode-param-type(true, 32) = 65 → TIntW(true, 32). Pins the narrow-int payload binder typing (a `(WW Int32)`
   // binder is Int32, so its arith overflow-checks at width 32) — the int half of the ground-payload story.
   (let tree = record-ctor-tag-typed(empty-tree(), 842, 800, 2, encode-param-type(true, 32)) in
-    (match ctor-payload-binder-type(tree, 842) with
-      | _td => (if is-int-ty(_td) then (match int-parts-of(_td) with | (s, w) => (if ((if s then true else false) and (w == 32)) then unit else trap("Int32 argType decodes to a signed-32 int"))) else trap("argType decodes to an int"))))
+    (
+      let _td = ctor-payload-binder-type(tree, 842) in (if is-int-ty(_td) then (let (s, w) = int-parts-of(_td) in (if ((if s then true else false) and (w == 32)) then unit else trap("Int32 argType decodes to a signed-32 int"))) else trap("argType decodes to an int"))))
 
 @test
 def id-payload-binder-type-nullary-shorthand-decodes-int64() =
@@ -1728,14 +1728,14 @@ def id-payload-binder-type-nullary-shorthand-decodes-int64() =
   // default — harmless, a nullary pattern has no payload binder to use. Pins the 0/None fall-through so a future
   // change can't turn the placeholder into a spurious TErr/decline.
   (let tree = record-ctor-tag-typed(empty-tree(), 843, 800, 3, 0) in
-    (match ctor-payload-binder-type(tree, 843) with
-      | _td => (if is-int-ty(_td) then (match int-parts-of(_td) with | (s, w) => (if ((if s then true else false) and (w == 64)) then unit else trap("argType 0 decodes to Int64 default"))) else trap("argType decodes to an int"))))
+    (
+      let _td = ctor-payload-binder-type(tree, 843) in (if is-int-ty(_td) then (let (s, w) = int-parts-of(_td) in (if ((if s then true else false) and (w == 64)) then unit else trap("argType 0 decodes to Int64 default"))) else trap("argType decodes to an int"))))
 
 @test
 def id-payload-binder-type-unrecorded-ctor-decodes-int64() =
   // a ctor with NO ct entry (ctor-argtype-of None) also falls to the Int64 default — the total-on-missing branch.
-  (match ctor-payload-binder-type(empty-tree(), 999) with
-    | _td => (if is-int-ty(_td) then (match int-parts-of(_td) with | (s, w) => (if ((if s then true else false) and (w == 64)) then unit else trap("an unrecorded ctor decodes to Int64 default"))) else trap("ctor argType decodes to an int")))
+  (
+    let _td = ctor-payload-binder-type(empty-tree(), 999) in (if is-int-ty(_td) then (let (s, w) = int-parts-of(_td) in (if ((if s then true else false) and (w == 64)) then unit else trap("an unrecorded ctor decodes to Int64 default"))) else trap("ctor argType decodes to an int")))
 
 @test
 def id-ctor-pattern-cross-type-different-decl-rejects() =
@@ -1766,12 +1766,12 @@ def id-nmatchctor-terr-scrutinee-taints-match-pr849() =
   // scrutinee is an UNBOUND NVar (no rcol → RPoison → TErr), the body/rest are well-typed NLits (7, 9), and BB
   // is a recorded payload ctor. infer MUST type the match node TErr (not the arm-join Int64). Fast infer-layer
   // witness for the TErr-scrutinee short-circuit (was pinned only by the ref-backend guard / slow e2e file).
-  (match add-node(empty-tree(), Node.NVar(7)) with | (scrutId, t1) =>          // an UNBOUND scrutinee → TErr
-    (match add-node(t1, Node.NVar(8)) with | (binderId, t2) =>                 // the payload binder `x`
-      (match add-node(t2, Node.NLit(7)) with | (bodyId, t3) =>                 // well-typed body arm
-        (match add-node(t3, Node.NLit(9)) with | (restId, t4) =>               // well-typed rest arm
+  (let (scrutId, t1) = add-node(empty-tree(), Node.NVar(7)) in          // an UNBOUND scrutinee → TErr
+    (let (binderId, t2) = add-node(t1, Node.NVar(8)) in                 // the payload binder `x`
+      (let (bodyId, t3) = add-node(t2, Node.NLit(7)) in                 // well-typed body arm
+        (let (restId, t4) = add-node(t3, Node.NLit(9)) in               // well-typed rest arm
           (let t5 = record-ctor-tag-typed(t4, 860, 800, 1, encode-param-type(true, 64)) in   // BB (860) of decl 800, Int64 payload
-           (match add-node(t5, Node.NMatchCtor(scrutId, 860, List.push([], binderId), bodyId, restId)) with | (root, tree) =>
+           (let (root, tree) = add-node(t5, Node.NMatchCtor(scrutId, 860, List.push([], binderId), bodyId, restId)) in
              (let tc = infer-node(tree, root, (Map.empty : Map(Int64, Resolved)), (Map.empty : Map(Int64, Ty))) in   // no rcol → scrut unbound → TErr
               (match Map.lookup(tc, root) with
                 | Option.Some(Ty.TyErr) => unit                              // TErr scrutinee taints the match
