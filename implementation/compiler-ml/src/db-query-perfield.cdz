@@ -144,7 +144,7 @@ def types-col(db: Db) = match db with | Db.Db(_, _, tc, _) => tc
 def run-type-of(db0: Db, root: Int64) =
   handle DbState(db0) with
     | get-ty(id, db) => resume(require-ty(db, id), db)
-    | set-ty(pair, db) => (match pair with | (id, t) => resume(unit, fill-ty(db, id, t)))
+    | set-ty(pair, db) => (let (id, t) = pair in resume(unit, fill-ty(db, id, t)))
     | get-resolved(id, db) => resume(require-resolved(db, id), db)
     | node-of(id, db) => resume(node-at(db-tree(db), id), db)
     | def-body-node(name, db) => resume(def-body-of(db-tree(db), name), db)
@@ -162,19 +162,19 @@ import { Tok, parse-tokens, empty-tree, add-node, record-def, record-param } fro
 import { is-int-ty } from "ty"
 import { resolve-into-db } from "db-resolve"
 @test
-def pfq-arith() = match parse-tokens([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2)]) with
-  | (root, tree) => (let db = resolve-into-db(db-of(tree), root) in (if is-int-ty(run-type-of(db, root)) then unit else trap("int")))
+def pfq-arith() =
+  let (root, tree) = parse-tokens([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2)]) in (let db = resolve-into-db(db-of(tree), root) in (if is-int-ty(run-type-of(db, root)) then unit else trap("int")))
 
 @test
 def pfq-match() =
   // NMatch arm: hand-built `match 1 (0 => 10) (_ => 20)` (parse-tokens doesn't build NMatch; hand-build the
   // arena). Exercises the 4-child demand arm under the group fold → an int type. This was the shape that
   // tripped the invalid-wasm emit bug (now fixed by the boundary-name dedup 6431b69a4).
-  (match add-node(empty-tree(), Node.NLit(1)) with | (scrutId, t1) =>
-    (match add-node(t1, Node.NLit(0)) with | (litId, t2) =>
-      (match add-node(t2, Node.NLit(10)) with | (thenId, t3) =>
-        (match add-node(t3, Node.NLit(20)) with | (elseId, t4) =>
-          (match add-node(t4, Node.NMatch(scrutId, litId, thenId, elseId)) with | (root, tree) =>
+  (let (scrutId, t1) = add-node(empty-tree(), Node.NLit(1)) in
+    (let (litId, t2) = add-node(t1, Node.NLit(0)) in
+      (let (thenId, t3) = add-node(t2, Node.NLit(10)) in
+        (let (elseId, t4) = add-node(t3, Node.NLit(20)) in
+          (let (root, tree) = add-node(t4, Node.NMatch(scrutId, litId, thenId, elseId)) in
             (let db = resolve-into-db(db-of(tree), root) in
               (if is-int-ty(run-type-of(db, root)) then unit else trap("integer match is int"))))))))
 
@@ -184,7 +184,7 @@ def pfq-napp-recursive-nullary() =
   // that node so call-recursive(900) fires → the spine stamps Int64 WITHOUT descending (the 1-step fixpoint;
   // descending would loop the demand). Mirrors infer-db's recursive-nullary slice. Hand-built (parse-tokens
   // doesn't read def-forms).
-  (match add-node(empty-tree(), Node.NApp(900, -1)) with | (callId, t1) =>
+  (let (callId, t1) = add-node(empty-tree(), Node.NApp(900, -1)) in
     (let tree = record-def(t1, 900, callId) in
      (let db = resolve-into-db(db-of(tree), callId) in
        (if is-int-ty(run-type-of(db, callId)) then unit else trap("recursive nullary call types Int64")))))
@@ -194,13 +194,13 @@ def pfq-if-faithful-carries-width() =
   // FAITHFUL if-type upgrade: `if true then (: 5 Int8) else (: 9 Int8)` — both branches Int8, so the real
   // if-type JOINS them to Int8 (width 8), carrying the narrow width. The old combine-if stand-in returned the
   // then-branch type without a width-aware join; this pins that the faithful join preserves the narrow width.
-  (match add-node(empty-tree(), Node.NBoolLit(1)) with | (condId, t1) =>
-    (match add-node(t1, Node.NAnnLit(5, 1, 8)) with | (thenId, t2) =>
-      (match add-node(t2, Node.NAnnLit(9, 1, 8)) with | (elseId, t3) =>
-        (match add-node(t3, Node.NIf(condId, thenId, elseId)) with | (root, tree) =>
+  (let (condId, t1) = add-node(empty-tree(), Node.NBoolLit(1)) in
+    (let (thenId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
+      (let (elseId, t3) = add-node(t2, Node.NAnnLit(9, 1, 8)) in
+        (let (root, tree) = add-node(t3, Node.NIf(condId, thenId, elseId)) in
           (let db = resolve-into-db(db-of(tree), root) in
-            (match int-parts-of(run-type-of(db, root)) with
-              | (s, w) => (if s and (w == 8) then unit else trap("if with two Int8 branches joins to Int8 width 8"))))))))
+            (
+              let (s, w) = int-parts-of(run-type-of(db, root)) in (if s and (w == 8) then unit else trap("if with two Int8 branches joins to Int8 width 8"))))))))
 
 @test
 def pfq-if-faithful-mismatched-width-declines() =
@@ -208,10 +208,10 @@ def pfq-if-faithful-mismatched-width-declines() =
   // branches don't share a ground type, so join-branch-types → TyErr → the if is TyErr. The OLD combine-if
   // stand-in WRONGLY accepted this (returned the then-branch Int8, masking the mismatch). This is the concrete
   // correctness the faithful combiner buys over the stand-in.
-  (match add-node(empty-tree(), Node.NBoolLit(1)) with | (condId, t1) =>
-    (match add-node(t1, Node.NAnnLit(5, 1, 8)) with | (thenId, t2) =>
-      (match add-node(t2, Node.NAnnLit(9, 1, 16)) with | (elseId, t3) =>
-        (match add-node(t3, Node.NIf(condId, thenId, elseId)) with | (root, tree) =>
+  (let (condId, t1) = add-node(empty-tree(), Node.NBoolLit(1)) in
+    (let (thenId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
+      (let (elseId, t3) = add-node(t2, Node.NAnnLit(9, 1, 16)) in
+        (let (root, tree) = add-node(t3, Node.NIf(condId, thenId, elseId)) in
           (let db = resolve-into-db(db-of(tree), root) in
             (match run-type-of(db, root) with
               | Ty.TyErr => unit
@@ -221,21 +221,21 @@ def pfq-if-faithful-mismatched-width-declines() =
 def pfq-bin-faithful-same-width-runs() =
   // FAITHFUL bin-type: `(: 5 Int8) + (: 5 Int8)` → Int8 (width 8). Same-type arith yields that int type; the
   // old combine-bin stand-in returned the left operand type (coincidentally right here) — this pins the width.
-  (match add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) with | (l, t1) =>
-    (match add-node(t1, Node.NAnnLit(5, 1, 8)) with | (r, t2) =>
-      (match add-node(t2, Node.NBin(43, l, r)) with | (root, tree) =>
+  (let (l, t1) = add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) in
+    (let (r, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
+      (let (root, tree) = add-node(t2, Node.NBin(43, l, r)) in
         (let db = resolve-into-db(db-of(tree), root) in
-          (match int-parts-of(run-type-of(db, root)) with
-            | (s, w) => (if s and (w == 8) then unit else trap("Int8 + Int8 should be Int8 width 8")))))))
+          (
+            let (s, w) = int-parts-of(run-type-of(db, root)) in (if s and (w == 8) then unit else trap("Int8 + Int8 should be Int8 width 8")))))))
 
 @test
 def pfq-napp-arg-flows-to-param() =
   // ARG-PASSING NApp: `f p = p` (identity) applied to an Int8 arg — the arg's type FLOWS to the param use.
   // The arg arm demands type-of(arg), seeds set-ty(paramId, argTy), then demands type-of(body); the body IS
   // the param node, so type-of hits the seeded memo and the call types int (was TErr before this arm).
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
-    (match add-node(t1, Node.NAnnLit(5, 1, 8)) with | (argId, t2) =>
-      (match add-node(t2, Node.NApp(900, argId)) with | (callId, t3) =>
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
+    (let (argId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
+      (let (callId, t3) = add-node(t2, Node.NApp(900, argId)) in
         (let t4 = record-param(t3, 900, paramId) in
          (let tree = record-def(t4, 900, paramId) in
           (let db = resolve-into-db(db-of(tree), callId) in
@@ -249,8 +249,8 @@ def pfq-let-var-body-is-int() =
   // resolves (RBound) to the enclosing NLet binder. The NVar arm must type it via the let's VALUE (valId), NOT
   // type-of(binder=NLet) — the latter loops (type-of(NLet)->type-of(NVar)->type-of(NLet)->...) to a run-time
   // stack-exhaust. This pins the fix (mirror infer-db var-type) + guards the class on the cad-test-compiler-ml gate.
-  (match add-node(empty-tree(), Node.NLit(5)) with | (valId, t1) =>
-    (match add-node(t1, Node.NVar(1)) with | (bodyId, t2) =>
-      (match add-node(t2, Node.NLet(1, valId, bodyId)) with | (root, tree) =>
+  (let (valId, t1) = add-node(empty-tree(), Node.NLit(5)) in
+    (let (bodyId, t2) = add-node(t1, Node.NVar(1)) in
+      (let (root, tree) = add-node(t2, Node.NLet(1, valId, bodyId)) in
         (let db = resolve-into-db(db-of(tree), root) in
           (if is-int-ty(run-type-of(db, root)) then unit else trap("let x = 5 in x should type int"))))))
