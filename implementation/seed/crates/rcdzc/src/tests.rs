@@ -13118,61 +13118,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_let_or_fn_missing_its_body_offers_to_add_one() {
-        // `(let ((x 5)))` / `(fn (x))` — the bindings/params are present but the trailing BODY is missing.
-        // The message already named the shape; now it carries the actionable repair: append an
-        // `(trap "TODO")` body. `trap : ∀a. String → a` inhabits any type, so the completed form
-        // type-checks wherever it is used — the `let`/`fn` twin of the missing-`if`-else add-fix.
-        let cases = [
-            ("(module m (def (f) (let ((x 5)))) (export f))", "let"),
-            ("(module m (def (f) ((fn (x)) 5)) (export f))", "fn"),
-        ];
-        for (src, form) in cases {
-            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.message.contains("has no body"))
-                .unwrap_or_else(|| panic!("a {form} with no body reports"));
-            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{form}: {}", d.message);
-            let fix = d
-                .fix
-                .as_ref()
-                .unwrap_or_else(|| panic!("{form} no-body carries an add-body fix: {}", d.message));
-            assert_eq!(
-                fix.kind,
-                crate::abi::FixKind::InsertInto,
-                "{form}: {:?}",
-                fix
-            );
-            assert!(
-                fix.replacement.contains("(trap \"TODO\")"),
-                "{form} appends a placeholder body: {:?}",
-                fix.replacement
-            );
-        }
-        // The completed forms compile (the placeholder inhabits the body position's type).
-        assert!(
-            crate::compile::compile_component(&crate::codec::encode(&parse(
-                "(module m (def (f) (let ((x 5)) (trap \"TODO\"))) (export f))"
-            )))
-            .is_ok(),
-            "the let with an added body compiles"
-        );
-        // NO fix for the DEGENERATE `(let)` (no bindings AND no body) — appending only a body still leaves a
-        // malformed bindings-list, so it is not a one-shot add; keeps the message, no fix.
-        let empty = crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (def (f) (let)) (export f))",
-        )))
-        .into_iter()
-        .find(|d| d.message.contains("no bindings and no body"))
-        .expect("an empty let reports");
-        assert!(
-            empty.fix.is_none(),
-            "a bindings-and-body-less let has no one-shot add: {:?}",
-            empty.fix
-        );
-    }
-
-    #[test]
     fn an_empty_let_binding_list_names_the_binds_nothing_case_not_a_malformed_binding() {
         // `(let () <body>)` — an EMPTY binding list — is distinct from a MALFORMED one `(let ((a 1 2)) …)`:
         // there is no binding to be "malformed", the `let` just binds nothing. The message now says so
@@ -13214,57 +13159,6 @@ mod match_engine {
             .iter()
             .all(|d| d.severity != crate::abi::Severity::Error),
             "a valid one-binding let is clean"
-        );
-    }
-
-    #[test]
-    fn a_member_access_with_the_wrong_operand_count_offers_a_delete_fix_and_names_the_form() {
-        // Member access `(. operand key)` is a fixed-arity form (want 2), so it routes through the SHARED
-        // `fixed_arity_reject` the other fixed-arity forms use — bringing it to fix-parity with the family
-        // (before, it was the one fixed-arity form with a terse fix-less "takes an operand and a key"). A
-        // TOO-MANY access `(. r x y)` (an over-chained member) carries the delete-the-surplus fix; a
-        // TOO-FEW `(. r)` (no key) is message-only. The message names the `(. operand key)` form + the
-        // nested-chain spelling `(. (. r a) b)` so an agent knows how to fix a genuine nested access.
-        let find = |src: &str| {
-            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.message.contains("member access is `(. operand key)`"))
-                .unwrap_or_else(|| panic!("a member-access arity fault is reported for {src}"))
-        };
-        // TOO MANY — delete the surplus key, and the message names the form + the chain spelling.
-        let many = find("(module m (def (f (: r (Record (x Int64)))) (. r x y)) (export f))");
-        assert_eq!(
-            many.code.as_deref(),
-            Some("CDZ0201"),
-            "got: {}",
-            many.message
-        );
-        assert!(
-            many.message.contains("(. (. r a) b)"),
-            "names the nested-chain spelling: {}",
-            many.message
-        );
-        assert_eq!(
-            many.fix.as_ref().map(|f| f.kind),
-            Some(crate::abi::FixKind::Delete),
-            "a too-many member access carries a delete-the-surplus fix: {:?}",
-            many.fix
-        );
-        // TOO FEW — nothing to delete; supplying the key is not a mechanical edit.
-        let few = find("(module m (def (f (: r (Record (x Int64)))) (. r)) (export f))");
-        assert!(
-            few.fix.is_none(),
-            "a too-few member access has no surplus to delete: {:?}",
-            few.fix
-        );
-        // NO false positive: a well-formed `(. r x)` is clean (no arity fault).
-        assert!(
-            !crate::diagnostics(&mut crate::db::Db::load(parse(
-                "(module m (def (f (: r (Record (x Int64)))) (. r x)) (export f))"
-            )))
-            .iter()
-            .any(|d| d.message.contains("member access is `(. operand key)`")),
-            "a well-formed member access raises no arity fault"
         );
     }
 

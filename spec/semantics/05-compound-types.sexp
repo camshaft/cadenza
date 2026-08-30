@@ -25,6 +25,25 @@
             (r (+ (. r x) (. r y)))))
   (output (: 7 Int64)))
 
+; Member access `(. operand key)` is a fixed-arity form (2 tail elements). A TOO-MANY access `(. r x y)`
+; (an over-chained member) routes through the shared fixed-arity reject → a delete-the-surplus fix; the
+; message names the `(. operand key)` form + the nested-chain spelling `(. (. r a) b)` so an author knows
+; how to write a genuine nested access. A TOO-FEW `(. r)` (no key) has nothing to delete → no fix. A
+; well-formed `(. r x)` is clean. (Migrated from rcdzc
+; a_member_access_with_the_wrong_operand_count_offers_a_delete_fix_and_names_the_form.)
+(case "a member access with too many operands offers a delete-the-surplus fix and names the form"
+  (input  (do (def (f (: r (Record (: x Int64)))) (. r x y)) (export f)))
+  (error  CDZ0201 (message "member access is `(. operand key)`") (message "(. (. r a) b)")
+                  (fix (kind delete))))
+
+(case "a member access with too few operands (no key) carries no fix"
+  (input  (do (def (f (: r (Record (: x Int64)))) (. r)) (export f)))
+  (error  CDZ0201 (message "member access is `(. operand key)`") (no-fix)))
+
+(case "a well-formed member access raises no arity fault and projects the field"
+  (input  (do (def (f (: r (Record (: x Int64)))) (. r x)) (def (main) (f #record((= x 5)))) (export main)))
+  (call   main) (output (: 5 Int64)))
+
 (case "a record field holding a sum is projected then matched"
   (doc    "The record-carrying-a-sum idiom a self-hosted compiler's node records take: a record whose
            field is an `Option`, projected out with `(. r tag)` and then matched. `f (Some 7)` builds
