@@ -534,6 +534,10 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         Leaf::Ctor(c) => out.push_str(compound_ctor_word(*c)),
         Leaf::FieldPair => out.push('='),
         Leaf::Member => out.push('.'),
+        // The rational-literal HEAD leaf (seq-204) is likewise a LIST head: the well-formed `num/den`
+        // render is at the list level (`print_node` via `rational_parts`), so this bare tag renders only a
+        // best-effort marker for a stray atom occurrence, keeping the printer total.
+        Leaf::Rational => out.push_str("#rational"),
     }
 }
 

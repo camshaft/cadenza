@@ -365,6 +365,7 @@ impl<'a> Printer<'a> {
             Leaf::Ctor(c) => self.doc.word(crate::sexpr::compound_ctor_word(*c)),
             Leaf::FieldPair => self.doc.word("="),
             Leaf::Member => self.doc.word("."),
+            Leaf::Rational => self.doc.word("#rational"),
         }
     }
 
