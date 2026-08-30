@@ -45,6 +45,34 @@ impl Artifact {
     pub const KIND_RESULT_TYPES: &'static str = "result-types";
 }
 
+/// The input-artifact kind naming a package's ENTRY file — its bytes ARE the entry name. Rides the input
+/// artifact stream like `ast`/`sidecar` (`DESIGN-package-linking.md` §3c): a `.find(kind == KIND_ENTRY)`,
+/// no change to `compile`'s signature. A compile-BOUNDARY kind (the front-end builds it, the compiler
+/// reads it), so it lives here; `rcdzc::link` `pub use`s it (byte-stable for the linker + `compile`).
+pub const KIND_ENTRY: &str = "entry";
+
+/// The input-artifact kind naming the INTERFACE a PROVIDER component publishes its exports under (X4b) —
+/// its bytes are the interface name (`cadenza:pkg/iface`) a peer consumer binds to. A compile-BOUNDARY
+/// kind like [`KIND_ENTRY`]; `rcdzc::link` `pub use`s it.
+pub const KIND_COMPONENT_NAME: &str = "component-name";
+
+/// Build the [`KIND_ENTRY`] input artifact naming a package's entry file — its bytes are the entry name.
+/// A boundary artifact-builder the FRONT-END (`cdz`) uses to deliver a package the same way the
+/// artifacts-in compiler path does, so it lives here rather than in `rcdzc::cli` (which `pub use`s it).
+pub fn entry_artifact(name: &str) -> Artifact {
+    Artifact::new(KIND_ENTRY, "entry", name.as_bytes().to_vec())
+}
+
+/// Build the [`KIND_COMPONENT_NAME`] input artifact naming a provider's published interface (X4b) — its
+/// bytes are the interface name. The boundary companion of [`entry_artifact`].
+pub fn component_name_artifact(iface: &str) -> Artifact {
+    Artifact::new(
+        KIND_COMPONENT_NAME,
+        "component-name",
+        iface.as_bytes().to_vec(),
+    )
+}
+
 /// A diagnostic's severity. An error denies the artifact; a warning rides alongside a produced one —
 /// the distinction is per-diagnostic, not which arm of a union was taken. Severity is a SEPARATE field
 /// from the diagnostic's kind (reject/decline/trap): a consumer reads failure-ness from `severity`, not

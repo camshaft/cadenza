@@ -427,22 +427,10 @@ pub fn run_with_specs(
     )
 }
 
-/// Build the `KIND_ENTRY` input artifact naming a package's entry file — its bytes are the entry name.
-/// Shared by `run` (artifacts-in) and the `cdz` driver (source-in), so both deliver a package the same
-/// way.
-pub fn entry_artifact(name: &str) -> Artifact {
-    Artifact::new(crate::link::KIND_ENTRY, "entry", name.as_bytes().to_vec())
-}
-
-/// Build the `KIND_COMPONENT_NAME` input artifact naming a provider's published interface (X4b) — its
-/// bytes are the interface name. Shared by `run` and the `cdz` driver.
-pub fn component_name_artifact(iface: &str) -> Artifact {
-    Artifact::new(
-        crate::link::KIND_COMPONENT_NAME,
-        "component-name",
-        iface.as_bytes().to_vec(),
-    )
-}
+// The `entry`/`component-name` INPUT-artifact BUILDERS are compile-boundary helpers the FRONT-END
+// uses — moved to `cadenza-compile-abi`. Re-exported so `crate::cli::{entry_artifact,
+// component_name_artifact}` (and `rcdzc::cli::…`) stay byte-stable for `run_with_specs`/`run`.
+pub use cadenza_compile_abi::abi::{component_name_artifact, entry_artifact};
 
 /// FLAT-MERGE the `ast` input artifacts into ONE `(do (def..)+ (export <sym>))` program artifact — the
 /// `--export` two-stage splice. Each input's top-level items concatenate in order: a `(do item..)` root
