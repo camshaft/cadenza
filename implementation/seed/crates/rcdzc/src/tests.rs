@@ -2219,7 +2219,7 @@ fn a_reducer_event_shaped_record_with_bytes_imports_the_value_encode_runtime() {
     use crate::testkit::parse;
     // Fields sorted (BTreeMap): `ct` < `pl`. `ct` = String, `pl` = Bytes. Runtime-built (recursion defeats
     // the constant fold), so it takes the runtime value-encode walker — the reducer apply's result path.
-    let src = "(module m (def (f n) (if (= n 0) (record (ct \"wasm\") (pl (Bytes.of (list 1 2 3)))) (f (- n 1)))) \
+    let src = "(module m (def (f n) (if (= n 0) (record (= ct \"wasm\") (= pl (Bytes.of (list 1 2 3)))) (f (- n 1)))) \
                  (def (main) (f 2)) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
@@ -13861,7 +13861,7 @@ mod match_engine {
         };
         // Map LITERAL — the outlier value `"bad"` (a String among Int64 values) is the locus.
         assert_eq!(
-            anchor_of("(module m (def (main) ((. Map len) (map (\"a\" 1) (\"b\" \"bad\")))) (export main))")
+            anchor_of("(module m (def (main) ((. Map len) (map (= \"a\" 1) (= \"b\" \"bad\")))) (export main))")
                 .as_deref(),
             Some("bad"),
             "a map-literal value-heterogeneity reject anchors at the outlier value `\"bad\"`, not the map"
@@ -24775,7 +24775,7 @@ mod stage1 {
         // hex that are DIFFERENT values), distinct strings, distinct bools.
         assert!(compiles_ok("(map (= 1 10) (= 2 20))"));
         assert!(compiles_ok("(map (= 1 10) (= 0x2 20) (= 3 30))"));
-        assert!(compiles_ok("(map (\"a\" 1) (\"b\" 2))"));
+        assert!(compiles_ok("(map (= \"a\" 1) (= \"b\" 2))"));
         assert!(compiles_ok("(map (= true 1) (= false 2))"));
     }
 
@@ -25835,7 +25835,7 @@ mod stage1 {
         use crate::testkit::parse;
         let src = "(module m (type MapList (Cons (Tuple (Map String Int64) MapList)) Nil) \
                      (def (build (: n Int64)) (if (< n 1) (MapList.Nil ()) \
-                        (MapList.Cons (tuple (map (\"k\" n)) (build (- n 1)))))) \
+                        (MapList.Cons (tuple (map (= \"k\" n)) (build (- n 1)))))) \
                      (def (main) (build 2)) (export main))";
         compile_component(&crate::codec::encode(&parse(src)))
             .expect("a recursive sum carrying a Map compiles via the value-encode walker");
@@ -31957,12 +31957,12 @@ mod stage1 {
         // O(N²). Correctness (the dispatch picks the right arm) is pinned by the run-value tests out of band.
         fn wide_map_match_src(arms: usize) -> String {
             let arm_forms: String = (0..arms)
-                .map(|i| format!("((map (\"k{i}\" v)) {i})"))
+                .map(|i| format!("((map (= \"k{i}\" v)) {i})"))
                 .collect::<Vec<_>>()
                 .join(" ");
             format!(
                 "(module m (def (f (: m (Map String Int64))) (match m {arm_forms} (_ -1))) \
-                   (def (main) (f (map (\"k0\" 1)))) (export main))"
+                   (def (main) (f (map (= \"k0\" 1)))) (export main))"
             )
         }
         // A small instance compiles clean (a valid runtime-map match).
