@@ -6577,6 +6577,24 @@ fn arm_borrows_heap_subvalue_seen(
             arm_borrows_heap_subvalue_seen(db, lhs, true, seen)
                 || arm_borrows_heap_subvalue_seen(db, rhs, true, seen)
         }
+        // Applying a closure BORROWS it: `call_indirect` reads the closure's env cell (the lifted body reads
+        // captures via `arr-get`) and does NOT consume/free it — the env-cell reclaim is a SEPARATE post-apply
+        // drop (SITE-A, emit.rs) that fires only for an owned operand. So a heap CLOSURE handle read out of the
+        // matched scrutinee purely to be APPLIED does NOT escape the arm as a live handle → relax the CALLEE to
+        // `borrowed`, un-blocking the enclosing MatchSum shell-reclaim for the borrowed-extracted-closure-then-
+        // apply shape (#6049, e.g. 09:827 `(match (List.at fs 0) ((Some f) (f 10)) …)`, 09:848 the Map twin):
+        // the owned Some-shell then deep-drops after the apply, its cascade reclaiming the closure cell + boxed
+        // captures the borrow left live. The ARGS are CONSUMED by the call (a heap arg genuinely escapes into
+        // the callee) → stay consuming. SAFE: a closure that ALSO escapes/re-stores is read at a SEPARATE
+        // consuming `SumPayload` node (a store/tuple/return position) reached with `borrowed=false` → still
+        // flagged → the reclaim stays blocked there (a residual leak, never a double-free). Mirrors the
+        // Map.lookup/Set.contains borrowed-operand relaxation above.
+        Core::CallClosure { closure, ref args } => {
+            arm_borrows_heap_subvalue_seen(db, closure, true, seen)
+                || args
+                    .iter()
+                    .any(|&a| arm_borrows_heap_subvalue_seen(db, a, false, seen))
+        }
         // Every other node kind (calls, constructors, `if`/`let`, arithmetic, …) consumes / results — its
         // children carry no borrow relaxation. SAFE-BY-DEFAULT: an unhandled shape can only over-decline.
         _ => core_child_ids(db, id)
