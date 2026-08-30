@@ -236,6 +236,25 @@ partial def symMatchPat (m : Module) (patId : Nat) (v : SymExpr) : Option (Optio
         | .ctor _ _ => some none
         | .record _ => some none
         | _ => none
+      else if h == "record".toUTF8 then
+        -- `(record (k p)…)` matches a record scrutinee BY FIELD (each named key must be present; a partial
+        -- pattern checks only its own fields) — mirrors Eval.matchRecordPats.
+        (match v with
+         | .record vfields =>
+           (pc.extract 1 pc.size).foldl (fun (acc : Option (Option SymEnv)) fp =>
+             match acc with
+             | some (some env) =>
+               (match recordField? m fp with
+                | some (key, subPatId) =>
+                  (match (vfields.find? (fun kv => kv.1 == key)).map (·.2) with
+                   | some fv => (match symMatchPat m subPatId fv with
+                                 | some (some e2) => some (some (env ++ e2))
+                                 | some none => some none
+                                 | none => none)
+                   | none => some none)
+                | none => none)
+             | other => other) (some (some []))
+         | .const _ => some none | .ctor _ _ => some none | .tuple _ => some none | _ => none)
       -- a USER (or prelude) sum-constructor pattern `(C p…)` / `((. T C) p…)`, mirroring symCtorConstruct's
       -- erasure so pattern and value use ONE representation: a NEWTYPE pattern binds the erased payload
       -- directly; a struct-newtype matches the field tuple; a sole-nullary matches `unit`; a tagged ctor
@@ -296,7 +315,7 @@ partial def symArmTag? (m : Module) (patId : Nat) : Option ByteArray :=
      | _ => none)
   | some (Node.list pc) =>
     (match m.headName? (Node.list pc) with
-     | some h => if h == "tuple".toUTF8 || h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then some h
+     | some h => if h == "tuple".toUTF8 || h == "record".toUTF8 || h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then some h
                  else ctorAppName? m pc
      | none => none)
   | none => none
@@ -325,6 +344,15 @@ partial def symBindPat (m : Module) (patId : Nat) (scrut : SymExpr) : Option (Li
            | none => none
            | some bs => (match symBindPat m p.1 (.proj scrut (toString p.2).toUTF8) with
                          | some b2 => some (bs ++ b2) | none => none)) (some [])
+       else if h == "record".toUTF8 then
+         -- `(record (k p)…)` binds each field sub-pattern p to `proj scrut k` (the field selector).
+         (pc.extract 1 pc.size).foldl (fun (acc : Option (List (ByteArray × SymExpr))) fp =>
+           match acc with
+           | none => none
+           | some bs => (match recordField? m fp with
+                         | some (key, subPatId) => (match symBindPat m subPatId (.proj scrut key) with
+                                                    | some b2 => some (bs ++ b2) | none => none)
+                         | none => none)) (some [])
        else match ctorAppName? m pc with
          | some cname => (match variantCtorArity? m cname with
                           | some 1 => (match pc[1]? with | some sp => symBindPat m sp (.proj scrut cname) | none => some [])
@@ -890,5 +918,16 @@ private def _f64div : Module :=
   { leaves := #[Leaf.name "/".toUTF8, Leaf.float false 0 (ByteArray.mk #[10]), Leaf.float false 0 (ByteArray.mk #[3])],
     nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
 #guard symEval _f64div [] symDefaultFuel defaultIntTy 3 == SymOutcome.sym (.const (.f64 (10.0 / 3.0)))
+
+-- RECORD-pattern match (getting ahead of the fuzzer's record widening, spec 05-compound "record MATCH
+-- pattern destructures by field"). Pattern `(record (a x))` at node 4. leaves 0:record 1:a 2:x.
+private def _recPat : Module :=
+  { leaves := #[Leaf.name "record".toUTF8, Leaf.name "a".toUTF8, Leaf.name "x".toUTF8],
+    nodes := #[.atom 1, .atom 2, .list #[0, 1], .atom 0, .list #[3, 2]], root := 4 }
+-- against a CONCRETE record `{a=1, b=2}` → binds x to the `a` field (1); partial (ignores b).
+#guard symMatchPat _recPat 4 (.record #[("a".toUTF8, .const (.int 1)), ("b".toUTF8, .const (.int 2))])
+       == some (some [("x".toUTF8, .const (.int 1))])
+-- against a SYMBOLIC scrutinee → binds x to the symbolic field projection `proj scrut a`.
+#guard symBindPat _recPat 4 (.var 0) == some [("x".toUTF8, .proj (.var 0) "a".toUTF8)]
 
 end Oracle
