@@ -1,9 +1,10 @@
 ; data/unsupported.sexp — the auto-generated registry of every construct rcdzc declines to compile.
-; GENERATED from the DeclineId catalog (rcdzc/src/diag.rs) by `cargo run -p xtask-codegen-unsupported`.
-; The (code …) and (reason …) fields are DERIVED — do NOT hand-edit them (a `codegen --check` gate reds
-; on drift). The (blocked-on …) block IS hand-authored (status/owner/needs/ref) and is PRESERVED across
-; regenerations — that is where triage + routing-to-owning-lanes lives. Status: blocked | in-flight |
-; permanent | design-gated | unowned. (Unsupported-error tracker, operator seq-286-broad.)
+; GENERATED from the DeclineId catalog (rcdzc/src/diag.rs) by the `unsupported_registry` test
+; (`CADENZA_REGEN=1 cargo test -p rcdzc unsupported_registry` rewrites it). The (code …) and (reason …)
+; fields are DERIVED — do NOT hand-edit them (the drift-test reds). The (blocked-on …) block IS
+; hand-authored (status/owner/needs/ref) and is PRESERVED across regenerations — that is where triage +
+; routing-to-owning-lanes lives. Status: blocked | in-flight | permanent | design-gated | unowned.
+; (Unsupported-error tracker, operator seq-286-broad.)
 (do
   (unsupported wasm-host-peer-resource-fusion
     (code CDZ0900)
@@ -54,7 +55,7 @@
       (needs "the per-binder runtime keyed-read for a map-pattern over a runtime map")
       (ref pr 6216)))
   (unsupported prim-as-value-needs-closure
-    (code none)
+    (code CDZ0900)
     (reason "a built-in operation used as a runtime value")
     (blocked-on
       (status blocked)
