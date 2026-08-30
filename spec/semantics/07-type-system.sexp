@@ -3341,6 +3341,25 @@
   (input  (do (def (f) (let (((: x Int64) 3.0)) x)) (export f)))
   (error  CDZ0203 (message "value of type Float64") (fix (kind replace) (replacement "3"))))
 
+; CONTEXT-AWARE suggestion in TYPE position: the type slot of an annotation `(: v T)` is a type expression,
+; so only a TYPE name could be meant. The candidate pool DROPS non-type kinds (value defs, lexical binders,
+; variant ctors) — suggesting one would fail the one-shot rule (`(: 5 flag)` → "annotation requires a type").
+; So a value def `flag` one edit from a typo'd `flg` is NOT suggested (the diagnostic stays the honest plain
+; unbound), while a real user/prelude TYPE one edit away (`Widgett`→`Widget`, `Booll`→`Bool`) IS suggested
+; with an applyable rename fix. (Migrated from rcdzc a_type_position_typo_does_not_suggest_a_nearer_value +
+; a_type_position_typo_still_suggests_a_real_type.)
+(case "a type-position typo does not suggest a nearer VALUE def"
+  (input  (do (def (flag) true) (def (main) (: 5 flg)) (export main)))
+  (error  CDZ0101 (message "unbound") (not "flag")))
+
+(case "a type-position typo still suggests a real user type with a rename fix"
+  (input  (do (type Widget (W Int64)) (def (main) (: 5 Widgett)) (export main)))
+  (error  CDZ0101 (message "did you mean `Widget`?") (fix (kind replace) (replacement "Widget") (unverified))))
+
+(case "a type-position typo still suggests a prelude type with a rename fix"
+  (input  (do (def (main) (: 5 Booll)) (export main)))
+  (error  CDZ0101 (message "did you mean `Bool`?") (fix (kind replace) (replacement "Bool") (unverified))))
+
 (case "a String let-binder init annotated Bytes wraps in to-bytes"
   (input  (do (def (f (: s String)) (let (((: x Bytes) s)) x)) (export f)))
   (error  CDZ0203 (message "value of type String") (fix (kind wrap) (replacement-contains "(String.to-bytes "))))
