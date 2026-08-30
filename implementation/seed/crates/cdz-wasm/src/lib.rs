@@ -161,6 +161,34 @@ fn to_js_diag(
     }
 }
 
+/// The maximum size (UTF-8 bytes) of a SINGLE untrusted source the wasm boundary parses, checked BEFORE
+/// parsing. This is the DoS backstop at the UNTRUSTED ingestion layer (browser input) — the correct layer
+/// for a size limit: the reader builds an arena that is O(input), so bounding input bytes bounds arena
+/// size (the real resource concern), and the reader itself is overflow-proof. NATIVE/trusted callers of
+/// `cadenza_syntax` are UNBOUNDED; only this wasm boundary caps input. 1 MiB is generous — guide /
+/// playground / CAD sources are KB-scale — while rejecting a pathological megabyte-deep-nest source.
+pub const CDZ_WASM_MAX_SOURCE_BYTES: usize = 1 << 20;
+
+/// The maximum AGGREGATE untrusted source size across a multi-module compile — the user `text` PLUS every
+/// preloaded module source — checked BEFORE parsing in [`compile_with_preloaded`]. The per-source
+/// [`CDZ_WASM_MAX_SOURCE_BYTES`] guard bounds each source individually; this bounds their SUM so that N
+/// just-under-limit modules cannot aggregate into a many-sources DoS. 8 MiB accommodates a real preloaded
+/// library set while staying bounded.
+pub const CDZ_WASM_MAX_TOTAL_BYTES: usize = 8 << 20;
+
+/// Reject an untrusted source exceeding [`CDZ_WASM_MAX_SOURCE_BYTES`] BEFORE parsing (the size guard at
+/// the wasm ingestion boundary). The `Err(String)` surfaces through the existing parse-failure channel as
+/// a codeless error diagnostic (see [`compile`]). The byte counts ride in the message.
+fn check_source_size(text: &str) -> Result<(), String> {
+    if text.len() > CDZ_WASM_MAX_SOURCE_BYTES {
+        return Err(format!(
+            "source exceeds the maximum size ({} bytes; limit {CDZ_WASM_MAX_SOURCE_BYTES} bytes)",
+            text.len()
+        ));
+    }
+    Ok(())
+}
+
 /// Parse `text` in `surface` into rcdzc's binary AST bytes AND the front-end span table (node id →
 /// UTF-8 byte range) built from the SAME parse. The span table MUST be keyed by the CANONICAL node ids,
 /// because `codec::encode` canonicalizes (`canon.rs`) and the compiler decodes+reports THOSE ids. A raw
@@ -177,6 +205,10 @@ fn parse_spanned(
     text: &str,
     from: Format,
 ) -> Result<(Vec<u8>, Option<cadenza_syntax::spans::SpanTable>), String> {
+    // Size guard at the untrusted ingestion boundary: reject an over-limit source BEFORE parsing. Every
+    // surface parse (the user model AND each preloaded module) funnels through here, so this one guard
+    // bounds each individual untrusted source; the aggregate is bounded in `compile_with_preloaded`.
+    check_source_size(text)?;
     match from {
         Format::Sexpr => {
             // A SINGLE top-level form stays bare (`read_spanned`); MULTIPLE forms (a guide snippet with
@@ -334,6 +366,21 @@ pub fn compile_with_preloaded(
     {
         return Err(JsError::new(
             "compile_with_preloaded: preloaded_names/sources/formats must be equal length",
+        ));
+    }
+
+    // AGGREGATE size guard: the per-source `check_source_size` (in `parse_spanned`) bounds `text` and each
+    // preloaded source individually; this bounds their SUM so N just-under-limit modules can't aggregate
+    // into a many-sources DoS. Checked BEFORE any parsing; surfaced as a codeless diagnostic (the same
+    // channel a parse/size failure uses), not a JS exception.
+    let total: usize = text.len() + preloaded_sources.iter().map(String::len).sum::<usize>();
+    if total > CDZ_WASM_MAX_TOTAL_BYTES {
+        return Ok(compile_error(
+            format!(
+                "aggregate source size exceeds the maximum ({total} bytes; limit {CDZ_WASM_MAX_TOTAL_BYTES} bytes)"
+            ),
+            0,
+            0,
         ));
     }
 
@@ -2665,6 +2712,71 @@ mod tests {
         assert_eq!(
             sexpr, from_ml,
             "the same program lowers identically regardless of input surface"
+        );
+    }
+
+    #[test]
+    fn parse_spanned_rejects_an_over_limit_source_before_parsing() {
+        // The untrusted-ingestion size guard: a source past CDZ_WASM_MAX_SOURCE_BYTES is a clean error
+        // BEFORE parsing (bounds the O(input) arena — the DoS backstop that lets the reader drop its
+        // depth cap). The content need not be valid: the guard fires on byte length alone.
+        let too_big = "a".repeat(CDZ_WASM_MAX_SOURCE_BYTES + 1);
+        let err = parse_spanned(&too_big, Format::Sexpr)
+            .expect_err("an over-limit source must be rejected before parsing");
+        assert!(
+            err.contains("exceeds the maximum size"),
+            "expected a size-limit message, got: {err}"
+        );
+        // The ML surface funnels through the same guard.
+        let err_ml = parse_spanned(&too_big, Format::Ml)
+            .expect_err("the ML surface funnels through the same size guard");
+        assert!(err_ml.contains("exceeds the maximum size"), "got: {err_ml}");
+    }
+
+    #[test]
+    fn parse_spanned_accepts_a_legit_deep_source_under_the_limit() {
+        // The guard must not OVER-reject: a genuinely deep (but under the reader's nesting cap and well
+        // under the byte limit) source parses fine. 500 levels is a few KB — far below 1 MiB — and under
+        // MAX_NESTING_DEPTH (1024), so the iterative reader parses it without the size guard tripping.
+        let n = 500usize;
+        let deep = format!("{}1{}", "(+ ".repeat(n), " 1)".repeat(n));
+        assert!(
+            deep.len() < CDZ_WASM_MAX_SOURCE_BYTES,
+            "the deep source must be under the byte limit for this test to be meaningful"
+        );
+        let (ast_bytes, _) =
+            parse_spanned(&deep, Format::Sexpr).expect("a legit under-limit deep source parses");
+        assert!(!ast_bytes.is_empty(), "produced AST bytes");
+    }
+
+    #[test]
+    fn compile_with_preloaded_rejects_an_over_aggregate_input() {
+        // The aggregate guard (refinement R1): each preloaded source is individually under the per-source
+        // cap, but their SUM exceeds CDZ_WASM_MAX_TOTAL_BYTES, so the many-sources DoS is rejected BEFORE
+        // any parsing — surfaced as a codeless diagnostic (not a JS exception). Nine 1 MiB modules = 9 MiB
+        // aggregate, past the 8 MiB total cap.
+        let module = "a".repeat(CDZ_WASM_MAX_SOURCE_BYTES); // exactly the per-source limit (passes per-source)
+        let count = (CDZ_WASM_MAX_TOTAL_BYTES / CDZ_WASM_MAX_SOURCE_BYTES) + 1; // sum just over the total cap
+        let names: Vec<String> = (0..count).map(|i| format!("m{i}")).collect();
+        let sources: Vec<String> = (0..count).map(|_| module.clone()).collect();
+        let formats: Vec<String> = (0..count).map(|_| "sexpr".to_string()).collect();
+        let result = compile_with_preloaded("(export main)", "sexpr", names, sources, formats)
+            .expect("an over-aggregate input returns a diagnostic, not a JsError");
+        assert!(
+            result.component.is_none(),
+            "an over-aggregate input must not produce a component"
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("aggregate source size exceeds")),
+            "expected an aggregate-size diagnostic, got: {:?}",
+            result
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 }
