@@ -303,12 +303,14 @@ impl Gen<'_> {
         // 2026-08-30: keep expanding the shapes of programs.
         if self.cur.choice(4) == 0 {
             // A whole-program special shape needing top-level structure the body dispatch can't build:
-            // a user-sum type decl, or a try/`?` fallible-boundary program. (The sub-choice here only
-            // affects this ~1/4 branch — the normal-path crafted-seed tests take choice(4) != 0.)
-            if self.cur.flip() {
-                self.user_sum_program();
-            } else {
-                self.try_program();
+            // a user-sum type decl, a try/`?` fallible-boundary program, or a cross-function-perform
+            // effect program (a callee `def` performs the op, a caller's `handle` discharges it). (The
+            // sub-choice here only affects this ~1/4 branch — the normal-path crafted-seed tests take
+            // choice(4) != 0.)
+            match self.cur.choice(3) {
+                0 => self.user_sum_program(),
+                1 => self.try_program(),
+                _ => self.cross_fn_effect_program(),
             }
             return;
         }
@@ -402,6 +404,77 @@ impl Gen<'_> {
                 self.out.push_str(") ((Mk a b) (+ a b)))) (export main))");
             }
         }
+    }
+
+    /// A CROSS-FUNCTION-PERFORM effect program: the op is performed inside a CALLEE `def`, and a
+    /// CALLER's `handle` discharges it — the dynamic-in-extent, statically-resolved handler resolution
+    /// (a callee's perform discharged by a caller's handler, monomorphized per call site) the spec pins as
+    /// the self-hosting shape (the compiler's own `Fresh`/`Diag`/`Unify` all perform DEEP inside called
+    /// functions, not lexically inside a `handle`). The inline [`effect_handler_expr`] — whose perform is
+    /// ALWAYS lexically inside the `handle` body — can never emit this dynamic-extent shape; it is the F24
+    /// cross-function / xhs cross-handler territory the effect-handler comments reference but no path
+    /// produces. Operator seq-23 (2026-08-30): exercise the effect system's shapes cdz-smith never hit.
+    /// Shape (top-level effect decl + helper def(s) + a `main` whose handle wraps the call):
+    /// `(do (effect E (op o (-> Int64 Int64))) (def (g (: x Int64)) (<op> (E.o x) <num>))
+    ///      (def (main) (handle E <init> ((o (p) s (resume <val> <state>))) (g <arg>))) (export main))`.
+    /// TERMINATION/SAFETY: the callee performs a FIXED once (non-recursive), the single tail-resumptive arm
+    /// resumes EXACTLY once threading scalar Int64 state, and neither effect nor op name is a value binding,
+    /// so a generated resume operand can't re-perform into a loop. Int64 throughout so it type-checks. Two
+    /// shapes: the perform ONE frame below the handle (main→g) or TWO (main→h→g, `h` forwards its arg to
+    /// `g`), exercising multi-frame dynamic extent — the perform is discharged across intervening frames.
+    fn cross_fn_effect_program(&mut self) {
+        let depth = 3;
+        let ename = {
+            let v = self.env.fresh();
+            format!("E{}", &v[1..]) // capitalized effect name, e.g. E7
+        };
+        let oname = self.env.fresh(); // lowercase op name — a valid operation identifier
+        let g = self.env.fresh();
+        let gp = self.env.fresh();
+        let _ = write!(
+            self.out,
+            "(do (effect {ename} (op {oname} (-> Int64 Int64))) "
+        );
+        // Callee `g`: performs the op ONCE on its param, combined with a generated numeric operand.
+        let op = ["+", "-", "*"][self.cur.choice(3)];
+        let _ = write!(
+            self.out,
+            "(def ({g} (: {gp} Int64)) ({op} ({ename}.{oname} {gp}) "
+        );
+        let mark = self.env.push(gp.clone(), Kind::Num); // only gp is a value binding (E/o are not)
+        self.expr(depth, Kind::Num); // second operand (may reference gp)
+        self.env.truncate(mark);
+        self.out.push_str(")) ");
+        // Optionally a second frame so the perform is TWO calls below the handle (main → h → g).
+        let callee = if self.cur.flip() {
+            let h = self.env.fresh();
+            let hp = self.env.fresh();
+            let _ = write!(self.out, "(def ({h} (: {hp} Int64)) ({g} {hp})) ");
+            h
+        } else {
+            g
+        };
+        // main: the handle discharges the perform occurring inside the (transitively) called callee.
+        let p = self.env.fresh();
+        let s = self.env.fresh();
+        let init = self.cur.range(0, 9);
+        let _ = write!(
+            self.out,
+            "(def (main) (handle {ename} {init} (({oname} ({p}) {s} (resume "
+        );
+        let mark = self.env.push(p.clone(), Kind::Num); // p and s are both scalar Int64 here
+        self.env.push(s.clone(), Kind::Num);
+        self.expr(depth, Kind::Num); // resume VALUE (may reference p/s)
+        self.out.push(' ');
+        self.expr(depth, Kind::Num); // new STATE (may reference p/s)
+        self.env.truncate(mark);
+        // Close: resume/arm/arm-list (`)))`), the handled-body call `({callee} <arg>)` and then handle +
+        // def-main (`))` after the call), then the sibling top-level `(export main)`, then the outer `(do …)`.
+        let _ = write!(
+            self.out,
+            "))) ({callee} {}))) (export main))",
+            self.cur.range(0, 9)
+        );
     }
 
     /// Emit one expression of the requested (hint) kind, within the depth budget.
@@ -2134,9 +2207,12 @@ mod tests {
             );
             // `main` is the only top-level def; a SECOND `(def (` is a recursive helper — EXCEPT in the
             // special whole-program shapes, whose top-level helper is not a rec_def_expr helper: a
-            // try/`?` program has a sibling `(def (f) …)` boundary fn (no recursion), and a user-sum
-            // program declares a type. Exclude those so this only checks genuine normal-path rec-defs.
-            let is_special = src.contains("(try (Ok ") || src.contains("(do (type ");
+            // try/`?` program has a sibling `(def (f) …)` boundary fn (no recursion), a user-sum program
+            // declares a type, and a cross-function-perform effect program (top-level `(do (effect …`)
+            // has non-recursive `g`/`h` helper defs. Exclude those so this only checks normal-path rec-defs.
+            let is_special = src.contains("(try (Ok ")
+                || src.contains("(do (type ")
+                || src.starts_with("(do (effect ");
             if !is_special && src.matches("(def (").count() >= 2 {
                 hit = true;
                 assert!(
@@ -2385,6 +2461,53 @@ mod tests {
         assert!(
             hit,
             "no seed in the sweep emitted a STRING-state effect handler"
+        );
+    }
+
+    /// The CROSS-FUNCTION-PERFORM effect program is reachable — some seed emits a top-level `(effect …)`
+    /// whose op is performed inside a CALLEE `def` while a separate `main`'s `(handle …)` discharges it
+    /// (dynamic-in-extent resolution across an intervening call frame — the self-hosting Fresh/Diag/Unify
+    /// shape the inline handler never produces). Both the one-frame (main→g) and two-frame (main→h→g)
+    /// variants are reached, and every program parses. Guards operator seq-23 cross-function coverage.
+    #[test]
+    fn some_seed_emits_a_cross_function_perform() {
+        let mut hit_one = false;
+        let mut hit_two = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            // The cross-fn program is the only top-level shape starting with `(do (effect …`, and its
+            // handle lives in a param-less `(def (main) (handle …`, with the perform inside a helper def.
+            if src.starts_with("(do (effect ") && src.contains("(def (main) (handle ") {
+                assert!(
+                    src.contains("(resume "),
+                    "cross-fn effect program is missing its `(resume `:\n{src}"
+                );
+                // The op is performed inside a helper def, NOT lexically inside the handle body.
+                let handle_at = src.find("(handle ").unwrap();
+                assert!(
+                    src[..handle_at].contains(".") && src[..handle_at].contains("(def ("),
+                    "cross-fn program should perform the op in a helper def before the handle:\n{src}"
+                );
+                // Two-frame variant has THREE top-level defs (g, h, main); one-frame has two.
+                match src.matches("(def (").count() {
+                    2 => hit_one = true,
+                    3 => hit_two = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(
+            hit_one,
+            "no seed emitted a one-frame (main→g) cross-function-perform program"
+        );
+        assert!(
+            hit_two,
+            "no seed emitted a two-frame (main→h→g) cross-function-perform program"
         );
     }
 
