@@ -273,7 +273,7 @@ def subtree-calls-callee(tree: Tree, calleeName: Int64, target: Int64, fuel: Int
 /// to a known def → not recursive (the unknown-name decline path handles it).
 def call-is-recursive(tree: Tree, calleeName: Int64) =
   (match def-body-of(tree, calleeName) with
-    | Option.Some(b) => (match subtree-calls-name(tree, b, calleeName, 4000) with | (found, _) => found)
+    | Option.Some(b) => (let (found, _) = subtree-calls-name(tree, b, calleeName, 4000) in found)
     | Option.None(_) => false)
 
 /// slice-B1b-p3: does `id`'s subtree call `target` DIRECTLY (a self-call), WITHOUT descending into OTHER
@@ -341,7 +341,7 @@ def subtree-calls-self-opt(tree: Tree, argOpt: Option(Int64), target: Int64, fue
 /// def-env; mutual pairs stay out and decline. `def-body-of` miss → not a known def → not self-recursive.
 def call-is-self-recursive(tree: Tree, calleeName: Int64) =
   (match def-body-of(tree, calleeName) with
-    | Option.Some(b) => (match subtree-calls-self(tree, b, calleeName, 4000) with | (found, _) => found)
+    | Option.Some(b) => (let (found, _) = subtree-calls-self(tree, b, calleeName, 4000) in found)
     | Option.None(_) => false)
 
 /// Record a def's FIRST PARAMETER node-id: name-id → its param node-id (slice-3c). A `(name arg)` call looks
@@ -468,7 +468,7 @@ def record-ctor-tag-typed-list(tree: Tree, ctorName: Int64, declName: Int64, tag
 def ctor-tag-of(tree: Tree, ctorName: Int64) = match tree with
   | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(dt2) => (match dt2 with | (_declName, tag, _argTypes) => Option.Some(tag)))
+      | Option.Some(dt2) => (let (_declName, tag, _argTypes) = dt2 in Option.Some(tag)))
 
 /// M2-b-2b-ii-c2b: the DECL NAME-id of the sum type a ctor belongs to, or `None` (not a recorded ctor). infer
 /// types a ctor-app/pattern as `TySum(declName)` — this is what gives a ctor VALUE its sum identity so a
@@ -476,7 +476,7 @@ def ctor-tag-of(tree: Tree, ctorName: Int64) = match tree with
 def ctor-decl-of(tree: Tree, ctorName: Int64) = match tree with
   | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(dt2) => (match dt2 with | (declName, _tag, _argTypes) => Option.Some(declName)))
+      | Option.Some(dt2) => (let (declName, _tag, _argTypes) = dt2 in Option.Some(declName)))
 
 /// M2-b-2b-ii-c2b payload-argType accessor (SINGLE-FIELD fast path, v-inference t443 refinement): the ENCODED
 /// declared type of a ctor's FIRST payload (0 = none/Int64-placeholder — a nullary ctor or an as-yet-unparsed
@@ -490,7 +490,7 @@ def ctor-decl-of(tree: Tree, ctorName: Int64) = match tree with
 def ctor-argtype-of(tree: Tree, ctorName: Int64) = match tree with
   | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(dt2) => (match dt2 with | (_declName, _tag, argTypes) =>
+      | Option.Some(dt2) => (let (_declName, _tag, argTypes) = dt2 in
           (match List.at(argTypes, 0) with | Option.Some(a0) => Option.Some(a0) | Option.None(_) => Option.Some(0))))
 
 /// compound-payload slice-1a: the FULL per-field payload argType LIST of a ctor (each element encoded like the
@@ -499,7 +499,7 @@ def ctor-argtype-of(tree: Tree, ctorName: Int64) = match tree with
 def ctor-argtypes-of(tree: Tree, ctorName: Int64) = match tree with
   | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(dt2) => (match dt2 with | (_declName, _tag, argTypes) => Option.Some(argTypes)))
+      | Option.Some(dt2) => (let (_declName, _tag, argTypes) = dt2 in Option.Some(argTypes)))
 
 /// M2-b-2b-ii-c2 ENUM-DISC REPRESENTATION predicate (ii-c2b-2, v-inference-confirmed against rcdzc db.rs:2789):
 /// is `declName` a C-style enum — `>= 2` constructors, EVERY one NULLARY (no payload)? Such a sum value carries
@@ -522,7 +522,7 @@ def decl-enum-disc-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64,
   (if (i == List.len(entries)) then (if (payload == 0) then (nullary >= 2) else false)
    else (match List.at(entries, i) with
      | Option.None(_) => (if (payload == 0) then (nullary >= 2) else false)
-     | Option.Some(e) => (match e with | (ctorName, dt) => (match dt with | (dn, _tag, _argTypes) =>
+     | Option.Some(e) => (let (ctorName, dt) = e in (let (dn, _tag, _argTypes) = dt in
           (if (dn == declName)
            then (match def-body-of(tree, ctorName) with               // nullary ctor has a def-body; payload doesn't
                   | Option.Some(_) => decl-enum-disc-go(tree, entries, declName, i + 1, nullary + 1, payload)
@@ -540,7 +540,7 @@ def decl-ctor-count-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64
   (if (i == List.len(entries)) then n
    else (match List.at(entries, i) with
      | Option.None(_) => n
-     | Option.Some(e) => (match e with | (_ctorName, dt) => (match dt with | (dn, _tag, _argTypes) =>
+     | Option.Some(e) => (let (_ctorName, dt) = e in (let (dn, _tag, _argTypes) = dt in
           (if (dn == declName)
            then decl-ctor-count-go(tree, entries, declName, i + 1, n + 1)
            else decl-ctor-count-go(tree, entries, declName, i + 1, n))))))
@@ -559,7 +559,7 @@ def decl-name-registered-go(entries: List(Tuple(Int64, Tuple(Int64, Int64, List(
   (if (i == List.len(entries)) then false
    else (match List.at(entries, i) with
      | Option.None(_) => false
-     | Option.Some(e) => (match e with | (_ctorName, dt) => (match dt with | (dn, _tag, _argTypes) =>
+     | Option.Some(e) => (let (_ctorName, dt) = e in (let (dn, _tag, _argTypes) = dt in
           (if (dn == nameId) then true else decl-name-registered-go(entries, nameId, i + 1))))))
 
 /// Encode a param's declared `(signed, width)` into the single Int64 the param-type table stores: `width*2 +
@@ -597,27 +597,27 @@ def op-code(t: Tok) = match t with | Tok.TOp(op) => Option.Some(op) | _ => Optio
 /// parse-factor: an Int literal, a boolean literal, a variable reference, or a parenthesized expression. A
 /// paren nests the FULL grammar (`parse-any`, so `(let x = 1 in x)` parses). Returns `(nodeId, nextIndex, tree')`.
 def parse-factor(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
-  | Tok.TNum(v) => (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, i + 1, t1))
-  | Tok.TBoolTok(b) => (match add-node(tree, Node.NBoolLit(b)) with | (id, t1) => (id, i + 1, t1))
+  | Tok.TNum(v) => (let (id, t1) = add-node(tree, Node.NLit(v)) in (id, i + 1, t1))
+  | Tok.TBoolTok(b) => (let (id, t1) = add-node(tree, Node.NBoolLit(b)) in (id, i + 1, t1))
   | Tok.TNeg =>
     // prefix unary minus `-x`, DESUGARED at parse time into `0 - x` = NBin(45, NLit 0, x). No new node type,
     // so resolve/infer/lower/eval need no `NNeg` arm — it is exactly a subtraction. Binds tight (a factor):
     // `-x * 2` = `(-x) * 2`, and `- -x` = `0 - (0 - x)`. Uses NLit 0 as the left operand.
-    (match add-node(tree, Node.NLit(0)) with | (zeroId, t0) =>
-      (match parse-factor(ts, i + 1, t0) with | (opnd, j, t1) =>
-        (match add-node(t1, Node.NBin(45, zeroId, opnd)) with | (id, t2) => (id, j, t2))))
-  | Tok.TName(nm) => (match add-node(tree, Node.NVar(nm)) with | (id, t1) => (id, i + 1, t1))
+    (let (zeroId, t0) = add-node(tree, Node.NLit(0)) in
+      (let (opnd, j, t1) = parse-factor(ts, i + 1, t0) in
+        (let (id, t2) = add-node(t1, Node.NBin(45, zeroId, opnd)) in (id, j, t2))))
+  | Tok.TName(nm) => (let (id, t1) = add-node(tree, Node.NVar(nm)) in (id, i + 1, t1))
   | Tok.TLParen =>
-    (match parse-any(ts, i + 1, tree) with | (inner, j, t1) =>
+    (let (inner, j, t1) = parse-any(ts, i + 1, tree) in
       // consume the matching ')' if present (j points at it); tolerate a missing one.
       (match tok-at(ts, j) with | Tok.TRParen => (inner, j + 1, t1) | _ => (inner, j, t1)))
-  | _ => (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, i + 1, t1))   // error recovery: 0
+  | _ => (let (id, t1) = add-node(tree, Node.NLit(0)) in (id, i + 1, t1))   // error recovery: 0
 
 /// parse-term: factor ((`*`|`/`|`%`) factor)* — the multiplicative tier, tighter than `+`/`-` and
 /// left-associative. Op codes 42 `*`, 47 `/`, 37 `%` all bind here; each builds an `NBin` (op-agnostic), so
 /// `/` and `%` join by widening the op test — no new grammar function (SCC-safe).
 def parse-term(ts: List(Tok), i: Int64, tree: Tree) =
-  (match parse-factor(ts, i, tree) with | (lhs, j, t1) => parse-term-tail(ts, j, lhs, t1))
+  (let (lhs, j, t1) = parse-factor(ts, i, tree) in parse-term-tail(ts, j, lhs, t1))
 
 def parse-term-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree) =
   (match op-code(tok-at(ts, i)) with
@@ -628,12 +628,12 @@ def parse-term-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree) =
       else (if (op == 37) then mul-tail-add(ts, i, lhs, tree, 37) else (lhs, i, tree)))))
 
 def mul-tail-add(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
-  (match parse-factor(ts, i + 1, tree) with | (rhs, j, t1) =>
-    (match add-node(t1, Node.NBin(op, lhs, rhs)) with | (id, t2) => parse-term-tail(ts, j, id, t2)))
+  (let (rhs, j, t1) = parse-factor(ts, i + 1, tree) in
+    (let (id, t2) = add-node(t1, Node.NBin(op, lhs, rhs)) in parse-term-tail(ts, j, id, t2)))
 
 /// parse-expr: term ((`+`|`-`) term)* — left-associative additive layer.
 def parse-expr(ts: List(Tok), i: Int64, tree: Tree) =
-  (match parse-term(ts, i, tree) with | (lhs, j, t1) => parse-expr-tail(ts, j, lhs, t1))
+  (let (lhs, j, t1) = parse-term(ts, i, tree) in parse-expr-tail(ts, j, lhs, t1))
 
 def parse-expr-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree) =
   (match op-code(tok-at(ts, i)) with
@@ -643,8 +643,8 @@ def parse-expr-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree) =
       else (if op == 45 then add-tail(ts, i, lhs, tree, 45) else (lhs, i, tree))))
 
 def add-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
-  (match parse-term(ts, i + 1, tree) with | (rhs, j, t1) =>
-    (match add-node(t1, Node.NBin(op, lhs, rhs)) with | (id, t2) => parse-expr-tail(ts, j, id, t2)))
+  (let (rhs, j, t1) = parse-term(ts, i + 1, tree) in
+    (let (id, t2) = add-node(t1, Node.NBin(op, lhs, rhs)) in parse-expr-tail(ts, j, id, t2)))
 
 /// parse-any: the top of the grammar — a `let NAME = expr in expr` binding, or a comparison expression. `let`
 /// nests `parse-any` in both the value and body positions, so `let a = 1 in let b = 2 in a + b` parses and
@@ -659,12 +659,12 @@ def parse-any(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
 /// branches nest the FULL grammar (`parse-any`, so `if c then let x = 1 in x else 0` and nested ifs parse).
 /// Tolerates a missing `then`/`else` (error recovery: parse straight through). All three children are BY ID.
 def parse-if(ts: List(Tok), i: Int64, tree: Tree) =
-  (match parse-cmp(ts, i, tree) with | (condId, j, t1) =>
+  (let (condId, j, t1) = parse-cmp(ts, i, tree) in
     (let k = (match tok-at(ts, j) with | Tok.TThen => j + 1 | _ => j) in
-     (match parse-any(ts, k, t1) with | (thenId, m, t2) =>
+     (let (thenId, m, t2) = parse-any(ts, k, t1) in
        (let p = (match tok-at(ts, m) with | Tok.TElse => m + 1 | _ => m) in
-        (match parse-any(ts, p, t2) with | (elseId, q, t3) =>
-          (match add-node(t3, Node.NIf(condId, thenId, elseId)) with | (id, t4) => (id, q, t4)))))))
+        (let (elseId, q, t3) = parse-any(ts, p, t2) in
+          (let (id, t4) = add-node(t3, Node.NIf(condId, thenId, elseId)) in (id, q, t4)))))))
 
 /// parse-cmp: the comparison layer — `expr [CMP expr]`, looser than `+`/`-` (so `1 + 2 < 3 + 4` groups the
 /// additions under the comparison) and NON-associative (one comparison; a chained second is not an
@@ -672,15 +672,15 @@ def parse-if(ts: List(Tok), i: Int64, tree: Tree) =
 /// let-binding `=`). A comparison builds an `NBin` just like arithmetic; infer gives it `TBool`. Adding the
 /// four new relational ops is just more op codes in THIS existing layer — no new grammar function (SCC-safe).
 def parse-cmp(ts: List(Tok), i: Int64, tree: Tree) =
-  (match parse-expr(ts, i, tree) with | (lhs, j, t1) =>
+  (let (lhs, j, t1) = parse-expr(ts, i, tree) in
     (match op-code(tok-at(ts, j)) with
      | Option.None(_) => (lhs, j, t1)
      | Option.Some(op) =>
        (if (op >= 60) then (if (op <= 65) then cmp-tail(ts, j, lhs, t1, op) else (lhs, j, t1)) else (lhs, j, t1))))
 
 def cmp-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
-  (match parse-expr(ts, i + 1, tree) with | (rhs, j, t1) =>
-    (match add-node(t1, Node.NBin(op, lhs, rhs)) with | (id, t2) => (id, j, t2)))
+  (let (rhs, j, t1) = parse-expr(ts, i + 1, tree) in
+    (let (id, t2) = add-node(t1, Node.NBin(op, lhs, rhs)) in (id, j, t2)))
 
 /// parse-let: after the `let` keyword — `NAME = <any> in <any>`, building an `NLet(nameId, valueId, bodyId)`.
 /// Tolerates a missing `=`/`in` (error recovery: parse straight through). The value and body are children BY
@@ -688,10 +688,10 @@ def cmp-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
 def parse-let(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
   | Tok.TName(nm) =>
     (let j = (match tok-at(ts, i + 1) with | Tok.TEq => i + 2 | _ => i + 1) in
-     (match parse-any(ts, j, tree) with | (valId, k, t1) =>
+     (let (valId, k, t1) = parse-any(ts, j, tree) in
        (let m = (match tok-at(ts, k) with | Tok.TIn => k + 1 | _ => k) in
-        (match parse-any(ts, m, t1) with | (bodyId, p, t2) =>
-          (match add-node(t2, Node.NLet(nm, valId, bodyId)) with | (id, t3) => (id, p, t3))))))
+        (let (bodyId, p, t2) = parse-any(ts, m, t1) in
+          (let (id, t3) = add-node(t2, Node.NLet(nm, valId, bodyId)) in (id, p, t3))))))
   | _ => parse-expr(ts, i, tree)   // recovery: `let` with no name → parse as expression
 
 /// The parse COLUMN entry: tokens → `(rootId, Tree)` — the root node id and the arena. TRAILING-TOKEN GUARD:
@@ -704,9 +704,9 @@ def parse-let(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
 /// value" discipline the s-expr reader uses for trailing junk (`se-trailing-junk-declines`). A fully-consumed
 /// parse returns its real root unchanged.
 def parse-tokens(ts: List(Tok)) =
-  (match parse-any(ts, 0, empty-tree()) with | (root, endIdx, tree) =>
+  (let (root, endIdx, tree) = parse-any(ts, 0, empty-tree()) in
     (if (endIdx == List.len(ts)) then (root, tree)
-     else (match add-node(tree, Node.NVar(0)) with | (poison, t1) => (poison, t1))))
+     else (let (poison, t1) = add-node(tree, Node.NVar(0)) in (poison, t1))))
 
 /// A structural probe: is the node at `id` a `Bin` with op `op`?
 def is-bin-op(tree: Tree, id: Int64, op: Int64) = match node-at(tree, id) with
@@ -774,19 +774,19 @@ def neg() = Tok.TNeg
 @test
 def pd-single-literal() =
   // "5" → one NLit node, root is it.
-  (match parse-tokens([n(5)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(5)]) in
     (if node-count(tree) == 1 then (if is-lit(tree, root, 5) then unit else trap("root is Lit 5")) else trap("one node")))
 
 @test
 def pd-simple-add() =
   // "1 + 2" → NLit 1, NLit 2, NBin(+, ..) ; 3 nodes, root is a + Bin.
-  (match parse-tokens([n(1), plus(), n(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(1), plus(), n(2)]) in
     (if node-count(tree) == 3 then (if is-bin-op(tree, root, 43) then unit else trap("root is + Bin")) else trap("3 nodes")))
 
 @test
 def pd-precedence-mul-tighter() =
   // "1 + 2 * 3" → root is + , whose RIGHT child is a * Bin (mul binds tighter). Verify the shape by ids.
-  (match parse-tokens([n(1), plus(), n(2), times(), n(3)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(1), plus(), n(2), times(), n(3)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NBin(op, _, r)) =>
         (if op == 43 then (if is-bin-op(tree, r, 42) then unit else trap("+ 's right child is * ")) else trap("root is +"))
@@ -795,7 +795,7 @@ def pd-precedence-mul-tighter() =
 @test
 def pd-parens-override() =
   // "(1 + 2) * 3" → root is * , whose LEFT child is a + Bin (parens grouped the add under the mul).
-  (match parse-tokens([Tok.TLParen, n(1), plus(), n(2), Tok.TRParen, times(), n(3)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([Tok.TLParen, n(1), plus(), n(2), Tok.TRParen, times(), n(3)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NBin(op, l, _)) =>
         (if op == 42 then (if is-bin-op(tree, l, 43) then unit else trap("* 's left child is + ")) else trap("root is * "))
@@ -804,7 +804,7 @@ def pd-parens-override() =
 @test
 def pd-left-assoc-subtraction() =
   // "10 - 3 - 2" → left-associative: ((10 - 3) - 2), so root is - whose LEFT child is also a - Bin.
-  (match parse-tokens([n(10), minus(), n(3), minus(), n(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(10), minus(), n(3), minus(), n(2)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NBin(op, l, _)) =>
         (if op == 45 then (if is-bin-op(tree, l, 45) then unit else trap("left child is the inner - ")) else trap("root is - "))
@@ -813,7 +813,7 @@ def pd-left-assoc-subtraction() =
 @test
 def pd-node-ids-stable-and-dense() =
   // node ids are dense 0..n-1: "1 + 2" has 3 nodes at ids 0,1,2 — every id in range resolves to a node.
-  (match parse-tokens([n(1), plus(), n(2)]) with | (_, tree) =>
+  (let (_, tree) = parse-tokens([n(1), plus(), n(2)]) in
     (match node-at(tree, 0) with | Option.Some(_) =>
       (match node-at(tree, 1) with | Option.Some(_) =>
         (match node-at(tree, 2) with | Option.Some(_) =>
@@ -822,13 +822,13 @@ def pd-node-ids-stable-and-dense() =
 @test
 def pd-deep-nesting() =
   // "((1))" → parens collapse to just the literal; one node.
-  (match parse-tokens([Tok.TLParen, Tok.TLParen, n(1), Tok.TRParen, Tok.TRParen]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([Tok.TLParen, Tok.TLParen, n(1), Tok.TRParen, Tok.TRParen]) in
     (if is-lit(tree, root, 1) then (if node-count(tree) == 1 then unit else trap("one node")) else trap("root is Lit 1")))
 
 @test
 def pd-children-by-id-not-inline() =
   // the arena shape: a Bin's children are ID references into the same arena, resolvable via node-at.
-  (match parse-tokens([n(7), times(), n(8)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(7), times(), n(8)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NBin(_, l, r)) =>
         (if is-lit(tree, l, 7) then (if is-lit(tree, r, 8) then unit else trap("right child id → Lit 8")) else trap("left child id → Lit 7"))
@@ -837,13 +837,13 @@ def pd-children-by-id-not-inline() =
 @test
 def pd-single-var() =
   // "x" (name-id 1) → one NVar node, root is it.
-  (match parse-tokens([var(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([var(1)]) in
     (if node-count(tree) == 1 then (if is-var(tree, root, 1) then unit else trap("root is Var 1")) else trap("one node")))
 
 @test
 def pd-let-binding-shape() =
   // "let x = 2 in x" → root is a NLet naming x(=1); its value is NLit 2, its body is NVar x.
-  (match parse-tokens([letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([letkw(), var(1), eq(), n(2), inkw(), var(1)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NLet(nm, valId, bodyId)) =>
         (if nm == 1 then
@@ -856,7 +856,7 @@ def pd-let-binding-shape() =
 def pd-let-milestone-program() =
   // THE MILESTONE program `let x = 2 in x * 3 + 1`: root is a let of x; its BODY is `x*3+1` = a + Bin whose
   // left is a * Bin (x * 3) and right is Lit 1 — the shape the DB pipeline will resolve/infer/lower/run to 7.
-  (match parse-tokens([letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NLet(nm, valId, bodyId)) =>
         (if nm == 1 then
@@ -874,7 +874,7 @@ def pd-let-milestone-program() =
 @test
 def pd-nested-let-scopes() =
   // "let a = 1 in let b = 2 in a + b" → root let (a); its BODY is itself a let (b) — nested scopes by id.
-  (match parse-tokens([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), n(2), inkw(), var(1), plus(), var(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), n(2), inkw(), var(1), plus(), var(2)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NLet(nm, _, bodyId)) =>
         (if nm == 1 then (if is-let(tree, bodyId, 2) then unit else trap("outer let's body is the inner let (b)")) else trap("outer binds a"))
@@ -884,7 +884,7 @@ def pd-nested-let-scopes() =
 def pd-let-in-parens() =
   // "(let x = 5 in x) * 2" → parens let the full grammar (incl. let) nest under an operator: root is a * Bin
   // whose LEFT child is a let node. Proves parse-factor's paren nests parse-any, not just parse-expr.
-  (match parse-tokens([Tok.TLParen, letkw(), var(1), eq(), n(5), inkw(), var(1), Tok.TRParen, times(), n(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([Tok.TLParen, letkw(), var(1), eq(), n(5), inkw(), var(1), Tok.TRParen, times(), n(2)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NBin(op, l, _)) =>
         (if op == 42 then (if is-let(tree, l, 1) then unit else trap("* 's left child is a let")) else trap("root is * "))
@@ -893,13 +893,13 @@ def pd-let-in-parens() =
 @test
 def pd-comparison-lt() =
   // "1 < 2" → root is an NBin with op 60 (<).
-  (match parse-tokens([n(1), lt(), n(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(1), lt(), n(2)]) in
     (if is-bin-op(tree, root, 60) then unit else trap("root is a < Bin")))
 
 @test
 def pd-comparison-looser-than-arith() =
   // "1 + 2 < 3" → root is `<` (op 60) whose LEFT child is a `+` Bin (comparison is looser than additive).
-  (match parse-tokens([n(1), plus(), n(2), lt(), n(3)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(1), plus(), n(2), lt(), n(3)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NBin(op, l, _)) =>
         (if op == 60 then (if is-bin-op(tree, l, 43) then unit else trap("< 's left is a + Bin")) else trap("root is <"))
@@ -908,13 +908,13 @@ def pd-comparison-looser-than-arith() =
 @test
 def pd-equality-op() =
   // "3 == 3" → root is an NBin with op 61 (==), distinct from the let-binding TEq.
-  (match parse-tokens([n(3), eqop(), n(3)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(3), eqop(), n(3)]) in
     (if is-bin-op(tree, root, 61) then unit else trap("root is a == Bin")))
 
 @test
 def pd-if-shape() =
   // "if 1 < 2 then 10 else 20" → root is an NIf; cond is a < Bin, then/else are the literals.
-  (match parse-tokens([ifkw(), n(1), lt(), n(2), thenkw(), n(10), elsekw(), n(20)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([ifkw(), n(1), lt(), n(2), thenkw(), n(10), elsekw(), n(20)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NIf(cond, thn, els)) =>
         (if is-bin-op(tree, cond, 60) then (if is-lit(tree, thn, 10) then (if is-lit(tree, els, 20) then unit else trap("else is Lit 20")) else trap("then is Lit 10")) else trap("cond is a < Bin"))
@@ -923,7 +923,7 @@ def pd-if-shape() =
 @test
 def pd-if-branches-nest-full-grammar() =
   // "if 1 then let x = 5 in x else 0" → the THEN branch is a let node (branches nest parse-any, not parse-cmp).
-  (match parse-tokens([ifkw(), n(1), thenkw(), letkw(), var(1), eq(), n(5), inkw(), var(1), elsekw(), n(0)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([ifkw(), n(1), thenkw(), letkw(), var(1), eq(), n(5), inkw(), var(1), elsekw(), n(0)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NIf(_, thn, _)) => (if is-let(tree, thn, 1) then unit else trap("then branch is a let"))
       | _ => trap("root is an NIf")))
@@ -931,7 +931,7 @@ def pd-if-branches-nest-full-grammar() =
 @test
 def pd-nested-if-in-else() =
   // "if 1 then 2 else if 3 then 4 else 5" → else-branch is itself an NIf (else-if chaining).
-  (match parse-tokens([ifkw(), n(1), thenkw(), n(2), elsekw(), ifkw(), n(3), thenkw(), n(4), elsekw(), n(5)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([ifkw(), n(1), thenkw(), n(2), elsekw(), ifkw(), n(3), thenkw(), n(4), elsekw(), n(5)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NIf(_, _, els)) => (if is-if(tree, els) then unit else trap("else branch is a nested if"))
       | _ => trap("root is an NIf")))
@@ -939,19 +939,19 @@ def pd-nested-if-in-else() =
 @test
 def pd-bool-literal-true() =
   // "true" → one NBoolLit(1) node.
-  (match parse-tokens([truelit()]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([truelit()]) in
     (if is-bool-lit(tree, root, 1) then unit else trap("root is NBoolLit 1")))
 
 @test
 def pd-bool-literal-false() =
   // "false" → NBoolLit(0).
-  (match parse-tokens([falselit()]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([falselit()]) in
     (if is-bool-lit(tree, root, 0) then unit else trap("root is NBoolLit 0")))
 
 @test
 def pd-bool-in-if-cond() =
   // "if true then 1 else 2" → cond is a bool literal (proves a bool literal parses as a factor in cond pos).
-  (match parse-tokens([ifkw(), truelit(), thenkw(), n(1), elsekw(), n(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([ifkw(), truelit(), thenkw(), n(1), elsekw(), n(2)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NIf(cond, _, _)) => (if is-bool-lit(tree, cond, 1) then unit else trap("cond is bool literal true"))
       | _ => trap("root is an NIf")))
@@ -959,7 +959,7 @@ def pd-bool-in-if-cond() =
 @test
 def pd-unary-minus-desugars-to-sub() =
   // "-5" → NBin(45, NLit 0, NLit 5): unary minus desugars to `0 - 5` (no new node type).
-  (match parse-tokens([neg(), n(5)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([neg(), n(5)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NBin(op, l, r)) =>
         (if op == 45 then (if is-lit(tree, l, 0) then (if is-lit(tree, r, 5) then unit else trap("right is Lit 5")) else trap("left is Lit 0")) else trap("op is - (45)"))
@@ -968,7 +968,7 @@ def pd-unary-minus-desugars-to-sub() =
 @test
 def pd-unary-minus-binds-tight() =
   // "-x * 2" → `(-x) * 2` = NBin(*, NBin(-, 0, x), 2): unary minus is a factor, so it binds tighter than *.
-  (match parse-tokens([neg(), var(1), times(), n(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([neg(), var(1), times(), n(2)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NBin(op, l, _)) =>
         (if op == 42 then (if is-bin-op(tree, l, 45) then unit else trap("* 's left is the unary-minus Bin")) else trap("root is *"))
@@ -977,19 +977,19 @@ def pd-unary-minus-binds-tight() =
 @test
 def pd-gt-op() =
   // "3 > 2" → NBin with op 62.
-  (match parse-tokens([n(3), gt(), n(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(3), gt(), n(2)]) in
     (if is-bin-op(tree, root, 62) then unit else trap("root is a > Bin")))
 
 @test
 def pd-le-op() =
   // "2 <= 3" → NBin with op 63.
-  (match parse-tokens([n(2), le(), n(3)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(2), le(), n(3)]) in
     (if is-bin-op(tree, root, 63) then unit else trap("root is a <= Bin")))
 
 @test
 def pd-ne-looser-than-arith() =
   // "1 + 1 != 3" → root is `!=` (65) whose left is a `+` Bin (relational looser than additive).
-  (match parse-tokens([n(1), plus(), n(1), ne(), n(3)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(1), plus(), n(1), ne(), n(3)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NBin(op, l, _)) =>
         (if op == 65 then (if is-bin-op(tree, l, 43) then unit else trap("!= 's left is a + Bin")) else trap("root is !="))
@@ -998,7 +998,7 @@ def pd-ne-looser-than-arith() =
 @test
 def pd-div-op() =
   // "8 / 2" → NBin with op 47.
-  (match parse-tokens([n(8), divop(), n(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(8), divop(), n(2)]) in
     (if is-bin-op(tree, root, 47) then unit else trap("root is a / Bin")))
 
 @test
@@ -1019,7 +1019,7 @@ def pd-op-code-is-option() =
 @test
 def pd-mod-same-precedence-as-mul() =
   // "1 + 6 % 4" → root is `+` whose RIGHT is a `%` Bin (% binds tighter than +, same tier as *).
-  (match parse-tokens([n(1), plus(), n(6), modop(), n(4)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([n(1), plus(), n(6), modop(), n(4)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NBin(op, _, r)) =>
         (if op == 43 then (if is-bin-op(tree, r, 37) then unit else trap("+ 's right is a % Bin")) else trap("root is +"))
@@ -1034,17 +1034,17 @@ def pd-mod-same-precedence-as-mul() =
 def pd-nullary-app-node() =
   // a NULLARY call `(mk)` → NApp(bodyId, -1): callee = the def-body node it names, arg = -1 (no argument).
   // Build a body `42` (NLit), then the NApp referencing it. is-app pins the (callee, arg) shape.
-  (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
-    (match add-node(t1, Node.NApp(bodyId, -1)) with | (appId, t2) =>
+  (let (bodyId, t1) = add-node(empty-tree(), Node.NLit(42)) in
+    (let (appId, t2) = add-node(t1, Node.NApp(bodyId, -1)) in
       (if is-app(t2, appId, bodyId, -1) then unit else trap("NApp(bodyId, -1) is a nullary application node"))))
 
 @test
 def pd-app-with-arg-node() =
   // a 1-arg call `(f a)` → NApp(bodyId, argId) with a real arg node (argId != -1) — the shape the param
   // slice will lower to CLet(param, arg, body). Here just pins the node carries both child ids.
-  (match add-node(empty-tree(), Node.NLit(7)) with | (bodyId, t1) =>
-    (match add-node(t1, Node.NLit(5)) with | (argId, t2) =>
-      (match add-node(t2, Node.NApp(bodyId, argId)) with | (appId, t3) =>
+  (let (bodyId, t1) = add-node(empty-tree(), Node.NLit(7)) in
+    (let (argId, t2) = add-node(t1, Node.NLit(5)) in
+      (let (appId, t3) = add-node(t2, Node.NApp(bodyId, argId)) in
         (if is-app(t3, appId, bodyId, argId) then unit else trap("NApp(bodyId, argId) carries callee + arg")))))
 
 // ---- def-table (slice-3 foundation for user-functions call resolution) ----
@@ -1053,14 +1053,14 @@ def pd-app-with-arg-node() =
 def pd-def-table-empty-by-default() =
   // a fresh tree / a bare-token parse has an EMPTY def-table: def-body-of any name → None (no defs recorded).
   (if (match def-body-of(empty-tree(), 1) with | Option.None(_) => true | Option.Some(_) => false)
-   then (match parse-tokens([Tok.TNum(5)]) with | (_, tree) =>
+   then (let (_, tree) = parse-tokens([Tok.TNum(5)]) in
           (if (match def-body-of(tree, 1) with | Option.None(_) => true | Option.Some(_) => false) then unit else trap("token parse has no defs")))
    else trap("empty-tree def-table is empty"))
 
 @test
 def pd-record-def-then-lookup() =
   // record a def `name 1 → body node b`, then def-body-of(name 1) returns b; a DIFFERENT name → None.
-  (match add-node(empty-tree(), Node.NLit(42)) with | (b, t1) =>
+  (let (b, t1) = add-node(empty-tree(), Node.NLit(42)) in
     (let t2 = record-def(t1, 1, b) in
      (match def-body-of(t2, 1) with
        | Option.Some(x) => (if x == b then (match def-body-of(t2, 2) with | Option.None(_) => unit | Option.Some(_) => trap("unrecorded name → None")) else trap("def-body-of returns the recorded body"))
@@ -1072,8 +1072,8 @@ def pd-record-param-then-lookup() =
   // an unrecorded name → None. AND the param-table is ORTHOGONAL to the def-table: recording a param does not
   // create a def-body entry, and recording a def does not create a param entry — a nullary def (def-body only)
   // has param-of = None, distinct from a value. Pins the additive param-table a `(name arg)` call reads.
-  (match add-node(empty-tree(), Node.NLit(7)) with | (bodyId, t1) =>
-    (match add-node(t1, Node.NVar(1)) with | (paramId, t2) =>
+  (let (bodyId, t1) = add-node(empty-tree(), Node.NLit(7)) in
+    (let (paramId, t2) = add-node(t1, Node.NVar(1)) in
       (let t3 = record-def(t2, 1, bodyId) in                    // name 1 = a NULLARY def (body only, no param)
        (let t4 = record-param(t3, 2, paramId) in                // name 2 = a def with a param (param recorded)
         (match param-of(t4, 2) with
@@ -1091,8 +1091,8 @@ def pd-record-param2-then-lookup() =
   // multi-param foundation (slice-3d): the SECOND param-table. record-param2(name → p2) then param2-of(name) = p2.
   // ORTHOGONAL to param1: a 2-param def records BOTH param + param2; a SINGLE-param def records only param1 →
   // param2-of = None (distinguishes 1-param from 2-param). ADDITIVE — single/nullary behavior unchanged.
-  (match add-node(empty-tree(), Node.NVar(10)) with | (p1, t1) =>
-    (match add-node(t1, Node.NVar(11)) with | (p2, t2) =>
+  (let (p1, t1) = add-node(empty-tree(), Node.NVar(10)) in
+    (let (p2, t2) = add-node(t1, Node.NVar(11)) in
       (let ta = record-param(t2, 5, p1) in                       // name 5 = a def; record its 1st param
        (let tb = record-param2(ta, 5, p2) in                     // + its 2nd param → a 2-param def
         (match param2-of(tb, 5) with
@@ -1112,8 +1112,8 @@ def pd-record-arg2-then-lookup() =
   // 2-arg-call foundation (slice-3d): the ARG2-table, keyed by the CALL's NApp NODE-ID. record-arg2(nAppId → arg2)
   // then arg2-of(nAppId) = arg2. A 1-arg/nullary call records no arg2 → arg2-of = None (distinguishes 1-arg from
   // 2-arg). Keyed by node-id (not name) since one callee can be applied at multiple sites with different args.
-  (match add-node(empty-tree(), Node.NLit(2)) with | (arg2Id, t1) =>
-    (match add-node(t1, Node.NApp(7, 5)) with | (callId, t2) =>          // a call node NApp(body=7, arg1=5)
+  (let (arg2Id, t1) = add-node(empty-tree(), Node.NLit(2)) in
+    (let (callId, t2) = add-node(t1, Node.NApp(7, 5)) in          // a call node NApp(body=7, arg1=5)
       (let t3 = record-arg2(t2, callId, arg2Id) in
        (match arg2-of(t3, callId) with
          | Option.Some(x) => (if x == arg2Id
@@ -1129,8 +1129,8 @@ def pd-record-param3-and-arg3-then-lookup() =
   // record-param3(name → p3) then param3-of(name) = p3; record-arg3(nAppId → arg3) then arg3-of(nAppId) = arg3.
   // A ≤2-param def / ≤2-arg call records neither → param3-of/arg3-of = None (distinguishes 3 from ≤2). ADDITIVE
   // — the record-param2/arg2 (and param/arg) entries are untouched, so 1-/2-param behavior is unchanged.
-  (match add-node(empty-tree(), Node.NVar(3)) with | (p3, t1) =>            // a 3rd param binder node
-    (match add-node(t1, Node.NLit(9)) with | (arg3Id, t2) =>                // a 3rd arg node
+  (let (p3, t1) = add-node(empty-tree(), Node.NVar(3)) in            // a 3rd param binder node
+    (let (arg3Id, t2) = add-node(t1, Node.NLit(9)) in                // a 3rd arg node
       (let t3 = record-param3(t2, 5, p3) in                                 // name 5 = a def; record its 3rd param
        (let t4 = record-arg3(t3, 42, arg3Id) in                             // NApp node 42 = a call; record its 3rd arg
         (match param3-of(t4, 5) with
@@ -1163,8 +1163,8 @@ def pd-record-param4-and-arg4-then-lookup() =
   // record-param4(name → p4) then param4-of(name) = p4; record-arg4(nAppId → arg4) then arg4-of(nAppId) = arg4.
   // A ≤3-param def / ≤3-arg call records neither → param4-of/arg4-of = None. ADDITIVE — the param/param2/param3
   // (+ arg2/arg3) entries are untouched, so 1-/2-/3-param behavior is unchanged.
-  (match add-node(empty-tree(), Node.NVar(4)) with | (p4, t1) =>            // a 4th param binder node
-    (match add-node(t1, Node.NLit(9)) with | (arg4Id, t2) =>                // a 4th arg node
+  (let (p4, t1) = add-node(empty-tree(), Node.NVar(4)) in            // a 4th param binder node
+    (let (arg4Id, t2) = add-node(t1, Node.NLit(9)) in                // a 4th arg node
       (let t3 = record-param4(t2, 5, p4) in                                 // name 5 = a def; record its 4th param
        (let t4 = record-arg4(t3, 42, arg4Id) in                             // NApp node 42 = a call; record its 4th arg
         (match param4-of(t4, 5) with
@@ -1196,10 +1196,10 @@ def pd-self-call-in-arg3-detected-pr785() =
   // (so the def is included in the def-env and self-recursion RUNS, not declines). Build `f` (name 900) whose body
   // is `(g a1 a2 (f))` — a call to g (name 901) with the self-call NApp(900,-1) in arg3. subtree-calls-self
   // originally capped at arg2 → this was MISSED. call-is-self-recursive(tree, 900) MUST be true. Pins the arg3 scan.
-  (match add-node(empty-tree(), Node.NApp(900, -1)) with | (selfCall, t1) =>     // the self-call `(f)` in arg3
-    (match add-node(t1, Node.NLit(1)) with | (a1, t2) =>                            // arg1 (a plain literal)
-      (match add-node(t2, Node.NLit(2)) with | (a2, t3) =>                          // arg2 (a plain literal)
-        (match add-node(t3, Node.NApp(901, a1)) with | (body, t4) =>                // body = `(g a1 …)`, argId=a1
+  (let (selfCall, t1) = add-node(empty-tree(), Node.NApp(900, -1)) in     // the self-call `(f)` in arg3
+    (let (a1, t2) = add-node(t1, Node.NLit(1)) in                            // arg1 (a plain literal)
+      (let (a2, t3) = add-node(t2, Node.NLit(2)) in                          // arg2 (a plain literal)
+        (let (body, t4) = add-node(t3, Node.NApp(901, a1)) in                // body = `(g a1 …)`, argId=a1
           (let t5 = record-arg2(t4, body, a2) in                                    // its 2nd arg (keyed by the body NApp id)
            (let t6 = record-arg3(t5, body, selfCall) in                             // its 3rd arg = the self-call
             (let t7 = record-def(t6, 900, body) in                                  // f (900) body = this call
@@ -1212,11 +1212,11 @@ def pd-transitive-call-in-arg4-detected-pr785() =
   // back to the target nested in a 4th ARG must be detected. Build `f` (900) whose body is `(g a1 a2 a3 (f))` — a
   // 4-arg call to g with the recursive call NApp(900,-1) in arg4. call-is-recursive(tree, 900) MUST be true (else
   // the cycle-guard would try to INLINE the cycle → inline-hang risk). Pins the arg4 scan of the transitive walker.
-  (match add-node(empty-tree(), Node.NApp(900, -1)) with | (recCall, t1) =>      // the recursive call `(f)` in arg4
-    (match add-node(t1, Node.NLit(1)) with | (a1, t2) =>
-      (match add-node(t2, Node.NLit(2)) with | (a2, t3) =>
-        (match add-node(t3, Node.NLit(3)) with | (a3, t4) =>
-          (match add-node(t4, Node.NApp(901, a1)) with | (body, t5) =>              // body = `(g a1 …)`, argId=a1
+  (let (recCall, t1) = add-node(empty-tree(), Node.NApp(900, -1)) in      // the recursive call `(f)` in arg4
+    (let (a1, t2) = add-node(t1, Node.NLit(1)) in
+      (let (a2, t3) = add-node(t2, Node.NLit(2)) in
+        (let (a3, t4) = add-node(t3, Node.NLit(3)) in
+          (let (body, t5) = add-node(t4, Node.NApp(901, a1)) in              // body = `(g a1 …)`, argId=a1
             (let t6 = record-arg2(t5, body, a2) in
              (let t7 = record-arg3(t6, body, a3) in
               (let t8 = record-arg4(t7, body, recCall) in                           // its 4th arg = the recursive call
@@ -1280,7 +1280,7 @@ def pd-record-param-type-then-lookup() =
   // narrow-int-enforcement foundation (slice annotation-2): the PARAM-TYPE table, keyed by the param NODE-id.
   // record-param-type(paramId → encode-param-type(signed, width)) then param-type-of(paramId) round-trips to the
   // same (signed, width) via pt-signed/pt-width. An untyped/unrecorded param → None (the arg's own type flows).
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>       // a param binder node
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in       // a param binder node
     (let enc = encode-param-type(true, 8) in                                // Int8 = signed, width 8
      (let t2 = record-param-type(t1, paramId, enc) in
       (match param-type-of(t2, paramId) with
@@ -1311,7 +1311,7 @@ def pd-trailing-tokens-decline() =
   // parses `1 < 2` and leaves `< 3` dangling; the guard turns the leftover into an NVar(0) poison root (→
   // resolve RPoison → infer TErr → eval None), matching rcdzc's reject (dropping `< 3` + running `1<2`→1 was a
   // fabricated value). Pins the root is the poison Var(0), NOT the `1<2` comparison Bin.
-  (match parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TOp(60), Tok.TNum(3)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TOp(60), Tok.TNum(3)]) in
     (if is-var(tree, root, 0) then unit
      else trap("`1 < 2 < 3` has leftover `< 3` → the root must be the NVar(0) poison (decline), not `1<2`")))
 
@@ -1319,7 +1319,7 @@ def pd-trailing-tokens-decline() =
 def pd-fully-consumed-parse-keeps-its-root() =
   // the guard fires ONLY on leftover tokens: a fully-consumed parse returns its REAL root. `1 < 2` consumes
   // every token → the root is the comparison Bin (op 60), NOT a poison. Pins the guard doesn't over-decline.
-  (match parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) in
     (if is-bin-op(tree, root, 60) then unit
      else trap("`1 < 2` consumes all tokens → root is the `<` Bin, not a poison")))
 
@@ -1331,8 +1331,8 @@ def pd-fully-consumed-parse-keeps-its-root() =
 @test
 def pd-enum-disc-all-nullary-two-plus() =
   // decl 100 with TWO nullary ctors (1→tag0, 2→tag1) — a C-style enum → enum-disc TRUE (bare tag rep).
-  (match add-node(empty-tree(), Node.NLit(0)) with | (b0, t1) =>
-    (match add-node(t1, Node.NLit(1)) with | (b1, t2) =>
+  (let (b0, t1) = add-node(empty-tree(), Node.NLit(0)) in
+    (let (b1, t2) = add-node(t1, Node.NLit(1)) in
       (let t3 = record-def(t2, 1, b0) in                          // ctor 1 nullary (def-body b0)
        (let t4 = record-ctor-tag(t3, 1, 100, 0) in
         (let t5 = record-def(t4, 2, b1) in                        // ctor 2 nullary (def-body b1)
@@ -1344,7 +1344,7 @@ def pd-enum-disc-all-nullary-two-plus() =
 def pd-enum-disc-mixed-is-boxed() =
   // decl 200 with a nullary ctor (3→tag0) AND a PAYLOAD ctor (4→tag1, ct entry but NO def-body) → NOT enum-disc
   // (a mixed sum is boxed — any payload ctor makes the rep a store handle).
-  (match add-node(empty-tree(), Node.NLit(0)) with | (b0, t1) =>
+  (let (b0, t1) = add-node(empty-tree(), Node.NLit(0)) in
     (let t2 = record-def(t1, 3, b0) in                            // ctor 3 nullary
      (let t3 = record-ctor-tag(t2, 3, 200, 0) in
       (let t4 = record-ctor-tag(t3, 4, 200, 1) in                 // ctor 4 PAYLOAD (ct entry, no record-def)
@@ -1355,7 +1355,7 @@ def pd-enum-disc-mixed-is-boxed() =
 def pd-enum-disc-single-variant-not-enum() =
   // decl 300 with ONE nullary ctor (5→tag0) → NOT enum-disc: the >=2 gate (matches rcdzc — a single-variant
   // nullary sum is a newtype Unit, a DIFFERENT rep). Guards the parity rule that the >=2 requirement is not dropped.
-  (match add-node(empty-tree(), Node.NLit(0)) with | (b0, t1) =>
+  (let (b0, t1) = add-node(empty-tree(), Node.NLit(0)) in
     (let t2 = record-def(t1, 5, b0) in
      (let t3 = record-ctor-tag(t2, 5, 300, 0) in
       (if decl-is-enum-disc(t3, 300) then trap("a SINGLE-variant nullary sum is NOT enum-disc (>=2 required, newtype Unit otherwise)")
