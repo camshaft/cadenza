@@ -43,19 +43,16 @@ type Local =
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 def project-k(g: Chor, r: String, k: Local) -> Local = match g with
   | Chor.Done => k
-  | Chor.Comm(f, t, l) => if r == f then
-    Local.LSend(t, l, k)
-  else if r == t then
-    Local.LRecv(f, l, k)
-  else
-    k
+  | Chor.Comm(f, t, l) =>
+    if r == f then Local.LSend(t, l, k) else if r == t then Local.LRecv(f, l, k) else k
   | Chor.Seq(a, b) => project-k(a, r, project-k(b, r, k))
-  | Chor.Choice(p, brs) => if r == p then
-    Local.LIntC(project-branches(brs, r, k))
-  else if any-participates(r, brs) then
-    Local.LExtC(p, project-branches(brs, r, k))
-  else
-    k
+  | Chor.Choice(p, brs) =>
+    if r == p then
+      Local.LIntC(project-branches(brs, r, k))
+    else if any-participates(r, brs) then
+      Local.LExtC(p, project-branches(brs, r, k))
+    else
+      k
   | Chor.Branch(_l, cont) => project-k(cont, r, k) // wf keeps branches inside choices; be total
   | Chor.Rec(v, body) => Local.LRecT(v, project-k(body, r, k))
   | Chor.Var(v) => Local.LVarT(v)
@@ -64,12 +61,11 @@ def project-k(g: Chor, r: String, k: Local) -> Local = match g with
 /// stay distinguishable (the selection label the chooser sends / the receiver is told).
 def project-branches(brs: List(Chor), r: String, k: Local) -> List(Local) = match brs with
   | [] => []
-  | [b, .. rest] => match b with
-    | Chor.Branch(l, cont) => List.concat(
-      [Local.LBranch(l, project-k(cont, r, k))],
-      project-branches(rest, r, k)
-    )
-    | _ => project-branches(rest, r, k)
+  | [b, .. rest] =>
+    match b with
+      | Chor.Branch(l, cont) =>
+        List.concat([Local.LBranch(l, project-k(cont, r, k))], project-branches(rest, r, k))
+      | _ => project-branches(rest, r, k)
 
 /// Does role `r` participate in ANY branch (as sender/receiver/chooser)? — the test that decides an
 /// external choice (r is involved, so it is told) vs the merge-to-`k` case (r does nothing).
@@ -84,52 +80,58 @@ def project(g: Chor, r: String) -> Local = project-k(g, r, Local.LEnd)
 // Structural equality over `Local` (for golden-projection tests).
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 def local-eq(a: Local, b: Local) -> Bool = match a with
-  | Local.LEnd => (match b with
-    | Local.LEnd => true
-    | _ => false
-  )
-  | Local.LSend(t, l, k) => (match b with
-    | Local.LSend(t2, l2, k2) => if t == t2 then
-      if l == l2 then local-eq(k, k2) else false
-    else
-      false
-    | _ => false
-  )
-  | Local.LRecv(f, l, k) => (match b with
-    | Local.LRecv(f2, l2, k2) => if f == f2 then
-      if l == l2 then local-eq(k, k2) else false
-    else
-      false
-    | _ => false
-  )
-  | Local.LIntC(brs) => (match b with
-    | Local.LIntC(brs2) => local-list-eq(brs, brs2)
-    | _ => false
-  )
-  | Local.LExtC(f, brs) => (match b with
-    | Local.LExtC(f2, brs2) => if f == f2 then local-list-eq(brs, brs2) else false
-    | _ => false
-  )
-  | Local.LBranch(l, k) => (match b with
-    | Local.LBranch(l2, k2) => if l == l2 then local-eq(k, k2) else false
-    | _ => false
-  )
-  | Local.LRecT(v, body) => (match b with
-    | Local.LRecT(v2, body2) => if v == v2 then local-eq(body, body2) else false
-    | _ => false
-  )
-  | Local.LVarT(v) => match b with
-    | Local.LVarT(v2) => v == v2
-    | _ => false
+  | Local.LEnd =>
+    (match b with
+      | Local.LEnd => true
+      | _ => false
+    )
+  | Local.LSend(t, l, k) =>
+    (match b with
+      | Local.LSend(t2, l2, k2) =>
+        if t == t2 then if l == l2 then local-eq(k, k2) else false else false
+      | _ => false
+    )
+  | Local.LRecv(f, l, k) =>
+    (match b with
+      | Local.LRecv(f2, l2, k2) =>
+        if f == f2 then if l == l2 then local-eq(k, k2) else false else false
+      | _ => false
+    )
+  | Local.LIntC(brs) =>
+    (match b with
+      | Local.LIntC(brs2) => local-list-eq(brs, brs2)
+      | _ => false
+    )
+  | Local.LExtC(f, brs) =>
+    (match b with
+      | Local.LExtC(f2, brs2) => if f == f2 then local-list-eq(brs, brs2) else false
+      | _ => false
+    )
+  | Local.LBranch(l, k) =>
+    (match b with
+      | Local.LBranch(l2, k2) => if l == l2 then local-eq(k, k2) else false
+      | _ => false
+    )
+  | Local.LRecT(v, body) =>
+    (match b with
+      | Local.LRecT(v2, body2) => if v == v2 then local-eq(body, body2) else false
+      | _ => false
+    )
+  | Local.LVarT(v) =>
+    match b with
+      | Local.LVarT(v2) => v == v2
+      | _ => false
 
 def local-list-eq(xs: List(Local), ys: List(Local)) -> Bool = match xs with
-  | [] => (match ys with
-    | [] => true
-    | _ => false
-  )
-  | [x, .. xr] => match ys with
-    | [] => false
-    | [y, .. yr] => if local-eq(x, y) then local-list-eq(xr, yr) else false
+  | [] =>
+    (match ys with
+      | [] => true
+      | _ => false
+    )
+  | [x, .. xr] =>
+    match ys with
+      | [] => false
+      | [y, .. yr] => if local-eq(x, y) then local-list-eq(xr, yr) else false
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Fixtures + tests — the Inc-2 gate: golden projections of each role.

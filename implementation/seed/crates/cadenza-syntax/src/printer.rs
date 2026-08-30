@@ -3430,7 +3430,7 @@ impl<'a> Printer<'a> {
             if let Struct::List(pair) = self.a.get(arm) {
                 let (pat, body) = (pair[0], pair[1]);
                 self.pattern(pat);
-                self.doc.word(" => ");
+                self.doc.word(" =>");
                 // A NON-LAST arm body whose TRAILING sub-expression is an open `|`-arm list
                 // (`match`/`handle`, possibly under `if`-else / `let`-body / `@` / comment wrappers) must
                 // parenthesize, else the following `| pat` is absorbed into that inner arm list. Every
@@ -3450,20 +3450,27 @@ impl<'a> Printer<'a> {
                 } else {
                     0
                 };
-                // A `let`-shaped arm body HUGS `=>` (the `let …` stays on the arm line), but its
-                // chain + FINAL body are now FLAT (operator seq-86 — `print_let` no longer indents the
-                // final body). Flat alone would land the body at the SAME column as the `| ` arm markers
-                // (`print_match`'s cbox already indents the arms one level). So wrap the let body in an
-                // extra `cbox(INDENT)`: the whole let (every chained line + the flat final body) sits ONE
-                // level UNDER the arm, visually distinct from the `|` arms — preserving the seq68 arm
-                // disambiguation while honoring seq-86's flatten (chain + body share one indent).
-                if self.is_let_shape_form(self.a.peel_comments(body)) {
-                    self.doc.cbox(INDENT);
-                    self.expr(body, body_prec);
-                    self.doc.end();
+                // A MULTI-LINE arm body goes on its OWN line, indented one level under the `=>` arm
+                // (operator follow-on to seq-86/87/89: "body one level under its header"); a SINGLE-LINE
+                // body stays inline after `=>`. The extra `cbox(INDENT)` provides that one level. The
+                // break after `=>`:
+                //   • a bare `let`-shape body is INHERENTLY multi-line (its `in`-body always breaks) →
+                //     force a `hardbreak` so the `let` itself drops to the indented line;
+                //   • a body with a LEADING `//` comment keeps the comment on the `=>` line (a hard space;
+                //     `print_comment` then breaks to the body) — a soft break would wrongly drop the `//`;
+                //   • any other body uses a soft break — inline when the whole arm fits, else it WRAPS to
+                //     the indented line.
+                self.doc.cbox(INDENT);
+                let has_lead_comment = self.a.as_form(body, "comment").is_some();
+                if !has_lead_comment && self.is_let_shape_form(self.a.peel_comments(body)) {
+                    self.doc.hardbreak();
+                } else if has_lead_comment {
+                    self.doc.word(" ");
                 } else {
-                    self.expr(body, body_prec);
+                    self.doc.space();
                 }
+                self.expr(body, body_prec);
+                self.doc.end();
             }
             // Trailing comments after the body, same line (innermost closest to the body).
             for &text in trail_texts.iter().rev() {
@@ -7457,6 +7464,20 @@ mod tests {
     }
 
     #[test]
+    fn multi_line_match_arm_body_breaks_to_its_own_indented_line() {
+        // Operator follow-on to seq-86/87/89: a MULTI-LINE match-arm body goes on a NEW line indented
+        // one level under `=>` (a let-in chain / a body that wraps); a SINGLE-LINE body stays inline.
+        let out = assert_roundtrip(
+            "def profile-half-extent(p: Profile(Rational)) = match p with\n  | Profile.Rect(sz) => let Vec2.V2(w, h) = sz in Vec2.V2(rhalf(w), rhalf(h))\n  | Profile.Circle(r) => Vec2.V2(r, r)\n  | Profile.PathProfile(pth) => path-half-extent(pth)",
+            100,
+        );
+        assert_eq!(
+            out,
+            "def profile-half-extent(p: Profile(Rational)) = match p with\n  | Profile.Rect(sz) =>\n    let Vec2.V2(w, h) = sz in\n    Vec2.V2(rhalf(w), rhalf(h))\n  | Profile.Circle(r) => Vec2.V2(r, r)\n  | Profile.PathProfile(pth) => path-half-extent(pth)"
+        );
+    }
+
+    #[test]
     fn compound_body_indentation_is_coherent_operator_seq_86_87_89() {
         // The operator flagged THREE examples of "funky" compound-body indentation; the coherent model:
         // a construct's BODY indents ONE level under its header, and a flat CHAIN (let-in / else-if
@@ -9203,7 +9224,9 @@ mod tests {
             "a non-last `if` arm body prints bare (no wrapping parens), got:\n{out}"
         );
         assert!(
-            out.contains("| B => let y = x in"),
+            // The multi-line `let` body breaks to its own indented line under `=>` (operator follow-on),
+            // still BARE (no wrapping parens).
+            out.contains("| B =>\n    let y = x in"),
             "a non-last `let` arm body prints bare (no wrapping parens), got:\n{out}"
         );
         assert!(
@@ -9225,7 +9248,8 @@ mod tests {
             200,
         );
         assert!(
-            nested.contains("=> (match x with"),
+            // Multi-line body breaks under `=>` (operator follow-on); the nested match KEEPS its parens.
+            nested.contains("=>\n    (match x with"),
             "a non-last nested-match arm body keeps its parens, got:\n{nested}"
         );
         // `if` whose else-tail is a match — must wrap (the else-match would swallow the next `|`).
@@ -9234,7 +9258,7 @@ mod tests {
             200,
         );
         assert!(
-            if_else_match.contains("=> (if p then"),
+            if_else_match.contains("(if p then"),
             "a non-last `if` whose else-tail is a match keeps parens, got:\n{if_else_match}"
         );
     }

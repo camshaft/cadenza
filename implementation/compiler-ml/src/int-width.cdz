@@ -336,12 +336,13 @@ def iw-overflows-out-of-scope-is-false() =
 def iw-checked-add-in-range-is-some() =
   // in-range sums compute: 100 + 20 = 120 fits Int8 → Some 120; 100 + 27 = 127 fits UInt8 → Some 127.
   match checked-add(100, 20, true, 8) with
-    | Option.Some(v) => if v == 120 then
-      match checked-add(100, 27, false, 8) with
-        | Option.Some(w) => if w == 127 then unit else trap("u8 100+27=127")
-        | Option.None(_) => trap("u8 in-range Some")
-    else
-      trap("i8 100+20=120")
+    | Option.Some(v) =>
+      if v == 120 then
+        match checked-add(100, 27, false, 8) with
+          | Option.Some(w) => if w == 127 then unit else trap("u8 100+27=127")
+          | Option.None(_) => trap("u8 in-range Some")
+      else
+        trap("i8 100+20=120")
     | Option.None(_) => trap("i8 in-range → Some")
 
 @test
@@ -349,30 +350,33 @@ def iw-checked-add-overflow-is-none() =
   // 100 + 100 = 200 overflows Int8 (max 127) → None (the TRAP condition, matching CDZ0304); 200 + 100 = 300
   // overflows UInt8 (max 255) → None. This is the checked/trapping default, DISTINCT from wrapping-add's -56/44.
   match checked-add(100, 100, true, 8) with
-    | Option.None(_) => (match checked-add(200, 100, false, 8) with
-      | Option.None(_) => unit
-      | Option.Some(_) => trap("u8 300 overflows → None")
-    )
+    | Option.None(_) =>
+      (match checked-add(200, 100, false, 8) with
+        | Option.None(_) => unit
+        | Option.Some(_) => trap("u8 300 overflows → None")
+      )
     | Option.Some(_) => trap("i8 200 overflows → None")
 
 @test
 def iw-checked-sub-underflow-is-none() =
   // 0 - 1 = -1 underflows UInt8 (min 0) → None; an in-range signed sub computes: 5 - 8 = -3 fits Int8 → Some.
   match checked-sub(0, 1, false, 8) with
-    | Option.None(_) => (match checked-sub(5, 8, true, 8) with
-      | Option.Some(v) => if v == -3 then unit else trap("i8 5-8=-3")
-      | Option.None(_) => trap("i8 5-8 in range → Some")
-    )
+    | Option.None(_) =>
+      (match checked-sub(5, 8, true, 8) with
+        | Option.Some(v) => if v == -3 then unit else trap("i8 5-8=-3")
+        | Option.None(_) => trap("i8 5-8 in range → Some")
+      )
     | Option.Some(_) => trap("u8 0-1 underflows → None")
 
 @test
 def iw-checked-mul-overflow-is-none() =
   // 20 * 20 = 400 overflows UInt8 → None; 10 * 12 = 120 fits Int8 → Some 120.
   match checked-mul(20, 20, false, 8) with
-    | Option.None(_) => (match checked-mul(10, 12, true, 8) with
-      | Option.Some(v) => if v == 120 then unit else trap("i8 10*12=120")
-      | Option.None(_) => trap("i8 10*12 in range → Some")
-    )
+    | Option.None(_) =>
+      (match checked-mul(10, 12, true, 8) with
+        | Option.Some(v) => if v == 120 then unit else trap("i8 10*12=120")
+        | Option.None(_) => trap("i8 10*12 in range → Some")
+      )
     | Option.Some(_) => trap("u8 400 overflows → None")
 
 export {

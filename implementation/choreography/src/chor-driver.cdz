@@ -133,19 +133,22 @@ def compile-preamble() -> String =
 /// (mock-deterministic, matching chor-run's ichoice/ematch).
 def compile-body(l: Local) -> String = match l with
   | Local.LEnd => "unit"
-  | Local.LSend(_to, label, k) => String.concat(
-    "let _ = Comm.send(\"",
-    String.concat(label, String.concat("\") in\n  ", compile-body(k)))
-  )
-  | Local.LRecv(from, _label, k) => String.concat(
-    "let _ = Comm.recv(\"",
-    String.concat(from, String.concat("\") in\n  ", compile-body(k)))
-  )
+  | Local.LSend(_to, label, k) =>
+    String.concat(
+      "let _ = Comm.send(\"",
+      String.concat(label, String.concat("\") in\n  ", compile-body(k)))
+    )
+  | Local.LRecv(from, _label, k) =>
+    String.concat(
+      "let _ = Comm.recv(\"",
+      String.concat(from, String.concat("\") in\n  ", compile-body(k)))
+    )
   | Local.LIntC(brs) => compile-first-branch(brs)
-  | Local.LExtC(from, brs) => String.concat(
-    "let _ = Comm.recv(\"",
-    String.concat(from, String.concat("\") in\n  ", compile-first-branch(brs)))
-  )
+  | Local.LExtC(from, brs) =>
+    String.concat(
+      "let _ = Comm.recv(\"",
+      String.concat(from, String.concat("\") in\n  ", compile-first-branch(brs)))
+    )
   | Local.LBranch(_label, k) => compile-body(k)
   | Local.LRecT(_v, _body) => "unit  -- rec: unsupported in first-cut render-compilable"
   | Local.LVarT(_v) => "unit  -- var: unsupported in first-cut render-compilable"
@@ -190,10 +193,8 @@ def render-all(roles: List(String), g: Chor) -> String =
 def render-all-sections(roles: List(String), g: Chor) -> String = match roles with
   | [] => ""
   | [r] => render-actor-section(g, r)
-  | [r, .. rest] => String.concat(
-    render-actor-section(g, r),
-    String.concat("\n", render-all-sections(rest, g))
-  )
+  | [r, .. rest] =>
+    String.concat(render-actor-section(g, r), String.concat("\n", render-all-sections(rest, g)))
 
 def render-actor-section(g: Chor, r: String) -> String =
   String.concat("==== ", String.concat(r, String.concat(" ====\n", render-compilable(g, r))))
@@ -204,10 +205,11 @@ def render-actor-section(g: Chor, r: String) -> String =
 /// Chor; the wf/projectable verdict via render-all otherwise). Keeps the CLI's generated driver trivial (one
 /// call) instead of an error-prone inline nested match.
 def shred-sexp(src: String) -> String = match read(src) with
-  | Option.Some(a) => (match from-ast(a) with
-    | Option.Some(g) => render-all(roles-of(g), g)
-    | Option.None(_) => "not-a-protocol"
-  )
+  | Option.Some(a) =>
+    (match from-ast(a) with
+      | Option.Some(g) => render-all(roles-of(g), g)
+      | Option.None(_) => "not-a-protocol"
+    )
   | Option.None(_) => "not-a-protocol"
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -382,10 +384,11 @@ def prefix-eq(s: String, prefix: String, i: Int64) -> Bool =
     false
   else
     match String.at(s, i) with
-      | Option.Some(cs) => (match String.at(prefix, i) with
-        | Option.Some(cp) => if cs == cp then prefix-eq(s, prefix, i + 1) else false
-        | Option.None(_) => true
-      )
+      | Option.Some(cs) =>
+        (match String.at(prefix, i) with
+          | Option.Some(cp) => if cs == cp then prefix-eq(s, prefix, i + 1) else false
+          | Option.None(_) => true
+        )
       | Option.None(_) => false
 
 @test
@@ -613,10 +616,11 @@ def prefix-eq-at(hay: String, needle: String, start: Int64, j: Int64) -> Bool =
     true
   else
     match String.at(hay, start + j) with
-      | Option.Some(ch) => (match String.at(needle, j) with
-        | Option.Some(cn) => if ch == cn then prefix-eq-at(hay, needle, start, j + 1) else false
-        | Option.None(_) => true
-      )
+      | Option.Some(ch) =>
+        (match String.at(needle, j) with
+          | Option.Some(cn) => if ch == cn then prefix-eq-at(hay, needle, start, j + 1) else false
+          | Option.None(_) => true
+        )
       | Option.None(_) => false
 
 export { render, shred, drive, verdict, report, render-compilable, render-all, shred-sexp }

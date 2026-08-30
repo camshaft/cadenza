@@ -24,10 +24,8 @@ def run-of-db(db: Db, root: Int64) = match lower-of-db(db, root) with
   // slice-B1b-p3: eval under a DEF-ENV (name → (params, bodyCore)) built from the tree's recursive defs, so
   // a CCall to a recursive callee runs via eval-core-d's def-env dispatch (was declining at eval). A
   // non-recursive program has an empty def-env and behaves exactly as the old eval-core(core, empty).
-  | (db1, Option.Some(core)) => (
-    db1,
-    eval-core-d(core, Map.empty : Map(Int64, Value), lower-def-env(db-tree(db1)))
-  )
+  | (db1, Option.Some(core)) =>
+    (db1, eval-core-d(core, Map.empty : Map(Int64, Value), lower-def-env(db-tree(db1))))
   | (db1, Option.None(_)) => (db1, Option.None(unit))
 
 /// The Db RUN driver from a token program: parse → Db → run over the memoized pipeline → value. The
@@ -117,13 +115,15 @@ def de-comparison-runs() =
 /// (now the source-differential primary) computes IDENTICALLY to the whim it replaces. When eval-tree/run are
 /// finally nuked, this witnesses they matched first (nuke-as-you-replace, proven-equivalent).
 def paths-agree(ts: List(Tok)) = match run-tokens-db(ts) with
-  | Option.Some(dv) => (match run(ts) with
-    | Option.Some(wv) => dv == wv
-    | Option.None(_) => false
-  )
-  | Option.None(_) => match run(ts) with
-    | Option.None(_) => true
-    | Option.Some(_) => false
+  | Option.Some(dv) =>
+    (match run(ts) with
+      | Option.Some(wv) => dv == wv
+      | Option.None(_) => false
+    )
+  | Option.None(_) =>
+    match run(ts) with
+      | Option.None(_) => true
+      | Option.Some(_) => false
 
 @test
 def de-db-and-whim-agree() =

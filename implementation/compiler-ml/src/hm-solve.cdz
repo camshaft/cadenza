@@ -32,7 +32,8 @@ import { Scheme, instantiate } from "hm-scheme"
 /// solve: `SVar0 ~ Signed` then `(TyInt SVar0 _) ~ (TyInt Unsigned _)` CONFLICTS because 0 is already Signed.
 def solve-from(su0: Subst, cs: List(Tuple(Ty, Ty))) = match cs with
   | [] => Option.Some(su0)
-  | [c, .. rest] => let (a, b) = c in
+  | [c, .. rest] =>
+    let (a, b) = c in
     match unify-ty-su(su0, a, b) with
       | Option.Some(su1) => solve-from(su1, rest)
       | Option.None(_) => Option.None(unit)
@@ -64,10 +65,8 @@ def var-int(s: Int64, w: Int64) = Ty.TyInt(IntType.IntType(Sign.SVar(s), Width.W
 def hs-empty-solves-to-empty-subst() =
   // no constraints → the empty Subst is a (trivial) solution; applying it to a type is the identity.
   match solve-apply([] : List(Tuple(Ty, Ty)), ty-int64()) with
-    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 64 then
-      unit
-    else
-      trap("identity on Int64")
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) =>
+      if w == 64 then unit else trap("identity on Int64")
     | _ => trap("empty constraint set solves; apply is identity")
 
 @test
@@ -75,10 +74,8 @@ def hs-single-constraint-binds-var() =
   // one constraint (TyInt SVar0 WVar1) ~ (Unsigned, W16) binds 0:=Unsigned, 1:=16; applying the solution to the
   // var-int yields UInt16. The solver threads the bind through.
   match solve-apply(List.push([], (var-int(0, 1), ty-fixed-int(false, 16))), var-int(0, 1)) with
-    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(w)))) => if w == 16 then
-      unit
-    else
-      trap("var-int solves to UInt16")
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(w)))) =>
+      if w == 16 then unit else trap("var-int solves to UInt16")
     | _ => trap("a single constraint binds both axis vars")
 
 @test
@@ -90,10 +87,8 @@ def hs-connected-solve-shared-var-propagates() =
   let c1 = (var-int(0, 1), ty-int64()) in
   let c2 = (var-int(0, 1), ty-int64()) in
   match solve-apply(List.push(List.push([], c1), c2), var-int(0, 1)) with
-    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 64 then
-      unit
-    else
-      trap("shared var propagates to Int64")
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) =>
+      if w == 64 then unit else trap("shared var propagates to Int64")
     | _ => trap("two constraints sharing SVar0 solve consistently")
 
 @test
@@ -119,13 +114,13 @@ def hs-instantiate-then-solve-is-let-polymorphism() =
   // constrain the FIRST instantiation to Int64, solve, then apply to the SECOND — B must remain a var
   // (unbound), i.e. NOT forced to Signed. Distinct fresh vars = independent.
   match solve(List.push([], (tyA, ty-int64()))) with
-    | Option.Some(su) => (match apply(su, tyB) with
-      | Ty.TyInt(IntType.IntType(Sign.SVar(_), _)) => unit // B's sign still a free var → independent
-      | Ty.TyInt(IntType.IntType(Sign.Signed, _)) => trap(
-        "B was tainted by A's binding — not polymorphic"
+    | Option.Some(su) =>
+      (match apply(su, tyB) with
+        | Ty.TyInt(IntType.IntType(Sign.SVar(_), _)) => unit // B's sign still a free var → independent
+        | Ty.TyInt(IntType.IntType(Sign.Signed, _)) =>
+          trap("B was tainted by A's binding — not polymorphic")
+        | _ => trap("B stays an int with a free sign var")
       )
-      | _ => trap("B stays an int with a free sign var")
-    )
     | Option.None(_) => trap("constraining only A is satisfiable")
 
 export { solve, solve-from, solve-apply, solvable }

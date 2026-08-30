@@ -65,7 +65,8 @@ def is-conjunct(notes: List(Int64)) = leap-count(notes) == 0
 /// are `Level`.
 def net-direction(notes: List(Int64)) = match notes with
   | [] => Direction.Level
-  | [h, .. t] => let last = last-note(h, t) in
+  | [h, .. t] =>
+    let last = last-note(h, t) in
     if last > h then Direction.Rising else if last < h then Direction.Falling else Direction.Level
 
 /// The last note of a non-empty melody (head + tail form). Recursive, annotated.
@@ -118,13 +119,15 @@ def a-scale-is-conjunct-and-an-arpeggio-is-not() =
 def net-direction-is-the-sign-of-first-to-last() =
   // rising [60,59,64] (60→64); falling [67,68,60] (67→60); level [60,64,60] (60→60).
   match net-direction([60, 59, 64]) with
-    | Direction.Rising => (match net-direction([67, 68, 60]) with
-      | Direction.Falling => (match net-direction([60, 64, 60]) with
-        | Direction.Level => unit
-        | _ => trap("level")
+    | Direction.Rising =>
+      (match net-direction([67, 68, 60]) with
+        | Direction.Falling =>
+          (match net-direction([60, 64, 60]) with
+            | Direction.Level => unit
+            | _ => trap("level")
+          )
+        | _ => trap("falling")
       )
-      | _ => trap("falling")
-    )
     | _ => trap("rising")
 
 @test
@@ -133,10 +136,11 @@ def a-melody-too-short-to-move-is-level() =
   // or fall, so both the empty and the single-note cases are `Level` (pins the guarded edge of
   // `net-direction` — the de-sentinel path that replaced a signed sign code).
   match net-direction([]) with
-    | Direction.Level => (match net-direction([60]) with
-      | Direction.Level => unit
-      | _ => trap("a single note is level")
-    )
+    | Direction.Level =>
+      (match net-direction([60]) with
+        | Direction.Level => unit
+        | _ => trap("a single note is level")
+      )
     | _ => trap("an empty melody is level")
 
 @test

@@ -99,7 +99,8 @@ def schedule(notes: List(Note)) = schedule-go(notes, [])
 /// channel/velocity, so the pairing is preserved.
 def transpose-piece-go(notes: List(Note), semis: Int64, out: List(Note)) = match notes with
   | [] => out
-  | [h, .. t] => let moved = Note.Note(
+  | [h, .. t] =>
+    let moved = Note.Note(
         transpose(note-pitch(h), interval(semis)),
         note-chan(h),
         note-vel(h),
@@ -116,7 +117,8 @@ def transpose-piece(notes: List(Note), semis: Int64) = transpose-piece-go(notes,
 /// the direct reuse now emits valid wasm.
 def remap-channel-go(notes: List(Note), chan: Int64, out: List(Note)) = match notes with
   | [] => out
-  | [h, .. t] => let moved = Note.Note(note-pitch(h), chan, note-vel(h), note-start(h), note-dur(h)) in
+  | [h, .. t] =>
+    let moved = Note.Note(note-pitch(h), chan, note-vel(h), note-start(h), note-dur(h)) in
     remap-channel-go(t, chan, List.push(out, moved))
 
 def remap-channel(notes: List(Note), chan: Int64) = remap-channel-go(notes, chan, [])
@@ -125,13 +127,8 @@ def remap-channel(notes: List(Note), chan: Int64) = remap-channel-go(notes, chan
 /// each repeat is independently balanced → the concatenation is balanced. Recursive, annotated.
 def shift-piece-go(notes: List(Note), by: Int64, out: List(Note)) = match notes with
   | [] => out
-  | [h, .. t] => let moved = Note.Note(
-        note-pitch(h),
-        note-chan(h),
-        note-vel(h),
-        note-start(h) + by,
-        note-dur(h)
-      ) in
+  | [h, .. t] =>
+    let moved = Note.Note(note-pitch(h), note-chan(h), note-vel(h), note-start(h) + by, note-dur(h)) in
     shift-piece-go(t, by, List.push(out, moved))
 
 def shift-piece(notes: List(Note), by: Int64) = shift-piece-go(notes, by, [])
@@ -151,16 +148,17 @@ def loop-piece(notes: List(Note), period: Int64, n: Int64) = loop-piece-go(notes
 /// separately below, never dipped negative).
 def net-outstanding(evs: List(MidiEvent), chan: Int64, num: Int64, acc: Int64) = match evs with
   | [] => acc
-  | [e, .. t] => if ev-chan(e) == chan then
-    if ev-note(e) == num then
-      if ev-on(e) then
-        net-outstanding(t, chan, num, acc + 1)
+  | [e, .. t] =>
+    if ev-chan(e) == chan then
+      if ev-note(e) == num then
+        if ev-on(e) then
+          net-outstanding(t, chan, num, acc + 1)
+        else
+          net-outstanding(t, chan, num, acc - 1)
       else
-        net-outstanding(t, chan, num, acc - 1)
+        net-outstanding(t, chan, num, acc)
     else
       net-outstanding(t, chan, num, acc)
-  else
-    net-outstanding(t, chan, num, acc)
 
 /// The total number of note-on events minus note-off events across the whole list. A necessary (but NOT
 /// sufficient) condition for balance: if this is nonzero there is a definite stuck key, but a zero here can
@@ -198,10 +196,8 @@ def prefix-nonneg(seen-rev: List(MidiEvent), evs: List(MidiEvent)) = match evs w
 /// simple; no first-occurrence deduplication (the redundant re-checks give the same verdict).
 def all-keys-zero(evs: List(MidiEvent), all: List(MidiEvent)) = match evs with
   | [] => true
-  | [e, .. t] => if net-outstanding(all, ev-chan(e), ev-note(e), 0) == 0 then
-    all-keys-zero(t, all)
-  else
-    false
+  | [e, .. t] =>
+    if net-outstanding(all, ev-chan(e), ev-note(e), 0) == 0 then all-keys-zero(t, all) else false
 
 /// A schedule has NO STUCK KEYS iff (a) walking in order, no key's outstanding count ever goes negative
 /// (no off without a matching outstanding on), AND (b) every key returns to zero at the end. This is the
@@ -221,7 +217,10 @@ def balanced(evs: List(MidiEvent)) =
 def insert-by-tick(e: MidiEvent, sorted: List(MidiEvent)) = match sorted with
   | [] => [e]
   | [h, .. t] => // Insert BEFORE the first element strictly later in tick (stable: ties keep `h` ahead of `e`).
-  if ev-tick(e) < ev-tick(h) then List.prepend(sorted, e) else List.prepend(insert-by-tick(e, t), h)
+    if ev-tick(e) < ev-tick(h) then
+      List.prepend(sorted, e)
+    else
+      List.prepend(insert-by-tick(e, t), h)
 
 /// Sort an event list ascending by tick (stable insertion sort). Recursive driver, annotated.
 def play-order-go(evs: List(MidiEvent), out: List(MidiEvent)) = match evs with
@@ -237,18 +236,19 @@ def a-note-lowers-to-a-balanced-on-off-pair() =
   // C4 on channel 0, velocity 100, at tick 0 for a quarter (960) → on@0 + off@960, same channel+note.
   let n = note-at(pitch-c4, 0, 100, 0, 960) in
   match note-events(n) with
-    | [on, off] => if ev-on(on) then
-      if ev-on(off) then
-        trap("second event is NOT the off (still an on)")
-      else if ev-tick(on) == 0 then
-        if ev-tick(off) == 960 then
-          if ev-note(on) == 60 then unit else trap("note number")
+    | [on, off] =>
+      if ev-on(on) then
+        if ev-on(off) then
+          trap("second event is NOT the off (still an on)")
+        else if ev-tick(on) == 0 then
+          if ev-tick(off) == 960 then
+            if ev-note(on) == 60 then unit else trap("note number")
+          else
+            trap("off tick")
         else
-          trap("off tick")
+          trap("on tick")
       else
-        trap("on tick")
-    else
-      trap("first event is the on")
+        trap("first event is the on")
     | _ => trap("a note is two events")
 
 @test
@@ -423,10 +423,11 @@ def play-order-is-stable-for-same-tick-events() =
   let piece = [note-at(pitch-c4, 0, 100, 0, 480), note-at(pitch-e4, 0, 100, 0, 480)] in
   let stream = play-order(schedule(piece)) in
   match stream with
-    | [first, .. _] => if ev-note(first) == 60 then
-      if ev-on(first) then unit else trap("on")
-    else
-      trap("C's on comes first (stable)")
+    | [first, .. _] =>
+      if ev-note(first) == 60 then
+        if ev-on(first) then unit else trap("on")
+      else
+        trap("C's on comes first (stable)")
     | _ => trap("has events")
 
 @test
@@ -436,10 +437,11 @@ def play-order-keeps-a-zero-length-notes-on-before-its-off() =
   let piece = [note-at(pitch-c4, 0, 100, 100, 0)] in
   let stream = play-order(schedule(piece)) in
   match stream with
-    | [first, second] => if ev-on(first) then
-      if ev-on(second) then trap("second is NOT the off (still an on)") else unit
-    else
-      trap("on before off")
+    | [first, second] =>
+      if ev-on(first) then
+        if ev-on(second) then trap("second is NOT the off (still an on)") else unit
+      else
+        trap("on before off")
     | _ => trap("two events")
 
 @test
@@ -475,10 +477,8 @@ def nth-note(notes: List(Note), i: Int64) = match notes with
 def ticks-ascending(evs: List(MidiEvent)) = match evs with
   | [] => true
   | [_] => true
-  | [a, b, .. rest] => if ev-tick(a) <= ev-tick(b) then
-    ticks-ascending(List.prepend(rest, b))
-  else
-    false
+  | [a, b, .. rest] =>
+    if ev-tick(a) <= ev-tick(b) then ticks-ascending(List.prepend(rest, b)) else false
 
 export {
   Note.*,

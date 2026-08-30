@@ -111,32 +111,41 @@ def cyl-and-ball-have-the-right-envelope() =
 def single-axis-moves-shift-the-box-centre() =
   // move-x(10, cube(2)) shifts the [-1,1] box to [9,11] → centre x = 10; y,z stay centred at 0.
   match bounding-box(move-x(10 / 1, cube(2 / 1))) with
-    | Aabb.Box(lo, hi) => match lo with
-      | Vec3.V3(lx, ly, _) => match hi with
-        | Vec3.V3(hx, hy, _) => if (lx + hx) / (2 / 1) == 10 / 1 then
-          if (ly + hy) / (2 / 1) == 0 / 1 then unit else trap("y stays centred")
-        else
-          trap("x centre = 10")
+    | Aabb.Box(lo, hi) =>
+      match lo with
+        | Vec3.V3(lx, ly, _) =>
+          match hi with
+            | Vec3.V3(hx, hy, _) =>
+              if (lx + hx) / (2 / 1) == 10 / 1 then
+                if (ly + hy) / (2 / 1) == 0 / 1 then unit else trap("y stays centred")
+              else
+                trap("x centre = 10")
 
 @test
 def move-y-and-move-z-shift-their-own-axis() =
   // The x arm above pins move-x; pin move-y/move-z too so a per-axis copy-paste (a builder writing the delta
   // to the wrong coordinate slot) can't slip. move-y(10, cube(2)) → centre y=10, x/z stay 0; move-z likewise.
   match bounding-box(move-y(10 / 1, cube(2 / 1))) with
-    | Aabb.Box(ylo, yhi) => match ylo with
-      | Vec3.V3(ylx, yly, ylz) => match yhi with
-        | Vec3.V3(yhx, yhy, yhz) => if (yly + yhy) / (2 / 1) == 10 / 1
-            and (ylx + yhx) / (2 / 1) == 0 / 1 and (ylz + yhz) / (2 / 1) == 0 / 1 then
-          match bounding-box(move-z(10 / 1, cube(2 / 1))) with
-            | Aabb.Box(zlo, zhi) => match zlo with
-              | Vec3.V3(zlx, zly, zlz) => match zhi with
-                | Vec3.V3(zhx, zhy, zhz) => if (zlz + zhz) / (2 / 1) == 10 / 1
-                    and (zlx + zhx) / (2 / 1) == 0 / 1 and (zly + zhy) / (2 / 1) == 0 / 1 then
-                  unit
-                else
-                  trap("move-z shifts z only (x/y stay centred)")
-        else
-          trap("move-y shifts y only (x/z stay centred)")
+    | Aabb.Box(ylo, yhi) =>
+      match ylo with
+        | Vec3.V3(ylx, yly, ylz) =>
+          match yhi with
+            | Vec3.V3(yhx, yhy, yhz) =>
+              if (yly + yhy) / (2 / 1) == 10 / 1 and (ylx + yhx) / (2 / 1) == 0 / 1
+                  and (ylz + yhz) / (2 / 1) == 0 / 1 then
+                match bounding-box(move-z(10 / 1, cube(2 / 1))) with
+                  | Aabb.Box(zlo, zhi) =>
+                    match zlo with
+                      | Vec3.V3(zlx, zly, zlz) =>
+                        match zhi with
+                          | Vec3.V3(zhx, zhy, zhz) =>
+                            if (zlz + zhz) / (2 / 1) == 10 / 1 and (zlx + zhx) / (2 / 1) == 0 / 1
+                                and (zly + zhy) / (2 / 1) == 0 / 1 then
+                              unit
+                            else
+                              trap("move-z shifts z only (x/y stay centred)")
+              else
+                trap("move-y shifts y only (x/z stay centred)")
 
 @test
 def scale-uniform-multiplies-the-box() =
@@ -180,15 +189,18 @@ def cut-fuse-common-are-the-boolean-wrappers() =
   let b = move-x(10 / 1, cube(2 / 1)) in
   // fuse of two disjoint size-2 cubes (10 apart) → box spans x ∈ [-1, 11] → width 12.
   match bounding-box(fuse(a, b)) with
-    | Aabb.Box(lo, hi) => match lo with
-      | Vec3.V3(lx, _, _) => match hi with
-        | Vec3.V3(hx, _, _) => if hx - lx == 12 / 1 then
-          if v3-eq(aabbr-size(bounding-box(cut(a, b))), aabbr-size(bounding-box(a))) then
-            unit
-          else
-            trap("cut never grows the base")
-        else
-          trap("fuse encloses both (width 12)")
+    | Aabb.Box(lo, hi) =>
+      match lo with
+        | Vec3.V3(lx, _, _) =>
+          match hi with
+            | Vec3.V3(hx, _, _) =>
+              if hx - lx == 12 / 1 then
+                if v3-eq(aabbr-size(bounding-box(cut(a, b))), aabbr-size(bounding-box(a))) then
+                  unit
+                else
+                  trap("cut never grows the base")
+              else
+                trap("fuse encloses both (width 12)")
 
 @test
 def common-is-the-intersection-wrapper() =
@@ -212,19 +224,25 @@ def rotate-array-and-mirror-build-symmetric-solids() =
   // rotate-z(45, bar): SOUND conservative box is symmetric [-R,R]^3 with R = the L1 corner-radius
   // (mx + my + mz = 11 + 1 + 1 = 13), so size 26 each axis (soundly encloses any rotation of the shifted bar).
   match bounding-box(rotate-z(45 / 1, bar)) with
-    | Aabb.Box(lo, hi) => match lo with
-      | Vec3.V3(lx, _, _) => match hi with
-        | Vec3.V3(hx, _, _) => if hx - lx == 26 / 1 then
-          // mirror-x(bar) → box x∈[-11,-9]; fuse with bar → x∈[-11,11], width 22 (a bilateral pair).
-          match bounding-box(fuse(bar, mirror-x(bar))) with
-            | Aabb.Box(mlo, mhi) => match mlo with
-              | Vec3.V3(mlx, _, _) => match mhi with
-                | Vec3.V3(mhx, _, _) => if mhx - mlx == 22 / 1 then
-                  unit
-                else
-                  trap("bilateral fuse spans [-11,11]")
-        else
-          trap("rotate-z sound box is symmetric (width 26 via the L1 radius 13)")
+    | Aabb.Box(lo, hi) =>
+      match lo with
+        | Vec3.V3(lx, _, _) =>
+          match hi with
+            | Vec3.V3(hx, _, _) =>
+              if hx - lx == 26 / 1 then
+                // mirror-x(bar) → box x∈[-11,-9]; fuse with bar → x∈[-11,11], width 22 (a bilateral pair).
+                match bounding-box(fuse(bar, mirror-x(bar))) with
+                  | Aabb.Box(mlo, mhi) =>
+                    match mlo with
+                      | Vec3.V3(mlx, _, _) =>
+                        match mhi with
+                          | Vec3.V3(mhx, _, _) =>
+                            if mhx - mlx == 22 / 1 then
+                              unit
+                            else
+                              trap("bilateral fuse spans [-11,11]")
+              else
+                trap("rotate-z sound box is symmetric (width 26 via the L1 radius 13)")
 
 @test
 def mirror-y-and-mirror-z-reflect-their-own-axis() =
@@ -237,15 +255,15 @@ def mirror-y-and-mirror-z-reflect-their-own-axis() =
   let fwd = move-z(10 / 1, cube(2 / 1)) in // cube centred at z=10 → z∈[9,11]
   match bounding-box(fuse(up, mirror-y(up))) with
     | Aabb.Box(ylo, yhi) => // y spans [-11,11] (width 22); x and z stay the cube's width 2.
-    if v3-y(yhi) - v3-y(ylo) == 22 / 1 and v3-x(yhi) - v3-x(ylo) == 2 / 1 then
-      match bounding-box(fuse(fwd, mirror-z(fwd))) with
-        | Aabb.Box(zlo, zhi) => if v3-z(zhi) - v3-z(zlo) == 22 / 1
-            and v3-x(zhi) - v3-x(zlo) == 2 / 1 then
-          unit
-        else
-          trap("mirror-z must reflect the Z axis (fused width 22 on z, 2 on x)")
-    else
-      trap("mirror-y must reflect the Y axis (fused width 22 on y, 2 on x)")
+      if v3-y(yhi) - v3-y(ylo) == 22 / 1 and v3-x(yhi) - v3-x(ylo) == 2 / 1 then
+        match bounding-box(fuse(fwd, mirror-z(fwd))) with
+          | Aabb.Box(zlo, zhi) =>
+            if v3-z(zhi) - v3-z(zlo) == 22 / 1 and v3-x(zhi) - v3-x(zlo) == 2 / 1 then
+              unit
+            else
+              trap("mirror-z must reflect the Z axis (fused width 22 on z, 2 on x)")
+      else
+        trap("mirror-y must reflect the Y axis (fused width 22 on y, 2 on x)")
 
 @test
 def the-single-axis-rotate-builders-put-the-angle-on-their-own-axis() =
@@ -255,23 +273,23 @@ def the-single-axis-rotate-builders-put-the-angle-on-their-own-axis() =
   // copy-paste axis bug (rotate-x writing the angle to y) would otherwise be invisible until a mesh renders.
   let unit-cube = cube(2 / 1) in
   match rotate-x(30 / 1, unit-cube) with
-    | Solid.Rotate(ax, _) => if v3-x(ax) == 30 / 1 and v3-y(ax) == rzero-h()
-        and v3-z(ax) == rzero-h() then
-      match rotate-y(40 / 1, unit-cube) with
-        | Solid.Rotate(ay, _) => if v3-y(ay) == 40 / 1 and v3-x(ay) == rzero-h()
-            and v3-z(ay) == rzero-h() then
-          match rotate-z(50 / 1, unit-cube) with
-            | Solid.Rotate(az, _) => if v3-z(az) == 50 / 1 and v3-x(az) == rzero-h()
-                and v3-y(az) == rzero-h() then
-              unit
+    | Solid.Rotate(ax, _) =>
+      if v3-x(ax) == 30 / 1 and v3-y(ax) == rzero-h() and v3-z(ax) == rzero-h() then
+        match rotate-y(40 / 1, unit-cube) with
+          | Solid.Rotate(ay, _) =>
+            if v3-y(ay) == 40 / 1 and v3-x(ay) == rzero-h() and v3-z(ay) == rzero-h() then
+              match rotate-z(50 / 1, unit-cube) with
+                | Solid.Rotate(az, _) =>
+                  if v3-z(az) == 50 / 1 and v3-x(az) == rzero-h() and v3-y(az) == rzero-h() then
+                    unit
+                  else
+                    trap("rotate-z must put the angle on Z")
+                | _ => trap("rotate-z must build a Rotate node")
             else
-              trap("rotate-z must put the angle on Z")
-            | _ => trap("rotate-z must build a Rotate node")
-        else
-          trap("rotate-y must put the angle on Y")
-        | _ => trap("rotate-y must build a Rotate node")
-    else
-      trap("rotate-x must put the angle on X")
+              trap("rotate-y must put the angle on Y")
+          | _ => trap("rotate-y must build a Rotate node")
+      else
+        trap("rotate-x must put the angle on X")
     | _ => trap("rotate-x must build a Rotate node")
 
 export {

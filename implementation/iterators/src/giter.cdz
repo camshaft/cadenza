@@ -122,9 +122,10 @@ def nth(it, n) = match it with
 /// `last(it)` — the final element, `None` for an empty iterator. Closure-free; recurses to the last cons.
 def last(it) = match it with
   | GIter.Nil(_) => Option.None(unit)
-  | GIter.Cons(h, rest) => match rest with
-    | GIter.Nil(_) => Option.Some(h)
-    | GIter.Cons(_, _) => last(rest)
+  | GIter.Cons(h, rest) =>
+    match rest with
+      | GIter.Nil(_) => Option.Some(h)
+      | GIter.Cons(_, _) => last(rest)
 
 /// CLOSURE-FREE TRANSFORMERS (build a new `GIter(a)`; no closure threaded — the Part C shape) -----------
 /// These need NO closure, so they compose per element type. (Closure-threading transformers — `map`/`filter`
@@ -161,9 +162,10 @@ def drop(it, n) = match it with
 /// transformer closure-tie lands.
 def zip(a, b) = match a with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(ha, ra) => match b with
-    | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(hb, rb) => GIter.Cons((ha, hb), zip(ra, rb))
+  | GIter.Cons(ha, ra) =>
+    match b with
+      | GIter.Nil(_) => GIter.Nil(unit)
+      | GIter.Cons(hb, rb) => GIter.Cons((ha, hb), zip(ra, rb))
 
 /// `enum-from(it, i)` — the recursive worker for `enumerate`: pair each element with an index counter that
 /// starts at `i` and climbs. Closure-free; the result element is a `(Int64, a)` tuple, so like `zip` it
@@ -184,19 +186,18 @@ def enumerate(it) = enum-from(it, 0)
 /// iterator yields `2n-1` elements (0 stays 0, else `2n-1`).
 def intersperse(it, sep) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(h, rest) => match rest with
-    | GIter.Nil(_) => GIter.Cons(h, GIter.Nil(unit))
-    | GIter.Cons(_, _) => GIter.Cons(h, GIter.Cons(sep, intersperse(rest, sep)))
+  | GIter.Cons(h, rest) =>
+    match rest with
+      | GIter.Nil(_) => GIter.Cons(h, GIter.Nil(unit))
+      | GIter.Cons(_, _) => GIter.Cons(h, GIter.Cons(sep, intersperse(rest, sep)))
 
 /// `step-from(it, n, i)` — the recursive worker for `step-by`: yield the current element when the countdown
 /// `i` hits 0 (then reset to `n-1`), else skip it and decrement. Closure-free; rebuilds the head cell so the
 /// result element ties to the input's, composing at ≥2 element types.
 def step-from(it, n, i) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(h, rest) => if i <= 0 then
-    GIter.Cons(h, step-from(rest, n, n - 1))
-  else
-    step-from(rest, n, i - 1)
+  | GIter.Cons(h, rest) =>
+    if i <= 0 then GIter.Cons(h, step-from(rest, n, n - 1)) else step-from(rest, n, i - 1)
 
 /// `step-by(it, n)` — keep every `n`-th element starting at index 0 (`0, n, 2n, …`), dropping the rest.
 /// A thin seed of `step-from` at countdown 0 (so the first element is always kept). `step-by(it, 1)` is the
@@ -211,11 +212,13 @@ def step-by(it, n) = step-from(it, n, 0)
 /// tuple is inferred, no `∀`-annotation). The three-way sibling of `zip`.
 def zip3(a, b, c) = match a with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(ha, ra) => match b with
-    | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(hb, rb) => match c with
+  | GIter.Cons(ha, ra) =>
+    match b with
       | GIter.Nil(_) => GIter.Nil(unit)
-      | GIter.Cons(hc, rc) => GIter.Cons((ha, hb, hc), zip3(ra, rb, rc))
+      | GIter.Cons(hb, rb) =>
+        match c with
+          | GIter.Nil(_) => GIter.Nil(unit)
+          | GIter.Cons(hc, rc) => GIter.Cons((ha, hb, hc), zip3(ra, rb, rc))
 
 /// `windows2(it)` — the SLIDING pairs of adjacent elements: `(x0,x1), (x1,x2), …`, yielding a
 /// `GIter((a, a))`. Closure-free; the inner match on `rest` peeks the SECOND element (via `h2`) without
@@ -224,9 +227,10 @@ def zip3(a, b, c) = match a with
 /// of a general `windows(k)`; the tuple element ties both slots to the input element, composing at ≥2 types.
 def windows2(it) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(h, rest) => match rest with
-    | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(h2, _) => GIter.Cons((h, h2), windows2(rest))
+  | GIter.Cons(h, rest) =>
+    match rest with
+      | GIter.Nil(_) => GIter.Nil(unit)
+      | GIter.Cons(h2, _) => GIter.Cons((h, h2), windows2(rest))
 
 /// `interleave(a, b)` — alternate elements of the two iterators (`a0, b0, a1, b1, …`); when one runs out,
 /// the REMAINDER of the other follows. Closure-free; the `Nil` base returns the other iterator (same element
@@ -269,9 +273,10 @@ def find(it, p) = match it with
 /// deepest `Some`. Returns `Option(a)`; composes at ≥2 element types.
 def last-where(it, p) = match it with
   | GIter.Nil(_) => Option.None(unit)
-  | GIter.Cons(h, rest) => match last-where(rest, p) with
-    | Option.Some(v) => Option.Some(v)
-    | Option.None(_) => if p(h) then Option.Some(h) else Option.None(unit)
+  | GIter.Cons(h, rest) =>
+    match last-where(rest, p) with
+      | Option.Some(v) => Option.Some(v)
+      | Option.None(_) => if p(h) then Option.Some(h) else Option.None(unit)
 
 /// `pos-from(it, p, i)` — the recursive worker for `position`: the 0-based INDEX (not the element) of the
 /// first element satisfying `p`, counting from `i`. Threads `p` and a plain Int64 counter `i` — the counter
@@ -310,9 +315,10 @@ def count-if(it, p) = match it with
 /// instantiations; RESOLVED by rcdzc `565f6d184` — an identity `Some(x)` payload composes fine now too.)
 def map-while(it, f) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(h, rest) => match f(h) with
-    | Option.None(_) => GIter.Nil(unit)
-    | Option.Some(v) => GIter.Cons(v, map-while(rest, f))
+  | GIter.Cons(h, rest) =>
+    match f(h) with
+      | Option.None(_) => GIter.Nil(unit)
+      | Option.Some(v) => GIter.Cons(v, map-while(rest, f))
 
 /// `take-while(it, p)` — the longest leading run of elements satisfying `p`, stopping at the first that
 /// fails. Threads `p`. Its stop branch is a bare `GIter.Nil(unit)` whose element used to be untied on that
@@ -356,40 +362,47 @@ def fold(it, acc, f) = match it with
 /// it needed the transformer closure tie; the result element `c` is inferred from `f`.
 def zip-with(a, b, f) = match a with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(ha, ra) => match b with
-    | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(hb, rb) => GIter.Cons(f(ha, hb), zip-with(ra, rb, f))
+  | GIter.Cons(ha, ra) =>
+    match b with
+      | GIter.Nil(_) => GIter.Nil(unit)
+      | GIter.Cons(hb, rb) => GIter.Cons(f(ha, hb), zip-with(ra, rb, f))
 
 /// TESTS ----------------------------------------------------------------------------------------------
 /// Local monomorphic list-equalities (one per element type) — kept monomorphic so the tests exercise the
 /// GENERIC producer/consumer composition, not a generic comparison (a generic recursive equality is its own
 /// tie question, out of scope for this slice).
 def int-list-eq(xs, ys) = match xs with
-  | [] => (match ys with
-    | [] => true
-    | _ => false
-  )
-  | [x, .. xr] => match ys with
-    | [] => false
-    | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
+  | [] =>
+    (match ys with
+      | [] => true
+      | _ => false
+    )
+  | [x, .. xr] =>
+    match ys with
+      | [] => false
+      | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
 
 def str-list-eq(xs, ys) = match xs with
-  | [] => (match ys with
-    | [] => true
-    | _ => false
-  )
-  | [x, .. xr] => match ys with
-    | [] => false
-    | [y, .. yr] => if x == y then str-list-eq(xr, yr) else false
+  | [] =>
+    (match ys with
+      | [] => true
+      | _ => false
+    )
+  | [x, .. xr] =>
+    match ys with
+      | [] => false
+      | [y, .. yr] => if x == y then str-list-eq(xr, yr) else false
 
 def bool-list-eq(xs, ys) = match xs with
-  | [] => (match ys with
-    | [] => true
-    | _ => false
-  )
-  | [x, .. xr] => match ys with
-    | [] => false
-    | [y, .. yr] => if x == y then bool-list-eq(xr, yr) else false
+  | [] =>
+    (match ys with
+      | [] => true
+      | _ => false
+    )
+  | [x, .. xr] =>
+    match ys with
+      | [] => false
+      | [y, .. yr] => if x == y then bool-list-eq(xr, yr) else false
 
 /// THE headline test: a recursive-generic PRODUCER composed with a generic CONSUMER at TWO distinct
 /// element types in ONE program. This exact shape declined with CDZ0201 before the Part C fix.
@@ -441,7 +454,8 @@ def empty-int-source-collects-empty() =
 @test
 def next-yields-head-then-rest() = match next(from-list([42, 43])) with
   | Option.None(_) => trap("next of non-empty must be Some")
-  | Option.Some(p) => let (h, rest) = p in
+  | Option.Some(p) =>
+    let (h, rest) = p in
     if h == 42 then if count(rest) == 1 then unit else trap("rest length") else trap("head value")
 
 /// SLICE-2 closure-free combinators, each pinned at TWO element types in one program.
@@ -541,7 +555,8 @@ def zip-mixed-element-types() =
 @test
 def zip-pairs-carry-both-elements() = match next(zip(from-list([7, 8]), from-list(["x", "y"]))) with
   | Option.None(_) => trap("zip of non-empty must yield")
-  | Option.Some(p) => let (pair, _rest) = p in
+  | Option.Some(p) =>
+    let (pair, _rest) = p in
     let (l, r) = pair in
     if l == 7 then if r == "x" then unit else trap("zip right elem") else trap("zip left elem")
 
@@ -730,7 +745,8 @@ def scan-string-accumulator() =
 @test
 def enumerate-ints-indices-climb() = match next(enumerate(from-list([10, 20, 30]))) with
   | Option.None(_) => trap("enumerate of non-empty must yield")
-  | Option.Some(p) => let (pair, _rest) = p in
+  | Option.Some(p) =>
+    let (pair, _rest) = p in
     let (i, v) = pair in
     if i == 0 then
       if v == 10 then unit else trap("enumerate first elem")
@@ -931,7 +947,8 @@ def zip3-three-different-element-types() = match next(
     zip3(from-list(["a", "b"]), from-list([1, 2]), from-list([true, false]))
   ) with
   | Option.None(_) => trap("zip3 mixed must yield")
-  | Option.Some(p) => let (triple, _rest) = p in
+  | Option.Some(p) =>
+    let (triple, _rest) = p in
     let (s, n, b) = triple in
     if s == "a" then
       if n == 1 then if b then unit else trap("zip3 bool") else trap("zip3 int")
@@ -947,7 +964,8 @@ def windows2-adjacent-pairs-ints() =
 @test
 def windows2-carries-both-neighbors() = match next(windows2(from-list([10, 20, 30]))) with
   | Option.None(_) => trap("windows2 must yield")
-  | Option.Some(p) => let (pair, _rest) = p in
+  | Option.Some(p) =>
+    let (pair, _rest) = p in
     let (l, r) = pair in
     if l == 10 then if r == 20 then unit else trap("windows2 right") else trap("windows2 left")
 

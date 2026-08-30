@@ -50,31 +50,37 @@ def inbox-of(t: Trace) -> List(String) = match t with
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 /// `(perform (send to l))` → Some(M(to, l)); anything else → None.
 def sent-msg(stmt: Ast) -> Option(Msg) = match stmt with
-  | Ast.List(es) => (match es with
-    | [h, inner] => (match h with
-      | Ast.Name(op) => if op == "perform" then send-msg(inner) else Option.None(unit)
+  | Ast.List(es) =>
+    (match es with
+      | [h, inner] =>
+        (match h with
+          | Ast.Name(op) => if op == "perform" then send-msg(inner) else Option.None(unit)
+          | _ => Option.None(unit)
+        )
       | _ => Option.None(unit)
     )
-    | _ => Option.None(unit)
-  )
   | _ => Option.None(unit)
 
 def send-msg(inner: Ast) -> Option(Msg) = match inner with
-  | Ast.List(es) => (match es with
-    | [h, to, l] => (match h with
-      | Ast.Name(op) => if op == "send" then
-        match name-of(to) with
-          | Option.Some(ts) => (match name-of(l) with
-            | Option.Some(ls) => Option.Some(Msg.M(ts, ls))
-            | Option.None(_) => Option.None(unit)
-          )
-          | Option.None(_) => Option.None(unit)
-      else
-        Option.None(unit)
+  | Ast.List(es) =>
+    (match es with
+      | [h, to, l] =>
+        (match h with
+          | Ast.Name(op) =>
+            if op == "send" then
+              match name-of(to) with
+                | Option.Some(ts) =>
+                  (match name-of(l) with
+                    | Option.Some(ls) => Option.Some(Msg.M(ts, ls))
+                    | Option.None(_) => Option.None(unit)
+                  )
+                | Option.None(_) => Option.None(unit)
+            else
+              Option.None(unit)
+          | _ => Option.None(unit)
+        )
       | _ => Option.None(unit)
     )
-    | _ => Option.None(unit)
-  )
   | _ => Option.None(unit)
 
 def name-of(a: Ast) -> Option(String) = match a with
@@ -91,9 +97,10 @@ def done-trace(sends: List(Msg), inbox: List(String)) -> Trace =
 
 def run-form(es: List(Ast), inbox: List(String), sends: List(Msg)) -> Trace = match es with
   | [] => done-trace(sends, inbox)
-  | [h, .. rest] => match h with
-    | Ast.Name(op) => run-op(op, rest, inbox, sends)
-    | _ => done-trace(sends, inbox)
+  | [h, .. rest] =>
+    match h with
+      | Ast.Name(op) => run-op(op, rest, inbox, sends)
+      | _ => done-trace(sends, inbox)
 
 def run-op(op: String, rest: List(Ast), inbox: List(String), sends: List(Msg)) -> Trace =
   if op == "done" then
@@ -112,68 +119,78 @@ def run-op(op: String, rest: List(Ast), inbox: List(String), sends: List(Msg)) -
 
 /// `(seq stmt k)` — `stmt` is a `(perform (send …))`; record the sent message, continue `k`.
 def run-seq(rest: List(Ast), inbox: List(String), sends: List(Msg)) -> Trace = match rest with
-  | [stmt, k] => (match sent-msg(stmt) with
-    | Option.Some(m) => run-acc(k, inbox, List.concat([m], sends))
-    | Option.None(_) => run-acc(k, inbox, sends)
-  )
+  | [stmt, k] =>
+    (match sent-msg(stmt) with
+      | Option.Some(m) => run-acc(k, inbox, List.concat([m], sends))
+      | Option.None(_) => run-acc(k, inbox, sends)
+    )
   | _ => done-trace(sends, inbox)
 
 /// `(let lbl (perform (recv from)) k)` — consume one label off the inbox (the received value), continue `k`.
 def run-let(rest: List(Ast), inbox: List(String), sends: List(Msg)) -> Trace = match rest with
-  | [_lbl, _rhs, k] => (match inbox with
-    | [_x, .. more] => run-acc(k, more, sends) // consumed the delivered label
-    | [] => run-acc(k, inbox, sends)
-  ) // inbox underflow: nothing to consume, keep going
+  | [_lbl, _rhs, k] =>
+    (match inbox with
+      | [_x, .. more] => run-acc(k, more, sends) // consumed the delivered label
+      | [] => run-acc(k, inbox, sends)
+    ) // inbox underflow: nothing to consume, keep going
   | _ => done-trace(sends, inbox)
 
 /// `(ichoice branch…)` — the chooser: deterministically take the FIRST arm's continuation.
 def run-ichoice(brs: List(Ast), inbox: List(String), sends: List(Msg)) -> Trace = match brs with
-  | [first, .. _rest] => (match branch-cont(first) with
-    | Option.Some(k) => run-acc(k, inbox, sends)
-    | Option.None(_) => done-trace(sends, inbox)
-  )
+  | [first, .. _rest] =>
+    (match branch-cont(first) with
+      | Option.Some(k) => run-acc(k, inbox, sends)
+      | Option.None(_) => done-trace(sends, inbox)
+    )
   | [] => done-trace(sends, inbox)
 
 /// `(ematch from branch…)` — the told role: the head of the inbox is the selection; take the arm whose
 /// label matches it (consuming that selection label), then run its continuation.
 def run-ematch(rest: List(Ast), inbox: List(String), sends: List(Msg)) -> Trace = match rest with
-  | [_from, .. brs] => (match inbox with
-    | [sel, .. more] => (match pick-branch(brs, sel) with
-      | Option.Some(k) => run-acc(k, more, sends)
-      | Option.None(_) => done-trace(sends, more)
+  | [_from, .. brs] =>
+    (match inbox with
+      | [sel, .. more] =>
+        (match pick-branch(brs, sel) with
+          | Option.Some(k) => run-acc(k, more, sends)
+          | Option.None(_) => done-trace(sends, more)
+        )
+      | [] => done-trace(sends, inbox)
     )
-    | [] => done-trace(sends, inbox)
-  )
   | _ => done-trace(sends, inbox)
 
 /// `(branch label cont)` → Some(cont).
 def branch-cont(b: Ast) -> Option(Ast) = match b with
-  | Ast.List(es) => (match es with
-    | [h, _l, k] => (match h with
-      | Ast.Name(op) => if op == "branch" then Option.Some(k) else Option.None(unit)
+  | Ast.List(es) =>
+    (match es with
+      | [h, _l, k] =>
+        (match h with
+          | Ast.Name(op) => if op == "branch" then Option.Some(k) else Option.None(unit)
+          | _ => Option.None(unit)
+        )
       | _ => Option.None(unit)
     )
-    | _ => Option.None(unit)
-  )
   | _ => Option.None(unit)
 
 /// `(branch label cont)` → Some(label).
 def branch-label(b: Ast) -> Option(String) = match b with
-  | Ast.List(es) => (match es with
-    | [h, l, _k] => (match h with
-      | Ast.Name(op) => if op == "branch" then name-of(l) else Option.None(unit)
+  | Ast.List(es) =>
+    (match es with
+      | [h, l, _k] =>
+        (match h with
+          | Ast.Name(op) => if op == "branch" then name-of(l) else Option.None(unit)
+          | _ => Option.None(unit)
+        )
       | _ => Option.None(unit)
     )
-    | _ => Option.None(unit)
-  )
   | _ => Option.None(unit)
 
 /// Find the branch whose label == `sel`, return its continuation.
 def pick-branch(brs: List(Ast), sel: String) -> Option(Ast) = match brs with
   | [] => Option.None(unit)
-  | [b, .. rest] => match branch-label(b) with
-    | Option.Some(l) => if l == sel then branch-cont(b) else pick-branch(rest, sel)
-    | Option.None(_) => pick-branch(rest, sel)
+  | [b, .. rest] =>
+    match branch-label(b) with
+      | Option.Some(l) => if l == sel then branch-cont(b) else pick-branch(rest, sel)
+      | Option.None(_) => pick-branch(rest, sel)
 
 def reverse-msgs(xs: List(Msg), acc: List(Msg)) -> List(Msg) = match xs with
   | [] => acc
@@ -188,34 +205,40 @@ def run(p: Ast, inbox: List(String)) -> Trace = run-acc(p, inbox, [])
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 def deliver(msgs: List(Msg), role: String) -> List(String) = match msgs with
   | [] => []
-  | [m, .. rest] => if msg-to(m) == role then
-    List.concat([msg-label(m)], deliver(rest, role))
-  else
-    deliver(rest, role)
+  | [m, .. rest] =>
+    if msg-to(m) == role then
+      List.concat([msg-label(m)], deliver(rest, role))
+    else
+      deliver(rest, role)
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Equalities (goldens).
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 def strs-eq(xs: List(String), ys: List(String)) -> Bool = match xs with
-  | [] => (match ys with
-    | [] => true
-    | _ => false
-  )
-  | [x, .. xr] => match ys with
-    | [] => false
-    | [y, .. yr] => if x == y then strs-eq(xr, yr) else false
+  | [] =>
+    (match ys with
+      | [] => true
+      | _ => false
+    )
+  | [x, .. xr] =>
+    match ys with
+      | [] => false
+      | [y, .. yr] => if x == y then strs-eq(xr, yr) else false
 
 def msgs-eq(xs: List(Msg), ys: List(Msg)) -> Bool = match xs with
-  | [] => (match ys with
-    | [] => true
-    | _ => false
-  )
-  | [x, .. xr] => match ys with
-    | [] => false
-    | [y, .. yr] => if msg-to(x) == msg-to(y) then
-      if msg-label(x) == msg-label(y) then msgs-eq(xr, yr) else false
-    else
-      false
+  | [] =>
+    (match ys with
+      | [] => true
+      | _ => false
+    )
+  | [x, .. xr] =>
+    match ys with
+      | [] => false
+      | [y, .. yr] =>
+        if msg-to(x) == msg-to(y) then
+          if msg-label(x) == msg-label(y) then msgs-eq(xr, yr) else false
+        else
+          false
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Fixtures + tests — the Inc-3b gate: execution over the mock medium.

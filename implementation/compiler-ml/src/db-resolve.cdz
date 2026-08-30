@@ -64,12 +64,13 @@ def dr-bound-var-is-rbound() =
   // the body var (a NAME node) resolves to RBound(binder). Find it via resolved-of-db; expect Some(RBound).
   let (root, d0) = let-db() in
   match node-var-id(db-tree(d0), root) with
-    | Option.Some(varId) => (match resolved-of-db(d0, root, varId) with
-      | (_, Option.Some(Resolved.RBound(_))) => unit
-      | (_, Option.Some(Resolved.RPoison)) => trap("bound var should be RBound, not RPoison")
-      | (_, Option.Some(Resolved.RDef(_))) => trap("bound var should be RBound, not RDef")
-      | (_, Option.None(_)) => trap("bound var has a resolved fact")
-    )
+    | Option.Some(varId) =>
+      (match resolved-of-db(d0, root, varId) with
+        | (_, Option.Some(Resolved.RBound(_))) => unit
+        | (_, Option.Some(Resolved.RPoison)) => trap("bound var should be RBound, not RPoison")
+        | (_, Option.Some(Resolved.RDef(_))) => trap("bound var should be RBound, not RDef")
+        | (_, Option.None(_)) => trap("bound var has a resolved fact")
+      )
     | Option.None(_) => trap("the let body is a var")
 
 @test

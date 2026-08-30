@@ -38,9 +38,8 @@ def ss-ctor-int-literal-match-declines() =
   match run-src(
       "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Green) (0 100) (1 200) (_ 300))) (export main))"
     ) with
-    | Option.Some(_) => trap(
-      "an int-literal match over a ctor (Green : Color, not int) must DECLINE per ruling (a)"
-    )
+    | Option.Some(_) =>
+      trap("an int-literal match over a ctor (Green : Color, not int) must DECLINE per ruling (a)")
     | Option.None(_) => unit
 
 @test
@@ -51,9 +50,8 @@ def ss-ctor-in-arith-declines() =
   match run-src(
       "(do (type Color (Red) (Green) (Blue)) (def (main) (+ (Blue) (Green))) (export main))"
     ) with
-    | Option.Some(_) => trap(
-      "arithmetic over ctors (Blue/Green : Color, not int) must DECLINE per ruling (a)"
-    )
+    | Option.Some(_) =>
+      trap("arithmetic over ctors (Blue/Green : Color, not int) must DECLINE per ruling (a)")
     | Option.None(_) => unit
 
 @test
@@ -73,10 +71,8 @@ def ss-two-sum-types-independent-tagging() =
   match run-src(
       "(do (type Color (Red) (Green) (Blue)) (type Bit (Off) (On)) (def (main) (On)) (export main))"
     ) with
-    | Option.Some(v) => if v == 1 then
-      unit
-    else
-      trap("(On) is Bit's 1st ctor → tag 1 (independent of Color)")
+    | Option.Some(v) =>
+      if v == 1 then unit else trap("(On) is Bit's 1st ctor → tag 1 (independent of Color)")
     | Option.None(_) => trap("two sum types tag independently")
 
 @test
@@ -87,9 +83,8 @@ def ss-payload-ctor-USE-constructs() =
   // matching arm to READ the payload back is ii-c; here we only pin that construction TYPES + LOWERS + RUNS.)
   match run-src("(do (type Opt (Some Int64) (None)) (def (main) (Some 5)) (export main))") with
     | Option.Some(_) => unit
-    | Option.None(_) => trap(
-      "a payload constructor USE (Some 5) should now construct + run, not decline"
-    )
+    | Option.None(_) =>
+      trap("a payload constructor USE (Some 5) should now construct + run, not decline")
 
 @test
 def ss-nullary-sibling-of-payload-ctor-runs() =
@@ -101,22 +96,17 @@ def ss-nullary-sibling-of-payload-ctor-runs() =
   match run-src(
       "(do (type Opt (Some Int64) (None)) (def (main) (match (None) (None 7) (_ 9))) (export main))"
     ) with
-    | Option.Some(v) => if v == 7 then
-      unit
-    else
-      trap("(None) boxes (mixed decl) + matches its own tag → 7")
-    | Option.None(_) => trap(
-      "a nullary sibling of a payload ctor must run (payload ctor skips, not aborts)"
-    )
+    | Option.Some(v) =>
+      if v == 7 then unit else trap("(None) boxes (mixed decl) + matches its own tag → 7")
+    | Option.None(_) =>
+      trap("a nullary sibling of a payload ctor must run (payload ctor skips, not aborts)")
 
 @test
 def ss-nullary-before-payload-is-tag-zero() =
   // the complement: a NULLARY ctor BEFORE a payload ctor is tag 0. `(type Res (Ok) (Err Int64))` → (Ok) = 0.
   match run-src("(do (type Res (Ok) (Err Int64)) (def (main) (Ok)) (export main))") with
-    | Option.Some(v) => if v == 0 then
-      unit
-    else
-      trap("(Ok) is the 1st ctor → tag 0 (payload Err doesn't shift it)")
+    | Option.Some(v) =>
+      if v == 0 then unit else trap("(Ok) is the 1st ctor → tag 0 (payload Err doesn't shift it)")
     | Option.None(_) => trap("a nullary ctor before a payload ctor must run")
 
 @test
@@ -138,10 +128,8 @@ def ss-match-on-ctor-pattern-first() =
   match run-src(
       "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Red) (Red 100) (Green 200) (_ 300))) (export main))"
     ) with
-    | Option.Some(v) => if v == 100 then
-      unit
-    else
-      trap("match (Red) hits the Red-pattern arm → 100")
+    | Option.Some(v) =>
+      if v == 100 then unit else trap("match (Red) hits the Red-pattern arm → 100")
     | Option.None(_) => trap("a nullary ctor pattern in match runs (first arm)")
 
 @test
@@ -150,10 +138,8 @@ def ss-match-on-ctor-pattern-middle() =
   match run-src(
       "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Green) (Red 100) (Green 200) (_ 300))) (export main))"
     ) with
-    | Option.Some(v) => if v == 200 then
-      unit
-    else
-      trap("match (Green) hits the Green-pattern arm → 200")
+    | Option.Some(v) =>
+      if v == 200 then unit else trap("match (Green) hits the Green-pattern arm → 200")
     | Option.None(_) => trap("a nullary ctor pattern in match runs (middle arm)")
 
 @test
@@ -229,7 +215,8 @@ def ss-match-mixed-int-literal-over-ctor-declines() =
   match run-src(
       "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Green) (0 100) (Green 200) (_ 300))) (export main))"
     ) with
-    | Option.Some(_) => trap(
-      "an int-literal pattern (0 100) over a TSum scrutinee (Green) must DECLINE per ruling (a)"
-    )
+    | Option.Some(_) =>
+      trap(
+        "an int-literal pattern (0 100) over a TSum scrutinee (Green) must DECLINE per ruling (a)"
+      )
     | Option.None(_) => unit

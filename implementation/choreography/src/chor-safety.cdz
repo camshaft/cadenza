@@ -72,15 +72,17 @@ def recvs-branches(brs: List(Local)) -> List(IO) = match brs with
 /// Does `obs` contain an obligation with this peer + label?
 def has-io(obs: List(IO), peer: String, lbl: String) -> Bool = match obs with
   | [] => false
-  | [o, .. rest] => if io-peer(o) == peer then
-    if io-label(o) == lbl then true else has-io(rest, peer, lbl)
-  else
-    has-io(rest, peer, lbl)
+  | [o, .. rest] =>
+    if io-peer(o) == peer then
+      if io-label(o) == lbl then true else has-io(rest, peer, lbl)
+    else
+      has-io(rest, peer, lbl)
 
 /// Every send of `r` is mirrored by a recv in its recipient's projection.
 def sends-matched(g: Chor, r: String, mine: List(IO)) -> Bool = match mine with
   | [] => true
-  | [s, .. rest] => let recipient = io-peer(s) in
+  | [s, .. rest] =>
+    let recipient = io-peer(s) in
     let their-recvs = local-recvs(project(g, recipient)) in
     if has-io(their-recvs, r, io-label(s)) then
       // recipient receives (from r, label) ?
@@ -91,7 +93,8 @@ def sends-matched(g: Chor, r: String, mine: List(IO)) -> Bool = match mine with
 /// Every recv of `r` is mirrored by a send in its sender's projection.
 def recvs-matched(g: Chor, r: String, mine: List(IO)) -> Bool = match mine with
   | [] => true
-  | [rc, .. rest] => let sender = io-peer(rc) in
+  | [rc, .. rest] =>
+    let sender = io-peer(rc) in
     let their-sends = local-sends(project(g, sender)) in
     if has-io(their-sends, r, io-label(rc)) then
       // sender sends (to r, label) ?

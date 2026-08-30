@@ -47,9 +47,10 @@ def values-ints(vs: List(Value), i: Int64, acc: List(Int64)) =
   else
     match List.at(vs, i) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(v) => match value-int(v) with
-        | Option.None(_) => Option.None(unit)
-        | Option.Some(x) => values-ints(vs, i + 1, List.concat(acc, List.push([], x)))
+      | Option.Some(v) =>
+        match value-int(v) with
+          | Option.None(_) => Option.None(unit)
+          | Option.Some(x) => values-ints(vs, i + 1, List.concat(acc, List.push([], x)))
 
 /// Evaluate a Core term under `env` (binderId → value). Total: an unbound var or divide-by-zero → `None`.
 /// The DEF-ENV (slice-B1b/B3): `name → (paramBinderIds, bodyCore)`. Recursion is a STATIC name reference
@@ -75,13 +76,16 @@ def eval-args(args: List(Core), i: Int64, env: Map(Int64, Value), defs: Map(
   else
     match List.at(args, i) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(a) => match eval-core-s(a, env, defs, store) with
-        | Option.None(_) => Option.None(unit)
-        | Option.Some(vs1) => let (v, store1) = vs1 in
-          match eval-args(args, i + 1, env, defs, store1) with
-            | Option.None(_) => Option.None(unit)
-            | Option.Some(rs) => let (rest, store2) = rs in
-              Option.Some((List.concat(List.push([], v), rest), store2))
+      | Option.Some(a) =>
+        match eval-core-s(a, env, defs, store) with
+          | Option.None(_) => Option.None(unit)
+          | Option.Some(vs1) =>
+            let (v, store1) = vs1 in
+            match eval-args(args, i + 1, env, defs, store1) with
+              | Option.None(_) => Option.None(unit)
+              | Option.Some(rs) =>
+                let (rest, store2) = rs in
+                Option.Some((List.concat(List.push([], v), rest), store2))
 
 /// bind-params (slice-B3): bind param binder-ids positionally to arg values in a FRESH env (lexical — the
 /// callee body sees ONLY its params + defs, never the caller's locals). Index recursion. Ragged arity (a
@@ -92,9 +96,10 @@ def bind-params(params: List(Int64), vals: List(Value), i: Int64, acc: Map(Int64
   else
     match List.at(params, i) with
       | Option.None(_) => acc
-      | Option.Some(p) => match List.at(vals, i) with
-        | Option.None(_) => acc
-        | Option.Some(v) => bind-params(params, vals, i + 1, Map.insert(acc, p, v))
+      | Option.Some(p) =>
+        match List.at(vals, i) with
+          | Option.None(_) => acc
+          | Option.Some(v) => bind-params(params, vals, i + 1, Map.insert(acc, p, v))
 
 /// bind-payload (M2-b-2b): bind a sum value's payload elements to a CMatchSum arm's binder-ids in `env`. For
 /// each binder `binders[i]`, read `store-payload(store, h, i)` and insert `binder → value` (env is the CVar
@@ -107,21 +112,16 @@ def bind-payload(store: SumStore, h: Int64, binders: List(Int64), i: Int64, env:
     match List.at(binders, i) with
       | Option.None(_) => env
       | Option.Some(b) => // WILDCARD `_`: a -1 sentinel binder means IGNORE this field — CONSUME the store slot (index i still
-      // tracks the FIELD position, so a `_` in field 0 must NOT shift field 1's store-payload(h,1) read) but
-      // insert NOTHING (no name-id(_) key → N wildcards never collide). Continue to i+1 either way.
-      if b == -1 then
-        bind-payload(store, h, binders, i + 1, env) // skip-insert, advance slot
-      else
-        match store-payload(store, h, i) with
-          | Option.None(_) => env
-          // the store holds Int64 payload elements; wrap as VInt entering the Value-keyed env (S-w0).
-          | Option.Some(v) => bind-payload(
-            store,
-            h,
-            binders,
-            i + 1,
-            Map.insert(env, b, Value.VInt(v))
-          )
+        // tracks the FIELD position, so a `_` in field 0 must NOT shift field 1's store-payload(h,1) read) but
+        // insert NOTHING (no name-id(_) key → N wildcards never collide). Continue to i+1 either way.
+        if b == -1 then
+          bind-payload(store, h, binders, i + 1, env) // skip-insert, advance slot
+        else
+          match store-payload(store, h, i) with
+            | Option.None(_) => env
+            // the store holds Int64 payload elements; wrap as VInt entering the Value-keyed env (S-w0).
+            | Option.Some(v) =>
+              bind-payload(store, h, binders, i + 1, Map.insert(env, b, Value.VInt(v)))
 
 /// apply-def-by-name (slice-B3 / HO-3, DRY): dispatch a def by NAME — the shared body of CCall and CFnRefVar.
 /// Look the name up in the def-env; eval the args in the CURRENT (caller) env; bind them positionally into a
@@ -136,10 +136,12 @@ def apply-def-by-name(name: Int64, args: List(Core), env: Map(Int64, Value), def
   Tuple(List(Int64), Core)
 ), store: SumStore) = match Map.lookup(defs, name) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pb) => let (params, body) = pb in
+  | Option.Some(pb) =>
+    let (params, body) = pb in
     match eval-args(args, 0, env, defs, store) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(vs) => let (vals, store1) = vs in
+      | Option.Some(vs) =>
+        let (vals, store1) = vs in
         eval-core-s(body, bind-params(params, vals, 0, Map.empty : Map(Int64, Value)), defs, store1)
 
 /// eval-core-d (slice-B3): the 3-arg PUBLIC workhorse — evaluate a Core term under `env` + `defs`, returning
@@ -156,7 +158,8 @@ def eval-core-d(c: Core, env: Map(Int64, Value), defs: Map(Int64, Tuple(List(Int
   // S-w0 boundary: unwrap the final Value to Option(Int64) so every external caller/@test is unchanged. A
   // non-VInt result (impossible today; VStr/VChar arrive in S-w1) declines to None — exactly the old
   // "no Int value" behavior. run-src's Option(Int64) return widens later (S-w2) to render the wider verdict.
-  | Option.Some(vs) => let (v, _) = vs in
+  | Option.Some(vs) =>
+    let (v, _) = vs in
     value-int(v)
 
 /// The store-threaded workhorse (M2-b-2a): `eval-core-d` + a `SumStore` threaded IN and OUT of every arm, so a
@@ -169,130 +172,149 @@ def eval-core-d(c: Core, env: Map(Int64, Value), defs: Map(Int64, Tuple(List(Int
 /// through their sub-evals. Recursion terminates by the PROGRAM's base case (a CIf guard), never by fuel.
 def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, Tuple(List(Int64), Core)), store: SumStore) = match c with
   | Core.CNum(v, _, _) => Option.Some((Value.VInt(v), store)) // a scalar literal is VInt; width is an emit concern
-  | Core.CVar(b) => (match Map.lookup(env, b) with
-    | Option.None(_) => Option.None(unit)
-    | Option.Some(v) => Option.Some((v, store))
-  ) // env already holds a Value — pass it through
-  | Core.CBin(op, signed, width, l, r) => // corrected-2b: a NARROW (width<64) ARITH result TRAPS on overflow (→ None) — matching spec §Overflow
-  // + the reference's CDZ0304 (the unqualified +/-/* traps; wrapping is the opt-in .wrapping-* form, not
-  // here). Int64 (width 64) + comparisons (0/1, width 64) never overflow-check. So `(: 100 Int8) +
-  // (: 100 Int8)` = 200, overflows Int8 → None (declines); `(: 100 Int8) + (: 20 Int8)` = 120 fits → Some.
-  // Thread the store L→R (a sub-expr may construct a sum): store → store1 (after l) → store2 (after r).
-  // S-w0: unwrap both operand Values to Int64 for eval-bin (a non-VInt operand — none today — declines);
-  // rewrap the arith result as VInt.
-  (match eval-core-s(l, env, defs, store) with
-    | Option.Some(as1) => (let (av, store1) = as1 in
-      match eval-core-s(r, env, defs, store1) with
-        | Option.Some(bs2) => (let (bv, store2) = bs2 in
-          match value-int(av) with
-            | Option.None(_) => Option.None(unit)
-            | Option.Some(a) => match value-int(bv) with
-              | Option.None(_) => Option.None(unit)
-              | Option.Some(b) => match eval-bin(op, a, b) with
-                | Option.Some(v) => if width < 64 then
-                  if overflows(v, signed, width) then
-                    Option.None(unit)
-                  else
-                    Option.Some((Value.VInt(v), store2))
-                else
-                  Option.Some((Value.VInt(v), store2))
-                | Option.None(_) => Option.None(unit))
-        | Option.None(_) => Option.None(unit))
-    | Option.None(_) => Option.None(unit)
-  )
-  | Core.CLet(binder, valExpr, body) => // non-recursive let: eval the value in the CURRENT env (threading store → store1), bind the Value to the
-  // let's canonical id, eval body under store1.
-  (match eval-core-s(valExpr, env, defs, store) with
-    | Option.Some(vs1) => let (v, store1) = vs1 in
-      eval-core-s(body, Map.insert(env, binder, v), defs, store1)
-    | Option.None(_) => Option.None(unit)
-  )
-  | Core.CIf(cond, thn, els) => // Bool is 0/1 in Core: a non-zero condition takes the then-branch, zero takes the else. Only the taken
-  // branch is evaluated (lazy). Thread store: cond → store1, then the taken branch under store1. S-w0:
-  // unwrap the cond Value to test its Int (a non-VInt cond — none today — declines).
-  (match eval-core-s(cond, env, defs, store) with
-    | Option.Some(cs1) => (let (cv, store1) = cs1 in
-      match value-int(cv) with
-        | Option.None(_) => Option.None(unit)
-        | Option.Some(c) => if c == 0 then
-          eval-core-s(els, env, defs, store1)
-        else
-          eval-core-s(thn, env, defs, store1))
-    | Option.None(_) => Option.None(unit)
-  )
-  | Core.CCall(name, args) => // slice-B3: a recursive call is a NON-inlining name reference — dispatched by name via the shared
-  // apply-def-by-name (unknown name / declining arg → None). Recursion terminates on the program's own
-  // base case (a CIf guard), never by fuel. Threads the store through the args + body.
-  apply-def-by-name(name, args, env, defs, store)
-  | Core.CFnRef(name) => // HIGHER-ORDER: a def-name as a first-class fn VALUE. A function value IS its name (top-level defs are
-  // closed — no capture), carried as VInt(name-ordinal); the CFnRefVar site unwraps + dispatches it.
-  Option.Some((Value.VInt(name), store))
-  | Core.CFnRefVar(fBinder, args) => // HIGHER-ORDER apply: call the fn-value held in binder `fBinder` (a fn-typed param). Look up the binder's
-  // Value = the callee def-NAME (a VInt put there by a CFnRef arg), unwrap it, then dispatch by name via the
-  // SHARED apply-def-by-name — the same helper CCall uses. An unbound binder / non-VInt / unknown name → None.
-  (match Map.lookup(env, fBinder) with
-    | Option.None(_) => Option.None(unit)
-    | Option.Some(nameV) => match value-int(nameV) with
+  | Core.CVar(b) =>
+    (match Map.lookup(env, b) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(name) => apply-def-by-name(name, args, env, defs, store)
-  )
-  | Core.CCtor(tag, args) => // M2-b-2b USER SUM PAYLOAD ctor: eval the payload args (threading the store L→R — an arg may itself
-  // construct a sum), then store-ALLOC (tag, arg-values) → the Int64 HANDLE, carried as VInt. eval-args
-  // collects Values; values-ints unwraps them to the Int64 payload the store holds (a non-VInt payload
-  // element — none today — declines; storing a String payload is a later S-w1+ decision).
-  (match eval-args(args, 0, env, defs, store) with
-    | Option.None(_) => Option.None(unit)
-    | Option.Some(vs) => let (vals, store1) = vs in
-      match values-ints(vals, 0, [] : List(Int64)) with
-        | Option.None(_) => Option.None(unit)
-        | Option.Some(ints) => let (h, store2) = store-alloc(store1, tag, ints) in
-          Option.Some((Value.VInt(h), store2))
-  )
-  | Core.CMatchSum(scrut, tag, binders, thn, els) => // M2-b-2b sum DECONSTRUCT: eval scrut to a handle, read its store-tag. If it EQUALS `tag`, bind each
-  // payload element to its binder (store-payload h i → binders[i]) and eval `then` under that env; else
-  // eval `else` (fall-through to the next arm). 🔑 a scrutinee that is NOT an allocated handle — e.g. a
-  // NULLARY ctor value (a bare tag Int, M2-a) or any non-sum scalar — has store-tag None: it simply does
-  // NOT match this PAYLOAD-ctor pattern, so take the ELSE arm (NOT a decline). Threads the store. S-w0:
-  // unwrap the scrut Value to the Int64 handle (a non-VInt scrut — none today — declines).
-  (match eval-core-s(scrut, env, defs, store) with
-    | Option.None(_) => Option.None(unit)
-    | Option.Some(hs) => let (hv, store1) = hs in
-      match value-int(hv) with
-        | Option.None(_) => Option.None(unit)
-        | Option.Some(h) => match store-tag(store1, h) with
-          | Option.None(_) => eval-core-s(els, env, defs, store1) // not a payload sum → pattern doesn't match → else
-          | Option.Some(scrutTag) => if scrutTag == tag then
-            eval-core-s(thn, bind-payload(store1, h, binders, 0, env), defs, store1)
-          else
-            eval-core-s(els, env, defs, store1)
-  )
-  | Core.CMatchEnum(scrut, tag, thn, els) => // ii-c2b-2 ENUM-DISC deconstruct (Z1): an all-nullary sum value is a BARE TAG (a CNum, no heap cell) — so
-  // eval the scrutinee to its value and compare it DIRECTLY against `tag` (NOT store-tag, which returns None
-  // for a bare tag). Equal → `then` (no binders — a nullary ctor has no payload), else → `else`. Sound
-  // without a runtime marker: infer gated the scrutinee to TSum-of-the-decl, so the Int IS a ctor tag. S-w0:
-  // unwrap the scrut Value to its Int tag.
-  (match eval-core-s(scrut, env, defs, store) with
-    | Option.None(_) => Option.None(unit)
-    | Option.Some(vs) => let (vv, store1) = vs in
-      match value-int(vv) with
-        | Option.None(_) => Option.None(unit)
-        | Option.Some(v) => if v == tag then
-          eval-core-s(thn, env, defs, store1)
-        else
-          eval-core-s(els, env, defs, store1)
-  )
-  | Core.CProj(operand, index) => // TUPLE PROJECTION `(. t i)`: eval the operand to its SumStore handle (a tuple is CCtor(0, elems)), then
-  // read `store-payload(h, index)` — the i-th element value. infer proved the operand is a tuple and the
-  // index is in-bounds, so the read succeeds; a None (non-handle scalar / out-of-bounds) declines totally.
-  // S-w0: unwrap the operand Value to the Int64 handle; wrap the Int64 payload read back as VInt.
-  match eval-core-s(operand, env, defs, store) with
-    | Option.None(_) => Option.None(unit)
-    | Option.Some(hs) => let (hv, store1) = hs in
-      match value-int(hv) with
-        | Option.None(_) => Option.None(unit)
-        | Option.Some(h) => match store-payload(store1, h, index) with
-          | Option.Some(v) => Option.Some((Value.VInt(v), store1))
+      | Option.Some(v) => Option.Some((v, store))
+    ) // env already holds a Value — pass it through
+  | Core.CBin(op, signed, width, l, r) => // corrected-2b: a NARROW (width<64) ARITH result TRAPS on overflow (→ None) — matching spec §Overflow
+    // + the reference's CDZ0304 (the unqualified +/-/* traps; wrapping is the opt-in .wrapping-* form, not
+    // here). Int64 (width 64) + comparisons (0/1, width 64) never overflow-check. So `(: 100 Int8) +
+    // (: 100 Int8)` = 200, overflows Int8 → None (declines); `(: 100 Int8) + (: 20 Int8)` = 120 fits → Some.
+    // Thread the store L→R (a sub-expr may construct a sum): store → store1 (after l) → store2 (after r).
+    // S-w0: unwrap both operand Values to Int64 for eval-bin (a non-VInt operand — none today — declines);
+    // rewrap the arith result as VInt.
+    (match eval-core-s(l, env, defs, store) with
+      | Option.Some(as1) =>
+        (let (av, store1) = as1 in
+        match eval-core-s(r, env, defs, store1) with
+          | Option.Some(bs2) =>
+            (let (bv, store2) = bs2 in
+            match value-int(av) with
+              | Option.None(_) => Option.None(unit)
+              | Option.Some(a) =>
+                match value-int(bv) with
+                  | Option.None(_) => Option.None(unit)
+                  | Option.Some(b) =>
+                    match eval-bin(op, a, b) with
+                      | Option.Some(v) =>
+                        if width < 64 then
+                          if overflows(v, signed, width) then
+                            Option.None(unit)
+                          else
+                            Option.Some((Value.VInt(v), store2))
+                        else
+                          Option.Some((Value.VInt(v), store2))
+                      | Option.None(_) => Option.None(unit))
+          | Option.None(_) => Option.None(unit))
+      | Option.None(_) => Option.None(unit)
+    )
+  | Core.CLet(binder, valExpr, body) => // non-recursive let: eval the value in the CURRENT env (threading store → store1), bind the Value to the
+    // let's canonical id, eval body under store1.
+    (match eval-core-s(valExpr, env, defs, store) with
+      | Option.Some(vs1) =>
+        let (v, store1) = vs1 in
+        eval-core-s(body, Map.insert(env, binder, v), defs, store1)
+      | Option.None(_) => Option.None(unit)
+    )
+  | Core.CIf(cond, thn, els) => // Bool is 0/1 in Core: a non-zero condition takes the then-branch, zero takes the else. Only the taken
+    // branch is evaluated (lazy). Thread store: cond → store1, then the taken branch under store1. S-w0:
+    // unwrap the cond Value to test its Int (a non-VInt cond — none today — declines).
+    (match eval-core-s(cond, env, defs, store) with
+      | Option.Some(cs1) =>
+        (let (cv, store1) = cs1 in
+        match value-int(cv) with
           | Option.None(_) => Option.None(unit)
+          | Option.Some(c) =>
+            if c == 0 then
+              eval-core-s(els, env, defs, store1)
+            else
+              eval-core-s(thn, env, defs, store1))
+      | Option.None(_) => Option.None(unit)
+    )
+  | Core.CCall(name, args) => // slice-B3: a recursive call is a NON-inlining name reference — dispatched by name via the shared
+    // apply-def-by-name (unknown name / declining arg → None). Recursion terminates on the program's own
+    // base case (a CIf guard), never by fuel. Threads the store through the args + body.
+    apply-def-by-name(name, args, env, defs, store)
+  | Core.CFnRef(name) => // HIGHER-ORDER: a def-name as a first-class fn VALUE. A function value IS its name (top-level defs are
+    // closed — no capture), carried as VInt(name-ordinal); the CFnRefVar site unwraps + dispatches it.
+    Option.Some((Value.VInt(name), store))
+  | Core.CFnRefVar(fBinder, args) => // HIGHER-ORDER apply: call the fn-value held in binder `fBinder` (a fn-typed param). Look up the binder's
+    // Value = the callee def-NAME (a VInt put there by a CFnRef arg), unwrap it, then dispatch by name via the
+    // SHARED apply-def-by-name — the same helper CCall uses. An unbound binder / non-VInt / unknown name → None.
+    (match Map.lookup(env, fBinder) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(nameV) =>
+        match value-int(nameV) with
+          | Option.None(_) => Option.None(unit)
+          | Option.Some(name) => apply-def-by-name(name, args, env, defs, store)
+    )
+  | Core.CCtor(tag, args) => // M2-b-2b USER SUM PAYLOAD ctor: eval the payload args (threading the store L→R — an arg may itself
+    // construct a sum), then store-ALLOC (tag, arg-values) → the Int64 HANDLE, carried as VInt. eval-args
+    // collects Values; values-ints unwraps them to the Int64 payload the store holds (a non-VInt payload
+    // element — none today — declines; storing a String payload is a later S-w1+ decision).
+    (match eval-args(args, 0, env, defs, store) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(vs) =>
+        let (vals, store1) = vs in
+        match values-ints(vals, 0, [] : List(Int64)) with
+          | Option.None(_) => Option.None(unit)
+          | Option.Some(ints) =>
+            let (h, store2) = store-alloc(store1, tag, ints) in
+            Option.Some((Value.VInt(h), store2))
+    )
+  | Core.CMatchSum(scrut, tag, binders, thn, els) => // M2-b-2b sum DECONSTRUCT: eval scrut to a handle, read its store-tag. If it EQUALS `tag`, bind each
+    // payload element to its binder (store-payload h i → binders[i]) and eval `then` under that env; else
+    // eval `else` (fall-through to the next arm). 🔑 a scrutinee that is NOT an allocated handle — e.g. a
+    // NULLARY ctor value (a bare tag Int, M2-a) or any non-sum scalar — has store-tag None: it simply does
+    // NOT match this PAYLOAD-ctor pattern, so take the ELSE arm (NOT a decline). Threads the store. S-w0:
+    // unwrap the scrut Value to the Int64 handle (a non-VInt scrut — none today — declines).
+    (match eval-core-s(scrut, env, defs, store) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(hs) =>
+        let (hv, store1) = hs in
+        match value-int(hv) with
+          | Option.None(_) => Option.None(unit)
+          | Option.Some(h) =>
+            match store-tag(store1, h) with
+              | Option.None(_) => eval-core-s(els, env, defs, store1) // not a payload sum → pattern doesn't match → else
+              | Option.Some(scrutTag) =>
+                if scrutTag == tag then
+                  eval-core-s(thn, bind-payload(store1, h, binders, 0, env), defs, store1)
+                else
+                  eval-core-s(els, env, defs, store1)
+    )
+  | Core.CMatchEnum(scrut, tag, thn, els) => // ii-c2b-2 ENUM-DISC deconstruct (Z1): an all-nullary sum value is a BARE TAG (a CNum, no heap cell) — so
+    // eval the scrutinee to its value and compare it DIRECTLY against `tag` (NOT store-tag, which returns None
+    // for a bare tag). Equal → `then` (no binders — a nullary ctor has no payload), else → `else`. Sound
+    // without a runtime marker: infer gated the scrutinee to TSum-of-the-decl, so the Int IS a ctor tag. S-w0:
+    // unwrap the scrut Value to its Int tag.
+    (match eval-core-s(scrut, env, defs, store) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(vs) =>
+        let (vv, store1) = vs in
+        match value-int(vv) with
+          | Option.None(_) => Option.None(unit)
+          | Option.Some(v) =>
+            if v == tag then
+              eval-core-s(thn, env, defs, store1)
+            else
+              eval-core-s(els, env, defs, store1)
+    )
+  | Core.CProj(operand, index) => // TUPLE PROJECTION `(. t i)`: eval the operand to its SumStore handle (a tuple is CCtor(0, elems)), then
+    // read `store-payload(h, index)` — the i-th element value. infer proved the operand is a tuple and the
+    // index is in-bounds, so the read succeeds; a None (non-handle scalar / out-of-bounds) declines totally.
+    // S-w0: unwrap the operand Value to the Int64 handle; wrap the Int64 payload read back as VInt.
+    match eval-core-s(operand, env, defs, store) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(hs) =>
+        let (hv, store1) = hs in
+        match value-int(hv) with
+          | Option.None(_) => Option.None(unit)
+          | Option.Some(h) =>
+            match store-payload(store1, h, index) with
+              | Option.Some(v) => Option.Some((Value.VInt(v), store1))
+              | Option.None(_) => Option.None(unit)
 
 /// Apply a binary op: 43 +, 45 -, 42 *, 47 /, and the relational ops 60 `<`, 61 `==`, 62 `>`, 63 `<=`,
 /// 64 `>=`, 65 `!=`. Relational ops yield a Bool encoded as 0/1 (Core represents Bool as an Int); each of
@@ -309,10 +331,10 @@ def eval-bin(op: Int64, a: Int64, b: Int64) =
     | 42 => Option.Some(a * b)
     | 47 => if b == 0 then Option.None(unit) else Option.Some(a / b)
     | 37 => // modulo; %0 → None (trap). `Int64.min % -1` is mathematically 0 (no overflow), but the host `%`
-    // FAULTS on it (the same INT_MIN/-1 hardware trap as division) → special-case b == -1 to 0, matching
-    // rcdzc's rule (lower.rs: "MIN % -1 is 0 … but Rust's % panics there — special-case it to 0"). Without
-    // this, `(% (: Int64.min Int64) (: -1 Int64))` wrongly DECLINED where rcdzc returns 0.
-    if b == 0 then Option.None(unit) else if b == -1 then Option.Some(0) else Option.Some(a % b)
+      // FAULTS on it (the same INT_MIN/-1 hardware trap as division) → special-case b == -1 to 0, matching
+      // rcdzc's rule (lower.rs: "MIN % -1 is 0 … but Rust's % panics there — special-case it to 0"). Without
+      // this, `(% (: Int64.min Int64) (: -1 Int64))` wrongly DECLINED where rcdzc returns 0.
+      if b == 0 then Option.None(unit) else if b == -1 then Option.Some(0) else Option.Some(a % b)
     | 60 => Option.Some(if a < b then 1 else 0)
     | 61 => Option.Some(if a == b then 1 else 0)
     | 62 => Option.Some(if b < a then 1 else 0) // a > b  ≡ b < a
@@ -662,10 +684,8 @@ def ev-width64-cbin-never-overflow-checks() =
       Core.CBin(43, true, 64, Core.CNum(100, true, 64), Core.CNum(100, true, 64)),
       Map.empty : Map(Int64, Value)
     ) with
-    | Option.Some(v) => if v == 200 then
-      unit
-    else
-      trap("Int64 100+100 = 200 (no overflow-check at width 64)")
+    | Option.Some(v) =>
+      if v == 200 then unit else trap("Int64 100+100 = 200 (no overflow-check at width 64)")
     | Option.None(_) => trap("a width-64 CBin never overflow-traps")
 
 @test
@@ -755,48 +775,52 @@ def ev-double-negation() =
 def ev-gt() =
   // 3 > 2 → 1 ; 2 > 3 → 0.
   match run([n(3), gt(), n(2)]) with
-    | Option.Some(v) => if v == 1 then
-      match run([n(2), gt(), n(3)]) with
-        | Option.Some(w) => if w == 0 then unit else trap("2>3=0")
-        | Option.None(_) => trap("runs")
-    else
-      trap("3>2=1")
+    | Option.Some(v) =>
+      if v == 1 then
+        match run([n(2), gt(), n(3)]) with
+          | Option.Some(w) => if w == 0 then unit else trap("2>3=0")
+          | Option.None(_) => trap("runs")
+      else
+        trap("3>2=1")
     | Option.None(_) => trap("runs")
 
 @test
 def ev-le() =
   // 2 <= 2 → 1 ; 3 <= 2 → 0.
   match run([n(2), le(), n(2)]) with
-    | Option.Some(v) => if v == 1 then
-      match run([n(3), le(), n(2)]) with
-        | Option.Some(w) => if w == 0 then unit else trap("3<=2=0")
-        | Option.None(_) => trap("runs")
-    else
-      trap("2<=2=1")
+    | Option.Some(v) =>
+      if v == 1 then
+        match run([n(3), le(), n(2)]) with
+          | Option.Some(w) => if w == 0 then unit else trap("3<=2=0")
+          | Option.None(_) => trap("runs")
+      else
+        trap("2<=2=1")
     | Option.None(_) => trap("runs")
 
 @test
 def ev-ge() =
   // 2 >= 3 → 0 ; 3 >= 3 → 1.
   match run([n(2), ge(), n(3)]) with
-    | Option.Some(v) => if v == 0 then
-      match run([n(3), ge(), n(3)]) with
-        | Option.Some(w) => if w == 1 then unit else trap("3>=3=1")
-        | Option.None(_) => trap("runs")
-    else
-      trap("2>=3=0")
+    | Option.Some(v) =>
+      if v == 0 then
+        match run([n(3), ge(), n(3)]) with
+          | Option.Some(w) => if w == 1 then unit else trap("3>=3=1")
+          | Option.None(_) => trap("runs")
+      else
+        trap("2>=3=0")
     | Option.None(_) => trap("runs")
 
 @test
 def ev-ne() =
   // 3 != 4 → 1 ; 3 != 3 → 0.
   match run([n(3), ne(), n(4)]) with
-    | Option.Some(v) => if v == 1 then
-      match run([n(3), ne(), n(3)]) with
-        | Option.Some(w) => if w == 0 then unit else trap("3!=3=0")
-        | Option.None(_) => trap("runs")
-    else
-      trap("3!=4=1")
+    | Option.Some(v) =>
+      if v == 1 then
+        match run([n(3), ne(), n(3)]) with
+          | Option.Some(w) => if w == 0 then unit else trap("3!=3=0")
+          | Option.None(_) => trap("runs")
+      else
+        trap("3!=4=1")
     | Option.None(_) => trap("runs")
 
 @test
@@ -842,12 +866,13 @@ def ev-mod-by-neg-one-is-zero() =
   // panics there — special-case it to 0"). Was wrongly declining (host trap). Test via eval-bin directly:
   // Int64.min % -1 and a plain 7 % -1 both = 0.
   match eval-bin(37, 0 - 9223372036854775807 - 1, -1) with
-    | Option.Some(v) => if v == 0 then
-      match eval-bin(37, 7, -1) with
-        | Option.Some(w) => if w == 0 then unit else trap("7 % -1 = 0")
-        | Option.None(_) => trap("7 % -1 runs")
-    else
-      trap("Int64.min % -1 = 0")
+    | Option.Some(v) =>
+      if v == 0 then
+        match eval-bin(37, 7, -1) with
+          | Option.Some(w) => if w == 0 then unit else trap("7 % -1 = 0")
+          | Option.None(_) => trap("7 % -1 runs")
+      else
+        trap("Int64.min % -1 = 0")
     | Option.None(_) => trap("Int64.min % -1 must be 0 (special-cased), not a decline")
 
 @test
@@ -869,10 +894,8 @@ def ev-nullary-call-evaluates-to-body() =
   let t1d = record-def(t1, 900, bodyId) in
   let (root, tree) = add-node(t1d, Node.NApp(900, -1)) in
   match eval-tree(tree, root) with
-    | Option.Some(v) => if v == 42 then
-      unit
-    else
-      trap("nullary call evaluates to its body value (42)")
+    | Option.Some(v) =>
+      if v == 42 then unit else trap("nullary call evaluates to its body value (42)")
     | Option.None(_) => trap("a nullary call runs end-to-end")
 
 @test
@@ -914,10 +937,8 @@ def ev-nullary-call-chain-inlines-transitively() =
   let t2d = record-def(t2, 901, gBody) in // g (name 901) → body `(f)`
   let (root, tree) = add-node(t2d, Node.NApp(901, -1)) in // root: `(g)`
   match eval-tree(tree, root) with
-    | Option.Some(v) => if v == 42 then
-      unit
-    else
-      trap("(g) where g=(f), f=42 → 42 (transitive inline)")
+    | Option.Some(v) =>
+      if v == 42 then unit else trap("(g) where g=(f), f=42 → 42 (transitive inline)")
     | Option.None(_) => trap("a chain of nullary calls inlines transitively")
 
 @test
@@ -931,9 +952,8 @@ def ev-napp-with-arg-but-no-param-declines() =
   let (root, tree) = add-node(t2, Node.NApp(bodyId, argId)) in
   match eval-tree(tree, root) with
     | Option.None(_) => unit
-    | Option.Some(_) => trap(
-      "a call WITH an arg but NO recorded param declines (over-applied nullary)"
-    )
+    | Option.Some(_) =>
+      trap("a call WITH an arg but NO recorded param declines (over-applied nullary)")
 
 @test
 def ev-param-call-clet() =
@@ -1077,16 +1097,15 @@ def ev-mutual-recursion-ev-od-slice-b3() =
       evod-defs
     ) with
     | Option.None(_) => trap("(ev 4) should run via mutual dispatch")
-    | Option.Some(evv) => match eval-core-d(
-        Core.CCall(301, List.push([], Core.CNum(4, true, 64))),
-        Map.empty : Map(Int64, Value),
-        evod-defs
-      ) with
-      | Option.None(_) => trap("(od 4) should run via mutual dispatch")
-      | Option.Some(odv) => if evv == 1 and odv == 0 then
-        unit
-      else
-        trap("(ev 4)=1 and (od 4)=0 via mutual recursion")
+    | Option.Some(evv) =>
+      match eval-core-d(
+          Core.CCall(301, List.push([], Core.CNum(4, true, 64))),
+          Map.empty : Map(Int64, Value),
+          evod-defs
+        ) with
+        | Option.None(_) => trap("(od 4) should run via mutual dispatch")
+        | Option.Some(odv) =>
+          if evv == 1 and odv == 0 then unit else trap("(ev 4)=1 and (od 4)=0 via mutual recursion")
 
 /// M2-b-2b USER SUM PAYLOAD ctor eval tests (direct-Core, hand-built — proves the CCtor/CMatchSum + SumStore
 /// MECHANISM before the reader/infer/lower wiring, exactly like the slice-B3 def-env tests proved recursion
@@ -1129,10 +1148,8 @@ def ev-cmatchenum-bare-tag-mismatch-takes-else() =
       Core.CMatchEnum(Core.CNum(2, true, 64), 1, Core.CNum(200, true, 64), Core.CNum(300, true, 64)),
       Map.empty : Map(Int64, Value)
     ) with
-    | Option.Some(v) => if v == 300 then
-      unit
-    else
-      trap("CMatchEnum bare-tag 2 != 1 → else arm → 300")
+    | Option.Some(v) =>
+      if v == 300 then unit else trap("CMatchEnum bare-tag 2 != 1 → else arm → 300")
     | Option.None(_) => trap("an enum-disc bare-tag mismatch takes the else arm")
 
 @test
@@ -1188,10 +1205,8 @@ def ev-cmatchsum-nested-arms-second-matches() =
       ),
       Map.empty : Map(Int64, Value)
     ) with
-    | Option.Some(v) => if v == 9 then
-      unit
-    else
-      trap("nested sum arms: (Some 9) → the Some arm → 9")
+    | Option.Some(v) =>
+      if v == 9 then unit else trap("nested sum arms: (Some 9) → the Some arm → 9")
     | Option.None(_) => trap("a nested-arm sum match runs")
 
 @test

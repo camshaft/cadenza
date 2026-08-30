@@ -88,11 +88,12 @@ def di-root-is-int64() =
   // the root of `let x = 2 in x` types to Int64 (TyInt signed width 64).
   let (root, d0) = let-db() in
   match ty-of-db(d0, root, root) with
-    | (_, Option.Some(t)) => if is-int-ty(t) then
-      let (s, w) = int-parts-of(t) in
-      if s then if w == 64 then unit else trap("width 64") else trap("signed")
-    else
-      trap("root has an int type fact")
+    | (_, Option.Some(t)) =>
+      if is-int-ty(t) then
+        let (s, w) = int-parts-of(t) in
+        if s then if w == 64 then unit else trap("width 64") else trap("signed")
+      else
+        trap("root has an int type fact")
     | _ => trap("root has an Int64 type fact")
 
 @test

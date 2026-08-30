@@ -75,9 +75,8 @@ def the-lowered-bracket-render-form-is-non-empty() =
   // the LOWERED output is not SolidR.Empty. (bracket's top node is hole-through = a Difference → the lowered top
   // is SolidR.Difference, a real meshable render node.)
   match lower(bracket(3 / 1, 2 / 1, 1 / 1, 1 / 4)) with
-    | SolidR.Empty => trap(
-      "the lowered bracket render form (what the driver meshes) must NOT be empty"
-    )
+    | SolidR.Empty =>
+      trap("the lowered bracket render form (what the driver meshes) must NOT be empty")
     | _ => unit
 
 export { main }

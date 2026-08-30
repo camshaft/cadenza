@@ -50,12 +50,13 @@ def pc-of(n: Int64) =
 /// signature must be a canonical sorted set for the stack comparison to work. Recursive, annotated params.
 def insert-sorted(xs: List(Int64), x: Int64) = match xs with
   | [] => [x]
-  | [h, .. t] => if x == h then
-    xs
-  else if x < h then
-    List.prepend(xs, x)
-  else
-    List.prepend(insert-sorted(t, x), h)
+  | [h, .. t] =>
+    if x == h then
+      xs
+    else if x < h then
+      List.prepend(xs, x)
+    else
+      List.prepend(insert-sorted(t, x), h)
 
 /// Fold a note list into its sorted, deduped set of root-RELATIVE pitch classes (each note's pitch class
 /// minus the root pitch class, mod 12). Recursive driver threading the accumulating sorted set.
@@ -71,13 +72,15 @@ def signature(notes: List(Int64), root: Pitch) = signature-go(notes, pc-of(note(
 /// Exact equality of two Int64 lists (element-wise). Recursive, annotated. Used to compare a signature to
 /// a known stack — both are sorted deduped pitch-class sets, so `==` on the lists is set equality.
 def list-eq(a: List(Int64), b: List(Int64)) = match a with
-  | [] => (match b with
-    | [] => true
-    | [_, .. _] => false
-  )
-  | [ha, .. ta] => match b with
-    | [] => false
-    | [hb, .. tb] => if ha == hb then list-eq(ta, tb) else false
+  | [] =>
+    (match b with
+      | [] => true
+      | [_, .. _] => false
+    )
+  | [ha, .. ta] =>
+    match b with
+      | [] => false
+      | [hb, .. tb] => if ha == hb then list-eq(ta, tb) else false
 
 // ---- identification ----------------------------------------------------------------------------------
 /// Identify the QUALITY of a set of note numbers, given the intended root. Folds the notes to their
@@ -148,16 +151,19 @@ def identifies-the-four-seventh-chords() =
   // Root-position sevenths off C (60): maj7 [0,4,7,11], dom7 [0,4,7,10], min7 [0,3,7,10], dim7 [0,3,6,9].
   let c = Pitch.Pitch(60) in
   match identify([60, 64, 67, 71], c) with
-    | Quality.MajorSeventh => (match identify([60, 64, 67, 70], c) with
-      | Quality.DominantSeventh => (match identify([60, 63, 67, 70], c) with
-        | Quality.MinorSeventh => (match identify([60, 63, 66, 69], c) with
-          | Quality.DiminishedSeventh => unit
-          | _ => trap("dim7")
-        )
-        | _ => trap("min7")
+    | Quality.MajorSeventh =>
+      (match identify([60, 64, 67, 70], c) with
+        | Quality.DominantSeventh =>
+          (match identify([60, 63, 67, 70], c) with
+            | Quality.MinorSeventh =>
+              (match identify([60, 63, 66, 69], c) with
+                | Quality.DiminishedSeventh => unit
+                | _ => trap("dim7")
+              )
+            | _ => trap("min7")
+          )
+        | _ => trap("dom7")
       )
-      | _ => trap("dom7")
-    )
     | _ => trap("maj7")
 
 @test
@@ -165,10 +171,11 @@ def distinguishes-diminished-and-augmented-triads() =
   // dim triad [0,3,6] vs aug triad [0,4,8] — the two symmetric triads must not be confused.
   let c = Pitch.Pitch(60) in
   match identify([60, 63, 66], c) with
-    | Quality.DiminishedTriad => (match identify([60, 64, 68], c) with
-      | Quality.AugmentedTriad => unit
-      | _ => trap("aug triad")
-    )
+    | Quality.DiminishedTriad =>
+      (match identify([60, 64, 68], c) with
+        | Quality.AugmentedTriad => unit
+        | _ => trap("aug triad")
+      )
     | _ => trap("dim triad")
 
 @test

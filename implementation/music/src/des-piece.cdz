@@ -69,7 +69,8 @@ def tick-instant(tick: Int64) =
 /// `run-sim` (effects are intra-component; see the header).
 def play-task-go(evs: List(MidiEvent)) = match evs with
   | [] => Sim.now()
-  | [e, .. t] => let _slept = Sim.sleep(tick-instant(ev-tick(e))) in
+  | [e, .. t] =>
+    let _slept = Sim.sleep(tick-instant(ev-tick(e))) in
     play-task-go(t)
 
 /// Play a piece (a list of `Note`s) over the Sim clock: schedule it to paired on/off events, sort into
@@ -83,7 +84,8 @@ def play-piece(notes: List(Note)) =
 /// returns the task's own type. Recursive, annotated; performs `Sim.sleep` so it runs inside `run-sim`.
 def play-events-go(evs: List(MidiEvent)) = match evs with
   | [] => []
-  | [e, .. t] => let _slept = Sim.sleep(tick-instant(ev-tick(e))) in
+  | [e, .. t] =>
+    let _slept = Sim.sleep(tick-instant(ev-tick(e))) in
     List.prepend(play-events-go(t), e)
 
 /// Play a piece and return the PLAYED event stream (tick-ordered on/off `MidiEvent`s) — the WebMIDI-driver
@@ -182,10 +184,11 @@ def play-events-returns-the-played-stream-in-tick-order() =
   if List.len(stream) == 2 then
     if balanced(stream) then
       match stream with
-        | [first, second] => if ev-tick(first) == 0 then
-          if ev-tick(second) == 960 then unit else trap("off at 960")
-        else
-          trap("on at 0")
+        | [first, second] =>
+          if ev-tick(first) == 0 then
+            if ev-tick(second) == 960 then unit else trap("off at 960")
+          else
+            trap("on at 0")
         | _ => trap("two events")
     else
       trap("stream is balanced")

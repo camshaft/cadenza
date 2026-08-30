@@ -56,13 +56,10 @@ def ss-mixed-payload-and-nullary-arms-compose() =
   match run-src(
       "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 8) ((Some x) (+ x 1)) (None 0) (_ 5))) (export main))"
     ) with
-    | Option.Some(v) => if v == 9 then
-      unit
-    else
-      trap("mixed Some+None arms: (Some 8) → Some arm x+1 → 9")
-    | Option.None(_) => trap(
-      "a match with both a payload arm and a nullary arm over a mixed sum runs"
-    )
+    | Option.Some(v) =>
+      if v == 9 then unit else trap("mixed Some+None arms: (Some 8) → Some arm x+1 → 9")
+    | Option.None(_) =>
+      trap("a match with both a payload arm and a nullary arm over a mixed sum runs")
 
 @test
 def ss-mixed-nullary-arm-hits-on-none() =
@@ -95,9 +92,8 @@ def ss-ctor-pattern-unknown-ctor-declines-cleanly() =
   match run-src(
       "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 5) ((Nope x) x) (_ 0))) (export main))"
     ) with
-    | Option.Some(_) => trap(
-      "an unknown-ctor pattern arm must DECLINE (None), never fabricate a value"
-    )
+    | Option.Some(_) =>
+      trap("an unknown-ctor pattern arm must DECLINE (None), never fabricate a value")
     | Option.None(_) => unit
 
 @test
@@ -107,9 +103,8 @@ def ss-ctor-pattern-no-binder-declines-cleanly() =
   match run-src(
       "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 5) ((Some) 1) (_ 0))) (export main))"
     ) with
-    | Option.Some(_) => trap(
-      "a no-binder ctor pattern arm must DECLINE (None), never bind an empty name"
-    )
+    | Option.Some(_) =>
+      trap("a no-binder ctor pattern arm must DECLINE (None), never bind an empty name")
     | Option.None(_) => unit
 
 // ---- payload ctor-pattern match ARMS must JOIN (an infer soundness fix) ----
@@ -123,9 +118,8 @@ def ss-payload-pattern-arm-type-mismatch-declines() =
   match run-src(
       "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 5) ((Some x) x) (_ true))) (export main))"
     ) with
-    | Option.Some(_) => trap(
-      "a payload-pattern match with mismatched arm types (Int body / Bool else) must DECLINE"
-    )
+    | Option.Some(_) =>
+      trap("a payload-pattern match with mismatched arm types (Int body / Bool else) must DECLINE")
     | Option.None(_) => unit
 
 @test
@@ -153,9 +147,10 @@ def ss-multifield-payload-ctor-bare-constructs() =
   // result-boundary check. So (P 3 4) is in-subset and runs (opaque handle value; a match arm reads it back).
   match run-src("(do (type Pair (P Int64 Int64)) (def (main) (P 3 4)) (export main))") with
     | Option.Some(_) => unit
-    | Option.None(_) => trap(
-      "a 2-field payload ctor (P 3 4) now constructs + runs (handle), like single-field (Some 5)"
-    )
+    | Option.None(_) =>
+      trap(
+        "a 2-field payload ctor (P 3 4) now constructs + runs (handle), like single-field (Some 5)"
+      )
 
 @test
 def ss-multifield-payload-ctor-const-both-binders() =
@@ -164,13 +159,10 @@ def ss-multifield-payload-ctor-const-both-binders() =
   match run-src(
       "(do (type Pair (P Int64 Int64)) (def (main) (match (P 3 4) ((P x y) (+ x y)) (_ 0))) (export main))"
     ) with
-    | Option.Some(v) => if v == 7 then
-      unit
-    else
-      trap("(P 3 4) matched ((P x y) (+ x y)) must bind x=3,y=4 → 7")
-    | Option.None(_) => trap(
-      "a 2-field payload ctor with a 2-binder pattern must RUN (behavior slice), not decline"
-    )
+    | Option.Some(v) =>
+      if v == 7 then unit else trap("(P 3 4) matched ((P x y) (+ x y)) must bind x=3,y=4 → 7")
+    | Option.None(_) =>
+      trap("a 2-field payload ctor with a 2-binder pattern must RUN (behavior slice), not decline")
 
 @test
 def ss-multifield-payload-ctor-runtime-boxed() =
@@ -183,13 +175,17 @@ def ss-multifield-payload-ctor-runtime-boxed() =
   match run-src(
       "(do (type Pair (P Int64 Int64)) (def (go n) (match (if (> n 0) (P 3 4) (P 10 20)) ((P x y) (+ x y)) (_ 0))) (def (main) (go 1)) (export main))"
     ) with
-    | Option.Some(v) => if v == 7 then
-      unit
-    else
-      trap("runtime-boxed (P 3 4) via (if n>0) → ((P x y) (+ x y)) must round-trip both fields → 7")
-    | Option.None(_) => trap(
-      "a runtime-boxed 2-field payload multi-binder match must RUN → 7 (compiled gate verifies the store/extract)"
-    )
+    | Option.Some(v) =>
+      if v == 7 then
+        unit
+      else
+        trap(
+          "runtime-boxed (P 3 4) via (if n>0) → ((P x y) (+ x y)) must round-trip both fields → 7"
+        )
+    | Option.None(_) =>
+      trap(
+        "a runtime-boxed 2-field payload multi-binder match must RUN → 7 (compiled gate verifies the store/extract)"
+      )
 
 @test
 def ss-wildcard-binder-ignores-field-const() =
@@ -198,15 +194,15 @@ def ss-wildcard-binder-ignores-field-const() =
   match run-src(
       "(do (type Pair (P Int64 Int64)) (def (main) (match (P 3 4) ((P _ y) y) (_ 0))) (export main))"
     ) with
-    | Option.Some(v) => if v == 4 then
-      unit
-    else
-      trap(
-        "((P _ y) y): `_` ignores field 0, y binds field 1 = 4 (got 3 = _ wrongly shifted the slot)"
-      )
-    | Option.None(_) => trap(
-      "a wildcard-binder pattern ((P _ y) y) must RUN (bind-elision), not decline"
-    )
+    | Option.Some(v) =>
+      if v == 4 then
+        unit
+      else
+        trap(
+          "((P _ y) y): `_` ignores field 0, y binds field 1 = 4 (got 3 = _ wrongly shifted the slot)"
+        )
+    | Option.None(_) =>
+      trap("a wildcard-binder pattern ((P _ y) y) must RUN (bind-elision), not decline")
 
 @test
 def ss-wildcard-both-fields-no-collision() =
@@ -215,10 +211,11 @@ def ss-wildcard-both-fields-no-collision() =
   match run-src(
       "(do (type Pair (P Int64 Int64)) (def (main) (match (P 3 4) ((P _ _) 9) (_ 0))) (export main))"
     ) with
-    | Option.Some(v) => if v == 9 then
-      unit
-    else
-      trap("((P _ _) 9): both fields ignored → 9 (two `_` must not collide)")
+    | Option.Some(v) =>
+      if v == 9 then
+        unit
+      else
+        trap("((P _ _) 9): both fields ignored → 9 (two `_` must not collide)")
     | Option.None(_) => trap("a two-wildcard pattern ((P _ _) 9) must RUN, not decline/collide")
 
 @test
@@ -233,15 +230,17 @@ def ss-wildcard-binder-runtime-boxed() =
   match run-src(
       "(do (type Pair (P Int64 Int64)) (def (go n) (match (if (> n 0) (P 3 4) (P 10 20)) ((P _ y) y) (_ 0))) (def (main) (go 1)) (export main))"
     ) with
-    | Option.Some(v) => if v == 4 then
-      unit
-    else
+    | Option.Some(v) =>
+      if v == 4 then
+        unit
+      else
+        trap(
+          "runtime-boxed ((P _ y) y) via go(1): `_` ignores field 0, y binds field 1 = 4 (got 3 = slot not advanced)"
+        )
+    | Option.None(_) =>
       trap(
-        "runtime-boxed ((P _ y) y) via go(1): `_` ignores field 0, y binds field 1 = 4 (got 3 = slot not advanced)"
+        "a runtime-boxed wildcard-binder match must RUN → 4 (compiled gate verifies slot-advance)"
       )
-    | Option.None(_) => trap(
-      "a runtime-boxed wildcard-binder match must RUN → 4 (compiled gate verifies slot-advance)"
-    )
 
 // ---- NESTED single-field payloads round-trip: a payload whose value is ITSELF a sum handle ----
 // (Some (Some 5)) — the outer ctor's payload IS the inner ctor's store handle. Constructing nests one handle
@@ -253,13 +252,15 @@ def ss-nested-payload-some-of-some-roundtrips() =
   match run-src(
       "(do (type Opt (Some Int64) (None)) (def (main) (match (Some (Some 5)) ((Some y) (match y ((Some x) x) (_ 0))) (_ 0))) (export main))"
     ) with
-    | Option.Some(v) => if v == 5 then
-      unit
-    else
-      trap("nested (Some (Some 5)) must round-trip to 5, not a fabricated value")
-    | Option.None(_) => trap(
-      "nested (Some (Some 5)) must round-trip (a single-field-payload handle nested in another)"
-    )
+    | Option.Some(v) =>
+      if v == 5 then
+        unit
+      else
+        trap("nested (Some (Some 5)) must round-trip to 5, not a fabricated value")
+    | Option.None(_) =>
+      trap(
+        "nested (Some (Some 5)) must round-trip (a single-field-payload handle nested in another)"
+      )
 
 // ---- ii-c2b-2 CROSS-TYPE ctor-pattern REJECT (soundness) ----
 // Tags restart at 0 per sum decl, so a pattern ctor from a DIFFERENT sum (e.g. MkB : B) tag-collides with a
@@ -273,9 +274,10 @@ def ss-crosstype-payload-pattern-rejects() =
   match run-src(
       "(do (type A (MkA Int64)) (type B (MkB Int64)) (def (main) (match (MkA 5) ((MkB x) x) (_ 0))) (export main))"
     ) with
-    | Option.Some(_) => trap(
-      "a cross-type ctor pattern (MkB over an A scrutinee) must REJECT, never match a wrong-sum value"
-    )
+    | Option.Some(_) =>
+      trap(
+        "a cross-type ctor pattern (MkB over an A scrutinee) must REJECT, never match a wrong-sum value"
+      )
     | Option.None(_) => unit
 
 @test
@@ -287,9 +289,10 @@ def ss-crosstype-nullary-pattern-rejects() =
   match run-src(
       "(do (type Color (Red) (Green) (Blue)) (type Bit (Off) (On)) (def (main) (match (Green) (On 1) (_ 0))) (export main))"
     ) with
-    | Option.Some(_) => trap(
-      "a cross-type nullary pattern (On:Bit over a Color scrutinee) must REJECT, not tag-match"
-    )
+    | Option.Some(_) =>
+      trap(
+        "a cross-type nullary pattern (On:Bit over a Color scrutinee) must REJECT, not tag-match"
+      )
     | Option.None(_) => unit
 
 @test
@@ -299,13 +302,10 @@ def ss-sametype-payload-pattern-still-matches() =
   match run-src(
       "(do (type A (MkA Int64)) (type B (MkB Int64)) (def (main) (match (MkA 5) ((MkA x) x) (_ 0))) (export main))"
     ) with
-    | Option.Some(v) => if v == 5 then
-      unit
-    else
-      trap("same-type pattern (MkA over an A scrutinee) → 5")
-    | Option.None(_) => trap(
-      "a same-type payload pattern must still match (reject only on decl mismatch)"
-    )
+    | Option.Some(v) =>
+      if v == 5 then unit else trap("same-type pattern (MkA over an A scrutinee) → 5")
+    | Option.None(_) =>
+      trap("a same-type payload pattern must still match (reject only on decl mismatch)")
 
 @test
 def ss-terr-scrutinee-taints-ctor-match() =
@@ -315,9 +315,10 @@ def ss-terr-scrutinee-taints-ctor-match() =
   match run-src(
       "(do (type A (MkA Int64)) (def (main) (match (+ true 5) ((MkA x) x) (_ 0))) (export main))"
     ) with
-    | Option.Some(_) => trap(
-      "a TErr scrutinee (ill-typed (+ true 5)) must taint the match → decline, not be masked by the arms"
-    )
+    | Option.Some(_) =>
+      trap(
+        "a TErr scrutinee (ill-typed (+ true 5)) must taint the match → decline, not be masked by the arms"
+      )
     | Option.None(_) => unit
 
 // ---- BOOL payload binder: RUNS as a cond (value path wired); arith on it still declines ----
@@ -340,9 +341,8 @@ def ss-bool-payload-binder-runs-as-cond() =
       "(do (type BoxB (BB Bool)) (def (main) (match (BB true) ((BB b) (if b 1 0)) (_ 9))) (export main))"
     ) with
     | Option.Some(v) => if v == 1 then unit else trap("(BB true) payload b=true → (if b 1 0) → 1")
-    | Option.None(_) => trap(
-      "a Bool payload binder used as a cond must RUN (b:TBool → if cond → 1), not decline"
-    )
+    | Option.None(_) =>
+      trap("a Bool payload binder used as a cond must RUN (b:TBool → if cond → 1), not decline")
 
 @test
 def ss-bool-payload-binder-runtime-boxed-multivariant() =
@@ -352,10 +352,8 @@ def ss-bool-payload-binder-runtime-boxed-multivariant() =
   match run-src(
       "(do (type BoxB (BB Bool) (BI Int64)) (def (go n) (match (BB (> n 0)) ((BB b) (if b 1 0)) ((BI x) x) (_ 9))) (def (main) (go 5)) (export main))"
     ) with
-    | Option.Some(v) => if v == 1 then
-      unit
-    else
-      trap("runtime-boxed (BB (> 5 0))=true → (if b 1 0) → 1")
+    | Option.Some(v) =>
+      if v == 1 then unit else trap("runtime-boxed (BB (> 5 0))=true → (if b 1 0) → 1")
     | Option.None(_) => trap("runtime-boxed Bool payload cond must RUN → 1, not decline")
 
 @test
@@ -367,9 +365,8 @@ def ss-bool-payload-binder-used-as-int-declines() =
   match run-src(
       "(do (type BoxB (BB Bool)) (def (main) (match (BB true) ((BB b) (+ b 1)) (_ 9))) (export main))"
     ) with
-    | Option.Some(_) => trap(
-      "a Bool payload binder used as int must DECLINE (TBool operand to arith → TErr)"
-    )
+    | Option.Some(_) =>
+      trap("a Bool payload binder used as int must DECLINE (TBool operand to arith → TErr)")
     | Option.None(_) => unit
 
 @test
@@ -391,13 +388,12 @@ def ss-exhaustive-payload-last-arm-runs() =
   match run-src(
       "(do (type Opt (Some Int64) (None)) (def (main) (match (None) (None 0) ((Some x) x))) (export main))"
     ) with
-    | Option.Some(v) => if v == 0 then
-      unit
-    else
-      trap("exhaustive payload-last-arm match (None) → 0")
-    | Option.None(_) => trap(
-      "an EXHAUSTIVE no-wildcard sum match with a PAYLOAD last arm must run (memoized resolve)"
-    )
+    | Option.Some(v) =>
+      if v == 0 then unit else trap("exhaustive payload-last-arm match (None) → 0")
+    | Option.None(_) =>
+      trap(
+        "an EXHAUSTIVE no-wildcard sum match with a PAYLOAD last arm must run (memoized resolve)"
+      )
 
 @test
 def ss-exhaustive-payload-last-arm-binds-payload() =
@@ -407,10 +403,8 @@ def ss-exhaustive-payload-last-arm-binds-payload() =
   match run-src(
       "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 5) (None 0) ((Some x) x))) (export main))"
     ) with
-    | Option.Some(v) => if v == 5 then
-      unit
-    else
-      trap("exhaustive payload-last-arm match (Some 5) → 5")
+    | Option.Some(v) =>
+      if v == 5 then unit else trap("exhaustive payload-last-arm match (Some 5) → 5")
     | Option.None(_) => trap("exhaustive payload-last-arm, payload-ctor scrutinee, must bind + run")
 
 @test
@@ -420,8 +414,6 @@ def ss-exhaustive-single-payload-ctor-runs() =
   match run-src(
       "(do (type P (Pt Int64 Int64)) (def (main) (match (Pt 3 4) ((Pt x y) (+ x y)))) (export main))"
     ) with
-    | Option.Some(v) => if v == 7 then
-      unit
-    else
-      trap("exhaustive single-payload-ctor match (Pt 3 4) → 7")
+    | Option.Some(v) =>
+      if v == 7 then unit else trap("exhaustive single-payload-ctor match (Pt 3 4) → 7")
     | Option.None(_) => trap("an exhaustive single-payload-ctor no-wildcard match must run")

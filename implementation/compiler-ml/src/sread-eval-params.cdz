@@ -42,9 +42,8 @@ def se-narrow-param-out-of-range-declines() =
   // disagreeing with rcdzc). Now infer's param-fit-ok fails → TErr → None. Differential-verified vs rcdzc CDZ0302.
   match run-src("(do (def (f (: a Int8)) a) (def (main) (f 200)) (export main))") with
     | Option.None(_) => unit
-    | Option.Some(_) => trap(
-      "(f 200) to an Int8 param MUST decline (200 out of Int8 range — CDZ0302)"
-    )
+    | Option.Some(_) =>
+      trap("(f 200) to an Int8 param MUST decline (200 out of Int8 range — CDZ0302)")
 
 @test
 def se-narrow-param-in-range-runs() =
@@ -65,9 +64,8 @@ def se-narrow-body-arith-overflow-declines() =
   // wrong VALUE). Differential-verified vs rcdzc CDZ0304 (a compile-provable narrow overflow = ConstTrap).
   match run-src("(do (def (f (: a Int8)) (+ a a)) (def (main) (f 100)) (export main))") with
     | Option.None(_) => unit
-    | Option.Some(_) => trap(
-      "(+ a a) on an Int8 param fed 100 = 200 OVERFLOWS Int8 → must decline (CDZ0304)"
-    )
+    | Option.Some(_) =>
+      trap("(+ a a) on an Int8 param fed 100 = 200 OVERFLOWS Int8 → must decline (CDZ0304)")
 
 @test
 def se-narrow-body-arith-in-range-runs() =
@@ -83,10 +81,8 @@ def se-wide-body-arith-no-false-overflow() =
   // 100)` → 200 (width 64 never overflow-checks — the CDZ0304 trap is narrow-only). Pins the enforcement
   // doesn't leak into the wide default (the param-bind-type width-64 path stays plain Int64 arith).
   match run-src("(do (def (f (: n Int64)) (+ n n)) (def (main) (f 100)) (export main))") with
-    | Option.Some(v) => if v == 200 then
-      unit
-    else
-      trap("(f 100) Int64 → (+ n n) = 200 (no overflow at width 64)")
+    | Option.Some(v) =>
+      if v == 200 then unit else trap("(f 100) Int64 → (+ n n) = 200 (no overflow at width 64)")
     | Option.None(_) => trap("a wide (Int64) body arith must not false-decline")
 
 @test
@@ -134,10 +130,8 @@ def se-corpus-underscore-param-call() =
   // call wiring — the two compose for the real corpus shape. Differential-verified vs rcdzc. This is the
   // headline conformance case for user functions with an argument, byte-for-byte from the corpus.
   match run-src("(do (def (f _1) (+ _1 1)) (def (main) (f 41)) (export main))") with
-    | Option.Some(v) => if v == 42 then
-      unit
-    else
-      trap("corpus (def (f _1) (+ _1 1)) called (f 41) → 42")
+    | Option.Some(v) =>
+      if v == 42 then unit else trap("corpus (def (f _1) (+ _1 1)) called (f 41) → 42")
     | Option.None(_) => trap("the corpus _1-param function call runs end-to-end")
 
 @test

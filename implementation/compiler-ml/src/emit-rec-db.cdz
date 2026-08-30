@@ -52,19 +52,20 @@ import {
 def can-emit-d(c: Core, defidx: Map(Int64, Int64)) = match c with
   | Core.CNum(_, _, _) => true
   | Core.CVar(_) => true
-  | Core.CBin(op, _, _, l, r) => (is-arith-op(op) or is-cmp-op(op)) and can-emit-d(l, defidx)
-    and can-emit-d(r, defidx)
+  | Core.CBin(op, _, _, l, r) =>
+    (is-arith-op(op) or is-cmp-op(op)) and can-emit-d(l, defidx) and can-emit-d(r, defidx)
   | Core.CLet(_, v, body) => can-emit-d(v, defidx) and can-emit-d(body, defidx)
-  | Core.CIf(cond, thn, els) => can-emit-d(cond, defidx) and can-emit-d(thn, defidx)
-    and can-emit-d(els, defidx)
-  | Core.CCall(name, args) => (match Map.lookup(defidx, name) with
-    | Option.Some(_) => can-call-args(args, 0, defidx)
-    | Option.None(_) => false
-  )
+  | Core.CIf(cond, thn, els) =>
+    can-emit-d(cond, defidx) and can-emit-d(thn, defidx) and can-emit-d(els, defidx)
+  | Core.CCall(name, args) =>
+    (match Map.lookup(defidx, name) with
+      | Option.Some(_) => can-call-args(args, 0, defidx)
+      | Option.None(_) => false
+    )
   // W-enum: an ENUM-DISC bare-tag match emits (emit-db's emit-instrs-d handles CMatchEnum as a tag-equality
   // if/else). Emittable iff scrutinee + both branches are (nested N-arm enum match = nested CMatchEnum in els).
-  | Core.CMatchEnum(scrut, _, thn, els) => can-emit-d(scrut, defidx)
-    and (can-emit-d(thn, defidx) and can-emit-d(els, defidx))
+  | Core.CMatchEnum(scrut, _, thn, els) =>
+    can-emit-d(scrut, defidx) and (can-emit-d(thn, defidx) and can-emit-d(els, defidx))
   // W-compound: a tuple/record CCtor (bump-alloc heap block) + CProj (heap load) emit in the recursive path too
   // (emit-db's emit-instrs-d handles both; emit-recursive-module adds the memory + bump-ptr global; each body
   // gets its i32 scratch via body-of-scratch). CCtor args must be FLAT + emittable (nested clobbers the scratch).
@@ -72,17 +73,18 @@ def can-emit-d(c: Core, defidx: Map(Int64, Int64)) = match c with
   | Core.CProj(operand, _) => can-emit-d(operand, defidx)
   // W-compound: a payload-sum deconstruct emits (emit-instrs-d handles CMatchSum: load tag + bind payloads off
   // the heap). Emittable iff scrutinee + both branches are (nested N-arm match = nested CMatchSum in else).
-  | Core.CMatchSum(scrut, _, _, thn, els) => can-emit-d(scrut, defidx)
-    and (can-emit-d(thn, defidx) and can-emit-d(els, defidx))
+  | Core.CMatchSum(scrut, _, _, thn, els) =>
+    can-emit-d(scrut, defidx) and (can-emit-d(thn, defidx) and can-emit-d(els, defidx))
   // W-HO: a def-name-as-fn-value `CFnRef(name)` emits `i64.const funcidx` (funcidx from defidx) — emittable iff
   // the name is a known recursive def (it MUST be in the table for call_indirect). A `CFnRefVar(fBinder, args)`
   // apply emits `<args> ; local.get fBinder ; i32.wrap_i64 ; call_indirect <typeidx> 0` — emittable iff the args
   // are (fBinder is a local holding a funcidx, always fine). emit-recursive-module adds the table+elem sections
   // + the HO-arity functypes when any body carries a CFnRef/CFnRefVar.
-  | Core.CFnRef(name) => (match Map.lookup(defidx, name) with
-    | Option.Some(_) => true
-    | Option.None(_) => false
-  )
+  | Core.CFnRef(name) =>
+    (match Map.lookup(defidx, name) with
+      | Option.Some(_) => true
+      | Option.None(_) => false
+    )
   | Core.CFnRefVar(_, args) => can-call-args(args, 0, defidx)
 
 /// W-compound (recursive path): are a CCtor's payload args each EMITTABLE (can-emit-d) and FLAT (no nested
@@ -94,10 +96,8 @@ def ctor-args-emittable-d(args: List(Core), i: Int64, defidx: Map(Int64, Int64))
   else
     match List.at(args, i) with
       // NESTED compounds now emit (depth-distinct scratch in emit-instrs-d) — a CCtor arg no longer clobbers.
-      | Option.Some(a) => if can-emit-d(a, defidx) then
-        ctor-args-emittable-d(args, i + 1, defidx)
-      else
-        false
+      | Option.Some(a) =>
+        if can-emit-d(a, defidx) then ctor-args-emittable-d(args, i + 1, defidx) else false
       | Option.None(_) => false
 
 /// Are all a CCall's arg terms in the emit subset (under `defidx`)? Index recursion.
@@ -106,10 +106,8 @@ def can-call-args(args: List(Core), i: Int64, defidx: Map(Int64, Int64)) =
     true
   else
     match List.at(args, i) with
-      | Option.Some(a) => if can-emit-d(a, defidx) then
-        can-call-args(args, i + 1, defidx)
-      else
-        false
+      | Option.Some(a) =>
+        if can-emit-d(a, defidx) then can-call-args(args, i + 1, defidx) else false
       | Option.None(_) => false
 
 // in-bounds i so unreachable; but for an emit-subset predicate a missing arg = NOT emittable (decline), never an optimistic pass
@@ -126,7 +124,8 @@ def all-defs-emittable(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i:
     true
   else
     match List.at(entries, i) with
-      | Option.Some(e) => let (_, pb) = e in
+      | Option.Some(e) =>
+        let (_, pb) = e in
         let (_, body) = pb in
         if can-emit-d(body, fmap) then all-defs-emittable(entries, i + 1, fmap) else false
       | Option.None(_) => false
@@ -144,7 +143,8 @@ def recursive-types-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i:
     acc
   else
     match List.at(entries, i) with
-      | Option.Some(e) => let (_, pb) = e in
+      | Option.Some(e) =>
+        let (_, pb) = e in
         let (params, _) = pb in
         recursive-types-go(entries, i + 1, List.push(acc, functype-bytes(List.len(params))))
       | Option.None(_) => acc
@@ -168,7 +168,8 @@ def recursive-bodies-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i
     acc
   else
     match List.at(entries, i) with
-      | Option.Some(e) => let (_, pb) = e in
+      | Option.Some(e) =>
+        let (_, pb) = e in
         let (params, body) = pb in
         recursive-bodies-go(
           entries,
@@ -198,7 +199,8 @@ def entries-to-defs-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i:
     acc
   else
     match List.at(entries, i) with
-      | Option.Some(e) => let (name, pb) = e in
+      | Option.Some(e) =>
+        let (name, pb) = e in
         entries-to-defs-go(entries, i + 1, Map.insert(acc, name, pb))
       | Option.None(_) => acc
 
@@ -269,7 +271,8 @@ def any-body-has-ctor-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), 
     false
   else
     match List.at(entries, i) with
-      | Option.Some(e) => let (_, pb) = e in
+      | Option.Some(e) =>
+        let (_, pb) = e in
         let (_, body) = pb in
         if has-ctor(body) then true else any-body-has-ctor-go(entries, i + 1)
       | Option.None(_) => false
@@ -284,7 +287,8 @@ def any-body-has-fnref-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))),
     false
   else
     match List.at(entries, i) with
-      | Option.Some(e) => let (_, pb) = e in
+      | Option.Some(e) =>
+        let (_, pb) = e in
         let (_, body) = pb in
         if has-fnref(body) then true else any-body-has-fnref-go(entries, i + 1)
       | Option.None(_) => false
@@ -348,13 +352,14 @@ def emit-rec-src(s: String) =
 def emit-any-src-bytes(s: String) =
   let (root, tree) = read-source(s) in
   match lower-tree(tree, root) with
-    | Option.Some(core) => (if is-def-env-empty(lower-def-env(tree)) then
-      emit-src-bytes(s) // no recursive defs → emit-db single-main (imported), byte-identical
-    else
-      match emit-recursive-module(core, tree) with
-        // recursive → the multi-fn assembler
-        | Option.Some(b) => Option.Some(bytes-to-list(b))
-        | Option.None(_) => Option.None(unit))
+    | Option.Some(core) =>
+      (if is-def-env-empty(lower-def-env(tree)) then
+        emit-src-bytes(s) // no recursive defs → emit-db single-main (imported), byte-identical
+      else
+        match emit-recursive-module(core, tree) with
+          // recursive → the multi-fn assembler
+          | Option.Some(b) => Option.Some(bytes-to-list(b))
+          | Option.None(_) => Option.None(unit))
     | Option.None(_) => Option.None(unit)
 
 // ill-typed → declined
@@ -459,16 +464,18 @@ def er-recursive-types-puts-main-last() =
   let types = recursive-types(entries) in
   match List.at(types, List.len(types) - 1) with
     // the LAST functype must be main's (nullary, 4 bytes)
-    | Option.Some(lastT) => if Bytes.len(lastT) == 4 then
-      match List.at(types, 0) with
-        // index 0 must be the 1-param def's (5 bytes), NOT main's
-        | Option.Some(firstT) => if Bytes.len(firstT) == 5 then
-          unit
-        else
-          trap("typeidx 0 is the 1-param def functype (5 bytes), not main")
-        | Option.None(_) => trap("recursive-types has a first entry")
-    else
-      trap("LAST functype is nullary main (functype-bytes(0), 4 bytes)")
+    | Option.Some(lastT) =>
+      if Bytes.len(lastT) == 4 then
+        match List.at(types, 0) with
+          // index 0 must be the 1-param def's (5 bytes), NOT main's
+          | Option.Some(firstT) =>
+            if Bytes.len(firstT) == 5 then
+              unit
+            else
+              trap("typeidx 0 is the 1-param def functype (5 bytes), not main")
+          | Option.None(_) => trap("recursive-types has a first entry")
+      else
+        trap("LAST functype is nullary main (functype-bytes(0), 4 bytes)")
     | Option.None(_) => trap("recursive-types is non-empty")
 
 @test
@@ -487,16 +494,18 @@ def er-recursive-bodies-puts-main-last() =
     // 1 def body + main body
     match List.at(bodies, List.len(bodies) - 1) with
       // LAST body must be main's (nullary CNum 7 → 4 bytes: 00 42 07 0b)
-      | Option.Some(lastB) => if Bytes.len(lastB) == 4 then
-        match List.at(bodies, 0) with
-          // index 0 is the def's arith body (7 bytes), NOT main's
-          | Option.Some(firstB) => if Bytes.len(firstB) == 7 then
-            unit
-          else
-            trap("funcidx 0 is the def's arith body (7 bytes), not main")
-          | Option.None(_) => trap("recursive-bodies has a first entry")
-      else
-        trap("LAST body is nullary main (CNum 7 body, 4 bytes)")
+      | Option.Some(lastB) =>
+        if Bytes.len(lastB) == 4 then
+          match List.at(bodies, 0) with
+            // index 0 is the def's arith body (7 bytes), NOT main's
+            | Option.Some(firstB) =>
+              if Bytes.len(firstB) == 7 then
+                unit
+              else
+                trap("funcidx 0 is the def's arith body (7 bytes), not main")
+            | Option.None(_) => trap("recursive-bodies has a first entry")
+        else
+          trap("LAST body is nullary main (CNum 7 body, 4 bytes)")
       | Option.None(_) => trap("recursive-bodies is non-empty")
   else
     trap("recursive-bodies = 1 def + main = 2 bodies")
