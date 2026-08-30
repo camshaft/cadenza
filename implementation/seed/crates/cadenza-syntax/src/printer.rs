@@ -2089,7 +2089,14 @@ impl<'a> Printer<'a> {
         // Each operation on its own line, led by `| ` (always, including the first) — symmetric with a
         // sum type's `|`-led variants. The `|` is the surface separator between the operation
         // signatures, never a node in the tree.
-        for &op in ops {
+        for &op_raw in ops {
+            // Peel a trailing `(comment-after "text" op)` the reader attaches to an op-signature (seq-277):
+            // print the op, then ` // text` same-line after its signature. Head is `comment-after`, so
+            // `as_form(op,"op")` below would otherwise MISS and drop the whole op. `strip_comments` peels it.
+            let (op, op_trail) = match self.a.as_form(op_raw, "comment-after") {
+                Some(a) if a.len() == 2 && self.is_string(a[0]) => (a[1], Some(a[0])),
+                _ => (op_raw, None),
+            };
             self.doc.hardbreak();
             self.doc.word("| ");
             // op = (op <name> <ty> (resource <idx>)?). The optional trailing `(resource N)` is the
@@ -2106,6 +2113,9 @@ impl<'a> Printer<'a> {
                     .and_then(|r| r.first().copied())
                     .and_then(|idx| self.a.as_int_usize(idx));
                 self.print_op_type_with_resource(o[1], resource_idx);
+            }
+            if let Some(text) = op_trail {
+                self.doc.word(format!(" //{}", self.doc_line_text(text)));
             }
         }
         self.doc.end();
@@ -2660,7 +2670,10 @@ impl<'a> Printer<'a> {
         let docs_end = 1 + args[1..].iter().take_while(|&&a| self.is_doc(a)).count();
         let ops = &args[docs_end..];
         !ops.is_empty()
-            && ops.iter().all(|&op| match self.a.as_form(op, "op") {
+            // Peel any `(comment …)`/`(comment-after …)` wrapper the reader attaches to an op (seq-277):
+            // a comment-wrapped op is still an op, so it must NOT knock the effect decl to the generic
+            // call form (which drops the comment). `print_effect` peels the same wrapper when printing.
+            && ops.iter().all(|&op| match self.a.as_form(self.a.peel_comments(op), "op") {
                 // `(op <name> <ty>)` OR `(op <name> <ty> (resource N))` — the optional trailing
                 // `(resource N)` is the SEC-F1 marker the op printer resugars as `@resource` (it must not
                 // knock the effect decl back to the generic call form).
