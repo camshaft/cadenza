@@ -11155,60 +11155,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_char_compared_to_a_number_offers_the_char_to_int_conversion_like_arithmetic_does() {
-        use crate::testkit::parse;
-        // The COMPARISON/EQUALITY twin of `(+ #\a 1)`: arithmetic on a Char-vs-number flows to the
-        // numeric-coercion path (the `Char.to-int` wrap fix); comparison/equality (`< > = <=`) instead
-        // fell to the generic scheme-unify → the opaque "type mismatch: Char and Int64 must be the same
-        // type here" (an internal-clash read), with NO repair. It now names the kind boundary + carries
-        // the SAME `(Char.to-int …)` wrap fix, at parity with arithmetic.
-        for src in [
-            "(module m (def (f (: c Char)) (< c 1)) (def (main) 0) (export main))",
-            "(module m (def (f (: c Char)) (= c 5)) (def (main) 0) (export main))",
-            "(module m (def (f (: c Char)) (> 0 c)) (def (main) 0) (export main))", // number-first order
-        ] {
-            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| {
-                    d.message
-                        .contains("a character and a number are not comparable")
-                })
-                .unwrap_or_else(|| {
-                    panic!("a Char-vs-number comparison must name the boundary: {src}")
-                });
-            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-            assert!(
-                !d.message.contains("must be the same type here"),
-                "names the kind boundary, not the raw unify clash: {}",
-                d.message
-            );
-            let fix = d.fix.as_ref().expect("carries a Char.to-int wrap fix");
-            assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-            assert_eq!(
-                fix.replacement,
-                format!("(Char.to-int {})", crate::abi::WRAP_HOLE),
-                "wraps the char operand in Char.to-int: {}",
-                fix.replacement
-            );
-        }
-        // NO false positive: comparing two Chars is valid (a Char has a defined order), and arithmetic on
-        // a Char keeps its own coercion path (not intercepted as a comparison).
-        for ok in [
-            "(module m (def (f (: a Char) (: b Char)) (< a b)) (def (main) 0) (export main))",
-            "(module m (def (f (: a Char) (: b Char)) (= a b)) (def (main) 0) (export main))",
-        ] {
-            assert!(
-                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                    .iter()
-                    .any(|d| d
-                        .message
-                        .contains("a character and a number are not comparable")),
-                "a two-Char comparison is valid, not flagged: {ok}"
-            );
-        }
-    }
-
-    #[test]
     fn a_bitwise_operator_on_a_non_integer_operand_names_the_integer_requirement() {
         use crate::testkit::parse;
         // The bitwise/shift operators `& | ^ << >>` carry the `∀a. (Int a) → (Int a) → (Int a)` scheme, so

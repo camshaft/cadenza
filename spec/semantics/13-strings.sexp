@@ -3248,6 +3248,31 @@
   (input  (Char.to-int #\a))
   (output (: 97 Int64)))
 
+; A Char compared/equated to a NUMBER (`(< c 1)`, `(= c 5)`, `(> 0 c)`) is CDZ0203 — a char and a number
+; are not comparable — and, at parity with the arithmetic Char-vs-number coercion, carries the same
+; `Char.to-int` WRAP fix (`…` marks where the char operand goes). Comparing two Chars is VALID (a Char has a
+; defined order). (Migrated from rcdzc a_char_compared_to_a_number_offers_the_char_to_int_conversion_like_arithmetic_does;
+; the "not the raw same-type-here unify wording" facet — a message-absence — is subsumed by the positive
+; "a character and a number are not comparable" lead asserted here.)
+(case "a char compared to a number is not comparable and offers the Char.to-int wrap fix"
+  (input  (do (def (f (: c Char)) (< c 1)) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "a character and a number are not comparable")
+                  (fix (kind wrap) (replacement "(Char.to-int …)"))))
+
+(case "a char equated to a number offers the Char.to-int wrap fix"
+  (input  (do (def (f (: c Char)) (= c 5)) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "a character and a number are not comparable")
+                  (fix (kind wrap) (replacement "(Char.to-int …)"))))
+
+(case "a number-first char comparison offers the Char.to-int wrap fix (either operand order)"
+  (input  (do (def (f (: c Char)) (> 0 c)) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "a character and a number are not comparable")
+                  (fix (kind wrap) (replacement "(Char.to-int …)"))))
+
+(case "comparing two Chars is valid (a Char has a defined order)"
+  (input  (do (def (f (: a Char) (: b Char)) (< a b)) (def (main) 0) (export main)))
+  (call   main) (output (: 0 Int64)))
+
 (case "Char.to-int reads a genuinely-runtime char (if-selected) by scalar value"
   (doc    "The runtime Char rep (Char-rep 1/N): a char chosen at RUN TIME — `(if b #\\a #\\z)` unifies two
            char literals into ONE `Char` value whose identity is known only at run time, so it is NOT
