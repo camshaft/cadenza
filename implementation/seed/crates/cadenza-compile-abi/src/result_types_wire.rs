@@ -1,51 +1,25 @@
 //! The `KIND_RESULT_TYPES` map wire — each boundary export's COMPILED result type as a FULL structured
 //! `Ty` sub-AST, carried in ONE canonical BINARY AST value (`cadenza_ast::codec`), the SAME wire every
 //! compile-boundary artifact speaks (operator seq-254/seq-284: "Binary AST everywhere. No exceptions." +
-//! "I don't want the type names being rendered by the compiler — I want the full type ast!"). The
-//! producer (`rcdzc`'s `compile`, emitting both the standalone artifact + the `cdz-result-type` component
-//! custom section) builds each export's type via `rcdzc::eval::encode_ty_payload` and calls
-//! [`encode_result_types`]; the consumer (`cdz-run`, which reads the section to disambiguate a WIT-erased
-//! leaf at render — a `list<u8>` as `Bytes` vs `List UInt8`, a `string` as a `Symbol`) calls
-//! [`decode_result_types`], which returns a flat [`DecodedTy`] so the render path needs NO `cadenza-ast`
-//! arena-walk (it operates on a plain enum). ONE shared codec, so neither side hand-rolls a parser and NO
-//! render-name string ever rides the wire — structured-is-truth.
+//! "I want the full type ast!"). The producer (`rcdzc`'s `compile`, emitting both the standalone artifact
+//! and the `cdz-result-type` component custom section) builds each export's type via
+//! `rcdzc::eval::encode_ty_payload` and calls [`encode_result_types`]; a consumer calls
+//! [`decode_result_types`] and gets each export's FULL type back as a standalone `Arenas` it walks itself.
 //!
-//! Shape: a root `(result-types <result-type>…)` list, one `(result-type <Str name> <ty-payload>)` form
-//! per boundary export, in export order. `<ty-payload>` is the resolved type sub-AST grafted verbatim —
-//! the same `(-> …)` / `(Sum …)` / `(Record …)` / `(List …)` / scalar payload `encode_ty_payload` builds
-//! (mirrors `export_types_wire`). TOTAL on decode: a malformed / wrong-shape form is skipped, and any
-//! type head the consumer does not case on decodes to [`DecodedTy::Other`] (a render-blind default), never
-//! a crash.
+//! This crate is a GENERIC, full-fidelity codec — it performs NO render-specific projection. A Cadenza type
+//! is not WIT; it merely supports it, so WIT-erasure disambiguation (a `list<u8>` as `Bytes` vs `List UInt8`,
+//! a `string` as a `Symbol`) is a RENDER concern that lives in the consumer (`cdz-run`), NOT here: coupling
+//! the shared boundary crate to one consumer's render semantics would force every other tool (a doc
+//! generator, a type-diff, a schema export) to inherit a lossy projection or re-walk the tree. So the shape
+//! MIRRORS its sibling [`crate::export_types_wire`] exactly — full Ty in, full Ty out — and each caller maps
+//! the returned `Arenas` to whatever it needs.
+//!
+//! Shape: a root `(result-types <result-type>…)` list, one `(result-type <Str name> <ty-payload>)` form per
+//! boundary export, in export order. `<ty-payload>` is the resolved type sub-AST grafted verbatim — the same
+//! `(-> …)` / `(Sum …)` / `(Record …)` / `(List …)` / scalar payload `encode_ty_payload` builds. TOTAL on
+//! decode: a malformed / wrong-shape form is skipped, never a crash.
 
 use cadenza_ast::ast::{Arenas, Builder, Struct, StructId};
-
-/// A consumer-facing, `cadenza-ast`-free projection of a resolved result type — ONLY the distinctions a
-/// runtime render needs to disambiguate a WIT-erased leaf (`Bytes` vs `List UInt8`, `Symbol` vs a
-/// compound). The codec walks the structured `Ty` payload into this flat enum on decode, so the render
-/// path (`cdz-run`) matches a plain value and never touches the arena. Any type the render does not
-/// special-case (`Map`, `Int`/`Float`/`Bool`/…, `Nominal`, an arrow) folds to [`DecodedTy::Other`] — a
-/// type-blind render, exactly as a `None` result type rendered before this wire existed.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum DecodedTy {
-    /// The `Bytes` leaf — render a `list<u8>` as `b"…"`, NOT `#list`.
-    Bytes,
-    /// The `Symbol` leaf — render a string-shaped value as `#"…"`, NOT `"…"`.
-    Symbol,
-    /// `List elem` — the element type threads for nested disambiguation.
-    List(Box<DecodedTy>),
-    /// `Set elem`.
-    Set(Box<DecodedTy>),
-    /// `Tuple e…` — each element type in order.
-    Tuple(Vec<DecodedTy>),
-    /// `Record (: name T)…` — each field's type by name, in canonical (encoded) order.
-    Record(Vec<(String, DecodedTy)>),
-    /// `Option inner` (a `Sum` named `Option`) — the payload type threads into a `(Some p)` render.
-    Option(Box<DecodedTy>),
-    /// `Result ok err` (a `Sum` named `Result`) — the ok/err payload types thread into `(Ok p)`/`(Err e)`.
-    Result(Box<DecodedTy>, Box<DecodedTy>),
-    /// Any type the render does not special-case — a type-blind render (the pre-wire default).
-    Other,
-}
 
 /// Encode the export→result-type map as the `KIND_RESULT_TYPES` artifact / `cdz-result-type` section
 /// bytes — ONE canonical binary AST value (see module docs). Each entry's `Arenas` is a standalone arena
@@ -69,12 +43,12 @@ pub fn encode_result_types(entries: &[(String, Arenas)]) -> Vec<u8> {
     cadenza_ast::codec::encode(&b.finish(root))
 }
 
-/// Decode the `KIND_RESULT_TYPES` bytes back into export name → [`DecodedTy`] pairs — the inverse of
-/// [`encode_result_types`], read via the shared `cadenza_ast::codec`. The structured `Ty` payload is
-/// walked into the flat `DecodedTy` HERE (on the codec side), so the consumer never walks the arena.
-/// TOTAL: a malformed tree / wrong-shape form is skipped; an unrecognized type head decodes to
-/// [`DecodedTy::Other`].
-pub fn decode_result_types(bytes: &[u8]) -> Vec<(String, DecodedTy)> {
+/// Decode the `KIND_RESULT_TYPES` bytes back into export name → standalone type-arena pairs — the inverse
+/// of [`encode_result_types`], read via the shared `cadenza_ast::codec`. Each returned `Arenas` is a fresh
+/// standalone arena whose ROOT is that export's full type payload subtree (so a consumer grafts/walks it
+/// directly — the FULL structured `Ty`, no projection). TOTAL: a malformed tree / wrong-shape form is
+/// skipped rather than failing the whole decode.
+pub fn decode_result_types(bytes: &[u8]) -> Vec<(String, Arenas)> {
     let Some(a) = cadenza_ast::codec::decode(bytes) else {
         return Vec::new();
     };
@@ -88,74 +62,13 @@ pub fn decode_result_types(bytes: &[u8]) -> Vec<(String, DecodedTy)> {
         .collect()
 }
 
-fn decode_one(a: &Arenas, form: StructId) -> Option<(String, DecodedTy)> {
+fn decode_one(a: &Arenas, form: StructId) -> Option<(String, Arenas)> {
     let tail = a.as_form(form, "result-type")?;
     let name = a.as_str(*tail.first()?)?.to_string();
     let payload = *tail.get(1)?;
-    Some((name, decode_ty(a, payload)))
-}
-
-/// Walk a resolved-type payload subtree (the `encode_ty_payload` shape) into a flat [`DecodedTy`]. TOTAL:
-/// any head the render does not need decodes to `Other`. Recurses only through the shapes the consumer
-/// disambiguates (List/Set/Tuple/Record/Option/Result), so a deep type stays shallow on the enum side.
-fn decode_ty(a: &Arenas, id: StructId) -> DecodedTy {
-    match a.get(id) {
-        // A bare leaf type-name: only `Bytes` / `Symbol` matter to the render; every other scalar
-        // (`Bool`/`Unit`/`Char`/`String`/`BigInt`/`Rational`) is render-blind → `Other`.
-        Struct::Atom(_) => match a.as_name(id) {
-            Some("Bytes") => DecodedTy::Bytes,
-            Some("Symbol") => DecodedTy::Symbol,
-            _ => DecodedTy::Other,
-        },
-        Struct::List(kids) => {
-            let Some(head) = kids.first().and_then(|&h| a.as_name(h)) else {
-                return DecodedTy::Other;
-            };
-            match head {
-                "List" => match kids.get(1) {
-                    Some(&elem) => DecodedTy::List(Box::new(decode_ty(a, elem))),
-                    None => DecodedTy::Other,
-                },
-                "Set" => match kids.get(1) {
-                    Some(&elem) => DecodedTy::Set(Box::new(decode_ty(a, elem))),
-                    None => DecodedTy::Other,
-                },
-                "Tuple" => DecodedTy::Tuple(kids[1..].iter().map(|&c| decode_ty(a, c)).collect()),
-                "Record" => {
-                    // Each field is the shared ascription node `(: name T)`.
-                    let mut fields = Vec::new();
-                    for &f in &kids[1..] {
-                        if let Struct::List(fk) = a.get(f)
-                            && fk.len() == 3
-                            && a.as_name(fk[0]) == Some(":")
-                            && let Some(fname) = a.as_name(fk[1])
-                        {
-                            fields.push((fname.to_string(), decode_ty(a, fk[2])));
-                        }
-                    }
-                    DecodedTy::Record(fields)
-                }
-                // A sum type-value `(Sum NAME <decl> arg…)`; recognize the two the render threads a payload
-                // type into (Option/Result) by NAME — args follow the name + decl (indices 3, 4). Every
-                // other sum (and Map / Nominal / arrow / numeric heads) is render-blind → `Other`.
-                "Sum" => match kids.get(1).and_then(|&n| a.as_name(n)) {
-                    Some("Option") => match kids.get(3) {
-                        Some(&inner) => DecodedTy::Option(Box::new(decode_ty(a, inner))),
-                        None => DecodedTy::Other,
-                    },
-                    Some("Result") => match (kids.get(3), kids.get(4)) {
-                        (Some(&ok), Some(&err)) => DecodedTy::Result(
-                            Box::new(decode_ty(a, ok)),
-                            Box::new(decode_ty(a, err)),
-                        ),
-                        _ => DecodedTy::Other,
-                    },
-                    _ => DecodedTy::Other,
-                },
-                _ => DecodedTy::Other,
-            }
-        }
-    }
+    let mut b = Builder::new();
+    let root = copy_from(&mut b, a, payload);
+    Some((name, b.finish(root)))
 }
 
 /// Copy the subtree rooted at `id` of `src` into builder `b`, returning the new root id. Iterative
@@ -197,8 +110,8 @@ mod tests {
     use super::*;
     use cadenza_ast::ast::{Builder, Leaf};
 
-    /// A standalone type-payload arena rooted at `root_build(&mut b)`'s node — as the producer extracts
-    /// one export's `encode_ty_payload` subtree.
+    /// A standalone type-payload arena rooted at `root_build`'s node — as the producer extracts one
+    /// export's `encode_ty_payload` subtree.
     fn ty(root_build: impl FnOnce(&mut Builder) -> StructId) -> Arenas {
         let mut b = Builder::new();
         let root = root_build(&mut b);
@@ -207,95 +120,44 @@ mod tests {
 
     #[test]
     fn result_types_full_ty_binary_ast_round_trips() {
-        // g : Bytes (the Bytes-leaf disambiguation), greet : Symbol, xs : (List (UInt 8)) (a byte list that
-        // is NOT Bytes), opt : (Sum Option <decl> Bytes), pair : (Tuple Symbol Bytes).
+        // The FULL type survives verbatim: a Bytes leaf, a (List (UInt 8)) byte-list, an (-> Int64 Symbol)
+        // arrow, a (Record (: id Symbol)). The consumer walks each returned arena itself.
+        let bytes_ty = || ty(|b| b.name("Bytes"));
+        let list_u8 = || {
+            ty(|b| {
+                let head = b.name("List");
+                let uint = b.name("UInt");
+                let w = b.atom_leaf(Leaf::Int {
+                    value: cadenza_ast::ast::IntValue::from_i64(8),
+                    radix: cadenza_ast::ast::Radix::Dec,
+                });
+                let inner = b.list(vec![uint, w]);
+                b.list(vec![head, inner])
+            })
+        };
+        let arrow = || {
+            ty(|b| {
+                let h = b.name("->");
+                let p = b.name("Int64");
+                let r = b.name("Symbol");
+                b.list(vec![h, p, r])
+            })
+        };
         let entries = vec![
-            ("g".to_string(), ty(|b| b.name("Bytes"))),
-            ("greet".to_string(), ty(|b| b.name("Symbol"))),
-            (
-                "xs".to_string(),
-                ty(|b| {
-                    let head = b.name("List");
-                    let uint = b.name("UInt");
-                    let w = b.atom_leaf(Leaf::Int {
-                        value: cadenza_ast::ast::IntValue::from_i64(8),
-                        radix: cadenza_ast::ast::Radix::Dec,
-                    });
-                    let inner = b.list(vec![uint, w]);
-                    b.list(vec![head, inner])
-                }),
-            ),
-            (
-                "opt".to_string(),
-                ty(|b| {
-                    let head = b.name("Sum");
-                    let nm = b.name("Option");
-                    let decl = b.atom_leaf(Leaf::Int {
-                        value: cadenza_ast::ast::IntValue::from_i64(0),
-                        radix: cadenza_ast::ast::Radix::Dec,
-                    });
-                    let inner = b.name("Bytes");
-                    b.list(vec![head, nm, decl, inner])
-                }),
-            ),
-            (
-                "pair".to_string(),
-                ty(|b| {
-                    let head = b.name("Tuple");
-                    let s = b.name("Symbol");
-                    let by = b.name("Bytes");
-                    b.list(vec![head, s, by])
-                }),
-            ),
+            ("g".to_string(), bytes_ty()),
+            ("xs".to_string(), list_u8()),
+            ("f".to_string(), arrow()),
         ];
         let decoded = decode_result_types(&encode_result_types(&entries));
-        assert_eq!(
-            decoded,
-            vec![
-                ("g".to_string(), DecodedTy::Bytes),
-                ("greet".to_string(), DecodedTy::Symbol),
-                (
-                    "xs".to_string(),
-                    DecodedTy::List(Box::new(DecodedTy::Other))
-                ),
-                (
-                    "opt".to_string(),
-                    DecodedTy::Option(Box::new(DecodedTy::Bytes))
-                ),
-                (
-                    "pair".to_string(),
-                    DecodedTy::Tuple(vec![DecodedTy::Symbol, DecodedTy::Bytes])
-                ),
-            ]
-        );
-    }
-
-    #[test]
-    fn record_fields_decode_by_name() {
-        // (Record (: id Symbol) (: raw Bytes)) — field types recovered by name, in order.
-        let arena = ty(|b| {
-            let head = b.name("Record");
-            let c1 = b.name(":");
-            let n1 = b.name("id");
-            let t1 = b.name("Symbol");
-            let f1 = b.list(vec![c1, n1, t1]);
-            let c2 = b.name(":");
-            let n2 = b.name("raw");
-            let t2 = b.name("Bytes");
-            let f2 = b.list(vec![c2, n2, t2]);
-            b.list(vec![head, f1, f2])
-        });
-        let decoded = decode_result_types(&encode_result_types(&[("r".to_string(), arena)]));
-        assert_eq!(
-            decoded,
-            vec![(
-                "r".to_string(),
-                DecodedTy::Record(vec![
-                    ("id".to_string(), DecodedTy::Symbol),
-                    ("raw".to_string(), DecodedTy::Bytes),
-                ])
-            )]
-        );
+        assert_eq!(decoded.len(), 3);
+        // Names preserved in order; each payload is STRUCTURALLY IDENTICAL to its source — full fidelity,
+        // no projection (a leaf `Bytes`, a `(List (UInt 8))`, an `(-> Int64 Symbol)` all survive verbatim).
+        assert_eq!(decoded[0].0, "g");
+        assert!(decoded[0].1.structurally_eq(&bytes_ty()));
+        assert_eq!(decoded[1].0, "xs");
+        assert!(decoded[1].1.structurally_eq(&list_u8()));
+        assert_eq!(decoded[2].0, "f");
+        assert!(decoded[2].1.structurally_eq(&arrow()));
     }
 
     #[test]
@@ -305,15 +167,20 @@ mod tests {
     }
 
     #[test]
-    fn unrecognized_head_folds_to_other() {
-        // A Map / an arrow / a bare numeric are render-blind → Other.
-        let arrow = ty(|b| {
-            let h = b.name("->");
-            let p = b.name("Bytes");
-            let r = b.name("Symbol");
-            b.list(vec![h, p, r])
-        });
-        let decoded = decode_result_types(&encode_result_types(&[("f".to_string(), arrow)]));
-        assert_eq!(decoded, vec![("f".to_string(), DecodedTy::Other)]);
+    fn a_malformed_form_is_skipped() {
+        // A root list with a wrong-headed form in the middle keeps only the well-formed result-type forms.
+        let mut b = Builder::new();
+        let rt_head = b.name("result-types");
+        let good_head = b.name("result-type");
+        let good_name = b.atom_leaf(Leaf::Str("g".into()));
+        let good_ty = b.name("Bytes");
+        let good = b.list(vec![good_head, good_name, good_ty]);
+        let bad_head = b.name("nonsense");
+        let bad = b.list(vec![bad_head]);
+        let root = b.list(vec![rt_head, good, bad]);
+        let bytes = cadenza_ast::codec::encode(&b.finish(root));
+        let decoded = decode_result_types(&bytes);
+        assert_eq!(decoded.len(), 1, "the bogus form is skipped");
+        assert_eq!(decoded[0].0, "g");
     }
 }
