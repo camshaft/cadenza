@@ -646,12 +646,23 @@ fn nat_walk(
     exempt: &mut std::collections::HashSet<StructId>,
     skip_outputs: bool,
     collect: bool,
+    in_wit: bool,
     edits: &mut Vec<(usize, usize, String)>,
 ) {
     let Struct::List(ch) = a.get(id) else {
         return;
     };
     let ch = ch.clone();
+    // A `(wit-world …)` clause is a WIT interface/TYPE declaration, not a compound-VALUE context. Its
+    // lowercase `record`/`list`/… heads are WIT TYPE descriptors (`(record (= x (s64)))`, `(list (u8))`),
+    // NOT value literals — nativizing them is out of M3's value-literal scope AND regresses: the type
+    // parser accepts native heads (`wit_world.rs` `head_ctor`), but the imposed-WIT-world reducer path
+    // DECLINES a native-headed type descriptor (corpus-28 case "…via an imposed WIT world" pass→Todo,
+    // verified 2026-08-30). So exempt the whole `(wit-world …)`/`(world …)` subtree from head-nativize (a
+    // wit-world holds no value literals, so nothing legitimate is skipped). Mirrors the handler-arm-op
+    // exemption. Genuine compound VALUES in a wit-boundary case sit OUTSIDE the wit-world clause and still
+    // nativize.
+    let in_wit = in_wit || matches!(a.head_name(id), Some("wit-world" | "world"));
     // CORPUS inputs-only mode (`skip_outputs`): a corpus case's `(output …)` expected VALUE must match the
     // GATE RENDER exactly, and the render NORMALIZES (Ast.List→`(. Ast List)`, Qty.of, `#"sym"`, map/set key
     // order, Bytes `b"…"`) — a text-nativize would NOT reproduce those, so `(output …)` is v-corpus-harness's
@@ -688,6 +699,7 @@ fn nat_walk(
     // `ch.first()`, NOT `ch[0]` — an EMPTY list `()` has no head (indexing would panic).
     let ctor_name = name_head.or_else(|| ch.first().and_then(|&h| a.as_str(h)));
     if collect
+        && !in_wit
         && let Some(name) = ctor_name
         && nat_is_ctor_name(name)
         // A NAME head is suppressed by a shadowing binding; a STRING head is unshadowable (always the ctor).
@@ -733,6 +745,7 @@ fn nat_walk(
             exempt,
             skip_outputs,
             collect,
+            in_wit,
             edits,
         );
     }
@@ -784,6 +797,7 @@ fn nativize_compound_impl(src: &str, skip_outputs: bool) -> Result<String, ReadE
         &mut exempt,
         skip_outputs,
         true, // collect edits from the root down (flips off only inside an (output …) when skip_outputs)
+        false, // in_wit: not inside a (wit-world …) type-descriptor subtree at the root
         &mut edits,
     );
     edits.sort_by_key(|e| core::cmp::Reverse(e.0)); // descending: apply back-to-front, offsets stay valid
@@ -1797,6 +1811,30 @@ mod tests {
         assert_eq!(
             n("(do (doc \"a (list 1 2) in prose\") (def (m) (list 3 4)) (export m))"),
             "(do (doc \"a (list 1 2) in prose\") (def (m) #list(3 4)) (export m))"
+        );
+    }
+
+    #[test]
+    fn nativize_compound_source_exempts_wit_world_type_descriptors() {
+        // A `(wit-world …)` clause declares WIT interfaces/TYPES. Its lowercase `record`/`list`/… heads are
+        // WIT TYPE descriptors, NOT compound value literals — out of M3's value-literal scope, and
+        // nativizing them regresses (the imposed-WIT-world reducer path DECLINES a native-headed type
+        // descriptor). So the whole `(wit-world …)` subtree is exempt from head-nativize; a genuine value
+        // literal OUTSIDE the clause still nativizes.
+        let n = |s: &str| super::nativize_compound_source(s).unwrap();
+        // The wit-world `(record …)`/`(list …)` type descriptors stay classic; `(list 1 2)` value nativizes.
+        assert_eq!(
+            n(
+                "(do (wit-world (world w (export i (member f (func (param m (record (= x (s64)))) (result (list (u8)))))))) (def (g) (list 1 2)) (export g))"
+            ),
+            "(do (wit-world (world w (export i (member f (func (param m (record (= x (s64)))) (result (list (u8)))))))) (def (g) #list(1 2)) (export g))"
+        );
+        // Nested wit type descriptors (record-of-list) also stay classic throughout the clause.
+        assert_eq!(
+            n(
+                "(wit-world (world w (export i (member f (func (param m (record (= tok (list (u8))))) (result (s64)))))))"
+            ),
+            "(wit-world (world w (export i (member f (func (param m (record (= tok (list (u8))))) (result (s64)))))))"
         );
     }
 
