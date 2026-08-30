@@ -3247,7 +3247,7 @@ fn a_bare_export_param_resolves_a_variant_via_an_imported_library_sum() {
         &[
             Artifact::new(Artifact::KIND_AST, "lib", lib),
             Artifact::new(Artifact::KIND_AST, "app", app),
-            Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+            cadenza_compile_abi::abi::entry_artifact("app"),
         ],
         &[Target::Wasm],
     );
@@ -26075,7 +26075,7 @@ mod stage1 {
             let out = crate::compile::compile(
                 &[
                     Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                    cadenza_compile_abi::abi::entry_artifact("app"),
                 ],
                 &[crate::backend::Target::Wasm],
             );
@@ -26122,7 +26122,7 @@ mod stage1 {
             let out = crate::compile::compile(
                 &[
                     Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                    cadenza_compile_abi::abi::entry_artifact("app"),
                 ],
                 &[crate::backend::Target::Wasm],
             );
@@ -26194,7 +26194,7 @@ mod stage1 {
             let out = crate::compile::compile(
                 &[
                     Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                    cadenza_compile_abi::abi::entry_artifact("app"),
                 ],
                 &[crate::backend::Target::Wasm],
             );
@@ -26246,7 +26246,7 @@ mod stage1 {
             let out = crate::compile::compile(
                 &[
                     Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                    cadenza_compile_abi::abi::entry_artifact("app"),
                 ],
                 &[crate::backend::Target::Wasm],
             );
@@ -26280,7 +26280,7 @@ mod stage1 {
             let out = crate::compile::compile(
                 &[
                     Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                    cadenza_compile_abi::abi::entry_artifact("app"),
                 ],
                 &[crate::backend::Target::Wasm],
             );
@@ -26361,7 +26361,7 @@ mod stage1 {
                 &[
                     Artifact::new(Artifact::KIND_AST, "lib", lib.clone()),
                     Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                    cadenza_compile_abi::abi::entry_artifact("app"),
                 ],
                 &[crate::backend::Target::Wasm],
             );
@@ -35675,7 +35675,7 @@ mod sidecar_driven {
                     // A multi-file package needs an `entry` marker (as `cdz test` supplies); it names the
                     // linkage-driving file but does NOT restrict which files' @tests emit — EmitTestsPerFile
                     // buckets ALL linked test defs by file.
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"file_a".to_vec()),
+                    cadenza_compile_abi::abi::entry_artifact("file_a"),
                     Artifact::new(
                         sidecar::KIND_SIDECAR,
                         "drive",
@@ -35901,7 +35901,7 @@ mod sidecar_driven {
                     Artifact::new(Artifact::KIND_AST, "app-b", app_b.clone()),
                     // A multi-file package needs an entry (linkage root); a composed test build roots on the
                     // `@test` defs, so any member serves — `cdz test <dir>` passes one likewise.
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app-a".to_vec()),
+                    cadenza_compile_abi::abi::entry_artifact("app-a"),
                     Artifact::new(
                         sidecar::KIND_SIDECAR,
                         "drive",
@@ -35935,7 +35935,7 @@ mod sidecar_driven {
             .collect();
         assert_eq!(iface_sidecar.len(), 1, "one component-name iface sidecar");
         assert_eq!(
-            String::from_utf8(iface_sidecar[0].bytes.clone()).unwrap(),
+            cadenza_compile_abi::decode_name(&iface_sidecar[0].bytes).unwrap(),
             "cadenza:closure/api",
             "the iface sidecar carries the fixed closure-interface string"
         );
@@ -36429,7 +36429,7 @@ mod sidecar_driven {
                         Artifact::new(Artifact::KIND_AST, "lib", lib),
                         Artifact::new(Artifact::KIND_AST, "app-a", app_a),
                         Artifact::new(Artifact::KIND_AST, "app-b", app_b),
-                        Artifact::new(crate::link::KIND_ENTRY, "entry", b"app-a".to_vec()),
+                        cadenza_compile_abi::abi::entry_artifact("app-a"),
                         Artifact::new(sidecar::KIND_SIDECAR, "drive", sidecar::encode(&[req])),
                     ],
                     &[],
@@ -36498,7 +36498,7 @@ mod sidecar_driven {
                         Artifact::new(Artifact::KIND_AST, "lib", lib.to_vec()),
                         Artifact::new(Artifact::KIND_AST, "app-a", a.to_vec()),
                         Artifact::new(Artifact::KIND_AST, "app-b", b.to_vec()),
-                        Artifact::new(crate::link::KIND_ENTRY, "entry", b"app-a".to_vec()),
+                        cadenza_compile_abi::abi::entry_artifact("app-a"),
                         Artifact::new(sidecar::KIND_SIDECAR, "drive", sidecar::encode(&[req])),
                     ],
                     &[],
@@ -36582,7 +36582,7 @@ mod sidecar_driven {
                     Artifact::new(Artifact::KIND_AST, "lib", lib.clone()),
                     Artifact::new(Artifact::KIND_AST, "app-a", app_a.clone()),
                     Artifact::new(Artifact::KIND_AST, "app-b", app_b.clone()),
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app-a".to_vec()),
+                    cadenza_compile_abi::abi::entry_artifact("app-a"),
                     Artifact::new(
                         sidecar::KIND_SIDECAR,
                         "drive",
@@ -36621,7 +36621,7 @@ mod sidecar_driven {
             "the component-name iface sidecar is still emitted"
         );
         assert_eq!(
-            String::from_utf8(iface[0].bytes.clone()).unwrap(),
+            cadenza_compile_abi::decode_name(&iface[0].bytes).unwrap(),
             "cadenza:closure/api"
         );
         // The closure-hash sidecar IS emitted on the consumer-only path (changed 2026-08-02, the
@@ -36688,7 +36688,7 @@ mod sidecar_driven {
                     // distinct names (no dup-name reject), so the stem-collision reaches the composed guard.
                     Artifact::new(Artifact::KIND_AST, "a/t", t1.clone()),
                     Artifact::new(Artifact::KIND_AST, "b/t", t2.clone()),
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"a/t".to_vec()),
+                    cadenza_compile_abi::abi::entry_artifact("a/t"),
                     Artifact::new(
                         sidecar::KIND_SIDECAR,
                         "drive",

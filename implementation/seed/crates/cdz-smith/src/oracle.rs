@@ -347,11 +347,7 @@ pub fn compile_modules_catching(modules: &[(String, String)], entry_src: &str) -
     ));
     // A KIND_ENTRY artifact names which file is the package entry (its bytes are the entry file's name) —
     // the linker needs it to know where `main` lives and produce a component (see rcdzc link tests).
-    artifacts.push(rcdzc::abi::Artifact::new(
-        rcdzc::link::KIND_ENTRY,
-        "entry",
-        b"main".to_vec(),
-    ));
+    artifacts.push(rcdzc::cli::entry_artifact("main"));
 
     // Clear the crash slot so we read THIS run's panic (see `compile_bytes_catching`).
     *slot().lock().unwrap() = None;
