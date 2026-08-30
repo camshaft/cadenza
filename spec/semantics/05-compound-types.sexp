@@ -24385,10 +24385,10 @@
            heap-tuple/list chain reclaims with no leak and no double-free.")
   (input  (do
             (def (grow (: n Int64) (: xs (List Int64)))
-              (if (<= n 0) (tuple n xs)
+              (if (<= n 0) #tuple(n xs)
                   (let ((#tuple(a b) (grow (- n 1) (List.push xs n))))
-                       (tuple a (List.push b n)))))
-            (def (main) (let ((#tuple(k ys) (grow 5 (list)))) (List.len ys)))
+                       #tuple(a (List.push b n)))))
+            (def (main) (let ((#tuple(k ys) (grow 5 #list()))) (List.len ys)))
             (export main)))
   (output (: 10 Int64))
   (live-objects 0))
@@ -24400,7 +24400,7 @@
            does NOT early-free it — `z` reclaims exactly once by its owner (no double-free). Value = len[7,7,7] + b +
            (. z 1) = 3 + 8 + 8 = 19; live-objects 0.")
   (input  (do
-            (def (mk (: n Int64)) (if (< n 0) (mk (+ n 1)) (tuple (list n n n) (+ n 1))))
+            (def (mk (: n Int64)) (if (< n 0) (mk (+ n 1)) #tuple(#list(n n n) (+ n 1))))
             (def (main)
               (let ((z (mk 7)))
                    (let ((#tuple(a b) z)) (+ (List.len a) (+ b (. z 1))))))
