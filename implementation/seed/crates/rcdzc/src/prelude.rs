@@ -493,7 +493,10 @@ fn record_module(ast: &mut Arenas) -> StructId {
         let lambda = row_op_placeholder_type(ast);
         let op = list_op_record(ast, prim, lambda);
         let key = push_atom(ast, Leaf::Name(name.into()));
-        children.push(push_list(ast, vec![key, op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, key, op])
+        });
     }
     push_list(ast, children)
 }
@@ -520,7 +523,10 @@ fn tuple_module(ast: &mut Arenas) -> StructId {
         let lambda = row_op_placeholder_type(ast);
         let op = list_op_record(ast, prim, lambda);
         let key = push_atom(ast, Leaf::Name(name.into()));
-        children.push(push_list(ast, vec![key, op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, key, op])
+        });
     }
     push_list(ast, children)
 }
@@ -584,7 +590,10 @@ fn list_module(ast: &mut Arenas) -> StructId {
     ] {
         let op = list_op_record(ast, prim, lambda);
         let k = push_atom(ast, Leaf::Name(name.into()));
-        children.push(push_list(ast, vec![k, op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, k, op])
+        });
     }
     push_list(ast, children)
 }
@@ -648,7 +657,10 @@ fn map_module(ast: &mut Arenas) -> StructId {
     ] {
         let op = list_op_record(ast, prim, lambda);
         let k = push_atom(ast, Leaf::Name(name.into()));
-        children.push(push_list(ast, vec![k, op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, k, op])
+        });
     }
     push_list(ast, children)
 }
@@ -693,7 +705,10 @@ fn set_module(ast: &mut Arenas) -> StructId {
     ] {
         let op = list_op_record(ast, prim, lambda);
         let k = push_atom(ast, Leaf::Name(name.into()));
-        children.push(push_list(ast, vec![k, op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, k, op])
+        });
     }
     push_list(ast, children)
 }
@@ -931,7 +946,10 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
     ] {
         let op = list_op_record(ast, prim, ty);
         let k = push_atom(ast, Leaf::Name(name.into()));
-        children.push(push_list(ast, vec![k, op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, k, op])
+        });
     }
     push_list(ast, children)
 }
@@ -972,7 +990,10 @@ fn string_module(ast: &mut Arenas) -> StructId {
         let ty = string_to_int64_type(ast);
         let op = list_op_record(ast, prim, ty);
         let k = push_atom(ast, Leaf::Name(name.into()));
-        children.push(push_list(ast, vec![k, op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, k, op])
+        });
     }
     // `at : String → Int64 → (Option String)` — the fallible scalar-indexed read.
     let at_ty = str_at_type(ast);
@@ -2415,19 +2436,31 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
         meta_field(ast, "t", ty_expr),
         {
             let k = push_atom(ast, Leaf::Name("of-int".into()));
-            push_list(ast, vec![k, of_int])
+            {
+                let eq = push_atom(ast, Leaf::Name("=".into()));
+                push_list(ast, vec![eq, k, of_int])
+            }
         },
         {
             let k = push_atom(ast, Leaf::Name("of".into()));
-            push_list(ast, vec![k, of_op])
+            {
+                let eq = push_atom(ast, Leaf::Name("=".into()));
+                push_list(ast, vec![eq, k, of_op])
+            }
         },
         {
             let k = push_atom(ast, Leaf::Name("nan".into()));
-            push_list(ast, vec![k, nan_val])
+            {
+                let eq = push_atom(ast, Leaf::Name("=".into()));
+                push_list(ast, vec![eq, k, nan_val])
+            }
         },
         {
             let k = push_atom(ast, Leaf::Name("Infinity".into()));
-            push_list(ast, vec![k, inf_val])
+            {
+                let eq = push_atom(ast, Leaf::Name("=".into()));
+                push_list(ast, vec![eq, k, inf_val])
+            }
         },
     ];
     let mut children = vec![head];
@@ -2643,7 +2676,10 @@ fn wrap_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
     // `(wrap record)`.
     let k = push_atom(ast, Leaf::Name("wrap".into()));
-    push_list(ast, vec![k, record])
+    {
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, k, record])
+    }
 }
 
 /// A `(of (record ((meta t) TYPE-LAMBDA) ((meta apply) (intrinsic checked-of))))` field — the module's
@@ -2684,7 +2720,10 @@ fn of_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
     // `(of record)`.
     let k = push_atom(ast, Leaf::Name("of".into()));
-    push_list(ast, vec![k, record])
+    {
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, k, record])
+    }
 }
 
 /// A `(name (record ((meta t) TYPE) ((meta apply) (intrinsic PRIM))))` field — a CHECKED arithmetic op
@@ -2729,7 +2768,10 @@ fn checked_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width: 
     let apply_field = meta_field(ast, "apply", prim_node);
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
     let k = push_atom(ast, Leaf::Name(name.into()));
-    push_list(ast, vec![k, record])
+    {
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, k, record])
+    }
 }
 
 /// A `(name (record ((meta t) TYPE) ((meta apply) (intrinsic PRIM))))` field — a WRAPPING arithmetic op
@@ -2768,7 +2810,10 @@ fn wrapping_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width:
     let apply_field = meta_field(ast, "apply", prim_node);
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
     let k = push_atom(ast, Leaf::Name(name.into()));
-    push_list(ast, vec![k, record])
+    {
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, k, record])
+    }
 }
 
 /// A `(name (: value (Int/UInt width)))` record field — an arbitrary-precision integer constant
@@ -2795,7 +2840,10 @@ fn int_field(ast: &mut Arenas, name: &str, value: IntValue, signed: bool, width:
     let ty_expr = push_list(ast, vec![ctor, w]);
     let colon = push_atom(ast, Leaf::Name(":".into()));
     let annot = push_list(ast, vec![colon, lit, ty_expr]);
-    push_list(ast, vec![k, annot])
+    {
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, k, annot])
+    }
 }
 
 /// A `(name (unrealized name))` record field: the field exists, but its value is an `unrealized`
@@ -2806,7 +2854,10 @@ fn unrealized_field(ast: &mut Arenas, name: &str) -> StructId {
     let head = push_atom(ast, Leaf::Name("unrealized".into()));
     let who = push_atom(ast, Leaf::Name(name.into()));
     let v = push_list(ast, vec![head, who]);
-    push_list(ast, vec![k, v])
+    {
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, k, v])
+    }
 }
 
 /// Append a leaf and an `Atom` occurrence of it, returning the occurrence's id. (No dedup — the

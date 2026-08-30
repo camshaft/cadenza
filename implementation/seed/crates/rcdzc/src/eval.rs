@@ -4194,7 +4194,8 @@ fn float_of_int_field(db: &mut Db, width: u32) -> StructId {
     let rec_head = db.push_str("record");
     let rec = db.push_list(vec![rec_head, t_field, apply_field]);
     let k = db.push_name("of-int");
-    db.push_list(vec![k, rec])
+    let eq = db.push_name("="); // seq-276: canonical (= name value) record entry
+    db.push_list(vec![eq, k, rec])
 }
 
 /// The module's `of` field, appended on `&mut Db` — the constructor-side twin of `prelude::float_of_type`
@@ -4231,7 +4232,8 @@ fn float_of_field(db: &mut Db, width: u32) -> StructId {
     let rec_head = db.push_str("record");
     let rec = db.push_list(vec![rec_head, t_field, apply_field]);
     let k = db.push_name("of");
-    db.push_list(vec![k, rec])
+    let eq = db.push_name("="); // seq-276: canonical (= name value) record entry
+    db.push_list(vec![eq, k, rec])
 }
 
 /// The module's `wrap` field, appended on `&mut Db` — the constructor-side twin of `prelude::wrap_field`
@@ -4266,7 +4268,8 @@ fn wrap_field(db: &mut Db, signed: bool, width: u32) -> StructId {
     let apply_field = meta_field(db, "apply", prim);
     let record = db.push_list(vec![rec_head, t_field, apply_field]);
     let k = db.push_name("wrap");
-    db.push_list(vec![k, record])
+    let eq = db.push_name("="); // seq-276: canonical (= name value) record entry
+    db.push_list(vec![eq, k, record])
 }
 
 /// The (max, min) bounds of a `(signed, width)` integer as arbitrary-precision [`IntValue`]s, computed
@@ -4332,7 +4335,8 @@ fn named_int_field(db: &mut Db, name: &str, value: IntValue, signed: bool, width
     // `(: lit ty_expr)`.
     let colon = db.push_name(":");
     let annot = db.push_list(vec![colon, lit, ty_expr]);
-    db.push_list(vec![k, annot])
+    let eq = db.push_name("="); // seq-276: canonical (= name value) record entry
+    db.push_list(vec![eq, k, annot])
 }
 
 /// A `(name (unrealized name))` field — the field exists but declines when projected.
@@ -4341,5 +4345,6 @@ fn unrealized_field(db: &mut Db, name: &str) -> StructId {
     let head = db.push_name("unrealized");
     let who = db.push_name(name);
     let v = db.push_list(vec![head, who]);
-    db.push_list(vec![k, v])
+    let eq = db.push_name("="); // seq-276: canonical (= name value) record entry
+    db.push_list(vec![eq, k, v])
 }
