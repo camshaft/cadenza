@@ -87,6 +87,37 @@ test("stripModule keeps a def block minus its trailing export", () => {
   assert.equal(stripModule("def a = 1\ndef b = 2\nexport { a, b }", "ml"), "def a = 1\ndef b = 2");
 });
 
+test("stripModule dedents multi-line (do …) children so top-level siblings sit flush-left", () => {
+  // operator seq-256 bug: the canonical printer indents `(do` children 2 spaces + blank-line-separates
+  // top-level defs; unwrapping must dedent every sibling, not just trim the first line (which left the
+  // second def indented 2 spaces — the "weird indentation").
+  const printed =
+    "(do\n" +
+    "  (def (dbl (: x Int64)) (* x 2))\n" +
+    "\n" +
+    "  (def (main) (dbl 21))\n" +
+    "\n" +
+    "  (export main))";
+  assert.equal(
+    stripModule(printed, "sexpr"),
+    "(def (dbl (: x Int64)) (* x 2))\n\n(def (main) (dbl 21))",
+  );
+  // nested body indentation is preserved RELATIVELY (only the common `(do`-child indent is removed)
+  const nested =
+    "(do\n" +
+    "  (def (f x)\n" +
+    "    (let ((y 1))\n" +
+    "      (+ x y)))\n" +
+    "\n" +
+    "  (def (main) (f 5))\n" +
+    "\n" +
+    "  (export main))";
+  assert.equal(
+    stripModule(nested, "sexpr"),
+    "(def (f x)\n  (let ((y 1))\n    (+ x y)))\n\n(def (main) (f 5))",
+  );
+});
+
 test("wrapPrefixOf is the UTF-8 byte offset of the snippet within the wrapped program", () => {
   const wrapped = wrapModule("(+ 2 3)", "sexpr");
   const prefix = wrapPrefixOf("(+ 2 3)", wrapped);

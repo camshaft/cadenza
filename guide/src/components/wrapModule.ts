@@ -176,8 +176,15 @@ export function stripModule(rendered: string, surface: Surface): string {
 
   if (surface === "sexpr") {
     // `(do <form…> (export …))` → the forms, minus the trailing export. Unwrap the outer `(do …)`.
+    // The canonical printer indents `(do` children 2 spaces (and blank-line-separates top-level defs), so
+    // the unwrapped body's SIBLING forms carry that 2-space indent on their continuation lines. `dedent`
+    // strips it uniformly so the unwrapped top-level forms sit flush-left; a lone `.trim()` fixes only the
+    // FIRST line, leaving later siblings indented 2 spaces (the "weird indentation" the reader sees). Same
+    // continuation-line fix the ML branch already applies to a multi-line `def main()` body below.
     const m = /^\(do\b([\s\S]*)\)\s*$/.exec(t);
-    const body = (m ? m[1] : t).trim().replace(/\(export\s+[^)]*\)\s*$/, "").trim();
+    const body = dedent(m ? m[1] : t)
+      .replace(/\(export\s+[^)]*\)\s*$/, "")
+      .trim();
     // A synthesized single `(def (main) <expr>)` (no other defs) → unwrap to the bare expression.
     const bare = /^\(def\s+\(main\)\s+([\s\S]*)\)$/.exec(body);
     if (bare && !/\(def\b|\(type\b/.test(bare[1])) return bare[1].trim();
