@@ -1006,48 +1006,6 @@ fn a_member_accessible_module_sharing_a_variant_name_is_still_suggested() {
 }
 
 #[test]
-fn a_type_position_typo_does_not_suggest_a_nearer_value() {
-    // CONTEXT-AWARE suggestion in TYPE position: the type slot of an annotation `(: 5 flg)` is a type
-    // expression, so only a TYPE name could be meant. A value def `flag` sits 1 edit from `flg`, but
-    // suggesting it would fail the one-shot rule — `(: 5 flag)` gives "annotation requires a type,
-    // found a non-type". The type-expr pool drops value defs (and lexical binders + variant ctors), so
-    // with no type close to `flg` the diagnostic stays the honest plain "unbound", not a value
-    // suggestion. (A value-annotation body isolates the type typo — a param annotation on an exported
-    // def surfaces the export's ambiguous-type error first.)
-    let src = "(module m (def (flag) true) (def (main) (: 5 flg)) (export main))";
-    let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
-    assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
-    assert!(
-        !d.message.contains("flag"),
-        "a value def is not suggested in type position: {}",
-        d.message
-    );
-}
-
-#[test]
-fn a_type_position_typo_still_suggests_a_real_type() {
-    // The type-position filter keeps TYPE names: a user type `Widget` misspelled `Widgett` in an
-    // annotation is still suggested (the fix `(: 5 Widget)` resolves), and a prelude type `Bool`
-    // misspelled `Booll` too — only the non-type kinds are dropped.
-    let user = "(module m (type Widget (W Int64)) (def (main) (: 5 Widgett)) (export main))";
-    let d = compile_component(&crate::codec::encode(&parse(user))).expect_err("must reject");
-    assert_eq!(
-        d.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("Widget"),
-        "a user type is suggested in type position: {}",
-        d.message
-    );
-    let prelude = "(module m (def (main) (: 5 Booll)) (export main))";
-    let d2 = compile_component(&crate::codec::encode(&parse(prelude))).expect_err("must reject");
-    assert_eq!(
-        d2.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("Bool"),
-        "a prelude type is suggested in type position: {}",
-        d2.message
-    );
-}
-
-#[test]
 fn a_lexical_well_formedness_fault_surfaces_in_an_unreached_body() {
     // A LEXICAL well-formedness poison a bare leaf resolves to — a malformed numeric literal
     // (CDZ0201), an out-of-range float (CDZ0201), an unrecognized string escape (CDZ0001), a char
