@@ -3018,23 +3018,9 @@ fn two_same_named_effects_are_distinct_not_conflated() {
     );
 }
 
-#[test]
-fn an_effect_reached_with_no_handler_or_delegation_is_cdz0401() {
-    // E1d: an effect operation performed with NEITHER an enclosing handler NOR a host delegation has
-    // no home — CDZ0401 (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error).
-    // A handled perform is reduced away before lowering, so any perform reaching lowering directly is
-    // ungranted. Reported cleanly (not as a leaked "unknown intrinsic" / unbound `effect-op`).
-    let src = "(do (effect Ask (op ask (-> Unit Int64))) \
-                   (def (main) (+ ((. Ask ask)) 1)) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("an ungranted effect must be rejected");
-    assert_eq!(
-        err.code.as_deref(),
-        Some("CDZ0401"),
-        "expected CDZ0401 (no home for a reached effect), got: {}",
-        err.message
-    );
-}
+// an_effect_reached_with_no_handler_or_delegation_is_cdz0401 (`(effect Ask …)` performed with no handler
+// nor delegation → CDZ0401) migrated to corpus 14b-effects-and-handlers "an effect operation reached with
+// neither a handler nor a delegation is rejected". rcdzc test deleted (corpus-covered, code-only).
 
 #[test]
 fn a_no_home_effect_carries_a_host_delegation_wrap_fix() {
@@ -4023,23 +4009,9 @@ fn the_handler_add_arm_fix_resume_value_type_checks_in_one_shot() {
     );
 }
 
-#[test]
-fn a_delegation_of_an_unreached_effect_is_cdz0404() {
-    // E2a: a `host` delegation naming an effect the body never reaches is latent authority — CDZ0404
-    // (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). `main`
-    // delegates `log` but its body is `42` (never performs `log.emit`), so the manifest would carry a
-    // granted-but-unexercised capability — rejected.
-    let src = "(do (effect log (op emit (-> String Unit))) \
-                   (def (main) (host (log) 42)) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("a delegation of an unreached effect must be rejected");
-    assert_eq!(
-        err.code.as_deref(),
-        Some("CDZ0404"),
-        "expected CDZ0404 (latent authority), got: {}",
-        err.message
-    );
-}
+// a_delegation_of_an_unreached_effect_is_cdz0404 (`(host (log) 42)` delegating `log` never performed →
+// CDZ0404 latent authority) migrated to corpus 14b-effects-and-handlers "a host delegation of an effect
+// the body never reaches is latent authority and is rejected". rcdzc test deleted (corpus-covered, code-only).
 
 #[test]
 fn a_misspelled_delegated_op_does_not_also_report_latent_authority() {
