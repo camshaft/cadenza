@@ -24,6 +24,7 @@ fn main() {
     let migrate = args.iter().any(|a| a == "--migrate");
     let registry = args.iter().any(|a| a == "--registry");
     let playground_registry = args.iter().any(|a| a == "--playground-registry");
+    let playground_bootstrap = args.iter().any(|a| a == "--playground-bootstrap");
 
     // --shred <out-dir> <cdz-bin> <ordered .cdzb list>: the guide shred (binary-AST-in). Positional args:
     // out-dir, the cdz binary (for the sexpr→ml render), then the chapter binary-AST files in case order.
@@ -66,6 +67,13 @@ fn main() {
     // from the sibling examples.sexp source-of-truth (fork1a). The positional arg is examples.ts.
     if playground_registry {
         playground::run_playground_registry(&path, check);
+        return;
+    }
+
+    // --playground-bootstrap: one-time fork1a migration — emit examples.sexp from the hand-authored
+    // examples.ts (in Rust; the operator's directive is no JS tooling). Positional arg is examples.ts.
+    if playground_bootstrap {
+        playground::run_playground_bootstrap(&path);
         return;
     }
 
