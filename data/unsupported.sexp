@@ -70,4 +70,13 @@
       (status blocked)
       (owner v-effects)
       (needs "the tail-resumptive fold to specialize a cross-function or non-tail resume")
-      (ref pr 6219))))
+      (ref pr 6219)))
+  (decline MatchOverHeapCollectionScrutinee
+    (code UnsupportedConstruct)
+    (reason "matching over a heap-backed Set or Map scrutinee")
+    (doc "Matching over a heap-backed Set/Map scrutinee — even a whole-value binder — needs a heap walk the compiler does not yet emit; surfaced by the dedup self-suppression fix (#6417).")
+    (blocked-on
+      (status blocked)
+      (owner v-inference)
+      (needs "match lowering that emits a heap walk over a Set/Map scrutinee (even a whole-value binder)")
+      (ref pr 6417))))

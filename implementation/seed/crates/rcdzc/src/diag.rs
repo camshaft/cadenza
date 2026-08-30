@@ -1514,7 +1514,7 @@ mod decline_catalog_tests {
         // a variant from ALL (breaking the "complete by construction" contract) reds here.
         assert_eq!(
             DeclineId::ALL.len(),
-            8,
+            9,
             "seed catalog size (grow deliberately as sites migrate)"
         );
         // Every key is stable kebab-case (lowercase ASCII + hyphens; no spaces/underscores/caps) — the
