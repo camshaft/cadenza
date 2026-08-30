@@ -56,13 +56,32 @@ what `cdz fmt` compares against.
 
 ## The gate
 
-- **Increment 2 (now):** a self-consistency check — `tests/syntax_corpus.rs` in `cadenza-syntax`
-  enforces the two equalities above against the reference reader/printer. Run it with `cargo test -p
-  cadenza-syntax --test syntax_corpus`. Regenerate goldens after editing an input (or adding a case)
-  with `CDZ_BLESS=1 cargo test -p cadenza-syntax --test syntax_corpus`.
-- **Increment 3 (next):** the dedicated syntax grader (`Pass`/`Todo`/`Fail`, additive
-  `.gate-baseline`) + per-case nix derivations (`.#checks.<arch>-linux.syntax-corpus`), following the
-  semantics corpus's per-case caching. That is the authoritative, cached, parallel gate.
+- **`cargo xtask gate-syntax`** — the corpus grader. It drives the reference `cdz` tool over every
+  case and prints an additive `pass`/`todo`/`fail` verdict per case:
+  - `pass` — `tree.sexp` and the format both match.
+  - `todo` — the reader DECLINES the input (a clean parse error): a not-yet-realized surface/feature,
+    never a false fail. (This is what lets the future Cadenza-parser rewrite land feature-by-feature:
+    a construct it hasn't reached declines → `todo`, it does not miscompile.)
+  - `fail` — a wrong tree/format, a missing `tree.sexp`, or an ICE.
+
+  Flags mirror the semantics `gate`: `--case <substr>` / `<case-dir>…` select a subset, `--save`
+  rewrites `.gate-baseline` from the current verdicts, `--check` compares to the baseline and fails on
+  a regression. Only `pass → not-pass` regresses; `todo → pass` is a silent additive tighten. A FULL
+  run (`--check` with no selection) also reds a **vanished** case — a baseline title with no
+  corresponding case (a silently dropped/renamed case); a subset run skips that check.
+
+- **`spec/syntax/.gate-baseline`** — the committed per-case verdicts (`<verdict>\t<title>`, sorted,
+  `merge=union`), identical in shape to `spec/semantics/.gate-baseline`.
+  **⚠ Durable hygiene rule:** a PR that RENAMES a case (its `<surface>/<name>` directory) or FLIPS a
+  verdict MUST co-update `.gate-baseline` in the SAME PR — otherwise the vanished/regression check
+  reds. Regenerate with `cargo xtask gate-syntax --save`.
+
+- **Increment 1/2 self-consistency check** — `tests/syntax_corpus.rs` in `cadenza-syntax` also
+  enforces the two equalities against the reference reader/printer (a bootstrapping guard). Run it with
+  `cargo test -p cadenza-syntax --test syntax_corpus`; regenerate goldens after editing an input (or
+  adding a case) with `CDZ_BLESS=1 cargo test -p cadenza-syntax --test syntax_corpus`.
+- **Increment 3b (next):** per-case nix derivations (`.#checks.<arch>-linux.syntax-corpus`) following
+  the semantics corpus's per-case caching — the authoritative, cached, parallel gate.
 
 ## How it drives the future Cadenza-parser rewrite
 
