@@ -3358,3 +3358,37 @@
              (def (apply (: evt (Record (: b (Option Outcome)) (: c Int64)))) (. evt c))
              (def (main) (apply #record((= b (Some 5)) (= c 9)))) (export main)))
   (error CDZ0203))
+
+; --- A type mismatch at an argument/annotation names the specific DELTA, not two full renders ----
+; When a compound value is passed where a differently-shaped compound is expected, the diagnostic names the
+; SPECIFIC differing facet — a tuple's arity delta or its differing element position, a collection's differing
+; AXIS (element / key / value) with expected-vs-actual — rather than dumping both full type renders for the
+; reader to diff. All CDZ0203. (Migrated from rcdzc a_tuple_arity_mismatch_names_the_element_counts +
+; a_collection_element_mismatch_names_the_differing_axis.)
+(case "a tuple passed with too FEW elements names the arity delta"
+  (input  (do (def (h (: t (Tuple Int64 Int64 Int64))) (. t 0)) (def (g) (h #tuple(1 2))) (export g)))
+  (error  CDZ0203 (message "expected a tuple with 3 elements, but this one has 2")))
+
+(case "a tuple passed with too MANY elements names the arity delta the other direction"
+  (input  (do (def (h (: t (Tuple Int64 Int64))) (. t 0)) (def (g) (h #tuple(1 2 3))) (export g)))
+  (error  CDZ0203 (message "expected a tuple with 2 elements, but this one has 3")))
+
+(case "a same-arity tuple element-type mismatch names the specific position, not an arity delta"
+  (input  (do (def (h (: t (Tuple Int64 Bool))) (. t 0)) (def (g) (h #tuple(1 2))) (export g)))
+  (error  CDZ0203 (message "element 1 should be Bool, but this one is Int64") (not "expected a tuple with")))
+
+(case "a list element-type mismatch names the element axis and offers no mechanical fix"
+  (input  (do (def (h (: xs (List Int64))) xs) (def (g) (h #list(true))) (export g)))
+  (error  CDZ0203 (message "its elements should be Int64, but these are Bool") (no-fix)))
+
+(case "a map KEY-type mismatch names the key axis"
+  (input  (do (def (h (: mp (Map String Int64))) mp) (def (g) (h #map((= 1 2)))) (export g)))
+  (error  CDZ0203 (message "its keys should be String, but these are Int64")))
+
+(case "a map VALUE-type mismatch names the value axis"
+  (input  (do (def (h (: mp (Map Int64 Int64))) mp) (def (g) (h #map((= 1 true)))) (export g)))
+  (error  CDZ0203 (message "its values should be Int64, but these are Bool")))
+
+(case "a map with BOTH axes wrong reports the leftmost (key) axis deterministically"
+  (input  (do (def (h (: mp (Map String Int64))) mp) (def (g) (h #map((= 1 true)))) (export g)))
+  (error  CDZ0203 (message "its keys should be String") (not "its values should be")))
