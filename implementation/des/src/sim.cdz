@@ -14,12 +14,10 @@ type Duration =
   | Duration(UInt64)
 
 // Unwrap an Instant to its raw nanosecond count.
-def inst-ns(t: Instant) = match t with
-  | Instant.Instant(n) => n
+def inst-ns(t: Instant) = let Instant.Instant(n) = t in n
 
 // Unwrap a Duration to its raw nanosecond count.
-def dur-ns(d: Duration) = match d with
-  | Duration.Duration(n) => n
+def dur-ns(d: Duration) = let Duration.Duration(n) = d in n
 
 // Duration constructors (bach's `5.s()` / `.ms()` / `.us()` / `.ns()`), scaling a count to ns.
 def secs(n: UInt64) = Duration.Duration(n * 1000000000)
