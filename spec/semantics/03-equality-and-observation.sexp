@@ -127,7 +127,7 @@
   ; dqe fix gate (the "max-FOLD-NaN regression" was this pre-existing leak, not the fix). Accepted per
   ; accept-vs-fix policy (value-correct + no-trap = interim known-leak, seq-278). Real fix = the general
   ; fold/list-reclaim drop-pass (v-core-opt batch / my #1 lever) -> tightens to 0. Was (live-objects 0).
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case "a NaN selected through a runtime if-join stays self-equal and unordered downstream"
   (doc    "NaN through a runtime if-JOIN, both disciplines checked downstream: (= r r) is the
