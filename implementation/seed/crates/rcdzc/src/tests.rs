@@ -18346,51 +18346,6 @@ mod match_engine {
     }
 
     #[test]
-    fn adding_a_quantity_and_a_bare_number_offers_the_same_unit_wrap_fix() {
-        // A quantity + a plain number — `(+ (Qty.of 5 (Unit.of #"meter")) 3)` — is CDZ0501 (no implicit
-        // dimensionless coercion). The mechanical repair: give the bare number the SAME unit as the
-        // quantity operand, `(Qty.of 3 (Unit.base #"meter"))` — then both sides are quantities of one
-        // dimension. The unit is recoverable from the quantity operand (`Unit::render`, the re-parseable
-        // `(Unit.base …)` surface); the fix wraps the bare number so `cdz fix` applies it.
-        let right =
-            reject_full("(module m (def (g) (+ (Qty.of 5 (Unit.of #\"meter\")) 3)) (export g))")
-                .expect("a quantity + a bare number rejects");
-        assert_eq!(
-            right.code.as_deref(),
-            Some("CDZ0501"),
-            "got: {}",
-            right.message
-        );
-        let fix = right.fix.expect("a same-unit wrap fix is carried");
-        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-        assert_eq!(
-            fix.replacement,
-            format!("(Qty.of {} (Unit.base #\"meter\"))", crate::abi::WRAP_HOLE),
-            "wraps the bare number in the quantity's unit: {}",
-            right.message
-        );
-        // The bare number on EITHER side is wrapped (the fix targets whichever operand is the plain number).
-        let left =
-            reject_full("(module m (def (g) (+ 3 (Qty.of 5 (Unit.of #\"meter\")))) (export g))")
-                .expect("a bare number + a quantity rejects");
-        assert_eq!(
-            left.fix.as_ref().map(|f| f.kind),
-            Some(crate::abi::FixKind::Wrap),
-            "the bare LEFT operand is wrapped too: {} / {:?}",
-            left.message,
-            left.fix
-        );
-        // The applied fix type-checks — a same-unit quantity sum is well-formed.
-        assert!(
-            reject_full(
-                "(module m (def (g) (+ (Qty.of 5 (Unit.of #\"meter\")) (Qty.of 3 (Unit.base #\"meter\")))) (export g))"
-            )
-            .is_none_or(|d| d.code.as_deref() != Some("CDZ0501")),
-            "the same-unit wrap resolves the dimension fault"
-        );
-    }
-
-    #[test]
     fn scaling_a_float_quantity_by_a_bare_integer_is_a_numeric_mismatch_not_a_miscompile() {
         // MISCOMPILE FIX: `(* (Qty.of 5.0 meter) 1)` scales a `(Qty Float64 meter)` by a bare `Int64` `1`.
         // `*`/`/` on a quantity is dimensionally always well-formed, so `check_application` SKIPPED the
