@@ -4649,8 +4649,13 @@
         # THROW rather than compare against a stray literal). Platform content address, §8 — not the old 64-hex.
         checks =
           let
+            # The 3 hash consts RELOCATED rcdzc/backend/wasm/runtime_abi.rs → cadenza-compile-abi (#6104,
+            # v-runtime/v-cdz-crate-split, unblocks the rcdzc-optional flip; runtime_abi.rs now RE-EXPORTS them,
+            # which is NOT a `pub const X = match{…}` decl this regex can read). runtime_hash.rs PRESERVES the
+            # exact `pub const X: &str = match option_env!(…) { Some(h)=>h, None=>"<45 base62>" }` shape, so the
+            # decl/marker split below still works — only the readFile PATH moves (the atomic flake half of #6104).
             abi = builtins.readFile
-              ./implementation/seed/crates/rcdzc/src/backend/wasm/runtime_abi.rs;
+              ./implementation/seed/crates/cadenza-compile-abi/src/runtime_hash.rs;
             recordedHash = constName:
               let
                 decl = "pub const " + constName + ": &str =";
