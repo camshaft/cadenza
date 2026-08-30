@@ -3380,6 +3380,18 @@ impl<'a> Parser<'a> {
             if self.at(Kind::Pipe) {
                 self.bump(); // `|` before the next arm
             } else {
+                // No more arms. Any own-line comment(s) we just drained do NOT lead a (nonexistent) next
+                // arm — they lead whatever FOLLOWS the match (e.g. the next top-level `def`, or a
+                // `// ---- SECTION` header between defs). Draining them here without an arm to attach to
+                // would DROP them (`cdz fmt` refuses — the seq-277 reader-attachment gap). Restore them to
+                // the current token's leading slot so the enclosing parser (the next `stmt`/element) picks
+                // them up. (At EOF the run is empty — a trailing comment is in `self.trailing`, handled by
+                // `program`.)
+                if !pending_leading.is_empty() && self.pos < self.leading.len() {
+                    let mut restored = std::mem::take(&mut pending_leading);
+                    restored.append(&mut self.leading[self.pos]);
+                    self.leading[self.pos] = restored;
+                }
                 break;
             }
         }
@@ -4770,6 +4782,48 @@ mod tests {
                 "nested-ctor arena not preserved across ML round-trip\n--- reprint ---\n{printed}"
             );
         }
+    }
+
+    #[test]
+    fn an_own_line_comment_after_a_match_bodied_def_leads_the_next_def_not_dropped() {
+        // Regression (seq-277/C3): a `match`-bodied def followed by an own-line comment then the next def
+        // USED TO DROP the comment — `match_expr`'s arm loop drained it as the "next arm's" leading run
+        // and, finding no next arm (a `def`, not `|`), DISCARDED it (`cdz fmt` refused: "would drop N
+        // comment(s)"). It must instead be restored to lead the FOLLOWING form. This closes db-demand.cdz's
+        // 10 dropped comments (all section headers after match-bodied defs).
+        let src = "def a(x) = match x with\n  | 0 => 1\n  | _ => 2\n\n\
+                   // ---- SECTION between defs\n\
+                   def b() = 2\n\nexport { a, b }\n";
+        let count_comments = |a: &Arenas| {
+            (0..a.structure.len() as u32)
+                .map(StructId)
+                .filter(|&id| a.head_name(id) == Some("comment"))
+                .count()
+        };
+        let p = read_ml(src);
+        assert!(p.ok(), "parses cleanly: {:?}", p.errors);
+        assert_eq!(
+            count_comments(&p.arenas),
+            1,
+            "the section comment is attached as a (comment …) node, not dropped"
+        );
+        // Round-trips: reprint to ML + reparse keeps the comment (this is what `cdz fmt`'s drop-guard checks).
+        let printed = crate::printer::print(&p.arenas, 100);
+        let reparsed = read_ml(&printed);
+        assert!(
+            reparsed.ok(),
+            "reprint reparses: {:?}\n{printed}",
+            reparsed.errors
+        );
+        assert_eq!(
+            count_comments(&reparsed.arenas),
+            1,
+            "the comment survives the ML round-trip\n{printed}"
+        );
+        assert!(
+            printed.contains("// ---- SECTION between defs"),
+            "comment text is re-emitted:\n{printed}"
+        );
     }
 
     #[test]
