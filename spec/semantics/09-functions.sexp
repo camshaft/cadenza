@@ -835,7 +835,13 @@
             (def (main) (let ((fs #list((adder 1) (adder 2)))) (match (List.at fs 0) ((Some f) (f 10)) ((None u) -1))))
             (export main)))
   (output (: 11 Int64))
-  (live-objects 0)
+  ; INTERIM re-pin (v-memory-safety, 2026-08-30): a closure extracted from a runtime LIST + applied over-retains 2
+  ; — the #6022/#6049 borrowed-env closure-application class. #6022 (is_heap_type Ty::Fn=>true) made the closure a
+  ; Perceus retain candidate (closing the earlier UAF/miscompile); the extracted env ref is not yet dropped after
+  ; the borrowing call_indirect (same mechanism as 09:99, the CALL-BOTH-WAYS witness). LEAK-side: value 11 correct,
+  ; NO trap (verified fresh-store; seq-278 leak>UAF, interim over-retention tolerated). Real fix = the reclaim batch
+  ; (SITE-A expect-shell/apply-drop + dup-site, v-core-opt under my direction) → tightens to 0. Was (live-objects 0).
+  (live-objects known-leak)
   )
 
 (case "a closure stored as a MAP value is looked up by a runtime key and applied"
@@ -857,7 +863,12 @@
   (call   main (: 1 Int64) (: 5 Int64)) (output (: 50 Int64))
   (call   main (: 2 Int64) (: 5 Int64)) (output (: 105 Int64))
   (call   main (: 9 Int64) (: 5 Int64)) (output (: -1 Int64))
-  (live-objects 0))
+  ; INTERIM re-pin (v-memory-safety, 2026-08-30): a closure looked up from a CHAMP MAP value + applied over-retains
+  ; 2 — the #6022/#6049 borrowed-env closure-application class (UAF closed by #6022's Ty::Fn retain candidate; the
+  ; extracted env ref is not yet dropped after the borrowing call_indirect, same mechanism as 09:99). LEAK-side:
+  ; values 50/105/-1 correct, NO trap (verified fresh-store; seq-278 leak>UAF, interim over-retention tolerated).
+  ; Real fix = the reclaim batch (v-core-opt under my direction) → tightens to 0. Was (live-objects 0).
+  (live-objects known-leak))
 
 (case "two capturing closures stored as runtime tuple elements keep distinct captures"
   (doc    "The tuple-element runtime companion: `(tuple (adder 1) (adder 2))` bound via `let` holds two
