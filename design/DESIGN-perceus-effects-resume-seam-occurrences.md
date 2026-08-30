@@ -166,6 +166,21 @@ case (`crn1`/`(use-k k)` shape) under `--live-objects` and check for 0 (already-
 This narrows what I owe v-memory-safety's inventory — flag it as "partially Increment-A-served, census
 pending" rather than wholesale "resume-seam-pending gated on B" once censused.
 
+**✅ SECOND ENTRY POINT (`#st` `PayloadNode`) ALSO VERIFIED — a70, symmetric with the Captured one.**
+The `#st` value/state tuple (built by `build_value_state_tuple`, effects/mod.rs:2476, unpacked by
+tuple-`Proj` per dispatch) lowers to `Core::Proj`/`Core::SumPayload` occurrences that the EXISTING
+per-node collector `collect_consuming_payload_sites_expr`/`_cont` (reclaim.rs:786-840) already walks BY
+NODE ID: it collects every such occurrence rooted at the scrutinee, classifies each per consuming
+position (`consuming` flag, same borrow/consume verdict as `sum_payload_child_escapes_expr`), and
+inserts ONLY the consuming compound-heap-leaf sites into `dup_sites` (the snowflake `EscapeTarget::Node`
+SumPayload-escape, #5833; memoized #6168). So — exactly like the Captured entry point — the `PayloadNode`
+occurrences get correct per-escape dups under the existing machinery for the DISTINCT-node case; the only
+Increment-B-gated residual is a SINGLE `Proj`/`SumPayload` node consumed twice. **Net: design Next-step #2
+is COMPLETE for BOTH §2 entry points — neither needs a new classifier arm; both are served per-node
+today, and the genuine Increment-B need for the whole slice is uniformly just the shared-node-consumed-
+twice multiset.** Impl reduces to: confirm the effects-reified Core actually routes through these two
+collectors (the empirical `--live-objects` census), then wire only the shared-node residual behind B.
+
 ## 4. glb1 = the §2.3 borrowed-N-escapes acceptance case
 
 glb1 (the collapse-continuation join-point duplication) in post-splice Core is a `Core::CallClosure`
