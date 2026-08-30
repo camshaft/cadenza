@@ -1806,6 +1806,19 @@ fn emit_grounded_float(
     Ok(rendered)
 }
 
+/// The Int/Float grounding width of a homogeneous-container SLOT type (a List/Set element or a Map key/value):
+/// a narrow `Int` width to feed [`emit_grounded`], or a `Float` width to feed [`emit_grounded_float`], so a
+/// bare deferred-width literal element/key/value is emitted at the container's SETTLED width rather than its
+/// own `Int64`/`Float64` default — the fix for the mixed-width `vec![<f64>, <f32>]` / `BTreeMap` E0308 the
+/// wasm side already avoids via `box_op_for`. `(None, None)` for a non-numeric or unresolved slot.
+fn container_slot_grounding(t: &Ty) -> (Option<IntTy>, Option<u32>) {
+    match t.strip_nominal() {
+        Ty::Int(it) => (Some(*it), None),
+        Ty::Float(ft) => (None, Some(ft.ground_width())),
+        _ => (None, None),
+    }
+}
+
 fn emit_grounded(
     db: &mut Db,
     id: StructId,
@@ -2612,18 +2625,25 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // carrying) — the List twin of the Map entry-key/value + Set-element sibling-width render
             // (corpus-bugfix, fuzzer cdz-smith differential). Only INTEGER elements ground; a non-int
             // element type leaves the bare emit (a wrong render would still error LOUD at rustc).
-            let elem_it: Option<IntTy> = match type_of(db, id).strip_nominal() {
-                Ty::List(elem) => match elem.strip_nominal() {
-                    Ty::Int(it) => Some(*it),
-                    _ => None,
-                },
-                _ => None,
+            // FLOAT twin of the integer element grounding (fuzzer cdz-smith wasm-vs-rust E0308): a bare
+            // deferred-width float element defaults its OWN `type_of` to Float64 (`f64::from_bits(…)`), but a
+            // homogeneous `(list 1.0 (: 2.0 Float32))` unifies to `List Float32` (inference settles the
+            // sibling width), so a bare `1.0` next to an f32 sibling would emit `vec![<f64>, <f32>]` into a
+            // `Vec<f32>` → rustc E0308. Ground each element to the list's SETTLED element width — Int via
+            // `emit_grounded`, Float via `emit_grounded_float` (both no-ops when the element already carries
+            // that width). The wasm side follows the settled width via `box_op_for`; the rust `vec!` must too.
+            let (elem_it, elem_fw) = match type_of(db, id).strip_nominal() {
+                Ty::List(elem) => container_slot_grounding(elem),
+                _ => (None, None),
             };
             let mut parts = Vec::with_capacity(elems.len());
             for &e in elems.iter() {
-                let part = match elem_it {
-                    Some(it) => emit_grounded(db, e, it, env, use_ctx)?,
-                    None => emit(db, e, env, use_ctx)?,
+                let part = if let Some(it) = elem_it {
+                    emit_grounded(db, e, it, env, use_ctx)?
+                } else if let Some(fw) = elem_fw {
+                    emit_grounded_float(db, e, fw, env, use_ctx)?
+                } else {
+                    emit(db, e, env, use_ctx)?
                 };
                 parts.push(part);
             }
@@ -2736,32 +2756,35 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // to the map's key/value type (`emit_grounded` renders a bare literal at that width, no-op when
             // already width-carrying) — the Map twin of the Set-element / list-element sibling-width render
             // (adv-68, v-inference: the emit half of #1780's CDZ0302 range check).
-            let (key_it, val_it): (Option<IntTy>, Option<IntTy>) =
-                match type_of(db, id).strip_nominal() {
-                    Ty::Map(mk, mv) => {
-                        let ki = match mk.strip_nominal() {
-                            Ty::Int(it) => Some(*it),
-                            _ => None,
-                        };
-                        let vi = match mv.strip_nominal() {
-                            Ty::Int(it) => Some(*it),
-                            _ => None,
-                        };
-                        (ki, vi)
-                    }
-                    _ => (None, None),
-                };
+            // Both Int AND Float widths (the float twin closes the same wasm-vs-rust E0308 the list-element
+            // fix does: a bare deferred-width Float key/value next to an f32-settled sibling would emit an
+            // f64 into an f32-typed `BTreeMap` slot). `emit_grounded`/`emit_grounded_float` are no-ops when
+            // the entry already carries the settled width.
+            let (key_it, key_fw) = match type_of(db, id).strip_nominal() {
+                Ty::Map(mk, _) => container_slot_grounding(mk),
+                _ => (None, None),
+            };
+            let (val_it, val_fw) = match type_of(db, id).strip_nominal() {
+                Ty::Map(_, mv) => container_slot_grounding(mv),
+                _ => (None, None),
+            };
             let mut lines = String::new();
             for (k, v) in entries.iter() {
-                let ke = match key_it {
-                    Some(it) => emit_grounded(db, *k, it, env, ctx)?,
-                    None => emit(db, *k, env, ctx)?,
+                let ke = if let Some(it) = key_it {
+                    emit_grounded(db, *k, it, env, ctx)?
+                } else if let Some(fw) = key_fw {
+                    emit_grounded_float(db, *k, fw, env, ctx)?
+                } else {
+                    emit(db, *k, env, ctx)?
                 };
                 let kt = type_of(db, *k);
                 let ke = wrap_ord_key(&db.name_ctx(), ke, &kt);
-                let ve = match val_it {
-                    Some(it) => emit_grounded(db, *v, it, env, ctx)?,
-                    None => emit(db, *v, env, ctx)?,
+                let ve = if let Some(it) = val_it {
+                    emit_grounded(db, *v, it, env, ctx)?
+                } else if let Some(fw) = val_fw {
+                    emit_grounded_float(db, *v, fw, env, ctx)?
+                } else {
+                    emit(db, *v, env, ctx)?
                 };
                 lines.push_str(&format!("__m.insert({ke}, {ve}); "));
             }
@@ -3065,18 +3088,20 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // each element to the set's element type (`emit_grounded` renders a bare literal at that width and
             // is a no-op when the element already carries the width) — the Set twin of the list-element
             // sibling-width render (#1766) and the compound-slot literal grounding above (adv-68, v-inference).
-            let set_elem_ty: Option<IntTy> = match type_of(db, id).strip_nominal() {
-                Ty::Set(elem) => match elem.strip_nominal() {
-                    Ty::Int(it) => Some(*it),
-                    _ => None,
-                },
-                _ => None,
+            // Both Int AND Float element widths (the float twin closes the same wasm-vs-rust E0308 as the
+            // list/map fix — a bare deferred-width float element beside an f32-settled sibling).
+            let (set_elem_it, set_elem_fw) = match type_of(db, id).strip_nominal() {
+                Ty::Set(elem) => container_slot_grounding(elem),
+                _ => (None, None),
             };
             let mut lines = String::new();
             for e in elems.iter() {
-                let ee = match set_elem_ty {
-                    Some(it) => emit_grounded(db, *e, it, env, ctx)?,
-                    None => emit(db, *e, env, ctx)?,
+                let ee = if let Some(it) = set_elem_it {
+                    emit_grounded(db, *e, it, env, ctx)?
+                } else if let Some(fw) = set_elem_fw {
+                    emit_grounded_float(db, *e, fw, env, ctx)?
+                } else {
+                    emit(db, *e, env, ctx)?
                 };
                 // Wrap a bare-float element in `CdzF64::new` (the set's element type is `CdzF64`).
                 let et = type_of(db, *e);
