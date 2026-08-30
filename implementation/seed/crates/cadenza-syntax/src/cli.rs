@@ -649,9 +649,14 @@ impl From<Format> for CommentLexis {
 /// The number of DOC and plain-COMMENT markers in `text`, per the surface's [`CommentLexis`], counting a
 /// marker ANYWHERE on a line (leading OR trailing — `x = 1 // note` / `(f x) ; note` both count),
 /// scanning raw text and SKIPPING a marker inside a `"…"` string or `#\…` char literal (so a `//` in a
-/// URL, or a `;` inside a `";"` string, is not miscounted). At most one marker per line (a comment runs
-/// to end-of-line). For `SlashSlash`, `///` counts ONLY as a doc; `Semicolon` has no doc distinction (all
-/// s-expr `;` are plain comments). Returned as `(doc, comment)`.
+/// URL, or a `;` inside a `";"` string, is not miscounted). String state is tracked ACROSS lines, so a
+/// marker on a CONTINUATION line of a MULTI-LINE string literal is skipped too — e.g. a `;` inside a
+/// multi-line `(doc "…; …")` s-expr string, or a `//` inside a multi-line ML string, is not miscounted as
+/// a comment. (Without this, re-wrapping such a doc string to a different width shifts which continuation
+/// lines carry a `;`, so the count drifts and the guard falsely refuses — the exact false-positive that
+/// blocked `cdz fmt` on every heavily-doc-commented `spec/semantics/*.sexp`.) At most one marker per line
+/// (a comment runs to end-of-line). For `SlashSlash`, `///` counts ONLY as a doc; `Semicolon` has no doc
+/// distinction (all s-expr `;` are plain comments). Returned as `(doc, comment)`.
 ///
 /// Used by the WRITE paths of `fmt`/`normalize` to detect a reprint that DROPS a comment marker — the
 /// exact signature of a reader comment-attachment gap (a comment the reader loses is invisible to any
@@ -665,10 +670,13 @@ fn comment_counts(text: &str, lexis: CommentLexis) -> (usize, usize) {
     }
     let mut docs = 0;
     let mut comments = 0;
+    // `in_str` is carried ACROSS lines so a multi-line string literal's continuation lines are scanned as
+    // string content (a marker inside them is skipped), not as fresh code. A comment marker is only ever
+    // reached while `!in_str`, and we `break` at it, so `in_str` is never corrupted by the break.
+    let mut in_str = false;
     for line in text.lines() {
         let bytes = line.as_bytes();
         let mut i = 0;
-        let mut in_str = false;
         while i < bytes.len() {
             let c = bytes[i];
             if in_str {
@@ -1750,6 +1758,13 @@ mod tests {
             comment_counts("let u = \"a//b\" // real", SlashSlash),
             (0, 1)
         );
+        // A `//` on a CONTINUATION line of a MULTI-LINE ML string is skipped too (string state carried
+        // across lines) — only the real trailing `// real` counts.
+        assert_eq!(
+            comment_counts("let u = \"a\n b//c\nd\" // real", SlashSlash),
+            (0, 1),
+            "// inside a multi-line string continuation is not a comment"
+        );
         // Only the FIRST marker per line counts (a `//` runs to end-of-line).
         assert_eq!(comment_counts("x // a // b", SlashSlash), (0, 1));
         // No markers.
@@ -1765,6 +1780,24 @@ mod tests {
             comment_counts("(f \"a;b\")", Semicolon),
             (0, 0),
             "; in a string"
+        );
+        // A `;` on a CONTINUATION line of a MULTI-LINE string is NOT a comment — string state is carried
+        // across lines. (The false-positive that refused every doc-commented `spec/semantics/*.sexp`: a
+        // multi-line `(doc "…; …")` whose continuation line's `;` was miscounted as a comment.) Only the
+        // real leading `; c` counts.
+        assert_eq!(
+            comment_counts(
+                "; c\n(doc \"one; still string\n two; also string\")",
+                Semicolon
+            ),
+            (0, 1),
+            "; inside a multi-line string continuation is not a comment"
+        );
+        // The closing `"` re-opens code, so a genuine trailing `;` AFTER a multi-line string still counts.
+        assert_eq!(
+            comment_counts("(doc \"a\nb\") ; real", Semicolon),
+            (0, 1),
+            "trailing ; after a multi-line string still counts"
         );
         assert_eq!(
             comment_counts("(f x) // not a sexpr comment", Semicolon),
@@ -1930,6 +1963,33 @@ mod tests {
         assert!(
             commented_s.contains("; header"),
             "the ; comment must survive fmt, got: {commented_s:?}"
+        );
+
+        // The false-positive that refused EVERY doc-commented `spec/semantics/*.sexp`: a multi-line
+        // `(doc "…; …")` string whose CONTINUATION line carries a `;`. The reader preserves the real
+        // `; header` comment, and the doc string's content is byte-preserved (its literal newline becomes a
+        // `\n` escape), so the guard must NOT refuse. Pin both: the real comment survives AND
+        // `would_drop_comments(src, fmt(src))` is `None`.
+        let src =
+            b"; header\n(case \"x\"\n  (doc \"one; still string\n        two; also string\"))\n";
+        let formatted = {
+            let mut b = fmt_surface(src, Format::Sexpr, Options::default())
+                .expect("multi-line doc-string .sexp formats");
+            b.push(b'\n');
+            b
+        };
+        let formatted_s = String::from_utf8_lossy(&formatted);
+        assert!(
+            formatted_s.contains("; header"),
+            "the ; comment must survive fmt over a multi-line doc string, got: {formatted_s:?}"
+        );
+        assert!(
+            formatted_s.contains("one; still string\\n"),
+            "the multi-line doc string content is byte-preserved (newline -> \\n), got: {formatted_s:?}"
+        );
+        assert!(
+            would_drop_comments(src, &formatted, CommentLexis::Semicolon).is_none(),
+            "the guard must NOT falsely refuse a multi-line doc-string .sexp reprint: {formatted_s:?}"
         );
     }
 
