@@ -167,9 +167,11 @@
   (doc    "`(: 5 42)` puts the integer literal `42` — a VALUE, not a type — in type position. A value is
            not a type, so the annotation is meaningless and rejects (CDZ0203, 'expected a type'). Pins
            the non-name facet of the same missing validation: any non-type operand rejects, not just an
-           unbound name. Accepted-and-ignored (ran to 5) before the type-operand check.")
+           unbound name. Accepted-and-ignored (ran to 5) before the type-operand check. A LITERAL has no
+           name to blame, so it keeps the GENERIC `found a non-type` phrasing — not the `X is a value, not a
+           type` naming a bound value name earns (below).")
   (input  (do (def (main) (: 5 42)) (export main)))
-  (error  CDZ0203))
+  (error  CDZ0203 (message "found a non-type")))
 
 (case "a value compound in a type annotation's type position is rejected"
   (doc    "`(: 5 (tuple 1 2))` puts a VALUE tuple — not a type — in type position, the compound-value
@@ -578,6 +580,24 @@
            a_non_type_in_a_type_annotation_position.)")
   (input  (do (def (f (: x 42)) x) (def (main) (f 7)) (export main)))
   (error  CDZ0203))
+
+; A BOUND VALUE name misused as a type — `(: x helper)` where `helper` is a value `def`, distinct from an
+; UNBOUND name (`foo` → CDZ0101 above) and a LITERAL (`42` → the generic "expected a type"). It IS bound, but
+; to a value, not a type, so CDZ0203 NAMES it: "`helper` is a value, not a type" (the type-position analogue
+; of the apply-position category message), across all THREE annotation sites — a parameter annotation, a
+; value annotation, and a let-binder annotation (three parallel producers that must share the naming).
+; (Migrated from rcdzc a_value_name_in_type_position_is_named_a_value_not_a_generic_non_type.)
+(case "a bound value name as a parameter's annotation type is named a value, not a type"
+  (input  (do (def helper 5) (def (f (: x helper)) x) (export helper)))
+  (error  CDZ0203 (message "`helper` is a value, not a type")))
+
+(case "a bound value name as a value's annotation type is named a value, not a type"
+  (input  (do (def helper 5) (def (main) (: 3 helper)) (export main)))
+  (error  CDZ0203 (message "`helper` is a value, not a type")))
+
+(case "a bound value name as a let-binder annotation type is named a value, not a type"
+  (input  (do (def helper 5) (def (main) (let (((: x helper) 3)) x)) (export main)))
+  (error  CDZ0203 (message "`helper` is a value, not a type")))
 
 (case "a genuine type mismatch in an annotation still rejects (no over-rejection)"
   (doc    "The no-over-rejection control's REJECT half as a standalone case: `(: 5 Bool)` names a real type
