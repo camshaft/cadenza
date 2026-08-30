@@ -212,9 +212,11 @@ export default function PlaygroundPage() {
         const rustAsync = await emitRust(src, srf, true).catch((e) => `// error: ${e}`);
         setCompiled((c) => (c ? { ...c, rustAsync } : c));
       } else if (view === "cadenza") {
-        // The lowered-optimized Cadenza (`--target cadenza`), printed as sexpr. A declined program comes
-        // back as a `; declined: …` note (not an error) — shown verbatim.
-        const cadenza = await emitCadenza(src, srf, "sexpr").catch((e) => `; error: ${e}`);
+        // The lowered-optimized Cadenza (`--target cadenza`), printed in the buffer's CURRENT surface (ml
+        // or sexpr) so the Compiled/Cadenza view honors the global syntax toggle like every other view —
+        // not hardcoded sexpr (operator seq-255). A declined program comes back as a `; declined: …` note
+        // (not an error) — shown verbatim.
+        const cadenza = await emitCadenza(src, srf, srf).catch((e) => `; error: ${e}`);
         setCompiled((c) => (c ? { ...c, cadenza } : c));
       }
     },
