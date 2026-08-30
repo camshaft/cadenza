@@ -2025,23 +2025,6 @@ fn a_refutable_ctor_list_element_still_requires_a_catch_all() {
 }
 
 #[test]
-fn a_non_sum_list_element_pattern_gets_no_spurious_variant_suggestion() {
-    // WHITE-BOX RESIDUAL of the misspelled-list-element-variant suggest (its positive halves — the
-    // near-miss "did you mean `Add`?" + rename fix and the far-miss "closest matches" — are now the
-    // corpus 02 list-element-variant cases). Keeps the NEGATIVE the corpus cannot assert: a NON-SUM
-    // element type gets NO variant suggestion (a message-ABSENCE).
-    let non_sum = reject_full(
-            "(module m (def (f (: xs (List Int64))) (match xs ((list (Foo) .. r) 1) (_ 0))) (export f))",
-        )
-        .expect("must reject");
-    assert!(
-        !non_sum.message.contains("did you mean"),
-        "a non-sum element type gets no variant suggestion: {}",
-        non_sum.message
-    );
-}
-
-#[test]
 fn a_map_list_element_dispatches_by_key_presence() {
     // The MAP twin of the refutable-ctor list element: a list of key-value records matched by KEY in one
     // arm — `(match xs ((list (map (1 a)) .. rest) a) …)`. A `(map (k v)…)` element is REFUTABLE (matches

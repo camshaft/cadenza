@@ -4993,6 +4993,16 @@
               (def (f (: xs (List Op))) (match xs (#list((Zzz) .. r) 1) (_ 0))) (export f)))
   (error  CDZ0201 (message "closest matches") (no-fix)))
 
+(case "a constructor-pattern list element over a NON-SUM element type gets no spurious variant suggestion"
+  (doc    "The variant did-you-mean fires only when the element type is a SUM whose variant set the closed
+           suggestion pool can search. A `(Foo)` constructor pattern over a NON-SUM element type (here the
+           list is `(List Int64)`, a scalar) is the ordinary 'not a tuple, record, or constructor' reject
+           (CDZ0201) and carries NO spurious variant did-you-mean — there is no sum to draw a candidate from.
+           Pinned by `(not \"did you mean\")`. (Migrated from rcdzc
+           a_non_sum_list_element_pattern_gets_no_spurious_variant_suggestion.)")
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list((Foo) .. r) 1) (_ 0))) (export f)))
+  (error  CDZ0201 (message "constructor") (not "did you mean")))
+
 ; The refutable / ill-shaped / non-linear rejections. A binding position has no alternative arm, so its
 ; pattern MUST be irrefutable and its shape MUST match the value's type (core-semantics.md #A Binding
 ; Position Accepts An Irrefutable Pattern).
