@@ -308,7 +308,43 @@ pub fn print_pretty_width(arenas: &Arenas, width: usize) -> String {
 /// `width` columns — the pretty counterpart of [`print_from`].
 pub fn print_pretty_from(arenas: &Arenas, id: StructId, width: usize) -> String {
     let mut doc = Doc::new();
-    pretty_node(arenas, id, &mut doc, true);
+    pretty_node(arenas, id, &mut doc, true, false);
+    doc.render(width)
+}
+
+// ============================================================================
+// Structural renderer (`render_sexpr`) — the canonical golden-generation function for the
+// `spec/syntax/` parser/printer corpus (DESIGN-parser-test-corpus.md §2, Increment 1).
+//
+// It is `print_pretty*` with ONE difference: reader comment wrappers render as ORDINARY
+// `(comment "text" form)` / `(comment-after "text" form)` lists, NOT as `;` line-comments. The
+// pretty/fmt surface collapses comment nodes back to `;` — correct for FORMATTING (a `;` is what a
+// human reads), but wrong for a parse-tree GOLDEN, because `;` is trivia the reader could drop, so a
+// golden written with `;` would not pin the comment as part of the compared tree. The structural form
+// makes every comment an explicit node, so a golden pins the FULL arena the parser built — and it
+// re-reads to the identical arena (a `(comment …)` list reads back to the same `comment` node a
+// `;`/`//` comment produces), so the golden is unambiguous and round-trippable.
+//
+// `doc`/`module-doc` nodes need no special handling: neither printer ever special-cased them, so they
+// already render as ordinary `(doc …)` / `(module-doc …)` lists in BOTH modes.
+// ============================================================================
+
+/// Render `arenas` as the STRUCTURAL golden s-expression (multi-line, comment nodes as explicit lists),
+/// targeting the default width — the canonical `tree.sexp` generator for the `spec/syntax/` corpus.
+pub fn render_sexpr(arenas: &Arenas) -> String {
+    render_sexpr_width(arenas, DEFAULT_WIDTH)
+}
+
+/// [`render_sexpr`] targeting `width` columns.
+pub fn render_sexpr_width(arenas: &Arenas, width: usize) -> String {
+    render_sexpr_from(arenas, arenas.root, width)
+}
+
+/// [`render_sexpr`] of one occurrence (a sub-form at `id`) targeting `width` columns — the structural
+/// counterpart of [`print_pretty_from`].
+pub fn render_sexpr_from(arenas: &Arenas, id: StructId, width: usize) -> String {
+    let mut doc = Doc::new();
+    pretty_node(arenas, id, &mut doc, true, true);
     doc.render(width)
 }
 
@@ -344,7 +380,14 @@ pub fn print_pretty_program(arenas: &Arenas, width: usize) -> String {
 /// nested child, so a `(do …)` used as a function body deeper in the tree keeps its statements
 /// tightly single-broken. A `module` blank-separates its members at ANY depth (a module body is
 /// always a declaration list).
-fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
+///
+/// `structural` selects the comment rendering. When `false` (the default, `print_pretty*`), reader
+/// comment wrappers re-emit as `;`-syntax (`(comment "t" node)` → `; t` above `node`) so a commented
+/// `.sexp` round-trips byte-for-byte through the fmt surface. When `true` (`render_sexpr`, the golden-
+/// corpus renderer), those wrappers instead fall through to the GENERIC list path and print as ordinary
+/// `(comment "t" node)` / `(comment-after "t" node)` lists — the STRUCTURAL form the `spec/syntax/`
+/// parse-tree goldens require, where a comment is part of the compared tree, not droppable `;` trivia.
+fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool, structural: bool) {
     // An EXPLICIT work stack, not native recursion: `pretty_node` BUILDS the Oppen `Doc` token stream by
     // walking the arena — one frame per nesting level in the recursive form — and `print_pretty` runs on
     // arenas from ANY source, including a decoded binary AST that `codec::decode` accepts at ARBITRARY
@@ -447,7 +490,8 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
                     // prints `; text` on its own line ABOVE the node; a TRAILING `(comment-after "text" node)`
                     // prints ` ; text` SAME-LINE after it. Both peel via `strip_comments`, so consumers are
                     // unaffected. Grouped in a `cbox(0)` so the node stays at the comment's indent level.
-                    if let Some(tail) = a.as_form(id, "comment")
+                    if !structural
+                        && let Some(tail) = a.as_form(id, "comment")
                         && tail.len() == 2
                         && is_string_leaf(a, tail[0])
                     {
@@ -458,7 +502,8 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
                         stack.push(Work::Node(tail[1], top));
                         continue;
                     }
-                    if let Some(tail) = a.as_form(id, "comment-after")
+                    if !structural
+                        && let Some(tail) = a.as_form(id, "comment-after")
                         && tail.len() == 2
                         && is_string_leaf(a, tail[0])
                     {
@@ -2882,6 +2927,71 @@ mod tests {
             assert!(
                 a.structurally_eq(&read(&compact).unwrap()),
                 "compact round-trips for {src:?} (printed {compact:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn render_sexpr_emits_structural_comment_nodes_and_round_trips() {
+        // `render_sexpr` is the golden-generation function for the `spec/syntax/` parser corpus
+        // (DESIGN-parser-test-corpus.md §2, Increment 1). Unlike the fmt/pretty surface — which collapses
+        // reader comment wrappers back to `;` trivia — it renders them as ORDINARY `(comment "t" node)` /
+        // `(comment-after "t" node)` lists, so a comment is part of the compared parse tree, not droppable
+        // trivia. For each comment-bearing input assert: (a) the structural render has NO `;` line-comment
+        // and DOES carry a `(comment`/`(comment-after` list; (b) it re-reads to a structurally-equal arena
+        // (the list form reads back to the same comment node); (c) it is byte-idempotent.
+        for src in [
+            "; a header\n(def (f) 1)",     // leading own-line, top level
+            "(def (f) 1) ; trailing note", // trailing same-line, top level
+            "(do\n  ; lead one\n  (def (f) 1)\n  ; lead two\n  (def (g) 2))", // stacked leading in a list
+            "(match e\n  ; arm note\n  ((Some n) n)\n  ((None _) 0))", // comment before a list element
+            "(comment \"note\" (f 1))", // an explicit structural comment list re-reads + re-renders as one
+        ] {
+            let a = read(src).unwrap();
+            let rendered = render_sexpr(&a);
+            // (a) Structural, not `;`: a comment is an explicit list head, and no `;` line survives.
+            assert!(
+                rendered.contains("(comment"),
+                "render_sexpr must emit a `(comment …)` list for {src:?}: {rendered:?}"
+            );
+            assert!(
+                !rendered.contains(';'),
+                "render_sexpr must NOT emit `;` trivia for {src:?}: {rendered:?}"
+            );
+            // (b) Re-reads to a structurally-equal arena — the golden is round-trippable.
+            let b = read(&rendered).unwrap();
+            assert!(
+                a.structurally_eq(&b),
+                "render_sexpr round-trips structurally for {src:?}\n  a:        {}\n  rendered: {rendered}\n  b:        {}",
+                print(&a),
+                print(&b)
+            );
+            // (c) Byte-idempotent: rendering the re-read arena reproduces the same golden.
+            assert_eq!(
+                render_sexpr(&b),
+                rendered,
+                "render_sexpr is idempotent for {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_sexpr_matches_pretty_when_no_comments() {
+        // With no comment wrappers to expand, the structural renderer is IDENTICAL to `print_pretty` —
+        // the only divergence is comment handling. This pins that `render_sexpr` is a faithful superset:
+        // it changes nothing about non-comment layout, so the parse-tree golden of a comment-free case is
+        // exactly the pretty form.
+        for src in [
+            "(def (f) 1)",
+            "(let ((x (+ 1 (* 2 3)))) x)",
+            "(do (def (f) 1) (def (g) 2))",
+            "#list(1 2 3)",
+        ] {
+            let a = read(src).unwrap();
+            assert_eq!(
+                render_sexpr(&a),
+                print_pretty(&a),
+                "render_sexpr == print_pretty for the comment-free {src:?}"
             );
         }
     }
