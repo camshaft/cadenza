@@ -23,6 +23,7 @@ fn main() {
     let check = args.iter().any(|a| a == "--check");
     let migrate = args.iter().any(|a| a == "--migrate");
     let registry = args.iter().any(|a| a == "--registry");
+    let playground_registry = args.iter().any(|a| a == "--playground-registry");
 
     // --shred <out-dir> <cdz-bin> <ordered .cdzb list>: the guide shred (binary-AST-in). Positional args:
     // out-dir, the cdz binary (for the sexpr→ml render), then the chapter binary-AST files in case order.
@@ -58,6 +59,13 @@ fn main() {
     // node codegen-registry.mjs — operator: no codegen in JavaScript, keep it in the xtask.)
     if registry {
         run_registry(&path, check);
+        return;
+    }
+
+    // --playground-registry: regenerate (or --check) the EXAMPLES[] region of the playground's examples.ts
+    // from the sibling examples.sexp source-of-truth (fork1a). The positional arg is examples.ts.
+    if playground_registry {
+        playground::run_playground_registry(&path, check);
         return;
     }
 
