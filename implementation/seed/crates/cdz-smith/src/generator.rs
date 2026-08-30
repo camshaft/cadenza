@@ -315,7 +315,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(19) {
+        match self.cur.choice(20) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -332,6 +332,7 @@ impl Gen<'_> {
             15 => self.rec_def_expr(depth),
             16 => self.effect_handler_expr(depth, want),
             17 => self.effect_multiop_expr(depth),
+            18 => self.map_set_builtin_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -603,6 +604,101 @@ impl Gen<'_> {
             _ => {
                 self.out.push_str("(String.to-bytes ");
                 self.string_lit();
+                self.out.push(')');
+            }
+        }
+    }
+
+    /// A homogeneous non-empty numeric `Map` built by chained `(Map.insert Map.empty k v)` — the operand
+    /// shape a `Map.*` builtin needs to TYPE (numeric keys+values) and reach the MAP runtime lowering
+    /// (hash-map alloc / insert / rehash). Non-empty so a lookup/remove has a live entry to hit. Nested
+    /// inserts start from the bare `Map.empty` atom (not `(Map.empty)`), matching the corpus surface.
+    fn num_map(&mut self, depth: u32) {
+        let n = 1 + self.cur.choice(3); // 1..=3 entries
+        for _ in 0..n {
+            self.out.push_str("(Map.insert ");
+        }
+        self.out.push_str("Map.empty");
+        for _ in 0..n {
+            self.out.push(' ');
+            self.expr(depth.saturating_sub(1), Kind::Num); // key
+            self.out.push(' ');
+            self.expr(depth.saturating_sub(1), Kind::Num); // value
+            self.out.push(')');
+        }
+    }
+
+    /// A homogeneous non-empty numeric `Set` — `(Set.of (list <num> ...))` (Set.of takes a LIST operand,
+    /// not variadic, per the corpus surface). Reaches the SET runtime lowering (hash-set alloc / dedup /
+    /// membership). Non-empty so a `contains`/`remove` has a live element.
+    fn num_set(&mut self, depth: u32) {
+        self.out.push_str("(Set.of ");
+        self.num_list(depth);
+        self.out.push(')');
+    }
+
+    /// A `Map`/`Set`-module builtin over a freshly-built numeric map/set — the HEAP-COLLECTION lowering
+    /// (hash map/set: alloc, insert, lookup, membership, remove, union, cardinality) that the crash/
+    /// invalid-wasm hunt otherwise NEVER reaches (the generator only emitted `list`/`tuple` ctors +
+    /// `List.*`/`String.*` builtins; maps/sets are a distinct runtime subsystem — operator directive
+    /// 2026-08-30 to keep expanding generated inputs). Result kind (Int len / Option lookup / Bool
+    /// membership / Map|Set|List value) governs the node, so a mismatch with the outer `want` is a clean
+    /// decline, never a false finding.
+    fn map_set_builtin_expr(&mut self, depth: u32) {
+        match self.cur.choice(9) {
+            0 => {
+                self.out.push_str("(Map.len ");
+                self.num_map(depth);
+                self.out.push(')');
+            }
+            1 => {
+                self.out.push_str("(Map.lookup ");
+                self.num_map(depth);
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Num); // key (may miss → None)
+                self.out.push(')');
+            }
+            2 => {
+                self.out.push_str("(Map.remove ");
+                self.num_map(depth);
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(')');
+            }
+            3 => {
+                self.out.push_str("(Map.to-list ");
+                self.num_map(depth);
+                self.out.push(')');
+            }
+            4 => {
+                self.out.push_str("(Set.len ");
+                self.num_set(depth);
+                self.out.push(')');
+            }
+            5 => {
+                self.out.push_str("(Set.contains ");
+                self.num_set(depth);
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(')');
+            }
+            6 => {
+                self.out.push_str("(Set.insert ");
+                self.num_set(depth);
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(')');
+            }
+            7 => {
+                self.out.push_str("(Set.union ");
+                self.num_set(depth);
+                self.out.push(' ');
+                self.num_set(depth);
+                self.out.push(')');
+            }
+            _ => {
+                self.out.push_str("(Set.to-list ");
+                self.num_set(depth);
                 self.out.push(')');
             }
         }
@@ -1337,6 +1433,32 @@ mod tests {
             }
         }
         assert!(hit, "no seed in the sweep emitted a String builtin");
+    }
+
+    /// The Map/Set-builtin arm is reachable — some seed emits a `(Map.*|Set.* ...)` call over a
+    /// freshly-built numeric map/set — and every program that path can emit still parses. Guards the
+    /// HEAP-COLLECTION runtime reach (hash map/set lowering — a subsystem the crash hunt never touched
+    /// before this arm; operator directive 2026-08-30 to keep expanding generated inputs).
+    #[test]
+    fn some_seed_emits_a_map_set_builtin() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(Map.") || src.contains("(Set.") {
+                // A map/set op must be built over a non-empty operand (Map.insert Map.empty … / Set.of).
+                assert!(
+                    src.contains("Map.empty") || src.contains("(Set.of "),
+                    "map/set builtin without a constructed operand:\n{src}"
+                );
+                hit = true;
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a Map/Set builtin");
     }
 
     /// The recursive-def arm is reachable — some seed emits a NESTED `(def (...` helper (main is the
