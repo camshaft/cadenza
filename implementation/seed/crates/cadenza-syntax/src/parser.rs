@@ -2334,6 +2334,16 @@ impl<'a> Parser<'a> {
                 if self.at(Kind::Pipe) {
                     self.bump(); // `|`
                 } else {
+                    // No more variants: any own-line comment(s) we drained lead what FOLLOWS the type decl
+                    // (the next `def`, or an own-line comment after the last variant / a multi-line trailing
+                    // comment's own-line continuation), NOT a nonexistent next variant. Restore them to the
+                    // current token's leading slot so the enclosing parser attaches them instead of dropping
+                    // them (the seq-277 reader-attachment gap; mirrors `match_expr`'s restore-on-break).
+                    if !pending_leading.is_empty() && self.pos < self.leading.len() {
+                        let mut restored = std::mem::take(&mut pending_leading);
+                        restored.append(&mut self.leading[self.pos]);
+                        self.leading[self.pos] = restored;
+                    }
                     break;
                 }
             }
@@ -4823,6 +4833,40 @@ mod tests {
         assert!(
             printed.contains("// ---- SECTION between defs"),
             "comment text is re-emitted:\n{printed}"
+        );
+    }
+
+    #[test]
+    fn an_own_line_comment_after_the_last_sum_variant_is_not_dropped() {
+        // Regression (seq-277/C3): an own-line comment after the LAST variant of a `type T = | A | B`
+        // decl (before the next form) USED TO DROP — the variant loop drained it as the "next variant's"
+        // leading run and discarded it on break (no next `|`). Same class as the match-arm fix; restored
+        // on break so it leads the following form. (Closes emit-db.cdz / resolve-db.cdz drops.)
+        let src = "type T =\n  | A\n  | B\n  // trailing note after the last variant\ndef f() = 1\n\nexport { f }\n";
+        let count_comments = |a: &Arenas| {
+            (0..a.structure.len() as u32)
+                .map(StructId)
+                .filter(|&id| a.head_name(id) == Some("comment"))
+                .count()
+        };
+        let p = read_ml(src);
+        assert!(p.ok(), "parses cleanly: {:?}", p.errors);
+        assert_eq!(
+            count_comments(&p.arenas),
+            1,
+            "the post-variant comment is a (comment …) node, not dropped"
+        );
+        let printed = crate::printer::print(&p.arenas, 100);
+        let reparsed = read_ml(&printed);
+        assert!(
+            reparsed.ok(),
+            "reprint reparses: {:?}\n{printed}",
+            reparsed.errors
+        );
+        assert_eq!(
+            count_comments(&reparsed.arenas),
+            1,
+            "comment survives the ML round-trip\n{printed}"
         );
     }
 
