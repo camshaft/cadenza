@@ -373,7 +373,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(22) {
+        match self.cur.choice(23) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -393,6 +393,7 @@ impl Gen<'_> {
             18 => self.map_set_builtin_expr(depth),
             19 => self.record_expr(depth),
             20 => self.sum_expr(depth),
+            21 => self.char_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -854,6 +855,26 @@ impl Gen<'_> {
             self.out.push_str(") ((None) ");
             self.expr(depth.saturating_sub(1), Kind::Num);
             self.out.push_str("))");
+        }
+    }
+
+    /// A `Char` expression — `(Char.from-int <num>)` yields `(Option Char)` (fallible: an int may not be
+    /// a valid codepoint), either returned bare or MATCHED and round-tripped back to an Int via
+    /// `(Char.to-int c)`. Reaches the Char scalar (codepoint) lowering + `Char.from-int`/`Char.to-int` +
+    /// the Option-of-Char match — a value domain the crash hunt never touched (operator directive
+    /// 2026-08-30: keep expanding generated program shapes). Numeric arg so it types.
+    fn char_expr(&mut self, depth: u32) {
+        if self.cur.flip() {
+            // Bare (Option Char) construction.
+            self.out.push_str("(Char.from-int ");
+            self.expr(depth.saturating_sub(1), Kind::Num);
+            self.out.push(')');
+        } else {
+            // Construct-then-match: bind the Char and convert back to Int (exhaustive with a None arm).
+            self.out.push_str("(match (Char.from-int ");
+            self.expr(depth.saturating_sub(1), Kind::Num);
+            let c = self.env.fresh();
+            let _ = write!(self.out, ") ((Some {c}) (Char.to-int {c})) ((None) 0))");
         }
     }
 
@@ -1698,6 +1719,34 @@ mod tests {
         assert!(
             hit,
             "no seed in the sweep emitted a user-sum type declaration"
+        );
+    }
+
+    /// The Char arm is reachable — some seed emits `(Char.from-int …)` and some a matched round-trip via
+    /// `Char.to-int` — and every such program parses. Guards the Char scalar (codepoint) lowering reach
+    /// (operator directive 2026-08-30 to keep expanding generated inputs).
+    #[test]
+    fn some_seed_emits_a_char() {
+        let mut saw_ctor = false;
+        let mut saw_roundtrip = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(Char.from-int ") {
+                saw_ctor = true;
+            }
+            if src.contains("(Char.to-int ") {
+                saw_roundtrip = true;
+            }
+        }
+        assert!(saw_ctor, "no seed in the sweep emitted (Char.from-int …)");
+        assert!(
+            saw_roundtrip,
+            "no seed in the sweep emitted a Char.to-int round-trip"
         );
     }
 
