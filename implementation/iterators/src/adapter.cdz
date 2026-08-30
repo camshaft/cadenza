@@ -39,13 +39,13 @@ def from-list(xs) =
 /// COMBINATORS (wrap the upstream step into a new step — the fusing core) ------------------------------
 /// `map(it, f)` — apply `f` to every element. The new step calls the upstream step, then `f` on the element;
 /// state is unchanged (the upstream's). A static call to the upstream closure — fuses, no dispatch.
-def map(it, f: Int64 -> Int64) = match it with
-  | Iter.Mk(s0, step) =>
-    Iter.Mk(s0, fn(s) => match step(s) with
-      | Option.None(_) => Option.None(unit)
-      | Option.Some(p) =>
-        let (x, s2) = p in
-        Option.Some((f(x), s2)))
+def map(it, f: Int64 -> Int64) =
+  let Iter.Mk(s0, step) = it in
+  Iter.Mk(s0, fn(s) => match step(s) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(p) =>
+      let (x, s2) = p in
+      Option.Some((f(x), s2)))
 
 /// `filter(it, p)` — keep only elements satisfying `p`. The new step drives the upstream step forward,
 /// skipping non-matching elements, via the recursive `filter-step` worker (annotated, since it recurses).
@@ -59,21 +59,22 @@ def filter-step(
     let (x, s2) = pair in
     if p(x) then Option.Some((x, s2)) else filter-step(step, s2, p)
 
-def filter(it, p: Int64 -> Bool) = match it with
-  | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => filter-step(step, s, p))
+def filter(it, p: Int64 -> Bool) =
+  let Iter.Mk(s0, step) = it in
+  Iter.Mk(s0, fn(s) => filter-step(step, s, p))
 
 /// `take-while(it, p)` — the longest leading run satisfying `p`, stopping at the first that fails. Keeps the
 /// SAME state type (`List(Int64)`) — no counter needed, because "stop" is `None`, which ENDS iteration
 /// (subsequent steps are never called). So it composes with the base `Iter` + its consumers, unlike `take`
 /// (which needs a `(counter, state)` compound state). The new step applies `p` to the pulled element and
 /// returns `None` (ending the run) the moment it fails.
-def take-while(it, p: Int64 -> Bool) = match it with
-  | Iter.Mk(s0, step) =>
-    Iter.Mk(s0, fn(s) => match step(s) with
-      | Option.None(_) => Option.None(unit)
-      | Option.Some(pair) =>
-        let (x, s2) = pair in
-        if p(x) then Option.Some((x, s2)) else Option.None(unit))
+def take-while(it, p: Int64 -> Bool) =
+  let Iter.Mk(s0, step) = it in
+  Iter.Mk(s0, fn(s) => match step(s) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(pair) =>
+      let (x, s2) = pair in
+      if p(x) then Option.Some((x, s2)) else Option.None(unit))
 
 /// `filter-map(it, f)` — the fused map-then-filter: apply `f : Int64 -> Option(Int64)` to each element,
 /// keep the `Some` results, drop the `None`s (transform + select in one pass). Same-state (`List(Int64)`),
