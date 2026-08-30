@@ -416,7 +416,6 @@ pass	String.from-bytes rejects a lone continuation byte
 pass	String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts
 pass	String.from-bytes rejects an overlong encoding
 pass	String.from-bytes validates a multi-byte scalar straddling a runtime byte-rope's seam
-pass	String.scalar-at over a runtime index declines pending the runtime Char rep
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
 pass	String.slice across a multibyte scalar carries byte-len 2 with scalar-len 1, and degenerate ranges answer Some-empty / None
