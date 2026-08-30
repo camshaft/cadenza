@@ -24534,6 +24534,7 @@
             (export main)))
   (output (: 9227465 Int64)))
 
+; cdz-nativize-exempt: guards the #6042 name-head ML/paren-surface hang path; drop/convert at the reader-flip
 (case "a DEEP recursive NAME-HEAD tuple destructure-let terminates within deadline — guards the ML/paren-surface path (#6042)"
   (doc    "Companion to the #6013 termination guard, for the NAME-HEAD binder form `(tuple a b)` — what the
            ML/paren surface `let (a,b) = …` desugars to (distinct from the `#tuple(a b)` ctor-leaf form; #6000

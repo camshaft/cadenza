@@ -634,6 +634,44 @@ fn nat_map_eligible(a: &Arenas, ch: &[StructId]) -> bool {
     true
 }
 
+/// True if the form starting at byte `form_start` carries a `; cdz-nativize-exempt: …` line-comment on the
+/// line IMMEDIATELY above it (the form must begin its own line after only indentation). This is the per-form
+/// exemption marker (operator-approved): the codemod leaves the marked form + subtree untouched, and
+/// v-corpus-harness's `nativize-check` (which shares this walk) then passes idempotence on it. Tolerant of a
+/// `;` or `;;` comment lead and surrounding whitespace.
+fn nat_form_is_exempt(bytes: &[u8], form_start: usize) -> bool {
+    // Back up over the form's own leading indentation (spaces/tabs) on its line.
+    let mut i = form_start.min(bytes.len());
+    while i > 0 && matches!(bytes[i - 1], b' ' | b'\t') {
+        i -= 1;
+    }
+    // The form must sit at line start (only ws before it); the char before is the '\n' ending the PREVIOUS
+    // line. Otherwise there is no "line immediately above" to carry the marker.
+    if i == 0 || bytes[i - 1] != b'\n' {
+        return false;
+    }
+    let prev_line_end = i - 1; // the '\n' ending the previous line
+    let mut ls = prev_line_end;
+    while ls > 0 && bytes[ls - 1] != b'\n' {
+        ls -= 1;
+    }
+    let line = &bytes[ls..prev_line_end];
+    let mut j = 0;
+    while j < line.len() && matches!(line[j], b' ' | b'\t') {
+        j += 1;
+    }
+    if j >= line.len() || line[j] != b';' {
+        return false;
+    }
+    while j < line.len() && line[j] == b';' {
+        j += 1;
+    }
+    while j < line.len() && matches!(line[j], b' ' | b'\t') {
+        j += 1;
+    }
+    line[j..].starts_with(b"cdz-nativize-exempt:")
+}
+
 /// Recurse `id`, collecting head-nativize + map-entry-field-pairify edits (start, end, replacement) into
 /// `edits`, tracking ctor-name `shadow` scopes.
 #[allow(clippy::too_many_arguments)]
@@ -653,6 +691,18 @@ fn nat_walk(
         return;
     };
     let ch = ch.clone();
+    // PER-FORM EXEMPTION (operator-approved, seq marker): a line-comment `; cdz-nativize-exempt: <reason>`
+    // immediately above a form marks it (and its whole subtree) as DELIBERATELY non-native — leave it
+    // untouched. The single source of truth for both the codemod (won't rewrite) and v-corpus-harness's
+    // `nativize-check` (idempotence passes). Used for transitional NAME-HEAD parity cases that guard a
+    // name-head-path fix (e.g. corpus-05 #6047 guards the #6042 ML/paren-surface hang path) — the name-head
+    // path is live until the reader-flip, so nativizing them would destroy the coverage. Skip nativize +
+    // recursion for the marked form's subtree (a marked corpus `(case …)` exempts every literal within it).
+    if let Some(sp) = spans.get(id)
+        && nat_form_is_exempt(bytes, sp.start)
+    {
+        return;
+    }
     // A `(wit-world …)` clause is a WIT interface/TYPE declaration, not a compound-VALUE context. Its
     // lowercase `record`/`list`/… heads are WIT TYPE descriptors (`(record (= x (s64)))`, `(list (u8))`),
     // NOT value literals — nativizing them is out of M3's value-literal scope AND regresses: the type
@@ -1836,6 +1886,34 @@ mod tests {
             ),
             "(wit-world (world w (export i (member f (func (param m (record (= tok (list (u8))))) (result (s64)))))))"
         );
+    }
+
+    #[test]
+    fn nativize_compound_source_respects_per_form_exempt_marker() {
+        // A `; cdz-nativize-exempt: <reason>` line-comment IMMEDIATELY above a form marks it (+ its subtree)
+        // as deliberately non-native — the codemod leaves it untouched; an unmarked sibling still nativizes.
+        // Single source of truth honored by both the codemod and v-corpus-harness's nativize-check
+        // (transitional NAME-HEAD parity cases, e.g. corpus-05 #6047 guarding the #6042 ML/paren-surface path).
+        let n = |s: &str| super::nativize_compound_source(s).unwrap();
+        // Marked def left classic; unmarked sibling nativizes.
+        assert_eq!(
+            n(
+                "(do\n  ; cdz-nativize-exempt: guards the name-head path\n  (def (a) (tuple 1 2))\n  (def (b) (tuple 3 4))\n  (export a))"
+            ),
+            "(do\n  ; cdz-nativize-exempt: guards the name-head path\n  (def (a) (tuple 1 2))\n  (def (b) #tuple(3 4))\n  (export a))"
+        );
+        // Tolerant of a `;;` lead + extra whitespace.
+        assert_eq!(
+            n(";;   cdz-nativize-exempt: r\n(list 1 2)"),
+            ";;   cdz-nativize-exempt: r\n(list 1 2)"
+        );
+        // The marker must be IMMEDIATELY above: a blank line between does NOT exempt.
+        assert_eq!(
+            n("; cdz-nativize-exempt: r\n\n(list 1 2)"),
+            "; cdz-nativize-exempt: r\n\n#list(1 2)"
+        );
+        // A plain comment (not the tag) does NOT exempt.
+        assert_eq!(n("; just a note\n(list 1 2)"), "; just a note\n#list(1 2)");
     }
 
     #[test]
