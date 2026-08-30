@@ -1347,13 +1347,40 @@ pub fn type_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<TypeAt
         .expect("node_at_offset returned a spanned node");
     // Ride the `TypeAt` sidecar query (the same one `cdz type-at` runs) — the node id crosses the
     // copy-don't-depend boundary as its raw index (the byte-identical codec keeps the index space
-    // aligned). The result is the rendered type text (or "unknown" for a non-user/unsolved node).
-    let name = run_query_text(&ast_bytes, &rcdzc::Query::TypeAt { node: node.0 })?;
+    // aligned). The result is a BINARY-AST hover verdict (`type_at_wire`, seq-254 "binary AST is THE
+    // data exchange format"), NOT text — so take the BYTES and DECODE them. (Interpreting the binary as
+    // UTF-8 via `run_query_text` was a bug: it either threw "not valid UTF-8" or rendered garbage — the
+    // same class as the `export_types`/`KIND_EXPORTS` regression, #6324.) Render the decoded verdict to
+    // the display type text the guide editor's hover shows, mirroring `cdz`'s `render_type_at`.
+    let bytes = run_query_bytes(&ast_bytes, &rcdzc::Query::TypeAt { node: node.0 })?;
+    let type_name = render_type_at_verdict(&rcdzc::sidecar::decode_type_at(&bytes));
     Ok(Some(TypeAt {
-        type_name: name,
+        type_name,
         from: span.start as u32,
         to: span.end as u32,
     }))
+}
+
+/// Render a decoded [`rcdzc::sidecar::TypeAt`] hover verdict to its display type text — the SAME mapping
+/// `cdz`'s `render_type_at` uses (kept in sync; the shared renderer is `cadenza_syntax::render_ty`). A
+/// definition renders `name : <scheme>`, a keyword `keyword <kw>`, a bare typed node its rendered type,
+/// and an untypeable/non-user node `unknown`. `render_ty_scheme` (not `render_ty`) because an export /
+/// definition signature may be polymorphic and gets stable Var-lettering.
+fn render_type_at_verdict(v: &rcdzc::sidecar::TypeAt) -> String {
+    // Alias so the verdict enum doesn't collide with this crate's wasm-bindgen `TypeAt` return struct.
+    use rcdzc::sidecar::TypeAt as Verdict;
+    match v {
+        Verdict::Def { name, ty } => {
+            let t = match ty {
+                Some(a) => cadenza_syntax::render_ty::render_ty_scheme(a, a.root),
+                None => "unknown".to_string(),
+            };
+            format!("{name} : {t}")
+        }
+        Verdict::Keyword(kw) => format!("keyword {kw}"),
+        Verdict::Ty(a) => cadenza_syntax::render_ty::render_ty_scheme(a, a.root),
+        Verdict::Unknown => "unknown".to_string(),
+    }
 }
 
 /// The definition a name at a source byte offset refers to — for go-to-definition. Resolves the
@@ -2063,6 +2090,36 @@ mod tests {
         assert!(
             out2.lines().all(|l| l.is_empty() || l.contains('\t')),
             "each row is `name<TAB>type` text: {out2:?}"
+        );
+    }
+
+    #[test]
+    fn type_at_renders_the_hover_type_not_raw_binary() {
+        // Regression guard (same bug class as export_types #6324): `Query::TypeAt` emits the KIND_TYPE_AT
+        // BINARY hover verdict (`type_at_wire`), so `type_at` must DECODE it + render (mirroring `cdz`'s
+        // `render_type_at`), NOT `String::from_utf8` the binary. The bug: Class A threw "not valid UTF-8"
+        // on the browser editor hover; Class B rendered garbage. `type_at` is LIVE-wired in the guide
+        // editor (client.ts -> worker.ts), so this was a real user-facing hover bug, not just a gate.
+        let src = "(do (def (main) 3000.0) (export main))";
+        // A bare typed node (the whole-`Float64` literal) → the `Ty` verdict → rendered type name.
+        let lit_off = src.find("3000.0").expect("float literal present") as u32;
+        let hit = type_at(src, "sexpr", lit_off)
+            .expect("type_at returns a verdict, not a UTF-8 error (Class A regression)")
+            .expect("a user node at the float literal offset");
+        assert!(
+            hit.type_name.contains("Float"),
+            "the whole-float literal's hover type renders as a Float name (not raw binary / not empty): {:?}",
+            hit.type_name
+        );
+        // A definition name → the `Def` verdict → `name : <scheme>` (exercises the Def arm's render).
+        let name_off = (src.find("(main)").expect("main def present") + 1) as u32;
+        let def_hit = type_at(src, "sexpr", name_off)
+            .expect("type_at on a def name returns a verdict, not a UTF-8 error")
+            .expect("a user node at the def name");
+        assert!(
+            def_hit.type_name.contains("main"),
+            "a def hover renders `name : type`: {:?}",
+            def_hit.type_name
         );
     }
 

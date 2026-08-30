@@ -78,6 +78,14 @@ pub use cadenza_compile_abi::{decode_highlight, encode_highlight};
 // `export_types` decodes the binary exports payload via `rcdzc::sidecar::decode_exports` (then renders
 // each export's display type-name from the decoded structure), without a direct `cadenza-compile-abi` dep.
 pub use cadenza_compile_abi::exports_wire::decode_exports;
+// The `Query::TypeAt` (`KIND_TYPE_AT`) decode + its `TypeAt` hover-verdict enum — re-exported for the
+// SAME reason as `decode_exports`/`decode_highlight`: the browser consumer `cdz-wasm` (`type_at`, the
+// guide editor's live hover) decodes this now-BINARY wire via `rcdzc::sidecar::…` without a direct
+// `cadenza-compile-abi` dep. The producer above emits binary AST (`type_at_wire`), so a
+// `String::from_utf8` consumer is a bug — the consumer decodes the verdict + renders it (mirrors the
+// `cdz` LSP `render_type_at` + the `decode_exports` template).
+pub use cadenza_compile_abi::TypeAt;
+pub use cadenza_compile_abi::type_at_wire::decode_type_at;
 
 // The `Request` (materialize an output column) + `Query` (read a fact column) enums that make up one
 // sidecar request list now live in the shared `cadenza-compile-abi` crate — the compile-boundary
