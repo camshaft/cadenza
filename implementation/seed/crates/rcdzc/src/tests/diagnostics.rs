@@ -1747,15 +1747,26 @@ fn a_set_match_pattern_is_a_coded_check_surfaced_rejection_not_silent() {
                 && d.message.contains("set match pattern is not supported")),
         "the legacy alias `(set …)` set match pattern also surfaces the coded CDZ0201 (dual-read): {alias_diags:?}"
     );
-    // NO false alarm: a scalar-only match over a Set scrutinee (a whole-value binder + wildcard, NO
-    // `#set(…)` pattern) routes to the scalar path with a valid binder probe — it must stay clean.
-    let ok = "(module m (def (f (: s (Set Int64))) (match s (whole 0) (_ 9))) (export f))";
-    let ok_diags = diags_of(ok);
+    // A whole-value-binder match over a HEAP-BACKED Set scrutinee (no `#set(…)` pattern) is a GENUINE
+    // not-yet-built DECLINE: the compiler cannot yet emit a match over a heap-backed Set/Map scrutinee
+    // (even a trivial whole-binder), so it produces CDZ0900 "matching a compound value needs a heap walk"
+    // and NO artifact. Per seq-286 (v-deferral ruling A) that decline MUST be VISIBLE + coded in `check` —
+    // it was formerly SILENTLY masked by a `dedup_faults` self-suppression bug (a lone coded decline
+    // dropped itself at its own coded node), which made `check` wrongly report clean while `compile`
+    // declined. The self-suppression fix (`coded_nodes` counts only genuine rejects) now surfaces it. The
+    // separate "should a whole-binder over a heap collection emit WITHOUT a walk?" capability question is a
+    // match-lowering follow-up (v-deferral catalogs a `MatchOverHeapCollectionScrutinee` DeclineId); if
+    // built, this decline vanishes and the assertion reverts to checks-clean.
+    let sc = "(module m (def (f (: s (Set Int64))) (match s (whole 0) (_ 9))) (export f))";
+    let sc_diags = diags_of(sc);
     assert!(
-        ok_diags
+        sc_diags
             .iter()
-            .all(|d| d.severity != crate::abi::Severity::Error),
-        "a scalar-only match over a set still checks clean (no set pattern → no CDZ0201): {ok_diags:?}"
+            .any(|d| d.severity == crate::abi::Severity::Error
+                && d.code.as_deref() == Some("CDZ0900")
+                && d.message.contains("needs a heap walk")),
+        "a match over a heap-backed Set scrutinee surfaces the coded CDZ0900 heap-walk decline in check \
+         (was silently self-suppressed; seq-286 requires a not-yet-built decline be visible): {sc_diags:?}"
     );
 }
 

@@ -4549,9 +4549,19 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
     // Are Ordered By Safety — a coded rejection dominates a decline). Drop it. E.g. `(Symbol.of 5)`: the
     // CDZ0203 type error and the emit path's "runtime string" decline both anchor the call node → keep
     // only the CDZ0203. A decline at a node with NO coded reject (a genuinely-unbuilt construct) survives.
+    // Nodes carrying a genuine coded REJECT (an `error:` that says the program is WRONG) — the set the
+    // "drop a weaker decline shadowed by a coded fault at the same node" rule (below) keys on. A coded
+    // DECLINE (`Reject::unsupported`, `CDZ0900` — a not-yet-built construct) is EXCLUDED: it carries a
+    // `code` but `is_decline()` is true, so counting it here would add its OWN node and then drop it by
+    // that very rule (self-suppression) — a lone `CDZ0900` at a node with no real reject would VANISH from
+    // `diagnostics()`, silently masking a not-yet-built decline (seq-286: a decline MUST be visible/coded,
+    // never dropped). A CDZ0900 decline is the PRIMARY report of its fault, not a weaker consequence of a
+    // co-located reject, so it must not be shadowed by the presence of itself. A CDZ0900 decline co-located
+    // with a genuine reject is still dropped (the reject's node IS in this set), which is correct — the
+    // reject names the real defect.
     let coded_nodes: std::collections::HashSet<u32> = faults
         .iter()
-        .filter(|r| r.code.is_some())
+        .filter(|r| r.code.is_some() && !r.is_decline())
         .filter_map(|r| r.at.map(|s| s.0))
         .collect();
     // A BARE "unbound name `X`" reject is SUPERSEDED by an ENRICHED unbound reject for the same name at the
@@ -6985,5 +6995,47 @@ fn fail_with(query_artifacts: Vec<Artifact>, rejects: Vec<Reject>) -> CompileOut
         cse_partition_core_eq_calls: 0,
         value_range_uncached_calls: 0,
         param_apply_extra_handled_calls: 0,
+    }
+}
+
+#[cfg(test)]
+mod dedup_selfsuppress_tests {
+    use super::*;
+    use crate::ast::StructId;
+    use crate::diag::{Code, Reject};
+
+    /// A lone CDZ0900 DECLINE (`Reject::unsupported`) must SURVIVE `dedup_faults` — it is the primary
+    /// report of a not-yet-built construct (seq-286: a decline MUST be visible/coded, never silently
+    /// masked), not a weaker consequence of a co-located reject. Regression pin for the self-suppression
+    /// bug: a CDZ0900 is BOTH `is_decline()` and `code.is_some()`, so `coded_nodes` used to include its own
+    /// node and then `:4916` dropped it — a lone CDZ0900 vanished from `diagnostics()`. Now `coded_nodes`
+    /// counts only genuine coded REJECTS, so a lone CDZ0900 survives while one co-located with a real reject
+    /// is still dropped (the reject names the real defect).
+    #[test]
+    fn a_lone_cdz0900_decline_survives_dedup_but_one_shadowed_by_a_reject_is_dropped() {
+        let db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let node_a = StructId(1); // carries a genuine reject + a co-located CDZ0900 decline
+        let node_c = StructId(2); // carries a LONE CDZ0900 decline
+        let faults = vec![
+            Reject::coded(Code::Malformed, "a genuine reject at node A").at(node_a),
+            Reject::unsupported("a CDZ0900 decline SHADOWED by the reject at node A").at(node_a),
+            Reject::unsupported("a LONE CDZ0900 decline at node C").at(node_c),
+        ];
+        let out = dedup_faults(&db, faults, false);
+        let has = |needle: &str| out.iter().any(|r| r.message.contains(needle));
+        assert!(
+            has("a genuine reject at node A"),
+            "the genuine reject is kept"
+        );
+        assert!(
+            has("a LONE CDZ0900 decline at node C"),
+            "a lone CDZ0900 decline MUST survive dedup (self-suppression regression, seq-286)"
+        );
+        assert!(
+            !has("a CDZ0900 decline SHADOWED"),
+            "a CDZ0900 decline co-located with a genuine reject is still dropped"
+        );
     }
 }
