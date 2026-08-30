@@ -46,6 +46,23 @@ if [ -z "${CARGO_BUILD_JOBS:-}" ]; then
   export CARGO_BUILD_JOBS="$_jobs"
 fi
 
+# SHARED COMPILE CACHE via sccache (operator seq-250 native-half, v-nix-led interim 2026-08-30). The #1
+# fleet CPU sink was the wasmtime/cranelift dep-closure recompiled PER-WORKTREE by the tight-loop
+# `cargo build -p cdz-run` (cdz-run → wasmtime → cranelift): measured 23 of 35 worktrees each rebuilt it
+# in their OWN isolated target/ (~3.2G deps/worktree, ~70G redundant; ~55769 %CPU-sum in the monitor).
+# sccache's cache is user-global (SCCACHE_DIR), so an EXTERNAL dep (cranelift/wasmtime/serde/…) is compiled
+# ONCE and cache-HIT by every worktree's native cargo thereafter. Concurrency-safe by design. KEY: we do
+# NOT force CARGO_INCREMENTAL=0 — external deps are always non-incremental so sccache caches them regardless,
+# while WORKSPACE crates (rcdzc/cdz) stay cargo-incremental (sccache passes incremental compiles through
+# uncached) → the expensive deps are shared WITHOUT regressing the top-crate tight-loop hot path. Only
+# affects NATIVE cargo (nix builds are hermetic — RUSTC_WRAPPER doesn't enter their sandbox). Fully
+# reversible: unset RUSTC_WRAPPER. Respect an explicit override; skip if sccache isn't installed.
+if [ -z "${RUSTC_WRAPPER:-}" ] && command -v sccache >/dev/null 2>&1; then
+  export RUSTC_WRAPPER=sccache
+  export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache-fleet}"
+  export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-20G}"
+fi
+
 # Concurrent-heavy-check cap: NO LONGER PINNED HERE (operator seq-208 2026-08-29). The cap is now a
 # LOAD-ADAPTIVE compiled default in `check_lease_max()` — generous (up to ceil 5) when the box has spare
 # run-queue capacity so queued agents build concurrently instead of idle-waiting on the lock, tightening to
