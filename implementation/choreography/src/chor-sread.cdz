@@ -46,8 +46,7 @@ def parse-node(s: String, i0: Int64) -> Option((Ast, Int64)) =
     | Option.Some(c) =>
       (if c == "(" then parse-list(s, i + 1, [])
        else (if c == ")" then Option.None(unit)          // unexpected close
-         else (match scan-atom(s, i, "") with
-           | (atom, ni) => (if atom == "" then Option.None(unit)
+         else (let (atom, ni) = scan-atom(s, i, "") in (if atom == "" then Option.None(unit)
              else Option.Some((Ast.Name(atom), ni))))))
     | Option.None(_) => Option.None(unit))
 
