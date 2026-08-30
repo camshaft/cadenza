@@ -386,6 +386,38 @@ theorem evalArithOp_mod_one (x : Int) (ty : IntTy) (v : Value)
   all_goals (try (split at h <;> simp_all))
   all_goals (try (split at h <;> simp_all))
 
+/-! ### Arithmetic-identity value characterizations, operand-PRESERVING case.
+The value-PRESERVING algebraic identities (`x+0→x`, `x-0→x`, `x*1→x`, `1*x→x`, `x/1→x`) rewrite to the
+surviving operand. Their denote-soundness is: whenever the op yields a value, that value is the operand.
+Same VALUE-CONDITIONED shape as the dropping case (vacuous under unresolved width / out-of-range trap),
+so unconditionally true. Together with the dropping lemmas above and the `foldConst?` alignment
+(`denoteBinary_fold`, #6405), these are the complete arithmetic engine for the capstone `.app`-identity
+subcase: every arithmetic normalizer identity's result value is pinned. -/
+theorem evalArithOp_add_zero_r (x : Int) (ty : IntTy) (v : Value)
+    (h : evalArithOp "+" x 0 ty = .value v) : v = .int x := by
+  simp only [evalArithOp, Int.add_zero] at h
+  repeat' (first | (split at h) | simp_all (config := { decide := true }))
+
+theorem evalArithOp_sub_zero_r (x : Int) (ty : IntTy) (v : Value)
+    (h : evalArithOp "-" x 0 ty = .value v) : v = .int x := by
+  simp only [evalArithOp, Int.sub_zero] at h
+  repeat' (first | (split at h) | simp_all (config := { decide := true }))
+
+theorem evalArithOp_mul_one_r (x : Int) (ty : IntTy) (v : Value)
+    (h : evalArithOp "*" x 1 ty = .value v) : v = .int x := by
+  simp only [evalArithOp, Int.mul_one] at h
+  repeat' (first | (split at h) | simp_all (config := { decide := true }))
+
+theorem evalArithOp_mul_one_l (y : Int) (ty : IntTy) (v : Value)
+    (h : evalArithOp "*" 1 y ty = .value v) : v = .int y := by
+  simp only [evalArithOp, Int.one_mul] at h
+  repeat' (first | (split at h) | simp_all (config := { decide := true }))
+
+theorem evalArithOp_div_one (x : Int) (ty : IntTy) (v : Value)
+    (h : evalArithOp "/" x 1 ty = .value v) : v = .int x := by
+  simp only [evalArithOp, Int.tdiv_one] at h
+  repeat' (first | (split at h) | simp_all (config := { decide := true }))
+
 /-! ### Capstone base cases: `denote (normalize e) = denote e` on the leaves.
 The normalizer preserves meaning on `var` (it is the identity) and `const` (float canonicalization is
 now aligned in `denote`, so the equality is structural). These are the base cases of the full
