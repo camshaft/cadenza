@@ -3444,13 +3444,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "xtask-codegen-unsupported"
-version = "0.0.0"
-dependencies = [
- "rcdzc",
-]
-
-[[package]]
 name = "xtask-codegen-wasm-abi"
 version = "0.0.0"
 dependencies = [
