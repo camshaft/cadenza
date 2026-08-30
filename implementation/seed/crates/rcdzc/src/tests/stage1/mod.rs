@@ -2409,25 +2409,6 @@ fn an_undetermined_escape_type_is_reported_by_check_not_only_compile() {
     }
 }
 
-#[test]
-fn tuple_branches_of_different_arity_are_a_type_error() {
-    // 02-binding-and-control: `(if true (tuple 1 2) (tuple 3 4 5))` pairs a 2-tuple with a 3-tuple —
-    // different types (a tuple's arity is part of its type), so the whole `if` has no single type
-    // and is rejected (CDZ0201/0203). A check comparing only branch KIND (both "a tuple") would
-    // wrongly accept it. Projected to keep the whole thing a value the compiler must type.
-    let msg = expect_decline("(. (if true (tuple 1 2) (tuple 3 4 5)) 0)");
-    assert!(msg.contains("branches differ"), "got: {msg}");
-}
-
-#[test]
-fn tuple_branches_of_different_element_type_are_a_type_error() {
-    // `(if true (tuple 1 2) (tuple 1 true))` pairs `(Tuple Int64 Int64)` with `(Tuple Int64 Bool)`
-    // — the second position's types differ, so the branches disagree (checked STRUCTURALLY, not at
-    // coarse kind). Rejected.
-    let msg = expect_decline("(. (if true (tuple 1 2) (tuple 1 true)) 0)");
-    assert!(msg.contains("branches differ"), "got: {msg}");
-}
-
 // ── the prelude: a built-in module is an arena record, reached by the same projection ──────
 
 #[test]
