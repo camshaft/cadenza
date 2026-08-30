@@ -55,7 +55,7 @@ log_normalize() {
 # escalate-to-owner policy, not this reaper's to kill. arg1: apply (1 = SIGKILL, 0 = dry-run report only).
 # FAIL-OPEN: any hiccup just returns (a monitor tick must never error out or spam cron mail).
 reap_orphaned_cdz() {
-  local apply="${1:-0}" me min_secs reaped=0 seen=0 pid ppid euid et comm n
+  local apply="${1:-0}" me min_secs reaped=0 seen=0 pid ppid euid et comm cmd n
   me="$(id -u 2>/dev/null || echo -1)"
   min_secs=$(( REAP_MIN * 60 ))
   # pid ppid euid etimes comm — comm is the executable basename (holds `cdz` untruncated). `read` word-splits.
@@ -66,15 +66,20 @@ reap_orphaned_cdz() {
     [ "$comm" = "cdz" ] || continue        # exactly the front-end binary (not cdz-run/cdz-compile/rcdzc)
     [ "${et:-0}" -ge "$min_secs" ] 2>/dev/null || continue
     seen=$((seen + 1))
+    # Capture the untruncated argv BEFORE the kill so the audit line is CLASSIFIABLE (v-compiler-perf hang-
+    # classification: comm alone is just "cdz"; the full argv names WHICH compile hung — e.g. `cdz test
+    # implementation/compiler-ml …`, the match->let non-termination family). /proc/<pid>/cmdline is NUL-sep;
+    # translate to spaces + trim. Best-effort (a proc that exits between the ps scan and here yields empty).
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"; cmd="${cmd% }"
     if [ "$apply" = 1 ]; then
       if kill -KILL "$pid" 2>/dev/null; then
         reaped=$((reaped + 1))
-        printf '%s reaped orphaned cdz pid=%s ppid=1 etimes=%ss (>=%smin, own-user)\n' \
-          "$(date -Is 2>/dev/null || echo now)" "$pid" "$et" "$REAP_MIN" >> "$REAP_LOG" 2>/dev/null || true
+        printf '%s reaped orphaned cdz pid=%s ppid=1 etimes=%ss (>=%smin, own-user) cmd=%s\n' \
+          "$(date -Is 2>/dev/null || echo now)" "$pid" "$et" "$REAP_MIN" "$cmd" >> "$REAP_LOG" 2>/dev/null || true
       fi
     else
-      printf 'cpu-monitor: WOULD reap orphaned cdz pid=%s ppid=1 etimes=%ss (>=%smin, own-user)\n' \
-        "$pid" "$et" "$REAP_MIN" >&2
+      printf 'cpu-monitor: WOULD reap orphaned cdz pid=%s ppid=1 etimes=%ss (>=%smin, own-user) cmd=%s\n' \
+        "$pid" "$et" "$REAP_MIN" "$cmd" >&2
     fi
   done < <(ps -eo pid=,ppid=,euid=,etimes=,comm= 2>/dev/null)
   if [ "$apply" = 1 ]; then
