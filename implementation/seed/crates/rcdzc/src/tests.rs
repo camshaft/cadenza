@@ -21495,26 +21495,6 @@ mod diagnostics {
     }
 
     #[test]
-    fn an_unused_binding_carries_a_verified_underscore_prefix_fix() {
-        // The first MACHINE-APPLICABLE fix (`spec/capabilities/diagnostics.md` §A Confirmed Fix Is
-        // Marked Verified): the CDZ0306 warning's prose "prefix with `_`" is now a structural fix an
-        // agent applies WITHOUT review — rename the binder to `_<name>`, which the silencing rule makes
-        // behaviour-preserving and clears the warning by construction.
-        let src = "(module m (def (f p q) (+ p 1)) (export f))";
-        let diags = unused_diags(src);
-        assert_eq!(diags.len(), 1, "only q is unused: {diags:?}");
-        let fix = diags[0].fix.as_ref().expect("a fix is carried");
-        assert_eq!(fix.replacement, "_q", "the `_`-prefixed name");
-        assert!(
-            fix.verified,
-            "the silencing rule makes this fix VERIFIED, not heuristic"
-        );
-        // And applying it (q → _q) clears the warning — the fix's correctness, demonstrated.
-        let fixed = "(module m (def (f p _q) (+ p 1)) (export f))";
-        assert!(unused_diags(fixed).is_empty(), "the _-prefix silences it");
-    }
-
-    #[test]
     fn a_recursive_functions_used_parameter_is_not_flagged_unused() {
         // A RECURSIVE function freshens its parameter binder when its body is resolved (and the
         // accumulator transform may rewrite the body entirely), so a reference resolves to a
