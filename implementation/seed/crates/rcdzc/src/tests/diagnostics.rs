@@ -563,55 +563,20 @@ fn a_mismatched_comparison_drops_the_misleading_heap_walk_decline() {
 //  variant-typo enrichment — near-typo did-you-mean + replace fix / far-typo "closest matches" list + no-fix,
 //  across qualified (C.Alph→CDZ0201), bare (Alph→CDZ0101), and wrong-sum (D.Gamma→CDZ0203) heads.)
 #[test]
-fn a_wrong_ctor_over_a_single_variant_newtype_scrutinee_is_enriched_too() {
-    // A single-variant `(type T (Mk …))` erases to a `Ty::Nominal` newtype, whose wrong-ctor pattern
-    // took a SEPARATE reject path from the boxed `Ty::Sum` — it named "not the constructor of the
-    // matched type T" with NO suggestion and NO fix, while the multi-variant path already carried the
-    // "did you mean?" / closest-variants enrichment. Both now share `enrich_pattern_head_suggestion`
-    // (which reads the `decl`'s variants for either kind), so a newtype scrutinee gets the same route.
-
-    // NEAR miss → a confident "did you mean" + a replace fix to the newtype's sole variant.
-    let near = first_error(
-        "(module m (type A (Xyz)) (type B (Xyw)) (def (f (: a A)) (match a ((Xyw) 1))) (export f))",
-    );
-    assert_eq!(
-        near.code.as_deref(),
-        Some("CDZ0203"),
-        "got: {}",
-        near.message
-    );
+fn a_newtype_scrutinees_own_ctor_pattern_still_matches() {
+    // WHITE-BOX residual (compile-validity — corpus-inexpressible). The near/far wrong-ctor SUGGESTION
+    // halves over a single-variant `(type A (Xyz))` newtype scrutinee (which erases to a `Ty::Nominal`,
+    // once a separate reject path with no suggestion; now shares `enrich_pattern_head_suggestion` with
+    // the boxed-sum path) migrated to corpus 05-compound-types ("a near-typo/far-typo ctor over a
+    // single-variant newtype …"). What stays here: the newtype's OWN ctor pattern `(Mk n)` still matches
+    // + binds — no false reject from the shared enrich path — a compile_component `.is_ok()` pin.
     assert!(
-        near.message.contains("not a variant of the matched type A"),
-        "the newtype wrong-ctor uses the variant wording: {}",
-        near.message
+        crate::compile::compile_component(&crate::codec::encode(&parse(
+            "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (match u ((Mk n) n))) (export f))"
+        )))
+        .is_ok(),
+        "the newtype's own ctor pattern still matches"
     );
-    assert!(
-        near.message.contains("did you mean `Xyz`?")
-            && near
-                .fix
-                .as_ref()
-                .is_some_and(|f| f.replacement.contains("Xyz")),
-        "a near-miss ctor over a newtype suggests + fixes to its sole variant: {} fix={:?}",
-        near.message,
-        near.fix
-    );
-    // FAR miss → lists the newtype's variant (no baseless fix), the same two-tier the sum path gives.
-    let far = first_error(
-        "(module m (type A (Xyz)) (type B (Y)) (def (f (: a A)) (match a ((Y) 1))) (export f))",
-    );
-    assert!(
-        far.message.contains("closest matches:") && far.message.contains("`Xyz`"),
-        "a far-miss ctor over a newtype lists its variant: {}",
-        far.message
-    );
-    // NO false reject: the newtype's REAL ctor still matches and binds.
-    assert!(
-            crate::compile::compile_component(&crate::codec::encode(&parse(
-                "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (match u ((Mk n) n))) (export f))"
-            )))
-            .is_ok(),
-            "the newtype's own ctor pattern still matches"
-        );
 }
 
 #[test]
