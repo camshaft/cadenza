@@ -2471,81 +2471,14 @@ fn a_collection_element_mismatch_across_kinds_names_no_axis() {
 // taking 1 argument, but this one takes 2"), a same-arity PARAMETER difference resolving at the inner argument
 // (no fn-signature tail), the value-annotation-site result face, and the identical-fn no-fault control. All PASS.)
 
-#[test]
-fn a_mismatch_between_two_same_named_distinct_types_disambiguates_the_shared_name() {
-    // A user type that SHADOWS a prelude type name — `(type Int64 (A))` — makes `Int64` in a type
-    // position denote the user sum. Passing the prelude `Int64` literal `5` to a `(: x Int64)` parameter
-    // is then a genuine mismatch between two DIFFERENT types that both render "Int64" — the bare
-    // "this argument is an Int64, but a value of type Int64 is expected here" reads as a contradiction.
-    // The message now appends a tail explaining the names collide via a shadowing declaration.
-    // The CALL-ARGUMENT path.
-    let arg = reject_full(
-        "(module m (type Int64 (A)) (def (f (: x Int64)) x) (def (main) (f 5)) (export main))",
-    )
-    .expect("passing a prelude Int64 where the shadowing user Int64 is wanted rejects");
-    assert_eq!(arg.code.as_deref(), Some("CDZ0203"), "got: {}", arg.message);
-    assert!(
-        arg.message
-            .contains("two DIFFERENT types printed with the same name")
-            && arg.message.contains("shadows a built-in"),
-        "the argument mismatch disambiguates the shared name: {}",
-        arg.message
-    );
-    // The DIRECT value-annotation path (`(: 5 Int64)`) shares the same hint chain.
-    let annot = reject_full("(module m (type Int64 (A)) (def (main) (: 5 Int64)) (export main))")
-        .expect("annotating a prelude literal with the shadowing user Int64 rejects");
-    assert!(
-        annot
-            .message
-            .contains("two DIFFERENT types printed with the same name"),
-        "the value-annotation mismatch disambiguates too: {}",
-        annot.message
-    );
-    // NO false positive: an ordinary mismatch between DIFFERENT names (Int64 vs String) gets NO such
-    // tail — the render already distinguishes them.
-    let ordinary =
-        reject_full("(module m (def (f (: x Int64)) x) (def (main) (f \"s\")) (export main))")
-            .expect("Int64 vs String rejects");
-    assert!(
-        !ordinary
-            .message
-            .contains("two DIFFERENT types printed with the same name"),
-        "a distinct-name mismatch adds no same-name tail: {}",
-        ordinary.message
-    );
-}
+// (a_mismatch_between_two_same_named_distinct_types_disambiguates_the_shared_name migrated to corpus
+// 07-type-system: a user `(type Int64 …)` shadowing the prelude makes a prelude-Int64-vs-user-Int64 mismatch
+// append "two DIFFERENT types printed with the same name … shadows a built-in" (argument + value-annotation
+// sites); an ordinary distinct-name mismatch adds no such tail. All 3 PASS wasm.)
 
-#[test]
-fn an_unsolved_type_variable_renders_as_underscore_not_an_internal_number() {
-    // An UNSOLVED type variable in a rendered type — the error type of a bare `(Ok 1)` is `(Result
-    // Int64 _)`, inference never pins the `Err` payload — must render as `_` (rustc's placeholder for
-    // an unknown type), NOT the internal `?{n}`. The `n` is a nondeterministic solver-assigned number
-    // that means nothing to the author and reads as a naive-HM internal leak. Checked across the sites
-    // an unsolved var reaches a user message: a list-element clash, a call argument, an if-branch join.
-    let list = reject_full("(module m (def (g) (list (Some 1) (Ok 2))) (export g))")
-        .expect("mixing Option and Result in a list rejects");
-    assert!(
-        list.message.contains("(Result Int64 _)") && !list.message.contains("?"),
-        "an unsolved var renders as `_`, no `?N`: {}",
-        list.message
-    );
-    let arg = reject_full(
-        "(module m (def (g (: o (Option Int64))) o) (def (main) (g (Ok 2))) (export main))",
-    )
-    .expect("passing a Result where Option is wanted rejects");
-    assert!(
-        arg.message.contains("(Result Int64 _)") && !arg.message.contains("?"),
-        "the call-argument message renders the unsolved var as `_`: {}",
-        arg.message
-    );
-    let iff = reject_full("(module m (def (f (: b Bool)) (if b (Some 1) (Ok 2))) (export f))")
-        .expect("if branches Option vs Result reject");
-    assert!(
-        iff.message.contains("(Result Int64 _)") && !iff.message.contains("?"),
-        "the if-branch message renders the unsolved var as `_`: {}",
-        iff.message
-    );
-}
+// (an_unsolved_type_variable_renders_as_underscore_not_an_internal_number migrated to corpus 07-type-system:
+// an unsolved type var renders as `_` (not the internal `?N`) — `(Result Int64 _)` — at a list-element clash,
+// a call argument, and an if-branch join, each pinned with (not "?"). All 3 PASS wasm.)
 
 #[test]
 fn a_join_site_scalar_clash_keeps_its_retype_fix_and_no_structural_delta() {

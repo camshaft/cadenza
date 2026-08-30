@@ -3569,3 +3569,37 @@
 (case "over-applying an arity-1 member op uses the singular argument"
   (input  (do (def (main) ((. Map len) #map((= 1 2)) 99)) (export main)))
   (error  CDZ0203 (message "`Map.len` takes 1 argument, but 2 were given")))
+
+; Two DIFFERENT types that render with the SAME name (a user `(type Int64 …)` shadowing the prelude) get a
+; disambiguating tail — "two DIFFERENT types printed with the same name … shadows a built-in" — so the
+; message doesn't read as a contradiction ("an Int64 where an Int64 is expected"). An ordinary distinct-name
+; mismatch (Int64 vs String) adds no such tail. (Migrated from rcdzc
+; a_mismatch_between_two_same_named_distinct_types_disambiguates_the_shared_name.)
+(case "a mismatch between two same-named distinct types disambiguates the shared name (argument site)"
+  (input  (do (type Int64 (A)) (def (f (: x Int64)) x) (def (main) (f 5)) (export main)))
+  (error  CDZ0203 (message "two DIFFERENT types printed with the same name") (message "shadows a built-in")))
+
+(case "the same-name disambiguation also fires at a value annotation"
+  (input  (do (type Int64 (A)) (def (main) (: 5 Int64)) (export main)))
+  (error  CDZ0203 (message "two DIFFERENT types printed with the same name")))
+
+(case "an ordinary distinct-name mismatch adds no same-name disambiguation tail"
+  (input  (do (def (f (: x Int64)) x) (def (main) (f "s")) (export main)))
+  (error  CDZ0203 (message "String") (not "two DIFFERENT types printed with the same name")))
+
+; An UNSOLVED type variable in a rendered type renders as `_` (rustc's placeholder for an unknown type), NOT
+; the internal solver-assigned `?{n}` (a nondeterministic number that reads as a naive-HM leak). Checked at the
+; sites an unsolved var reaches a user message: a list-element clash, a call argument, an if-branch join — the
+; error type of a bare `(Ok 2)` is `(Result Int64 _)` (inference never pins the Err payload). (Migrated from
+; rcdzc an_unsolved_type_variable_renders_as_underscore_not_an_internal_number.)
+(case "an unsolved type variable renders as underscore in a list-element clash"
+  (input  (do (def (g) #list((Some 1) (Ok 2))) (export g)))
+  (error  CDZ0201 (message "(Result Int64 _)") (not "?")))
+
+(case "an unsolved type variable renders as underscore in a call-argument mismatch"
+  (input  (do (def (g (: o (Option Int64))) o) (def (main) (g (Ok 2))) (export main)))
+  (error  CDZ0203 (message "(Result Int64 _)") (not "?")))
+
+(case "an unsolved type variable renders as underscore in an if-branch join"
+  (input  (do (def (f (: b Bool)) (if b (Some 1) (Ok 2))) (export f)))
+  (error  CDZ0203 (message "(Result Int64 _)") (not "?")))
