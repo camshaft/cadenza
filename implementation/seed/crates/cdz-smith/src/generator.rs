@@ -315,7 +315,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(20) {
+        match self.cur.choice(21) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -333,6 +333,7 @@ impl Gen<'_> {
             16 => self.effect_handler_expr(depth, want),
             17 => self.effect_multiop_expr(depth),
             18 => self.map_set_builtin_expr(depth),
+            19 => self.record_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -701,6 +702,32 @@ impl Gen<'_> {
                 self.num_set(depth);
                 self.out.push(')');
             }
+        }
+    }
+
+    /// A `record` value in GENERAL position — `(record (= a e) (= b e) …)` over 1..=3 numeric fields
+    /// (fixed labels a/b/c so it always types), sometimes wrapped in a field PROJECTION `(. <record>
+    /// <label>)`. Reaches record CONSTRUCTION + projection lowering in ordinary expression position —
+    /// which the crash hunt otherwise never exercised (records were emitted ONLY as effect-handler
+    /// state before; operator directive 2026-08-30 to keep expanding generated inputs). Numeric fields
+    /// so the value types + reaches codegen; a projected label is always one that is present.
+    fn record_expr(&mut self, depth: u32) {
+        let n = 1 + self.cur.choice(3); // 1..=3 fields
+        const LABELS: [&str; 3] = ["a", "b", "c"];
+        let project = self.cur.flip();
+        if project {
+            self.out.push_str("(. ");
+        }
+        self.out.push_str("(record");
+        for &label in LABELS.iter().take(n) {
+            let _ = write!(self.out, " (= {label} ");
+            self.expr(depth.saturating_sub(1), Kind::Num);
+            self.out.push(')');
+        }
+        self.out.push(')');
+        if project {
+            // Project a field that is definitely present (index < n).
+            let _ = write!(self.out, " {})", LABELS[self.cur.choice(n)]);
         }
     }
 
@@ -1459,6 +1486,31 @@ mod tests {
             }
         }
         assert!(hit, "no seed in the sweep emitted a Map/Set builtin");
+    }
+
+    /// The record arm is reachable — some seed emits a `(record (= a …) …)` in GENERAL position (not just
+    /// effect-handler state), and every program it can emit parses. Guards the record construction +
+    /// projection reach (operator directive 2026-08-30 to keep expanding generated inputs).
+    #[test]
+    fn some_seed_emits_a_record() {
+        let mut hit = false;
+        let mut saw_projection = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(record (= a ") {
+                hit = true;
+                if src.contains("(. (record (= a ") {
+                    saw_projection = true;
+                }
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a record");
+        assert!(saw_projection, "no seed projected a field from a record");
     }
 
     /// The recursive-def arm is reachable — some seed emits a NESTED `(def (...` helper (main is the
