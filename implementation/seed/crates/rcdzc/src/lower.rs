@@ -6678,14 +6678,18 @@ fn desugar_saturating_bool_list_elements(
             bool_lead.push(None);
             continue;
         };
-        match es.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
-            // A lead-0 rest `(list .. rest)` covers every length → an unguarded whole-tail cover.
-            Some(0) => {
+        match db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, trailing_start)| (i, trailing_start))
+        {
+            // A lead-0 rest `(list .. rest)` / `(list (.. rest))` covers every length → an unguarded whole-tail cover.
+            Some((0, _)) => {
                 has_tail_cover = true;
                 bool_lead.push(None);
             }
-            // A single leading element + rest, that element a bool literal → a saturating candidate.
-            Some(i) if i == 1 && i + 2 == es.len() => {
+            // A single leading element + rest at the end, that element a bool literal → a saturating candidate.
+            Some((1, trailing_start)) if trailing_start == es.len() => {
                 match crate::resolve::resolved_of(db, es[0]) {
                     crate::resolved::Resolved::Bool(b) => bool_lead.push(Some(b)),
                     _ => bool_lead.push(None),
@@ -7125,8 +7129,12 @@ fn desugar_saturating_ctor_list_elements(
             ctor_lead.push(None);
             continue;
         };
-        match es.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
-            Some(0) => {
+        match db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, trailing_start)| (i, trailing_start))
+        {
+            Some((0, _)) => {
                 has_tail_cover = true;
                 ctor_lead.push(None);
             }
@@ -7135,7 +7143,7 @@ fn desugar_saturating_ctor_list_elements(
             // variant written `C.R`) is a candidate too — the rewrite NORMALIZES it to the paren-applied form
             // `((. C R))` (which resolves cleanly as a variant pattern where the bare member re-lowers as
             // member ACCESS — a synthesized-member-pattern resolve gap), see `wrap_bare_member_element`.
-            Some(i) if i == 1 && i + 2 == es.len() => {
+            Some((1, trailing_start)) if trailing_start == es.len() => {
                 match refutable_ctor_element_head(db, es[0]) {
                     Some(head) => ctor_lead.push(ctor_head_display_name(db, head)),
                     None => ctor_lead.push(None),
@@ -7432,7 +7440,7 @@ fn desugar_refutable_ctor_list_elements(
 /// list (irrefutable, handled inline by `list_element_irrefutable_or_decline`) → `None`.
 fn refutable_nested_list_element(db: &Db, elem_pat: StructId) -> Option<(usize, bool)> {
     let es = db.ast.compound_form_of(elem_pat, CompoundCtor::List)?;
-    match es.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+    match db.ast.rest_marker(es).map(|(i, _, _)| i) {
         // A rest form: refutable iff ≥1 leading element (misses the empty inner list); zero-leading is
         // irrefutable (returns None). `inner_lead` = the count before `..`, not fixed.
         Some(k) if k > 0 => Some((k, false)),
@@ -7701,8 +7709,9 @@ fn map_pattern_with_wildcard_values(db: &mut Db, map_pat: StructId) -> StructId 
     };
     let mut children = vec![map_head];
     for &entry in &tail {
-        // Stop at a `..` marker — the presence guard tests only the NAMED keys, not the rest.
-        if db.ast.as_name(entry) == Some("..") {
+        // Stop at a `..` marker (either the flat `..` or the wrapped `(.. rest)` node) — the presence guard
+        // tests only the NAMED keys, not the rest.
+        if db.ast.as_name(entry) == Some("..") || db.ast.as_form(entry, "..").is_some() {
             break;
         }
         // Extract the entry's KEY, handling the native `FieldPair (= k v)` (3-element) + the name-head
@@ -7911,9 +7920,10 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
             else {
                 continue;
             };
-            let lead = es
-                .iter()
-                .position(|&e| db.ast.as_name(e) == Some(".."))
+            let lead = db
+                .ast
+                .rest_marker(&es)
+                .map(|(i, _, _)| i)
                 .unwrap_or(es.len());
             for &e in &es[..lead] {
                 if is_refutable_literal_element(db, e) {
@@ -8300,7 +8310,7 @@ fn list_element_irrefutable_or_decline(
             .ast
             .compound_form_of(elem_pat, CompoundCtor::List)
             .map(|es| {
-                let dd = es.iter().position(|&e| db.ast.as_name(e) == Some(".."));
+                let dd = db.ast.rest_marker(es).map(|(i, _, _)| i);
                 match dd {
                     // A rest form `(list p… .. rest)` with ≥1 leading element is refutable.
                     Some(k) => k > 0,
@@ -10483,7 +10493,7 @@ fn pattern_constraints(
         // unknown; name that. (Detected the same way the list-pattern arms find their rest — a bare `..`
         // name among the elements. Anchored at the pattern; the message avoids every `dedup_faults` marker
         // phrase — "were given"/"takes exactly"/"arguments to a function of arity"/"are different types".)
-        if elems.iter().any(|&e| db.ast.as_name(e) == Some("..")) {
+        if db.ast.rest_marker(&elems).is_some() {
             return Err(Reject::coded(
                 Code::Malformed,
                 "a tuple pattern has fixed arity, so `..` (a rest/spread) has no place here — a `..` \
