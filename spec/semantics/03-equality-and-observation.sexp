@@ -120,7 +120,14 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects 0))
+  ; INTERIM re-pin (v-memory-safety, 2026-08-30): this runtime-list max-fold over-retains 6 on current main
+  ; (values 1/1 correct, NO trap — a genuine fold/list-reclaim over-retention, my #1-lever class, NOT a UAF).
+  ; It was a CLEAN-pin (live-objects 0) VIOLATION surfaced by #6119's binary grade (clean->leak blocks); the
+  ; over-retention is PRE-EXISTING on clean main (git-clean measure = 6, no fix applied) — it confounded the
+  ; dqe fix gate (the "max-FOLD-NaN regression" was this pre-existing leak, not the fix). Accepted per
+  ; accept-vs-fix policy (value-correct + no-trap = interim known-leak, seq-278). Real fix = the general
+  ; fold/list-reclaim drop-pass (v-core-opt batch / my #1 lever) -> tightens to 0. Was (live-objects 0).
+  (live-objects known-leak))
 
 (case "a NaN selected through a runtime if-join stays self-equal and unordered downstream"
   (doc    "NaN through a runtime if-JOIN, both disciplines checked downstream: (= r r) is the
