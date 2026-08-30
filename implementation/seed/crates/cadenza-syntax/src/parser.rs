@@ -1051,6 +1051,13 @@ impl<'a> Parser<'a> {
             // the `// note` would swallow the trailing ` op right`). `strip_comments` peels it.
             let left_trailing = self.take_trailing_comment_here();
             left = self.wrap_comment_after(left_trailing, left);
+            // OWN-LINE `//` comment(s) sitting BEFORE this operator (`a\n  // note\n  and b`, or a block
+            // between operands of a multi-line `and`/`|>` chain) lead the RIGHT operand — they remain at
+            // the operator token's leading slot after the same-line trailing prefix is taken. Drain them
+            // here + attach to `right` below, else they are stranded at the op slot and DROPPED (seq-277/C3:
+            // sread-eval.cdz's mid-chain own-line comment blocks). The infix printer emits them own-line
+            // BEFORE the operator. `strip_comments` peels them.
+            let right_leading = self.take_comments_here();
             self.bump(); // operator
             let head = self.name(op_name, op_span);
             // A `:` ascription whose RHS OPENS with `forall` is a type-position `forall` (`e : forall a. T`):
@@ -1075,6 +1082,8 @@ impl<'a> Parser<'a> {
                 };
                 self.expr(right_min)
             };
+            // Attach the own-line comment(s) that preceded the operator as leading on the right operand.
+            let right = self.wrap_comments(right_leading, right);
             let span = start.merge(self.prev_span());
             left = self.list(vec![head, left, right], span);
             // DEPTH GUARD for the LEFT SPINE. A left-associative run (`a + b + c + …`) is parsed by
@@ -4892,6 +4901,49 @@ mod tests {
         );
         assert_eq!(
             crate::printer::print(&rp.arenas, 60),
+            printed,
+            "idempotent\n{printed}"
+        );
+    }
+
+    #[test]
+    fn an_own_line_comment_between_infix_operands_survives_the_round_trip() {
+        // Regression (seq-277/C3): an OWN-LINE `//` comment/block BETWEEN operands of a multi-line infix
+        // chain (`a\n  and b\n  // block\n  and c`) sits at the next operator's leading slot. The infix loop
+        // drained a same-line operand-trailing (slice 3) but NOT an own-line-before-operator comment, so it
+        // dropped. Reader now attaches it as leading on the RIGHT operand; the printer emits it OWN-LINE
+        // BEFORE the operator (emitting after the op re-reads to a DROP — non-idempotent). Closes sread-eval.
+        let src = "def f(a, b, c) = if a\n  and b\n  // block line1\n  // block line2\n  and c\n  then 1 else 2\n";
+        let count = |a: &Arenas| {
+            (0..a.structure.len() as u32)
+                .map(StructId)
+                .filter(|&id| a.head_name(id) == Some("comment"))
+                .count()
+        };
+        let p = read_ml(src);
+        assert!(p.ok(), "parses: {:?}", p.errors);
+        assert_eq!(
+            count(&p.arenas),
+            2,
+            "both own-line block lines attached as leading (comment …)"
+        );
+        let printed = crate::printer::print(&p.arenas, 80);
+        assert!(
+            !printed.contains("comment("),
+            "no garbage comment(...):\n{printed}"
+        );
+        assert!(
+            printed.contains("// block line1") && printed.contains("// block line2"),
+            "both re-emitted:\n{printed}"
+        );
+        let rp = read_ml(&printed);
+        assert!(
+            rp.ok() && p.arenas.structurally_eq(&rp.arenas),
+            "round-trips: {:?}\n{printed}",
+            rp.errors
+        );
+        assert_eq!(
+            crate::printer::print(&rp.arenas, 80),
             printed,
             "idempotent\n{printed}"
         );

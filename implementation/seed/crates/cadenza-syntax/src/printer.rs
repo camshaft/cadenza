@@ -920,19 +920,38 @@ impl<'a> Printer<'a> {
         // that operand carried a trailing `//` comment, so the break before the NEXT operator is HARD.
         let mut force_break = self.infix_operand(operands[0], prec);
         for (i, o) in ops.iter().enumerate() {
-            // A trailing `//` on the previous operand runs to end-of-line, so a soft `space()` here could
-            // stay flat (`a // note and b`) and SWALLOW ` op right` into the comment — force a hardbreak.
-            if force_break {
+            // Peel LEADING `(comment …)` off the next operand — such a comment PRECEDED the operator in
+            // source (`a\n  // note\n  op b`, an own-line comment/block between operands of a multi-line
+            // chain), so it must print OWN-LINE BEFORE the operator (the reader re-drains an own-line
+            // comment at the operator slot as the right operand's leading, so this keeps the round-trip
+            // IDEMPOTENT; emitting it after the op — `op // note` — re-reads to a DROP). seq-277/C3.
+            let mut operand = operands[i + 1];
+            let mut op_leads: Vec<StructId> = Vec::new();
+            while let Some(a) = self.a.as_form(operand, "comment")
+                && a.len() == 2
+                && self.is_string(a[0])
+            {
+                op_leads.push(a[0]);
+                operand = a[1];
+            }
+            // A trailing `//` on the previous operand (force_break), or a leading comment on this operand,
+            // forces a HARD break before the operator (a `//` runs to end-of-line, so a soft space could
+            // keep the chain flat and swallow the ` op right` / the comment can't sit inline).
+            if force_break || !op_leads.is_empty() {
                 self.doc.hardbreak();
             } else {
                 self.doc.space(); // break BEFORE the operator
+            }
+            for &text in &op_leads {
+                self.doc.word(format!("//{}", self.doc_line_text(text)));
+                self.doc.hardbreak();
             }
             // In infix position the operator prints as its SURFACE GLYPH (the arena head `=` for
             // equality prints as `==`; every other op is identity). The backtick escape is only for
             // an operator glyph used as an ordinary NAME.
             self.doc.word(infix_glyph(o).to_string());
             self.doc.word(" ");
-            force_break = self.infix_operand(operands[i + 1], prec + 1); // right binds one tighter
+            force_break = self.infix_operand(operand, prec + 1); // right binds one tighter (leads peeled)
         }
         if paren {
             self.doc.word(")");
