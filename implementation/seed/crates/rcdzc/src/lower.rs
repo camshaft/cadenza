@@ -285,8 +285,8 @@ fn lower_runtime_str_len(
 ) -> Core {
     use crate::resolved::Prim;
     if !matches!(crate::infer::type_of(db, operand), crate::ty::Ty::String) {
-        return Core::Poison(Reject::decline(
-            "a runtime string's scalar length needs a UTF-8 decoding walk (not yet built; byte-len works)",
+        return Core::Poison(Reject::unsupported(
+            "a runtime string's scalar length needs a UTF-8 decoding walk (byte-len works)",
         ));
     }
     match prim {
@@ -298,8 +298,8 @@ fn lower_runtime_str_len(
             trace!(target: "rcdzc::lower", node = id.0, "String.scalar-len on a runtime string → UTF-8 lead-byte count walk");
             Core::StrScalarLen { operand }
         }
-        _ => Core::Poison(Reject::decline(
-            "a runtime string's scalar length needs a UTF-8 decoding walk (not yet built; byte-len works)",
+        _ => Core::Poison(Reject::unsupported(
+            "a runtime string's scalar length needs a UTF-8 decoding walk (byte-len works)",
         )),
     }
 }
@@ -2186,8 +2186,8 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant integer comparison (i128, wide unsigned)");
                     Core::ConstBool(r)
                 }
-                _ => Core::Poison(Reject::decline(
-                    "comparison of an integer beyond the machine width is not yet folded",
+                _ => Core::Poison(Reject::unsupported(
+                    "comparison of an integer beyond the machine width is not supported",
                 )),
             },
         },
@@ -2640,13 +2640,14 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                      carries no blessed order) — order its orderable components individually",
                 ))
             } else {
-                // EQUALITY (`=`) reaching here is a genuinely NOT-YET-BUILT canonicalization (a Set/Map leaf
-                // whose structural `=` the compiler cannot yet walk) — keep the honest heap-walk decline
-                // (the `COMPOUND_COMPARISON_DECLINE` marker, byte-identical: it is corpus-referenced + the
-                // mismatched-type dedup key).
-                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: equality of a compound value needs a heap walk (not yet built)");
-                Core::Poison(Reject::decline(
-                    "comparison of a compound value needs a heap walk (not yet built)",
+                // EQUALITY (`=`) reaching here is a genuinely unbuilt canonicalization (a Set/Map leaf
+                // whose structural `=` the compiler cannot walk) — the honest heap-walk decline, now the
+                // umbrella CDZ0900 (`Reject::unsupported`). Uses the `COMPOUND_COMPARISON_DECLINE` marker
+                // VERBATIM (it is corpus-referenced + the mismatched-type `dedup_faults` key that recognizes
+                // it by `.contains`, and dropping the old "(not yet built)" deferral suffix keeps that match).
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: equality of a compound value needs a heap walk (CDZ0900)");
+                Core::Poison(Reject::unsupported(
+                    crate::diag::COMPOUND_COMPARISON_DECLINE,
                 ))
             }
         }
@@ -4304,8 +4305,8 @@ fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -
         // Fallback (synthesis could not classify — a non-representable payload/result type): decline cleanly
         // (reject-don't-miscompile) rather than emit a malformed value.
         trace!(target: "rcdzc::lower", head = head.0, n_args = args.len(), arity, "sum-new: partial constructor — eta synthesis bailed, declines");
-        return Core::Poison(Reject::decline(
-            "a partially-applied constructor as a runtime value is not yet lowered to a runtime closure",
+        return Core::Poison(Reject::unsupported(
+            "a partially-applied constructor as a runtime value is not lowered to a runtime closure",
         ));
     }
     // NEWTYPE ERASURE: if the constructor's owning sum is an erasable NEWTYPE (a single-variant sum), the
@@ -4785,8 +4786,8 @@ fn lower_set_of(db: &mut Db, id: StructId, list: StructId) -> Core {
         Core::ListNew { elems } => build_const_set(db, id, &elems, elem_ty),
         // A runtime list source — building a set from a runtime list needs a runtime dedup loop (a later
         // increment); decline cleanly (a constant list is the corpus shape).
-        _ => Core::Poison(Reject::decline(
-            "Set.of over a runtime list is not yet built (a constant list literal only)",
+        _ => Core::Poison(Reject::unsupported(
+            "Set.of over a runtime list is not supported (a constant list literal only)",
         )),
     }
 }
@@ -5144,8 +5145,8 @@ fn build_bin_arm_predicate(
                 ));
             };
             if bin_static_offset(segs, j).is_none() {
-                return Err(Reject::decline(
-                    "a runtime bin match with a dynamically-offset dependent size field is not yet lowered",
+                return Err(Reject::unsupported(
+                    "a runtime bin match with a dynamically-offset dependent size field is not lowered",
                 ));
             }
             dep_seg_indices.push(i);
@@ -5308,8 +5309,8 @@ fn build_bin_arm_predicate(
                 // and short-circuits, so `total + off_plus + width <= total + Σn <= bytes-len` holds here.
                 let Some((byte_offset, off_plus)) = bin_dynamic_offset(db, scrutinee, segs, i)
                 else {
-                    return Err(Reject::decline(
-                        "a runtime bin literal int segment after a non-final unsized bytes / utf8 segment is not yet probed",
+                    return Err(Reject::unsupported(
+                        "a runtime bin literal int segment after a non-final unsized bytes / utf8 segment is not probed",
                     ));
                 };
                 // `BinIntRead` always emits an i64; type it FIXED Int64 so the compare's `operand_int_ty`
@@ -5671,8 +5672,8 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
                     }
                 }
                 // A non-int source or unresolved target bounds can't be range-checked here — decline honestly.
-                return Core::Poison(Reject::decline(
-                    "a runtime checked integer conversion (T.of) that could be out of range is not yet emitted (convert a constant, widen instead of narrow, or use T.wrap)",
+                return Core::Poison(Reject::unsupported(
+                    "a runtime checked integer conversion (T.of) that could be out of range is not supported (convert a constant, widen instead of narrow, or use T.wrap)",
                 ));
             }
             if is_scalar(db, args[0]) {
