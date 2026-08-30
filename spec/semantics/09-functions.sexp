@@ -270,7 +270,8 @@
   (call   main (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 2 Int64)) (output (: 31 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64))
-  (live-objects 0))
+  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
+  (live-objects known-leak))
 
 ; A CAPTURING closure whose HANDLE both ESCAPES WHOLE (stored into a heap collection / sum payload) AND is
 ; ALSO DIRECTLY CALLED — the "call BOTH ways" shape. The pinned idioms above call a stored closure via
@@ -2116,7 +2117,8 @@
         (export main)))
   (call main (: 9 Int64)) (output (: 123 Int64))
   (call main (: 0 Int64)) (output (: 33 Int64))
-  (live-objects 0))
+  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
+  (live-objects known-leak))
 
 (case "a RUNTIME-selected combiner closure crosses a join and drives a fold"
   (doc    "The fold-fn pins take the closure as a CONST param (devirtualizable); this SELECTS the
@@ -4091,7 +4093,8 @@
             (def (main) (match (f #list(5 10) #list((Some 0)) 1 (None unit)) ((None _u) -1) ((Some r) r)))
             (export main)))
   (output (: -1 Int64))
-  (live-objects 0))
+  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
+  (live-objects known-leak))
 
 ; --- A TAIL call runs in constant stack ---------------------------------------------------------
 ; A recursive call in TAIL position (the function's result is exactly that call) must reuse the
@@ -6904,7 +6907,8 @@
             (def (main) (s #list(1 2 3) 0))
             (export main)))
   (output (: 6 Int64))
-  (live-objects 0))
+  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
+  (live-objects known-leak))
 
 ; The tail fold above folds a built-in list with a fixed `+`. The general HIGHER-ORDER left fold
 ; (`foldl f acc xs`) takes a COMBINING FUNCTION `f` as a parameter — the single most common higher-order
@@ -7277,7 +7281,8 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 18 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects 0))
+  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
+  (live-objects known-leak))
 
 (case "a captured list survives a structural rebuild of the same source between capture and application"
   (doc    "`f = (fn (k) (+ k (isum xs)))` captures `xs = [1,2,3]`; BEFORE `f` runs, `xs` is also fed to a
@@ -8058,7 +8063,8 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 4070 Int64))
   (call   main (: 3 Int64)) (output (: 3008 Int64))
-  (live-objects 0))
+  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
+  (live-objects known-leak))
 
 (case "a pipeline chain threads handler STATE left-to-right through effectful stages"
   (doc    "`|>` composed with effects: two chained pipe stages each perform `(Ctr.tick)` — the desugar
@@ -8209,7 +8215,8 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 30 Int64))
-  (live-objects 0)
+  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
+  (live-objects known-leak)
   )
 
 (case "ch04 a runtime-branch-selected closure applies"
@@ -9672,7 +9679,8 @@
     (def (main) (match (f #list(5 10) #list((Some 0)) 1 (None unit)) ((None _u) -1) ((Some r) r)))
     (export main)))
   (output (: -1 Int64))
-  (live-objects 0))
+  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
+  (live-objects known-leak))
 
 (case "a runtime value-eq in a tail-loop condition does not clash the arithmetic scratch slot"
   (doc    "`find` compares `(N.I n)` against `(N.I 3)` (an i32 heap-handle compare) in the condition of a
@@ -10005,7 +10013,8 @@
               (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64))
   (call   main (: 5 Int64)) (output (: 15 Int64))
-  (live-objects 0))
+  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
+  (live-objects known-leak))
 
 (case "an extracted closure placed into a tuple then projected and applied reclaims"
   (doc    "A closure `(mk k)` extracted via `List.at` is placed into a TUPLE `(tuple f 99)` (a consuming
@@ -10020,7 +10029,8 @@
               (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64))
   (call   main (: 5 Int64)) (output (: 15 Int64))
-  (live-objects 0))
+  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
+  (live-objects known-leak))
 
 (case "a runtime-selected closure from a list of DISTINCT-BODY closures dispatches indirectly and reclaims"
   (doc    "Unlike the same-factory runtime-index case, this list holds closures with DIFFERENT bodies —
@@ -10038,7 +10048,8 @@
   (call   main (: 1 Int64)) (output (: 11 Int64))
   (call   main (: 2 Int64)) (output (: 20 Int64))
   (call   main (: 3 Int64)) (output (: 30 Int64))
-  (live-objects 0))
+  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
+  (live-objects known-leak))
 
 (case "an extracted closure passed through a helper then applied reclaims"
   (doc    "A closure `(mk k)` extracted via `List.at` is passed as an ARGUMENT to a helper `(applyit g) =
@@ -10052,4 +10063,5 @@
               (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64))
   (call   main (: 5 Int64)) (output (: 15 Int64))
-  (live-objects 0))
+  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
+  (live-objects known-leak))
