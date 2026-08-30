@@ -4935,6 +4935,7 @@
               clippy-xtask-fmt = mkCrateClippyCrane { crate = "xtask-fmt"; };
               clippy-xtask-codegen-contracts = mkCrateClippyCrane { crate = "xtask-codegen-contracts"; };
               clippy-xtask-codegen-wasm-abi = mkCrateClippyCrane { crate = "xtask-codegen-wasm-abi"; };
+              clippy-xtask-codegen-declines = mkCrateClippyCrane { crate = "xtask-codegen-declines"; };
               clippy-xtask-codegen-guide = mkCrateClippyCrane { crate = "xtask-codegen-guide"; };
               clippy-xtask-prune-baselines = mkCrateClippyCrane { crate = "xtask-prune-baselines"; };
               clippy-xtask-save-baseline = mkCrateClippyCrane { crate = "xtask-save-baseline"; };
@@ -5000,6 +5001,7 @@
               test-xtask-fmt = mkCrateTestCrane { crate = "xtask-fmt"; };
               test-xtask-codegen-contracts = mkCrateTestCrane { crate = "xtask-codegen-contracts"; };
               test-xtask-codegen-wasm-abi = mkCrateTestCrane { crate = "xtask-codegen-wasm-abi"; };
+              test-xtask-codegen-declines = mkCrateTestCrane { crate = "xtask-codegen-declines"; };
               test-xtask-codegen-guide = mkCrateTestCrane { crate = "xtask-codegen-guide"; };
               test-xtask-prune-baselines = mkCrateTestCrane { crate = "xtask-prune-baselines"; };
               test-xtask-save-baseline = mkCrateTestCrane { crate = "xtask-save-baseline"; };
@@ -5073,7 +5075,7 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-codegen-guide clippy-xtask-prune-baselines clippy-xtask-save-baseline clippy-xtask-merge-baseline clippy-xtask-bench clippy-xtask-install-lsp clippy-xtask-duvet-check clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-codegen-declines clippy-xtask-codegen-guide clippy-xtask-prune-baselines clippy-xtask-save-baseline clippy-xtask-merge-baseline clippy-xtask-bench clippy-xtask-install-lsp clippy-xtask-duvet-check clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
               echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + xtask-codegen-wasm-abi + xtask-prune-baselines + xtask-bench + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
