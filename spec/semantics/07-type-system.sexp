@@ -3550,6 +3550,21 @@
   (input  (do (def (g) #list(#tuple(1 2) #tuple(1 2 3))) (export g)))
   (error  CDZ0201 (message "expected a tuple with 2 elements, but this one has 3")))
 
+; The `if`-branch twins of the match-arm/list-literal joins above: two tuple branches of an `if` that
+; disagree in ARITY or in one ELEMENT TYPE are a branch-join type mismatch (CDZ0203, not the CDZ0201
+; homogeneity fault a LIST literal raises). The coarse "if branches differ" lead carries the SAME
+; per-member structural delta the match-arm case names — an arity delta or an element-position delta —
+; not two whole tuple renders. A cross-KIND disagreement (tuple vs scalar) is CDZ0203; two DISTINCT
+; NUMERIC branches would instead be CDZ0201 (no silent promotion). (Migrated from rcdzc
+; tuple_branches_of_different_arity_are_a_type_error + tuple_branches_of_different_element_type_are_a_type_error.)
+(case "an if whose branch tuples differ in arity is a CDZ0203 branch-join mismatch naming the arity delta"
+  (input  (do (def (f (: b Bool)) (if b #tuple(1 2) #tuple(3 4 5))) (export f)))
+  (error  CDZ0203 (message "if branches differ") (message "expected a tuple with 2 elements, but this one has 3")))
+
+(case "an if whose branch tuples differ in one element type names the differing position at the join"
+  (input  (do (def (f (: b Bool)) (if b #tuple(1 2) #tuple(1 true))) (export f)))
+  (error  CDZ0203 (message "if branches differ") (message "element 1 should be Int64, but this one is Bool")))
+
 ; Over-applying a bare variant CONSTRUCTOR names it + its arity (like the prelude-member-op over-application),
 ; not an anonymous "applied N arguments to a function of arity M". The constructor is named bare (`Mk`) or
 ; dotted at the member-access spelling (`P.Mk`), and the reject carries a delete-surplus fix. An ordinary
