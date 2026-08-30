@@ -85,30 +85,32 @@ type Iter =
 /// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure;
 /// `rest` is a fresh iterator for the remainder, so an iterator is re-steppable and shareable.
 def next(it) = match it with
-  | Iter.FromList(xs) =>
-    (match xs with
+  | Iter.FromList(xs) => (
+    match xs with
       | [] => Option.None(unit)
       | [h, .. t] => Option.Some((h, Iter.FromList(t)))
-    )
+  )
   | Iter.RangeI(r) =>
     let (lo, hi) = r in
     if lo < hi then Option.Some((lo, Iter.RangeI((lo + 1, hi)))) else Option.None(unit)
-  | Iter.MapI(mf) =>
-    (let (f, src) = mf in
+  | Iter.MapI(mf) => (
+    let (f, src) = mf in
     match next(src) with
       | Option.None(_) => Option.None(unit)
       | Option.Some(p) =>
         let (v, rest) = p in
-        Option.Some((f(v), Iter.MapI((f, rest)))))
-  | Iter.FilterI(pf) =>
-    (let (p, src) = pf in
+        Option.Some((f(v), Iter.MapI((f, rest))))
+  )
+  | Iter.FilterI(pf) => (
+    let (p, src) = pf in
     match next(src) with
       | Option.None(_) => Option.None(unit)
       | Option.Some(pr) =>
         let (v, rest) = pr in
-        if p(v) then Option.Some((v, Iter.FilterI((p, rest)))) else next(Iter.FilterI((p, rest))))
-  | Iter.TakeI(nf) =>
-    (let (n, src) = nf in
+        if p(v) then Option.Some((v, Iter.FilterI((p, rest)))) else next(Iter.FilterI((p, rest)))
+  )
+  | Iter.TakeI(nf) => (
+    let (n, src) = nf in
     if n <= 0 then
       Option.None(unit)
     else
@@ -116,9 +118,10 @@ def next(it) = match it with
         | Option.None(_) => Option.None(unit)
         | Option.Some(p) =>
           let (v, rest) = p in
-          Option.Some((v, Iter.TakeI((n - 1, rest)))))
-  | Iter.DropI(nf) =>
-    (let (n, src) = nf in
+          Option.Some((v, Iter.TakeI((n - 1, rest))))
+  )
+  | Iter.DropI(nf) => (
+    let (n, src) = nf in
     if n <= 0 then
       next(src)
     else
@@ -126,24 +129,27 @@ def next(it) = match it with
         | Option.None(_) => Option.None(unit)
         | Option.Some(p) =>
           let (v, rest) = p in
-          next(Iter.DropI((n - 1, rest))))
-  | Iter.TakeWhileI(pf) =>
-    (let (p, src) = pf in
+          next(Iter.DropI((n - 1, rest)))
+  )
+  | Iter.TakeWhileI(pf) => (
+    let (p, src) = pf in
     match next(src) with
       | Option.None(_) => Option.None(unit)
       | Option.Some(pr) =>
         let (v, rest) = pr in
-        if p(v) then Option.Some((v, Iter.TakeWhileI((p, rest)))) else Option.None(unit))
-  | Iter.ChainI(ab) =>
-    (let (a, b) = ab in
+        if p(v) then Option.Some((v, Iter.TakeWhileI((p, rest)))) else Option.None(unit)
+  )
+  | Iter.ChainI(ab) => (
+    let (a, b) = ab in
     match next(a) with
       // drain `a` first; when `a` is exhausted, step straight into `b`
       | Option.None(_) => next(b)
       | Option.Some(p) =>
         let (v, rest) = p in
-        Option.Some((v, Iter.ChainI((rest, b)))))
-  | Iter.ZipWithI(zf) =>
-    (let (f, ab) = zf in
+        Option.Some((v, Iter.ChainI((rest, b))))
+  )
+  | Iter.ZipWithI(zf) => (
+    let (f, ab) = zf in
     let (a, b) = ab in
     match next(a) with
       // stop as soon as EITHER side runs out — the shorter iterator bounds the result
@@ -154,9 +160,10 @@ def next(it) = match it with
           | Option.None(_) => Option.None(unit)
           | Option.Some(pb) =>
             let (vb, rb) = pb in
-            Option.Some((f(va, vb), Iter.ZipWithI((f, (ra, rb))))))
-  | Iter.ScanI(sf) =>
-    (let (f, acc-src) = sf in
+            Option.Some((f(va, vb), Iter.ZipWithI((f, (ra, rb)))))
+  )
+  | Iter.ScanI(sf) => (
+    let (f, acc-src) = sf in
     let (acc, src) = acc-src in
     // yield the running accumulator, threading the new acc into the rest
     match next(src) with
@@ -164,7 +171,8 @@ def next(it) = match it with
       | Option.Some(p) =>
         let (v, rest) = p in
         let acc2 = f(acc, v) in
-        Option.Some((acc2, Iter.ScanI((f, (acc2, rest))))))
+        Option.Some((acc2, Iter.ScanI((f, (acc2, rest)))))
+  )
   | Iter.IterateI(itf) =>
     let (f, cur) = itf in
     // never exhausts: yield `cur`, and the rest resumes from `f(cur)`
@@ -200,8 +208,8 @@ def next(it) = match it with
       Option.Some((lo, Iter.InclRangeI((lo + 1, hi))))
     else
       Option.Some((lo, Iter.FromList([])))
-  | Iter.FlatMapI(ff) =>
-    (let (f, cur-src) = ff in
+  | Iter.FlatMapI(ff) => (
+    let (f, cur-src) = ff in
     let (cur, src) = cur-src in
     // drain the current sub-iterator; when it is empty, pull the next source element `x` and open
     // `f(x)` as the new current sub-iterator (recursing to skip any empty sub-iterators)
@@ -214,9 +222,10 @@ def next(it) = match it with
           | Option.None(_) => Option.None(unit)
           | Option.Some(ps) =>
             let (x, srest) = ps in
-            next(Iter.FlatMapI((f, (f(x), srest)))))
-  | Iter.IntersperseI(isp) =>
-    (let (sep, pending-src) = isp in
+            next(Iter.FlatMapI((f, (f(x), srest))))
+  )
+  | Iter.IntersperseI(isp) => (
+    let (sep, pending-src) = isp in
     let (pending, src) = pending-src in
     // if a separator is pending AND the source still has an element, yield `sep` (then next yields the
     // element); otherwise yield the next source element and mark a separator pending before the one after
@@ -229,9 +238,10 @@ def next(it) = match it with
         | Option.None(_) => Option.None(unit)
         | Option.Some(p) =>
           let (v, rest) = p in
-          Option.Some((v, Iter.IntersperseI((sep, (true, rest))))))
-  | Iter.StepByI(sb) =>
-    (let (n, src) = sb in
+          Option.Some((v, Iter.IntersperseI((sep, (true, rest)))))
+  )
+  | Iter.StepByI(sb) => (
+    let (n, src) = sb in
     // yield the head, then advance the rest by dropping the next `n-1` elements (via the lazy DropI).
     // A non-positive `n` yields nothing (guards against a zero/negative stride).
     if n <= 0 then
@@ -241,7 +251,8 @@ def next(it) = match it with
         | Option.None(_) => Option.None(unit)
         | Option.Some(p) =>
           let (v, rest) = p in
-          Option.Some((v, Iter.StepByI((n, Iter.DropI((n - 1, rest)))))))
+          Option.Some((v, Iter.StepByI((n, Iter.DropI((n - 1, rest))))))
+  )
   | Iter.DedupI(dd) =>
     let (have, prev-src) = dd in
     let (prev, src) = prev-src in
@@ -608,11 +619,11 @@ def min-by(it, key: Int64 -> Int64) = match next(it) with
 
 // ── Tests ────────────────────────────────────────────────────────────────────────────────────────
 def int-list-eq(a, b) = match a with
-  | [] =>
-    (match b with
+  | [] => (
+    match b with
       | [] => true
       | _ => false
-    )
+  )
   | [x, .. xs] =>
     match b with
       | [] => false

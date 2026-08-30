@@ -68,26 +68,27 @@ def compute-type(id: Int64) = match DbState.node-of(id) with
   | Option.Some(Node.NLit(_)) => t-int-deferred()
   | Option.Some(Node.NBoolLit(_)) => Ty.TyBool
   | Option.Some(Node.NAnnLit(_, sflag, w)) => mk-int(if sflag == 1 then true else false, w)
-  | Option.Some(Node.NVar(_)) => // A var reference's type is the type of what its binder BINDS — NOT type-of(binder), which would
+  | Option.Some(Node.NVar(_)) => (
+    // A var reference's type is the type of what its binder BINDS — NOT type-of(binder), which would
     // LOOP for a let-bound var: `let x = 5 in x` resolves x's binder to the enclosing NLet node, so
     // type-of(NLet) demands type-of(body=NVar) demands type-of(binder=NLet) → infinite recursion (a real
     // stack-exhaust at run time). Mirror infer-db's `var-type` (infer-db.cdz:422), which distinguishes:
     //   - an NLet binder → the type of the let's VALUE node (valId), typed before the body (demand it);
     //   - an NVar binder (a PARAMETER, slice-3c: the arg-flow NApp arm seeds set-ty(paramId, argTy) at the
     //     param's own NVar node) → read the seeded fact at the binder id directly via get-ty (no re-demand).
-    (match DbState.get-resolved(id) with
-      | Option.Some(Resolved.RBound(binder)) =>
-        (match DbState.node-of(binder) with
+    match DbState.get-resolved(id) with
+      | Option.Some(Resolved.RBound(binder)) => (
+        match DbState.node-of(binder) with
           | Option.Some(Node.NLet(_, valId, _)) => type-of(valId)
-          | Option.Some(Node.NVar(_)) =>
-            (match DbState.get-ty(binder) with
+          | Option.Some(Node.NVar(_)) => (
+            match DbState.get-ty(binder) with
               | Option.Some(t) => t
               | Option.None(_) => Ty.TyErr
-            )
+          )
           | _ => Ty.TyErr
-        )
+      )
       | _ => Ty.TyErr
-    )
+  )
   | Option.Some(Node.NBin(op, l, r)) => // FAITHFUL: demand both operands (memoizing them into the column), then call the REAL infer-db bin-type
     // over the current column (get-tcol) + the read-only ast (get-tree, for its literal-operand range-check).
     // bin-type unifies the operand types (arith → that int type / relational → Bool; mixed width/sign → TErr,
@@ -121,12 +122,13 @@ def compute-type(id: Int64) = match DbState.node-of(id) with
     let _t = type-of(thenId) in
     let _e = type-of(elseId) in
     match-type(DbState.get-tcol(), scrutId, litId, thenId, elseId)
-  | Option.Some(Node.NApp(calleeName, argId)) => // slice-2 NULLARY call `(mk)` = NApp(name, -1): its type is the callee BODY's type (beta-reduction over
+  | Option.Some(Node.NApp(calleeName, argId)) => (
+    // slice-2 NULLARY call `(mk)` = NApp(name, -1): its type is the callee BODY's type (beta-reduction over
     // zero args). A RECURSIVE call must NOT descend the body (the demand would loop) — stamp Int64 directly,
     // the 1-step fixpoint (mirror rcdzc infer.rs:157 / infer-db's recursive-nullary slice). A call WITH an
     // arg (argId != -1) is the param slice — not yet covered here → TErr. This is the minimal-correct nullary
     // NApp; the arg-passing + HO-param + ctor-use cases are follow-on increments.
-    (if argId == -1 then
+    if argId == -1 then
       if DbState.call-recursive(calleeName) then
         mk-int(true, 64)
       else
@@ -137,14 +139,16 @@ def compute-type(id: Int64) = match DbState.node-of(id) with
       mk-int(true, 64)
     else
       match DbState.param-node(calleeName) with
-        | Option.Some(paramId) =>
-          (let at = type-of(argId) in
+        | Option.Some(paramId) => (
+          let at = type-of(argId) in
           match DbState.set-ty((paramId, at)) with
             | _ =>
               match DbState.def-body-node(calleeName) with
                 | Option.Some(bodyId) => type-of(bodyId)
-                | Option.None(_) => Ty.TyErr)
-        | Option.None(_) => Ty.TyErr)
+                | Option.None(_) => Ty.TyErr
+        )
+        | Option.None(_) => Ty.TyErr
+  )
   | Option.Some(_) => Ty.TyErr
   | Option.None(_) => Ty.TyErr
 
@@ -159,15 +163,17 @@ def types-col(db: Db) =
 /// shared-state shape the operator confirmed + v-effects' fold targets.
 def run-type-of(db0: Db, root: Int64) =
   handle DbState(db0) with
-    | get-ty(id, db) => resume(require-ty(db, id), db)
-    | set-ty(pair, db) => (let (id, t) = pair in
-    resume(unit, fill-ty(db, id, t)))
-    | get-resolved(id, db) => resume(require-resolved(db, id), db)
-    | node-of(id, db) => resume(node-at(db-tree(db), id), db)
-    | def-body-node(name, db) => resume(def-body-of(db-tree(db), name), db)
-    | call-recursive(name, db) => resume(call-is-recursive(db-tree(db), name), db)
-    | param-node(name, db) => resume(param-of(db-tree(db), name), db)
-    | get-tcol(db) => resume(types-col(db), db)
+    | get-ty(id, db) => (resume(require-ty(db, id), db))
+    | set-ty(pair, db) => (
+      let (id, t) = pair in
+      resume(unit, fill-ty(db, id, t))
+    )
+    | get-resolved(id, db) => (resume(require-resolved(db, id), db))
+    | node-of(id, db) => (resume(node-at(db-tree(db), id), db))
+    | def-body-node(name, db) => (resume(def-body-of(db-tree(db), name), db))
+    | call-recursive(name, db) => (resume(call-is-recursive(db-tree(db), name), db))
+    | param-node(name, db) => (resume(param-of(db-tree(db), name), db))
+    | get-tcol(db) => (resume(types-col(db), db))
     | get-tree(db) => resume(db-tree(db), db)
   in
   type-of(root)

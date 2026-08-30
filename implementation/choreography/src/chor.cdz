@@ -44,47 +44,47 @@ type Chor =
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 /// Structural equality of two choreographies.
 def chor-eq(a: Chor, b: Chor) = match a with
-  | Chor.Done =>
-    (match b with
+  | Chor.Done => (
+    match b with
       | Chor.Done => true
       | _ => false
-    )
-  | Chor.Comm(f, t, l) =>
-    (match b with
+  )
+  | Chor.Comm(f, t, l) => (
+    match b with
       | Chor.Comm(f2, t2, l2) => if f == f2 then if t == t2 then l == l2 else false else false
       | _ => false
-    )
-  | Chor.Seq(x, y) =>
-    (match b with
+  )
+  | Chor.Seq(x, y) => (
+    match b with
       | Chor.Seq(x2, y2) => if chor-eq(x, x2) then chor-eq(y, y2) else false
       | _ => false
-    )
-  | Chor.Choice(c, brs) =>
-    (match b with
+  )
+  | Chor.Choice(c, brs) => (
+    match b with
       | Chor.Choice(c2, brs2) => if c == c2 then chor-list-eq(brs, brs2) else false
       | _ => false
-    )
-  | Chor.Branch(l, k) =>
-    (match b with
+  )
+  | Chor.Branch(l, k) => (
+    match b with
       | Chor.Branch(l2, k2) => if l == l2 then chor-eq(k, k2) else false
       | _ => false
-    )
-  | Chor.Rec(v, body) =>
-    (match b with
+  )
+  | Chor.Rec(v, body) => (
+    match b with
       | Chor.Rec(v2, body2) => if v == v2 then chor-eq(body, body2) else false
       | _ => false
-    )
+  )
   | Chor.Var(v) =>
     match b with
       | Chor.Var(v2) => v == v2
       | _ => false
 
 def chor-list-eq(xs: List(Chor), ys: List(Chor)) = match xs with
-  | [] =>
-    (match ys with
+  | [] => (
+    match ys with
       | [] => true
       | _ => false
-    )
+  )
   | [x, .. xr] =>
     match ys with
       | [] => false
@@ -144,32 +144,32 @@ def from-op(op: String, rest: List(Ast)) =
 
 /// `(comm from to label)` — three names.
 def from-comm(rest: List(Ast)) = match rest with
-  | [f, t, l] =>
-    (match name-of(f) with
-      | Option.Some(fs) =>
-        (match name-of(t) with
-          | Option.Some(ts) =>
-            (match name-of(l) with
+  | [f, t, l] => (
+    match name-of(f) with
+      | Option.Some(fs) => (
+        match name-of(t) with
+          | Option.Some(ts) => (
+            match name-of(l) with
               | Option.Some(ls) => Option.Some(Chor.Comm(fs, ts, ls))
               | Option.None(_) => Option.None(unit)
-            )
+          )
           | Option.None(_) => Option.None(unit)
-        )
+      )
       | Option.None(_) => Option.None(unit)
-    )
+  )
   | _ => Option.None(unit)
 
 /// `(seq a b)` — two choreographies.
 def from-seq(rest: List(Ast)) = match rest with
-  | [a, b] =>
-    (match from-ast(a) with
-      | Option.Some(ca) =>
-        (match from-ast(b) with
+  | [a, b] => (
+    match from-ast(a) with
+      | Option.Some(ca) => (
+        match from-ast(b) with
           | Option.Some(cb) => Option.Some(Chor.Seq(ca, cb))
           | Option.None(_) => Option.None(unit)
-        )
+      )
       | Option.None(_) => Option.None(unit)
-    )
+  )
   | _ => Option.None(unit)
 
 /// `(choice chooser br…)` — a chooser name then zero-or-more branch nodes.
@@ -177,46 +177,46 @@ def from-choice(rest: List(Ast)) = match rest with
   | [] => Option.None(unit)
   | [chooser, .. brs] =>
     match name-of(chooser) with
-      | Option.Some(cs) =>
-        (match from-ast-list(brs) with
+      | Option.Some(cs) => (
+        match from-ast-list(brs) with
           | Option.Some(cbrs) => Option.Some(Chor.Choice(cs, cbrs))
           | Option.None(_) => Option.None(unit)
-        )
+      )
       | Option.None(_) => Option.None(unit)
 
 /// `(branch label cont)` — a label name then a continuation choreography.
 def from-branch(rest: List(Ast)) = match rest with
-  | [l, k] =>
-    (match name-of(l) with
-      | Option.Some(ls) =>
-        (match from-ast(k) with
+  | [l, k] => (
+    match name-of(l) with
+      | Option.Some(ls) => (
+        match from-ast(k) with
           | Option.Some(ck) => Option.Some(Chor.Branch(ls, ck))
           | Option.None(_) => Option.None(unit)
-        )
+      )
       | Option.None(_) => Option.None(unit)
-    )
+  )
   | _ => Option.None(unit)
 
 /// `(rec var body)` — a rec-var name then a body choreography.
 def from-rec(rest: List(Ast)) = match rest with
-  | [v, body] =>
-    (match name-of(v) with
-      | Option.Some(vs) =>
-        (match from-ast(body) with
+  | [v, body] => (
+    match name-of(v) with
+      | Option.Some(vs) => (
+        match from-ast(body) with
           | Option.Some(cb) => Option.Some(Chor.Rec(vs, cb))
           | Option.None(_) => Option.None(unit)
-        )
+      )
       | Option.None(_) => Option.None(unit)
-    )
+  )
   | _ => Option.None(unit)
 
 /// `(var v)` — one rec-var name.
 def from-var(rest: List(Ast)) = match rest with
-  | [v] =>
-    (match name-of(v) with
+  | [v] => (
+    match name-of(v) with
       | Option.Some(vs) => Option.Some(Chor.Var(vs))
       | Option.None(_) => Option.None(unit)
-    )
+  )
   | _ => Option.None(unit)
 
 /// Parse a list of `Ast` nodes into a list of `Chor`, failing the whole list if any element is malformed.
@@ -224,11 +224,11 @@ def from-ast-list(es: List(Ast)) = match es with
   | [] => Option.Some([])
   | [h, .. r] =>
     match from-ast(h) with
-      | Option.Some(ch) =>
-        (match from-ast-list(r) with
+      | Option.Some(ch) => (
+        match from-ast-list(r) with
           | Option.Some(cr) => Option.Some(List.concat([ch], cr))
           | Option.None(_) => Option.None(unit)
-        )
+      )
       | Option.None(_) => Option.None(unit)
 
 /// The `String` of a `Name` node, else `None`.

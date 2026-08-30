@@ -150,21 +150,21 @@ def ground-default(t: Ty) = match t with
 /// SIGN equality — two signs are equal iff the SAME state (Signed=Signed, Unsigned=Unsigned,
 /// SignDef=SignDef). A one-level match (flat, avoids the deep-nested-pattern limitation).
 def sign-eq(a: Sign, b: Sign) = match a with
-  | Sign.Signed =>
-    (match b with
+  | Sign.Signed => (
+    match b with
       | Sign.Signed => true
       | _ => false
-    )
-  | Sign.Unsigned =>
-    (match b with
+  )
+  | Sign.Unsigned => (
+    match b with
       | Sign.Unsigned => true
       | _ => false
-    )
-  | Sign.SignDef =>
-    (match b with
+  )
+  | Sign.SignDef => (
+    match b with
       | Sign.SignDef => true
       | _ => false
-    )
+  )
   // ARC-A1: two unification-var signs are structurally equal iff SAME var-id (an SVar is NOT equal to a
   // concrete/deferred sign — it's an unknown). Structural state-equality, distinct from unify (which BINDS).
   | Sign.SVar(ia) =>
@@ -174,16 +174,16 @@ def sign-eq(a: Sign, b: Sign) = match a with
 
 /// WIDTH equality — WFixed(n)=WFixed(n) iff same n; WidthDef=WidthDef; else unequal.
 def width-eq(a: Width, b: Width) = match a with
-  | Width.WFixed(n) =>
-    (match b with
+  | Width.WFixed(n) => (
+    match b with
       | Width.WFixed(m) => n == m
       | _ => false
-    )
-  | Width.WidthDef =>
-    (match b with
+  )
+  | Width.WidthDef => (
+    match b with
       | Width.WidthDef => true
       | _ => false
-    )
+  )
   // ARC-A1: two unification-var widths equal iff SAME var-id (a WVar is an unknown, not equal to Fixed/Deferred).
   | Width.WVar(ia) =>
     match b with
@@ -196,64 +196,64 @@ def width-eq(a: Width, b: Width) = match a with
 /// if-join relies on). This is the convergence primitive infer's if-type-join + unify use over the shared
 /// `Ty` (replacing infer-db's monomorphic `type-eq`). Bind-per-level (deep-nested-match limitation).
 def ty-eq(a: Ty, b: Ty) = match a with
-  | Ty.TyInt(ita) =>
-    (match b with
+  | Ty.TyInt(ita) => (
+    match b with
       | Ty.TyInt(itb) =>
         let IntType.IntType(sa, wa) = ita in
         let IntType.IntType(sb, wb) = itb in
         if sign-eq(sa, sb) then width-eq(wa, wb) else false
       | _ => false
-    )
-  | Ty.TyBool =>
-    (match b with
+  )
+  | Ty.TyBool => (
+    match b with
       | Ty.TyBool => true
       | _ => false
-    )
-  | Ty.TyString =>
-    (match b with
+  )
+  | Ty.TyString => (
+    match b with
       | Ty.TyString => true
       | _ => false
-    )
-  | Ty.TyChar =>
-    (match b with
+  )
+  | Ty.TyChar => (
+    match b with
       | Ty.TyChar => true
       | _ => false
-    )
+  )
   | Ty.TyErr => false
   // HIGHER-ORDER: two function types are equal iff same arity, params pairwise-equal, and results equal.
-  | Ty.TyFn(psa, ra) =>
-    (match b with
+  | Ty.TyFn(psa, ra) => (
+    match b with
       | Ty.TyFn(psb, rb) =>
         if List.len(psa) == List.len(psb) then
           if ty-eq-list(psa, psb, 0) then ty-eq(ra, rb) else false
         else
           false
       | _ => false
-    )
+  )
   // M2-b-2b-ii-c2 USER SUM: DECL-IDENTITY — two sum types are equal iff SAME decl name-id (never structural
   // inner). This closes recursive sums + enforces ctor-app/pattern sharing a sum's identity (cross-type reject).
-  | Ty.TySum(na) =>
-    (match b with
+  | Ty.TySum(na) => (
+    match b with
       | Ty.TySum(nb) => na == nb
       | _ => false
-    )
+  )
   // ARC-B5 (rcdzc ty.rs:1025 `(Ty::Var(a), Ty::Var(b)) => a == b`): two type variables are equal iff the SAME
   // id. A TyVar is never equal to a concrete type (it's unsolved) — that's unify's job, not equality's.
-  | Ty.TyTuple(esa) =>
-    (match b with
+  | Ty.TyTuple(esa) => (
+    match b with
       | Ty.TyTuple(esb) => if List.len(esa) == List.len(esb) then ty-eq-list(esa, esb, 0) else false
       | _ => false
-    )
+  )
   // COMPOUND RECORD: equal iff SAME field names (in order) AND the paired types are pairwise equal.
-  | Ty.TyRecord(na, ta) =>
-    (match b with
+  | Ty.TyRecord(na, ta) => (
+    match b with
       | Ty.TyRecord(nb, tb) =>
         if List.len(na) == List.len(nb) then
           if int-list-eq(na, nb, 0) then ty-eq-list(ta, tb, 0) else false
         else
           false
       | _ => false
-    )
+  )
   | Ty.TyVar(va) =>
     match b with
       | Ty.TyVar(vb) => va == vb
@@ -319,45 +319,46 @@ def ty-bool-not-int() =
 /// output, which resolves `SignDef`→`Signed`, so a fully-ground int is the norm at the call sites. Models
 /// "not a fixed-width int" as typed absence (`WidthDef` / non-int → `None`) — no in-band `-1` sentinel.
 def int-parts(t: Ty) = match t with
-  | Ty.TyInt(it) =>
-    (let IntType.IntType(s, w) = it in
+  | Ty.TyInt(it) => (
+    let IntType.IntType(s, w) = it in
     match w with
       | Width.WFixed(n) => Option.Some((s, n))
       | Width.WidthDef => Option.None(unit)
-      | Width.WVar(_) => Option.None(unit)) // ARC-A1: an un-bound var width is NOT a fixed width → None (same as WidthDef)
+      | Width.WVar(_) => Option.None(unit)
+  ) // ARC-A1: an un-bound var width is NOT a fixed width → None (same as WidthDef)
   | _ => Option.None(unit)
 
 @test
 def ty-ground-default-deferred-to-int64() =
   // grounding a fully-deferred literal → Int64 (signed, 64) — the default.
   match int-parts(ground-default(ty-deferred-int())) with
-    | Option.Some((sg, w)) =>
-      (match sg with
+    | Option.Some((sg, w)) => (
+      match sg with
         | Sign.Signed => if w == 64 then unit else trap("deferred grounds to Int64 width 64")
         | _ => trap("deferred grounds to SIGNED")
-      )
+    )
     | Option.None(_) => trap("deferred did NOT ground to a fixed-width int (int-parts = None)")
 
 @test
 def ty-ground-default-keeps-fixed() =
   // grounding a fixed type is the identity: UInt8 stays (unsigned, 8).
   match int-parts(ground-default(ty-fixed-int(false, 8))) with
-    | Option.Some((sg, w)) =>
-      (match sg with
+    | Option.Some((sg, w)) => (
+      match sg with
         | Sign.Unsigned => if w == 8 then unit else trap("fixed UInt8 width 8")
         | _ => trap("fixed UInt8 stays UNSIGNED")
-      )
+    )
     | Option.None(_) => trap("a fixed int has int-parts")
 
 @test
 def ty-ground-default-partial-deferred-sign() =
   // a deferred SIGN with a fixed width grounds the sign to Signed, keeps the width (orthogonal axes).
   match int-parts(ground-default(Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WFixed(16))))) with
-    | Option.Some((sg, w)) =>
-      (match sg with
+    | Option.Some((sg, w)) => (
+      match sg with
         | Sign.Signed => if w == 16 then unit else trap("deferred-sign keeps width 16")
         | _ => trap("deferred-sign→Signed")
-      )
+    )
     | Option.None(_) => trap("a fixed-width int has int-parts")
 
 // ---- ty-eq tests (structural type equality — the convergence primitive) ----

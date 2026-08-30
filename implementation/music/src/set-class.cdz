@@ -29,11 +29,11 @@ def transpose-pc-set(notes: List(Int64), t: Int64) = transpose-set-go(pc-set(not
 // ---- set equality ------------------------------------------------------------------------------------
 /// Exact equality of two Int64 lists (element-wise). Both are sorted deduped sets, so `==` is set equality.
 def list-eq(a: List(Int64), b: List(Int64)) = match a with
-  | [] =>
-    (match b with
+  | [] => (
+    match b with
       | [] => true
       | [_, .. _] => false
-    )
+  )
   | [ha, .. ta] =>
     match b with
       | [] => false
@@ -147,15 +147,15 @@ def the-relation-is-symmetric-by-the-complementary-transposition() =
   let c = [60, 64, 67] in
   let g = [67, 71, 74] in
   match transposition-between(c, g) with
-    | Option.Some(tcg) =>
-      (match transposition-between(g, c) with
+    | Option.Some(tcg) => (
+      match transposition-between(g, c) with
         | Option.Some(tgc) =>
           if tcg == 7 then
             if tgc == 5 then unit else trap("G major maps back to C major by t=5")
           else
             trap("C major maps to G major by t=7")
         | Option.None(_) => trap("the relation is symmetric — G~C too")
-      )
+    )
     | Option.None(_) => trap("C~G")
 
 @test

@@ -115,11 +115,11 @@ def de-comparison-runs() =
 /// (now the source-differential primary) computes IDENTICALLY to the whim it replaces. When eval-tree/run are
 /// finally nuked, this witnesses they matched first (nuke-as-you-replace, proven-equivalent).
 def paths-agree(ts: List(Tok)) = match run-tokens-db(ts) with
-  | Option.Some(dv) =>
-    (match run(ts) with
+  | Option.Some(dv) => (
+    match run(ts) with
       | Option.Some(wv) => dv == wv
       | Option.None(_) => false
-    )
+  )
   | Option.None(_) =>
     match run(ts) with
       | Option.None(_) => true

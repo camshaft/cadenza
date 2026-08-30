@@ -92,12 +92,12 @@ def sst-unique-handles() =
     trap("distinct allocs must get distinct handles")
   else
     match store-tag(st2, h1) with
-      | Option.Some(t1) =>
-        (match store-tag(st2, h2) with
+      | Option.Some(t1) => (
+        match store-tag(st2, h2) with
           | Option.Some(t2) =>
             if t1 == 1 and t2 == 2 then unit else trap("each hnd keeps its own tag")
           | Option.None(_) => trap("h2 tag readable")
-        )
+      )
       | Option.None(_) => trap("h1 still readable after a later alloc")
 
 @test
@@ -105,11 +105,11 @@ def sst-two-field-payload() =
   // a two-field ctor `Pair 3 4` (tag 0, payloads [3,4]): element 0 = 3, element 1 = 4.
   let (h, st) = store-alloc(empty-store(), 0, List.concat(List.push([], 3), List.push([], 4))) in
   match store-payload(st, h, 0) with
-    | Option.Some(a) =>
-      (match store-payload(st, h, 1) with
+    | Option.Some(a) => (
+      match store-payload(st, h, 1) with
         | Option.Some(b) => if a == 3 and b == 4 then unit else trap("Pair 3 4 → [3,4]")
         | Option.None(_) => trap("element 1 present")
-      )
+    )
     | Option.None(_) => trap("element 0 present")
 
 @test
@@ -120,8 +120,8 @@ def sst-nested-sum-hnd-as-payload() =
   let (h1, st1) = store-alloc(empty-store(), 1, List.push([], 5)) in
   let (h2, st2) = store-alloc(st1, 1, List.push([], h1)) in
   match store-payload(st2, h2, 0) with
-    | Option.Some(inner) =>
-      (match store-tag(st2, inner) with
+    | Option.Some(inner) => (
+      match store-tag(st2, inner) with
         | Option.Some(it) =>
           if it == 1 then
             match store-payload(st2, inner, 0) with
@@ -130,18 +130,18 @@ def sst-nested-sum-hnd-as-payload() =
           else
             trap("inner tag 1")
         | Option.None(_) => trap("inner hnd readable")
-      )
+    )
     | Option.None(_) => trap("outer payload[0] is the inner hnd")
 
 @test
 def sst-unknown-hnd-declines() =
   // a hnd never allocated → tag/payload both None (total, never a wrong value). Handle 99 in an empty store.
   match store-tag(empty-store(), 99) with
-    | Option.None(_) =>
-      (match store-payload(empty-store(), 99, 0) with
+    | Option.None(_) => (
+      match store-payload(empty-store(), 99, 0) with
         | Option.None(_) => unit
         | Option.Some(_) => trap("unknown hnd has no payload")
-      )
+    )
     | Option.Some(_) => trap("an unknown hnd has no tag")
 
 export { SumStore.*, empty-store, store-alloc, store-tag, store-payload }

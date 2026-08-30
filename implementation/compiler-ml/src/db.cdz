@@ -119,15 +119,15 @@ def db-empty-columns-absent() =
   // a fresh Db has every derived column Absent: require → None (absent ≠ a value).
   let db = sample-db() in
   match require-resolved(db, 0) with
-    | Option.None(_) =>
-      (match require-ty(db, 0) with
-        | Option.None(_) =>
-          (match require-core(db, 0) with
+    | Option.None(_) => (
+      match require-ty(db, 0) with
+        | Option.None(_) => (
+          match require-core(db, 0) with
             | Option.None(_) => unit
             | Option.Some(_) => trap("core absent")
-          )
+        )
         | Option.Some(_) => trap("types absent")
-      )
+    )
     | Option.Some(_) => trap("resolved absent on a fresh Db")
 
 @test
@@ -164,15 +164,15 @@ def db-fill-once-monotone-columns-independent() =
   let db1 = fill-resolved(sample-db(), 0, Resolved.RPoison) in
   let db2 = fill-core(db1, 0, Core.CNum(5, true, 64)) in
   match require-resolved(db2, 0) with
-    | Option.Some(_) =>
-      (match require-core(db2, 0) with
-        | Option.Some(_) =>
-          (match require-ty(db2, 0) with
+    | Option.Some(_) => (
+      match require-core(db2, 0) with
+        | Option.Some(_) => (
+          match require-ty(db2, 0) with
             | Option.None(_) => unit
             | Option.Some(_) => trap("types still Absent")
-          )
+        )
         | Option.None(_) => trap("core filled")
-      )
+    )
     | Option.None(_) => trap("resolved filled")
 
 @test

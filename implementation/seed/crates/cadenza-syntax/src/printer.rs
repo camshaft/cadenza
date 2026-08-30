@@ -2661,7 +2661,7 @@ impl<'a> Printer<'a> {
             self.doc.word(", ");
         }
         self.expr(state, 0); // the state binder, last
-        self.doc.word(") => ");
+        self.doc.word(") =>");
         // A non-last arm's greedy block-form body (`match`/`let`/`if`/…) parenthesizes so its arms
         // don't run into the next `| op` handler arm on re-parse; the last arm's body is terminated
         // by `in`, so it needs no guard. `PREC_KEYWORD` forces block-form parens without wrapping an
@@ -2675,17 +2675,42 @@ impl<'a> Printer<'a> {
         } else {
             PREC_KEYWORD
         };
-        // A BARE `let`-shaped body (the last arm; a non-last arm parenthesizes via PREC_KEYWORD, so its
-        // `in`-body is delimited by the `)` — no `| op` collision) hugs `=>` with its chain + flat final
-        // body (seq-86). Wrap it in an extra `cbox(INDENT)` so the body sits one level under the arm,
-        // clear of the `| op` handler markers — same treatment as `print_match`'s let arm bodies.
-        if body_prec == 0 && self.is_let_shape_form(self.a.peel_comments(body)) {
+        self.print_arm_body(body, body_prec);
+    }
+
+    /// Emit a match/handle arm body after `=>` (already printed, no trailing space). Layout:
+    ///   • `body_prec > 0` — the body PARENTHESIZES (a non-last open-`|`-arm-form tail via `PREC_KEYWORD`,
+    ///     or a bare-`|` infix via `PREC_PIPE_PAREN`): explicit parens with a consistent box (operator
+    ///     seq-95) — `=> (` on the arm line, the body indented one level, the close `)` on its OWN line
+    ///     dedented to the arm indent. A SINGLE-LINE paren body stays inline (`(x | 8)`); a multi-line one
+    ///     breaks. The body prints BARE (prec 0) — the explicit parens delimit it, so a trailing open-arm
+    ///     form can't absorb the following `| pat`.
+    ///   • otherwise a MULTI-LINE body drops to its own indented line, a SINGLE-LINE stays inline after
+    ///     `=>` (seq-86/87/89 + #6335): a bare `let` forces the break (its `in`-body always breaks); a
+    ///     body with a LEADING `//` comment keeps the comment on the `=>` line (`print_comment` then
+    ///     breaks); any other body soft-breaks (inline when it fits, else it WRAPS to the indented line).
+    fn print_arm_body(&mut self, body: StructId, body_prec: u8) {
+        if body_prec > 0 {
+            self.doc.word(" (");
             self.doc.cbox(INDENT);
-            self.expr(body, body_prec);
+            self.doc.zerobreak();
+            self.expr(body, 0);
+            self.doc.break_with(0, -INDENT);
+            self.doc.word(")");
             self.doc.end();
-        } else {
-            self.expr(body, body_prec);
+            return;
         }
+        self.doc.cbox(INDENT);
+        let has_lead_comment = self.a.as_form(body, "comment").is_some();
+        if !has_lead_comment && self.is_let_shape_form(self.a.peel_comments(body)) {
+            self.doc.hardbreak();
+        } else if has_lead_comment {
+            self.doc.word(" ");
+        } else {
+            self.doc.space();
+        }
+        self.expr(body, 0);
+        self.doc.end();
     }
 
     /// `host E, … in body` — an entrypoint delegation. `args` is `(E …) body`; the effects render as a
@@ -3461,27 +3486,7 @@ impl<'a> Printer<'a> {
                 } else {
                     0
                 };
-                // A MULTI-LINE arm body goes on its OWN line, indented one level under the `=>` arm
-                // (operator follow-on to seq-86/87/89: "body one level under its header"); a SINGLE-LINE
-                // body stays inline after `=>`. The extra `cbox(INDENT)` provides that one level. The
-                // break after `=>`:
-                //   • a bare `let`-shape body is INHERENTLY multi-line (its `in`-body always breaks) →
-                //     force a `hardbreak` so the `let` itself drops to the indented line;
-                //   • a body with a LEADING `//` comment keeps the comment on the `=>` line (a hard space;
-                //     `print_comment` then breaks to the body) — a soft break would wrongly drop the `//`;
-                //   • any other body uses a soft break — inline when the whole arm fits, else it WRAPS to
-                //     the indented line.
-                self.doc.cbox(INDENT);
-                let has_lead_comment = self.a.as_form(body, "comment").is_some();
-                if !has_lead_comment && self.is_let_shape_form(self.a.peel_comments(body)) {
-                    self.doc.hardbreak();
-                } else if has_lead_comment {
-                    self.doc.word(" ");
-                } else {
-                    self.doc.space();
-                }
-                self.expr(body, body_prec);
-                self.doc.end();
+                self.print_arm_body(body, body_prec);
             }
             // Trailing comments after the body, same line (innermost closest to the body).
             for &text in trail_texts.iter().rev() {
@@ -6020,7 +6025,7 @@ mod tests {
         let a = sexpr::read(last_arm).unwrap();
         let ml = print(&a, 100);
         assert!(
-            ml.contains("=> match v with") && !ml.contains("=> (match"),
+            ml.contains("match v with") && !ml.contains("(match"),
             "a LAST handler arm's match body is NOT wrapped in parens:\n{ml}"
         );
     }
@@ -7472,6 +7477,20 @@ mod tests {
         // level deeper (operator seq-86: "why is the last statement indented").
         let out = assert_roundtrip("def f(x) = let y = x + 1 in y * y", 80);
         assert_eq!(out, "def f(x) =\n  let y = x + 1 in\n  y * y");
+    }
+
+    #[test]
+    fn parenthesized_arm_body_opens_paren_on_the_arm_line_seq95() {
+        // Operator seq-95: a PARENTHESIZED match-arm body puts the open `(` on the `=>` line, the body
+        // indented one level under the arm, and the close `)` on its OWN line dedented to the arm indent
+        // — not `(expr` bound tight nor a trailing `)` glued to the last body line.
+        assert_eq!(
+            assert_roundtrip(
+                "def f() = match x with | A => (match x with | C => 1 | _ => 2) | B => 3",
+                200,
+            ),
+            "def f() = match x with\n  | A => (\n    match x with\n      | C => 1\n      | _ => 2\n  )\n  | B => 3"
+        );
     }
 
     #[test]
@@ -9278,8 +9297,9 @@ mod tests {
             200,
         );
         assert!(
-            // Multi-line body breaks under `=>` (operator follow-on); the nested match KEEPS its parens.
-            nested.contains("=>\n    (match x with"),
+            // Parenthesized arm body (operator seq-95): `=> (` on the arm line, body indented, `)`
+            // dedented; the nested match KEEPS its parens.
+            nested.contains("=> (\n    match x with"),
             "a non-last nested-match arm body keeps its parens, got:\n{nested}"
         );
         // `if` whose else-tail is a match — must wrap (the else-match would swallow the next `|`).
@@ -9288,7 +9308,7 @@ mod tests {
             200,
         );
         assert!(
-            if_else_match.contains("(if p then"),
+            if_else_match.contains("=> (\n    if p then"),
             "a non-last `if` whose else-tail is a match keeps parens, got:\n{if_else_match}"
         );
     }

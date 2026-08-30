@@ -1138,11 +1138,11 @@ def em-cnum-emits-a-module() =
   // a CNum emits Some(bytes); an out-of-subset shape (a CBin over an UNKNOWN op-code, neither arith nor
   // comparison) emits None — the subset boundary stays honest.
   match emit-module(cnum64(42)) with
-    | Option.Some(_) =>
-      (match emit-module(Core.CBin(0, true, 64, cnum64(1), cnum64(2))) with
+    | Option.Some(_) => (
+      match emit-module(Core.CBin(0, true, 64, cnum64(1), cnum64(2))) with
         | Option.None(_) => unit
         | _ => trap("unknown-op CBin out of subset")
-      )
+    )
     | Option.None(_) => trap("CNum emits a module")
 
 @test
@@ -1177,10 +1177,11 @@ def em-compound-construct-project-emits-a-module() =
         Core.CProj(Core.CVar(100), 1)
       )
     ) with
-    | Option.Some(_) => // a NESTED ctor arg now EMITS too: depth-distinct scratch (scratch-need + the `depth` thread) gives each
+    | Option.Some(_) => (
+      // a NESTED ctor arg now EMITS too: depth-distinct scratch (scratch-need + the `depth` thread) gives each
       // nesting level its own alloc-base local, and bumping the global BEFORE storing elems keeps the inner
       // alloc from landing on the outer base. So a ctor-in-ctor assembles a module (was a decline pre-fix).
-      (match emit-module(
+      match emit-module(
           Core.CCtor(
             0,
             List.concat(
@@ -1192,7 +1193,7 @@ def em-compound-construct-project-emits-a-module() =
         | Option.Some(_) => unit
         | Option.None(_) =>
           trap("a nested compound ctor must now EMIT (depth-scratch + bump-early)")
-      )
+    )
     | Option.None(_) => trap("a flat tuple construct+project emits a module")
 
 @test
@@ -1614,27 +1615,27 @@ def em-seam-target-wasm-emits() =
   // the seam `target-emit(Target.Wasm, core)` emits the same wasm module the direct Wasm arm does — the
   // dispatch is transparent for the one shipped backend, and `emit-module` (back-compat) routes through it.
   match target-emit(Target.Wasm, cnum64(7)) with
-    | Option.Some(m) =>
-      (match emit-wasm-module(cnum64(7)) with
+    | Option.Some(m) => (
+      match emit-wasm-module(cnum64(7)) with
         | Option.Some(m2) =>
           if Bytes.len(m) == Bytes.len(m2) then
             if byte-of(m, 0) == 0 then unit else trap("wasm magic via seam")
           else
             trap("seam == direct wasm arm")
         | Option.None(_) => trap("wasm arm emits")
-      )
+    )
     | Option.None(_) => trap("seam Target.Wasm emits")
 
 @test
 def em-seam-src-for-wasm-matches-emit-src() =
   // `emit-src-for(Target.Wasm, s)` == `emit-src(s)` (emit-src is the Wasm specialization of the seam entry).
   match emit-src-for(Target.Wasm, "(+ 1 2)") with
-    | Option.Some(m) =>
-      (match emit-src("(+ 1 2)") with
+    | Option.Some(m) => (
+      match emit-src("(+ 1 2)") with
         | Option.Some(m2) =>
           if Bytes.len(m) == Bytes.len(m2) then unit else trap("emit-src-for Wasm == emit-src")
         | Option.None(_) => trap("emit-src emits")
-      )
+    )
     | Option.None(_) => trap("emit-src-for Wasm emits")
 
 /// Target.Text backend (Core→String render) ---------------------------------------------------------
@@ -1731,11 +1732,11 @@ def em-src-arith-emits() =
 def em-src-let-and-if-emit() =
   // a let program and an if program both emit (W2b locals + W3 control flow reached through emit-src).
   match emit-src("(let ((x 2)) (* x 3))") with
-    | Option.Some(_) =>
-      (match emit-src("(if (< 1 2) 10 20)") with
+    | Option.Some(_) => (
+      match emit-src("(if (< 1 2) 10 20)") with
         | Option.Some(_) => unit
         | Option.None(_) => trap("if source emits")
-      )
+    )
     | Option.None(_) => trap("let source emits")
 
 @test
@@ -1745,11 +1746,11 @@ def em-src-multi-binding-let-emits() =
   // path for the multi-binding form (the emit-src let tests were single-binding before). run-emitted runs it
   // to 15 (W4-checked). A 3-binding form also emits.
   match emit-src("(let ((x 5) (y 10)) (+ x y))") with
-    | Option.Some(_) =>
-      (match emit-src("(let ((a 1) (b 2) (c 3)) (+ a (+ b c)))") with
+    | Option.Some(_) => (
+      match emit-src("(let ((a 1) (b 2) (c 3)) (+ a (+ b c)))") with
         | Option.Some(_) => unit
         | Option.None(_) => trap("3-binding let source emits")
-      )
+    )
     | Option.None(_) => trap("2-binding let source emits")
 
 @test
@@ -1774,11 +1775,11 @@ def em-src-corpus-module-wrapper-emits() =
 def em-src-corpus-module-with-let-and-if() =
   // a module-wrapped let and a module-wrapped if both emit — the corpus feeds these module-normalized.
   match emit-src("(do (def (main) (let ((x 2)) (* x 3))) (export main))") with
-    | Option.Some(_) =>
-      (match emit-src("(do (def (main) (if (< 1 2) 10 20)) (export main))") with
+    | Option.Some(_) => (
+      match emit-src("(do (def (main) (if (< 1 2) 10 20)) (export main))") with
         | Option.Some(_) => unit
         | Option.None(_) => trap("module-wrapped if emits")
-      )
+    )
     | Option.None(_) => trap("module-wrapped let emits")
 
 @test
@@ -1788,11 +1789,11 @@ def em-src-user-function-module-emits() =
   // Pins the source→emit path for functions (the emit-src tests were all bare/nullary-main before). A nullary
   // helper `(g)` and a single-param helper `(sq x)` both emit; run-emitted runs them to 12 / 49 (W4-checked).
   match emit-src("(do (def (g) 7) (def (main) (+ (g) 5)) (export main))") with
-    | Option.Some(_) =>
-      (match emit-src("(do (def (sq x) (* x x)) (def (main) (sq 7)) (export main))") with
+    | Option.Some(_) => (
+      match emit-src("(do (def (sq x) (* x x)) (def (main) (sq 7)) (export main))") with
         | Option.Some(_) => unit
         | Option.None(_) => trap("single-param helper module emits")
-      )
+    )
     | Option.None(_) => trap("nullary helper module emits")
 
 @test
@@ -1817,12 +1818,12 @@ def em-src-bytes-matches-emit-src-len() =
   // emit-src-bytes is emit-src with Bytes→List(UInt8): Some when emit-src is Some, and the list length
   // equals the module's byte length (the conversion preserves every byte, in order).
   match emit-src("42") with
-    | Option.Some(b) =>
-      (match emit-src-bytes("42") with
+    | Option.Some(b) => (
+      match emit-src-bytes("42") with
         | Option.Some(lst) =>
           if List.len(lst) == Bytes.len(b) then unit else trap("list len == bytes len")
         | Option.None(_) => trap("emit-src-bytes Some when emit-src Some")
-      )
+    )
     | Option.None(_) => trap("42 emits")
 
 @test
@@ -1832,12 +1833,12 @@ def em-src-bytes-len-matches-arith-module() =
   // order accumulator in bytes-to-list-go; a UInt8→Int cast to check values isn't available, and Bytes.of
   // rejects a runtime list, so we pin length-preservation here + rely on the accumulator for order.)
   match emit-src("(+ 1 2)") with
-    | Option.Some(b) =>
-      (match emit-src-bytes("(+ 1 2)") with
+    | Option.Some(b) => (
+      match emit-src-bytes("(+ 1 2)") with
         | Option.Some(lst) =>
           if List.len(lst) == Bytes.len(b) then unit else trap("arith list len == bytes len")
         | Option.None(_) => trap("emit-src-bytes Some")
-      )
+    )
     | Option.None(_) => trap("arith emits")
 
 @test
@@ -2143,12 +2144,12 @@ def em-defenv-funcidx-map-assigns-positions() =
     ) in
   let m = defenv-funcidx-map(Map.to-list(de)) in
   match Map.lookup(m, 900) with
-    | Option.Some(i0) =>
-      (match Map.lookup(m, 901) with
+    | Option.Some(i0) => (
+      match Map.lookup(m, 901) with
         | Option.Some(i1) =>
           if i0 + i1 == 1 then unit else trap("two defs get funcidx 0 and 1 (sum 1)")
         | Option.None(_) => trap("901 in map")
-      )
+    )
     | Option.None(_) => trap("900 in map")
 
 @test

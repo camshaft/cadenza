@@ -179,62 +179,63 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
   // tuple is a single tag-0 product; eval store-allocs it to a handle, projection reads store-payload[i]).
   // Lower each element; any element that fails to lower declines the whole tuple. A raw-tuple PROGRAM RESULT
   // still declines at the is-tuple-at boundary guard (run-src) — matching the oracle.
-  | Option.Some(Node.NTuple(ids)) =>
-    (match lower-tuple-elems(tree, ids, rcol, tcol, 0, [] : List(Core)) with
+  | Option.Some(Node.NTuple(ids)) => (
+    match lower-tuple-elems(tree, ids, rcol, tcol, 0, [] : List(Core)) with
       | Option.Some(elems) => Option.Some(Core.CCtor(0, elems))
       | Option.None(_) => Option.None(unit)
-    )
+  )
   // RECORD `(record (f v)…)` → `CCtor(0, [field values in field order])` — REUSE the SumStore product rep
   // (like a tuple; the field values are positional, in the record's source field order). Field access
   // `(. r f)` reads the field's slot by finding its name's index in that same order (index-of-name), so
   // construct + access agree without a sort. Any field value that fails to lower declines the whole record.
-  | Option.Some(Node.NRecord(_, valueIds)) =>
-    (match lower-tuple-elems(tree, valueIds, rcol, tcol, 0, [] : List(Core)) with
+  | Option.Some(Node.NRecord(_, valueIds)) => (
+    match lower-tuple-elems(tree, valueIds, rcol, tcol, 0, [] : List(Core)) with
       | Option.Some(vals) => Option.Some(Core.CCtor(0, vals))
       | Option.None(_) => Option.None(unit)
-    )
+  )
   // PROJECTION `(. t i)` → `CProj(operandCore, i)`: lower the operand (a tuple → CCtor(0, elems)) and read
   // the literal index from indexId. infer only types this node (routing it here via the gate) when the
   // operand is a TyTuple and the index is an in-bounds NLit, so the operand lowers and the index is a
   // literal; the defensive non-NLit/None arms decline. eval reads store-payload(handle, i).
-  | Option.Some(Node.NProj(operandId, indexId)) =>
-    (match lower-node(tree, operandId, rcol, tcol) with
-      | Option.Some(opCore) =>
-        (match node-at(tree, indexId) with
+  | Option.Some(Node.NProj(operandId, indexId)) => (
+    match lower-node(tree, operandId, rcol, tcol) with
+      | Option.Some(opCore) => (
+        match node-at(tree, indexId) with
           // TUPLE `(. t <int>)`: the literal index IS the payload slot.
           | Option.Some(Node.NLit(i)) => Option.Some(Core.CProj(opCore, i))
           // RECORD `(. r fieldname)`: resolve the field name to its slot via the operand's TyRecord field
           // order (the SAME order lower-NRecord laid the CCtor values), then read that slot with CProj.
-          | Option.Some(Node.NVar(fieldNameId)) =>
-            (match Map.lookup(tcol, operandId) with
-              | Option.Some(Ty.TyRecord(nameIds, _)) =>
-                (match index-of-name(nameIds, fieldNameId, 0) with
+          | Option.Some(Node.NVar(fieldNameId)) => (
+            match Map.lookup(tcol, operandId) with
+              | Option.Some(Ty.TyRecord(nameIds, _)) => (
+                match index-of-name(nameIds, fieldNameId, 0) with
                   | Option.Some(slot) => Option.Some(Core.CProj(opCore, slot))
                   | Option.None(_) => Option.None(unit)
-                )
+              )
               | _ => Option.None(unit)
-            )
+          )
           | _ => Option.None(unit)
-        )
+      )
       | Option.None(_) => Option.None(unit)
-    )
+  )
   | Option.Some(Node.NAnnLit(v, sflag, w)) => // a width-annotated literal lowers to a NARROW CNum carrying its (signed, width) — emit reads the
     // width to pick i32-vs-i64 codegen. signed rides as 1|0.
     Option.Some(Core.CNum(v, if sflag == 1 then true else false, w))
-  | Option.Some(Node.NVar(_)) => // canonicalize: replace the source name with the binder's node-id (resolve already proved RBound
+  | Option.Some(Node.NVar(_)) => (
+    // canonicalize: replace the source name with the binder's node-id (resolve already proved RBound
     // since the type fact was TInt). Defensive: a non-RBound fact yields no core form.
-    (match Map.lookup(rcol, id) with
+    match Map.lookup(rcol, id) with
       | Option.Some(Resolved.RBound(binder)) => Option.Some(Core.CVar(binder))
       // HIGHER-ORDER (HO-3): a bare def-name used as a VALUE (RDef) lowers to CFnRef(defName) — a fn-value
       // (top-level defs are closed, so the value IS the name). eval returns Some(name); a CFnRefVar site
       // dispatches it. This is the `inc` argument in `(apply inc 41)`.
       | Option.Some(Resolved.RDef(name)) => Option.Some(Core.CFnRef(name))
       | _ => Option.None(unit)
-    )
-  | Option.Some(Node.NBin(op, l, r)) =>
-    (match lower-node(tree, l, rcol, tcol) with
-      | Option.Some(cl) =>
-        (match lower-node(tree, r, rcol, tcol) with
+  )
+  | Option.Some(Node.NBin(op, l, r)) => (
+    match lower-node(tree, l, rcol, tcol) with
+      | Option.Some(cl) => (
+        match lower-node(tree, r, rcol, tcol) with
           // stamp the CBin's result width from THIS node's type fact (narrow arith carries its width;
           // arithmetic-over-Int64 and comparisons stamp (true,64)).
           | Option.Some(cr) =>
@@ -249,52 +250,56 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
               )
             )
           | Option.None(_) => Option.None(unit)
-        )
+      )
       | Option.None(_) => Option.None(unit)
-    )
-  | Option.Some(Node.NLet(_, valId, bodyId)) => // the let is keyed by its OWN node-id, matching the CVar(binderId) of its bound uses.
-    (match lower-node(tree, valId, rcol, tcol) with
-      | Option.Some(cv) =>
-        (match lower-node(tree, bodyId, rcol, tcol) with
+  )
+  | Option.Some(Node.NLet(_, valId, bodyId)) => (
+    // the let is keyed by its OWN node-id, matching the CVar(binderId) of its bound uses.
+    match lower-node(tree, valId, rcol, tcol) with
+      | Option.Some(cv) => (
+        match lower-node(tree, bodyId, rcol, tcol) with
           | Option.Some(cb) => Option.Some(Core.CLet(id, cv, cb))
           | Option.None(_) => Option.None(unit)
-        )
+      )
       | Option.None(_) => Option.None(unit)
-    )
-  | Option.Some(Node.NIf(condId, thenId, elseId)) => // lower all three children; the if lowers iff all three lower (infer already proved cond Bool and the
+  )
+  | Option.Some(Node.NIf(condId, thenId, elseId)) => (
+    // lower all three children; the if lowers iff all three lower (infer already proved cond Bool and the
     // branches same-typed, so a Some here is a well-typed CIf).
-    (match lower-node(tree, condId, rcol, tcol) with
-      | Option.Some(cc) =>
-        (match lower-node(tree, thenId, rcol, tcol) with
-          | Option.Some(ct) =>
-            (match lower-node(tree, elseId, rcol, tcol) with
+    match lower-node(tree, condId, rcol, tcol) with
+      | Option.Some(cc) => (
+        match lower-node(tree, thenId, rcol, tcol) with
+          | Option.Some(ct) => (
+            match lower-node(tree, elseId, rcol, tcol) with
               | Option.Some(ce) => Option.Some(Core.CIf(cc, ct, ce))
               | Option.None(_) => Option.None(unit)
-            )
+          )
           | Option.None(_) => Option.None(unit)
-        )
+      )
       | Option.None(_) => Option.None(unit)
-    )
-  | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) => // M1-a integer match → CIf(CBin(61 ==, scrut, lit), then, else): the match IS "if scrut == lit then <arm>
+  )
+  | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) => (
+    // M1-a integer match → CIf(CBin(61 ==, scrut, lit), then, else): the match IS "if scrut == lit then <arm>
     // else <wildcard-arm>". Reuses CIf/CBin so eval/emit need NO new handling. All four children must lower.
-    (match lower-node(tree, scrutId, rcol, tcol) with
-      | Option.Some(cs) =>
-        (match lower-node(tree, litId, rcol, tcol) with
-          | Option.Some(cl) =>
-            (match lower-node(tree, thenId, rcol, tcol) with
-              | Option.Some(ct) =>
-                (match lower-node(tree, elseId, rcol, tcol) with
+    match lower-node(tree, scrutId, rcol, tcol) with
+      | Option.Some(cs) => (
+        match lower-node(tree, litId, rcol, tcol) with
+          | Option.Some(cl) => (
+            match lower-node(tree, thenId, rcol, tcol) with
+              | Option.Some(ct) => (
+                match lower-node(tree, elseId, rcol, tcol) with
                   | Option.Some(ce) =>
                     Option.Some(Core.CIf(Core.CBin(61, true, 64, cs, cl), ct, ce)) // 61 = ==
                   | Option.None(_) => Option.None(unit)
-                )
+              )
               | Option.None(_) => Option.None(unit)
-            )
+          )
           | Option.None(_) => Option.None(unit)
-        )
+      )
       | Option.None(_) => Option.None(unit)
-    )
-  | Option.Some(Node.NMatchCtor(scrutId, patCtorName, binderIds, bodyId, restId)) => // M2-b-2b-ii-c payload ctor-pattern arm → CMatchSum(scrut, tag, binderIds, body, rest): eval reads the
+  )
+  | Option.Some(Node.NMatchCtor(scrutId, patCtorName, binderIds, bodyId, restId)) => (
+    // M2-b-2b-ii-c payload ctor-pattern arm → CMatchSum(scrut, tag, binderIds, body, rest): eval reads the
     // scrutinee sum handle's store-tag; if == tag, binds payload[i] to binderIds[i] (CVar keys) + evals body,
     // else evals rest. binderIds is already the CMatchSum binder LIST (schema slice) — a single-binder pattern
     // is [binderId], a compound is [id0, id1, …]. All three children must lower. The TAG is re-derived from the
@@ -306,14 +311,14 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
     // return None → always-else). A payload pattern (non-empty binderIds) OR a mixed-decl nullary pattern (boxed)
     // lowers to CMatchSum (store-tag on the handle). decl-is-enum-disc(declOf patCtorName) is the switch —
     // mirrors rcdzc's ty_is_enum_disc at select.
-    (match ctor-tag-of(tree, patCtorName) with
+    match ctor-tag-of(tree, patCtorName) with
       | Option.None(_) => Option.None(unit)
       | Option.Some(ctorTag) =>
         match lower-node(tree, scrutId, rcol, tcol) with
-          | Option.Some(cs) =>
-            (match lower-node(tree, bodyId, rcol, tcol) with
-              | Option.Some(cbody) =>
-                (match lower-node(tree, restId, rcol, tcol) with
+          | Option.Some(cs) => (
+            match lower-node(tree, bodyId, rcol, tcol) with
+              | Option.Some(cbody) => (
+                match lower-node(tree, restId, rcol, tcol) with
                   | Option.Some(crest) =>
                     if List.len(binderIds) == 0 and lower-ctor-decl-enum-disc(tree, patCtorName) then
                       Option.Some(Core.CMatchEnum(cs, ctorTag, cbody, crest)) // enum-disc nullary → bare-tag
@@ -322,12 +327,13 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                         Core.CMatchSum(cs, ctorTag, lower-binder-list(binderIds), cbody, crest)
                       ) // boxed
                   | Option.None(_) => Option.None(unit)
-                )
+              )
               | Option.None(_) => Option.None(unit)
-            )
+          )
           | Option.None(_) => Option.None(unit)
-    )
-  | Option.Some(Node.NApp(calleeId, argId)) => // NULLARY call `(mk)` = NApp(calleeBodyId, -1) INLINES the callee body's Core (β-reduction over zero
+  )
+  | Option.Some(Node.NApp(calleeId, argId)) => (
+    // NULLARY call `(mk)` = NApp(calleeBodyId, -1) INLINES the callee body's Core (β-reduction over zero
     // args — the call IS the body). slice-3c SINGLE-PARAM call `(f arg)` = NApp(calleeBodyId, argId) lowers
     // to `CLet(paramId, argCore, bodyCore)` — a call binds its param exactly like a `let`: eval the arg,
     // bind it to the param's canonical node-id, eval the body under that binding. The paramId is found by
@@ -355,16 +361,18 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
     // `CCtor(tag, [])` (empty-payload handle) so it shares the payload siblings' store rep — else a match over
     // the mixed sum (which reads a store handle) rep-mismatches the bare tag. This is decl-is-enum-disc's
     // lower consumer. A PAYLOAD ctor use (argId != -1) always → CCtor(tag, args). Checked before the def path.
-    (match if argId == -1 then Option.None(unit) else ctor-tag-of(tree, calleeId) with
-      | Option.Some(ctorTag) => // PAYLOAD ctor use → CCtor(tag, args)
-        (match lower-rec-args(tree, id, argId, rcol, tcol) with
+    match if argId == -1 then Option.None(unit) else ctor-tag-of(tree, calleeId) with
+      | Option.Some(ctorTag) => (
+        // PAYLOAD ctor use → CCtor(tag, args)
+        match lower-rec-args(tree, id, argId, rcol, tcol) with
           | Option.Some(args) => Option.Some(Core.CCtor(ctorTag, args))
           | Option.None(_) => Option.None(unit)
-        )
+      )
       | Option.None(_) =>
         match if argId == -1 then ctor-decl-of(tree, calleeId) else Option.None(unit) with
-          | Option.Some(declName) => // NULLARY ctor use — rep by its decl
-            (if decl-is-enum-disc(tree, declName) then
+          | Option.Some(declName) => (
+            // NULLARY ctor use — rep by its decl
+            if decl-is-enum-disc(tree, declName) then
               match def-body-of(tree, calleeId) with
                 // enum-disc → bare CNum tag (M2-a inline)
                 | Option.Some(calleeBody) => lower-node(tree, calleeBody, rcol, tcol)
@@ -373,7 +381,8 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
               match ctor-tag-of(tree, calleeId) with
                 // mixed decl → boxed CCtor(tag, [])
                 | Option.Some(ctorTag) => Option.Some(Core.CCtor(ctorTag, [] : List(Core)))
-                | Option.None(_) => Option.None(unit))
+                | Option.None(_) => Option.None(unit)
+          )
           | Option.None(_) =>
             if call-is-recursive(tree, calleeId) then
               lower-recursive-call(tree, id, calleeId, argId, rcol, tcol)
@@ -382,15 +391,15 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                 // HIGHER-ORDER (HO-3): def-body-of MISS = callee is NOT a global def — may be a fn-typed PARAM.
                 // resolve-db (HO-2b-ii-B) stored a callee-fact at THIS NApp id: RBound(binder) → lower to
                 // CFnRefVar(binder, loweredArgs) (eval looks up env[binder]=def-name, dispatches). Else decline.
-                | Option.None(_) =>
-                  (match Map.lookup(rcol, id) with
-                    | Option.Some(Resolved.RBound(binder)) =>
-                      (match lower-rec-args(tree, id, argId, rcol, tcol) with
+                | Option.None(_) => (
+                  match Map.lookup(rcol, id) with
+                    | Option.Some(Resolved.RBound(binder)) => (
+                      match lower-rec-args(tree, id, argId, rcol, tcol) with
                         | Option.Some(args) => Option.Some(Core.CFnRefVar(binder, args))
                         | Option.None(_) => Option.None(unit)
-                      )
+                    )
                     | _ => Option.None(unit)
-                  )
+                )
                 | Option.Some(calleeBody) =>
                   if argId == -1 then
                     // NULLARY call `(mk)`. A genuine nullary def (param-of None) inlines its body. But a def WITH
@@ -401,24 +410,25 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                       | Option.None(_) => lower-node(tree, calleeBody, rcol, tcol)
                   else
                     match param-of(tree, calleeId) with
-                      | Option.Some(paramId) =>
-                        (match lower-node(tree, argId, rcol, tcol) with
-                          | Option.Some(argCore) =>
-                            (match lower-node(tree, calleeBody, rcol, tcol) with
-                              | Option.Some(bodyCore) => // slice-3d 2-ARG call `(add a b)`: if this NApp node (id) has a 2nd arg recorded
+                      | Option.Some(paramId) => (
+                        match lower-node(tree, argId, rcol, tcol) with
+                          | Option.Some(argCore) => (
+                            match lower-node(tree, calleeBody, rcol, tcol) with
+                              | Option.Some(bodyCore) => (
+                                // slice-3d 2-ARG call `(add a b)`: if this NApp node (id) has a 2nd arg recorded
                                 // (arg2-of) AND the callee a 2nd param (param2-of), NEST a second CLet INSIDE the
                                 // first — CLet(p1, arg1, CLet(p2, arg2, body)). A 1-arg call has arg2-of None →
                                 // the single CLet (slice-3c). The inner binds LAST so the body sees both params.
-                                (match arg2-of(tree, id) with
-                                  | Option.Some(arg2Id) =>
-                                    (match param2-of(tree, calleeId) with
-                                      | Option.Some(param2Id) =>
-                                        (match lower-node(tree, arg2Id, rcol, tcol) with
+                                match arg2-of(tree, id) with
+                                  | Option.Some(arg2Id) => (
+                                    match param2-of(tree, calleeId) with
+                                      | Option.Some(param2Id) => (
+                                        match lower-node(tree, arg2Id, rcol, tcol) with
                                           // slice-3e 3-ARG call `(f a b c)`: if this NApp has a 3rd arg (arg3-of)
                                           // AND the callee a 3rd param (param3-of), nest a THIRD CLet innermost
                                           // → CLet(p1,a1,CLet(p2,a2,CLet(p3,a3,body))). Else the 2-arg CLet.
-                                          | Option.Some(arg2Core) =>
-                                            (match inner-body-with-param3(
+                                          | Option.Some(arg2Core) => (
+                                            match inner-body-with-param3(
                                                 tree,
                                                 id,
                                                 calleeId,
@@ -435,11 +445,11 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                                                   )
                                                 )
                                               | Option.None(_) => Option.None(unit)
-                                            ) // arg3 but no param3 → over-applied → decline
+                                          ) // arg3 but no param3 → over-applied → decline
                                           | Option.None(_) => Option.None(unit)
-                                        )
+                                      )
                                       | Option.None(_) => Option.None(unit)
-                                    ) // arg2 but no param2 → over-applied → decline
+                                  ) // arg2 but no param2 → over-applied → decline
                                   | Option.None(_) => // 1-arg call. Saturated ONLY if the callee has no 2nd param; if param2-of
                                     // is Some the call is UNDER-applied → decline (mirror of the arg2/no-param2
                                     // over-application guard). Else the single CLet (slice-3c, exactly saturated).
@@ -447,13 +457,13 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                                       | Option.Some(_) => Option.None(unit) // param2 but no arg2 → under-applied → decline
                                       | Option.None(_) =>
                                         Option.Some(Core.CLet(paramId, argCore, bodyCore))
-                                ) // 1-arg saturated
+                              ) // 1-arg saturated
                               | Option.None(_) => Option.None(unit)
-                            )
+                          )
                           | Option.None(_) => Option.None(unit)
-                        )
+                      )
                       | Option.None(_) => Option.None(unit)
-    )
+  )
   | Option.None(_) => Option.None(unit)
 
 /// slice-3e: the innermost body of a call's nested-CLet chain, optionally wrapping a THIRD `CLet(param3, arg3,
@@ -470,22 +480,23 @@ def inner-body-with-param3(
   rcol: Map(Int64, Resolved),
   tcol: Map(Int64, Ty)
 ) = match arg3-of(tree, id) with
-  | Option.None(_) => // 2-arg call, no 3rd arg. Saturated ONLY if the callee has no 3rd param; a Some param3-of means the
+  | Option.None(_) => (
+    // 2-arg call, no 3rd arg. Saturated ONLY if the callee has no 3rd param; a Some param3-of means the
     // call is UNDER-applied → decline (mirror of the arg3/no-param3 over-application guard below).
-    (match param3-of(tree, calleeId) with
+    match param3-of(tree, calleeId) with
       | Option.Some(_) => Option.None(unit) // param3 but no arg3 → under-applied → decline
       | Option.None(_) => Option.Some(bodyCore)
-    ) // 2-arg saturated — no 3rd CLet
+  ) // 2-arg saturated — no 3rd CLet
   | Option.Some(arg3Id) =>
     match param3-of(tree, calleeId) with
       | Option.None(_) => Option.None(unit) // arg3 but no param3 → over-applied → decline
       | Option.Some(param3Id) =>
         match inner-body-with-param4(tree, id, calleeId, bodyCore, rcol, tcol) with
-          | Option.Some(inner) =>
-            (match lower-node(tree, arg3Id, rcol, tcol) with
+          | Option.Some(inner) => (
+            match lower-node(tree, arg3Id, rcol, tcol) with
               | Option.Some(arg3Core) => Option.Some(Core.CLet(param3Id, arg3Core, inner))
               | Option.None(_) => Option.None(unit)
-            )
+          )
           | Option.None(_) => Option.None(unit)
 
 // arg4 but no param4 → over-applied → decline
@@ -501,12 +512,13 @@ def inner-body-with-param4(
   rcol: Map(Int64, Resolved),
   tcol: Map(Int64, Ty)
 ) = match arg4-of(tree, id) with
-  | Option.None(_) => // 3-arg call, no 4th arg. Saturated ONLY if the callee has no 4th param; a Some param4-of means the
+  | Option.None(_) => (
+    // 3-arg call, no 4th arg. Saturated ONLY if the callee has no 4th param; a Some param4-of means the
     // call is UNDER-applied → decline (mirror of the arg4/no-param4 over-application guard below).
-    (match param4-of(tree, calleeId) with
+    match param4-of(tree, calleeId) with
       | Option.Some(_) => Option.None(unit) // param4 but no arg4 → under-applied → decline
       | Option.None(_) => Option.Some(bodyCore)
-    ) // 3-arg saturated — no 4th CLet
+  ) // 3-arg saturated — no 4th CLet
   | Option.Some(arg4Id) =>
     match param4-of(tree, calleeId) with
       | Option.None(_) => Option.None(unit) // arg4 but no param4 → over-applied → decline
@@ -862,10 +874,10 @@ def lw-shadowing-canonical-names-distinct() =
       [letkw(), var(1), eq(), n(1), inkw(), letkw(), var(1), eq(), n(2), inkw(), var(1)]
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NLet(_, _, innerLetId)) =>
-      (match lower-tree(tree, root) with
-        | Option.Some(Core.CLet(outerId, _, body)) =>
-          (match body with
+    | Option.Some(Node.NLet(_, _, innerLetId)) => (
+      match lower-tree(tree, root) with
+        | Option.Some(Core.CLet(outerId, _, body)) => (
+          match body with
             | Core.CLet(innerId, _, innerBody) =>
               if is-cvar(innerBody, innerId) then
                 if innerId == innerLetId then
@@ -875,9 +887,9 @@ def lw-shadowing-canonical-names-distinct() =
               else
                 trap("inner body is CVar(innerLetId) — shadow resolved")
             | _ => trap("outer body is the inner CLet")
-          )
+        )
         | _ => trap("root lowers to CLet")
-      )
+    )
     | _ => trap("root is a let")
 
 @test

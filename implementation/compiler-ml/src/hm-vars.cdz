@@ -58,11 +58,11 @@ def ty-occurs-go(su: Subst, v: Int64, t: Ty, fuel: Int64) =
     false
   else
     match t with
-      | Ty.TyVar(w) =>
-        (match Map.lookup(subst-tys(su), w) with
+      | Ty.TyVar(w) => (
+        match Map.lookup(subst-tys(su), w) with
           | Option.Some(sol) => ty-occurs-go(su, v, sol, fuel - 1) // bound → continue into its solution
           | Option.None(_) => v == w
-        ) // unbound → occurs iff same id
+      ) // unbound → occurs iff same id
       | Ty.TyFn(ps, r) =>
         if ty-occurs-list(su, v, ps, 0, fuel) then true else ty-occurs-go(su, v, r, fuel)
       | Ty.TyTuple(es) => ty-occurs-list(su, v, es, 0, fuel) // COMPOUND: occurs in any element (mirrors TyFn params)

@@ -115,11 +115,11 @@ def the-whole-twelve-tet-grid-round-trips() =
 /// Assert a rational chord's STACK (list of RInterval offsets) projects, entry-by-entry, to the Int64
 /// semitone stack `ints` — the chord-level twin of `agree`. Traps on any mismatch or off-grid entry.
 def chord-agree(rstack: List(RInterval), ints: List(Int64)) = match rstack with
-  | [] =>
-    (match ints with
+  | [] => (
+    match ints with
       | [] => unit
       | [_, .. _] => trap("rational chord has fewer intervals")
-    )
+  )
   | [rh, .. rt] =>
     match ints with
       | [] => trap("rational chord has more intervals")

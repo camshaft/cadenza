@@ -86,13 +86,14 @@ def parse-list(s: String, i0: Int64, acc: List(Ast)) -> Option(Tuple(Ast, Int64)
     Option.None(unit) // unterminated list
   else
     match String.at(s, i) with
-      | Option.Some(c) =>
-        (if c == ")" then
+      | Option.Some(c) => (
+        if c == ")" then
           Option.Some((Ast.List(acc), i + 1))
         else
           match parse-node(s, i) with
             | Option.Some((node, ni)) => parse-list(s, ni, List.concat(acc, [node]))
-            | Option.None(_) => Option.None(unit))
+            | Option.None(_) => Option.None(unit)
+      )
       | Option.None(_) => Option.None(unit)
 
 /// Read a whole s-expr string into an Ast (None on malformed / trailing garbage tolerated).
@@ -140,8 +141,8 @@ def read-an-atom() = match read("Buyer") with
 
 @test
 def read-a-flat-list() = match read("(comm Buyer Seller Title)") with
-  | Option.Some(Ast.List(es)) =>
-    (match es with
+  | Option.Some(Ast.List(es)) => (
+    match es with
       | [Ast.Name(a), Ast.Name(b), Ast.Name(c), Ast.Name(d)] =>
         if a == "comm" then
           if b == "Buyer" then
@@ -151,7 +152,7 @@ def read-a-flat-list() = match read("(comm Buyer Seller Title)") with
         else
           trap("a")
       | _ => trap("comm reads to a 4-element name list")
-    )
+  )
   | _ => trap("(comm …) reads to Ast.List")
 
 @test
@@ -163,12 +164,12 @@ def read-nested-then-from-ast() =
       Chor.Comm("Seller", "Buyer", "Quote")
     ) in
   match read(src) with
-    | Option.Some(a) =>
-      (match from-ast(a) with
+    | Option.Some(a) => (
+      match from-ast(a) with
         | Option.Some(g) =>
           if chor-eq(g, expect) then unit else trap("parsed Chor must equal the expected")
         | Option.None(_) => trap("from-ast must parse the read Ast")
-      )
+    )
     | Option.None(_) => trap("read must parse the s-expr")
 
 @test
@@ -180,11 +181,11 @@ def read-rejects-unterminated() = match read("(comm Buyer") with
 def read-handles-extra-whitespace() =
   let src = "  ( seq  (comm A B M)   (done) )  " in
   match read(src) with
-    | Option.Some(a) =>
-      (match from-ast(a) with
+    | Option.Some(a) => (
+      match from-ast(a) with
         | Option.Some(_g) => unit
         | Option.None(_) => trap("from-ast on whitespace-padded parse")
-      )
+    )
     | Option.None(_) => trap("read tolerates surrounding + interior whitespace")
 
 @test
@@ -288,11 +289,11 @@ def read-a-nested-choice-roundtrips() =
   // `.sexp` surface is witnessed on nested choices, not just flat ones.
   let src = "(choice Buyer (branch Go (choice Seller (branch Ship (comm Seller Carrier Deliver)))) (branch Stop (comm Buyer Seller Halt)))" in
   match read(src) with
-    | Option.Some(a) =>
-      (match from-ast(a) with
+    | Option.Some(a) => (
+      match from-ast(a) with
         | Option.Some(_g) => unit
         | Option.None(_) => trap("from-ast must parse the read nested-choice Ast")
-      )
+    )
     | Option.None(_) => trap("read must parse a nested-choice s-expr")
 
 @test
@@ -310,12 +311,12 @@ def read-a-choice-then-from-ast() =
       ]
     ) in
   match read(src) with
-    | Option.Some(a) =>
-      (match from-ast(a) with
+    | Option.Some(a) => (
+      match from-ast(a) with
         | Option.Some(g) =>
           if chor-eq(g, expect) then unit else trap("parsed choice must equal the expected")
         | Option.None(_) => trap("from-ast must parse the read choice Ast")
-      )
+    )
     | Option.None(_) => trap("read must parse a choice s-expr")
 
 @test
@@ -325,12 +326,12 @@ def read-a-rec-then-from-ast() =
   let src = "(rec Loop (seq (comm Buyer Seller Ping) (var Loop)))" in
   let expect = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
   match read(src) with
-    | Option.Some(a) =>
-      (match from-ast(a) with
+    | Option.Some(a) => (
+      match from-ast(a) with
         | Option.Some(g) =>
           if chor-eq(g, expect) then unit else trap("parsed rec must equal the expected")
         | Option.None(_) => trap("from-ast must parse the read rec Ast")
-      )
+    )
     | Option.None(_) => trap("read must parse a rec s-expr")
 
 @test
@@ -375,11 +376,11 @@ def read-tolerates-trailing-garbage() =
 def read-empty-list-is-not-a-protocol() =
   // `()` reads to Ast.List([]) (well-formed s-expr) but from-ast rejects it (no op head) → None.
   match read("()") with
-    | Option.Some(a) =>
-      (match from-ast(a) with
+    | Option.Some(a) => (
+      match from-ast(a) with
         | Option.None(_) => unit
         | Option.Some(_) => trap("an empty list is not a protocol")
-      )
+    )
     | Option.None(_) => trap("() reads to an empty Ast.List")
 
 @test
@@ -387,15 +388,15 @@ def read-deeply-nested-seq() =
   // A 5-deep seq nest reads + from-asts + roles-of without issue (recursive descent terminates).
   let src = "(seq (comm A B M1) (seq (comm B C M2) (seq (comm C D M3) (seq (comm D E M4) (comm E F M5)))))" in
   match read(src) with
-    | Option.Some(a) =>
-      (match from-ast(a) with
-        | Option.Some(g) =>
-          (match roles-of(g) with
+    | Option.Some(a) => (
+      match from-ast(a) with
+        | Option.Some(g) => (
+          match roles-of(g) with
             | [_a, _b, _c, _d, _e, _f] => unit
             | _ => trap("the 5-deep chain has exactly 6 roles")
-          )
+        )
         | Option.None(_) => trap("from-ast on the deep nest")
-      )
+    )
     | Option.None(_) => trap("read on the deep nest")
 
 export { read, roles-of }
