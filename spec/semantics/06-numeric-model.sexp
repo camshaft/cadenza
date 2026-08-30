@@ -405,6 +405,33 @@
   (input  (do (def (main) (: 18446744073709551616 UInt64)) (export main)))
   (error  CDZ0302 (message "0..=18446744073709551615")))
 
+; A BARE integer literal (no annotation) that OVERFLOWS the signed-Int64 DEFAULT is a DISTINCT fault from the
+; annotated-width overflow above: the bare literal is malformed only as a signed-default, so it is CDZ0201 and
+; carries an ANNOTATE fix (kind wrap) — `(: <lit> UInt64)` when the value still fits UInt64's range, escalating
+; to `(: <lit> BigInt)` once the value is past UInt64.max (BigInt holds any magnitude). Heuristic → unverified
+; (the author may have meant a specific narrower width). `2^64-1` (18446744073709551615) is the top of the
+; UInt64 range; `2^63` (9223372036854775808) is just past Int64.max and takes the same UInt64 fix; `2^64+`
+; escalates to BigInt. (Migrated from rcdzc a_bare_literal_over_int64_that_fits_uint64_offers_an_annotate_uint64_fix.)
+(case "a bare literal past Int64.max that still fits UInt64 offers an annotate-UInt64 wrap fix"
+  (input  (do (def (main) 18446744073709551615) (export main)))
+  (error  CDZ0201 (message "UInt64") (fix (kind wrap) (replacement-contains "UInt64") (unverified))))
+
+(case "a bare literal just past Int64.max (2^63) takes the same annotate-UInt64 fix"
+  (input  (do (def (main) 9223372036854775808) (export main)))
+  (error  CDZ0201 (fix (kind wrap) (replacement-contains "UInt64") (unverified))))
+
+(case "a bare literal past UInt64.max escalates the annotate fix to BigInt"
+  (input  (do (def (main) 99999999999999999999) (export main)))
+  (error  CDZ0201 (message "BigInt") (fix (kind wrap) (replacement-contains "BigInt") (unverified))))
+
+; Inside `(BigInt.of …)` the annotate-BigInt wrap would CASCADE — BigInt.of widens a FIXED integer, so
+; `(BigInt.of (: … BigInt))` hands a BigInt where a fixed int is wanted. So a too-big literal as BigInt.of's
+; argument carries NO wrap fix (it would not clear the fault) and the message names the real repair: drop the
+; redundant wrapper and write `(: … BigInt)` directly. (Migrated from the same rcdzc test's BigInt.of sub-case.)
+(case "a too-big literal inside BigInt.of carries no wrap fix and names the drop-the-wrapper repair"
+  (input  (do (def (g) ((. BigInt of) 999999999999999999999999999999)) (export g)))
+  (error  CDZ0201 (message "write the literal directly as a") (no-fix)))
+
 (case "a checked integer conversion at the signed boundary fits and converts unchanged"
   (doc    "`(Int8.of (: 127 Int32))` = 127 — the largest value that fits Int8 (Int8.max) converts unchanged.
            Pins the inclusive upper boundary of the checked conversion.")

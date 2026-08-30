@@ -415,65 +415,9 @@ fn a_wrong_type_constructor_payload_offers_the_same_coercion_fix_as_an_argument(
     );
 }
 
-#[test]
-fn a_bare_literal_over_int64_that_fits_uint64_offers_an_annotate_uint64_fix() {
-    // A bare integer literal overflowing the signed-Int64 default (`18446744073709551615` = 2^64-1)
-    // still has a concrete fixed type — `UInt64` — so it is malformed only as a bare (signed-default)
-    // literal. Offer the ANNOTATE fix: `(: <lit> UInt64)` (whose range holds the value). Just past
-    // i64.max (2^63) is the boundary case; a value past 2^64-1 has NO fixed type → no fix.
-    for src in [
-        "(module m (def (main) 18446744073709551615) (export main))",
-        "(module m (def (main) 9223372036854775808) (export main))",
-    ] {
-        let d = first_error(src);
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        let fix = d.fix.expect("an annotate-UInt64 fix is carried");
-        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-        assert_eq!(
-            fix.replacement,
-            format!("(: {} UInt64)", crate::abi::WRAP_HOLE),
-            "annotates the literal UInt64: {src}"
-        );
-        assert!(
-            !fix.verified,
-            "the author may want a different width → heuristic"
-        );
-    }
-    // Past UInt64.max → no FIXED width holds it, but `BigInt` holds an integer literal of any
-    // magnitude, so it offers the total "annotate `BigInt`" fix (a one-shot repair, not a guess).
-    let past = first_error("(module m (def (main) 99999999999999999999) (export main))");
-    let fix = past
-        .fix
-        .expect("an annotate-BigInt fix is carried past UInt64.max");
-    assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-    assert_eq!(
-        fix.replacement,
-        format!("(: {} BigInt)", crate::abi::WRAP_HOLE),
-        "annotates the past-fixed literal BigInt: {}",
-        past.message
-    );
-    // But INSIDE `(BigInt.of …)` the annotate-BigInt wrap would CASCADE — `BigInt.of` widens a FIXED
-    // integer, so `(BigInt.of (: … BigInt))` is a BigInt where a fixed int is wanted. So a too-big
-    // literal as `BigInt.of`'s argument carries NO wrap fix (honest — it would not clear the fault) and
-    // the message names the real repair: drop the redundant `BigInt.of`, write `(: … BigInt)` directly.
-    let in_of = first_error(
-        "(module m (def (g) ((. BigInt of) 999999999999999999999999999999)) (export g))",
-    );
-    assert!(
-        in_of.message.contains("BigInt.of")
-            && in_of
-                .message
-                .contains("write the literal directly as a `BigInt`"),
-        "names the drop-the-wrapper repair inside BigInt.of: {}",
-        in_of.message
-    );
-    assert!(
-        in_of.fix.is_none(),
-        "no cascading annotate-BigInt wrap inside BigInt.of: {:?}",
-        in_of.fix
-    );
-}
-
+// (a_bare_literal_over_int64_that_fits_uint64_offers_an_annotate_uint64_fix migrated to corpus 06-numeric-model:
+//  bare-literal past Int64.max -> CDZ0201 annotate-UInt64 wrap fix (2^64-1 + the 2^63 boundary), past UInt64.max
+//  -> annotate-BigInt fix, and the BigInt.of cascade -> no-fix + "write the literal directly as a" message.)
 // (a_non_aliased_int_width_target_carries_no_conversion_fix migrated to corpus 06-numeric-model
 //  "a mixed-int-width operator with a non-aliased target width carries NO conversion fix" (CDZ0301 (no-fix)).)
 
