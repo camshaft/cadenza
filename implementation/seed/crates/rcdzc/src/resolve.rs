@@ -3810,6 +3810,21 @@ fn map_form_binds_name(db: &Db, pat: StructId, name: &str) -> bool {
     };
     let marker = db.ast.rest_marker(tail);
     let dotdot = marker.map(|(d, _, _)| d);
+    // Whether a map ENTRY binds `name` at its VALUE position (the key is a label, never a binder). Accepts
+    // the native `(= k v)` FieldPair (M2 `#map((= k v))` — a FieldPair leaf or 3-element list) AND the legacy
+    // 2-element `(k v)` pair — mirroring `map_pattern_of`'s entry read. Without the FieldPair arm a native
+    // `#map` value binder failed the 2-element check → not recognized inert → the malformed-two-`..` case
+    // leaked a spurious CDZ0101 on the value binder (v-rcdzc-test-shrink report).
+    let entry_binds_value = |item: StructId| -> bool {
+        if let Some((_, v)) = db
+            .ast
+            .field_pair_parts(item)
+            .or_else(|| db.ast.field_pair(item))
+        {
+            return db.ast.as_name(v) == Some(name);
+        }
+        matches!(db.ast.get(item), Struct::List(kv) if kv.len() == 2 && db.ast.as_name(kv[1]) == Some(name))
+    };
     for (i, &item) in tail.iter().enumerate() {
         match dotdot {
             // The `..` marker itself binds nothing — EXCEPT the wrapped `(.. rest)` node CARRIES its rest
@@ -3833,20 +3848,14 @@ fn map_form_binds_name(db: &Db, pat: StructId, name: &str) -> bool {
                 if db.ast.as_name(item) == Some(name) {
                     return true;
                 }
-                if let Struct::List(kv) = db.ast.get(item)
-                    && kv.len() == 2
-                    && db.ast.as_name(kv[1]) == Some(name)
-                {
+                if entry_binds_value(item) {
                     return true;
                 }
             }
-            // An entry `(key value)` BEFORE `..` (or in a pattern with no `..`) — the VALUE (second child)
+            // An entry `(key value)`/`(= key value)` BEFORE `..` (or in a pattern with no `..`) — the VALUE
             // is the binder; the KEY is not.
             _ => {
-                if let Struct::List(kv) = db.ast.get(item)
-                    && kv.len() == 2
-                    && db.ast.as_name(kv[1]) == Some(name)
-                {
+                if entry_binds_value(item) {
                     return true;
                 }
             }

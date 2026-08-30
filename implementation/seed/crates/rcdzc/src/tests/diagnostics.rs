@@ -1893,6 +1893,24 @@ fn a_map_match_pattern_with_a_malformed_rest_names_the_shape_not_an_unbound_bind
         all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
         "no unbound-name leak for the two-`..` case: {all:?}"
     );
+    // NATIVE #map twin of the two-`..` case — the M2 surface `#map((= k v) …)` with FieldPair entries.
+    // `map_form_binds_name` only recognized the legacy 2-element `(k v)` entry, so the native value binder
+    // `v` was not classified inert on a malformed rest → the two-`..` NATIVE case leaked a spurious CDZ0101
+    // on `v` that the classic form suppressed (v-rcdzc-test-shrink report 2026-08-30). Now the malformed-rest
+    // helper reads the FieldPair value too, matching the classic path: clean CDZ0201, no unbound leak.
+    let native_two_dots = "(module m (def (f (: mp (Map Int64 Int64))) \
+                        (match mp (#map((= 1 v) .. r1 .. r2) v) (_ 0))) (export f))";
+    let all = diags_of(native_two_dots);
+    assert!(
+        all.iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("map rest pattern is")),
+        "native #map two-`..` reports the rest-shape CDZ0201: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+        "no unbound-name leak for the NATIVE #map two-`..` value binder (v-rcdzc-test-shrink): {all:?}"
+    );
     // NO false alarm: a WELL-FORMED map rest pattern (`.. rest` final, one binder) checks clean.
     let ok = "(module m (def (f (: mp (Map Int64 Int64))) \
                   (match mp ((map (1 v) .. rest) v) (_ 0))) (export f))";
