@@ -234,7 +234,7 @@ def run-sender-emits-the-message() =
   // Buyer's generated program for (Buyer -> Seller : Title) sends exactly [M(Seller,Title)].
   let g = Chor.Comm("Buyer", "Seller", "Title") in
   let t = run(gen-role(g, "Buyer"), []) in
-    if msgs-eq(sends-of(t), [Msg.M("Seller", "Title")]) then
+  if msgs-eq(sends-of(t), [Msg.M("Seller", "Title")]) then
     unit
   else
     trap("the sender's generated program puts M(Seller,Title) on the wire")
@@ -244,7 +244,7 @@ def run-receiver-consumes-the-label() =
   // Seller's generated program, given inbox ["Title"], consumes it (empty inbox, sends nothing).
   let g = Chor.Comm("Buyer", "Seller", "Title") in
   let t = run(gen-role(g, "Seller"), ["Title"]) in
-    if strs-eq(inbox-of(t), []) then
+  if strs-eq(inbox-of(t), []) then
     if msgs-eq(sends-of(t), []) then unit else trap("a pure receiver sends nothing")
   else
     trap("the receiver's generated program consumes the delivered label")
@@ -257,7 +257,7 @@ def run-value-flows-buyer-to-seller() =
   let buyer = run(gen-role(g, "Buyer"), []) in
   let seller-inbox = deliver(sends-of(buyer), "Seller") in // route Buyer's wire to Seller
   let seller = run(gen-role(g, "Seller"), seller-inbox) in
-    if strs-eq(seller-inbox, ["Title"]) then
+  if strs-eq(seller-inbox, ["Title"]) then
     if strs-eq(inbox-of(seller), []) then
       unit // Seller consumed exactly the delivered value
     else
@@ -271,7 +271,7 @@ def run-roundtrip-title-then-quote() =
   let g = Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"), Chor.Comm("Seller", "Buyer", "Quote")) in
   let buyer1 = run(gen-role(g, "Buyer"), []) in
   let seller = run(gen-role(g, "Seller"), deliver(sends-of(buyer1), "Seller")) in
-    // Seller received Title (inbox drained) and emitted a Quote addressed to Buyer.
+  // Seller received Title (inbox drained) and emitted a Quote addressed to Buyer.
   if strs-eq(inbox-of(seller), []) then
     if msgs-eq(sends-of(seller), [Msg.M("Buyer", "Quote")]) then
       unit
@@ -284,9 +284,9 @@ def run-roundtrip-title-then-quote() =
 def run-choice-selection-drives-receiver() =
   // Buyer chooses (first arm = Yes) and tells Seller; Seller's ematch follows the Yes branch.
   let buyer = run(gen-role(yes-no(), "Buyer"), []) in
-    if msgs-eq(sends-of(buyer), [Msg.M("Seller", "Yes")]) then
+  if msgs-eq(sends-of(buyer), [Msg.M("Seller", "Yes")]) then
     let seller = run(gen-role(yes-no(), "Seller"), deliver(sends-of(buyer), "Seller")) in
-      if strs-eq(inbox-of(seller), []) then
+    if strs-eq(inbox-of(seller), []) then
       unit // Seller matched Yes and consumed the selection
     else
       trap("Seller's ematch consumes the selection it was told")
@@ -318,9 +318,9 @@ def run-divergent-branch-recvs-then-sends-back() =
   // Tracking→Buyer. Deeper than run-choice-selection-drives-receiver (whose branches only recv) — pins that
   // codegen emits, and the interp runs, a recv-then-send inside an external-choice branch.
   let buyer = run(gen-role(ship-or-cancel(), "Buyer"), ["Tracking"]) in
-    if msgs-eq(sends-of(buyer), [Msg.M("Seller", "Ship")]) then
+  if msgs-eq(sends-of(buyer), [Msg.M("Seller", "Ship")]) then
     let seller = run(gen-role(ship-or-cancel(), "Seller"), deliver(sends-of(buyer), "Seller")) in
-      if msgs-eq(sends-of(seller), [Msg.M("Buyer", "Tracking")]) then
+    if msgs-eq(sends-of(seller), [Msg.M("Buyer", "Tracking")]) then
       unit
     else
       trap("Seller's Ship branch recvs the selection then sends Tracking back to Buyer")
@@ -331,7 +331,7 @@ def run-divergent-branch-recvs-then-sends-back() =
 def run-bystander-does-nothing() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
   let t = run(gen-role(g, "Shipper"), []) in
-    if msgs-eq(sends-of(t), []) then
+  if msgs-eq(sends-of(t), []) then
     unit
   else
     trap("an uninvolved role's generated program sends nothing")
@@ -340,7 +340,7 @@ def run-bystander-does-nothing() =
 def run-ematch-picks-the-told-branch() =
   // Directly: Seller told "No" follows the No arm (not the first). Proves ematch is selection-driven.
   let seller = run(gen-role(yes-no(), "Seller"), ["No"]) in
-    if strs-eq(inbox-of(seller), []) then
+  if strs-eq(inbox-of(seller), []) then
     unit
   else
     trap("ematch consumes the No selection via the matching branch")
@@ -359,7 +359,7 @@ def run-seller-routes-quote-and-ship() =
   // Seller's generated program, given Title, emits Quote→Buyer THEN Ship→Shipper (order-preserving).
   let g = purchase-linear() in
   let seller = run(gen-role(g, "Seller"), deliver(run-buyer-sends(g), "Seller")) in
-    if msgs-eq(sends-of(seller), [Msg.M("Buyer", "Quote"), Msg.M("Shipper", "Ship")]) then
+  if msgs-eq(sends-of(seller), [Msg.M("Buyer", "Quote"), Msg.M("Shipper", "Ship")]) then
     unit
   else
     trap("Seller relays Quote to Buyer then Ship to Shipper, in order")
@@ -373,10 +373,10 @@ def run-purchase-reaches-shipper() =
   let g = purchase-linear() in
   let seller = run(gen-role(g, "Seller"), deliver(run-buyer-sends(g), "Seller")) in
   let shipper-inbox = deliver(sends-of(seller), "Shipper") in
-    if strs-eq(shipper-inbox, ["Ship"]) then
+  if strs-eq(shipper-inbox, ["Ship"]) then
     // routing kept Quote out of Shipper's inbox
     let shipper = run(gen-role(g, "Shipper"), shipper-inbox) in
-      if strs-eq(inbox-of(shipper), []) then
+    if strs-eq(inbox-of(shipper), []) then
       unit // Shipper consumed the Ship instruction
     else
       trap("Shipper's generated program consumes the delivered Ship")
@@ -388,7 +388,7 @@ def run-buyer-receives-only-quote() =
   // Buyer's inbox (routed from Seller) is exactly [Quote] — the Ship (for Shipper) is not delivered to Buyer.
   let g = purchase-linear() in
   let seller = run(gen-role(g, "Seller"), deliver(run-buyer-sends(g), "Seller")) in
-    if strs-eq(deliver(sends-of(seller), "Buyer"), ["Quote"]) then
+  if strs-eq(deliver(sends-of(seller), "Buyer"), ["Quote"]) then
     unit
   else
     trap("routing delivers exactly [Quote] to Buyer")
@@ -401,7 +401,7 @@ def deliver-partitions-a-mixed-wire-in-order() =
   // gets the empty inbox. If deliver ever mis-routed (dropped, reordered, or cross-delivered a label), this
   // fires — the property the destination-aware three-party proof silently depends on.
   let wire = [Msg.M("A", "m1"), Msg.M("B", "m2"), Msg.M("A", "m3"), Msg.M("C", "m4")] in
-    if strs-eq(deliver(wire, "A"), ["m1", "m3"]) then
+  if strs-eq(deliver(wire, "A"), ["m1", "m3"]) then
     // A's two labels, in wire order
     if strs-eq(deliver(wire, "B"), ["m2"]) then
       if strs-eq(deliver(wire, "C"), ["m4"]) then

@@ -29,14 +29,14 @@ def empty-store() = SumStore.SumStore(0, Map.empty : Map(Int64, (Int64, List(Int
 /// returns a NEW store (no mutation), threaded onward like `defs`.
 def store-alloc(store: SumStore, tag: Int64, payloads: List(Int64)) =
   let SumStore.SumStore(next, cells) = store in
-    (next, SumStore.SumStore(next + 1, Map.insert(cells, next, (tag, payloads))))
+  (next, SumStore.SumStore(next + 1, Map.insert(cells, next, (tag, payloads))))
 
 /// Read the TAG of the sum value at `hnd` — `Some tag` if allocated, `None` if the hnd is unknown (a
 /// malformed hnd — impossible for a hnd that came from store-alloc, but total). A CMatch arm reads this
 /// to pick the branch (compare against each ctor pattern's tag).
 def store-tag(store: SumStore, hnd: Int64) =
   let SumStore.SumStore(_, cells) = store in
-    match Map.lookup(cells, hnd) with
+  match Map.lookup(cells, hnd) with
     | Option.None(_) => Option.None(unit)
     | Option.Some(cell) => let (tag, _) = cell in
       Option.Some(tag)
@@ -46,7 +46,7 @@ def store-tag(store: SumStore, hnd: Int64) =
 /// a multi-field ctor (`Pair a b`) reads 0 and 1. Index recursion via List.at (the compiler-ml idiom).
 def store-payload(store: SumStore, hnd: Int64, i: Int64) =
   let SumStore.SumStore(_, cells) = store in
-    match Map.lookup(cells, hnd) with
+  match Map.lookup(cells, hnd) with
     | Option.None(_) => Option.None(unit)
     | Option.Some(cell) => let (_, payloads) = cell in
       List.at(payloads, i)
@@ -55,7 +55,7 @@ def store-payload(store: SumStore, hnd: Int64, i: Int64) =
 def sst-alloc-then-read-tag() =
   // allocate a `Some 5` (tag 1, payload [5]); the hnd reads back tag 1.
   let (h, st) = store-alloc(empty-store(), 1, List.push([], 5)) in
-    match store-tag(st, h) with
+  match store-tag(st, h) with
     | Option.Some(t) => if t == 1 then unit else trap("alloc tag 1 reads back 1")
     | Option.None(_) => trap("an allocated hnd has a tag")
 
@@ -63,7 +63,7 @@ def sst-alloc-then-read-tag() =
 def sst-alloc-then-read-payload() =
   // the `Some 5` hnd reads back payload element 0 = 5.
   let (h, st) = store-alloc(empty-store(), 1, List.push([], 5)) in
-    match store-payload(st, h, 0) with
+  match store-payload(st, h, 0) with
     | Option.Some(v) => if v == 5 then unit else trap("Some 5 payload[0] = 5")
     | Option.None(_) => trap("an allocated hnd has payload element 0")
 
@@ -71,7 +71,7 @@ def sst-alloc-then-read-payload() =
 def sst-nullary-payload-empty() =
   // a NULLARY-shaped alloc (tag 3, no payloads) reads its tag but has NO element 0.
   let (h, st) = store-alloc(empty-store(), 3, [] : List(Int64)) in
-    match store-tag(st, h) with
+  match store-tag(st, h) with
     | Option.Some(t) => if t == 3 then
       match store-payload(st, h, 0) with
         | Option.None(_) => unit
@@ -85,7 +85,7 @@ def sst-unique-handles() =
   // two allocs get DISTINCT handles (monotone counter), each reading back its OWN tag — no aliasing.
   let (h1, st1) = store-alloc(empty-store(), 1, List.push([], 10)) in
   let (h2, st2) = store-alloc(st1, 2, List.push([], 20)) in
-    if h1 == h2 then
+  if h1 == h2 then
     trap("distinct allocs must get distinct handles")
   else
     match store-tag(st2, h1) with
@@ -102,7 +102,7 @@ def sst-unique-handles() =
 def sst-two-field-payload() =
   // a two-field ctor `Pair 3 4` (tag 0, payloads [3,4]): element 0 = 3, element 1 = 4.
   let (h, st) = store-alloc(empty-store(), 0, List.concat(List.push([], 3), List.push([], 4))) in
-    match store-payload(st, h, 0) with
+  match store-payload(st, h, 0) with
     | Option.Some(a) => (match store-payload(st, h, 1) with
       | Option.Some(b) => if a == 3 and b == 4 then unit else trap("Pair 3 4 → [3,4]")
       | Option.None(_) => trap("element 1 present")
@@ -116,7 +116,7 @@ def sst-nested-sum-hnd-as-payload() =
   // hnd IS an Int64 payload element).
   let (h1, st1) = store-alloc(empty-store(), 1, List.push([], 5)) in
   let (h2, st2) = store-alloc(st1, 1, List.push([], h1)) in
-    match store-payload(st2, h2, 0) with
+  match store-payload(st2, h2, 0) with
     | Option.Some(inner) => (match store-tag(st2, inner) with
       | Option.Some(it) => if it == 1 then
         match store-payload(st2, inner, 0) with

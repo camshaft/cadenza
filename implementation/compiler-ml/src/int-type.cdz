@@ -51,7 +51,7 @@ def after-prefix(name: String, prefix: String) =
   // scalar-len needs a UTF-8 decode walk not built for runtime strings — sread walks runtime strings by
   // byte-len for the same reason. Type names are ASCII, so byte-len == scalar-len here.
   let p = String.byte-len(prefix) in
-    match String.slice(name, 0, p) with
+  match String.slice(name, 0, p) with
     | Option.Some(head) => if head == prefix then
       match String.slice(name, p, String.byte-len(name)) with
         | Option.Some(rest) => Option.Some(rest)

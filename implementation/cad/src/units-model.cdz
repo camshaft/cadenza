@@ -68,12 +68,12 @@ def translate-m(by: Vec3(Qty(Rational, Unit.base(#meter))), s: Solid(
 /// the B-via-generic ruling — the same generic `Solid`/`Vec3`, two instantiations, a structural map between.
 def lower-v(v: Vec3(Qty(Rational, Unit.base(#meter)))) =
   let Vec3.V3(x, y, z) = v in
-    Vec3.V3(Qty.value(x), Qty.value(y), Qty.value(z))
+  Vec3.V3(Qty.value(x), Qty.value(y), Qty.value(z))
 
 /// Unwrap a 2-D vector's `Qty[meter]` coords to bare-Rational meters.
 def lower-v2(v: Vec2(Qty(Rational, Unit.base(#meter)))) =
   let Vec2.V2(x, y) = v in
-    Vec2.V2(Qty.value(x), Qty.value(y))
+  Vec2.V2(Qty.value(x), Qty.value(y))
 
 /// Unwrap one path segment's `Qty[meter]` coords to bare-Rational meters.
 def lower-pathseg-q(s: PathSeg(Qty(Rational, Unit.base(#meter)))) = match s with
@@ -89,7 +89,7 @@ def lower-pathseg-q(s: PathSeg(Qty(Rational, Unit.base(#meter)))) = match s with
 /// no index counter).
 def lower-path-q(p: Path(Qty(Rational, Unit.base(#meter)))) =
   let Path.Segs(xs) = p in
-    Path.Segs(lower-path-q-go(xs, []))
+  Path.Segs(lower-path-q-go(xs, []))
 
 def lower-path-q-go(xs: List(PathSeg(Qty(Rational, Unit.base(#meter)))), acc: List(
   PathSeg(Rational)
@@ -132,7 +132,7 @@ def a-cube-authored-in-meters-lowers-to-exact-rational() =
   // Author a 4×2×6-metre box with units; lower to bare Rational meters. The lowered coords are exactly
   // 4, 2, 6 (the meter magnitudes) — units carried in the model, unwrapped at the render edge.
   let model = cube-m(meters(4 / 1), meters(2 / 1), meters(6 / 1)) in
-    match lower(model) with
+  match lower(model) with
     | Solid.Cube(v) => (match v with
       | Vec3.V3(x, y, z) => if x == 4 / 1 then if z == 6 / 1 then unit else trap("z") else trap("x")
     )
@@ -145,7 +145,7 @@ def a-difference-of-units-solids-lowers-recursively() =
       cube-m(meters(4 / 1), meters(4 / 1), meters(4 / 1)),
       sphere-m(meters(2 / 1))
     ) in
-    match lower(model) with
+  match lower(model) with
     | Solid.Difference(a, b) => (match b with
       | Solid.Sphere(r) => if r == 2 / 1 then unit else trap("r")
       | _ => trap("b")
@@ -158,7 +158,7 @@ def a-component-authored-in-inches-lowers-to-exact-meters() =
   // the model carries it as a length, and lower unwraps it to that exact meter magnitude — no float.
   let inch-x = Qty.of(Qty.of(1 / 1, Unit.of(#inch)) as meter, Unit.of(#meter)) in
   let model = cube-m(inch-x, meters(1 / 1), meters(1 / 1)) in
-    match lower(model) with
+  match lower(model) with
     | Solid.Cube(v) => (match v with
       | Vec3.V3(x, _, _) => if x == 127 / 5000 then unit else trap("1 inch = 127/5000 m")
     )
@@ -174,7 +174,7 @@ def a-translated-units-cylinder-lowers-its-offset-and-dims-to-exact-meters() =
       v3m(meters(3 / 1), meters(0 / 1), meters(0 / 1)),
       cylinder-m(meters(6 / 1), meters(2 / 1))
     ) in
-    match lower(model) with
+  match lower(model) with
     | Solid.Translate(by, of) => (match by with
       | Vec3.V3(bx, by2, bz) => if bx == 3 / 1 and by2 == 0 / 1 and bz == 0 / 1 then
         match of with
@@ -195,7 +195,7 @@ def an-extruded-units-rect-profile-lowers-profile-and-height-to-exact-meters() =
   // 3 m, all as Qty[meter]; lower and confirm the profile dims AND the extrude height unwrap to exact meters.
   let prof = Profile.Rect(Vec2.V2(meters(4 / 1), meters(2 / 1))) in
   let model = Solid.ExtrudeLinear(prof, meters(3 / 1)) in
-    match lower(model) with
+  match lower(model) with
     | Solid.ExtrudeLinear(p, h) => (match p with
       | Profile.Rect(sz) => (match sz with
         | Vec2.V2(w, d) => if w == 4 / 1 and d == 2 / 1 and h == 3 / 1 then
@@ -229,7 +229,7 @@ def a-units-path-profile-lowers-every-segment-coordinate-to-exact-meters() =
       )
     ) in
   let model = Solid.ExtrudeLinear(Profile.PathProfile(pth), meters(4 / 1)) in
-    match lower(model) with
+  match lower(model) with
     | Solid.ExtrudeLinear(p, h) => (match p with
       | Profile.PathProfile(lp) => (match lp with
         | Path.Segs(xs) => // segment 1 is LineToAbs(6,2); segment 2 is CubicToAbs end(8,3) c0(7,5) c1(9,1).

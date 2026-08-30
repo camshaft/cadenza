@@ -172,10 +172,10 @@ def fleet-merge-request-round-trip() =
   let g = fleet-merged-once() in
   let worker1 = run(gen-role(g, "Worker"), []) in // Worker sends MergeRequest (then awaits)
   let prsync-inbox = deliver(sends-of(worker1), "PrSync") in
-    if strs-eq(prsync-inbox, ["MergeRequest"]) then
+  if strs-eq(prsync-inbox, ["MergeRequest"]) then
     // PrSync got the request
     let prsync = run(gen-role(g, "PrSync"), prsync-inbox) in // PrSync recvs it, sends Merged to Worker
-      if strs-eq(inbox-of(prsync), []) then
+    if strs-eq(inbox-of(prsync), []) then
       // PrSync consumed the request
       if strs-eq(deliver(sends-of(prsync), "Worker"), ["Merged"]) then
         unit // Merged routed back to Worker
@@ -194,10 +194,10 @@ def fleet-blocked-escalation-round-trip() =
   let worker1 = run(gen-role(g, "Worker"), []) in
   let prsync = run(gen-role(g, "PrSync"), deliver(sends-of(worker1), "PrSync")) in
   let concierge-inbox = deliver(sends-of(prsync), "Concierge") in
-    if strs-eq(concierge-inbox, ["Ask"]) then
+  if strs-eq(concierge-inbox, ["Ask"]) then
     // Ask reached the Concierge
     let concierge = run(gen-role(g, "Concierge"), concierge-inbox) in
-      if strs-eq(deliver(sends-of(concierge), "PrSync"), ["Answer"]) then
+    if strs-eq(deliver(sends-of(concierge), "PrSync"), ["Answer"]) then
       unit // Answer routed back to PrSync
     else
       trap("Concierge answers PrSync")

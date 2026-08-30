@@ -772,7 +772,7 @@ mod tests {
     fn binary_to_ml() {
         let bin = convert(b"(let ((x 1)) x)", Format::Sexpr, Format::Binary).unwrap();
         let ml = convert(&bin, Format::Binary, Format::Ml).unwrap();
-        assert_eq!(String::from_utf8(ml).unwrap(), "let x = 1 in\n  x");
+        assert_eq!(String::from_utf8(ml).unwrap(), "let x = 1 in\nx");
     }
 
     #[test]

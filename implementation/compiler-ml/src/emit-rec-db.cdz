@@ -127,7 +127,7 @@ def all-defs-emittable(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i:
   else
     match List.at(entries, i) with
       | Option.Some(e) => let (_, pb) = e in
-      let (_, body) = pb in
+        let (_, body) = pb in
         if can-emit-d(body, fmap) then all-defs-emittable(entries, i + 1, fmap) else false
       | Option.None(_) => false
 
@@ -145,7 +145,7 @@ def recursive-types-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i:
   else
     match List.at(entries, i) with
       | Option.Some(e) => let (_, pb) = e in
-      let (params, _) = pb in
+        let (params, _) = pb in
         recursive-types-go(entries, i + 1, List.push(acc, functype-bytes(List.len(params))))
       | Option.None(_) => acc
 
@@ -169,13 +169,13 @@ def recursive-bodies-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i
   else
     match List.at(entries, i) with
       | Option.Some(e) => let (_, pb) = e in
-      let (params, body) = pb in
+        let (params, body) = pb in
         recursive-bodies-go(
-        entries,
-        i + 1,
-        fmap,
-        List.push(acc, emit-def-body-d(params, body, fmap))
-      )
+          entries,
+          i + 1,
+          fmap,
+          List.push(acc, emit-def-body-d(params, body, fmap))
+        )
       | Option.None(_) => acc
 
 /// The integer list [0,1,…,n] — the typeidx-per-func vector for func-section-multi (func i uses type i; k+1
@@ -219,7 +219,7 @@ def emit-recursive-module(mainCore: Core, tree: Tree) =
   let entries = Map.to-list(lower-def-env(tree)) in
   let k = List.len(entries) in
   let fmap = defenv-funcidx-map(entries) in
-    if can-emit-d(mainCore, fmap) and all-defs-emittable(entries, 0, fmap)
+  if can-emit-d(mainCore, fmap) and all-defs-emittable(entries, 0, fmap)
       and has-value-d(mainCore, entries) then
     let hasho = any-body-has-fnref(entries, mainCore) in
     let mem = if any-body-has-ctor(entries, mainCore) then
@@ -232,7 +232,7 @@ def emit-recursive-module(mainCore: Core, tree: Tree) =
         List.concat(recursive-types(entries), ho-functypes())
       else
         recursive-types(entries) in
-      // W-compound: memory + bump-ptr global when any body builds/reads a compound. W-HO: funcref table +
+    // W-compound: memory + bump-ptr global when any body builds/reads a compound. W-HO: funcref table +
     // identity elem + HO-arity functypes when any body carries a fn-value. Section order (ascending id,
     // elem before code): type(1) func(3) TABLE(4) MEM(5) GLOBAL(6) export(7) ELEM(9) code(10).
     Option.Some(
@@ -270,7 +270,7 @@ def any-body-has-ctor-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), 
   else
     match List.at(entries, i) with
       | Option.Some(e) => let (_, pb) = e in
-      let (_, body) = pb in
+        let (_, body) = pb in
         if has-ctor(body) then true else any-body-has-ctor-go(entries, i + 1)
       | Option.None(_) => false
 
@@ -285,7 +285,7 @@ def any-body-has-fnref-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))),
   else
     match List.at(entries, i) with
       | Option.Some(e) => let (_, pb) = e in
-      let (_, body) = pb in
+        let (_, body) = pb in
         if has-fnref(body) then true else any-body-has-fnref-go(entries, i + 1)
       | Option.None(_) => false
 
@@ -334,7 +334,7 @@ def ho-functypes() =
 /// / declines. The recursive companion to emit-db's `emit-src` (which is single-main only).
 def emit-rec-src(s: String) =
   let (root, tree) = read-source(s) in
-    match lower-tree(tree, root) with
+  match lower-tree(tree, root) with
     | Option.Some(core) => emit-recursive-module(core, tree)
     | Option.None(_) => Option.None(unit)
 
@@ -347,7 +347,7 @@ def emit-rec-src(s: String) =
 /// declined-vs-error contract holds. Verdict semantics match emit-db's emit-src-bytes exactly.
 def emit-any-src-bytes(s: String) =
   let (root, tree) = read-source(s) in
-    match lower-tree(tree, root) with
+  match lower-tree(tree, root) with
     | Option.Some(core) => (if is-def-env-empty(lower-def-env(tree)) then
       emit-src-bytes(s) // no recursive defs → emit-db single-main (imported), byte-identical
     else
@@ -376,7 +376,7 @@ def er-recursive-module-assembles-from-hand-core() =
       (900, (List.push([], 7), Core.CNum(1, true, 64)))
     ) in
   let types = recursive-types(entries) in
-    if List.len(types) == 2 then
+  if List.len(types) == 2 then
     // fac-type + main-type
     if List.len(range-list(1)) == 2 then unit else trap("range-list(1) = [0,1]")
   else
@@ -386,7 +386,7 @@ def er-recursive-module-assembles-from-hand-core() =
 def er-can-emit-d-allows-known-ccall() =
   // a CCall whose callee IS in the def-index map is emittable; an unknown callee declines.
   let de = Map.insert(Map.empty : Map(Int64, Int64), 900, 0) in
-    if can-emit-d(Core.CCall(900, [] : List(Core)), de) then
+  if can-emit-d(Core.CCall(900, [] : List(Core)), de) then
     if can-emit-d(Core.CCall(901, [] : List(Core)), de) then
       trap("unknown callee should decline")
     else
@@ -400,7 +400,7 @@ def er-can-emit-d-allows-compound-construct-project() =
   // arg is NOW emittable too (depth-distinct scratch + bump-early). Direct-Core: CProj(CCtor(0,[10,20]), 1)
   // emits; CCtor(0,[CCtor(0,[1]),3]) (nested) also emits.
   let de = Map.empty : Map(Int64, Int64) in
-    if can-emit-d(
+  if can-emit-d(
       Core.CProj(
         Core.CCtor(
           0,
@@ -457,7 +457,7 @@ def er-recursive-types-puts-main-last() =
       (900, (List.push([], 7), Core.CNum(1, true, 64)))
     ) in
   let types = recursive-types(entries) in
-    match List.at(types, List.len(types) - 1) with
+  match List.at(types, List.len(types) - 1) with
     // the LAST functype must be main's (nullary, 4 bytes)
     | Option.Some(lastT) => if Bytes.len(lastT) == 4 then
       match List.at(types, 0) with
@@ -483,7 +483,7 @@ def er-recursive-bodies-puts-main-last() =
       )
     ) in
   let bodies = recursive-bodies(entries, Core.CNum(7, true, 64), Map.empty : Map(Int64, Int64)) in
-    if List.len(bodies) == 2 then
+  if List.len(bodies) == 2 then
     // 1 def body + main body
     match List.at(bodies, List.len(bodies) - 1) with
       // LAST body must be main's (nullary CNum 7 → 4 bytes: 00 42 07 0b)
@@ -517,7 +517,7 @@ def er-all-defs-emittable-gates-out-of-subset-body() =
       (900, ([] : List(Int64), arithBody))
     ) in
   let badEntries = List.push(okEntries, (901, ([] : List(Int64), hoBody))) in
-    if all-defs-emittable(okEntries, 0, fmap) then
+  if all-defs-emittable(okEntries, 0, fmap) then
     if all-defs-emittable(badEntries, 0, fmap) then
       trap("a CFnRef (higher-order) def body is NOT emit-subset → all-defs-emittable must be false")
     else
@@ -560,7 +560,7 @@ def er-can-emit-d-allows-fnref-and-fnrefvar() =
   // W-HO: a CFnRef to a KNOWN def is emittable (→ i64.const funcidx); to an unknown name it declines. A
   // CFnRefVar apply is emittable iff its args are (the fBinder is a local holding a funcidx).
   let de = Map.insert(Map.empty : Map(Int64, Int64), 900, 0) in
-    if can-emit-d(Core.CFnRef(900), de) then
+  if can-emit-d(Core.CFnRef(900), de) then
     if can-emit-d(Core.CFnRef(901), de) then
       trap("CFnRef to an unknown def must decline")
     else if can-emit-d(Core.CFnRefVar(5, List.push([], Core.CNum(41, true, 64))), de) then

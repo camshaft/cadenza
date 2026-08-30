@@ -79,9 +79,9 @@ def eval-args(args: List(Core), i: Int64, env: Map(Int64, Value), defs: Map(
         | Option.None(_) => Option.None(unit)
         | Option.Some(vs1) => let (v, store1) = vs1 in
           match eval-args(args, i + 1, env, defs, store1) with
-          | Option.None(_) => Option.None(unit)
-          | Option.Some(rs) => let (rest, store2) = rs in
-            Option.Some((List.concat(List.push([], v), rest), store2))
+            | Option.None(_) => Option.None(unit)
+            | Option.Some(rs) => let (rest, store2) = rs in
+              Option.Some((List.concat(List.push([], v), rest), store2))
 
 /// bind-params (slice-B3): bind param binder-ids positionally to arg values in a FRESH env (lexical — the
 /// callee body sees ONLY its params + defs, never the caller's locals). Index recursion. Ragged arity (a
@@ -138,9 +138,9 @@ def apply-def-by-name(name: Int64, args: List(Core), env: Map(Int64, Value), def
   | Option.None(_) => Option.None(unit)
   | Option.Some(pb) => let (params, body) = pb in
     match eval-args(args, 0, env, defs, store) with
-    | Option.None(_) => Option.None(unit)
-    | Option.Some(vs) => let (vals, store1) = vs in
-      eval-core-s(body, bind-params(params, vals, 0, Map.empty : Map(Int64, Value)), defs, store1)
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(vs) => let (vals, store1) = vs in
+        eval-core-s(body, bind-params(params, vals, 0, Map.empty : Map(Int64, Value)), defs, store1)
 
 /// eval-core-d (slice-B3): the 3-arg PUBLIC workhorse — evaluate a Core term under `env` + `defs`, returning
 /// `Option(Int64)` (the value, store discarded). A thin wrapper over the store-threaded `eval-core-s`: seed an
@@ -183,21 +183,21 @@ def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, Tuple(List(Int
   (match eval-core-s(l, env, defs, store) with
     | Option.Some(as1) => (let (av, store1) = as1 in
       match eval-core-s(r, env, defs, store1) with
-      | Option.Some(bs2) => (let (bv, store2) = bs2 in
-        match value-int(av) with
-        | Option.None(_) => Option.None(unit)
-        | Option.Some(a) => match value-int(bv) with
-          | Option.None(_) => Option.None(unit)
-          | Option.Some(b) => match eval-bin(op, a, b) with
-            | Option.Some(v) => if width < 64 then
-              if overflows(v, signed, width) then
-                Option.None(unit)
-              else
-                Option.Some((Value.VInt(v), store2))
-            else
-              Option.Some((Value.VInt(v), store2))
-            | Option.None(_) => Option.None(unit))
-      | Option.None(_) => Option.None(unit))
+        | Option.Some(bs2) => (let (bv, store2) = bs2 in
+          match value-int(av) with
+            | Option.None(_) => Option.None(unit)
+            | Option.Some(a) => match value-int(bv) with
+              | Option.None(_) => Option.None(unit)
+              | Option.Some(b) => match eval-bin(op, a, b) with
+                | Option.Some(v) => if width < 64 then
+                  if overflows(v, signed, width) then
+                    Option.None(unit)
+                  else
+                    Option.Some((Value.VInt(v), store2))
+                else
+                  Option.Some((Value.VInt(v), store2))
+                | Option.None(_) => Option.None(unit))
+        | Option.None(_) => Option.None(unit))
     | Option.None(_) => Option.None(unit)
   )
   | Core.CLet(binder, valExpr, body) => // non-recursive let: eval the value in the CURRENT env (threading store → store1), bind the Value to the
@@ -213,11 +213,11 @@ def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, Tuple(List(Int
   (match eval-core-s(cond, env, defs, store) with
     | Option.Some(cs1) => (let (cv, store1) = cs1 in
       match value-int(cv) with
-      | Option.None(_) => Option.None(unit)
-      | Option.Some(c) => if c == 0 then
-        eval-core-s(els, env, defs, store1)
-      else
-        eval-core-s(thn, env, defs, store1))
+        | Option.None(_) => Option.None(unit)
+        | Option.Some(c) => if c == 0 then
+          eval-core-s(els, env, defs, store1)
+        else
+          eval-core-s(thn, env, defs, store1))
     | Option.None(_) => Option.None(unit)
   )
   | Core.CCall(name, args) => // slice-B3: a recursive call is a NON-inlining name reference — dispatched by name via the shared
@@ -244,9 +244,9 @@ def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, Tuple(List(Int
     | Option.None(_) => Option.None(unit)
     | Option.Some(vs) => let (vals, store1) = vs in
       match values-ints(vals, 0, [] : List(Int64)) with
-      | Option.None(_) => Option.None(unit)
-      | Option.Some(ints) => let (h, store2) = store-alloc(store1, tag, ints) in
-        Option.Some((Value.VInt(h), store2))
+        | Option.None(_) => Option.None(unit)
+        | Option.Some(ints) => let (h, store2) = store-alloc(store1, tag, ints) in
+          Option.Some((Value.VInt(h), store2))
   )
   | Core.CMatchSum(scrut, tag, binders, thn, els) => // M2-b-2b sum DECONSTRUCT: eval scrut to a handle, read its store-tag. If it EQUALS `tag`, bind each
   // payload element to its binder (store-payload h i → binders[i]) and eval `then` under that env; else
@@ -258,13 +258,13 @@ def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, Tuple(List(Int
     | Option.None(_) => Option.None(unit)
     | Option.Some(hs) => let (hv, store1) = hs in
       match value-int(hv) with
-      | Option.None(_) => Option.None(unit)
-      | Option.Some(h) => match store-tag(store1, h) with
-        | Option.None(_) => eval-core-s(els, env, defs, store1) // not a payload sum → pattern doesn't match → else
-        | Option.Some(scrutTag) => if scrutTag == tag then
-          eval-core-s(thn, bind-payload(store1, h, binders, 0, env), defs, store1)
-        else
-          eval-core-s(els, env, defs, store1)
+        | Option.None(_) => Option.None(unit)
+        | Option.Some(h) => match store-tag(store1, h) with
+          | Option.None(_) => eval-core-s(els, env, defs, store1) // not a payload sum → pattern doesn't match → else
+          | Option.Some(scrutTag) => if scrutTag == tag then
+            eval-core-s(thn, bind-payload(store1, h, binders, 0, env), defs, store1)
+          else
+            eval-core-s(els, env, defs, store1)
   )
   | Core.CMatchEnum(scrut, tag, thn, els) => // ii-c2b-2 ENUM-DISC deconstruct (Z1): an all-nullary sum value is a BARE TAG (a CNum, no heap cell) — so
   // eval the scrutinee to its value and compare it DIRECTLY against `tag` (NOT store-tag, which returns None
@@ -275,11 +275,11 @@ def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, Tuple(List(Int
     | Option.None(_) => Option.None(unit)
     | Option.Some(vs) => let (vv, store1) = vs in
       match value-int(vv) with
-      | Option.None(_) => Option.None(unit)
-      | Option.Some(v) => if v == tag then
-        eval-core-s(thn, env, defs, store1)
-      else
-        eval-core-s(els, env, defs, store1)
+        | Option.None(_) => Option.None(unit)
+        | Option.Some(v) => if v == tag then
+          eval-core-s(thn, env, defs, store1)
+        else
+          eval-core-s(els, env, defs, store1)
   )
   | Core.CProj(operand, index) => // TUPLE PROJECTION `(. t i)`: eval the operand to its SumStore handle (a tuple is CCtor(0, elems)), then
   // read `store-payload(h, index)` — the i-th element value. infer proved the operand is a tuple and the
@@ -289,10 +289,10 @@ def eval-core-s(c: Core, env: Map(Int64, Value), defs: Map(Int64, Tuple(List(Int
     | Option.None(_) => Option.None(unit)
     | Option.Some(hs) => let (hv, store1) = hs in
       match value-int(hv) with
-      | Option.None(_) => Option.None(unit)
-      | Option.Some(h) => match store-payload(store1, h, index) with
-        | Option.Some(v) => Option.Some((Value.VInt(v), store1))
         | Option.None(_) => Option.None(unit)
+        | Option.Some(h) => match store-payload(store1, h, index) with
+          | Option.Some(v) => Option.Some((Value.VInt(v), store1))
+          | Option.None(_) => Option.None(unit)
 
 /// Apply a binary op: 43 +, 45 -, 42 *, 47 /, and the relational ops 60 `<`, 61 `==`, 62 `>`, 63 `<=`,
 /// 64 `>=`, 65 `!=`. Relational ops yield a Bool encoded as 0/1 (Core represents Bool as an Int); each of
@@ -331,7 +331,7 @@ def eval-tree(tree: Tree, root: Int64) = match lower-tree(tree, root) with
 /// the lazy query DB. `Some v` = ran to `v`; `None` = ill-typed (no core form) or malformed.
 def run(ts: List(Tok)) =
   let (root, tree) = parse-tokens(ts) in
-    eval-tree(tree, root)
+  eval-tree(tree, root)
 
 /// Builders + the milestone program, so the end-to-end result is demonstrable without hand-tokenizing.
 def n(v: Int64) = Tok.TNum(v)
@@ -868,7 +868,7 @@ def ev-nullary-call-evaluates-to-body() =
   let (bodyId, t1) = add-node(empty-tree(), Node.NLit(42)) in
   let t1d = record-def(t1, 900, bodyId) in
   let (root, tree) = add-node(t1d, Node.NApp(900, -1)) in
-    match eval-tree(tree, root) with
+  match eval-tree(tree, root) with
     | Option.Some(v) => if v == 42 then
       unit
     else
@@ -885,7 +885,7 @@ def ev-nullary-call-over-arith-body() =
   let (bodyId, t3) = add-node(t2, Node.NBin(43, aId, bId)) in
   let t3d = record-def(t3, 900, bodyId) in
   let (root, tree) = add-node(t3d, Node.NApp(900, -1)) in
-    match eval-tree(tree, root) with
+  match eval-tree(tree, root) with
     | Option.Some(v) => if v == 42 then unit else trap("nullary call over (+ 40 2) = 42")
     | Option.None(_) => trap("a nullary call over an arith body runs")
 
@@ -899,7 +899,7 @@ def ev-nullary-call-nested-in-arith() =
   let (callId, t2) = add-node(t1d, Node.NApp(900, -1)) in
   let (oneId, t3) = add-node(t2, Node.NLit(1)) in
   let (root, tree) = add-node(t3, Node.NBin(43, callId, oneId)) in
-    match eval-tree(tree, root) with
+  match eval-tree(tree, root) with
     | Option.Some(v) => if v == 42 then unit else trap("(+ (mk) 1) = 42 (call nested in arith)")
     | Option.None(_) => trap("a nullary call nested in arith evals")
 
@@ -913,7 +913,7 @@ def ev-nullary-call-chain-inlines-transitively() =
   let (gBody, t2) = add-node(t1d, Node.NApp(900, -1)) in // g's body: a call to f
   let t2d = record-def(t2, 901, gBody) in // g (name 901) → body `(f)`
   let (root, tree) = add-node(t2d, Node.NApp(901, -1)) in // root: `(g)`
-    match eval-tree(tree, root) with
+  match eval-tree(tree, root) with
     | Option.Some(v) => if v == 42 then
       unit
     else
@@ -929,7 +929,7 @@ def ev-napp-with-arg-but-no-param-declines() =
   let (bodyId, t1) = add-node(empty-tree(), Node.NLit(7)) in
   let (argId, t2) = add-node(t1, Node.NLit(5)) in
   let (root, tree) = add-node(t2, Node.NApp(bodyId, argId)) in
-    match eval-tree(tree, root) with
+  match eval-tree(tree, root) with
     | Option.None(_) => unit
     | Option.Some(_) => trap(
       "a call WITH an arg but NO recorded param declines (over-applied nullary)"
@@ -949,7 +949,7 @@ def ev-param-call-clet() =
   let (argId, t4) = add-node(t3, Node.NLit(41)) in
   let (root, t5) = add-node(t4, Node.NApp(900, argId)) in
   let tree = record-param(record-def(t5, 900, bodyId), 900, paramId) in
-    match eval-tree(tree, root) with
+  match eval-tree(tree, root) with
     | Option.Some(v) => if v == 42 then unit else trap("f(41) where f(n)=n+1 → 42")
     | Option.None(_) => trap("a single-param call lowers to CLet + evals")
 
@@ -1030,7 +1030,7 @@ def ev-recursive-countdown-runs-slice-b3() =
       200,
       (List.push([], 7), cd-body)
     ) in
-    match eval-core-d(
+  match eval-core-d(
       Core.CCall(200, List.push([], Core.CNum(7, true, 64))),
       Map.empty : Map(Int64, Value),
       cd-defs
@@ -1071,7 +1071,7 @@ def ev-mutual-recursion-ev-od-slice-b3() =
       301,
       (List.push([], 7), od-body)
     ) in
-    match eval-core-d(
+  match eval-core-d(
       Core.CCall(300, List.push([], Core.CNum(4, true, 64))),
       Map.empty : Map(Int64, Value),
       evod-defs
@@ -1178,7 +1178,7 @@ def ev-cmatchsum-nested-arms-second-matches() =
   // CMatchSum(scrut, tag0, [], CNum 0, CMatchSum(scrut, tag1, [100], CVar 100, CNum -1)) → 9. Pins that the
   // else-chain re-tests the SAME scrutinee handle against the next arm's tag (mirrors NMatch→CIf chaining).
   let scrut = Core.CCtor(1, List.push([], Core.CNum(9, true, 64))) in
-    match eval-core(
+  match eval-core(
       Core.CMatchSum(
         scrut,
         0,

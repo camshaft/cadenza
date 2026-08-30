@@ -94,7 +94,7 @@ def bind-or-check-width(su: Subst, ra: Width, rb: Width) = match ra with
 def unify-int-su(su: Subst, a: IntType, b: IntType) =
   let IntType.IntType(sa, wa) = a in
   let IntType.IntType(sb, wb) = b in
-    match unify-sign-su(su, sa, sb) with
+  match unify-sign-su(su, sa, sb) with
     | Option.Some(su1) => unify-width-su(su1, wa, wb)
     | Option.None(_) => Option.None(unit)
 
@@ -375,7 +375,7 @@ def us-b3-occurs-check-rejects-infinite() =
   // occurs-check: unify TyVar 0 ~ (fn (TyVar 0) -> Bool) → 0 occurs in the fn param → REJECT (infinite type),
   // mirroring rcdzc's occurs guard before the bind. Returns None.
   let f = Ty.TyFn(List.push([] : List(Ty), Ty.TyVar(0)), Ty.TyBool) in
-    match unify-ty-su(subst-empty(), Ty.TyVar(0), f) with
+  match unify-ty-su(subst-empty(), Ty.TyVar(0), f) with
     | Option.None(_) => unit
     | Option.Some(_) => trap("TyVar 0 ~ (fn (TyVar0) -> Bool) must fail the occurs-check")
 

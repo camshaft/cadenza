@@ -48,7 +48,7 @@ def plinth-bbox-is-exact-meters() =
   // The plinth is a full-size 2×1×1 m box centred at origin; its bounding-box size is exactly 2×1×1 m
   // (bare Rational meters — the stored model unit). Exact, via the existing exact bbox fold.
   let sz = aabbr-size(bounding-box(plinth())) in
-    if v3-x(sz) == 2 / 1 then
+  if v3-x(sz) == 2 / 1 then
     if v3-y(sz) == 1 / 1 then if v3-z(sz) == 1 / 1 then unit else trap("z") else trap("y")
   else
     trap("x")
@@ -58,7 +58,7 @@ def mixed-units-block-is-exact() =
   // 1 m wide, 12-inch deep, 6-inch high — the mixed-unit showcase. 12 inch = 1524/5000 m, 6 inch =
   // 762/5000 m, EXACTLY (no float). The bbox reports these exact meter magnitudes.
   let sz = aabbr-size(bounding-box(mixed-block())) in
-    if v3-x(sz) == 1 / 1 then
+  if v3-x(sz) == 1 / 1 then
     if v3-y(sz) == 1524 / 5000 then
       if v3-z(sz) == 762 / 5000 then unit else trap("z = 6 inch in m")
     else

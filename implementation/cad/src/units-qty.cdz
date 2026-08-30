@@ -52,22 +52,22 @@ def qm(n: Rational) = n meter
 /// The three length components, each read back OUT as a meter quantity (units preserved).
 def q-x(v: Vec3q) =
   let Vec3q.V3q(x, _, _) = v in
-    x
+  x
 
 def q-y(v: Vec3q) =
   let Vec3q.V3q(_, y, _) = v in
-    y
+  y
 
 def q-z(v: Vec3q) =
   let Vec3q.V3q(_, _, z) = v in
-    z
+  z
 
 /// Bridge a units-carrying `Vec3q` to the exact bare-`Rational` `Vec3` the CSG/bbox core consumes:
 /// unwrap each length to its exact meter magnitude (`Qty.value` — the magnitude IS the meter coordinate).
 /// Still fully exact (no f64); this is how a Qty-field build plugs into the existing exact machinery.
 def vec3q-to-vec3(v: Vec3q) =
   let Vec3q.V3q(x, y, z) = v in
-    v3(Qty.value(x), Qty.value(y), Qty.value(z))
+  v3(Qty.value(x), Qty.value(y), Qty.value(z))
 
 /// ============================ @test suite (S2b — Qty-field product, exact meters) ============================
 @test
@@ -76,7 +76,7 @@ def a-vec3q-field-holds-a-length-quantity() =
   // Distinct 5/2/3 magnitudes across all THREE accessors so a swapped accessor (q-y returning x, etc.) can't
   // hide — the earlier version skipped q-y, leaving the middle accessor + an axis-swap unpinned.
   let v = v3q(qm(5), qm(2), qm(3)) in
-    if Qty.value(q-x(v)) == 5 / 1 then
+  if Qty.value(q-x(v)) == 5 / 1 then
     if Qty.value(q-y(v)) == 2 / 1 then
       if Qty.value(q-z(v)) == 3 / 1 then unit else trap("q-z must read the z component (3 m)")
     else
@@ -89,7 +89,7 @@ def vec3q-bridges-to-the-exact-vec3-core() =
   // Unwrapping to Vec3 gives the exact bare-Rational meter magnitudes the CSG/bbox core uses — a Qty-
   // field build plugs into the existing exact machinery, same magnitudes, no f64.
   let v = v3q(qm(4), qm(5), qm(6)) in
-    match vec3q-to-vec3(v) with
+  match vec3q-to-vec3(v) with
     | Vec3.V3(x, y, z) => if x == 4 / 1 then if z == 6 / 1 then unit else trap("z") else trap("x")
 
 @test
@@ -99,6 +99,6 @@ def a-vec3q-component-authored-in-inches-is-exact-meters() =
   let one-inch = Qty.of(1 / 1, Unit.of(#inch)) in
   let as-meters = Qty.of(one-inch as meter, Unit.of(#meter)) in
   let v = v3q(as-meters, qm(0), qm(0)) in
-    if Qty.value(q-x(v)) == 127 / 5000 then unit else trap("1 inch = 127/5000 m")
+  if Qty.value(q-x(v)) == 127 / 5000 then unit else trap("1 inch = 127/5000 m")
 
 export { Vec3q.*, v3q, qm, q-x, q-y, q-z, vec3q-to-vec3 }

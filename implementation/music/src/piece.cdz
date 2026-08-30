@@ -75,7 +75,7 @@ def the-progression-has-every-note() =
 def the-progression-schedules-with-no-stuck-keys() =
   // The end-to-end gate: the whole piece lowers to paired on/off events, net zero — no stuck keys.
   let evs = schedule(progression) in
-    if List.len(evs) == 32 then
+  if List.len(evs) == 32 then
     if balanced(evs) then unit else trap("balanced")
   else
     trap("32 events")

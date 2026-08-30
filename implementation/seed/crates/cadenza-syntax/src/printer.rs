@@ -1102,16 +1102,13 @@ impl<'a> Printer<'a> {
         if let Some(text) = in_trailing {
             self.doc.word(format!(" //{}", self.doc_line_text(text)));
         }
-        // Body layout (operator seq68): a `let … in` CHAIN (body is itself a `let`) stays FLAT — the
-        // nested `let` drops to the SAME column (offset 0), the ML idiom for a pervasive `let … in` (and
-        // it avoids the per-rung DEEPENING the operator flagged for if-else). But the FINAL (non-`let`)
-        // body INDENTS one level, so inside a `match` arm the in-body is visually DISTINCT from the `|`
-        // arm markers (it was landing at the SAME indent as the arms, reading like a sibling arm — seq68).
-        if self.is_let_shape_form(args[1]) {
-            self.doc.hardbreak();
-        } else {
-            self.doc.hardbreak_with(INDENT);
-        }
+        // Body layout (operator seq68 → seq-86): a `let … in` chain is FLAT — every chained `let` AND
+        // the final body drop to the SAME column (the chain's indent, offset 0 in this box), the ML idiom
+        // for a pervasive `let … in`. The operator (seq-86) flagged the earlier per-`let` DEEPENING of the
+        // final body ("why is the last statement indented") as weird — same class as the else-if ladder
+        // flatten (seq69/70). So NO extra indent on the final body: `hardbreak()` uniformly, whether the
+        // body is another `let` (chain continues) or the terminal expression.
+        self.doc.hardbreak();
         self.expr(args[1], 0);
         if paren {
             self.doc.word(")");
@@ -2667,7 +2664,17 @@ impl<'a> Printer<'a> {
         } else {
             PREC_KEYWORD
         };
-        self.expr(body, body_prec);
+        // A BARE `let`-shaped body (the last arm; a non-last arm parenthesizes via PREC_KEYWORD, so its
+        // `in`-body is delimited by the `)` — no `| op` collision) hugs `=>` with its chain + flat final
+        // body (seq-86). Wrap it in an extra `cbox(INDENT)` so the body sits one level under the arm,
+        // clear of the `| op` handler markers — same treatment as `print_match`'s let arm bodies.
+        if body_prec == 0 && self.is_let_shape_form(self.a.peel_comments(body)) {
+            self.doc.cbox(INDENT);
+            self.expr(body, body_prec);
+            self.doc.end();
+        } else {
+            self.expr(body, body_prec);
+        }
     }
 
     /// `host E, … in body` — an entrypoint delegation. `args` is `(E …) body`; the effects render as a
@@ -3443,7 +3450,20 @@ impl<'a> Printer<'a> {
                 } else {
                     0
                 };
-                self.expr(body, body_prec);
+                // A `let`-shaped arm body HUGS `=>` (the `let …` stays on the arm line), but its
+                // chain + FINAL body are now FLAT (operator seq-86 — `print_let` no longer indents the
+                // final body). Flat alone would land the body at the SAME column as the `| ` arm markers
+                // (`print_match`'s cbox already indents the arms one level). So wrap the let body in an
+                // extra `cbox(INDENT)`: the whole let (every chained line + the flat final body) sits ONE
+                // level UNDER the arm, visually distinct from the `|` arms — preserving the seq68 arm
+                // disambiguation while honoring seq-86's flatten (chain + body share one indent).
+                if self.is_let_shape_form(self.a.peel_comments(body)) {
+                    self.doc.cbox(INDENT);
+                    self.expr(body, body_prec);
+                    self.doc.end();
+                } else {
+                    self.expr(body, body_prec);
+                }
             }
             // Trailing comments after the body, same line (innermost closest to the body).
             for &text in trail_texts.iter().rev() {
@@ -6029,8 +6049,9 @@ mod tests {
             assert_roundtrip("if a then b else c", 80),
             "if a then b else c"
         );
-        // `let … in` always breaks the body to its own line at the let column (ML idiom).
-        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\n  x");
+        // `let … in` always breaks the body to its own line, FLAT at the let column (ML idiom;
+        // operator seq-86 — the final body is not indented below the `let`).
+        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\nx");
         assert_eq!(
             assert_roundtrip("fn(x, y) => x + y", 80),
             "fn(x, y) => x + y"
@@ -7427,11 +7448,49 @@ mod tests {
     }
 
     #[test]
-    fn def_let_body_drops_and_indents() {
-        // A non-brace body (let) is not hugged: it drops to an indented continuation line and lays
-        // out flat at that indent.
+    fn def_let_body_drops_flat_at_the_let_column() {
+        // A non-brace body (let) is not hugged: it drops to an indented continuation line. The `let`
+        // and its FINAL body share one indent — the body is FLAT at the `let` column, not nested a
+        // level deeper (operator seq-86: "why is the last statement indented").
         let out = assert_roundtrip("def f(x) = let y = x + 1 in y * y", 80);
-        assert_eq!(out, "def f(x) =\n  let y = x + 1 in\n    y * y");
+        assert_eq!(out, "def f(x) =\n  let y = x + 1 in\n  y * y");
+    }
+
+    #[test]
+    fn compound_body_indentation_is_coherent_operator_seq_86_87_89() {
+        // The operator flagged THREE examples of "funky" compound-body indentation; the coherent model:
+        // a construct's BODY indents ONE level under its header, and a flat CHAIN (let-in / else-if
+        // ladder) stays at ONE level (no per-rung deepening). Pin all three shapes.
+
+        // seq-86: a let-in CHAIN's final body is FLAT at the chain indent (not nested a level deeper).
+        assert_eq!(
+            assert_roundtrip("def f() = let a = 1 in let b = 2 in a + b", 80),
+            "def f() =\n  let a = 1 in\n  let b = 2 in\n  a + b"
+        );
+
+        // seq-87: a let that IS a match-arm body indents ONE level UNDER the `=>` arm (not flush with
+        // the `|` markers) — here forced to its own line by the `// MISS` comment trailing `=>`. The
+        // `//` comments round-trip in place.
+        let seq87 = assert_roundtrip(
+            "def demand-typed-leaf(db: Db, id: Int64) = match require-ty(db, id) with\n  | Option.Some(fact) => (db, fact) // memo HIT — no recompute\n  | Option.None(_) => // MISS — compute from source, fill, thread\n  let ty = compute-leaf-type(db-tree(db), id) in\n  (fill-ty(db, id, ty), ty)",
+            100,
+        );
+        assert_eq!(
+            seq87,
+            "def demand-typed-leaf(db: Db, id: Int64) = match require-ty(db, id) with\n  | Option.Some(fact) => (db, fact) // memo HIT — no recompute\n  | Option.None(_) => // MISS — compute from source, fill, thread\n    let ty = compute-leaf-type(db-tree(db), id) in\n    (fill-ty(db, id, ty), ty)"
+        );
+
+        // seq-89: mixed let-in + if-then-else — the let-in body (`if`) is FLAT at the let indent; each
+        // then/else BRANCH body indents one level under its `if … then` / `else` header; `else`
+        // dedents to its `if` column. The leading `//` comment round-trips.
+        let seq89 = assert_roundtrip(
+            "@test\ndef dd-miss-fills-and-returns() =\n  // a demand on an ABSENT slot computes the fact, fills the column, returns the fact.\n  let (db1, fact) = demand-typed(sample-db(), 0, mk-int(true, 64)) in\n  if is-int-ty(fact) then\n  let (s, w) = int-parts-of(fact) in\n  if s and w == 64 then\n  if typed-filled(db1) == 1 then unit else trap(\"filled 1\")\n  else trap(\"Int64\")\n  else trap(\"demand returns the fact\")",
+            100,
+        );
+        assert_eq!(
+            seq89,
+            "@test\ndef dd-miss-fills-and-returns() =\n  // a demand on an ABSENT slot computes the fact, fills the column, returns the fact.\n  let (db1, fact) = demand-typed(sample-db(), 0, mk-int(true, 64)) in\n  if is-int-ty(fact) then\n    let (s, w) = int-parts-of(fact) in\n    if s and w == 64 then\n      if typed-filled(db1) == 1 then unit else trap(\"filled 1\")\n    else\n      trap(\"Int64\")\n  else\n    trap(\"demand returns the fact\")"
+        );
     }
 
     #[test]
@@ -8044,10 +8103,10 @@ mod tests {
             "the let-binding comment round-trips"
         );
         // Clean lets (incl. multi-binding + pattern binder) keep their layout.
-        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\n  x");
+        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\nx");
         assert_eq!(
             assert_roundtrip("let x = 1, y = 2 in x + y", 80),
-            "let x = 1, y = 2 in\n  x + y"
+            "let x = 1, y = 2 in\nx + y"
         );
     }
 
@@ -8139,15 +8198,15 @@ mod tests {
         // `let` binder patterns — tuple, list-rest, and a mix with a plain name.
         assert_eq!(
             assert_roundtrip("let (a, b) = p in a + b", 80),
-            "let (a, b) = p in\n  a + b"
+            "let (a, b) = p in\na + b"
         );
         assert_eq!(
             assert_roundtrip("let [x, .. rest] = ys in x", 80),
-            "let [x, .. rest] = ys in\n  x"
+            "let [x, .. rest] = ys in\nx"
         );
         assert_eq!(
             assert_roundtrip("let x = 1, (a, b) = p in x + a", 80),
-            "let x = 1, (a, b) = p in\n  x + a"
+            "let x = 1, (a, b) = p in\nx + a"
         );
         // A multi-binding `let` that does NOT fit breaks CONSISTENTLY: every binding drops to its own
         // line, indented under `let` — not a greedy fill that packs two bindings per line. At width 20
@@ -8155,18 +8214,18 @@ mod tests {
         // line and the rest hang at INDENT under it.
         assert_eq!(
             assert_roundtrip("let aa = 1, bb = 2, cc = 3 in aa + bb + cc", 20),
-            "let aa = 1,\n  bb = 2,\n  cc = 3 in\n  aa + bb + cc"
+            "let aa = 1,\n  bb = 2,\n  cc = 3 in\naa + bb + cc"
         );
         // The same bindings that DO fit stay on one line (consistent box prints flat when it fits) —
         // so this is a no-op for a `let` that fits, changing only the overflow layout.
         assert_eq!(
             assert_roundtrip("let aa = 1, bb = 2, cc = 3 in aa + bb + cc", 80),
-            "let aa = 1, bb = 2, cc = 3 in\n  aa + bb + cc"
+            "let aa = 1, bb = 2, cc = 3 in\naa + bb + cc"
         );
         // The oracle: a string-headed `(tuple …)` binder pattern from the s-expr surface sugars too.
         assert_eq!(
             print(&sexpr::read("(let (((tuple a b) p)) (+ a b))").unwrap(), 80),
-            "let (a, b) = p in\n  a + b"
+            "let (a, b) = p in\na + b"
         );
         // A CONSTRUCTOR-application pattern binder now sugars to the proper `let Ctor(p…) = v in …`
         // surface (both a bare `Ctor` and a qualified `Mod.Ctor`), the parser having gained the
@@ -8175,18 +8234,18 @@ mod tests {
         // backtick-`let` fallback. (v-guide-editor issue 2026-07-18.)
         assert_eq!(
             print(&sexpr::read("(let ((((. Id Mk) n) v)) n)").unwrap(), 80),
-            "let Id.Mk(n) = v in\n  n"
+            "let Id.Mk(n) = v in\nn"
         );
         assert_eq!(
             print(&sexpr::read("(let (((C c) x)) c)").unwrap(), 80),
-            "let C(c) = x in\n  c"
+            "let C(c) = x in\nc"
         );
         assert_eq!(
             print(
                 &sexpr::read("(let (((P.Mk a b) (P.Mk 5 6))) (+ a b))").unwrap(),
                 80
             ),
-            "let P.Mk(a, b) = P.Mk(5, 6) in\n  a + b"
+            "let P.Mk(a, b) = P.Mk(5, 6) in\na + b"
         );
         // …and the whole thing round-trips through the ML reader (no backtick fallback).
         for sx in [
@@ -8219,7 +8278,7 @@ mod tests {
         );
         assert_eq!(
             assert_roundtrip("let { x = a, y = b } = r in a + b", 80),
-            "let { x = a, y = b } = r in\n  a + b"
+            "let { x = a, y = b } = r in\na + b"
         );
         assert_eq!(
             assert_roundtrip("match r with | { x = a } => a", 80),
@@ -8232,7 +8291,7 @@ mod tests {
                 &sexpr::read("(def (main) (let (((record (= x a) (= y b)) r)) (+ a b)))").unwrap(),
                 80
             ),
-            "def main() =\n  let { x = a, y = b } = r in\n    a + b"
+            "def main() =\n  let { x = a, y = b } = r in\n  a + b"
         );
         // Both a record PATTERN binder AND a record VALUE are the canonical `(= name value)` triple
         // (path B — full symmetry; operator ruling): patterns and literals spell the identical form.
@@ -8262,7 +8321,7 @@ mod tests {
                 &sexpr::read("(def (main) (let (((record) v)) v))").unwrap(),
                 80
             ),
-            "def main() =\n  let {} = v in\n    v"
+            "def main() =\n  let {} = v in\n  v"
         );
         // NESTED compositions of the binding patterns (tuple/list/map/record/ctor) — the interaction of
         // the record + ctor pattern surfaces with each other and the pre-existing tuple/list/map ones is
@@ -8316,7 +8375,7 @@ mod tests {
         // a lone `=` is only the binding separator, never equality.
         assert_eq!(
             assert_roundtrip("let x = 1 in x == 1", 80),
-            "let x = 1 in\n  x == 1"
+            "let x = 1 in\nx == 1"
         );
     }
 
@@ -8500,8 +8559,8 @@ mod tests {
         );
         // `from` is contextual — still usable as an ordinary name elsewhere.
         assert_eq!(
-            assert_roundtrip("let from = 5 in\n  from", 80),
-            "let from = 5 in\n  from"
+            assert_roundtrip("let from = 5 in\nfrom", 80),
+            "let from = 5 in\nfrom"
         );
     }
 
@@ -8511,15 +8570,15 @@ mod tests {
         // application — rendered as a call, NOT sugared. This is the head-position shadow the
         // resolver honours; the printer must not misrepresent it as a literal.
         assert_eq!(
-            assert_roundtrip("let list = fn(a, b) => a + b in\n  list(3, 4)", 80),
-            "let list = fn(a, b) => a + b in\n  list(3, 4)"
+            assert_roundtrip("let list = fn(a, b) => a + b in\nlist(3, 4)", 80),
+            "let list = fn(a, b) => a + b in\nlist(3, 4)"
         );
         // shadowed via a def parameter: the `tuple` argument, not a tuple literal.
         let a = sexpr::read("(def (f tuple) (tuple 3 4))").unwrap();
         assert_eq!(print(&a, 80), "def f(tuple) = tuple(3, 4)");
         // an unshadowed sibling in the SAME tree still sugars (shadow is per-name, not all-ctors).
         let a = sexpr::read("(let ((list (fn (a) a))) (tuple (list 1) 2))").unwrap();
-        assert_eq!(print(&a, 80), "let list = fn(a) => a in\n  (list(1), 2)");
+        assert_eq!(print(&a, 80), "let list = fn(a) => a in\n(list(1), 2)");
     }
 
     #[test]

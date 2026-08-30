@@ -125,7 +125,7 @@ def gen-send-is-perform-send() =
         Ast.List([Ast.Name("done")])
       ]
     ) in
-    if a-eq(gen-role(g, "Buyer"), expect) then
+  if a-eq(gen-role(g, "Buyer"), expect) then
     unit
   else
     trap("Buyer's send generates a perform-send then done")
@@ -142,7 +142,7 @@ def gen-recv-binds-label() =
         Ast.List([Ast.Name("done")])
       ]
     ) in
-    if a-eq(gen-role(g, "Seller"), expect) then
+  if a-eq(gen-role(g, "Seller"), expect) then
     unit
   else
     trap("Seller's recv generates a let-bound perform-recv then done")
@@ -150,7 +150,7 @@ def gen-recv-binds-label() =
 @test
 def gen-bystander-is-done() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-    if a-eq(gen-role(g, "Shipper"), Ast.List([Ast.Name("done")])) then
+  if a-eq(gen-role(g, "Shipper"), Ast.List([Ast.Name("done")])) then
     unit
   else
     trap("an uninvolved role generates just (done)")
@@ -175,7 +175,7 @@ def gen-seq-nests-continuation() =
         )
       ]
     ) in
-    if a-eq(gen-role(g, "Buyer"), expect) then
+  if a-eq(gen-role(g, "Buyer"), expect) then
     unit
   else
     trap("a sequence generates a nested send-then-recv program")
@@ -203,7 +203,7 @@ def gen-chooser-is-ichoice() =
         ]
       ) in
   let expect = Ast.List([Ast.Name("ichoice"), arm("Yes"), arm("No")]) in
-    if a-eq(gen-role(yes-no(), "Buyer"), expect) then
+  if a-eq(gen-role(yes-no(), "Buyer"), expect) then
     unit
   else
     trap("the chooser generates an internal-choice program")
@@ -227,7 +227,7 @@ def gen-told-role-is-ematch() =
         ]
       ) in
   let expect = Ast.List([Ast.Name("ematch"), Ast.Name("Buyer"), arm("Yes"), arm("No")]) in
-    if a-eq(gen-role(yes-no(), "Seller"), expect) then
+  if a-eq(gen-role(yes-no(), "Seller"), expect) then
     unit
   else
     trap("a told role generates an external-match program on the chooser's selection")
@@ -261,7 +261,7 @@ def gen-rec-is-loop() =
         )
       ]
     ) in
-    if a-eq(gen-role(g, "Buyer"), expect) then
+  if a-eq(gen-role(g, "Buyer"), expect) then
     unit
   else
     trap("a guarded rec generates a loop program with a back-jump")
@@ -283,7 +283,7 @@ def gen-rec-receiver-side() =
         )
       ]
     ) in
-    if a-eq(gen-role(g, "Seller"), expect) then
+  if a-eq(gen-role(g, "Seller"), expect) then
     unit
   else
     trap("the receiver's rec generates a recursive recv loop")
@@ -292,7 +292,7 @@ def gen-rec-receiver-side() =
 def gen-distinguishes-roles() =
   // Non-vacuous: sender's and receiver's generated programs must differ.
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-    if a-eq(gen-role(g, "Buyer"), gen-role(g, "Seller")) then
+  if a-eq(gen-role(g, "Buyer"), gen-role(g, "Seller")) then
     trap("sender and receiver programs must differ")
   else
     unit

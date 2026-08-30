@@ -126,7 +126,7 @@ def hv-fresh-int-ty-both-axes-fresh() =
 def hv-fresh-two-ints-are-distinct() =
   // two consecutive fresh ints share NO var-ids (threading the counter): first (10,11), second (12,13).
   let (_t1, n1) = fresh-int-ty(10) in
-    match fresh-int-ty(n1) with
+  match fresh-int-ty(n1) with
     | (Ty.TyInt(IntType.IntType(Sign.SVar(sa), Width.WVar(wa))), n2) => if sa == 12 and wa == 13
         and n2 == 14 then
       unit
@@ -148,7 +148,7 @@ def hv-occurs-through-chain() =
   // 0 := SVar(1) would create the cycle 0→1→0 → the occurs-check catches it through the chain (rcdzc's "follows
   // the subst chain"). Pins the transitive case, not just the direct one.
   let su = subst-bind-sign(subst-empty(), 1, Sign.SVar(0)) in
-    if sign-occurs(su, 0, Sign.SVar(1)) then
+  if sign-occurs(su, 0, Sign.SVar(1)) then
     unit
   else
     trap("var 0 occurs in SVar(1) through the chain 1→0")
@@ -200,14 +200,14 @@ def hv-ty-no-occurs-in-distinct-or-concrete() =
 def hv-ty-occurs-under-tyfn() =
   // TyVar 0 occurs INSIDE a TyFn param `(TyVar0) -> TyBool` → binding 0 := that fn would make an infinite type.
   let f = Ty.TyFn(List.push([], Ty.TyVar(0)), Ty.TyBool) in
-    if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in a TyFn param")
+  if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in a TyFn param")
 
 @test
 def hv-ty-occurs-through-chain() =
   // occurs FOLLOWS the tys chain: TyVar 1 := (TyFn (TyVar0) -> Bool); does 0 occur in TyVar 1? Resolve 1 to the fn,
   // then 0 occurs in its param → true. Pins the resolve-through-subst that rcdzc occurs does.
   let su = subst-bind-ty(subst-empty(), 1, Ty.TyFn(List.push([], Ty.TyVar(0)), Ty.TyBool)) in
-    if ty-occurs(su, 0, Ty.TyVar(1)) then
+  if ty-occurs(su, 0, Ty.TyVar(1)) then
     unit
   else
     trap("occurs resolves TyVar 1 through the chain, finds 0 in the fn")
@@ -223,21 +223,21 @@ def hv-ty-occurs-in-tyfn-result() =
   // occurs finds a var in the RESULT of a TyFn, not just the params: `(Bool) -> TyVar0` — 0 occurs. Prior
   // under-tyfn test only checked a param; this pins the ty-occurs-go recursion into the result arm.
   let f = Ty.TyFn(List.push([], Ty.TyBool), Ty.TyVar(0)) in
-    if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in a TyFn result")
+  if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in a TyFn result")
 
 @test
 def hv-ty-occurs-in-second-param() =
   // ty-occurs-list scans EVERY param: `(Bool, TyVar0) -> Bool` — 0 occurs in the 2nd param. Pins the list
   // recursion past index 0 (prior tests had the var in the 1st/only param).
   let f = Ty.TyFn(List.push(List.push([], Ty.TyBool), Ty.TyVar(0)), Ty.TyBool) in
-    if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in the 2nd TyFn param")
+  if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in the 2nd TyFn param")
 
 @test
 def hv-ty-occurs-fuel-terminates-on-cycle() =
   // SAFETY: a cyclic tys binding (TyVar 0 := TyVar 0) makes ty-occurs FOLLOW 0→0→…; the fuel guard stops it and
   // returns false rather than looping. Pins the fuel==0 arm of ty-occurs-go (occurs must always terminate).
   let su = subst-bind-ty(subst-empty(), 9, Ty.TyVar(9)) in
-    if ty-occurs(su, 0, Ty.TyVar(9)) then
+  if ty-occurs(su, 0, Ty.TyVar(9)) then
     trap("cyclic-binding occurs must terminate false, not loop")
   else
     unit

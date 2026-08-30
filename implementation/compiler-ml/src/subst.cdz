@@ -40,33 +40,33 @@ def subst-empty() =
 /// The sign-binding map (read-only accessor).
 def subst-signs(su: Subst) =
   let Subst.Subst(sm, _, _) = su in
-    sm
+  sm
 
 /// The width-binding map (read-only accessor).
 def subst-widths(su: Subst) =
   let Subst.Subst(_, wm, _) = su in
-    wm
+  wm
 
 /// The whole-type-binding map (read-only accessor) — `TyVar id -> Ty` (rcdzc `subst.tys`).
 def subst-tys(su: Subst) =
   let Subst.Subst(_, _, tm) = su in
-    tm
+  tm
 
 /// BIND a sign var-id to a sign (the solver records `SVar id := s`). Overwrites — the solver binds a fresh/unbound
 /// var, so a well-formed solve never re-binds a distinct value (B3 guards the bind path; this is the low-level write).
 def subst-bind-sign(su: Subst, id: Int64, s: Sign) =
   let Subst.Subst(sm, wm, tm) = su in
-    Subst.Subst(Map.insert(sm, id, s), wm, tm)
+  Subst.Subst(Map.insert(sm, id, s), wm, tm)
 
 /// BIND a width var-id to a width.
 def subst-bind-width(su: Subst, id: Int64, w: Width) =
   let Subst.Subst(sm, wm, tm) = su in
-    Subst.Subst(sm, Map.insert(wm, id, w), tm)
+  Subst.Subst(sm, Map.insert(wm, id, w), tm)
 
 /// BIND a whole-type var-id to a `Ty` (the solver records `TyVar id := t`; rcdzc unify.rs:253 `subst.tys.insert`).
 def subst-bind-ty(su: Subst, id: Int64, t: Ty) =
   let Subst.Subst(sm, wm, tm) = su in
-    Subst.Subst(sm, wm, Map.insert(tm, id, t))
+  Subst.Subst(sm, wm, Map.insert(tm, id, t))
 
 /// Chain-following sign resolution (rcdzc `apply_sign`): if `s` is a bound `SVar`, follow to its binding, and
 /// keep following while that binding is itself a bound var. Fuel-bounded (default depth) so a malformed cyclic
@@ -166,7 +166,7 @@ def su-unbound-var-stays() =
 def su-bound-sign-var-resolves() =
   // bind SVar 0 := Signed; apply resolves the var to Signed on the sign axis (width var left unbound).
   let su = subst-bind-sign(subst-empty(), 0, Sign.Signed) in
-    match apply(su, Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WFixed(32)))) with
+  match apply(su, Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WFixed(32)))) with
     | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 32 then
       unit
     else
@@ -177,7 +177,7 @@ def su-bound-sign-var-resolves() =
 def su-bound-width-var-resolves() =
   // bind WVar 5 := WFixed 8; apply resolves the width var.
   let su = subst-bind-width(subst-empty(), 5, Width.WFixed(8)) in
-    match apply(su, Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WVar(5)))) with
+  match apply(su, Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WVar(5)))) with
     | Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(w))) => if w == 8 then
       unit
     else
@@ -190,7 +190,7 @@ def su-follows-var-to-var-chain() =
   // multi-hop resolution the solver relies on (a var bound to another var, ultimately to a concrete).
   let su0 = subst-bind-sign(subst-empty(), 0, Sign.SVar(1)) in
   let su1 = subst-bind-sign(su0, 1, Sign.Signed) in
-    match apply-sign(su1, Sign.SVar(0)) with
+  match apply-sign(su1, Sign.SVar(0)) with
     | Sign.Signed => unit
     | _ => trap("apply-sign follows SVar 0 → SVar 1 → Signed")
 
@@ -198,7 +198,7 @@ def su-follows-var-to-var-chain() =
 def su-both-axes-independent() =
   // orthogonal: bind ONLY the sign var; the width var stays unbound. The two axes resolve independently.
   let su = subst-bind-sign(subst-empty(), 2, Sign.Unsigned) in
-    match apply(su, Ty.TyInt(IntType.IntType(Sign.SVar(2), Width.WVar(3)))) with
+  match apply(su, Ty.TyInt(IntType.IntType(Sign.SVar(2), Width.WVar(3)))) with
     | Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WVar(b))) => if b == 3 then
       unit
     else
@@ -215,7 +215,7 @@ def su-applies-under-tyfn() =
       List.push([], Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WFixed(64)))),
       Ty.TyInt(IntType.IntType(Sign.Signed, Width.WVar(1)))
     ) in
-    match apply(su, f) with
+  match apply(su, f) with
     | Ty.TyFn(ps, Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(rw)))) => (match List.at(ps, 0) with
       | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(pw)))) => if pw == 64
           and rw == 16 then
@@ -230,7 +230,7 @@ def su-applies-under-tyfn() =
 def su-bool-and-err-unchanged() =
   // var-free types are untouched by any Subst.
   let su = subst-bind-sign(subst-empty(), 0, Sign.Signed) in
-    match apply(su, Ty.TyBool) with
+  match apply(su, Ty.TyBool) with
     | Ty.TyBool => (match apply(su, Ty.TyErr) with
       | Ty.TyErr => unit
       | _ => trap("TyErr unchanged")
@@ -242,7 +242,7 @@ def su-bool-and-err-unchanged() =
 def su-b2-tyvar-binds-to-bool() =
   // bind TyVar 0 := TyBool; apply resolves the TyVar to TyBool (a whole-type binding, not an int-axis one).
   let su = subst-bind-ty(subst-empty(), 0, Ty.TyBool) in
-    match apply(su, Ty.TyVar(0)) with
+  match apply(su, Ty.TyVar(0)) with
     | Ty.TyBool => unit
     | _ => trap("TyVar 0 := TyBool resolves to TyBool under apply")
 
@@ -263,7 +263,7 @@ def su-b2-tyvar-binds-to-int-then-resolves-axes() =
       Ty.TyInt(IntType.IntType(Sign.SVar(1), Width.WFixed(8)))
     ) in
   let su = subst-bind-sign(su0, 1, Sign.Unsigned) in
-    match apply(su, Ty.TyVar(0)) with
+  match apply(su, Ty.TyVar(0)) with
     | Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(w))) => if w == 8 then
       unit
     else
@@ -275,7 +275,7 @@ def su-b2-tyvar-chain-follows() =
   // CHAIN: TyVar 0 := TyVar 1, TyVar 1 := TyBool. apply follows 0→1→TyBool (whole-type chain, like the sign chain).
   let su0 = subst-bind-ty(subst-empty(), 0, Ty.TyVar(1)) in
   let su = subst-bind-ty(su0, 1, Ty.TyBool) in
-    match apply(su, Ty.TyVar(0)) with
+  match apply(su, Ty.TyVar(0)) with
     | Ty.TyBool => unit
     | _ => trap("TyVar 0 → TyVar 1 → TyBool chain-follows")
 
@@ -284,7 +284,7 @@ def su-sum-passes-through() =
   // apply over a TySum is identity on the decl id — a TySum(n) has no inner Ty to substitute (decl-identity),
   // so any Subst leaves it unchanged. Pins the TySum arm of apply-go (was untested).
   let su = subst-bind-ty(subst-empty(), 0, Ty.TyBool) in
-    match apply(su, Ty.TySum(5)) with
+  match apply(su, Ty.TySum(5)) with
     | Ty.TySum(n) => if n == 5 then unit else trap("TySum keeps its decl id under apply")
     | _ => trap("apply over a TySum stays a TySum")
 
@@ -294,7 +294,7 @@ def su-cyclic-tyvar-fuel-terminates() =
   // but apply must not loop on) TERMINATES via the fuel guard and returns a TyVar rather than looping forever.
   // Pins the fuel==0 arm of apply-go's TyVar case.
   let su = subst-bind-ty(subst-empty(), 0, Ty.TyVar(0)) in
-    match apply(su, Ty.TyVar(0)) with
+  match apply(su, Ty.TyVar(0)) with
     | Ty.TyVar(_) => unit
     | _ => trap("cyclic TyVar binding must terminate (fuel guard) and stay a var")
 
@@ -305,7 +305,7 @@ def su-applies-under-multi-param-tyfn() =
   let su0 = subst-bind-ty(subst-empty(), 0, ty-int64()) in
   let su = subst-bind-ty(su0, 1, Ty.TyBool) in
   let arrow = Ty.TyFn(List.push(List.push([], Ty.TyVar(0)), Ty.TyBool), Ty.TyVar(1)) in
-    match apply(su, arrow) with
+  match apply(su, arrow) with
     | Ty.TyFn(ps, r) => (match r with
       | Ty.TyBool => (match List.at(ps, 0) with
         | Option.Some(Ty.TyInt(_)) => (match List.at(ps, 1) with

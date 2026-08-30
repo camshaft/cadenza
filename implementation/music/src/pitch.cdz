@@ -16,14 +16,14 @@
 /// fold a negative remainder up by one modulus. (Same idiom as compiler-ml's leb128 `mod-floor`.)
 def mod-floor(n: Int64, m: Int64) =
   let r = n % m in
-    if r < 0 then r + m else r
+  if r < 0 then r + m else r
 
 /// Floored division to match `mod-floor`: `q` such that `n == q*m + mod-floor(n, m)`. Rounds toward
 /// negative infinity, so the octave of a sub-zero note stays consistent with its pitch class.
 def div-floor(n: Int64, m: Int64) =
   let q = n / m in
   let r = n % m in
-    if r < 0 then q - 1 else q
+  if r < 0 then q - 1 else q
 
 // ---- Pitch: a concrete note on the MIDI chromatic grid (60 = middle C) ------------------------------
 /// A pitch is one note number on the 12-TET grid. 60 = middle C (C4); each +1 is a semitone up.
@@ -36,7 +36,7 @@ def pitch(n: Int64) = Pitch.Pitch(n)
 /// The raw MIDI note number of a pitch.
 def note(p: Pitch) =
   let Pitch.Pitch(n) = p in
-    n
+  n
 
 /// The PITCH CLASS `0..11` (C=0, C#=1, … B=11): the note folded into a single octave, floored so it is
 /// canonical even for notes below C-1.
@@ -65,7 +65,7 @@ def interval(semis: Int64) = Interval.Interval(semis)
 /// The semitone count of an interval.
 def semitones(i: Interval) =
   let Interval.Interval(s) = i in
-    s
+  s
 
 /// The interval FROM `a` TO `b` (`b - a` semitones): positive if `b` is higher.
 def interval-between(a: Pitch, b: Pitch) = Interval.Interval(note(b) - note(a))
@@ -81,7 +81,7 @@ def invert(axis: Pitch, p: Pitch) = Pitch.Pitch(2 * note(axis) - note(p))
 /// inverse (a fifth and a fourth share interval-class 5). This is what harmonic equivalence uses.
 def interval-class(i: Interval) =
   let m = mod-floor(semitones(i), 12) in
-    if m > 6 then 12 - m else m
+  if m > 6 then 12 - m else m
 
 // ---- named interval constants (the common ones, ascending from unison) ------------------------------
 def unison = Interval.Interval(0)
@@ -115,7 +115,7 @@ def octave-interval = Interval.Interval(12)
 def middle-c-is-note-sixty() =
   // The grounding convention: middle C is MIDI 60, pitch class 0, octave 4.
   let c4 = pitch(60) in
-    if pitch-class(c4) == 0 then
+  if pitch-class(c4) == 0 then
     if octave(c4) == 4 then unit else trap("middle C octave")
   else
     trap("middle C pitch class")
@@ -147,7 +147,7 @@ def octave-and-pitch-class-round-trip() =
   // pitch-of inverts octave/pitch-class for a spread of notes.
   let p = pitch(75) in
   let q = pitch-of(octave(p), pitch-class(p)) in
-    if pitch-eq(p, q) then
+  if pitch-eq(p, q) then
     if pitch-eq(pitch-of(4, 0), pitch(60)) then unit else trap("C4 rebuild")
   else
     trap("round trip")
@@ -157,7 +157,7 @@ def transpose-up-a-fifth-then-down-is-identity() =
   // Transposing up then down by the same interval returns the original pitch.
   let c4 = pitch(60) in
   let g4 = transpose(c4, perfect-fifth) in
-    if note(g4) == 67 then
+  if note(g4) == 67 then
     if pitch-eq(transpose(g4, interval(0 - 7)), c4) then unit else trap("round trip")
   else
     trap("fifth above C4 is G4")
@@ -167,7 +167,7 @@ def interval-between-is-signed-difference() =
   // The interval from C4 up to G4 is +7; from G4 down to C4 is -7.
   let c4 = pitch(60) in
   let g4 = pitch(67) in
-    if semitones(interval-between(c4, g4)) == 7 then
+  if semitones(interval-between(c4, g4)) == 7 then
     if semitones(interval-between(g4, c4)) == 0 - 7 then unit else trap("descending")
   else
     trap("ascending")
@@ -177,7 +177,7 @@ def inversion-reflects-around-the-axis() =
   // Inverting E4 (64) around C4 (60) gives Ab3 (56): as far below C4 as E4 was above.
   let c4 = pitch(60) in
   let e4 = pitch(64) in
-    if note(invert(c4, e4)) == 56 then
+  if note(invert(c4, e4)) == 56 then
     if pitch-eq(invert(c4, c4), c4) then unit else trap("axis fixed")
   else
     trap("reflection")
@@ -201,7 +201,7 @@ def same-pitch-class-across-octaves() =
   // C4 and C5 share a pitch class but are not the same pitch.
   let c4 = pitch(60) in
   let c5 = pitch(72) in
-    if same-pitch-class(c4, c5) then
+  if same-pitch-class(c4, c5) then
     if pitch-eq(c4, c5) then trap("should differ") else unit
   else
     trap("same class")

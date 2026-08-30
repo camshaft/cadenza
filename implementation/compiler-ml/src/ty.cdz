@@ -140,8 +140,8 @@ def is-ground-int(t: Ty) = match t with
 /// a deferred sign → Signed, a deferred width → 64. A fixed axis is unchanged; a non-int type is unchanged.
 def ground-default(t: Ty) = match t with
   | Ty.TyInt(it) => let IntType.IntType(s, w) = it in
-  let s2 = if sign-deferred(s) then Sign.Signed else s in
-  let w2 = if width-deferred(w) then Width.WFixed(64) else w in
+    let s2 = if sign-deferred(s) then Sign.Signed else s in
+    let w2 = if width-deferred(w) then Width.WFixed(64) else w in
     Ty.TyInt(IntType.IntType(s2, w2))
   | _ => t
 
@@ -189,7 +189,7 @@ def width-eq(a: Width, b: Width) = match a with
 def ty-eq(a: Ty, b: Ty) = match a with
   | Ty.TyInt(ita) => (match b with
     | Ty.TyInt(itb) => let IntType.IntType(sa, wa) = ita in
-    let IntType.IntType(sb, wb) = itb in
+      let IntType.IntType(sb, wb) = itb in
       if sign-eq(sa, sb) then width-eq(wa, wb) else false
     | _ => false
   )
@@ -298,9 +298,9 @@ def ty-bool-not-int() =
 def int-parts(t: Ty) = match t with
   | Ty.TyInt(it) => (let IntType.IntType(s, w) = it in
     match w with
-    | Width.WFixed(n) => Option.Some((s, n))
-    | Width.WidthDef => Option.None(unit)
-    | Width.WVar(_) => Option.None(unit)) // ARC-A1: an un-bound var width is NOT a fixed width → None (same as WidthDef)
+      | Width.WFixed(n) => Option.Some((s, n))
+      | Width.WidthDef => Option.None(unit)
+      | Width.WVar(_) => Option.None(unit)) // ARC-A1: an un-bound var width is NOT a fixed width → None (same as WidthDef)
   | _ => Option.None(unit)
 
 @test
@@ -386,7 +386,7 @@ def ty-eq-fn-structural() =
   // HIGHER-ORDER: (Int64)->Int64 equals itself; differs from (Int64)->Bool (result) and from a plain Int64.
   let f = Ty.TyFn(List.push([], ty-int64()), ty-int64()) in
   let g = Ty.TyFn(List.push([], ty-int64()), Ty.TyBool) in
-    if ty-eq(f, f) then
+  if ty-eq(f, f) then
     if ty-eq(f, g) then
       trap("fn result differs → not equal")
     else if ty-eq(f, ty-int64()) then
@@ -403,7 +403,7 @@ def ty-eq-fn-arity-differs() =
   // the arity mismatch → false (a 2-arg fn value never unifies with a 1-arg arrow).
   let f2 = Ty.TyFn(List.push(List.push([], ty-int64()), ty-int64()), ty-int64()) in
   let f1 = Ty.TyFn(List.push([], ty-int64()), ty-int64()) in
-    if ty-eq(f2, f1) then trap("2-param arrow must NOT equal 1-param arrow (arity)") else unit
+  if ty-eq(f2, f1) then trap("2-param arrow must NOT equal 1-param arrow (arity)") else unit
 
 @test
 def ty-eq-sum-decl-identity() =

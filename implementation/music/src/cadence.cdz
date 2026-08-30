@@ -24,14 +24,14 @@ type Cadence =
 /// Floored modulus into `0 .. m-1` (degrees fold into 0..6).
 def mod-floor(n: Int64, m: Int64) =
   let r = n % m in
-    if r < 0 then r + m else r
+  if r < 0 then r + m else r
 
 /// Classify the cadence from scale degree `a` to scale degree `b` (0-based, folded mod 7). Authentic (V→I)
 /// and Plagal (IV→I) and Deceptive (V→vi) are checked before Half (→V), so V→I is Authentic not Half.
 def cadence-of(a: Int64, b: Int64) =
   let from = mod-floor(a, 7) in
   let to = mod-floor(b, 7) in
-    if to == 0 then
+  if to == 0 then
     if from == 4 then
       Cadence.Authentic // V → I
     else if from == 3 then

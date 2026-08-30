@@ -97,7 +97,7 @@ def a-single-note-plays-and-the-clock-reaches-its-off() =
   // One C4 quarter (on@0, off@960): the task sleeps to 0 then 960; the final clock is 960.
   let piece = [note-at(pitch(60), 0, 100, 0, 960)] in
   let final = play-piece(piece) in
-    if inst-ns(final) == UInt64.wrap(960) then
+  if inst-ns(final) == UInt64.wrap(960) then
     unit
   else
     trap("clock reaches the note's off at tick 960")
@@ -112,7 +112,7 @@ def a-sequence-plays-in-tick-order-ending-at-the-last-off() =
       note-at(pitch(67), 0, 100, 1920, 960)
     ] in
   let final = play-piece(piece) in
-    if inst-ns(final) == UInt64.wrap(2880) then
+  if inst-ns(final) == UInt64.wrap(2880) then
     unit
   else
     trap("clock ends at the last note's off, 2880")
@@ -128,7 +128,7 @@ def a-chord-block-plays-over-sim-time() =
       note-at(pitch(67), 0, 100, 0, 960)
     ] in
   let final = play-piece(piece) in
-    if inst-ns(final) == UInt64.wrap(960) then
+  if inst-ns(final) == UInt64.wrap(960) then
     if List.len(nums) == 3 then unit else trap("triad has three notes")
   else
     trap("chord block ends at 960")
@@ -137,7 +137,7 @@ def a-chord-block-plays-over-sim-time() =
 def an-empty-piece-leaves-the-clock-at-zero() =
   // Edge: no events → the task never sleeps → the clock stays at its initial 0.
   let final = play-piece([]) in
-    if inst-ns(final) == UInt64.wrap(0) then unit else trap("empty piece leaves the clock at 0")
+  if inst-ns(final) == UInt64.wrap(0) then unit else trap("empty piece leaves the clock at 0")
 
 @test
 def notes-authored-out-of-order-still-play-in-tick-order() =
@@ -151,7 +151,7 @@ def notes-authored-out-of-order-still-play-in-tick-order() =
       note-at(pitch(60), 0, 100, 0, 480)
     ] in // authored second, starts at 0
   let final = play-piece(piece) in
-    if inst-ns(final) == UInt64.wrap(2400) then
+  if inst-ns(final) == UInt64.wrap(2400) then
     unit
   else
     trap("plays in tick order, ends at the true last off 2400")
@@ -168,7 +168,7 @@ def a-composed-arpeggio-plays-to-its-final-offset() =
       note-at(pitch(65), 0, 100, 2880, 480)
     ] in
   let final = play-piece(piece) in
-    if inst-ns(final) == UInt64.wrap(3360) then
+  if inst-ns(final) == UInt64.wrap(3360) then
     unit
   else
     trap("clock ends at the last eighth's off, 3360")
@@ -179,7 +179,7 @@ def play-events-returns-the-played-stream-in-tick-order() =
   // A single C4 quarter → [on@0, off@960]; the stream is balanced and the ticks are non-decreasing.
   let piece = [note-at(pitch(60), 0, 100, 0, 960)] in
   let stream = play-events(piece) in
-    if List.len(stream) == 2 then
+  if List.len(stream) == 2 then
     if balanced(stream) then
       match stream with
         | [first, second] => if ev-tick(first) == 0 then
@@ -201,7 +201,7 @@ def play-events-of-a-chord-yields-all-six-events-balanced() =
       note-at(pitch(67), 0, 100, 0, 960)
     ] in
   let stream = play-events(piece) in
-    if List.len(stream) == 6 then
+  if List.len(stream) == 6 then
     if balanced(stream) then unit else trap("balanced")
   else
     trap("six events")

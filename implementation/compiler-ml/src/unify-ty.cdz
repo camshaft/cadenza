@@ -48,7 +48,7 @@ def unify-width(a: Width, b: Width) = match a with
 def unify-int(a: IntType, b: IntType) =
   let IntType.IntType(sa, wa) = a in
   let IntType.IntType(sb, wb) = b in
-    match unify-sign(sa, sb) with
+  match unify-sign(sa, sb) with
     | Option.Some(s) => (match unify-width(wa, wb) with
       | Option.Some(w) => Option.Some(IntType.IntType(s, w))
       | Option.None(_) => Option.None(unit)

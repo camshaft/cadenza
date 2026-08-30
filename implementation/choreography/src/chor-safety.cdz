@@ -81,28 +81,28 @@ def has-io(obs: List(IO), peer: String, lbl: String) -> Bool = match obs with
 def sends-matched(g: Chor, r: String, mine: List(IO)) -> Bool = match mine with
   | [] => true
   | [s, .. rest] => let recipient = io-peer(s) in
-  let their-recvs = local-recvs(project(g, recipient)) in
+    let their-recvs = local-recvs(project(g, recipient)) in
     if has-io(their-recvs, r, io-label(s)) then
-    // recipient receives (from r, label) ?
-    sends-matched(g, r, rest)
-  else
-    false
+      // recipient receives (from r, label) ?
+      sends-matched(g, r, rest)
+    else
+      false
 
 /// Every recv of `r` is mirrored by a send in its sender's projection.
 def recvs-matched(g: Chor, r: String, mine: List(IO)) -> Bool = match mine with
   | [] => true
   | [rc, .. rest] => let sender = io-peer(rc) in
-  let their-sends = local-sends(project(g, sender)) in
+    let their-sends = local-sends(project(g, sender)) in
     if has-io(their-sends, r, io-label(rc)) then
-    // sender sends (to r, label) ?
-    recvs-matched(g, r, rest)
-  else
-    false
+      // sender sends (to r, label) ?
+      recvs-matched(g, r, rest)
+    else
+      false
 
 /// A single role's I/O is fully matched against its peers.
 def role-matched(g: Chor, r: String) -> Bool =
   let l = project(g, r) in
-    if sends-matched(g, r, local-sends(l)) then recvs-matched(g, r, local-recvs(l)) else false
+  if sends-matched(g, r, local-sends(l)) then recvs-matched(g, r, local-recvs(l)) else false
 
 /// Every declared role's I/O is matched — the deadlock-freedom witness.
 def all-roles-matched(roles: List(String), g: Chor) -> Bool = match roles with
@@ -258,7 +258,7 @@ def deadlock-free-third-party-chooser-coordinator() =
 def sends-are-collected() =
   // Seller's projection of Purchase sends Quote→Buyer and Ship→Shipper.
   let s = local-sends(project(purchase-linear(), "Seller")) in
-    if has-io(s, "Buyer", "Quote") then
+  if has-io(s, "Buyer", "Quote") then
     if has-io(s, "Shipper", "Ship") then unit else trap("Seller sends Ship to Shipper")
   else
     trap("Seller sends Quote to Buyer")
@@ -267,7 +267,7 @@ def sends-are-collected() =
 def recvs-are-collected() =
   // Buyer's projection of Purchase receives Quote from Seller.
   let r = local-recvs(project(purchase-linear(), "Buyer")) in
-    if has-io(r, "Seller", "Quote") then unit else trap("Buyer receives Quote from Seller")
+  if has-io(r, "Seller", "Quote") then unit else trap("Buyer receives Quote from Seller")
 
 @test
 def has-io-detects-a-missing-mirror() =
@@ -275,7 +275,7 @@ def has-io-detects-a-missing-mirror() =
   // fire if a projection/codegen bug dropped the recv half of a communication — the send would find no
   // mirror in the recipient's recvs and `sends-matched` would return false (an un-matched I/O = a deadlock).
   let seller-recvs = local-recvs(project(purchase-linear(), "Seller")) in
-    // Seller genuinely receives Title from Buyer...
+  // Seller genuinely receives Title from Buyer...
   if has-io(seller-recvs, "Buyer", "Title") then
     // ...but NOT a fictional "Ghost" label — a dropped/renamed half is detectable.
     if has-io(seller-recvs, "Buyer", "Ghost") then
@@ -291,7 +291,7 @@ def matched-io-fails-on-a-mismatched-label() =
   // has no mirror in a recv set that only contains (from Buyer, "Other") → sends-matched-style check fails.
   let sends = [IO.Ob("Seller", "Title")] in
   let bad-recvs = [IO.Ob("Buyer", "Other")] in
-    if has-io(bad-recvs, "Seller", "Title") then
+  if has-io(bad-recvs, "Seller", "Title") then
     trap("a mismatched label must not be reported matched")
   else if has-io(sends, "Seller", "Title") then
     unit

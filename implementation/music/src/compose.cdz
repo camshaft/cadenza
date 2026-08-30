@@ -89,7 +89,7 @@ def sequence(nums: List(Int64), chan: Int64, vel: Int64, start: Int64, dur: Int6
 def a-block-chord-sounds-every-note-at-the-same-tick() =
   // A C-major triad [60,64,67] as a block chord at tick 0 for 960: three notes, all starting at 0.
   let block = chord-block([60, 64, 67], 0, 100, 0, 960) in
-    if List.len(block) == 3 then
+  if List.len(block) == 3 then
     if all-start-at(block, 0) then unit else trap("all notes start together")
   else
     trap("three notes")
@@ -98,7 +98,7 @@ def a-block-chord-sounds-every-note-at-the-same-tick() =
 def an-arpeggio-spreads-the-notes-in-time() =
   // The same triad arpeggiated with step 240: notes start at 0, 240, 480 — ascending in time.
   let arp = arpeggiate([60, 64, 67], 0, 100, 0, 240, 240) in
-    match arp with
+  match arp with
     | [a, b, c] => if start-of(a) == 0 then
       if start-of(b) == 240 then
         if start-of(c) == 480 then unit else trap("third at 480")
@@ -112,7 +112,7 @@ def an-arpeggio-spreads-the-notes-in-time() =
 def a-sequence-plays-notes-back-to-back() =
   // A four-note run, each a quarter (960): starts at 0, 960, 1920, 2880 — no gaps, no overlaps.
   let seq = sequence([60, 62, 64, 65], 0, 100, 0, 960) in
-    match seq with
+  match seq with
     | [_, b, _, d] => if start-of(b) == 960 then
       if start-of(d) == 2880 then unit else trap("fourth start")
     else
@@ -124,7 +124,7 @@ def block-and-arpeggio-carry-the-same-notes() =
   // Placing in time changes WHEN, not WHICH — both forms carry the same three note numbers.
   let block = chord-block([60, 64, 67], 0, 100, 0, 960) in
   let arp = arpeggiate([60, 64, 67], 0, 100, 0, 240, 240) in
-    if has-note(block, 64) then
+  if has-note(block, 64) then
     if has-note(arp, 64) then unit else trap("arp has E")
   else
     trap("block has E")
@@ -145,7 +145,7 @@ def empty-inputs-produce-empty-pieces() =
 def a-melody-note-places-one-note-at-its-tick() =
   // The melodic atom: one note number at one tick, carrying its number, start, and duration verbatim.
   let n = melody-note(67, 1, 90, 480, 240) in
-    if num-of(n) == 67 then
+  if num-of(n) == 67 then
     if start-of(n) == 480 then
       if dur-of(n) == 240 then unit else trap("lasts 240 ticks")
     else
@@ -158,7 +158,7 @@ def a-sequence-is-gapless-each-note-ends-where-the-next-begins() =
   // Contiguity invariant: in a back-to-back sequence, note i ends (start + dur) exactly where note i+1
   // begins — no gaps, no overlaps — regardless of the fixed note length.
   let seq = sequence([60, 62, 64], 0, 100, 0, 960) in
-    match seq with
+  match seq with
     | [a, b, c] => if start-of(a) + dur-of(a) == start-of(b) then
       if start-of(b) + dur-of(b) == start-of(c) then unit else trap("b ends where c begins")
     else
@@ -169,17 +169,17 @@ def a-sequence-is-gapless-each-note-ends-where-the-next-begins() =
 /// The start tick of a note (mirrors schedule.cdz's accessor; local to keep this test self-contained).
 def start-of(n: Note) =
   let Note.Note(_, _, _, s, _) = n in
-    s
+  s
 
 /// The note number of a note.
 def num-of(n: Note) =
   let Note.Note(Pitch.Pitch(k), _, _, _, _) = n in
-    k
+  k
 
 /// The duration (in ticks) of a note.
 def dur-of(n: Note) =
   let Note.Note(_, _, _, _, d) = n in
-    d
+  d
 
 /// Do all notes start at `t`? Recursive, annotated.
 def all-start-at(notes: List(Note), t: Int64) = match notes with

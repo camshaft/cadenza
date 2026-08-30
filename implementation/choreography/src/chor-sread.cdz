@@ -66,7 +66,7 @@ def scan-atom(s: String, i: Int64, acc: String) -> Tuple(String, Int64) =
 /// A `(` opens a list (read nodes until `)`); anything else is an atom → Ast.Name.
 def parse-node(s: String, i0: Int64) -> Option(Tuple(Ast, Int64)) =
   let i = skip-ws(s, i0) in
-    if i >= String.byte-len(s) then
+  if i >= String.byte-len(s) then
     Option.None(unit)
   else
     match String.at(s, i) with
@@ -76,13 +76,13 @@ def parse-node(s: String, i0: Int64) -> Option(Tuple(Ast, Int64)) =
         Option.None(unit) // unexpected close
       else
         let (atom, ni) = scan-atom(s, i, "") in
-          if atom == "" then Option.None(unit) else Option.Some((Ast.Name(atom), ni))
+        if atom == "" then Option.None(unit) else Option.Some((Ast.Name(atom), ni))
       | Option.None(_) => Option.None(unit)
 
 /// Read list elements from `i` until the matching `)`. `acc` collects children (in order).
 def parse-list(s: String, i0: Int64, acc: List(Ast)) -> Option(Tuple(Ast, Int64)) =
   let i = skip-ws(s, i0) in
-    if i >= String.byte-len(s) then
+  if i >= String.byte-len(s) then
     Option.None(unit) // unterminated list
   else
     match String.at(s, i) with
@@ -159,7 +159,7 @@ def read-nested-then-from-ast() =
       Chor.Comm("Buyer", "Seller", "Title"),
       Chor.Comm("Seller", "Buyer", "Quote")
     ) in
-    match read(src) with
+  match read(src) with
     | Option.Some(a) => (match from-ast(a) with
       | Option.Some(g) => if chor-eq(g, expect) then
         unit
@@ -177,7 +177,7 @@ def read-rejects-unterminated() = match read("(comm Buyer") with
 @test
 def read-handles-extra-whitespace() =
   let src = "  ( seq  (comm A B M)   (done) )  " in
-    match read(src) with
+  match read(src) with
     | Option.Some(a) => (match from-ast(a) with
       | Option.Some(_g) => unit
       | Option.None(_) => trap("from-ast on whitespace-padded parse")
@@ -190,7 +190,7 @@ def roles-of-purchase() =
       Chor.Comm("Buyer", "Seller", "Title"),
       Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"), Chor.Comm("Seller", "Shipper", "Ship"))
     ) in
-    // Buyer, Seller, Shipper — first-seen order, deduplicated.
+  // Buyer, Seller, Shipper — first-seen order, deduplicated.
   match roles-of(g) with
     | [a, b, c] => if a == "Buyer" then
       if b == "Seller" then if c == "Shipper" then unit else trap("c=Shipper") else trap("b=Seller")
@@ -201,7 +201,7 @@ def roles-of-purchase() =
 @test
 def roles-of-choice-includes-chooser() =
   let g = Chor.Choice("Buyer", [Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Y"))]) in
-    match roles-of(g) with
+  match roles-of(g) with
     | [a, b] => if a == "Buyer" then
       if b == "Seller" then unit else trap("Seller")
     else
@@ -224,7 +224,7 @@ def roles-of-collects-across-branches() =
         Chor.Branch("B", Chor.Comm("Buyer", "Carrier", "Cb"))
       ]
     ) in
-    match roles-of(g) with
+  match roles-of(g) with
     | [a, b, c, d] => if a == "Buyer" then
       if b == "Seller" then
         if c == "Shipper" then
@@ -241,7 +241,7 @@ def roles-of-collects-across-branches() =
 def roles-of-dedups() =
   // A role appearing twice is counted once.
   let g = Chor.Seq(Chor.Comm("A", "B", "M"), Chor.Comm("B", "A", "N")) in
-    match roles-of(g) with
+  match roles-of(g) with
     | [a, b] => if a == "A" then if b == "B" then unit else trap("B") else trap("A")
     | _ => trap("two roles, deduplicated")
 
@@ -261,7 +261,7 @@ def roles-of-descends-nested-choice() =
         Chor.Branch("Stop", Chor.Comm("Buyer", "Seller", "Halt"))
       ]
     ) in
-    match roles-of(g) with
+  match roles-of(g) with
     | [a, b, c] => if a == "Buyer" then
       if b == "Seller" then if c == "Carrier" then unit else trap("c=Carrier") else trap("b=Seller")
     else
@@ -274,7 +274,7 @@ def read-a-nested-choice-roundtrips() =
   // recursive-descent parse of doubly-nested lists). Pairs with the roles-of nested pin so the whole
   // `.sexp` surface is witnessed on nested choices, not just flat ones.
   let src = "(choice Buyer (branch Go (choice Seller (branch Ship (comm Seller Carrier Deliver)))) (branch Stop (comm Buyer Seller Halt)))" in
-    match read(src) with
+  match read(src) with
     | Option.Some(a) => (match from-ast(a) with
       | Option.Some(_g) => unit
       | Option.None(_) => trap("from-ast must parse the read nested-choice Ast")
@@ -295,7 +295,7 @@ def read-a-choice-then-from-ast() =
         Chor.Branch("No", Chor.Comm("Buyer", "Seller", "N"))
       ]
     ) in
-    match read(src) with
+  match read(src) with
     | Option.Some(a) => (match from-ast(a) with
       | Option.Some(g) => if chor-eq(g, expect) then
         unit
@@ -311,7 +311,7 @@ def read-a-rec-then-from-ast() =
   // rec/var surface so the guarded-loop protocols (e.g. FleetIntegrate's) stay readable from `.sexp`.
   let src = "(rec Loop (seq (comm Buyer Seller Ping) (var Loop)))" in
   let expect = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
-    match read(src) with
+  match read(src) with
     | Option.Some(a) => (match from-ast(a) with
       | Option.Some(g) => if chor-eq(g, expect) then
         unit
@@ -326,7 +326,7 @@ def roles-of-rec-skips-var() =
   // PIN: roles-of descends a Rec body but a bare Var contributes no role (it's a loop back-edge, not a
   // participant). The rec Ping loop's only roles are Buyer + Seller.
   let g = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
-    match roles-of(g) with
+  match roles-of(g) with
     | [a, b] => if a == "Buyer" then
       if b == "Seller" then unit else trap("Seller")
     else
@@ -375,7 +375,7 @@ def read-empty-list-is-not-a-protocol() =
 def read-deeply-nested-seq() =
   // A 5-deep seq nest reads + from-asts + roles-of without issue (recursive descent terminates).
   let src = "(seq (comm A B M1) (seq (comm B C M2) (seq (comm C D M3) (seq (comm D E M4) (comm E F M5)))))" in
-    match read(src) with
+  match read(src) with
     | Option.Some(a) => (match from-ast(a) with
       | Option.Some(g) => (match roles-of(g) with
         | [_a, _b, _c, _d, _e, _f] => unit

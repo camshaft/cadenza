@@ -25,7 +25,7 @@ def rinterval(octaves: Rational) = RInterval.RInterval(octaves)
 /// The octave-fraction of a rational interval (a `Rational`).
 def octaves(i: RInterval) =
   let RInterval.RInterval(r) = i in
-    r
+  r
 
 // ---- constructing intervals as fractions of the octave ----------------------------------------------
 /// The `n`-th step of an `m`-EDO (equal division of the octave) system, as a fraction of the octave:
@@ -207,7 +207,7 @@ def a-heptatonic-step-is-one-seventh() =
 def twelve-semitones-make-an-octave() =
   // Twelve chromatic steps sum to exactly one octave (exact rational, no drift).
   let twelve = r-add(semitones-r(6), semitones-r(6)) in
-    if r-eq(twelve, r-octave) then
+  if r-eq(twelve, r-octave) then
     match to-semitones-exact(r-octave) with
       | Option.Some(s) => if s == 12 then unit else trap("octave projects to 12 semitones")
       | Option.None(_) => trap("octave is in-grid")
@@ -232,7 +232,7 @@ def seven-sevenths-is-an-octave-across-any-mode() =
   let four = r-add(two, two) in
   let six = r-add(four, two) in
   let seven = r-add(six, degree-r(1)) in
-    if r-eq(seven, r-octave) then unit else trap("7 * (1/7) = 1 octave")
+  if r-eq(seven, r-octave) then unit else trap("7 * (1/7) = 1 octave")
 
 @test
 def in-grid-projects-exactly-off-grid-declines() =
@@ -321,7 +321,7 @@ def to-semitones-snaps-an-off-grid-interval-toward-zero() =
   // a fifth (7/12 + 1/24 = 15/24 of an octave) is 7.5 semitones → truncate toward zero = 7. This is the
   // capability the projection adds over to-semitones-exact (which returns None here).
   let quarter-sharp-fifth = rinterval(Rational.of(15, 24)) in
-    match to-semitones-exact(quarter-sharp-fifth) with
+  match to-semitones-exact(quarter-sharp-fifth) with
     | Option.None(_) => if to-semitones(quarter-sharp-fifth) == 7 then
       unit
     else
@@ -350,7 +350,7 @@ def floor-rounds-down-where-truncate-rounds-toward-zero() =
   // monotone downward snap truncate can't (truncate and floor DIFFER here — the reason floor was worth
   // adding once the prelude op landed).
   let desc-quarter-sharp-fifth = rinterval(Rational.of(0 - 15, 24)) in
-    if to-semitones(desc-quarter-sharp-fifth) == 0 - 7 then
+  if to-semitones(desc-quarter-sharp-fifth) == 0 - 7 then
     if to-semitones-floor(desc-quarter-sharp-fifth) == 0 - 8 then
       if to-semitones-ceil(desc-quarter-sharp-fifth) == 0 - 7 then unit else trap("ceil -> -7")
     else
@@ -362,7 +362,7 @@ def floor-rounds-down-where-truncate-rounds-toward-zero() =
 def ceil-rounds-up-for-a-positive-off-grid-interval() =
   // A positive off-grid 7.5 semitones: ceil → 8 (up), vs truncate/floor → 7. Pins ceil's upward rounding.
   let quarter-sharp-fifth = rinterval(Rational.of(15, 24)) in
-    if to-semitones-ceil(quarter-sharp-fifth) == 8 then
+  if to-semitones-ceil(quarter-sharp-fifth) == 8 then
     if to-semitones-floor(quarter-sharp-fifth) == 7 then unit else trap("floor -> 7")
   else
     trap("ceil -> 8")
@@ -373,7 +373,7 @@ def round-snaps-to-the-nearest-semitone-ties-away-from-zero() =
   // Exactly a tie: 15/24 octave = 7.5 → 8 (half-AWAY-from-zero). Its negative -7.5 → -8 (away from zero).
   let near-fifth = rinterval(Rational.of(29, 48)) in
   let quarter-sharp-fifth = rinterval(Rational.of(15, 24)) in
-    if to-semitones-round(near-fifth) == 7 then
+  if to-semitones-round(near-fifth) == 7 then
     if to-semitones-round(quarter-sharp-fifth) == 8 then
       if to-semitones-round(r-negate(quarter-sharp-fifth)) == 0 - 8 then unit else trap("-7.5 → -8")
     else

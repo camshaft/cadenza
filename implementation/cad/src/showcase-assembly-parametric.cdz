@@ -23,12 +23,12 @@ def rzero() = 0 / 1
 def base-plate(len: Rational, wid: Rational, t: Rational, r: Rational) =
   let slab = move-z(t / (2 / 1), box(len, wid, t)) in
   let hole = move-x(len / (4 / 1), cyl(t * (2 / 1), r)) in
-    cut(slab, move-z(t / (2 / 1), hole))
+  cut(slab, move-z(t / (2 / 1), hole))
 
 def arm-flat(wid: Rational, rise: Rational, t: Rational, r: Rational) =
   let slab = move-z(t / (2 / 1), box(wid, rise, t)) in
   let hole = move-y(rise / (3 / 1), cyl(t * (2 / 1), r)) in
-    cut(slab, move-z(t / (2 / 1), hole))
+  cut(slab, move-z(t / (2 / 1), hole))
 
 def standing-arm(wid: Rational, rise: Rational, t: Rational, r: Rational) =
   move-y((rzero() - wid) / (2 / 1), move-z(t, rotate-x(90 / 1, arm-flat(wid, rise, t, r))))
@@ -44,7 +44,7 @@ def main() =
   let t = Param.pa-thick() in
   let rise = Param.pa-rise() in
   let r = Param.pa-bolt() in
-    lower(bracket(len, wid, t, rise, r))
+  lower(bracket(len, wid, t, rise, r))
 
 @test
 def the-parametric-bracket-is-non-empty() =
@@ -69,7 +69,7 @@ def the-lowered-parametric-render-form-is-non-empty() =
 def the-base-plate-part-has-the-right-envelope() =
   // The base-plate PART (a small tree — reliable bbox): a 40×30×4 slab; the bolt hole (a cut) never grows it.
   let slab = move-z(4 / 1 / (2 / 1), box(40 / 1, 30 / 1, 4 / 1)) in
-    if v3-eq(
+  if v3-eq(
       aabbr-size(bounding-box(base-plate(40 / 1, 30 / 1, 4 / 1, 3 / 1))),
       aabbr-size(bounding-box(slab))
     ) then

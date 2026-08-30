@@ -282,7 +282,7 @@ def role-informed-by-third-party-is-not-enough() =
         Chor.Branch("Stop", Chor.Comm("Buyer", "Seller", "Stop"))
       ]
     ) in
-    if projectable(roles3(), g) then
+  if projectable(roles3(), g) then
     trap("informed by a third party is not knowledge of choice under Inc-1")
   else
     unit
@@ -290,7 +290,7 @@ def role-informed-by-third-party-is-not-enough() =
 @test
 def participates-detects-sender-and-receiver() =
   let g = Chor.Comm("A", "B", "M") in
-    if participates("A", g) then
+  if participates("A", g) then
     if participates("B", g) then
       if participates("C", g) then trap("C does not participate") else unit
     else
@@ -344,7 +344,7 @@ def role-silent-in-all-branches-is-exempt() =
         Chor.Branch("No", Chor.Comm("Buyer", "Seller", "No"))
       ]
     ) in
-    if projectable(roles3(), g) then
+  if projectable(roles3(), g) then
     unit
   else
     trap("a role silent in ALL branches is exempt (rule b) — must remain projectable")
@@ -360,7 +360,7 @@ def nested-choice-inner-unprojectable-is-caught() =
         Chor.Branch("Y", Chor.Comm("Buyer", "Seller", "Y"))
       ]
     ) in
-    // Wait: in branch X, Buyer must also inform Shipper for the OUTER choice. It doesn't, so this is bad at
+  // Wait: in branch X, Buyer must also inform Shipper for the OUTER choice. It doesn't, so this is bad at
   // the OUTER level too — either way it must be un-projectable. Assert rejection.
   if projectable(roles3(), g) then
     trap("a nested un-projectable choice must make the whole protocol un-projectable")

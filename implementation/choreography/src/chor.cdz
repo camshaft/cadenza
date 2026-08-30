@@ -298,7 +298,7 @@ def rt-purchase() = match from-ast(to-ast(purchase())) with
 @test
 def rt-purchase-ast() =
   let node = to-ast(purchase()) in
-    match from-ast(node) with
+  match from-ast(node) with
     | Option.Some(c) => if ast-eq(to-ast(c), node) then
       unit
     else
@@ -314,14 +314,14 @@ def rt-done() = match from-ast(to-ast(Chor.Done)) with
 @test
 def rt-comm() =
   let c = Chor.Comm("A", "B", "M") in
-    match from-ast(to-ast(c)) with
+  match from-ast(to-ast(c)) with
     | Option.Some(c2) => if chor-eq(c2, c) then unit else trap("Comm round-trips")
     | Option.None(_) => trap("Comm parses")
 
 @test
 def rt-rec() =
   let c = Chor.Rec("Loop", Chor.Seq(Chor.Comm("A", "B", "M"), Chor.Var("Loop"))) in
-    match from-ast(to-ast(c)) with
+  match from-ast(to-ast(c)) with
     | Option.Some(c2) => if chor-eq(c2, c) then unit else trap("Rec round-trips")
     | Option.None(_) => trap("Rec parses")
 
@@ -410,7 +410,7 @@ def nested-rec-round-trips() =
         Chor.Rec("Inner", Chor.Seq(Chor.Comm("B", "A", "N"), Chor.Var("Inner")))
       )
     ) in
-    match from-ast(to-ast(g)) with
+  match from-ast(to-ast(g)) with
     | Option.Some(g2) => if chor-eq(g, g2) then unit else trap("nested rec must round-trip")
     | Option.None(_) => trap("from-ast(to-ast) of a nested rec")
 
@@ -424,7 +424,7 @@ def wf-accepts-inner-var-bound-by-inner-rec() =
         Chor.Rec("Inner", Chor.Seq(Chor.Comm("B", "A", "N"), Chor.Var("Inner")))
       )
     ) in
-    if wf(["A", "B"], g) then unit else trap("a var bound by the inner rec is well-formed")
+  if wf(["A", "B"], g) then unit else trap("a var bound by the inner rec is well-formed")
 
 @test
 def wf-rejects-rec-var-referenced-out-of-its-scope() =
@@ -436,7 +436,7 @@ def wf-rejects-rec-var-referenced-out-of-its-scope() =
       "Outer",
       Chor.Seq(Chor.Rec("Inner", Chor.Comm("B", "A", "N")), Chor.Var("Inner"))
     ) in
-    if wf(["A", "B"], g) then
+  if wf(["A", "B"], g) then
     trap("Inner is out of scope in the outer body — must be rejected")
   else
     unit

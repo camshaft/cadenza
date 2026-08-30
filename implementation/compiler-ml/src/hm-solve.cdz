@@ -34,8 +34,8 @@ def solve-from(su0: Subst, cs: List(Tuple(Ty, Ty))) = match cs with
   | [] => Option.Some(su0)
   | [c, .. rest] => let (a, b) = c in
     match unify-ty-su(su0, a, b) with
-    | Option.Some(su1) => solve-from(su1, rest)
-    | Option.None(_) => Option.None(unit)
+      | Option.Some(su1) => solve-from(su1, rest)
+      | Option.None(_) => Option.None(unit)
 
 /// SOLVE from the EMPTY Subst — the top-level entry (rcdzc `solve`): unify the whole constraint set starting
 /// with no bindings. `Some(solution)` or `None` (unsatisfiable).
@@ -89,7 +89,7 @@ def hs-connected-solve-shared-var-propagates() =
   // B3's single unify could NOT do (each unify was independent); the threaded fold makes the binding persist.
   let c1 = (var-int(0, 1), ty-int64()) in
   let c2 = (var-int(0, 1), ty-int64()) in
-    match solve-apply(List.push(List.push([], c1), c2), var-int(0, 1)) with
+  match solve-apply(List.push(List.push([], c1), c2), var-int(0, 1)) with
     | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 64 then
       unit
     else
@@ -103,7 +103,7 @@ def hs-conflicting-constraints-abort() =
   // The connected solve aborts the set (no partial/last-wins), the essence of a real solver.
   let c1 = (var-int(0, 1), ty-int64()) in
   let c2 = (var-int(0, 1), ty-fixed-int(false, 64)) in
-    if solvable(List.push(List.push([], c1), c2)) then
+  if solvable(List.push(List.push([], c1), c2)) then
     trap("Signed-then-Unsigned on SVar0 must conflict")
   else
     unit
@@ -116,7 +116,7 @@ def hs-instantiate-then-solve-is-let-polymorphism() =
   // then applying to B leaves B's var UNBOUND (a distinct var), proving the two uses don't share a binding.
   let (tyA, n1) = instantiate(Scheme.Scheme(List.push([], 0), [] : List(Int64), var-int(0, 5)), 10) in
   let (tyB, _n2) = instantiate(Scheme.Scheme(List.push([], 0), [] : List(Int64), var-int(0, 6)), n1) in
-    // constrain the FIRST instantiation to Int64, solve, then apply to the SECOND — B must remain a var
+  // constrain the FIRST instantiation to Int64, solve, then apply to the SECOND — B must remain a var
   // (unbound), i.e. NOT forced to Signed. Distinct fresh vars = independent.
   match solve(List.push([], (tyA, ty-int64()))) with
     | Option.Some(su) => (match apply(su, tyB) with

@@ -41,7 +41,7 @@ def demand-typed-eff(id: Int64, deflt: Ty) = match require-ty(DbState.get(), id)
 def cache-typed-eff(id: Int64, deflt: Ty) =
   let filled = fill-ty(DbState.get(), id, deflt) in
   let _ = DbState.put(filled) in
-    deflt
+  deflt
 
 // ---- TESTS: the state-effect carrier memoizes without manual threading (unblocked by the eff-let fix) ----
 import { Tok, parse-tokens } from "parse-db"
@@ -53,7 +53,7 @@ def ty-i64() = Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(64)))
 
 def sample-tree() =
   let (_, tree) = parse-tokens([Tok.TNum(5)]) in
-    tree
+  tree
 
 @test
 def ds-get-returns-fresh-db() =
@@ -76,7 +76,7 @@ def ds-demand-caches-via-put() =
         | put(nd, state) => resume(unit, nd)
       in
       let _t = demand-typed-eff(0, ty-i64()) in
-        typed-filled(DbState.get())) == 1 then
+      typed-filled(DbState.get())) == 1 then
     unit
   else
     trap("a demand caches one fact via the effect")
@@ -91,7 +91,7 @@ def ds-demand-memoizes-second-hit() =
       in
       let _a = demand-typed-eff(0, ty-i64()) in
       let _b = demand-typed-eff(0, ty-i64()) in
-        typed-filled(DbState.get())) == 1 then
+      typed-filled(DbState.get())) == 1 then
     unit
   else
     trap("second demand HITS the memo via the effect (1 fact, not 2)")

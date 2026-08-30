@@ -28,23 +28,23 @@ def adsr-unity(attack: Int64, decay: Int64, sustain: Int64, release: Int64) =
 
 def env-attack(e: Adsr) =
   let Adsr.Adsr(a, _, _, _, _) = e in
-    a
+  a
 
 def env-decay(e: Adsr) =
   let Adsr.Adsr(_, d, _, _, _) = e in
-    d
+  d
 
 def env-sustain(e: Adsr) =
   let Adsr.Adsr(_, _, s, _, _) = e in
-    s
+  s
 
 def env-release(e: Adsr) =
   let Adsr.Adsr(_, _, _, r, _) = e in
-    r
+  r
 
 def env-peak(e: Adsr) =
   let Adsr.Adsr(_, _, _, _, p) = e in
-    p
+  p
 
 // ---- linear interpolation helper ---------------------------------------------------------------------
 /// Linear interpolation from `a` to `b` over `span` ticks, at offset `t` (0..span). Exact integer lerp:
@@ -54,7 +54,7 @@ def lerp(a: Int64, b: Int64, t: Int64, span: Int64) =
     b
   else
     let clamped = if t < 0 then 0 else if t > span then span else t in
-      a + (b - a) * clamped / span
+    a + (b - a) * clamped / span
 
 // ---- sampling the envelope ---------------------------------------------------------------------------
 /// The amplitude (per-mille) at tick `t` of the ATTACK/DECAY/SUSTAIN portion (key still down). Attack ramps
@@ -64,7 +64,7 @@ def sample-down(e: Adsr, t: Int64) =
   let d = env-decay(e) in
   let peak = env-peak(e) in
   let sus = env-sustain(e) in
-    if t <= 0 then
+  if t <= 0 then
     0
   else if t < a then
     lerp(0, peak, t, a)
@@ -82,7 +82,7 @@ def sample(e: Adsr, held: Int64, t: Int64) =
   else
     let level-at-release = sample-down(e, held) in
     let r = env-release(e) in
-      lerp(level-at-release, 0, t - held, r)
+    lerp(level-at-release, 0, t - held, r)
 
 /// The total duration of the envelope if the key is held for `held` ticks: `held + release` (the note
 /// finishes ringing out `release` ticks after the key lifts).
@@ -99,7 +99,7 @@ def attack-ramps-from-zero-to-peak() =
   // adsr(100 attack, 50 decay, 700 sustain, 200 release, 1000 peak): at t=0 amplitude 0; halfway up the
   // attack (t=50) it's ~500; at the attack top (t=100) it's the peak 1000.
   let e = adsr(100, 50, 700, 200, 1000) in
-    if sample-down(e, 0) == 0 then
+  if sample-down(e, 0) == 0 then
     if sample-down(e, 50) == 500 then
       if sample-down(e, 100) == 1000 then unit else trap("attack top is peak")
     else
@@ -112,7 +112,7 @@ def decay-falls-from-peak-to-sustain() =
   // After the 100-tick attack, decay ramps 1000→700 over 50 ticks: at t=125 (halfway) it's ~850; at
   // t=150 (decay end) it's the sustain 700, and it holds there.
   let e = adsr(100, 50, 700, 200, 1000) in
-    if sample-down(e, 125) == 850 then
+  if sample-down(e, 125) == 850 then
     if sample-down(e, 150) == 700 then
       if sample-down(e, 999) == 700 then unit else trap("holds at sustain")
     else
@@ -125,7 +125,7 @@ def release-falls-from-the-held-level-to-zero() =
   // Key held to t=300 (well into sustain=700), released there; release ramps 700→0 over 200 ticks: at
   // t=400 (halfway) it's ~350; at t=500 (release end) it's 0.
   let e = adsr(100, 50, 700, 200, 1000) in
-    if sample(e, 300, 300) == 700 then
+  if sample(e, 300, 300) == 700 then
     if sample(e, 300, 400) == 350 then
       if sample(e, 300, 500) == 0 then unit else trap("release end is 0")
     else
@@ -138,7 +138,7 @@ def a-short-release-before-sustain-uses-the-actual-level() =
   // Key released DURING the attack (t=50, level 500): release ramps from 500 (not the peak or sustain)
   // down to 0 — the release starts from wherever the envelope actually was.
   let e = adsr(100, 50, 700, 200, 1000) in
-    if sample(e, 50, 50) == 500 then
+  if sample(e, 50, 50) == 500 then
     if sample(e, 50, 150) == 250 then unit else trap("release halves from 500")
   else
     trap("released mid-attack starts at 500")
@@ -146,7 +146,7 @@ def a-short-release-before-sustain-uses-the-actual-level() =
 @test
 def total-span-is-held-plus-release() =
   let e = adsr(100, 50, 700, 200, 1000) in
-    if total-span(e, 300) == 500 then unit else trap("300 held + 200 release = 500")
+  if total-span(e, 300) == 500 then unit else trap("300 held + 200 release = 500")
 
 @test
 def zero-attack-jumps-straight-to-peak-then-decays() =
@@ -155,7 +155,7 @@ def zero-attack-jumps-straight-to-peak-then-decays() =
   // the peak 1000 is only exactly reached at the instant t==attack==0; at t=1 it has decayed one step
   // toward 800: lerp(1000, 800, 1, 100) = 998. Pins that a zero attack skips straight into decay.
   let e = adsr(0, 100, 800, 100, 1000) in
-    if sample-down(e, 0) == 0 then
+  if sample-down(e, 0) == 0 then
     if sample-down(e, 1) == 998 then
       if sample-down(e, 100) == 800 then unit else trap("decay end is sustain 800")
     else
@@ -168,7 +168,7 @@ def sustain-can-be-full-scale-a-flat-envelope() =
   // sustain == peak == 1000 with zero decay → a flat organ-like envelope: full amplitude the whole time
   // the key is down.
   let e = adsr(10, 0, 1000, 50, 1000) in
-    if sample-down(e, 10) == 1000 then
+  if sample-down(e, 10) == 1000 then
     if sample-down(e, 500) == 1000 then unit else trap("flat at full scale")
   else
     trap("reaches full scale after attack")
@@ -178,7 +178,7 @@ def is-active-spans-the-note-and-its-release() =
   // Key held to t=300, release 200 → total-span 500. Active on [0,500): silent-but-not-yet-started t<0 is
   // inactive; t=0 and t=499 active; t=500 (release finished) inactive.
   let e = adsr(100, 50, 700, 200, 1000) in
-    if is-active(e, 300, 0) then
+  if is-active(e, 300, 0) then
     if is-active(e, 300, 499) then
       if is-active(e, 300, 500) then
         trap("finished ringing out at 500")
