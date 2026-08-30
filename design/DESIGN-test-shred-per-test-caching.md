@@ -1,9 +1,10 @@
 # Per-`@test` nix caching for the Cadenza test gate (test-shred)
 
-Status: LANDED / EVOLVING (v-test-shred, 2026-08-29). The matrix is live on main (iterators standalone,
-360/360); cad/choreography standalone + the arm-drops are in flight (contention-gated). See "Status
-(LANDED)" at the bottom for the current state and "Scale + the per-suite mode split" for how the original
-single-model idea below evolved into the shipped standalone/two-stage per-suite modes. Goal: replace the coarse per-PROJECT
+Status: LANDED (v-test-shred, 2026-08-30). The full shreddable fleet is on the CA + AOT-cached path —
+iterators + cad + choreography + music = 974 `@tests` shred + cranelift-free AOT-cached (compiler-ml opt-out).
+See "Status (LANDED)" + "AOT exec caching" at the bottom for the current state, and "Scale + the per-suite
+mode split" for how the original single-model idea below evolved into the shipped standalone/two-stage modes.
+Goal: replace the coarse per-PROJECT
 `cdz test` gate derivations (`testCadenzaProject` / the `cad-tests` aggregate over
 `implementation/{cad,compiler-ml,choreography,iterators}`) with a per-`@test` content-addressed matrix,
 so an unrelated change is a cache hit and each `@test` runs in parallel — **without any persistent
@@ -134,24 +135,36 @@ Two emit modes, chosen PER SUITE (`testShredSuites.<suite>.mode`):
   emission …); coverage climbs incrementally (64 → 80 → …), not in one jump. compiler-ml stays COARSE
   (its `cad-test-compiler-ml` arm) until two-stage coverage is ~full.
 
-## Status (LANDED — 2026-08-29)
+## AOT exec caching — precompile-once, cranelift-free deserialize (seq-271)
 
-The matrix is LIVE on main and the discovery mechanism is settled:
-1. ✅ **Compiler-informed discovery** — `cdz test --list --format nix` (#5461) + the `testDiscovery`
-   scoped-cached-IFD (#5473); the committed `tests-shred-index.txt` was built (#5298) then REMOVED (#5477).
-   Closes the operator's banned-committed-list concern for iterators.
-2. ✅ **iterators shred matrix GREEN on main** — first as two-stage (#5473; discovered to be a hollow 56/360
-   — two-stage `emit_fragment` can't lower higher-order params), then corrected to `mode=standalone`
-   (#5530) → 360/360 REAL, zero-skip, hard-fail-on-missing. The audit lesson: a green shred aggregate does
-   NOT prove coverage unless emit-N == authoritative AND zero-skip (standalone enforces this structurally).
-3. ✅ **Per-suite mode** — `mkTestShred`/`mkTestExec`/… take `mode = standalone | two-stage` (#5530);
-   `testShredSuites` entries are `{ dir; mode }`.
+The exec side rides v-nix's AOT corpus-exec infra (#5893/#5922/#5957): the shred derivation precompiles each
+self-contained per-test wasm → `.cwasm` ONCE (cranelift-ON, CA-cached with the shred), and `mkTestExec` runs
+it CRANELIFT-FREE via `cdzRunExec --precompiled` (`--no-default-features`) with `CDZ_STORE=componentStoreCwasm`
++ `--runtime runtimeDebugCwasm` (#5970). This removes the wasmtime cranelift JIT from every exec (~41% of the
+per-run test CPU per v-compiler-perf's profile), leaving deserialize-only. Peer/two-stage tests keep the JIT
+fallback. The runtime-hash flag-day rotates `componentStoreCwasm`/`runtimeDebugCwasm` transparently via the CA
+graph — the matrix carries NO hardcoded hash.
 
-Remaining (in flight, contention-gated on nix builder starvation):
-- (a) **iterators arm-drop** — rewire `cad-tests` to depend on `test-shred-iterators` instead of the coarse
-  `cad-test-iterators` (spec delivered + re-audited GREEN; v-nix executes as single-writer in a calm window).
-- (b) **cad + choreography standalone** — wired `mode=standalone` (v-nix branch, gate-pending), then their
-  arm-drops (each 138/138, 177/177, retire-ready). After these, in-process `cdz test` runs ONLY compiler-ml.
-- (c) **compiler-ml** — stays COARSE; two-stage coverage climbs as v-cadenza peels the backend re-emit
-  layers on general merits (not a test-shred blocker). Retiring its coarse arm (→ dropping `cdz-run`'s lib
-  dep from `cdz`, the headline win) waits on ~full two-stage coverage.
+## Status (LANDED — 2026-08-30)
+
+The full shreddable fleet is on the CA + AOT-cached path — **974 `@tests` across 4 suites**, the operator's
+"actual caching" win (seq-271), independently nix-path-verified:
+1. ✅ **Compiler-informed discovery** — `cdz test --list --format nix` (#5461) + `testDiscovery`
+   scoped-cached-IFD (#5473); committed index removed (#5477). No committed hard-coded test list.
+2. ✅ **Per-suite mode** (#5530) + **AOT exec wiring** (#5970): iterators 360/360 standalone, cranelift-free.
+3. ✅ **seedCompilerTestRunner split** (#6054) — after `cdz`'s test cluster went `#[cfg(feature="standalone")]`
+   (v-cdz-crate-split's rcdzc-optional flip), the flake needs TWO cdz variants: `seedCompiler`
+   (COMPILE/DELEGATE, `--no-default-features`, standalone OFF, thin) and `seedCompilerTestRunner`
+   (TEST/DISCOVERY, `--features cdz/standalone`, standalone ON) that drives `cdz test`/`--list`/`--emit-shred`.
+   (Lesson: `seedCompiler` is `--no-default-features` — gating `run_test` behind `standalone` broke discovery
+   until this split; verify FULL build-args + re-audit on the NIX path, not local default-features tooling.)
+4. ✅ **Caching batch** (#6084): cad 138/138 + choreography 177/177 + music 299/299 wired `mode=standalone`,
+   all genuinely green on the nix path + AOT cranelift-free (grade-identity verified). des skips (0 `@tests`).
+
+**seq-271 reframing (operator):** compiler-ml recompiles on any source OR rcdzc change (~constant), so a
+per-test cache invalidates constantly — standalone-B for compiler-ml (a ~4.3h emit paid every re-emit) was
+REJECTED. Direction = lowest-CPU-that-keeps-confidence: AOT (removes the ~41% JIT, this doc) + v-cadenza's
+fast-emit two-stage (cuts the ~38% emit). compiler-ml is OPT-OUT of the shred (made optional, dropped from the
+forced local-gate #5992); its shred remains v-cadenza's fast-emit lane (the disc-folded Leaf-over-tuple /
+Leaf-over-catch-all cadenza-backend re-emit, ongoing on general merits). Retiring compiler-ml's coarse arm (→
+dropping `cdz-run`'s lib dep from `cdz`) waits on that reaching ~full two-stage coverage.
