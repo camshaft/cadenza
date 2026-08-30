@@ -8469,3 +8469,29 @@
            genuinely coercible int-literal-vs-float clash.")
   (input  (do (def (f (: b Bool)) (if b 1 true)) (export f)))
   (error  CDZ0203 (no-fix)))
+
+; A literal-arm match with no wildcard is NON-EXHAUSTIVE over its scalar domain (CDZ0210), regardless of
+; whether the runtime scrutinee would hit an arm. For Bool the relaxation is precise: a match is exhaustive
+; ONLY with BOTH `true` and `false` arms — a single Bool literal, or two of the SAME literal, still leaves a
+; value uncovered. An Int64 literal match without a wildcard stays rejected (the both-literals relaxation is
+; Bool-specific). (Migrated from rcdzc a_non_wildcard_pattern_after_a_literal_still_needs_a_wildcard +
+; a_bool_match_missing_a_literal_is_still_non_exhaustive.)
+(case "an integer literal match with no wildcard is non-exhaustive"
+  (input  (do (def (f (: n Int64)) (match n (0 1) (1 2))) (export f)))
+  (error  CDZ0210))
+
+(case "a Bool match with only the true arm is non-exhaustive"
+  (input  (do (def (main (: b Bool)) (match b (true 1))) (export main)))
+  (error  CDZ0210))
+
+(case "a Bool match with only the false arm is non-exhaustive"
+  (input  (do (def (main (: b Bool)) (match b (false 2))) (export main)))
+  (error  CDZ0210))
+
+(case "a Bool match with two of the same literal is non-exhaustive"
+  (input  (do (def (main (: b Bool)) (match b (true 1) (true 2))) (export main)))
+  (error  CDZ0210))
+
+(case "a Bool match with both true and false arms is exhaustive and runs"
+  (input  (do (def (main) (match true (true 1) (false 2))) (export main)))
+  (call main) (output (: 1 Int64)))
