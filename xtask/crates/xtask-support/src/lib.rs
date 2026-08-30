@@ -603,6 +603,175 @@ fn file_size_lint_with(repo: &Path, allowlist: &[&str]) -> Result<(), String> {
     Err(msg)
 }
 
+/// Lexically resolve `.`/`..` in `p` WITHOUT touching the filesystem (no symlink/existence dependency), so
+/// a `#[path]` target normalizes even before the file exists in a build. Input is expected absolute.
+fn lexical_normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// The crate root of `file` — the nearest ancestor directory (up to `repo`) holding a `Cargo.toml`.
+fn crate_root_of(file: &Path, repo: &Path) -> Option<PathBuf> {
+    let mut dir = file.parent();
+    while let Some(d) = dir {
+        if d.join("Cargo.toml").is_file() {
+            return Some(d.to_path_buf());
+        }
+        if d == repo {
+            break;
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// Extract the string literal from a `#[path = "…"]` attribute line (the text between the first pair of
+/// double quotes). `None` if there is no quoted value (so a non-attribute line is skipped).
+fn extract_path_literal(attr_line: &str) -> Option<String> {
+    let start = attr_line.find('"')? + 1;
+    let rest = attr_line.get(start..)?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Cross-crate `#[path]` source-includes present at seq-275 adoption, GRANDFATHERED pending removal (each
+/// keyed by the INCLUDING file's repo-relative path + the exact `#[path]` literal). SELF-EXPIRING: an entry
+/// that is no longer a cross-crate include (removed / file gone) is STALE and FAILS the lint, so this list
+/// can only shrink. The cdz-runtime -> cadenza-ast three are owned by v-runtime under seq-273; the cdz-num
+/// -> cdz-runtime one is tracked with v-runtime. REMOVE an entry once its include is converted to a dep.
+pub const PATH_INCLUDE_ALLOWLIST: &[(&str, &str)] = &[
+    (
+        "implementation/seed/crates/cdz-num/src/lib.rs",
+        "../../cdz-runtime/src/bigint.rs",
+    ),
+    (
+        "implementation/seed/crates/cdz-runtime/src/lib.rs",
+        "../../cadenza-ast/src/ast.rs",
+    ),
+    (
+        "implementation/seed/crates/cdz-runtime/src/lib.rs",
+        "../../cadenza-ast/src/codec.rs",
+    ),
+    (
+        "implementation/seed/crates/cdz-runtime/src/lib.rs",
+        "../../cadenza-ast/src/leb128.rs",
+    ),
+];
+
+/// CROSS-CRATE `#[path]` SOURCE-INCLUDE lint (operator directive seq-275): FAIL on any `#[path = "…"]`
+/// attribute whose target resolves OUTSIDE the including crate's own `src/` (i.e. into a SIBLING crate) —
+/// exactly the source-share that breaks crates.io publishability ("i don't want to see any other cross
+/// crate source includes … make those unpublishable to crates.io"). Same-crate `#[path]` (a file under the
+/// crate's own root) is fine and left alone. EXCEPT the grandfathered [`PATH_INCLUDE_ALLOWLIST`]; a stale
+/// allowlist entry FAILS so the set can only shrink as includes are converted to proper dependencies.
+/// `repo` is the repo root (CDZ_REPO_ROOT for the nix app). Mirrors `emoji_free_lint`'s discipline.
+pub fn cross_crate_path_include_lint(repo: &Path) -> Result<(), String> {
+    cross_crate_path_include_lint_with(repo, PATH_INCLUDE_ALLOWLIST)
+}
+
+/// Testable core of [`cross_crate_path_include_lint`], parameterized on the allowlist.
+fn cross_crate_path_include_lint_with(
+    repo: &Path,
+    allowlist: &[(&str, &str)],
+) -> Result<(), String> {
+    let root = repo.join("implementation");
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_rs_files(&root, &mut files).map_err(|e| {
+        format!(
+            "cannot enumerate {} for the cross-crate #[path] lint: {e}",
+            root.display()
+        )
+    })?;
+    files.sort();
+    if files.is_empty() {
+        return Err(format!(
+            "no *.rs source files found under {} — the cross-crate #[path] lint would pass vacuously",
+            root.display()
+        ));
+    }
+    let allow: std::collections::BTreeSet<(&str, &str)> = allowlist.iter().copied().collect();
+    let mut seen: std::collections::BTreeSet<(String, String)> = std::collections::BTreeSet::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).map_err(|e| {
+            format!(
+                "cannot read {} for the cross-crate #[path] lint: {e}",
+                file.display()
+            )
+        })?;
+        let file_rel = file
+            .strip_prefix(repo)
+            .unwrap_or(file)
+            .display()
+            .to_string();
+        let Some(crate_root) = crate_root_of(file, repo) else {
+            continue;
+        };
+        let base = file.parent().unwrap_or(file);
+        for (i, line) in text.lines().enumerate() {
+            if !line.trim_start().starts_with("#[path") {
+                continue; // an actual attribute at line-start, NOT a comment mentioning #[path]
+            }
+            let Some(lit) = extract_path_literal(line.trim_start()) else {
+                continue;
+            };
+            let target = lexical_normalize(&base.join(&lit));
+            if target.starts_with(&crate_root) {
+                continue; // same-crate include — allowed
+            }
+            if allow.contains(&(file_rel.as_str(), lit.as_str())) {
+                seen.insert((file_rel.clone(), lit.clone()));
+            } else {
+                let tgt = target.strip_prefix(repo).unwrap_or(&target).display();
+                offenders.push(format!(
+                    "{file_rel}:{}: #[path = \"{lit}\"] -> {tgt} (outside the crate's own src/ — a \
+                     cross-crate SOURCE include breaks crates.io publishability; use a proper dependency)",
+                    i + 1
+                ));
+            }
+        }
+    }
+    let stale: Vec<String> = allowlist
+        .iter()
+        .filter(|(f, l)| !seen.contains(&((*f).to_string(), (*l).to_string())))
+        .map(|(f, l)| format!("{f} -> {l}"))
+        .collect();
+    if offenders.is_empty() && stale.is_empty() {
+        return Ok(());
+    }
+    let mut msg = String::new();
+    if !offenders.is_empty() {
+        msg.push_str(&format!(
+            "found {} cross-crate #[path] source-include(s) — the codebase forbids source-including a \
+             sibling crate's file (it breaks crates.io publishability); convert each to a proper crate \
+             dependency. At:\n  {}",
+            offenders.len(),
+            offenders.join("\n  ")
+        ));
+    }
+    if !stale.is_empty() {
+        if !msg.is_empty() {
+            msg.push_str("\n\n");
+        }
+        msg.push_str(&format!(
+            "{} STALE #[path]-allowlist entr(ies) — no longer a cross-crate include; REMOVE from \
+             PATH_INCLUDE_ALLOWLIST (the grandfather list must shrink as includes are removed):\n  {}",
+            stale.len(),
+            stale.join("\n  ")
+        ));
+    }
+    Err(msg)
+}
+
 // ── GATE-BASELINE text algebra (v-xtask-decompose) — the pure, std-only baseline-text primitives shared
 // by the gate (verdict grading + save), the `merge-baseline` git driver, the `check` baseline-no-dup lint,
 // and the standalone `xtask-canonicalize-baselines` command. Moved here so the canonicalizer command crate
@@ -1073,6 +1242,85 @@ expect\tdone\n\
             "flags the stale allowlist entry: {err}"
         );
         assert!(err.contains("small.rs"), "names the stale entry: {err}");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    /// Build a two-crate fixture: `<repo>/implementation/crates/{a,b}/` each with a `Cargo.toml` + `src/`.
+    /// Crate A's `src/lib.rs` gets `a_lib_body`; crate B gets a `src/shared.rs`. Returns the repo root.
+    fn path_fixture(tag: &str, a_lib_body: &str) -> PathBuf {
+        let repo = std::env::temp_dir().join(format!(
+            "cdz-pathlint-{tag}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for c in ["a", "b"] {
+            let src = repo.join(format!("implementation/crates/{c}/src"));
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(
+                repo.join(format!("implementation/crates/{c}/Cargo.toml")),
+                "[package]\n",
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            repo.join("implementation/crates/b/src/shared.rs"),
+            "pub fn f() {}\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("implementation/crates/a/src/lib.rs"), a_lib_body).unwrap();
+        repo
+    }
+
+    #[test]
+    fn path_lint_flags_cross_crate_include() {
+        // A's lib.rs source-includes B's file → cross-crate, must fail.
+        let repo = path_fixture(
+            "cross",
+            "#[path = \"../../b/src/shared.rs\"]\nmod shared;\n",
+        );
+        let err = cross_crate_path_include_lint_with(&repo, &[]).unwrap_err();
+        assert!(err.contains("cross-crate"), "names the violation: {err}");
+        assert!(err.contains("shared.rs"), "names the target: {err}");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn path_lint_allows_same_crate_include_and_allowlisted() {
+        // Same-crate #[path] (a file under A's own src/) is fine.
+        let repo = path_fixture("same", "#[path = \"helper.rs\"]\nmod helper;\n");
+        std::fs::write(repo.join("implementation/crates/a/src/helper.rs"), "\n").unwrap();
+        assert!(cross_crate_path_include_lint_with(&repo, &[]).is_ok());
+        std::fs::remove_dir_all(&repo).ok();
+
+        // A grandfathered cross-crate include passes (and is not stale, since it is present).
+        let repo = path_fixture(
+            "allow",
+            "#[path = \"../../b/src/shared.rs\"]\nmod shared;\n",
+        );
+        let allow = &[(
+            "implementation/crates/a/src/lib.rs",
+            "../../b/src/shared.rs",
+        )];
+        assert!(cross_crate_path_include_lint_with(&repo, allow).is_ok());
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn path_lint_flags_stale_allowlist_entry() {
+        // The allowlist names an include that no longer exists → stale, must be removed.
+        let repo = path_fixture("pstale", "// no includes here\n");
+        let allow = &[(
+            "implementation/crates/a/src/lib.rs",
+            "../../b/src/shared.rs",
+        )];
+        let err = cross_crate_path_include_lint_with(&repo, allow).unwrap_err();
+        assert!(
+            err.contains("STALE"),
+            "flags the stale allowlist entry: {err}"
+        );
         std::fs::remove_dir_all(&repo).ok();
     }
 }

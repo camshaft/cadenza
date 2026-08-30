@@ -5424,6 +5424,14 @@ fn check(paths: &Paths, profile: &str) {
     // over the limit at adoption (each pending a split); the lint blocks NEW oversized files and shrinks
     // as the allowlisted ones are split. See `xtask_support::file_size_lint`.
     log.step_native("file-size", || xtask_support::file_size_lint(&paths.repo));
+    // Cross-crate #[path] source-include lint (operator directive seq-275): FAIL on any `#[path = "…"]`
+    // whose target resolves OUTSIDE the including crate's own src/ (into a sibling crate) — the source-share
+    // that breaks crates.io publishability. Same-crate `#[path]` is fine. A grandfather allowlist carries
+    // the current 4 cross-crate includes (cdz-runtime->cadenza-ast x3 under seq-273; cdz-num->cdz-runtime
+    // bigint.rs) and shrinks as they convert to deps. See `xtask_support::cross_crate_path_include_lint`.
+    log.step_native("cross-crate-path-include", || {
+        xtask_support::cross_crate_path_include_lint(&paths.repo)
+    });
     // Mandate-enforcement lint: NO LONGER an inline step here (v-xtask-decompose 2026-08-28). The
     // mandate lint now lives in the STANDALONE `xtask-mandates` crate + the nix `mandateLintCheck`
     // (rewired to `cargo run -p xtask-mandates`), which gate-local folds into its fail-set — the
