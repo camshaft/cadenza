@@ -54,11 +54,19 @@ inductive SymOutcome where
 
 /-- A fully-CONSTANT symbolic expression → its concrete `Value` (`none` if any leaf is symbolic). Lets the
 constant folder decide `=` over COMPOUND constants (e.g. `(= (tuple 1 2) (tuple 1 3))`), not just scalars. -/
-partial def symToValue? : SymExpr → Option Value
+def symToValue? : SymExpr → Option Value
   | .const v => some v
-  | .tuple es => (es.mapM symToValue?).map Value.tuple
-  | .record fs => (fs.mapM (fun kv => (symToValue? kv.2).map (fun v => (kv.1, v)))).map Value.record
+  | .tuple es => (es.attach.mapM (fun x => symToValue? x.val)).map Value.tuple
+  | .record fs => (fs.attach.mapM (fun x => (symToValue? x.val.2).map (fun v => (x.val.1, v)))).map Value.record
   | _ => none
+termination_by e => sizeOf e
+decreasing_by
+  · simp_wf; have h := Array.sizeOf_lt_of_mem x.property; omega
+  · simp_wf
+    rcases x with ⟨⟨k, e⟩, hmem⟩
+    have h := Array.sizeOf_lt_of_mem hmem
+    simp_all
+    omega
 
 /-- Constant-fold an operator applied to fully-CONSTANT operands, iff the fold is SOUND independent of
 integer width (the symbolic evaluator does not yet track width). So this folds ONLY operators that can
