@@ -418,6 +418,24 @@ theorem evalArithOp_div_one (x : Int) (ty : IntTy) (v : Value)
   simp only [evalArithOp, Int.tdiv_one] at h
   repeat' (first | (split at h) | simp_all (config := { decide := true }))
 
+/-! ### `denoteBinary`-level arithmetic-identity value characterizations (the capstone `.app` bridge).
+Composing `denoteBinary_arith` (the deferred int-arith path routes to `evalArithOp`, given the op is
+arithmetic and `foldConst?` declined, #6405) with the `evalArithOp` characterizations above pins the
+result value of `denoteBinary` DIRECTLY, in the exact shape the capstone `.app` case consumes. The
+`foldConst? … = none` hypothesis is precisely what that case has IN HAND on the `normalize`-identity
+branch (`normalize`'s `.app` arm applies the algebraic identities only when `foldConst?` returned
+`none`), so carrying it here is faithful, not a gap. Two representatives — an operand-dropping (`x*0`)
+and an operand-preserving (`x+0`) one; the remaining identities follow by the identical composition. -/
+theorem denoteBinary_mul_zero_value (w : IntTy) (x : Int) (v : Value)
+    (hf : foldConst? "*" #[.const (.int x), .const (.int 0)] = none)
+    (h : denoteBinary "*" w (.value (.int x)) (.value (.int 0)) = .value v) : v = .int 0 :=
+  evalArithOp_mul_zero_r x w v (denoteBinary_arith "*" w x 0 hf (by decide) ▸ h)
+
+theorem denoteBinary_add_zero_value (w : IntTy) (x : Int) (v : Value)
+    (hf : foldConst? "+" #[.const (.int x), .const (.int 0)] = none)
+    (h : denoteBinary "+" w (.value (.int x)) (.value (.int 0)) = .value v) : v = .int x :=
+  evalArithOp_add_zero_r x w v (denoteBinary_arith "+" w x 0 hf (by decide) ▸ h)
+
 /-! ### Capstone base cases: `denote (normalize e) = denote e` on the leaves.
 The normalizer preserves meaning on `var` (it is the identity) and `const` (float canonicalization is
 now aligned in `denote`, so the equality is structural). These are the base cases of the full
