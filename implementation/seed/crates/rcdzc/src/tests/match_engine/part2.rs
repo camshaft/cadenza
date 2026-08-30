@@ -257,79 +257,13 @@ fn a_list_pattern_must_be_linear_and_refutable_elements_decline() {
         );
 }
 
-#[test]
-fn a_list_pattern_on_a_non_list_value_names_the_type_not_the_payload() {
-    // A `(list …)` pattern against a value that is NOT a list — a record, a tuple, a scalar — is a shape
-    // error (CDZ0201). The message NAMES the value's type + says a list pattern needs a list (the list
-    // twin of the tuple/constructor shape messages); it no longer leaks the internal "payload type" term
-    // ("a list pattern does not match the payload type T"), which misleads for a top-level `match`/`let`
-    // on a plain value that is not a variant payload.
-    let rec = reject_full(
-        "(module m (def (g (: r (Record (: x Int64)))) (match r ((list a) a))) (export g))",
-    )
-    .expect("a list pattern on a record rejects");
-    assert_eq!(rec.code.as_deref(), Some("CDZ0201"), "got: {}", rec.message);
-    assert!(
-        rec.message
-            .contains("this list pattern cannot destructure a value of type (Record (: x Int64))")
-            && !rec.message.contains("payload"),
-        "names the type, no internal 'payload' term: {}",
-        rec.message
-    );
-    // A tuple value too — same clear wording.
-    let tup = reject_full(
-        "(module m (def (g (: t (Tuple Int64 Int64))) (match t ((list a b) a))) (export g))",
-    )
-    .expect("a list pattern on a tuple rejects");
-    assert!(
-        tup.message
-            .contains("a `(list …)` pattern matches only a list value"),
-        "a tuple value gets the list-needs-a-list message: {}",
-        tup.message
-    );
-    // NO regression: a valid list pattern on a list value raises no shape fault.
-    assert!(
-        reject_full(
-            "(module m (def (f (: xs (List Int64))) (match xs ((list a) a) (_ 0))) (export f))"
-        )
-        .is_none_or(|d| !d.message.contains("cannot destructure")),
-        "a valid list pattern raises no shape fault"
-    );
-}
+// (a_list_pattern_on_a_non_list_value_names_the_type_not_the_payload migrated to corpus 05-compound-types: a
+// list pattern on a record/tuple is a shape error CDZ0201 naming the type (not the internal "payload" term);
+// the valid-list-pattern-no-fault control is covered by the existing 05 list-pattern match cases. PASS wasm.)
 
-#[test]
-fn two_rest_markers_in_one_arm_are_linear() {
-    // REGRESSION: the `..` rest MARKER is a syntactic token, NOT a binder (the rest binder is the name
-    // AFTER `..`). `collect_pattern_binders` walked `..` as a bare-name atom and inserted it into the
-    // seen-set, so a WELL-FORMED arm with two rest patterns — a tuple of two rest-lists
-    // `(tuple (list a .. r1) (list b .. r2))`, or a ctor-wrapped rest-list inside an outer rest-list
-    // `(list (Mk (list a .. r1)) .. r2)` — falsely faulted CDZ0102 "binds `..` more than once" and even
-    // proposed a `..2` rename. Both `_` and `..` are non-binding tokens the linearity walker must skip.
-    assert_eq!(
-        reject_code(
-            "(module m (def (f (: p (Tuple (List Int64) (List Int64)))) \
-                   (match p ((tuple (list a .. r1) (list b .. r2)) (+ a b)) (_ 0))) \
-                 (def (main) (f (tuple (list 1 2) (list 3 4)))) (export main))"
-        ),
-        None,
-        "two rest markers across sibling sub-patterns are linear (no CDZ0102)"
-    );
-    // The value (the leading binders `a`,`b` read element 0 of each rest-list, 1+3=4) is confirmed
-    // end-to-end by corpus 05 "a tuple of two rest-lists binds each leading head" — this keeps only the
-    // compile-time linearity witness (`reject_code`, no runtime).
-    // The linearity check still fires for a GENUINE repeat that spans a nested rest sub-pattern (the
-    // rest BINDER `r` is reused, not the `..` marker): `(tuple (list a .. r) (list b .. r))` → CDZ0102.
-    assert_eq!(
-        reject_code(
-            "(module m (def (f (: p (Tuple (List Int64) (List Int64)))) \
-                   (match p ((tuple (list a .. r) (list b .. r)) a) (_ 0))) \
-                 (def (main) (f (tuple (list 1) (list 2)))) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0102"),
-        "a reused rest BINDER across sibling rest-lists is still non-linear"
-    );
-}
+// (two_rest_markers_in_one_arm_are_linear migrated to corpus 05-compound-types: a reused rest BINDER across
+// sibling rest-lists is non-linear (CDZ0102); the well-formed two-rest positive is the existing 05 "a tuple of
+// two rest-lists binds each leading head" case. PASS wasm.)
 
 #[test]
 fn applying_an_effect_name_names_the_category_not_the_leaked_record_type() {
